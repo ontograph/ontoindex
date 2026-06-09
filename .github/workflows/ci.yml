@@ -15,13 +15,14 @@ on:
 # called-workflow context `github.workflow` evaluation is ambiguous across GitHub
 # Actions versions, and a prefix that could resolve to the caller's name would
 # share a concurrency group with the caller → deadlock. A literal prefix is
-# immune. Direct `push`/`pull_request` invocations use `CI-<ref>`; invocations
-# from a reusable-workflow caller fall into a per-run-unique group that never
-# serializes with the caller.
+# immune. Direct `push`/`pull_request` invocations use `CI-<ref>` for branches
+# and `CI-<ref>-<sha>` for tags so corrected release retags do not wait behind
+# stale queued tag CI. Other reusable-workflow callers fall into a per-run-unique
+# group that never serializes with the caller.
 # cancel-in-progress is event-aware: cancel superseded PR runs, queue every other
 # event (push to master, workflow_call from publish.yml, etc.).
 concurrency:
-  group: ${{ (github.event_name == 'pull_request' || github.event_name == 'push') && format('CI-{0}', github.ref) || format('CI-nested-{0}', github.run_id) }}
+  group: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && format('CI-{0}-{1}', github.ref, github.sha) || ((github.event_name == 'pull_request' || github.event_name == 'push') && format('CI-{0}', github.ref) || format('CI-nested-{0}', github.run_id)) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # ── Reusable workflow orchestration ─────────────────────────────────
