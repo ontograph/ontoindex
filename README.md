@@ -9,8 +9,7 @@
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
 - **Current release:** `1.9.0`
-- **npm:** [ontoindex](https://www.npmjs.com/package/ontoindex)
-- **Repository:** [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
+ 
 - **Enterprise:** [erasyuk@gmail.com](erasyuk@gmail.com) 
 
 ## Why OntoIndex
