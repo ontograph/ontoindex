@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "./hooks/augment-shell.sh",
+        "timeout": 5,
+        "matcher": "\\brg\\b|\\bgrep\\b"
+      }
+    ]
+  }
+}

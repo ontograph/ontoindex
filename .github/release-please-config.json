@@ -1,0 +1,22 @@
+{
+  "skip-github-release": true,
+  "skip-labeling": true,
+  "packages": {
+    "ontoindex": {
+      "release-type": "node",
+      "package-name": "ontoindex",
+      "changelog-path": "CHANGELOG.md",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true
+    },
+    "ontoindex-web": {
+      "release-type": "node",
+      "package-name": "ontoindex-web"
+    },
+    "ontoindex-shared": {
+      "release-type": "node",
+      "package-name": "ontoindex-shared"
+    }
+  },
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json"
+}

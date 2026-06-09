@@ -1,0 +1,83 @@
+name: E2E Tests
+
+on:
+  workflow_call:
+
+jobs:
+  check-changes:
+    name: Check web module changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      web_changed: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v3
+        id: filter
+        with:
+          filters: |
+            web:
+              - 'ontoindex-web/**'
+
+  e2e:
+    name: e2e (chromium)
+    needs: check-changes
+    if: needs.check-changes.result == 'success' && needs.check-changes.outputs.web_changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: ./.github/actions/setup-ontoindex-web
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+        working-directory: ontoindex-web
+
+      - name: Install backend dependencies
+        run: npm ci
+        working-directory: ontoindex
+
+      - name: Build backend
+        run: npm run build
+        working-directory: ontoindex
+
+      - name: Analyze repository (index for backend)
+        run: |
+          node ontoindex/dist/cli/index.js analyze || true
+          if [ ! -d ".ontoindex" ]; then
+            echo "::error::No .ontoindex index created"
+            exit 1
+          fi
+
+      - name: Start backend server
+        run: node dist/cli/index.js serve &
+        working-directory: ontoindex
+
+      - name: Wait for backend readiness
+        run: npx wait-on http://localhost:4747/api/repos --timeout 30000
+        working-directory: ontoindex-web
+
+      - name: Start Vite dev server
+        run: npm run dev &
+        working-directory: ontoindex-web
+
+      - name: Wait for Vite dev server
+        run: npx wait-on http://localhost:5173 --timeout 30000
+        working-directory: ontoindex-web
+
+      - name: Run E2E tests
+        run: npx playwright test
+        working-directory: ontoindex-web
+        env:
+          E2E: '1'
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-results
+          path: |
+            ontoindex-web/test-results/
+            ontoindex-web/playwright-report/
+          retention-days: 5

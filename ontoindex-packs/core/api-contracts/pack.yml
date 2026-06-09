@@ -1,0 +1,25 @@
+schema: 1
+id: core.api-contracts
+name: API Contracts
+version: 0.1.0
+kind: query
+tier: stable
+summary: Surface route/consumer mismatches, API impact, and contract drift across service boundaries.
+owners:
+  - maintainers
+tags:
+  - api
+  - contracts
+  - reliability
+provides:
+  - api_impact
+  - route_map
+  - shape_check
+runs:
+  - tool: route_map
+    params: {}
+  - tool: shape_check
+    params: {}
+  - tool: api_impact
+    params:
+      route: /api/

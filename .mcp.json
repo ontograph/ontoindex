@@ -1,0 +1,63 @@
+{
+  "mcpServers": {
+    "ontoindex": {
+      "type": "stdio",
+      "command": "/usr/bin/node",
+      "args": ["/opt/demodb/_workfolder/OntoIndex/ontoindex/dist/cli/index.js", "mcp"],
+      "cwd": "/opt/demodb/_workfolder/OntoIndex",
+      "env": {
+        "NODE_ENV": "production",
+        "ONTOINDEX_MCP_AUTO_ANALYZE": "0",
+        "ONTOINDEX_LBUG_POOL_SIZE": "1",
+        "ONTOINDEX_MAX_WORKERS": "7",
+        "ONTOINDEX_MCP_STARTUP_TIMEOUT_MS": "10000",
+        "ONTOINDEX_MCP_REPO": "/opt/demodb/_workfolder/OntoIndex",
+        "NODE_OPTIONS": "--max-old-space-size=1536"
+      }
+    },
+    "codex": {
+      "type": "stdio",
+      "command": "/home/er77/.nvm/versions/node/v25.5.0/bin/codex",
+      "args": ["mcp-server", "-c", "model=gpt-5.4", "-c", "reasoning_effort=high"]
+    },
+    "codex-codex": {
+      "type": "stdio",
+      "command": "/home/er77/.nvm/versions/node/v25.5.0/bin/codex",
+      "args": ["mcp-server", "-c", "model=gpt-5.3-codex", "-c", "reasoning_effort=high"]
+    },
+    "gemini": {
+      "type": "stdio",
+      "command": "/home/er77/.nvm/versions/node/v25.5.0/bin/node",
+      "args": ["/home/er77/.claude/mcp-adapters/gemini-mcp.mjs"]
+    },
+    "opencode": {
+      "type": "stdio",
+      "command": "/home/er77/.nvm/versions/node/v25.5.0/bin/node",
+      "args": ["/home/er77/.claude/mcp-adapters/opencode-mcp.mjs"],
+      "env": {
+        "OPENCODE_BIN": "/home/er77/.opencode/bin/opencode"
+      }
+    },
+    "copilot": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/home/er77/.claude/mcp-adapters/copilot-mcp.mjs"],
+      "env": {
+        "COPILOT_MODEL": "gpt-5.4",
+        "COPILOT_EFFORT": "high",
+        "COPILOT_TIMEOUT_MS": "300000",
+        "COPILOT_WORK_DIR": "/home/er77/_wrk/axel"
+      }
+    },
+    "lean-ctx": {
+      "type": "stdio",
+      "command": "/home/er77/.cargo/bin/lean-ctx",
+      "args": []
+    },
+    "mcp-on-demand": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@soflution/mcp-on-demand"]
+    }
+  }
+}

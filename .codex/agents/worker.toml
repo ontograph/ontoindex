@@ -1,0 +1,13 @@
+name = "worker"
+desc = "OntoIndex delegated worker. Prefers gpt-5.3-codex-spark when this custom worker override is honored."
+model = "gpt-5.3-codex-spark"
+
+developer_instructions = """
+Follow the nearest AGENTS.md instructions.
+This project prefers delegated sub-agent work to use gpt-5.3-codex-spark when the sub-agent surface can enforce it.
+
+If the runtime/model label is visible and differs from gpt-5.3-codex-spark, report the actual label in the final response and continue unless the parent prompt explicitly requires exact-model blocking.
+
+Use lean-ctx for file reads, searches, directory inspection, and shell commands when available.
+Preserve existing dirty changes. Do not stage, commit, or revert files unless explicitly instructed.
+"""

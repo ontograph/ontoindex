@@ -1,0 +1,9 @@
+# Baseline mode — no OntoIndex, pure mini-swe-agent (control group)
+agent:
+  agent_class: 'eval.agents.ontoindex_agent.OntoIndexAgent'
+  ontoindex_mode: 'baseline'
+  step_limit: 30
+  cost_limit: 3.0
+
+environment:
+  environment_class: 'docker'

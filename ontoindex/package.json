@@ -1,0 +1,128 @@
+{
+  "name": "ontoindex",
+  "version": "1.6.2",
+  "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
+  "author": "Abhigyan Patwari",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/ontograph/ontoindex#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ontograph/ontoindex.git",
+    "directory": "ontoindex"
+  },
+  "bugs": {
+    "url": "https://github.com/ontograph/ontoindex/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "code-intelligence",
+    "knowledge-graph",
+    "cursor",
+    "claude",
+    "codex",
+    "ai-agent",
+    "ontoindex",
+    "static-analysis",
+    "codebase-indexing"
+  ],
+  "type": "module",
+  "bin": {
+    "ontoindex": "dist/cli/index.js"
+  },
+  "files": [
+    "dist",
+    "hooks",
+    "scripts",
+    "skills",
+    "vendor"
+  ],
+  "scripts": {
+    "build": "node scripts/build.js",
+    "serve": "tsx src/cli/index.ts serve",
+    "dev": "tsx watch src/cli/index.ts",
+    "test": "vitest run",
+    "test:unit": "vitest run test/unit",
+    "test:integration": "vitest run test/integration",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "bench:large": "node scripts/large-codebase-benchmark.mjs",
+    "postinstall": "node scripts/patch-tree-sitter-swift.cjs && node scripts/build-tree-sitter-proto.cjs",
+    "prepare": "node scripts/build.js",
+    "prepack": "node scripts/build.js"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.1.0",
+    "@ladybugdb/core": "^0.16.1",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@scarf/scarf": "^1.4.0",
+    "cli-progress": "^3.12.0",
+    "commander": "^14.0.3",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "glob": "^13.0.6",
+    "graphology": "^0.26.0",
+    "graphology-indices": "^0.17.0",
+    "graphology-utils": "^2.3.0",
+    "ignore": "^7.0.5",
+    "js-yaml": "^4.1.1",
+    "lru-cache": "^11.0.0",
+    "mdast-util-from-markdown": "^2.0.3",
+    "mdast-util-frontmatter": "^2.0.1",
+    "mdast-util-gfm": "^3.1.0",
+    "micromark-extension-frontmatter": "^2.0.0",
+    "micromark-extension-gfm": "^3.0.0",
+    "mnemonist": "^0.40.3",
+    "onnxruntime-node": "^1.24.0",
+    "p-limit": "^7.3.0",
+    "pandemonium": "^2.4.0",
+    "safe-regex": "^2.1.1",
+    "seedrandom": "^3.0.5",
+    "tree-sitter": "^0.21.1",
+    "tree-sitter-c": "0.23.2",
+    "tree-sitter-c-sharp": "0.23.1",
+    "tree-sitter-cpp": "^0.23.4",
+    "tree-sitter-go": "^0.23.0",
+    "tree-sitter-java": "^0.23.5",
+    "tree-sitter-javascript": "^0.23.0",
+    "tree-sitter-php": "^0.23.0",
+    "tree-sitter-python": "0.23.4",
+    "tree-sitter-ruby": "^0.23.1",
+    "tree-sitter-rust": "0.23.1",
+    "tree-sitter-typescript": "^0.23.2",
+    "uuid": "^14.0.0",
+    "zod": "^4.3.6"
+  },
+  "optionalDependencies": {
+    "node-addon-api": "^8.0.0",
+    "node-gyp-build": "^4.8.0",
+    "tree-sitter-dart": "git+https://github.com/UserNobody14/tree-sitter-dart.git#80e23c07b64494f7e21090bb3450223ef0b192f4",
+    "tree-sitter-kotlin": "^0.3.8",
+    "tree-sitter-proto": "file:./vendor/tree-sitter-proto",
+    "tree-sitter-swift": "^0.6.0"
+  },
+  "devDependencies": {
+    "@types/cli-progress": "^3.11.6",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^25.6.0",
+    "@types/safe-regex": "^1.1.6",
+    "@types/seedrandom": "^3.0.8",
+    "@types/uuid": "^10.0.0",
+    "@vitest/coverage-v8": "^4.0.18",
+    "ontoindex-shared": "file:../ontoindex-shared",
+    "tsx": "^4.0.0",
+    "typescript": "^5.4.5",
+    "vitest": "^4.0.18"
+  },
+  "overrides": {
+    "@huggingface/transformers": {
+      "onnxruntime-node": "$onnxruntime-node"
+    },
+    "tree-sitter-c": "0.23.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

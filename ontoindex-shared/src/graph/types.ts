@@ -1,0 +1,165 @@
+/**
+ * Graph type definitions — single source of truth.
+ *
+ * Both ontoindex (CLI) and ontoindex-web import from this package.
+ * Do NOT add Node.js-specific or browser-specific imports here.
+ */
+
+import { SupportedLanguages } from '../languages.js';
+
+export type NodeLabel =
+  | 'Project'
+  | 'Package'
+  | 'Module'
+  | 'Folder'
+  | 'File'
+  | 'Class'
+  | 'Function'
+  | 'Method'
+  | 'Variable'
+  | 'Interface'
+  | 'Enum'
+  | 'Decorator'
+  | 'Import'
+  | 'Type'
+  | 'CodeElement'
+  | 'Community'
+  | 'Concept'
+  | 'Process'
+  // Multi-language node types
+  | 'Struct'
+  | 'Macro'
+  | 'Typedef'
+  | 'Union'
+  | 'Namespace'
+  | 'Trait'
+  | 'Impl'
+  | 'TypeAlias'
+  | 'Const'
+  | 'Static'
+  | 'Property'
+  | 'Record'
+  | 'Delegate'
+  | 'Annotation'
+  | 'Constructor'
+  | 'Template'
+  | 'Section'
+  | 'Route'
+  | 'Tool';
+
+export type NodeProperties = {
+  name: string;
+  filePath: string;
+  startLine?: number;
+  endLine?: number;
+  language?: SupportedLanguages | string;
+  isExported?: boolean;
+  astFrameworkMultiplier?: number;
+  astFrameworkReason?: string;
+  // Community
+  heuristicLabel?: string;
+  cohesion?: number;
+  symbolCount?: number;
+  keywords?: string[];
+  description?: string;
+  enrichedBy?: 'heuristic' | 'llm';
+  // Process
+  processType?: 'intra_community' | 'cross_community';
+  stepCount?: number;
+  communities?: string[];
+  entryPointId?: string;
+  terminalId?: string;
+  entryPointScore?: number;
+  entryPointReason?: string;
+  importance?: number;
+  // Method/property
+  parameterCount?: number;
+  level?: number;
+  returnType?: string;
+  declaredType?: string;
+  visibility?: string;
+  isStatic?: boolean;
+  isReadonly?: boolean;
+  isAbstract?: boolean;
+  isFinal?: boolean;
+  isVirtual?: boolean;
+  isOverride?: boolean;
+  isAsync?: boolean;
+  isPartial?: boolean;
+  annotations?: string[];
+  // Route/response
+  responseKeys?: string[];
+  errorKeys?: string[];
+  middleware?: string[];
+  // Documentation concept nodes. These are advisory evidence nodes and do not
+  // replace or mutate code graph nodes they point at.
+  aliases?: string[];
+  sourceDocuments?: string[];
+  sourceFactKeys?: string[];
+  resolutionKeys?: string[];
+  authority?: 'authoritative' | 'advisory';
+  evidenceClass?: 'docs_evidence';
+  freshness?: 'fresh' | 'stale' | 'unknown';
+  confidence?: 'high' | 'medium' | 'low';
+  // Extensible
+  [key: string]: unknown;
+};
+
+export type RelationshipType =
+  | 'CONTAINS'
+  | 'CALLS'
+  | 'INHERITS'
+  | 'METHOD_OVERRIDES'
+  | 'METHOD_IMPLEMENTS'
+  | 'IMPORTS'
+  | 'USES'
+  | 'DEFINES'
+  | 'DECORATES'
+  | 'IMPLEMENTS'
+  | 'EXTENDS'
+  | 'HAS_METHOD'
+  | 'HAS_PROPERTY'
+  | 'ACCESSES'
+  | 'MEMBER_OF'
+  | 'STEP_IN_PROCESS'
+  | 'HANDLES_ROUTE'
+  | 'FETCHES'
+  | 'HANDLES_TOOL'
+  | 'ENTRY_POINT_OF'
+  | 'WRAPS'
+  | 'QUERIES'
+  | 'EXPLAINED_BY'
+  | 'MENTIONS'
+  | 'CO_CHANGED_WITH';
+
+export interface GraphNode {
+  id: string;
+  label: NodeLabel;
+  properties: NodeProperties;
+}
+
+export interface GraphRelationship {
+  id: string;
+  sourceId: string;
+  targetId: string;
+  type: RelationshipType;
+  confidence: number;
+  reason: string;
+  step?: number;
+  /**
+   * Per-signal evidence trace for edges emitted by the scope-based
+   * resolution pipeline (RFC #909 Ring 2 PKG #925). Populated by
+   * `emit-references.ts` when draining `ReferenceIndex` into the graph
+   * so downstream query / audit tools can inspect *why* a given edge
+   * was emitted with its confidence value.
+   *
+   * Optional and additive — every existing edge emitter ignores this
+   * field, and every existing query continues to work whether or not
+   * an edge carries it.
+   */
+  evidence?: readonly {
+    readonly kind: string;
+    readonly weight: number;
+    readonly note?: string;
+  }[];
+}

@@ -1,0 +1,16 @@
+dist/
+coverage/
+ontoindex/vendor/
+ontoindex/test/fixtures/
+ontoindex-web/playwright-report/
+ontoindex-web/test-results/
+*.d.ts
+*.snap
+*.wasm
+*.md
+.ontoindex/
+.vercel/
+.claude-flow/
+.swarm/
+assets/
+repomix-output*

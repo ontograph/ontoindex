@@ -1,0 +1,45 @@
+services:
+  ontoindex-server:
+    image: ${SERVER_IMAGE:-ghcr.io/ontograph/ontoindex:latest}
+    container_name: ${SERVER_CONTAINER_NAME:-ontoindex-server}
+    # Map the server to the same host port the web UI expects by default
+    # (http://localhost:4747). The browser runs on the host, so the UI's
+    # built-in default works without any reconfiguration.
+    ports:
+      - '${SERVER_HOST_PORT:-4747}:4747'
+    volumes:
+      # Persist the global registry, indexes, and cloned repos across runs.
+      - ontoindex-data:/data/ontoindex
+      # Optional: mount a host workspace so `ontoindex index <path>` can see
+      # repos you already have on disk. The default points at an empty
+      # `./workspace/` sibling that compose will create on first start —
+      # it intentionally does NOT bind-mount the repo root, which would
+      # expose `.git`, `.env`, and CI secrets to the container.
+      # Override with `WORKSPACE_DIR=/abs/path/to/your/repos`.
+      - ${WORKSPACE_DIR:-./workspace}:/workspace:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://localhost:4747/api/heartbeat']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  ontoindex-web:
+    image: ${WEB_IMAGE:-ghcr.io/ontograph/ontoindex-web:latest}
+    container_name: ${WEB_CONTAINER_NAME:-ontoindex-web}
+    ports:
+      - '${WEB_HOST_PORT:-4173}:4173'
+    depends_on:
+      ontoindex-server:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:4173/']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  ontoindex-data:

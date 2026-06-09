@@ -1,0 +1,117 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+.claude/settings.local.json
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+docker/.env
+
+# Logs
+*.log
+npm-debug.log*
+
+# Testing
+coverage/
+
+# Misc
+*.local
+HANDOFF.md
+HANDOFF*.md
+
+.vercel
+
+
+
+
+
+
+.env*.local
+.ontoindex
+.claude/settings.local.json
+
+# Claude Code worktrees
+.claude/worktrees/
+
+# Claude code skills
+.claude/skills/generated/
+
+# Assets (screenshots, images)
+assets/
+
+# Generated files (should not be indexed)
+repomix-output*
+
+# Playwright artifacts
+ontoindex-web/playwright-report/
+ontoindex-web/test-results/
+
+# Python test artifacts
+eval/.coverage
+eval/.hypothesis/
+
+# Design docs (local only)
+docs/plans/
+
+ontoindex/test/fixtures/mini-repo/*.md
+ontoindex/test/fixtures/mini-repo/.claude
+ontoindex/test/fixtures/mini-repo/.gitignore
+
+# Ignore csharp generated obj and bin folders
+ontoindex/test/fixtures/lang-resolution/**/obj
+ontoindex/test/fixtures/lang-resolution/**/bin
+OntoIndex.sln
+# Git worktrees
+.worktrees/
+
+# Vendored tree-sitter grammar build artifacts (created at install time,
+# never committed). See docs/plans/2026-04-15-002-fix-tree-sitter-proto-vendor-deps-plan.md
+ontoindex/vendor/**/build/
+ontoindex/vendor/**/node_modules/
+ontoindex-native/target/
+ontoindex-native/native/*.node
+
+/github/scripts/triage/__pycache__/
+
+.claude-flow/
+
+.claude/agents/
+.claude/commands/
+.claude/helpers
+.claude/skills/
+!.claude/skills/ontoindex/
+
+.history/
+
+.swarm/
+
+local_docs/
+
+# Local agent scratch / review prompts (never commit)
+.tmp/
+.agents/
+.claude/agent-memory/
+
+# Local embedding-endpoint config (sources OPENROUTER_API_KEY; never commit)
+.env.embeddings
+
+# v7+ pilot DBs
+pilot/

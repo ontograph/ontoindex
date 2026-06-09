@@ -1,0 +1,88 @@
+{
+  "snapshot": {
+    "sourceIndexId": "index-1",
+    "sourceCommitHash": "commit-1",
+    "schemaVersion": 1,
+    "analyzerVersion": "1.0.0",
+    "filePath": "src/orders/service.ts",
+    "fileHash": "hash-orders"
+  },
+  "primaryResults": [
+    { "id": "primary-1", "score": 1 },
+    { "id": "primary-2", "score": 0.8 }
+  ],
+  "passiveCandidates": [
+    {
+      "factKey": "fact-1",
+      "reason": "semantic-bridge-fallback",
+      "score": 0.92,
+      "fact": {
+        "kind": "semantic-bridge",
+        "subject": {
+          "type": "symbol",
+          "id": "Function:src/orders/service.ts:createOrder",
+          "filePath": "src/orders/service.ts"
+        },
+        "from": {
+          "type": "symbol",
+          "id": "Function:src/orders/service.ts:createOrder",
+          "filePath": "src/orders/service.ts"
+        },
+        "to": {
+          "type": "symbol",
+          "id": "Function:src/billing/invoice.ts:createInvoice",
+          "filePath": "src/billing/invoice.ts"
+        },
+        "bridgeType": "usage",
+        "confidence": 0.9,
+        "evidence": [],
+        "referencedFiles": [
+          { "filePath": "src/orders/service.ts", "fileHash": "hash-orders" },
+          { "filePath": "src/billing/invoice.ts", "fileHash": "hash-billing" }
+        ]
+      }
+    }
+  ],
+  "expected": {
+    "relatedFactKeys": ["fact-1"],
+    "relatedSymbolIds": [
+      "Function:src/orders/service.ts:createOrder",
+      "Function:src/billing/invoice.ts:createInvoice"
+    ],
+    "relatedFilePaths": ["src/orders/service.ts", "src/billing/invoice.ts"]
+  },
+  "qualityFixture": {
+    "name": "graph-expansion-basic",
+    "defaultCases": [
+      {
+        "name": "exact symbol default recall",
+        "topK": 1,
+        "expectedResultIds": ["Function:src/orders/service.ts:createOrder"],
+        "actualResultIds": ["Function:src/orders/service.ts:createOrder"]
+      },
+      {
+        "name": "exact file default recall",
+        "topK": 1,
+        "expectedResultIds": ["src/orders/service.ts"],
+        "actualResultIds": ["src/orders/service.ts"]
+      }
+    ],
+    "optInPassiveCases": [
+      {
+        "name": "passive symbol expansion recall",
+        "topK": 2,
+        "expectedResultIds": ["Function:src/billing/invoice.ts:createInvoice"],
+        "actualResultIds": [
+          "Function:src/orders/service.ts:createOrder",
+          "Function:src/billing/invoice.ts:createInvoice"
+        ]
+      },
+      {
+        "name": "passive file expansion recall",
+        "topK": 2,
+        "expectedResultIds": ["src/billing/invoice.ts"],
+        "actualResultIds": ["src/orders/service.ts", "src/billing/invoice.ts"]
+      }
+    ]
+  }
+}

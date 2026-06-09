@@ -1,0 +1,72 @@
+name: Quality Checks
+
+on:
+  workflow_call:
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npx prettier --check .
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npx eslint .
+
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup-ontoindex
+      - run: npx tsc --noEmit
+        working-directory: ontoindex
+
+  typecheck-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup-ontoindex-web
+      - run: npx tsc -b --noEmit
+        working-directory: ontoindex-web
+
+  # Enforces the convention documented in CONTRIBUTING.md → "GitHub Actions —
+  # Concurrency Convention":
+  #   1. Every entry-point (non-reusable) workflow declares a top-level
+  #      `concurrency:` block.
+  #   2. Reusable workflows (`on: workflow_call` only) do NOT declare one —
+  #      they inherit concurrency from the caller.
+  #   3. The concurrency group key starts with `${{ github.workflow }}` or
+  #      the literal `CI-` prefix (the documented ci.yml exception for
+  #      reusable-workflow-safe grouping).
+  # Reusability is detected by parsing each workflow's `on:` block, not an
+  # allowlist, so new reusable workflows never produce false positives.
+  workflow-convention:
+    name: Workflow concurrency convention
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Validate workflow concurrency convention
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/check-workflow-concurrency.py .github/workflows

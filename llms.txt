@@ -1,0 +1,20 @@
+OntoIndex monorepo (CLI + web UI)
+
+# Core docs (read first for any contribution)
+- AGENTS.md — canonical agent instructions, OntoIndex MCP tool reference
+- GUARDRAILS.md — non-negotiables and escalation triggers
+
+# Operational (read when running commands or debugging)
+- RUNBOOK.md — copy-paste commands for common workflows
+- TESTING.md — test commands for both packages
+- CONTRIBUTING.md — contribution workflow and PR conventions
+
+# Architecture (read for design context)
+- ARCHITECTURE.md — system overview, data flow, component relationships
+
+# Key directories
+- ontoindex/ (CLI/core, MCP server — TypeScript)
+- ontoindex-web/ (web UI — React/Vite/WASM)
+- eval/ (SWE-bench evaluation harness — Python)
+- ontoindex-claude-plugin/ (Claude marketplace config)
+- ontoindex-cursor-integration/ (Cursor integration config)

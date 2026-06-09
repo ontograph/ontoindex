@@ -1,0 +1,22 @@
+# OntoIndex CODEOWNERS
+# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner
+* @abhigyanpatwari
+
+# Package surfaces
+/ontoindex/ @abhigyanpatwari
+/ontoindex-web/ @abhigyanpatwari
+/ontoindex-shared/ @abhigyanpatwari
+
+# Governance and release-critical files
+/CONTRIBUTING.md @abhigyanpatwari
+/CODE_OF_CONDUCT.md @abhigyanpatwari
+/SECURITY.md @abhigyanpatwari
+/LICENSE @abhigyanpatwari
+/NOTICE @abhigyanpatwari
+/.github/CODEOWNERS @abhigyanpatwari
+/.github/workflows/ @abhigyanpatwari
+
+# Documentation
+/docs/ @abhigyanpatwari

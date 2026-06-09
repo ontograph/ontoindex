@@ -1,0 +1,87 @@
+name: Tests
+
+on:
+  workflow_call:
+
+jobs:
+  tests:
+    name: ubuntu / coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup-ontoindex
+        with:
+          build: 'true'
+
+      - name: Run all tests with coverage
+        run: >-
+          npx vitest run
+          --reporter=default
+          --reporter=json
+          --outputFile=test-results.json
+          --coverage
+          --coverage.reporter=json-summary
+          --coverage.reporter=json
+          --coverage.reporter=text
+          --coverage.thresholdAutoUpdate=false
+          --coverage.reportOnFailure=true
+        working-directory: ontoindex
+
+      # ontoindex-shared already built by setup-ontoindex action above
+      - name: Install ontoindex-web dependencies
+        run: npm ci
+        working-directory: ontoindex-web
+
+      - name: Run ontoindex-web unit tests
+        run: >-
+          npx vitest run
+          --reporter=default
+          --reporter=json
+          --outputFile=web-test-results.json
+        working-directory: ontoindex-web
+
+      - name: Run docker-server integration tests
+        run: node --test docker-server.test.mjs
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-reports
+          path: |
+            ontoindex/coverage/coverage-summary.json
+            ontoindex/coverage/coverage-final.json
+            ontoindex/test-results.json
+            ontoindex-web/web-test-results.json
+          retention-days: 5
+
+  runtime-matrix:
+    name: ${{ matrix.os }} / node ${{ matrix.node }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [20, 22]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: |
+            ontoindex/package-lock.json
+            ontoindex-shared/package-lock.json
+      - name: Build ontoindex-shared
+        run: npm ci && npm run build
+        working-directory: ontoindex-shared
+      - run: npm ci
+        working-directory: ontoindex
+      - name: Build ontoindex
+        run: npm run build
+        working-directory: ontoindex
+      - name: Run ontoindex unit tests
+        run: npm run test:unit
+        working-directory: ontoindex

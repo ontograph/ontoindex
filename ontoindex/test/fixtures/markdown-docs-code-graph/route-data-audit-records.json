@@ -1,0 +1,56 @@
+[
+  {
+    "framework": "nextjs",
+    "source": "nextjs-filesystem-route",
+    "method": "GET",
+    "route": "/api/users",
+    "handler": "app/api/users/route.ts",
+    "filePath": "app/api/users/route.ts",
+    "lineSpan": { "startLine": 1, "endLine": 32 },
+    "middleware": ["withAuth"],
+    "consumers": [{ "name": "UsersPage", "filePath": "app/users/page.tsx" }]
+  },
+  {
+    "framework": "legacy-rpc",
+    "source": "unsupported-route-extractor",
+    "supportState": "unsupported",
+    "unsupportedReason": "legacy-rpc has no route extractor",
+    "route": "/rpc/users",
+    "handler": "src/rpc/users.ts",
+    "filePath": "src/rpc/users.ts"
+  },
+  {
+    "framework": "express",
+    "source": "framework-route",
+    "route": "/api/orders/:id",
+    "handler": "src/routes/orders.ts",
+    "filePath": "src/routes/orders.ts",
+    "lineNumber": 12
+  },
+  {
+    "framework": "laravel",
+    "source": "framework-route",
+    "method": "POST",
+    "routePath": "/api/invoices",
+    "handler": "routes/api.php",
+    "filePath": "routes/api.php"
+  },
+  {
+    "framework": "spring",
+    "source": "decorator-GetMapping",
+    "method": "GET",
+    "routePath": "/api/ambiguous",
+    "handler": "src/main/UserController.java",
+    "filePath": "src/main/UserController.java",
+    "lineNumber": 20
+  },
+  {
+    "framework": "spring",
+    "source": "decorator-GetMapping",
+    "method": "GET",
+    "routePath": "/api/ambiguous",
+    "handler": "src/main/AdminController.java",
+    "filePath": "src/main/AdminController.java",
+    "lineNumber": 35
+  }
+]

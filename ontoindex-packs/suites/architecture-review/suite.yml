@@ -1,0 +1,13 @@
+schema: 1
+id: suite.architecture-review
+name: Architecture Review
+tier: stable
+summary: Combine architecture drift and framework modeling packs for pre-merge or release architecture review.
+owners:
+  - maintainers
+tags:
+  - architecture
+  - review
+packs:
+  - core.architecture-and-drift
+  - core.framework-models

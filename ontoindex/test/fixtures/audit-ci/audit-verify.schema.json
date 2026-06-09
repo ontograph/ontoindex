@@ -1,0 +1,84 @@
+{
+  "type": "object",
+  "required": [
+    "version",
+    "action",
+    "verifiedCount",
+    "findings",
+    "limits",
+    "warnings",
+    "skipReasons"
+  ],
+  "properties": {
+    "version": { "const": 1 },
+    "action": { "const": "audit-verify" },
+    "verifiedCount": { "type": "number" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "findingId",
+          "title",
+          "status",
+          "statusReason",
+          "confidence",
+          "reasonCodes",
+          "verifiedAt",
+          "verifiedHead",
+          "verificationKind",
+          "fixCommit",
+          "evidence",
+          "negativeEvidence",
+          "comments",
+          "testMentions",
+          "fixHistory",
+          "limits"
+        ],
+        "properties": {
+          "findingId": { "type": "string" },
+          "title": { "type": "string" },
+          "status": { "type": "string" },
+          "statusReason": { "type": "string" },
+          "confidence": { "type": "number" },
+          "reasonCodes": { "type": "array", "items": { "type": "string" } },
+          "verifiedAt": { "type": ["string", "null"] },
+          "verifiedHead": { "type": ["string", "null"] },
+          "verificationKind": { "type": ["string", "null"] },
+          "fixCommit": { "type": ["string", "null"] },
+          "evidence": { "type": "array" },
+          "negativeEvidence": { "type": "array" },
+          "comments": { "type": "array" },
+          "testMentions": { "type": "array" },
+          "fixHistory": { "type": "array" },
+          "limits": {
+            "type": "object",
+            "required": [
+              "maxEvidence",
+              "evidenceTruncated",
+              "negativeEvidenceTruncated"
+            ],
+            "properties": {
+              "maxEvidence": { "type": "number" },
+              "evidenceTruncated": { "type": "boolean" },
+              "negativeEvidenceTruncated": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "required": ["maxFindings", "maxEvidence", "emitted", "total", "truncated"],
+      "properties": {
+        "maxFindings": { "type": "number" },
+        "maxEvidence": { "type": "number" },
+        "emitted": { "type": "number" },
+        "total": { "type": "number" },
+        "truncated": { "type": "boolean" }
+      }
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "skipReasons": { "type": "array", "items": { "type": "string" } }
+  }
+}

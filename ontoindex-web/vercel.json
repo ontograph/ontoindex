@@ -1,0 +1,3 @@
+{
+  "installCommand": "cd ../ontoindex-shared && npm install && npm run build && cd ../ontoindex-web && npm install"
+}

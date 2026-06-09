@@ -1,0 +1,33 @@
+name: Setup OntoIndex
+description: Setup Node.js 20, install dependencies, and optionally build
+
+inputs:
+  build:
+    description: Whether to run npm run build after install
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: 20
+        cache: npm
+        cache-dependency-path: ontoindex/package-lock.json
+
+    - name: Build ontoindex-shared
+      run: npm install && npm run build
+      shell: bash
+      working-directory: ontoindex-shared
+
+    - name: Install dependencies
+      run: npm ci
+      shell: bash
+      working-directory: ontoindex
+
+    - name: Build
+      if: ${{ inputs.build == 'true' }}
+      run: npm run build
+      shell: bash
+      working-directory: ontoindex

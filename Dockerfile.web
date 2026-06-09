@@ -1,0 +1,37 @@
+ARG BUILDPLATFORM
+ARG TARGETPLATFORM
+
+FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
+
+WORKDIR /app
+
+COPY ontoindex-shared/package.json ontoindex-shared/package-lock.json ./ontoindex-shared/
+RUN npm ci --prefix ontoindex-shared
+
+COPY ontoindex-shared ./ontoindex-shared
+RUN npm run build --prefix ontoindex-shared
+
+COPY ontoindex/package.json ./ontoindex/
+
+COPY ontoindex-web/package.json ontoindex-web/package-lock.json ./ontoindex-web/
+RUN npm ci --prefix ontoindex-web
+
+COPY ontoindex-web ./ontoindex-web
+RUN npm run build --prefix ontoindex-web
+
+FROM node:22-alpine AS runtime
+
+RUN apk add --no-cache curl
+
+WORKDIR /app
+
+COPY --from=builder /app/ontoindex-web/dist ./dist
+COPY docker-server.mjs ./docker-server.mjs
+
+RUN chown -R node:node /app
+
+USER node
+
+EXPOSE 4173
+
+CMD ["node", "docker-server.mjs"]

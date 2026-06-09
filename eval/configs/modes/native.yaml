@@ -1,0 +1,19 @@
+# Native mode — OntoIndex tools only, no grep enrichment
+#
+# Explicit tools: ontoindex-query, ontoindex-context, ontoindex-impact, ontoindex-cypher
+# Available as fast bash commands (~100ms via eval-server)
+#
+# Use this mode to isolate the value of explicit tools without grep augmentation.
+agent:
+  agent_class: 'eval.agents.ontoindex_agent.OntoIndexAgent'
+  ontoindex_mode: 'native'
+  step_limit: 30
+  cost_limit: 3.0
+  track_ontoindex_usage: true
+
+environment:
+  environment_class: 'eval.environments.ontoindex_docker.OntoIndexDockerEnvironment'
+  enable_ontoindex: true
+  skip_embeddings: true
+  ontoindex_timeout: 120
+  eval_server_port: 4848

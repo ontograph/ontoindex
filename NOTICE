@@ -1,0 +1,73 @@
+OntoIndex
+Copyright 2024-2026 OntoIndex contributors
+
+This product includes software developed by OntoIndex contributors and
+is licensed under the Apache License, Version 2.0.
+
+-------------------------------------------------------------------------------
+Third-Party Components
+-------------------------------------------------------------------------------
+
+tree-sitter (^0.21.1)
+  License: MIT
+  https://www.npmjs.com/package/tree-sitter
+
+tree-sitter-c (0.23.2)
+  License: MIT
+  https://www.npmjs.com/package/tree-sitter-c
+
+tree-sitter-c-sharp (^0.23.1)
+  License: MIT
+  https://www.npmjs.com/package/tree-sitter-c-sharp
+
+tree-sitter-cpp (^0.23.4)
+  License: MIT
+  https://www.npmjs.com/package/tree-sitter-cpp
+
+tree-sitter-go (^0.23.0)
+  License: MIT
+  https://www.npmjs.com/package/tree-sitter-go
+
+tree-sitter-java (^0.23.5)
+  License: MIT
+  https://www.npmjs.com/package/tree-sitter-java
+
+tree-sitter-javascript (^0.23.0)
+  License: MIT
+  https://www.npmjs.com/package/tree-sitter-javascript
+
+tree-sitter-php (^0.23.0)
+  License: MIT
+  https://www.npmjs.com/package/tree-sitter-php
+
+tree-sitter-python (0.23.4)
+  License: MIT
+  https://www.npmjs.com/package/tree-sitter-python
+
+tree-sitter-ruby (^0.23.1)
+  License: MIT
+  https://www.npmjs.com/package/tree-sitter-ruby
+
+tree-sitter-rust (0.23.1)
+  License: MIT
+  https://www.npmjs.com/package/tree-sitter-rust
+
+tree-sitter-typescript (^0.23.2)
+  License: MIT
+  https://www.npmjs.com/package/tree-sitter-typescript
+
+tree-sitter-dart (github:UserNobody14/tree-sitter-dart) [optional]
+  License: MIT
+  https://github.com/UserNobody14/tree-sitter-dart
+
+tree-sitter-kotlin (^0.3.8) [optional]
+  License: MIT
+  https://www.npmjs.com/package/tree-sitter-kotlin
+
+tree-sitter-swift (^0.6.0) [optional]
+  License: Apache-2.0
+  https://www.npmjs.com/package/tree-sitter-swift
+
+@ladybugdb/core (^0.15.2)
+  License: MIT
+  https://www.npmjs.com/package/@ladybugdb/core

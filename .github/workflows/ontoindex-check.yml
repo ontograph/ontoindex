@@ -1,0 +1,59 @@
+name: OntoIndex Check
+
+on:
+  pull_request:
+    paths:
+      - 'ontoindex/src/**'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          cd ontoindex-shared && npm ci && npm run build
+          cd ../ontoindex && npm ci
+
+      - name: Build
+        run: cd ontoindex && npm run build
+
+      - name: Run OntoIndex Check
+        id: run_check
+        run: |
+          cd ontoindex
+          npx ontoindex check > check_output.txt 2>&1
+          exit_code=$?
+          echo "CHECK_OUTPUT<<EOF" >> $GITHUB_ENV
+          cat check_output.txt >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+          if [ $exit_code -ne 0 ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            exit $exit_code
+          else
+            echo "status=passed" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Comment PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STATUS="${{ steps.run_check.outputs.status }}"
+          if [ "$STATUS" == "failed" ]; then
+            gh pr comment ${{ github.event.pull_request.number }} --body "### ❌ OntoIndex Check Failed
+            \`\`\`
+            ${{ env.CHECK_OUTPUT }}
+            \`\`\`"
+          else
+            gh pr comment ${{ github.event.pull_request.number }} --body "### ✅ OntoIndex Check Passed"
+          fi

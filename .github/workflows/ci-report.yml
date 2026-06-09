@@ -1,0 +1,423 @@
+name: CI Report
+
+# Triggered after the CI workflow completes.  Because workflow_run
+# always runs code from the *default branch*, it receives a read/write
+# GITHUB_TOKEN — even when the triggering PR comes from a fork.
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+
+permissions:
+  actions: read # needed to list/download workflow run artifacts
+  contents: read # needed for sparse checkout of vitest.config.ts
+  pull-requests: write # needed to post sticky PR comment
+
+# Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
+# Serialize sticky-comment writes per PR so two rapid CI completions don't race.
+# Internal PRs surface in `pull_requests[0].number`. Fork PRs leave that array empty,
+# so we fall back to `<head-repo-full-name>/<head-branch>`, which is stable across
+# reruns and subsequent pushes for the same fork PR (unlike `workflow_run.id` which
+# is unique per run and therefore does not serialize anything).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.pull_requests[0].number || format('{0}/{1}', github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch) }}
+  cancel-in-progress: false
+
+jobs:
+  pr-report:
+    name: PR Report
+    # Only run for pull-request CI runs
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # ── Download artifacts from the CI run ────────────────────────
+      - name: Download artifacts
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const runId = context.payload.workflow_run.id;
+
+            const allArtifacts = await github.rest.actions.listWorkflowRunArtifacts({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: runId,
+            });
+
+            async function downloadArtifact(name, dest) {
+              const match = allArtifacts.data.artifacts.find(a => a.name === name);
+              if (!match) {
+                core.warning(`Artifact "${name}" not found`);
+                return false;
+              }
+              const zip = await github.rest.actions.downloadArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: match.id,
+                archive_format: 'zip',
+              });
+              fs.mkdirSync(dest, { recursive: true });
+              fs.writeFileSync(path.join(dest, `${name}.zip`), Buffer.from(zip.data));
+              return true;
+            }
+
+            const temp = process.env.RUNNER_TEMP;
+            await downloadArtifact('pr-meta', path.join(temp, 'dl'));
+            await downloadArtifact('test-reports', path.join(temp, 'dl'));
+
+      - name: Extract artifacts
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP/dl"
+          # Extract each artifact into its own directory to avoid filename collisions
+          for z in *.zip; do
+            [ -f "$z" ] || continue
+            name="${z%.zip}"
+            mkdir -p "$RUNNER_TEMP/artifacts/$name"
+            unzip -o "$z" -d "$RUNNER_TEMP/artifacts/$name"
+          done
+
+      - name: Read PR metadata
+        id: meta
+        shell: bash
+        run: |
+          DIR="$RUNNER_TEMP/artifacts/pr-meta"
+          if [ ! -f "$DIR/pr_number" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::pr_number artifact missing — skipping report"
+            exit 0
+          fi
+
+          # Validate PR number is a positive integer (artifact comes from
+          # untrusted fork code, so treat contents defensively).
+          PR_NUM=$(cat "$DIR/pr_number" | tr -d '[:space:]')
+          if ! [[ "$PR_NUM" =~ ^[0-9]+$ ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Invalid PR number in artifact: '$PR_NUM'"
+            exit 0
+          fi
+
+          echo "skip=false"              >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUM"       >> "$GITHUB_OUTPUT"
+          # Validate job-result strings against known GitHub Actions values.
+          # Artifact contents come from the PR workflow (potentially untrusted
+          # fork code), so we whitelist to prevent newline injection into
+          # GITHUB_OUTPUT.
+          validate_result() {
+            local val
+            val=$(cat "$1" | tr -d '[:space:]')
+            case "$val" in
+              success|failure|cancelled|skipped) echo "$val" ;;
+              *) echo "unknown" ;;
+            esac
+          }
+
+          echo "quality=$(validate_result "$DIR/quality_result")"        >> "$GITHUB_OUTPUT"
+          echo "tests=$(validate_result "$DIR/tests_result")"            >> "$GITHUB_OUTPUT"
+          echo "e2e=$(validate_result "$DIR/e2e_result")"                >> "$GITHUB_OUTPUT"
+
+      - name: Checkout (for vitest config)
+        if: steps.meta.outputs.skip != 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: ontoindex/vitest.config.ts
+          sparse-checkout-cone-mode: false
+
+      # ── Fetch base branch coverage for delta reporting ───────────
+      - name: Fetch base branch coverage
+        if: steps.meta.outputs.skip != 'true'
+        id: base-coverage
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            // Find the latest successful CI run on main
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'ci.yml',
+              branch: 'main',
+              status: 'success',
+              per_page: 1,
+            });
+
+            if (runs.data.workflow_runs.length === 0) {
+              core.setOutput('found', 'false');
+              core.info('No successful main branch CI runs found');
+              return;
+            }
+
+            const mainRunId = runs.data.workflow_runs[0].id;
+            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: mainRunId,
+            });
+
+            const testReports = artifacts.data.artifacts.find(a => a.name === 'test-reports');
+            if (!testReports) {
+              core.setOutput('found', 'false');
+              core.info('No test-reports artifact on main branch');
+              return;
+            }
+
+            const zip = await github.rest.actions.downloadArtifact({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              artifact_id: testReports.id,
+              archive_format: 'zip',
+            });
+
+            const dest = path.join(process.env.RUNNER_TEMP, 'base-coverage');
+            fs.mkdirSync(dest, { recursive: true });
+            fs.writeFileSync(path.join(dest, 'base.zip'), Buffer.from(zip.data));
+            core.setOutput('found', 'true');
+            core.setOutput('dir', dest);
+
+      - name: Extract base coverage
+        if: steps.meta.outputs.skip != 'true' && steps.base-coverage.outputs.found == 'true'
+        shell: bash
+        run: |
+          cd "${{ steps.base-coverage.outputs.dir }}"
+          mkdir -p base
+          unzip -o base.zip -d base
+
+      - name: Build report
+        if: steps.meta.outputs.skip != 'true'
+        id: report
+        shell: bash
+        env:
+          QUALITY: ${{ steps.meta.outputs.quality }}
+          TESTS: ${{ steps.meta.outputs.tests }}
+          E2E: ${{ steps.meta.outputs.e2e }}
+          BASE_FOUND: ${{ steps.base-coverage.outputs.found }}
+          BASE_DIR: ${{ steps.base-coverage.outputs.dir }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          DIR="$RUNNER_TEMP/artifacts"
+
+          # ── Helper: read coverage summary into prefixed vars ──
+          read_cov() {
+            local prefix=$1 file=$2
+            if [ -n "$file" ] && [ -f "$file" ]; then
+              local val
+              val=$(jq -r '.total.statements.pct // "N/A"' "$file" 2>/dev/null) || val="N/A"
+              printf -v "${prefix}_STMTS" '%s' "$val"
+              val=$(jq -r '.total.branches.pct // "N/A"' "$file" 2>/dev/null) || val="N/A"
+              printf -v "${prefix}_BRANCH" '%s' "$val"
+              val=$(jq -r '.total.functions.pct // "N/A"' "$file" 2>/dev/null) || val="N/A"
+              printf -v "${prefix}_FUNCS" '%s' "$val"
+              val=$(jq -r '.total.lines.pct // "N/A"' "$file" 2>/dev/null) || val="N/A"
+              printf -v "${prefix}_LINES" '%s' "$val"
+              val=$(jq -r '"\(.total.statements.covered)/\(.total.statements.total)"' "$file" 2>/dev/null) || val=""
+              printf -v "${prefix}_STMTS_COV" '%s' "$val"
+              val=$(jq -r '"\(.total.branches.covered)/\(.total.branches.total)"' "$file" 2>/dev/null) || val=""
+              printf -v "${prefix}_BRANCH_COV" '%s' "$val"
+              val=$(jq -r '"\(.total.functions.covered)/\(.total.functions.total)"' "$file" 2>/dev/null) || val=""
+              printf -v "${prefix}_FUNCS_COV" '%s' "$val"
+              val=$(jq -r '"\(.total.lines.covered)/\(.total.lines.total)"' "$file" 2>/dev/null) || val=""
+              printf -v "${prefix}_LINES_COV" '%s' "$val"
+              return 0
+            else
+              printf -v "${prefix}_STMTS" '%s' "N/A"
+              printf -v "${prefix}_BRANCH" '%s' "N/A"
+              printf -v "${prefix}_FUNCS" '%s' "N/A"
+              printf -v "${prefix}_LINES" '%s' "N/A"
+              printf -v "${prefix}_STMTS_COV" '%s' ""
+              printf -v "${prefix}_BRANCH_COV" '%s' ""
+              printf -v "${prefix}_FUNCS_COV" '%s' ""
+              printf -v "${prefix}_LINES_COV" '%s' ""
+              return 1
+            fi
+          }
+
+          # ── Read coverage reports ──
+          UNIT_SUMMARY=$(find "$DIR/test-reports" -name "coverage-summary.json" -type f 2>/dev/null | head -1)
+
+          read_cov "U" "$UNIT_SUMMARY"
+
+          # ── Read base branch coverage (main) ──
+          BASE_SUMMARY=""
+          if [ "$BASE_FOUND" = "true" ] && [ -n "$BASE_DIR" ]; then
+            BASE_SUMMARY=$(find "$BASE_DIR/base" -name "coverage-summary.json" -type f 2>/dev/null | head -1)
+          fi
+          read_cov "B" "$BASE_SUMMARY"
+
+          # ── Locate test results ──
+          RESULTS_FILE=$(find "$DIR/test-reports" -name "test-results.json" -type f 2>/dev/null | head -1)
+          WEB_RESULTS_FILE=$(find "$DIR/test-reports" -name "web-test-results.json" -type f 2>/dev/null | head -1)
+
+          sum_results() {
+            local file=$1
+            if [ -n "$file" ] && [ -f "$file" ]; then
+              jq -r '"\(.numTotalTests) \(.numPassedTests) \(.numFailedTests) \(.numPendingTests) \(.numTotalTestSuites) \(((.testResults | map(.endTime) | max) - (.startTime)) / 1000 | floor)"' "$file" 2>/dev/null || echo "0 0 0 0 0 0"
+            else
+              echo "0 0 0 0 0 0"
+            fi
+          }
+
+          read CLI_T CLI_P CLI_F CLI_S CLI_SU CLI_D <<< "$(sum_results "$RESULTS_FILE")"
+          read WEB_T WEB_P WEB_F WEB_S WEB_SU WEB_D <<< "$(sum_results "$WEB_RESULTS_FILE")"
+
+          TOTAL=$((CLI_T + WEB_T))
+          PASSED=$((CLI_P + WEB_P))
+          FAILED=$((CLI_F + WEB_F))
+          SKIPPED=$((CLI_S + WEB_S))
+          SUITES=$((CLI_SU + WEB_SU))
+          DURATION=$((CLI_D > WEB_D ? CLI_D : WEB_D))
+
+          # ── Status helpers ──
+          status_icon() {
+            case "$1" in
+              success) echo "✅" ;;
+              failure) echo "❌" ;;
+              cancelled) echo "⏭️" ;;
+              *) echo "❓" ;;
+            esac
+          }
+
+          # Validate a value looks like a number (integer or decimal, optional
+          # leading minus).  Returns 1 for anything else — guards against awk
+          # injection when artifact values come from untrusted fork code.
+          is_numeric() { [[ "$1" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; }
+
+          cov_delta() {
+            local pct=$1 base=$2
+            if [ "$pct" = "N/A" ] || [ "$base" = "N/A" ]; then echo "—"; return; fi
+            if ! is_numeric "$pct" || ! is_numeric "$base"; then echo "—"; return; fi
+            local diff
+            diff=$(awk -v p="$pct" -v b="$base" 'BEGIN { printf "%.1f", p - b }')
+            if [ "$(awk -v p="$pct" -v b="$base" 'BEGIN { print (p > b) ? 1 : 0 }')" = "1" ]; then
+              echo "📈 +${diff}"
+            elif [ "$(awk -v p="$pct" -v b="$base" 'BEGIN { print (p < b) ? 1 : 0 }')" = "1" ]; then
+              echo "📉 ${diff}"
+            else
+              echo "＝ ${diff}"
+            fi
+          }
+
+          cov_bar() {
+            local pct=$1 base=$2
+            if [ "$pct" = "N/A" ] || ! is_numeric "$pct"; then echo "—"; return; fi
+            local filled
+            filled=$(awk -v p="$pct" 'BEGIN { printf "%d", p / 5 }')
+            (( filled < 0 )) && filled=0
+            (( filled > 20 )) && filled=20
+            local empty=$((20 - filled))
+            local bar=""
+            for ((i=0; i<filled; i++)); do bar+="█"; done
+            for ((i=0; i<empty; i++)); do bar+="░"; done
+            # Green if >= base (or base unavailable), red if dropped
+            if [ "$base" = "N/A" ] || ! is_numeric "$base" || [ "$(awk -v p="$pct" -v b="$base" 'BEGIN { print (p >= b) ? 1 : 0 }')" = "1" ]; then
+              echo "🟢 ${bar}"
+            else
+              echo "🔴 ${bar}"
+            fi
+          }
+
+          # ── Overall status ──
+          if [[ "$QUALITY" == "success" && "$TESTS" == "success" && ("$E2E" == "success" || "$E2E" == "skipped") ]]; then
+            OVERALL="✅ **All checks passed**"
+          else
+            OVERALL="❌ **Some checks failed**"
+          fi
+
+          # ── Build markdown ──
+          {
+            echo "body<<ONTOINDEX_CI_REPORT_EOF_7f3a"
+            echo "## CI Report"
+            echo ""
+            echo "${OVERALL}"
+            echo ""
+            echo "### Pipeline Status"
+            echo ""
+            echo "| Stage | Status | Details |"
+            echo "|-------|--------|---------|"
+            echo "| $(status_icon "$QUALITY") Typecheck | \`${QUALITY}\` | tsc --noEmit |"
+            echo "| $(status_icon "$TESTS") Tests | \`${TESTS}\` | unit tests, 3 platforms |"
+            echo "| $(status_icon "$E2E") E2E | \`${E2E}\` | ontoindex-web changes only |"
+            echo ""
+
+            if [ "$TOTAL" -gt 0 ] 2>/dev/null; then
+              echo "### Test Results"
+              echo ""
+              echo "| Tests | Passed | Failed | Skipped | Duration |"
+              echo "|-------|--------|--------|---------|----------|"
+              echo "| ${TOTAL} | ${PASSED} | ${FAILED} | ${SKIPPED} | ${DURATION}s |"
+              echo ""
+
+              if [ "$FAILED" = "0" ]; then
+                echo "✅ All **${PASSED}** tests passed"
+              else
+                echo "❌ **${FAILED}** failed / **${PASSED}** passed"
+              fi
+              if [ "$SKIPPED" != "0" ]; then
+                echo ""
+                echo "<details>"
+                echo "<summary>${SKIPPED} test(s) skipped — expand for details</summary>"
+                echo ""
+                for rf in "$RESULTS_FILE" "$WEB_RESULTS_FILE"; do
+                  if [ -n "$rf" ] && [ -f "$rf" ]; then
+                    jq -r '
+                      .testResults[]
+                      | .assertionResults[]?
+                      | select(.status == "pending" or .status == "skipped")
+                      | "- \(.ancestorTitles | join(" > ")) > \(.title)"
+                    ' "$rf" 2>/dev/null || true
+                  fi
+                done
+                echo ""
+                echo "</details>"
+              fi
+              echo ""
+            fi
+
+            # ── Coverage table helper ──
+            cov_table() {
+              local label=$1 s=$2 b=$3 f=$4 l=$5 sc=$6 bc=$7 fc=$8 lc=$9
+              shift 9
+              local bs=$1 bb=$2 bf=$3 bl=$4
+              echo "#### ${label}"
+              echo ""
+              echo "| Metric | Coverage | Covered | Base | Delta | Status |"
+              echo "|--------|----------|---------|------|-------|--------|"
+              echo "| Statements | **${s}%** | ${sc} | ${bs}% | $(cov_delta "$s" "$bs") | $(cov_bar "$s" "$bs") |"
+              echo "| Branches | **${b}%** | ${bc} | ${bb}% | $(cov_delta "$b" "$bb") | $(cov_bar "$b" "$bb") |"
+              echo "| Functions | **${f}%** | ${fc} | ${bf}% | $(cov_delta "$f" "$bf") | $(cov_bar "$f" "$bf") |"
+              echo "| Lines | **${l}%** | ${lc} | ${bl}% | $(cov_delta "$l" "$bl") | $(cov_bar "$l" "$bl") |"
+              echo ""
+            }
+
+            if [ "$U_STMTS" != "N/A" ]; then
+              echo "### Code Coverage"
+              echo ""
+              cov_table "Tests" \
+                "$U_STMTS" "$U_BRANCH" "$U_FUNCS" "$U_LINES" \
+                "$U_STMTS_COV" "$U_BRANCH_COV" "$U_FUNCS_COV" "$U_LINES_COV" \
+                "$B_STMTS" "$B_BRANCH" "$B_FUNCS" "$B_LINES"
+            else
+              echo "### Code Coverage"
+              echo ""
+              echo "⚠️ Coverage data unavailable - check the [unit test job](${RUN_URL}) for details."
+              echo ""
+            fi
+
+            echo "---"
+            echo "<sub>📋 [View full run](${RUN_URL}) · Generated by CI</sub>"
+            echo "ONTOINDEX_CI_REPORT_EOF_7f3a"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Comment on PR
+        if: steps.meta.outputs.skip != 'true'
+        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0 # v2
+        with:
+          header: ci-report
+          number: ${{ steps.meta.outputs.pr_number }}
+          message: ${{ steps.report.outputs.body }}

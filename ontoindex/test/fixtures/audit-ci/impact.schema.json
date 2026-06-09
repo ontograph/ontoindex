@@ -1,0 +1,34 @@
+{
+  "type": "object",
+  "required": ["target", "direction", "impactedCount", "risk"],
+  "properties": {
+    "target": {
+      "type": "object",
+      "required": ["id", "name", "type", "filePath"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "filePath": { "type": "string" }
+      }
+    },
+    "direction": { "enum": ["upstream", "downstream"] },
+    "impactedCount": { "type": "number" },
+    "risk": { "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"] },
+    "partial": { "type": "boolean" },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "summary": {
+      "type": "object",
+      "required": ["direct", "processes_affected", "modules_affected"],
+      "properties": {
+        "direct": { "type": "number" },
+        "processes_affected": { "type": "number" },
+        "modules_affected": { "type": "number" }
+      }
+    },
+    "affected_processes": { "type": "array" },
+    "affected_modules": { "type": "array" },
+    "byDepth": { "type": "object" },
+    "rawCounts": { "type": "object" }
+  }
+}

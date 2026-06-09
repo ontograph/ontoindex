@@ -1,0 +1,76 @@
+{
+  "qualityFixture": {
+    "name": "markdown-rag-quality-basic",
+    "defaultCases": [
+      {
+        "name": "code default remains code-only",
+        "topK": 1,
+        "expectedResultIds": ["Function:src/orders/service.ts:createOrder"],
+        "actualResultIds": ["Function:src/orders/service.ts:createOrder"]
+      }
+    ],
+    "optInPassiveCases": [
+      {
+        "name": "markdown single-hop citation recall",
+        "topK": 2,
+        "expectedResultIds": ["chunk:orders-overview"],
+        "actualResultIds": ["chunk:orders-overview", "chunk:billing-details"],
+        "expectedCitations": [
+          {
+            "resultId": "chunk:orders-overview",
+            "docPath": "docs/orders.md",
+            "headingPath": ["Orders", "Overview"],
+            "lineSpan": { "start": 4, "end": 12 },
+            "contentHash": "sha256:orders-overview"
+          }
+        ],
+        "actualCitations": [
+          {
+            "resultId": "chunk:orders-overview",
+            "docPath": "docs/orders.md",
+            "headingPath": ["Orders", "Overview"],
+            "lineSpan": { "start": 4, "end": 12 },
+            "contentHash": "sha256:orders-overview"
+          }
+        ]
+      },
+      {
+        "name": "markdown multi-hop intermediate evidence",
+        "topK": 3,
+        "expectedResultIds": ["chunk:invoice-policy"],
+        "actualResultIds": [
+          "chunk:orders-overview",
+          "chunk:invoice-policy",
+          "chunk:payment-adapter"
+        ],
+        "expectedIntermediateEvidenceIds": [
+          "entity:checkout",
+          "mention:Function:src/billing/invoice.ts:createInvoice"
+        ],
+        "actualIntermediateEvidenceIds": [
+          "entity:checkout",
+          "mention:Function:src/billing/invoice.ts:createInvoice",
+          "link:docs/orders.md#invoice-policy"
+        ],
+        "expectedCitations": [
+          {
+            "resultId": "chunk:invoice-policy",
+            "docPath": "docs/billing.md",
+            "headingPath": ["Billing", "Invoice Policy"],
+            "lineSpan": { "start": 18, "end": 28 },
+            "contentHash": "sha256:invoice-policy"
+          }
+        ],
+        "actualCitations": [
+          {
+            "resultId": "chunk:invoice-policy",
+            "docPath": "docs/billing.md",
+            "headingPath": ["Billing", "Invoice Policy"],
+            "lineSpan": { "start": 18, "end": 28 },
+            "contentHash": "sha256:invoice-policy"
+          }
+        ]
+      }
+    ]
+  }
+}

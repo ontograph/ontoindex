@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "ontoindex": {
+      "command": "npx",
+      "args": ["-y", "ontoindex@latest", "mcp"]
+    },
+    "lean-ctx": {
+      "command": "lean-ctx",
+      "args": []
+    },
+    "mcp-on-demand": {
+      "command": "npx",
+      "args": ["-y", "@soflution/mcp-on-demand"]
+    }
+  }
+}

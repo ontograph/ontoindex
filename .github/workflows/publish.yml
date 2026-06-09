@@ -1,0 +1,139 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# No workflow-level permissions — scoped per job below.
+
+# Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
+# Tag refs are unique per release, so distinct tags run in parallel. Re-pushes of the
+# same tag serialize. cancel-in-progress: false — never cancel a publish mid-flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      actions: read
+      # No pull-requests:write — `ci.yml`'s save-pr-meta job is gated on
+      # `github.event_name == 'pull_request'`, so it never runs during a
+      # tag-triggered publish. Least-privilege for release-critical paths.
+
+  publish:
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: ontoindex/package-lock.json
+      - name: Build ontoindex-shared
+        run: npm install && npm run build
+        working-directory: ontoindex-shared
+
+      - run: npm ci
+        working-directory: ontoindex
+
+      - name: Check release tag signing policy
+        shell: bash
+        env:
+          REQUIRE_SIGNED_RELEASE_TAGS: ${{ vars.REQUIRE_SIGNED_RELEASE_TAGS || 'false' }}
+          RELEASE_GPG_PUBLIC_KEY: ${{ secrets.RELEASE_GPG_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          git fetch --force --tags origin "refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
+
+          TAG_TYPE="$(git cat-file -t "refs/tags/${TAG_NAME}" 2>/dev/null || true)"
+          if [ "$TAG_TYPE" != "tag" ]; then
+            if [ "$REQUIRE_SIGNED_RELEASE_TAGS" = "true" ]; then
+              echo "::error::Release tag ${TAG_NAME} is not an annotated tag; signed release tags require annotated tag objects."
+              exit 1
+            fi
+            echo "::warning::Release tag ${TAG_NAME} is not an annotated tag; signed tag enforcement is disabled."
+            exit 0
+          fi
+
+          if [ "$REQUIRE_SIGNED_RELEASE_TAGS" != "true" ]; then
+            if git cat-file tag "refs/tags/${TAG_NAME}" | grep -q 'BEGIN PGP SIGNATURE'; then
+              echo "::notice::Release tag ${TAG_NAME} contains an embedded signature. Set REQUIRE_SIGNED_RELEASE_TAGS=true and RELEASE_GPG_PUBLIC_KEY to verify it in CI."
+            else
+              echo "::warning::Release tag ${TAG_NAME} is annotated but unsigned; signed tag enforcement is disabled."
+            fi
+            exit 0
+          fi
+
+          if [ -z "$RELEASE_GPG_PUBLIC_KEY" ]; then
+            echo "::error::REQUIRE_SIGNED_RELEASE_TAGS=true but RELEASE_GPG_PUBLIC_KEY is not configured."
+            exit 1
+          fi
+
+          export GNUPGHOME
+          GNUPGHOME="$(mktemp -d)"
+          chmod 700 "$GNUPGHOME"
+          printf '%s\n' "$RELEASE_GPG_PUBLIC_KEY" | gpg --batch --import
+          git verify-tag "$TAG_NAME"
+
+      - name: Verify version consistency
+        shell: bash
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          if ! [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "::error::Tag does not follow semver: v$TAG_VERSION"
+            exit 1
+          fi
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Tag version (v$TAG_VERSION) does not match package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+          echo "Version verified: $PKG_VERSION"
+        working-directory: ontoindex
+
+      - name: Build
+        run: npm run build
+        working-directory: ontoindex
+
+      - name: Dry-run publish
+        run: npm publish --dry-run
+        working-directory: ontoindex
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        working-directory: ontoindex
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Extract release notes from CHANGELOG
+        id: changelog
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          NOTES=$(awk "/^## \\[$VERSION\\]/{found=1; next} /^## \\[/{if(found) exit} found" ontoindex/CHANGELOG.md)
+          if [ -z "$NOTES" ]; then
+            echo "::warning::No CHANGELOG entry found for v$VERSION, falling back to auto-generated notes"
+            echo "fallback=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "$NOTES" > /tmp/release-notes.md
+            echo "fallback=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v2
+        with:
+          body_path: ${{ steps.changelog.outputs.fallback == 'false' && '/tmp/release-notes.md' || '' }}
+          generate_release_notes: ${{ steps.changelog.outputs.fallback == 'true' }}

@@ -1,0 +1,12 @@
+schema: 1
+id: suite.api-contracts
+name: API Contracts
+tier: stable
+summary: Review route handlers, consumer shape assumptions, and HTTP contract drift in one pass.
+owners:
+  - maintainers
+tags:
+  - api
+  - contracts
+packs:
+  - core.api-contracts

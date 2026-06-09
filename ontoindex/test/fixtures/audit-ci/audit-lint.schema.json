@@ -1,0 +1,103 @@
+{
+  "type": "object",
+  "required": [
+    "version",
+    "action",
+    "responseMode",
+    "ok",
+    "advisory",
+    "exitRecommendation",
+    "issues",
+    "summary",
+    "limits",
+    "policyFilter",
+    "warnings",
+    "skipReasons",
+    "nextAction",
+    "gate"
+  ],
+  "properties": {
+    "version": { "const": 1 },
+    "action": { "const": "audit-lint" },
+    "responseMode": { "enum": ["full", "summary", "minimal"] },
+    "ok": { "type": "boolean" },
+    "advisory": { "type": "boolean" },
+    "exitRecommendation": { "enum": ["zero", "nonzero"] },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ruleId", "scope", "severity", "message"],
+        "properties": {
+          "ruleId": { "type": "string" },
+          "scope": { "type": "string" },
+          "severity": { "type": "string" },
+          "message": { "type": "string" },
+          "findingId": { "type": "string" },
+          "bundleId": { "type": "string" },
+          "suggestedStatus": { "type": "string" }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["findings", "bundles", "issueCount", "byRuleId", "bySeverity"],
+      "properties": {
+        "findings": { "type": "number" },
+        "bundles": { "type": "number" },
+        "issueCount": { "type": "number" },
+        "byRuleId": { "type": "object" },
+        "bySeverity": { "type": "object" }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "required": ["maxIssues", "emitted", "total", "truncated"],
+      "properties": {
+        "maxIssues": { "type": "number" },
+        "emitted": { "type": "number" },
+        "total": { "type": "number" },
+        "truncated": { "type": "boolean" }
+      }
+    },
+    "policyFilter": {
+      "type": "object",
+      "required": [
+        "applied",
+        "includeIgnored",
+        "excludedPathCount",
+        "representativeExcludedPaths",
+        "globs",
+        "sources"
+      ],
+      "properties": {
+        "applied": { "type": "boolean" },
+        "includeIgnored": { "type": "boolean" },
+        "excludedPathCount": { "type": "number" },
+        "representativeExcludedPaths": { "type": "array", "items": { "type": "string" } },
+        "globs": { "type": "array", "items": { "type": "string" } },
+        "sources": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "skipReasons": { "type": "array", "items": { "type": "string" } },
+    "nextAction": { "type": "string" },
+    "gate": {
+      "type": "object",
+      "required": ["mode", "source", "warnings", "policy"],
+      "properties": {
+        "mode": { "enum": ["advisory", "blocking"] },
+        "source": { "type": "string" },
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "policy": {
+          "type": "object",
+          "required": ["blockOnStaleOpen"],
+          "properties": {
+            "blockOnStaleOpen": { "type": "boolean" },
+            "severityThreshold": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

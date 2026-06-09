@@ -1,0 +1,291 @@
+{
+  "queryReplays": [
+    {
+      "id": "plain-query-hybrid-baseline",
+      "classifier": {
+        "intent": "ambiguous",
+        "confidence": 0.84,
+        "matchedKeywords": []
+      },
+      "params": {
+        "query": "CacheStore semantic cache storage",
+        "structured_output": true,
+        "limit": 3
+      },
+      "bm25Results": [
+        {
+          "nodeId": "Function:src/core/cache.ts:CacheStore",
+          "name": "CacheStore",
+          "type": "Function",
+          "filePath": "src/core/cache.ts",
+          "startLine": 10,
+          "endLine": 40,
+          "bm25Score": 0.91
+        }
+      ],
+      "semanticResults": [
+        {
+          "nodeId": "Function:src/semantic.ts:SemanticOnlyHit",
+          "name": "SemanticOnlyHit",
+          "type": "Function",
+          "filePath": "src/semantic.ts",
+          "startLine": 5,
+          "endLine": 25,
+          "semanticScore": 0.83
+        }
+      ],
+      "expected": {
+        "definitionNames": ["CacheStore", "SemanticOnlyHit"],
+        "candidateIds": [
+          "retrieval:Function:src/core/cache.ts:CacheStore",
+          "retrieval:Function:src/semantic.ts:SemanticOnlyHit"
+        ],
+        "candidateSources": ["lex", "lex"],
+        "evidenceKinds": ["plain-query", "plain-query"],
+        "evidenceRetrievals": ["hybrid", "hybrid"],
+        "callCounts": {
+          "bm25": 1,
+          "semantic": 1,
+          "graph": 0
+        }
+      }
+    },
+    {
+      "id": "typed-query-exact-and-vector-lanes",
+      "classifier": {
+        "intent": "identifier",
+        "confidence": 0.95,
+        "matchedKeywords": []
+      },
+      "params": {
+        "typedQuery": {
+          "lines": [
+            {
+              "type": "symbol",
+              "query": "CacheStore",
+              "lineNumber": 1
+            },
+            {
+              "type": "vec",
+              "query": "semantic cache storage",
+              "lineNumber": 2
+            }
+          ]
+        },
+        "structured_output": true,
+        "limit": 3
+      },
+      "exactSymbolResults": [
+        {
+          "nodeId": "Function:src/core/cache.ts:CacheStore",
+          "name": "CacheStore",
+          "type": "Function",
+          "filePath": "src/core/cache.ts",
+          "startLine": 10,
+          "endLine": 40
+        }
+      ],
+      "semanticResults": [
+        {
+          "nodeId": "Function:src/semantic.ts:SemanticOnlyHit",
+          "name": "SemanticOnlyHit",
+          "type": "Function",
+          "filePath": "src/semantic.ts",
+          "startLine": 5,
+          "endLine": 25,
+          "semanticScore": 0.83
+        }
+      ],
+      "expected": {
+        "definitionNames": ["CacheStore", "SemanticOnlyHit"],
+        "candidateIds": [
+          "retrieval:Function:src/core/cache.ts:CacheStore",
+          "retrieval:Function:src/semantic.ts:SemanticOnlyHit"
+        ],
+        "candidateSources": ["symbol", "vec"],
+        "evidenceKinds": ["typed-query-line", "typed-query-line"],
+        "evidenceRetrievals": ["exact", "vector"],
+        "callCounts": {
+          "bm25": 0,
+          "semantic": 1,
+          "graph": 0
+        }
+      }
+    },
+    {
+      "id": "typed-query-stale-without-embeddings",
+      "classifier": {
+        "intent": "nl-conceptual",
+        "confidence": 0.93,
+        "matchedKeywords": []
+      },
+      "params": {
+        "typedQuery": {
+          "lines": [
+            {
+              "type": "vec",
+              "query": "semantic cache invalidation",
+              "lineNumber": 2
+            }
+          ]
+        },
+        "structured_output": true,
+        "limit": 3
+      },
+      "embeddingsAvailable": false,
+      "targetContextOverrides": {
+        "targetHead": "def456",
+        "currentHead": "def456",
+        "indexedHead": "abc123",
+        "changedSinceIndex": true,
+        "embeddings": {
+          "status": "unavailable",
+          "reason": "embedding-stats-unavailable"
+        }
+      },
+      "expected": {
+        "definitionNames": [],
+        "candidateIds": [],
+        "candidateSources": [],
+        "evidenceKinds": [],
+        "evidenceRetrievals": [],
+        "callCounts": {
+          "bm25": 0,
+          "semantic": 0,
+          "graph": 0
+        },
+        "warningContains": ["Typed vec line 2 downgraded: embeddings unavailable."],
+        "freshnessStatus": "stale",
+        "capabilitiesMissing": ["embeddings"],
+        "capabilityWarnings": [
+          "Embeddings unavailable; typed retrieval downgraded vector lanes.",
+          "Index freshness stale: indexedHead != targetHead."
+        ]
+      }
+    }
+  ],
+  "ensembleReplays": [
+    {
+      "id": "cross-file-impact-weight-trace-guard",
+      "intent": "cross-file-impact",
+      "confidence": 0.92,
+      "limit": 5,
+      "bm25Results": [
+        {
+          "nodeId": "Function:src/cache.ts:LexSeed",
+          "name": "LexSeed",
+          "type": "Function",
+          "filePath": "src/cache.ts",
+          "startLine": 10,
+          "endLine": 20,
+          "bm25Score": 0.91
+        }
+      ],
+      "semanticResults": [
+        {
+          "nodeId": "Function:src/cache.ts:VecSeed",
+          "name": "VecSeed",
+          "type": "Function",
+          "filePath": "src/cache.ts",
+          "startLine": 30,
+          "endLine": 40,
+          "semanticScore": 0.86
+        }
+      ],
+      "graphResults": [
+        {
+          "nodeId": "Function:src/cache.ts:GraphHit",
+          "name": "GraphHit",
+          "type": "Function",
+          "filePath": "src/cache.ts",
+          "startLine": 50,
+          "endLine": 60,
+          "score": 0.88
+        }
+      ],
+      "expected": [
+        {
+          "key": "Function:src/cache.ts:GraphHit",
+          "name": "GraphHit",
+          "score": 0.009836065573770492,
+          "trace": [
+            {
+              "source": "graph",
+              "rank": 1,
+              "rawScore": 0.88,
+              "weight": 0.6,
+              "contribution": 0.009836065573770492
+            }
+          ]
+        },
+        {
+          "key": "Function:src/cache.ts:LexSeed",
+          "name": "LexSeed",
+          "score": 0.004918032786885246,
+          "trace": [
+            {
+              "source": "bm25",
+              "rank": 1,
+              "rawScore": 0.91,
+              "weight": 0.3,
+              "contribution": 0.004918032786885246
+            }
+          ]
+        },
+        {
+          "key": "Function:src/cache.ts:VecSeed",
+          "name": "VecSeed",
+          "score": 0.001639344262295082,
+          "trace": [
+            {
+              "source": "semantic",
+              "rank": 1,
+              "rawScore": 0.86,
+              "weight": 0.1,
+              "contribution": 0.001639344262295082
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "organicReplays": [
+    {
+      "id": "reject-generic-reason-leakage",
+      "callableToolNames": ["gn_help", "gn_test_gap", "gn_verify_diff"],
+      "input": {
+        "id": "rec-generic",
+        "action": "review-test-gap",
+        "target": {
+          "kind": "symbol",
+          "name": "parseToken"
+        },
+        "reason": "Add tests before merging.",
+        "confidence": "medium",
+        "evidenceIds": ["tg-1"],
+        "evidenceClasses": ["graph_evidence"],
+        "nextTools": ["gn_test_gap"]
+      },
+      "expectedErrorFields": ["reason"]
+    },
+    {
+      "id": "reject-non-callable-next-tool-leakage",
+      "callableToolNames": ["gn_help", "gn_test_gap", "gn_verify_diff"],
+      "input": {
+        "id": "rec-tool",
+        "action": "manual-review",
+        "target": {
+          "kind": "file",
+          "name": "src/core/review.ts",
+          "filePath": "src/core/review.ts"
+        },
+        "reason": "src/core/review.ts is called out by ev-7 for manual inspection.",
+        "confidence": "low",
+        "evidenceIds": ["ev-7"],
+        "evidenceClasses": ["runtime_diagnostic"],
+        "nextTools": ["manual_patch_with_guard"]
+      },
+      "expectedErrorFields": ["nextTools[0]"]
+    }
+  ]
+}

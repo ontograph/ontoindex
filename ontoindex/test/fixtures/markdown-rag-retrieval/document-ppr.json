@@ -1,0 +1,19 @@
+{
+  "nodes": [
+    { "id": "doc:orders", "type": "doc" },
+    { "id": "section:checkout", "type": "section" },
+    { "id": "chunk:checkout-overview", "type": "chunk" },
+    { "id": "entity:payment-flow", "type": "entity" },
+    { "id": "chunk:payment-handshake", "type": "chunk" },
+    { "id": "mention:createInvoice", "type": "mention" },
+    { "id": "code:Function:createInvoice", "type": "symbol" },
+    { "id": "chunk:stale", "type": "chunk", "stale": true }
+  ],
+  "edges": [
+    { "from": "chunk:checkout-overview", "to": "entity:payment-flow", "type": "mentions" },
+    { "from": "entity:payment-flow", "to": "chunk:payment-handshake", "type": "entity-source" },
+    { "from": "chunk:payment-handshake", "to": "mention:createInvoice", "type": "mentions" },
+    { "from": "mention:createInvoice", "to": "code:Function:createInvoice", "type": "impact" },
+    { "from": "chunk:payment-handshake", "to": "chunk:stale", "type": "links-to" }
+  ]
+}

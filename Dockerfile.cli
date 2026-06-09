@@ -1,0 +1,57 @@
+ARG BUILDPLATFORM
+ARG TARGETPLATFORM
+
+# ── Builder ────────────────────────────────────────────────────────────
+# Native modules (tree-sitter-*, onnxruntime-node, node-gyp builds for
+# tree-sitter-proto / tree-sitter-swift) require python3 + a C/C++ toolchain.
+FROM node:22-alpine AS builder
+
+WORKDIR /app
+
+# Toolchain for node-gyp / native builds.
+RUN apk add --no-cache python3 make g++ git
+
+# Build ontoindex-shared first — ontoindex depends on it as a workspace.
+COPY ontoindex-shared/package.json ontoindex-shared/package-lock.json ./ontoindex-shared/
+RUN npm ci --prefix ontoindex-shared
+COPY ontoindex-shared ./ontoindex-shared
+RUN npm run build --prefix ontoindex-shared
+
+# Copy the full ontoindex package before installing — `npm ci` triggers
+# `postinstall` (patches tree-sitter-swift, builds the vendored
+# tree-sitter-proto) and `prepare` (compiles TypeScript via scripts/build.js),
+# both of which need the source tree.
+COPY ontoindex ./ontoindex
+RUN npm ci --prefix ontoindex
+
+# Drop dev dependencies for a smaller runtime layer.
+RUN npm prune --omit=dev --prefix ontoindex
+
+# ── Runtime ────────────────────────────────────────────────────────────
+FROM node:22-alpine AS runtime
+
+# curl for the healthcheck; git so `ontoindex` can clone repos at runtime.
+RUN apk add --no-cache curl git
+
+WORKDIR /app
+
+# Pre-create the data directory and hand it to the unprivileged `node` user
+# so the bind-mounted volume is writable without root.
+RUN mkdir -p /data/ontoindex && chown -R node:node /data
+
+COPY --from=builder --chown=node:node /app/ontoindex/dist ./ontoindex/dist
+COPY --from=builder --chown=node:node /app/ontoindex/node_modules ./ontoindex/node_modules
+COPY --from=builder --chown=node:node /app/ontoindex/package.json ./ontoindex/package.json
+COPY --from=builder --chown=node:node /app/ontoindex/vendor ./ontoindex/vendor
+
+USER node
+
+# The web UI defaults to http://localhost:4747 — keep that contract.
+ENV ONTOINDEX_HOME=/data/ontoindex \
+    NODE_ENV=production \
+    PORT=4747
+
+EXPOSE 4747
+
+# Bind to 0.0.0.0 so the server is reachable from the host's mapped port.
+CMD ["node", "ontoindex/dist/cli/index.js", "serve", "--host", "0.0.0.0", "--port", "4747"]

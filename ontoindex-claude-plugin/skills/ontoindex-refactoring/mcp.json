@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ontoindex": {
+      "command": "npx",
+      "args": ["-y", "ontoindex@latest", "mcp"]
+    }
+  }
+}

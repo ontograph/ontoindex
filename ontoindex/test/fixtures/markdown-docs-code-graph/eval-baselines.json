@@ -1,0 +1,305 @@
+{
+  "fixtures": [
+    {
+      "fixtureId": "trace-precision-recall",
+      "input": {
+        "source": "part-1-requirement-trace-report",
+        "query": "REQ-A implementation evidence"
+      },
+      "traceReport": {
+        "version": 1,
+        "repo": {
+          "id": "eval-repo",
+          "path": "/eval/repo",
+          "sourceIndexId": "index-1",
+          "sourceCommitHash": "commit-1",
+          "graphSchemaVersion": 1
+        },
+        "sidecar": {
+          "status": "complete",
+          "staleReasons": [],
+          "degradedReasons": {}
+        },
+        "summary": {
+          "report": "requirement-trace"
+        },
+        "items": [
+          {
+            "requirementId": "REQ-A",
+            "status": "implemented",
+            "evidenceClasses": ["declared", "linked", "resolved", "tested"]
+          },
+          {
+            "requirementId": "REQ-B",
+            "status": "missing",
+            "evidenceClasses": ["declared"]
+          },
+          {
+            "requirementId": "REQ-C",
+            "status": "ambiguous",
+            "evidenceClasses": ["declared", "linked"]
+          }
+        ],
+        "warnings": [],
+        "limits": {
+          "truncated": false,
+          "maxItems": 100,
+          "maxCandidatesPerFact": 5
+        }
+      },
+      "traceExpected": {
+        "positiveIds": ["REQ-A"],
+        "positiveStatuses": ["implemented"],
+        "minimumPrecision": 1,
+        "minimumRecall": 1
+      },
+      "stateExpected": {
+        "ambiguousDetected": true
+      }
+    },
+    {
+      "fixtureId": "drift-precision-recall",
+      "input": {
+        "source": "part-1-api-drift-report",
+        "query": "documented API drift"
+      },
+      "driftReport": {
+        "version": 1,
+        "repo": {
+          "id": "eval-repo",
+          "path": "/eval/repo",
+          "sourceIndexId": "index-1",
+          "sourceCommitHash": "commit-1",
+          "graphSchemaVersion": 1
+        },
+        "sidecar": {
+          "status": "complete",
+          "staleReasons": [],
+          "degradedReasons": {}
+        },
+        "summary": {
+          "report": "api-drift"
+        },
+        "items": [
+          {
+            "routeKey": "GET /users",
+            "method": "GET",
+            "path": "/users",
+            "status": "matched"
+          },
+          {
+            "routeKey": "POST /orders",
+            "method": "POST",
+            "path": "/orders",
+            "status": "documented-missing-in-code"
+          },
+          {
+            "routeKey": "GET /legacy",
+            "method": "GET",
+            "path": "/legacy",
+            "status": "code-missing-in-docs"
+          },
+          {
+            "routeKey": "PATCH /users/{id}",
+            "method": "PATCH",
+            "path": "/users/{id}",
+            "status": "mismatch"
+          }
+        ],
+        "warnings": [],
+        "limits": {
+          "truncated": false,
+          "maxItems": 100,
+          "maxCandidatesPerFact": 5
+        }
+      },
+      "driftExpected": {
+        "positiveIds": ["GET /legacy", "PATCH /users/{id}", "POST /orders"],
+        "minimumPrecision": 1,
+        "minimumRecall": 1
+      }
+    },
+    {
+      "fixtureId": "docs-aware-retrieval",
+      "input": {
+        "source": "part-2-retrieval-output",
+        "query": "create invoice from checkout docs"
+      },
+      "retrievalOutput": {
+        "relatedChunks": [
+          {
+            "chunkKey": "chunk:checkout-overview"
+          },
+          {
+            "chunkKey": "chunk:invoice-requirement"
+          }
+        ],
+        "relatedDocs": [
+          {
+            "docPath": "docs/orders.md"
+          }
+        ],
+        "summary": {
+          "candidateCount": 2,
+          "degraded": false
+        },
+        "skipped": []
+      },
+      "retrievalExpected": {
+        "chunkKeys": ["chunk:checkout-overview", "chunk:invoice-requirement"],
+        "minimumPrecision": 1,
+        "minimumRecall": 1
+      }
+    },
+    {
+      "fixtureId": "stale-sidecar",
+      "input": {
+        "source": "part-1-stale-report",
+        "query": "stale markdown sidecar detection"
+      },
+      "traceReport": {
+        "version": 1,
+        "repo": {
+          "id": "eval-repo",
+          "path": "/eval/repo",
+          "sourceIndexId": "index-old",
+          "sourceCommitHash": "old-commit",
+          "graphSchemaVersion": 1
+        },
+        "sidecar": {
+          "status": "stale",
+          "staleReasons": ["commit mismatch"],
+          "degradedReasons": {
+            "stale": 1
+          }
+        },
+        "summary": {
+          "report": "requirement-trace"
+        },
+        "items": [
+          {
+            "requirementId": "REQ-STALE",
+            "status": "stale"
+          }
+        ],
+        "warnings": ["requirement trace degraded by sidecar status stale"],
+        "limits": {
+          "truncated": false,
+          "maxItems": 100,
+          "maxCandidatesPerFact": 5
+        }
+      },
+      "stateExpected": {
+        "staleDetected": true
+      }
+    },
+    {
+      "fixtureId": "unsupported-route",
+      "input": {
+        "source": "part-1-api-drift-report",
+        "query": "unsupported route extractor state"
+      },
+      "driftReport": {
+        "version": 1,
+        "repo": {
+          "id": "eval-repo",
+          "path": "/eval/repo",
+          "sourceIndexId": "index-1",
+          "sourceCommitHash": "commit-1",
+          "graphSchemaVersion": 1
+        },
+        "sidecar": {
+          "status": "complete",
+          "staleReasons": [],
+          "degradedReasons": {}
+        },
+        "summary": {
+          "report": "api-drift"
+        },
+        "items": [
+          {
+            "routeKey": "* /rpc/users",
+            "method": "*",
+            "path": "/rpc/users",
+            "status": "unsupported",
+            "reason": "legacy-rpc has no route extractor"
+          }
+        ],
+        "warnings": [],
+        "limits": {
+          "truncated": false,
+          "maxItems": 100,
+          "maxCandidatesPerFact": 5
+        }
+      },
+      "stateExpected": {
+        "unsupportedDetected": true
+      }
+    },
+    {
+      "fixtureId": "edit-readiness-docs-evidence",
+      "input": {
+        "source": "part-2-edit-readiness-output",
+        "query": "can edit createInvoice with docs evidence"
+      },
+      "editReadinessOutput": {
+        "verdict": "ready",
+        "docsEvidence": [
+          {
+            "docPath": "docs/orders.md",
+            "chunkKey": "chunk:invoice-requirement"
+          }
+        ],
+        "evidence": [
+          {
+            "source": "markdown-docs",
+            "target": "Function:createInvoice"
+          }
+        ]
+      },
+      "editReadinessExpected": {
+        "minimumDocsEvidenceCount": 2
+      }
+    },
+    {
+      "fixtureId": "compactness-baseline",
+      "input": {
+        "source": "baseline-snapshot",
+        "query": "compare docs-aware retrieval with Codebase-Memory-style MCP output"
+      },
+      "compactnessBaseline": {
+        "output": {
+          "tool": "ontoindex.search",
+          "results": [
+            {
+              "symbol": "createInvoice",
+              "filePath": "src/billing/invoice.ts",
+              "markdownContext": [
+                {
+                  "docPath": "docs/orders.md",
+                  "chunkKey": "chunk:invoice-requirement"
+                }
+              ]
+            }
+          ]
+        },
+        "maxOutputBytes": 900,
+        "maxOutputTokens": 225,
+        "codebaseMemoryStyleOutput": {
+          "memories": [
+            {
+              "title": "Checkout invoice implementation notes",
+              "content": "The checkout flow creates invoices after payment authorization. Relevant implementation details include src/billing/invoice.ts createInvoice, src/routes/orders.ts POST /orders, docs/orders.md chunk:invoice-requirement, docs/orders.md chunk:checkout-overview, and the associated order-processing tests. This verbose memory-style payload repeats document and code anchors so an agent can infer the same docs-to-code relationship without graph-native citations."
+            },
+            {
+              "title": "API route drift context",
+              "content": "POST /orders is the route used by the checkout flow. The documentation evidence appears in docs/api.md and docs/orders.md. The code evidence appears in src/routes/orders.ts. A memory-only server would typically emit the narrative, route path, file paths, and requirement ids together rather than a compact structured citation."
+            }
+          ]
+        },
+        "maxTokenRatioToCodebaseMemory": 0.7
+      },
+      "regressionNotes": ["research comparison only; no learned ranking default is enabled"]
+    }
+  ]
+}

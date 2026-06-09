@@ -1,0 +1,21 @@
+name: Setup OntoIndex Web
+description: Setup Node.js 20, build ontoindex-shared, install web dependencies
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: 20
+        cache: npm
+        cache-dependency-path: ontoindex-web/package-lock.json
+
+    - name: Build ontoindex-shared
+      run: npm install && npm run build
+      shell: bash
+      working-directory: ontoindex-shared
+
+    - name: Install web dependencies
+      run: npm ci
+      shell: bash
+      working-directory: ontoindex-web

@@ -1,0 +1,31 @@
+schema: 1
+id: core.architecture-and-drift
+name: Architecture and Drift
+version: 0.1.0
+kind: query
+tier: stable
+summary: Track graph drift, dead code, hotspots, and structural regression before merge or release.
+owners:
+  - maintainers
+tags:
+  - architecture
+  - drift
+  - maintainability
+provides:
+  - graph_diff
+  - dead_code
+  - hotspot_analysis
+  - tech_debt
+runs:
+  - tool: graph_diff
+    params:
+      limit: 25
+  - tool: dead_code
+    params:
+      limit: 50
+  - tool: hotspot_analysis
+    params:
+      limit: 10
+  - tool: tech_debt
+    params:
+      limit: 10

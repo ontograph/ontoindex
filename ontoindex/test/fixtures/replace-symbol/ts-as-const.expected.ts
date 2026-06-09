@@ -1,0 +1,3 @@
+function getConst() {
+  return "replaced";
+}

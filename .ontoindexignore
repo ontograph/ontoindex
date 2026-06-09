@@ -1,0 +1,11 @@
+# ontoindex analyze — extra exclusions on top of .gitignore and the
+# hardcoded DEFAULT_IGNORE_LIST (see ontoindex/src/config/ignore-service.ts).
+# Patterns use gitignore syntax (parsed by the `ignore` npm package).
+
+# Build output — noise with no source-graph value
+dist/**
+**/dist/**
+
+# Test fixtures — synthetic inputs that pollute the graph
+test/fixtures/**
+**/test/fixtures/**

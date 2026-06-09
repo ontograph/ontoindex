@@ -1,0 +1,3 @@
+function template() {
+  return "replaced";
+}

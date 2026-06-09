@@ -1,0 +1,102 @@
+Please solve this issue: {{task}}
+
+You can execute bash commands and edit files to implement the necessary changes.
+
+## Recommended Workflow
+
+Work step-by-step so you can iterate on your changes and catch problems early.
+
+1. **Understand the issue** — read the problem statement, identify the symptom and affected area
+2. **Find the relevant code** — use `ontoindex-query "<feature area>"` to find execution flows, or `grep` for specific strings
+3. **Understand the suspect** — use `ontoindex-context "<symbol>"` to see all callers and callees, then `cat` to read the source
+4. **Check blast radius** — before editing shared code, run `ontoindex-impact "<symbol>" upstream` to see what depends on it
+5. **Implement the fix** — make minimal, targeted changes
+6. **Verify** — run relevant tests, check edge cases
+7. **Submit** — issue: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`
+   Do not combine it with any other command. After this command, you cannot continue working on this task.
+
+## Debugging Patterns
+
+| Symptom | Approach |
+|---------|----------|
+| Error message / exception | `ontoindex-query` for error text → `ontoindex-context` on throw sites |
+| Wrong return value | `ontoindex-context` on the function → trace callees for data flow |
+| Missing feature / incomplete behavior | `ontoindex-query` for feature area → find the execution flow → locate the gap |
+| Need to understand callers | `ontoindex-context` — graph-complete, finds callers grep would miss |
+
+## Risk Assessment
+
+Before editing shared code, check the blast radius:
+
+| Impact | Risk | Action |
+|--------|------|--------|
+| <5 symbols at d=1 | Low | Fix with confidence |
+| 5-15 symbols at d=1 | Medium | Fix carefully, run broader tests |
+| >15 symbols at d=1 | High | Minimal change, run full test suite |
+
+## Important Rules
+
+1. Every response must contain exactly one action
+2. The action must be enclosed in triple backticks
+3. Directory or environment variable changes are not persistent. Every action is executed in a new subshell.
+   However, you can prefix any action with `MY_ENV_VAR=MY_VALUE cd /path/to/working/dir && ...` or write/load environment variables from files
+4. Make minimal, targeted changes. Don't refactor unrelated code.
+5. OntoIndex tools are ~100ms. Use them when they save you multiple grep iterations.
+
+<system_info>
+{{system}} {{release}} {{version}} {{machine}}
+</system_info>
+
+## Formatting your response
+
+Here is an example of a correct response:
+
+<example_response>
+THOUGHT: The issue mentions a problem with form field validation. Let me search the code knowledge graph for the relevant execution flows to understand how validation works in this codebase.
+
+```mswea_bash_command
+ontoindex-query "form field validation"
+```
+</example_response>
+
+## Useful command examples
+
+### Create a new file:
+
+```bash
+cat <<'EOF' > newfile.py
+import numpy as np
+hello = "world"
+print(hello)
+EOF
+```
+
+### Edit files with sed:
+
+{%- if system == "Darwin" -%}
+<note>
+You are on MacOS. For all the below examples, you need to use `sed -i ''` instead of `sed -i`.
+</note>
+{%- endif -%}
+
+```bash
+# Replace all occurrences
+sed -i 's/old_string/new_string/g' filename.py
+# Replace only first occurrence
+sed -i 's/old_string/new_string/' filename.py
+# Replace all occurrences in lines 1-10
+sed -i '1,10s/old_string/new_string/g' filename.py
+```
+
+### View file content:
+
+```bash
+# View specific lines with numbers
+nl -ba filename.py | sed -n '10,20p'
+```
+
+### Any other command you want to run
+
+```bash
+anything
+```

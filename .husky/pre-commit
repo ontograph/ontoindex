@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Pre-commit hook: format staged files + typecheck (baseline-ratchet).
+# Tests run in CI (ci-tests.yml), not here.
+# Skip with: git commit --no-verify
+
+ROOT="$(git rev-parse --show-toplevel)"
+
+# 1. Format staged files with prettier via lint-staged
+echo "pre-commit: formatting staged files..."
+"$ROOT/node_modules/.bin/lint-staged" || exit 1
+
+# 2. Typecheck changed packages (baseline-ratchet: fail only on regression)
+WEB_CHANGED=$(git diff --cached --name-only -- 'ontoindex-web/' | head -1)
+CLI_CHANGED=$(git diff --cached --name-only -- 'ontoindex/' | head -1)
+
+if [ -n "$WEB_CHANGED" ]; then
+  echo "pre-commit: typechecking ontoindex-web (tsc -b)..."
+  TSC_OUT=$(cd "$ROOT/ontoindex-web" && ./node_modules/.bin/tsc -b --noEmit 2>&1 || true)
+  CURRENT=$(echo "$TSC_OUT" | grep -c "error TS" || true)
+  BASELINE=$(cat "$ROOT/.husky/tsc-baseline.ontoindex-web.txt" 2>/dev/null || echo 0)
+  if [ "$CURRENT" -gt "$BASELINE" ]; then
+    echo "pre-commit: tsc regression in ontoindex-web — $CURRENT errors (baseline: $BASELINE)"
+    echo "New errors introduced by this commit:"
+    echo "$TSC_OUT" | grep "error TS" | head -20
+    echo "Fix the errors above, or if the baseline is stale update .husky/tsc-baseline.ontoindex-web.txt to $CURRENT."
+    exit 1
+  elif [ "$CURRENT" -lt "$BASELINE" ]; then
+    echo "pre-commit: tsc ratchet available in ontoindex-web — $CURRENT errors (baseline: $BASELINE). Consider lowering .husky/tsc-baseline.ontoindex-web.txt to $CURRENT."
+  fi
+fi
+
+if [ -n "$CLI_CHANGED" ]; then
+  echo "pre-commit: typechecking ontoindex..."
+  TSC_OUT=$(cd "$ROOT/ontoindex" && ./node_modules/.bin/tsc --noEmit 2>&1 || true)
+  CURRENT=$(echo "$TSC_OUT" | grep -c "error TS" || true)
+  BASELINE=$(cat "$ROOT/.husky/tsc-baseline.ontoindex.txt" 2>/dev/null || echo 0)
+  if [ "$CURRENT" -gt "$BASELINE" ]; then
+    echo "pre-commit: tsc regression in ontoindex — $CURRENT errors (baseline: $BASELINE)"
+    echo "New errors introduced by this commit:"
+    echo "$TSC_OUT" | grep "error TS" | head -20
+    echo "Fix the errors above, or if the baseline is stale update .husky/tsc-baseline.ontoindex.txt to $CURRENT."
+    exit 1
+  elif [ "$CURRENT" -lt "$BASELINE" ]; then
+    echo "pre-commit: tsc ratchet available in ontoindex — $CURRENT errors (baseline: $BASELINE). Consider lowering .husky/tsc-baseline.ontoindex.txt to $CURRENT."
+  fi
+fi
+
+echo "pre-commit: all checks passed"
