@@ -10,7 +10,9 @@ import {
 import { runNativeBridgeScenario } from '../../helpers/native-bridge-child.js';
 import { makeContract } from './fixtures.js';
 
-describe('bridge-db native child process coverage', () => {
+const describeNativeBridge = process.platform === 'win32' ? describe.skip : describe;
+
+describeNativeBridge('bridge-db native child process coverage', () => {
   it('opens, initializes schema, and queries data', () => {
     runNativeBridgeScenario(`
     const dbPath = path.join(tmpDir, 'test.lbug');

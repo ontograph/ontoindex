@@ -1,5 +1,7 @@
 import { EventEmitter } from 'events';
 import type { Server } from 'http';
+import os from 'node:os';
+import path from 'node:path';
 import express from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChildProcess } from 'child_process';
@@ -63,7 +65,8 @@ describe('mountAnalyzeRoutes cancellation lifecycle', () => {
     child.kill = vi.fn(() => true);
     forkMockState.fork.mockReturnValue(child);
 
-    const lock = { repoPath: '/tmp/ontoindex-analyze-route-test', token: Symbol('lock') };
+    const repoPath = path.join(os.tmpdir(), 'ontoindex-analyze-route-test');
+    const lock = { repoPath, token: Symbol('lock') };
     const acquireRepoLock = vi.fn(() => lock);
     const releaseRepoLock = vi.fn();
 
@@ -79,7 +82,7 @@ describe('mountAnalyzeRoutes cancellation lifecycle', () => {
     const startResponse = await fetch(`${baseUrl}/api/analyze`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ path: '/tmp/ontoindex-analyze-route-test' }),
+      body: JSON.stringify({ path: repoPath }),
     });
     expect(startResponse.status).toBe(202);
     const { jobId } = (await startResponse.json()) as { jobId: string };

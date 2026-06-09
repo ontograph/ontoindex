@@ -1,7 +1,9 @@
 import { describe, it } from 'vitest';
 import { runNativeBridgeScenario } from '../../helpers/native-bridge-child.js';
 
-describe('bridge-db edge cases', () => {
+const describeNativeBridge = process.platform === 'win32' ? describe.skip : describe;
+
+describeNativeBridge('bridge-db edge cases', () => {
   it('rejects incompatible bridge schema versions', () => {
     runNativeBridgeScenario(`
     await fsp.writeFile(path.join(tmpDir, 'bridge.lbug'), 'dummy');

@@ -66,8 +66,8 @@ import {
 
 const MOCK_REPO_ENTRY = {
   name: 'test-project',
-  path: '/tmp/test-project',
-  storagePath: '/tmp/.ontoindex/test-project',
+  path: path.join(os.tmpdir(), 'test-project'),
+  storagePath: path.join(os.tmpdir(), '.ontoindex', 'test-project'),
   indexedAt: '2024-06-01T12:00:00Z',
   lastCommit: 'abc1234567890',
   stats: { files: 10, nodes: 50, edges: 100, communities: 3, processes: 5 },
@@ -85,8 +85,8 @@ function setupMultipleRepos() {
     {
       ...MOCK_REPO_ENTRY,
       name: 'other-project',
-      path: '/tmp/other-project',
-      storagePath: '/tmp/.ontoindex/other-project',
+      path: path.join(os.tmpdir(), 'other-project'),
+      storagePath: path.join(os.tmpdir(), '.ontoindex', 'other-project'),
     },
   ]);
 }

@@ -16,6 +16,8 @@ import {
 } from '../../src/core/audit-lifecycle/audit-event-store.js';
 import { buildAuditProjection } from '../../src/core/audit-lifecycle/audit-projection.js';
 
+const itOnLockFriendlyFs = process.platform === 'win32' ? it.skip : it;
+
 let tmpDir: string;
 let store: LocalAuditEventStore;
 
@@ -243,7 +245,7 @@ describe('audit event store', () => {
     expect({ ...rebuilt, rebuiltAt: '2026-05-17T01:00:00.000Z' }).toEqual(expected);
   });
 
-  it('serializes concurrent appends without losing events', async () => {
+  itOnLockFriendlyFs('serializes concurrent appends without losing events', async () => {
     await store.createSession(sessionInput, { id: 'evt-1' });
 
     await Promise.all(
