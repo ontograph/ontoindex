@@ -4,7 +4,21 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
-No unreleased changes yet.
+### Changed
+
+- Added `docs/README.md`, moved the MCP reference into `docs/reference/mcp.md`, marked ADR 0082 accepted for the shipped opt-in frontier, and removed completed manager tracking residue.
+- Added `scripts/install-ontoindex-latest.sh` for installing the newest GitHub release tarball without hard-coding the version.
+
+## [1.9.1] - 2026-06-09
+
+### Added
+
+- **Semantic ANN frontier retrieval** — added retrieval-only `ANN_NEIGHBOR` edge support, one-shot neighborhood search, and opt-in typed backend integration through `retrieval_policy: "symbol-neighborhood"`.
+- **Semantic ANN benchmark gate** — added a realistic code-symbol fixture and threshold flags for recall/visited-node validation.
+
+### Changed
+
+- Updated agent skill guidance and public install examples for the `1.9.1` release.
 
 ## [1.9.0] - 2026-06-09
 

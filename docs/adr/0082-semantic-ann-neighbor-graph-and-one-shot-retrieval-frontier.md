@@ -1,6 +1,6 @@
 # ADR 0082: Semantic ANN Neighbor Graph and One-Shot Retrieval Frontier
 
-**Status:** Proposed - Challenged/Core Extension Only
+**Status:** Accepted - Implemented as opt-in core extension
 **Date:** 2026-06-09
 **Source:** Instagram semantic-memory prototype review; narrowed against existing OntoIndex embedding, query, and graph-navigation architecture.
 
@@ -47,7 +47,7 @@ Challenge findings:
 
 ## Decision
 
-Add a proposed OntoIndex core extension with two new primitives and one validation gate:
+Add an opt-in OntoIndex core extension with two new primitives and one validation gate:
 
 1. `ANN_NEIGHBOR` relationships between embedded code entities.
 2. `semanticFrontierSearch` backend operation that expands, scores, ranks, and diagnoses candidates
@@ -63,7 +63,7 @@ this ADR.
 
 Materialize bounded nearest-neighbor edges between embedded code entities.
 
-Proposed relationship:
+Relationship:
 
 ```text
 (source)-[:ANN_NEIGHBOR {
@@ -287,13 +287,23 @@ Mitigations:
   reasons.
 - ANN remains opt-in until benchmark gates pass.
 
+## Implementation Status
+
+Implemented in `1.9.1` as an opt-in retrieval frontier:
+
+- `ANN_NEIGHBOR` edge building and loading lives under `ontoindex/src/core/embeddings/`.
+- One-shot backend search lives in `ontoindex/src/core/search/semantic-frontier-search.ts`.
+- The existing MCP/search surface can opt in with `retrieval_policy: "symbol-neighborhood"`.
+- Benchmark gating is available through `npm run bench:semantic-ann`.
+
 ## Validation
 
 For implementation work, run focused tests for touched modules plus:
 
 ```bash
 cd ontoindex && npx tsc --noEmit --pretty false
-cd ontoindex && npm test -- --runInBand
+cd ontoindex && npm test -- --run test/unit/ann-neighbor-builder.test.ts test/unit/ann-neighbor-store.test.ts test/unit/semantic-frontier-search.test.ts test/unit/semantic-frontier-adapter.test.ts test/unit/backend-search-typed.test.ts test/unit/hybrid-search.test.ts
+cd ontoindex && npm run bench:semantic-ann -- --fixture test/fixtures/semantic-ann/realistic-code-symbols.json --ef 19 --min-recall-at-1 1 --min-recall-at-5 1 --max-visited 19
 ```
 
 If implementation touches graph traversal, add tests proving `ANN_NEIGHBOR` is retrieval-only.

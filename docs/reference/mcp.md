@@ -584,8 +584,8 @@ Use these when the client prefers a small stable tool list. Each facade has an `
   "repo": "OntoIndex",
   "session": "audit-2026-06-release",
   "bundleId": "B-MCP-DOCS",
-  "changedFiles": ["readme_mcp.md"],
-  "executedTests": ["npx prettier --check readme_mcp.md"]
+  "changedFiles": ["docs/reference/mcp.md"],
+  "executedTests": ["npx prettier --check docs/reference/mcp.md"]
 }
 ```
 

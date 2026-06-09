@@ -10,7 +10,7 @@ Works with **Cursor**, **Claude Code**, **Codex**, **Windsurf**, **Cline**, **Op
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- **Current release:** `1.9.0`
+- **Current release:** `1.9.1`
 - **Repository:** [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - **Web UI:** [ontoindex.vercel.app](https://ontoindex.vercel.app)
 
@@ -30,6 +30,12 @@ npx ontoindex analyze
 
 # Scope MCP setup to this repo by running setup here.
 npx ontoindex setup
+```
+
+From a source checkout, install the latest GitHub release tarball with:
+
+```bash
+../scripts/install-ontoindex-latest.sh
 ```
 
 That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command.
@@ -147,6 +153,8 @@ ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ONTOINDEX_MCP_REPO=/path/to/targe
 ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ONTOINDEX_MCP_REPO=/path/to/target/repo ontoindex mcp --repo my-target-repo
 ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1 ontoindex mcp   # override when intentionally cross-repo
 ```
+
+Full MCP tool examples live in the repository reference: [`../docs/reference/mcp.md`](../docs/reference/mcp.md).
 
 ## MCP Resources
 
@@ -274,8 +282,8 @@ Release-candidate versions follow the standard semver prerelease format
 `X.Y.Z-rc.N`, where `X.Y.Z` is the next stable target (bumped from the
 current `latest` by patch by default; `minor` or `major` when kicking off a
 bigger cycle) and `N` increments per published rc. Example sequence:
-`1.9.0-rc.1`, `1.9.0-rc.2`, …, then once `1.9.0` ships stable, the next patch-cycle starts at
-`1.9.1-rc.1` (or `1.10.0-rc.1` for a minor/bigger cycle). See the [Releases page](https://github.com/ontograph/ontoindex/releases)
+`1.9.1-rc.1`, `1.9.1-rc.2`, …, then once `1.9.1` ships stable, the next patch-cycle starts at
+`1.9.2-rc.1` (or `1.10.0-rc.1` for a minor/bigger cycle). See the [Releases page](https://github.com/ontograph/ontoindex/releases)
 for the full list; stable `latest` is unaffected.
 
 ## Troubleshooting

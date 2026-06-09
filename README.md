@@ -8,7 +8,7 @@
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- **Current release:** `1.9.0`
+- **Current release:** `1.9.1`
  
 - **Enterprise:** [erasyuk@gmail.com](erasyuk@gmail.com)
   
@@ -42,6 +42,12 @@ npx -y ontoindex@1.9.1 setup
 
 # Start the MCP server manually when needed.
 npx -y ontoindex@1.9.1 mcp
+```
+
+To always install the latest GitHub release tarball:
+
+```bash
+./scripts/install-ontoindex-latest.sh
 ```
 
 If you run `ontoindex setup` or `ontoindex mcp` from a helper checkout (for example, a global Codex/Claude installation), set the target project hint explicitly so startup can validate selection against the intended repo:
@@ -280,7 +286,7 @@ Supported language coverage includes TypeScript, JavaScript, Python, Java, Kotli
 | [`ontoindex-claude-plugin/`](ontoindex-claude-plugin/) | Claude integration assets |
 | [`ontoindex-cursor-integration/`](ontoindex-cursor-integration/) | Cursor integration assets |
 | [`eval/`](eval/) | Evaluation harness |
-| [`docs/`](docs/) | ADRs, guides, code-indexing notes |
+| [`docs/`](docs/) | Documentation index, ADRs, guides, reference docs, code-indexing notes |
 
 ## Development
 
@@ -298,7 +304,9 @@ Useful docs:
 - [GUARDRAILS.md](GUARDRAILS.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [TESTING.md](TESTING.md)
+- [docs/README.md](docs/README.md)
 - [docs/adr/0000-index.md](docs/adr/0000-index.md)
+- [docs/reference/mcp.md](docs/reference/mcp.md)
 
 ## Web UI
 
@@ -321,8 +329,8 @@ Images:
 
 | Image | Purpose |
 | --- | --- |
-| `ghcr.io/ontograph/ontoindex:1.9.0` | CLI, MCP, and `ontoindex serve` backend |
-| `ghcr.io/ontograph/ontoindex-web:1.9.0` | Web UI |
+| `ghcr.io/ontograph/ontoindex:1.9.1` | CLI, MCP, and `ontoindex serve` backend |
+| `ghcr.io/ontograph/ontoindex-web:1.9.1` | Web UI |
 
 The compose stack exposes:
 
@@ -331,10 +339,10 @@ The compose stack exposes:
 
 ## Release Integrity
 
-Stable Docker images are intended to match npm package versions. For `1.9.0`:
+Stable Docker images are intended to match npm package versions. For `1.9.1`:
 
 ```bash
-cosign verify ghcr.io/ontograph/ontoindex:1.9.0 \
+cosign verify ghcr.io/ontograph/ontoindex:1.9.1 \
   --certificate-identity-regexp '^https://github\.com/ontograph/ontoindex/\.github/workflows/docker\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
