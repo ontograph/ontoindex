@@ -292,7 +292,7 @@ describe('setupClaudeCode', () => {
 
     const raw = await fs.readFile(path.join(codexDir, 'config.toml'), 'utf-8');
     expect(raw).toContain(`command = ${JSON.stringify(process.execPath)}`);
-    expect(raw).toMatch(/args = \[".*dist[/\\]cli[/\\]index\.js", "mcp"\]/);
+    expect(raw).toMatch(/args = \[".*dist.*cli.*index\.js", "mcp"\]/);
     expect(raw).toContain('ONTOINDEX_MCP_AUTO_ANALYZE = "0"');
     expect(raw).toContain('ONTOINDEX_MCP_STARTUP_TIMEOUT_MS = "10000"');
     expect(raw).toContain('ONTOINDEX_MCP_STARTUP_TRACE = "1"');

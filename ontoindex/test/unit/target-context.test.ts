@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
 
 const REPO_ID = 'test-repo';
 const CURRENT_COMMIT = 'abc123def456abc123def456abc123def456abc1';
@@ -48,7 +49,7 @@ describe('resolveTargetContext', () => {
     expect(context).toMatchObject({
       status: 'ok',
       repoKey: REPO_ID,
-      repoPath: '/repo/test-repo',
+      repoPath: path.resolve('/repo/test-repo'),
       branch: 'main',
       targetRef: 'HEAD',
       targetHead: CURRENT_COMMIT,

@@ -155,7 +155,10 @@ describe('gn_explore', () => {
       expect.objectContaining({ id: 'ontoindex', name: 'OntoIndex', repoPath: '/tmp/OntoIndex' }),
       expect.objectContaining({ query: 'MCP tool contract' }),
     );
-    expect(mockInitLbug).toHaveBeenCalledWith('ontoindex', '/tmp/OntoIndex/.ontoindex/lbug');
+    expect(mockInitLbug.mock.calls[0]?.[0]).toBe('ontoindex');
+    expect(String(mockInitLbug.mock.calls[0]?.[1]).replace(/\\/g, '/')).toBe(
+      '/tmp/OntoIndex/.ontoindex/lbug',
+    );
     expect(mockGetFileSkeleton).toHaveBeenCalledWith(
       'ontoindex',
       expect.any(String),

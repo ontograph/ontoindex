@@ -5,6 +5,7 @@
  * are mocked so tests run without a live DB or filesystem access.
  */
 
+import path from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
@@ -41,6 +42,7 @@ const mockAccess = access as unknown as ReturnType<typeof vi.fn>;
 const mockRealpath = realpath as unknown as ReturnType<typeof vi.fn>;
 const mockStat = stat as unknown as ReturnType<typeof vi.fn>;
 const mockReadFile = readFile as unknown as ReturnType<typeof vi.fn>;
+const normalizePath = (value: unknown) => String(value).replace(/\\/g, '/');
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -209,12 +211,12 @@ describe('gnProposeLocation', () => {
     mockAccess.mockResolvedValue(undefined);
     mockStat.mockResolvedValue({ isFile: () => true, size: 128 });
     mockReadFile.mockImplementation((fp: string) => {
-      if (String(fp).endsWith('src/services/user-service.ts')) {
+      if (normalizePath(fp).endsWith('src/services/user-service.ts')) {
         return Promise.resolve(
           `import { db } from '../db/client.js';\nimport { logger } from '../utils/logger.js';\n`,
         );
       }
-      if (String(fp).endsWith('src/services/order-service.ts')) {
+      if (normalizePath(fp).endsWith('src/services/order-service.ts')) {
         return Promise.resolve(
           `import { db } from '../db/client.js';\nimport { validator } from '../utils/validator.js';\n`,
         );
@@ -272,7 +274,9 @@ describe('gnProposeLocation', () => {
     mockStat.mockResolvedValue({ isFile: () => true, size: 128 });
     mockReadFile.mockResolvedValue("import { secret } from '../secret.js';\n");
     mockRealpath.mockImplementation(async (fp: string) =>
-      fp.endsWith('/src/services/linked.ts') ? '/tmp/outside/linked.ts' : fp,
+      normalizePath(fp).endsWith('/src/services/linked.ts')
+        ? path.resolve(process.cwd(), '..', 'outside', 'linked.ts')
+        : fp,
     );
 
     const report = await gnProposeLocation(REPO_ID, { intent: 'add private service' });
@@ -323,7 +327,7 @@ describe('gnProposeLocation', () => {
     mockStat.mockResolvedValue({ isFile: () => true, size: 128 });
     mockReadFile.mockResolvedValue("import { db } from '../db/client.js';\n");
 
-    const currentRepoId = process.cwd().split('/').pop()!.toLowerCase();
+    const currentRepoId = process.cwd().split(/[\\/]/).pop()!.toLowerCase();
     const report = await gnProposeLocation(currentRepoId, { intent: 'add service' });
 
     expect(report.candidates).toHaveLength(1);
