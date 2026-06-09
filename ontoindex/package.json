@@ -112,7 +112,7 @@
     "@types/safe-regex": "^1.1.6",
     "@types/seedrandom": "^3.0.8",
     "@types/uuid": "^10.0.0",
-    "@vitest/coverage-v8": "^4.0.18",
+    "@vitest/coverage-v8": "^4.1.8",
     "ontoindex-shared": "file:../ontoindex-shared",
     "tsx": "^4.0.0",
     "typescript": "^5.4.5",
