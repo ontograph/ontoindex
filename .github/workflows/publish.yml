@@ -8,10 +8,11 @@ on:
 # No workflow-level permissions — scoped per job below.
 
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
-# Tag refs are unique per release, so distinct tags run in parallel. Re-pushes of the
-# same tag serialize. cancel-in-progress: false — never cancel a publish mid-flight.
+# Tag refs are unique per release, so distinct tags run in parallel. Include the
+# tag commit SHA so a corrected retag is not blocked by a stale queued run for an
+# older SHA. cancel-in-progress: false — never cancel a publish mid-flight.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
