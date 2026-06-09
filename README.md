@@ -35,13 +35,14 @@ curl -fsSL https://raw.githubusercontent.com/ontograph/ontoindex/master/scripts/
 ontoindex --version
 
 # Run from the repository you want to index.
-npx -y ontoindex@1.9.1 analyze
+  ontoindex analyze
 
 # Configure MCP clients once.
-npx -y ontoindex@1.9.1 setup
+  ontoindex setup
 
 # Start the MCP server manually when needed.
-npx -y ontoindex@1.9.1 mcp
+  ontoindex mcp
+
 ```
 
 To always install the latest GitHub release tarball:
@@ -53,10 +54,17 @@ To always install the latest GitHub release tarball:
 If you run `ontoindex setup` or `ontoindex mcp` from a helper checkout (for example, a global Codex/Claude installation), set the target project hint explicitly so startup can validate selection against the intended repo:
 
 ```bash
-cd /path/to/target/repo
-ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ONTOINDEX_MCP_REPO=/path/to/target/repo npx -y ontoindex@1.9.1 setup
+ 
+  cd /path/to/target/repo
 
-ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ONTOINDEX_MCP_REPO=/path/to/target/repo npx -y ontoindex@1.9.1 mcp --repo my-project
+  ONTOINDEX_MCP_PROJECT_CWD="$PWD" \
+  ONTOINDEX_MCP_REPO="$PWD" \
+  ontoindex setup
+
+  ONTOINDEX_MCP_PROJECT_CWD="$PWD" \
+  ONTOINDEX_MCP_REPO="$PWD" \
+  ontoindex mcp --repo my-project
+
 ```
 
 Startup prints both the executable cwd and project path, and will error loudly when `ONTOINDEX_MCP_REPO` or `--repo` points outside the configured `ONTOINDEX_MCP_PROJECT_CWD` unless `ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1`.
