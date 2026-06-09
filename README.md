@@ -30,26 +30,26 @@ The result is a smaller, more reliable context surface: agents ask the graph ins
 ## Quick Start
 
 ```bash
-npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.0/ontoindex-1.9.0.tgz
+npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.1/ontoindex-1.9.1.tgz
 ontoindex --version
 
 # Run from the repository you want to index.
-npx -y ontoindex@1.9.0 analyze
+npx -y ontoindex@1.9.1 analyze
 
 # Configure MCP clients once.
-npx -y ontoindex@1.9.0 setup
+npx -y ontoindex@1.9.1 setup
 
 # Start the MCP server manually when needed.
-npx -y ontoindex@1.9.0 mcp
+npx -y ontoindex@1.9.1 mcp
 ```
 
 If you run `ontoindex setup` or `ontoindex mcp` from a helper checkout (for example, a global Codex/Claude installation), set the target project hint explicitly so startup can validate selection against the intended repo:
 
 ```bash
 cd /path/to/target/repo
-ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ONTOINDEX_MCP_REPO=/path/to/target/repo npx -y ontoindex@1.9.0 setup
+ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ONTOINDEX_MCP_REPO=/path/to/target/repo npx -y ontoindex@1.9.1 setup
 
-ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ONTOINDEX_MCP_REPO=/path/to/target/repo npx -y ontoindex@1.9.0 mcp --repo my-project
+ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ONTOINDEX_MCP_REPO=/path/to/target/repo npx -y ontoindex@1.9.1 mcp --repo my-project
 ```
 
 Startup prints both the executable cwd and project path, and will error loudly when `ONTOINDEX_MCP_REPO` or `--repo` points outside the configured `ONTOINDEX_MCP_PROJECT_CWD` unless `ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1`.
@@ -57,7 +57,7 @@ Startup prints both the executable cwd and project path, and will error loudly w
 For the browser UI:
 
 ```bash
-npx -y ontoindex@1.9.0 serve
+npx -y ontoindex@1.9.1 serve
 ```
 
 Then open [ontoindex.vercel.app](https://ontoindex.vercel.app). The UI detects the local backend at `http://localhost:4747` and can browse indexed repositories without uploading code.
@@ -69,13 +69,13 @@ Then open [ontoindex.vercel.app](https://ontoindex.vercel.app). The UI detects t
 ### Claude Code
 
 ```bash
-claude mcp add ontoindex -- npx -y ontoindex@1.9.0 mcp
+claude mcp add ontoindex -- npx -y ontoindex@1.9.1 mcp
 ```
 
 ### Codex
 
 ```bash
-codex mcp add ontoindex -- npx -y ontoindex@1.9.0 mcp
+codex mcp add ontoindex -- npx -y ontoindex@1.9.1 mcp
 ```
 
 ### Cursor
@@ -87,7 +87,7 @@ Add this to `~/.cursor/mcp.json`:
   "mcpServers": {
     "ontoindex": {
       "command": "npx",
-      "args": ["-y", "ontoindex@1.9.0", "mcp"]
+      "args": ["-y", "ontoindex@1.9.1", "mcp"]
     }
   }
 }
@@ -102,7 +102,7 @@ Add this to `~/.config/opencode/config.json`:
   "mcp": {
     "ontoindex": {
       "type": "local",
-      "command": ["npx", "-y", "ontoindex@1.9.0", "mcp"]
+      "command": ["npx", "-y", "ontoindex@1.9.1", "mcp"]
     }
   }
 }
