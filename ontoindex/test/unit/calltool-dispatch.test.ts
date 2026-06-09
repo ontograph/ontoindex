@@ -1057,7 +1057,7 @@ describe('LocalBackend.listRepos', () => {
     expect(repos[0]).toEqual(
       expect.objectContaining({
         name: 'test-project',
-        path: '/tmp/test-project',
+        path: MOCK_REPO_ENTRY.path,
         indexedAt: expect.any(String),
         lastCommit: expect.any(String),
       }),
