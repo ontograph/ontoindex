@@ -96,10 +96,9 @@ describe('mcpCommand', () => {
       expect.stringContaining('OntoIndex: MCP executable cwd:'),
     );
     expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining(
-        'OntoIndex: MCP target project path: /opt/demodb/_workfolder/ontocode',
-      ),
+      expect.stringContaining('OntoIndex: MCP target project path:'),
     );
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('ontocode'));
     expect(backendMocks.dispose).not.toHaveBeenCalled();
   });
 
@@ -114,10 +113,9 @@ describe('mcpCommand', () => {
     expect(process.exitCode).toBe(1);
     expect(backendMocks.dispose).not.toHaveBeenCalled();
     expect(startMCPServer).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('ONTOINDEX_MCP_REPO'));
     expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining(
-        'ONTOINDEX_MCP_REPO (/project/b) does not match this project scope (/project/a)',
-      ),
+      expect.stringContaining('does not match this project scope'),
     );
   });
 
@@ -131,10 +129,9 @@ describe('mcpCommand', () => {
     await mcpCommand();
 
     expect(process.exitCode).toBeUndefined();
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('ONTOINDEX_MCP_REPO'));
     expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining(
-        'ONTOINDEX_MCP_REPO (/project/b) does not match this project scope (/project/a)',
-      ),
+      expect.stringContaining('does not match this project scope'),
     );
     expect(backendMocks.dispose).not.toHaveBeenCalled();
     expect(startMCPServer).toHaveBeenCalled();

@@ -33,6 +33,8 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
   loadMeta: mockLoadMeta,
 }));
 
+const normalizeForAssert = (value: string) => value.replace(/^[A-Z]:/i, '').replace(/\\/g, '/');
+
 describe('memoryCommand', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -64,9 +66,10 @@ describe('memoryCommand', () => {
       source: ['docs/adr/0023-serena-follow-up-memory-diagnostics-guardrails.md'],
     });
 
-    expect(mockMkdir).toHaveBeenCalledWith('/repo/.ontoindex/memories', { recursive: true });
+    expect(normalizeForAssert(mockMkdir.mock.calls[0]?.[0])).toBe('/repo/.ontoindex/memories');
+    expect(mockMkdir.mock.calls[0]?.[1]).toEqual({ recursive: true });
     expect(mockWriteFile).toHaveBeenCalledWith(
-      '/repo/.ontoindex/memories/team-onboarding.md',
+      expect.stringMatching(/[\\/]repo[\\/]\.ontoindex[\\/]memories[\\/]team-onboarding\.md$/),
       expect.any(String),
       'utf8',
     );
@@ -86,7 +89,9 @@ describe('memoryCommand', () => {
       'docs/adr/0023-serena-follow-up-memory-diagnostics-guardrails.md',
     ]);
     expect(logSpy).toHaveBeenCalledWith(
-      '  Created advisory memory skeleton: /repo/.ontoindex/memories/team-onboarding.md',
+      expect.stringMatching(
+        /Created advisory memory skeleton: .*[/\\]repo[/\\]\.ontoindex[/\\]memories[/\\]team-onboarding\.md$/,
+      ),
     );
   });
 
@@ -139,7 +144,9 @@ describe('memoryCommand', () => {
     const parsed = parseMemoryFile('/repo/.ontoindex/memories/team-onboarding.md', content);
     expect(parsed.frontMatter.freshness).toBe('stale-index');
     expect(logSpy).toHaveBeenCalledWith(
-      '  Overwrote advisory memory skeleton: /repo/.ontoindex/memories/team-onboarding.md',
+      expect.stringMatching(
+        /Overwrote advisory memory skeleton: .*[/\\]repo[/\\]\.ontoindex[/\\]memories[/\\]team-onboarding\.md$/,
+      ),
     );
   });
 

@@ -64,7 +64,7 @@ describe('setupCommand codex execution', () => {
     expect(execFileMock).not.toHaveBeenCalled();
     const raw = await fs.readFile(path.join(tempHome, '.codex', 'config.toml'), 'utf-8');
     expect(raw).toContain(`command = ${JSON.stringify(process.execPath)}`);
-    expect(raw).toMatch(/args = \[".*dist[/\\]cli[/\\]index\.js", "mcp"\]/);
+    expect(raw).toMatch(/args = \[".*dist.*cli.*index\.js", "mcp"\]/);
     expect(raw).toContain('ONTOINDEX_MCP_AUTO_ANALYZE = "0"');
     expect(raw).toContain('ONTOINDEX_MCP_STARTUP_TIMEOUT_MS = "10000"');
     expect(raw).toContain('ONTOINDEX_MCP_STARTUP_TRACE = "1"');
@@ -80,7 +80,7 @@ describe('setupCommand codex execution', () => {
     expect(execFileMock).not.toHaveBeenCalled();
     const raw = await fs.readFile(path.join(tempHome, '.codex', 'config.toml'), 'utf-8');
     expect(raw).toContain(`command = ${JSON.stringify(process.execPath)}`);
-    expect(raw).toMatch(/args = \[".*dist[/\\]cli[/\\]index\.js", "mcp"\]/);
+    expect(raw).toMatch(/args = \[".*dist.*cli.*index\.js", "mcp"\]/);
     expect(raw).not.toContain('ontoindex@latest');
   });
 

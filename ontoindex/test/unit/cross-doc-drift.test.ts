@@ -98,8 +98,12 @@ describe('cross_doc_drift', () => {
       audit_files: ['audit/current.json'],
     });
     expect(result.status).toBe('success');
-    expect(result.plan_files_scanned).toEqual(['docs/plan.md']);
-    expect(result.audit_files_scanned).toEqual(['audit/current.json']);
+    expect(result.plan_files_scanned.map((file) => file.replace(/\\/g, '/'))).toEqual([
+      'docs/plan.md',
+    ]);
+    expect(result.audit_files_scanned.map((file) => file.replace(/\\/g, '/'))).toEqual([
+      'audit/current.json',
+    ]);
     // T-5.0.01 drift is only visible through nested.json + status.md,
     // which are excluded here — it must not appear.
     const ids = new Set(result.drifts.map((d) => d.id));
