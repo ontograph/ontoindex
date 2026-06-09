@@ -18,8 +18,8 @@ By adapting these, OntoIndex can seamlessly unify external project management da
 This ADR extends:
 - [ADR 0030](0030-falkordb-inspired-query-budgets-and-response-diagnostics.md), for query budgets;
 - [ADR 0065](0065-codexgraph-inspired-native-graph-query-and-subgraph-extraction.md), for direct graph queries;
-- [ADR 0073](0073-knowwheregraph-inspired-native-spatial-temporal-codebase-topography-and-geo-enriched-intelligence.md), for geo-enrichment;
-- [ADR 0077](0077-cognee-inspired-native-declarative-ingestion-pipelines-and-dual-store-synchronization.md), for ETL pipelines.
+- geo-enrichment;
+- ETL pipelines.
 
 ## OntoIndex Review Evidence
 

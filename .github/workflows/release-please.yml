@@ -3,7 +3,7 @@ name: Release Please
 on:
   push:
     branches:
-      - main
+      - master
   workflow_dispatch:
 
 # Release-please is configured in manifest mode to open/update release PRs only.

@@ -336,7 +336,7 @@ describe('MCP Docs Facade Integration', () => {
     });
     expect(result.docsEvidence[0]).toMatchObject({ freshness: 'stale' });
     expect(result.nextAction).toBe(
-      'Refresh docs sidecar data before using this report for write decisions.',
+      'Run `ontoindex docs refresh` (or `ontoindex analyze --markdown-sidecar`) before using this report for write decisions.',
     );
   });
 

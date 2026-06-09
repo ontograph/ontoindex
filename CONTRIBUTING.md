@@ -4,9 +4,9 @@ How to propose changes, run checks locally, and open pull requests.
 
 ## License
 
-This project is licensed under the [Apache License 2.0](LICENSE). By submitting a pull request, you agree to license your contribution under the Apache License 2.0. Contributors retain copyright over their own contributions.
+This project is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE). By submitting a pull request, you agree to license your contribution under AGPL-3.0-or-later. Contributors retain copyright over their own contributions.
 
-Apache-2.0 is used so OntoIndex can be adopted, modified, and redistributed under an OSI-compatible license with an explicit patent grant. Do not add files under a different license, or copy code whose license is incompatible with Apache-2.0, without maintainer approval.
+AGPL-3.0-or-later is used so modifications, including network-hosted versions, remain available to users under the same copyleft terms. Do not add files under a different license, or copy code whose license is incompatible with AGPL-3.0-or-later, without maintainer approval.
 
 ## Where to discuss
 
@@ -107,9 +107,9 @@ Every workflow under `.github/workflows/` MUST declare a top-level `concurrency:
   | Event | `cancel-in-progress` | Why |
   |-------|----------------------|-----|
   | `pull_request` CI run | `true` | New push supersedes old run |
-  | `push` to `main` | `false` | Every main commit gets validated |
+  | `push` to `master` | `false` | Every master commit gets validated |
   | Tag push (`v*` publish) | `false` | Never cancel mid-publish |
-  | `push` to `main` for release-candidate | `false` | Never cancel mid-RC publish |
+  | `push` to `master` for release-candidate | `false` | Never cancel mid-RC publish |
   | `workflow_dispatch` (release/publish) | `false` | Manual runs are intentional |
   | `workflow_run` (sticky-comment reports) | `false` | Serialize, don't race |
   | Per-PR bot workflows (`@claude`, review) | `false` | Serialize comments per PR |
@@ -136,10 +136,10 @@ Two publish workflows ship `ontoindex` to npm:
 
 - **Stable** (`.github/workflows/publish.yml`) — triggered by pushing any `v*`
   tag. Publishes to the `latest` dist-tag with a changelog-backed GitHub
-  release. Maintainers are expected to tag from `main` as a convention; the
+  release. Maintainers are expected to tag from `master` as a convention; the
   workflow itself does not enforce branch reachability.
 - **Release Candidate** (`.github/workflows/release-candidate.yml`) — runs on
-  every push to `main` (typically a merged PR) plus manual dispatch. Docs-only
+  every push to `master` (typically a merged PR) plus manual dispatch. Docs-only
   changes are skipped via `paths-ignore`. Publishes to the `rc` dist-tag with
   version `X.Y.Z-rc.N` and a GitHub prerelease, where:
   - `X.Y.Z` is selected automatically. On push (and on dispatch with
@@ -152,8 +152,8 @@ Two publish workflows ship `ontoindex` to npm:
     registry. First rc for a given base is `rc.1`.
   - After the npm publish succeeds, the workflow calls `docker.yml` as a
     reusable workflow to build and push the corresponding RC Docker images
-    (e.g. `ghcr.io/ontograph/ontoindex:1.7.0-rc.1`). The images are
-    signed with Cosign; the OIDC identity is `docker.yml@refs/heads/main`
+    (e.g. `ghcr.io/ontograph/ontoindex:X.Y.Z-rc.N`). The images are
+    signed with Cosign; the OIDC identity is `docker.yml@refs/heads/master`
     (the caller's ref — see README.md § Docker for the verify command).
 
   Idempotency: the workflow pushes an `rc/<HEAD_SHA>` marker tag and a
@@ -176,13 +176,13 @@ Two publish workflows ship `ontoindex` to npm:
 
   ```bash
   # 1. Manually trigger only the docker workflow, passing the existing RC tag:
-  gh workflow run docker.yml --ref main -f tag=v<RC_VERSION>
+  gh workflow run docker.yml --ref master -f tag=v<RC_VERSION>
   # (requires a workflow_dispatch trigger on docker.yml — see note below)
   ```
 
   Because `docker.yml` intentionally has no `workflow_dispatch` (images are
   tag-driven by design), the practical recovery options are:
-  - Wait for the next commit on `main`, which will cut a new RC that includes
+  - Wait for the next commit on `master`, which will cut a new RC that includes
     the Docker build.
   - Manually run `docker build` + `docker push` locally and sign with Cosign
     against the same digest.
@@ -199,7 +199,7 @@ npm view ontoindex dist-tags
 
 Stable releases are maintainer-only:
 
-1. Confirm `main` is green in CI and the intended `ontoindex/package.json` version is already merged.
+1. Confirm `master` is green in CI and the intended `ontoindex/package.json` version is already merged.
 2. Create an annotated `vX.Y.Z` tag that exactly matches `ontoindex/package.json`.
 3. Push the tag. `.github/workflows/publish.yml` publishes the npm package to `latest`; tag-driven Docker publishing is described in `README.md` section "Docker images".
 4. Verify the npm dist-tags with `npm view ontoindex dist-tags` and confirm the GitHub release/changelog was created.

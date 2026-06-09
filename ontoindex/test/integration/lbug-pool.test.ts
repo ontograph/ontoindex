@@ -5,7 +5,7 @@
  * Covers hardening fixes: parameterized queries, query timeout,
  * waiter queue timeout, idle eviction guards, stdout silencing race
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   initLbug,
   executeQuery,
@@ -29,26 +29,19 @@ const POOL_SEED_DATA = [
 withTestLbugDB(
   'lbug-pool',
   (handle) => {
+    beforeEach(async () => {
+      if (!isLbugReady(handle.repoId)) {
+        await initLbug(handle.repoId, handle.dbPath);
+      }
+    });
+
     afterEach(async () => {
-      try {
-        await closeLbug('test-repo');
-      } catch {
-        /* best-effort */
-      }
-      try {
-        await closeLbug('repo1');
-      } catch {
-        /* best-effort */
-      }
-      try {
-        await closeLbug('repo2');
-      } catch {
-        /* best-effort */
-      }
-      try {
-        await closeLbug('');
-      } catch {
-        /* best-effort */
+      for (const id of ['repo1', 'repo2']) {
+        try {
+          await closeLbug(id);
+        } catch {
+          /* best-effort */
+        }
       }
     });
 

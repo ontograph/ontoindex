@@ -2,10 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   pull_request:
-    branches: [main]
+    branches: [master]
     paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   workflow_call:
 
@@ -19,7 +19,7 @@ on:
 # from a reusable-workflow caller fall into a per-run-unique group that never
 # serializes with the caller.
 # cancel-in-progress is event-aware: cancel superseded PR runs, queue every other
-# event (push to main, workflow_call from publish.yml, etc.).
+# event (push to master, workflow_call from publish.yml, etc.).
 concurrency:
   group: ${{ (github.event_name == 'pull_request' || github.event_name == 'push') && format('CI-{0}', github.ref) || format('CI-nested-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -74,10 +74,10 @@ jobs:
           echo "$TESTS"      > pr-meta/tests_result
           echo "$E2E"        > pr-meta/e2e_result
           # TODO(post-merge): remove backward-compat copies once ci-report.yml
-          # on main reads underscore names.
-          # Backward-compat: ci-report.yml on main still reads hyphenated
+          # on master reads underscore names.
+          # Backward-compat: ci-report.yml on master still reads hyphenated
           # names.  workflow_run always executes from the default branch, so
-          # the main-branch reader won't find the underscore variants until
+          # the master-branch reader won't find the underscore variants until
           # this PR is merged.  Write both until then.
           cp pr-meta/pr_number       pr-meta/pr-number
           cp pr-meta/quality_result  pr-meta/quality-result

@@ -224,4 +224,36 @@ describe('systems-audit contracts', () => {
       }).capabilitiesMissing,
     ).toEqual(['sidecar']);
   });
+
+  it('adds actionable embeddings remediation when semantic retrieval falls back', () => {
+    const targetContext: TargetContext = {
+      version: 1,
+      status: 'ok',
+      repoKey: 'fixture',
+      repoPath: '/repo/fixture',
+      branch: 'main',
+      targetRef: 'HEAD',
+      targetHead: 'abc',
+      currentHead: 'abc',
+      indexedHead: 'abc',
+      dirtyWorktree: false,
+      changedSinceIndex: false,
+      snapshotMode: 'committed-head',
+      qualityMode: 'balanced',
+      embeddings: { status: 'unavailable', count: 0 },
+      lsp: { status: 'available', servers: { typescript: true, python: false, rust: false } },
+      sidecar: { status: 'available', reason: 'ok' },
+      policy: { status: 'unknown', reason: 'policy-profile-probe-not-configured' },
+      warnings: [],
+    };
+
+    expect(
+      collectCapabilityDiagnostics({ targetContext, semanticFallbackUsed: true }),
+    ).toMatchObject({
+      capabilitiesMissing: ['embeddings'],
+      warnings: [
+        'Embeddings unavailable; semantic retrieval fell back to lexical/graph ranking. Run: ontoindex analyze --embeddings',
+      ],
+    });
+  });
 });

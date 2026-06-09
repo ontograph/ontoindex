@@ -18,6 +18,7 @@ const ROOT = path.resolve(__dirname, '..');
 const SHARED_ROOT = path.resolve(ROOT, '..', 'ontoindex-shared');
 const DIST = path.join(ROOT, 'dist');
 const SHARED_DEST = path.join(DIST, '_shared');
+const DIST_SUPER_DISPATCH = path.join(DIST, 'mcp', 'super', 'dispatch.js');
 fs.rmSync(DIST, { recursive: true, force: true });
 fs.rmSync(path.join(ROOT, 'tsconfig.tsbuildinfo'), { force: true });
 fs.rmSync(path.join(SHARED_ROOT, 'dist'), { recursive: true, force: true });
@@ -73,5 +74,44 @@ walk(DIST, ['.js', '.d.ts'], rewriteFile);
 // ── 5. Make CLI entry executable ────────────────────────────────────
 const cliEntry = path.join(DIST, 'cli', 'index.js');
 if (fs.existsSync(cliEntry)) fs.chmodSync(cliEntry, 0o755);
+validateSuperDispatchArtifacts(DIST_SUPER_DISPATCH);
 
 console.log(`[build] done - rewrote ${rewritten} files.`);
+
+/**
+ * Sanity-check that every super-function dispatch case can resolve its
+ * implementation file in dist.
+ */
+function validateSuperDispatchArtifacts(dispatchPath) {
+  if (!fs.existsSync(dispatchPath)) {
+    throw new Error(`Cannot validate super dispatch artifacts: missing ${dispatchPath}`);
+  }
+
+  const dispatchSource = fs.readFileSync(dispatchPath, 'utf-8');
+  const caseImportPattern =
+    /case\s+(?:'([^']+)'|"([^\"]+)")\s*:\s*\{[\s\S]*?import\(\s*(?:'([^']+\.js)'|"([^"]+\.js)")\s*\)/g;
+
+  const missing = [];
+  const seenTools = new Set();
+  for (const match of dispatchSource.matchAll(caseImportPattern)) {
+    const tool = match[1] ?? match[2];
+    const moduleSpecifier = match[3] ?? match[4];
+    if (!tool || !moduleSpecifier) continue;
+
+    seenTools.add(tool);
+    const resolvedModule = path.join(path.dirname(dispatchPath), moduleSpecifier);
+    if (!fs.existsSync(resolvedModule)) {
+      missing.push(`${tool}->${moduleSpecifier}`);
+    }
+  }
+
+  if (seenTools.size === 0) {
+    throw new Error(
+      'Validation failed: no super dispatch import cases found in dist/mcp/super/dispatch.js',
+    );
+  }
+
+  if (missing.length > 0) {
+    throw new Error(`Missing dist super-module artifacts: ${missing.join(', ')}`);
+  }
+}

@@ -123,7 +123,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ github.token }}
 
       # Computes image tags and labels from the verified semver tag:
       #   v1.2.3        → :1.2.3, :1.2, :1, :latest (auto, only for non-prerelease)

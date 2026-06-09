@@ -154,7 +154,9 @@ export function collectCapabilityDiagnostics(
 
   if (options.semanticFallbackUsed && !embeddingsAvailable(options.targetContext)) {
     capabilitiesMissing.add('embeddings');
-    warnings.push('Embeddings unavailable; semantic retrieval fell back to lexical/graph ranking.');
+    warnings.push(
+      'Embeddings unavailable; semantic retrieval fell back to lexical/graph ranking. Run: ontoindex analyze --embeddings',
+    );
   }
 
   if (options.typeAwareClaimsDowngraded && !lspAvailable(options.targetContext)) {

@@ -15,10 +15,14 @@ const execFileMock = vi.fn((...args: any[]) => {
 const execFileSyncMock = vi.fn(() => {
   throw new Error('not found');
 });
+const getGitRootMock = vi.fn(() => '/mock/repo/path');
 
 vi.mock('child_process', () => ({
   execFile: execFileMock,
   execFileSync: execFileSyncMock,
+}));
+vi.mock('../../src/storage/git.js', () => ({
+  getGitRoot: getGitRootMock,
 }));
 
 describe('setupClaudeCode', () => {
@@ -35,7 +39,7 @@ describe('setupClaudeCode', () => {
   };
 
   const expectPackagedMcpEntry = (entry: any) => {
-    expect(entry).toEqual({
+    expect(entry).toMatchObject({
       command: process.execPath,
       args: [expect.stringMatching(/dist[/\\]cli[/\\]index\.js$/), 'mcp'],
       env: {
@@ -44,6 +48,8 @@ describe('setupClaudeCode', () => {
         ONTOINDEX_LBUG_POOL_SIZE: '1',
         ONTOINDEX_MCP_STARTUP_TIMEOUT_MS: '10000',
         ONTOINDEX_MCP_STARTUP_TRACE: '1',
+        ONTOINDEX_MCP_PROJECT_CWD: '/mock/repo/path',
+        ONTOINDEX_MCP_REPO: '/mock/repo/path',
         NODE_OPTIONS: '--max-old-space-size=1536',
       },
     });

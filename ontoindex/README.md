@@ -2,10 +2,17 @@
 
 **Graph-powered code intelligence for AI agents.** Index any codebase into a knowledge graph, then query it via MCP or CLI.
 
+> Important: OntoIndex has no official cryptocurrency, token, or coin. Any token using the OntoIndex name is not affiliated with this project or its maintainers.
+
 Works with **Cursor**, **Claude Code**, **Codex**, **Windsurf**, **Cline**, **OpenCode**, and any MCP-compatible tool.
 
 [![npm version](https://img.shields.io/npm/v/ontoindex.svg)](https://www.npmjs.com/package/ontoindex)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
+[![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
+
+- **Current release:** `1.9.0`
+- **Repository:** [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
+- **Web UI:** [ontoindex.vercel.app](https://ontoindex.vercel.app)
 
 ---
 
@@ -20,6 +27,9 @@ AI coding tools don't understand your codebase structure. They edit a function w
 ```bash
 # Index your repo (run from repo root)
 npx ontoindex analyze
+
+# Scope MCP setup to this repo by running setup here.
+npx ontoindex setup
 ```
 
 That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command.
@@ -127,6 +137,17 @@ Your AI agent gets these tools automatically:
 
 > With one indexed repo, the `repo` param is optional. With multiple, specify which: `query({query: "auth", repo: "my-app"})`.
 
+When MCP starts from a tool checkout, it uses `ONTOINDEX_MCP_PROJECT_CWD` (set by `setup`) as the target-project hint, and startup checks this against the selected repo target.
+If the selected repo target does not match that project scope, startup fails loudly unless override is enabled.
+For external helper checkouts (for example, `cwd=/opt/demodb/_workfolder/OntoIndex` while the target repo is `/opt/demodb/_workfolder/ontocode`), set setup and config against the target repo path:
+
+```bash
+cd /path/to/target/repo
+ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ONTOINDEX_MCP_REPO=/path/to/target/repo ontoindex mcp
+ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ONTOINDEX_MCP_REPO=/path/to/target/repo ontoindex mcp --repo my-target-repo
+ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1 ontoindex mcp   # override when intentionally cross-repo
+```
+
 ## MCP Resources
 
 | Resource | Purpose |
@@ -231,13 +252,13 @@ Installed automatically by both `ontoindex analyze` (per-repo) and `ontoindex se
 
 ## Requirements
 
-- Node.js >= 18
+- Node.js >= 20
 - Git repository (uses git for commit tracking)
 
 ## Release candidates
 
 Stable releases publish to the default `latest` dist-tag. When a pull request
-with non-documentation changes merges into `main`, an automated workflow also
+with non-documentation changes merges into `master`, an automated workflow also
 publishes a prerelease build under the `rc` dist-tag, so early adopters can
 try in-flight fixes without waiting for the next stable cut. (Docs-only
 merges are skipped.)
@@ -253,8 +274,8 @@ Release-candidate versions follow the standard semver prerelease format
 `X.Y.Z-rc.N`, where `X.Y.Z` is the next stable target (bumped from the
 current `latest` by patch by default; `minor` or `major` when kicking off a
 bigger cycle) and `N` increments per published rc. Example sequence:
-`1.6.2-rc.1`, `1.6.2-rc.2`, …, then once `1.6.2` ships stable,
-`1.6.3-rc.1`. See the [Releases page](https://github.com/abhigyanpatwari/OntoIndex/releases)
+`1.9.0-rc.1`, `1.9.0-rc.2`, …, then once `1.9.0` ships stable, the next patch-cycle starts at
+`1.9.1-rc.1` (or `1.10.0-rc.1` for a minor/bigger cycle). See the [Releases page](https://github.com/ontograph/ontoindex/releases)
 for the full list; stable `latest` is unaffected.
 
 ## Troubleshooting
@@ -263,7 +284,7 @@ for the full list; stable `latest` is unaffected.
 
 This crash was caused by a dependency URL format that is incompatible with
 certain npm/arborist versions ([npm/cli#8126](https://github.com/npm/cli/issues/8126)).
-It is fixed in **ontoindex v1.6.2+**. Upgrade to the latest version:
+It is fixed in **ontoindex v1.9.0+**. Upgrade to the latest version:
 
 ```bash
 npx ontoindex@latest analyze          # always uses the newest release
@@ -330,4 +351,4 @@ OntoIndex also has a browser-based UI at [ontoindex.vercel.app](https://ontoinde
 
 ## License
 
-[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)
+[GNU Affero General Public License v3.0 or later](https://www.gnu.org/licenses/agpl-3.0.html)

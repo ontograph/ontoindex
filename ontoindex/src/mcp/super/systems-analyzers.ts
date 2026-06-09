@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { createEnvelopeFromLegacy } from '../shared/response-envelope.js';
 import { resolveTargetContext } from '../shared/target-context.js';
+import { readRegistry } from '../../storage/repo-manager.js';
 import {
   diffAbi,
   type AbiDiffParams,
@@ -290,23 +291,84 @@ async function loadNamedText(
   if (inline !== undefined) return { text: inline, filePath: inputPath, warnings: [] };
   if (!inputPath) return { text: '', warnings: ['no source text or path supplied'] };
 
-  const candidate = resolveInputPath(repoId, inputPath);
+  const resolved = await resolveInputPath(repoId, inputPath);
   try {
-    return { text: await fs.readFile(candidate, 'utf8'), filePath: inputPath, warnings: [] };
+    return {
+      text: await fs.readFile(resolved.absolutePath, 'utf8'),
+      filePath: resolved.repoRelativePath,
+      warnings: [],
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
       text: '',
-      filePath: inputPath,
-      warnings: [`could not read path ${inputPath}: ${message}`],
+      filePath: resolved.repoRelativePath,
+      warnings: [
+        `could not read path ${resolved.repoRelativePath} from repo ${resolved.repoPath}: ${message}`,
+      ],
     };
   }
 }
 
-function resolveInputPath(repoId: string, inputPath: string): string {
-  if (path.isAbsolute(inputPath)) return inputPath;
-  if (path.isAbsolute(repoId)) return path.join(repoId, inputPath);
-  return inputPath;
+interface ResolvedInputPath {
+  absolutePath: string;
+  repoPath: string;
+  repoRelativePath: string;
+}
+
+async function resolveRepoPath(repoId: string): Promise<string> {
+  if (path.isAbsolute(repoId)) return path.resolve(repoId);
+
+  const registry = await readRegistry();
+  const normalizedRepo = repoId.toLowerCase();
+
+  const exactMatches = registry.filter(
+    (entry) =>
+      entry.name.toLowerCase() === normalizedRepo ||
+      path.resolve(entry.path) === path.resolve(repoId),
+  );
+  if (exactMatches.length === 1) return path.resolve(exactMatches[0].path);
+
+  const fuzzyMatches = registry.filter((entry) =>
+    entry.name.toLowerCase().includes(normalizedRepo),
+  );
+  if (fuzzyMatches.length === 1) return path.resolve(fuzzyMatches[0].path);
+
+  if (fuzzyMatches.length > 1) {
+    throw new Error(
+      `repo identifier is ambiguous: ${repoId}. Matches: ${fuzzyMatches.map((entry) => entry.path).join(', ')}`,
+    );
+  }
+  if (exactMatches.length > 1) {
+    throw new Error(
+      `repo identifier is ambiguous: ${repoId}. Matches: ${exactMatches.map((entry) => entry.path).join(', ')}`,
+    );
+  }
+
+  throw new Error(`repo not found for path resolution: ${repoId}`);
+}
+
+function assertPathWithinRepo(repoPath: string, absolutePath: string, inputPath: string): void {
+  const relative = path.relative(repoPath, absolutePath);
+  if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) return;
+
+  throw new Error(`Path is outside repository: ${inputPath}. Use a path under ${repoPath}.`);
+}
+
+async function resolveInputPath(repoId: string, inputPath: string): Promise<ResolvedInputPath> {
+  const repoPath = await resolveRepoPath(repoId);
+  const absolutePath = path.isAbsolute(inputPath)
+    ? path.resolve(inputPath)
+    : path.resolve(repoPath, inputPath);
+
+  assertPathWithinRepo(repoPath, absolutePath, inputPath);
+
+  const repoRelativePath = path.relative(repoPath, absolutePath).split(path.sep).join('/');
+  return {
+    absolutePath,
+    repoPath,
+    repoRelativePath: repoRelativePath === '' ? '.' : repoRelativePath,
+  };
 }
 
 function inferTargetName(target: string | undefined): string | undefined {

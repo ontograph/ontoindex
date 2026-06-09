@@ -68,8 +68,8 @@ describe('createDocsInlineContextBundle', () => {
       - warnings: api drift report degraded by sidecar status stale
       Next checks:
       - confirm unsupported extractor or framework gap
-      - refresh markdown sidecar before trusting evidence
-      - review warnings and skip reasons"
+      - review warnings and skip reasons
+      - run \`ontoindex docs refresh\` (or \`ontoindex analyze --markdown-sidecar\`) before trusting evidence"
     `);
   });
 
@@ -95,7 +95,7 @@ describe('createDocsInlineContextBundle', () => {
       - skip reasons: sidecar-partial
       Next checks:
       - review warnings and skip reasons
-      - verify missing document coverage"
+      - run \`ontoindex docs refresh\` (or \`ontoindex analyze --markdown-sidecar\`) before relying on incomplete docs coverage"
     `);
   });
 

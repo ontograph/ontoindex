@@ -4,7 +4,7 @@
  * Defines the contract for parsing source code and extracting graph elements.
  * Formalizes the existing LanguageProvider interface.
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
 import type { SupportedLanguages } from '../languages.js';

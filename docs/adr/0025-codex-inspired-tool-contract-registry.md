@@ -4,9 +4,8 @@ Status: Implemented
 
 ## Context
 
-The Codex architecture review in
-[`docs/guides/codex-architecture-lessons-for-ontoindex.md`](../guides/codex-architecture-lessons-for-ontoindex.md)
-highlighted that OntoIndex lacks a single, declarative source of truth for tool contracts.
+The Codex architecture review highlighted that OntoIndex lacks a single, declarative
+source of truth for tool contracts.
 Currently, tool counts, capabilities (like structured output), and agent-mode visibility
 are scattered across `help.ts`, `tool-contract.ts`, and the CLI. This leads to silent
 drift where help advertisements disagree with actual implementation frontiers.

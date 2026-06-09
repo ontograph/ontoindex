@@ -12,9 +12,9 @@ OntoIndex currently implements structured retrieval (ADR 0022) and evidence clas
 
 This ADR extends:
 - [ADR 0026](0026-knowledge-discovery-evidence-classification.md), for evidence metadata;
-- [ADR 0054](0054-semantic-ritual-inspired-native-conceptual-mapping-and-ambiguity-diagnostics.md), for conceptual nodes;
-- [ADR 0056](0056-agenticrag-inspired-native-corrective-retrieval-and-recursive-hierarchical-lanes.md), for self-correction loops;
-- [ADR 0058](0058-agenticrag-inspired-native-graph-navigation-and-discovery-provenance.md), for navigation steps.
+- conceptual nodes;
+- self-correction loops;
+- navigation steps.
 
 ## OntoIndex Review Evidence
 

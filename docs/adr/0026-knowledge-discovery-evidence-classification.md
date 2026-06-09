@@ -2,7 +2,7 @@
 
 Status: Implemented
 
-Source: [Claude Code Architecture Lessons for OntoIndex](../guides/claude-code-architecture-lessons-for-ontoindex.md)
+Source: Claude Code architecture review.
 
 ## Context
 

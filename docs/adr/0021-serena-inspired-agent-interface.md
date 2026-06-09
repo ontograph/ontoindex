@@ -115,8 +115,7 @@ The following are recorded as follow-up work, not bundled into the first impleme
 - explicit read-only cross-repo query mode.
 
 Detailed memory and diagnostics follow-up now lives in
-[ADR 0023](./0023-serena-follow-up-memory-diagnostics-guardrails.md) and the
-[Serena follow-up memory and diagnostics project plan](../guides/serena-follow-up-memory-diagnostics-project-plan.md).
+[ADR 0023](./0023-serena-follow-up-memory-diagnostics-guardrails.md).
 
 This ADR does not approve vendoring Serena, replacing the OntoIndex graph, or treating memories as
 audit evidence. It also does not approve dynamic runtime MCP tool hiding.
@@ -242,8 +241,7 @@ This is follow-up work after v1. Use LSP only when:
 ### 4. Advisory project memories
 
 This is follow-up work after v1. Detailed guardrails, rollout slices, and validation now live in
-[ADR 0023](./0023-serena-follow-up-memory-diagnostics-guardrails.md) and the
-[Serena follow-up memory and diagnostics project plan](../guides/serena-follow-up-memory-diagnostics-project-plan.md).
+[ADR 0023](./0023-serena-follow-up-memory-diagnostics-guardrails.md).
 
 The high-level direction remains: add a small OntoIndex-native memory layer:
 
@@ -295,8 +293,7 @@ ontoindex-web/src/
 ```
 
 This is follow-up work after v1. Detailed guardrails, rollout slices, and validation now live in
-[ADR 0023](./0023-serena-follow-up-memory-diagnostics-guardrails.md) and the
-[Serena follow-up memory and diagnostics project plan](../guides/serena-follow-up-memory-diagnostics-project-plan.md).
+[ADR 0023](./0023-serena-follow-up-memory-diagnostics-guardrails.md).
 
 The high-level direction remains: expose a local diagnostics endpoint or web view with:
 

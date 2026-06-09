@@ -981,7 +981,7 @@ function createDocsNextAction(
     return 'Markdown docs sidecar is missing; run `ontoindex docs refresh` or `ontoindex analyze --markdown-sidecar` before relying on this report.';
   }
   if (skipReasons.includes('sidecar-stale') || skipReasons.includes('sidecar-partial')) {
-    return 'Refresh docs sidecar data before using this report for write decisions.';
+    return 'Run `ontoindex docs refresh` (or `ontoindex analyze --markdown-sidecar`) before using this report for write decisions.';
   }
   if (envelope.warnings.length > 0) return 'Review warnings before acting on this report.';
   return 'No follow-up required.';

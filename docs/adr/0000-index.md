@@ -41,6 +41,7 @@ Each ADR follows: **Context → Decision → Algorithm/Technique → Consequence
 | [0022](0022-qmd-inspired-structured-retrieval.md)              | QMD-inspired structured retrieval and economic recommendations | Proposed                         | QMD architecture review; update 2026-06-01 |
 | [0023](0023-serena-follow-up-memory-diagnostics-guardrails.md) | Serena follow-up memory and diagnostics guardrails            | Proposed                         | Serena follow-up challenge review         |
 | [0024](0024-crush-inspired-evidence-read-ledger.md)            | Crush-inspired evidence read ledger and local control plane   | Proposed                         | Crush architecture review                 |
+| [0024-FU](0024-follow-up-permission-hooks.md)                  | Deferred permission and hook design                           | Proposed / Deferred              | ADR 0024 follow-up                        |
 | [0025](0025-codex-inspired-tool-contract-registry.md)          | Codex-inspired tool contract registry and schema drift gates  | Implemented                      | Codex architecture review                 |
 | [0026](0026-knowledge-discovery-evidence-classification.md)    | Knowledge discovery and evidence classification surfaces      | Implemented                      | Claude Code architecture review           |
 | [0027](0027-mcp-startup-surface-profiles.md)                   | MCP startup surface profiles and lazy tool loading            | Proposed - Challenged            | MCP startup-time review                   |

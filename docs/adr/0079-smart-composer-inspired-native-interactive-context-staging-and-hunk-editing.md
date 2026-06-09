@@ -14,8 +14,8 @@ By applying these concepts to OntoIndex, we can create a native **Interactive Wo
 
 This ADR extends:
 - [ADR 0017](0017-audit-lifecycle-layer.md), for audit findings and remediation;
-- [ADR 0064](0064-linza-inspired-native-perspective-aware-lenses-and-contextual-focus.md), for contextual focus;
-- [ADR 0078](0078-neural-composer-inspired-native-neural-composition-and-self-organizing-latent-edges.md), for neural composition.
+- contextual focus;
+- neural composition.
 
 ## OntoIndex Review Evidence
 

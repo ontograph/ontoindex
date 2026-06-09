@@ -1,9 +1,9 @@
 {
   "name": "ontoindex",
-  "version": "1.6.2",
+  "version": "1.9.0",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
-  "license": "Apache-2.0",
+  "license": "AGPL-3.0-or-later",
   "homepage": "https://github.com/ontograph/ontoindex#readme",
   "repository": {
     "type": "git",
@@ -31,6 +31,8 @@
     "ontoindex": "dist/cli/index.js"
   },
   "files": [
+    "LICENSE",
+    "NOTICE",
     "dist",
     "hooks",
     "scripts",

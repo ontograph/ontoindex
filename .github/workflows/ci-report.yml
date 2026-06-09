@@ -138,19 +138,19 @@ jobs:
             const fs = require('fs');
             const path = require('path');
 
-            // Find the latest successful CI run on main
+            // Find the latest successful CI run on master
             const runs = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'ci.yml',
-              branch: 'main',
+              branch: 'master',
               status: 'success',
               per_page: 1,
             });
 
             if (runs.data.workflow_runs.length === 0) {
               core.setOutput('found', 'false');
-              core.info('No successful main branch CI runs found');
+              core.info('No successful master branch CI runs found');
               return;
             }
 
@@ -164,7 +164,7 @@ jobs:
             const testReports = artifacts.data.artifacts.find(a => a.name === 'test-reports');
             if (!testReports) {
               core.setOutput('found', 'false');
-              core.info('No test-reports artifact on main branch');
+              core.info('No test-reports artifact on master branch');
               return;
             }
 
@@ -243,7 +243,7 @@ jobs:
 
           read_cov "U" "$UNIT_SUMMARY"
 
-          # ── Read base branch coverage (main) ──
+          # ── Read base branch coverage (master) ──
           BASE_SUMMARY=""
           if [ "$BASE_FOUND" = "true" ] && [ -n "$BASE_DIR" ]; then
             BASE_SUMMARY=$(find "$BASE_DIR/base" -name "coverage-summary.json" -type f 2>/dev/null | head -1)

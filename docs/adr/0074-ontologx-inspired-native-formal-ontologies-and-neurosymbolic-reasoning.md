@@ -12,9 +12,9 @@ The `ontologx` framework demonstrates a **Neurosymbolic** approach: using LLMs (
 
 This ADR extends:
 - [ADR 0017](0017-audit-lifecycle-layer.md), for audit governance;
-- [ADR 0033](0033-neosemantics-inspired-semantic-contract-checks.md), for semantic contracts;
-- [ADR 0054](0054-semantic-ritual-inspired-native-conceptual-mapping-and-ambiguity-diagnostics.md), for conceptual nodes;
-- [ADR 0072](0072-rigor-inspired-native-verticalized-knowledge-graphs-and-expert-verified-domain-constraints.md), for vertical domain profiles.
+- semantic contracts;
+- conceptual nodes;
+- vertical domain profiles.
 
 ## OntoIndex Review Evidence
 

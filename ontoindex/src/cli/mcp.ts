@@ -10,8 +10,11 @@ import { startMCPServer } from '../mcp/server.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { getPublicToolDefinitions } from '../mcp/shared/tool-registry.js';
 import { INTERNAL_TOOL_HANDLERS } from '../mcp/tools.js';
+import { getGitRoot } from '../storage/git.js';
+import path from 'path';
 
 const DEFAULT_MCP_STARTUP_TIMEOUT_MS = 30_000;
+const MCP_PROJECT_CWD_ENV = 'ONTOINDEX_MCP_PROJECT_CWD';
 
 function getMcpStartupTimeoutMs(): number {
   const raw = Number.parseInt(process.env.ONTOINDEX_MCP_STARTUP_TIMEOUT_MS ?? '', 10);
@@ -37,6 +40,48 @@ function initBackendWithTimeout(backend: LocalBackend): Promise<boolean> {
   });
 }
 
+type RepoFilterSource = 'auto' | 'env' | 'cli';
+
+function resolveRepoFilterSource(options: { full?: boolean; repo?: string }): RepoFilterSource {
+  if (options.repo) return 'cli';
+  return process.env.ONTOINDEX_MCP_REPO ? 'env' : 'auto';
+}
+
+function getProjectPathFromCwd(): string {
+  const cwd = process.cwd();
+  const gitRoot = getGitRoot(cwd);
+  return path.resolve(gitRoot || cwd);
+}
+
+function resolveConfiguredProjectPath(): string | null {
+  const rawProjectCwd = process.env[MCP_PROJECT_CWD_ENV];
+  if (!rawProjectCwd) return null;
+  const trimmed = rawProjectCwd.trim();
+  return trimmed ? path.resolve(trimmed) : null;
+}
+
+function maybeMismatchedRepoTarget(
+  repoFilter: string | undefined,
+  projectPath: string | null,
+): string | null {
+  if (!repoFilter) return null;
+  if (!projectPath) return null;
+  if (!path.isAbsolute(repoFilter) && !repoFilter.includes('/') && !repoFilter.includes('\\')) {
+    return null;
+  }
+  const normalizedFilter = path.resolve(repoFilter);
+  return normalizedFilter === projectPath ? null : normalizedFilter;
+}
+
+function hasExplicitMismatchOverride(): boolean {
+  return process.env.ONTOINDEX_MCP_ALLOW_REPO_MISMATCH === '1';
+}
+
+function formatRepoFilterLabel(repoFilter: string | undefined): string {
+  if (!repoFilter) return '<all repos>';
+  return repoFilter;
+}
+
 export const mcpCommand = async (options: { full?: boolean; repo?: string } = {}) => {
   process.on('uncaughtException', (err) => {
     console.error(`OntoIndex MCP: uncaught exception — ${err.message}`);
@@ -47,7 +92,51 @@ export const mcpCommand = async (options: { full?: boolean; repo?: string } = {}
     console.error(`OntoIndex MCP: unhandled rejection — ${msg}`);
   });
 
+  const cwd = path.resolve(process.cwd());
+  const inferredProjectPath = getProjectPathFromCwd();
+  const configuredProjectPath = resolveConfiguredProjectPath();
+  const targetProjectPath = configuredProjectPath ?? inferredProjectPath;
   const repoFilter = options.repo ?? process.env.ONTOINDEX_MCP_REPO;
+  const repoFilterSource = resolveRepoFilterSource(options);
+  console.error(`OntoIndex: MCP executable cwd: ${cwd}`);
+  console.error(`OntoIndex: MCP target project path: ${targetProjectPath}`);
+  console.error(`OntoIndex: MCP target repo filter: ${formatRepoFilterLabel(repoFilter)}`);
+  if (repoFilterSource === 'env') {
+    const mismatch = maybeMismatchedRepoTarget(repoFilter, configuredProjectPath);
+    if (mismatch) {
+      const detail =
+        `OntoIndex: ONTOINDEX_MCP_REPO (${mismatch}) does not match this project scope ` +
+        `(${targetProjectPath}). ` +
+        `Set ${MCP_PROJECT_CWD_ENV} to the active target project, or use --repo explicitly for this run.`;
+      if (hasExplicitMismatchOverride()) {
+        console.error(
+          `OntoIndex WARNING: ${detail} Override enabled via ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1.`,
+        );
+      } else {
+        console.error(`OntoIndex ERROR: ${detail} Startup blocked.`);
+        process.exitCode = 1;
+        return;
+      }
+    }
+  } else if (repoFilterSource === 'cli') {
+    const mismatch = maybeMismatchedRepoTarget(repoFilter, configuredProjectPath);
+    if (mismatch) {
+      const detail =
+        `OntoIndex: --repo (${mismatch}) does not match this project scope ` +
+        `(${targetProjectPath}). ` +
+        `Set ${MCP_PROJECT_CWD_ENV} to the active target project, or run setup from the target repo.`;
+      if (hasExplicitMismatchOverride()) {
+        console.error(
+          `OntoIndex WARNING: ${detail} Override enabled via ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1.`,
+        );
+      } else {
+        console.error(`OntoIndex ERROR: ${detail} Startup blocked.`);
+        process.exitCode = 1;
+        return;
+      }
+    }
+  }
+
   const backend = new LocalBackend({ repoFilter });
   try {
     await initBackendWithTimeout(backend);

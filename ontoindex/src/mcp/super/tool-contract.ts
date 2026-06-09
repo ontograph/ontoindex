@@ -5,6 +5,7 @@ import {
   ALL_AGENT_MODES,
   type ContractStatus,
   type AgentMode,
+  type McpStartupProfile,
   getCallableToolNames,
   getPublicToolRegistry,
   getRegisteredFacadeToolNames,
@@ -54,6 +55,17 @@ export interface ModeFrontierSummary {
   missing: ToolContractMissing[];
   extras: ToolContractExtra[];
   status: 'ok' | 'drift';
+}
+
+export interface ToolContractVisibleFrontier {
+  mode: AgentMode | 'default';
+  activeStartupProfile: McpStartupProfile;
+  note: string;
+  internalCallable: string[];
+  hostVisible: string[];
+  clientVisible: string[];
+  internalOnly: string[];
+  clientOnly: string[];
 }
 
 /** Structural integrity check result — always present in the report. */
@@ -106,6 +118,8 @@ export interface ToolContractReport {
   implementationExtra: Array<{ tool: string; sourceHint: string }>;
   facadeActionDrift: FacadeActionDrift[];
   warnings: string[];
+  /** Internal vs host-visible callable frontier (useful when startup profiles hide wrappers). */
+  visibleFrontier: ToolContractVisibleFrontier;
   /** Mode-filtered frontier comparison. Present only when `mode` is supplied. */
   modeFrontier?: ModeFrontierSummary;
   /** Structural integrity checks (always present). */
@@ -145,6 +159,12 @@ export interface ClassificationReport {
 export function gnToolContract(params: ToolContractParams = {}): ToolContractReport {
   const includeFacades = params.includeFacades === true;
   const { mode } = params;
+  const startupProfile = getStartupProfileState().activeProfile;
+  const hostProfiledCallable = getPublicToolRegistry({
+    includeFacades,
+    mode,
+    startupProfile,
+  }).map((entry) => entry.name);
 
   // Registry baseline (Source of Truth)
   const registryEntries = getPublicToolRegistry({ includeFacades, mode });
@@ -309,6 +329,13 @@ export function gnToolContract(params: ToolContractParams = {}): ToolContractRep
 
   // Structural integrity checks (always run regardless of mode)
   const structuralChecks = runStructuralChecks(includeFacades, registryEntries);
+  const visibleFrontier = computeVisibleFrontier({
+    mode: mode ?? 'default',
+    startupProfile: startupProfile,
+    registryEntries,
+    callable: hostProfiledCallable,
+    registrySet,
+  });
 
   const warnings: string[] = [];
   if (drifted) {
@@ -319,6 +346,11 @@ export function gnToolContract(params: ToolContractParams = {}): ToolContractRep
   if (implementationDrifted) {
     warnings.push(
       'Registry and MCP registered tools (super + facade) differ; check tool-definitions.ts or tool-registry.ts.',
+    );
+  }
+  if (visibleFrontier.internalOnly.length > 0) {
+    warnings.push(
+      'Host-visible wrappers are a subset of internal callable tools due to startup-profile or mode filtering; review visibleFrontier.clientVisible and visibleFrontier.internalOnly.',
     );
   }
   if (actionDrifted) {
@@ -358,6 +390,7 @@ export function gnToolContract(params: ToolContractParams = {}): ToolContractRep
     implementationExtra,
     facadeActionDrift,
     warnings,
+    visibleFrontier,
     ...(modeFrontier !== undefined ? { modeFrontier } : {}),
     structuralChecks,
     compatibilityInventory,
@@ -433,6 +466,40 @@ function computeModeFrontier(mode: AgentMode, superCallable: string[]): ModeFron
     missing,
     extras,
     status: missing.length === 0 && extras.length === 0 ? 'ok' : 'drift',
+  };
+}
+
+function computeVisibleFrontier(input: {
+  mode: AgentMode | 'default';
+  startupProfile: McpStartupProfile;
+  registryEntries: readonly PublicToolRegistryEntry[];
+  callable: readonly string[];
+  registrySet: Set<string>;
+}): ToolContractVisibleFrontier {
+  const internalCallable = sorted(input.registryEntries.map((entry) => entry.name));
+  const hostVisible = sorted(input.callable);
+  const hostSet = new Set(hostVisible);
+
+  const clientVisible = hostVisible;
+  const internalOnly = internalCallable.filter((tool) => !hostSet.has(tool));
+  const clientOnly = hostVisible.filter((tool) => !input.registrySet.has(tool));
+
+  const modeDescription = input.mode === 'default' ? 'all modes' : `mode "${input.mode}"`;
+  const note = [
+    `Callable tools in the OntoIndex registry (${modeDescription}) are compared with host-discoverable wrappers for this process.`,
+    `Startup-profile filter currently set to "${input.startupProfile}" can hide internal tools from hosts.`,
+    'If a host reports missing wrappers for visible tools, request the same startup-profile and frontier in that host context.',
+  ].join(' ');
+
+  return {
+    mode: input.mode,
+    activeStartupProfile: input.startupProfile,
+    note,
+    internalCallable,
+    hostVisible,
+    clientVisible,
+    internalOnly,
+    clientOnly,
   };
 }
 

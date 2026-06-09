@@ -4,7 +4,7 @@
  * Defines the contract for persistence and retrieval of the code graph.
  * Decouples graph logic from the underlying storage engine (LadybugDB, DuckDB, etc).
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
 // LbugValue used to be imported from @ladybugdb/core; shared keeps a local value union

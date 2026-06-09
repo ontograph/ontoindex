@@ -63,7 +63,7 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 
 - **npm:** Do not publish from unreviewed automation. Bump version intentionally; tag releases to match `package.json`.
 - **Dependencies:** Minimal, auditable `package.json` changes; run tests and CI after lockfile updates.
-- **License:** This project ships under **Apache License 2.0** — do not relicense or imply a different license in docs or metadata without maintainer approval.
+- **License:** This project ships under **AGPL-3.0-or-later** — do not relicense or imply a different license in docs or metadata without maintainer approval.
 
 ---
 

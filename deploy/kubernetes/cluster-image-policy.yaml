@@ -4,7 +4,7 @@
 # `ghcr.io/ontograph/ontoindex` or `ontoindex-web` image is using a build
 # that was Cosign-keyless-signed by this repository's `docker.yml` workflow
 # running from a `vX.Y.Z` git tag. Unsigned images, images signed by other
-# workflows, and images signed from unprotected refs (e.g. `main`, PR branches)
+# workflows, and images signed from unprotected refs (e.g. `master`, PR branches)
 # are rejected.
 #
 # Prerequisites
@@ -53,7 +53,7 @@ spec:
           # regex the README's `cosign verify` example uses; it rejects:
           #   * unsigned images
           #   * signatures from any other repo / workflow
-          #   * signatures from non-tag refs (main, PRs, release branches)
+          #   * signatures from non-tag refs (master, PRs, release branches)
           #   * signatures from arbitrary non-semver tags
           - issuer: https://token.actions.githubusercontent.com
             subjectRegExp: ^https://github\.com/ontograph/ontoindex/\.github/workflows/docker\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$

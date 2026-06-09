@@ -12,8 +12,8 @@ The `ontogpt` framework introduces a more robust approach: **LinkML (Linked Data
 
 This ADR extends:
 - [ADR 0015](0015-post-index-enrichment-sidecar.md), for post-index sidecars;
-- [ADR 0033](0033-neosemantics-inspired-semantic-contract-checks.md), for semantic contracts;
-- [ADR 0063](0063-nouz-inspired-native-architectural-semiotics-and-meaning-profile-aggregation.md), for semiotic signs;
+- semantic contracts;
+- semiotic signs;
 - [ADR 0074](0074-ontologx-inspired-native-formal-ontologies-and-neurosymbolic-reasoning.md), for formal ontologies.
 
 ## OntoIndex Review Evidence

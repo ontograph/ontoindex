@@ -4,21 +4,31 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+No unreleased changes yet.
+
+## [1.9.0] - 2026-06-09
+
 ### Added
 
 - **Audit lifecycle workflow** — expanded the audit suite with `ontoindex audit ingest`, `verify`, `lint`, and `bundle`, plus corresponding audit/systems-audit MCP surfaces for turning reports into verified implementation bundles and CI-friendly outputs.
 - **Typed structured retrieval lane** — `ontoindex query --typed` and MCP semantic search now preserve typed-query documents through backend routing, with optional structured retrieval output and replay-backed regression coverage.
 - **Advisory memory and diagnostics surfaces** — added local `ontoindex memory <name>` skeleton authoring, advisory memory context/readiness support for `gn_docs`, an authenticated `/api/mcp/diagnostics` endpoint, and the web settings diagnostics panel.
+- **MCP runtime hardening** — `ontoindex setup` now records the intended project path for external tool checkouts, MCP startup reports executable cwd/project/repo scope, and `gn_tool_contract` distinguishes internal callable tools from host-visible wrappers.
+- **Release documentation refresh** — rebuilt the public README, added full MCP tool documentation, and aligned package metadata with the `ontograph/ontoindex` repository.
 
 ### Fixed
 
 - **Advisory memory validation hardening** — local memory files now reject unsafe paths, invalid freshness/source metadata, oversized payloads, and non-advisory shapes before they cross the resource boundary.
 - **Organic recommendation compatibility** — `gn_diff_impact` and `gn_pre_commit_audit` now add evidence-backed recommendations without breaking legacy response fields.
+- **Cross-repo MCP safeguards** — `gn_taint_trace` resolves repo-relative paths against the selected repo and rejects paths outside the repo; MCP startup can warn or fail on explicit repo/project mismatches before returning misleading results.
+- **MCP packaging guard** — build and smoke tests now verify advertised super-functions resolve to emitted `dist/mcp/super/*.js` modules, preventing missing-module failures such as `gn_pre_commit_audit`.
+- **Package release artifacts** — npm dry-run packaging now includes package-local AGPL license and attribution notice files.
 
 ### Changed
 
 - **Diagnostics trust boundary** — diagnostics remain redacted at the API layer, and the web settings surface exposes operational metadata without raw session identifiers or audit evidence.
 - **Architecture record coverage** — the ADR index now tracks the audit lifecycle, MCP trust contract, structured retrieval, and memory/diagnostics follow-up decisions behind this release surface.
+- **License** — the project now ships as `AGPL-3.0-or-later`; prior GitNexus attribution remains in `NOTICE`.
 
 ### Performance
 

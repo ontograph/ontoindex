@@ -149,3 +149,43 @@ describe('gnToolContract — ADR27 startup-profile metadata', () => {
     expect(report.startupProfile.hiddenButCallableCount).toBe(0);
   });
 });
+
+describe('gnToolContract — visible frontier', () => {
+  it('includes an explicit internal vs host-visible frontier summary with caveat text', () => {
+    const report = gnToolContract({ includeFacades: true });
+
+    expect(report.visibleFrontier).toMatchObject({
+      mode: 'default',
+      activeStartupProfile: 'public-full',
+      hostVisible: expect.any(Array),
+      clientVisible: expect.any(Array),
+      internalCallable: expect.any(Array),
+      internalOnly: expect.any(Array),
+      clientOnly: expect.any(Array),
+      note: expect.stringContaining('Callable tools in the OntoIndex registry'),
+    });
+    for (const tool of report.visibleFrontier.hostVisible) {
+      expect(report.visibleFrontier.internalCallable).toContain(tool);
+    }
+    for (const tool of report.visibleFrontier.internalOnly) {
+      expect(report.visibleFrontier.internalCallable).toContain(tool);
+      expect(report.visibleFrontier.hostVisible).not.toContain(tool);
+    }
+  });
+
+  it('marks host-hidden internal callable tools when startup profile is reduced', () => {
+    process.env.ONTOINDEX_MCP_STARTUP_PROFILE = 'core';
+    const report = gnToolContract({ includeFacades: true });
+
+    expect(report.visibleFrontier.activeStartupProfile).toBe('core');
+    expect(report.visibleFrontier.mode).toBe('default');
+    expect(report.visibleFrontier.internalOnly.length).toBeGreaterThan(0);
+    for (const tool of report.visibleFrontier.internalOnly) {
+      expect(report.visibleFrontier.hostVisible).not.toContain(tool);
+      expect(report.visibleFrontier.internalCallable).toContain(tool);
+    }
+    expect(new Set(report.visibleFrontier.internalOnly)).toEqual(
+      new Set(report.startupProfile.hiddenButCallable),
+    );
+  });
+});

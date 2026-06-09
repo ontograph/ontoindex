@@ -10,21 +10,27 @@ const { backendMocks, serverMocks } = vi.hoisted(() => ({
     startMCPServer: vi.fn().mockResolvedValue(undefined),
   },
 }));
+const getGitRootMock = vi.hoisted(() => vi.fn(() => '/target/repo'));
 
 vi.mock('../../src/mcp/local/local-backend.js', () => ({
   LocalBackend: vi.fn(function LocalBackendMock() {
     return backendMocks;
   }),
 }));
+vi.mock('../../src/storage/git.js', () => ({
+  getGitRoot: getGitRootMock,
+}));
 
 vi.mock('../../src/mcp/server.js', () => serverMocks);
-
 import { mcpCommand } from '../../src/cli/mcp.js';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { startMCPServer } from '../../src/mcp/server.js';
 
 describe('mcpCommand', () => {
   const originalStartupTimeout = process.env.ONTOINDEX_MCP_STARTUP_TIMEOUT_MS;
+  const originalMcpRepo = process.env.ONTOINDEX_MCP_REPO;
+  const originalMcpProjectCwd = process.env.ONTOINDEX_MCP_PROJECT_CWD;
+  const originalMcpAllowMismatch = process.env.ONTOINDEX_MCP_ALLOW_REPO_MISMATCH;
   const originalExitCode = process.exitCode;
 
   const restoreStartupTimeout = () => {
@@ -32,6 +38,21 @@ describe('mcpCommand', () => {
       delete process.env.ONTOINDEX_MCP_STARTUP_TIMEOUT_MS;
     } else {
       process.env.ONTOINDEX_MCP_STARTUP_TIMEOUT_MS = originalStartupTimeout;
+    }
+    if (originalMcpRepo === undefined) {
+      delete process.env.ONTOINDEX_MCP_REPO;
+    } else {
+      process.env.ONTOINDEX_MCP_REPO = originalMcpRepo;
+    }
+    if (originalMcpProjectCwd === undefined) {
+      delete process.env.ONTOINDEX_MCP_PROJECT_CWD;
+    } else {
+      process.env.ONTOINDEX_MCP_PROJECT_CWD = originalMcpProjectCwd;
+    }
+    if (originalMcpAllowMismatch === undefined) {
+      delete process.env.ONTOINDEX_MCP_ALLOW_REPO_MISMATCH;
+    } else {
+      process.env.ONTOINDEX_MCP_ALLOW_REPO_MISMATCH = originalMcpAllowMismatch;
     }
   };
 
@@ -58,6 +79,81 @@ describe('mcpCommand', () => {
     expect(process.exitCode).toBe(1);
     expect(backendMocks.dispose).toHaveBeenCalled();
     expect(startMCPServer).not.toHaveBeenCalled();
+  });
+
+  it('allows known-good external checkout when project hint matches ONTOINDEX_MCP_REPO', async () => {
+    getGitRootMock.mockReturnValue('/opt/demodb/_workfolder/OntoIndex');
+    process.env.ONTOINDEX_MCP_REPO = '/opt/demodb/_workfolder/ontocode';
+    process.env.ONTOINDEX_MCP_PROJECT_CWD = '/opt/demodb/_workfolder/ontocode';
+    backendMocks.listRepos.mockResolvedValue([{ name: 'ontocode' }]);
+
+    await mcpCommand();
+
+    expect(process.exitCode).toBeUndefined();
+    expect(backendMocks.init).toHaveBeenCalled();
+    expect(startMCPServer).toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('OntoIndex: MCP executable cwd:'),
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'OntoIndex: MCP target project path: /opt/demodb/_workfolder/ontocode',
+      ),
+    );
+    expect(backendMocks.dispose).not.toHaveBeenCalled();
+  });
+
+  it('fails fast when ONTOINDEX_MCP_PROJECT_CWD confirms a different project than ONTOINDEX_MCP_REPO', async () => {
+    getGitRootMock.mockReturnValue('/opt/demodb/_workfolder/OntoIndex');
+    process.env.ONTOINDEX_MCP_REPO = '/project/b';
+    process.env.ONTOINDEX_MCP_PROJECT_CWD = '/project/a';
+    process.env.ONTOINDEX_MCP_STARTUP_TIMEOUT_MS = '10000';
+
+    await mcpCommand();
+
+    expect(process.exitCode).toBe(1);
+    expect(backendMocks.dispose).not.toHaveBeenCalled();
+    expect(startMCPServer).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'ONTOINDEX_MCP_REPO (/project/b) does not match this project scope (/project/a)',
+      ),
+    );
+  });
+
+  it('warns and continues when ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1', async () => {
+    getGitRootMock.mockReturnValue('/opt/demodb/_workfolder/OntoIndex');
+    process.env.ONTOINDEX_MCP_REPO = '/project/b';
+    process.env.ONTOINDEX_MCP_PROJECT_CWD = '/project/a';
+    process.env.ONTOINDEX_MCP_ALLOW_REPO_MISMATCH = '1';
+    backendMocks.listRepos.mockResolvedValue([{ name: 'repo-b' }]);
+
+    await mcpCommand();
+
+    expect(process.exitCode).toBeUndefined();
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'ONTOINDEX_MCP_REPO (/project/b) does not match this project scope (/project/a)',
+      ),
+    );
+    expect(backendMocks.dispose).not.toHaveBeenCalled();
+    expect(startMCPServer).toHaveBeenCalled();
+  });
+
+  it('logs startup cwd and target repo filter', async () => {
+    getGitRootMock.mockReturnValue('/project/a');
+    process.env.ONTOINDEX_MCP_REPO = '/project/a';
+    process.env.ONTOINDEX_MCP_PROJECT_CWD = '/project/a';
+    backendMocks.listRepos.mockResolvedValue([{ name: 'repo-a' }]);
+
+    await mcpCommand();
+
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('OntoIndex: MCP executable cwd:'),
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('OntoIndex: MCP target repo filter: /project/a'),
+    );
   });
 
   it('fails fast when backend initialization exceeds the MCP startup timeout', async () => {

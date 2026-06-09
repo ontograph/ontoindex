@@ -16,8 +16,8 @@ This ADR consolidates the "Hierarchy and Navigation" pillar, superseding ADR 004
 This ADR extends:
 - [ADR 0005](0005-gitmining-co-changed-with.md), for temporal coupling;
 - [ADR 0030](0030-falkordb-inspired-query-budgets-and-response-diagnostics.md), for response diagnostics;
-- [ADR 0061](0061-ort-inspired-native-ontology-grounded-reverse-thinking-and-systems-pressure-diagnostics.md), for global diagnostics;
-- [ADR 0063](0063-nouz-inspired-native-architectural-semiotics-and-meaning-profile-aggregation.md), for semiotic profiles.
+- global diagnostics;
+- semiotic profiles.
 
 ## Decision
 

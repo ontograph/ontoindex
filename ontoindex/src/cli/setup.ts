@@ -14,6 +14,7 @@ import { execFile, execFileSync } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { glob } from 'glob';
+import { getGitRoot } from '../storage/git.js';
 import { getGlobalDir } from '../storage/repo-manager.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -69,6 +70,12 @@ function caughtMessage(err: unknown): unknown {
   return err instanceof Error ? err.message : (err as { message: unknown }).message;
 }
 
+function resolveMcpRepoPath(): string {
+  const cwd = process.cwd();
+  const repoRoot = getGitRoot(cwd);
+  return path.resolve(repoRoot || cwd);
+}
+
 function defaultMcpEnv(): Record<string, string> {
   return {
     NODE_ENV: 'production',
@@ -76,6 +83,8 @@ function defaultMcpEnv(): Record<string, string> {
     ONTOINDEX_LBUG_POOL_SIZE: '1',
     ONTOINDEX_MCP_STARTUP_TIMEOUT_MS: process.env.ONTOINDEX_MCP_STARTUP_TIMEOUT_MS || '10000',
     ONTOINDEX_MCP_STARTUP_TRACE: process.env.ONTOINDEX_MCP_STARTUP_TRACE || '1',
+    ONTOINDEX_MCP_PROJECT_CWD: resolveMcpRepoPath(),
+    ONTOINDEX_MCP_REPO: resolveMcpRepoPath(),
     NODE_OPTIONS: process.env.ONTOINDEX_MCP_NODE_OPTIONS || '--max-old-space-size=1536',
   };
 }
@@ -343,7 +352,12 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
       }
     }
 
-    ensureHookEntry('PreToolUse', 'Grep|Glob|Bash', 10, 'Enriching with OntoIndex graph context...');
+    ensureHookEntry(
+      'PreToolUse',
+      'Grep|Glob|Bash',
+      10,
+      'Enriching with OntoIndex graph context...',
+    );
     ensureHookEntry('PostToolUse', 'Bash', 10, 'Checking OntoIndex index freshness...');
 
     await writeJsonFile(settingsPath, existing);

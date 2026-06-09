@@ -114,6 +114,17 @@ describe('gnHelp — return shape', () => {
       ]),
     );
   });
+
+  it('includes actionable docs and embeddings remediation in repo readiness notes', () => {
+    const report = gnHelp({ repo: 'repo:test' });
+    expect(report.readinessNotes).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('ontoindex docs refresh'),
+        expect.stringContaining('ontoindex analyze --markdown-sidecar'),
+        expect.stringContaining('ontoindex analyze --embeddings'),
+      ]),
+    );
+  });
 });
 
 describe('ADR27: gnHelp startup-profile metadata', () => {

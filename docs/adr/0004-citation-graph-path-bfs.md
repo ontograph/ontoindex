@@ -12,7 +12,7 @@ Simple BFS (depth 4) over all edges can lead to "Neighborhood Explosion" where h
 
 This ADR extends:
 - [ADR 0022](0022-qmd-inspired-structured-retrieval.md), for structured retrieval lanes;
-- [ADR 0061](0061-ort-inspired-native-ontology-grounded-reverse-thinking-and-systems-pressure-diagnostics.md), for global diagnostics;
+- global diagnostics for pressure and retrieval-quality reporting;
 - [ADR 0065](0065-codexgraph-inspired-native-graph-query-and-subgraph-extraction.md), for subgraph extraction.
 
 ## Decision

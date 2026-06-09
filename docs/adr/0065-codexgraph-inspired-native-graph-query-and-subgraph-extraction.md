@@ -13,8 +13,8 @@ CodexGraph introduces an architecture where the LLM agent is explicitly provided
 This ADR extends:
 - [ADR 0022](0022-qmd-inspired-structured-retrieval.md), for structured retrieval;
 - [ADR 0030](0030-falkordb-inspired-query-budgets-and-response-diagnostics.md), for query budgets;
-- [ADR 0044](0044-graphrag-inspired-native-index-artifact-and-retrieval-provenance.md), for graph-native indexing;
-- [ADR 0058](0058-agenticrag-inspired-native-graph-navigation-and-discovery-provenance.md), for navigation steps.
+- graph-native indexing;
+- navigation steps.
 
 ## OntoIndex Review Evidence
 

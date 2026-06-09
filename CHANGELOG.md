@@ -4,22 +4,33 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+No unreleased changes yet.
+
+## [1.9.0] - 2026-06-09
+
 ### Added
 
 - **Audit lifecycle workflow** — expanded OntoIndex with audit ingest, verify, lint, and bundle flows, plus the corresponding audit/systems-audit MCP surfaces for turning findings into verified implementation bundles.
 - **Typed structured retrieval and recommendations** — semantic search now supports typed-query documents end-to-end, structured retrieval output, replay-backed regression gates, and additive organic recommendations in diff/pre-commit review flows.
 - **Advisory memory and diagnostics workflow** — added local advisory memory skeleton authoring, advisory memory context/readiness support, an authenticated MCP diagnostics API, and a web settings diagnostics panel.
+- **MCP runtime hardening** — setup now records the intended project path for external tool checkouts, startup reports executable cwd/project/repo scope, and tool-contract output distinguishes internal callable tools from host-visible wrappers.
+- **Release documentation refresh** — rebuilt the public README, added full MCP tool documentation, and aligned package metadata with the `ontograph/ontoindex` repository.
 
 ### Fixed
 
 - **Memory trust-boundary hardening** — advisory memory parsing now rejects unsafe names, path traversal, malformed freshness/source metadata, oversized files, and non-advisory shapes.
+- **Cross-repo MCP safeguards** — `gn_taint_trace` resolves repo-relative paths against the selected repo and rejects paths outside the repo; MCP startup can warn or fail on explicit repo/project mismatches before returning misleading results.
+- **MCP packaging guard** — build and smoke tests now verify advertised super-functions resolve to emitted `dist/mcp/super/*.js` modules, preventing missing-module failures such as `gn_pre_commit_audit`.
+- **Package release artifacts** — npm dry-run packaging now includes package-local AGPL license and attribution notice files.
 
 ### Changed
+
 - Migrated from KuzuDB to LadybugDB v0.15 (`@ladybugdb/core`, `@ladybugdb/wasm-core`)
 - Renamed all internal paths from `kuzu` to `lbug` (storage: `.ontoindex/kuzu` → `.ontoindex/lbug`)
 - Added automatic cleanup of stale KuzuDB index files
 - LadybugDB v0.15 requires explicit VECTOR extension loading for semantic search
 - Expanded ADR coverage for the audit lifecycle, trust-contract, structured-retrieval, and memory/diagnostics follow-up tracks.
+- Relicensed the project as `AGPL-3.0-or-later`; prior GitNexus attribution remains in `NOTICE`.
 
 ## [1.5.3] - 2026-04-01
 

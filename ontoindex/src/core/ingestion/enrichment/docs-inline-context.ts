@@ -191,8 +191,14 @@ function nextCheckLines(
   skipReasons: readonly string[],
 ): string[] {
   const checks = new Set<string>();
-  if (states.has('stale')) checks.add('refresh markdown sidecar before trusting evidence');
-  if (states.has('partial')) checks.add('verify missing document coverage');
+  if (states.has('stale'))
+    checks.add(
+      'run `ontoindex docs refresh` (or `ontoindex analyze --markdown-sidecar`) before trusting evidence',
+    );
+  if (states.has('partial'))
+    checks.add(
+      'run `ontoindex docs refresh` (or `ontoindex analyze --markdown-sidecar`) before relying on incomplete docs coverage',
+    );
   if (states.has('ambiguous'))
     checks.add('add explicit docs/code anchors for ambiguous identities');
   if (states.has('unresolved')) checks.add('resolve missing graph or docs identity');

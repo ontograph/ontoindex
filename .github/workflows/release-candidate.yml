@@ -1,11 +1,11 @@
 name: Release Candidate
 
 on:
-  # Publish a release-candidate build whenever a merge/commit lands on main.
+  # Publish a release-candidate build whenever a merge/commit lands on master.
   # Docs/README-only changes are filtered out so prose updates don't
   # cut a release.
   push:
-    branches: [main]
+    branches: [master]
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -320,7 +320,7 @@ jobs:
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
-          # Detached release commit with the version bump — keeps `main`
+          # Detached release commit with the version bump — keeps `master`
           # pristine but gives the v-tag a tree that matches the published
           # package contents exactly (fixes release-integrity gap).
           git add package.json package-lock.json 2>/dev/null || git add package.json
@@ -356,12 +356,12 @@ jobs:
           make_latest: 'false'
           generate_release_notes: true
           body: |
-            Automated release candidate build from `main`.
+            Automated release candidate build from `master`.
 
             **npm:** `npm install ontoindex@rc`
             **Version:** `${{ steps.version.outputs.rc_version }}`
             **Target base:** `${{ steps.version.outputs.base }}` (rc #${{ steps.version.outputs.rc_n }})
-            **Source commit (main):** ${{ needs.guard.outputs.head_sha }}
+            **Source commit (master):** ${{ needs.guard.outputs.head_sha }}
             **Release commit (versioned tree):** ${{ steps.reltag.outputs.release_sha }}
 
             Release candidates are pre-stable builds intended for early testing.
@@ -372,7 +372,7 @@ jobs:
   # attestation logic stays in one place. The publish job exposes `vtag`
   # (e.g. `v1.2.3-rc.1`) as an output so we can pass it as the tag input.
   # RC images are signed with Cosign keyless signing; the OIDC identity
-  # will be `docker.yml@refs/heads/main` (the caller's ref) rather than a
+  # will be `docker.yml@refs/heads/master` (the caller's ref) rather than a
   # tag ref — see README.md § Docker for the correct verify command for RCs.
   docker:
     name: Build & Push RC Docker images

@@ -13,9 +13,9 @@ OntoIndex currently implements WRITE operations (rename, modify-body, extract, m
 This ADR extends:
 - [ADR 0017](0017-audit-lifecycle-layer.md), for lifecycle management;
 - [ADR 0027](0027-mcp-startup-surface-profiles.md), for WRITE super-function classification;
-- [ADR 0033](0033-neosemantics-inspired-semantic-contract-checks.md), for semantic contract checks;
-- [ADR 0042](0042-kuzu-inspired-native-db-operation-diagnostics.md), for DB operation diagnostics;
-- [ADR 0054](0054-semantic-ritual-inspired-native-conceptual-mapping-and-ambiguity-diagnostics.md), for conceptual mapping.
+- semantic contract checks;
+- DB operation diagnostics;
+- conceptual mapping.
 
 ## OntoIndex Review Evidence
 
