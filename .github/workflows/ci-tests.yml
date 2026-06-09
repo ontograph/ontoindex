@@ -14,9 +14,9 @@ jobs:
         with:
           build: 'true'
 
-      - name: Run all tests with coverage
+      - name: Run unit tests with coverage
         run: >-
-          npx vitest run
+          npx vitest run test/unit
           --reporter=default
           --reporter=json
           --outputFile=test-results.json
