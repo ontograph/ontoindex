@@ -25,7 +25,7 @@ describe('audit freshness utilities', () => {
       now: new Date('2026-05-17T00:00:00.000Z'),
     });
 
-    expect(head.gitRoot).toBe(repo);
+    expect(fs.realpathSync.native(head.gitRoot)).toBe(fs.realpathSync.native(repo));
     expect(head.ref).toBe('HEAD');
     expect(head.commit).toMatch(/^[0-9a-f]{40}$/);
     expect(head.shortCommit).toHaveLength(12);

@@ -306,12 +306,14 @@ describe('local sidecar store', () => {
       }),
       'utf8',
     );
+    const oldLockTime = new Date('2026-05-13T00:00:00.000Z');
+    await fs.utimes(updateLockPath(), oldLockTime, oldLockTime);
 
     await store.update(
       (state) => {
         state.requests.push(request);
       },
-      { maxAttempts: 2, retryDelayMs: 0, staleLockMs: 0, ownerId: 'fresh-owner' },
+      { maxAttempts: 2, retryDelayMs: 0, staleLockMs: 1, ownerId: 'fresh-owner' },
     );
 
     await expect(store.load()).resolves.toMatchObject({
