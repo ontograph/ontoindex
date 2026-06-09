@@ -30,7 +30,8 @@ The result is a smaller, more reliable context surface: agents ask the graph ins
 ## Quick Start
 
 ```bash
-npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.1/ontoindex-1.9.1.tgz
+curl -fsSL https://raw.githubusercontent.com/ontograph/ontoindex/master/scripts/install-ontoindex-latest.sh | bash
+
 ontoindex --version
 
 # Run from the repository you want to index.
