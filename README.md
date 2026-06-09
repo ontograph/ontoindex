@@ -11,9 +11,7 @@
 - **Current release:** `1.9.0`
 - **npm:** [ontoindex](https://www.npmjs.com/package/ontoindex)
 - **Repository:** [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
-- **Web UI:** [ontoindex.vercel.app](https://ontoindex.vercel.app)
-- **Enterprise:** [akonlabs.com](https://akonlabs.com)
-- **Community:** [Discord](https://discord.gg/MgJrmsqr62)
+- **Enterprise:** [erasyuk@gmail.com](erasyuk@gmail.com) 
 
 ## Why OntoIndex
 
