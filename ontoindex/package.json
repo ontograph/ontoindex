@@ -54,7 +54,7 @@
     "prepack": "node scripts/build.js"
   },
   "dependencies": {
-    "@huggingface/transformers": "^4.1.0",
+    "@huggingface/transformers": "^4.2.0",
     "@ladybugdb/core": "^0.16.1",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@scarf/scarf": "^1.4.0",
