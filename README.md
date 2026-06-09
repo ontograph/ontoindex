@@ -10,7 +10,8 @@
 
 - **Current release:** `1.9.0`
  
-- **Enterprise:** [erasyuk@gmail.com](erasyuk@gmail.com) 
+- **Enterprise:** [erasyuk@gmail.com](erasyuk@gmail.com)
+  
 
 ## Why OntoIndex
 
@@ -29,6 +30,9 @@ The result is a smaller, more reliable context surface: agents ask the graph ins
 ## Quick Start
 
 ```bash
+npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.0/ontoindex-1.9.0.tgz
+ontoindex --version
+
 # Run from the repository you want to index.
 npx -y ontoindex@1.9.0 analyze
 
