@@ -454,9 +454,9 @@ describe('gnDiagnose', () => {
     expect(report.setup.mcp.autoAnalyze).toBe('enabled');
     expect(report.degradedContext.status).toBe('degraded');
     expect(report.degradedContext.reasons).toContain('mcp-auto-analyze-enabled');
-    expect(report.recommendations.some((r) => r.detail.includes('ONTOINDEX_MCP_AUTO_ANALYZE'))).toBe(
-      true,
-    );
+    expect(
+      report.recommendations.some((r) => r.detail.includes('ONTOINDEX_MCP_AUTO_ANALYZE')),
+    ).toBe(true);
   });
 
   it('includes the MCP tool contract health check by default', async () => {

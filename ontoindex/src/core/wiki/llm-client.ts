@@ -119,8 +119,14 @@ const parsePositiveIntEnv = (name: string, fallback: number): number => {
 };
 
 const LLM_REQUEST_TIMEOUT_MS = parsePositiveIntEnv('ONTOINDEX_LLM_TIMEOUT_MS', 10 * 60_000);
-const MAX_LLM_STREAM_BYTES = parsePositiveIntEnv('ONTOINDEX_LLM_MAX_STREAM_BYTES', 20 * 1024 * 1024);
-const MAX_LLM_STREAM_CHARS = parsePositiveIntEnv('ONTOINDEX_LLM_MAX_STREAM_CHARS', 10 * 1024 * 1024);
+const MAX_LLM_STREAM_BYTES = parsePositiveIntEnv(
+  'ONTOINDEX_LLM_MAX_STREAM_BYTES',
+  20 * 1024 * 1024,
+);
+const MAX_LLM_STREAM_CHARS = parsePositiveIntEnv(
+  'ONTOINDEX_LLM_MAX_STREAM_CHARS',
+  10 * 1024 * 1024,
+);
 const MAX_LLM_SSE_BUFFER_CHARS = parsePositiveIntEnv(
   'ONTOINDEX_LLM_MAX_SSE_BUFFER_CHARS',
   1024 * 1024,

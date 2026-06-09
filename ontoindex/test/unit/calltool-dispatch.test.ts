@@ -689,7 +689,9 @@ describe('LocalBackend.callTool', () => {
 
   it('api_impact reports active model packs when manifests are present', async () => {
     const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-api-impact-models-'));
-    await fs.mkdir(path.join(repoDir, 'ontoindex-packs/core/framework-models'), { recursive: true });
+    await fs.mkdir(path.join(repoDir, 'ontoindex-packs/core/framework-models'), {
+      recursive: true,
+    });
     await fs.writeFile(
       path.join(repoDir, 'ontoindex-packs/core/framework-models/pack.yml'),
       [

@@ -41,7 +41,9 @@ describe('normalizeServerUrl', () => {
   });
 
   it('preserves existing https://', () => {
-    expect(normalizeServerUrl('https://ontoindex.example.com')).toBe('https://ontoindex.example.com');
+    expect(normalizeServerUrl('https://ontoindex.example.com')).toBe(
+      'https://ontoindex.example.com',
+    );
   });
 });
 

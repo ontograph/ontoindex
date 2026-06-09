@@ -572,10 +572,7 @@ describe('gnReviewDiff', () => {
   });
 
   it('caps changed paths with deterministic budget metadata', () => {
-    const capped = applyChangedPathLimitForReview(
-      ['src/a.ts', 'src/b.ts', 'src/c.ts'],
-      2,
-    );
+    const capped = applyChangedPathLimitForReview(['src/a.ts', 'src/b.ts', 'src/c.ts'], 2);
 
     expect(capped).toMatchObject({
       changedPaths: ['src/a.ts', 'src/b.ts'],

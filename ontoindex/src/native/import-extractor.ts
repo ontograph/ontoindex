@@ -28,7 +28,9 @@ try {
   }
 
   if (!nativeModule) {
-    console.warn(`[native] Failed to load native module from known locations: ${failures.join('; ')}`);
+    console.warn(
+      `[native] Failed to load native module from known locations: ${failures.join('; ')}`,
+    );
   }
 } catch (e) {
   console.warn(

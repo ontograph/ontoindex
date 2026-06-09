@@ -173,7 +173,9 @@ describe('analysis execution planning', () => {
 
   it('collects component file patterns from active component model packs', async () => {
     const repoDir = await createRepo();
-    await fs.mkdir(path.join(repoDir, 'ontoindex-packs/core/component-models'), { recursive: true });
+    await fs.mkdir(path.join(repoDir, 'ontoindex-packs/core/component-models'), {
+      recursive: true,
+    });
     await fs.mkdir(path.join(repoDir, 'ontoindex-packs/core/other-models'), { recursive: true });
     await fs.writeFile(
       path.join(repoDir, 'ontoindex-packs/core/component-models/pack.yml'),

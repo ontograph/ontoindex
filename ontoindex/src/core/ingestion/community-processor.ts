@@ -160,8 +160,14 @@ export const processCommunities = async (
   //
   // Leiden is synchronous JavaScript, so Promise.race/setTimeout cannot preempt it once it starts.
   // Guard pathological graph sizes before entering the CPU-bound call.
-  const maxLeidenNodes = parsePositiveIntEnv('ONTOINDEX_MAX_LEIDEN_NODES', DEFAULT_MAX_LEIDEN_NODES);
-  const maxLeidenEdges = parsePositiveIntEnv('ONTOINDEX_MAX_LEIDEN_EDGES', DEFAULT_MAX_LEIDEN_EDGES);
+  const maxLeidenNodes = parsePositiveIntEnv(
+    'ONTOINDEX_MAX_LEIDEN_NODES',
+    DEFAULT_MAX_LEIDEN_NODES,
+  );
+  const maxLeidenEdges = parsePositiveIntEnv(
+    'ONTOINDEX_MAX_LEIDEN_EDGES',
+    DEFAULT_MAX_LEIDEN_EDGES,
+  );
   let details: LeidenDetailedResult;
   if (nodeCount > maxLeidenNodes || edgeCount > maxLeidenEdges) {
     onProgress?.(

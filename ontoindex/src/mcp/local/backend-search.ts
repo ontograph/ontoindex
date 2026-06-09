@@ -466,7 +466,9 @@ function structuredRowsForCandidates(candidates: RetrievalCandidate[]): Record<s
 }
 
 function cachedCandidateSymbolId(candidate: RetrievalCandidate): string | undefined {
-  return candidate.id.startsWith('retrieval:') ? candidate.id.slice('retrieval:'.length) : undefined;
+  return candidate.id.startsWith('retrieval:')
+    ? candidate.id.slice('retrieval:'.length)
+    : undefined;
 }
 
 function cachedCandidateType(candidate: RetrievalCandidate): string {

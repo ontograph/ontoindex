@@ -594,7 +594,9 @@ export const HelpPanel = ({ isOpen, onClose, nodeCount, edgeCount }: HelpPanelPr
               <h2 style={{ fontSize: 16, fontWeight: 600, color: '#e2e2e8', margin: 0 }}>
                 Help & Reference
               </h2>
-              <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>OntoIndex — graph explorer</p>
+              <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>
+                OntoIndex — graph explorer
+              </p>
             </div>
           </div>
           <button
@@ -703,7 +705,7 @@ export const HelpPanel = ({ isOpen, onClose, nodeCount, edgeCount }: HelpPanelPr
             OntoIndex — open source codebase graph explorer
           </span>
           <a
-                  href="https://github.com/ontograph/ontoindex"
+            href="https://github.com/ontograph/ontoindex"
             target="_blank"
             rel="noopener noreferrer"
             style={{ fontSize: 11, color: '#a78bfa', textDecoration: 'none' }}

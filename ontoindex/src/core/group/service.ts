@@ -12,7 +12,12 @@ import {
   normalizeServicePrefix,
   repoInSubgroup,
 } from './group-path-utils.js';
-import { getDefaultOntoIndexDir, getGroupDir, listGroups, readContractRegistry } from './storage.js';
+import {
+  getDefaultOntoIndexDir,
+  getGroupDir,
+  listGroups,
+  readContractRegistry,
+} from './storage.js';
 import { syncGroup } from './sync.js';
 import type {
   ContractRegistry,

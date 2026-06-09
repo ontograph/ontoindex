@@ -269,7 +269,6 @@ describe('cross-impact', () => {
     }
   });
 
-
   it('test_runGroupImpact_bridge_schema_mismatch_returns_error', async () => {
     const { tmpDir, groupDir, cleanup } = tmpGroup();
     vi.stubEnv('ONTOINDEX_HOME', tmpDir);

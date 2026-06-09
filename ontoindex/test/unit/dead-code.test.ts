@@ -19,7 +19,10 @@ function repo() {
 
 function initGitRepo(repoPath: string) {
   execFileSync('git', ['init'], { cwd: repoPath, stdio: 'ignore' });
-  execFileSync('git', ['config', 'user.name', 'OntoIndex Test'], { cwd: repoPath, stdio: 'ignore' });
+  execFileSync('git', ['config', 'user.name', 'OntoIndex Test'], {
+    cwd: repoPath,
+    stdio: 'ignore',
+  });
   execFileSync('git', ['config', 'user.email', 'ontoindex-test@example.com'], {
     cwd: repoPath,
     stdio: 'ignore',

@@ -83,7 +83,9 @@ describe('ORM dataflow detection', () => {
   it('uses orm-model pack client identifiers in the sequential fallback path', async () => {
     const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ontoindex-orm-pack-'));
     try {
-      fs.mkdirSync(path.join(repoDir, 'ontoindex-packs/core/framework-models'), { recursive: true });
+      fs.mkdirSync(path.join(repoDir, 'ontoindex-packs/core/framework-models'), {
+        recursive: true,
+      });
       fs.mkdirSync(path.join(repoDir, 'src'), { recursive: true });
       fs.writeFileSync(
         path.join(repoDir, 'ontoindex-packs/core/framework-models/pack.yml'),
