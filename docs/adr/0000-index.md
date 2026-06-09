@@ -58,6 +58,7 @@ Each ADR follows: **Context → Decision → Algorithm/Technique → Consequence
 | [0076](0076-ontogpt-inspired-native-linkml-schema-governance-and-recursive-spires-extraction.md) | OntoGPT-inspired native LinkML schema governance and recursive SPIRES extraction | Proposed | OntoGPT review |
 | [0079](0079-smart-composer-inspired-native-interactive-context-staging-and-hunk-editing.md) | Smart-Composer-inspired native interactive context staging and hunk editing | Proposed | Obsidian Smart Composer review |
 | [0081](0081-virtuoso-inspired-native-multi-model-virtual-views-and-anytime-queries.md) | Virtuoso-inspired native multi-model virtual views and anytime queries | Proposed | OpenLink Virtuoso review |
+| [0082](0082-semantic-ann-neighbor-graph-and-one-shot-retrieval-frontier.md) | Semantic ANN neighbor graph and one-shot retrieval frontier | Proposed | Instagram semantic-memory prototype review |
 
 ## How to add a new ADR
 

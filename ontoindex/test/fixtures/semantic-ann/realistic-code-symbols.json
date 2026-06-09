@@ -1,0 +1,108 @@
+{
+  "label": "realistic-code-symbols",
+  "dimensions": 6,
+  "nodes": [
+    {
+      "id": "src/auth.ts::authorizeRequest",
+      "vector": [0.98, 0.04, 0, 0, 0, 0]
+    },
+    {
+      "id": "src/auth.ts::canUserRead",
+      "vector": [0.96, 0.05, 0, 0, 0, 0]
+    },
+    {
+      "id": "src/auth.ts::canUserWrite",
+      "vector": [0.95, -0.06, 0, 0, 0, 0]
+    },
+    {
+      "id": "src/auth.ts::validateSession",
+      "vector": [0.93, 0.11, 0, 0, 0, 0]
+    },
+    {
+      "id": "src/search.ts::queryCandidates",
+      "vector": [0, 0.99, 0.04, 0, 0, 0]
+    },
+    {
+      "id": "src/search.ts::rankByRelevance",
+      "vector": [0, 0.97, -0.07, 0, 0, 0]
+    },
+    {
+      "id": "src/search.ts::resolveSymbolByName",
+      "vector": [0, 0.95, 0.09, 0, 0, 0]
+    },
+    {
+      "id": "src/search.ts::buildSearchIndex",
+      "vector": [0, 0.96, 0.03, 0, 0, 0]
+    },
+    {
+      "id": "src/graph.ts::addNeighborEdge",
+      "vector": [0, 0, 0.99, 0.02, 0, 0]
+    },
+    {
+      "id": "src/graph.ts::pruneEdges",
+      "vector": [0, 0, 0.97, -0.05, 0, 0]
+    },
+    {
+      "id": "src/graph.ts::markVisited",
+      "vector": [0, 0, 0.94, 0.09, 0, 0]
+    },
+    {
+      "id": "src/graph.ts::traverseNeighbors",
+      "vector": [0, 0, 0.96, 0.06, 0, 0]
+    },
+    {
+      "id": "src/service.ts::upsertSymbol",
+      "vector": [0, 0, 0, 0.99, 0.03, 0]
+    },
+    {
+      "id": "src/service.ts::flushSymbolBuffer",
+      "vector": [0, 0, 0, 0.97, -0.05, 0]
+    },
+    {
+      "id": "src/service.ts::scheduleRefresh",
+      "vector": [0, 0, 0, 0.95, 0.06, 0]
+    },
+    {
+      "id": "src/service.ts::emitChangeEvent",
+      "vector": [0, 0, 0, 0.96, -0.01, 0]
+    },
+    {
+      "id": "src/api.ts::buildApiResponse",
+      "vector": [0, 0, 0, 0, 0.98, 0.02]
+    },
+    {
+      "id": "src/api.ts::handleError",
+      "vector": [0, 0, 0, 0, 0.96, -0.06]
+    },
+    {
+      "id": "src/api.ts::normalizePayload",
+      "vector": [0, 0, 0, 0, 0.94, 0.08]
+    }
+  ],
+  "queries": [
+    {
+      "id": "query:auth-token-check",
+      "vector": [0.91, 0.18, 0, 0, 0, 0]
+    },
+    {
+      "id": "query:indexed-search",
+      "vector": [0, 0.88, 0.21, 0, 0, 0]
+    },
+    {
+      "id": "query:graph-traversal",
+      "vector": [0, 0, 0.9, 0.22, 0, 0]
+    },
+    {
+      "id": "query:service-refresh",
+      "vector": [0, 0, 0, 0.94, 0.16, 0]
+    },
+    {
+      "id": "query:api-shape",
+      "vector": [0, 0, 0, 0, 0.96, 0.06]
+    },
+    {
+      "id": "query:mixed-routing",
+      "vector": [0.3, 0.3, 0.3, 0.3, 0.2, 0.2]
+    }
+  ]
+}

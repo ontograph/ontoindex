@@ -49,6 +49,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "bench:large": "node scripts/large-codebase-benchmark.mjs",
+    "bench:semantic-ann": "node scripts/semantic-ann-benchmark.mjs",
     "postinstall": "node scripts/patch-tree-sitter-swift.cjs && node scripts/build-tree-sitter-proto.cjs",
     "prepare": "node scripts/build.js",
     "prepack": "node scripts/build.js"

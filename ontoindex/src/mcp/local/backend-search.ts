@@ -29,8 +29,14 @@ import { graphTraversalRank, type GraphEdgeType } from '../../core/search/graph-
 import { appendQueryLog } from './query-log.js';
 import { getFileSkeleton } from '../../core/search/skeleton.js';
 import { SemanticRetrievalCache } from '../../core/search/semantic-cache.js';
+import { semanticFrontierSearch, type SemanticFrontierSearchDiagnostics } from '../../core/search/semantic-frontier-search.js';
+import {
+  adaptAnnNeighborEdgesForFrontier,
+  loadAnnNeighborEdges,
+} from '../../core/embeddings/ann-neighbor-store.js';
 import { classifyIntent, type Intent } from '../../core/search/intent-classifier.js';
 import { lspBridge } from '../../core/lsp/bridge.js';
+import { EMBEDDING_TABLE_NAME } from '../../core/lbug/schema.js';
 import type {
   SearchableTypedQueryLineType,
   TypedQueryLine,
@@ -239,6 +245,31 @@ interface TypedLaneSearchState {
   candidateMap: Map<string, RetrievalCandidate>;
 }
 
+interface FrontierSearchInput {
+  nodeId: string;
+  vector: number[];
+  lanes: string[];
+}
+
+interface VectorCarrier {
+  vector: number[];
+  freshness: QueryFreshnessStatus;
+}
+
+interface SymbolNeighborhoodFrontierSearchResult {
+  bm25Results: EnrichedSymbolRow[];
+  semanticResults: EnrichedSymbolRow[];
+  warnings: string[];
+  diagnostics?: SemanticFrontierSearchDiagnostics;
+  fallbackToDefaultVector: boolean;
+}
+
+interface IndexedSymbolNode {
+  nodeId: string;
+  freshness: QueryFreshnessStatus;
+  vector: number[];
+}
+
 function logSearchQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
   console.error(`OntoIndex [${context}]: ${msg}`);
@@ -278,6 +309,235 @@ function toEnrichedSymbolRow(row: LookupRow): EnrichedSymbolRow {
         : Number(rowValue(row, 'startLine', 4)),
     endLine:
       rowValue(row, 'endLine', 5) === undefined ? undefined : Number(rowValue(row, 'endLine', 5)),
+  };
+}
+
+function parseIntEnvVar(name: string, fallback: number): number {
+  const raw = process.env[name];
+  const parsed = raw === undefined ? NaN : Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const parseFiniteNumber = (value: unknown): number | undefined => {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : undefined;
+};
+
+const parseEmbeddingVector = (value: unknown): number[] | undefined => {
+  if (!value) return undefined;
+  if (Array.isArray(value)) {
+    const numbers = value
+      .map((entry) => parseFiniteNumber(entry))
+      .filter((entry): entry is number => entry !== undefined);
+    return numbers.length > 0 ? numbers : undefined;
+  }
+  if (typeof value === 'string') {
+    try {
+      return parseEmbeddingVector(JSON.parse(value));
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof value === 'object' && 'length' in (value as { length?: unknown })) {
+    const length = parseFiniteNumber((value as { length?: unknown }).length);
+    if (!length || length <= 0) return undefined;
+    const vector: number[] = [];
+    const arrayLike = value as ArrayLike<unknown>;
+    for (let index = 0; index < length; index += 1) {
+      const entry = parseFiniteNumber(arrayLike[index]);
+      if (entry !== undefined) {
+        vector.push(entry);
+      }
+    }
+    return vector.length > 0 ? vector : undefined;
+  }
+  return undefined;
+};
+
+function mapSymbolNodeMetadata(row: LookupRow): EnrichedSymbolRow {
+  return {
+    nodeId: String(rowValue(row, 'nodeId', 0) ?? ''),
+    name: String(rowValue(row, 'name', 1) ?? ''),
+    type: String(rowValue(row, 'type', 2) ?? ''),
+    filePath: String(rowValue(row, 'filePath', 3) ?? ''),
+    startLine: parseFiniteNumber(rowValue(row, 'startLine', 4)),
+    endLine: parseFiniteNumber(rowValue(row, 'endLine', 5)),
+  };
+}
+
+function summarizeFrontierDiagnostics(frontier: SemanticFrontierSearchDiagnostics): string[] {
+  const lines = [
+    `symbol-neighborhood frontier repo=${frontier.repo}`,
+    `symbol-neighborhood frontier repoPath=${frontier.repoPath ?? '(unknown)'}`,
+    `symbol-neighborhood frontier mode=${frontier.mode}`,
+    `symbol-neighborhood frontier freshness=${frontier.indexFreshness}`,
+    `symbol-neighborhood frontier visited=${frontier.visited}/${frontier.maxVisited}`,
+    `symbol-neighborhood frontier truncated=${frontier.truncated}`,
+    `symbol-neighborhood frontier fallback=${frontier.fallbackReason ?? 'none'}`,
+  ];
+  if (frontier.warnings.length > 0) {
+    lines.push(...frontier.warnings.map((warning) => `symbol-neighborhood frontier warning: ${warning}`));
+  }
+  return lines;
+}
+
+async function loadIndexedSymbolVectors(
+  repoId: string,
+  nodeIds: readonly string[],
+): Promise<Map<string, VectorCarrier>> {
+  if (nodeIds.length === 0) return new Map();
+  const rows = await executeParameterized(
+    repoId,
+    `
+      MATCH (e:${EMBEDDING_TABLE_NAME})
+      WHERE e.nodeId IN $nodeIds
+      RETURN e.nodeId AS nodeId, e.embedding AS embedding
+    `,
+    { nodeIds: [...nodeIds] },
+  );
+
+  const out = new Map<string, VectorCarrier>();
+  for (const row of rows) {
+    const nodeId = String(rowValue(row, 'nodeId', 0) ?? '');
+    if (!nodeId || out.has(nodeId)) continue;
+    const vector = parseEmbeddingVector(rowValue(row, 'embedding', 1));
+    if (!vector || vector.length === 0) continue;
+    out.set(nodeId, { freshness: 'fresh', vector });
+  }
+  return out;
+}
+
+async function loadSymbolNodesByIds(
+  repoId: string,
+  nodeIds: readonly string[],
+): Promise<Map<string, EnrichedSymbolRow>> {
+  if (nodeIds.length === 0) return new Map();
+  const rows = await executeParameterized(
+    repoId,
+    `
+      MATCH (n)
+      WHERE n.id IN $nodeIds
+      RETURN n.id AS nodeId, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+    `,
+    { nodeIds: [...nodeIds] },
+  );
+
+  const out = new Map<string, EnrichedSymbolRow>();
+  for (const row of rows) {
+    const mapped = mapSymbolNodeMetadata(row);
+    if (!mapped.nodeId) continue;
+    out.set(mapped.nodeId, mapped);
+  }
+  return out;
+}
+
+async function runSymbolNeighborhoodFrontierSearch(
+  repo: SearchRepoHandle,
+  searchQuery: string,
+  seedRows: EnrichedSymbolRow[],
+  searchLimit: number,
+  intentModelOverride: string | undefined,
+): Promise<SymbolNeighborhoodFrontierSearchResult> {
+  const fallback = (reason: string, details: string[]): SymbolNeighborhoodFrontierSearchResult => ({
+    bm25Results: seedRows,
+    semanticResults: [],
+    warnings: [`symbol-neighborhood skipped: ${reason}`, ...details.filter((line) => line.length > 0)],
+    fallbackToDefaultVector: true,
+  });
+
+  const seedIds = seedRows
+    .map((row) => row.nodeId)
+    .filter((nodeId): nodeId is string => typeof nodeId === 'string' && nodeId.length > 0);
+  if (seedIds.length === 0) {
+    return fallback('no bm25 seed node IDs available', []);
+  }
+
+  let queryVector: number[];
+  try {
+    const { embedQuery, isEmbedderReady } = await import('../core/embedder.js');
+    if (intentModelOverride && !isEmbedderReady()) {
+      process.env.ONTOINDEX_EMBEDDING_MODEL = intentModelOverride;
+    }
+    queryVector = await embedQuery(searchQuery);
+  } catch {
+    return fallback('embedding model unavailable', []);
+  }
+
+  const indexedSeedVectors = await loadIndexedSymbolVectors(repo.id, seedIds);
+  const frontierSeeds = seedRows
+    .map((seed) => {
+      if (!seed.nodeId) return undefined;
+      const indexed = indexedSeedVectors.get(seed.nodeId);
+      if (!indexed?.vector) return undefined;
+      return {
+        nodeId: seed.nodeId,
+        vector: indexed.vector,
+        lanes: [seed.type || 'symbol'],
+      } satisfies FrontierSearchInput;
+    })
+    .filter((seed): seed is FrontierSearchInput => seed !== undefined);
+
+  if (frontierSeeds.length === 0) {
+    return fallback('no seed embeddings available', []);
+  }
+
+  const loadedEdges = await loadAnnNeighborEdges((cypher, params) => {
+    return executeParameterized(repo.id, cypher, params ?? {});
+  }, {
+    sourceIds: frontierSeeds.map((seed) => seed.nodeId),
+    includeStale: false,
+    maxOutboundDegree: parseIntEnvVar('ONTOINDEX_ANN_MAX_OUTBOUND_DEGREE', 8),
+  });
+  if (loadedEdges.length === 0) {
+    return fallback('no ANN edges found for retrieved seeds', []);
+  }
+
+  const frontier = await semanticFrontierSearch({
+    repo: repo.id,
+    repoPath: repo.repoPath,
+    queryVector,
+    topK: searchLimit,
+    ef: parseIntEnvVar('ONTOINDEX_ANN_FRONTIER_EF', 64),
+    maxVisited: parseIntEnvVar('ONTOINDEX_ANN_FRONTIER_MAX_VISITED', 512),
+    seeds: frontierSeeds,
+    edges: adaptAnnNeighborEdgesForFrontier(loadedEdges),
+    freshnessRequired: false,
+  });
+
+  const nodeMetadata = await loadSymbolNodesByIds(
+    repo.id,
+    frontier.results.map((result) => result.nodeId),
+  );
+  const semanticRows = frontier.results
+    .map((result) => {
+      const row = nodeMetadata.get(result.nodeId);
+      return {
+        nodeId: result.nodeId,
+        name: result.name || row?.name || '',
+        type: row?.type || '',
+        filePath: result.filePath || row?.filePath || '',
+        startLine: result.startLine ?? row?.startLine,
+        endLine: result.endLine ?? row?.endLine,
+      } satisfies EnrichedSymbolRow;
+    })
+    .filter((row) => row.nodeId || row.filePath);
+
+  if (semanticRows.length === 0) {
+    return {
+      bm25Results: seedRows,
+      semanticResults: [],
+      diagnostics: frontier,
+      warnings: [`symbol-neighborhood frontier produced no merged rows`, ...summarizeFrontierDiagnostics(frontier)],
+      fallbackToDefaultVector: true,
+    };
+  }
+
+  return {
+    bm25Results: seedRows,
+    semanticResults: semanticRows,
+    diagnostics: frontier,
+    warnings: summarizeFrontierDiagnostics(frontier),
+    fallbackToDefaultVector: false,
   };
 }
 
@@ -1168,6 +1428,24 @@ export async function query(
     bm25Results = bm25SearchResult.results as EnrichedSymbolRow[];
     semanticResults = semanticSearchResults as EnrichedSymbolRow[];
     ftsUsed = bm25SearchResult.ftsUsed;
+
+    if (params.retrieval_policy === 'symbol-neighborhood') {
+      const frontierResult = await timer.time(
+        'semantic_frontier',
+        runSymbolNeighborhoodFrontierSearch(
+          repo,
+          searchQuery,
+          bm25Results,
+          searchLimit,
+          intentModelOverride,
+        ),
+      );
+      typedWarnings = uniqueStrings([...typedWarnings, ...frontierResult.warnings]);
+      if (!frontierResult.fallbackToDefaultVector) {
+        bm25Results = frontierResult.bm25Results;
+        semanticResults = frontierResult.semanticResults;
+      }
+    }
 
     // --- Graph leg (W1b-step-2) ---
     // Gate: ONTOINDEX_INTENT_ENSEMBLE=1 AND intent is calls-of or cross-file-impact

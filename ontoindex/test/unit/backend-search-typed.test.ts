@@ -48,6 +48,16 @@ vi.mock('../../src/mcp/shared/target-context.js', () => ({
   resolveTargetContext: vi.fn(),
 }));
 
+vi.mock('../../src/core/embeddings/ann-neighbor-store.js', () => ({
+  adaptAnnNeighborEdgesForFrontier: vi.fn((edges) => edges),
+  loadAnnNeighborEdges: vi.fn(),
+}));
+
+vi.mock('../../src/mcp/core/embedder.js', () => ({
+  embedQuery: vi.fn(),
+  isEmbedderReady: vi.fn(),
+}));
+
 import { executeParameterized } from '../../src/core/lbug/pool-adapter.js';
 import { bm25Search, semanticSearch } from '../../src/mcp/local/backend-query.js';
 import { mergeSymbolsWithRRF, type EnrichedSymbolRow } from '../../src/core/search/symbol-merge.js';
@@ -55,9 +65,11 @@ import { applyEnsemble } from '../../src/core/search/per-intent-ensemble.js';
 import { graphTraversalRank } from '../../src/core/search/graph-traversal-rank.js';
 import { getFileSkeleton } from '../../src/core/search/skeleton.js';
 import { appendQueryLog } from '../../src/mcp/local/query-log.js';
-import { classifyIntent } from '../../src/core/search/intent-classifier.js';
 import { resolveTargetContext } from '../../src/mcp/shared/target-context.js';
 import { query } from '../../src/mcp/local/backend-search.js';
+import { embedQuery, isEmbedderReady } from '../../src/mcp/core/embedder.js';
+import { loadAnnNeighborEdges, adaptAnnNeighborEdgesForFrontier } from '../../src/core/embeddings/ann-neighbor-store.js';
+import { classifyIntent } from '../../src/core/search/intent-classifier.js';
 import { SemanticRetrievalCache } from '../../src/core/search/semantic-cache.js';
 
 const mockExecuteParameterized = vi.mocked(executeParameterized);
@@ -70,6 +82,10 @@ const mockGetFileSkeleton = vi.mocked(getFileSkeleton);
 const mockAppendQueryLog = vi.mocked(appendQueryLog);
 const mockClassifyIntent = vi.mocked(classifyIntent);
 const mockResolveTargetContext = vi.mocked(resolveTargetContext);
+const mockLoadAnnNeighborEdges = vi.mocked(loadAnnNeighborEdges);
+const mockAdaptAnnNeighborEdgesForFrontier = vi.mocked(adaptAnnNeighborEdgesForFrontier);
+const mockEmbedQuery = vi.mocked(embedQuery);
+const mockIsEmbedderReady = vi.mocked(isEmbedderReady);
 
 function symbolRow(overrides: Partial<EnrichedSymbolRow> = {}): EnrichedSymbolRow {
   return {
@@ -151,6 +167,10 @@ describe('backend-search typed input', () => {
     mockAppendQueryLog.mockResolvedValue(undefined);
     mockGetFileSkeleton.mockResolvedValue('');
     mockResolveTargetContext.mockResolvedValue(targetContext());
+    mockLoadAnnNeighborEdges.mockResolvedValue([]);
+    mockAdaptAnnNeighborEdgesForFrontier.mockImplementation((edges) => edges);
+    mockEmbedQuery.mockResolvedValue([0.11, 0.22, 0.33]);
+    mockIsEmbedderReady.mockReturnValue(true);
   });
 
   it('keeps plain query callers working unchanged', async () => {
@@ -177,6 +197,52 @@ describe('backend-search typed input', () => {
       definitions: [],
       query_intent: 'identifier',
     });
+    expect(result.warning).toBeUndefined();
+    expect(mockLoadAnnNeighborEdges).not.toHaveBeenCalled();
+    expect(mockEmbedQuery).not.toHaveBeenCalled();
+  });
+
+  it('opt-in symbol-neighborhood retrieval policy engages frontier search on plain queries', async () => {
+    mockBm25Search.mockResolvedValue({
+      results: [symbolRow()],
+      ftsUsed: true,
+    });
+    mockExecuteParameterized.mockImplementation(async (_repoId, statement) => {
+      if (String(statement).includes('MATCH (e:CodeEmbedding)')) {
+        return [
+          {
+            nodeId: symbolRow().nodeId,
+            embedding: [0.11, 0.22, 0.33],
+          },
+        ];
+      }
+      return [];
+    });
+    mockLoadAnnNeighborEdges.mockResolvedValue([]);
+
+    const result = await query({ id: 'repo-1', repoPath: '/repo', lastCommit: 'abc123' } as any, {
+      query: 'symbol: CacheStore',
+      limit: 3,
+      retrieval_policy: 'symbol-neighborhood',
+    });
+
+    expect(mockEmbedQuery).toHaveBeenCalledTimes(1);
+    expect(mockLoadAnnNeighborEdges).toHaveBeenCalledTimes(1);
+    expect(result.warning).toContain('symbol-neighborhood skipped: no ANN edges found for retrieved seeds');
+    expect(result).toMatchObject({
+      processes: [],
+      process_symbols: [],
+      definitions: [{ name: 'CacheStore', filePath: 'src/core/cache.ts' }],
+      query_intent: 'identifier',
+    });
+    expect(mockLoadAnnNeighborEdges).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({
+        sourceIds: [
+          'Function:src/core/cache.ts:CacheStore',
+        ],
+      }),
+    );
   });
 
   it('uses request-level intent for classification without overriding lex routing', async () => {
