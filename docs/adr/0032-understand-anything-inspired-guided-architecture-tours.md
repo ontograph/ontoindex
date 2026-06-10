@@ -1,222 +1,299 @@
-# Understand-Anything-inspired guided architecture tours
+# ADR 0032: Core Architecture Tour Composition
 
-**Status:** Proposed - implementation scope narrowed
-**Source:** Understand-Anything architecture review, 2026-05-26
+**Status:** Implemented (core composition)
+**Source:** Understand-Anything architecture review, 2026-05-26; narrowed 2026-06-10
 **External reference:** <https://github.com/Lum1104/Understand-Anything>
 
 ## Context
 
-Understand-Anything is useful as a comparison architecture, but its main design choices do not map directly onto OntoIndex. OntoIndex should not clone a generated JSON graph, LLM-first analyzer, multi-agent extraction pipeline, or dashboard-first product surface.
+Understand-Anything is useful as a comparison architecture, but its main product shape does not map
+directly onto OntoIndex. OntoIndex should not clone a generated JSON graph, an LLM-first analyzer, a
+multi-agent extraction pipeline, a dashboard-first experience, or a broad "explain the codebase" chat
+surface.
 
-The useful idea is narrower: users benefit from an ordered, cited walkthrough of architecture evidence that OntoIndex already owns.
+The useful OntoIndex-native idea is narrower:
 
-This ADR keeps only functionality that can be implemented inside OntoIndex's natural core:
+```text
+Given already-collected OntoIndex evidence, build a bounded, ordered, citation-backed architecture
+tour that explains how that evidence connects.
+```
 
-- native graph/index evidence;
+This ADR keeps only new core functionality. It must extend OntoIndex's core evidence infrastructure,
+not repackage existing CLI reports, review bundles, MCP tools, docs reports, or graph queries.
+
+## Existing Functionality Excluded From This ADR
+
+The following already exist and are not the new feature:
+
+- graph/index evidence;
 - process and execution-flow evidence;
 - diff-impact and review evidence;
 - docs/ADR sidecar evidence;
 - evidence diagnostics;
-- CLI report/export surfaces;
-- MCP attachment only after CLI/export behavior is proven.
+- semantic contracts for citation requirements, docs authority boundaries, freshness consistency, and
+  truncation visibility;
+- CLI report/export commands;
+- MCP review-diff and facade surfaces.
 
-## OntoIndex Review Evidence
+Those surfaces may later feed or display a tour, but this ADR does not approve changing them as the
+first implementation.
 
-OntoIndex was used for this challenge pass.
+## OntoIndex Evidence Review
 
-- `ontoindex status` reported the repository index is stale against current HEAD. Results below were treated as directional and cross-checked with current local source maps.
-- `ontoindex query "CLI report builders export review bundle diagnostics MCP review diff docs knowledge report evidence diagnostics" -r OntoIndex` resolved relevant existing surfaces including `ontoindex/src/cli/report.ts`, `ontoindex/src/cli/export.ts`, `ontoindex/src/cli/review.ts`, MCP diff-impact code, docs MCP helpers, and evidence-read-ledger code.
-- `ontoindex context registerReportCommands -r OntoIndex` found `registerReportCommands` in `ontoindex/src/cli/report.ts`, called by `ontoindex/src/cli/index.ts`.
-- `ontoindex context exportReviewBundleCommand -r OntoIndex` found review-bundle export composition in `ontoindex/src/cli/export.ts`.
-- `ontoindex context gnReviewDiff -r OntoIndex` found MCP review-diff flow in `ontoindex/src/mcp/super/diff-impact.ts`, called through `dispatchSuper`.
-- Current local source maps confirm:
-  - `ontoindex/src/cli/report.ts` exposes `buildHubReport`, `buildSurprisingConnectionsReport`, text formatters, and command registration.
-  - `ontoindex/src/cli/export.ts` exposes `buildReviewBundleDiagnostics`, `formatReviewBundleMarkdown`, `exportReviewBundleCommand`, and review-bundle artifact helpers.
-  - `ontoindex/src/mcp/super/diff-impact.ts` exposes `gnReviewDiff` and review-diff diagnostics.
-  - `ontoindex/src/core/runtime/evidence-diagnostics.ts` exposes shared diagnostic normalization and rendering helpers.
-  - `ontoindex/src/core/ingestion/enrichment/markdown-knowledge-report.ts` exposes docs/ADR knowledge report items and sidecar freshness.
+This challenge pass used the local OntoIndex CLI and source reads.
 
-Impact checks from the stale index still provide useful routing signals:
+- `ontoindex status` reported the local index is stale: indexed commit `e3b70fc`, current commit
+  `1b0e8ce`. OntoIndex query results were therefore treated as routing evidence and cross-checked
+  against source.
+- `ontoindex query "architecture tour evidence diagnostics report export review bundle MCP diff docs knowledge report" --repo OntoIndex --limit 12`
+  resolved existing report/export/review/docs surfaces, but did not reveal an existing
+  architecture-tour core module.
+- Source search found no current `ArchitectureTour` or `architecture-tour` implementation.
+- Source search confirmed existing reusable contracts:
+  - `ontoindex/src/core/runtime/evidence-diagnostics.ts` defines `EvidenceDiagnosticRecord`,
+    `EvidenceDiagnosticQualityKind`, normalization, bounded summaries, and markdown-friendly
+    diagnostic rendering.
+  - `ontoindex/src/core/runtime/semantic-contracts.ts` already validates quality-state placement,
+    authority consistency, freshness consistency, docs authority boundaries, truncation visibility,
+    and citation requirements.
+  - `ontoindex/src/cli/report.ts`, `ontoindex/src/cli/export.ts`, and
+    `ontoindex/src/mcp/super/diff-impact.ts` are existing product surfaces and are not the new core.
 
-- `impact registerReportCommands`: LOW, direct caller `ontoindex/src/cli/index.ts`.
-- `impact buildHubReport`: LOW, reaches `reportHubsCommand` and `registerReportCommands`.
-- `impact formatReviewBundleMarkdown`: LOW, direct caller `exportReviewBundleCommand`, one affected CLI process.
-- `impact gnReviewDiff`: HIGH, affects MCP dispatch, server MCP handling, facade, and super modules.
-- `impact buildReviewBundleDiagnostics` and `impact createMarkdownKnowledgeReport`: UNKNOWN because the stale index did not resolve those newer symbols.
-
-Before code implementation, rerun fresh OntoIndex impact checks for every edited symbol.
+Conclusion: ADR 0032 should add only the missing composition kernel. It must reuse existing
+diagnostic and semantic-contract infrastructure instead of inventing a parallel citation or authority
+checker.
 
 ## Challenge Findings
 
-1. **The earlier feature list was still too product-shaped.**
-   UI graph highlighting, side panels, source previews, persona modes, broad semantic search, and generic chat are not natural OntoIndex core.
+1. **The previous scope was too product-shaped.**
+   CLI report commands, review-bundle artifacts, MCP attachments, UI graph highlighting, source
+   previews, persona modes, and generic chat are product surfaces, not core architecture.
 
-2. **The implementation should start with low-risk report/export paths.**
-   OntoIndex impact points to CLI report and review-bundle formatting as lower-risk integration points than MCP review-diff.
+2. **A tour must be new core behavior, not a wrapper.**
+   Calling existing reports in sequence and formatting them differently would not extend OntoIndex
+   core. The new part is a reusable composition kernel that validates citations, orders evidence, and
+   reports confidence/diagnostic state.
 
-3. **A shared pure model is required before adding surfaces.**
-   Without a shared model, report, export, and MCP outputs would duplicate logic and drift.
+3. **The core must not query the graph directly.**
+   Querying belongs to existing retrieval/report/review paths. The architecture-tour kernel should
+   accept already-collected evidence and make deterministic decisions over that input.
 
-4. **MCP integration must be an attachment, not a new frontier.**
-   `gnReviewDiff` has HIGH impact in the stale index, so MCP work is retained only as a later optional attachment after CLI/export behavior is tested.
+4. **Docs/ADR evidence is advisory.**
+   A docs-only step can orient a reader, but it must not be presented as architecture authority unless
+   linked to graph, symbol, process, review, or file evidence.
 
-5. **Docs/ADR evidence is advisory unless linked to code evidence.**
-   The docs knowledge report can enrich a tour, but it must not become architecture authority by itself.
+5. **MCP and CLI integration are later adapters.**
+   They are useful after the core contract is stable, but they are not part of the first core
+   deliverable.
+
+6. **Do not duplicate existing semantic contracts.**
+   Citation requirements, docs authority boundaries, stale/degraded diagnostics, and truncation
+   visibility already have core support. The tour builder should produce evidence and diagnostics that
+   satisfy those contracts, not define a second policy engine.
 
 ## Decision
 
-Implement a OntoIndex-native architecture tour as a small evidence-composition feature. It will not introduce a new analyzer, graph backend, dashboard, persistent generated graph artifact, or uncited LLM summary.
+Add a pure core architecture-tour composition subsystem.
 
-The tour is a bounded ordered report over existing evidence. Each step must cite at least one source of truth: graph node, file path, symbol, process, diff-review evidence, docs/ADR sidecar item, or diagnostic record.
+The subsystem turns a bounded set of existing OntoIndex evidence records into an ordered tour with
+mandatory citations and diagnostics. It does not collect evidence, mutate indexes, call LLMs, emit
+audit authority, or introduce any public MCP/CLI surface.
 
-## Integration Paths To Implement
+Approved core shape:
 
-### 1. Shared Tour Model And Renderer
+```text
+ArchitectureTourInput
+  -> normalize evidence
+  -> group related evidence
+  -> rank ordered tour steps
+  -> enforce citations and bounds
+  -> attach diagnostics
+  -> ArchitectureTour
+```
 
-Add a pure internal module for the tour data model and markdown rendering.
+## Implementation Status
 
-- File: `ontoindex/src/core/runtime/architecture-tour.ts`
-- New exported types:
-  - `ArchitectureTour`
-  - `ArchitectureTourStep`
-  - `ArchitectureTourCitation`
-  - `ArchitectureTourDiagnostic`
-  - `ArchitectureTourInput`
-- New exported functions:
-  - `buildArchitectureTour(input: ArchitectureTourInput): ArchitectureTour`
-  - `formatArchitectureTourMarkdown(tour: ArchitectureTour): string`
+Implemented for the core composition layer.
 
-Implementation rules:
+- Core module: `ontoindex/src/core/runtime/architecture-tour.ts`
+- Tests: `ontoindex/test/unit/architecture-tour.test.ts`
+- Public CLI, review-bundle, and MCP adapters remain rejected from the first core implementation and
+  are still later-adapter work.
 
-- Accept already-collected evidence as input; do not query the graph inside the renderer.
-- Require at least one citation per emitted step.
-- Use `EvidenceDiagnosticRecord` and `EvidenceDiagnosticQualityKind` for unsupported, stale, ambiguous, degraded, inferred, or truncated evidence.
-- Enforce bounded output with max-step and max-citation limits.
-- Return diagnostics instead of emitting uncited prose.
+## Core Functionality
 
-Tests:
+### 1. Shared Tour Model
 
-- `ontoindex/test/unit/architecture-tour.test.ts`
-- Cover citation requirement, truncation diagnostics, docs-advisory handling, markdown rendering, and deterministic ordering.
+Add:
 
-### 2. CLI Report Integration
+```text
+ontoindex/src/core/runtime/architecture-tour.ts
+```
 
-Add the first user-visible surface under the existing report command group.
+New exported types:
 
-- File: `ontoindex/src/cli/report.ts`
-- Add command: `ontoindex report architecture-tour`
-- New exported functions:
-  - `buildArchitectureTourReport(...)`
-  - `formatArchitectureTourText(...)`
-  - `reportArchitectureTourCommand(...)`
+```ts
+export interface ArchitectureTourInput {
+  subject?: ArchitectureTourSubject;
+  evidence: readonly ArchitectureTourEvidence[];
+  maxSteps?: number;
+  maxCitationsPerStep?: number;
+}
 
-Inputs to support in the first implementation:
+export interface ArchitectureTour {
+  subject?: ArchitectureTourSubject;
+  steps: readonly ArchitectureTourStep[];
+  diagnostics: readonly EvidenceDiagnosticRecord[];
+  truncated: boolean;
+}
 
-- `--file <path>`
-- `--symbol <name>`
-- `--process <name-or-id>`
-- `--top <n>`
-- `--json`
-- `--repo <path>`
+export interface ArchitectureTourStep {
+  id: string;
+  title: string;
+  summary: string;
+  evidenceKind: ArchitectureTourEvidenceKind;
+  citations: readonly ArchitectureTourCitation[];
+  diagnostics: readonly EvidenceDiagnosticRecord[];
+}
+```
 
-Implementation rules:
+Rules:
 
-- Follow existing `report hubs` and `report surprising-connections` patterns.
-- Label the output as a bounded evidence tour, not complete impact analysis.
-- Reuse current graph/process queries already available to report commands.
-- Prefer deterministic graph/process evidence over docs evidence.
-- Emit warnings when the graph index is stale or missing.
+- The model is internal core infrastructure, not an MCP/CLI response schema.
+- Evidence records must be explicit typed data, not free-form prose.
+- A step without citations is rejected or downgraded into a diagnostic.
+- The model must preserve enough provenance for later wrappers to explain where each statement came
+  from.
+- Diagnostics use `EvidenceDiagnosticRecord`; this ADR does not add new diagnostic quality kinds.
 
-Why this route first:
+### 2. Evidence Input Contract
 
-- OntoIndex impact for `registerReportCommands` is LOW.
-- OntoIndex impact for the existing report builder path is LOW.
-- It keeps the first implementation outside MCP and review-bundle behavior.
+Define a small input contract for evidence already collected by other systems:
 
-Tests:
+```ts
+export type ArchitectureTourEvidenceKind =
+  | 'graph-node'
+  | 'symbol'
+  | 'process'
+  | 'file'
+  | 'diff-review'
+  | 'docs-sidecar'
+  | 'diagnostic';
+```
 
-- Extend `ontoindex/test/unit/report-discovery.test.ts` or add `ontoindex/test/unit/report-architecture-tour.test.ts`.
-- Cover text output, JSON output, stale/missing index warnings, bounds, and citation rendering.
+Rules:
 
-### 3. Review Bundle Integration
+- Evidence must carry stable identity fields such as `repoPath`, `filePath`, `symbolName`,
+  `processId`, `nodeId`, or `diagnosticId` where available.
+- Docs-sidecar evidence is marked `advisory` unless paired with code evidence.
+- Unknown or ambiguous evidence produces diagnostics instead of uncited tour steps.
+- The core does not read files, query LadybugDB, call MCP, or inspect Git state.
 
-Attach a tour artifact to review bundles after the CLI report model is stable.
+### 3. Tour Builder
 
-- File: `ontoindex/src/cli/export.ts`
-- Output artifact: `architecture-tour.md`
-- Optional JSON section: `risk-summary.json.diagnostics.architectureTour` or equivalent bounded field.
-- Existing integration symbols:
-  - `exportReviewBundleCommand`
-  - `formatReviewBundleMarkdown`
-  - `buildReviewBundleDiagnostics`
+Add:
 
-Implementation rules:
+```ts
+export function buildArchitectureTour(input: ArchitectureTourInput): ArchitectureTour;
+```
 
-- Build the tour from existing `DiffReviewResult`, sidecar status, docs knowledge report, and provenance data already collected by review-bundle export.
-- Include a short "Architecture Tour" section in `REVIEW_REPORT.md` only when cited steps exist.
-- Write `architecture-tour.md` as a disposable snapshot artifact, never canonical graph state.
-- Preserve all existing diagnostics and freshness warnings.
-- Treat docs/ADR evidence as advisory unless linked to changed files or changed symbols.
+Builder rules:
 
-Why this route second:
+- Deterministic ordering for identical input.
+- Prefer graph, symbol, process, and file evidence over docs-only evidence.
+- Group related evidence into steps by stable subject keys.
+- Enforce `maxSteps` and `maxCitationsPerStep`.
+- Report truncation through diagnostics, not hidden omission.
+- Use existing evidence diagnostic and semantic-contract utilities for stale, inferred, advisory,
+  ambiguous, degraded, and truncated evidence.
+- Do not implement a second docs-authority, freshness, citation, or truncation policy.
 
-- OntoIndex impact for `formatReviewBundleMarkdown` is LOW.
-- It reuses the same tour model from the report command.
-- It makes the feature useful for existing review-bundle workflows without broadening analyzer scope.
+### 4. Pure Renderer
 
-Tests:
+Add:
 
-- Extend `ontoindex/test/unit/export-review-bundle.test.ts`.
-- Cover artifact generation, markdown insertion, risk-summary diagnostics, stale graph warnings, and docs-advisory filtering.
+```ts
+export function formatArchitectureTourMarkdown(tour: ArchitectureTour): string;
+```
 
-### 4. Review-Diff MCP Attachment
+Renderer rules:
 
-Expose the tour through MCP only after report/export output is stable.
+- Render only the supplied `ArchitectureTour`.
+- Do not invent missing steps.
+- Do not query graph/docs/review state.
+- Include citation references for every emitted step.
+- Include diagnostics when the tour is advisory, stale, inferred, ambiguous, degraded, or truncated.
 
-- File: `ontoindex/src/mcp/super/diff-impact.ts`
-- Existing symbol: `gnReviewDiff`
-- Add optional result field under the existing response, not a new MCP tool.
+## Rejected From Core
 
-Implementation rules:
+- New generated architecture graph artifacts.
+- Dashboard, web UI, source-preview panel, or graph highlighting.
+- LLM-generated architecture summaries.
+- Multi-agent extraction pipeline.
+- New graph backend or analyzer.
+- New evidence-diagnostic quality taxonomy.
+- Duplicate semantic-contract checker.
+- New MCP tool.
+- Changes to `gn_review_diff` default output.
+- `ontoindex report architecture-tour` as part of the first core implementation.
+- Review-bundle `architecture-tour.md` artifact as part of the first core implementation.
+- Docs-only architecture authority.
 
-- Gate behind an optional parameter such as `include_architecture_tour`.
-- Reuse the shared tour builder and already-collected review-diff evidence.
-- Do not change existing default `gn_review_diff` output.
-- Keep `auditAuthority: false` or equivalent advisory labeling for tour diagnostics.
-- Preserve existing budget and truncation behavior.
+## Later Adapters
 
-Why this route is later:
+After the core module lands and tests prove the contract, later ADRs or implementation notes may add
+thin adapters:
 
-- OntoIndex impact for `gnReviewDiff` is HIGH.
-- It touches MCP dispatch/server/facade paths.
-- It should not be first implementation work.
+1. CLI report adapter that gathers existing graph/process evidence and calls the core builder.
+2. Review-bundle adapter that writes a disposable tour artifact.
+3. Optional MCP attachment under an existing result field, gated by an explicit opt-in parameter.
 
-Tests:
+Those adapters must not change the core rules above.
 
-- Extend `ontoindex/test/unit/super/diff-impact.test.ts` and `ontoindex/test/integration/mcp-facades.test.ts`.
-- Cover opt-in behavior, default output stability, diagnostic authority, and budget/truncation records.
+## Acceptance Criteria
 
-## Implementation Order
+- `architecture-tour.ts` exists under core runtime.
+- The builder accepts already-collected evidence and does not query graph, MCP, HTTP, Git, or files.
+- Every emitted step has at least one citation.
+- Docs-only evidence is advisory and visibly marked.
+- Truncation, stale, ambiguous, degraded, inferred, and unsupported states are diagnostics; unsupported
+  evidence is represented through existing diagnostic fields such as `category`, `reason`,
+  `advisory`, and an existing quality `kind`, not a new quality kind.
+- Existing `EvidenceDiagnosticRecord` and semantic-contract utilities are reused instead of duplicated.
+- Output is deterministic for identical input.
+- Unit tests cover citation enforcement, deterministic ordering, docs-advisory handling, truncation,
+  diagnostic propagation, and markdown rendering.
+- No public CLI/MCP/export behavior changes in the first implementation.
 
-1. Implement shared model and renderer.
-2. Implement `ontoindex report architecture-tour`.
-3. Attach the tour to review-bundle export.
-4. Add opt-in `gn_review_diff` attachment only after fresh OntoIndex impact confirms the risk is acceptable.
+## Validation
 
-## Acceptance Gates
+For implementation work, run focused tests first:
 
-- Every tour step has at least one citation.
-- Stale, inferred, advisory, ambiguous, degraded, or truncated evidence is visible as diagnostics.
-- No generated graph artifact is treated as canonical.
-- No LLM text is required for correctness.
-- No web UI/dashboard work is included.
-- No new MCP tool is introduced in the first implementation.
-- CLI report and export bundle tests pass before MCP work starts.
-- Fresh OntoIndex impact checks are recorded before editing implementation symbols.
+```bash
+cd ontoindex && npm test -- --run test/unit/architecture-tour.test.ts
+cd ontoindex && npx tsc --noEmit --pretty false
+```
+
+Before editing any existing implementation symbol, rerun fresh OntoIndex impact checks for that
+symbol. Adding the new core module does not require impact analysis on existing symbols.
+
+## Consequences
+
+Positive:
+
+- OntoIndex gains reusable core infrastructure for cited architecture walkthroughs.
+- Later CLI/export/MCP surfaces can share one deterministic tour contract.
+- The feature remains evidence-first and does not depend on LLM prose.
+
+Negative:
+
+- The first slice is not directly user-visible unless called by tests or later adapters.
+- Evidence collection remains the responsibility of existing surfaces.
+- Tour quality depends on the quality of supplied citations and diagnostics.
 
 ## Stop Conditions
 
-- Stop if the shared tour model cannot enforce citations.
-- Stop if report/export integration requires a new graph backend or analyzer.
-- Stop if docs-only evidence starts being treated as authoritative architecture evidence.
-- Stop before MCP integration if fresh impact remains HIGH and the maintainer does not explicitly accept that risk.
+- Stop if the core builder cannot enforce citations.
+- Stop if implementation requires a new graph query layer or analyzer.
+- Stop if docs-only evidence is treated as architecture authority.
+- Stop if CLI/export/MCP changes become necessary to prove the core.

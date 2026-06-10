@@ -1,6 +1,6 @@
 # ADR 0022: QMD-Inspired Structured Retrieval and Organic Recommendations
 
-Status: Proposed
+Status: Partially Implemented
 
 ## Context
 
@@ -71,6 +71,13 @@ The constraints are:
    blast-radius data when a safety tool promises exhaustive impact.
 7. **Replay gates are required before tuning.** Retrieval/ranking changes need ADR 0019-style replay
    cases before score weights become release-critical.
+
+## Implementation Status
+
+Partially implemented. Typed-query parsing, structured retrieval output, retrieval policies,
+capability diagnostics, RRF tracing, and organic recommendation gates now exist in the search and
+review surfaces. Replay-gated ranking changes, path context metadata, and optional reranking remain
+bounded follow-up work.
 
 Current-code evidence tightens the decision further:
 

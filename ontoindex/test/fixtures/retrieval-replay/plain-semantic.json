@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "plain-semantic-cache-baseline",
+  "query": "cache service",
+  "repoHint": "/repo",
+  "request": {
+    "action": "semantic",
+    "includeSkeleton": true,
+    "includeContent": true,
+    "consumeEnrichmentFacts": true,
+    "includePassiveRelatedFacts": false,
+    "includeMarkdownContext": false,
+    "includeMarkdownPpr": false,
+    "limit": 5,
+    "qualityMode": "fast"
+  },
+  "expected": {
+    "topK": 5,
+    "identities": [
+      {
+        "kind": "symbol",
+        "uid": "Function:src/cache.ts:CacheStore",
+        "repoPath": "/repo",
+        "filePath": "src/cache.ts",
+        "name": "CacheStore"
+      },
+      {
+        "kind": "file",
+        "filePath": "src/cache.ts"
+      }
+    ],
+    "minimumJaccardAtK": 0.7
+  },
+  "notes": [
+    "Baseline plain-semantic case with no neighborhood policy and content included."
+  ]
+}

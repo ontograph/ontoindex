@@ -55,14 +55,6 @@ ontoindex_query({query: "payment processing"})
 → Symbols grouped by flow with file locations
 ```
 
-**search with symbol-neighborhood** — opt-in semantic frontier over persisted ANN edges:
-
-```
-search({action: "semantic", query: "payment processing", retrieval_policy: "symbol-neighborhood", structured_output: true})
-→ Uses existing BM25/vector seeds, then one backend semantic frontier if embeddings and ANN_NEIGHBOR edges exist
-→ If ANN edges are missing, returns fallback diagnostics and keeps default retrieval behavior
-```
-
 **ontoindex_context** — 360-degree view of a symbol:
 
 ```

@@ -1,6 +1,6 @@
 # ADR 0018: MCP Audit Trust Contract and Customer Readiness Gates
 
-Status: Proposed
+Status: Implemented (core contract; compatibility migration ongoing)
 
 ## Context
 
@@ -66,6 +66,13 @@ P2 audit operations
   manager-level session APIs, write-through verification, test-gap evidence,
   SARIF/JUnit/JSON CI export
 ```
+
+## Implementation Status
+
+Implemented for the core public contract. The codebase now has shared target/freshness policy,
+single registry-backed tool contracts, capability-aware response metadata, `gn_tool_contract`,
+`gn_verify_diff`, worker scope review, audit lifecycle wrappers, and CI export paths. Some surfaces
+retain legacy response compatibility while clients migrate to the newer envelopes.
 
 ## Algorithm/Technique
 

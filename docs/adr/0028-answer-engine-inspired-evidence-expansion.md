@@ -1,6 +1,6 @@
 # ADR 0028: Answer-Engine-Inspired Evidence Expansion for OntoIndex
 
-Status: Proposed - Challenged
+Status: Implemented (core discipline)
 
 Source: [`developersdigest/llm-answer-engine`](https://github.com/developersdigest/llm-answer-engine)
 
@@ -83,6 +83,13 @@ surfaces may consume it incrementally after proving compatibility:
 - `gn_audit_session_verify` only after a separate audit-authority review
 - `gn_help`
 - `gn_tool_contract`
+
+## Implementation Status
+
+Implemented as a core evidence discipline. `EvidenceReadLedger`, `basedOnReads` summaries, evidence
+classification metadata, passive related facts, Markdown context/PPR options, and organic
+recommendation gates now feed existing exploration, docs, review, pre-commit, and safe-edit
+surfaces. This ADR did not add a generic answer engine or external web-search product.
 
 ## Accepted Recommendations
 

@@ -1,6 +1,6 @@
 # ADR-0014: Measurement-gated Rust native kernels
 
-**Status:** Proposed (measurement-gated)
+**Status:** Accepted (partially implemented; native kernels remain opt-in)
 **Date:** 2026-05-05
 **Source:** large-codebase scalability benchmark work
 
@@ -35,6 +35,13 @@ Adopt a **measurement-gated hybrid native-kernel strategy**:
 6. Prefer in-process N-API for bounded kernels; consider a sidecar binary only when crash isolation or independent memory limits are required.
 
 This ADR does not approve a broad rewrite. It approves the architecture rule: Rust is allowed only behind measured, replaceable TypeScript adapters.
+
+## Implementation Status
+
+Partially implemented. The repository now includes `ontoindex-native/` and TypeScript adapters under
+`ontoindex/src/native/` for selected native kernels, including graph/CSV writing and import extraction
+fallback paths. The architecture remains measurement-gated and opt-in; this ADR does not mark every
+candidate kernel as implemented.
 
 ## Algorithm / Technique
 

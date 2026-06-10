@@ -1,78 +1,164 @@
-# ADR 0076: OntoGPT-inspired native LinkML schema governance and recursive SPIRES extraction
+# ADR 0076: Core schema-guided recursive extraction bundle contract
 
-**Status:** Proposed
-**Source:** OntoGPT (GitHub: monarch-initiative/ontogpt) review, 2026-06-01
+**Status:** Implemented (core schema-guided extraction contract)
+**Source:** OntoGPT review; narrowed 2026-06-10
 **External reference:** <https://github.com/monarch-initiative/ontogpt>
 
 ## Context
 
-OntoIndex manages a complex, multi-modal knowledge graph containing AST symbols, architectural semiotics (ADR 0063), and formal ontologies (ADR 0074). Currently, the graph schema is defined implicitly in TypeScript and KuzuDB setup scripts, and architectural rules are enforced via hardcoded semantic contracts (ADR 0033) or external SHACL files. Furthermore, extracting structured meaning from "unstructured" sources—like verbose Markdown docs or legacy code comments—is performed using ad-hoc LLM prompts that often suffer from drift or lack of rigorous validation.
+OntoGPT is useful as a reference because it combines schema-first modeling with schema-guided extraction from unstructured text. The original ADR mixed several layers: LinkML as a source of truth, SPIRES prompt generation, recursive LLM extraction, persistent URI grounding, schema-to-prompt generation, validation, redaction, sidecars, shared packages, and a new MCP grounding tool.
 
-The `ontogpt` framework introduces a more robust approach: **LinkML (Linked Data Modeling Language)** as a unified schema-as-code backbone, and **SPIRES (Structured Prompt Interrogation and Recursive Extraction of Semantics)** as a zero-shot, schema-guided method for recursive knowledge extraction. By adopting these, OntoIndex can move to a "Schema-First" architecture where the graph structure, the extraction prompts, and the validation logic are all derived from a single, versioned source of truth.
+That scope is too broad for a core ADR. OntoIndex already has separate surfaces for graph schema manifests, semantic contracts, ontology validation reports, hypothesis grounding, audit lifecycle, MCP tool contracts, and sidecar enrichment. This ADR must add only new core functionality and must not reopen adapter, sidecar, graph-storage, or LLM decisions.
 
-This ADR extends:
-- [ADR 0015](0015-post-index-enrichment-sidecar.md), for post-index sidecars;
-- semantic contracts;
-- semiotic signs;
-- [ADR 0074](0074-ontologx-inspired-native-formal-ontologies-and-neurosymbolic-reasoning.md), for formal ontologies.
+Current codebase evidence:
 
-## OntoIndex Review Evidence
+- `ontoindex/src/core/graph/subgraph-context.ts` already exposes `buildGraphSchemaManifest` and `buildSubgraphContext`.
+- `ontoindex/src/core/ontology/validation-report.ts` already owns ontology-style validation report composition.
+- `ontoindex/src/core/reasoning/hypothesis-grounding.ts` already owns evidence-to-logic grounding reports.
+- `ontoindex/src/core/contract/versions.ts` already tracks coarse contract versions.
+- `js-yaml` and `zod` are available dependencies, but there is no LinkML, SPIRES, JSON-LD, RDF, or ontology-parser dependency.
+- Source search found no `LinkML`, `SPIRES`, `schema-guided extraction`, `ExtractionBundle`, or `SchemaGuidedExtraction` core module.
+- The local OntoIndex index is up to date at commit `1b0e8ce`.
 
-- OntoIndex lacks a unified **Schema Modeling Language**. Adding a new node type requires manual updates to TypeScript interfaces, KuzuDB DDL, and MCP tool schemas.
-- Current documentation parsing is "Flat." We struggle to extract nested, multi-layered data (e.g., "The `Auth` module implements `Pattern X` which has `Constraint Y` and `Requirement Z`") from Markdown without significant token waste or hallucination.
-- Symbol identity is primarily file-and-name-based. We lack a native core surface for **Persistent URI Grounding** (OAK-style), making it difficult to maintain stable references to symbols and decisions (ADR 0072) as code is refactored across files.
+## Challenge Findings
 
-## Pruned Core Recommendations
+The previous ADR should not be implemented as written.
 
-### 1. `LinkML-Driven Schema Core` (Unified Modeling)
-- **Capability:** A core subsystem that uses LinkML YAML to define the OntoIndex graph schema (Node types, Slots/Properties, and Enum domains).
-- **Native Surface:** `ontoindex/src/core/schema/linkml-definitions.yaml`.
-- **Purpose:** Automatically generate the TypeScript types, KuzuDB schemas, and MCP JSON-Schema definitions from a single source, ensuring "Schema Parity" across the entire stack.
-
-### 2. `SPIRES-Extraction Engine` (Recursive Interrogation)
-- **Capability:** A specialized extraction service that transforms a LinkML schema and unstructured text (Markdown/Comments) into a structured LLM prompt using the SPIRES "Interrogation" template.
-- **Native Surface:** `ontoindex/src/core/extraction/spires-engine.ts`.
-- **Logic:** Enables recursive extraction, where a parent object (e.g., `Module`) automatically triggers sub-interrogations for its children (e.g., `Invariants`, `SideEffects`).
-
-### 3. `Persistent URI Grounding` (OAK Lane)
-- **Capability:** A mapping facility that assigns stable, globally unique URIs (e.g., `ontoindex:symbol/auth/v1/Validator`) to every code symbol, documentation requirement, and architectural decision.
-- **Native Surface:** `ontoindex/src/core/ontology/grounding-manager.ts`.
-- **Purpose:** Enable long-term "Decisional Memory" and cross-repo referencing (ADR 0061) that survives file renames.
-
-### 4. `Schema-to-Prompt Bridge`
-- **Capability:** A utility that programmatically generates "System Prompts" for agentic tools (ADR 0025) directly from the LinkML schema, ensuring the agent's internal model of the data matches the system's structural constraints.
-- **Native Surface:** `ontoindex/src/core/schema/prompt-generator.ts`.
-
-### 5. `Multi-Layered Data Validator`
-- **Capability:** A runtime validator that checks LLM-extracted data against LinkML constraints (Types, Ranges, Required fields) before it is committed to the graph.
-- **Native Surface:** `ontoindex/src/core/schema/linkml-validator.ts`.
-
-### 6. `LinkMLMixinsAndInheritance` (DRY Graph Definition)
-- **Capability:** Leverage LinkML's `mixins` and `slots` inheritance to clean up the KuzuDB node definitions (e.g., instead of repeating `timestamp` on every node, apply a `HasTimestamp` mixin).
-- **Native Surface:** Extension of `linkml-definitions.yaml`.
-
-### 7. `SchemaDrivenRedaction` (Agent Masking)
-- **Capability:** Use LinkML slot annotations (e.g., `annotations: { sensitive: true }`) to automatically strip fields from the graph *before* they are sent to an LLM context window.
-- **Native Surface:** `ontoindex/src/core/schema/redaction-filter.ts`.
+1. LinkML-as-source-of-truth would require schema migration strategy, code generation, Kuzu DDL generation, MCP JSON-schema generation, and cross-package release governance.
+2. SPIRES extraction is an LLM/prompt workflow, not a deterministic core primitive.
+3. A post-index extraction sidecar is blocked by the postponed sidecar ADR and must not be smuggled into this scope.
+4. Persistent URI grounding overlaps with existing identity, graph, summary-tree grounding, and future ontology decisions.
+5. Schema-to-prompt generation is an adapter concern and would couple core to prompts.
+6. Redaction-by-schema is useful but belongs to audit/context rendering policy, not this first core slice.
+7. A new `gn_ground_symbol` tool is an MCP adapter and must not be the implementation target.
+8. LinkML mixins, inheritance, and DDL generation are build/governance work, not a small core extension.
 
 ## Decision
 
-Implement the **LinkML Schema Governance and SPIRES Extraction Contract** to unify OntoIndex knowledge representation and improve extraction fidelity.
+Add only one new core capability: a schema-guided recursive extraction bundle contract.
 
-### Implementation Solution: Pure Contract First
+The contract accepts a small OntoIndex-native extraction schema and already-extracted candidate objects, then returns a deterministic validation and normalization report. It does not parse LinkML, generate prompts, call an LLM, read Markdown, query the graph, write sidecar data, create URIs, or generate database schemas.
 
-1. **`LinkMLSource`**: Establish the `ontoindex-shared/src/schema/linkml/` folder as the source of truth for all graph entities.
-2. **`ExtractionSidecar`**: Register a post-index sidecar that runs the SPIRES engine over Markdown documentation to extract structured architectural facts.
-3. **`gn_ground_symbol`**: A new internal tool for assigning and resolving persistent URIs for graph nodes.
+## Core Functionality
 
-## Rejected From Core
+Create `ontoindex/src/core/extraction/schema-guided-extraction.ts`.
 
-- **Dynamic Schema Evolution**: We use LinkML for *static* schema definition and versioning. We do not allow agents to dynamically modify the LinkML YAML at runtime.
-- **Direct LinkML-to-Neo4j/Kuzu DDL Generation**: We use LinkML to define the *structure*; the actual KuzuDB DDL generation is a separate, human-vetted build step to ensure database performance.
+The module should expose deterministic data structures and pure functions for validating nested extraction bundles before an adapter decides whether to persist or render them.
+
+Minimum API:
+
+- `ExtractionScalarType`: `string`, `number`, `boolean`, or `object`.
+- `ExtractionSlotSchema`: slot name, range, required flag, repeated flag, optional enum values, optional sensitivity marker.
+- `ExtractionClassSchema`: class name and slots.
+- `ExtractionSchemaDocument`: schema id, version, root class, and classes.
+- `ExtractionCandidate`: candidate id, class name, fields, optional source span, optional confidence, optional metadata.
+- `ExtractionBundleInput`: schema document, candidates, optional limits.
+- `ExtractionValidationIssue`: deterministic issue with candidate id, path, code, severity, and message.
+- `ExtractionBundleReport`: normalized candidates, issues, summary counts, redaction manifest, truncation metadata.
+- `buildSchemaGuidedExtractionReport(input)`: pure report builder.
+
+## Algorithm/Technique
+
+1. Validate the schema document:
+   - schema id, version, root class, class names, and slot names must be non-empty strings;
+   - root class must exist;
+   - slot ranges must refer to scalar types or known class names;
+   - repeated and required flags default to false.
+2. Normalize candidates:
+   - trim candidate id and class name;
+   - reject unknown candidate classes with an issue instead of throwing;
+   - preserve source span and metadata as opaque values;
+   - sort candidates deterministically by class name and id.
+3. Validate fields recursively:
+   - required missing fields produce `error`;
+   - scalar range mismatches produce `error`;
+   - unknown fields produce `warning`;
+   - enum mismatches produce `error`;
+   - repeated slots must be arrays and validate each element;
+   - object slots must match the referenced class schema.
+4. Build a redaction manifest:
+   - any slot marked sensitive emits a path in the manifest;
+   - the function does not redact values directly unless a future adapter opts in.
+5. Enforce limits:
+   - `maxCandidates` limits emitted normalized candidates;
+   - `maxIssues` limits emitted issues;
+   - counts are computed from the full accepted input, not just emitted rows.
+6. Return a plain object with deterministic ordering and no side effects.
+
+## Required Behavior
+
+- Pure TypeScript only.
+- No imports from `ontoindex/src/mcp/**`.
+- No LinkML parser, SPIRES prompt engine, JSON-LD/RDF/OWL support, graph/Kuzu access, file-system access, sidecar access, web access, or LLM calls.
+- No package dependency additions.
+- Deterministic output for identical input.
+- Explicit validation issues instead of hidden coercion.
+- Preserve adapter metadata as opaque values.
+- Keep redaction as manifest generation only.
+
+## Rejected From This ADR
+
+- LinkML YAML source of truth.
+- LinkML-to-TypeScript, LinkML-to-Kuzu, or LinkML-to-MCP schema generation.
+- SPIRES prompt generation.
+- Recursive LLM extraction.
+- Markdown or comment parsing.
+- Persistent URI grounding.
+- MCP tools such as `gn_ground_symbol`.
+- Post-index extraction sidecar.
+- Runtime graph writes.
+- Audit lifecycle schema changes.
+- Schema-driven prompt redaction or context rendering.
+
+## Later Adapter Opportunities
+
+Future adapters may call `buildSchemaGuidedExtractionReport` after they collect extracted objects from Markdown, comments, LLMs, or sidecars. Those adapters must provide the schema and candidates explicitly.
+
+Possible later integrations:
+
+- A LinkML adapter can translate a vetted LinkML subset into `ExtractionSchemaDocument`.
+- A SPIRES adapter can use the schema to build prompts, then validate model output with this report builder.
+- A docs sidecar can feed candidate objects into this core contract.
+- A redaction renderer can consume the redaction manifest before sending context to an agent.
+
+## Acceptance Criteria
+
+- New module exists at `ontoindex/src/core/extraction/schema-guided-extraction.ts`.
+- Focused unit tests exist at `ontoindex/test/unit/schema-guided-extraction.test.ts`.
+- Tests cover schema validation, nested object validation, repeated slots, required fields, enum validation, unknown fields, deterministic ordering, issue limits, candidate limits, redaction manifest generation, and absence of forbidden imports.
+- Existing graph schema, ontology validation, hypothesis grounding, MCP mode, and sidecar tests remain unchanged.
+- No package dependencies are added.
 
 ## Validation Gates
 
-- `npm run build`
-- Unit tests verifying that the SPIRES engine correctly extracts a nested `SideEffect` object from a Markdown comment.
-- Assertion that the `LinkML-to-TypeScript` generator produces types that match the existing hand-authored interfaces.
-- Performance check: LinkML-based validation of an extraction bundle must complete in <50ms to avoid blocking tool turns.
+- `cd ontoindex && npm test -- --run test/unit/schema-guided-extraction.test.ts`
+- `cd ontoindex && npx tsc --noEmit --pretty false`
+- `git diff --check -- docs/adr/0076-ontogpt-inspired-native-linkml-schema-governance-and-recursive-spires-extraction.md docs/adr/0000-index.md ontoindex/src/core/extraction/schema-guided-extraction.ts ontoindex/test/unit/schema-guided-extraction.test.ts`
+
+## Consequences
+
+Positive:
+
+- OntoIndex gains a reusable core contract for validating nested extracted facts.
+- LinkML and SPIRES ideas remain possible later without committing core to a parser or LLM workflow.
+- Redaction-sensitive schema annotations can be represented without changing context rendering yet.
+
+Negative:
+
+- This does not make LinkML the source of truth.
+- This does not extract facts from Markdown by itself.
+- Adapters still need to collect text, run extraction, and decide persistence policy.
+
+## Stop Conditions
+
+Stop and write a separate ADR if implementation requires:
+
+- adding LinkML, RDF, JSON-LD, SHACL, OWL, or SPIRES dependencies;
+- parsing files from disk;
+- generating prompts;
+- calling an LLM;
+- querying or writing Kuzu/LadybugDB;
+- adding a sidecar;
+- adding an MCP tool;
+- changing graph schema or audit schema;
+- changing redaction rendering behavior.

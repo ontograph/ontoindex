@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "id": "graph-only-baseline",
+  "query": "CacheStore neighborhood",
+  "repoHint": "/repo",
+  "request": {
+    "action": "semantic",
+    "retrievalPolicy": "graph-only",
+    "includeSkeleton": false,
+    "includeContent": false,
+    "consumeEnrichmentFacts": true,
+    "includePassiveRelatedFacts": false,
+    "includeMarkdownContext": false,
+    "limit": 6,
+    "qualityMode": "balanced"
+  },
+  "expected": {
+    "topK": 6,
+    "identities": [
+      {
+        "kind": "symbol",
+        "uid": "Function:src/index.ts:initCacheGraph",
+        "repoPath": "/repo",
+        "filePath": "src/index.ts",
+        "name": "initCacheGraph"
+      },
+      {
+        "kind": "symbol",
+        "uid": "Function:src/graph.ts:expandCacheNeighborhood",
+        "repoPath": "/repo",
+        "filePath": "src/graph.ts",
+        "name": "expandCacheNeighborhood"
+      }
+    ],
+    "minimumJaccardAtK": 0.4,
+    "requireTop1Stable": false
+  },
+  "notes": [
+    "Graph-only retrieval should avoid passive docs and markdown expansions."
+  ]
+}

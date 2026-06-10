@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "id": "graph-passive-docs-neighborhood",
+  "query": "cache policy docs",
+  "repoHint": "/repo",
+  "request": {
+    "action": "semantic",
+    "retrievalPolicy": "graph-with-passive-docs",
+    "includeSkeleton": false,
+    "includeContent": false,
+    "consumeEnrichmentFacts": true,
+    "includePassiveRelatedFacts": true,
+    "includeMarkdownContext": true,
+    "includeMarkdownPpr": true,
+    "limit": 8,
+    "qualityMode": "balanced"
+  },
+  "expected": {
+    "topK": 8,
+    "identities": [
+      {
+        "kind": "symbol",
+        "uid": "Function:src/index.ts:initCacheGraph",
+        "repoPath": "/repo",
+        "filePath": "src/index.ts",
+        "name": "initCacheGraph"
+      },
+      {
+        "kind": "doc-section",
+        "docPath": "docs/cache-behavior.md",
+        "headingPath": ["Cache Behavior", "Policy Notes"],
+        "repoPath": "/repo"
+      }
+    ],
+    "minimumJaccardAtK": 0.35
+  },
+  "notes": [
+    "Passive docs should be available alongside graph expansion."
+  ]
+}

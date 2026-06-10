@@ -1,6 +1,6 @@
 # ADR 0023: Serena Follow-Up Memory and Diagnostics Guardrails
 
-Status: Proposed
+Status: Implemented
 
 ## Context
 
@@ -56,6 +56,13 @@ Evidence note:
 The unsafe version of this proposal would treat memories as a soft evidence channel, add a write-capable
 MCP surface before validation exists, or expose session diagnostics as an unbounded telemetry product.
 Those outcomes conflict with OntoIndex' audit model.
+
+## Implementation Status
+
+Implemented. Advisory memory parsing and resources enforce `not_audit_evidence: true`, path
+normalization, freshness validation, and bounded resource output. `gn_docs` supports explicit
+`includeMemories` for advisory context/readiness only, and the HTTP server exposes authenticated,
+redacted MCP diagnostics.
 
 The current codebase also changes the shape of the work:
 

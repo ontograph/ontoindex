@@ -1,299 +1,152 @@
-# ADR 0027: MCP Startup Surface Profiles and Lazy Tool Loading
+# ADR 0027: Core MCP startup profile measurement gates
 
-Status: Proposed - Challenged
+**Status:** Proposed - Challenged/Core Extension Only
+**Source:** MCP startup-time review; narrowed 2026-06-10
 
 ## Context
 
-OntoIndex now exposes a large MCP frontier. The public server currently advertises dozens of
-super-functions plus facade tools, and the startup path serializes every public tool definition.
-That is useful for discoverability, but expensive for agents that only need the common workflow:
-inspect project state, ask for help, query code, check safety, and then request a more specific
-tool only when needed.
+The original ADR proposed MCP startup profiles, profile-aware help/contract reporting, hidden-but-callable compatibility, and lazy super-function loading. Current code review shows those are no longer future work:
 
-The current architecture also has two different startup costs:
+- `McpStartupProfile`, `ONTOINDEX_MCP_STARTUP_PROFILE`, `public-full`, and profile filtering already exist in `ontoindex/src/mcp/shared/tool-registry.ts`.
+- `getMcpStartupProfileToolReport()` already reports advertised tool count, hidden-but-callable count, full public count, facade inclusion, and `advertise_only` enforcement.
+- `createMCPServer()` already reads the active startup profile and advertises `getPublicToolDefinitions({ startupProfile })`.
+- `server.ts` avoids eager `dispatchSuper` import by dynamically importing `./super/dispatch.js` only in `dispatchLazySuper()`.
+- `super/dispatch.ts` uses type-only imports at module load and dynamic imports inside dispatch cases.
+- `gn_help` and `gn_tool_contract` already expose startup-profile state.
+- Focused tests already cover startup profile parsing, profile counts, hidden-callable reporting, help output, contract output, and lazy server loading.
+- Local OntoIndex search on 2026-06-10 found no `startup-profile-measurement`, `measureMcpStartupProfiles`, or `McpStartupProfileMeasurementReport` implementation.
+- Existing `payloadBytes` fields belong to ingestion worker telemetry and do not measure MCP `ListTools` startup surfaces.
 
-1. **Discovery payload cost:** the MCP `ListTools` response includes all public tool schemas,
-   descriptions, and metadata.
-2. **Runtime module-load cost:** the super-function dispatcher imports many implementations
-   eagerly, even when a session never calls those tools.
+Those implemented surfaces should not be re-planned as ADR 0027 tasks. The remaining core gap is measurement: OntoIndex does not yet have a pure, reusable measurement contract that computes profile payload size and startup-surface deltas for release gating.
 
-ADR 0025 already created the tool contract registry and drift gates. ADR 0026 added evidence
-classification and organic-recommendation guardrails. Any startup optimization must preserve those
-contracts instead of introducing a parallel tool system.
+## Challenge Findings
 
-Current source review found two important implementation facts:
-
-- `createMCPServer()` currently builds the advertised MCP frontier from
-  `getPublicToolDefinitions()` in normal mode, while `options.full` switches to
-  `INTERNAL_TOOL_HANDLERS`.
-- `server.ts` imports `dispatchSuper` from `super/dispatch.ts` at module load time, and
-  `dispatch.ts` statically imports the super-function implementation modules.
-
-Therefore profile filtering alone can reduce the `ListTools` response, but it will not reduce all
-startup cost until the eager `dispatchSuper` import path is changed.
+1. Startup profile filtering is already implemented and tested.
+2. Hidden-but-callable compatibility reporting is already implemented and tested.
+3. Help and tool-contract profile reporting are already implemented.
+4. Lazy super-function implementation imports are already in place.
+5. Switching the default profile from `public-full` to `core` is a release compatibility decision, not a new core feature.
+6. Schema compaction is risky because MCP input schemas are part of the stable contract.
+7. Warm daemons, facade-first discovery, multiple MCP servers, and strict profile enforcement are product/runtime policies, not the remaining core extension.
 
 ## Decision
 
-Adopt **profiled MCP startup surfaces** as the first optimization, then add **lazy super-function
-handler loading** behind the existing dispatcher.
+Add one core extension: a pure MCP startup profile measurement module that quantifies profile payload size and profile deltas without starting an MCP server or changing the advertised tool contract.
 
-The default agent-facing MCP server should advertise a small, organic default profile while keeping
-the complete public tool set available through an explicit `public-full` profile. The implementation must keep
-`gn_tool_contract`, `gn_help`, and the registry as the source of truth, so startup shrinkage is a
-filtered view of the same public contract, not a second contract.
+This keeps the part of ADR 0027 that is still new and core:
 
-## Recommended Implementation
+- measure startup profile payload size deterministically;
+- compare `core`, `query`, `audit`, `refactor`, `systems`, and `public-full`;
+- expose release-gate data before any default-profile switch;
+- keep ADR 0025 registry data as the source of truth.
 
-### 1. Add MCP startup profiles
+## Core Functionality
 
-Introduce a profile selector, for example:
+Create a pure module:
 
-```text
-ONTOINDEX_MCP_STARTUP_PROFILE=core|query|audit|refactor|systems|public-full
-```
+`ontoindex/src/mcp/shared/startup-profile-measurement.ts`
 
-Recommended profile meanings:
+The module should expose types similar to:
 
-| Profile | Advertised tools | Intended user |
-| --- | --- | --- |
-| `core` | facades, `gn_help`, `gn_tool_contract`, `gn_diagnose`, freshness/safety basics | default agent startup |
-| `query` | core plus code/docs/query/navigation tools | exploration sessions |
-| `audit` | core plus review, evidence, replay, verification, systems-audit tools | audit sessions |
-| `refactor` | core plus impact, safe-edit, rename/refactor tools | code-change sessions |
-| `systems` | core plus lifecycle, FD, fork, signal, taint, ABI, and resource tools | systems audits |
-| `public-full` | current public frontier | compatibility and power users |
+- `McpStartupProfileMeasurement`
+- `McpStartupProfileMeasurementInput`
+- `McpStartupProfileMeasurementReport`
+- `McpStartupProfileMeasurementDelta`
+- `McpStartupProfileMeasurementLimits`
 
-Avoid naming this profile `full`. In the current server implementation, `options.full` means the
-legacy/internal MCP handler set, not the normal public super-function frontier. Reusing `full` would
-make release notes and support diagnostics ambiguous.
+The module should expose:
 
-The default should be `core` only after compatibility has been tested. Until then, use
-`public-full` as the default and let agents opt into `core` with an environment variable.
+- `measureMcpStartupProfiles(input): McpStartupProfileMeasurementReport`
 
-Do not create a completely separate policy axis if the existing registry modes can carry the same
-meaning. The first implementation should map startup profiles onto existing `AgentMode` metadata
-where possible:
+## Required Behavior
 
-| Startup profile | Existing registry mode relationship |
-| --- | --- |
-| `query` | likely maps to `query-projects` plus facades |
-| `audit` | maps to `audit` |
-| `refactor` | maps to `refactor` |
-| `public-full` | no mode filter |
-| `core` | small allowlist, because no current `AgentMode` means "minimal bootstrap" |
-| `systems` | probably needs new metadata or category filtering because current modes do not isolate systems-audit tools |
+The core implementation must:
 
-### 2. Keep hidden tools callable during the migration
+1. Accept supplied profile names and supplied public tool definitions or registry entries.
+2. Measure each profile deterministically:
+   - advertised tool count;
+   - facade count;
+   - super-tool count;
+   - JSON serialized `ListTools` payload bytes;
+   - input-schema bytes;
+   - description bytes;
+   - largest tool definitions by serialized size.
+3. Compute deltas against a configurable baseline profile, defaulting to `public-full`.
+4. Report reduction ratios and absolute byte deltas.
+5. Preserve enough per-tool detail to explain why a profile is large.
+6. Return warnings for missing baseline profile, duplicate tool names inside a profile, empty profiles, and invalid byte budgets.
+7. Support optional budgets such as max payload bytes and max advertised tools.
+8. Return pass/fail budget results without changing runtime behavior.
+9. Avoid all MCP server startup, transport access, graph access, database access, file reads, process env reads, timers, random values, or LLM calls.
 
-In the first slice, profile filtering should only change the advertised `ListTools` response. The
-dispatcher may still accept calls to tools that are hidden by the current profile. This avoids
-breaking existing agents that know exact tool names while still shrinking startup payload for agents
-that rely on discovery.
+## Algorithm/Technique
 
-After telemetry and tests prove compatibility, a later release may add strict profile enforcement.
-Strict enforcement must be explicit and separately documented.
+Use a pure serialization and aggregation pipeline:
 
-Challenge: hidden-but-callable tools must not become a permanent bypass around discovery and
-permission expectations. `gn_tool_contract` should report this as `enforcement: "advertise_only"`
-and expose the hidden callable names or counts so users can tell whether a session is operating in a
-compatibility mode.
+1. Normalize profile names and tool definitions from supplied input.
+2. Sort profiles and tool definitions by stable string keys.
+3. For each profile, serialize the same `ListTools` shape the server advertises: `{ tools: [{ name, description, inputSchema }] }`.
+4. Count UTF-8 bytes with `TextEncoder` or a deterministic equivalent.
+5. Separately count bytes for descriptions and input schemas.
+6. Build largest-tool diagnostics sorted by serialized bytes descending, then name.
+7. Compare every profile to the baseline profile.
+8. Evaluate optional budgets and return structured budget results.
 
-### 3. Report profile state through existing contracts
+The module must not call `getPublicToolDefinitions()` itself. Runtime adapters and tests can supply definitions from the existing registry.
 
-Extend `gn_tool_contract` and `gn_help` to show:
+## Rejected From Core
 
-- active profile;
-- advertised tool count;
-- hidden-but-callable tool count;
-- full public tool count;
-- whether facade tools are included;
-- whether the current server is running in compatibility mode or strict profile mode.
+- Re-implementing startup profile filtering.
+- Re-implementing `getMcpStartupProfileToolReport()`.
+- Re-implementing `gn_help` or `gn_tool_contract` startup-profile sections.
+- Changing the default profile from `public-full` to `core`.
+- Strict profile enforcement.
+- Schema compaction that changes stable MCP input schemas.
+- Warm MCP daemon.
+- Facade-first discovery as the default.
+- Splitting OntoIndex into multiple MCP servers.
+- Measuring wall-clock startup time inside the pure core module.
 
-This keeps ADR 0025 drift checks useful even when different sessions advertise different frontiers.
+These can be handled later by release policy, CLI/MCP adapters, or benchmarking scripts after the pure measurement contract exists.
 
-### 4. Lazy-load super-function handlers
+## Later Adapter Opportunities
 
-After profile filtering lands, replace eager dispatcher imports with a lazy handler registry. The
-dispatcher should load an implementation module only when that tool is called.
+After the pure module lands, later work may:
 
-This targets the second startup cost. Profile filtering reduces `ListTools` payload; lazy loading
-reduces cold module initialization.
-
-The lazy-loading implementation must start at `server.ts`, not only inside `dispatch.ts`. If
-`server.ts` continues to statically import `dispatchSuper` from `super/dispatch.ts`, Node will still
-evaluate `dispatch.ts` and its implementation imports during server startup. The first lazy-loading
-slice should either:
-
-1. move `SUPER_NAMES` to a small name-only registry module and dynamically import `dispatchSuper`
-   only on a super-tool call; or
-2. rewrite `dispatch.ts` so its top-level imports are type-only or name-only and each case performs
-   a dynamic import.
-
-The first option has the cleaner startup boundary because `server.ts` can answer `ListTools`
-without evaluating super-function implementations.
-
-### 5. Compact default-profile schemas
-
-For default startup only, use concise descriptions and avoid embedding nonessential explanatory
-metadata where MCP clients do not need it up front. Full details should remain available through
-`gn_tool_contract` or the `public-full` profile.
-
-Do not remove properties from stable JSON input schemas as a startup shortcut. That would change how
-MCP clients discover valid arguments and could conflict with ADR 0025 snapshot expectations. Schema
-compaction is acceptable only if it preserves the stable validation contract or is implemented as a
-separate abbreviated discovery layer.
-
-## Review and Challenge
-
-Reviewed on 2026-05-23 against the current OntoIndex MCP implementation.
-
-Evidence:
-
-- `gn_diagnose({repo: "OntoIndex", checkToolContract: true})` reported a stale index but a clean MCP
-  tool contract: 51 advertised super-functions and 8 facade tools.
-- `gn_tool_contract({includeFacades: true})` reported no missing or extra callable tools in the
-  active MCP session.
-- Direct source review found `server.ts` advertises `getPublicToolDefinitions()` in normal mode and
-  routes super-functions through the statically imported `dispatchSuper`.
-- Direct source review found `tool-registry.ts` already has `AgentMode` filtering and
-  `getPublicToolDefinitions(options)`, so startup profiles should extend that registry rather than
-  inventing a second public-tool list.
-- Direct source review found `super/dispatch.ts` statically imports every super-function
-  implementation module, so true module-load savings require a dispatcher import boundary change.
-
-Challenge findings:
-
-1. **Profile naming must avoid existing `full` semantics.** Use `public-full` for the current public
-   super/facade frontier. Keep `options.full` reserved for the existing internal handler path unless
-   that path is renamed in a separate migration.
-2. **Do not duplicate `AgentMode` without a reason.** Most proposed profiles map to existing
-   registry modes. Only `core` and maybe `systems` need new selection logic.
-3. **Advertise-only compatibility needs an exit plan.** Hidden-but-callable tools are useful for
-   migration, but they must be visible in contracts and should not silently become the long-term
-   permission model.
-4. **Lazy loading must remove the `server.ts -> dispatch.ts` eager edge.** A lazy registry inside
-   `dispatch.ts` is insufficient if the server still imports the dispatcher at startup.
-5. **Schema compaction is risky.** Stable input schemas are part of the MCP contract. Reduce
-   descriptions and metadata first; abbreviate schemas only if the validation contract remains
-   unchanged or the abbreviated form is clearly separate from the stable schema.
-6. **Measurement must gate default changes.** Do not switch the default from `public-full` to `core`
-   until payload bytes, startup time, and agent task success are measured on representative sessions.
-
-## Why Facade-First Is Deferred
-
-Facade-first discovery is useful, but it should not be the first slice.
-
-Reasons:
-
-1. It changes the product contract more than it changes startup mechanics.
-2. It can hide important OntoIndex intent boundaries unless routing explanations are excellent.
-3. It risks weakening ADR 0018, ADR 0025, and ADR 0026 trust boundaries if facade output does not
-   expose evidence class, freshness, provenance, and recommendation authority.
-4. It does not reduce module-load cost by itself if the dispatcher still imports all handlers.
-5. It needs a compatibility period because some agents use exact tool names.
-
-Recommendation: use facades heavily inside the `core` profile, but do not remove direct tools from
-the `public-full` profile. Revisit facade-first as a phase 2 cleanup after profile filtering and lazy
-loading are measured.
-
-## Why Warm Daemon Is Deferred
-
-A warm MCP daemon could reduce repeated process cold starts, but it does not reduce the large
-tool-list/schema payload. It also introduces lifecycle risks:
-
-- stale index or stale runtime state;
-- cross-session state leakage;
-- process supervision complexity;
-- harder provenance and source-identity debugging;
-- more failure modes around shutdown and workspace switching.
-
-Recommendation: consider a warm daemon only if measured startup remains too slow after profiles,
-lazy imports, and schema compaction. If added, it must report runtime source identity and freshness
-through `gn_diagnose` and `gn_tool_contract`.
-
-## Alternatives Considered
-
-### Keep the current public frontier
-
-Rejected as the only default. It maximizes discoverability but keeps startup expensive for every
-agent session, including sessions that only need a few tools.
-
-### Split OntoIndex into multiple MCP servers
-
-Deferred. Separate servers can reduce per-session tool count, but they increase installation,
-configuration, and support burden. Profiles provide most of the benefit inside the existing server.
-
-### Remove low-use tools from public MCP
-
-Rejected. Low-use tools may still be important for specific audits. The problem is startup
-advertisement, not necessarily tool existence.
-
-### Build a new agent router
-
-Rejected for this ADR. OntoIndex already has facades, `gn_help`, `gn_tool_contract`, and the registry.
-A new router would duplicate responsibility and weaken the existing contract model.
-
-## Implementation Plan
-
-1. Add profile metadata and a profile filter to `ontoindex/src/mcp/shared/tool-registry.ts`.
-2. Update `createMCPServer` list-tools behavior to use the active profile.
-3. Extend `gn_tool_contract` with active-profile and hidden-tool reporting.
-4. Extend `gn_help` to explain how to switch profiles and discover the full frontier.
-5. Add focused tests for profile counts, facade inclusion, full-profile parity, and contract output.
-6. Move super-tool name discovery out of `super/dispatch.ts` so `server.ts` can avoid eager
-   dispatcher imports during startup.
-7. Convert super-function dispatcher implementation imports to lazy imports.
-8. Add timing/payload measurements before and after profile and lazy-load changes.
-
-## Implementation Guardrails
-
-- Treat `public-full` as a filtered view of the ADR 0025 registry, not a new registry.
-- Keep `INTERNAL_TOOL_HANDLERS` and legacy `options.full` behavior out of the startup-profile
-  contract unless a later ADR explicitly migrates it.
-- Keep `core` small enough to matter. A useful first target is facades plus
-  `gn_help`, `gn_tool_contract`, `gn_diagnose`, `gn_ensure_fresh`, and `gn_quality_mode`.
-- Do not add strict enforcement until advertise-only compatibility has a measured migration window.
-- Do not allow profile filtering to alter ADR 0026 evidence classification or organic recommendation
-  authority.
+- expose measurement output through `gn_tool_contract`;
+- add a CLI/report command that prints profile payload deltas;
+- add CI snapshots for profile payload size;
+- use measurements to decide whether `core` can become the default profile;
+- add wall-clock startup benchmarks outside the pure core module.
 
 ## Acceptance Criteria
 
-- Default profile can advertise a substantially smaller tool frontier.
-- `public-full` profile preserves the current public MCP surface.
-- `gn_tool_contract` reports no registry drift in every profile.
-- Hidden tools remain callable during the migration period.
-- ADR 0026 evidence classes and organic-recommendation guardrails are unchanged.
-- Lazy imports do not change handler behavior or structured output envelopes.
-- Startup payload size and server initialization time are measured before and after the change.
-- `server.ts` can answer `ListTools` for a small profile without loading all super-function
-  implementation modules.
+1. `ontoindex/src/mcp/shared/startup-profile-measurement.ts` exists and exports the public types/function above.
+2. The implementation is pure and deterministic.
+3. Unit tests cover:
+   - payload-byte measurement;
+   - description/schema byte accounting;
+   - baseline deltas;
+   - largest-tool diagnostics;
+   - duplicate tool warnings;
+   - empty profile warnings;
+   - budget pass/fail;
+   - stable sorting;
+   - no server/env/DB/fs/MCP transport dependency.
 
-## Validation
+## Validation Gates
 
-For code changes that implement this ADR, run:
+- `cd ontoindex && npm test -- --run test/unit/super/startup-profile-measurement.test.ts`
+- `cd ontoindex && npx tsc --noEmit --pretty false`
 
-```bash
-cd ontoindex && npx tsc --noEmit --pretty false
-cd ontoindex && npx vitest run test/unit/super/tool-contract.test.ts test/unit/super/help.test.ts test/unit/tool-contract-schema.test.ts
-cd ontoindex && npm run build
-```
+## Stop Conditions
 
-Before commit, also run the OntoIndex pre-commit audit and inspect changed symbols through the
-OntoIndex change detector required by the project instructions.
+Stop and re-review the ADR if implementation requires:
 
-## Consequences
-
-Pros:
-
-- Smaller default MCP startup payload.
-- Lower cognitive load for agents.
-- Full compatibility path remains available.
-- ADR 0025 registry remains the source of truth.
-- Lazy loading can reduce cold process cost without changing tool contracts.
-
-Cons:
-
-- Tool discovery becomes profile-dependent.
-- Tests must cover multiple frontiers instead of one.
-- Help and contract output need to explain hidden-but-callable tools clearly.
-- Strict enforcement, if added later, will require a separate compatibility decision.
+- changing profile filtering behavior;
+- changing the default startup profile;
+- modifying MCP input schemas;
+- starting an MCP server;
+- reading environment variables;
+- measuring wall-clock time inside the core module;
+- changing `gn_help`, `gn_tool_contract`, or server dispatch before the pure measurement module exists.

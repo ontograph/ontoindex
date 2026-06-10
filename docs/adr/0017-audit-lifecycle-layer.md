@@ -1,6 +1,6 @@
 # ADR 0017: Audit Lifecycle Layer
 
-Status: Proposed
+Status: Implemented
 
 ## Context
 
@@ -42,6 +42,13 @@ Do not add a large set of unrelated top-level MCP primitives first. Start with a
 - `gn_audit_ingest`
 
 Later features such as path verification, resource tracing, stale-audit explanation, scope guards, and test suggestions should build on the same finding model.
+
+## Implementation Status
+
+Implemented. The audit lifecycle subsystem exists under `ontoindex/src/core/audit-lifecycle/`, with
+finding schema, event store/projection, verify/lint/bundle flows, fix history, scope guard,
+tombstones, replay, dispatch prompts, and CI export integration. CLI and MCP wrappers expose the
+ingest, verify, lint, bundle, and fix-history workflows.
 
 ## Algorithm/Technique
 

@@ -1,4 +1,5 @@
 export * from './additional-analyzers.js';
+export * from './coverage-manifest.js';
 export * from './abi-diff.js';
 export * from './boundary-trace.js';
 export * from './concurrency-audit.js';

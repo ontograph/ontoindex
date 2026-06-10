@@ -1,6 +1,6 @@
 # ADR 0020: Graph-Aware Diff Review and Review Reports
 
-Status: Proposed
+Status: Implemented (v1 local review; follow-ups remain)
 
 ## Context
 
@@ -65,6 +65,12 @@ the existing diff-impact/detect-changes surfaces, the impact kernel where it is 
 and the ADR 0018 envelope. Review bundles, hub reports, surprising
 connections, hosted PR lookup, MCP exposure, and sidecar cache improvements remain follow-up work
 gated by the v1 report contract.
+
+## Implementation Status
+
+Implemented for the v1 local review contract. `ontoindex review diff`, shared review types/builders,
+`gn_diff_impact`, and `gn_review_diff` now provide local graph-aware diff review with freshness and
+provenance metadata. Hosted PR adapters and additional report exports remain follow-up work.
 
 ### OntoIndex Evidence Check
 

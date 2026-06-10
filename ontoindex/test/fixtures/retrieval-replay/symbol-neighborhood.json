@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "id": "symbol-neighborhood-expansion",
+  "query": "CacheStore",
+  "repoHint": "/repo",
+  "request": {
+    "action": "semantic",
+    "retrievalPolicy": "symbol-neighborhood",
+    "includeSkeleton": true,
+    "includeContent": false,
+    "consumeEnrichmentFacts": true,
+    "includePassiveRelatedFacts": true,
+    "includeMarkdownContext": true,
+    "limit": 9,
+    "qualityMode": "balanced"
+  },
+  "expected": {
+    "topK": 9,
+    "identities": [
+      {
+        "kind": "symbol",
+        "uid": "Function:src/cache.ts:CacheStore",
+        "repoPath": "/repo",
+        "filePath": "src/cache.ts",
+        "name": "CacheStore"
+      },
+      {
+        "kind": "symbol",
+        "uid": "Function:src/cache.ts:ClearCache",
+        "repoPath": "/repo",
+        "filePath": "src/cache.ts",
+        "name": "ClearCache"
+      }
+    ],
+    "minimumJaccardAtK": 0.55,
+    "requireTop1Stable": true
+  },
+  "notes": [
+    "Symbol neighborhood policy should capture neighborhood expansion from anchor symbol."
+  ]
+}

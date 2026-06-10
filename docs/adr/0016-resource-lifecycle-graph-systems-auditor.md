@@ -1,364 +1,317 @@
-# ADR 0016: Resource Lifecycle Graph and Systems Auditor Overlay
+# ADR 0016: Core Systems-Audit Coverage Manifest
 
-Status: Proposed
+Status: Implemented (core coverage manifest)
 
 ## Context
 
-OntoIndex currently models code structure and execution mostly through symbols, files, routes, processes, and relationships such as `CALLS`, `ACCESSES`, `HANDLES_ROUTE`, and `STEP_IN_PROCESS`. This is enough for normal code navigation and blast-radius review, but it is not enough for systems audits where the risky object is not a function. The risky object may be a file descriptor, PID, signal mask, lock, global quota, state enum, WASM buffer, ABI field, tainted value, or swallowed error.
+OntoIndex already has a substantial systems-audit substrate. The original ADR mixed several things
+that now exist or belong elsewhere:
 
-Recent systems-audit work exposed this gap:
+- resource fact contracts and freshness envelopes;
+- C/C++ POSIX resource extraction;
+- systems rule engine;
+- boundary tracing;
+- FSM extraction;
+- taint tracing;
+- ABI diff;
+- concurrency audit;
+- error topology;
+- fault simulation;
+- pressure impact;
+- graph-promotion review;
+- MCP wrappers and tool-registry entries for systems-audit tools.
 
-- FD handoff through `sendmsg` / `SCM_RIGHTS` was invisible after the syscall boundary.
-- Fork/exec safety, `O_CLOEXEC`, TOCTOU, zombie, and signal-mask bugs required manual forensic tracing.
-- State-machine bypasses were spread across assignments and guard checks.
-- WASM/IPC alignment and TypeScript/C++ numeric-boundary bugs were outside standard linting.
-- Existing impact output showed code callers, not global resource pressure or starvation risk.
-- MCP freshness checks remained manual through `gn_ensure_fresh`, so stale audit findings could be repeated after fixes.
+The remaining OntoIndex-core gap is narrower. Agents can run analyzers, but there is no deterministic
+core report that answers:
 
-The existing post-index sidecar architecture in ADR 0015 is the correct substrate for this work. These analyzers are deeper and more expensive than the main Tree-sitter analyze path, and many results are advisory until proven stable. They must not silently mutate trusted graph facts or appear as safety-critical truth without freshness, confidence, and source evidence.
+```text
+For this indexed snapshot, which systems-audit evidence families are fresh, missing, partial,
+unsupported, stale, or blocked, and what exact evidence gaps prevent relying on them?
+```
 
-ADR 0017 defines the Audit Lifecycle layer that consumes these systems-audit facts as evidence for findings, verification, tombstones, root-cause dedupe, implementation bundles, and dispatch governance. This ADR owns how evidence is extracted; ADR 0017 owns how audit findings are accepted, rejected, carried forward, or dispatched.
+Without that manifest, manager agents can overtrust one analyzer output, miss stale sidecar records,
+or dispatch duplicate systems-audit work that the current repo cannot support.
 
-ADR 0018 defines the MCP audit trust contract that constrains how these analyzers are exposed to customers: target freshness, tool availability, capability readiness, result envelopes, and manager-level audit workflows. Systems-audit tools from this ADR must not be advertised as reliable forensic tools until they satisfy ADR 0018's freshness, capability, and evidence requirements.
+## Existing Functionality Excluded From This ADR
 
-## Challenge Review
+These are already implemented enough that this ADR must not recreate them:
 
-This proposal is valuable, but the unsafe version of it would overfit one audit session and pollute the graph with speculative facts. The hard challenges are:
+- `ontoindex/src/core/systems-audit/resource-facts.ts`
+- `ontoindex/src/core/systems-audit/systems-audit-contracts.ts`
+- `ontoindex/src/core/systems-audit/systems-audit-store.ts`
+- `ontoindex/src/core/systems-audit/resource-extractor-cpp.ts`
+- `ontoindex/src/core/systems-audit/systems-rule-engine.ts`
+- `ontoindex/src/core/systems-audit/boundary-trace.ts`
+- `ontoindex/src/core/systems-audit/fsm-extractor.ts`
+- `ontoindex/src/core/systems-audit/taint-trace.ts`
+- `ontoindex/src/core/systems-audit/abi-diff.ts`
+- `ontoindex/src/core/systems-audit/concurrency-audit.ts`
+- `ontoindex/src/core/systems-audit/error-topology.ts`
+- `ontoindex/src/core/systems-audit/fault-simulation.ts`
+- `ontoindex/src/core/systems-audit/pressure-impact.ts`
+- `ontoindex/src/core/systems-audit/graph-promotion-review.ts`
+- `ontoindex/src/core/systems-audit/additional-analyzers.ts`
+- MCP systems-audit dispatch and registry surfaces.
 
-1. **Resource identity is not a variable name.** A file descriptor number is process-local and can be reused. `fd=4` in a parent and `fd=4` in a child are not the same identity by default. The stable model is an abstract resource instance plus per-process handle aliases.
-2. **Cross-process handoff is rarely single-hop.** `SCM_RIGHTS`, `fork`, `exec`, `dup`, `fcntl`, pidfds, and wrapper helpers often split allocation, transfer, and ownership into separate functions. The analyzer must tolerate incomplete paths and report unresolved identity gaps.
-3. **Rule output will be noisy unless scoped.** TOCTOU, fork-safety, lock, and zombie heuristics are useful only when every finding has why-fired evidence, why-it-may-be-false-positive notes, and suppression/waiver support.
-4. **Nine new top-level MCP tools is too much for a first release.** The first implementation should prove one report envelope, one sidecar record family, one response limiter, and one freshness model before expanding the surface.
-5. **Graph promotion is a compatibility event.** New node labels and relationship types affect storage, queries, web rendering, impact traversal, and package consumers. Sidecar-only facts must come first.
-6. **Freshness latching must not become background indexing.** A watcher that scans a large repo continuously is a performance bug. The first version should use a cheap dirty flag from mtime/hash manifests and Git status checks, not broad file watching.
-7. **Fault simulation is research-grade.** It should start as branch-slice explanation for a single return value, not as a general symbolic executor.
+This ADR also does not approve primary graph schema promotion, new top-level MCP tools, automatic
+indexing, filesystem scanning, Git access, LLM interpretation, or analyzer execution.
 
-### 6. `AuditMetricLayers` (Geo-Enrichment)
-- **Capability:** A framework for attaching external metadata "Layers" (e.g., production error rates, memory spikes, or ownership census) to specific file paths or symbols in the graph.
-- **Native Surface:** `ontoindex/src/core/systems-audit/metric-layers.ts`.
-- **Purpose:** Augment the static code map with "Live" systems data without modifying the source code, allowing for "Pressure-Aware" impact analysis.
+## OntoIndex Evidence Review
+
+This challenge pass used the local OntoIndex CLI and source reads.
+
+- `ontoindex status` reported the local index is up to date at commit `1b0e8ce`.
+- `ontoindex/src/core/systems-audit/` contains implemented modules for the analyzer families listed
+  above.
+- Unit tests already exist for systems-audit contracts, resource extraction, rule engine, boundary
+  tracing, FSM, taint, ABI, concurrency, error topology, fault simulation, pressure impact, graph
+  promotion, and additional analyzer gates.
+- The originally named `metric-layers.ts` file does not exist.
+- Search found no dedicated `coverage-manifest.ts` or equivalent core report that summarizes
+  analyzer coverage across existing systems-audit records.
+- `additional-analyzers.ts` only declares later analyzers such as FSM, taint, ABI, fault simulation,
+  concurrency, error topology, and pressure impact. It does not cover base analyzers such as
+  `gn_audit_logic` and `gn_trace_boundary`, so the coverage manifest needs its own caller-supplied
+  declaration shape instead of mutating that registry.
+
+Conclusion: ADR 0016 should add only a pure core coverage manifest over supplied systems-audit
+records and caller-supplied analyzer declarations. It should not add more analyzers or MCP wrappers.
+
+## Challenge Findings
+
+1. **The original ADR is no longer a clean implementation plan.** Most of its analyzer list already
+   exists, so treating the whole ADR as undone would create duplicate code.
+2. **Analyzer execution is not coverage governance.** Running `gn_audit_logic` or
+   `gn_trace_boundary` gives one report; it does not say whether the overall systems-audit evidence
+   set is fresh and complete enough for a manager decision.
+3. **Graph promotion remains out of scope.** Existing `graph-promotion-review.ts` already protects
+   primary graph promotion. This ADR must not add labels or relationships.
+4. **MCP expansion is not core functionality.** Tool routing and registry exposure already exist and
+   belong to MCP surfaces. This ADR should produce a core value object that adapters may expose later.
+5. **Metric layers need a manifest boundary first.** External pressure or ownership data should be
+   represented as supplied evidence coverage, not as an implicit graph mutation.
 
 ## Decision
 
-Introduce a Resource Lifecycle Graph as a post-index systems-audit overlay.
+Add a pure core systems-audit coverage manifest builder.
 
-The overlay will extract resource, state, lock, ABI, taint, error, and constraint facts into versioned sidecar records first. Stable facts may later be promoted into first-class graph nodes and relationships after snapshot tests, false-positive review, migration review, and audit validation prove their precision. MCP super-functions will expose the overlay through bounded reports with explicit evidence, confidence, limits, stale-state metadata, and unresolved gaps.
+The manifest consumes caller-supplied current snapshot metadata, analyzer declarations, expected
+coverage scopes, and existing systems-audit records. It emits a deterministic report that classifies
+coverage per analyzer and per scope as covered, partial, missing, stale, unsupported, or blocked.
 
-This ADR does not approve a broad rewrite of the core call graph. It approves an additive analyzer architecture:
-
-1. Keep the primary symbol graph deterministic and fast.
-2. Store systems-audit facts in a sidecar keyed to `sourceIndexId`, `sourceCommitHash`, analyzer id, analyzer version, file hash, and graph schema version.
-3. Promote only stable, low-noise facts into the primary graph schema.
-4. Expose agent-facing systems-audit workflows through a minimal MCP surface first, then split into more `gn_*` super-functions only after response shapes stabilize.
-5. Treat the LLM as the interpreter of evidence, not the source of mechanical dataflow truth.
-
-## Algorithm/Technique
-
-### 1. Fact ownership and storage
-
-Create a new subsystem:
+Approved core shape:
 
 ```text
-ontoindex/src/core/systems-audit/
-  resource-facts.ts
-  resource-extractor-cpp.ts
-  systems-rule-engine.ts
-  fsm-extractor.ts
-  taint-trace.ts
-  lock-graph.ts
-  abi-contracts.ts
-  error-topology.ts
-  fault-simulator.ts
-  constraint-graph.ts
+SystemsAuditCoverageInput
+  -> normalize expected systems-audit scopes
+  -> classify supplied records against current snapshot freshness
+  -> match analyzer declarations to expected scopes
+  -> aggregate coverage by analyzer and scope
+  -> emit gaps and summary counts
+  -> SystemsAuditCoverageManifest
 ```
 
-Each analyzer writes sidecar records shaped like:
+## Core Functionality
+
+### 1. Shared Coverage Model
+
+Add:
 
 ```text
-systems audit record:
-  kind: systems-audit-*
-  sourceIndexId
-  sourceCommitHash
-  analyzerId
-  analyzerVersion
-  filePath
-  fileHash
-  status
-  confidence
-  evidence[]
-  records[]
-  limits
-  skipReasons
+ontoindex/src/core/systems-audit/coverage-manifest.ts
 ```
 
-Readers must apply ADR 0015 sidecar rules:
+Core types:
 
-- Reject records whose `sourceIndexId` or `sourceCommitHash` does not match the current primary index.
-- Report stale, partial, failed, ambiguous, unsupported, and unresolved states explicitly.
-- Keep primary graph facts separate from advisory systems-audit evidence.
-- Apply deterministic response limits before returning through MCP.
+```ts
+export interface SystemsAuditCoverageInput {
+  snapshot: SystemsAuditCurrentSnapshot;
+  analyzerDeclarations: readonly SystemsAuditCoverageAnalyzerDeclaration[];
+  scopes: readonly SystemsAuditCoverageScope[];
+  records: readonly SystemsAuditRecord[];
+}
 
-### 2. Resource identity model
+export interface SystemsAuditCoverageAnalyzerDeclaration {
+  analyzerId: string;
+  sidecarRecordKind?: string;
+  available?: boolean;
+  requiredGates?: readonly string[];
+  completedGates?: readonly string[];
+}
 
-The resource model has three layers:
+export type SystemsAuditCoverageStatus =
+  | 'covered'
+  | 'partial'
+  | 'missing'
+  | 'stale'
+  | 'unsupported'
+  | 'blocked';
 
-```text
-ResourceInstance
-  stable abstract resource: open file description, socket endpoint, pid, signal mask, WASM buffer, quota
+export interface SystemsAuditCoverageScope {
+  id: string;
+  analyzerId: string;
+  filePath?: string;
+  symbolName?: string;
+  resourceKind?: string;
+  category?: string;
+  required?: boolean;
+}
 
-ResourceHandle
-  process-local alias: fd number, pidfd number, variable name, handle field, buffer view
-
-ResourceEvent
-  lifecycle event: allocate, duplicate, close, inherit, hand off, receive, escape, leak
+export interface SystemsAuditCoverageManifest {
+  snapshot: SystemsAuditCurrentSnapshot;
+  scopes: readonly SystemsAuditCoverageResult[];
+  gaps: readonly SystemsAuditCoverageGap[];
+  summary: SystemsAuditCoverageSummary;
+}
 ```
 
 Rules:
 
-- Never identify a resource only by FD number.
-- `fork` inherits handles that point to the same `ResourceInstance`, subject to later close/dup/exec rules.
-- `exec` preserves only handles without close-on-exec.
-- `SCM_RIGHTS` creates a receiver-side `ResourceHandle` that aliases the sender-side `ResourceInstance`; the edge evidence is the send/receive path, not equality of FD numbers.
-- `pidfd_getfd` duplicates a remote process handle into a local handle; the target alias is local, but the resource instance is inherited from the remote handle if the lookup is resolved.
-- Unknown or wrapper-hidden ownership must be represented as `unresolved`, not guessed.
+- Scope ids are caller-provided stable identifiers.
+- Analyzer ids must match caller-supplied declarations or be reported as unsupported.
+- The builder may accept declarations derived from `additional-analyzers.ts`, MCP registry metadata, or
+  test fixtures, but it must not mutate those registries.
+- Records are supplied as inputs; the builder must not run analyzers.
+- Freshness must use existing systems-audit record freshness decisions.
+- The manifest is advisory core data, not an audit lifecycle status and not a recommendation engine.
 
-The first implementation may store these as sidecar facts only:
+### 2. Coverage Manifest Builder
 
-```text
-resourceInstanceId
-handleId
-processIdentity
-symbolId
-filePath
-lineSpan
-eventKind
-mechanism
-confidence
-unresolved[]
+Add:
+
+```ts
+export function buildSystemsAuditCoverageManifest(
+  input: SystemsAuditCoverageInput,
+): SystemsAuditCoverageManifest;
 ```
 
-### 3. Graph schema additions
+Builder rules:
 
-Add graph nodes only after the sidecar facts prove stable.
+- Pure deterministic function over supplied input.
+- No filesystem, Git, LadybugDB, MCP, HTTP, embedding, LLM, or analyzer execution.
+- A required scope with no matching fresh record becomes `missing`.
+- A matching stale record becomes `stale`, not `covered`.
+- A matching partial/unresolved record becomes `partial`.
+- A matching failed record becomes `partial` with a failed-record reason unless the analyzer itself is
+  unavailable or blocked.
+- A matching unsupported record becomes `unsupported`.
+- A scope whose analyzer is unavailable becomes `unsupported`.
+- A scope whose analyzer gate is unmet becomes `blocked`.
+- Record matching is limited to explicit record fields and payload metadata: `analyzerId`, optional
+  `filePath`, optional finding `category`, and optional resource `resourceKind`.
+- Optional scopes contribute to summary counts but do not make the manifest fail.
+- Output order is deterministic by scope id and analyzer id.
 
-Candidate node labels:
+### 3. Coverage Gap Manifest
 
-```text
-Resource
-Constraint
-State
-Lock
-AuditFinding
-AbiContract
+Gap kinds:
+
+```ts
+export type SystemsAuditCoverageGapKind =
+  | 'missing-required-scope'
+  | 'stale-record'
+  | 'partial-record'
+  | 'unsupported-analyzer'
+  | 'blocked-analyzer-gate';
 ```
 
-Candidate relationship types:
+Rules:
 
-```text
-ALLOCATES_RESOURCE
-DUPLICATES_RESOURCE
-CLOSES_RESOURCE
-HANDS_OFF_RESOURCE
-INHERITS_RESOURCE
-CONSTRAINS
-TRANSITIONS_TO
-GUARDS_STATE
-TAINTS
-SANITIZES
-LOCKS
-BLOCKS_ON
-SERIALIZES_AS
-PROPAGATES_ERROR
-SWALLOWS_ERROR
+- Gaps identify the scope id and analyzer id.
+- Gaps include a concise reason and related record ids when available.
+- Gaps do not include recommended tools or mutate audit lifecycle status.
+- Gaps may be consumed later by MCP or audit adapters, but this ADR does not add those adapters.
+
+## Rejected From Core
+
+- New resource extractor or systems rule logic.
+- New `gn_*` tool.
+- MCP registry, dispatch, or help changes.
+- Primary graph nodes or relationship types.
+- Sidecar storage format migration.
+- Automatic analyzer execution.
+- Automatic broad re-indexing or file watching.
+- LLM/NLI interpretation of systems-audit findings.
+- Metric overlay graph promotion.
+- Audit lifecycle status transition logic.
+
+## Later Adapters
+
+After the core manifest lands and tests prove the contract, later work may add thin adapters:
+
+1. MCP/readiness adapter that exposes the manifest in an existing systems-audit envelope.
+2. Audit-lifecycle adapter that attaches coverage gaps as advisory evidence.
+3. Optional metric-layer ingestion that supplies coverage scopes and records to the manifest.
+
+Those adapters must not change the core rules above.
+
+## Implementation Status
+
+Implemented in:
+
+- `ontoindex/src/core/systems-audit/coverage-manifest.ts`
+- `ontoindex/src/core/systems-audit/index.ts`
+- `ontoindex/test/unit/systems-coverage-manifest.test.ts`
+
+The implementation landed only the approved core slice: caller-supplied analyzer declarations,
+explicit coverage scopes, supplied systems-audit records, snapshot freshness checks, per-scope
+coverage statuses, coverage gaps, summary counts, deterministic ordering, and barrel export.
+
+No analyzer execution, MCP/CLI wrapper, registry mutation, graph schema, storage migration,
+recommendation policy, LLM behavior, or audit lifecycle status transition was added.
+
+## Acceptance Criteria
+
+- `coverage-manifest.ts` exists under `ontoindex/src/core/systems-audit/`.
+- The builder accepts explicit scopes, analyzer declarations, current snapshot metadata, and supplied
+  systems-audit records.
+- The builder does not query graph, MCP, HTTP, Git, filesystem, embeddings, LLMs, or run analyzers.
+- The builder does not mutate `additional-analyzers.ts`, MCP registries, or systems-audit record
+  storage.
+- Fresh matching records produce `covered` results.
+- Stale matching records produce `stale` gaps.
+- Partial or unresolved matching records produce `partial` gaps.
+- Failed matching records produce `partial` gaps with failed-record evidence.
+- Missing required scopes produce `missing-required-scope` gaps.
+- Unknown analyzer ids produce `unsupported-analyzer` gaps.
+- Unmet analyzer gates produce `blocked-analyzer-gate` gaps.
+- Optional scopes are reported but do not make required coverage incomplete.
+- Output is deterministic.
+- Unit tests cover covered, missing, stale, partial, unsupported, blocked, optional, and ordering
+  behavior.
+
+## Validation
+
+For implementation work, run focused tests first:
+
+```bash
+cd ontoindex && npm test -- --run test/unit/systems-coverage-manifest.test.ts
+cd ontoindex && npx tsc --noEmit --pretty false
 ```
 
-`HANDS_OFF_RESOURCE` is the flagship cross-process edge, but it must not be emitted until both sides have resource identities. For `SCM_RIGHTS`, the edge links a sender-side `ResourceHandle` to a receiver-side `ResourceHandle` through the shared `ResourceInstance`. For `pidfd_getfd`, the edge links the remote process handle to the duplicated local handle through the resolved resource instance. Every edge must include:
-
-- resource kind: `fd`, `pid`, `signal_mask`, `socket`, `buffer`, or `quota`
-- source symbol and target symbol
-- boundary mechanism: `SCM_RIGHTS`, `pidfd_getfd`, fork inheritance, exec inheritance, IPC payload, or WASM export
-- confidence and reason
-- file path and line span evidence
-- unresolved participants, if identity is incomplete
-
-Promotion gates before adding any candidate node or relationship to the primary graph:
-
-- at least one sidecar-only release with stable JSON shape
-- fixture coverage for stale, ambiguous, unsupported, and unresolved cases
-- measured false-positive rate on at least one real systems repository
-- migration note for `ontoindex-shared` graph type changes
-- MCP response compatibility test
-- web/consumer fallback for unknown labels and relationship types
-
-### 4. Systems rule engine
-
-Implement `systems-rule-engine.ts` as a deterministic pattern runner over AST facts, call graph edges, and sidecar facts. Initial rules:
-
-- TOCTOU: `stat`, `lstat`, `access`, or `realpath` followed by `open`, `link`, `rename`, or privileged use without stable handle validation. The rule must recognize common mitigations such as `openat`, directory FDs, `O_NOFOLLOW`, inode revalidation, and same-handle use.
-- CLOEXEC: FD-producing calls without `O_CLOEXEC`, `SOCK_CLOEXEC`, `pipe2`, `dup3`, or follow-up `fcntl(FD_CLOEXEC)`.
-- Fork safety: child path between `fork` and `exec` calling unsafe functions such as allocation, `dprintf`, logging wrappers, mutex-taking functions, or non-async-signal-safe code.
-- Zombie risk: `fork` without reachable `waitpid`, pidfd tracking, subreaper contract, or `PR_SET_PDEATHSIG`.
-- Signal inheritance: `sigprocmask` changes before fork/exec without restoration or explicit child reset.
-- Lock pressure: blocking calls, I/O, unbounded loops, large container mutation, or lock-order changes while a mutex is held.
-
-Each finding must include:
-
-- stable `auditId`
-- category
-- severity and confidence
-- evidence path
-- why the rule fired
-- why the rule may be a false positive
-- suggested next tools
-- stable suppression key and suppression reason, when present
-- language and platform scope
-
-The first rule set is C/C++ and POSIX/Linux focused. JavaScript/TypeScript WASM, Rust, and cross-language ABI rules are later analyzers, not part of the first rule-engine acceptance gate.
-
-### 5. MCP super-functions
-
-Do not add all systems-audit tools as top-level MCP tools in the first release. Start with a narrow MCP surface:
-
-- `gn_audit_logic({ path, category })`
-- `gn_trace_boundary({ resource, start, end?, kind? })`
-
-These two tools prove the report envelope, response limits, stale-state behavior, and sidecar read path. After that, add specialized tools only when they have their own tested report contract.
-
-Candidate later tools:
-
-- `gn_extract_fsm({ target })` (Finite State Machine Extraction)
-  - Maps assignments to state variables as transitions and conditionals as guards.
-  - Emits a transition matrix, missing-guard warnings, and unreachable states using bounded intra-procedural symbolic execution.
-
-- `gn_taint_trace({ source, sink, sanitizers? })` (Source-to-Sink Taint Analysis)
-  - Performs bounded heuristic data-flow tracing from untrusted sources (e.g., `recv`) to dangerous sinks (e.g., `system`).
-  - Identifies `TAINTS` and `SANITIZES` edges, marking unresolved hops (e.g., library calls) explicitly.
-
-- `gn_concurrency_audit({ symbol?, path? })`
-  - Finds mutexes, lock scopes, blocking calls under lock, nested locks, and lock-order inversions.
-
-- `gn_abi_diff({ source_struct, target_interface })` (Cross-Language ABI Checker)
-  - Compares serialization contracts (e.g., C++ `struct` vs. TypeScript `interface`).
-  - Flags field width, nullability, precision (e.g., `uint64_t` to JS `number`), and field-order mismatches in IPC/WASM boundaries.
-
-- `gn_error_topology({ path?, symbol? })` (Error Sink Mapping)
-  - Traces error origins (errno, exceptions) to logging, user-visible errors, or "Black Hole" swallowed states.
-
-- `gn_simulate_fault({ target, return_value, trigger_path })` (Semantic Fault Injection)
-  - Performs constrained symbolic branch replay for one injected return value (e.g., `NULL` from `malloc`).
-  - Identifies unhandled error paths and cleanup bypasses without executing code.
-
-- `gn_pressure_impact({ symbol })` (Systems Pressure Analysis)
-  - Extends impact analysis with `Quota` nodes such as active process count, worker quota, or global pool capacity.
-  - Reports a `pressureDelta` if a changed symbol interacts with a shared system limit.
-
-- `gn_extract_morphology({ target })` (Symbol Morphology Analyzer)
-  - Calculates structural anomalies like "Malignant" invasive call graphs (calling into >80% of distinct service cores) or abnormal nested complexity.
-  - Flags structurally degenerate code that cannot be easily isolated or refactored.
-
-- `gn_pathology_search({ query })` (Pathological Call Graph Discovery)
-  - A specialized graph query that identifies "Invasive" symbols that bridge boundaries they structurally shouldn't, similar to metastasis.
-
-All systems-audit MCP responses must include:
-
-```text
-version
-tool
-status
-primaryGraphFacts[]
-systemsEvidence[]
-findings[]
-limits
-freshness
-skipReasons[]
-warnings[]
-nextTools[]
-```
-
-### 6. Freshness latching
-
-Add MCP dirty-state latching before shipping systems-audit results by default.
-
-The MCP server should consume a lightweight mtime/hash manifest and Git status checks. Broad recursive file watching is not part of the first implementation. When the manifest or Git status indicates changes after the indexed snapshot, MCP marks the current graph state as `DIRTY`. Read tools may still return partial results, but responses must include:
-
-```text
-freshness:
-  graphState: clean | dirty | stale | partial
-  warning: STALE_WARNING | PARTIAL_GRAPH_WARNING
-  indexedCommit
-  workingTreeDirty
-  changedSinceIndex[]
-  recommendedAction: gn_ensure_fresh({ autoAnalyze: false }) or explicit sync
-```
-
-The watcher must not auto-run broad analyze work. Users or agents must explicitly request sync or analyze.
-
-### 7. Implementation sequence
-
-1. Add dirty-state response metadata using manifest/Git checks, not broad watchers.
-2. Add systems-audit sidecar record types and storage.
-3. Add C/C++ POSIX resource fact extraction for allocation, duplication, close, fork, exec, and CLOEXEC state.
-4. Add `gn_audit_logic` with deterministic C/C++ rules and suppression keys.
-5. Add FD lifecycle extraction and `gn_trace_boundary` for `SCM_RIGHTS` and `pidfd_getfd`.
-6. Add `AuditMetricLayer` schema support for external JSON-based metric overlays.
-7. Measure false-positive rate and response size before graph promotion.
-7. Add `gn_extract_fsm` and `gn_error_topology`.
-8. Add `gn_concurrency_audit`.
-9. Add `gn_pressure_impact` after `Constraint` sidecar semantics are stable.
-10. Add `gn_taint_trace`, `gn_abi_diff`, and `gn_simulate_fault` behind explicit experimental flags.
-
-### 8. Validation protocol
-
-Each analyzer must ship with focused fixtures:
-
-- `SCM_RIGHTS` FD send/receive across parent and child.
-- `pidfd_getfd` duplication.
-- `stat` then `open` TOCTOU.
-- child-after-fork unsafe call before exec.
-- missing `O_CLOEXEC`.
-- fork without wait or pidfd ownership.
-- signal mask inherited into child.
-- enum state missing a guard.
-- tainted string reaching a sink without sanitizer.
-- mutex scope with blocking operation.
-- `uint64_t` serialized into TypeScript `number`.
-- swallowed errno or `catch (...)`.
-- injected syscall failure changing control flow.
-- quota increment affecting global pressure.
-
-Validation must include:
-
-- unit tests for extractor facts
-- integration tests for MCP report shape
-- stale sidecar and dirty graph tests
-- truncation tests
-- false-positive suppression tests
-- response-size limit tests
-- schema migration tests before graph promotion
-- unknown-label and unknown-edge consumer fallback tests
+Before editing any existing implementation symbol, rerun fresh OntoIndex impact checks for that
+symbol. Adding the new core module does not require impact analysis on existing symbols.
 
 ## Consequences
 
-### Positive
+Positive:
 
-- OntoIndex becomes useful for systems-level audits where risk flows through resources, not only through function calls.
-- Agents can ask for concrete lifecycle, state, taint, lock, ABI, and error evidence instead of spending context on manual tracing.
-- The sidecar-first design preserves main index performance and avoids silently treating experimental facts as graph truth.
-- The MCP super-functions provide bounded, purpose-specific reports for audit workflows.
+- Managers get one deterministic answer about systems-audit evidence coverage before dispatching
+  more work.
+- Existing systems-audit analyzers remain the source of facts; the new core only judges coverage.
+- Future MCP and audit adapters can share one coverage contract.
+- The design avoids graph pollution and duplicate analyzer code.
 
-### Negative
+Negative:
 
-- This introduces a new analyzer family with substantial test and fixture maintenance cost.
-- Cross-process resource identity is inherently approximate in some C/C++ patterns, so every report needs confidence and unresolved-state metadata.
-- Promoting too many advisory findings into primary graph edges would make `impact` noisy.
-- Dirty-state latching adds operational complexity to long-running MCP sessions.
-- The first release intentionally covers fewer tools than the vision, which delays some user-facing workflows but prevents premature schema commitments.
+- The first slice is not directly user-visible unless called by tests or later adapters.
+- Coverage quality depends on caller-supplied scopes and records.
+- It does not improve analyzer precision; it only reports evidence readiness.
 
-### Guardrails
+## Stop Conditions
 
-- No analyzer may auto-fix code.
-- No analyzer may auto-run broad indexing from MCP.
-- No analyzer may claim safety-critical certainty without source evidence and freshness metadata.
-- No systems-audit evidence may change impact risk scoring until a separate safety policy ADR accepts that behavior.
-- Experimental tools must remain explicit and bounded until false-positive rates are measured.
-- No primary graph schema addition may ship until sidecar-only facts have a measured precision baseline and compatibility tests.
+- Stop if implementation requires a new analyzer.
+- Stop if implementation requires MCP registry or dispatch changes.
+- Stop if implementation requires primary graph schema changes.
+- Stop if the builder needs filesystem, Git, database, HTTP, embedding, or LLM access.
+- Stop if coverage gaps become audit lifecycle status transitions or recommendations.

@@ -1,87 +1,148 @@
-# ADR 0074: Ontologx-inspired native formal ontologies and neurosymbolic reasoning
+# ADR 0074: Core ontology constraint validation report contract
 
-**Status:** Proposed
-**Source:** Ontologx (GitHub: LucaCtt/ontologx) review, 2026-06-01
+**Status:** Implemented (core validation report contract)
+**Source:** Ontologx (GitHub: LucaCtt/ontologx) review, narrowed 2026-06-10
 **External reference:** <https://github.com/LucaCtt/ontologx>
 
 ## Context
 
-OntoIndex manages architectural intent through Semiotic Signs (ADR 0063), Perspective Lenses (ADR 0064), and Expert-Verified Domain Constraints (ADR 0072). While these primitives add high-signal meaning, they are still largely heuristic or reliant on manual expert tagging. OntoIndex lacks a mechanism to define **Architecture as Code** using formal, machine-readable logic, and it cannot enforce hard constraints on the graph using standardized web ontology languages.
+Ontologx is useful as a reference for formal ontology workflows, but the original proposal mixed too many layers: Turtle parsing, OWL/RDF modeling, SHACL execution, LLM concept mapping, MCP tools, sidecars, audit schema changes, and vertical domain policy.
 
-The `ontologx` framework demonstrates a **Neurosymbolic** approach: using LLMs (Neural) for fuzzy mapping and data extraction, but anchoring them to strict, formal Ontologies (Symbolic) using Turtle (TTL) and SHACL (Shapes Constraint Language) to prevent hallucinations and enforce logical consistency.
+The current OntoIndex codebase already has deterministic semantic contract checks in `ontoindex/src/core/runtime/semantic-contracts.ts`, but it does not have a standard formal-constraint report contract that future ontology, policy, or audit layers can share.
 
-This ADR extends:
-- [ADR 0017](0017-audit-lifecycle-layer.md), for audit governance;
-- semantic contracts;
-- conceptual nodes;
-- vertical domain profiles.
+Current review evidence:
 
-## OntoIndex Review Evidence
+- There is no `ontoindex/src/core/ontology/` implementation.
+- There are no RDF, Turtle, OWL, SHACL, SPARQL, or JSON-LD package dependencies in the CLI package.
+- There is no `gn_shacl_audit` MCP tool.
+- ADR 0015 sidecar work is postponed, so this ADR must not depend on a new sidecar.
+- Semantic contracts are pure TypeScript checks and do not emit SHACL-style validation reports.
 
-- OntoIndex semantic contracts (ADR 0033) check for graph invariant violations, but they are hardcoded in TypeScript. There is no support for a user-provided, standardized ruleset (like SHACL) that teams can author and version alongside their code.
-- `ConceptualNode`s (ADR 0054) exist, but they are not backed by a formal RDF/OWL/TTL ontology. An agent cannot execute SPARQL-like queries or run a formal reasoner over the concept graph.
-- LLM agent reasoning (ADR 0059) is entirely "Neural." If an agent misunderstands the architecture, the core has no "Symbolic" logic engine to formally reject the agent's premise before it modifies code.
+## Challenge Findings
 
-## Pruned Core Recommendations
+The original ADR should not be implemented as written.
 
-### 1. `FormalArchitectureOntology` (TTL Engine)
-- **Capability:** A core subsystem that ingests W3C standardized Turtle (`.ttl`) or OWL files located in the repository (e.g., `.ontoindex/ontology.ttl`). These define the permitted nodes, edges, and domain concepts (e.g., "A `Controller` can only `CALL` a `Service`").
-- **Native Surface:** `ontoindex/src/core/ontology/ttl-parser.ts`.
-- **Purpose:** Provide a formal, machine-readable "Ground Truth" for the repository's architecture.
-
-### 2. `GraphConstraintLinter` (SHACL Validator)
-- **Capability:** A structural validator that maps KuzuDB graph data into an RDF representation in-memory to execute SHACL validation rules.
-- **Native Surface:** `ontoindex/src/core/ontology/shacl-validator.ts`.
-- **Purpose:** Automatically flag architectural violations (e.g., "Dependency Inversion broken") during indexing or safe-refactor checks.
-
-### 3. `NeurosymbolicCorrectionLoop` (Agentic Guardrail)
-- **Capability:** An interceptor for agentic proposals (ADR 0064 intents or ADR 0017 bundles). If an agent proposes a change that violates a SHACL constraint, this loop automatically bounces the proposal back to the LLM with the formal error message, forcing a correction before human review.
-- **Native Surface:** `ontoindex/src/core/reasoning/neurosymbolic-guard.ts`.
-
-### 4. `OntologicalGraphProjection` (Semantic Join)
-- **Capability:** A background task that uses the Neural engine (LLM) to map ambiguous AST symbols (e.g., a function named `processData`) to a formal Symbolic node (e.g., `DataSanitizer` in the TTL file), storing the link as an `IMPLEMENTS_CONCEPT` edge.
-- **Native Surface:** `ontoindex/src/core/ontology/concept-mapper.ts`.
-### 5. `Ontology-Aware Handoff Artifacts`
-- **Capability:** Include the repository's `.ttl` ontology in cross-repo handoff bundles (ADR 0061), allowing a consumer repo to "Inherit" the architectural rules of its upstream libraries.
-- **Native Surface:** Extension of `handoff-manager.ts`.
-
-### 6. `VerticalDomainProfile` (Core Specialization)
-- **Capability:** A configuration-driven mode that re-weights the entire OntoIndex core (Retrieval, Audit, Impact) for a specific industry (e.g., `Safety-Critical`, `Fintech-Audit`) by activating a subset of TTL/SHACL constraints.
-- **Native Surface:** `ontoindex/src/core/vertical/domain-manager.ts`.
-
-### 7. `Constraint-Gated Reasoning` (Domain Invariants)
-- **Capability:** A pre-check that forces agentic reasoning to remain within the "Rules" defined by a vertical profile's SHACL Shapes.
-- **Native Surface:** `ontoindex/src/core/vertical/constraint-gate.ts`.
-- **Example:** "In the `Fintech` profile, `Amount` variables must never be typed as `float`."
-
-## Decision
-### 6. `StandardValidationReportGraph` (Explainable Audits)
-- **Capability:** Instead of returning generic error strings, the linter generates a formal `sh:ValidationReport` graph serialized as N-Triples/JSON-LD.
-- **Native Surface:** `ontoindex/src/core/ontology/validation-report.ts`.
-- **Purpose:** Agents can query the report graph to understand exactly which `sh:focusNode` failed which `sh:sourceShape`.
-
-### 7. `SeverityGradedConstraints`
-- **Capability:** Natively maps SHACL severities (`sh:Violation`, `sh:Warning`, `sh:Info`) to OntoIndex Audit Severities, allowing agents to prioritize critical architectural breaks over stylistic warnings.
-- **Native Surface:** Extension of `shacl-validator.ts`.
+1. A TTL/OWL parser is not a small core extension. It adds new syntax support, dependency policy, file discovery, error handling, and security surface.
+2. A SHACL validator over the Kuzu graph requires RDF projection, graph query planning, dependency selection, and performance gates.
+3. A neurosymbolic correction loop is an agent workflow, not a core graph primitive.
+4. LLM concept mapping and `IMPLEMENTS_CONCEPT` graph writes are non-deterministic and need separate governance.
+5. Ontology sidecars are blocked by the postponed sidecar ADR.
+6. MCP tools such as `gn_shacl_audit` are adapters and must not be the first implementation target.
+7. Vertical domain profiles and constraint gates are policy layers, not a minimum reusable core.
+8. Audit schema changes belong to the audit lifecycle, not this first ontology slice.
 
 ## Decision
 
-Implement the **Formal Ontologies and Neurosymbolic Reasoning Contract** to enable verifiable, logic-based architecture enforcement.
+Add only one new core capability: a pure ontology constraint validation report contract.
 
-### Implementation Solution: Pure Contract First
+This contract standardizes how future formal-constraint engines report failures, without adding a TTL parser, RDF store, SHACL runtime, LLM mapper, sidecar, MCP tool, or graph writer.
 
-1. **`OntologySidecar`**: Add a new sidecar (ADR 0015) responsible for parsing `.ttl` files and maintaining the `IMPLEMENTS_CONCEPT` mapping edges in KuzuDB.
-2. **`gn_shacl_audit`**: Expose a new MCP tool that runs SHACL validation over the current workspace or a proposed PR diff (ADR 0020), returning standard JSON-LD/N-Triples validation reports.
-3. **`ConstraintViolation`**: Update the `AuditFinding` schema to explicitly support formal SHACL validation errors as a first-class evidence type.
+## Core Functionality
 
-## Rejected From Core
+Create `ontoindex/src/core/ontology/validation-report.ts`.
 
-- **Full RDF Database Migration**: We do not replace KuzuDB (Property Graph) with a pure RDF triple-store (like GraphDB). We project KuzuDB data into RDF only at validation time for SHACL rules, keeping the main graph optimized for Cypher and impact analysis.
-- **Automatic TTL Generation**: We do not use LLMs to hallucinate the foundational `.ttl` files. The ontology must be authored (or at least approved) by human architects. The LLM only maps *code* to the *existing* ontology.
+The module should expose deterministic data structures and pure functions for composing SHACL-style reports from already-computed constraint findings.
+
+Minimum API:
+
+- `OntologyConstraintSeverity`: `violation`, `warning`, or `info`.
+- `OntologyConstraintFindingInput`: one supplied finding with `focusNode`, `sourceShape`, optional `resultPath`, `message`, `severity`, optional `evidence`, and optional `metadata`.
+- `OntologyConstraintValidationReport`: normalized report with `conforms`, sorted `results`, severity counts, truncation metadata, and stable render-ready fields.
+- `buildOntologyValidationReport(input)`: pure report builder.
+- `mapOntologyConstraintSeverityToAuditSeverity(severity)`: deterministic mapping to existing audit severity labels without importing audit lifecycle code.
+
+## Algorithm/Technique
+
+1. Validate each supplied finding with a narrow runtime guard:
+   - required strings: `focusNode`, `sourceShape`, `message`;
+   - optional string: `resultPath`;
+   - severity default: `violation`;
+   - unknown severities are rejected, not coerced.
+2. Normalize each accepted finding into a stable report result:
+   - trim whitespace;
+   - preserve original evidence and metadata as opaque JSON-like values;
+   - attach `auditSeverity` from the deterministic severity map.
+3. Sort results by:
+   - severity rank: `violation`, `warning`, `info`;
+   - `focusNode`;
+   - `sourceShape`;
+   - `resultPath`;
+   - `message`.
+4. Apply limits after sorting:
+   - `maxResults` truncates result count;
+   - `maxRenderedBytes` truncates only optional rendered report text, not structured result records.
+5. Compute report summary:
+   - `conforms` is false when any untruncated or truncated input finding has severity `violation`;
+   - counts are computed from all accepted input findings, not just visible results;
+   - truncation metadata records omitted result count and rendered text truncation.
+6. Return a plain object. Do not serialize RDF, JSON-LD, or N-Triples in this ADR.
+
+## Required Behavior
+
+- Accept supplied findings only; do not parse files, inspect the graph, call an LLM, or run an MCP tool.
+- Normalize and sort results deterministically by severity, `focusNode`, `sourceShape`, `resultPath`, and `message`.
+- Emit SHACL-style fields: `focusNode`, `sourceShape`, `resultPath`, `message`, and `severity`.
+- Map severities as:
+  - `violation` -> `HIGH`
+  - `warning` -> `MEDIUM`
+  - `info` -> `LOW`
+- Return `conforms: true` only when there are no `violation` findings.
+- Enforce configurable limits for maximum result count and maximum rendered text bytes.
+- Return explicit truncation metadata when limits are applied.
+- Keep the module dependency-free beyond existing project utilities.
+
+## Rejected From This ADR
+
+- TTL, RDF, OWL, SPARQL, JSON-LD, or SHACL parsing.
+- In-memory RDF projection from Kuzu graph data.
+- New database tables, graph edges, or schema migrations.
+- Automatic ontology generation.
+- LLM-based concept mapping.
+- Agent correction loops.
+- MCP tools and resources.
+- Sidecar storage or migration.
+- Vertical domain profiles.
+- Audit finding schema changes.
+
+## Later Adapter Opportunities
+
+Future ADRs may connect this core report contract to:
+
+- A real SHACL validator.
+- A repository-authored ontology file.
+- MCP audit tools.
+- Audit lifecycle findings.
+- Guided refactor or pre-commit gates.
+- Domain-specific architecture policy packs.
+
+Those adapters must consume this report contract instead of defining competing report shapes.
+
+## Acceptance Criteria
+
+- The new module is pure TypeScript and has no runtime dependency on RDF or SHACL packages.
+- Unit tests cover empty reports, severity mapping, deterministic ordering, limit truncation, and mixed-severity `conforms` behavior.
+- The public API can be used by semantic contracts or a future SHACL adapter without importing MCP, graph database, or LLM code.
+- No existing semantic contract behavior changes.
+
+## Consequences
+
+- OntoIndex gains a reusable core report shape for formal constraint failures without committing to a specific ontology engine.
+- Future SHACL/RDF/MCP work has a stable integration target and cannot introduce a competing validation report shape without a new ADR.
+- The first implementation is intentionally modest: it improves evidence structure, not reasoning power.
+- Users still need a separate validator or semantic-contract producer to generate findings.
 
 ## Validation Gates
 
-- `npm run build`
-- Unit tests verifying that a `.ttl` parsing error gracefully falls back to heuristic modes.
-- Assertion that the `GraphConstraintLinter` correctly flags a `Controller` calling a `Repository` if the SHACL shape forbids it.
-- Performance check: In-memory RDF projection and SHACL validation for a 1,000-node subgraph must complete in <200ms.
+- `cd ontoindex && npm test -- --run test/unit/ontology-validation-report.test.ts`
+- `cd ontoindex && npx tsc --noEmit --pretty false`
+
+## Stop Conditions
+
+Stop and write a separate ADR if implementation requires:
+
+- Adding RDF, SHACL, Turtle, OWL, SPARQL, or JSON-LD dependencies.
+- Reading ontology files from disk.
+- Querying Kuzu or writing graph edges.
+- Adding an MCP tool.
+- Changing the audit finding schema.
+- Calling an LLM.

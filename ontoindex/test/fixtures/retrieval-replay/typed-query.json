@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "typed-query-hybrid-search",
+  "query": "CacheStore",
+  "repoHint": "/repo",
+  "request": {
+    "action": "semantic",
+    "typedQuery": true,
+    "includeSkeleton": true,
+    "includeContent": false,
+    "consumeEnrichmentFacts": true,
+    "includePassiveRelatedFacts": false,
+    "includeMarkdownContext": false,
+    "limit": 7,
+    "qualityMode": "balanced"
+  },
+  "expected": {
+    "topK": 7,
+    "identities": [
+      {
+        "kind": "symbol",
+        "uid": "Function:src/cache.ts:CacheStore",
+        "repoPath": "/repo",
+        "filePath": "src/cache.ts",
+        "name": "CacheStore"
+      }
+    ],
+    "minimumJaccardAtK": 0.65,
+    "requireTop1Stable": true
+  },
+  "notes": [
+    "Typed-query path should preserve symbol identity for top result."
+  ]
+}

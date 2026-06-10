@@ -33,7 +33,6 @@ For any task involving code understanding, debugging, impact analysis, or refact
 | Tool             | What it gives you                                                        |
 | ---------------- | ------------------------------------------------------------------------ |
 | `query`          | Process-grouped code intelligence — execution flows related to a concept |
-| `search`         | Semantic/BM25 search; opt into ANN frontier retrieval with `retrieval_policy: "symbol-neighborhood"` when embeddings and `ANN_NEIGHBOR` edges exist |
 | `context`        | 360-degree symbol view — categorized refs, processes it participates in  |
 | `impact`         | Symbol blast radius — what breaks at depth 1/2/3 with confidence         |
 | `detect_changes` | Git-diff impact — what do your current changes affect                    |
@@ -58,19 +57,8 @@ Lightweight reads (~100-500 tokens) for navigation:
 
 **Nodes:** File, Function, Class, Interface, Method, Community, Process
 **Edges (via CodeRelation.type):** CALLS, IMPORTS, EXTENDS, IMPLEMENTS, DEFINES, MEMBER_OF, STEP_IN_PROCESS
-**Retrieval-only edges:** `ANN_NEIGHBOR` is advisory semantic-neighborhood evidence. It is only for opt-in symbol-neighborhood retrieval and must not be treated as dependency, impact, ownership, or audit evidence.
 
 ```cypher
 MATCH (caller)-[:CodeRelation {type: 'CALLS'}]->(f:Function {name: "myFunc"})
 RETURN caller.name, caller.filePath
 ```
-
-## Opt-In Semantic Frontier
-
-Use only when the repo has embeddings and persisted `ANN_NEIGHBOR` edges:
-
-```
-search({action: "semantic", query: "auth permission checks", retrieval_policy: "symbol-neighborhood", structured_output: true})
-```
-
-The response should expose fallback warnings/diagnostics when ANN edges are unavailable.

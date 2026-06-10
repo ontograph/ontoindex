@@ -1,7 +1,6 @@
 # ADR 0015: Post-Index Enrichment Sidecar
 
-Status: Accepted for the local safety substrate and opt-in Markdown sidecar path; Proposed for
-production sidecar job execution.
+Status: Postponed
 
 ## Context
 

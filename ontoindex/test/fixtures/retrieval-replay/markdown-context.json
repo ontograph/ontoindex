@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "markdown-context-neighborhood",
+  "query": "cache markdown context",
+  "repoHint": "/repo",
+  "request": {
+    "action": "semantic",
+    "retrievalPolicy": "process-neighborhood",
+    "includeSkeleton": true,
+    "includeContent": true,
+    "consumeEnrichmentFacts": true,
+    "includePassiveRelatedFacts": true,
+    "includeMarkdownContext": true,
+    "includeMarkdownPpr": true,
+    "limit": 7,
+    "qualityMode": "thorough"
+  },
+  "expected": {
+    "topK": 7,
+    "identities": [
+      {
+        "kind": "doc-section",
+        "docPath": "docs/cache-runbook.md",
+        "headingPath": ["Cache Runbook", "Troubleshooting"],
+        "repoPath": "/repo"
+      },
+      {
+        "kind": "file",
+        "filePath": "src/cache.ts"
+      }
+    ],
+    "minimumJaccardAtK": 0.42
+  },
+  "notes": [
+    "Markdown context and PPR flags should keep both code and doc-section identities."
+  ]
+}

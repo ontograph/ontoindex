@@ -1,6 +1,6 @@
 # Palantir-Foundry-inspired native transactional ontology edits and gated actions
 
-**Status:** Proposed
+**Status:** Postponed
 **Source:** Palantir Foundry OSDK Ontology Edits review, 2026-05-31
 **External reference:** <https://www.palantir.com/docs/foundry/functions/python-ontology-edits>
 

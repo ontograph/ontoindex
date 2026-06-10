@@ -8,6 +8,8 @@ All notable changes to OntoIndex will be documented in this file.
 
 - Added `docs/README.md`, moved the MCP reference into `docs/reference/mcp.md`, marked ADR 0082 accepted for the shipped opt-in frontier, and removed completed manager tracking residue.
 - Added `scripts/install-ontoindex-latest.sh` for installing the newest GitHub release tarball without hard-coding the version.
+- Reviewed ADR implementation status against the current codebase and updated implemented/partially implemented records and the ADR index.
+- Reworked ADR 0019 to keep only new core retrieval replay functionality and reject logging/MCP capture sprawl.
 
 ## [1.9.1] - 2026-06-09
 

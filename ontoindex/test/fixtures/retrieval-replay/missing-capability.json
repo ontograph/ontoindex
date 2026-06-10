@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "id": "missing-capability-degraded-behavior",
+  "query": "cache strict query",
+  "repoHint": "/repo",
+  "request": {
+    "action": "semantic",
+    "typedQuery": true,
+    "retrievalPolicy": "graph-with-passive-docs",
+    "includeSkeleton": false,
+    "includeContent": false,
+    "consumeEnrichmentFacts": true,
+    "includePassiveRelatedFacts": true,
+    "includeMarkdownContext": true,
+    "includeMarkdownPpr": false,
+    "limit": 6,
+    "qualityMode": "thorough"
+  },
+  "expected": {
+    "topK": 6,
+    "identities": [
+      {
+        "kind": "unknown",
+        "reason": "result drift expected when embeddings are unavailable",
+        "repoPath": "/repo"
+      },
+      {
+        "kind": "symbol",
+        "uid": "Function:src/cache.ts:CacheStore",
+        "repoPath": "/repo",
+        "filePath": "src/cache.ts",
+        "name": "CacheStore"
+      }
+    ],
+    "minimumJaccardAtK": 0.2,
+    "requireTop1Stable": false,
+    "allowedCapabilityDrift": [
+      "embeddings",
+      "markdown-sidecar"
+    ]
+  },
+  "notes": [
+    "Represents missing embeddings/sidecar capability with advisory drift tolerance."
+  ]
+}

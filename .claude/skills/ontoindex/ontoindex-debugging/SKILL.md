@@ -56,14 +56,6 @@ ontoindex_query({query: "payment validation error"})
 → Symbols: validatePayment, handlePaymentError, PaymentException
 ```
 
-**search with symbol-neighborhood** — opt-in semantic frontier for fuzzy bug/symptom lookup:
-
-```
-search({action: "semantic", query: "payment validation error", retrieval_policy: "symbol-neighborhood", structured_output: true})
-→ Useful when exact names are unknown and persisted ANN_NEIGHBOR edges exist
-→ Fallback diagnostics mean ANN edges/embeddings are unavailable; continue with normal query/context flow
-```
-
 **ontoindex_context** — full context for a suspect:
 
 ```

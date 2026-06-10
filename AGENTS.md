@@ -99,7 +99,7 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 <!-- ontoindex:start -->
 # OntoIndex — Code Intelligence
 
-This project is indexed by OntoIndex as **OntoIndex** (38036 symbols, 55075 relationships, 300 execution flows). Use the OntoIndex MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by OntoIndex as **ontoindex** (33952 symbols, 50763 relationships, 300 execution flows). Use the OntoIndex MCP tools to understand code, assess impact, and navigate safely.
 
 > If any OntoIndex tool warns the index is stale, coordinate first; exactly one process should run `ONTOINDEX_MAX_WORKERS=7 node /opt/demodb/_workfolder/OntoIndex/ontoindex/dist/cli/index.js analyze`.
 
@@ -122,10 +122,10 @@ This project is indexed by OntoIndex as **OntoIndex** (38036 symbols, 55075 rela
 
 | Resource | Use for |
 |----------|---------|
-| `ontoindex://repo/OntoIndex/context` | Codebase overview, check index freshness |
-| `ontoindex://repo/OntoIndex/clusters` | All functional areas |
-| `ontoindex://repo/OntoIndex/processes` | All execution flows |
-| `ontoindex://repo/OntoIndex/process/{name}` | Step-by-step execution trace |
+| `ontoindex://repo/ontoindex/context` | Codebase overview, check index freshness |
+| `ontoindex://repo/ontoindex/clusters` | All functional areas |
+| `ontoindex://repo/ontoindex/processes` | All execution flows |
+| `ontoindex://repo/ontoindex/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 

@@ -1,78 +1,164 @@
-# ADR 0067: Hierarchical Knowledge Management, Bridge-Aware Retrieval, and Agentic Navigation
+# ADR 0067: Core retrieval context composition and navigation provenance
 
-**Status:** Proposed
-**Source:** Awesome-GraphRAG (GitHub: DEEP-PolyU/Awesome-GraphRAG), RAPTOR (arXiv:2401.03514), HiRAG (arXiv:2501.07431), A-RAG (arXiv:2602.03442), AgenticRAG (arXiv:2605.05538), Microsoft GraphRAG (ADR 0044), and LightRAG (ADR 0046).
+**Status:** Implemented (core retrieval context composition)
+**Source:** Awesome-GraphRAG review; RAPTOR, HiRAG, A-RAG, AgenticRAG, Microsoft GraphRAG, and LightRAG; narrowed 2026-06-10
 
 ## Context
 
-Current OntoIndex GraphRAG (ADR 0044, 0046, 0065) provides robust structural navigation and direct Cypher querying. However, it faces several limitations when scaling to massive codebases:
-1. **Density Gap**: We lack a **Hierarchical Summary Propagation** (RAPTOR-style) mechanism to recursively distill knowledge from L5 (Symbols) up to L1 (System).
-2. **Contractual Gap**: High-level summaries often miss the **Bridge Knowledge**—the intermediate contractual glue explaining *how* communities interact.
-3. **Efficiency Gap**: Agents need **Hierarchical Retrieval Interfaces** (A-RAG) to autonomously scale test-time compute (corpus -> document -> fragment) and **Iterative Navigation** tools (AgenticRAG) to "walk" the graph structurally.
-4. **Diagnostic Gap**: Retrieval answers need deterministic **Provenance** and **Context Composition** reports to explain which lanes and communities contributed to a result.
+Awesome-GraphRAG-style systems emphasize hierarchical retrieval, provenance, and graph navigation. Those ideas are useful for OntoIndex, but the original ADR bundled too many already-existing or non-core surfaces:
 
-This ADR consolidates the "Hierarchy and Navigation" pillar, superseding ADR 0044, 0045, 0046, 0047, 0049, 0050, 0053, 0057, 0058, and 0068.
+- community detection already exists in `ontoindex/src/core/ingestion/community-processor.ts`;
+- deterministic community evidence-pack export already exists through `runCommunityEvidencePack`;
+- raw graph query and subgraph context packaging are covered by ADR 0065;
+- graph traversal and ranking already exist under `ontoindex/src/core/search/graph-traversal-rank.ts`;
+- semantic/ANN frontier traversal already exists under `ontoindex/src/core/search/semantic-frontier-search.ts`;
+- summary-tree graph nodes and `SUMMARIZES` relationships already exist in `ontoindex/src/core/ingestion/pipeline-phases/summary-tree.ts`;
+- `gn_graph_walk` already exists as an experimental public super-tool;
+- review/export code already carries freshness and provenance metadata;
+- MCP navigation tools, `gn_help` capability advertising, and frontend maps are adapter/UI concerns.
 
-This ADR extends:
-- [ADR 0005](0005-gitmining-co-changed-with.md), for temporal coupling;
-- [ADR 0030](0030-falkordb-inspired-query-budgets-and-response-diagnostics.md), for response diagnostics;
-- global diagnostics;
-- semiotic profiles.
+The new core gap is narrower: OntoIndex lacks one pure contract that normalizes retrieval candidates from multiple lanes into tiered, provenance-bearing context composition reports. Today that summary logic is scattered across retrieval, review, export, diagnostics, and MCP response layers.
+
+## Challenge Findings
+
+1. `RecursiveSummaryTree`, `SummaryNode`, and `SUMMARIZES` are not new for this ADR; the summary-tree ingestion phase already exists.
+2. LLM summary propagation policy is still outside this ADR because it requires enrichment/model governance beyond a pure core contract.
+3. `CommunityEvidencePack` is not new; a backend/export path already exists.
+4. `gn_graph_walk` is not new; it is already registered as an experimental public super-tool.
+5. `NavigationCapability` advertisement is not new core; graph-walk tool metadata already exists.
+6. Episodic retrieval lanes depend on session state and policy outside core retrieval composition.
+7. Altitude routing from query intent is a retrieval adapter concern unless a pure enum/classifier contract exists first.
+8. Dynamic traversal pruning over graph edges overlaps existing traversal/ranking logic and should not be bundled with context composition.
 
 ## Decision
 
-Define the **Hierarchical Knowledge and Agentic Navigation Contract** to enable architecture-first reasoning and structural walking. This ADR is contract-first: the named graph-walking and summary-tree symbols below are proposed targets, not current implementation.
+Add one core extension: a pure retrieval context composition module that accepts materialized retrieval candidates and returns deterministic tier, provenance, neighborhood, and composition metadata.
 
-### Consolidated Requirements:
+This preserves the new OntoIndex-core value from ADR 0067:
 
-1.  **`RecursiveSummaryTree` (RAPTOR Engine)**: A sidecar that recursively clusters symbols into a tree of summaries (L5 -> L4 -> L3 -> L2 -> L1).
-2.  **`RetrievalTiers` (Granularity Control)**: Tag candidates with explicit tiers (`0=Repo`, `1=File`, `2=Symbol`, `3=Fragment`).
-3.  **`CommunityEvidencePack`**: A deterministic JSON artifact grouping Symbols, Processes, and Concepts within a community, including citation density and deterministic scoring.
-4.  **`gn_graph_walk` (Iterative Navigation)**: A tool to move from an "Active Anchor" to its structural neighbors while maintaining a **Discovery Frontier**.
-5.  **`Discovery Provenance`**: Candidates carry breadcrumbs (e.g., `[SEARCH, WALK_CALLERS, PEEK]`) explaining how they were reached.
-6.  **`Bounded Relationship Expansion`**: Attach related-symbol metadata (edge type, reason) directly to retrieval candidates to explain evidence context.
-7.  **`RetrievalContextComposition`**: A summary report showing result counts by kind (Symbol/File), source (Lane), and freshness.
-8.  **`Episodic Retrieval Lane`**: A retrieval lane that weights symbols based on their co-occurrence in the current session's history.
-9.  **`Neighborhood-Aware Ranking`**: Boosts candidates based on proximity to the active anchor and "Information Gain" (unvisited connections).
-10. **`Dynamic Traversal Pruning`**: Utility that prunes "Noise Edges" from traversals based on Lens and Altitude.
+- make retrieval granularity explicit;
+- retain provenance breadcrumbs across lanes;
+- summarize context composition deterministically;
+- attach bounded relationship metadata to candidates;
+- provide a reusable contract for later MCP, CLI, review, and docs surfaces.
 
-## Algorithm / Technique
+## Core Functionality
 
-### 1. `TieredRetrievalCandidate`
--   **Proposed Shape**: `{ id, label, tier: 0|1|2|3, navigationPath: NavigationStep[], communityId?, relatedSymbols?: Array<{ id, type, reason }> }`.
+Create a pure core module:
 
-### 2. `RecursiveSummaryTree`
--   **Proposed Native Surface**: `ontoindex/src/core/graph/summary-tree.ts`.
--   **Logic**: Leiden clustering -> LLM Summarization -> Recursive Parent Creation.
+`ontoindex/src/core/search/retrieval-context-composition.ts`
 
-### 3. `Context Composition`
--   **Logic**: `composition = { total, byKind: Record<Kind, Count>, bySource: Record<Lane, Count> }`. Computed from materialized candidates.
+The module should expose types similar to:
 
-### 4. `GraphWalker` (Navigation State)
--   **Proposed Native Surface**: `ontoindex/src/core/search/graph-walker.ts`.
--   **State**: Tracks `activeAnchorId`, `visitedNodes: Set`, and `stepHistory: NavigationStep[]`.
+- `RetrievalTier = 0 | 1 | 2 | 3`
+- `RetrievalAltitude = "local" | "bridge" | "global"`
+- `NavigationStep`
+- `RelatedRetrievalSymbol`
+- `TieredRetrievalCandidate`
+- `RetrievalContextCompositionInput`
+- `RetrievalContextCompositionReport`
+- `RetrievalCompositionLimits`
+- `RetrievalCompositionFreshness`
 
-### 5. `Altitude-Aware Router`
--   **Capability**: Analyzes query intent (ADR 0012) and assigns `altitude: 'local' | 'bridge' | 'global'`.
+The module should expose:
 
-## Implementation Solution: Pure Contract First
+- `composeRetrievalContext(input): RetrievalContextCompositionReport`
 
-1. **`SummaryNode`**: Register a new node kind `Summary` in native graph storage, linked via `SUMMARIZES`.
-2. **`Tier` and `Provenance` Metadata**: Update the core candidate schema.
-3. **`CommunityEvidencePack`**: Versioned JSON schema for community exports.
-4. **`NavigationCapability`**: Advertise "Navigation" as a first-class capability in `gn_help`.
-5. **`queryAltitude` Hint**: Standardize the `altitude` parameter in retrieval requests.
+## Required Behavior
+
+The core implementation must:
+
+1. Accept supplied candidates from existing retrieval lanes.
+2. Normalize each candidate into an explicit tier:
+   - `0 = repo/system`
+   - `1 = file/module`
+   - `2 = symbol`
+   - `3 = fragment`
+3. Preserve provenance breadcrumbs such as search lane, graph traversal step, related symbol source, and freshness.
+4. Attach bounded `relatedSymbols` metadata without traversing the graph.
+5. Compute deterministic counts by tier, kind, source lane, freshness, community id, and altitude.
+6. Sort candidates deterministically by tier, score descending, id, and label.
+7. Enforce explicit limits for candidates, related symbols per candidate, provenance steps per candidate, and warning count.
+8. Return truncation metadata instead of silently dropping context.
+9. Emit warnings for duplicate candidate ids, unknown tiers, invalid scores, and dangling related-symbol references when they can be detected from supplied data.
+10. Avoid all database access, graph traversal, Cypher parsing, MCP/CLI registration, file reads, prompt injection, session reads, LLM calls, and graph storage changes.
+
+## Algorithm/Technique
+
+The implementation should use a pure data-normalization pipeline:
+
+1. Normalize candidates into immutable records keyed by `id`.
+2. Deduplicate by `id`, keeping the highest score and merging provenance/related metadata deterministically.
+3. Normalize tier, kind, lane, freshness, community id, and altitude into small enums/strings.
+4. Sort provenance steps by sequence when present, then by source/action/target.
+5. Sort related symbols by relation type, score descending, id, and label.
+6. Apply limits after sorting.
+7. Build a report with:
+   - emitted candidates;
+   - observed counts before limits;
+   - emitted counts after limits;
+   - `byTier`, `byKind`, `bySource`, `byFreshness`, `byCommunity`, and `byAltitude`;
+   - truncation flags;
+   - warnings.
+
+The module must not query existing graph/search backends. Existing search, graph traversal, semantic frontier, review, and MCP layers may later adapt their outputs into this module.
 
 ## Rejected From Core
 
--   **Dynamic Re-Summarization**: Summaries are pre-computed during enrichment (ADR 0015).
--   **Visual Discovery Maps**: 2D/3D map generation is a frontend concern.
--   **Automatic Navigation Policies**: Decisions on *which* link to follow belong in the Agent (LLM).
+- New `RecursiveSummaryTree`, `SummaryNode`, or `SUMMARIZES` implementation.
+- LLM summary propagation policy.
+- New community detection.
+- New `CommunityEvidencePack` implementation.
+- New `gn_graph_walk` MCP tool.
+- `NavigationCapability` advertisement in `gn_help`.
+- Automatic graph walking policy.
+- Episodic/session-history retrieval lane.
+- Altitude intent classifier backed by current query text.
+- Dynamic graph traversal pruning.
+- Frontend discovery maps.
+- Direct Cypher, graph traversal, or database reads.
+
+These can be proposed later as adapters or larger storage/enrichment ADRs after the pure composition contract exists.
+
+## Later Adapter Opportunities
+
+After the core module lands, later work may:
+
+- adapt semantic/BM25/graph traversal results into `TieredRetrievalCandidate`;
+- expose the composition report in MCP search responses;
+- feed community evidence-pack rows into the composition report;
+- add an altitude hint parameter to retrieval APIs;
+- adapt existing `gn_graph_walk` responses into `NavigationStep` breadcrumbs;
+- adapt existing summary-tree nodes into composition candidates.
+
+## Acceptance Criteria
+
+1. `ontoindex/src/core/search/retrieval-context-composition.ts` exists and exports the public types/function above.
+2. The implementation is pure and deterministic.
+3. Unit tests cover:
+   - tier normalization;
+   - deterministic sorting;
+   - provenance preservation;
+   - related-symbol limits;
+   - duplicate candidate merging;
+   - counts by tier/source/kind/freshness/community/altitude;
+   - truncation flags;
+   - empty input;
+   - no DB/Cypher/MCP/session/LLM dependency.
 
 ## Validation Gates
 
-- Contract review must name the first target file and symbol before implementation.
-- Initial implementation must add unit tests for whichever first surface lands: candidate tier metadata, community evidence pack export, or graph-walk state.
-- `gn_graph_walk` tests are required only after a public navigation tool exists.
-- `RecursiveSummaryTree` propagation tests are required only after `summary-tree.ts` or its chosen successor exists.
-- Performance check: any altitude routing or navigation overhead must stay <50ms after those paths are implemented.
+- `cd ontoindex && npm test -- --run test/unit/retrieval-context-composition.test.ts`
+- `cd ontoindex && npx tsc --noEmit --pretty false`
+
+## Stop Conditions
+
+Stop and re-review the ADR if implementation requires:
+
+- adding graph storage schema;
+- running clustering or summarization;
+- adding a new MCP/CLI tool;
+- querying the graph or filesystem from the core module;
+- reading session history;
+- adding LLM calls;
+- changing existing retrieval adapters before the pure module exists.
