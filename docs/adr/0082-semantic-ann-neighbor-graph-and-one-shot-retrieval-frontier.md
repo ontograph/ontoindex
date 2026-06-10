@@ -1,6 +1,6 @@
 # ADR 0082: Semantic ANN Neighbor Graph and One-Shot Retrieval Frontier
 
-**Status:** Accepted - Implemented as opt-in core extension
+**Status:** Implemented - opt-in core and analyze-time materialization
 **Date:** 2026-06-09
 **Source:** Instagram semantic-memory prototype review; narrowed against existing OntoIndex embedding, query, and graph-navigation architecture.
 
@@ -173,7 +173,7 @@ ANN is not accepted as default behavior until benchmarked against exact cosine r
 Suggested benchmark command:
 
 ```bash
-cd ontoindex && npm run bench:semantic-ann -- --repo OntoIndex --ef 16,32,64
+cd ontoindex && npm run bench:semantic-ann -- --fixture test/fixtures/semantic-ann/realistic-code-symbols.json --ef 16,32,64
 ```
 
 Required metrics:
@@ -289,12 +289,15 @@ Mitigations:
 
 ## Implementation Status
 
-Implemented in `1.9.1` as an opt-in retrieval frontier:
+Implemented as opt-in core functionality:
 
-- `ANN_NEIGHBOR` edge building and loading lives under `ontoindex/src/core/embeddings/`.
-- One-shot backend search lives in `ontoindex/src/core/search/semantic-frontier-search.ts`.
-- The existing MCP/search surface can opt in with `retrieval_policy: "symbol-neighborhood"`.
+- `ANN_NEIGHBOR` edge helpers and one-shot frontier search code are present in:
+  - `ontoindex/src/core/embeddings/`
+  - `ontoindex/src/core/search/semantic-frontier-search.ts`
+- The MCP/search surface can opt in with `retrieval_policy: "symbol-neighborhood"`.
+- `ontoindex analyze --ann-neighbors` materializes `ANN_NEIGHBOR` edges after embeddings are available.
 - Benchmark gating is available through `npm run bench:semantic-ann`.
+- ANN remains retrieval-only and is not included in default impact, dependency, or audit traversals.
 
 ## Validation
 

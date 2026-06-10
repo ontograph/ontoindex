@@ -41,6 +41,11 @@ import type { PipelineResult } from '../types/pipeline.js';
 import type { PipelineProgress } from 'ontoindex-shared';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
+import {
+  buildAnnNeighborsFromEmbeddingRows,
+  type AnnEmbeddingRow,
+} from './embeddings/ann-neighbor.js';
+import { persistAnnNeighborEdges } from './embeddings/ann-neighbor-store.js';
 import type { KnowledgeGraph } from './graph/types.js';
 import { FTS_INDEXES } from './search/bm25-index.js';
 import v8 from 'node:v8';
@@ -74,6 +79,11 @@ export interface AnalyzeOptions {
    */
   force?: boolean;
   embeddings?: boolean;
+  /**
+   * Build ANN_NEIGHBOR edges for retrieval-only symbol-neighborhood search.
+   * This path currently requires embeddings for vector-based neighbor derivation.
+   */
+  annNeighbors?: boolean;
   skipGit?: boolean;
   /** Skip AGENTS.md and CLAUDE.md ontoindex block updates. */
   skipAgentsMd?: boolean;
@@ -400,6 +410,90 @@ async function countEmbeddableGraphNodes(): Promise<number | undefined> {
   return counted ? total : undefined;
 }
 
+const ANN_NEIGHBOR_MODEL_FALLBACK = 'unknown-embedding-model';
+
+type QueryRow = Record<string, unknown> | readonly unknown[];
+
+const rowField = <T>(row: QueryRow, field: string, index: number): T | undefined => {
+  return Array.isArray(row) ? ((row[index] as T | undefined) ?? undefined) : ((row[field] as T | undefined) ?? undefined);
+};
+
+const toNumericVector = (value: unknown): number[] | undefined => {
+  if (value == null) return undefined;
+
+  if (Array.isArray(value)) {
+    const array = value as unknown[];
+    if (!array.every((item) => typeof item === 'number' && Number.isFinite(item))) return undefined;
+    return array as number[];
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    const arrayLike = Array.from(value as unknown as ArrayLike<number>);
+    if (!arrayLike.every((item) => typeof item === 'number' && Number.isFinite(item))) return undefined;
+    return arrayLike;
+  }
+
+  return undefined;
+};
+
+const toIntegerIfFinite = (value: unknown): number | undefined => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  return Math.round(value);
+};
+
+const loadAnnNeighborEmbeddingRows = async (
+  model: string,
+  buildId: string,
+  builtAt: string,
+): Promise<AnnEmbeddingRow[]> => {
+  const rows = await executeQuery(
+    `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.embedding AS embedding, e.chunkIndex AS chunkIndex, e.contentHash AS contentHash`,
+  );
+
+  const rowsByNodeId = new Map<
+    string,
+    {
+      embedding: number[];
+      chunkIndex: number;
+      contentHash: string;
+    }
+  >();
+
+  for (const row of rows) {
+    const nodeId = rowField<string>(row, 'nodeId', 0);
+    if (!nodeId || typeof nodeId !== 'string' || nodeId.trim().length === 0) continue;
+
+    const embedding = toNumericVector(rowField<unknown>(row, 'embedding', 1));
+    if (!embedding || embedding.length === 0) continue;
+
+    const chunkIndex = toIntegerIfFinite(rowField<unknown>(row, 'chunkIndex', 2)) ?? Number.MAX_SAFE_INTEGER;
+    const contentHash = rowField<string>(row, 'contentHash', 3) ?? STALE_HASH_SENTINEL;
+
+    const existing = rowsByNodeId.get(nodeId);
+    if (!existing || chunkIndex < existing.chunkIndex) {
+      rowsByNodeId.set(nodeId.trim(), {
+        embedding,
+        chunkIndex,
+        contentHash,
+      });
+    }
+  }
+
+  const annRows: AnnEmbeddingRow[] = [];
+  for (const [nodeId, row] of rowsByNodeId) {
+    annRows.push({
+      nodeId,
+      model,
+      buildId,
+      builtAt,
+      contentHash: row.contentHash,
+      embedding: row.embedding,
+    });
+  }
+
+  return annRows;
+};
+
 function buildGraphDiffSnapshot(
   graph: KnowledgeGraph,
   savedAt: string,
@@ -658,6 +752,8 @@ export async function runFullAnalysis(
   const { storagePath, lbugPath } = getStoragePaths(repoPath);
   const includePaths = await normalizeRepositoryIncludePaths(repoPath, options.includePaths);
   const requestedProfile = requestedPipelineProfile(options.profile);
+  const embeddingsEnabledForRun = options.embeddings === true || options.annNeighbors === true;
+  const annNeighborBuildRequested = options.annNeighbors === true;
 
   // Clean up stale KuzuDB files from before the LadybugDB migration.
   const kuzuResult = await cleanupOldKuzuFiles(storagePath);
@@ -675,7 +771,7 @@ export async function runFullAnalysis(
   // store silently corrupts similarity scores. Only fires when the user
   // asked for embeddings (`--embeddings`) and BOTH the persisted hash
   // and the env hash are present and disagree.
-  if (options.embeddings && existingMeta?.model_hash) {
+  if (embeddingsEnabledForRun && existingMeta?.model_hash) {
     const envHash = process.env['ONTOINDEX_EMBEDDING_MODEL_HASH'];
     if (envHash && envHash !== existingMeta.model_hash) {
       gcTelemetry?.stop();
@@ -725,7 +821,7 @@ export async function runFullAnalysis(
   let cachedEmbeddingNodeIds = new Set<string>();
   let cachedEmbeddings: CachedEmbedding[] = [];
 
-  if (options.embeddings && existingMeta && !options.force) {
+  if (embeddingsEnabledForRun && existingMeta && !options.force) {
     try {
       progress('embeddings', 0, 'Caching embeddings...');
       await initLbug(lbugPath);
@@ -946,7 +1042,7 @@ export async function runFullAnalysis(
     const stats = await getLbugStats();
     let embeddingSkipped = true;
 
-    if (options.embeddings) {
+    if (embeddingsEnabledForRun) {
       const embeddableNodeCount = await countEmbeddableGraphNodes();
       const embeddingLimitCount = embeddableNodeCount ?? stats.nodes;
       if (embeddingLimitCount <= EMBEDDING_NODE_LIMIT) {
@@ -1014,6 +1110,29 @@ export async function runFullAnalysis(
     }
 
     const indexedAt = new Date().toISOString();
+    if (annNeighborBuildRequested) {
+      if (embeddingCount <= 0) {
+        throw new Error(
+          'symbol-neighborhood requested, but no embeddings were generated. Check embedding provider configuration and rerun --ann-neighbors.',
+        );
+      }
+
+      const model =
+        process.env.ONTOINDEX_EMBEDDING_MODEL_HASH ??
+        existingMeta?.model_hash ??
+        ANN_NEIGHBOR_MODEL_FALLBACK;
+      const buildId = currentCommit && currentCommit.length > 0 ? currentCommit : `commit:${Date.now()}`;
+      const annRows = await loadAnnNeighborEmbeddingRows(model, buildId, indexedAt);
+      if (annRows.length === 0) {
+        throw new Error(
+          'symbol-neighborhood requested, but no embedding rows could be loaded. Check embedding provider configuration and rerun --ann-neighbors.',
+        );
+      }
+
+      const annEdges = buildAnnNeighborsFromEmbeddingRows({ embeddings: annRows });
+      await persistAnnNeighborEdges(executeWithReusedStatement, annEdges);
+    }
+
     const symbolsProfile = options.profile === 'symbols' || options.profile === 'huge-repo-symbols';
     const symbolsOnlyMetadata = symbolsProfile
       ? {

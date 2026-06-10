@@ -210,6 +210,8 @@ async function acquireAnalyzeLock(repoPath: string): Promise<AnalyzeLock> {
 interface AnalyzeOptions {
   force?: boolean;
   embeddings?: boolean;
+  /** Build ANN_NEIGHBOR edges for symbol-neighborhood retrieval (implies embeddings). */
+  annNeighbors?: boolean;
   skills?: boolean;
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md ontoindex block updates. */
@@ -425,6 +427,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         // collision guard (see allowDuplicateName below).
         force: options?.force || options?.skills,
         embeddings: options?.embeddings,
+        annNeighbors: options?.annNeighbors,
         skipGit: options?.skipGit,
         markdownSidecar: options?.markdownSidecar,
         ...(profile ? { profile } : {}),

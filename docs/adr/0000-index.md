@@ -58,7 +58,7 @@ Each ADR follows: **Context → Decision → Algorithm/Technique → Consequence
 | [0076](0076-ontogpt-inspired-native-linkml-schema-governance-and-recursive-spires-extraction.md) | Core schema-guided recursive extraction bundle contract | Implemented (core extraction contract) | OntoGPT review; narrowed and implemented 2026-06-10 |
 | [0079](0079-smart-composer-inspired-native-interactive-context-staging-and-hunk-editing.md) | Core interactive context staging and virtual diff selection | Implemented (core workspace contracts) | Obsidian Smart Composer review; narrowed and implemented 2026-06-10 |
 | [0081](0081-virtuoso-inspired-native-multi-model-virtual-views-and-anytime-queries.md) | Core virtual source mapping and anytime result envelopes | Implemented (core virtual mapping and anytime envelope contracts) | OpenLink Virtuoso review; narrowed and implemented 2026-06-10 |
-| [0082](0082-semantic-ann-neighbor-graph-and-one-shot-retrieval-frontier.md) | Semantic ANN neighbor graph and one-shot retrieval frontier | Accepted (opt-in) | Instagram semantic-memory prototype review; implemented in 1.9.1 |
+| [0082](0082-semantic-ann-neighbor-graph-and-one-shot-retrieval-frontier.md) | Semantic ANN neighbor graph and one-shot retrieval frontier | Implemented (opt-in core and analyze-time materialization) | Instagram semantic-memory prototype review; core primitives shipped in 1.9.1; analyze-time materialization added 2026-06-10 |
 
 ## How to add a new ADR
 

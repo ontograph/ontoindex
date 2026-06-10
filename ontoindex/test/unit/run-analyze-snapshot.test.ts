@@ -66,6 +66,7 @@ import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import {
   createFTSIndex,
   executeQuery,
+  executeWithReusedStatement,
   getLbugStats,
   loadGraphToLbug,
 } from '../../src/core/lbug/lbug-adapter.js';
@@ -78,6 +79,9 @@ import { loadMeta, saveMeta } from '../../src/storage/repo-manager.js';
 const runPipelineMock = runPipelineFromRepo as unknown as ReturnType<typeof vi.fn>;
 const createFTSIndexMock = createFTSIndex as unknown as ReturnType<typeof vi.fn>;
 const executeQueryMock = executeQuery as unknown as ReturnType<typeof vi.fn>;
+const executeWithReusedStatementMock = executeWithReusedStatement as unknown as ReturnType<
+  typeof vi.fn
+>;
 const getLbugStatsMock = getLbugStats as unknown as ReturnType<typeof vi.fn>;
 const loadGraphToLbugMock = loadGraphToLbug as unknown as ReturnType<typeof vi.fn>;
 const loadMetaMock = loadMeta as unknown as ReturnType<typeof vi.fn>;
@@ -720,6 +724,98 @@ describe('runFullAnalysis snapshot persistence', () => {
       await runFullAnalysis(repoDir, { embeddings: true }, { onProgress: vi.fn() });
 
       expect(embeddingPipelineMocks.runEmbeddingPipeline).toHaveBeenCalledTimes(1);
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('builds and persists ANN_NEIGHBOR edges when --ann-neighbors is requested', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
+    try {
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'func:source',
+        label: 'Function',
+        properties: { name: 'source', filePath: 'src/source.ts' } as any,
+      });
+      graph.addNode({
+        id: 'func:target',
+        label: 'Function',
+        properties: { name: 'target', filePath: 'src/target.ts' } as any,
+      });
+
+      runPipelineMock.mockResolvedValue({
+        graph,
+        repoPath: repoDir,
+        totalFileCount: 2,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockImplementation(async (query: string) => {
+        if (query.includes('RETURN e.nodeId AS nodeId')) {
+          return [
+            {
+              nodeId: 'func:source',
+              embedding: [1, 0],
+              chunkIndex: 0,
+              contentHash: 'sha1',
+            },
+            {
+              nodeId: 'func:target',
+              embedding: [0.9, 0.1],
+              chunkIndex: 0,
+              contentHash: 'sha2',
+            },
+          ];
+        }
+        if (query.includes('RETURN count(e) AS cnt')) {
+          return [{ cnt: 2 }];
+        }
+        return [];
+      });
+
+      await runFullAnalysis(repoDir, { annNeighbors: true }, { onProgress: vi.fn() });
+
+      const persistCall = executeWithReusedStatementMock.mock.calls.find((call) =>
+        String(call[0]).includes('CodeRelation') && String(call[0]).includes('MERGE'),
+      );
+      expect(persistCall).toBeDefined();
+      expect(persistCall?.[1]).toHaveLength(2);
+      expect(embeddingPipelineMocks.runEmbeddingPipeline).toHaveBeenCalledTimes(1);
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails with an actionable message when --ann-neighbors is requested but no embeddings are produced', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
+    try {
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'func:source',
+        label: 'Function',
+        properties: { name: 'source', filePath: 'src/source.ts' } as any,
+      });
+
+      runPipelineMock.mockResolvedValue({
+        graph,
+        repoPath: repoDir,
+        totalFileCount: 1,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockImplementation(async (query: string) => {
+        if (query.includes('RETURN count(e) AS cnt')) {
+          return [{ cnt: 0 }];
+        }
+        return [];
+      });
+
+      await expect(
+        runFullAnalysis(repoDir, { annNeighbors: true }, { onProgress: vi.fn() }),
+      ).rejects.toThrow(/symbol-neighborhood requested, but no embeddings were generated/);
     } finally {
       await fs.rm(repoDir, { recursive: true, force: true });
     }
