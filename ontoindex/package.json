@@ -69,7 +69,7 @@
     "graphology-utils": "^2.3.0",
     "ignore": "^7.0.5",
     "js-yaml": "^4.1.1",
-    "lru-cache": "^11.0.0",
+    "lru-cache": "^11.5.1",
     "mdast-util-from-markdown": "^2.0.3",
     "mdast-util-frontmatter": "^2.0.1",
     "mdast-util-gfm": "^3.1.0",
