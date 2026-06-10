@@ -15,23 +15,15 @@ import { SupportedLanguages } from 'ontoindex-shared';
 
 const _require = createRequire(import.meta.url);
 
-type TreeSitterGrammar = {
-  name: string;
-  language: unknown;
-  nodeTypeInfo: readonly unknown[];
-};
+type TreeSitterGrammar = Parameters<typeof Parser.prototype.setLanguage>[0];
 
-const isTreeSitterGrammar = (value: unknown): value is TreeSitterGrammar =>
-  typeof value === 'object' &&
-  value !== null &&
-  typeof (value as { name?: unknown }).name === 'string' &&
-  'language' in value &&
-  Array.isArray((value as { nodeTypeInfo?: unknown }).nodeTypeInfo);
+const asTreeSitterGrammar = (value: unknown): TreeSitterGrammar =>
+  value as TreeSitterGrammar;
 
 const loadOptionalGrammar = (packageName: string): TreeSitterGrammar | null => {
   try {
     const grammar: unknown = _require(packageName);
-    return isTreeSitterGrammar(grammar) ? grammar : null;
+    return asTreeSitterGrammar(grammar);
   } catch {
     return null;
   }
@@ -47,20 +39,20 @@ const Kotlin = loadOptionalGrammar('tree-sitter-kotlin');
 let parser: Parser | null = null;
 
 const languageMap: Record<string, TreeSitterGrammar> = {
-  [SupportedLanguages.JavaScript]: JavaScript,
-  [SupportedLanguages.TypeScript]: TypeScript.typescript,
-  [`${SupportedLanguages.TypeScript}:tsx`]: TypeScript.tsx,
-  [SupportedLanguages.Python]: Python,
-  [SupportedLanguages.Java]: Java,
-  [SupportedLanguages.C]: C,
-  [SupportedLanguages.CPlusPlus]: CPP,
-  [SupportedLanguages.CSharp]: CSharp,
-  [SupportedLanguages.Go]: Go,
-  [SupportedLanguages.Rust]: Rust,
+  [SupportedLanguages.JavaScript]: asTreeSitterGrammar(JavaScript),
+  [SupportedLanguages.TypeScript]: asTreeSitterGrammar(TypeScript.typescript),
+  [`${SupportedLanguages.TypeScript}:tsx`]: asTreeSitterGrammar(TypeScript.tsx),
+  [SupportedLanguages.Python]: asTreeSitterGrammar(Python),
+  [SupportedLanguages.Java]: asTreeSitterGrammar(Java),
+  [SupportedLanguages.C]: asTreeSitterGrammar(C),
+  [SupportedLanguages.CPlusPlus]: asTreeSitterGrammar(CPP),
+  [SupportedLanguages.CSharp]: asTreeSitterGrammar(CSharp),
+  [SupportedLanguages.Go]: asTreeSitterGrammar(Go),
+  [SupportedLanguages.Rust]: asTreeSitterGrammar(Rust),
   ...(Kotlin ? { [SupportedLanguages.Kotlin]: Kotlin } : {}),
-  [SupportedLanguages.PHP]: PHP.php_only,
-  [SupportedLanguages.Ruby]: Ruby,
-  [SupportedLanguages.Vue]: TypeScript.typescript,
+  [SupportedLanguages.PHP]: asTreeSitterGrammar(PHP.php_only),
+  [SupportedLanguages.Ruby]: asTreeSitterGrammar(Ruby),
+  [SupportedLanguages.Vue]: asTreeSitterGrammar(TypeScript.typescript),
   ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
 };

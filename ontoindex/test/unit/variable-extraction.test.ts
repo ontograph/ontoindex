@@ -25,6 +25,18 @@ import Ruby from 'tree-sitter-ruby';
 
 const parser = new Parser();
 
+const findDescendantByType = (
+  node: Parser.SyntaxNode,
+  type: string,
+): Parser.SyntaxNode | undefined => {
+  if (node.type === type) return node;
+  for (const child of node.namedChildren) {
+    const found = findDescendantByType(child, type);
+    if (found) return found;
+  }
+  return undefined;
+};
+
 // ---------------------------------------------------------------------------
 // TypeScript config
 // ---------------------------------------------------------------------------
@@ -548,7 +560,7 @@ describe('VariableExtractor — block-scoped declarations', () => {
     // source_file > function_declaration > block > short_var_declaration
     const funcDecl = tree.rootNode.namedChildren.find((c) => c.type === 'function_declaration')!;
     const body = funcDecl.childForFieldName('body')!;
-    const shortVarDecl = body.namedChildren.find((c) => c.type === 'short_var_declaration');
+    const shortVarDecl = findDescendantByType(body, 'short_var_declaration');
     expect(shortVarDecl).toBeDefined();
     const info = extractor.extract(shortVarDecl!, ctx);
     expect(info).not.toBeNull();

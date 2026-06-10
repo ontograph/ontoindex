@@ -31,7 +31,7 @@ export {
   Folder,
   FolderOpen,
   GitBranch,
-  Github,
+  GitBranch as Github,
   Globe,
   Hash,
   Heart,

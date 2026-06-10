@@ -21,7 +21,7 @@
     "node": ">=20.0.0"
   },
   "devDependencies": {
-    "@napi-rs/cli": "^3.6.2"
+    "@napi-rs/cli": "^3.7.1"
   },
   "license": "AGPL-3.0-or-later"
 }

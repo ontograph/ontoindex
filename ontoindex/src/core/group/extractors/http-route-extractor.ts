@@ -5,6 +5,7 @@ import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { capScanFiles, readSafe } from './fs-utils.js';
 import { getPluginForFile, HTTP_SCAN_GLOB, type HttpDetection } from './http-patterns/index.js';
+import { toTreeSitterLanguage } from './tree-sitter-scanner.js';
 
 /**
  * Language-agnostic orchestrator for HTTP route (provider + consumer)
@@ -170,7 +171,7 @@ export class HttpRouteExtractor implements ContractExtractor {
         return [];
       }
       try {
-        parser.setLanguage(plugin.language);
+        parser.setLanguage(toTreeSitterLanguage(plugin.language));
         const tree = parser.parse(content);
         const detections = plugin.scan(tree);
         cachedDetections.set(rel, detections);

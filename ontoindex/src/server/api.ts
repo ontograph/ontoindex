@@ -857,7 +857,8 @@ export const streamGraphNdjson = async (
  */
 const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManager) => {
   app.get(routePath, (req, res) => {
-    const job = jm.getJob(req.params.jobId);
+    const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId;
+    const job = jm.getJob(jobId);
     if (!job) {
       res.status(404).json({ error: 'Job not found' });
       return;
@@ -903,7 +904,7 @@ const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManage
       try {
         eventId++;
         if (progress.phase === 'complete' || progress.phase === 'failed') {
-          const eventJob = jm.getJob(req.params.jobId);
+          const eventJob = jm.getJob(jobId);
           res.write(
             `id: ${eventId}\nevent: ${progress.phase}\ndata: ${JSON.stringify({
               repoName: eventJob?.repoName,

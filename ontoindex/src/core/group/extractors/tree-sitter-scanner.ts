@@ -1,5 +1,10 @@
 import Parser from 'tree-sitter';
 
+type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
+
+export const toTreeSitterLanguage = (language: unknown): TreeSitterLanguage =>
+  language as TreeSitterLanguage;
+
 /**
  * Shared, language-agnostic tree-sitter scanning utilities used by group
  * extractors (topic, http, grpc, ...).
@@ -34,11 +39,8 @@ export interface PatternSpec<TMeta> {
  * A set of patterns owned by one language plugin, bound to a specific
  * tree-sitter grammar.
  *
- * `language` is typed as `unknown` because tree-sitter's TypeScript
- * declarations use `any` for the grammar object, and the grammar modules
- * export different shapes (plain grammar vs. namespace with `typescript`
- * / `tsx` members). Callers pass the concrete grammar object; this
- * module forwards it to `parser.setLanguage` / `new Parser.Query`.
+ * Callers pass the concrete grammar object; this module forwards it to
+ * `parser.setLanguage` / `new Parser.Query`.
  */
 export interface LanguagePatterns<TMeta> {
   /** Human-readable plugin name for diagnostics. */
@@ -96,7 +98,7 @@ export function compilePatterns<TMeta>(bundle: LanguagePatterns<TMeta>): Compile
   const compiled: CompiledPattern<TMeta>[] = [];
   for (const spec of bundle.patterns) {
     try {
-      const query = new Parser.Query(bundle.language, spec.query);
+      const query = new Parser.Query(toTreeSitterLanguage(bundle.language), spec.query);
       compiled.push({ query, meta: spec.meta });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -154,7 +156,7 @@ export function scanFile<TMeta>(
 ): ScanMatch<TMeta>[] {
   let tree: Parser.Tree;
   try {
-    parser.setLanguage(plugin.language);
+    parser.setLanguage(toTreeSitterLanguage(plugin.language));
     tree = parser.parse(content);
   } catch {
     return [];

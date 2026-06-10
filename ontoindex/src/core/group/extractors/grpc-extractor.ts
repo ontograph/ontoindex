@@ -10,6 +10,7 @@ import {
   hasProtoPlugin,
   type GrpcDetection,
 } from './grpc-patterns/index.js';
+import { toTreeSitterLanguage } from './tree-sitter-scanner.js';
 
 /**
  * Language-agnostic orchestrator for gRPC (provider + consumer) contract
@@ -421,7 +422,7 @@ export class GrpcExtractor implements ContractExtractor {
       if (!content) continue;
       let detections: GrpcDetection[] = [];
       try {
-        parser.setLanguage(plugin.language);
+        parser.setLanguage(toTreeSitterLanguage(plugin.language));
         const tree = parser.parse(content);
         detections = plugin.scan(tree);
       } catch {

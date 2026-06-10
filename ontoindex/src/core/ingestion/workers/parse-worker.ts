@@ -144,6 +144,8 @@ const parser = new Parser();
 
 const PARSER_TIMEOUT_MICROS = 10_000_000; // 10 seconds in microseconds
 
+const asTreeSitterLanguage = (value: unknown): TreeSitterLanguage => value as TreeSitterLanguage;
+
 type ParserWithOptionalTimeoutMicros = {
   setTimeoutMicros?: unknown;
 };
@@ -161,20 +163,20 @@ if (supportsSetTimeoutMicros(parser)) {
 }
 
 const languageMap = {
-  [SupportedLanguages.JavaScript]: JavaScript,
-  [SupportedLanguages.TypeScript]: TypeScript.typescript,
-  [`${SupportedLanguages.TypeScript}:tsx`]: TypeScript.tsx,
-  [SupportedLanguages.Python]: Python,
-  [SupportedLanguages.Java]: Java,
-  [SupportedLanguages.C]: C,
-  [SupportedLanguages.CPlusPlus]: CPP,
-  [SupportedLanguages.CSharp]: CSharp,
-  [SupportedLanguages.Go]: Go,
-  [SupportedLanguages.Rust]: Rust,
+  [SupportedLanguages.JavaScript]: asTreeSitterLanguage(JavaScript),
+  [SupportedLanguages.TypeScript]: asTreeSitterLanguage(TypeScript.typescript),
+  [`${SupportedLanguages.TypeScript}:tsx`]: asTreeSitterLanguage(TypeScript.tsx),
+  [SupportedLanguages.Python]: asTreeSitterLanguage(Python),
+  [SupportedLanguages.Java]: asTreeSitterLanguage(Java),
+  [SupportedLanguages.C]: asTreeSitterLanguage(C),
+  [SupportedLanguages.CPlusPlus]: asTreeSitterLanguage(CPP),
+  [SupportedLanguages.CSharp]: asTreeSitterLanguage(CSharp),
+  [SupportedLanguages.Go]: asTreeSitterLanguage(Go),
+  [SupportedLanguages.Rust]: asTreeSitterLanguage(Rust),
   ...(Kotlin ? { [SupportedLanguages.Kotlin]: Kotlin } : {}),
-  [SupportedLanguages.PHP]: PHP.php_only,
-  [SupportedLanguages.Ruby]: Ruby,
-  [SupportedLanguages.Vue]: TypeScript.typescript,
+  [SupportedLanguages.PHP]: asTreeSitterLanguage(PHP.php_only),
+  [SupportedLanguages.Ruby]: asTreeSitterLanguage(Ruby),
+  [SupportedLanguages.Vue]: asTreeSitterLanguage(TypeScript.typescript),
   ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
 } as Record<string, TreeSitterLanguage>;

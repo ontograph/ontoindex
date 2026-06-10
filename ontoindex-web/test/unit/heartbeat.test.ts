@@ -18,7 +18,7 @@ beforeEach(() => {
   lastEventSource = null;
   vi.stubGlobal(
     'EventSource',
-    vi.fn().mockImplementation(() => {
+    vi.fn().mockImplementation(function () {
       lastEventSource = new MockEventSource();
       return lastEventSource;
     }),
