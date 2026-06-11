@@ -1,300 +1,325 @@
 # OntoIndex
 
-**Graph-powered code intelligence for AI agents.** OntoIndex indexes a codebase into a local knowledge graph, then exposes precise code search, symbol context, blast-radius analysis, review helpers, and multi-repo navigation through the Model Context Protocol (MCP), CLI, and web UI.
+**Graph-powered code intelligence for AI agents.** OntoIndex builds a local code graph for a repository and exposes it through a CLI, an MCP server, an HTTP API, and a browser UI.
 
 > Important: OntoIndex has no official cryptocurrency, token, or coin. Any token using the OntoIndex name is not affiliated with this project or its maintainers.
-
 
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- **Current release:** `1.9.1`
- 
-- **Enterprise:** [erasyuk@gmail.com](erasyuk@gmail.com)
-  
+- Current release: `1.9.3`
+- Source repository: [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
+- Security policy: [SECURITY.md](SECURITY.md)
+- Enterprise contact: [erasyuk@gmail.com](mailto:erasyuk@gmail.com)
+- Languages: [Русский](README.ru.md) · [简体中文](README.zh-CN.md)
 
-## Why OntoIndex
+## Abstract
 
-AI coding agents are fast, but they often operate from partial file snippets. They can rename a function without seeing downstream callers, edit a service without understanding cross-file routes, or miss architectural coupling hidden outside the prompt.
+AI coding agents often work from small slices of a codebase. That is fast, but fragile: a model can edit a function without seeing callers, rename a symbol without downstream impact analysis, or miss coupling that sits outside the current prompt.
 
-OntoIndex gives agents a precomputed graph of the repository:
+OntoIndex reduces that uncertainty by precomputing a repository graph. The graph records files, symbols, imports, calls, inheritance, routes, tools, documentation sections, communities, and execution flows. Agents can then ask graph-level questions before editing: where is this symbol used, what process does it participate in, what tests are nearby, and what changes are risky?
 
-- **Symbols:** functions, classes, methods, interfaces, files, communities
-- **Relations:** imports, calls, inheritance, implementation, membership, execution flow
-- **Search:** BM25, semantic retrieval, reciprocal-rank fusion, typed queries
-- **Safety:** impact analysis, diff-to-symbol mapping, review reports, audit workflows
-- **Local-first:** indexes live in `.ontoindex/`; the MCP server reads local graph data
+The index is local-first. Repository data is stored in `.ontoindex/`, while the global registry under `~/.ontoindex/` only tracks indexed repository metadata and paths.
 
-The result is a smaller, more reliable context surface: agents ask the graph instead of repeatedly scanning the tree.
+## What It Provides
 
-## Quick Start
+| Area | Capability |
+| --- | --- |
+| Code graph | Files, folders, functions, classes, methods, interfaces, properties, routes, tools, docs sections, and process nodes |
+| Relationships | `CONTAINS`, `DEFINES`, `CALLS`, `IMPORTS`, `EXTENDS`, `IMPLEMENTS`, `MEMBER_OF`, `STEP_IN_PROCESS`, `HANDLES_ROUTE`, and related edges |
+| Search | BM25, graph search, optional semantic retrieval, reciprocal-rank fusion, and process-grouped results |
+| Agent safety | Impact analysis, diff-to-symbol mapping, pre-commit audit, review helpers, and target-repository validation |
+| Interfaces | CLI, MCP stdio server, HTTP API, generated wiki, generated skills, and React/Vite web UI |
+| Multi-repo work | Named repository registry, repo labels, group contracts, and cross-repo context surfaces |
+
+## Installation
+
+### Third-party Prerequisites
+
+OntoIndex runs on Node.js and uses native parser packages for some languages. Install the following before installing OntoIndex.
+
+| Requirement | Linux | Windows |
+| --- | --- | --- |
+| Node.js | Node.js `20` or newer plus `npm` | Node.js `20` or newer plus `npm` |
+| Git | `git` CLI for repository metadata and diff analysis | Git for Windows |
+| Native build tools | `python3`, `make`, and `g++` for optional native parser builds | Python 3 and Microsoft C++ Build Tools from Visual Studio Build Tools |
+| Shell | `bash` for the install script examples | PowerShell 5.1 or PowerShell 7 |
+| Optional containers | Docker Engine and Docker Compose | Docker Desktop |
+
+Linux example:
+
+```bash
+node --version
+npm --version
+git --version
+python3 --version
+make --version
+g++ --version
+```
+
+Windows PowerShell example:
+
+```powershell
+node --version
+npm --version
+git --version
+python --version
+npm config get msvs_version
+```
+
+### Install the Latest GitHub Release
+
+Linux and macOS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ontograph/ontoindex/master/scripts/install-ontoindex-latest.sh | bash
-
 ontoindex --version
-
-# Run from the repository you want to index.
-  ontoindex analyze
-
-# Configure MCP clients once.
-  ontoindex setup
-
-# Start the MCP server manually when needed.
-  ontoindex mcp
-
 ```
 
-To always install the latest GitHub release tarball:
+Windows PowerShell:
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/ontograph/ontoindex/master/scripts/install-ontoindex-latest.ps1 | iex
+ontoindex --version
+```
+
+From a local checkout:
+
+| Platform | Command |
+| --- | --- |
+| Linux/macOS | `./scripts/install-ontoindex-latest.sh` |
+| Windows PowerShell | `powershell -ExecutionPolicy Bypass -File .\scripts\install-ontoindex-latest.ps1` |
+
+The installers fetch the latest GitHub release, locate the `ontoindex-*.tgz` asset, and install it with `npm install -g`. If a global install is not writable, they fall back to a user npm prefix.
+
+Installer configuration:
+
+| Purpose | Linux/macOS | Windows PowerShell |
+| --- | --- | --- |
+| Use another release repository | `ONTOINDEX_GITHUB_REPO=owner/repo ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_GITHUB_REPO='owner/repo'; .\scripts\install-ontoindex-latest.ps1` |
+| Use a user npm prefix | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_NPM_PREFIX="$env:APPDATA\npm"; .\scripts\install-ontoindex-latest.ps1` |
+| Force user prefix | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh` | `.\scripts\install-ontoindex-latest.ps1 -ForceUserPrefix` |
+
+### Install with npm
+
+Use this path when npm publication is available in your environment.
+
+| Platform | Command |
+| --- | --- |
+| Linux/macOS | `npm install -g ontoindex@1.9.3 && ontoindex --version` |
+| Windows PowerShell | `npm install -g ontoindex@1.9.3; ontoindex --version` |
+
+### Install from a Release Tarball URL
+
+Use this when you want an immutable GitHub release asset.
+
+| Platform | Command |
+| --- | --- |
+| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.3/ontoindex-1.9.3.tgz && ontoindex --version` |
+| Windows PowerShell | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.3/ontoindex-1.9.3.tgz; ontoindex --version` |
+
+## First Run
+
+Run OntoIndex from the repository you want to index.
+
+| Task | Linux/macOS | Windows PowerShell |
+| --- | --- | --- |
+| Index current repository | `ontoindex analyze` | `ontoindex analyze` |
+| Check index status | `ontoindex status` | `ontoindex status` |
+| Configure supported MCP clients | `ontoindex setup` | `ontoindex setup` |
+| Start MCP server manually | `ontoindex mcp` | `ontoindex mcp` |
+| Start local HTTP backend | `ontoindex serve` | `ontoindex serve` |
+| Generate a wiki | `ontoindex wiki . --out docs/wiki` | `ontoindex wiki . --out docs/wiki` |
+
+When the OntoIndex executable is launched from a helper checkout or global tool path, set the target repository explicitly so the MCP server cannot silently serve the wrong repository.
+
+Linux/macOS:
 
 ```bash
-./scripts/install-ontoindex-latest.sh
+cd /path/to/target/repo
+export ONTOINDEX_MCP_PROJECT_CWD="$PWD"
+export ONTOINDEX_MCP_REPO="$PWD"
+ontoindex setup
+ontoindex mcp --repo my-project
 ```
 
-If you run `ontoindex setup` or `ontoindex mcp` from a helper checkout (for example, a global Codex/Claude installation), set the target project hint explicitly so startup can validate selection against the intended repo:
+Windows PowerShell:
 
-```bash
- 
-  cd /path/to/target/repo
-
-  ONTOINDEX_MCP_PROJECT_CWD="$PWD" \
-  ONTOINDEX_MCP_REPO="$PWD" \
-  ontoindex setup
-
-  ONTOINDEX_MCP_PROJECT_CWD="$PWD" \
-  ONTOINDEX_MCP_REPO="$PWD" \
-  ontoindex mcp --repo my-project
-
+```powershell
+Set-Location C:\path\to\target\repo
+$env:ONTOINDEX_MCP_PROJECT_CWD = (Get-Location).Path
+$env:ONTOINDEX_MCP_REPO = (Get-Location).Path
+ontoindex setup
+ontoindex mcp --repo my-project
 ```
 
-Startup prints both the executable cwd and project path, and will error loudly when `ONTOINDEX_MCP_REPO` or `--repo` points outside the configured `ONTOINDEX_MCP_PROJECT_CWD` unless `ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1`.
-
-For the browser UI:
-
-```bash
-npx -y ontoindex@1.9.1 serve
-```
-
-Then open [ontoindex.vercel.app](https://ontoindex.vercel.app). The UI detects the local backend at `http://localhost:4747` and can browse indexed repositories without uploading code.
+At startup, OntoIndex prints both the executable working directory and the target project path. If `ONTOINDEX_MCP_REPO` or `--repo` points outside `ONTOINDEX_MCP_PROJECT_CWD`, startup fails unless `ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1` is set.
 
 ## MCP Setup
 
-`ontoindex setup` configures supported MCP clients automatically. Manual examples:
+`ontoindex setup` configures supported MCP clients automatically. Manual examples are useful for debugging or for clients that do not support automatic setup.
 
-### Claude Code
+| Client | Linux/macOS | Windows PowerShell |
+| --- | --- | --- |
+| Claude Code | `claude mcp add ontoindex -- ontoindex mcp` | `claude mcp add ontoindex -- ontoindex mcp` |
+| Codex | `codex mcp add ontoindex -- ontoindex mcp` | `codex mcp add ontoindex -- ontoindex mcp` |
+| Any MCP client | command: `ontoindex`, args: `["mcp"]` | command: `ontoindex`, args: `["mcp"]` |
 
-```bash
-claude mcp add ontoindex -- npx -y ontoindex@1.9.1 mcp
-```
-
-### Codex
-
-```bash
-codex mcp add ontoindex -- npx -y ontoindex@1.9.1 mcp
-```
-
-### Cursor
-
-Add this to `~/.cursor/mcp.json`:
+Cursor example:
 
 ```json
 {
   "mcpServers": {
     "ontoindex": {
-      "command": "npx",
-      "args": ["-y", "ontoindex@1.9.1", "mcp"]
+      "command": "ontoindex",
+      "args": ["mcp"]
     }
   }
 }
 ```
 
-### OpenCode
-
-Add this to `~/.config/opencode/config.json`:
+OpenCode example:
 
 ```json
 {
   "mcp": {
     "ontoindex": {
       "type": "local",
-      "command": ["npx", "-y", "ontoindex@1.9.1", "mcp"]
+      "command": ["ontoindex", "mcp"]
     }
   }
 }
 ```
 
-## Editor Support
+## Common Agent Workflows
 
-| Client | MCP | Skills | Hooks | Notes |
-| --- | --- | --- | --- | --- |
-| Claude Code | Yes | Yes | Yes | Deepest integration: MCP tools, generated skills, and optional hooks |
-| Cursor | Yes | Yes | No | Global MCP config works across projects |
-| Codex | Yes | Yes | No | Use `codex mcp add` or `.codex/config.toml` |
-| Windsurf | Yes | No | No | Standard MCP server connection |
-| OpenCode | Yes | Yes | No | Standard local MCP process |
-| Any MCP client | Yes | Client-dependent | Client-dependent | Uses the stdio MCP server |
+| Goal | Linux/macOS | Windows PowerShell |
+| --- | --- | --- |
+| Search for a flow | `ontoindex query "authentication flow"` | `ontoindex query "authentication flow"` |
+| Inspect symbol context | `ontoindex ctx validateUser` | `ontoindex ctx validateUser` |
+| Check blast radius | `ontoindex impact validateUser --include-tests --depth 2` | `ontoindex impact validateUser --include-tests --depth 2` |
+| Review current diff | `ontoindex review diff` | `ontoindex review diff` |
+| Audit before commit | `ontoindex detect-changes` | `ontoindex detect-changes` |
+| Rebuild from scratch | `ontoindex analyze --force` | `ontoindex analyze --force` |
 
-## How OntoIndex Compares
+Core MCP surfaces include:
 
-This is a functionality comparison, not a benchmark. It focuses on what each tool is designed to do at runtime.
-
-| Capability | **OntoIndex** | **GitNexus** | [Graphify](https://github.com/safishamsi/graphify) | [CodeGPT Deep Graph MCP](https://github.com/JudiniLabs/mcp-code-graph) | [code-graph-mcp](https://github.com/sdsrss/code-graph-mcp) | [Optave Codegraph](https://github.com/optave/ops-codegraph-tool) | [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) | [Serena](https://github.com/oraios/serena) | [Graphiti MCP](https://github.com/getzep/graphiti/blob/main/mcp_server/README.md) |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Primary job | Agent code-intelligence platform | Donor/predecessor for OntoIndex | Turn mixed project folders into queryable knowledge graphs and reports | Query CodeGPT/DeepGraph-hosted repo graphs | Local AST graph MCP for coding assistants | Local function dependency graph and metrics | Local code graph context server and CLI | IDE-like symbolic code agent | Temporal knowledge graph memory |
-| Local repository indexing | Yes | Yes | Yes | No; graph is CodeGPT/DeepGraph-hosted | Yes | Yes | Yes | Uses local language tooling, not a precomputed graph index in the same way | No; stores facts/events, not source-code structure |
-| Hosted account required | No | No | No for local generation | Yes for private CodeGPT graphs; public DeepGraph URLs also supported | No | No | No | No | Usually needs Neo4j/service setup |
-| Persistent graph store | LadybugDB under `.ontoindex/` plus registry | Legacy local graph | Export artifacts such as graph/report/visualization outputs | Hosted DeepGraph/CodeGPT graph | Local AST graph store | SQLite-backed graph | Local graph database/context store | Project memories plus language-server state | Neo4j-backed temporal graph |
-| MCP surface | 60+ facade and `gn_*` tools: search, inspect, impact, audit, docs, refactor, systems checks | Earlier MCP concepts | Optional/adjacent MCP output, not the main persistent runtime | MCP tools for hosted graph retrieval and connection exploration | MCP search, call graph, route tracing, impact | MCP graph/metric tools | MCP context/query tools | MCP-style agent tools for symbols, references, edits, memory | MCP tools for entity/relation memory |
-| Impact / blast-radius analysis | Yes: symbol, route, diff, batch, process, test-aware signals | Partial predecessor capability | Report/artifact-oriented, not the same live pre-edit gate | Limited to hosted graph relationships | Yes | Yes | Yes/partial depending on indexed graph | References and edits through symbolic tooling, not graph-wide process analysis | Not source-code impact focused |
-| Safe refactor / rename | Yes: graph-aware rename/refactor wrappers with dry-run and verification guidance | Partial predecessor capability | No; primarily graph/report generation | No | Limited/analysis-oriented | Limited/analysis-oriented | Limited/analysis-oriented | Yes for symbolic edit workflows | No |
-| Docs / requirements evidence | Yes: docs readiness, trace, drift, context, sidecar status | No current public successor surface | Strong for multimodal docs ingestion, but not OntoIndex-style requirement trace gates | No | Limited | Limited | Limited | Memory notes, not docs/code drift gates | Strong memory facts, not repo docs drift |
-| Audit lifecycle | Yes: ingest, verify, lint, dedupe, bundle, dispatch, worker review, tombstones | No current public successor surface | Produces reviewable graph/report artifacts | No | No dedicated lifecycle | CI/quality gates and metrics, not OntoIndex audit sessions | No dedicated lifecycle | No dedicated lifecycle | No source-code audit lifecycle |
-| Systems-audit checks | Yes: resource trace, path verify, boundary trace, FSM, error topology, concurrency, taint, ABI, fault simulation | No current public successor surface | No | No | Route/call/impact oriented | Architecture/quality oriented | Context oriented | Symbolic navigation/editing | Temporal KG operations |
-| Multi-repo registry / target safeguards | Yes: named repo registry, target repo validation, repoPath reporting | Earlier basis | Project/folder oriented | Hosted graph selection | Mostly single workspace | Mostly local workspace | Local workspace | Project oriented | Global memory graph oriented |
-| Web/API bridge | Yes: HTTP API plus React/Vite UI | No current public successor surface | Generates visual artifacts | Hosted/web graph experience through DeepGraph | MCP/server focused | CLI/MCP focused | Playground/visual exploration reported by project | Agent tooling focused | Graph service/admin tooling |
-| Multimodal project knowledge | Code, docs, requirements, APIs; not a general image/video graph | Code-focused | Strong: code, docs, PDFs, images, videos/web assets depending on setup | Hosted code graph | Code-focused | Code-focused | Code-focused | Code + project memories | General facts/events memory |
-| Best fit | Local agent workflows that need graph evidence, safety gates, audits, and release checks | Historical migration source | Generating browsable/project knowledge artifacts across mixed content | Teams already using CodeGPT/DeepGraph hosted graphs | Lightweight local AST graph MCP | Function-level dependency metrics and CI-style graph checks | Local context server for assistant retrieval | Precise symbolic navigation and code edits | Long-lived temporal memory across entities/events |
-
-Practical differences:
-
-- Choose **OntoIndex** when the agent must make edit/release decisions from local graph evidence: impact, diff review, docs drift, audit bundles, and MCP target safeguards.
-- Choose **Graphify** when the main goal is a broad project knowledge graph over mixed artifacts, especially docs/PDFs/images/video plus human-readable graph reports.
-- Choose **CodeGPT Deep Graph MCP** when the graph already lives in CodeGPT/DeepGraph and the MCP client should query that hosted graph rather than build a local index.
-- Choose **code-graph-mcp**, **Optave Codegraph**, or **CodeGraphContext** for smaller local graph servers focused on AST/call/dependency context without OntoIndex's audit lifecycle and docs evidence model.
-- Choose **Serena** when language-server style symbolic edits and project memories matter more than a precomputed repository graph.
-- Choose **Graphiti MCP** for temporal memory over facts/events; it is complementary to OntoIndex rather than a source-code index replacement.
-
-## What the Agent Gets
-
-Core MCP tools:
-
-| Tool | Purpose |
+| Tool family | Use |
 | --- | --- |
-| `list_repos` | Discover indexed repositories |
-| `query` | Process-grouped hybrid search |
-| `context` | Symbol-centric callers, callees, references, and process participation |
-| `impact` | Blast-radius analysis before edits |
-| `detect_changes` | Map Git diff hunks to affected symbols and execution flows |
-| `rename` | Coordinated multi-file rename with graph and text-search evidence |
-| `cypher` | Raw graph queries for advanced users |
-
-Higher-level surfaces:
-
-- **Docs:** requirement tracing, docs drift, docs context, readiness reports
-- **Review:** graph-aware diff review and pre-commit audit
-- **Audit lifecycle:** ingest, verify, lint, bundle, and dispatch audit findings
-- **Systems audit:** resource tracing, path verification, test suggestions, taint-style heuristics
-- **Resources:** `ontoindex://repos`, repo context, clusters, processes, schema, memories, onboarding
-- **Generated skills:** repository-specific `.claude/skills/generated/*/SKILL.md` files with module-level context
+| Search and context | Find relevant symbols, files, routes, and processes |
+| Impact analysis | Estimate upstream and downstream blast radius before edits |
+| Diff review | Map changed hunks to graph symbols and execution flows |
+| Docs evidence | Check requirements traceability, docs drift, and readiness |
+| Refactor support | Use graph-aware rename and safety checks instead of plain find-and-replace |
+| Systems audit | Inspect resource flow, path boundaries, error topology, concurrency, and taint-style signals |
 
 ## Functional Architecture
 
-OntoIndex has three runtime entry points over the same local graph backend:
+OntoIndex has three entry points over the same local graph backend.
 
 ```mermaid
 flowchart LR
   Repo[Source repository] --> Analyze[CLI analyze pipeline]
   Analyze --> Graph[.ontoindex LadybugDB graph]
-  Analyze --> Registry[~/.ontoindex registry]
-
+  Analyze --> Registry[User registry]
   Graph --> Backend[LocalBackend]
   Registry --> Backend
-
+  Backend --> CLI[CLI commands]
   Backend --> MCP[MCP stdio server]
-  Backend --> HTTP[HTTP bridge: ontoindex serve]
-  Backend --> CLI[Direct CLI tools]
-
-  MCP --> Agents[Claude Code / Cursor / Codex / OpenCode / MCP clients]
-  HTTP --> Web[OntoIndex Web UI]
+  Backend --> HTTP[HTTP API]
+  MCP --> Agents[AI agents and MCP clients]
+  HTTP --> Web[React web UI]
 ```
 
-| Component | Code | Responsibility |
+| Component | Path | Responsibility |
 | --- | --- | --- |
-| CLI command layer | [`ontoindex/src/cli/`](ontoindex/src/cli/) | User-facing commands: `analyze`, `mcp`, `serve`, `query`, `impact`, `review`, `docs`, `audit`, `group` |
-| Ingestion pipeline | [`ontoindex/src/core/ingestion/`](ontoindex/src/core/ingestion/) | File walk, Tree-sitter parsing, import/call/type/heritage resolution, route/tool/ORM extraction |
-| Pipeline phase DAG | [`ontoindex/src/core/ingestion/pipeline-phases/`](ontoindex/src/core/ingestion/pipeline-phases/) | Ordered graph build phases: scan, structure, markdown, parse, routes, tools, ORM, cross-file, MRO, communities, processes |
-| Graph storage | [`ontoindex/src/core/lbug/`](ontoindex/src/core/lbug/) | LadybugDB schema, graph loading, query execution, embedding persistence |
-| Repository registry | [`ontoindex/src/storage/`](ontoindex/src/storage/) | `.ontoindex/` metadata, global `~/.ontoindex/registry.json`, stale-index checks |
-| Search and ranking | [`ontoindex/src/core/search/`](ontoindex/src/core/search/) | BM25, semantic retrieval, intent routing, Reciprocal Rank Fusion, repomap context |
-| Embeddings | [`ontoindex/src/core/embeddings/`](ontoindex/src/core/embeddings/) | Optional local embedding generation and incremental embedding reuse |
-| MCP backend | [`ontoindex/src/mcp/`](ontoindex/src/mcp/) | MCP server, resources, facade tools, `gn_*` super-functions, local backend dispatch |
+| CLI layer | [`ontoindex/src/cli/`](ontoindex/src/cli/) | User-facing commands such as `analyze`, `mcp`, `serve`, `query`, `impact`, `review`, `docs`, and `audit` |
+| Ingestion pipeline | [`ontoindex/src/core/ingestion/`](ontoindex/src/core/ingestion/) | File scanning, Tree-sitter parsing, import/call/type resolution, route/tool/ORM extraction |
+| Pipeline phases | [`ontoindex/src/core/ingestion/pipeline-phases/`](ontoindex/src/core/ingestion/pipeline-phases/) | Ordered graph build phases from scan to process extraction |
+| Graph storage | [`ontoindex/src/core/lbug/`](ontoindex/src/core/lbug/) | LadybugDB schema, graph loading, query execution, and embedding persistence |
+| Registry | [`ontoindex/src/storage/`](ontoindex/src/storage/) | `.ontoindex/` metadata, global registry, stale-index checks |
+| Search | [`ontoindex/src/core/search/`](ontoindex/src/core/search/) | BM25, semantic retrieval, intent routing, ranking, and repository-map context |
+| MCP backend | [`ontoindex/src/mcp/`](ontoindex/src/mcp/) | MCP resources, facade tools, `gn_*` workflows, and local backend dispatch |
 | HTTP backend | [`ontoindex/src/server/`](ontoindex/src/server/) | Express API used by the browser UI and local bridge mode |
-| Web UI | [`ontoindex-web/src/`](ontoindex-web/src/) | Graph explorer, repository browser, local backend connection, AI chat UI |
-| Shared contracts | [`ontoindex-shared/src/`](ontoindex-shared/src/) | Shared language IDs, API types, and client/server constants |
-| Native helpers | [`ontoindex-native/`](ontoindex-native/) | Optional native acceleration and extraction helpers |
-| Agent integration assets | [`ontoindex-claude-plugin/`](ontoindex-claude-plugin/), [`ontoindex-cursor-integration/`](ontoindex-cursor-integration/) | Skills, hooks, and editor-specific packaging |
-| Evaluation harness | [`eval/`](eval/) | Benchmarks and agent/tool evaluation workflows |
+| Web UI | [`ontoindex-web/src/`](ontoindex-web/src/) | Graph explorer, repository browser, backend connection, and AI chat UI |
+| Shared contracts | [`ontoindex-shared/src/`](ontoindex-shared/src/) | Shared API types, language identifiers, and constants |
 
-### Data Model
+### Indexing Pipeline
 
-The graph is stored in `.ontoindex/` inside each indexed repository. A global registry under `~/.ontoindex/` lets one MCP server serve many repositories.
-
-| Graph entity | Examples |
-| --- | --- |
-| Nodes | `File`, `Folder`, `Function`, `Class`, `Interface`, `Method`, `Property`, `Community`, `Process`, `Route`, `Tool`, `Section`, `Embedding` |
-| Relations | `CONTAINS`, `DEFINES`, `CALLS`, `IMPORTS`, `EXTENDS`, `IMPLEMENTS`, `HAS_METHOD`, `HAS_PROPERTY`, `ACCESSES`, `MEMBER_OF`, `STEP_IN_PROCESS`, `HANDLES_ROUTE`, `HANDLES_TOOL` |
-| Derived structures | Functional communities, execution processes, route maps, tool maps, contract bridges, markdown/doc evidence, advisory memories |
-
-### Request Flow
-
-| Request | Flow |
-| --- | --- |
-| `ontoindex analyze` | CLI scans the repository, runs the ingestion DAG, writes LadybugDB tables, saves metadata, and registers the repo globally |
-| MCP `search` / `query` | Agent calls MCP stdio server, `LocalBackend` opens the indexed repo, search combines BM25/vector/graph signals, response is grouped by process |
-| MCP `impact` / `gn_safe_edit_check` | Backend resolves a symbol or diff, traverses upstream/downstream graph edges, adds process/test/co-change evidence, and returns a risk verdict |
-| `ontoindex serve` + web UI | HTTP server exposes the same backend to the browser UI, so large repos use local indexes instead of browser-only memory |
-| Multi-repo groups | Group config links multiple indexed repos; contract extraction and cross-impact use service boundaries and exported contracts |
-
-For implementation details, see [ARCHITECTURE.md](ARCHITECTURE.md).
-
-## CLI Commands
-
-```bash
-ontoindex setup                         # Configure MCP clients
-ontoindex analyze [path]                # Index a repository
-ontoindex analyze --force               # Full re-index
-ontoindex analyze --skills              # Generate repo-specific skills
-ontoindex analyze --embeddings          # Enable semantic embeddings
-ontoindex index [path...]               # Register existing .ontoindex folders
-ontoindex serve                         # Start local HTTP backend for web UI
-ontoindex mcp                           # Start stdio MCP server
-ontoindex list                          # List indexed repositories
-ontoindex status                        # Show current repo index status
-ontoindex clean                         # Delete current repo index
-ontoindex wiki [path]                   # Generate repo wiki from graph
-ontoindex query "authentication flow"   # Search execution flows and symbols
-ontoindex context validateUser          # Callers, callees, refs, processes
-ontoindex impact validateUser           # Blast-radius analysis
-ontoindex detect-changes                # Analyze current Git diff
-ontoindex cypher "MATCH (n) RETURN n LIMIT 5"
-ontoindex review diff                   # Graph-aware local diff review
-ontoindex audit                         # Structured audit report
-ontoindex docs readiness                # Docs evidence readiness
-ontoindex group create <name>           # Multi-repo group
-ontoindex group sync <name>             # Cross-repo contract extraction
-```
-
-Run `ontoindex --help` or `ontoindex <command> --help` for the full command surface.
-
-## Indexing Pipeline
-
-OntoIndex builds the graph through a typed phase DAG:
+The graph build is a typed phase DAG:
 
 ```text
 scan -> structure -> [markdown, cobol] -> parse -> [routes, tools, orm]
   -> crossFile -> mro -> communities -> processes
 ```
 
-The key functional steps are:
+Key steps:
 
-1. **Scan and structure:** walk files, apply repository ignore policy, create folder/file nodes.
-2. **Parse:** run Tree-sitter providers in worker threads or sequential fallback, extracting unified symbols and captures.
-3. **Resolve:** connect imports, calls, receivers, constructor inference, type hints, heritage, and method-resolution-order edges.
-4. **Enrich graph:** extract routes, MCP/RPC tools, ORM queries, markdown sections, docs evidence, communities, and execution processes.
-5. **Persist:** load nodes and `CodeRelation` edges into LadybugDB, create text indexes, reuse or generate embeddings.
-6. **Expose:** serve the graph through CLI commands, MCP tools/resources, HTTP bridge APIs, and the web UI.
+1. Scan files with repository ignore rules.
+2. Parse supported languages with Tree-sitter providers.
+3. Resolve imports, calls, receivers, constructors, type hints, inheritance, and method-resolution-order edges.
+4. Enrich the graph with routes, MCP/RPC tools, ORM queries, markdown sections, communities, and execution flows.
+5. Persist nodes and relations into LadybugDB under `.ontoindex/`.
+6. Expose the same graph through CLI, MCP, HTTP, web UI, generated wiki pages, and generated skills.
 
-Supported language coverage includes TypeScript, JavaScript, Python, Java, Kotlin, C#, Go, Rust, PHP, Ruby, Swift, C, C++, Dart, and protobuf-related parser support. Depth varies by language, but the core model is consistent: symbols, files, relationships, communities, and execution flows.
+Supported language depth varies, but the shared model covers TypeScript, JavaScript, Python, Java, Kotlin, C#, Go, Rust, PHP, Ruby, Swift, C, C++, Dart, and protobuf-related parser support.
+
+## Web UI
+
+The hosted UI can connect to a local backend at `http://localhost:4747`.
+
+| Task | Linux/macOS | Windows PowerShell |
+| --- | --- | --- |
+| Start local backend | `ontoindex serve` | `ontoindex serve` |
+| Open hosted UI | `xdg-open https://ontoindex.vercel.app` | `Start-Process https://ontoindex.vercel.app` |
+
+To run the web UI from source:
+
+| Platform | Command |
+| --- | --- |
+| Linux/macOS | `cd ontoindex-shared && npm install && npm run build && cd ../ontoindex-web && npm install && npm run dev` |
+| Windows PowerShell | `Set-Location ontoindex-shared; npm install; npm run build; Set-Location ..\ontoindex-web; npm install; npm run dev` |
+
+The browser-only mode can inspect uploaded ZIPs in memory. For larger repositories, start `ontoindex serve` and let the UI use the local index.
+
+## Docker
+
+| Task | Linux/macOS | Windows PowerShell |
+| --- | --- | --- |
+| Start stack | `docker compose up -d` | `docker compose up -d` |
+| Backend URL | `http://localhost:4747` | `http://localhost:4747` |
+| Web UI URL | `http://localhost:4173` | `http://localhost:4173` |
+
+Images:
+
+| Image | Purpose |
+| --- | --- |
+| `ghcr.io/ontograph/ontoindex:1.9.3` | CLI, MCP server, and `ontoindex serve` backend |
+| `ghcr.io/ontograph/ontoindex-web:1.9.3` | Web UI |
+
+## Comparison With Related Tools
+
+This table compares functional scope, not benchmark speed.
+
+| Capability | OntoIndex | GitNexus | Graphify | CodeGPT Deep Graph MCP | code-graph-mcp / Optave / CodeGraphContext | Serena | Graphiti MCP |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Primary role | Local agent code-intelligence and safety layer | Historical donor and predecessor | Broad project knowledge graph and reports | MCP access to hosted CodeGPT/DeepGraph data | Lightweight local code graph servers | Symbolic code agent with memory | Temporal entity/relation memory |
+| Local source indexing | Yes | Yes | Yes | No, hosted graph | Yes | Uses language tooling rather than the same persistent graph model | No, stores facts/events |
+| Persistent repository graph | `.ontoindex/` LadybugDB plus registry | Legacy local graph | Exported graph/report artifacts | Hosted graph | Local AST/dependency stores | Project memories and language-server state | Neo4j-backed temporal graph |
+| MCP runtime | 60+ facade and `gn_*` tools | Earlier concepts | Adjacent, artifact-focused | Hosted graph query tools | Search/call/impact tools | Agent tools for symbols and edits | Entity/relation memory tools |
+| Impact analysis | Symbol, route, diff, process, test-aware signals | Partial predecessor capability | Report-oriented | Relationship queries only | Partial to strong, depending on project | Reference-based symbolic checks | Not source-code focused |
+| Refactor safety | Graph-aware rename and verification guidance | Partial predecessor capability | No | No | Mostly analysis-oriented | Strong symbolic edits | No |
+| Docs evidence | Requirements trace, drift checks, readiness reports | No current public successor surface | Strong mixed-document ingestion | No | Limited | Notes and memories | Memory facts, not repo docs drift |
+| Best fit | Local editing and release workflows where agents need graph evidence before acting | Migration context | Human-readable project knowledge artifacts | Teams already using CodeGPT-hosted graphs | Smaller local AST/call graph MCP needs | Precise symbolic editing | Long-lived non-code memory |
+
+Practical guidance:
+
+- Choose OntoIndex when an agent must edit or release from local evidence: impact, diff review, docs drift, audit workflows, and target-repository safeguards.
+- Choose Graphify when the main deliverable is a broad human-readable project knowledge graph across mixed artifacts.
+- Choose CodeGPT Deep Graph MCP when your graph already lives in CodeGPT/DeepGraph.
+- Choose smaller code-graph MCP servers when you only need AST/call/dependency lookup without a broader audit lifecycle.
+- Choose Serena for language-server style symbolic edits.
+- Choose Graphiti MCP for temporal memory over facts and events; it complements OntoIndex rather than replacing a source-code index.
 
 ## Repository Layout
 
@@ -302,23 +327,27 @@ Supported language coverage includes TypeScript, JavaScript, Python, Java, Kotli
 | --- | --- |
 | [`ontoindex/`](ontoindex/) | CLI, indexing pipeline, MCP server, graph logic |
 | [`ontoindex-web/`](ontoindex-web/) | React/Vite web UI |
-| [`ontoindex-shared/`](ontoindex-shared/) | Shared TypeScript types/constants |
+| [`ontoindex-shared/`](ontoindex-shared/) | Shared TypeScript types and constants |
 | [`ontoindex-native/`](ontoindex-native/) | Optional native helpers |
 | [`ontoindex-claude-plugin/`](ontoindex-claude-plugin/) | Claude integration assets |
 | [`ontoindex-cursor-integration/`](ontoindex-cursor-integration/) | Cursor integration assets |
+| [`docs/`](docs/) | ADRs, guides, generated wiki, and references |
 | [`eval/`](eval/) | Evaluation harness |
-| [`docs/`](docs/) | Documentation index, ADRs, guides, reference docs, code-indexing notes |
 
 ## Development
 
-```bash
-cd ontoindex
-npm install
-npm run build
-npm run test:unit
-```
+Third-party development prerequisites are the same as installation, plus the package manager and compiler tools needed by native Node modules.
 
-Useful docs:
+| Task | Linux/macOS | Windows PowerShell |
+| --- | --- | --- |
+| Install root dependencies | `npm install` | `npm install` |
+| Build CLI/core | `cd ontoindex && npm install && npm run build` | `Set-Location ontoindex; npm install; npm run build` |
+| Run unit tests | `cd ontoindex && npm run test:unit` | `Set-Location ontoindex; npm run test:unit` |
+| Type-check web UI | `cd ontoindex-web && npx tsc -b --noEmit` | `Set-Location ontoindex-web; npx tsc -b --noEmit` |
+| Build web UI | `cd ontoindex-web && npm run build` | `Set-Location ontoindex-web; npm run build` |
+| Run web tests | `cd ontoindex-web && npm test` | `Set-Location ontoindex-web; npm test` |
+
+Useful references:
 
 - [ARCHITECTURE.md](ARCHITECTURE.md)
 - [RUNBOOK.md](RUNBOOK.md)
@@ -327,75 +356,23 @@ Useful docs:
 - [TESTING.md](TESTING.md)
 - [docs/README.md](docs/README.md)
 - [docs/adr/0000-index.md](docs/adr/0000-index.md)
-- [docs/reference/mcp.md](docs/reference/mcp.md)
+- [docs/ref/mcp.md](docs/ref/mcp.md)
 
-## Web UI
+## Security and Privacy
 
-Use the hosted UI at [ontoindex.vercel.app](https://ontoindex.vercel.app), or run it locally:
-
-```bash
-cd ontoindex-shared && npm install && npm run build
-cd ../ontoindex-web && npm install && npm run dev
-```
-
-The browser-only mode can inspect uploaded ZIPs in memory. For larger repositories, run `ontoindex serve` and let the UI connect to the local backend.
-
-## Docker
-
-```bash
-docker compose up -d
-```
-
-Images:
-
-| Image | Purpose |
-| --- | --- |
-| `ghcr.io/ontograph/ontoindex:1.9.1` | CLI, MCP, and `ontoindex serve` backend |
-| `ghcr.io/ontograph/ontoindex-web:1.9.1` | Web UI |
-
-The compose stack exposes:
-
-- Backend: `http://localhost:4747`
-- Web UI: `http://localhost:4173`
-
-## Release Integrity
-
-Stable Docker images are intended to match npm package versions. For `1.9.1`:
-
-```bash
-cosign verify ghcr.io/ontograph/ontoindex:1.9.1 \
-  --certificate-identity-regexp '^https://github\.com/ontograph/ontoindex/\.github/workflows/docker\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
-```
-
-Kubernetes policy example:
-
-- [deploy/kubernetes/cluster-image-policy.yaml](deploy/kubernetes/cluster-image-policy.yaml)
-
-## Security And Privacy
-
-- CLI/MCP indexing is local by default.
+- CLI and MCP indexing are local by default.
 - Repository indexes are stored in `.ontoindex/`.
 - The global registry stores repository paths and metadata under the user profile.
-- Browser-only mode keeps code in the browser session.
+- Browser-only mode keeps uploaded code in the browser session.
 - Enterprise deployments can be self-hosted.
 
 Report security issues through [SECURITY.md](SECURITY.md).
 
-## Community Integrations
-
-| Project | Description |
-| --- | --- |
-| [pi-ontoindex](https://github.com/tintinweb/pi-ontoindex) | OntoIndex plugin for [pi](https://pi.dev) |
-| [ontoindex-stable-ops](https://github.com/ShunsukeHayashi/ontoindex-stable-ops) | Stable ops and deployment workflows |
-
-Open a pull request to add maintained integrations.
-
-## Source And Donor Acknowledgments
+## Source and Donor Acknowledgments
 
 OntoIndex includes code originally developed as **GitNexus**. Copyright and attribution for GitNexus contributors are preserved in [NOTICE](NOTICE).
 
-The project also builds on open source components and donated ecosystem work from upstream maintainers, including:
+The project also builds on open-source components and donated ecosystem work from upstream maintainers, including:
 
 - [Model Context Protocol](https://modelcontextprotocol.io/)
 - [Tree-sitter](https://tree-sitter.github.io/tree-sitter/)
@@ -408,4 +385,4 @@ See [NOTICE](NOTICE) for preserved attribution and third-party component notices
 
 ## License
 
-AGPL-3.0-or-later. See [LICENSE](LICENSE).
+OntoIndex is licensed under AGPL-3.0-or-later. See [LICENSE](LICENSE).
