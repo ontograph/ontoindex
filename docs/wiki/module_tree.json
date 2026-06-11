@@ -1,0 +1,63 @@
+[
+  {
+    "name": "Overview",
+    "slug": "overview",
+    "files": [
+      "README.md",
+      "ARCHITECTURE.md",
+      "AGENTS.md"
+    ]
+  },
+  {
+    "name": "CLI And Indexing",
+    "slug": "cli-and-indexing",
+    "files": [
+      "ontoindex/src/cli",
+      "ontoindex/src/core/ingestion",
+      "ontoindex/src/core/tree-sitter",
+      "ontoindex/src/storage"
+    ]
+  },
+  {
+    "name": "MCP Runtime",
+    "slug": "mcp-runtime",
+    "files": [
+      "ontoindex/src/mcp"
+    ]
+  },
+  {
+    "name": "HTTP API And Web UI",
+    "slug": "http-api-and-web-ui",
+    "files": [
+      "ontoindex/src/server",
+      "ontoindex-web/src"
+    ]
+  },
+  {
+    "name": "Search, Embeddings, And ANN Frontier",
+    "slug": "search-embeddings-and-ann",
+    "files": [
+      "ontoindex/src/core/search",
+      "ontoindex/src/core/embeddings"
+    ]
+  },
+  {
+    "name": "Audit And Safety",
+    "slug": "audit-and-safety",
+    "files": [
+      "ontoindex/src/core/audit-lifecycle",
+      "ontoindex/src/core/systems-audit",
+      "ontoindex/src/mcp/super"
+    ]
+  },
+  {
+    "name": "Release And Operations",
+    "slug": "release-and-operations",
+    "files": [
+      "ontoindex/package.json",
+      "ontoindex-web/package.json",
+      "ontoindex-native/package.json",
+      "ontoindex-shared/package.json"
+    ]
+  }
+]

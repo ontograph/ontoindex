@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OntoIndex Wiki</title>
+    <style>
+      body {
+        margin: 0;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #17202a;
+        background: #f7f8fa;
+      }
+      header {
+        padding: 24px 32px;
+        background: #102033;
+        color: white;
+      }
+      main {
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr);
+        min-height: calc(100vh - 92px);
+      }
+      nav {
+        padding: 20px;
+        border-right: 1px solid #d8dee8;
+        background: white;
+      }
+      nav a {
+        display: block;
+        padding: 8px 10px;
+        color: #1f5f99;
+        text-decoration: none;
+        border-radius: 6px;
+      }
+      nav a:hover {
+        background: #eef4fa;
+      }
+      article {
+        padding: 28px 36px;
+        max-width: 960px;
+      }
+      iframe {
+        width: 100%;
+        height: calc(100vh - 150px);
+        border: 1px solid #d8dee8;
+        border-radius: 8px;
+        background: white;
+      }
+      .meta {
+        color: #c9d6e4;
+        margin-top: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>OntoIndex Wiki</h1>
+      <div class="meta">Generated for /opt/demodb/_workfolder/OntoIndex at commit 022098e3</div>
+    </header>
+    <main>
+      <nav>
+        <a href="overview.md" target="page">Overview</a>
+        <a href="cli-and-indexing.md" target="page">CLI And Indexing</a>
+        <a href="mcp-runtime.md" target="page">MCP Runtime</a>
+        <a href="http-api-and-web-ui.md" target="page">HTTP API And Web UI</a>
+        <a href="search-embeddings-and-ann.md" target="page">Search, Embeddings, And ANN</a>
+        <a href="audit-and-safety.md" target="page">Audit And Safety</a>
+        <a href="release-and-operations.md" target="page">Release And Operations</a>
+      </nav>
+      <article>
+        <iframe name="page" src="overview.md" title="Wiki page"></iframe>
+      </article>
+    </main>
+  </body>
+</html>
