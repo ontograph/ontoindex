@@ -15,6 +15,13 @@ Each ADR follows: **Context → Decision → Algorithm/Technique → Consequence
 
 ## Index
 
+### MCP Function ADR Catalog
+
+| # | Title | Status | Source |
+| [MCP](mcp-functions/0000-index.md) | OntoIndex MCP function ADR pages | Accepted | Generated from MCP tool registry |
+
+### Architectural ADRs
+
 | #                                                              | Title                                                         | Status                           | Source                                    |
 | -------------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------- | ----------------------------------------- |
 | [0001](0001-worker-pool-parser-architecture.md)                | Worker pool parser architecture and large-repo profiles       | Accepted                         | v12 P1; updates 2026-06-01                |
