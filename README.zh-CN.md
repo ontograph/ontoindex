@@ -40,7 +40,7 @@ OntoIndex 运行在 Node.js 上，并且部分语言解析器会使用 native pa
 
 | 需求 | Linux | Windows |
 | --- | --- | --- |
-| Node.js | Node.js `20` 或更新版本，以及 `npm` | Node.js `20` 或更新版本，以及 `npm` |
+| Node.js | Node.js `20 LTS` 或 `22 LTS`，以及 `npm` | Node.js `20 LTS` 或 `22 LTS`，以及 `npm` |
 | Git | 用于仓库元数据和 diff 分析的 `git` CLI | Git for Windows |
 | Native build tools | `python3`, `make`, `g++`，用于可选 native parser build | Python 3 和 Visual Studio Build Tools 中的 Microsoft C++ Build Tools |
 | Shell | 安装脚本示例使用 `bash` | PowerShell 5.1 或 PowerShell 7 |

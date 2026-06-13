@@ -40,7 +40,7 @@ OntoIndex runs on Node.js and uses native parser packages for some languages. In
 
 | Requirement | Linux | Windows |
 | --- | --- | --- |
-| Node.js | Node.js `20` or newer plus `npm` | Node.js `20` or newer plus `npm` |
+| Node.js | Node.js `20 LTS` or `22 LTS` plus `npm` | Node.js `20 LTS` or `22 LTS` plus `npm` |
 | Git | `git` CLI for repository metadata and diff analysis | Git for Windows |
 | Native build tools | `python3`, `make`, and `g++` for optional native parser builds | Python 3 and Microsoft C++ Build Tools from Visual Studio Build Tools |
 | Shell | `bash` for the install script examples | PowerShell 5.1 or PowerShell 7 |

@@ -126,6 +126,6 @@
     "tree-sitter-c": "$tree-sitter-c"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.0.0 <24.0.0"
   }
 }

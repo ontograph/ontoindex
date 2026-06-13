@@ -6,6 +6,20 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Get-NodeMajorVersion {
+  $version = & node -p "process.versions.node"
+  if ($LASTEXITCODE -ne 0) {
+    throw "Unable to detect Node.js version."
+  }
+
+  $major = 0
+  if (-not [int]::TryParse(($version -split '\.')[0], [ref]$major)) {
+    throw "Unable to parse Node.js version: $version"
+  }
+
+  return $major
+}
+
 if ([string]::IsNullOrWhiteSpace($Repo)) {
   $Repo = "ontograph/ontoindex"
 }
@@ -90,6 +104,11 @@ function Find-OntoIndexCommand {
 
 Require-Command "node"
 $null = Resolve-NpmCommand
+
+$nodeMajor = Get-NodeMajorVersion
+if ($nodeMajor -ge 24) {
+  throw "OntoIndex currently supports Node.js 20.x and 22.x for published installs. Detected Node.js $nodeMajor.x. tree-sitter@0.25.0 falls back to a native build that fails on Node 24 because it still compiles with C++17 while Node 24 requires C++20. Update your active Node.js runtime to 22 LTS or 20 LTS, then rerun this installer. Recommended on Windows: use nvm-windows to install and activate Node.js 22 LTS before retrying."
+}
 
 $apiUrl = "https://api.github.com/repos/$Repo/releases/latest"
 $release = Invoke-RestMethod -Uri $apiUrl -Headers @{ "User-Agent" = "ontoindex-installer" }

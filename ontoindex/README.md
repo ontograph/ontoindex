@@ -316,7 +316,7 @@ continues to work; only that language's parsing support is skipped.
 
 Local native build requirements:
 
-- Node.js 20 or newer
+- Node.js 20 LTS or 22 LTS
 - npm with install scripts enabled
 - Python 3
 - `make`

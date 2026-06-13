@@ -16,6 +16,16 @@ need curl
 need node
 need npm
 
+node_major="$(node -p 'process.versions.node.split(".")[0]')"
+if [ "${node_major}" -ge 24 ]; then
+  echo "error: OntoIndex currently supports Node.js 20.x and 22.x for published installs." >&2
+  echo "error: detected Node.js ${node_major}.x." >&2
+  echo "error: tree-sitter@0.25.0 falls back to a native build that fails on Node 24 because it still compiles with C++17 while Node 24 requires C++20." >&2
+  echo "error: update your active Node.js runtime to 22 LTS or 20 LTS, then rerun this installer." >&2
+  echo "error: recommended: use nvm to install and activate Node.js 22 LTS before retrying." >&2
+  exit 1
+fi
+
 release_json="$(curl -fsSL "${API_URL}")"
 
 asset_url="$(
