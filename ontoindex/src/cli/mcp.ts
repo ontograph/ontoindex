@@ -137,7 +137,10 @@ export const mcpCommand = async (options: { full?: boolean; repo?: string } = {}
     }
   }
 
-  const backend = new LocalBackend({ repoFilter });
+  const backend = new LocalBackend({
+    repoFilter,
+    preferredProjectPath: targetProjectPath,
+  });
   try {
     await initBackendWithTimeout(backend);
   } catch (err) {

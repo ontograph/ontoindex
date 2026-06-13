@@ -8,7 +8,7 @@ Current package metadata:
 
 ```text
 name: ontoindex
-version: 1.9.3
+version: 1.9.4
 license: AGPL-3.0-or-later
 node: >=20.0.0
 repository: https://github.com/ontograph/ontoindex
@@ -27,7 +27,7 @@ npm pack --pack-destination ..
 Latest local distributable:
 
 ```text
-/opt/demodb/_workfolder/OntoIndex/ontoindex-1.9.3.tgz
+/opt/demodb/_workfolder/OntoIndex/ontoindex-1.9.4.tgz
 ```
 
 ## Validation Commands

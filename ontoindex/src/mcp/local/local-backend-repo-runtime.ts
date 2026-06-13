@@ -122,9 +122,14 @@ function resolveRepoByParam(handles: Iterable<RepoHandle>, repoParam: string): R
 export function resolveRepoFromHandles(
   repos: ReadonlyMap<string, RepoHandle>,
   repoParam?: string,
+  preferredRepoPath?: string,
 ): RepoHandle | null {
   if (repos.size === 0) return null;
   if (repoParam) return resolveRepoByParam(repos.values(), repoParam);
+  if (preferredRepoPath) {
+    const preferred = resolveRepoByParam(repos.values(), preferredRepoPath);
+    if (preferred) return preferred;
+  }
   if (repos.size === 1) return repos.values().next().value ?? null;
   return null;
 }

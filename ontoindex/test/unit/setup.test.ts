@@ -50,10 +50,10 @@ describe('setupClaudeCode', () => {
         ONTOINDEX_MCP_STARTUP_TIMEOUT_MS: '10000',
         ONTOINDEX_MCP_STARTUP_TRACE: '1',
         ONTOINDEX_MCP_PROJECT_CWD: expectedMockRepoPath,
-        ONTOINDEX_MCP_REPO: expectedMockRepoPath,
         NODE_OPTIONS: '--max-old-space-size=1536',
       },
     });
+    expect(entry.env).not.toHaveProperty('ONTOINDEX_MCP_REPO');
   };
 
   beforeEach(async () => {

@@ -1137,6 +1137,7 @@ const KNOWN_METHODS = new Set<string>([
 interface LocalBackendOptions {
   readonly confirmWrites?: boolean;
   readonly repoFilter?: string;
+  readonly preferredProjectPath?: string;
 }
 
 export class LocalBackend implements BackendPort {
@@ -1150,12 +1151,16 @@ export class LocalBackend implements BackendPort {
   private analysisLocks: Map<string, Promise<void>> = new Map();
   private readonly confirmWrites: boolean;
   private readonly repoFilter?: string;
+  private readonly preferredProjectPath?: string;
   private readonly globalToolHandlers: Record<RepoAgnosticToolName, GlobalToolHandler>;
   private readonly repoToolHandlers: Record<string, RepoToolHandler>;
 
   constructor(options: LocalBackendOptions = {}) {
     this.confirmWrites = options.confirmWrites === true;
     this.repoFilter = options.repoFilter?.trim() || undefined;
+    this.preferredProjectPath = options.preferredProjectPath
+      ? path.resolve(options.preferredProjectPath)
+      : undefined;
     this.globalToolHandlers = {
       list_repos: async () => this.listRepos(),
       gn_quality_mode: async (params) => {
@@ -1591,7 +1596,7 @@ export class LocalBackend implements BackendPort {
    * Try to resolve a repo from the in-memory cache. Returns null on miss.
    */
   private resolveRepoFromCache(repoParam?: string): RepoHandle | null {
-    return resolveRepoFromHandles(this.repos, repoParam);
+    return resolveRepoFromHandles(this.repos, repoParam, this.preferredProjectPath);
   }
 
   // ─── Lazy LadybugDB Init ────────────────────────────────────────────

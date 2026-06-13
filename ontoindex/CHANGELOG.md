@@ -4,6 +4,12 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.4] - 2026-06-13
+
+### Fixed
+
+- **External MCP repo targeting** — `ontoindex setup` no longer hard-pins `ONTOINDEX_MCP_REPO` to the setup checkout, and MCP runtime now defaults no-`repo` calls to the configured target project path instead of filtering the registry down to the tool repository.
+
 ## [1.9.3] - 2026-06-10
 
 ### Changed

@@ -84,7 +84,6 @@ function defaultMcpEnv(): Record<string, string> {
     ONTOINDEX_MCP_STARTUP_TIMEOUT_MS: process.env.ONTOINDEX_MCP_STARTUP_TIMEOUT_MS || '10000',
     ONTOINDEX_MCP_STARTUP_TRACE: process.env.ONTOINDEX_MCP_STARTUP_TRACE || '1',
     ONTOINDEX_MCP_PROJECT_CWD: resolveMcpRepoPath(),
-    ONTOINDEX_MCP_REPO: resolveMcpRepoPath(),
     NODE_OPTIONS: process.env.ONTOINDEX_MCP_NODE_OPTIONS || '--max-old-space-size=1536',
   };
 }

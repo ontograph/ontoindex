@@ -6,7 +6,7 @@ The MCP runtime exposes OntoIndex graph intelligence to agents. It wraps primiti
 
 Current MCP audit result:
 
-- Runtime package: `ontoindex@1.9.3`
+- Runtime package: `ontoindex@1.9.4`
 - Callable MCP tools: 61
 - Transport-level method calls tested: 61/61
 - Unknown-tool failures: 0

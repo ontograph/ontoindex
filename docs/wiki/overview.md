@@ -13,7 +13,7 @@ Index snapshot:
 - Relationships: 52,219
 - Clusters: 1,224
 - Execution flows: 300
-- Package version: `ontoindex@1.9.3`
+- Package version: `ontoindex@1.9.4`
 - License: `AGPL-3.0-or-later`
 
 ## Purpose
