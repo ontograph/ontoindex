@@ -1,0 +1,70 @@
+{
+  "fromCommit": "022098e3332bc94da85ce3dbb6a2523f0b7c4cb1",
+  "generatedAt": "2026-06-10T00:00:00.000Z",
+  "model": "deterministic-local-summary",
+  "moduleFiles": {
+    "overview": [
+      "README.md",
+      "ARCHITECTURE.md",
+      "AGENTS.md"
+    ],
+    "cli-and-indexing": [
+      "ontoindex/src/cli",
+      "ontoindex/src/core/ingestion",
+      "ontoindex/src/core/tree-sitter",
+      "ontoindex/src/storage"
+    ],
+    "mcp-runtime": [
+      "ontoindex/src/mcp"
+    ],
+    "http-api-and-web-ui": [
+      "ontoindex/src/server",
+      "ontoindex-web/src"
+    ],
+    "search-embeddings-and-ann": [
+      "ontoindex/src/core/search",
+      "ontoindex/src/core/embeddings"
+    ],
+    "audit-and-safety": [
+      "ontoindex/src/core/audit-lifecycle",
+      "ontoindex/src/core/systems-audit",
+      "ontoindex/src/mcp/super"
+    ],
+    "release-and-operations": [
+      "ontoindex/package.json",
+      "ontoindex-web/package.json",
+      "ontoindex-native/package.json",
+      "ontoindex-shared/package.json"
+    ]
+  },
+  "moduleTree": [
+    {
+      "name": "Overview",
+      "slug": "overview"
+    },
+    {
+      "name": "CLI And Indexing",
+      "slug": "cli-and-indexing"
+    },
+    {
+      "name": "MCP Runtime",
+      "slug": "mcp-runtime"
+    },
+    {
+      "name": "HTTP API And Web UI",
+      "slug": "http-api-and-web-ui"
+    },
+    {
+      "name": "Search, Embeddings, And ANN Frontier",
+      "slug": "search-embeddings-and-ann"
+    },
+    {
+      "name": "Audit And Safety",
+      "slug": "audit-and-safety"
+    },
+    {
+      "name": "Release And Operations",
+      "slug": "release-and-operations"
+    }
+  ]
+}

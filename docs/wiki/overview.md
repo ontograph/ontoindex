@@ -45,3 +45,9 @@ OntoIndex is a graph-powered code intelligence system for AI agents. It indexes 
 ## How To Read This Wiki
 
 Start with the CLI and indexing page to understand how repository facts enter the graph. Then read the MCP runtime page for the agent-facing API surface, the HTTP/Web UI page for browser-facing flows, and the audit/safety page for release gates.
+
+## Visual Graph
+
+- Static architecture graph export: [graph-overview.html](graph-overview.html)
+- GitHub Wiki serves the exported HTML as a raw file; download and open it locally to use the interactive filters.
+- The published wiki uses the summary graph slice so the artifact stays small enough to share and inspect.

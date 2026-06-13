@@ -1,77 +1,237 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OntoIndex Wiki</title>
-    <style>
-      body {
-        margin: 0;
-        font-family:
-          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        color: #17202a;
-        background: #f7f8fa;
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OntoIndex — Wiki</title>
+<script src="https://cdn.jsdelivr.net/npm/marked@11.0.0/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+<style>
+
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#ffffff;--sidebar-bg:#f8f9fb;--border:#e5e7eb;
+  --text:#1e293b;--text-muted:#64748b;--primary:#2563eb;
+  --primary-soft:#eff6ff;--hover:#f1f5f9;--code-bg:#f1f5f9;
+  --radius:8px;--shadow:0 1px 3px rgba(0,0,0,.08);
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  line-height:1.65;color:var(--text);background:var(--bg)}
+
+.layout{display:flex;min-height:100vh}
+.sidebar{width:280px;background:var(--sidebar-bg);border-right:1px solid var(--border);
+  position:fixed;top:0;left:0;bottom:0;overflow-y:auto;padding:24px 16px;
+  display:flex;flex-direction:column;z-index:10}
+.content{margin-left:280px;flex:1;padding:48px 64px;max-width:960px}
+
+.sidebar-header{margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--border)}
+.sidebar-title{font-size:16px;font-weight:700;color:var(--text);display:flex;align-items:center;gap:8px}
+.sidebar-title svg{flex-shrink:0}
+.sidebar-meta{font-size:11px;color:var(--text-muted);margin-top:6px}
+.nav-section{margin-bottom:2px}
+.nav-item{display:block;padding:7px 12px;border-radius:var(--radius);cursor:pointer;
+  font-size:13px;color:var(--text);text-decoration:none;transition:all .15s;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nav-item:hover{background:var(--hover)}
+.nav-item.active{background:var(--primary-soft);color:var(--primary);font-weight:600}
+.nav-item.overview{font-weight:600;margin-bottom:4px}
+.nav-children{padding-left:14px;border-left:1px solid var(--border);margin-left:12px}
+.nav-group-label{font-size:11px;font-weight:600;color:var(--text-muted);
+  text-transform:uppercase;letter-spacing:.5px;padding:12px 12px 4px;user-select:none}
+.sidebar-footer{margin-top:auto;padding-top:16px;border-top:1px solid var(--border);
+  font-size:11px;color:var(--text-muted);text-align:center}
+
+.content h1{font-size:28px;font-weight:700;margin-bottom:8px;line-height:1.3}
+.content h2{font-size:22px;font-weight:600;margin:32px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+.content h3{font-size:17px;font-weight:600;margin:24px 0 8px}
+.content h4{font-size:15px;font-weight:600;margin:20px 0 6px}
+.content p{margin:12px 0}
+.content ul,.content ol{margin:12px 0 12px 24px}
+.content li{margin:4px 0}
+.content a{color:var(--primary);text-decoration:none}
+.content a:hover{text-decoration:underline}
+.content blockquote{border-left:3px solid var(--primary);padding:8px 16px;margin:16px 0;
+  background:var(--primary-soft);border-radius:0 var(--radius) var(--radius) 0;
+  color:var(--text-muted);font-size:14px}
+.content code{font-family:'SF Mono',Consolas,'Courier New',monospace;font-size:13px;
+  background:var(--code-bg);padding:2px 6px;border-radius:4px}
+.content pre{background:#1e293b;color:#e2e8f0;border-radius:var(--radius);padding:16px;
+  overflow-x:auto;margin:16px 0}
+.content pre code{background:none;padding:0;font-size:13px;line-height:1.6;color:inherit}
+.content table{border-collapse:collapse;width:100%;margin:16px 0}
+.content th,.content td{border:1px solid var(--border);padding:8px 12px;text-align:left;font-size:14px}
+.content th{background:var(--sidebar-bg);font-weight:600}
+.content img{max-width:100%;border-radius:var(--radius)}
+.content hr{border:none;border-top:1px solid var(--border);margin:32px 0}
+.content .mermaid{margin:20px 0;text-align:center}
+
+.menu-toggle{display:none;position:fixed;top:12px;left:12px;z-index:20;
+  background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);
+  padding:8px 12px;cursor:pointer;font-size:18px;box-shadow:var(--shadow)}
+@media(max-width:768px){
+  .sidebar{transform:translateX(-100%);transition:transform .2s}
+  .sidebar.open{transform:translateX(0);box-shadow:2px 0 12px rgba(0,0,0,.1)}
+  .content{margin-left:0;padding:24px 20px;padding-top:56px}
+  .menu-toggle{display:block}
+}
+.empty-state{text-align:center;padding:80px 20px;color:var(--text-muted)}
+.empty-state h2{font-size:20px;margin-bottom:8px;border:none}
+
+</style>
+</head>
+<body>
+<button class="menu-toggle" id="menu-toggle" aria-label="Toggle menu">&#9776;</button>
+<div class="layout">
+<nav class="sidebar" id="sidebar">
+<div class="sidebar-header">
+<div class="sidebar-title">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/></svg>
+OntoIndex
+</div>
+<div class="sidebar-meta" id="meta-info"></div>
+</div>
+<div id="nav-tree"></div>
+<div class="sidebar-footer">Generated by OntoIndex</div>
+</nav>
+<main class="content" id="content">
+<div class="empty-state"><h2>Loading…</h2></div>
+</main>
+</div>
+<script>
+var PAGES = {"audit-and-safety":"# Audit And Safety Workflows\n\n## Purpose\n\nOntoIndex provides audit and safety workflows for agents before they edit, refactor, dispatch worker tasks, or release code.\n\nThe main goal is to turn graph evidence, docs evidence, and audit evidence into bounded, checkable decisions.\n\n## Core Areas\n\n| Path | Responsibility |\n| --- | --- |\n| `ontoindex/src/core/audit-lifecycle/` | Persistent audit sessions, findings, dedupe, verification, bundles, tombstones. |\n| `ontoindex/src/core/systems-audit/` | Resource, boundary, error, concurrency, taint, ABI, and fault-model analysis. |\n| `ontoindex/src/core/review/` | Diff and review support. |\n| `ontoindex/src/checks/` | Semantic and impact threshold checks. |\n| `ontoindex/src/mcp/super/` | Agent-facing safety and audit super-functions. |\n\n## Pre-Edit And Pre-Commit\n\nRecommended agent flow:\n\n1. `gn_safe_edit_check` before modifying a symbol.\n2. `gn_safe_refactor` for rename/extract/move/modify operations.\n3. `gn_verify_diff` after editing.\n4. `gn_test_gap` to verify test evidence.\n5. `gn_pre_commit_audit` before commit.\n\n## Audit Lifecycle\n\nManager-level audit flows use:\n\n| Tool | Role |\n| --- | --- |\n| `gn_audit_ingest` | Parse untrusted audit reports into candidate findings. |\n| `gn_audit_session_lock` | Record target HEAD and graph identity. |\n| `gn_audit_session_verify` | Verify findings against current evidence. |\n| `gn_audit_session_dedupe` | Collapse duplicate/stale findings. |\n| `gn_audit_session_bundle` | Group verified work into implementation bundles. |\n| `gn_audit_session_dispatch` | Generate one worker prompt for one bundle. |\n| `gn_audit_session_review_worker` | Check worker output against scope and tests. |\n\n## Current Audit Notes\n\nThe latest MCP method audit found:\n\n- All 61 MCP tools callable at transport level.\n- `gn_tool_contract` reports an internally consistent frontier.\n- Docs sidecar readiness is stale.\n- `gn_audit_verify` returned an untyped JavaScript exception for one smoke input: `Cannot read properties of undefined (reading 'includes')`.\n\nThat last item should be converted into a typed validation error before relying on arbitrary external audit finding shapes.\n","cli-and-indexing":"# CLI And Indexing\n\n## Entry Points\n\nThe CLI package is `ontoindex`, published from `ontoindex/package.json` with the executable:\n\n```text\nontoindex -> dist/cli/index.js\n```\n\nImportant commands:\n\n| Command | Purpose |\n| --- | --- |\n| `analyze` | Build or refresh the repository graph. |\n| `status` | Report index commit, current commit, and freshness. |\n| `mcp` | Start the MCP stdio server for agents. |\n| `serve` | Start the HTTP API for the web UI and integrations. |\n| `setup` | Configure supported MCP clients and agent skills. |\n| `wiki` | Legacy wiki generator. Requires an LLM provider. |\n\n## Indexing Pipeline\n\nThe analyzer reads repository files, parses language-specific syntax with tree-sitter where supported, extracts symbols and relationships, and writes the graph to `.ontoindex/`.\n\nCurrent parser stack includes TypeScript/JavaScript, Python, Go, Java, C/C++, C#, Rust, Ruby, PHP, Swift, Kotlin, Dart, and Proto-related support through tree-sitter packages and local vendor code.\n\nKey directories:\n\n| Path | Responsibility |\n| --- | --- |\n| `ontoindex/src/cli/` | CLI command definitions and command orchestration. |\n| `ontoindex/src/core/ingestion/` | Parse and ingestion pipeline. |\n| `ontoindex/src/core/tree-sitter/` | Parser loading and grammar compatibility. |\n| `ontoindex/src/core/group/` | Route, gRPC, bridge, and framework extraction helpers. |\n| `ontoindex/src/storage/` | Repository manager and git/storage adapters. |\n| `ontoindex/src/native/` | Optional native adapters and fallbacks. |\n\n## Current Index State\n\nThe self repository was indexed as `OntoIndex`:\n\n```text\nRepository: /opt/demodb/_workfolder/OntoIndex\nIndexed commit: 022098e3332bc94da85ce3dbb6a2523f0b7c4cb1\nStatus: up to date\nSymbols: 34,983\nEdges: 52,219\nFlows: 300\n```\n\n## Operational Notes\n\n- Use `ONTOINDEX_MAX_WORKERS=7` on this host to respect the configured 25% CPU cap.\n- The native graph writer is optional; current status reports it disabled/unavailable unless `ONTOINDEX_NATIVE_GRAPH_WRITER` is configured.\n- Some tree-sitter parser packages may emit Node deprecation warnings after dependency upgrades; these do not block indexing.\n","http-api-and-web-ui":"# HTTP API And Web UI\n\n## HTTP API\n\nThe HTTP server is implemented primarily in `ontoindex/src/server/api.ts`, with additional route modules for analyze, embeddings, MCP-over-HTTP, and server jobs.\n\nIndexed routes discovered for the current repo include:\n\n| Route | Handler |\n| --- | --- |\n| `/api/heartbeat` | `ontoindex/src/server/api.ts` |\n| `/api/info` | `ontoindex/src/server/api.ts` |\n| `/api/repos` | `ontoindex/src/server/api.ts` |\n| `/api/repo` | `ontoindex/src/server/api.ts` |\n| `/api/graph` | `ontoindex/src/server/api.ts` |\n| `/api/query` | `ontoindex/src/server/api.ts` |\n| `/api/search` | `ontoindex/src/server/api.ts` |\n| `/api/file` | `ontoindex/src/server/api.ts` |\n| `/api/grep` | `ontoindex/src/server/api.ts` |\n| `/api/processes` | `ontoindex/src/server/api.ts` |\n| `/api/process` | `ontoindex/src/server/api.ts` |\n| `/api/clusters` | `ontoindex/src/server/api.ts` |\n| `/api/cluster` | `ontoindex/src/server/api.ts` |\n| `/api/embed` | `ontoindex/src/server/api-embed-routes.ts` |\n| `/api/embed/:jobId` | `ontoindex/src/server/api-embed-routes.ts` |\n| `/api/embed/:jobId/progress` | `ontoindex/src/server/api-embed-routes.ts` |\n| `/api/analyze` | `ontoindex/src/server/api-analyze-routes.ts` |\n| `/api/analyze/:jobId` | `ontoindex/src/server/api-analyze-routes.ts` |\n| `/api/analyze/:jobId/progress` | `ontoindex/src/server/api-analyze-routes.ts` |\n| `/api/mcp` | `ontoindex/src/server/mcp-http.ts` |\n| `/api/mcp/diagnostics` | `ontoindex/test/unit/api-guards.test.ts` |\n\n## Web UI\n\nThe web UI lives in `ontoindex-web/` and uses React 19, Vite 8, Sigma, Graphology, D3, Mermaid, and Tailwind 4.\n\nImportant directories:\n\n| Path | Responsibility |\n| --- | --- |\n| `ontoindex-web/src/components/` | UI components and graph panels. |\n| `ontoindex-web/src/hooks/` | React state and behavior hooks. |\n| `ontoindex-web/src/services/` | API access layer. |\n| `ontoindex-web/src/core/graph/` | Graph-specific frontend logic. |\n| `ontoindex-web/e2e/` | Playwright tests. |\n| `ontoindex-web/test/` | Vitest unit tests. |\n\n## Local Commands\n\n```bash\ncd ontoindex && npm run serve\ncd ontoindex-web && npm run dev\n```\n\nThe web UI talks to the OntoIndex HTTP API rather than reading the graph store directly.\n","mcp-runtime":"# MCP Runtime\n\n## Purpose\n\nThe MCP runtime exposes OntoIndex graph intelligence to agents. It wraps primitive graph queries and higher-level super-functions behind a stable MCP frontier.\n\nCurrent MCP audit result:\n\n- Runtime package: `ontoindex@1.9.5`\n- Callable MCP tools: 61\n- Transport-level method calls tested: 61/61\n- Unknown-tool failures: 0\n- Tool contract status: `ok`\n\n## Runtime Components\n\n| Path | Responsibility |\n| --- | --- |\n| `ontoindex/src/mcp/server.ts` | MCP stdio server setup. |\n| `ontoindex/src/mcp/tools.ts` | Legacy/primitive tool registrations. |\n| `ontoindex/src/mcp/facade/` | Public facade tools: `discover`, `search`, `inspect`, `audit`, `refactor`, `manage`, `docs`, `impact`. |\n| `ontoindex/src/mcp/super/` | Higher-level `gn_*` workflows. |\n| `ontoindex/src/mcp/local/` | Backend implementations for local graph operations. |\n| `ontoindex/src/mcp/shared/` | Response envelopes, freshness policy, tool registry, target context. |\n\n## Main Facades\n\n| Tool | Use |\n| --- | --- |\n| `discover` | Repos, routes, tools, packs, groups, sync. |\n| `search` | Semantic, Cypher, and repomap retrieval. |\n| `inspect` | Symbol context, evidence, API shape, IPC trace. |\n| `impact` | Symbol, route, batch, and diff impact. |\n| `audit` | Audit reports and systems checks. |\n| `refactor` | Rename, replace, sandbox operations. |\n| `manage` | Sessions and route maps. |\n| `docs` | Docs readiness, trace, drift, context. |\n\n## Super-Function Groups\n\n| Group | Examples |\n| --- | --- |\n| Discovery | `gn_explore`, `gn_explain_module`, `gn_find_related`, `gn_graph_walk` |\n| Safety | `gn_safe_edit_check`, `gn_can_delete`, `gn_pre_commit_audit`, `gn_verify_diff`, `gn_test_gap` |\n| Refactor | `gn_safe_refactor` |\n| Audit lifecycle | `gn_audit_ingest`, `gn_audit_verify`, `gn_audit_bundle`, `gn_audit_session_*` |\n| Systems audit | `gn_resource_trace`, `gn_path_verify`, `gn_trace_boundary`, `gn_error_topology`, `gn_taint_trace`, `gn_abi_diff` |\n| Self-help | `gn_help`, `gn_tool_contract`, `gn_diagnose`, `gn_propose_location`, `gn_quality_mode` |\n\n## Current Registration\n\nThe Codex MCP config was repaired to start OntoIndex with:\n\n```text\nONTOINDEX_MCP_PROJECT_CWD=/opt/demodb/_workfolder/OntoIndex\nONTOINDEX_MCP_REPO=/opt/demodb/_workfolder/OntoIndex\nONTOINDEX_MAX_WORKERS=7\n```\n\nRestart MCP clients after config changes so the runtime loads the current repository instead of an older target.\n","overview":"# OntoIndex Wiki Overview\n\nGenerated: 2026-06-10\n\nSource repository: `/opt/demodb/_workfolder/OntoIndex`\n\nIndexed commit: `022098e3332bc94da85ce3dbb6a2523f0b7c4cb1`\n\nIndex snapshot:\n\n- Files: 1,490\n- Symbols: 34,983\n- Relationships: 52,219\n- Clusters: 1,224\n- Execution flows: 300\n- Package version: `ontoindex@1.9.5`\n- License: `AGPL-3.0-or-later`\n\n## Purpose\n\nOntoIndex is a graph-powered code intelligence system for AI agents. It indexes repositories into a local graph, exposes that graph through CLI, MCP, and HTTP APIs, and provides higher-level workflows for exploration, impact analysis, audit, refactoring safety, and release review.\n\n## Repository Layout\n\n| Path | Role |\n| --- | --- |\n| `ontoindex/` | TypeScript CLI, indexing pipeline, graph storage, MCP server, HTTP API, audit and search logic. |\n| `ontoindex-web/` | React/Vite graph UI and operational frontend. |\n| `ontoindex-shared/` | Shared TypeScript contracts and constants used by CLI/core and web. |\n| `ontoindex-native/` | Optional Rust/N-API acceleration for graph and import extraction paths. |\n| `ontoindex-packs/` | Analysis packs and suite definitions. |\n| `ontoindex-claude-plugin/` | Claude integration packaging. |\n| `ontoindex-cursor-integration/` | Cursor integration packaging. |\n| `eval/` | Python evaluation harness. |\n| `docs/adr/` | Architecture decision records and implementation frontier docs. |\n\n## Main Runtime Surfaces\n\n- CLI binary: `ontoindex/dist/cli/index.js`\n- MCP stdio server: `ontoindex mcp`\n- HTTP API server: `ontoindex serve`\n- Web UI: `ontoindex-web`\n- Generated wiki output: `.ontoindex/wiki/`\n\n## How To Read This Wiki\n\nStart with the CLI and indexing page to understand how repository facts enter the graph. Then read the MCP runtime page for the agent-facing API surface, the HTTP/Web UI page for browser-facing flows, and the audit/safety page for release gates.\n\n## Visual Graph\n\n- Static architecture graph export: [graph-overview.html](graph-overview.html)\n- GitHub Wiki serves the exported HTML as a raw file; download and open it locally to use the interactive filters.\n- The published wiki uses the summary graph slice so the artifact stays small enough to share and inspect.\n","release-and-operations":"# Release And Operations\n\n## Package\n\nThe release package is `ontoindex` from `ontoindex/package.json`.\n\nCurrent package metadata:\n\n```text\nname: ontoindex\nversion: 1.9.5\nlicense: AGPL-3.0-or-later\nnode: >=20.0.0\nrepository: https://github.com/ontograph/ontoindex\n```\n\n## Build And Pack\n\nCommon release commands:\n\n```bash\ncd ontoindex\nnpm run build\nnpm pack --pack-destination ..\n```\n\nLatest local distributable:\n\n```text\n/opt/demodb/_workfolder/OntoIndex/ontoindex-1.9.5.tgz\n```\n\n## Validation Commands\n\nCLI/core:\n\n```bash\ncd ontoindex\nnpx tsc --noEmit\nnpm run build\nnpm run test:unit\n```\n\nWeb:\n\n```bash\ncd ontoindex-web\nnpx tsc -b --noEmit\nnpm run build\nnpm test\n```\n\nRoot quality:\n\n```bash\nnpm run lint\n```\n\n## Dependency State\n\nThe repo has been updated to current major dependency families:\n\n- TypeScript 6\n- ESLint 10\n- React 19\n- Vite 8\n- Vitest 4\n- MCP SDK 1.29\n- tree-sitter 0.25 core\n\nTree-sitter parser packages still have uneven peer ranges, so installs may require the legacy peer resolver until the grammar ecosystem catches up.\n\n## MCP Operations\n\nCurrent self-repo MCP config should point at:\n\n```text\nONTOINDEX_MCP_PROJECT_CWD=/opt/demodb/_workfolder/OntoIndex\nONTOINDEX_MCP_REPO=/opt/demodb/_workfolder/OntoIndex\nONTOINDEX_MAX_WORKERS=7\n```\n\nRestart the MCP client after config changes so the running process does not retain an older repository target.\n","search-embeddings-and-ann":"# Search, Embeddings, And ANN Frontier\n\n## Search Surface\n\nOntoIndex search is exposed through the CLI, HTTP API, and MCP facade/super-function layers.\n\nMain code areas:\n\n| Path | Responsibility |\n| --- | --- |\n| `ontoindex/src/core/search/` | Query classification, retrieval composition, semantic cache, frontier search, replay gates. |\n| `ontoindex/src/core/embeddings/` | Chunking, embedding pipeline, ANN neighbors, HTTP embedding client, structural extraction. |\n| `ontoindex/src/mcp/local/backend-search.ts` | Local MCP search backend. |\n| `ontoindex/src/mcp/super/explore.ts` | Agent-friendly concept exploration. |\n\n## Retrieval Modes\n\nThe MCP `search` facade supports:\n\n- `semantic`\n- `cypher`\n- `repomap`\n\nSemantic search can opt into structured output, skeletons, Markdown context, passive related facts, and retrieval policies such as symbol, process, route, and requirement neighborhoods.\n\n## Embeddings\n\nThe current self index reports zero embeddings in the repo listing. That means graph and lexical retrieval are available, but vector-backed lanes may degrade or skip unless embeddings are generated.\n\nEmbedding-related commands and APIs are available through:\n\n- CLI analyze options\n- `/api/embed`\n- `ontoindex/src/core/embeddings/embedding-pipeline.ts`\n- `ontoindex/src/core/embeddings/ann-neighbor-store.ts`\n\n## ANN Neighbor Graph\n\nRecent architecture work added a semantic ANN neighbor frontier. The core idea is to store bounded nearest-neighbor links for embedded code chunks and use them as a fast semantic expansion lane.\n\nThe relevant code lives under:\n\n- `ontoindex/src/core/embeddings/ann-neighbor.ts`\n- `ontoindex/src/core/embeddings/ann-neighbor-store.ts`\n- `ontoindex/src/core/search/semantic-frontier-search.ts`\n- `ontoindex/src/core/search/semantic-frontier-adapter.ts`\n\n## Operational State\n\nIf semantic quality looks weak, first check:\n\n```bash\nnode /opt/demodb/_workfolder/OntoIndex/ontoindex/dist/cli/index.js status\n```\n\nThen regenerate embeddings only when explicitly needed, because embedding work is heavier than graph-only indexing.\n"};
+var TREE = [{"name":"Overview","slug":"overview","files":["README.md","ARCHITECTURE.md","AGENTS.md"]},{"name":"CLI And Indexing","slug":"cli-and-indexing","files":["ontoindex/src/cli","ontoindex/src/core/ingestion","ontoindex/src/core/tree-sitter","ontoindex/src/storage"]},{"name":"MCP Runtime","slug":"mcp-runtime","files":["ontoindex/src/mcp"]},{"name":"HTTP API And Web UI","slug":"http-api-and-web-ui","files":["ontoindex/src/server","ontoindex-web/src"]},{"name":"Search, Embeddings, And ANN Frontier","slug":"search-embeddings-and-ann","files":["ontoindex/src/core/search","ontoindex/src/core/embeddings"]},{"name":"Audit And Safety","slug":"audit-and-safety","files":["ontoindex/src/core/audit-lifecycle","ontoindex/src/core/systems-audit","ontoindex/src/mcp/super"]},{"name":"Release And Operations","slug":"release-and-operations","files":["ontoindex/package.json","ontoindex-web/package.json","ontoindex-native/package.json","ontoindex-shared/package.json"]}];
+var META = {"fromCommit":"022098e3332bc94da85ce3dbb6a2523f0b7c4cb1","generatedAt":"2026-06-10T00:00:00.000Z","model":"deterministic-local-summary","moduleFiles":{"overview":["README.md","ARCHITECTURE.md","AGENTS.md"],"cli-and-indexing":["ontoindex/src/cli","ontoindex/src/core/ingestion","ontoindex/src/core/tree-sitter","ontoindex/src/storage"],"mcp-runtime":["ontoindex/src/mcp"],"http-api-and-web-ui":["ontoindex/src/server","ontoindex-web/src"],"search-embeddings-and-ann":["ontoindex/src/core/search","ontoindex/src/core/embeddings"],"audit-and-safety":["ontoindex/src/core/audit-lifecycle","ontoindex/src/core/systems-audit","ontoindex/src/mcp/super"],"release-and-operations":["ontoindex/package.json","ontoindex-web/package.json","ontoindex-native/package.json","ontoindex-shared/package.json"]},"moduleTree":[{"name":"Overview","slug":"overview"},{"name":"CLI And Indexing","slug":"cli-and-indexing"},{"name":"MCP Runtime","slug":"mcp-runtime"},{"name":"HTTP API And Web UI","slug":"http-api-and-web-ui"},{"name":"Search, Embeddings, And ANN Frontier","slug":"search-embeddings-and-ann"},{"name":"Audit And Safety","slug":"audit-and-safety"},{"name":"Release And Operations","slug":"release-and-operations"}]};
+var GRAPH_OVERVIEW_AVAILABLE = true;
+
+(function() {
+  var activePage = 'overview';
+
+  document.addEventListener('DOMContentLoaded', function() {
+    mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: 'strict' });
+    renderMeta();
+    renderNav();
+    document.getElementById('menu-toggle').addEventListener('click', function() {
+      document.getElementById('sidebar').classList.toggle('open');
+    });
+    if (location.hash && location.hash.length > 1) {
+      activePage = decodeURIComponent(location.hash.slice(1));
+    }
+    navigateTo(activePage);
+  });
+
+  function renderMeta() {
+    if (!META) return;
+    var el = document.getElementById('meta-info');
+    var parts = [];
+    if (META.generatedAt) {
+      parts.push(new Date(META.generatedAt).toLocaleDateString());
+    }
+    if (META.model) parts.push(META.model);
+    if (META.fromCommit) parts.push(META.fromCommit.slice(0, 8));
+    el.textContent = parts.join(' \u00b7 ');
+  }
+
+  function renderNav() {
+    var container = document.getElementById('nav-tree');
+    var html = '<div class="nav-section">';
+    html += '<a class="nav-item overview" data-page="overview" href="#overview">Overview</a>';
+    html += '</div>';
+    if (GRAPH_OVERVIEW_AVAILABLE) {
+      html += '<div class="nav-section">';
+      html += '<a class="nav-item overview" href="graph-overview.html" target="_blank" rel="noopener">Graph Overview</a>';
+      html += '</div>';
+    }
+    if (TREE.length > 0) {
+      html += '<div class="nav-group-label">Modules</div>';
+      html += buildNavTree(TREE);
+    }
+    container.innerHTML = html;
+    container.addEventListener('click', function(e) {
+      var target = e.target;
+      while (target && !target.dataset.page) { target = target.parentElement; }
+      if (target && target.dataset.page) {
+        e.preventDefault();
+        navigateTo(target.dataset.page);
       }
-      header {
-        padding: 24px 32px;
-        background: #102033;
-        color: white;
+    });
+  }
+
+  function buildNavTree(nodes) {
+    var html = '';
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      html += '<div class="nav-section">';
+      html += '<a class="nav-item" data-page="' + escH(node.slug) + '" href="#' + encodeURIComponent(node.slug) + '">' + escH(node.name) + '</a>';
+      if (node.children && node.children.length > 0) {
+        html += '<div class="nav-children">' + buildNavTree(node.children) + '</div>';
       }
-      main {
-        display: grid;
-        grid-template-columns: 280px minmax(0, 1fr);
-        min-height: calc(100vh - 92px);
+      html += '</div>';
+    }
+    return html;
+  }
+
+  function escH(s) {
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function navigateTo(page) {
+    activePage = page;
+    location.hash = encodeURIComponent(page);
+
+    var items = document.querySelectorAll('.nav-item');
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].dataset.page === page) {
+        items[i].classList.add('active');
+      } else {
+        items[i].classList.remove('active');
       }
-      nav {
-        padding: 20px;
-        border-right: 1px solid #d8dee8;
-        background: white;
+    }
+
+    var contentEl = document.getElementById('content');
+    var md = PAGES[page];
+
+    if (!md) {
+      contentEl.innerHTML = '<div class="empty-state"><h2>Page not found</h2><p>' + escH(page) + '.md does not exist.</p></div>';
+      return;
+    }
+
+    contentEl.innerHTML = DOMPurify.sanitize(marked.parse(md));
+
+    // Rewrite .md links to hash navigation
+    var links = contentEl.querySelectorAll('a[href]');
+    for (var i = 0; i < links.length; i++) {
+      var href = links[i].getAttribute('href');
+      if (href && href.endsWith('.md') && href.indexOf('://') === -1) {
+        var slug = href.replace(/\.md$/, '');
+        links[i].setAttribute('href', '#' + encodeURIComponent(slug));
+        (function(s) {
+          links[i].addEventListener('click', function(e) {
+            e.preventDefault();
+            navigateTo(s);
+          });
+        })(slug);
       }
-      nav a {
-        display: block;
-        padding: 8px 10px;
-        color: #1f5f99;
-        text-decoration: none;
-        border-radius: 6px;
-      }
-      nav a:hover {
-        background: #eef4fa;
-      }
-      article {
-        padding: 28px 36px;
-        max-width: 960px;
-      }
-      iframe {
-        width: 100%;
-        height: calc(100vh - 150px);
-        border: 1px solid #d8dee8;
-        border-radius: 8px;
-        background: white;
-      }
-      .meta {
-        color: #c9d6e4;
-        margin-top: 4px;
-      }
-    </style>
-  </head>
-  <body>
-    <header>
-      <h1>OntoIndex Wiki</h1>
-      <div class="meta">Generated for /opt/demodb/_workfolder/OntoIndex at commit 022098e3</div>
-    </header>
-    <main>
-      <nav>
-        <a href="overview.md" target="page">Overview</a>
-        <a href="cli-and-indexing.md" target="page">CLI And Indexing</a>
-        <a href="mcp-runtime.md" target="page">MCP Runtime</a>
-        <a href="http-api-and-web-ui.md" target="page">HTTP API And Web UI</a>
-        <a href="search-embeddings-and-ann.md" target="page">Search, Embeddings, And ANN</a>
-        <a href="audit-and-safety.md" target="page">Audit And Safety</a>
-        <a href="release-and-operations.md" target="page">Release And Operations</a>
-      </nav>
-      <article>
-        <iframe name="page" src="overview.md" title="Wiki page"></iframe>
-      </article>
-    </main>
-  </body>
+    }
+
+    // Convert mermaid code blocks into mermaid divs
+    var mermaidBlocks = contentEl.querySelectorAll('pre code.language-mermaid');
+    for (var i = 0; i < mermaidBlocks.length; i++) {
+      var pre = mermaidBlocks[i].parentElement;
+      var div = document.createElement('div');
+      div.className = 'mermaid';
+      div.textContent = mermaidBlocks[i].textContent;
+      pre.parentNode.replaceChild(div, pre);
+    }
+    try { mermaid.run({ querySelector: '.mermaid' }); } catch(e) {}
+
+    window.scrollTo(0, 0);
+    document.getElementById('sidebar').classList.remove('open');
+  }
+})();
+
+</script>
+</body>
 </html>
