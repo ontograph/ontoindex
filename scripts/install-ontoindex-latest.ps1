@@ -18,10 +18,27 @@ function Require-Command {
   }
 }
 
+function Resolve-NpmCommand {
+  if ($IsWindows -or $env:OS -eq "Windows_NT") {
+    $npmCmd = Get-Command "npm.cmd" -ErrorAction SilentlyContinue
+    if ($npmCmd) {
+      return $npmCmd.Source
+    }
+  }
+
+  $npm = Get-Command "npm" -ErrorAction SilentlyContinue
+  if ($npm) {
+    return $npm.Source
+  }
+
+  throw "Required command not found: npm. Install Node.js LTS first, then rerun this script."
+}
+
 function Invoke-Npm {
   param([string[]]$Arguments)
 
-  & npm @Arguments
+  $npmCommand = Resolve-NpmCommand
+  & $npmCommand @Arguments
   if ($LASTEXITCODE -ne 0) {
     throw "npm failed with exit code $LASTEXITCODE"
   }
@@ -61,7 +78,7 @@ function Find-OntoIndexCommand {
 }
 
 Require-Command "node"
-Require-Command "npm"
+$null = Resolve-NpmCommand
 
 $apiUrl = "https://api.github.com/repos/$Repo/releases/latest"
 $release = Invoke-RestMethod -Uri $apiUrl -Headers @{ "User-Agent" = "ontoindex-installer" }

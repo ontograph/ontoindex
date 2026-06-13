@@ -107,7 +107,7 @@ ontoindex --version
 | 平台 | 命令 |
 | --- | --- |
 | Linux/macOS | `npm install -g ontoindex@1.9.5 && ontoindex --version` |
-| Windows PowerShell | `npm install -g ontoindex@1.9.5; ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.5; ontoindex --version` |
 
 ### 从 release tarball URL 安装
 
@@ -116,7 +116,7 @@ ontoindex --version
 | 平台 | 命令 |
 | --- | --- |
 | Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.5/ontoindex-1.9.5.tgz && ontoindex --version` |
-| Windows PowerShell | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.5/ontoindex-1.9.5.tgz; ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.5/ontoindex-1.9.5.tgz; ontoindex --version` |
 
 ## 首次运行
 

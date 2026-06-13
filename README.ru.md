@@ -107,7 +107,7 @@ ontoindex --version
 | Платформа | Команда |
 | --- | --- |
 | Linux/macOS | `npm install -g ontoindex@1.9.5 && ontoindex --version` |
-| Windows PowerShell | `npm install -g ontoindex@1.9.5; ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.5; ontoindex --version` |
 
 ### Установка из release tarball URL
 
@@ -116,7 +116,7 @@ ontoindex --version
 | Платформа | Команда |
 | --- | --- |
 | Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.5/ontoindex-1.9.5.tgz && ontoindex --version` |
-| Windows PowerShell | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.5/ontoindex-1.9.5.tgz; ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.5/ontoindex-1.9.5.tgz; ontoindex --version` |
 
 ## Первый запуск
 
