@@ -68,7 +68,10 @@ import { appendQueryLog } from '../../src/mcp/local/query-log.js';
 import { resolveTargetContext } from '../../src/mcp/shared/target-context.js';
 import { query } from '../../src/mcp/local/backend-search.js';
 import { embedQuery, isEmbedderReady } from '../../src/mcp/core/embedder.js';
-import { loadAnnNeighborEdges, adaptAnnNeighborEdgesForFrontier } from '../../src/core/embeddings/ann-neighbor-store.js';
+import {
+  loadAnnNeighborEdges,
+  adaptAnnNeighborEdgesForFrontier,
+} from '../../src/core/embeddings/ann-neighbor-store.js';
 import { classifyIntent } from '../../src/core/search/intent-classifier.js';
 import { SemanticRetrievalCache } from '../../src/core/search/semantic-cache.js';
 
@@ -228,7 +231,9 @@ describe('backend-search typed input', () => {
 
     expect(mockEmbedQuery).toHaveBeenCalledTimes(1);
     expect(mockLoadAnnNeighborEdges).toHaveBeenCalledTimes(1);
-    expect(result.warning).toContain('symbol-neighborhood skipped: no ANN edges found for retrieved seeds');
+    expect(result.warning).toContain(
+      'symbol-neighborhood skipped: no ANN edges found for retrieved seeds',
+    );
     expect(result).toMatchObject({
       processes: [],
       process_symbols: [],
@@ -238,9 +243,7 @@ describe('backend-search typed input', () => {
     expect(mockLoadAnnNeighborEdges).toHaveBeenCalledWith(
       expect.any(Function),
       expect.objectContaining({
-        sourceIds: [
-          'Function:src/core/cache.ts:CacheStore',
-        ],
+        sourceIds: ['Function:src/core/cache.ts:CacheStore'],
       }),
     );
   });

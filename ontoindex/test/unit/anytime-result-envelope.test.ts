@@ -272,9 +272,27 @@ describe('anytime result envelope', () => {
     const envelope = createAnytimeResultEnvelope({
       maxSlices: 2,
       slices: [
-        { lane: 'graph', completeness: 'complete', emittedCount: 1, payload: {}, exhaustedResources: [] },
-        { lane: 'graph', completeness: 'complete', emittedCount: 1, payload: {}, exhaustedResources: [] },
-        { lane: 'graph', completeness: 'complete', emittedCount: 1, payload: {}, exhaustedResources: [] },
+        {
+          lane: 'graph',
+          completeness: 'complete',
+          emittedCount: 1,
+          payload: {},
+          exhaustedResources: [],
+        },
+        {
+          lane: 'graph',
+          completeness: 'complete',
+          emittedCount: 1,
+          payload: {},
+          exhaustedResources: [],
+        },
+        {
+          lane: 'graph',
+          completeness: 'complete',
+          emittedCount: 1,
+          payload: {},
+          exhaustedResources: [],
+        },
       ],
     });
 
@@ -299,9 +317,7 @@ describe('anytime result envelope', () => {
         emittedCount: 1,
         payload,
         exhaustedResources: ['time'],
-        diagnostics: [
-          { code: 'a', message: 'hello', severity: 'warning' },
-        ],
+        diagnostics: [{ code: 'a', message: 'hello', severity: 'warning' }],
       },
       {
         lane: 'docs',

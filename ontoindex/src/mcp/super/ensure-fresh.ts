@@ -11,7 +11,7 @@
 
 import { spawn } from 'child_process';
 import { readFileSync } from 'fs';
-import { join } from 'path';
+import path, { join } from 'path';
 import { homedir } from 'os';
 import { execFileText } from '../../core/process/exec-file.js';
 
@@ -27,6 +27,7 @@ const GIT_PROBE_MAX_BUFFER = 1024 * 1024;
 // ---------------------------------------------------------------------------
 
 export interface EnsureFreshParams {
+  repo?: string;
   withEmbeddings?: boolean; // default: false
   autoAnalyze?: boolean; // default: false (require explicit confirm)
   killMcpForLock?: boolean; // deprecated; advisory only for safety
@@ -61,7 +62,7 @@ function parseRegistryJson(rawRegistry: string): RegistryEntry[] {
 }
 
 /** Resolve the repo root via `git rev-parse --show-toplevel`, fallback to cwd. */
-async function resolveRepoRoot(): Promise<string> {
+async function resolveCwdRepoRoot(): Promise<string> {
   try {
     return (
       await execFileText('git', ['rev-parse', '--show-toplevel'], {
@@ -72,6 +73,60 @@ async function resolveRepoRoot(): Promise<string> {
   } catch {
     return process.cwd();
   }
+}
+
+function normalizeRepoPath(repoPath: string | undefined): string | null {
+  if (!repoPath?.trim()) return null;
+  return path.resolve(repoPath);
+}
+
+function buildRegistryIds(registry: RegistryEntry[]): Map<RegistryEntry, string> {
+  const ids = new Map<RegistryEntry, string>();
+  const seen = new Map<string, string>();
+  for (const entry of registry) {
+    const base = entry.name?.toLowerCase();
+    const repoPath = normalizeRepoPath(entry.path);
+    if (!base || !repoPath) continue;
+
+    const previousPath = seen.get(base);
+    if (previousPath && previousPath !== repoPath) {
+      ids.set(entry, `${base}-${Buffer.from(repoPath).toString('base64url').slice(0, 6)}`);
+    } else {
+      seen.set(base, repoPath);
+      ids.set(entry, base);
+    }
+  }
+  return ids;
+}
+
+function findRegistryEntry(
+  registry: RegistryEntry[],
+  selector: string | undefined,
+  cwdRepoRoot: string | undefined,
+): RegistryEntry | undefined {
+  const registryIds = buildRegistryIds(registry);
+  const selectorLower = selector?.trim().toLowerCase();
+  const selectorPath = normalizeRepoPath(selector);
+  const cwdPath = normalizeRepoPath(cwdRepoRoot);
+
+  if (selectorLower || selectorPath) {
+    const selected = registry.find((entry) => {
+      const entryName = entry.name?.toLowerCase();
+      const entryPath = normalizeRepoPath(entry.path);
+      return (
+        (selectorLower !== undefined &&
+          (entryName === selectorLower || registryIds.get(entry) === selectorLower)) ||
+        (selectorPath !== null && entryPath === selectorPath)
+      );
+    });
+    if (selected) return selected;
+  }
+
+  if (cwdPath) {
+    return registry.find((entry) => normalizeRepoPath(entry.path) === cwdPath);
+  }
+
+  return undefined;
 }
 
 /** Build an empty report shell for early-return paths. */
@@ -155,9 +210,31 @@ export async function gnEnsureFresh(
   const warnings: string[] = [];
   const recommendations: string[] = [];
   const actionsTaken: string[] = [];
-  const repoRoot = await resolveRepoRoot();
 
-  // ---- 1. Get current HEAD commit -----------------------------------------
+  // ---- 1. Read registry ---------------------------------------------------
+  const registryPath = join(homedir(), '.ontoindex', 'registry.json');
+  let registry: RegistryEntry[] = [];
+  try {
+    registry = parseRegistryJson(readFileSync(registryPath, 'utf8'));
+  } catch (err) {
+    warnings.push('cannot read ~/.ontoindex/registry.json: ' + String(err));
+    return emptyReport(warnings, recommendations);
+  }
+
+  // ---- 2. Resolve the repo from the same registry semantics as MCP --------
+  const selector = params.repo?.trim() || repoId.trim() || undefined;
+  const cwdRepoRoot = selector ? undefined : await resolveCwdRepoRoot();
+  const entry = findRegistryEntry(registry, selector, cwdRepoRoot);
+  if (!entry) {
+    return emptyReport(
+      [...warnings, 'repo not in registry — run ontoindex analyze'],
+      recommendations,
+    );
+  }
+
+  const repoRoot = normalizeRepoPath(entry.path) ?? entry.path ?? process.cwd();
+
+  // ---- 3. Get current HEAD commit from the indexed repo path --------------
   let currentCommit = '';
   try {
     currentCommit = (
@@ -169,25 +246,6 @@ export async function gnEnsureFresh(
     ).trim();
   } catch (err) {
     warnings.push('git rev-parse HEAD failed: ' + String(err));
-  }
-
-  // ---- 2. Read registry ---------------------------------------------------
-  const registryPath = join(homedir(), '.ontoindex', 'registry.json');
-  let registry: RegistryEntry[] = [];
-  try {
-    registry = parseRegistryJson(readFileSync(registryPath, 'utf8'));
-  } catch (err) {
-    warnings.push('cannot read ~/.ontoindex/registry.json: ' + String(err));
-    return emptyReport(warnings, recommendations);
-  }
-
-  // ---- 3. Find this repo's entry ------------------------------------------
-  const entry = registry.find((e) => e.name === repoId || e.path === repoRoot);
-  if (!entry) {
-    return emptyReport(
-      [...warnings, 'repo not in registry — run ontoindex analyze'],
-      recommendations,
-    );
   }
 
   const indexedCommit: string = entry.lastCommit ?? '';
@@ -255,7 +313,7 @@ export async function gnEnsureFresh(
 
       // Re-read registry for postCheck
       const updatedRegistry = parseRegistryJson(readFileSync(registryPath, 'utf8'));
-      const updatedEntry = updatedRegistry.find((e) => e.name === repoId || e.path === repoRoot);
+      const updatedEntry = findRegistryEntry(updatedRegistry, selector, repoRoot);
       if (updatedEntry) {
         postCheck = {
           indexedCommit: updatedEntry.lastCommit ?? '',

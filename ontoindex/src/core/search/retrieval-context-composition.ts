@@ -146,7 +146,9 @@ interface InternalNavigationStep extends NavigationStep {
   sequence?: number;
 }
 
-export function composeRetrievalContext(input: RetrievalContextCompositionInput = {}): RetrievalContextCompositionReport {
+export function composeRetrievalContext(
+  input: RetrievalContextCompositionInput = {},
+): RetrievalContextCompositionReport {
   const limits = resolveLimits(input.limits);
   const warnings: string[] = [];
 
@@ -164,18 +166,21 @@ export function composeRetrievalContext(input: RetrievalContextCompositionInput 
     }
 
     warnings.push(`Duplicate candidate id "${normalized.id}" was merged.`);
-    dedupedById.set(
-      normalized.id,
-      mergeCandidate(existing, normalized, warnings),
-    );
+    dedupedById.set(normalized.id, mergeCandidate(existing, normalized, warnings));
   }
 
   const dedupedCandidates = Array.from(dedupedById.values()).sort(compareCandidate);
 
   const observed = {
     candidates: dedupedCandidates.length,
-    relatedSymbols: dedupedCandidates.reduce((sum, candidate) => sum + candidate.relatedSymbols.length, 0),
-    provenanceSteps: dedupedCandidates.reduce((sum, candidate) => sum + candidate.provenance.length, 0),
+    relatedSymbols: dedupedCandidates.reduce(
+      (sum, candidate) => sum + candidate.relatedSymbols.length,
+      0,
+    ),
+    provenanceSteps: dedupedCandidates.reduce(
+      (sum, candidate) => sum + candidate.provenance.length,
+      0,
+    ),
     warnings: 0,
   };
 
@@ -190,11 +195,13 @@ export function composeRetrievalContext(input: RetrievalContextCompositionInput 
         Boolean(hasExplicitSourceHint || hasExplicitLaneHint) &&
         Boolean(
           (hasExplicitSourceHint && hasExplicitSourceHint !== candidate.source) ||
-            (hasExplicitLaneHint && hasExplicitLaneHint !== candidate.source),
+          (hasExplicitLaneHint && hasExplicitLaneHint !== candidate.source),
         );
 
       if (!candidateIds.has(symbol.id) && !isLikelyExternalRef) {
-        warnings.push(`Dangling related-symbol reference "${symbol.id}" in candidate "${candidate.id}".`);
+        warnings.push(
+          `Dangling related-symbol reference "${symbol.id}" in candidate "${candidate.id}".`,
+        );
       }
     }
   }
@@ -202,13 +209,22 @@ export function composeRetrievalContext(input: RetrievalContextCompositionInput 
   const emittedCandidates = dedupedCandidates.slice(0, limits.maxCandidates).map((candidate) => ({
     ...candidate,
     provenance: applyProvenanceLimits(candidate.provenance, limits.maxProvenanceStepsPerCandidate),
-    relatedSymbols: applyRelatedLimits(candidate.relatedSymbols, limits.maxRelatedSymbolsPerCandidate),
+    relatedSymbols: applyRelatedLimits(
+      candidate.relatedSymbols,
+      limits.maxRelatedSymbolsPerCandidate,
+    ),
   }));
 
   const emitted = {
     candidates: emittedCandidates.length,
-    relatedSymbols: emittedCandidates.reduce((sum, candidate) => sum + candidate.relatedSymbols.length, 0),
-    provenanceSteps: emittedCandidates.reduce((sum, candidate) => sum + candidate.provenance.length, 0),
+    relatedSymbols: emittedCandidates.reduce(
+      (sum, candidate) => sum + candidate.relatedSymbols.length,
+      0,
+    ),
+    provenanceSteps: emittedCandidates.reduce(
+      (sum, candidate) => sum + candidate.provenance.length,
+      0,
+    ),
   };
 
   const truncated = {
@@ -253,7 +269,9 @@ export function composeRetrievalContext(input: RetrievalContextCompositionInput 
   };
 }
 
-function resolveLimits(input: Partial<RetrievalCompositionLimits> = {}): RetrievalCompositionLimits {
+function resolveLimits(
+  input: Partial<RetrievalCompositionLimits> = {},
+): RetrievalCompositionLimits {
   return {
     maxCandidates: normalizeLimit(input?.maxCandidates, DEFAULT_LIMITS.maxCandidates),
     maxRelatedSymbolsPerCandidate: normalizeLimit(
@@ -282,8 +300,16 @@ function normalizeCandidate(
 
   const score = normalizeScore((input as Record<string, unknown>).score, candidateId, warnings);
   const tier = normalizeTier((input as Record<string, unknown>).tier, candidateId, warnings);
-  const freshness = normalizeFreshness((input as Record<string, unknown>).freshness, candidateId, warnings);
-  const altitude = normalizeAltitude((input as Record<string, unknown>).altitude, candidateId, warnings);
+  const freshness = normalizeFreshness(
+    (input as Record<string, unknown>).freshness,
+    candidateId,
+    warnings,
+  );
+  const altitude = normalizeAltitude(
+    (input as Record<string, unknown>).altitude,
+    candidateId,
+    warnings,
+  );
   const source = normalizeText(
     (input as Record<string, unknown>).source ?? (input as Record<string, unknown>).sourceLane,
   );
@@ -334,11 +360,7 @@ function normalizeScore(raw: unknown, candidateId: string, warnings: string[]): 
   return 0;
 }
 
-function normalizeTier(
-  raw: unknown,
-  candidateId: string,
-  warnings: string[],
-): RetrievalTier {
+function normalizeTier(raw: unknown, candidateId: string, warnings: string[]): RetrievalTier {
   if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 && raw <= 3) {
     return raw as RetrievalTier;
   }
@@ -368,7 +390,9 @@ function normalizeFreshness(
   }
 
   if (raw !== undefined && String(raw).trim().length > 0) {
-    warnings.push(`Unknown freshness "${String(raw)}" for candidate "${candidateId}"; defaulting to unknown.`);
+    warnings.push(
+      `Unknown freshness "${String(raw)}" for candidate "${candidateId}"; defaulting to unknown.`,
+    );
   }
 
   return 'unknown';
@@ -385,7 +409,9 @@ function normalizeAltitude(
   }
 
   if (raw !== undefined && String(raw).trim().length > 0) {
-    warnings.push(`Unknown altitude "${String(raw)}" for candidate "${candidateId}"; defaulting to global.`);
+    warnings.push(
+      `Unknown altitude "${String(raw)}" for candidate "${candidateId}"; defaulting to global.`,
+    );
   }
 
   return 'global';
@@ -404,7 +430,11 @@ function normalizeProvenance(rawSteps: readonly unknown[]): InternalNavigationSt
       typeof (entry as Record<string, unknown>).sequence === 'number'
         ? Math.trunc((entry as Record<string, unknown>).sequence as number)
         : undefined;
-    const freshness = normalizeFreshness((entry as Record<string, unknown>).freshness, `${source}:${action}`, []);
+    const freshness = normalizeFreshness(
+      (entry as Record<string, unknown>).freshness,
+      `${source}:${action}`,
+      [],
+    );
 
     normalized.push({
       source,
@@ -457,11 +487,15 @@ function compareCandidate(left: InternalCandidate, right: InternalCandidate): nu
   return left.label.localeCompare(right.label);
 }
 
-function compareProvenanceSteps(left: InternalNavigationStep, right: InternalNavigationStep): number {
+function compareProvenanceSteps(
+  left: InternalNavigationStep,
+  right: InternalNavigationStep,
+): number {
   const leftHasSequence = typeof left.sequence === 'number';
   const rightHasSequence = typeof right.sequence === 'number';
   if (leftHasSequence && rightHasSequence) {
-    if (left.sequence !== right.sequence) return (left.sequence as number) - (right.sequence as number);
+    if (left.sequence !== right.sequence)
+      return (left.sequence as number) - (right.sequence as number);
   } else if (leftHasSequence) {
     return -1;
   } else if (rightHasSequence) {
@@ -478,7 +512,7 @@ function compareProvenanceSteps(left: InternalNavigationStep, right: InternalNav
 function compareRelatedSymbols(left: InternalRelatedSymbol, right: InternalRelatedSymbol): number {
   return (
     left.relationType.localeCompare(right.relationType) ||
-    (right.score - left.score) ||
+    right.score - left.score ||
     left.id.localeCompare(right.id) ||
     left.label.localeCompare(right.label)
   );
@@ -539,11 +573,17 @@ function mergeRelatedSymbols(
   return [...merged.values()].sort(compareRelatedSymbols);
 }
 
-function applyProvenanceLimits(steps: InternalNavigationStep[], limit: number): InternalNavigationStep[] {
+function applyProvenanceLimits(
+  steps: InternalNavigationStep[],
+  limit: number,
+): InternalNavigationStep[] {
   return typeof limit === 'number' && limit > 0 ? steps.slice(0, limit) : [];
 }
 
-function applyRelatedLimits(symbols: InternalRelatedSymbol[], limit: number): InternalRelatedSymbol[] {
+function applyRelatedLimits(
+  symbols: InternalRelatedSymbol[],
+  limit: number,
+): InternalRelatedSymbol[] {
   return typeof limit === 'number' && limit > 0 ? symbols.slice(0, limit) : [];
 }
 
@@ -559,7 +599,10 @@ function uniqueWarnings(values: string[]): string[] {
   return out;
 }
 
-function countBy(items: readonly InternalCandidate[], access: (item: InternalCandidate) => string): Record<string, number> {
+function countBy(
+  items: readonly InternalCandidate[],
+  access: (item: InternalCandidate) => string,
+): Record<string, number> {
   const out: Record<string, number> = {};
   for (const item of items) {
     const key = access(item);
@@ -568,7 +611,9 @@ function countBy(items: readonly InternalCandidate[], access: (item: InternalCan
   return out;
 }
 
-function countFreshness(items: readonly InternalCandidate[]): Record<RetrievalCompositionFreshness, number> {
+function countFreshness(
+  items: readonly InternalCandidate[],
+): Record<RetrievalCompositionFreshness, number> {
   const out: Record<RetrievalCompositionFreshness, number> = {
     fresh: 0,
     stale: 0,

@@ -14,9 +14,7 @@ import {
   type AnnNeighborExplicitCandidate,
 } from '../../src/core/embeddings/ann-neighbor.js';
 
-const makeEmbedding = (
-  overrides: Partial<AnnEmbeddingRow> = {},
-): AnnEmbeddingRow => ({
+const makeEmbedding = (overrides: Partial<AnnEmbeddingRow> = {}): AnnEmbeddingRow => ({
   nodeId: 'Function:source:A',
   model: 'text-embedding-3-small',
   buildId: 'build-001',
@@ -158,7 +156,9 @@ describe('buildAnnNeighborsFromEmbeddingRows', () => {
 
     expect(emitted).toHaveLength(2);
     expect(emitted.every((edge) => edge.isStale)).toBe(true);
-    expect(emitted.every((edge) => edge.staleReasons.includes('source-build-id-mismatch'))).toBe(true);
+    expect(emitted.every((edge) => edge.staleReasons.includes('source-build-id-mismatch'))).toBe(
+      true,
+    );
   });
 });
 

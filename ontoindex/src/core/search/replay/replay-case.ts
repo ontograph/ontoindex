@@ -184,7 +184,7 @@ function parseReplayRequest(
   return {
     action: 'semantic',
     typedQuery,
-      retrievalPolicy,
+    retrievalPolicy,
     includeSkeleton,
     includeContent,
     consumeEnrichmentFacts,
@@ -236,7 +236,10 @@ function parseReplayExpected(
     return fallback;
   }
   if (identityEntries.length === 0) {
-    errors.push({ path: `${path}.identities`, message: 'identities must include at least one entry' });
+    errors.push({
+      path: `${path}.identities`,
+      message: 'identities must include at least one entry',
+    });
   }
 
   const identities: RetrievalReplayIdentity[] = [];
@@ -251,11 +254,20 @@ function parseReplayExpected(
 
   const minimumJaccardAtK = optionalNumber(record.minimumJaccardAtK);
   if (minimumJaccardAtK !== undefined && !Number.isFinite(minimumJaccardAtK)) {
-    errors.push({ path: `${path}.minimumJaccardAtK`, message: 'minimumJaccardAtK must be a finite number' });
+    errors.push({
+      path: `${path}.minimumJaccardAtK`,
+      message: 'minimumJaccardAtK must be a finite number',
+    });
   } else if (minimumJaccardAtK !== undefined && minimumJaccardAtK < 0) {
-    errors.push({ path: `${path}.minimumJaccardAtK`, message: 'minimumJaccardAtK must be at least 0' });
+    errors.push({
+      path: `${path}.minimumJaccardAtK`,
+      message: 'minimumJaccardAtK must be at least 0',
+    });
   } else if (minimumJaccardAtK !== undefined && minimumJaccardAtK > 1) {
-    errors.push({ path: `${path}.minimumJaccardAtK`, message: 'minimumJaccardAtK cannot exceed 1' });
+    errors.push({
+      path: `${path}.minimumJaccardAtK`,
+      message: 'minimumJaccardAtK cannot exceed 1',
+    });
   }
 
   const requireTop1Stable = optionalBoolean(record.requireTop1Stable);
@@ -274,7 +286,11 @@ function parseReplayExpected(
   };
 }
 
-function requireString(value: unknown, path: string, errors: RetrievalReplayCaseValidationError[]): string {
+function requireString(
+  value: unknown,
+  path: string,
+  errors: RetrievalReplayCaseValidationError[],
+): string {
   const parsed = requireOptionalString(value, path, errors);
   if (parsed === undefined) {
     return '';

@@ -24,12 +24,7 @@ const VALID_DIAGNOSTIC_KINDS = [
   'truncated',
 ] as const;
 
-const REPORT_VERDICT_STATUSES = [
-  'supported',
-  'refuted',
-  'ambiguous',
-  'missing',
-] as const;
+const REPORT_VERDICT_STATUSES = ['supported', 'refuted', 'ambiguous', 'missing'] as const;
 const AUDIT_LIFECYCLE_STATUSES = ['OPEN', 'FIXED', 'VERIFIED', 'NEEDS-VERIFY', 'HOLD'] as const;
 
 const hypothesis = {
@@ -170,7 +165,10 @@ describe('hypothesis grounding report builder', () => {
     const report = buildHypothesisGroundingReport({
       hypothesis,
       premises: [premise('p1', 'Startup is described in source and docs.')],
-      evidence: [evidence('e8', 'p1', 'supports', {}), evidence('e9', 'p1', 'supports', fileCitation('/src/startup.ts'))],
+      evidence: [
+        evidence('e8', 'p1', 'supports', {}),
+        evidence('e9', 'p1', 'supports', fileCitation('/src/startup.ts')),
+      ],
     } satisfies HypothesisGroundingInput);
 
     const result = evaluateSemanticContracts({ diagnostics: report.diagnostics });

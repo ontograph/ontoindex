@@ -478,14 +478,8 @@ export const streamAllCSVsToDisk = async (
         const conceptCount = numericProperty(node.properties.conceptCount, 0);
         const includedConceptCount = numericProperty(node.properties.includedConceptCount, 0);
         const groundingCount = numericProperty(node.properties.groundingCount, 0);
-        const includedGroundingCount = numericProperty(
-          node.properties.includedGroundingCount,
-          0,
-        );
-        const omittedCommunityCount = numericProperty(
-          node.properties.omittedCommunityCount,
-          0,
-        );
+        const includedGroundingCount = numericProperty(node.properties.includedGroundingCount, 0);
+        const omittedCommunityCount = numericProperty(node.properties.omittedCommunityCount, 0);
         pendingWrite = writeCsvRow(
           summaryNodeWriter,
           [

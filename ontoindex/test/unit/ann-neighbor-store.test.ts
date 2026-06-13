@@ -1,8 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import {
-  ANN_NEIGHBOR_RELATION_TYPE,
-} from '../../src/core/embeddings/ann-neighbor.js';
+import { ANN_NEIGHBOR_RELATION_TYPE } from '../../src/core/embeddings/ann-neighbor.js';
 import {
   adaptAnnNeighborEdgesForFrontier,
   buildAnnNeighborDeleteQuery,
@@ -68,8 +66,8 @@ const staleMetadataRow = (
 describe('ann-neighbor-store query builders', () => {
   it('builds parameterized CREATE query without injecting node ids', () => {
     const query = buildAnnNeighborPersistQuery();
-    const dangerousSource = 'Function:bad\'; MATCH (n) DETACH DELETE n; //';
-    const dangerousTarget = 'Function:target\'; DETACH DELETE n; //';
+    const dangerousSource = "Function:bad'; MATCH (n) DETACH DELETE n; //";
+    const dangerousTarget = "Function:target'; DETACH DELETE n; //";
 
     expect(query).not.toContain(dangerousSource);
     expect(query).not.toContain(dangerousTarget);
@@ -128,11 +126,13 @@ describe('ann-neighbor-store persist/load', () => {
     const freshSource = makeEdge(2, 'Function:source:A');
     const freshTarget = makeEdge(3, 'Function:source:B');
 
-    const executeQuery = vi.fn().mockResolvedValue([
-      staleMetadataRow(staleSource, false),
-      staleMetadataRow(freshSource, false),
-      staleMetadataRow(freshTarget, false),
-    ]);
+    const executeQuery = vi
+      .fn()
+      .mockResolvedValue([
+        staleMetadataRow(staleSource, false),
+        staleMetadataRow(freshSource, false),
+        staleMetadataRow(freshTarget, false),
+      ]);
     const loadedFreshOnly = await loadAnnNeighborEdges(executeQuery, {
       sourceIds: ['Function:source:A'],
       includeStale: false,
@@ -167,13 +167,11 @@ describe('ann-neighbor-store persist/load', () => {
   it('limits outbound degree per source id during load', async () => {
     const denseSource = 'Function:source:Hub';
     const edges = Array.from({ length: 20 }, (_, index) =>
-      staleMetadataRow(
-        {
-          ...makeEdge(index + 1, denseSource),
-          sourceId: denseSource,
-          rank: index + 1,
-        },
-      ),
+      staleMetadataRow({
+        ...makeEdge(index + 1, denseSource),
+        sourceId: denseSource,
+        rank: index + 1,
+      }),
     );
 
     const executeQuery = vi.fn().mockResolvedValue(edges);
@@ -190,10 +188,9 @@ describe('ann-neighbor-store persist/load', () => {
 
   it('adapts ANN edges to frontier edges (score + stale metadata)', async () => {
     const edges = [makeEdge(1), makeEdge(2)];
-    const executeQuery = vi.fn().mockResolvedValue([
-      staleMetadataRow(edges[0], false),
-      staleMetadataRow(edges[1], true),
-    ]);
+    const executeQuery = vi
+      .fn()
+      .mockResolvedValue([staleMetadataRow(edges[0], false), staleMetadataRow(edges[1], true)]);
 
     const loaded = await loadAnnNeighborEdges(executeQuery, {
       includeStale: true,
@@ -228,13 +225,9 @@ describe('ann-neighbor-store persist/load', () => {
       .mockResolvedValueOnce([staleEdge, freshEdge]);
 
     const executeWithReusedStatement = vi.fn().mockResolvedValue(undefined);
-    const result = await cleanupAnnNeighborEdges(
-      executeQuery,
-      executeWithReusedStatement,
-      {
-        staleOnly: true,
-      },
-    );
+    const result = await cleanupAnnNeighborEdges(executeQuery, executeWithReusedStatement, {
+      staleOnly: true,
+    });
 
     expect(result).toHaveProperty('deletedCount', 1);
     expect(executeWithReusedStatement).toHaveBeenCalledOnce();
@@ -244,7 +237,10 @@ describe('ann-neighbor-store persist/load', () => {
     ];
     expect(deleteQuery).toContain('MATCH (source), (target)');
     expect(deleteParams).toHaveLength(1);
-    expect(deleteParams[0]).toMatchObject({ sourceId: staleEdge.sourceId, targetId: staleEdge.targetId });
+    expect(deleteParams[0]).toMatchObject({
+      sourceId: staleEdge.sourceId,
+      targetId: staleEdge.targetId,
+    });
   });
 
   it('keeps ANN_NEIGHBOR outside impact/dependency traversal relation sets', () => {

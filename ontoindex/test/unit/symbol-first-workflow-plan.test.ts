@@ -249,9 +249,7 @@ describe('symbol-first workflow plan', () => {
     });
     expect(plan.verdict).toBe('CAUTION');
     expect(plan.warnings).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ code: 'missing_optional_lsp_readiness' }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ code: 'missing_optional_lsp_readiness' })]),
     );
   });
 
@@ -261,7 +259,7 @@ describe('symbol-first workflow plan', () => {
       'utf8',
     );
     expect(source).not.toContain('/src/mcp/');
-    expect(source).not.toContain('from \'../../mcp/');
+    expect(source).not.toContain("from '../../mcp/");
     expect(source).not.toContain('from "../../mcp/');
   });
 });

@@ -18,7 +18,10 @@ function record(overrides: Partial<EvidenceDiagnosticRecord> = {}): EvidenceDiag
   };
 }
 
-function evaluate(profile: EvidenceDiagnosticSurfaceProfile, diagnostics: EvidenceDiagnosticRecord[]) {
+function evaluate(
+  profile: EvidenceDiagnosticSurfaceProfile,
+  diagnostics: EvidenceDiagnosticRecord[],
+) {
   return evaluateEvidenceDiagnosticProfile({ profile, diagnostics });
 }
 

@@ -163,7 +163,10 @@ function parseRecallThreshold(value, flag) {
 }
 
 function parseEfList(value) {
-  const parts = value.split(',').map((valuePart) => valuePart.trim()).filter(Boolean);
+  const parts = value
+    .split(',')
+    .map((valuePart) => valuePart.trim())
+    .filter(Boolean);
   if (parts.length === 0) {
     throw new Error('--ef requires at least one integer');
   }
@@ -220,7 +223,9 @@ async function loadCorpusConfig(opts) {
         'fixture.dimensions',
       ),
       queryCount: parsePositiveInt(String(fixture.queryCount), 'fixture.queryCount'),
-      seed: Number.isFinite(fixture.seed) ? parseSeed(String(fixture.seed), 'fixture.seed') : opts.seed,
+      seed: Number.isFinite(fixture.seed)
+        ? parseSeed(String(fixture.seed), 'fixture.seed')
+        : opts.seed,
       label: fixture.label || path.basename(fixturePath),
     });
   }
@@ -286,15 +291,14 @@ function normalizePoint(entry, index, pathLabel, fallbackPrefix) {
 
   const vector = entry.vector.map((value, valueIndex) => {
     if (!Number.isFinite(Number(value))) {
-      throw new Error(
-        `Malformed ${pathLabel}: vector[${valueIndex}] must be a finite number`,
-      );
+      throw new Error(`Malformed ${pathLabel}: vector[${valueIndex}] must be a finite number`);
     }
     return Number(value);
   });
 
   const normalized = normalizeVector(vector);
-  const id = typeof entry.id === 'string' && entry.id.length > 0 ? entry.id : `${fallbackPrefix}-${index}`;
+  const id =
+    typeof entry.id === 'string' && entry.id.length > 0 ? entry.id : `${fallbackPrefix}-${index}`;
 
   return {
     id,
@@ -452,12 +456,12 @@ function runBenchmark(corpus, opts) {
       const start = performance.now();
       const frontierResult = runSemanticFrontierSearch(
         {
-        queryId: query.id,
-        queryVector: query.vector,
-        nodes: corpus.nodes,
-        topK: effectiveK,
-        ef,
-        seed: querySeed,
+          queryId: query.id,
+          queryVector: query.vector,
+          nodes: corpus.nodes,
+          topK: effectiveK,
+          ef,
+          seed: querySeed,
         },
         opts.adapter,
       );
@@ -466,7 +470,10 @@ function runBenchmark(corpus, opts) {
       visitedTotal += frontierResult.visited;
       latencyTotal += latency;
       exactComparisons += corpus.nodes.length;
-      fallbackReasons.set(frontierResult.fallbackReason, (fallbackReasons.get(frontierResult.fallbackReason) ?? 0) + 1);
+      fallbackReasons.set(
+        frontierResult.fallbackReason,
+        (fallbackReasons.get(frontierResult.fallbackReason) ?? 0) + 1,
+      );
       if (frontierResult.results[0]?.id === baseline[0]?.id) {
         recallAt1++;
       }
@@ -606,7 +613,8 @@ async function run() {
   const opts = parseArgs(process.argv.slice(2));
   const corpus = await loadCorpusConfig(opts);
   const effectiveLabel = opts.label || corpus.label || DEFAULTS.label;
-  const effectiveKFromFixture = Number.isFinite(corpus.k) && Number.isFinite(opts.k) ? Math.min(opts.k, corpus.k) : opts.k;
+  const effectiveKFromFixture =
+    Number.isFinite(corpus.k) && Number.isFinite(opts.k) ? Math.min(opts.k, corpus.k) : opts.k;
   const effectiveK = Number.isFinite(effectiveKFromFixture) ? effectiveKFromFixture : opts.k;
   const configForRun = {
     ...opts,

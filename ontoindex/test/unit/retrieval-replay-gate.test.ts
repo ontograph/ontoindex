@@ -137,7 +137,9 @@ describe('retrieval replay gate', () => {
     });
 
     expect(missingCapabilitiesResult.verdict).toBe('WARN');
-    expect(missingCapabilitiesResult.reasons).toContain('missing required capabilities: embeddings');
+    expect(missingCapabilitiesResult.reasons).toContain(
+      'missing required capabilities: embeddings',
+    );
 
     const staleIndexResult = evaluateRetrievalReplayGate({
       caseInput,

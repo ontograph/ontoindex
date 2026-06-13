@@ -219,7 +219,10 @@ export const buildAnnNeighborsFromExplicitCandidates = (
   } = options;
 
   const outboundDegree = normalizeDegree(maxOutboundDegree);
-  const grouped = new Map<string, Map<string, { score: number; sourceContentHash: string; targetContentHash: string }>>();
+  const grouped = new Map<
+    string,
+    Map<string, { score: number; sourceContentHash: string; targetContentHash: string }>
+  >();
 
   for (const candidate of candidates) {
     const sourceId = normalizeNodeId(candidate.sourceId);
@@ -243,9 +246,7 @@ export const buildAnnNeighborsFromExplicitCandidates = (
   }
 
   const result: AnnNeighborEdge[] = [];
-  for (const [sourceId, targets] of [...grouped.entries()].sort(([a], [b]) =>
-    a.localeCompare(b),
-  )) {
+  for (const [sourceId, targets] of [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     const sourceCandidateTargets = [...targets.entries()].sort((left, right) => {
       if (left[1].score !== right[1].score) return right[1].score - left[1].score;
       return left[0].localeCompare(right[0]);

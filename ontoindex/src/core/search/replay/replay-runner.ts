@@ -71,7 +71,9 @@ export interface ReplayCasesInput {
   now?: () => number;
 }
 
-export async function replayRetrievalCases(input: ReplayCasesInput): Promise<RetrievalReplayReport> {
+export async function replayRetrievalCases(
+  input: ReplayCasesInput,
+): Promise<RetrievalReplayReport> {
   const now = input.now ?? (() => Date.now());
   const generatedAt = now();
 
@@ -92,8 +94,7 @@ async function executeReplayCase(
 ): Promise<ReplayCaseReport> {
   const runStartedAt = now();
   const runResult = await runReplayCase(replayCase, executor);
-  const elapsedMs =
-    runResult.elapsedMs ?? Math.max(0, now() - runStartedAt);
+  const elapsedMs = runResult.elapsedMs ?? Math.max(0, now() - runStartedAt);
   const metricsInput: ComputeRetrievalReplayMovementMetricsInput = {
     caseInput: replayCase,
     actual: runResult.identities,
@@ -111,7 +112,9 @@ async function executeReplayCase(
     indexFreshness: runResult.indexFreshness,
     missingCapabilities: runResult.missingCapabilities,
     baselineInvalid: runResult.baselineInvalid,
-    baselineInvalidReasons: runResult.baselineInvalidReason ? [runResult.baselineInvalidReason] : [],
+    baselineInvalidReasons: runResult.baselineInvalidReason
+      ? [runResult.baselineInvalidReason]
+      : [],
   });
 
   const enabledCapabilities = [...new Set(runResult.enabledCapabilities ?? [])];
@@ -172,9 +175,7 @@ interface ReplayCaseExecutionResult extends RetrievalReplayExecutorRun {
   error?: string;
 }
 
-function mergeWarnings(
-  ...parts: Array<readonly string[] | undefined | null | string>
-): string[] {
+function mergeWarnings(...parts: Array<readonly string[] | undefined | null | string>): string[] {
   const values: string[] = [];
   for (const part of parts) {
     if (typeof part === 'string') {

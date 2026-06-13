@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { buildGraphSchemaManifest, buildSubgraphContext } from '../../src/core/graph/subgraph-context.js';
+import {
+  buildGraphSchemaManifest,
+  buildSubgraphContext,
+} from '../../src/core/graph/subgraph-context.js';
 
 describe('graph schema manifest builder', () => {
   it('sorts labels, edge types, and properties deterministically', () => {
@@ -112,16 +115,10 @@ describe('subgraph context builder', () => {
     });
 
     expect(report.manifest.renderedShape).toBe(
-      [
-        'Function {name,path} -CALLS-> Function',
-        'Class {name} -IMPLEMENTS-> Function',
-      ].join('\n'),
+      ['Function {name,path} -CALLS-> Function', 'Class {name} -IMPLEMENTS-> Function'].join('\n'),
     );
     expect(report.rendered.triples).toBe(
-      [
-        'Class:n3 IMPLEMENTS Function:n2',
-        'Function:n2 CALLS Function:n1',
-      ].join('\n'),
+      ['Class:n3 IMPLEMENTS Function:n2', 'Function:n2 CALLS Function:n1'].join('\n'),
     );
 
     const compact = JSON.parse(report.rendered['compact-json'] ?? '{}');
@@ -202,7 +199,11 @@ describe('subgraph context builder', () => {
       nodes: [],
       edges: [],
     });
-    const textLength = [report.rendered.shape, report.rendered.triples, report.rendered['compact-json']]
+    const textLength = [
+      report.rendered.shape,
+      report.rendered.triples,
+      report.rendered['compact-json'],
+    ]
       .map((entry) => entry?.length ?? 0)
       .reduce((acc, current) => acc + current, 0);
 

@@ -19,9 +19,7 @@ describe('retrieval replay fixture corpus', () => {
 
   for (const fixtureFile of fixtureFiles) {
     it(`validates ${fixtureFile}`, () => {
-      const rawFixture = JSON.parse(
-        readFileSync(path.join(fixturesDir, fixtureFile), 'utf8'),
-      );
+      const rawFixture = JSON.parse(readFileSync(path.join(fixturesDir, fixtureFile), 'utf8'));
       const validation = validateRetrievalReplayCase(rawFixture);
       const validationMessage = validation.ok
         ? ''

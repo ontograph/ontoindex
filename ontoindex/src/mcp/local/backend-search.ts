@@ -29,7 +29,10 @@ import { graphTraversalRank, type GraphEdgeType } from '../../core/search/graph-
 import { appendQueryLog } from './query-log.js';
 import { getFileSkeleton } from '../../core/search/skeleton.js';
 import { SemanticRetrievalCache } from '../../core/search/semantic-cache.js';
-import { semanticFrontierSearch, type SemanticFrontierSearchDiagnostics } from '../../core/search/semantic-frontier-search.js';
+import {
+  semanticFrontierSearch,
+  type SemanticFrontierSearchDiagnostics,
+} from '../../core/search/semantic-frontier-search.js';
 import {
   adaptAnnNeighborEdgesForFrontier,
   loadAnnNeighborEdges,
@@ -376,7 +379,9 @@ function summarizeFrontierDiagnostics(frontier: SemanticFrontierSearchDiagnostic
     `symbol-neighborhood frontier fallback=${frontier.fallbackReason ?? 'none'}`,
   ];
   if (frontier.warnings.length > 0) {
-    lines.push(...frontier.warnings.map((warning) => `symbol-neighborhood frontier warning: ${warning}`));
+    lines.push(
+      ...frontier.warnings.map((warning) => `symbol-neighborhood frontier warning: ${warning}`),
+    );
   }
   return lines;
 }
@@ -441,7 +446,10 @@ async function runSymbolNeighborhoodFrontierSearch(
   const fallback = (reason: string, details: string[]): SymbolNeighborhoodFrontierSearchResult => ({
     bm25Results: seedRows,
     semanticResults: [],
-    warnings: [`symbol-neighborhood skipped: ${reason}`, ...details.filter((line) => line.length > 0)],
+    warnings: [
+      `symbol-neighborhood skipped: ${reason}`,
+      ...details.filter((line) => line.length > 0),
+    ],
     fallbackToDefaultVector: true,
   });
 
@@ -481,13 +489,16 @@ async function runSymbolNeighborhoodFrontierSearch(
     return fallback('no seed embeddings available', []);
   }
 
-  const loadedEdges = await loadAnnNeighborEdges((cypher, params) => {
-    return executeParameterized(repo.id, cypher, params ?? {});
-  }, {
-    sourceIds: frontierSeeds.map((seed) => seed.nodeId),
-    includeStale: false,
-    maxOutboundDegree: parseIntEnvVar('ONTOINDEX_ANN_MAX_OUTBOUND_DEGREE', 8),
-  });
+  const loadedEdges = await loadAnnNeighborEdges(
+    (cypher, params) => {
+      return executeParameterized(repo.id, cypher, params ?? {});
+    },
+    {
+      sourceIds: frontierSeeds.map((seed) => seed.nodeId),
+      includeStale: false,
+      maxOutboundDegree: parseIntEnvVar('ONTOINDEX_ANN_MAX_OUTBOUND_DEGREE', 8),
+    },
+  );
   if (loadedEdges.length === 0) {
     return fallback('no ANN edges found for retrieved seeds', []);
   }
@@ -527,7 +538,10 @@ async function runSymbolNeighborhoodFrontierSearch(
       bm25Results: seedRows,
       semanticResults: [],
       diagnostics: frontier,
-      warnings: [`symbol-neighborhood frontier produced no merged rows`, ...summarizeFrontierDiagnostics(frontier)],
+      warnings: [
+        `symbol-neighborhood frontier produced no merged rows`,
+        ...summarizeFrontierDiagnostics(frontier),
+      ],
       fallbackToDefaultVector: true,
     };
   }

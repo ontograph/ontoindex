@@ -660,14 +660,14 @@ export const streamGraphNdjson = async (
         executeStreamQuery<GraphNodeRow>(
           getExportableGraphNodeQuery(table, includeContent),
           async (row) => {
-          await writeNdjsonRecord(
-            res,
-            {
-              type: 'node',
-              data: mapExportableGraphNodeRow(table, row, includeContent),
-            },
-            signal,
-          );
+            await writeNdjsonRecord(
+              res,
+              {
+                type: 'node',
+                data: mapExportableGraphNodeRow(table, row, includeContent),
+              },
+              signal,
+            );
           },
         ),
       );
@@ -684,14 +684,14 @@ export const streamGraphNdjson = async (
       executeStreamQuery<GraphRelationshipRow>(
         getExportableGraphRelationshipQuery(summary),
         async (row) => {
-        await writeNdjsonRecord(
-          res,
-          {
-            type: 'relationship',
-            data: mapExportableGraphRelationshipRow(row),
-          },
-          signal,
-        );
+          await writeNdjsonRecord(
+            res,
+            {
+              type: 'relationship',
+              data: mapExportableGraphRelationshipRow(row),
+            },
+            signal,
+          );
         },
       ),
     );

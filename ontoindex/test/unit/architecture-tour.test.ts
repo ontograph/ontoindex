@@ -8,7 +8,11 @@ import {
 } from '../../src/core/runtime/architecture-tour.js';
 import { evaluateSemanticContracts } from '../../src/core/runtime/semantic-contracts.js';
 
-const subject = (key: string, label: string, kind: ArchitectureTourEvidenceKind): ArchitectureTourSubject => ({
+const subject = (
+  key: string,
+  label: string,
+  kind: ArchitectureTourEvidenceKind,
+): ArchitectureTourSubject => ({
   key,
   label,
   kind,
@@ -25,19 +29,23 @@ const evidence = (
   title: string,
   summary: string,
   citationValues: Record<string, string>[] = [],
-) => ({
-  kind,
-  subject: subjectData,
-  title,
-  summary,
-  citations: citationValues.length > 0 ? citationValues.map((value) => citation(value)) : [citation()],
-} as ArchitectureTourEvidence);
+) =>
+  ({
+    kind,
+    subject: subjectData,
+    title,
+    summary,
+    citations:
+      citationValues.length > 0 ? citationValues.map((value) => citation(value)) : [citation()],
+  }) as ArchitectureTourEvidence;
 
 describe('architecture tour builder', () => {
   it('creates a diagnostic when an evidence item has no usable citations', () => {
     const result = buildArchitectureTour({
       evidence: [
-        evidence('symbol', subject('alpha', 'Alpha symbol', 'symbol'), 'Alpha', 'Symbol summary', [{}]),
+        evidence('symbol', subject('alpha', 'Alpha symbol', 'symbol'), 'Alpha', 'Symbol summary', [
+          {},
+        ]),
         {
           kind: 'file',
           subject: subject('file', 'Orphan file', 'file'),
@@ -104,15 +112,21 @@ describe('architecture tour builder', () => {
       'step:file-core',
       'step:diff-core',
     ]);
-    expect(canonical[1]?.steps.map((step) => step.id)).toEqual(canonical[0]?.steps.map((step) => step.id));
+    expect(canonical[1]?.steps.map((step) => step.id)).toEqual(
+      canonical[0]?.steps.map((step) => step.id),
+    );
   });
 
   it('marks docs-sidecar evidence as advisory when unlinked', () => {
     const result = buildArchitectureTour({
       evidence: [
-        evidence('docs-sidecar', subject('docs-core', 'Core ADR', 'docs-sidecar'), 'Docs note', 'Docs summary', [
-          { filePath: '/docs/adr-0032.md' },
-        ]),
+        evidence(
+          'docs-sidecar',
+          subject('docs-core', 'Core ADR', 'docs-sidecar'),
+          'Docs note',
+          'Docs summary',
+          [{ filePath: '/docs/adr-0032.md' }],
+        ),
       ],
     });
 
@@ -185,9 +199,13 @@ describe('architecture tour builder', () => {
               { processId: 'auth-process', filePath: '/src/auth.ts' },
             ],
           ),
-          evidence('graph-node', subject('route', 'Routing layer', 'graph-node'), 'Routing layer', 'Routes are clustered by boundary.', [
-            { nodeId: 'route-node', filePath: '/src/router.ts' },
-          ]),
+          evidence(
+            'graph-node',
+            subject('route', 'Routing layer', 'graph-node'),
+            'Routing layer',
+            'Routes are clustered by boundary.',
+            [{ nodeId: 'route-node', filePath: '/src/router.ts' }],
+          ),
         ],
         maxSteps: 2,
       }),
@@ -206,12 +224,20 @@ describe('architecture tour builder', () => {
         maxSteps: 1,
         maxCitationsPerStep: 1,
         evidence: [
-          evidence('docs-sidecar', subject('docs', 'Core ADR', 'docs-sidecar'), 'Core ADR', 'Core overview context.', [
-            { filePath: '/docs/adr/0032.md' },
-          ]),
-          evidence('file', subject('file-a', 'Index file', 'file'), 'Index file', 'File-level summary.', [
-            { filePath: '/src/index.ts' },
-          ]),
+          evidence(
+            'docs-sidecar',
+            subject('docs', 'Core ADR', 'docs-sidecar'),
+            'Core ADR',
+            'Core overview context.',
+            [{ filePath: '/docs/adr/0032.md' }],
+          ),
+          evidence(
+            'file',
+            subject('file-a', 'Index file', 'file'),
+            'Index file',
+            'File-level summary.',
+            [{ filePath: '/src/index.ts' }],
+          ),
           evidence('file', subject('file-b', 'Diff file', 'file'), 'Diff file', 'Diff summary.', [
             { filePath: '/src/diff.ts' },
           ]),
@@ -240,9 +266,7 @@ describe('architecture tour builder', () => {
       }),
     );
 
-    const summaryLines = markdown
-      .split('\n')
-      .filter((line) => line.startsWith('- **Summary:**'));
+    const summaryLines = markdown.split('\n').filter((line) => line.startsWith('- **Summary:**'));
 
     expect(summaryLines).toHaveLength(1);
     expect(summaryLines[0]).toContain('(citations: [1]');
@@ -254,17 +278,31 @@ describe('architecture tour builder', () => {
       maxSteps: 1,
       maxCitationsPerStep: 1,
       evidence: [
-        evidence('file', subject('file', 'Indexed file', 'file'), 'Indexed file', 'Indexed file summary.', [
-          { filePath: '/src/index.ts' },
-          { filePath: '/src/index-extra.ts' },
-          { filePath: '/src/index-more.ts' },
-        ]),
-        evidence('symbol', subject('sym', 'Symbol edge', 'symbol'), 'Symbol edge', 'Symbol edge summary.', [
-          { filePath: '/src/symbol.ts', symbolName: 'SymbolEdge' },
-        ]),
-        evidence('docs-sidecar', subject('docs', 'Core ADR', 'docs-sidecar'), 'Core ADR', 'Docs-only context.', [
-          { filePath: '/docs/adr-0032.md' },
-        ]),
+        evidence(
+          'file',
+          subject('file', 'Indexed file', 'file'),
+          'Indexed file',
+          'Indexed file summary.',
+          [
+            { filePath: '/src/index.ts' },
+            { filePath: '/src/index-extra.ts' },
+            { filePath: '/src/index-more.ts' },
+          ],
+        ),
+        evidence(
+          'symbol',
+          subject('sym', 'Symbol edge', 'symbol'),
+          'Symbol edge',
+          'Symbol edge summary.',
+          [{ filePath: '/src/symbol.ts', symbolName: 'SymbolEdge' }],
+        ),
+        evidence(
+          'docs-sidecar',
+          subject('docs', 'Core ADR', 'docs-sidecar'),
+          'Core ADR',
+          'Docs-only context.',
+          [{ filePath: '/docs/adr-0032.md' }],
+        ),
       ],
     });
 
@@ -281,7 +319,10 @@ describe('architecture tour builder', () => {
 
     const unexpectedKinds = tour.diagnostics
       .map((diagnostic) => diagnostic.kind)
-      .filter((kind) => !['ambiguous', 'degraded', 'extracted', 'inferred', 'stale', 'truncated'].includes(kind));
+      .filter(
+        (kind) =>
+          !['ambiguous', 'degraded', 'extracted', 'inferred', 'stale', 'truncated'].includes(kind),
+      );
 
     expect(unexpectedKinds).toHaveLength(0);
   });

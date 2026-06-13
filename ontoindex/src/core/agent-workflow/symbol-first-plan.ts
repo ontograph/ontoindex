@@ -6,18 +6,9 @@ export type SymbolFirstWorkflowIntent =
   | 'review'
   | 'audit';
 
-export type SymbolFirstWorkflowVerdict =
-  | 'SAFE'
-  | 'CAUTION'
-  | 'DANGEROUS'
-  | 'BLOCKED';
+export type SymbolFirstWorkflowVerdict = 'SAFE' | 'CAUTION' | 'DANGEROUS' | 'BLOCKED';
 
-export type SymbolFirstWorkflowCoverageLikelihood =
-  | 'UNKNOWN'
-  | 'HIGH'
-  | 'MEDIUM'
-  | 'LOW'
-  | 'NONE';
+export type SymbolFirstWorkflowCoverageLikelihood = 'UNKNOWN' | 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE';
 
 export interface SymbolFirstWorkflowTarget {
   kind: string;
@@ -137,13 +128,7 @@ const SUPPORTED_INTENTS: readonly SymbolFirstWorkflowIntent[] = [
 
 const INTENT_SET = new Set<string>(SUPPORTED_INTENTS);
 
-const COVERAGE_LIKELIHOOD = new Set<string>([
-  'UNKNOWN',
-  'HIGH',
-  'MEDIUM',
-  'LOW',
-  'NONE',
-]);
+const COVERAGE_LIKELIHOOD = new Set<string>(['UNKNOWN', 'HIGH', 'MEDIUM', 'LOW', 'NONE']);
 
 const ACTION_NAME_DEFAULTS = {
   manualPatchWithGuard: 'manual_patch_with_guard',
@@ -167,7 +152,9 @@ const HIGH_DOWNSTREAM_COUNT = 12;
 const MIN_RISK_FOR_CAUTION = 3;
 const MIN_RISK_FOR_DANGER = 7;
 
-export function buildSymbolFirstWorkflowPlan(input: SymbolFirstWorkflowPlanInput): SymbolFirstWorkflowPlan {
+export function buildSymbolFirstWorkflowPlan(
+  input: SymbolFirstWorkflowPlanInput,
+): SymbolFirstWorkflowPlan {
   const target = normalizeTarget(input.target);
   const intent = normalizeIntent(input.intent);
   const evidence = normalizeEvidence(input.evidence ?? {});
@@ -478,7 +465,10 @@ function decideVerdict(params: {
   }
 
   if (params.intent === 'modify' || params.intent === 'rename' || params.intent === 'delete') {
-    if (params.totalRisk >= MIN_RISK_FOR_DANGER || (params.hasHighRadius && params.isCoverageWeak)) {
+    if (
+      params.totalRisk >= MIN_RISK_FOR_DANGER ||
+      (params.hasHighRadius && params.isCoverageWeak)
+    ) {
       return 'DANGEROUS';
     }
     if (params.totalRisk >= MIN_RISK_FOR_CAUTION || !params.evidence.lspReady) {
@@ -504,7 +494,11 @@ function decideVerdict(params: {
 function collectFreshnessBlockers(
   evidence: SymbolFirstWorkflowEvidenceNormalized,
   advisoryOnly: boolean,
-): { blockers: SymbolFirstWorkflowBlocker[]; contributions: SymbolFirstWorkflowScoreContribution[]; isFreshnessBlocking: boolean } {
+): {
+  blockers: SymbolFirstWorkflowBlocker[];
+  contributions: SymbolFirstWorkflowScoreContribution[];
+  isFreshnessBlocking: boolean;
+} {
   const blockers: SymbolFirstWorkflowBlocker[] = [];
   const contributions: SymbolFirstWorkflowScoreContribution[] = [];
 
@@ -674,11 +668,18 @@ interface RequiredSymbolFirstWorkflowActionNames {
   testGapReview: string;
 }
 
-function normalizeEvidence(rawEvidence: SymbolFirstWorkflowEvidence): SymbolFirstWorkflowEvidenceNormalized {
-  const normalizedEvidenceLikelihood = normalizeCoverageLikelihood(rawEvidence.testCoverageLikelihood);
+function normalizeEvidence(
+  rawEvidence: SymbolFirstWorkflowEvidence,
+): SymbolFirstWorkflowEvidenceNormalized {
+  const normalizedEvidenceLikelihood = normalizeCoverageLikelihood(
+    rawEvidence.testCoverageLikelihood,
+  );
   return {
     upstreamCallerCount: normalizeCount(rawEvidence.upstreamCallerCount, 'upstreamCallerCount'),
-    downstreamDependencyCount: normalizeCount(rawEvidence.downstreamDependencyCount, 'downstreamDependencyCount'),
+    downstreamDependencyCount: normalizeCount(
+      rawEvidence.downstreamDependencyCount,
+      'downstreamDependencyCount',
+    ),
     processCount: normalizeCount(rawEvidence.processCount, 'processCount'),
     coChangeCount: normalizeCount(rawEvidence.coChangeCount, 'coChangeCount'),
     exported: rawEvidence.exported === true,
@@ -689,7 +690,9 @@ function normalizeEvidence(rawEvidence: SymbolFirstWorkflowEvidence): SymbolFirs
   };
 }
 
-function normalizeCoverageLikelihood(rawCoverage: string | undefined): SymbolFirstWorkflowCoverageLikelihood {
+function normalizeCoverageLikelihood(
+  rawCoverage: string | undefined,
+): SymbolFirstWorkflowCoverageLikelihood {
   const normalized = typeof rawCoverage === 'string' ? rawCoverage.trim().toUpperCase() : 'UNKNOWN';
   if (COVERAGE_LIKELIHOOD.has(normalized)) {
     return normalized as SymbolFirstWorkflowCoverageLikelihood;

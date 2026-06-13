@@ -22,11 +22,7 @@ describe('resolveRepoFromHandles', () => {
       ['codex', makeRepo('codex', 'codex', '/opt/demodb/_workfolder/ontocode')],
     ]);
 
-    const result = resolveRepoFromHandles(
-      repos,
-      undefined,
-      '/opt/demodb/_workfolder/ontocode',
-    );
+    const result = resolveRepoFromHandles(repos, undefined, '/opt/demodb/_workfolder/ontocode');
 
     expect(result?.id).toBe('codex');
   });

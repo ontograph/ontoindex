@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import type { RetrievalReplayExecutor, RetrievalReplayExecutorRun } from '../../src/core/search/replay/replay-runner.js';
+import type {
+  RetrievalReplayExecutor,
+  RetrievalReplayExecutorRun,
+} from '../../src/core/search/replay/replay-runner.js';
 import { replayRetrievalCases } from '../../src/core/search/replay/replay-runner.js';
-import { RETRIEVAL_REPLAY_CASE_SCHEMA_VERSION, type RetrievalReplayCaseV1 } from '../../src/core/search/replay/replay-case.js';
+import {
+  RETRIEVAL_REPLAY_CASE_SCHEMA_VERSION,
+  type RetrievalReplayCaseV1,
+} from '../../src/core/search/replay/replay-case.js';
 
 function makeCase(overrides: Partial<RetrievalReplayCaseV1> = {}): RetrievalReplayCaseV1 {
   return {
@@ -21,7 +27,11 @@ function makeCase(overrides: Partial<RetrievalReplayCaseV1> = {}): RetrievalRepl
   } as RetrievalReplayCaseV1;
 }
 
-function makeExecutor(run: Omit<RetrievalReplayExecutorRun, 'identities'> & { identities?: RetrievalReplayExecutorRun['identities'] }): RetrievalReplayExecutor {
+function makeExecutor(
+  run: Omit<RetrievalReplayExecutorRun, 'identities'> & {
+    identities?: RetrievalReplayExecutorRun['identities'];
+  },
+): RetrievalReplayExecutor {
   return {
     run: async () => ({
       identities: [],

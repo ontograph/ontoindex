@@ -163,7 +163,9 @@ export async function buildExportableGraph(
   }
 
   const relationships: GraphRelationship[] = [];
-  const relRows = await runQuery<GraphRelationshipRow>(getExportableGraphRelationshipQuery(summary));
+  const relRows = await runQuery<GraphRelationshipRow>(
+    getExportableGraphRelationshipQuery(summary),
+  );
   for (const row of relRows) {
     relationships.push(mapExportableGraphRelationshipRow(row));
   }

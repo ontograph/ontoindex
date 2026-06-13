@@ -17,8 +17,7 @@ const _require = createRequire(import.meta.url);
 
 type TreeSitterGrammar = Parameters<typeof Parser.prototype.setLanguage>[0];
 
-const asTreeSitterGrammar = (value: unknown): TreeSitterGrammar =>
-  value as TreeSitterGrammar;
+const asTreeSitterGrammar = (value: unknown): TreeSitterGrammar => value as TreeSitterGrammar;
 
 const loadOptionalGrammar = (packageName: string): TreeSitterGrammar | null => {
   try {

@@ -108,7 +108,9 @@ const DEFAULT_LIMITS: SubgraphContextLimits = {
   maxTextLength: 4096,
 };
 
-export function buildGraphSchemaManifest(input: GraphSchemaManifestInput = {}): GraphSchemaManifest {
+export function buildGraphSchemaManifest(
+  input: GraphSchemaManifestInput = {},
+): GraphSchemaManifest {
   const normalizedNodeLabelsResult = dedupeByIdWithWarnings(
     (input.nodeLabels ?? [])
       .map((nodeLabel) => ({
@@ -187,7 +189,9 @@ export function buildSubgraphContext(input: SubgraphContextInput): SubgraphConte
     dedupedNodes.reduce((sum, node) => sum + node.properties.length, 0) +
     dedupedEdges.reduce((sum, edge) => sum + edge.properties.length, 0);
 
-  const nodeMap = new Map<string, InternalNode>(emittedNodesRaw.map((node) => [node.id, node] as const));
+  const nodeMap = new Map<string, InternalNode>(
+    emittedNodesRaw.map((node) => [node.id, node] as const),
+  );
 
   const warnings: string[] = [...manifest.warnings, ...nodeDedupe.warnings, ...edgeDedupe.warnings];
 
@@ -216,9 +220,7 @@ export function buildSubgraphContext(input: SubgraphContextInput): SubgraphConte
   const emittedNodesForOutput = emittedNodes.map(toContextNodeRecord);
   const emittedEdgesForOutput = emittedEdges.map(toContextEdgeRecord);
 
-  const emittedNodeMap = new Map(
-    emittedNodesForOutput.map((node) => [node.id, node] as const),
-  );
+  const emittedNodeMap = new Map(emittedNodesForOutput.map((node) => [node.id, node] as const));
 
   const renderedShape = manifest.renderedShape;
   const renderedTriples = emittedEdges
@@ -271,9 +273,7 @@ export function buildSubgraphContext(input: SubgraphContextInput): SubgraphConte
   for (const format of requestedFormats) {
     const candidate = rawRendered[format] ?? '';
     const truncated = candidate.length > limits.maxTextLength;
-    const text = truncated
-      ? candidate.slice(0, Math.max(0, limits.maxTextLength))
-      : candidate;
+    const text = truncated ? candidate.slice(0, Math.max(0, limits.maxTextLength)) : candidate;
 
     rendered[format] = text;
     emittedTextLength += text.length;
@@ -320,18 +320,16 @@ function resolveLimits(input?: Partial<SubgraphContextLimits>): SubgraphContextL
   };
 }
 
-function resolveFormats(formats?: readonly SubgraphContextFormat[]): readonly SubgraphContextFormat[] {
+function resolveFormats(
+  formats?: readonly SubgraphContextFormat[],
+): readonly SubgraphContextFormat[] {
   if (!formats || formats.length === 0) {
     return ['shape', 'triples', 'compact-json'];
   }
 
   const unique: SubgraphContextFormat[] = [];
   for (const format of formats) {
-    if (
-      format !== 'shape' &&
-      format !== 'triples' &&
-      format !== 'compact-json'
-    ) {
+    if (format !== 'shape' && format !== 'triples' && format !== 'compact-json') {
       continue;
     }
     if (!unique.includes(format)) unique.push(format);
@@ -432,7 +430,9 @@ function normalizePropertiesFromRecord(properties?: unknown): readonly PropertyP
   if (!properties || typeof properties !== 'object') return [];
 
   const source = properties as Record<string, unknown>;
-  const keys = Object.keys(source).filter((name) => name.trim().length > 0).sort(compareLexical);
+  const keys = Object.keys(source)
+    .filter((name) => name.trim().length > 0)
+    .sort(compareLexical);
 
   const propertyPairs: PropertyPair[] = [];
   for (const key of keys) {
@@ -443,10 +443,12 @@ function normalizePropertiesFromRecord(properties?: unknown): readonly PropertyP
 
 function normalizePropertyValue(value: unknown): GraphPropertyValue {
   if (value === null) return null;
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
+    return value;
   if (value === undefined) return null;
   if (typeof value === 'symbol' || typeof value === 'function') return String(value);
-  if (typeof value === 'bigint') return Number.isSafeInteger(Number(value)) ? Number(value) : String(value);
+  if (typeof value === 'bigint')
+    return Number.isSafeInteger(Number(value)) ? Number(value) : String(value);
   try {
     const rendered = JSON.stringify(value);
     return rendered === undefined ? String(value) : rendered;
@@ -541,12 +543,7 @@ function makeCompactJsonPayload(input: {
 }) {
   return {
     v: 1,
-    n: input.nodes.map((node) => [
-      node.id,
-      node.label,
-      node.properties,
-      node.sourceId ?? null,
-    ]),
+    n: input.nodes.map((node) => [node.id, node.label, node.properties, node.sourceId ?? null]),
     e: input.edges.map((edge) => [
       edge.id,
       edge.type,

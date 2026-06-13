@@ -1,4 +1,7 @@
-import type { EvidenceDiagnosticAuthority, EvidenceDiagnosticRecord } from './evidence-diagnostics.js';
+import type {
+  EvidenceDiagnosticAuthority,
+  EvidenceDiagnosticRecord,
+} from './evidence-diagnostics.js';
 import {
   renderEvidenceDiagnosticGroup,
   renderEvidenceDiagnosticSummaryLine,
@@ -126,7 +129,9 @@ export function buildArchitectureTour(input: ArchitectureTourInput): Architectur
 
   const groups = [...groupedEvidence.values()].map((group) => ({
     ...group,
-    kindPriority: Math.min(...group.items.map((item) => EVIDENCE_KIND_PRIORITY[item.evidence.kind])),
+    kindPriority: Math.min(
+      ...group.items.map((item) => EVIDENCE_KIND_PRIORITY[item.evidence.kind]),
+    ),
   }));
 
   groups.sort((a, b) => {
@@ -148,7 +153,9 @@ export function buildArchitectureTour(input: ArchitectureTourInput): Architectur
   let truncated = false;
 
   for (const group of emittedGroups) {
-    const orderedItems = [...group.items].sort((a, b) => a.evidence.title.localeCompare(b.evidence.title));
+    const orderedItems = [...group.items].sort((a, b) =>
+      a.evidence.title.localeCompare(b.evidence.title),
+    );
     const hasNonDocsEvidence = orderedItems.some((item) => item.evidence.kind !== 'docs-sidecar');
     const groupDiagnostics: EvidenceDiagnosticRecord[] = [];
     if (!hasNonDocsEvidence) {
@@ -270,7 +277,9 @@ export function formatArchitectureTourMarkdown(tour: ArchitectureTour): string {
 
       if (step.diagnostics.length > 0) {
         lines.push('');
-        lines.push(...renderEvidenceDiagnosticGroup(`Step Diagnostics: ${step.title}`, step.diagnostics));
+        lines.push(
+          ...renderEvidenceDiagnosticGroup(`Step Diagnostics: ${step.title}`, step.diagnostics),
+        );
       }
 
       lines.push('');
@@ -295,13 +304,11 @@ function indexEvidence(
   diagnostics: EvidenceDiagnosticRecord[],
 ): { evidence: ArchitectureTourEvidence; citations: ArchitectureTourCitation[] } | undefined {
   const normalizedCitations = dedupeCitations(
-    evidence.citations
-      .filter(isUsableCitation)
-      .map((citation) => ({
-        ...citation,
-        advisory: citation.advisory ?? evidence.advisory,
-        authority: citation.authority ?? evidence.authority ?? 'authoritative',
-      })),
+    evidence.citations.filter(isUsableCitation).map((citation) => ({
+      ...citation,
+      advisory: citation.advisory ?? evidence.advisory,
+      authority: citation.authority ?? evidence.authority ?? 'authoritative',
+    })),
   );
 
   if (normalizedCitations.length === 0) {
@@ -411,10 +418,14 @@ function buildStepSummary(items: IndexedEvidence[]): string {
   if (uniqueSummaries.length === 0) {
     return 'No summary provided.';
   }
-  return uniqueSummaries.length === 1 ? uniqueSummaries[0]! : `${uniqueSummaries[0]} (+${uniqueSummaries.length - 1} more)`;
+  return uniqueSummaries.length === 1
+    ? uniqueSummaries[0]!
+    : `${uniqueSummaries[0]} (+${uniqueSummaries.length - 1} more)`;
 }
 
-function lowestPriorityKind(kinds: readonly ArchitectureTourEvidenceKind[]): ArchitectureTourEvidenceKind {
+function lowestPriorityKind(
+  kinds: readonly ArchitectureTourEvidenceKind[],
+): ArchitectureTourEvidenceKind {
   let best: ArchitectureTourEvidenceKind = kinds[0] ?? 'diagnostic';
   let bestRank = EVIDENCE_KIND_PRIORITY[best];
   for (const kind of kinds) {

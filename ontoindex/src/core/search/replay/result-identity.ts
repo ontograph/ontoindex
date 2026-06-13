@@ -57,11 +57,7 @@ export function toReplayIdentityKey(identity: RetrievalReplayIdentity): string {
   }
 
   if (identity.kind === 'route') {
-    return [
-      'route',
-      ...base,
-      coalesceStringForKey(identity.reason),
-    ].join('|');
+    return ['route', ...base, coalesceStringForKey(identity.reason)].join('|');
   }
 
   if (identity.kind === 'unknown') {
@@ -243,7 +239,10 @@ function parseHeadingPath(
   return out;
 }
 
-function getStringField(record: Record<string, unknown>, path: string): RetrievalReplayIdentityKind | undefined {
+function getStringField(
+  record: Record<string, unknown>,
+  path: string,
+): RetrievalReplayIdentityKind | undefined {
   const raw = record[path.split('.').pop() as string];
   if (typeof raw !== 'string') return undefined;
   const value = raw.trim();

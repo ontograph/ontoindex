@@ -22,7 +22,12 @@ export interface MentionResolutionRequest {
   maxResults?: number;
 }
 
-export type MentionResolutionStatus = 'resolved' | 'ambiguous' | 'unresolved' | 'unsupported' | 'invalid';
+export type MentionResolutionStatus =
+  | 'resolved'
+  | 'ambiguous'
+  | 'unresolved'
+  | 'unsupported'
+  | 'invalid';
 
 export interface MentionResolutionMatch {
   mention: string;
@@ -285,7 +290,10 @@ function compareRankedCandidates(left: RankedCandidate, right: RankedCandidate):
   return 0;
 }
 
-function normalizeCandidate(candidate: MentionResolutionCandidate, index: number): NormalizedCandidate {
+function normalizeCandidate(
+  candidate: MentionResolutionCandidate,
+  index: number,
+): NormalizedCandidate {
   return {
     source: {
       kind: candidate.kind,
@@ -323,10 +331,7 @@ function parseMention(mention: string): { kind: string; query: string } | null {
 
 function normalizeKind(value: string): string {
   if (!value) return '';
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/_/g, '-');
+  return value.trim().toLowerCase().replace(/_/g, '-');
 }
 
 function isMentionResolutionKind(value: string): value is MentionResolutionKind {

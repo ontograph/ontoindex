@@ -125,7 +125,9 @@ export function buildVirtualNodeProjection(input: unknown): VirtualNodeProjectio
   const sourceName = normalizeText(record.sourceName);
   const graphLabel = normalizeText(record.graphLabel);
   const primaryKey = normalizeText(record.primaryKey);
-  const fieldMappings = asArray(record.fieldMappings).map((entry) => buildVirtualFieldMapping(entry));
+  const fieldMappings = asArray(record.fieldMappings).map((entry) =>
+    buildVirtualFieldMapping(entry),
+  );
 
   return {
     projectionKind: 'node',
@@ -159,7 +161,9 @@ export function buildVirtualRelationshipProjection(input: unknown): VirtualRelat
   };
 }
 
-export function validateVirtualSourceMapping(input: VirtualSourceValidationInput): VirtualSourceValidationReport {
+export function validateVirtualSourceMapping(
+  input: VirtualSourceValidationInput,
+): VirtualSourceValidationReport {
   const sourceInputs = asArray(input?.sourceDefinitions ?? input?.sources);
   const nodeInputs = asArray(input?.virtualNodeProjections);
   const relationshipInputs = asArray(input?.virtualRelationshipProjections);
@@ -167,7 +171,9 @@ export function validateVirtualSourceMapping(input: VirtualSourceValidationInput
 
   const diagnostics: VirtualSourceValidationDiagnostic[] = [];
 
-  const parsedSources = sourceInputs.map((sourceInput) => buildVirtualSourceDefinition(sourceInput));
+  const parsedSources = sourceInputs.map((sourceInput) =>
+    buildVirtualSourceDefinition(sourceInput),
+  );
   const sourceNames = new Set<string>();
   const sourceKindCounts = new Map<string, number>();
 
@@ -214,7 +220,9 @@ export function validateVirtualSourceMapping(input: VirtualSourceValidationInput
 
   for (const graphInput of graphInputs) {
     const graphRecord = asRecord(graphInput);
-    const rawKind = normalizeText(graphRecord.projectionKind ?? graphRecord.projection_kind ?? graphRecord.kind);
+    const rawKind = normalizeText(
+      graphRecord.projectionKind ?? graphRecord.projection_kind ?? graphRecord.kind,
+    );
     if (rawKind === 'node') {
       const node = buildVirtualNodeProjection(graphRecord);
       parsedNodes.push(node);
@@ -278,9 +286,7 @@ export function validateVirtualSourceMapping(input: VirtualSourceValidationInput
 
   validateRelationshipEndpoints(parsedRelationships, parsedNodes, diagnostics);
 
-  const stableNodes = [...parsedNodes].sort((left, right) =>
-    compareNodeProjection(left, right),
-  );
+  const stableNodes = [...parsedNodes].sort((left, right) => compareNodeProjection(left, right));
   const stableRelationships = [...parsedRelationships].sort((left, right) =>
     compareRelationshipProjection(left, right),
   );
@@ -297,7 +303,9 @@ export function validateVirtualSourceMapping(input: VirtualSourceValidationInput
 
   const bySourceKind = sortedCountRecord(sourceKindCounts);
   const byNodeLabel = sortedCountFromArray(stableNodes.map((item) => item.graphLabel));
-  const byRelationshipType = sortedCountFromArray(stableRelationships.map((item) => item.relationshipType));
+  const byRelationshipType = sortedCountFromArray(
+    stableRelationships.map((item) => item.relationshipType),
+  );
 
   return {
     mapping: {
@@ -580,7 +588,10 @@ function sortedCountRecord(values: ReadonlyMap<string, number>): Record<string, 
   return normalized;
 }
 
-function compareDiagnostic(left: VirtualSourceValidationDiagnostic, right: VirtualSourceValidationDiagnostic): number {
+function compareDiagnostic(
+  left: VirtualSourceValidationDiagnostic,
+  right: VirtualSourceValidationDiagnostic,
+): number {
   const bySeverity = SEVERITY_RANK[left.severity] - SEVERITY_RANK[right.severity];
   if (bySeverity !== 0) {
     return bySeverity;
@@ -632,7 +643,9 @@ function normalizeSourceKind(raw: string): string {
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function asArray(value: readonly unknown[] | unknown): readonly unknown[] {

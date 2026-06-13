@@ -199,12 +199,14 @@ export function buildGraphHtmlPayload(
     });
 
   const payloadRelationships = graph.relationships
-    .map((relationship): GraphHtmlPayloadRelationship => ({
-      id: relationship.id,
-      sourceId: relationship.sourceId,
-      targetId: relationship.targetId,
-      type: relationship.type,
-    }))
+    .map(
+      (relationship): GraphHtmlPayloadRelationship => ({
+        id: relationship.id,
+        sourceId: relationship.sourceId,
+        targetId: relationship.targetId,
+        type: relationship.type,
+      }),
+    )
     .sort((a, b) => {
       const byType = a.type.localeCompare(b.type);
       if (byType !== 0) return byType;

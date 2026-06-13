@@ -147,18 +147,21 @@ export function createAnytimeResultEnvelope(
   const envelopeDiagnostics: AnytimeResultDiagnostic[] = [];
 
   for (let index = 0; index < sourceSlices.length; index += 1) {
-    const normalized = normalizeSlice(sourceSlices[index], index, seenSliceIds, envelopeDiagnostics);
+    const normalized = normalizeSlice(
+      sourceSlices[index],
+      index,
+      seenSliceIds,
+      envelopeDiagnostics,
+    );
     allSlices.push(normalized);
   }
 
   const maxSlices = asNonNegativeInteger(input.maxSlices);
   const maxDiagnostics = asNonNegativeInteger(input.maxDiagnostics);
 
-  const { slices, omittedSlices } = applySliceLimit(
-    allSlices,
-    maxSlices,
-  );
-  const maxedSliceDiagnostics = omittedSlices > 0 ? createSliceLimitDiagnostic(maxSlices!, allSlices.length) : [];
+  const { slices, omittedSlices } = applySliceLimit(allSlices, maxSlices);
+  const maxedSliceDiagnostics =
+    omittedSlices > 0 ? createSliceLimitDiagnostic(maxSlices!, allSlices.length) : [];
   const diagnosticsFromSlices = slices.flatMap((slice) => slice.diagnostics);
   const diagnosticsFromAll = [
     ...envelopeDiagnostics,
@@ -173,7 +176,7 @@ export function createAnytimeResultEnvelope(
   );
 
   const isPartial =
-    (input.budgetSnapshot?.truncated === true) ||
+    input.budgetSnapshot?.truncated === true ||
     slices.some((slice) => slice.completeness !== 'complete') ||
     slices.some((slice) => slice.exhaustedResources.length > 0);
 
@@ -202,7 +205,13 @@ function normalizeSlice(
 
   const id = asTrimmedString(record.id);
   const lane = normalizeLane(record.lane, envelopeDiagnostics, id, index);
-  const completeness = normalizeCompleteness(record.completeness, envelopeDiagnostics, lane, id, index);
+  const completeness = normalizeCompleteness(
+    record.completeness,
+    envelopeDiagnostics,
+    lane,
+    id,
+    index,
+  );
   const normalizedResources = normalizeExhaustedResources(
     record.exhaustedResources,
     envelopeDiagnostics,
@@ -226,11 +235,7 @@ function normalizeSlice(
     }
   }
 
-  const sliceDiagnostics = normalizeSliceDiagnostics(
-    record.diagnostics,
-    lane,
-    id,
-  );
+  const sliceDiagnostics = normalizeSliceDiagnostics(record.diagnostics, lane, id);
 
   return {
     id: id.length > 0 ? id : undefined,
@@ -392,7 +397,10 @@ function applySliceLimit(
   };
 }
 
-function createSliceLimitDiagnostic(maxSlices: number, totalSlices: number): AnytimeResultDiagnostic[] {
+function createSliceLimitDiagnostic(
+  maxSlices: number,
+  totalSlices: number,
+): AnytimeResultDiagnostic[] {
   if (maxSlices <= 0) {
     return [
       {
@@ -441,11 +449,14 @@ function applyDiagnosticLimit(
   const emitBudget = maxDiagnostics - 1;
   const omittedDiagnostics = diagnostics.length - emitBudget;
   return {
-    diagnostics: [...diagnostics.slice(0, emitBudget), {
-      code: 'max-diagnostics-truncated',
-      message: `diagnostics capped at ${maxDiagnostics}; ${omittedDiagnostics} omitted`,
-      severity: 'warning',
-    }],
+    diagnostics: [
+      ...diagnostics.slice(0, emitBudget),
+      {
+        code: 'max-diagnostics-truncated',
+        message: `diagnostics capped at ${maxDiagnostics}; ${omittedDiagnostics} omitted`,
+        severity: 'warning',
+      },
+    ],
     omittedDiagnostics,
   };
 }
@@ -461,7 +472,10 @@ function buildSummary(
 
   for (const slice of slices) {
     laneCounts.set(slice.lane, (laneCounts.get(slice.lane) ?? 0) + 1);
-    completenessCounts.set(slice.completeness, (completenessCounts.get(slice.completeness) ?? 0) + 1);
+    completenessCounts.set(
+      slice.completeness,
+      (completenessCounts.get(slice.completeness) ?? 0) + 1,
+    );
     for (const resource of slice.exhaustedResources) {
       resourceCounts.set(resource, (resourceCounts.get(resource) ?? 0) + 1);
     }

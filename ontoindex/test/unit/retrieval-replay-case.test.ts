@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { parseRetrievalReplayCase, RETRIEVAL_REPLAY_CASE_SCHEMA_VERSION, validateRetrievalReplayCase } from '../../src/core/search/replay/replay-case.js';
+import {
+  parseRetrievalReplayCase,
+  RETRIEVAL_REPLAY_CASE_SCHEMA_VERSION,
+  validateRetrievalReplayCase,
+} from '../../src/core/search/replay/replay-case.js';
 
 const minimalValidCase = {
   schemaVersion: RETRIEVAL_REPLAY_CASE_SCHEMA_VERSION,

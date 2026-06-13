@@ -19,7 +19,10 @@ type QueryParams = Readonly<Record<string, PrimitiveParam | ReadonlyArray<Primit
 type QueryRow = Record<string, unknown> | readonly unknown[];
 
 type ExecuteQuery = (cypher: string, params?: QueryParams) => Promise<QueryRow[]>;
-type ExecuteBatch = (cypher: string, paramsList: readonly AnnNeighborPersistParams[]) => Promise<void>;
+type ExecuteBatch = (
+  cypher: string,
+  paramsList: readonly AnnNeighborPersistParams[],
+) => Promise<void>;
 
 type AnnNeighborPersistParams = {
   readonly sourceId: string;
@@ -89,7 +92,7 @@ const MAX_DEGREE = 32;
 const MIN_DEGREE = 1;
 
 const rowField = <T>(row: QueryRow, field: string, index: number): T | undefined =>
-  (Array.isArray(row) ? (row[index] as T | undefined) : (row[field] as T | undefined));
+  Array.isArray(row) ? (row[index] as T | undefined) : (row[field] as T | undefined);
 
 const normalizeDegree = (value: number | undefined): number => {
   if (!Number.isFinite(value) || value === undefined) return DEFAULT_MAX_DEGREE;
@@ -106,12 +109,22 @@ const toFiniteNumber = (value: unknown, fallback: number): number =>
   typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 
 const toStaleReasonList = (value: unknown): AnnNeighborStaleReason[] =>
-  Array.isArray(value) ? (value.filter((item): item is AnnNeighborStaleReason => typeof item === 'string') as AnnNeighborStaleReason[]) : [];
+  Array.isArray(value)
+    ? (value.filter(
+        (item): item is AnnNeighborStaleReason => typeof item === 'string',
+      ) as AnnNeighborStaleReason[])
+    : [];
 
 const encodeMetadata = (
   edge: Pick<
     AnnNeighborEdge,
-    'model' | 'sourceContentHash' | 'targetContentHash' | 'builtAt' | 'buildId' | 'isStale' | 'staleReasons'
+    | 'model'
+    | 'sourceContentHash'
+    | 'targetContentHash'
+    | 'builtAt'
+    | 'buildId'
+    | 'isStale'
+    | 'staleReasons'
   >,
 ): string =>
   JSON.stringify({
@@ -167,10 +180,16 @@ const computeStaleReasons = (
   const sourceCurrentBuildId = options.currentBuildIdByNodeId?.get(sourceId);
   const targetCurrentBuildId = options.currentBuildIdByNodeId?.get(targetId);
 
-  if (sourceCurrentContentHash !== undefined && metadata.sourceContentHash !== sourceCurrentContentHash) {
+  if (
+    sourceCurrentContentHash !== undefined &&
+    metadata.sourceContentHash !== sourceCurrentContentHash
+  ) {
     reasons.push('source-content-hash-mismatch');
   }
-  if (targetCurrentContentHash !== undefined && metadata.targetContentHash !== targetCurrentContentHash) {
+  if (
+    targetCurrentContentHash !== undefined &&
+    metadata.targetContentHash !== targetCurrentContentHash
+  ) {
     reasons.push('target-content-hash-mismatch');
   }
   if (sourceCurrentBuildId !== undefined && metadata.buildId !== sourceCurrentBuildId) {
@@ -260,10 +279,13 @@ export const loadAnnNeighborEdges = async (
 
   if (sourceIds && sourceIds.length === 0) return [];
 
-  const rows = await executeQuery(buildAnnNeighborLoadQuery(Boolean(sourceIds && sourceIds.length)), {
-    relationType,
-    ...(sourceIds && { sourceIds: [...sourceIds] }),
-  });
+  const rows = await executeQuery(
+    buildAnnNeighborLoadQuery(Boolean(sourceIds && sourceIds.length)),
+    {
+      relationType,
+      ...(sourceIds && { sourceIds: [...sourceIds] }),
+    },
+  );
 
   const groupedEdges = new Map<string, AnnNeighborStoredEdge[]>();
   const sourceFilter = sourceIds && new Set(sourceIds);
@@ -276,7 +298,12 @@ export const loadAnnNeighborEdges = async (
     const metadata = parseMetadata(parsedRow.reason);
     if (!metadata) continue;
 
-    const staleReasons = computeStaleReasons(parsedRow.sourceId, parsedRow.targetId, metadata, options);
+    const staleReasons = computeStaleReasons(
+      parsedRow.sourceId,
+      parsedRow.targetId,
+      metadata,
+      options,
+    );
     const isStale = metadata.isStale || staleReasons.length > 0;
     if (!includeStale && isStale) continue;
 

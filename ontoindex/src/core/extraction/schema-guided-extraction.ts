@@ -73,7 +73,10 @@ export interface ExtractionBundleReport {
   truncation: ExtractionBundleTruncation;
 }
 
-interface InternalExtractionSlotSchema extends Omit<ExtractionSlotSchema, 'required' | 'repeated' | 'sensitive'> {
+interface InternalExtractionSlotSchema extends Omit<
+  ExtractionSlotSchema,
+  'required' | 'repeated' | 'sensitive'
+> {
   required: boolean;
   repeated: boolean;
   sensitive: boolean;
@@ -163,7 +166,9 @@ export function buildSchemaGuidedExtractionReport(
   });
 
   const emittedCandidates =
-    maxCandidates === undefined ? normalizedCandidatesSorted : normalizedCandidatesSorted.slice(0, maxCandidates);
+    maxCandidates === undefined
+      ? normalizedCandidatesSorted
+      : normalizedCandidatesSorted.slice(0, maxCandidates);
   const emittedIssues = maxIssues === undefined ? issuesSorted : issuesSorted.slice(0, maxIssues);
 
   const counts = issues.reduce(
@@ -244,7 +249,10 @@ function normalizeSchema(rawSchema: unknown): InternalExtractionSchema {
         throw new Error(`schema class ${className} slot ${slotName} enum must be an array`);
       }
 
-      const range = requiredString(slotRecord.range, `schema class ${className} slot ${slotName} range`);
+      const range = requiredString(
+        slotRecord.range,
+        `schema class ${className} slot ${slotName} range`,
+      );
       const slot: InternalExtractionSlotSchema = {
         name: slotName,
         range,
@@ -339,8 +347,7 @@ function normalizeCandidate(
   }
 
   const fieldsValue = candidateRecord.fields;
-  const fields =
-    isRecord(fieldsValue) ? { ...fieldsValue } : fieldsValue === undefined ? {} : {};
+  const fields = isRecord(fieldsValue) ? { ...fieldsValue } : fieldsValue === undefined ? {} : {};
   if (fieldsValue !== undefined && !isRecord(fieldsValue)) {
     issues.push({
       candidateId,
@@ -399,15 +406,7 @@ function validateCandidateFields(
     }
 
     const value = fields[slot.name];
-    validateField(
-      value,
-      slot,
-      slotPath,
-      candidateId,
-      issues,
-      redactionPaths,
-      classesByName,
-    );
+    validateField(value, slot, slotPath, candidateId, issues, redactionPaths, classesByName);
   }
 
   const unknownFields = providedFieldNames.filter((field) => !knownFieldNames.has(field)).sort();
@@ -577,7 +576,12 @@ function resolveLimit(value: unknown): number | undefined {
   if (value === undefined) {
     return undefined;
   }
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || !Number.isFinite(value)) {
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    !Number.isFinite(value)
+  ) {
     throw new Error('limits must be finite non-negative integers');
   }
   return value;

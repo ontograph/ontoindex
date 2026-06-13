@@ -111,8 +111,7 @@ const makeHunkId = (
   newStart: number,
   newCount: number,
   index: number,
-): string =>
-  `${filePath}@@${oldStart},${oldCount}+${newStart},${newCount}#${index}`;
+): string => `${filePath}@@${oldStart},${oldCount}+${newStart},${newCount}#${index}`;
 
 const isVirtualDiff = (input: string | VirtualDiffInput): input is VirtualDiffInput => {
   return typeof input !== 'string';
@@ -149,18 +148,10 @@ const normalizeVirtualDiffObject = (input: VirtualDiffInput): VirtualDiff => {
         : files[existingIndex];
 
     for (const hunk of file.hunks) {
-      const oldStart = Number.isFinite(Number(hunk.oldStart))
-        ? Math.trunc(hunk.oldStart)
-        : 0;
-      const oldCount = Number.isFinite(Number(hunk.oldCount))
-        ? Math.trunc(hunk.oldCount)
-        : 1;
-      const newStart = Number.isFinite(Number(hunk.newStart))
-        ? Math.trunc(hunk.newStart)
-        : 0;
-      const newCount = Number.isFinite(Number(hunk.newCount))
-        ? Math.trunc(hunk.newCount)
-        : 1;
+      const oldStart = Number.isFinite(Number(hunk.oldStart)) ? Math.trunc(hunk.oldStart) : 0;
+      const oldCount = Number.isFinite(Number(hunk.oldCount)) ? Math.trunc(hunk.oldCount) : 1;
+      const newStart = Number.isFinite(Number(hunk.newStart)) ? Math.trunc(hunk.newStart) : 0;
+      const newCount = Number.isFinite(Number(hunk.newCount)) ? Math.trunc(hunk.newCount) : 1;
       const hunkIndex = targetFile.hunks.length;
       targetFile.hunks.push({
         index: hunkIndex,
@@ -168,7 +159,8 @@ const normalizeVirtualDiffObject = (input: VirtualDiffInput): VirtualDiff => {
         oldCount,
         newStart,
         newCount,
-        id: hunk.id ?? makeHunkId(normalizedPath, oldStart, oldCount, newStart, newCount, hunkIndex),
+        id:
+          hunk.id ?? makeHunkId(normalizedPath, oldStart, oldCount, newStart, newCount, hunkIndex),
       });
     }
   }
@@ -288,10 +280,12 @@ export const buildVirtualDiffSelectionPlan = (
   }
 
   const decisionByHunkId = new Map<string, VirtualDiffDecisionInput>();
-  const diagnostics: VirtualDiffSelectionDiagnostic[] = virtualDiff.diagnostics.map((diagnostic) => ({
-    ...diagnostic,
-    severity: 'warning',
-  }));
+  const diagnostics: VirtualDiffSelectionDiagnostic[] = virtualDiff.diagnostics.map(
+    (diagnostic) => ({
+      ...diagnostic,
+      severity: 'warning',
+    }),
+  );
 
   for (const decision of decisions) {
     if (!hunkById.has(decision.hunkId)) {

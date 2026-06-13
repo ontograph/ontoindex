@@ -66,20 +66,19 @@ const VIOLATION_KINDS: readonly EvidenceDiagnosticProfileViolationKind[] = [
   'missing-truncation-diagnostic',
 ] as const;
 
-const VIOLATION_KIND_ORDER = VIOLATION_KINDS.reduce(
-  (order, kind, index) => {
-    order.set(kind, index);
-    return order;
-  },
-  new Map<EvidenceDiagnosticProfileViolationKind, number>(),
-);
+const VIOLATION_KIND_ORDER = VIOLATION_KINDS.reduce((order, kind, index) => {
+  order.set(kind, index);
+  return order;
+}, new Map<EvidenceDiagnosticProfileViolationKind, number>());
 
 export function evaluateEvidenceDiagnosticProfile(
   input: EvidenceDiagnosticProfileInput,
 ): EvidenceDiagnosticProfileReport {
   const { profile, diagnostics } = input;
 
-  const categoryAllowlist = profile.allowedCategories ? new Set(profile.allowedCategories) : undefined;
+  const categoryAllowlist = profile.allowedCategories
+    ? new Set(profile.allowedCategories)
+    : undefined;
   const sourceAllowlist = profile.allowedSources ? new Set(profile.allowedSources) : undefined;
   const authorityAllowlist = profile.allowedAuthorities
     ? new Set(profile.allowedAuthorities)
@@ -123,7 +122,10 @@ export function evaluateEvidenceDiagnosticProfile(
       );
     }
 
-    if (!isAuthorityValue(diagnostic.authority) || authorityAllowlist?.has(diagnostic.authority) === false) {
+    if (
+      !isAuthorityValue(diagnostic.authority) ||
+      authorityAllowlist?.has(diagnostic.authority) === false
+    ) {
       perDiagnosticViolations.push(
         violation({
           kind: 'authority-not-allowed',
@@ -224,7 +226,10 @@ export function evaluateEvidenceDiagnosticProfile(
     violations.push(...perDiagnosticViolations);
   }
 
-  if (input.profile.requireTruncationDiagnosticWhenBounded && isBoundedOmitted(input.boundedOutput)) {
+  if (
+    input.profile.requireTruncationDiagnosticWhenBounded &&
+    isBoundedOmitted(input.boundedOutput)
+  ) {
     const hasTruncationDiagnostic = diagnostics.some(isTruncationDiagnostic);
     if (!hasTruncationDiagnostic) {
       violations.push(
@@ -271,10 +276,12 @@ function summarizeProfileViolations(violations: EvidenceDiagnosticProfileViolati
   };
 }
 
-function violation(input: Omit<EvidenceDiagnosticProfileViolation, 'qualityKind' | 'authority'> & {
-  qualityKind: string;
-  authority: string;
-}): EvidenceDiagnosticProfileViolation {
+function violation(
+  input: Omit<EvidenceDiagnosticProfileViolation, 'qualityKind' | 'authority'> & {
+    qualityKind: string;
+    authority: string;
+  },
+): EvidenceDiagnosticProfileViolation {
   return {
     ...input,
     profileId: input.profileId,
@@ -295,12 +302,8 @@ function reasonFromError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isBoundedOmitted(
-  boundedOutput: EvidenceDiagnosticProfileInput['boundedOutput'],
-): boolean {
-  return (
-    boundedOutput?.evidenceOmitted === true || (boundedOutput?.omittedEvidenceCount ?? 0) > 0
-  );
+function isBoundedOmitted(boundedOutput: EvidenceDiagnosticProfileInput['boundedOutput']): boolean {
+  return boundedOutput?.evidenceOmitted === true || (boundedOutput?.omittedEvidenceCount ?? 0) > 0;
 }
 
 function isTruncationDiagnostic(diagnostic: EvidenceDiagnosticRecord): boolean {

@@ -60,9 +60,10 @@ export function computeRetrievalReplayMovementMetrics(
     rankDelta += Math.abs(actualIndex + 1 - expectedRank);
   }
 
-  const top1Stable = expected.length > 0 && actual.length > 0
-    ? isReplayIdentityStrictMatch(actual[0], expected[0])
-    : expected.length === 0 && actual.length === 0;
+  const top1Stable =
+    expected.length > 0 && actual.length > 0
+      ? isReplayIdentityStrictMatch(actual[0], expected[0])
+      : expected.length === 0 && actual.length === 0;
 
   const expectedKeys = new Set(expected.map(toReplayIdentityKey));
   const actualKeys = new Set(actual.map(toReplayIdentityKey));
@@ -80,7 +81,9 @@ export function computeRetrievalReplayMovementMetrics(
 
   const capabilityDrift = unexpectedMissingCapabilities.length > 0;
   if (capabilityDrift) {
-    warnings.push(`missing required capabilities: ${unexpectedMissingCapabilities.sort().join(', ')}`);
+    warnings.push(
+      `missing required capabilities: ${unexpectedMissingCapabilities.sort().join(', ')}`,
+    );
   }
 
   const freshness = normalizeFreshness(input.indexFreshness);

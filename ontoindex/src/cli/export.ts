@@ -1466,7 +1466,10 @@ export async function exportGraphHtmlCommand(opts: ExportGraphHtmlOptions): Prom
     });
     fs.writeFileSync(outFile, html, 'utf8');
 
-    if (fs.existsSync(path.join(outDir, 'module_tree.json')) && fs.existsSync(path.join(outDir, 'meta.json'))) {
+    if (
+      fs.existsSync(path.join(outDir, 'module_tree.json')) &&
+      fs.existsSync(path.join(outDir, 'meta.json'))
+    ) {
       await generateHTMLViewer(outDir, path.basename(repoRoot));
     }
 

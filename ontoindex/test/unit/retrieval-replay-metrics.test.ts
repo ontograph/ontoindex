@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { computeRetrievalReplayMovementMetrics } from '../../src/core/search/replay/replay-metrics.js';
-import { RETRIEVAL_REPLAY_CASE_SCHEMA_VERSION, type RetrievalReplayCaseV1 } from '../../src/core/search/replay/replay-case.js';
+import {
+  RETRIEVAL_REPLAY_CASE_SCHEMA_VERSION,
+  type RetrievalReplayCaseV1,
+} from '../../src/core/search/replay/replay-case.js';
 
 function makeCase(overrides: Partial<RetrievalReplayCaseV1>): RetrievalReplayCaseV1 {
   return {
@@ -117,6 +120,8 @@ describe('retrieval replay movement metrics', () => {
     });
 
     expect(metrics.latencyDeltaMs).toBe(0);
-    expect(metrics.warnings).toContain('baseline latency not supplied; latencyDeltaMs reported as 0');
+    expect(metrics.warnings).toContain(
+      'baseline latency not supplied; latencyDeltaMs reported as 0',
+    );
   });
 });

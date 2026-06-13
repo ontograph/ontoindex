@@ -477,10 +477,14 @@ function buildSummary(data: {
     requiredPremiseCount: data.premises.filter((premise) => premise.required !== false).length,
     evidenceCount: data.evidenceCount,
     citedEvidenceCount: data.citedEvidenceCount,
-    supportedPremiseCount: data.premisesVerdicts.filter((verdict) => verdict.status === 'supported').length,
-    refutedPremiseCount: data.premisesVerdicts.filter((verdict) => verdict.status === 'refuted').length,
-    ambiguousPremiseCount: data.premisesVerdicts.filter((verdict) => verdict.status === 'ambiguous').length,
-    missingPremiseCount: data.premisesVerdicts.filter((verdict) => verdict.status === 'missing').length,
+    supportedPremiseCount: data.premisesVerdicts.filter((verdict) => verdict.status === 'supported')
+      .length,
+    refutedPremiseCount: data.premisesVerdicts.filter((verdict) => verdict.status === 'refuted')
+      .length,
+    ambiguousPremiseCount: data.premisesVerdicts.filter((verdict) => verdict.status === 'ambiguous')
+      .length,
+    missingPremiseCount: data.premisesVerdicts.filter((verdict) => verdict.status === 'missing')
+      .length,
     missingRequiredPremiseCount: data.premisesVerdicts.filter(
       (verdict) => verdict.status === 'missing' && verdict.required,
     ).length,

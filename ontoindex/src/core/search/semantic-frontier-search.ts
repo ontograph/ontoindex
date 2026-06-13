@@ -142,7 +142,10 @@ function cosSim(query: number[], candidate: number[]): number {
   return dot / (Math.sqrt(queryNormSq) * Math.sqrt(candidateNormSq));
 }
 
-function mergeFreshness(current: QueryFreshnessStatus, next?: QueryFreshnessStatus): QueryFreshnessStatus {
+function mergeFreshness(
+  current: QueryFreshnessStatus,
+  next?: QueryFreshnessStatus,
+): QueryFreshnessStatus {
   if (next === undefined) {
     return current;
   }
@@ -277,7 +280,10 @@ export async function semanticFrontierSearch(
       continue;
     }
 
-    const mergedLanes = uniqSorted([...(edge.target.lanes ?? []), ...(laneByNode.get(edge.toId) ?? [])]);
+    const mergedLanes = uniqSorted([
+      ...(edge.target.lanes ?? []),
+      ...(laneByNode.get(edge.toId) ?? []),
+    ]);
     const existing = candidateMap.get(edge.toId);
     if (existing) {
       candidateMap.set(edge.toId, {
@@ -359,10 +365,7 @@ export async function semanticFrontierSearch(
         continue;
       }
 
-      const candidateLanes = uniqSorted([
-        ...sourceLanes,
-        ...(candidate.lanes ?? []),
-      ]);
+      const candidateLanes = uniqSorted([...sourceLanes, ...(candidate.lanes ?? [])]);
       const finalLanes = candidateLanes.length > 0 ? candidateLanes : ['ann'];
 
       scoredResults.push({
@@ -414,8 +417,7 @@ export async function semanticFrontierSearch(
 
   if (result.results.length === 0) {
     if (!result.fallbackReason) {
-      result.fallbackReason =
-        visitedCandidates.size === 0 ? 'no-neighbors' : 'no-scored-results';
+      result.fallbackReason = visitedCandidates.size === 0 ? 'no-neighbors' : 'no-scored-results';
     }
   } else if (result.truncated && !result.fallbackReason) {
     if (truncatedByVisited) {

@@ -5,7 +5,9 @@ import {
   type VirtualSourceValidationDiagnostic,
 } from '../../src/core/search/virtual-source-mapping.js';
 
-function diagnosticsByCode(reportDiagnostics: readonly VirtualSourceValidationDiagnostic[]): string[] {
+function diagnosticsByCode(
+  reportDiagnostics: readonly VirtualSourceValidationDiagnostic[],
+): string[] {
   return reportDiagnostics.map((diagnostic) => diagnostic.code);
 }
 
@@ -115,7 +117,9 @@ describe('virtual source mapping validation', () => {
     expect(diagnosticsByCode(report.diagnostics)).toEqual(
       expect.arrayContaining(['duplicate-projection', 'duplicate-projection']),
     );
-    expect(report.diagnostics.filter((diagnostic) => diagnostic.code === 'duplicate-projection')).toHaveLength(2);
+    expect(
+      report.diagnostics.filter((diagnostic) => diagnostic.code === 'duplicate-projection'),
+    ).toHaveLength(2);
   });
 
   it('reports dangling relationship endpoints', () => {
@@ -162,7 +166,11 @@ describe('virtual source mapping validation', () => {
 
     expect(report.summaries.bySourceKind).toEqual({ postgres: 1 });
     expect(diagnosticsByCode(report.diagnostics)).toEqual(
-      expect.arrayContaining(['unsupported-source-kind', 'missing-source-reference', 'missing-primary-key']),
+      expect.arrayContaining([
+        'unsupported-source-kind',
+        'missing-source-reference',
+        'missing-primary-key',
+      ]),
     );
   });
 
@@ -235,9 +243,7 @@ describe('virtual source mapping validation', () => {
 
   it('does not mutate caller arrays', () => {
     const input = {
-      sourceDefinitions: [
-        { name: 'src', kind: 'duckdb' },
-      ] satisfies VirtualSourceDefinition[],
+      sourceDefinitions: [{ name: 'src', kind: 'duckdb' }] satisfies VirtualSourceDefinition[],
       virtualNodeProjections: [
         {
           sourceName: 'src',

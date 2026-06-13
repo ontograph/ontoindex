@@ -19,7 +19,9 @@ export interface RetrievalReplayGateResult {
   reasons: string[];
 }
 
-export function evaluateRetrievalReplayGate(input: EvaluateRetrievalReplayGateInput): RetrievalReplayGateResult {
+export function evaluateRetrievalReplayGate(
+  input: EvaluateRetrievalReplayGateInput,
+): RetrievalReplayGateResult {
   const reasons: string[] = [];
   const missingCapabilities = new Set(input.missingCapabilities ?? []);
   const allowedDrift = new Set(input.caseInput.expected.allowedCapabilityDrift ?? []);
@@ -92,7 +94,9 @@ export function evaluateRetrievalReplayGate(input: EvaluateRetrievalReplayGateIn
   };
 }
 
-function normalizeFreshness(value?: string | QueryFreshnessStatus): QueryFreshnessStatus | undefined {
+function normalizeFreshness(
+  value?: string | QueryFreshnessStatus,
+): QueryFreshnessStatus | undefined {
   if (typeof value !== 'string') {
     return undefined;
   }

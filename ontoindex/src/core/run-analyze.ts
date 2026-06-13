@@ -415,7 +415,9 @@ const ANN_NEIGHBOR_MODEL_FALLBACK = 'unknown-embedding-model';
 type QueryRow = Record<string, unknown> | readonly unknown[];
 
 const rowField = <T>(row: QueryRow, field: string, index: number): T | undefined => {
-  return Array.isArray(row) ? ((row[index] as T | undefined) ?? undefined) : ((row[field] as T | undefined) ?? undefined);
+  return Array.isArray(row)
+    ? ((row[index] as T | undefined) ?? undefined)
+    : ((row[field] as T | undefined) ?? undefined);
 };
 
 const toNumericVector = (value: unknown): number[] | undefined => {
@@ -429,7 +431,8 @@ const toNumericVector = (value: unknown): number[] | undefined => {
 
   if (ArrayBuffer.isView(value)) {
     const arrayLike = Array.from(value as unknown as ArrayLike<number>);
-    if (!arrayLike.every((item) => typeof item === 'number' && Number.isFinite(item))) return undefined;
+    if (!arrayLike.every((item) => typeof item === 'number' && Number.isFinite(item)))
+      return undefined;
     return arrayLike;
   }
 
@@ -466,7 +469,8 @@ const loadAnnNeighborEmbeddingRows = async (
     const embedding = toNumericVector(rowField<unknown>(row, 'embedding', 1));
     if (!embedding || embedding.length === 0) continue;
 
-    const chunkIndex = toIntegerIfFinite(rowField<unknown>(row, 'chunkIndex', 2)) ?? Number.MAX_SAFE_INTEGER;
+    const chunkIndex =
+      toIntegerIfFinite(rowField<unknown>(row, 'chunkIndex', 2)) ?? Number.MAX_SAFE_INTEGER;
     const contentHash = rowField<string>(row, 'contentHash', 3) ?? STALE_HASH_SENTINEL;
 
     const existing = rowsByNodeId.get(nodeId);
@@ -1121,7 +1125,8 @@ export async function runFullAnalysis(
         process.env.ONTOINDEX_EMBEDDING_MODEL_HASH ??
         existingMeta?.model_hash ??
         ANN_NEIGHBOR_MODEL_FALLBACK;
-      const buildId = currentCommit && currentCommit.length > 0 ? currentCommit : `commit:${Date.now()}`;
+      const buildId =
+        currentCommit && currentCommit.length > 0 ? currentCommit : `commit:${Date.now()}`;
       const annRows = await loadAnnNeighborEmbeddingRows(model, buildId, indexedAt);
       if (annRows.length === 0) {
         throw new Error(

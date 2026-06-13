@@ -12,9 +12,7 @@ import {
 } from './semantic-frontier-search.js';
 
 type QueryParamValue = string | number | boolean | null;
-type QueryParams = Readonly<
-  Record<string, QueryParamValue | ReadonlyArray<QueryParamValue>>
->;
+type QueryParams = Readonly<Record<string, QueryParamValue | ReadonlyArray<QueryParamValue>>>;
 type ExecuteQuery = (...args: unknown[]) => Promise<unknown[]>;
 
 type FrontEndOptions = Omit<
@@ -34,7 +32,7 @@ export interface SemanticFrontierAdapterOptions extends FrontEndOptions {
       readonly repoPath?: string;
       readonly queryVector: SemanticFrontierSearchParams['queryVector'];
       readonly seeds: readonly SemanticFrontierSeed[];
-       readonly edges: readonly SemanticFrontierEdge[];
+      readonly edges: readonly SemanticFrontierEdge[];
     },
   ) => Promise<SemanticFrontierSearchDiagnostics>;
 }
@@ -64,9 +62,7 @@ const makeDisabledDiagnostics = (
       ? Math.floor(options.maxVisited)
       : FRONTIER_MAX_VISITED_DEFAULT,
   truncated: false,
-  seedLanes: uniqueSortedLanes(
-    seeds.flatMap((seed) => (seed.lanes ? [...seed.lanes] : [])),
-  ),
+  seedLanes: uniqueSortedLanes(seeds.flatMap((seed) => (seed.lanes ? [...seed.lanes] : []))),
   warnings: ['symbol-neighborhood frontier search disabled'],
   fallbackReason: 'symbol-neighborhood-frontier-disabled',
   results: [],
@@ -96,7 +92,11 @@ export async function runAnnNeighborFrontierSearch(
   }
 
   const seedIds = Array.from(
-    new Set(seeds.map((seed) => seed.nodeId).filter((seedId): seedId is string => seedId.trim().length > 0)),
+    new Set(
+      seeds
+        .map((seed) => seed.nodeId)
+        .filter((seedId): seedId is string => seedId.trim().length > 0),
+    ),
   );
 
   const loadedEdges = await loadAnnNeighborEdges(

@@ -131,6 +131,55 @@ describe('gnEnsureFresh', () => {
     expect(report.recommendations.some((r) => r.includes('stale'))).toBe(false);
   });
 
+  it('resolves MCP backend repo ids case-insensitively and reads HEAD from the registry path', async () => {
+    let headCwd: string | undefined;
+    mockExecFile.mockImplementation((_cmd: string, args: string[], opts: any, callback: any) => {
+      if (args.includes('HEAD') && args.includes('rev-parse')) {
+        headCwd = opts.cwd;
+        callback(null, CURRENT_COMMIT + '\n', '');
+        return {} as any;
+      }
+      callback(null, '', '');
+      return {} as any;
+    });
+    mockReadFileSync.mockReturnValue(
+      makeRegistry({ name: 'Test-Repo', path: REPO_PATH, lastCommit: CURRENT_COMMIT }) as any,
+    );
+
+    const report = await gnEnsureFresh('test-repo', {});
+
+    expect(headCwd).toBe(REPO_PATH);
+    expect(report.preCheck).toEqual({
+      indexedCommit: CURRENT_COMMIT,
+      currentCommit: CURRENT_COMMIT,
+      isStale: false,
+    });
+    expect(report.warnings).toHaveLength(0);
+  });
+
+  it('resolves absolute repo path selectors without depending on process cwd', async () => {
+    let headCwd: string | undefined;
+    mockExecFile.mockImplementation((_cmd: string, args: string[], opts: any, callback: any) => {
+      if (args.includes('HEAD') && args.includes('rev-parse')) {
+        headCwd = opts.cwd;
+        callback(null, CURRENT_COMMIT + '\n', '');
+        return {} as any;
+      }
+      callback(null, '', '');
+      return {} as any;
+    });
+    mockReadFileSync.mockReturnValue(
+      makeRegistry({ path: REPO_PATH, lastCommit: CURRENT_COMMIT }) as any,
+    );
+
+    const report = await gnEnsureFresh(REPO_PATH, {});
+
+    expect(headCwd).toBe(REPO_PATH);
+    expect(report.preCheck.currentCommit).toBe(CURRENT_COMMIT);
+    expect(report.preCheck.indexedCommit).toBe(CURRENT_COMMIT);
+    expect(report.warnings).toHaveLength(0);
+  });
+
   // ---- Test 2: Stale without autoAnalyze → recommendations, no actions ----
   it('populates recommendations but takes no actions when stale and autoAnalyze is false', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT });

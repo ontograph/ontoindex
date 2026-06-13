@@ -5,7 +5,9 @@ import {
   type OntologyConstraintFindingInput,
 } from '../../src/core/ontology/validation-report.js';
 
-function finding(overrides: Partial<OntologyConstraintFindingInput> = {}): OntologyConstraintFindingInput {
+function finding(
+  overrides: Partial<OntologyConstraintFindingInput> = {},
+): OntologyConstraintFindingInput {
   return {
     focusNode: 'node',
     sourceShape: 'shape',

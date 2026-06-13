@@ -166,10 +166,46 @@ describe('composeRetrievalContext', () => {
   it('counts by tier, kind, source, freshness, community, and altitude deterministically', () => {
     const report = composeRetrievalContext({
       candidates: [
-        { id: 'a', tier: 0, kind: 'file', source: 'bm25', score: 1, freshness: 'fresh', communityId: 'one', altitude: 'local' },
-        { id: 'b', tier: 1, kind: 'file', source: 'bm25', score: 2, freshness: 'fresh', communityId: 'one', altitude: 'bridge' },
-        { id: 'c', tier: 2, kind: 'symbol', source: 'graph', score: 3, freshness: 'stale', communityId: 'two', altitude: 'global' },
-        { id: 'd', tier: 3, kind: 'fragment', source: 'graph', score: 4, freshness: 'degraded', communityId: 'two', altitude: 'global' },
+        {
+          id: 'a',
+          tier: 0,
+          kind: 'file',
+          source: 'bm25',
+          score: 1,
+          freshness: 'fresh',
+          communityId: 'one',
+          altitude: 'local',
+        },
+        {
+          id: 'b',
+          tier: 1,
+          kind: 'file',
+          source: 'bm25',
+          score: 2,
+          freshness: 'fresh',
+          communityId: 'one',
+          altitude: 'bridge',
+        },
+        {
+          id: 'c',
+          tier: 2,
+          kind: 'symbol',
+          source: 'graph',
+          score: 3,
+          freshness: 'stale',
+          communityId: 'two',
+          altitude: 'global',
+        },
+        {
+          id: 'd',
+          tier: 3,
+          kind: 'fragment',
+          source: 'graph',
+          score: 4,
+          freshness: 'degraded',
+          communityId: 'two',
+          altitude: 'global',
+        },
       ],
     });
 
@@ -195,9 +231,36 @@ describe('composeRetrievalContext', () => {
     const report = composeRetrievalContext({
       limits: { maxCandidates: 2 },
       candidates: [
-        { id: 'a', tier: 0, kind: 'file', source: 'bm25', score: 1, freshness: 'fresh', communityId: 'x', altitude: 'local' },
-        { id: 'b', tier: 1, kind: 'file', source: 'bm25', score: 2, freshness: 'fresh', communityId: 'x', altitude: 'local' },
-        { id: 'c', tier: 2, kind: 'symbol', source: 'graph', score: 3, freshness: 'fresh', communityId: 'x', altitude: 'local' },
+        {
+          id: 'a',
+          tier: 0,
+          kind: 'file',
+          source: 'bm25',
+          score: 1,
+          freshness: 'fresh',
+          communityId: 'x',
+          altitude: 'local',
+        },
+        {
+          id: 'b',
+          tier: 1,
+          kind: 'file',
+          source: 'bm25',
+          score: 2,
+          freshness: 'fresh',
+          communityId: 'x',
+          altitude: 'local',
+        },
+        {
+          id: 'c',
+          tier: 2,
+          kind: 'symbol',
+          source: 'graph',
+          score: 3,
+          freshness: 'fresh',
+          communityId: 'x',
+          altitude: 'local',
+        },
       ],
     });
 
@@ -223,7 +286,9 @@ describe('composeRetrievalContext', () => {
       ],
     });
 
-    expect(report.warnings).toContain('Dangling related-symbol reference "missing" in candidate "a".');
+    expect(report.warnings).toContain(
+      'Dangling related-symbol reference "missing" in candidate "a".',
+    );
   });
 
   it('does not warn for explicitly external related-symbol references', () => {
@@ -239,7 +304,13 @@ describe('composeRetrievalContext', () => {
           communityId: 'x',
           altitude: 'local',
           relatedSymbols: [
-            { id: 'external', label: 'external', relationType: 'calls', score: 1, source: 'external-source' },
+            {
+              id: 'external',
+              label: 'external',
+              relationType: 'calls',
+              score: 1,
+              source: 'external-source',
+            },
           ],
         },
       ],
@@ -274,7 +345,9 @@ describe('composeRetrievalContext', () => {
           freshness: 'fresh',
           communityId: 'c1',
           altitude: 'local',
-          relatedSymbols: [{ id: 'x', label: 'x2', relationType: 'calls', score: 5, source: 'graph' }],
+          relatedSymbols: [
+            { id: 'x', label: 'x2', relationType: 'calls', score: 5, source: 'graph' },
+          ],
         },
       ],
     });
@@ -292,9 +365,36 @@ describe('composeRetrievalContext', () => {
     const report = composeRetrievalContext({
       limits: { maxWarnings: 2 },
       candidates: [
-        { id: 'a', tier: 10, kind: 'symbol', source: 'bm25', score: NaN, freshness: 'fresh', communityId: 'x', altitude: 'local' },
-        { id: 'a', tier: 'bad-tier', kind: 'symbol', source: 'bm25', score: NaN, freshness: 'fresh', communityId: 'x', altitude: 'local' },
-        { id: 'b', tier: 10, kind: 'symbol', source: 'bm25', score: NaN, freshness: 'fresh', communityId: 'x', altitude: 'local' },
+        {
+          id: 'a',
+          tier: 10,
+          kind: 'symbol',
+          source: 'bm25',
+          score: NaN,
+          freshness: 'fresh',
+          communityId: 'x',
+          altitude: 'local',
+        },
+        {
+          id: 'a',
+          tier: 'bad-tier',
+          kind: 'symbol',
+          source: 'bm25',
+          score: NaN,
+          freshness: 'fresh',
+          communityId: 'x',
+          altitude: 'local',
+        },
+        {
+          id: 'b',
+          tier: 10,
+          kind: 'symbol',
+          source: 'bm25',
+          score: NaN,
+          freshness: 'fresh',
+          communityId: 'x',
+          altitude: 'local',
+        },
       ],
     });
 
@@ -320,7 +420,12 @@ describe('composeRetrievalContext', () => {
       byFreshness: { fresh: 0, stale: 0, degraded: 0, unknown: 0 },
       byCommunity: {},
       byAltitude: { local: 0, bridge: 0, global: 0 },
-      truncated: { candidates: false, relatedSymbols: false, provenanceSteps: false, warnings: false },
+      truncated: {
+        candidates: false,
+        relatedSymbols: false,
+        provenanceSteps: false,
+        warnings: false,
+      },
       candidates: [],
       warnings: [],
     });

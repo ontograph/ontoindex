@@ -777,8 +777,8 @@ describe('runFullAnalysis snapshot persistence', () => {
 
       await runFullAnalysis(repoDir, { annNeighbors: true }, { onProgress: vi.fn() });
 
-      const persistCall = executeWithReusedStatementMock.mock.calls.find((call) =>
-        String(call[0]).includes('CodeRelation') && String(call[0]).includes('MERGE'),
+      const persistCall = executeWithReusedStatementMock.mock.calls.find(
+        (call) => String(call[0]).includes('CodeRelation') && String(call[0]).includes('MERGE'),
       );
       expect(persistCall).toBeDefined();
       expect(persistCall?.[1]).toHaveLength(2);

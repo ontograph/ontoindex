@@ -107,7 +107,11 @@ export function buildSystemsAuditCoverageManifest(
   );
   const normalizedScopes = input.scopes.map(normalizeScope);
   const sortedScopes = [...normalizedScopes].sort((left, right) =>
-    left.id < right.id ? -1 : left.id > right.id ? 1 : left.analyzerId.localeCompare(right.analyzerId),
+    left.id < right.id
+      ? -1
+      : left.id > right.id
+        ? 1
+        : left.analyzerId.localeCompare(right.analyzerId),
   );
 
   const scopeResults: SystemsAuditCoverageResult[] = [];
@@ -324,8 +328,7 @@ function classifyMatches(input: {
 
     const partialRecord = usable.find((match) => isPartialRecordStatus(match.record.status));
     if (partialRecord) {
-      const reason =
-        `Analyzer ${input.analyzerId} produced ${partialRecord.record.status} coverage for scope ${input.scopeId}.`;
+      const reason = `Analyzer ${input.analyzerId} produced ${partialRecord.record.status} coverage for scope ${input.scopeId}.`;
       return {
         status: 'partial',
         reason,
@@ -341,8 +344,7 @@ function classifyMatches(input: {
 
     const failedRecord = usable.find((match) => match.record.status === 'failed');
     if (failedRecord) {
-      const reason =
-        `Analyzer ${input.analyzerId} produced failed coverage for scope ${input.scopeId}.`;
+      const reason = `Analyzer ${input.analyzerId} produced failed coverage for scope ${input.scopeId}.`;
       return {
         status: 'partial',
         reason,
@@ -390,7 +392,9 @@ function classifyMatches(input: {
     };
   }
 
-  const unsupportedRecord = input.unusableMatches.find((match) => match.record.status === 'unsupported');
+  const unsupportedRecord = input.unusableMatches.find(
+    (match) => match.record.status === 'unsupported',
+  );
   if (unsupportedRecord) {
     const reason = `Analyzer ${input.analyzerId} returned an unsupported record for scope ${input.scopeId}.`;
     return {
@@ -438,8 +442,10 @@ function matchesScope(scope: NormalizedScope, record: SystemsAuditRecord): boole
   if (record.analyzerId !== scope.analyzerId) return false;
   if (scope.filePath.length > 0 && record.filePath !== scope.filePath) return false;
   if (scope.category.length > 0 && !matchesFindingCategory(record, scope.category)) return false;
-  if (scope.resourceKind.length > 0 && !matchesRecordResourceKind(record, scope.resourceKind)) return false;
-  if (scope.symbolName.length > 0 && !matchesRecordSymbolName(record, scope.symbolName)) return false;
+  if (scope.resourceKind.length > 0 && !matchesRecordResourceKind(record, scope.resourceKind))
+    return false;
+  if (scope.symbolName.length > 0 && !matchesRecordSymbolName(record, scope.symbolName))
+    return false;
   return true;
 }
 

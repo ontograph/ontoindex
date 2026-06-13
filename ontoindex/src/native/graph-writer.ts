@@ -82,7 +82,9 @@ export async function writeGraphBatch(
         return {
           id: node.id,
           label,
-          properties: Object.fromEntries(Object.entries(node.properties).map(([k, v]) => [k, serializeNativeProperty(v)])),
+          properties: Object.fromEntries(
+            Object.entries(node.properties).map(([k, v]) => [k, serializeNativeProperty(v)]),
+          ),
         };
       });
 

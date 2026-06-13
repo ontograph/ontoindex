@@ -41,7 +41,9 @@ describe('exportGraphHtmlCommand', () => {
     expect(fs.mkdirSync).toHaveBeenCalledWith('/repo/.ontoindex/exports', { recursive: true });
     expect(fs.writeFileSync).toHaveBeenCalledWith(
       '/repo/.ontoindex/exports/graph-overview.html',
-      expect.stringContaining('Interactive architecture graph for modules, execution flows, and functional areas.'),
+      expect.stringContaining(
+        'Interactive architecture graph for modules, execution flows, and functional areas.',
+      ),
       'utf8',
     );
     expect(generateHTMLViewer).not.toHaveBeenCalled();

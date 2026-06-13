@@ -71,7 +71,12 @@ export function mapOntologyConstraintSeverityToAuditSeverity(
 }
 
 function asNonNegativeInteger(value: unknown): number | undefined {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || !Number.isFinite(value)) {
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    !Number.isFinite(value)
+  ) {
     return undefined;
   }
   return value;
@@ -93,10 +98,7 @@ function normalizeRequiredString(
   return normalized;
 }
 
-function normalizeOptionalString(
-  value: unknown,
-  field: 'resultPath',
-): string | undefined {
+function normalizeOptionalString(value: unknown, field: 'resultPath'): string | undefined {
   if (value === undefined) {
     return undefined;
   }
@@ -116,7 +118,10 @@ function isKnownSeverity(value: unknown): value is OntologyConstraintSeverity {
   return value === 'violation' || value === 'warning' || value === 'info';
 }
 
-function truncateUtf8(value: string, maxBytes: number): {
+function truncateUtf8(
+  value: string,
+  maxBytes: number,
+): {
   truncated: boolean;
   rendered: string;
   renderedBytes: number;
@@ -253,9 +258,7 @@ export function buildOntologyValidationReport(
   });
 
   const emittedResults =
-    resolvedMaxResults === undefined
-      ? sortedResults
-      : sortedResults.slice(0, resolvedMaxResults);
+    resolvedMaxResults === undefined ? sortedResults : sortedResults.slice(0, resolvedMaxResults);
 
   const rendered = formatRenderedText(sortedResults);
   const renderedTextTruncation =

@@ -161,7 +161,11 @@ const FREE_TEXT_RECORD = createSystemsAuditRecord({
 describe('systems-audit coverage manifest', () => {
   it('does not mutate caller-provided analyzer declarations', () => {
     const analyzerDeclarations: SystemsAuditCoverageAnalyzerDeclaration[] = [
-      { analyzerId: 'gn_audit_logic', requiredGates: ['capability'], completedGates: ['capability'] },
+      {
+        analyzerId: 'gn_audit_logic',
+        requiredGates: ['capability'],
+        completedGates: ['capability'],
+      },
       { analyzerId: 'gn_trace_boundary' },
     ];
     const declarationCopy = structuredClone(analyzerDeclarations);
@@ -537,7 +541,12 @@ describe('systems-audit coverage manifest', () => {
       snapshot: SNAPSHOT,
       analyzerDeclarations: DECLARATIONS,
       scopes: [
-        { id: 'beta', analyzerId: 'gn_trace_boundary', filePath: 'src/boundary.ts', required: true },
+        {
+          id: 'beta',
+          analyzerId: 'gn_trace_boundary',
+          filePath: 'src/boundary.ts',
+          required: true,
+        },
         { id: 'alpha', analyzerId: 'gn_audit_logic', filePath: 'src/audit.ts', required: true },
         { id: 'alpha', analyzerId: 'gn_abi_diff', filePath: 'src/api.rs', required: true },
       ],

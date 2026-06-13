@@ -24,9 +24,7 @@ function extractionSchema(overrides: Partial<ExtractionSchemaDocument>): Extract
       },
       {
         name: 'Profile',
-        slots: [
-          { name: 'emails', range: 'Email', repeated: true },
-        ],
+        slots: [{ name: 'emails', range: 'Email', repeated: true }],
       },
       {
         name: 'Email',
@@ -54,9 +52,9 @@ function extractionSchema(overrides: Partial<ExtractionSchemaDocument>): Extract
   };
 }
 
-function buildReport(input: Partial<ExtractionBundleInput>): ReturnType<
-  typeof buildSchemaGuidedExtractionReport
-> {
+function buildReport(
+  input: Partial<ExtractionBundleInput>,
+): ReturnType<typeof buildSchemaGuidedExtractionReport> {
   return buildSchemaGuidedExtractionReport({
     schema: extractionSchema({}),
     candidates: [],
@@ -166,8 +164,8 @@ describe('schema-guided extraction report', () => {
       ],
     });
 
-    const nestedIssue = report.issues.find((issue: ExtractionValidationIssue) =>
-      issue.code === 'field-required',
+    const nestedIssue = report.issues.find(
+      (issue: ExtractionValidationIssue) => issue.code === 'field-required',
     );
     expect(nestedIssue?.path).toContain('address.street');
     expect(report.counts.errors).toBeGreaterThan(0);
@@ -230,7 +228,9 @@ describe('schema-guided extraction report', () => {
 
   it('validates enum values for scalar slots', () => {
     const schema = extractionSchema({
-      classes: [{ name: 'Root', slots: [{ name: 'level', range: 'string', enum: ['low', 'high'] }] }],
+      classes: [
+        { name: 'Root', slots: [{ name: 'level', range: 'string', enum: ['low', 'high'] }] },
+      ],
     });
     const report = buildReport({
       schema,
@@ -251,9 +251,11 @@ describe('schema-guided extraction report', () => {
 
   it('warns on unknown candidate fields', () => {
     const schema = extractionSchema({
-      classes: [{ name: 'Root', slots: [{ name: 'name', range: 'string' }] },
-      { name: 'Address', slots: [{ name: 'street', range:'string' }] }],
-      rootClass:'Root',
+      classes: [
+        { name: 'Root', slots: [{ name: 'name', range: 'string' }] },
+        { name: 'Address', slots: [{ name: 'street', range: 'string' }] },
+      ],
+      rootClass: 'Root',
     });
     const report = buildReport({
       schema,
@@ -266,10 +268,7 @@ describe('schema-guided extraction report', () => {
       .filter((issue: ExtractionValidationIssue) => issue.code === 'field-unknown')
       .map((issue) => issue.path)
       .sort();
-    expect(warningPaths).toEqual([
-      'candidate[u-1].extra',
-      'candidate[u-1].stray',
-    ]);
+    expect(warningPaths).toEqual(['candidate[u-1].extra', 'candidate[u-1].stray']);
   });
 
   it('sorts normalized candidates deterministically by class and id', () => {
@@ -289,11 +288,9 @@ describe('schema-guided extraction report', () => {
       ],
     });
 
-    expect(report.normalizedCandidates.map((candidate) => `${candidate.className}:${candidate.id}`)).toEqual([
-      'Alpha:a',
-      'Alpha:b',
-      'Zeta:b',
-    ]);
+    expect(
+      report.normalizedCandidates.map((candidate) => `${candidate.className}:${candidate.id}`),
+    ).toEqual(['Alpha:a', 'Alpha:b', 'Zeta:b']);
   });
 
   it('limits emitted issues from full issue set and reports omission count', () => {

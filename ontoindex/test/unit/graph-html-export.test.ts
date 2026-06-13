@@ -98,7 +98,9 @@ describe('graph-html-export', () => {
       summary: true,
     });
 
-    expect(html).toContain('Interactive architecture graph for modules, execution flows, and functional areas.');
+    expect(html).toContain(
+      'Interactive architecture graph for modules, execution flows, and functional areas.',
+    );
     expect(html).toContain('How To Read This Graph');
     expect(html).toContain('Reset Filters');
     expect(html).toContain('id="process-filter"');
