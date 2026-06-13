@@ -83,6 +83,12 @@ iwr -useb https://raw.githubusercontent.com/ontograph/ontoindex/master/scripts/i
 ontoindex --version
 ```
 
+Windows 说明：
+
+- 在 Windows 上配合 `Node.js 22 LTS` 时，请使用 `npm 11.6.0` 或更新版本。
+- 较旧的 npm 可能会捆绑无法识别 Visual Studio 2026 Build Tools 的 `node-gyp`。
+- 重试安装前先执行 `npm.cmd install -g npm@11.6.3` 升级 npm。
+
 从本地 checkout 安装：
 
 | 平台 | 命令 |
@@ -91,6 +97,15 @@ ontoindex --version
 | Windows PowerShell | `powershell -ExecutionPolicy Bypass -File .\scripts\install-ontoindex-latest.ps1` |
 
 安装脚本会读取最新 GitHub release，查找 `ontoindex-*.tgz` asset，并使用 `npm install -g` 安装。如果全局 npm prefix 不可写，会回退到用户级 npm prefix。
+
+如果 Windows 安装曾经中途失败并留下损坏的 `ontoindex.cmd` shim，请先清理全局安装状态再重试：
+
+```powershell
+npm.cmd uninstall -g ontoindex
+if (Test-Path "$env:APPDATA\npm\node_modules\ontoindex") { Remove-Item "$env:APPDATA\npm\node_modules\ontoindex" -Recurse -Force }
+if (Test-Path "$env:APPDATA\npm\ontoindex.cmd") { Remove-Item "$env:APPDATA\npm\ontoindex.cmd" -Force }
+if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\ontoindex.ps1" -Force }
+```
 
 安装脚本配置：
 

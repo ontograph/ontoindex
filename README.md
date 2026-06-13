@@ -83,6 +83,12 @@ iwr -useb https://raw.githubusercontent.com/ontograph/ontoindex/master/scripts/i
 ontoindex --version
 ```
 
+Windows note:
+
+- With `Node.js 22 LTS`, use `npm 11.6.0` or newer on Windows.
+- Older npm releases can bundle `node-gyp` builds that fail to detect Visual Studio 2026 Build Tools.
+- Upgrade with `npm.cmd install -g npm@11.6.3` before retrying the installer.
+
 From a local checkout:
 
 | Platform | Command |
@@ -91,6 +97,15 @@ From a local checkout:
 | Windows PowerShell | `powershell -ExecutionPolicy Bypass -File .\scripts\install-ontoindex-latest.ps1` |
 
 The installers fetch the latest GitHub release, locate the `ontoindex-*.tgz` asset, and install it with `npm install -g`. If a global install is not writable, they fall back to a user npm prefix.
+
+If a Windows install previously failed partway through and left a broken `ontoindex.cmd` shim, repair the global install state before retrying:
+
+```powershell
+npm.cmd uninstall -g ontoindex
+if (Test-Path "$env:APPDATA\npm\node_modules\ontoindex") { Remove-Item "$env:APPDATA\npm\node_modules\ontoindex" -Recurse -Force }
+if (Test-Path "$env:APPDATA\npm\ontoindex.cmd") { Remove-Item "$env:APPDATA\npm\ontoindex.cmd" -Force }
+if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\ontoindex.ps1" -Force }
+```
 
 Installer configuration:
 
