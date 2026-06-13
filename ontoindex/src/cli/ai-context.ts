@@ -102,18 +102,18 @@ This project is indexed by OntoIndex as **${projectName}**${noStats ? '' : ` (${
 
 ## Always Do
 
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run \`ontoindex_impact({target: "symbolName", direction: "upstream"})\` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run \`ontoindex_detect_changes()\` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run MCP \`impact({action: "symbol", repo: "${projectName}", target: "symbolName", direction: "upstream"})\` or CLI \`${cliCommand} impact --repo ${projectName} <symbol>\`, then report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run MCP \`gn_verify_diff({repo: "${projectName}", scope: "all"})\` or CLI \`${cliCommand} detect-changes --repo ${projectName}\` before committing** to verify your changes only affect expected symbols and execution flows.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use \`ontoindex_query({query: "concept"})\` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use \`ontoindex_context({name: "symbolName"})\`.
+- When exploring unfamiliar code, use MCP \`search({action: "semantic", repo: "${projectName}", query: "concept"})\` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use MCP \`inspect({action: "context", repo: "${projectName}", target: "symbolName"})\`.
 
 ## Never Do
 
-- NEVER edit a function, class, or method without first running \`ontoindex_impact\` on it.
+- NEVER edit a function, class, or method without first running MCP \`impact\` or CLI \`${cliCommand} impact\` on it.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use \`ontoindex_rename\` which understands the call graph.
-- NEVER commit changes without running \`ontoindex_detect_changes()\` to check affected scope.
+- NEVER rename symbols with find-and-replace — use MCP \`refactor({action: "rename", ...})\` which understands the call graph.
+- NEVER commit changes without running MCP \`gn_verify_diff\` or CLI \`${cliCommand} detect-changes\` to check affected scope.
 
 ## Resources
 

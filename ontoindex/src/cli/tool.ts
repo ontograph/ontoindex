@@ -23,7 +23,7 @@ let _backend: LocalBackend | null = null;
 
 async function getBackend(): Promise<LocalBackend> {
   if (_backend) return _backend;
-  _backend = new LocalBackend();
+  _backend = new LocalBackend({ preferredProjectPath: process.cwd() });
   const ok = await _backend.init();
   if (!ok) {
     console.error('OntoIndex: No indexed repositories found. Run: ontoindex analyze');

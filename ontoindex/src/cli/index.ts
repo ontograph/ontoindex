@@ -145,6 +145,7 @@ program
 program
   .command('status')
   .description('Show index status for current repo')
+  .option('-r, --repo <repo>', 'Target repository by registry name or absolute path')
   .action(createLazyAction(() => import('./status.js'), 'statusCommand'));
 
 program

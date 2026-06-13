@@ -188,14 +188,18 @@ export async function resolveSymbolCandidates(
 
   if (!name) return { kind: 'not_found' };
 
-  const isQualified = name.includes('/') || name.includes(':');
+  const isCanonicalOrPathQualified = name.includes('/') || name.includes(':');
+  const isOwnerQualified = !isCanonicalOrPathQualified && name.includes('.');
   let whereClause: string;
   const queryParams: Record<string, unknown> = { symName: name };
   if (hints.file_path) {
     whereClause = `WHERE n.name = $symName AND n.filePath CONTAINS $filePath`;
     queryParams.filePath = hints.file_path;
-  } else if (isQualified) {
+  } else if (isCanonicalOrPathQualified) {
     whereClause = `WHERE n.id = $symName OR n.name = $symName`;
+  } else if (isOwnerQualified) {
+    whereClause = `WHERE n.name = $symName OR n.id ENDS WITH $qualifiedSuffix`;
+    queryParams.qualifiedSuffix = `:${name}`;
   } else {
     whereClause = `WHERE n.name = $symName`;
   }

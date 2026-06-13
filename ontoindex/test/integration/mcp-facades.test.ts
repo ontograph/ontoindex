@@ -132,6 +132,23 @@ describe('MCP Facade Integration (M-1)', () => {
     expect(backend.callTool).toHaveBeenCalledWith('route_map', { repo: 'fixture' });
   });
 
+  it('discover(action="tools") returns the callable MCP frontier by default', async () => {
+    const backend = createFacadeBackend();
+    const result = (await dispatchFacade('discover', 'tools', { repo: 'fixture' }, backend)) as any;
+
+    expect(result.source).toBe('mcp-frontier');
+    expect(result.tools.map((tool: { name: string }) => tool.name)).toEqual(
+      expect.arrayContaining(['search', 'inspect', 'impact', 'gn_verify_diff']),
+    );
+    expect(backend.callTool).not.toHaveBeenCalledWith('tool_map', expect.anything());
+  });
+
+  it('discover(action="tools", codebase=true) keeps graph tool discovery available', async () => {
+    const backend = createFacadeBackend();
+    await dispatchFacade('discover', 'tools', { repo: 'fixture', codebase: true }, backend);
+    expect(backend.callTool).toHaveBeenCalledWith('tool_map', { repo: 'fixture', codebase: true });
+  });
+
   it('audit(action="report") routes to audit_report', async () => {
     const backend = createFacadeBackend();
     const result = (await dispatchFacade('audit', 'report', { repo: 'fixture' }, backend)) as any;

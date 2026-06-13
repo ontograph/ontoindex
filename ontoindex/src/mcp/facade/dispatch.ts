@@ -1,6 +1,7 @@
 import type { LocalBackend } from '../local/local-backend.js';
 import type { SuperTool } from '../super/names.js';
 import { parseTypedQueryDocument } from '../../core/search/typed-query-document.js';
+import { getMcpStartupProfileFromEnv, getPublicToolRegistry } from '../shared/tool-registry.js';
 
 const CANONICAL_NODE_ID_RE = /^[A-Z]\w+:/;
 
@@ -24,6 +25,24 @@ export async function dispatchFacade(
   args: Record<string, unknown>,
   backend: LocalBackend,
 ): Promise<unknown> {
+  if (tool === 'discover' && action === 'tools' && args.codebase !== true) {
+    const startupProfile = getMcpStartupProfileFromEnv();
+    const tools = getPublicToolRegistry({ includeFacades: true, startupProfile }).map((entry) => ({
+      name: entry.name,
+      kind: entry.kind,
+      description: entry.definition.description,
+    }));
+    return {
+      version: 1,
+      source: 'mcp-frontier',
+      startupProfile,
+      count: tools.length,
+      tools,
+      codebaseToolsHint:
+        'Pass codebase: true to discover tools implemented by the indexed repository graph.',
+    };
+  }
+
   const superTool = getAuditFacadeSuperTool(tool, action);
   if (superTool) {
     const repo = await backend.resolveRepo(typeof args.repo === 'string' ? args.repo : undefined);

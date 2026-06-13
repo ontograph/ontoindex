@@ -2,10 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const initMock = vi.fn();
 const callToolMock = vi.fn();
+const constructorMock = vi.fn();
 const writeSyncMock = vi.fn();
 
 vi.mock('../../src/mcp/local/local-backend.js', () => ({
   LocalBackend: class {
+    constructor(options?: unknown) {
+      constructorMock(options);
+    }
+
     init = initMock;
     callTool = callToolMock;
   },
@@ -18,10 +23,20 @@ vi.mock('node:fs', () => ({
 describe('direct CLI tool commands', () => {
   beforeEach(() => {
     vi.resetModules();
+    constructorMock.mockReset();
     initMock.mockReset();
     callToolMock.mockReset();
     writeSyncMock.mockReset();
     initMock.mockResolvedValue(true);
+  });
+
+  it('creates direct CLI backend with cwd as preferred project path', async () => {
+    callToolMock.mockResolvedValue({ results: [] });
+    const { queryCommand } = await import('../../src/cli/tool.js');
+
+    await queryCommand('auth flow', {});
+
+    expect(constructorMock).toHaveBeenCalledWith({ preferredProjectPath: process.cwd() });
   });
 
   it('dispatches typed query documents through the typed backend path', async () => {

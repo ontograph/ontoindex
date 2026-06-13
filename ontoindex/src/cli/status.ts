@@ -4,7 +4,14 @@
  * Shows the indexing status of the current repository.
  */
 
-import { findRepo, getStoragePaths, hasKuzuIndex } from '../storage/repo-manager.js';
+import path from 'path';
+import {
+  findRepo,
+  getStoragePaths,
+  hasKuzuIndex,
+  listRegisteredRepos,
+  loadRepo,
+} from '../storage/repo-manager.js';
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
 import { getNativeGraphWriterStatus, type GraphWriterRuntime } from '../native/graph-writer.js';
 export { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js';
@@ -18,8 +25,37 @@ export const formatNativeGraphWriterStatus = (runtime: GraphWriterRuntime = {}):
   return `Native graph writer: ${status.flagName} ${enabled}, ${configured}, ${available} (${status.reason})`;
 };
 
-export const statusCommand = async () => {
-  const cwd = process.cwd();
+async function resolveRepoStartPath(repoOpt?: string): Promise<string> {
+  if (!repoOpt?.trim()) return process.cwd();
+
+  const resolvedPath = path.resolve(repoOpt);
+  const directRepo = await loadRepo(resolvedPath);
+  if (directRepo) return directRepo.repoPath;
+
+  const entries = await listRegisteredRepos({ validate: true });
+  const lower = repoOpt.toLowerCase();
+  const matches = entries.filter(
+    (entry) => entry.name.toLowerCase() === lower || path.resolve(entry.path) === resolvedPath,
+  );
+
+  if (matches.length === 1) return matches[0].path;
+  if (matches.length > 1) {
+    throw new Error(
+      `Repository "${repoOpt}" is ambiguous. Use an absolute path. Matches: ${matches
+        .map((entry) => `${entry.name} (${entry.path})`)
+        .join(', ')}`,
+    );
+  }
+
+  throw new Error(
+    `Repository "${repoOpt}" is not indexed. Available: ${entries
+      .map((entry) => entry.name)
+      .join(', ')}`,
+  );
+}
+
+export const statusCommand = async (options?: { repo?: string }) => {
+  const cwd = await resolveRepoStartPath(options?.repo);
   const nativeGraphWriterStatus = formatNativeGraphWriterStatus();
 
   if (!isGitRepo(cwd)) {

@@ -556,6 +556,39 @@ describe('LocalBackend.callTool', () => {
     }
   });
 
+  it('impact tool accepts displayed owner-qualified symbol names', async () => {
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'Function:src/thread_manager.rs:ThreadManager.validate_environment_selections',
+        name: 'validate_environment_selections',
+        type: 'Function',
+        filePath: 'src/thread_manager.rs',
+        startLine: 10,
+        endLine: 20,
+      },
+    ]);
+    (executeQuery as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('impact', {
+      target: 'ThreadManager.validate_environment_selections',
+      direction: 'upstream',
+    });
+
+    expect(result.target.id).toBe(
+      'Function:src/thread_manager.rs:ThreadManager.validate_environment_selections',
+    );
+    const [, cypher, params] = (executeParameterized as any).mock.calls[0] as [
+      string,
+      string,
+      Record<string, unknown>,
+    ];
+    expect(cypher).toContain('n.id ENDS WITH $qualifiedSuffix');
+    expect(params).toMatchObject({
+      symName: 'ThreadManager.validate_environment_selections',
+      qualifiedSuffix: ':ThreadManager.validate_environment_selections',
+    });
+  });
+
   it('dispatches impact tool', async () => {
     // impact() calls executeParameterized to find target, then executeQuery for traversal
     (executeParameterized as any).mockResolvedValue([

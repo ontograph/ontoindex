@@ -66,6 +66,8 @@ Each ADR follows: **Context → Decision → Algorithm/Technique → Consequence
 | [0079](0079-smart-composer-inspired-native-interactive-context-staging-and-hunk-editing.md) | Core interactive context staging and virtual diff selection | Implemented (core workspace contracts) | Obsidian Smart Composer review; narrowed and implemented 2026-06-10 |
 | [0081](0081-virtuoso-inspired-native-multi-model-virtual-views-and-anytime-queries.md) | Core virtual source mapping and anytime result envelopes | Implemented (core virtual mapping and anytime envelope contracts) | OpenLink Virtuoso review; narrowed and implemented 2026-06-10 |
 | [0082](0082-semantic-ann-neighbor-graph-and-one-shot-retrieval-frontier.md) | Semantic ANN neighbor graph and one-shot retrieval frontier | Implemented (opt-in core and analyze-time materialization) | Instagram semantic-memory prototype review; core primitives shipped in 1.9.1; analyze-time materialization added 2026-06-10 |
+| [0083](0083-open-knowledge-format-import-export-and-agent-context-bundles.md) | Open Knowledge Format import/export and agent context bundles | Postponed | Google Cloud Open Knowledge Format review; narrowed 2026-06-13 |
+| [0084](0084-html-first-visual-wiki-and-architecture-export-surfaces.md) | HTML graph export with functional slice filters | Proposed - Challenged/Core Extension Only | `plannotator/effective-html` review; narrowed 2026-06-13 |
 
 ## How to add a new ADR
 

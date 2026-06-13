@@ -1,5 +1,5 @@
-<!-- version: 1.7.4 -->
-<!-- Last updated: 2026-06-08 -->
+<!-- version: 1.7.6 -->
+<!-- Last updated: 2026-06-13 -->
 
 Last reviewed: 2026-04-21
 
@@ -16,8 +16,8 @@ Last reviewed: 2026-04-21
 
 ## Model Configuration
 
-- **Primary:** Use a named model (e.g. Claude Sonnet 4.x). Avoid `Auto` or unversioned `latest` when reproducibility matters.
-- **Sub-agents:** Prefer `gpt-5.3-codex-spark` for delegated sub-agent work when the sub-agent surface can enforce it. If the tool cannot select or verify the model, state the preference in the worker prompt, record the actual UI/runtime model when visible, and continue unless the user explicitly asks to block on exact model compliance.
+- **Primary:** For coding tasks, use `gpt-5.4-mini` by default. Avoid `Auto`, unversioned `latest`, or a different model unless the user explicitly overrides it or the task is clearly non-coding.
+- **Sub-agents:** For coding tasks, delegated sub-agents must also use `gpt-5.4-mini` when the sub-agent surface can enforce it. If the tool cannot select or verify the model, state the requirement in the worker prompt, record the actual UI/runtime model when visible, and continue unless the user explicitly asks to block on exact model compliance.
 - **Notes:** The OntoIndex CLI indexer does not call an LLM.
 
 ## Resource Budget
@@ -35,6 +35,27 @@ For multi-step work, state up front:
 3. Which **validation commands** you will run (`cd ontoindex && npm test`, `npx tsc --noEmit`).
 
 On long threads, *"Remember: apply all AGENTS.md rules"* re-weights these instructions against context dilution.
+
+## Architecture Fit Gate (hard rule)
+
+Before proposing, approving, or implementing any new change, refactor, ADR, feature, frontier, or
+workflow, agents must check both of these gates explicitly:
+
+1. **Real new functionality gate.** Confirm the proposal adds real new functionality rather than
+   renaming, rewrapping, duplicating, restating, or re-surfacing capability that already exists in
+   OntoIndex.
+2. **Core-extension gate.** Confirm the proposal extends current core solutions and stays aligned
+   with the existing architecture instead of introducing a parallel subsystem, replacement storage
+   model, duplicate UI surface, or detached workflow.
+
+Required behavior:
+
+- If either gate fails, narrow the work, challenge it, or mark it postponed instead of expanding it.
+- For ADR reviews, keep only the delta that survives both gates.
+- For refactors, prefer adapting existing CLI families, wiki/docs flows, MCP/frontier patterns, and
+  web rendering paths before introducing a new lane.
+- Agents must state this check when the task is architectural, proposal-heavy, or introduces a new
+  surface area.
 
 ## Branch & Artifact Hygiene (hard rules)
 
@@ -81,6 +102,8 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-06-13 | 1.7.6 | Updated model policy: coding tasks now default to `gpt-5.4-mini`, and delegated coding sub-agents must use `gpt-5.4-mini` when the tool can enforce it. |
+| 2026-06-13 | 1.7.5 | Added hard architecture-fit gate: all new proposals, changes, and refactors must prove they add real new functionality and only extend current core solutions in line with the existing architecture. |
 | 2026-06-08 | 1.7.4 | Relaxed delegated sub-agent model handling: prefer `gpt-5.3-codex-spark`, but continue with actual-runtime recording when exact model selection is unavailable unless the user explicitly requires blocking. |
 | 2026-06-08 | 1.7.3 | Added hard rule that delegated sub-agents must use `gpt-5.3-codex-spark`; prompts must state this explicitly when the tool cannot set the model directly. |
 | 2026-05-12 | 1.7.2 | Added hard rule to use the local OntoIndex fork for OntoIndex CLI commands; agents must never run `npx ontoindex`. |
@@ -99,33 +122,33 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 <!-- ontoindex:start -->
 # OntoIndex — Code Intelligence
 
-This project is indexed by OntoIndex as **OntoIndex** (34983 symbols, 52219 relationships, 300 execution flows). Use the OntoIndex MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by OntoIndex as **ontoindex** (36286 symbols, 53824 relationships, 300 execution flows). Use the OntoIndex MCP tools to understand code, assess impact, and navigate safely.
 
 > If any OntoIndex tool warns the index is stale, coordinate first; exactly one process should run `ONTOINDEX_MAX_WORKERS=7 node /opt/demodb/_workfolder/OntoIndex/ontoindex/dist/cli/index.js analyze`.
 
 ## Always Do
 
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `ontoindex_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `ontoindex_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run MCP `impact({action: "symbol", repo: "ontoindex", target: "symbolName", direction: "upstream"})` or CLI `ontoindex impact --repo ontoindex "symbolName" --direction upstream`, then report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run MCP `gn_verify_diff({repo: "ontoindex", scope: "all"})` or CLI `ontoindex detect-changes --repo ontoindex` before committing** to verify your changes only affect expected symbols and execution flows.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `ontoindex_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `ontoindex_context({name: "symbolName"})`.
+- When exploring unfamiliar code, use MCP `search({action: "semantic", repo: "ontoindex", query: "concept"})` or CLI `ontoindex query --repo ontoindex "concept"` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use MCP `inspect({action: "context", repo: "ontoindex", target: "symbolName"})` or CLI `ontoindex context --repo ontoindex "symbolName"`.
 
 ## Never Do
 
-- NEVER edit a function, class, or method without first running `ontoindex_impact` on it.
+- NEVER edit a function, class, or method without first running MCP `impact` or CLI `ontoindex impact` on it.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `ontoindex_rename` which understands the call graph.
-- NEVER commit changes without running `ontoindex_detect_changes()` to check affected scope.
+- NEVER rename symbols with find-and-replace — use MCP `refactor({action: "rename", ...})` or CLI-assisted symbol-aware refactoring.
+- NEVER commit changes without running MCP `gn_verify_diff` or CLI `ontoindex detect-changes` to check affected scope.
 
 ## Resources
 
 | Resource | Use for |
 |----------|---------|
-| `ontoindex://repo/OntoIndex/context` | Codebase overview, check index freshness |
-| `ontoindex://repo/OntoIndex/clusters` | All functional areas |
-| `ontoindex://repo/OntoIndex/processes` | All execution flows |
-| `ontoindex://repo/OntoIndex/process/{name}` | Step-by-step execution trace |
+| `ontoindex://repo/ontoindex/context` | Codebase overview, check index freshness |
+| `ontoindex://repo/ontoindex/clusters` | All functional areas |
+| `ontoindex://repo/ontoindex/processes` | All execution flows |
+| `ontoindex://repo/ontoindex/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 
