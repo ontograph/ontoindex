@@ -26,6 +26,64 @@ if [ "${node_major}" -ge 24 ]; then
   exit 1
 fi
 
+write_linux_repair_instructions() {
+  local prefix="${1}"
+  local node_modules_root
+  local package_dir
+  local bin_path
+
+  node_modules_root="$(npm root -g --prefix "${prefix}")"
+  package_dir="${node_modules_root}/ontoindex"
+  bin_path="${prefix}/bin/ontoindex"
+
+  echo >&2
+  echo "Repair commands for a broken partial install:" >&2
+  echo "  npm uninstall -g ontoindex" >&2
+  echo "  [ -d \"${package_dir}\" ] && rm -rf \"${package_dir}\"" >&2
+  echo "  [ -f \"${bin_path}\" ] && rm -f \"${bin_path}\"" >&2
+}
+
+validate_install() {
+  local prefix="${1}"
+  local bin_path="${2}"
+  local node_modules_root
+  local package_dir
+  local package_json
+  local cli_path
+
+  node_modules_root="$(npm root -g --prefix "${prefix}")"
+  package_dir="${node_modules_root}/ontoindex"
+  package_json="${package_dir}/package.json"
+  cli_path="${package_dir}/dist/cli/index.js"
+
+  if [ ! -f "${package_json}" ]; then
+    echo "error: installed package metadata not found: ${package_json}" >&2
+    write_linux_repair_instructions "${prefix}"
+    exit 1
+  fi
+
+  if [ ! -f "${cli_path}" ]; then
+    echo "error: installed CLI entrypoint not found: ${cli_path}" >&2
+    write_linux_repair_instructions "${prefix}"
+    exit 1
+  fi
+
+  (
+    cd "${package_dir}"
+    node -e "require('tree-sitter'); require('@ladybugdb/core')"
+  ) || {
+    echo "error: native dependency smoke test failed." >&2
+    write_linux_repair_instructions "${prefix}"
+    exit 1
+  }
+
+  "${bin_path}" --version || {
+    echo "error: installed ontoindex command failed validation." >&2
+    write_linux_repair_instructions "${prefix}"
+    exit 1
+  }
+}
+
 release_json="$(curl -fsSL "${API_URL}")"
 
 asset_url="$(
@@ -55,26 +113,35 @@ NODE
 default_prefix="$(npm config get prefix)"
 install_args=(-g "${asset_url}")
 bin_path=""
+install_prefix="${default_prefix}"
 
 if [ -w "${default_prefix}" ]; then
   echo "Installing OntoIndex ${version} from ${asset_url}"
-  npm install "${install_args[@]}"
+  npm install "${install_args[@]}" || {
+    write_linux_repair_instructions "${default_prefix}"
+    exit 1
+  }
   bin_path="$(command -v ontoindex || true)"
 else
   mkdir -p "${USER_PREFIX}"
   echo "Default npm prefix is not writable: ${default_prefix}"
   echo "Installing OntoIndex ${version} into user prefix: ${USER_PREFIX}"
-  npm install --prefix "${USER_PREFIX}" "${install_args[@]}"
+  npm install --prefix "${USER_PREFIX}" "${install_args[@]}" || {
+    write_linux_repair_instructions "${USER_PREFIX}"
+    exit 1
+  }
+  install_prefix="${USER_PREFIX}"
   bin_path="${USER_PREFIX}/bin/ontoindex"
 fi
 
 if [ ! -x "${bin_path}" ]; then
   echo "error: installed ontoindex binary not found: ${bin_path}" >&2
+  write_linux_repair_instructions "${install_prefix}"
   exit 1
 fi
 
 echo "Installed OntoIndex:"
-"${bin_path}" --version
+validate_install "${install_prefix}" "${bin_path}"
 
 case ":${PATH}:" in
   *":${USER_PREFIX}/bin:"*) ;;
