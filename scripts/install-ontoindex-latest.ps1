@@ -38,7 +38,11 @@ function Invoke-Npm {
   param([string[]]$Arguments)
 
   $npmCommand = Resolve-NpmCommand
-  & $npmCommand @Arguments
+  if ($IsWindows -or $env:OS -eq "Windows_NT") {
+    & cmd.exe /d /c $npmCommand @Arguments
+  } else {
+    & $npmCommand @Arguments
+  }
   if ($LASTEXITCODE -ne 0) {
     throw "npm failed with exit code $LASTEXITCODE"
   }
@@ -55,8 +59,15 @@ function Get-DefaultUserPrefix {
 function Find-OntoIndexCommand {
   param([string]$Prefix)
 
-  $existing = Get-Command ontoindex -ErrorAction SilentlyContinue
-  if ($existing) {
+  if ($IsWindows -or $env:OS -eq "Windows_NT") {
+    $existingCmd = Get-Command "ontoindex.cmd" -ErrorAction SilentlyContinue
+    if ($existingCmd) {
+      return $existingCmd.Source
+    }
+  }
+
+  $existing = Get-Command "ontoindex" -ErrorAction SilentlyContinue
+  if ($existing -and -not (($IsWindows -or $env:OS -eq "Windows_NT") -and $existing.Source -like "*.ps1")) {
     return $existing.Source
   }
 
