@@ -36,6 +36,17 @@ import {
 } from '../core/lbug/lbug-adapter.js';
 import { isWriteQuery } from '../core/lbug/pool-adapter.js';
 import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'ontoindex-shared';
+import {
+  SUMMARY_NODE_TABLES,
+  buildExportableGraph,
+  estimateExportableGraphRecordCount,
+  getExportableGraphNodeQuery,
+  getExportableGraphRelationshipQuery,
+  mapExportableGraphNodeRow,
+  mapExportableGraphRelationshipRow,
+  type GraphNodeRow,
+  type GraphRelationshipRow,
+} from '../core/graph/exportable-graph.js';
 import { searchFTSFromLbug, type BM25SearchResult } from '../core/search/bm25-index.js';
 import { mergeWithRRF, type HybridSearchResult } from '../core/search/hybrid-search.js';
 import { findTopLevelResultLimit } from '../core/cypher-limit.js';
@@ -611,8 +622,6 @@ const writeNdjsonRecord = async (
   }
 };
 
-const SUMMARY_NODE_TABLES = ['Folder', 'File', 'Community', 'Process', 'Module'];
-const SUMMARY_REL_TYPES = ['CONTAINS', 'IMPORTS'];
 const MAX_GRAPH_JSON_BYTES = 50 * 1024 * 1024; // 50 MB
 const MAX_LEGACY_GRAPH_RECORDS = (() => {
   const raw = Number.parseInt(process.env.ONTOINDEX_LEGACY_GRAPH_RECORD_LIMIT ?? '', 10);
@@ -623,173 +632,13 @@ const ESTIMATED_GRAPH_RECORD_BYTES = 700;
 const buildGraph = async (
   includeContent = false,
   summary = false,
-): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
-  const nodes: GraphNode[] = [];
-  const allowedTables = summary ? SUMMARY_NODE_TABLES : NODE_TABLES;
-
-  for (const table of allowedTables) {
-    try {
-      const rows = await executeQuery<GraphNodeRow>(getNodeQuery(table, includeContent));
-      for (const row of rows) {
-        nodes.push(mapGraphNodeRow(table, row, includeContent));
-      }
-    } catch (err) {
-      if (!isIgnorableGraphQueryError(err)) {
-        throw err;
-      }
-    }
-  }
-
-  const relationships: GraphRelationship[] = [];
-  const summaryLabelList = SUMMARY_NODE_TABLES.map((t) => `'${t}'`).join(', ');
-  const relQuery = summary
-    ? `MATCH (a)-[r:CodeRelation]->(b) WHERE r.type IN [${SUMMARY_REL_TYPES.map((t) => `'${t}'`).join(', ')}] AND a.label IN [${summaryLabelList}] AND b.label IN [${summaryLabelList}] RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`
-    : GRAPH_RELATIONSHIP_QUERY;
-
-  const relRows = await executeQuery<GraphRelationshipRow>(relQuery);
-  for (const row of relRows) {
-    relationships.push(mapGraphRelationshipRow(row));
-  }
-
-  return { nodes, relationships };
-};
-
-const GRAPH_RELATIONSHIP_QUERY =
-  `MATCH (a)-[r:CodeRelation]->(b) RETURN a.id AS sourceId, b.id AS targetId, ` +
-  `r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`;
-
-type GraphCountRow = LbugProjectionRow & {
-  count?: number | bigint | string | null;
-  COUNT?: number | bigint | string | null;
-  'count(n)'?: number | bigint | string | null;
-};
-
-type GraphNodeRow = LbugProjectionRow & {
-  id?: GraphNode['id'];
-  name?: GraphNode['properties']['name'];
-  label?: GraphNode['properties']['name'];
-  filePath?: GraphNode['properties']['filePath'];
-  startLine?: GraphNode['properties']['startLine'];
-  endLine?: GraphNode['properties']['endLine'];
-  content?: string;
-  responseKeys?: unknown;
-  errorKeys?: unknown;
-  middleware?: unknown;
-  heuristicLabel?: GraphNode['properties']['heuristicLabel'];
-  cohesion?: GraphNode['properties']['cohesion'];
-  symbolCount?: GraphNode['properties']['symbolCount'];
-  description?: GraphNode['properties']['description'];
-  processType?: GraphNode['properties']['processType'];
-  stepCount?: GraphNode['properties']['stepCount'];
-  communities?: GraphNode['properties']['communities'];
-  entryPointId?: GraphNode['properties']['entryPointId'];
-  terminalId?: GraphNode['properties']['terminalId'];
-};
-
-type GraphRelationshipRow = LbugProjectionRow & {
-  sourceId?: GraphRelationship['sourceId'];
-  targetId?: GraphRelationship['targetId'];
-  type?: GraphRelationship['type'];
-  confidence?: GraphRelationship['confidence'];
-  reason?: GraphRelationship['reason'];
-  step?: GraphRelationship['step'];
-};
-
-const rowCountValue = (row: GraphCountRow | undefined): number => {
-  const raw = row?.count ?? row?.COUNT ?? row?.['count(n)'] ?? row?.[0] ?? 0;
-  if (typeof raw === 'bigint') return Number(raw);
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) ? parsed : 0;
-};
+): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> =>
+  buildExportableGraph(executeQuery, { includeContent, summary });
 
 export const getLegacyGraphRecordLimit = (): number => MAX_LEGACY_GRAPH_RECORDS;
 
-export const estimateLegacyGraphRecordCount = async (summary = false): Promise<number> => {
-  const allowedTables = summary ? SUMMARY_NODE_TABLES : NODE_TABLES;
-  let total = 0;
-  for (const table of allowedTables) {
-    try {
-      const rows = await executeQuery<GraphCountRow>(
-        `MATCH (n:${quoteNodeTable(table)}) RETURN count(n) AS count`,
-      );
-      total += rowCountValue(rows[0]);
-    } catch (err) {
-      if (!isIgnorableGraphQueryError(err)) throw err;
-    }
-  }
-
-  const summaryLabelList = SUMMARY_NODE_TABLES.map((t) => `'${t}'`).join(', ');
-  const relQuery = summary
-    ? `MATCH (a)-[r:CodeRelation]->(b) WHERE r.type IN [${SUMMARY_REL_TYPES.map((t) => `'${t}'`).join(', ')}] AND a.label IN [${summaryLabelList}] AND b.label IN [${summaryLabelList}] RETURN count(r) AS count`
-    : `MATCH ()-[r:CodeRelation]->() RETURN count(r) AS count`;
-  const relRows = await executeQuery<GraphCountRow>(relQuery);
-  total += rowCountValue(relRows[0]);
-  return total;
-};
-
-const quoteNodeTable = (table: string): string => `\`${table.replace(/`/g, '``')}\``;
-
-const getNodeQuery = (table: string, includeContent: boolean): string => {
-  const tableLabel = quoteNodeTable(table);
-
-  if (table === 'File') {
-    return includeContent
-      ? `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.content AS content`
-      : `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath`;
-  }
-  if (table === 'Folder') {
-    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath`;
-  }
-  if (table === 'Community') {
-    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.cohesion AS cohesion, n.symbolCount AS symbolCount`;
-  }
-  if (table === 'Process') {
-    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.processType AS processType, n.stepCount AS stepCount, n.communities AS communities, n.entryPointId AS entryPointId, n.terminalId AS terminalId`;
-  }
-  if (table === 'Route') {
-    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware`;
-  }
-  if (table === 'Tool') {
-    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.description AS description`;
-  }
-  return includeContent
-    ? `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`
-    : `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine`;
-};
-
-const mapGraphNodeRow = (table: string, row: GraphNodeRow, includeContent: boolean): GraphNode => ({
-  id: (row.id ?? row[0]) as GraphNode['id'],
-  label: table as GraphNode['label'],
-  properties: {
-    name: row.name ?? row.label ?? row[1],
-    filePath: row.filePath ?? row[2],
-    startLine: row.startLine,
-    endLine: row.endLine,
-    content: includeContent ? row.content : undefined,
-    responseKeys: row.responseKeys,
-    errorKeys: row.errorKeys,
-    middleware: row.middleware,
-    heuristicLabel: row.heuristicLabel,
-    cohesion: row.cohesion,
-    symbolCount: row.symbolCount,
-    description: row.description,
-    processType: row.processType,
-    stepCount: row.stepCount,
-    communities: row.communities,
-    entryPointId: row.entryPointId,
-    terminalId: row.terminalId,
-  } as GraphNode['properties'],
-});
-
-const mapGraphRelationshipRow = (row: GraphRelationshipRow): GraphRelationship => ({
-  id: `${row.sourceId}_${row.type}_${row.targetId}`,
-  type: row.type as GraphRelationship['type'],
-  sourceId: row.sourceId as GraphRelationship['sourceId'],
-  targetId: row.targetId as GraphRelationship['targetId'],
-  confidence: row.confidence as GraphRelationship['confidence'],
-  reason: row.reason as GraphRelationship['reason'],
-  step: row.step,
-});
+export const estimateLegacyGraphRecordCount = async (summary = false): Promise<number> =>
+  estimateExportableGraphRecordCount(executeQuery, summary);
 
 export const streamGraphNdjson = async (
   res: express.Response,
@@ -808,16 +657,19 @@ export const streamGraphNdjson = async (
   for (const table of allowedTables) {
     try {
       await runQuery(() =>
-        executeStreamQuery<GraphNodeRow>(getNodeQuery(table, includeContent), async (row) => {
+        executeStreamQuery<GraphNodeRow>(
+          getExportableGraphNodeQuery(table, includeContent),
+          async (row) => {
           await writeNdjsonRecord(
             res,
             {
               type: 'node',
-              data: mapGraphNodeRow(table, row, includeContent),
+              data: mapExportableGraphNodeRow(table, row, includeContent),
             },
             signal,
           );
-        }),
+          },
+        ),
       );
     } catch (err) {
       if (signal?.aborted) throw new ClientDisconnectedError();
@@ -827,23 +679,21 @@ export const streamGraphNdjson = async (
     }
   }
 
-  const summaryLabelListStream = SUMMARY_NODE_TABLES.map((t) => `'${t}'`).join(', ');
-  const relQuery = summary
-    ? `MATCH (a)-[r:CodeRelation]->(b) WHERE r.type IN [${SUMMARY_REL_TYPES.map((t) => `'${t}'`).join(', ')}] AND a.label IN [${summaryLabelListStream}] AND b.label IN [${summaryLabelListStream}] RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`
-    : GRAPH_RELATIONSHIP_QUERY;
-
   try {
     await runQuery(() =>
-      executeStreamQuery<GraphRelationshipRow>(relQuery, async (row) => {
+      executeStreamQuery<GraphRelationshipRow>(
+        getExportableGraphRelationshipQuery(summary),
+        async (row) => {
         await writeNdjsonRecord(
           res,
           {
             type: 'relationship',
-            data: mapGraphRelationshipRow(row),
+            data: mapExportableGraphRelationshipRow(row),
           },
           signal,
         );
-      }),
+        },
+      ),
     );
   } catch (err) {
     if (signal?.aborted) throw new ClientDisconnectedError();

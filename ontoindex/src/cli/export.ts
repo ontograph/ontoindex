@@ -20,12 +20,15 @@ import type { Command } from 'commander';
 import { getGitRoot } from '../storage/git.js';
 import { getStoragePaths, loadMeta } from '../storage/repo-manager.js';
 import { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js';
-import { initLbug, closeLbug } from '../core/lbug/pool-adapter.js';
+import { initLbug, closeLbug, executeQuery } from '../core/lbug/pool-adapter.js';
 import { buildDiffReview } from '../core/review/diff-review.js';
 import type { DiffReviewResult, ReviewFile } from '../core/review/review-types.js';
 import { resolveTargetContext } from '../mcp/shared/target-context.js';
 import type { TargetContext } from '../mcp/shared/target-context.js';
 import { runCommunityEvidencePack } from '../mcp/local/backend-community-evidence-pack.js';
+import { buildExportableGraph } from '../core/graph/exportable-graph.js';
+import { createGraphOverviewHtml } from '../core/graph/graph-html-export.js';
+import { generateHTMLViewer } from '../core/wiki/html-viewer.js';
 import {
   deriveEnvelopeFreshness,
   type CapabilityResponseFreshness,
@@ -81,6 +84,19 @@ const MAX_SEMANTIC_CONTRACT_VIOLATIONS = 10;
 /** Bump when the bundle file schema changes in a backwards-incompatible way. */
 const BUNDLE_SCHEMA_VERSION = 1;
 
+function resolveRepoRoot(repoOpt?: string): string {
+  if (repoOpt) return path.resolve(repoOpt);
+  try {
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: GIT_TIMEOUT_MS,
+    }).trim();
+  } catch {
+    return getGitRoot(process.cwd()) ?? process.cwd();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -93,6 +109,12 @@ export interface ExportReviewBundleOptions {
   head?: string;
   range?: string;
   staged?: boolean;
+}
+
+export interface ExportGraphHtmlOptions {
+  out?: string;
+  repo?: string;
+  summary?: boolean;
 }
 
 /** Top-level metadata written to every artifact in the bundle. */
@@ -717,16 +739,7 @@ export async function exportReviewBundleCommand(opts: ExportReviewBundleOptions)
   const warnings: string[] = [];
 
   // ---- 1. Resolve git repo root -------------------------------------------
-  let repoRoot: string;
-  try {
-    repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: GIT_TIMEOUT_MS,
-    }).trim();
-  } catch {
-    repoRoot = getGitRoot(process.cwd()) ?? process.cwd();
-  }
+  const repoRoot = resolveRepoRoot(opts.repo);
 
   // ---- 2. Resolve target context and freshness ----------------------------
   const targetContext = await resolveTargetContext({
@@ -1386,16 +1399,7 @@ export async function exportCommunityEvidencePackCommand(opts: {
   const communityId = opts.community ?? 'default';
   const limit = opts.limit ?? 100;
 
-  let repoRoot: string;
-  try {
-    repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: GIT_TIMEOUT_MS,
-    }).trim();
-  } catch {
-    repoRoot = getGitRoot(process.cwd()) ?? process.cwd();
-  }
+  const repoRoot = resolveRepoRoot(opts.repo);
 
   const { storagePath, lbugPath } = getStoragePaths(repoRoot);
   const meta = await loadMeta(storagePath);
@@ -1432,6 +1436,49 @@ export async function exportCommunityEvidencePackCommand(opts: {
   }
 }
 
+export async function exportGraphHtmlCommand(opts: ExportGraphHtmlOptions): Promise<void> {
+  const repoRoot = resolveRepoRoot(opts.repo);
+  const { storagePath, lbugPath } = getStoragePaths(repoRoot);
+  const meta = await loadMeta(storagePath);
+
+  if (!meta) {
+    console.error('No OntoIndex index found. Run `ontoindex analyze` first.');
+    process.exit(1);
+  }
+
+  const outDir = opts.out ? path.resolve(opts.out) : path.join(repoRoot, '.ontoindex', 'exports');
+  fs.mkdirSync(outDir, { recursive: true });
+
+  const repoId = path.basename(repoRoot).toLowerCase();
+  const outFile = path.join(outDir, 'graph-overview.html');
+  try {
+    await initLbug(repoId, lbugPath);
+    const graph = await buildExportableGraph((query) => executeQuery(repoId, query), {
+      summary: opts.summary === true,
+    });
+    const html = createGraphOverviewHtml(graph, {
+      repoId,
+      repoPath: repoRoot,
+      generatedAt: new Date().toISOString(),
+      indexedAt: meta.indexedAt ?? null,
+      indexedHead: typeof meta.lastCommit === 'string' ? meta.lastCommit : null,
+      summary: opts.summary === true,
+    });
+    fs.writeFileSync(outFile, html, 'utf8');
+
+    if (fs.existsSync(path.join(outDir, 'module_tree.json')) && fs.existsSync(path.join(outDir, 'meta.json'))) {
+      await generateHTMLViewer(outDir, path.basename(repoRoot));
+    }
+
+    console.log(`Graph HTML exported to: ${path.relative(process.cwd(), outFile)}`);
+  } catch (err) {
+    console.error(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  } finally {
+    await closeLbug(repoId);
+  }
+}
+
 // Command registration
 // ---------------------------------------------------------------------------
 
@@ -1439,6 +1486,17 @@ export function registerExportCommands(program: Command): void {
   const exportCmd = program
     .command('export')
     .description('Export OntoIndex data as deterministic snapshot artifacts');
+
+  exportCmd
+    .command('graph-html')
+    .description('Export a self-contained HTML graph artifact with functional slice filters')
+    .option('--out <dir>', 'Output directory (default: .ontoindex/exports)')
+    .option('-r, --repo <name>', 'Indexed repository name or path')
+    .option(
+      '--summary',
+      'Export only the summary graph surface (folders/files/modules/processes/communities)',
+    )
+    .action(exportGraphHtmlCommand);
 
   exportCmd
     .command('review-bundle')

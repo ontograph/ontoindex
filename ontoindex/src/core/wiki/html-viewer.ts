@@ -61,7 +61,15 @@ export async function generateHTMLViewer(wikiDir: string, projectName: string): 
     pages[f.replace(/\.md$/, '')] = content;
   }
 
-  const html = buildHTML(projectName, moduleTree, pages, meta);
+  let graphOverviewAvailable = false;
+  try {
+    await fs.access(path.join(wikiDir, 'graph-overview.html'));
+    graphOverviewAvailable = true;
+  } catch {
+    /* optional artifact */
+  }
+
+  const html = buildHTML(projectName, moduleTree, pages, meta, graphOverviewAvailable);
   const outputPath = path.join(wikiDir, 'index.html');
   await fs.writeFile(outputPath, html, 'utf-8');
   return outputPath;
@@ -82,6 +90,7 @@ function buildHTML(
   moduleTree: ModuleTreeNode[],
   pages: Record<string, string>,
   meta: Record<string, unknown> | null,
+  graphOverviewAvailable: boolean,
 ): string {
   // Embed data as JSON inside the HTML.
   // Escape </script> sequences so they don't prematurely close the <script> tag.
@@ -89,6 +98,7 @@ function buildHTML(
   const pagesJSON = escScript(JSON.stringify(pages));
   const treeJSON = escScript(JSON.stringify(moduleTree));
   const metaJSON = escScript(JSON.stringify(meta));
+  const graphOverviewJSON = graphOverviewAvailable ? 'true' : 'false';
 
   const parts: string[] = [];
 
@@ -142,6 +152,7 @@ function buildHTML(
   parts.push('var PAGES = ' + pagesJSON + ';');
   parts.push('var TREE = ' + treeJSON + ';');
   parts.push('var META = ' + metaJSON + ';');
+  parts.push('var GRAPH_OVERVIEW_AVAILABLE = ' + graphOverviewJSON + ';');
   parts.push(JS_APP);
   parts.push('<\/script>');
 
@@ -265,6 +276,11 @@ const JS_APP = `
     var html = '<div class="nav-section">';
     html += '<a class="nav-item overview" data-page="overview" href="#overview">Overview</a>';
     html += '</div>';
+    if (GRAPH_OVERVIEW_AVAILABLE) {
+      html += '<div class="nav-section">';
+      html += '<a class="nav-item overview" href="graph-overview.html" target="_blank" rel="noopener">Graph Overview</a>';
+      html += '</div>';
+    }
     if (TREE.length > 0) {
       html += '<div class="nav-group-label">Modules</div>';
       html += buildNavTree(TREE);
