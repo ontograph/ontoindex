@@ -416,6 +416,7 @@ fn get_node_header(label: &str) -> Vec<&'static str> {
         "Method" => vec!["id", "name", "filePath", "startLine", "endLine", "isExported", "content", "description", "parameterCount", "returnType"],
         "Community" => vec!["id", "label", "heuristicLabel", "keywords", "description", "enrichedBy", "cohesion", "symbolCount"],
         "Process" => vec!["id", "label", "heuristicLabel", "processType", "stepCount", "communities", "entryPointId", "terminalId"],
+        "SummaryNode" => vec!["id", "name", "filePath", "level", "summaryKind", "summarizedCommunityIds", "summarizedConceptIds", "summarizedNodeIds", "truncated", "depth", "description", "communityLabel", "heuristicLabel", "cohesion", "symbolCount", "memberCount", "includedMemberCount", "membersTruncated", "conceptCount", "includedConceptCount", "conceptsTruncated", "groundingCount", "includedGroundingCount", "groundingsTruncated", "sourceDocuments", "sourceFactKeys", "resolutionKeys", "authority", "evidenceClass", "freshness", "confidence", "omittedCommunityCount"],
         "Section" => vec!["id", "name", "filePath", "startLine", "endLine", "level", "content", "description"],
         "Route" => vec!["id", "name", "filePath", "responseKeys", "errorKeys", "middleware"],
         "Tool" => vec!["id", "name", "filePath", "description"],

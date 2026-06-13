@@ -7,7 +7,7 @@
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- Текущий релиз: `1.9.4`
+- Текущий релиз: `1.9.5`
 - Исходный репозиторий: [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - Политика безопасности: [SECURITY.md](SECURITY.md)
 - Enterprise-контакт: [erasyuk@gmail.com](mailto:erasyuk@gmail.com)
@@ -106,8 +106,8 @@ ontoindex --version
 
 | Платформа | Команда |
 | --- | --- |
-| Linux/macOS | `npm install -g ontoindex@1.9.4 && ontoindex --version` |
-| Windows PowerShell | `npm install -g ontoindex@1.9.4; ontoindex --version` |
+| Linux/macOS | `npm install -g ontoindex@1.9.5 && ontoindex --version` |
+| Windows PowerShell | `npm install -g ontoindex@1.9.5; ontoindex --version` |
 
 ### Установка из release tarball URL
 
@@ -115,8 +115,8 @@ ontoindex --version
 
 | Платформа | Команда |
 | --- | --- |
-| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.4/ontoindex-1.9.4.tgz && ontoindex --version` |
-| Windows PowerShell | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.4/ontoindex-1.9.4.tgz; ontoindex --version` |
+| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.5/ontoindex-1.9.5.tgz && ontoindex --version` |
+| Windows PowerShell | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.5/ontoindex-1.9.5.tgz; ontoindex --version` |
 
 ## Первый запуск
 
@@ -294,8 +294,8 @@ Images:
 
 | Image | Назначение |
 | --- | --- |
-| `ghcr.io/ontograph/ontoindex:1.9.4` | CLI, MCP server и `ontoindex serve` backend |
-| `ghcr.io/ontograph/ontoindex-web:1.9.4` | Web UI |
+| `ghcr.io/ontograph/ontoindex:1.9.5` | CLI, MCP server и `ontoindex serve` backend |
+| `ghcr.io/ontograph/ontoindex-web:1.9.5` | Web UI |
 
 ## Сравнение с похожими инструментами
 

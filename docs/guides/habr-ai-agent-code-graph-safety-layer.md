@@ -123,7 +123,7 @@ OntoIndex - это локальный граф кода для AI-агентов
 Минимальный запуск:
 
 ```bash
-npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.4/ontoindex-1.9.4.tgz
+npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.5/ontoindex-1.9.5.tgz
 
 cd /path/to/repo
 ontoindex analyze

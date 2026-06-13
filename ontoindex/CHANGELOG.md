@@ -4,6 +4,12 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.5] - 2026-06-13
+
+### Added
+
+- **SummaryNode persistence support** — added `SummaryNode` node schema and `SUMMARIZES` relationship support across shared graph types, Ladybug CSV/schema import, and native graph serialization so repository/community/concept summary trees persist cleanly into the local graph store.
+
 ## [1.9.4] - 2026-06-13
 
 ### Fixed

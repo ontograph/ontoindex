@@ -64,6 +64,9 @@ const toLbugStringArrayLiteral = (values: unknown): string => {
 const optionalStringProperty = (value: unknown, fallback: string): string =>
   typeof value === 'string' && value.length > 0 ? value : fallback;
 
+const numericProperty = (value: unknown, fallback: number): number =>
+  typeof value === 'number' ? value : fallback;
+
 // ============================================================================
 // CONTENT EXTRACTION (lazy — reads from disk on demand)
 // ============================================================================
@@ -245,6 +248,10 @@ export const streamAllCSVsToDisk = async (
   const processWriter = createWriter(
     path.join(csvDir, 'process.csv'),
     'id,label,heuristicLabel,processType,stepCount,communities,entryPointId,terminalId',
+  );
+  const summaryNodeWriter = createWriter(
+    path.join(csvDir, 'summarynode.csv'),
+    'id,name,filePath,level,summaryKind,summarizedCommunityIds,summarizedConceptIds,summarizedNodeIds,truncated,depth,description,communityLabel,heuristicLabel,cohesion,symbolCount,memberCount,includedMemberCount,membersTruncated,conceptCount,includedConceptCount,conceptsTruncated,groundingCount,includedGroundingCount,groundingsTruncated,sourceDocuments,sourceFactKeys,resolutionKeys,authority,evidenceClass,freshness,confidence,omittedCommunityCount',
   );
   const conceptWriter = createWriter(
     path.join(csvDir, 'concept.csv'),
@@ -459,6 +466,66 @@ export const streamAllCSVsToDisk = async (
         if (pendingWrite) await pendingWrite;
         break;
       }
+      case 'SummaryNode': {
+        const summaryKind = optionalStringProperty(node.properties.summaryKind, '');
+        const communityLabel = optionalStringProperty(node.properties.communityLabel, '');
+        const heuristicLabel = optionalStringProperty(node.properties.heuristicLabel, '');
+        const depth = numericProperty(node.properties.depth, 0);
+        const cohesion = numericProperty(node.properties.cohesion, 0);
+        const symbolCount = numericProperty(node.properties.symbolCount, 0);
+        const memberCount = numericProperty(node.properties.memberCount, 0);
+        const includedMemberCount = numericProperty(node.properties.includedMemberCount, 0);
+        const conceptCount = numericProperty(node.properties.conceptCount, 0);
+        const includedConceptCount = numericProperty(node.properties.includedConceptCount, 0);
+        const groundingCount = numericProperty(node.properties.groundingCount, 0);
+        const includedGroundingCount = numericProperty(
+          node.properties.includedGroundingCount,
+          0,
+        );
+        const omittedCommunityCount = numericProperty(
+          node.properties.omittedCommunityCount,
+          0,
+        );
+        pendingWrite = writeCsvRow(
+          summaryNodeWriter,
+          [
+            escapeCSVField(node.id),
+            escapeCSVField(node.properties.name || ''),
+            escapeCSVField(node.properties.filePath || ''),
+            escapeCSVNumber(node.properties.level, 0),
+            escapeCSVField(summaryKind),
+            escapeCSVField(toLbugStringArrayLiteral(node.properties.summarizedCommunityIds)),
+            escapeCSVField(toLbugStringArrayLiteral(node.properties.summarizedConceptIds)),
+            escapeCSVField(toLbugStringArrayLiteral(node.properties.summarizedNodeIds)),
+            node.properties.truncated ? 'true' : 'false',
+            escapeCSVNumber(depth, 0),
+            escapeCSVField(node.properties.description || ''),
+            escapeCSVField(communityLabel),
+            escapeCSVField(heuristicLabel),
+            escapeCSVNumber(cohesion, 0),
+            escapeCSVNumber(symbolCount, 0),
+            escapeCSVNumber(memberCount, 0),
+            escapeCSVNumber(includedMemberCount, 0),
+            node.properties.membersTruncated ? 'true' : 'false',
+            escapeCSVNumber(conceptCount, 0),
+            escapeCSVNumber(includedConceptCount, 0),
+            node.properties.conceptsTruncated ? 'true' : 'false',
+            escapeCSVNumber(groundingCount, 0),
+            escapeCSVNumber(includedGroundingCount, 0),
+            node.properties.groundingsTruncated ? 'true' : 'false',
+            escapeCSVField(toLbugStringArrayLiteral(node.properties.sourceDocuments)),
+            escapeCSVField(toLbugStringArrayLiteral(node.properties.sourceFactKeys)),
+            escapeCSVField(toLbugStringArrayLiteral(node.properties.resolutionKeys)),
+            escapeCSVField(optionalStringProperty(node.properties.authority, '')),
+            escapeCSVField(optionalStringProperty(node.properties.evidenceClass, '')),
+            escapeCSVField(optionalStringProperty(node.properties.freshness, '')),
+            escapeCSVField(optionalStringProperty(node.properties.confidence, '')),
+            escapeCSVNumber(omittedCommunityCount, 0),
+          ].join(','),
+        );
+        if (pendingWrite) await pendingWrite;
+        break;
+      }
       case 'Concept': {
         pendingWrite = writeCsvRow(
           conceptWriter,
@@ -659,6 +726,7 @@ export const streamAllCSVsToDisk = async (
     codeElemWriter,
     communityWriter,
     processWriter,
+    summaryNodeWriter,
     conceptWriter,
     sectionWriter,
     routeWriter,
@@ -699,6 +767,7 @@ export const streamAllCSVsToDisk = async (
     ['CodeElement', codeElemWriter],
     ['Community', communityWriter],
     ['Process', processWriter],
+    ['SummaryNode' as NodeTableName, summaryNodeWriter],
     ['Concept', conceptWriter],
     ['Section' as NodeTableName, sectionWriter],
     ['Route' as NodeTableName, routeWriter],

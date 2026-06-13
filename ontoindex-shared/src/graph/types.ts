@@ -26,6 +26,7 @@ export type NodeLabel =
   | 'Community'
   | 'Concept'
   | 'Process'
+  | 'SummaryNode'
   // Multi-language node types
   | 'Struct'
   | 'Macro'
@@ -75,6 +76,12 @@ export type NodeProperties = {
   // Method/property
   parameterCount?: number;
   level?: number;
+  summaryKind?: 'root' | 'community' | 'concept' | string;
+  summarizedCommunityIds?: string[];
+  summarizedConceptIds?: string[];
+  summarizedNodeIds?: string[];
+  truncated?: boolean;
+  depth?: number;
   returnType?: string;
   declaredType?: string;
   visibility?: string;
@@ -129,6 +136,7 @@ export type RelationshipType =
   | 'WRAPS'
   | 'QUERIES'
   | 'EXPLAINED_BY'
+  | 'SUMMARIZES'
   | 'MENTIONS'
   | 'CO_CHANGED_WITH';
 

@@ -19,6 +19,7 @@ export const NODE_TABLES = [
   'Community',
   'Concept',
   'Process',
+  'SummaryNode',
   'Section',
   'Struct',
   'Enum',
@@ -69,6 +70,7 @@ export const REL_TYPES = [
   'WRAPS',
   'QUERIES',
   'EXPLAINED_BY',
+  'SUMMARIZES',
 ] as const;
 
 export type RelType = (typeof REL_TYPES)[number];

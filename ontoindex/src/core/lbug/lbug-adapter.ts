@@ -929,6 +929,9 @@ export const getCopyQuery = (table: NodeTableName, filePath: string): string => 
   if (table === 'Process') {
     return `COPY ${t}(id, label, heuristicLabel, processType, stepCount, communities, entryPointId, terminalId) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
+  if (table === 'SummaryNode') {
+    return `COPY ${t}(id, name, filePath, level, summaryKind, summarizedCommunityIds, summarizedConceptIds, summarizedNodeIds, truncated, depth, description, communityLabel, heuristicLabel, cohesion, symbolCount, memberCount, includedMemberCount, membersTruncated, conceptCount, includedConceptCount, conceptsTruncated, groundingCount, includedGroundingCount, groundingsTruncated, sourceDocuments, sourceFactKeys, resolutionKeys, authority, evidenceClass, freshness, confidence, omittedCommunityCount) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
   if (table === 'Section') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, level, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
@@ -987,6 +990,42 @@ const insertNodeToLbug = async (
       query = `CREATE (n:Folder {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}})`;
     } else if (label === 'Concept') {
       query = `CREATE (n:Concept {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, aliases: ${escapeValue(properties.aliases || [])}, authority: ${escapeValue(properties.authority)}, confidence: ${escapeValue(properties.confidence)}, evidenceClass: ${escapeValue(properties.evidenceClass)}, freshness: ${escapeValue(properties.freshness)}})`;
+    } else if (label === 'SummaryNode') {
+      query =
+        `CREATE (n:SummaryNode {` +
+        `id: ${escapeValue(properties.id)}, ` +
+        `name: ${escapeValue(properties.name)}, ` +
+        `filePath: ${escapeValue(properties.filePath)}, ` +
+        `level: ${properties.level || 0}, ` +
+        `summaryKind: ${escapeValue(properties.summaryKind || '')}, ` +
+        `summarizedCommunityIds: ${escapeValue(properties.summarizedCommunityIds || [])}, ` +
+        `summarizedConceptIds: ${escapeValue(properties.summarizedConceptIds || [])}, ` +
+        `summarizedNodeIds: ${escapeValue(properties.summarizedNodeIds || [])}, ` +
+        `truncated: ${!!properties.truncated}, ` +
+        `depth: ${properties.depth || 0}, ` +
+        `description: ${escapeValue(properties.description || '')}, ` +
+        `communityLabel: ${escapeValue(properties.communityLabel || '')}, ` +
+        `heuristicLabel: ${escapeValue(properties.heuristicLabel || '')}, ` +
+        `cohesion: ${properties.cohesion || 0}, ` +
+        `symbolCount: ${properties.symbolCount || 0}, ` +
+        `memberCount: ${properties.memberCount || 0}, ` +
+        `includedMemberCount: ${properties.includedMemberCount || 0}, ` +
+        `membersTruncated: ${!!properties.membersTruncated}, ` +
+        `conceptCount: ${properties.conceptCount || 0}, ` +
+        `includedConceptCount: ${properties.includedConceptCount || 0}, ` +
+        `conceptsTruncated: ${!!properties.conceptsTruncated}, ` +
+        `groundingCount: ${properties.groundingCount || 0}, ` +
+        `includedGroundingCount: ${properties.includedGroundingCount || 0}, ` +
+        `groundingsTruncated: ${!!properties.groundingsTruncated}, ` +
+        `sourceDocuments: ${escapeValue(properties.sourceDocuments || [])}, ` +
+        `sourceFactKeys: ${escapeValue(properties.sourceFactKeys || [])}, ` +
+        `resolutionKeys: ${escapeValue(properties.resolutionKeys || [])}, ` +
+        `authority: ${escapeValue(properties.authority || '')}, ` +
+        `evidenceClass: ${escapeValue(properties.evidenceClass || '')}, ` +
+        `freshness: ${escapeValue(properties.freshness || '')}, ` +
+        `confidence: ${escapeValue(properties.confidence || '')}, ` +
+        `omittedCommunityCount: ${properties.omittedCommunityCount || 0}` +
+        `})`;
     } else if (label === 'Section') {
       const descPart = properties.description
         ? `, description: ${escapeValue(properties.description)}`

@@ -171,6 +171,47 @@ CREATE NODE TABLE Process (
 )`;
 
 // ============================================================================
+// SUMMARY NODE TABLE (for recursive repository/community/concept summaries)
+// ============================================================================
+
+export const SUMMARY_NODE_SCHEMA = `
+CREATE NODE TABLE SummaryNode (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  level INT64,
+  summaryKind STRING,
+  summarizedCommunityIds STRING[],
+  summarizedConceptIds STRING[],
+  summarizedNodeIds STRING[],
+  truncated BOOLEAN,
+  depth INT64,
+  description STRING,
+  communityLabel STRING,
+  heuristicLabel STRING,
+  cohesion DOUBLE,
+  symbolCount INT32,
+  memberCount INT32,
+  includedMemberCount INT32,
+  membersTruncated BOOLEAN,
+  conceptCount INT32,
+  includedConceptCount INT32,
+  conceptsTruncated BOOLEAN,
+  groundingCount INT32,
+  includedGroundingCount INT32,
+  groundingsTruncated BOOLEAN,
+  sourceDocuments STRING[],
+  sourceFactKeys STRING[],
+  resolutionKeys STRING[],
+  authority STRING,
+  evidenceClass STRING,
+  freshness STRING,
+  confidence STRING,
+  omittedCommunityCount INT32,
+  PRIMARY KEY (id)
+)`;
+
+// ============================================================================
 // MULTI-LANGUAGE NODE TABLE SCHEMAS
 // ============================================================================
 
@@ -446,6 +487,9 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM Method TO Process,
   FROM Class TO Process,
   FROM Interface TO Process,
+  FROM SummaryNode TO SummaryNode,
+  FROM SummaryNode TO Community,
+  FROM SummaryNode TO Concept,
   FROM \`Struct\` TO Process,
   FROM \`Constructor\` TO Process,
   FROM \`Module\` TO Process,
@@ -558,6 +602,7 @@ export const NODE_SCHEMA_QUERIES = [
   COMMUNITY_SCHEMA,
   CONCEPT_SCHEMA,
   PROCESS_SCHEMA,
+  SUMMARY_NODE_SCHEMA,
   // Multi-language support
   STRUCT_SCHEMA,
   ENUM_SCHEMA,

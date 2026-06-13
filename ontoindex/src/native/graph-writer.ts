@@ -18,6 +18,19 @@ export interface NativeGraphWriterStatus {
   reason: string;
 }
 
+function serializeNativeProperty(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value
+      .filter((item): item is string | number | boolean => item !== null && item !== undefined)
+      .map((item) => `'${String(item).replace(/\\/g, '\\\\').replace(/'/g, "''")}'`)
+      .join(',')}]`;
+  }
+  if (value === undefined || value === null) {
+    return '';
+  }
+  return String(value);
+}
+
 try {
   const locations = [
     '../../../ontoindex-native/index.cjs',
@@ -69,9 +82,7 @@ export async function writeGraphBatch(
         return {
           id: node.id,
           label,
-          properties: Object.fromEntries(
-            Object.entries(node.properties).map(([k, v]) => [k, String(v)]),
-          ),
+          properties: Object.fromEntries(Object.entries(node.properties).map(([k, v]) => [k, serializeNativeProperty(v)])),
         };
       });
 
