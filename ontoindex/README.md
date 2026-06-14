@@ -193,6 +193,7 @@ ontoindex clean                   # Delete index for current repo
 ontoindex clean --all --force     # Delete all indexes
 ontoindex wiki [path]             # Generate LLM-powered docs from knowledge graph
 ontoindex wiki --model <model>    # Wiki with custom LLM model (default: gpt-4o-mini)
+ontoindex mcp-doctor --repo <label-or-path> --project-cwd <path> --json  # Diagnose MCP target selection
 
 # Repository groups (multi-repo / monorepo service tracking)
 ontoindex group create <name>     # Create a repository group

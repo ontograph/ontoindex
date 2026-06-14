@@ -10,6 +10,11 @@ import {
   type GitPorcelainWorkspaceSummary,
 } from '../../core/audit-lifecycle/freshness.js';
 import { readRegistry, type RegistryEntry } from '../../storage/repo-manager.js';
+import {
+  formatRepoResolutionError,
+  repoResolutionCandidatesFromEntries,
+  repoResolutionEnvironmentFromProcess,
+} from './repo-resolution-errors.js';
 
 const GIT_TIMEOUT_MS = 5_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
@@ -94,6 +99,7 @@ export interface TargetContext {
 
 export interface ResolveTargetContextOptions {
   repo?: string;
+  projectPath?: string;
   targetRef?: string;
   checkSidecar?: boolean;
   readiness?: {
@@ -117,66 +123,68 @@ export async function resolveTargetContext(
   const targetRef = options.targetRef?.trim() || 'HEAD';
   const base = createBaseContext(targetRef, warnings);
   const explicitRepo = options.repo?.trim() || undefined;
+  const explicitProjectPath = options.projectPath?.trim()
+    ? path.resolve(options.projectPath.trim())
+    : undefined;
   const envRepo = process.env.ONTOINDEX_MCP_REPO?.trim() || undefined;
-  const cwdRepoRoot = path.resolve(process.cwd());
+  const envProjectPath = process.env.ONTOINDEX_MCP_PROJECT_CWD?.trim()
+    ? path.resolve(process.env.ONTOINDEX_MCP_PROJECT_CWD.trim())
+    : undefined;
+  const cwdRepoRoot = explicitProjectPath ?? path.resolve(process.cwd());
   const explicitResolution = explicitRepo ? resolveRegistryEntry(registry, explicitRepo) : null;
+  const explicitProjectResolution = explicitProjectPath
+    ? resolveRegistryEntry(registry, explicitProjectPath)
+    : null;
   const envResolution = envRepo ? resolveRegistryEntry(registry, envRepo) : null;
+  const envProjectResolution = envProjectPath
+    ? resolveRegistryEntry(registry, envProjectPath)
+    : null;
   const cwdResolution = resolveRegistryEntry(registry, cwdRepoRoot);
   const noSelectorResolution = resolveRegistryEntry(registry, undefined);
 
-  let selectionSource: 'explicit' | 'env' | 'cwd' | 'single' = 'single';
+  let selectionSource: 'explicit' | 'env' | 'cwd' | 'single' | 'project' = 'single';
   let resolution = explicitRepo
     ? explicitResolution!
-    : envResolution?.status === 'ok'
-      ? envResolution
+    : explicitProjectResolution?.status === 'ok'
+      ? explicitProjectResolution
       : cwdResolution.status === 'ok'
         ? cwdResolution
-        : noSelectorResolution;
+        : envResolution?.status === 'ok'
+          ? envResolution
+          : envProjectResolution?.status === 'ok'
+            ? envProjectResolution
+            : noSelectorResolution;
 
   if (explicitRepo) selectionSource = 'explicit';
+  else if (explicitProjectResolution?.status === 'ok') selectionSource = 'project';
   if (explicitRepo && resolution.status !== 'ok') {
     return {
       ...base,
       status: resolution.status,
       availableRepos: registry.map(toRepoSummary),
-      action: actionWithRetryExamples(resolution.action, registry),
+      action: actionWithRetryExamples(resolution.status, registry, explicitRepo),
       warnings,
     };
   }
 
-  if (!explicitRepo && envRepo && envResolution?.status === 'ok') {
-    if (cwdResolution.status === 'ok' && cwdResolution.entry.path !== envResolution.entry.path) {
-      const ambiguousMessage = buildAmbiguousRepoAction(
-        envRepo,
-        envResolution.entry.path,
-        cwdRepoRoot,
-        cwdResolution.entry.path,
-      );
-      warnings.push(ambiguousMessage);
-      return {
-        ...base,
-        status: 'ambiguous',
-        availableRepos: registry.map(toRepoSummary),
-        action: ambiguousMessage,
-        warnings,
-      };
-    }
+  if (!explicitRepo && explicitProjectPath === undefined && cwdResolution.status === 'ok') {
+    resolution = cwdResolution;
+    selectionSource = 'cwd';
+  } else if (
+    !explicitRepo &&
+    explicitProjectPath === undefined &&
+    envRepo &&
+    envResolution?.status === 'ok'
+  ) {
     resolution = envResolution;
     selectionSource = 'env';
   } else if (
     !explicitRepo &&
-    envRepo &&
-    envResolution?.status !== 'ok' &&
-    cwdResolution.status === 'ok'
+    explicitProjectPath === undefined &&
+    envProjectResolution?.status === 'ok'
   ) {
-    warnings.push(
-      `ONTOINDEX_MCP_REPO "${envRepo}" did not resolve; using MCP cwd ${cwdRepoRoot} instead.`,
-    );
-    resolution = cwdResolution;
-    selectionSource = 'cwd';
-  } else if (!explicitRepo && !envRepo && cwdResolution.status === 'ok') {
-    resolution = cwdResolution;
-    selectionSource = 'cwd';
+    resolution = envProjectResolution;
+    selectionSource = 'env';
   } else if (!explicitRepo && !envRepo && resolution.status === 'ok') {
     selectionSource = noSelectorResolution.status === 'ok' ? 'single' : 'cwd';
   }
@@ -186,7 +194,7 @@ export async function resolveTargetContext(
       ...base,
       status: resolution.status,
       availableRepos: registry.map(toRepoSummary),
-      action: actionWithRetryExamples(resolution.action, registry),
+      action: actionWithRetryExamples(resolution.status, registry, explicitRepo ?? envRepo),
       warnings,
     };
   }
@@ -201,6 +209,15 @@ export async function resolveTargetContext(
   if (explicitRepo && cwdResolution.status === 'ok' && cwdResolution.entry.path !== repoPath) {
     warnings.push(
       `MCP cwd ${cwdRepoRoot} resolves to ${cwdResolution.entry.path}, but the explicit repo "${explicitRepo}" resolved to ${repoPath}.`,
+    );
+  }
+  if (
+    explicitRepo &&
+    explicitProjectResolution?.status === 'ok' &&
+    explicitProjectResolution.entry.path !== repoPath
+  ) {
+    warnings.push(
+      `Explicit project path ${explicitProjectResolution.entry.path} resolved differently than explicit repo "${explicitRepo}" -> ${repoPath}.`,
     );
   }
   const execGit = deps.execGit ?? defaultExecGit;
@@ -448,7 +465,7 @@ function resolveScopeConfidence(input: {
   status: TargetContextStatus;
   dirtyWorktree: boolean | null;
   changedSinceIndex: boolean | null;
-  selectionSource: 'explicit' | 'env' | 'cwd' | 'single';
+  selectionSource: 'explicit' | 'env' | 'cwd' | 'single' | 'project';
   selectionMismatch: boolean;
   dirtyWorkspace: TargetContextDirtyWorkspace;
 }): ScopeConfidence {
@@ -465,17 +482,18 @@ function resolveScopeConfidence(input: {
   return 'high';
 }
 
-function actionWithRetryExamples(action: string, registry: RegistryEntry[]): string {
-  const examples = registry
-    .map((entry) => {
-      const repoPath = path.resolve(entry.path);
-      return `${entry.name ?? repoPath} (${repoPath})`;
-    })
-    .slice(0, 3);
-  if (examples.length === 0) {
-    return `${action} Retry with repo: "/absolute/path/to/repo" or repo: "<repo-name>".`;
-  }
-  return `${action} Retry with repo: "/absolute/path/to/repo" or repo: "<repo-name>". Known repos: ${examples.join(', ')}.`;
+function actionWithRetryExamples(
+  status: Exclude<TargetContextStatus, 'ok'>,
+  registry: RegistryEntry[],
+  requestedRepo?: string,
+): string {
+  const reason = status === 'ambiguous' ? 'ambiguous' : status === 'not-found' ? 'not-found' : 'no-index';
+  return formatRepoResolutionError({
+    reason,
+    requestedRepo,
+    candidates: repoResolutionCandidatesFromEntries(registry),
+    environment: repoResolutionEnvironmentFromProcess(),
+  });
 }
 
 function buildAmbiguousRepoAction(

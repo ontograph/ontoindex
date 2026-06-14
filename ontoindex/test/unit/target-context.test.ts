@@ -175,7 +175,7 @@ describe('resolveTargetContext', () => {
     }
   });
 
-  it('returns a loud ambiguity when ONTOINDEX_MCP_REPO and cwd disagree', async () => {
+  it('prefers cwd resolution over ONTOINDEX_MCP_REPO when they disagree', async () => {
     const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/repo/other');
     const previousRepo = process.env.ONTOINDEX_MCP_REPO;
     process.env.ONTOINDEX_MCP_REPO = REPO_ID;
@@ -193,10 +193,37 @@ describe('resolveTargetContext', () => {
         },
       );
 
-      expect(context.status).toBe('ambiguous');
-      expect(context.action).toContain('Retry with repo:');
-      expect(context.action).toContain('/repo/test-repo');
-      expect(context.action).toContain('/repo/other');
+      expect(context.status).toBe('ok');
+      expect(context.repoLabel).toBe('other-repo');
+      expect(context.repoPath).toBe(path.resolve('/repo/other'));
+    } finally {
+      if (previousRepo === undefined) delete process.env.ONTOINDEX_MCP_REPO;
+      else process.env.ONTOINDEX_MCP_REPO = previousRepo;
+      cwdSpy.mockRestore();
+    }
+  });
+
+  it('uses explicit projectPath before cwd and env fallback', async () => {
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/repo/other');
+    const previousRepo = process.env.ONTOINDEX_MCP_REPO;
+    process.env.ONTOINDEX_MCP_REPO = 'other-repo';
+    try {
+      const { resolveTargetContext } = await loadActualResolver();
+
+      const context = await resolveTargetContext(
+        { projectPath: '/repo/test-repo' },
+        {
+          readRegistry: async () => [
+            registryEntry,
+            { ...registryEntry, name: 'other-repo', path: '/repo/other' },
+          ],
+          execGit: execGitFor(CURRENT_COMMIT),
+        },
+      );
+
+      expect(context.status).toBe('ok');
+      expect(context.repoLabel).toBe(REPO_ID);
+      expect(context.repoPath).toBe(path.resolve('/repo/test-repo'));
     } finally {
       if (previousRepo === undefined) delete process.env.ONTOINDEX_MCP_REPO;
       else process.env.ONTOINDEX_MCP_REPO = previousRepo;
@@ -270,6 +297,7 @@ describe('resolveTargetContext', () => {
       { key: REPO_ID, path: '/repo/test-repo' },
       { key: 'other-repo', path: '/repo/other' },
     ]);
-    expect(context.action).toContain('Specify one repository with the "repo" parameter');
+    expect(context.action).toContain('Multiple repositories are indexed');
+    expect(context.action).toContain('repo: "test-repo"');
   });
 });

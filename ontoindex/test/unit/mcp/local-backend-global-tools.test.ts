@@ -58,7 +58,7 @@ describe('LocalBackend repo-agnostic tool dispatch', () => {
 
   it('still requires repo for repo-scoped tools', async () => {
     await expect(backend.callTool('query', { query: 'test' })).rejects.toThrow(
-      'Multiple repositories indexed',
+      'Multiple repositories are indexed',
     );
   });
 });

@@ -10,10 +10,12 @@
 
 import { gnEnsureFresh } from './ensure-fresh.js';
 import { gnToolContract, type ToolContractReport } from './tool-contract.js';
+import path from 'node:path';
 import {
   createEnvelopeFromLegacy,
   type CapabilityResponseEnvelope,
 } from '../shared/response-envelope.js';
+import { shellQuote } from '../shared/repo-resolution-errors.js';
 import { resolveTargetContext, type TargetContext } from '../shared/target-context.js';
 import { execFileText } from '../../core/process/exec-file.js';
 import { getResourceContractSummaries } from '../resources.js';
@@ -83,6 +85,18 @@ export interface DiagnoseReport {
     reasons: string[];
     affectedAreas: string[];
     confidence: 'full' | 'reduced';
+  };
+  misconfiguration: {
+    status: 'ok' | 'fail';
+    severity?: 'P1';
+    reason?: 'mcp-service-target-mismatch';
+    requestedRepo?: string;
+    activeRepoLabel?: string;
+    activeRepoPath?: string;
+    mcpRepo?: string;
+    projectCwd?: string;
+    processCwd?: string;
+    recommendedCommand?: string;
   };
   targetContext?: TargetContext;
   toolContract?: Pick<
@@ -255,6 +269,42 @@ function buildResponseLimits(
 // ---------------------------------------------------------------------------
 // Main function
 // ---------------------------------------------------------------------------
+
+function buildMisconfigurationReport(
+  repoId: string,
+  envVars: Record<string, string | undefined>,
+  targetContext: TargetContext | undefined,
+): DiagnoseReport['misconfiguration'] {
+  const mcpRepo = envVars['ONTOINDEX_MCP_REPO']?.trim() || undefined;
+  const projectCwd = envVars['ONTOINDEX_MCP_PROJECT_CWD']?.trim() || undefined;
+  const processCwd = process.cwd();
+  const activeRepoPath = targetContext?.repoPath;
+  const activeRepoLabel = targetContext?.repoLabel ?? targetContext?.repoKey;
+  const pathMismatch =
+    activeRepoPath !== undefined &&
+    ((projectCwd !== undefined && path.resolve(projectCwd) !== path.resolve(activeRepoPath)) ||
+      (mcpRepo !== undefined &&
+        path.isAbsolute(mcpRepo) &&
+        path.resolve(mcpRepo) !== path.resolve(activeRepoPath)));
+  const targetMismatch =
+    targetContext?.status === 'ambiguous' || targetContext?.status === 'not-found' || pathMismatch;
+
+  if (!targetMismatch) return { status: 'ok' };
+
+  const restartPath = activeRepoPath ?? projectCwd ?? mcpRepo ?? '/absolute/path/to/project';
+  return {
+    status: 'fail',
+    severity: 'P1',
+    reason: 'mcp-service-target-mismatch',
+    requestedRepo: repoId,
+    ...(activeRepoLabel !== undefined ? { activeRepoLabel } : {}),
+    ...(activeRepoPath !== undefined ? { activeRepoPath } : {}),
+    ...(mcpRepo !== undefined ? { mcpRepo } : {}),
+    ...(projectCwd !== undefined ? { projectCwd } : {}),
+    processCwd,
+    recommendedCommand: `ontoindex mcp --project ${shellQuote(restartPath)}${repoId ? ` --repo ${shellQuote(repoId)}` : ''}`,
+  };
+}
 
 export async function gnDiagnose(
   repoId: string,
@@ -453,9 +503,26 @@ export async function gnDiagnose(
   }
 
   // ---- 8. Degraded context synthesis ----------------------------------------
+  const misconfiguration = buildMisconfigurationReport(repoId, envVars, targetContext);
+  if (misconfiguration.status === 'fail') {
+    recommendations.unshift({
+      severity: 'ERROR',
+      detail: `P1 MCP service target mismatch: requested "${repoId}" but active target is ${
+        misconfiguration.activeRepoLabel ?? '<unresolved>'
+      }${misconfiguration.activeRepoPath ? ` at ${misconfiguration.activeRepoPath}` : ''}.`,
+      fix:
+        misconfiguration.recommendedCommand ??
+        'Restart MCP with ontoindex mcp --project <target-repo> [--repo <label>].',
+    });
+  }
+
   const degradedReasons: string[] = [];
   const degradedAreas = new Set<string>();
 
+  if (misconfiguration.status === 'fail') {
+    degradedReasons.push('mcp-service-target-mismatch');
+    degradedAreas.add('repo-targeting');
+  }
   if (indexFreshness?.isStale) {
     degradedReasons.push('index-stale');
     degradedAreas.add('freshness');
@@ -512,6 +579,7 @@ export async function gnDiagnose(
     setup,
     responseLimits,
     degradedContext,
+    misconfiguration,
     envVars,
     recommendations,
     warnings,

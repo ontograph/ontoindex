@@ -253,7 +253,9 @@ export async function closeBridgeDb(handle: BridgeHandle): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 const RETRY_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
-const BRIDGE_NATIVE_SIDECAR_SUFFIXES = ['.wal', '.shadow'];
+const BRIDGE_NATIVE_SIDECAR_SUFFIXES = ['.wal', '.lock', '.shadow'];
+const BRIDGE_READ_BARRIER_ATTEMPTS = 8;
+const BRIDGE_READ_BARRIER_DELAY_MS = 50;
 
 export async function retryRename(src: string, dst: string, attempts = 3): Promise<void> {
   for (let i = 1; i <= attempts; i++) {
@@ -290,11 +292,39 @@ async function renameBridgeNativeSidecars(
     const src = `${srcBasePath}${suffix}`;
     try {
       await fsp.access(src);
-      await retryRename(src, `${dstBasePath}${suffix}`);
     } catch {
       /* sidecar may not exist */
+      continue;
+    }
+    await retryRename(src, `${dstBasePath}${suffix}`);
+  }
+}
+
+async function verifyBridgeReadable(groupDir: string): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= BRIDGE_READ_BARRIER_ATTEMPTS; attempt++) {
+    const handle = await openBridgeDbReadOnly(groupDir);
+    if (handle) {
+      try {
+        await queryBridge(handle, 'MATCH (c:Contract) RETURN count(c) AS cnt');
+        await closeBridgeDb(handle);
+        return;
+      } catch (error) {
+        lastError = error;
+        await closeBridgeDb(handle).catch(() => {
+          /* ignore cleanup during retry */
+        });
+      }
+    } else {
+      lastError = new Error('bridge read barrier could not open promoted database');
+    }
+    if (attempt < BRIDGE_READ_BARRIER_ATTEMPTS) {
+      await new Promise((resolve) => setTimeout(resolve, BRIDGE_READ_BARRIER_DELAY_MS * attempt));
     }
   }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`bridge read barrier failed: ${String(lastError ?? 'unknown error')}`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -578,6 +608,7 @@ export async function writeBridge(
   }
   await retryRename(tmpPath, finalPath);
   await renameBridgeNativeSidecars(tmpPath, finalPath);
+  await verifyBridgeReadable(groupDir);
   try {
     await fsp.rm(bakPath, { recursive: true, force: true });
     await removeBridgeNativeSidecars(bakPath);

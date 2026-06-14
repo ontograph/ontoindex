@@ -58,3 +58,5 @@ ONTOINDEX_MAX_WORKERS=7
 ```
 
 Restart MCP clients after config changes so the runtime loads the current repository instead of an older target.
+
+Use `ontoindex mcp-doctor --repo <label-or-path> --project-cwd <path> --json` to confirm the same target selection before restarting a client; it reports `READY`, `DEGRADED`, or `MISCONFIGURED` and includes a restart command when the repo target is wrong.

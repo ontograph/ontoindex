@@ -525,6 +525,60 @@ describe('gnDiagnose', () => {
     });
   });
 
+  it('reports repo-target mismatch as a P1 misconfiguration before quality recommendations', async () => {
+    process.env['ONTOINDEX_MCP_REPO'] = '/opt/demodb/_workfolder/Repo With Spaces';
+    process.env['ONTOINDEX_MCP_PROJECT_CWD'] = '/opt/demodb/_workfolder/Repo With Spaces';
+    mockResolveTargetContext.mockResolvedValue({
+      ...TARGET_CONTEXT,
+      repoKey: 'codex',
+      repoLabel: 'codex',
+      repoPath: '/opt/demodb/_workfolder/Active Repo With Spaces',
+    });
+
+    const report = await gnDiagnose('ontoindex', {
+      checkLsp: false,
+      checkEmbeddings: false,
+      checkIndexFreshness: false,
+      checkToolContract: false,
+    });
+
+    expect(report.misconfiguration).toMatchObject({
+      status: 'fail',
+      severity: 'P1',
+      reason: 'mcp-service-target-mismatch',
+      requestedRepo: 'ontoindex',
+      activeRepoLabel: 'codex',
+      activeRepoPath: '/opt/demodb/_workfolder/Active Repo With Spaces',
+      projectCwd: '/opt/demodb/_workfolder/Repo With Spaces',
+    });
+    expect(report.degradedContext.reasons).toContain('mcp-service-target-mismatch');
+    expect(report.degradedContext.affectedAreas).toContain('repo-targeting');
+    expect(report.recommendations[0]).toMatchObject({
+      severity: 'ERROR',
+      fix: expect.stringContaining(
+        "ontoindex mcp --project '/opt/demodb/_workfolder/Active Repo With Spaces'",
+      ),
+    });
+    expect(report.misconfiguration.recommendedCommand).toBe(
+      "ontoindex mcp --project '/opt/demodb/_workfolder/Active Repo With Spaces' --repo 'ontoindex'",
+    );
+  });
+
+  it('does not classify missing embeddings as MCP misconfiguration', async () => {
+    mockGnEnsureFresh.mockResolvedValue(makeFreshReport({ embeddingsCount: 0 }));
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: true,
+      checkIndexFreshness: false,
+      checkToolContract: false,
+    });
+
+    expect(report.misconfiguration).toEqual({ status: 'ok' });
+    expect(report.degradedContext.reasons).toContain('embeddings-unavailable');
+    expect(report.degradedContext.reasons).not.toContain('mcp-service-target-mismatch');
+  });
+
   it('returns the capability-aware envelope when legacyResponse is false', async () => {
     mockResolveTargetContext.mockResolvedValue({
       ...TARGET_CONTEXT,

@@ -25,6 +25,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { INTERNAL_TOOL_HANDLERS } from './tools.js';
 import { dispatchFacade, type FacadeTool } from './facade/dispatch.js';
+import { attachRepoScopeIdentity } from './shared/response-envelope.js';
 import { SUPER_NAMES, type SuperTool } from './super/names.js';
 import {
   getMcpStartupProfileFromEnv,
@@ -64,6 +65,27 @@ function formatUnhandledRejectionReason(reason: unknown): string {
     return String(reason.stack);
   }
   return String(reason);
+}
+
+interface RepoIdentity {
+  repoLabel: string;
+  repoPath: string;
+}
+
+function readRepoIdentity(value: unknown): RepoIdentity | null {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return null;
+  const candidate = value as Record<string, unknown>;
+  const repoLabel = typeof candidate.repoLabel === 'string' ? candidate.repoLabel : undefined;
+  const repoPath = typeof candidate.repoPath === 'string' ? candidate.repoPath : undefined;
+  return repoLabel && repoPath ? { repoLabel, repoPath } : null;
+}
+
+function formatToolCallErrorMessage(error: unknown, repo?: RepoIdentity | null): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!repo) {
+    return `Error: ${message}`;
+  }
+  return JSON.stringify({ error: message, repoLabel: repo.repoLabel, repoPath: repo.repoPath }, null, 2);
 }
 
 /**
@@ -364,6 +386,7 @@ export function createMCPServer(backend: LocalBackend, options: { full?: boolean
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     const typedArgs = (args ?? {}) as Record<string, unknown>;
+    let repoIdentity: RepoIdentity | null = null;
 
     try {
       let result: unknown;
@@ -372,10 +395,17 @@ export function createMCPServer(backend: LocalBackend, options: { full?: boolean
           result = await dispatchLazySuper(name as SuperTool, typedArgs, '');
         } else {
           const repo = await backend.resolveRepo(typedArgs.repo as string | undefined);
+          repoIdentity = {
+            repoLabel: repo.name ?? repo.id,
+            repoPath: repo.repoPath,
+          };
           if (GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool)) {
             await backend.ensureRepoInitialized(repo.id);
           }
-          result = await dispatchLazySuper(name as SuperTool, typedArgs, repo.id);
+          result = attachRepoScopeIdentity(
+            await dispatchLazySuper(name as SuperTool, typedArgs, repo.id),
+            repo,
+          );
         }
       } else if (!options.full && FACADE_NAMES.has(name)) {
         const action = typedArgs.action as string;
@@ -389,10 +419,10 @@ export function createMCPServer(backend: LocalBackend, options: { full?: boolean
       return {
         content: [{ type: 'text', text: resultText + hint }],
       };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
+      } catch (error) {
+      const scopedRepoIdentity = repoIdentity ?? readRepoIdentity(error);
       return {
-        content: [{ type: 'text', text: `Error: ${message}` }],
+        content: [{ type: 'text', text: formatToolCallErrorMessage(error, scopedRepoIdentity) }],
         isError: true,
       };
     }

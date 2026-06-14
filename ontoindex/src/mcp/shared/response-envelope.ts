@@ -54,6 +54,18 @@ export interface CapabilityDiagnostics {
   warnings: string[];
 }
 
+export interface RepoScopeIdentitySource {
+  id?: string;
+  name?: string;
+  repoPath: string;
+}
+
+export interface RepoScopeIdentityEnvelope<T> {
+  repoLabel: string;
+  repoPath: string;
+  result: T;
+}
+
 export interface CapabilityDiagnosticsOptions {
   capabilitiesUsed?: readonly string[];
   capabilitiesMissing?: readonly string[];
@@ -290,6 +302,57 @@ export function createEnvelopeFromLegacy<TLegacy extends object, TEvidence = unk
     warnings: [...readLegacyWarnings(input.legacy), ...diagnostics.warnings],
     limits: input.limits ?? readLegacyLimits(input.legacy),
     nextTools: input.nextTools ?? readLegacyNextTools(input.legacy),
+  });
+}
+
+export function attachRepoScopeIdentity<T>(
+  result: T,
+  repo: RepoScopeIdentitySource,
+): T | (T & { repoLabel: string; repoPath: string }) {
+  const fallbackRepoLabel = repo.name ?? repo.id;
+  const fallbackRepoPath = repo.repoPath;
+  if (!isRecord(result) || Array.isArray(result)) return result;
+  if (isRecord(result.targetContext)) return result;
+  const repoLabel = typeof result.repoLabel === 'string' ? result.repoLabel : fallbackRepoLabel;
+  const repoPath = typeof result.repoPath === 'string' ? result.repoPath : fallbackRepoPath;
+  if (!repoLabel || !repoPath) return result;
+  return {
+    repoLabel,
+    repoPath,
+    ...result,
+  };
+}
+
+export function wrapRepoScopeIdentity<T>(
+  result: T,
+  repo: RepoScopeIdentitySource,
+): T | RepoScopeIdentityEnvelope<T> {
+  const fallbackRepoLabel = repo.name ?? repo.id;
+  const fallbackRepoPath = repo.repoPath;
+  if (!fallbackRepoLabel || !fallbackRepoPath) return result;
+  return {
+    repoLabel: fallbackRepoLabel,
+    repoPath: fallbackRepoPath,
+    result,
+  };
+}
+
+export function attachRepoScopeIdentityToError<T extends object>(
+  error: T,
+  repo: RepoScopeIdentitySource,
+): T & { repoLabel: string; repoPath: string } {
+  if (!isRecord(error) || Array.isArray(error)) {
+    return error as T & { repoLabel: string; repoPath: string };
+  }
+
+  const repoLabel =
+    typeof error.repoLabel === 'string' ? error.repoLabel : (repo.name ?? repo.id);
+  const repoPath = typeof error.repoPath === 'string' ? error.repoPath : repo.repoPath;
+  if (!repoLabel || !repoPath) return error as T & { repoLabel: string; repoPath: string };
+
+  return Object.assign(error, {
+    repoLabel,
+    repoPath,
   });
 }
 

@@ -138,8 +138,18 @@ program
   .command('mcp')
   .description('Start MCP server (stdio) — serves indexed repos')
   .option('--full', 'Expose all direct internal tools (DEPRECATED — default is public MCP tools)')
+  .option('--project <path>', 'Bind MCP startup to an explicit target project path')
   .option('-r, --repo <repo>', 'Only expose one indexed repo by name or absolute path')
   .action(createLazyAction(() => import('./mcp.js'), 'mcpCommand'));
+
+program
+  .command('mcp-doctor')
+  .description('Validate MCP repo targeting and print repair commands')
+  .option('-r, --repo <repo>', 'Target repository by registry name or absolute path')
+  .option('--project-cwd <path>', 'Expected project cwd for MCP clients')
+  .option('--symbol <symbol>', 'Optional symbol name for future smoke checks')
+  .option('--json', 'Emit stable JSON for issue reports')
+  .action(createLazyAction(() => import('./mcp-doctor.js'), 'mcpDoctorCommand'));
 
 program
   .command('list')

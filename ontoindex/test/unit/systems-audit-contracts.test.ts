@@ -12,6 +12,7 @@ import {
 import {
   collectCapabilityDiagnostics,
   createEnvelopeFromLegacy,
+  createGlobalTargetContext,
 } from '../../src/mcp/shared/response-envelope.js';
 import type { TargetContext } from '../../src/mcp/shared/target-context.js';
 
@@ -241,6 +242,28 @@ describe('systems-audit contracts', () => {
         unknownGraphCoverageCount: 0,
       },
       scopeConfidence: 'high',
+    });
+  });
+
+  it('creates explicit global target context for global MCP tools', () => {
+    const response = createEnvelopeFromLegacy({
+      legacy: {
+        version: 1,
+        tools: [],
+      },
+      tool: 'gn_tool_contract',
+      status: 'ok',
+      targetContext: createGlobalTargetContext('tool contract is global by default'),
+      capabilitiesUsed: ['tool-registry'],
+    });
+
+    expect(response.targetContext).toEqual({
+      scope: 'global',
+      reason: 'tool contract is global by default',
+    });
+    expect(response.freshness).toMatchObject({
+      status: 'not-applicable',
+      reason: 'tool contract is global by default',
     });
   });
 

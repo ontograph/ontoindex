@@ -15,6 +15,7 @@ All examples below use this repository as the target:
 ```
 
 Return examples are abbreviated representative shapes, not full responses.
+Repo-scoped responses now carry repo identity. Legacy payloads expose `repoLabel` and `repoPath`; envelope-based responses carry `targetContext`. Global responses explicitly use `targetContext.scope: "global"`.
 
 ## Frontier 1: Facade Tools
 
@@ -309,6 +310,7 @@ Use these when the client prefers a small stable tool list. Each facade has an `
 ### `gn_diagnose`
 
 - **Use for:** MCP health and readiness checks.
+- **CLI companion:** `ontoindex mcp-doctor --repo <label-or-path> --project-cwd <path> --json` resolves the same selector and reports `READY`, `DEGRADED`, or `MISCONFIGURED`.
 - **Call:**
 
 ```json
@@ -322,11 +324,13 @@ Use these when the client prefers a small stable tool list. Each facade has an `
   "status": "ok",
   "indexFreshness": { "stale": false },
   "embeddings": { "available": true },
+  "misconfiguration": { "status": "ok" },
   "recommendations": []
 }
 ```
 
 - **Why use it:** Run at session start or when search quality looks wrong.
+- **Misconfiguration:** if the repo target and project cwd do not line up, the report sets `misconfiguration.status: "fail"`, `severity: "P1"`, and `reason: "mcp-service-target-mismatch"`. Embeddings, LSP, and dirty-worktree findings continue to contribute to `degradedContext` instead of being promoted to P1.
 
 ### `gn_quality_mode`
 

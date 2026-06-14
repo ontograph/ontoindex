@@ -110,6 +110,11 @@ import {
   ensureRepoInitialized,
   resolveRepoFromHandles,
 } from './local-backend-repo-runtime.js';
+import {
+  formatRepoResolutionError,
+  repoResolutionEnvironmentFromProcess,
+} from '../shared/repo-resolution-errors.js';
+import { attachRepoScopeIdentity } from '../shared/response-envelope.js';
 import type {
   AnalysisCatalogParams,
   ApiImpactParams,
@@ -1583,12 +1588,30 @@ export class LocalBackend implements BackendPort {
       throw new Error('No indexed repositories. Run: ontoindex analyze');
     }
     const labels = buildAvailableRepoLabels(this.repos);
+    const candidates = [...this.repos.values()].map((handle, index) => ({
+      label: labels[index] ?? handle.name,
+      path: handle.repoPath,
+    }));
 
     if (repoParam) {
-      throw new Error(`Repository "${repoParam}" not found. Available: ${labels.join(', ')}`);
+      throw new Error(
+        formatRepoResolutionError({
+          reason: 'not-found',
+          requestedRepo: repoParam,
+          candidates,
+          environment: repoResolutionEnvironmentFromProcess(),
+          preferredRetryLabel: candidates[0]?.label,
+          intendedPath: path.resolve(repoParam),
+        }),
+      );
     }
     throw new Error(
-      `Multiple repositories indexed. Specify which one with the "repo" parameter. Available: ${labels.join(', ')}`,
+      formatRepoResolutionError({
+        reason: 'ambiguous',
+        candidates,
+        environment: repoResolutionEnvironmentFromProcess(),
+        preferredRetryLabel: candidates[0]?.label,
+      }),
     );
   }
 
@@ -1735,9 +1758,12 @@ export class LocalBackend implements BackendPort {
     const handler = this.repoToolHandlers[method];
     if (!handler) throw new Error(`Unknown tool: ${method}`);
     const result = await handler(repo, params);
-    if (method !== 'query' && method !== 'context' && method !== 'impact') return result;
+    if (method !== 'query' && method !== 'context' && method !== 'impact') {
+      return isObjectResponse(result) ? attachRepoScopeIdentity(result, repo) : result;
+    }
     const warnings = await loadIndexCapabilityWarnings(repo.storagePath);
-    return appendIndexCapabilityWarnings(result, warnings);
+    const enriched = appendIndexCapabilityWarnings(result, warnings);
+    return isObjectResponse(enriched) ? attachRepoScopeIdentity(enriched, repo) : enriched;
   }
 
   private async readLocalEnrichmentMetadata(

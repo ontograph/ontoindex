@@ -146,6 +146,7 @@ If embeddings already exist, `ontoindex analyze` preserves them; use `ontoindex 
 | Index current repository | `ontoindex analyze` | `ontoindex analyze` |
 | Configure supported MCP clients | `ontoindex setup` | `ontoindex setup` |
 | Start MCP server manually | `ontoindex mcp` | `ontoindex mcp` |
+| Diagnose MCP configuration | `ontoindex mcp-doctor --repo <label-or-path> --project-cwd "$PWD" --json` | `ontoindex mcp-doctor --repo <label-or-path> --project-cwd "$PWD" --json` |
 | Start local HTTP backend | `ontoindex serve` | `ontoindex serve` |
 | Generate a wiki | `ontoindex wiki . --out docs/wiki` | `ontoindex wiki . --out docs/wiki` |
 | Check index status | `ontoindex status` | `ontoindex status` |
@@ -173,6 +174,8 @@ ontoindex mcp --repo my-project
 ```
 
 At startup, OntoIndex prints both the executable working directory and the target project path. If `ONTOINDEX_MCP_REPO` or `--repo` points outside `ONTOINDEX_MCP_PROJECT_CWD`, startup fails unless `ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1` is set.
+
+`ontoindex mcp-doctor --repo <label-or-path> --project-cwd <path> --json` resolves the same repo selector and reports `READY`, `DEGRADED`, or `MISCONFIGURED`; when it detects a mismatch, it includes a restart command for the target project scope.
 
 ## MCP Setup
 

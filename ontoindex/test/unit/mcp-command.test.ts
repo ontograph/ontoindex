@@ -58,6 +58,7 @@ describe('mcpCommand', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    getGitRootMock.mockReturnValue('/target/repo');
     backendMocks.init.mockResolvedValue(false);
     backendMocks.listRepos.mockResolvedValue([]);
     backendMocks.dispose.mockResolvedValue(undefined);
@@ -81,13 +82,13 @@ describe('mcpCommand', () => {
     expect(startMCPServer).not.toHaveBeenCalled();
   });
 
-  it('allows known-good external checkout when project hint matches ONTOINDEX_MCP_REPO', async () => {
+  it('resolves label-based --repo through the registry before comparing paths', async () => {
     getGitRootMock.mockReturnValue('/opt/demodb/_workfolder/OntoIndex');
-    process.env.ONTOINDEX_MCP_REPO = '/opt/demodb/_workfolder/ontocode';
-    process.env.ONTOINDEX_MCP_PROJECT_CWD = '/opt/demodb/_workfolder/ontocode';
-    backendMocks.listRepos.mockResolvedValue([{ name: 'ontocode' }]);
+    backendMocks.listRepos.mockResolvedValue([
+      { name: 'ontocode', path: '/opt/demodb/_workfolder/ontocode' },
+    ]);
 
-    await mcpCommand();
+    await mcpCommand({ repo: 'ontocode', project: '/opt/demodb/_workfolder/ontocode' });
 
     expect(process.exitCode).toBeUndefined();
     expect(backendMocks.init).toHaveBeenCalled();
@@ -98,57 +99,91 @@ describe('mcpCommand', () => {
     expect(console.error).toHaveBeenCalledWith(
       expect.stringContaining('OntoIndex: MCP target project path:'),
     );
-    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('ontocode'));
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('/opt/demodb/_workfolder/ontocode'),
+    );
     expect(backendMocks.dispose).not.toHaveBeenCalled();
   });
 
   it('passes the target project path to the backend when no repo filter is pinned', async () => {
     getGitRootMock.mockReturnValue('/opt/demodb/_workfolder/OntoIndex');
     delete process.env.ONTOINDEX_MCP_REPO;
-    process.env.ONTOINDEX_MCP_PROJECT_CWD = '/opt/demodb/_workfolder/ontocode';
-    backendMocks.listRepos.mockResolvedValue([{ name: 'OntoIndex' }, { name: 'codex' }]);
+    delete process.env.ONTOINDEX_MCP_PROJECT_CWD;
+    backendMocks.listRepos.mockResolvedValue([
+      { name: 'OntoIndex', path: '/opt/demodb/_workfolder/OntoIndex' },
+      { name: 'codex', path: '/opt/demodb/_workfolder/codex' },
+    ]);
 
     await mcpCommand();
 
     expect(LocalBackend).toHaveBeenCalledWith({
       repoFilter: undefined,
-      preferredProjectPath: '/opt/demodb/_workfolder/ontocode',
+      preferredProjectPath: '/opt/demodb/_workfolder/OntoIndex',
     });
     expect(process.exitCode).toBeUndefined();
     expect(startMCPServer).toHaveBeenCalled();
   });
 
-  it('fails fast when ONTOINDEX_MCP_PROJECT_CWD confirms a different project than ONTOINDEX_MCP_REPO', async () => {
+  it('uses --project as the preferred startup project path and ignores env repo pinning', async () => {
     getGitRootMock.mockReturnValue('/opt/demodb/_workfolder/OntoIndex');
-    process.env.ONTOINDEX_MCP_REPO = '/project/b';
+    process.env.ONTOINDEX_MCP_REPO = 'wrong-repo';
+    process.env.ONTOINDEX_MCP_PROJECT_CWD = '/project/env-target';
+    backendMocks.listRepos.mockResolvedValue([{ name: 'repo-a', path: '/project/explicit-target' }]);
+
+    await mcpCommand({ project: '/project/explicit-target' });
+
+    expect(LocalBackend).toHaveBeenCalledWith({
+      repoFilter: undefined,
+      preferredProjectPath: '/project/explicit-target',
+    });
+    expect(process.exitCode).toBeUndefined();
+    expect(startMCPServer).toHaveBeenCalled();
+  });
+
+  it('fails fast when --repo resolves to a different project', async () => {
+    getGitRootMock.mockReturnValue('/opt/demodb/_workfolder/OntoIndex');
     process.env.ONTOINDEX_MCP_PROJECT_CWD = '/project/a';
     process.env.ONTOINDEX_MCP_STARTUP_TIMEOUT_MS = '10000';
+    backendMocks.listRepos.mockResolvedValue([{ name: 'repo-b', path: '/project/b' }]);
 
-    await mcpCommand();
+    await mcpCommand({ repo: 'repo-b' });
 
     expect(process.exitCode).toBe(1);
-    expect(backendMocks.dispose).not.toHaveBeenCalled();
+    expect(backendMocks.dispose).toHaveBeenCalled();
     expect(startMCPServer).not.toHaveBeenCalled();
-    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('ONTOINDEX_MCP_REPO'));
     expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining('does not match this project scope'),
+      expect.stringContaining('--repo "repo-b" resolves to repo-b -> /project/b'),
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('Project cwd: /opt/demodb/_workfolder/OntoIndex'),
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining(`Process cwd: ${process.cwd()}`),
+    );
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Restart command:'));
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "ontoindex mcp --project '/opt/demodb/_workfolder/OntoIndex' --repo 'repo-b'",
+      ),
     );
   });
 
   it('warns and continues when ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1', async () => {
     getGitRootMock.mockReturnValue('/opt/demodb/_workfolder/OntoIndex');
-    process.env.ONTOINDEX_MCP_REPO = '/project/b';
+    process.env.ONTOINDEX_MCP_REPO = 'repo-b';
     process.env.ONTOINDEX_MCP_PROJECT_CWD = '/project/a';
     process.env.ONTOINDEX_MCP_ALLOW_REPO_MISMATCH = '1';
-    backendMocks.listRepos.mockResolvedValue([{ name: 'repo-b' }]);
+    backendMocks.listRepos.mockResolvedValue([{ name: 'repo-b', path: '/project/b' }]);
 
     await mcpCommand();
 
     expect(process.exitCode).toBeUndefined();
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('ONTOINDEX_MCP_REPO'));
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Resolved repo: repo-b -> /project/b'));
     expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining('does not match this project scope'),
+      expect.stringContaining('Project cwd: /opt/demodb/_workfolder/OntoIndex'),
     );
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Restart command:'));
     expect(backendMocks.dispose).not.toHaveBeenCalled();
     expect(startMCPServer).toHaveBeenCalled();
   });
@@ -157,7 +192,7 @@ describe('mcpCommand', () => {
     getGitRootMock.mockReturnValue('/project/a');
     process.env.ONTOINDEX_MCP_REPO = '/project/a';
     process.env.ONTOINDEX_MCP_PROJECT_CWD = '/project/a';
-    backendMocks.listRepos.mockResolvedValue([{ name: 'repo-a' }]);
+    backendMocks.listRepos.mockResolvedValue([{ name: 'repo-a', path: '/project/a' }]);
 
     await mcpCommand();
 
@@ -190,13 +225,26 @@ describe('mcpCommand', () => {
   });
 
   it('passes the requested repo filter to the backend before startup', async () => {
-    backendMocks.listRepos.mockResolvedValue([{ name: 'only-this-repo' }]);
+    delete process.env.ONTOINDEX_MCP_PROJECT_CWD;
+    backendMocks.listRepos.mockResolvedValue([{ name: 'only-this-repo', path: '/target/repo' }]);
 
     await mcpCommand({ repo: 'only-this-repo' });
 
     expect(LocalBackend).toHaveBeenCalledWith({
       repoFilter: 'only-this-repo',
-      preferredProjectPath: '/project/a',
+      preferredProjectPath: '/target/repo',
+    });
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('passes both explicit project path and repo filter to the backend before startup', async () => {
+    backendMocks.listRepos.mockResolvedValue([{ name: 'only-this-repo', path: '/target/repo' }]);
+
+    await mcpCommand({ repo: 'only-this-repo', project: '/target/repo' });
+
+    expect(LocalBackend).toHaveBeenCalledWith({
+      repoFilter: 'only-this-repo',
+      preferredProjectPath: '/target/repo',
     });
     expect(process.exitCode).toBeUndefined();
   });

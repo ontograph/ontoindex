@@ -2,6 +2,11 @@ import type { LocalBackend } from '../local/local-backend.js';
 import type { SuperTool } from '../super/names.js';
 import { parseTypedQueryDocument } from '../../core/search/typed-query-document.js';
 import { getMcpStartupProfileFromEnv, getPublicToolRegistry } from '../shared/tool-registry.js';
+import {
+  attachRepoScopeIdentity,
+  attachRepoScopeIdentityToError,
+  createGlobalTargetContext,
+} from '../shared/response-envelope.js';
 
 const CANONICAL_NODE_ID_RE = /^[A-Z]\w+:/;
 
@@ -39,6 +44,9 @@ export async function dispatchFacade(
       version: 1,
       source: 'mcp-frontier',
       startupProfile,
+      targetContext: createGlobalTargetContext(
+        'discover/tools does not require repository resolution',
+      ),
       count: tools.length,
       tools,
       recommendedTools,
@@ -54,7 +62,14 @@ export async function dispatchFacade(
   if (superTool) {
     const repo = await backend.resolveRepo(typeof args.repo === 'string' ? args.repo : undefined);
     const { dispatchSuper } = await import('../super/dispatch.js');
-    return dispatchSuper(superTool, args, repo.id);
+    try {
+      return attachRepoScopeIdentity(await dispatchSuper(superTool, args, repo.id), repo);
+    } catch (error) {
+      throw attachRepoScopeIdentityToError(
+        error instanceof Error ? error : new Error(String(error)),
+        repo,
+      );
+    }
   }
 
   const method = getInternalMethod(tool, action);

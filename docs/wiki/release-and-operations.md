@@ -81,3 +81,5 @@ ONTOINDEX_MAX_WORKERS=7
 ```
 
 Restart the MCP client after config changes so the running process does not retain an older repository target.
+
+Use `ontoindex mcp-doctor --repo <label-or-path> --project-cwd <path> --json` before restart to confirm whether the current scope is `READY`, `DEGRADED`, or `MISCONFIGURED`.

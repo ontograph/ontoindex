@@ -179,7 +179,7 @@ describe('E2E-1: gn_help mode-aware content via dispatchSuper', () => {
       unknown
     >;
     const workflow = (result.recommendedWorkflow as string[]).join('\n');
-    expect(workflow).toContain('gn_audit_session_start');
+    expect(workflow).toContain('audit({action: "session_start"})');
   });
 
   it('mode=refactor workflow includes gn_safe_refactor', async () => {

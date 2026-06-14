@@ -83,7 +83,6 @@ function defaultMcpEnv(): Record<string, string> {
     ONTOINDEX_LBUG_POOL_SIZE: '1',
     ONTOINDEX_MCP_STARTUP_TIMEOUT_MS: process.env.ONTOINDEX_MCP_STARTUP_TIMEOUT_MS || '10000',
     ONTOINDEX_MCP_STARTUP_TRACE: process.env.ONTOINDEX_MCP_STARTUP_TRACE || '1',
-    ONTOINDEX_MCP_PROJECT_CWD: resolveMcpRepoPath(),
     NODE_OPTIONS: process.env.ONTOINDEX_MCP_NODE_OPTIONS || '--max-old-space-size=1536',
   };
 }
@@ -129,17 +128,18 @@ function resolvePackagedCliPath(): string | null {
  */
 function getMcpEntry(): McpEntry {
   const cliPath = resolvePackagedCliPath();
+  const projectPath = resolveMcpRepoPath();
   if (cliPath) {
     return {
       command: process.execPath,
-      args: [cliPath, 'mcp'],
+      args: [cliPath, 'mcp', '--project', projectPath],
       env: defaultMcpEnv(),
     };
   }
 
   const bin = resolveOntoIndexBin();
   if (bin) {
-    return { command: bin, args: ['mcp'], env: defaultMcpEnv() };
+    return { command: bin, args: ['mcp', '--project', projectPath], env: defaultMcpEnv() };
   }
 
   // Last-resort fallback for source-tree setup before a build exists. This is
@@ -147,13 +147,13 @@ function getMcpEntry(): McpEntry {
   if (process.platform === 'win32') {
     return {
       command: 'cmd',
-      args: ['/c', 'npx', '-y', 'ontoindex', 'mcp'],
+      args: ['/c', 'npx', '-y', 'ontoindex', 'mcp', '--project', projectPath],
       env: defaultMcpEnv(),
     };
   }
   return {
     command: 'npx',
-    args: ['-y', 'ontoindex', 'mcp'],
+    args: ['-y', 'ontoindex', 'mcp', '--project', projectPath],
     env: defaultMcpEnv(),
   };
 }

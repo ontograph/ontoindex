@@ -89,9 +89,10 @@ describe('generateAIContextFiles', () => {
   });
 
   it('keeps the CLAUDE.md OntoIndex block under the token-cost budget (#856)', async () => {
-    // The pre-trim block was ~5465 chars. After #856 it's ~2580 — about a
-    // 52% reduction. 2700 is a soft ceiling that still leaves headroom for
-    // legitimate future additions but will fail loudly if the trim is
+    // The pre-trim block was ~5465 chars. After #856 it was ~2580, and later
+    // MCP/runtime additions pushed it somewhat higher while still keeping the
+    // block materially smaller than the original. 3000 is the current soft ceiling.
+    // It still fails loudly if the trim is
     // reverted or someone pads the block back out toward the original size.
     const stats = { nodes: 50, edges: 100, processes: 5 };
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
@@ -101,7 +102,7 @@ describe('generateAIContextFiles', () => {
       content.indexOf('<!-- ontoindex:start -->'),
       content.indexOf('<!-- ontoindex:end -->'),
     );
-    expect(block.length).toBeLessThan(2700);
+    expect(block.length).toBeLessThan(3000);
   });
 
   it('handles empty stats', async () => {

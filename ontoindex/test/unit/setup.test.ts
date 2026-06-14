@@ -42,14 +42,13 @@ describe('setupClaudeCode', () => {
   const expectPackagedMcpEntry = (entry: any) => {
     expect(entry).toMatchObject({
       command: process.execPath,
-      args: [expect.stringMatching(/dist[/\\]cli[/\\]index\.js$/), 'mcp'],
+      args: [expect.stringMatching(/dist[/\\]cli[/\\]index\.js$/), 'mcp', '--project', expectedMockRepoPath],
       env: {
         NODE_ENV: 'production',
         ONTOINDEX_MCP_AUTO_ANALYZE: '0',
         ONTOINDEX_LBUG_POOL_SIZE: '1',
         ONTOINDEX_MCP_STARTUP_TIMEOUT_MS: '10000',
         ONTOINDEX_MCP_STARTUP_TRACE: '1',
-        ONTOINDEX_MCP_PROJECT_CWD: expectedMockRepoPath,
         NODE_OPTIONS: '--max-old-space-size=1536',
       },
     });
@@ -292,7 +291,7 @@ describe('setupClaudeCode', () => {
 
     const raw = await fs.readFile(path.join(codexDir, 'config.toml'), 'utf-8');
     expect(raw).toContain(`command = ${JSON.stringify(process.execPath)}`);
-    expect(raw).toMatch(/args = \[".*dist.*cli.*index\.js", "mcp"\]/);
+    expect(raw).toMatch(/args = \[".*dist.*cli.*index\.js", "mcp", "--project", "\/mock\/repo\/path"\]/);
     expect(raw).toContain('ONTOINDEX_MCP_AUTO_ANALYZE = "0"');
     expect(raw).toContain('ONTOINDEX_MCP_STARTUP_TIMEOUT_MS = "10000"');
     expect(raw).toContain('ONTOINDEX_MCP_STARTUP_TRACE = "1"');

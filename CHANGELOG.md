@@ -4,6 +4,20 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.9] - 2026-06-14
+
+### Added
+
+- MCP startup now supports `ontoindex mcp --project <path>` so clients can target a repo directly without env-only harness wiring.
+- MCP misconfiguration hardening docs: `ontoindex mcp-doctor` now documents repo-label/path resolution, `READY` / `DEGRADED` / `MISCONFIGURED` verdicts, and the restart hint for project-target mismatches.
+
+### Changed
+
+- MCP repo resolution now prefers explicit startup args and cwd-derived project scope before env fallback, reducing cross-repo miswiring in multi-repo workspaces.
+- `ontoindex setup`, repo-resolution errors, `mcp-doctor`, and `gn_diagnose` now emit arg-first repair commands based on `ontoindex mcp --project ...`.
+- MCP reference and setup docs now describe repo identity on scoped responses, the `gn_diagnose` misconfiguration branch, and the `ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1` override.
+- Bridge DB overwrite now waits until the promoted `bridge.lbug` is queryable before returning and preserves `.wal` / `.lock` sidecars during atomic swaps, removing intermittent `Table Contract does not exist` failures in native child-process coverage.
+
 ## [1.9.3] - 2026-06-10
 
 ### Changed

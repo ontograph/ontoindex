@@ -882,8 +882,9 @@ describe('LocalBackend.resolveRepo', () => {
     setupMultipleRepos();
     await backend.init();
     await expect(backend.callTool('query', { query: 'test' })).rejects.toThrow(
-      'Multiple repositories indexed',
+      'Multiple repositories are indexed',
     );
+    await expect(backend.callTool('query', { query: 'test' })).rejects.toThrow('repo: "test-project"');
   });
 
   it('resolves repo by name parameter', async () => {
@@ -1168,7 +1169,7 @@ describe('cypher result formatting', () => {
     expect(result.row_count).toBe(2);
   });
 
-  it('returns empty array as-is', async () => {
+  it('preserves empty array results without repo identity wrapping', async () => {
     (executeQuery as any).mockResolvedValue([]);
     const result = await backend.callTool('cypher', {
       query: 'MATCH (n:Function) RETURN n.name LIMIT 1',

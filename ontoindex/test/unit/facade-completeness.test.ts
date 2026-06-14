@@ -101,6 +101,7 @@ describe('facade completeness — every declared action must reach a backend han
     const backend = new LocalBackend();
     const result = (await dispatchFacade('discover', 'tools', {}, backend)) as {
       version: number;
+      targetContext: { scope: string; reason: string };
       count: number;
       tools: Array<{ name: string; kind: string }>;
       recommendedTools: Array<{ name: string; kind: string }>;
@@ -111,6 +112,10 @@ describe('facade completeness — every declared action must reach a backend han
     };
 
     expect(result.version).toBe(1);
+    expect(result.targetContext).toEqual({
+      scope: 'global',
+      reason: 'discover/tools does not require repository resolution',
+    });
     expect(result.count).toBe(result.tools.length);
     expect(result.recommendedCount).toBe(result.recommendedTools.length);
     expect(result.compatibilityCount).toBe(result.compatibilityTools.length);

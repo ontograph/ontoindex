@@ -181,7 +181,7 @@ describe('MCP Facade Metadata Integration', () => {
   it('answers setup/help and edit-readiness prompts from the compact help report', () => {
     const prompts = gnHelp().ergonomicsReview.workflowPrompts;
 
-    expect(prompts.setupHelp).toContain('gn_help({})');
+    expect(prompts.setupHelp).toContain('discover({action: "tools"})');
     expect(prompts.editReadiness).toContain('gn_safe_edit_check');
   });
 });
