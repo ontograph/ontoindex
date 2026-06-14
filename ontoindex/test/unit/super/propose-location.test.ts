@@ -20,6 +20,10 @@ vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
   executeParameterized: vi.fn(),
 }));
 
+vi.mock('../../../src/storage/repo-manager.js', () => ({
+  listRegisteredRepos: vi.fn(),
+}));
+
 vi.mock('fs/promises', () => ({
   access: vi.fn(),
   realpath: vi.fn(),
@@ -33,11 +37,13 @@ vi.mock('fs/promises', () => ({
 
 import { gnExplore } from '../../../src/mcp/super/explore.js';
 import { executeParameterized } from '../../../src/core/lbug/pool-adapter.js';
+import { listRegisteredRepos } from '../../../src/storage/repo-manager.js';
 import { access, readFile, realpath, stat } from 'fs/promises';
 import { gnProposeLocation } from '../../../src/mcp/super/propose-location.js';
 
 const mockGnExplore = gnExplore as unknown as ReturnType<typeof vi.fn>;
 const mockExecuteParameterized = executeParameterized as unknown as ReturnType<typeof vi.fn>;
+const mockListRegisteredRepos = listRegisteredRepos as unknown as ReturnType<typeof vi.fn>;
 const mockAccess = access as unknown as ReturnType<typeof vi.fn>;
 const mockRealpath = realpath as unknown as ReturnType<typeof vi.fn>;
 const mockStat = stat as unknown as ReturnType<typeof vi.fn>;
@@ -78,6 +84,7 @@ function siblingRows(paths: string[]): any[] {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  mockListRegisteredRepos.mockResolvedValue([]);
   mockAccess.mockRejectedValue(new Error('ENOENT'));
   mockRealpath.mockImplementation(async (fp: string) => fp);
   mockStat.mockResolvedValue({ isFile: () => true, size: 0 });
@@ -317,6 +324,26 @@ describe('gnProposeLocation', () => {
       'import pattern sniffing skipped: target repo root is unknown',
     );
     expect(mockReadFile).not.toHaveBeenCalled();
+  });
+
+  it('uses import sniffing when repo id resolves through the registry', async () => {
+    const clusters = [{ name: 'services', role: 'logic', fileCount: 1, keyFiles: [] }];
+    mockGnExplore.mockResolvedValue(makeExploreResult(clusters));
+    mockListRegisteredRepos.mockResolvedValue([
+      { name: 'codex', path: process.cwd(), indexedAt: '', lastCommit: '', stats: {} },
+    ]);
+    mockExecuteParameterized.mockResolvedValueOnce(siblingRows(['src/services/user-service.ts']));
+    mockAccess.mockResolvedValue(undefined);
+    mockStat.mockResolvedValue({ isFile: () => true, size: 128 });
+    mockReadFile.mockResolvedValue("import { db } from '../db/client.js';\n");
+
+    const report = await gnProposeLocation('codex', { intent: 'add service' });
+
+    expect(report.candidates).toHaveLength(1);
+    expect(report.candidates[0].importPattern).toContain("import { db } from '../db/client.js';");
+    expect(report.warnings).not.toContain(
+      'import pattern sniffing skipped: target repo root is unknown',
+    );
   });
 
   it('uses import sniffing for current repo id with different casing', async () => {

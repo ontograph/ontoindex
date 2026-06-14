@@ -459,6 +459,55 @@ describe('gnDiffImpact', () => {
       ).toBe(true);
     }
   });
+
+  it('returns summary-first bounded detail for large diff payloads', async () => {
+    const previousFileLimit = process.env.ONTOINDEX_DIFF_IMPACT_MAX_DETAIL_FILES;
+    const previousSymbolLimit = process.env.ONTOINDEX_DIFF_IMPACT_MAX_DETAIL_SYMBOLS_PER_FILE;
+    process.env.ONTOINDEX_DIFF_IMPACT_MAX_DETAIL_FILES = '1';
+    process.env.ONTOINDEX_DIFF_IMPACT_MAX_DETAIL_SYMBOLS_PER_FILE = '1';
+    setupGitMocks('src/a.ts\nsrc/b.ts\n', '5\t1\tsrc/a.ts\n7\t2\tsrc/b.ts\n');
+    setupGraphMocks({
+      symbolRows: [
+        { id: 'Function:src/file.ts:first', name: 'first' },
+        { id: 'Function:src/file.ts:second', name: 'second' },
+      ],
+      upstreamCount: 2,
+    });
+
+    try {
+      const report = await gnDiffImpact(REPO_ID, { commitRange: 'HEAD~1..HEAD' });
+
+      expect(report.summary).toMatchObject({
+        totalChangedFiles: 2,
+        emittedChangedFiles: 1,
+        totalChangedSymbols: 4,
+        emittedChangedSymbols: 1,
+        detailTruncated: true,
+        truncatedFileCount: 1,
+        truncatedSymbolCount: 3,
+      });
+      expect(report.changedFiles).toHaveLength(1);
+      expect(report.changedFiles[0]).toMatchObject({
+        path: 'src/a.ts',
+        detailTruncated: true,
+        totalChangedSymbols: 2,
+      });
+      expect(report.changedFiles[0].changedSymbols).toHaveLength(1);
+      expect(report.warnings).toContain('Diff impact detailed file output capped at 1 files');
+      expect(report.warnings).toContain('Diff impact per-file symbol detail capped at 1 symbols');
+    } finally {
+      if (previousFileLimit === undefined) {
+        delete process.env.ONTOINDEX_DIFF_IMPACT_MAX_DETAIL_FILES;
+      } else {
+        process.env.ONTOINDEX_DIFF_IMPACT_MAX_DETAIL_FILES = previousFileLimit;
+      }
+      if (previousSymbolLimit === undefined) {
+        delete process.env.ONTOINDEX_DIFF_IMPACT_MAX_DETAIL_SYMBOLS_PER_FILE;
+      } else {
+        process.env.ONTOINDEX_DIFF_IMPACT_MAX_DETAIL_SYMBOLS_PER_FILE = previousSymbolLimit;
+      }
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

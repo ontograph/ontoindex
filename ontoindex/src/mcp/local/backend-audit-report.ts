@@ -36,7 +36,16 @@ const AUDIT_CONFIG = {
   HOTSPOT_LIMIT: 10,
   GRAPH_DIFF_LIMIT: 10,
   FANOUT_CONCURRENCY: 2,
+  BACKEND_TIMEOUT_MS: 15_000,
+  TOTAL_BUDGET_MS: 45_000,
 };
+
+function parsePositiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 // Bumped when the annotation prompt or output contract changes. Cache keys
 // include this so prompt edits invalidate prior cached annotations.
@@ -240,6 +249,14 @@ export async function runAuditReport(
   repo: RepoHandle,
   params: { annotate?: boolean; since?: string; force?: boolean },
 ): Promise<AuditReportResult> {
+  const backendTimeoutMs = parsePositiveIntegerEnv(
+    'ONTOINDEX_AUDIT_REPORT_BACKEND_TIMEOUT_MS',
+    AUDIT_CONFIG.BACKEND_TIMEOUT_MS,
+  );
+  const totalBudgetMs = parsePositiveIntegerEnv(
+    'ONTOINDEX_AUDIT_REPORT_TOTAL_BUDGET_MS',
+    AUDIT_CONFIG.TOTAL_BUDGET_MS,
+  );
   const BACKEND_NAMES = [
     'dead-code',
     'cycle-detect',
@@ -289,7 +306,15 @@ export async function runAuditReport(
       ),
   ];
 
-  const rawResults = await runAuditBackendsBounded(backendTasks, AUDIT_CONFIG.FANOUT_CONCURRENCY);
+  const rawResults = await runAuditBackendsBounded(
+    backendTasks,
+    AUDIT_CONFIG.FANOUT_CONCURRENCY,
+    BACKEND_NAMES,
+    {
+      backendTimeoutMs,
+      totalBudgetMs,
+    },
+  );
 
   const warnings: string[] = [];
   const [
@@ -402,16 +427,38 @@ export async function runAuditReport(
 async function runAuditBackendsBounded(
   tasks: Array<() => Promise<unknown | Error>>,
   concurrency: number,
+  backendNames: readonly string[],
+  options: {
+    backendTimeoutMs: number;
+    totalBudgetMs: number;
+  },
 ): Promise<Array<unknown | Error>> {
   const results: Array<unknown | Error> = new Array(tasks.length);
   let cursor = 0;
   const workerCount = Math.max(1, Math.min(concurrency, tasks.length));
+  const deadlineAt = Date.now() + options.totalBudgetMs;
+
+  async function runWithBudget(index: number): Promise<unknown | Error> {
+    if (Date.now() >= deadlineAt) {
+      return new Error(
+        `${backendNames[index] ?? `backend-${index + 1}`}: skipped after report budget ${options.totalBudgetMs}ms was exhausted`,
+      );
+    }
+    const task = tasks[index];
+    const timeoutMessage = `${backendNames[index] ?? `backend-${index + 1}`}: timed out after ${options.backendTimeoutMs}ms`;
+    return await Promise.race([
+      task(),
+      new Promise<Error>((resolve) =>
+        setTimeout(() => resolve(new Error(timeoutMessage)), options.backendTimeoutMs),
+      ),
+    ]);
+  }
 
   async function worker(): Promise<void> {
     while (true) {
       const index = cursor++;
       if (index >= tasks.length) return;
-      results[index] = await tasks[index]();
+      results[index] = await runWithBudget(index);
     }
   }
 

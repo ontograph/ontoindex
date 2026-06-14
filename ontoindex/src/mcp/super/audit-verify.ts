@@ -43,7 +43,7 @@ export async function runAuditVerify(
 ): Promise<Record<string, unknown>> {
   const sessionId = params.sessionId ?? params.session;
   const findings = params.finding
-    ? [params.finding]
+    ? [normalizeInlineFinding(params.finding)]
     : await loadLifecycleFindings(repoPath, sessionId, params.findingId);
   const maxFindings = clampLimit(params.maxFindings, 25);
   const maxEvidence = clampLimit(params.maxEvidence, DEFAULT_MAX_EVIDENCE);
@@ -101,6 +101,148 @@ export async function runAuditVerify(
       ...result.negativeEvidence.slice(0, maxEvidence),
     ]),
   });
+}
+
+function normalizeInlineFinding(value: unknown): LifecycleFinding {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('inline finding must be an object');
+  }
+  const finding = value as Record<string, unknown>;
+  const source = normalizeFindingSource(finding.source);
+  const fingerprint = normalizeFingerprint(finding.fingerprint);
+  return {
+    findingId: requiredString(finding.findingId, 'finding.findingId'),
+    title: requiredString(finding.title, 'finding.title'),
+    severity: normalizeSeverity(finding.severity),
+    status: normalizeStatus(finding.status),
+    source,
+    targetRepo: requiredString(finding.targetRepo, 'finding.targetRepo'),
+    ...(optionalString(finding.targetRef) ? { targetRef: optionalString(finding.targetRef) } : {}),
+    targetHead: requiredString(finding.targetHead, 'finding.targetHead'),
+    graphIndexId: requiredString(finding.graphIndexId, 'finding.graphIndexId'),
+    claimedEvidence: stringArray(finding.claimedEvidence),
+    verifiedEvidence: evidenceArray(finding.verifiedEvidence),
+    negativeEvidence: evidenceArray(finding.negativeEvidence),
+    statusReason: optionalString(finding.statusReason) ?? '',
+    fixCommit: nullableString(finding.fixCommit),
+    confidence: typeof finding.confidence === 'number' ? finding.confidence : 0,
+    reasonCodes: reasonCodeArray(finding.reasonCodes),
+    fingerprint,
+    claimDsl:
+      finding.claimDsl && typeof finding.claimDsl === 'object' && !Array.isArray(finding.claimDsl)
+        ? (finding.claimDsl as LifecycleFinding['claimDsl'])
+        : null,
+    verificationKind: normalizeVerificationKind(finding.verificationKind),
+    verifiedAt: nullableString(finding.verifiedAt),
+    verifiedHead: nullableString(finding.verifiedHead),
+    statusChangedAt: nullableString(finding.statusChangedAt),
+    statusChangedBy: optionalString(finding.statusChangedBy) ?? 'ontoindex',
+    statusTransitionEvidence: evidenceArray(finding.statusTransitionEvidence),
+    reopenTrigger:
+      finding.reopenTrigger &&
+      typeof finding.reopenTrigger === 'object' &&
+      !Array.isArray(finding.reopenTrigger)
+        ? (finding.reopenTrigger as LifecycleFinding['reopenTrigger'])
+        : null,
+    blocker:
+      finding.blocker && typeof finding.blocker === 'object' && !Array.isArray(finding.blocker)
+        ? (finding.blocker as LifecycleFinding['blocker'])
+        : null,
+    ...(finding.decisionGate &&
+    typeof finding.decisionGate === 'object' &&
+    !Array.isArray(finding.decisionGate)
+      ? { decisionGate: finding.decisionGate as NonNullable<LifecycleFinding['decisionGate']> }
+      : {}),
+    tombstoneMatch: nullableString(finding.tombstoneMatch),
+  };
+}
+
+function normalizeFindingSource(value: unknown): LifecycleFinding['source'] {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('finding.source must be an object');
+  }
+  const source = value as Record<string, unknown>;
+  return {
+    path: requiredString(source.path, 'finding.source.path'),
+    hash: requiredString(source.hash, 'finding.source.hash'),
+    ingestedAt: requiredString(source.ingestedAt, 'finding.source.ingestedAt'),
+    dirtyWorktree: typeof source.dirtyWorktree === 'boolean' ? source.dirtyWorktree : false,
+  };
+}
+
+function normalizeFingerprint(value: unknown): LifecycleFinding['fingerprint'] {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('finding.fingerprint must be an object');
+  }
+  const fingerprint = value as Record<string, unknown>;
+  return {
+    location: requiredString(fingerprint.location, 'finding.fingerprint.location'),
+    claim: requiredString(fingerprint.claim, 'finding.fingerprint.claim'),
+    ...(optionalString(fingerprint.history)
+      ? { history: optionalString(fingerprint.history) }
+      : {}),
+  };
+}
+
+function requiredString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`${field} must be a non-empty string`);
+  }
+  return value;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function reasonCodeArray(value: unknown): LifecycleFinding['reasonCodes'] {
+  return Array.isArray(value)
+    ? value.filter((item): item is LifecycleFinding['reasonCodes'][number] => typeof item === 'string')
+    : [];
+}
+
+function evidenceArray(value: unknown): LifecycleEvidence[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is LifecycleEvidence => typeof item === 'object' && item !== null)
+    : [];
+}
+
+function normalizeSeverity(value: unknown): LifecycleFinding['severity'] {
+  return value === 'LOW' || value === 'MEDIUM' || value === 'HIGH' || value === 'CRITICAL'
+    ? value
+    : 'LOW';
+}
+
+function normalizeStatus(value: unknown): LifecycleFinding['status'] {
+  return value === 'OPEN' ||
+    value === 'RESOLVED-ALREADY' ||
+    value === 'PARTIAL' ||
+    value === 'FALSE-POSITIVE' ||
+    value === 'NEEDS-VERIFY' ||
+    value === 'DECISION-GATED' ||
+    value === 'HOLD' ||
+    value === 'NEEDS-REVERIFY'
+    ? value
+    : 'NEEDS-VERIFY';
+}
+
+function normalizeVerificationKind(value: unknown): LifecycleFinding['verificationKind'] {
+  return value === 'static' ||
+    value === 'dynamic' ||
+    value === 'runtime' ||
+    value === 'manual' ||
+    value === 'hybrid' ||
+    value === 'unsupported'
+    ? value
+    : 'static';
 }
 
 export async function loadLifecycleFindings(

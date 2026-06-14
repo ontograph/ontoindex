@@ -9,6 +9,7 @@
 
 import { gnExplore } from './explore.js';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { listRegisteredRepos } from '../../storage/repo-manager.js';
 import { constants as fsConstants } from 'fs';
 import { access, readFile, realpath, stat } from 'fs/promises';
 import { basename, isAbsolute, relative, resolve } from 'path';
@@ -197,7 +198,7 @@ function isContainedPath(childPath: string, parentPath: string): boolean {
   return relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath));
 }
 
-function resolveKnownRepoRoot(repoId: string): string | undefined {
+async function resolveKnownRepoRoot(repoId: string): Promise<string | undefined> {
   const cwdRoot = resolve(process.cwd());
   if (repoId === cwdRoot || repoId.toLowerCase() === basename(cwdRoot).toLowerCase()) {
     return cwdRoot;
@@ -205,7 +206,13 @@ function resolveKnownRepoRoot(repoId: string): string | undefined {
 
   if (isAbsolute(repoId)) {
     const absoluteRepoId = resolve(repoId);
-    if (absoluteRepoId === cwdRoot) return cwdRoot;
+    return absoluteRepoId;
+  }
+
+  const repos = await listRegisteredRepos();
+  const repo = repos.find((entry) => entry.name === repoId || entry.path === repoId);
+  if (repo) {
+    return resolve(repo.path);
   }
 
   return undefined;
@@ -292,7 +299,7 @@ export async function gnProposeLocation(
   params: ProposeLocationParams,
 ): Promise<ProposeLocationReport> {
   const warnings: string[] = [];
-  const repoRoot = resolveKnownRepoRoot(repoId);
+  const repoRoot = await resolveKnownRepoRoot(repoId);
   if (!repoRoot) {
     warnings.push('import pattern sniffing skipped: target repo root is unknown');
   }

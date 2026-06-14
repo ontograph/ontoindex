@@ -1,6 +1,6 @@
 {
   "name": "ontoindex",
-  "version": "1.9.9",
+  "version": "1.9.10",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "AGPL-3.0-or-later",
@@ -50,7 +50,7 @@
     "test:coverage": "vitest run --coverage",
     "bench:large": "node scripts/large-codebase-benchmark.mjs",
     "bench:semantic-ann": "node scripts/semantic-ann-benchmark.mjs",
-    "postinstall": "node scripts/patch-tree-sitter-swift.cjs && node scripts/build-tree-sitter-proto.cjs",
+    "postinstall": "node scripts/patch-tree-sitter-swift.cjs && node scripts/patch-tree-sitter-csharp.cjs && node scripts/build-tree-sitter-proto.cjs",
     "prepare": "node scripts/build.js",
     "prepack": "node scripts/build.js"
   },

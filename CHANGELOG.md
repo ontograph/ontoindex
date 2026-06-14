@@ -4,6 +4,16 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.10] - 2026-06-14
+
+### Fixed
+
+- MCP audit/runtime hardening: inline audit verification now normalizes partial findings, `gn_audit_session_start({ persist: false })` no longer tries to create a persisted session lock, and `gn_propose_location` resolves registry repo labels correctly.
+- `inspect({ action: "ipc" })` now uses language-neutral symbol labels instead of reporting non-JavaScript symbols as JavaScript.
+- Audit reports now use bounded backend runtime handling, and diff-impact responses include summary-first truncation for dirty worktrees.
+- CLI analyze skips the risky native LadybugDB close path by default before process exit, avoiding late `free()` / `double free` crashes after successful graph writes. Set `ONTOINDEX_ANALYZE_NATIVE_CLOSE=1` to force the old close path for diagnostics.
+- `tree-sitter-c-sharp` now loads through its explicit `bindings/node/index.js` entrypoint and postinstall patches its package metadata, removing Node ESM `DEP0151` warning spam.
+
 ## [1.9.9] - 2026-06-14
 
 ### Added

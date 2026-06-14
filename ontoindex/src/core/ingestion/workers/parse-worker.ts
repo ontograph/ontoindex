@@ -8,7 +8,7 @@ import Python from 'tree-sitter-python';
 import Java from 'tree-sitter-java';
 import C from 'tree-sitter-c';
 import CPP from 'tree-sitter-cpp';
-import CSharp from 'tree-sitter-c-sharp';
+import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import PHP from 'tree-sitter-php';

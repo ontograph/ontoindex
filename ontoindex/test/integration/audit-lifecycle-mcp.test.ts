@@ -175,6 +175,33 @@ describe('audit lifecycle MCP integration', () => {
     expect(verify.code).toBe('STALE_SESSION');
   });
 
+  it('starts a non-persistent session without creating a store-backed lock', async () => {
+    const repo = initRepo();
+    const report = path.join(repo, 'audit.md');
+    writeFileSync(
+      report,
+      [
+        '## Missing guard in run',
+        'Severity: HIGH',
+        'Path: src/app.ts',
+        'Symbol: run',
+        'Claim: run is missing a guard',
+        '- evidence: src/app.ts:1',
+      ].join('\n'),
+    );
+
+    const started = (await dispatchSuper(
+      'gn_audit_session_start',
+      { repo, sourcePath: report, targetRef: 'HEAD', persist: false },
+      repo,
+    )) as Record<string, any>;
+
+    expect(started.action).toBe('audit-session-start');
+    expect(started.ok).toBe(true);
+    expect(started.persisted).toBe(false);
+    expect(started.lock).toBeNull();
+  });
+
   it('runs dedupe before manager bundling and blocks manager dispatch for NEEDS-REVERIFY findings', async () => {
     const repo = initRepo();
     const sessionId = 'session-manager';

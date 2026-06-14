@@ -130,6 +130,64 @@ describe('runAuditVerify', () => {
     });
     expect(Array.isArray(result.evidence)).toBe(true);
   });
+
+  it('normalizes partial inline findings before verification', async () => {
+    const result = await runAuditVerify(
+      '/workspace/fixture',
+      {
+        finding: {
+          findingId: 'AUDIT-M3-002',
+          title: 'Partial inline finding',
+          source: {
+            path: 'audits/report.md',
+            hash: 'sha256:inline',
+            ingestedAt: '2026-05-17T09:00:00.000Z',
+          },
+          targetRepo: '/workspace/fixture',
+          targetHead: 'abc123',
+          graphIndexId: 'idx:test',
+          fingerprint: { location: 'loc-inline', claim: 'claim-inline' },
+        } as unknown as AuditFinding,
+        persist: false,
+      },
+      'fixture',
+    );
+
+    expect(verifyFindingFreshEvidenceMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        finding: expect.objectContaining({
+          findingId: 'AUDIT-M3-002',
+          severity: 'LOW',
+          status: 'NEEDS-VERIFY',
+          reasonCodes: [],
+          claimedEvidence: [],
+          verifiedEvidence: [],
+          negativeEvidence: [],
+          statusTransitionEvidence: [],
+          verificationKind: 'static',
+          statusChangedBy: 'ontoindex',
+          tombstoneMatch: null,
+        }),
+      }),
+    );
+    expect(result.verifiedCount).toBe(1);
+  });
+
+  it('rejects malformed inline findings with a structured error', async () => {
+    await expect(
+      runAuditVerify(
+        '/workspace/fixture',
+        {
+          finding: {
+            findingId: 'AUDIT-M3-003',
+            title: 'Broken inline finding',
+          } as unknown as AuditFinding,
+          persist: false,
+        },
+        'fixture',
+      ),
+    ).rejects.toThrow('finding.source must be an object');
+  });
 });
 
 function finding(): AuditFinding {

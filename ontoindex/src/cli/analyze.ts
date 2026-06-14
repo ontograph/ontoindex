@@ -482,6 +482,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         ...(includePaths ? { includePaths } : {}),
         skipAgentsMd: experimentalFileDeltaPlan?.safeToBound ? true : options?.skipAgentsMd,
         noStats: experimentalFileDeltaPlan?.safeToBound ? true : options?.noStats,
+        skipNativeClose: process.env.ONTOINDEX_ANALYZE_NATIVE_CLOSE !== '1',
         registryName: options?.name,
         // Registry-collision bypass — its own CLI flag, intentionally NOT
         // overloading --force. A user who hits the collision guard should

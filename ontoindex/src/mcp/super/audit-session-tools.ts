@@ -322,6 +322,7 @@ export async function gnAuditSessionStart(
   params: AuditSessionStartParams,
 ): Promise<Record<string, unknown>> {
   const repo = await resolveAuditRepoHandle(repoId, params.repo);
+  const persisted = params.persist !== false;
   const ingest = await runAuditIngest(repo.repoPath, {
     sourcePath: params.sourcePath,
     sourceText: params.pastedText,
@@ -331,15 +332,18 @@ export async function gnAuditSessionStart(
     maxFindings: params.maxFindings,
   });
   const sessionId = requireStringField(ingest.sessionId, 'ingest.sessionId');
-  const lock = await createAuditSessionLockFromStore({
-    repoRoot: repo.repoPath,
-    sessionId,
-    ontoindexVersion: packageVersion(),
-  });
+  const lock = persisted
+    ? await createAuditSessionLockFromStore({
+        repoRoot: repo.repoPath,
+        sessionId,
+        ontoindexVersion: packageVersion(),
+      })
+    : null;
   return {
     version: 1,
     action: 'audit-session-start',
     ok: true,
+    persisted,
     strictFresh: params.strictFresh !== false,
     sessionId,
     ingest,

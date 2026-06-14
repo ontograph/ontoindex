@@ -106,6 +106,8 @@ export interface AnalyzeOptions {
   allowDuplicateName?: boolean;
   /** Queue post-index Markdown sidecar enrichment. Default off. */
   markdownSidecar?: boolean;
+  /** Skip native LadybugDB close; callers must terminate the process promptly. */
+  skipNativeClose?: boolean;
   /** Pipeline profile to run. Defaults to full. */
   profile?: PipelineProfile;
   /** Optional repository-relative roots to scan before ignore filtering. */
@@ -1314,7 +1316,9 @@ export async function runFullAnalysis(
     }
 
     // ── Close LadybugDB ──────────────────────────────────────────────
-    await closeLbug();
+    if (!options.skipNativeClose) {
+      await closeLbug();
+    }
 
     partialCheckpoint?.clear();
     progress('done', 100, 'Done');
@@ -1330,7 +1334,9 @@ export async function runFullAnalysis(
   } catch (err) {
     // Ensure LadybugDB is closed even on error
     try {
-      await closeLbug();
+      if (!options.skipNativeClose) {
+        await closeLbug();
+      }
     } catch {
       /* swallow */
     }

@@ -63,10 +63,21 @@ export interface DiffImpactReport {
   version: 1;
   commitRange: string;
   basedOnReads?: BasedOnReadsSummary;
+  summary: {
+    totalChangedFiles: number;
+    emittedChangedFiles: number;
+    totalChangedSymbols: number;
+    emittedChangedSymbols: number;
+    detailTruncated: boolean;
+    truncatedFileCount: number;
+    truncatedSymbolCount: number;
+  };
   changedFiles: Array<{
     path: string;
     addedLines: number;
     removedLines: number;
+    detailTruncated?: boolean;
+    totalChangedSymbols?: number;
     evidenceIds: string[];
     changedSymbols: Array<{
       nodeId: string;
@@ -126,6 +137,8 @@ const GIT_MAX_BUFFER = 16 * 1024 * 1024;
 const MAX_CHANGED_PATHS = 500;
 const MAX_REVIEWER_PATHS = 100;
 const MAX_REVIEW_DIFF_DIAGNOSTIC_RECORDS = 25;
+const MAX_DIFF_IMPACT_DETAIL_FILES = 25;
+const MAX_DIFF_IMPACT_SYMBOLS_PER_FILE = 10;
 const REVIEW_DIFF_DIAGNOSTICS_NOTE =
   'Evidence diagnostics are bounded quality metadata for review triage; they are not audit authority.';
 
@@ -307,6 +320,15 @@ function createBaseDiffImpactReport(
     version: 1,
     commitRange,
     basedOnReads: summarizeBasedOnReads(),
+    summary: {
+      totalChangedFiles: 0,
+      emittedChangedFiles: 0,
+      totalChangedSymbols: 0,
+      emittedChangedSymbols: 0,
+      detailTruncated: false,
+      truncatedFileCount: 0,
+      truncatedSymbolCount: 0,
+    },
     changedFiles: [],
     affectedProcesses: [],
     totalSymbolsChanged: 0,
@@ -325,6 +347,13 @@ function createBaseDiffImpactReport(
     evidence: [],
     ...overrides,
   };
+}
+
+function parsePositiveLimitEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function collectWarningEvidenceIds(
@@ -698,6 +727,31 @@ export async function gnDiffImpact(
   const evidence: DiffImpactReport['evidence'] = [];
   const fileEvidenceByPath = new Map<string, string>();
   const symbolEvidenceEntries: Array<{ token: string; id: string }> = [];
+  const detailFileLimit = parsePositiveLimitEnv(
+    'ONTOINDEX_DIFF_IMPACT_MAX_DETAIL_FILES',
+    MAX_DIFF_IMPACT_DETAIL_FILES,
+  );
+  const detailSymbolLimit = parsePositiveLimitEnv(
+    'ONTOINDEX_DIFF_IMPACT_MAX_DETAIL_SYMBOLS_PER_FILE',
+    MAX_DIFF_IMPACT_SYMBOLS_PER_FILE,
+  );
+  const emittedReviewedFiles = reviewResult.reviewedFiles.slice(0, detailFileLimit);
+  const totalDetailedFiles = reviewResult.reviewedFiles.length;
+  const totalDetailedSymbols = reviewResult.reviewedFiles.reduce(
+    (count, file) => count + file.changedSymbols.length,
+    0,
+  );
+  const emittedDetailedSymbols = emittedReviewedFiles.reduce(
+    (count, file) => count + Math.min(file.changedSymbols.length, detailSymbolLimit),
+    0,
+  );
+  const truncatedFileCount = Math.max(0, totalDetailedFiles - emittedReviewedFiles.length);
+  const truncatedSymbolCount =
+    totalDetailedSymbols -
+    emittedReviewedFiles.reduce(
+      (count, file) => count + Math.min(file.changedSymbols.length, detailSymbolLimit),
+      0,
+    );
 
   recordEvidenceReadSafe({
     readClass: 'graph_evidence',
@@ -708,7 +762,7 @@ export async function gnDiffImpact(
     repo: repoId,
   });
 
-  const changedFiles: DiffImpactReport['changedFiles'] = reviewResult.reviewedFiles.map((rf) => {
+  const changedFiles: DiffImpactReport['changedFiles'] = emittedReviewedFiles.map((rf) => {
     const fileEvidenceId = makeEvidenceId('diff-file', rf.path);
     fileEvidenceByPath.set(rf.path, fileEvidenceId);
 
@@ -727,8 +781,14 @@ export async function gnDiffImpact(
       path: rf.path,
       addedLines: rf.addedLines,
       removedLines: rf.removedLines,
+      ...(rf.changedSymbols.length > detailSymbolLimit
+        ? {
+            detailTruncated: true,
+            totalChangedSymbols: rf.changedSymbols.length,
+          }
+        : {}),
       evidenceIds: [fileEvidenceId],
-      changedSymbols: rf.changedSymbols.map((sym) => {
+      changedSymbols: rf.changedSymbols.slice(0, detailSymbolLimit).map((sym) => {
         const lookupKey = sym.nodeId || `${rf.path}::${sym.name}`;
         const symbolEvidenceId = makeEvidenceId('diff-symbol', lookupKey);
         symbolEvidenceEntries.push({ token: sym.name, id: symbolEvidenceId });
@@ -760,6 +820,12 @@ export async function gnDiffImpact(
       }),
     };
   });
+  if (truncatedFileCount > 0) {
+    warnings.push(`Diff impact detailed file output capped at ${detailFileLimit} files`);
+  }
+  if (truncatedSymbolCount > 0) {
+    warnings.push(`Diff impact per-file symbol detail capped at ${detailSymbolLimit} symbols`);
+  }
 
   const processEvidenceEntries: Array<{ token: string; id: string }> = [];
   const affectedProcesses: DiffImpactReport['affectedProcesses'] = (
@@ -1027,6 +1093,15 @@ export async function gnDiffImpact(
 
   return {
     ...createBaseDiffImpactReport(resolvedRange, uniqueWarnings),
+    summary: {
+      totalChangedFiles: totalDetailedFiles,
+      emittedChangedFiles: changedFiles.length,
+      totalChangedSymbols: totalDetailedSymbols,
+      emittedChangedSymbols: emittedDetailedSymbols,
+      detailTruncated: truncatedFileCount > 0 || truncatedSymbolCount > 0,
+      truncatedFileCount,
+      truncatedSymbolCount,
+    },
     changedFiles,
     affectedProcesses,
     totalSymbolsChanged,

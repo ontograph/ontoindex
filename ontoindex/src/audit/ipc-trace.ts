@@ -33,6 +33,46 @@ function firstString(value: unknown, fallback: string): string {
   return typeof value === 'string' && value.length > 0 ? value : fallback;
 }
 
+function languagePrefix(filePath: string): string | null {
+  const normalized = filePath.toLowerCase();
+  if (
+    normalized.endsWith('.js') ||
+    normalized.endsWith('.jsx') ||
+    normalized.endsWith('.ts') ||
+    normalized.endsWith('.tsx')
+  ) {
+    return 'JS';
+  }
+  if (normalized.endsWith('.rs')) return 'Rust';
+  if (
+    normalized.endsWith('.c') ||
+    normalized.endsWith('.cc') ||
+    normalized.endsWith('.cpp') ||
+    normalized.endsWith('.cxx') ||
+    normalized.endsWith('.h') ||
+    normalized.endsWith('.hpp')
+  ) {
+    return 'C++';
+  }
+  if (normalized.endsWith('.py')) return 'Python';
+  if (normalized.endsWith('.java')) return 'Java';
+  if (normalized.endsWith('.php')) return 'PHP';
+  if (normalized.endsWith('.go')) return 'Go';
+  return null;
+}
+
+function symbolKind(label: string, filePath: string): string {
+  const prefix = languagePrefix(filePath);
+  return prefix ? `${prefix} ${label}` : label;
+}
+
+function symbolDetail(symbolName: string, filePath: string): string {
+  const prefix = languagePrefix(filePath);
+  return prefix
+    ? `${prefix} definition/export of "${symbolName}"`
+    : `Symbol definition/export of "${symbolName}"`;
+}
+
 /**
  * Trace execution flows across the JS-to-C++ bridge.
  */
@@ -52,10 +92,10 @@ export async function traceIPCBridges(options: IPCTraceOptions): Promise<AuditRe
     const labels = Array.isArray(res.labels) ? res.labels : [res.labels || res[2] || 'Symbol'];
     const label = firstString(labels[0], 'Symbol');
     flow.push({
-      kind: `JS ${label}`,
+      kind: symbolKind(label, res.filePath || res[0] || ''),
       file: res.filePath || res[0] || '',
       line: (res.startLine ?? res[1]) || 1,
-      detail: `JavaScript definition/export of "${symbolName}"`,
+      detail: symbolDetail(symbolName, res.filePath || res[0] || ''),
       confidence: 'high',
     });
   }

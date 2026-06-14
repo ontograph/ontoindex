@@ -122,7 +122,7 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 <!-- ontoindex:start -->
 # OntoIndex — Code Intelligence
 
-This project is indexed by OntoIndex as **ontoindex** (36595 symbols, 54272 relationships, 300 execution flows). Use the OntoIndex MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by OntoIndex as **ontoindex** (36770 symbols, 54502 relationships, 300 execution flows). Use the OntoIndex MCP tools to understand code, assess impact, and navigate safely.
 
 > If any OntoIndex tool warns the index is stale, coordinate first; exactly one process should run `ONTOINDEX_MAX_WORKERS=7 node /opt/demodb/_workfolder/OntoIndex/ontoindex/dist/cli/index.js analyze`.
 

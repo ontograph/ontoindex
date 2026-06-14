@@ -267,4 +267,45 @@ describe('AuditReportResult shape — structural drift gate', () => {
 
     expect(maxInFlight).toBeLessThanOrEqual(2);
   });
+
+  it('returns partial results with timeout warnings when a backend exceeds the internal budget', async () => {
+    vi.clearAllMocks();
+    const previousBackendTimeout = process.env.ONTOINDEX_AUDIT_REPORT_BACKEND_TIMEOUT_MS;
+    const previousTotalBudget = process.env.ONTOINDEX_AUDIT_REPORT_TOTAL_BUDGET_MS;
+    process.env.ONTOINDEX_AUDIT_REPORT_BACKEND_TIMEOUT_MS = '10';
+    process.env.ONTOINDEX_AUDIT_REPORT_TOTAL_BUDGET_MS = '50';
+
+    vi.mocked(runDeadCode).mockImplementation(
+      vi.fn(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(() => resolve({ entries: [{ name: 'tooSlow', filePath: 'src/slow.ts' }] }), 30),
+          ),
+      ),
+    );
+    vi.mocked(runCycleDetect).mockResolvedValue({ cycles: [] });
+    vi.mocked(runCouplingMatrix).mockResolvedValue({ rows: [] });
+    vi.mocked(runTechDebt).mockResolvedValue({ symbols: [] });
+    vi.mocked(runHotspotAnalysis).mockResolvedValue({ hotspots: [] });
+    vi.mocked(runBoundaryViolations).mockResolvedValue({ violations: [] });
+    vi.mocked(runVerificationGap).mockResolvedValue({ coverage: [] });
+    vi.mocked(runGraphDiff).mockResolvedValue({ added: [], removed: [] });
+
+    try {
+      const timed = await runAuditReport(repo, {});
+      expect(timed.deadCandidates).toEqual([]);
+      expect(timed.warnings).toContain('dead-code: dead-code: timed out after 10ms');
+    } finally {
+      if (previousBackendTimeout === undefined) {
+        delete process.env.ONTOINDEX_AUDIT_REPORT_BACKEND_TIMEOUT_MS;
+      } else {
+        process.env.ONTOINDEX_AUDIT_REPORT_BACKEND_TIMEOUT_MS = previousBackendTimeout;
+      }
+      if (previousTotalBudget === undefined) {
+        delete process.env.ONTOINDEX_AUDIT_REPORT_TOTAL_BUDGET_MS;
+      } else {
+        process.env.ONTOINDEX_AUDIT_REPORT_TOTAL_BUDGET_MS = previousTotalBudget;
+      }
+    }
+  });
 });
