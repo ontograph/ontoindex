@@ -2,6 +2,22 @@
 
 All notable changes to OntoIndex will be documented in this file.
 
+## [1.10.0](https://github.com/ontograph/ontoindex/compare/ontoindex-v1.9.0...ontoindex-v1.10.0) (2026-06-14)
+
+
+### Features
+
+* add semantic ann frontier retrieval ([6a95385](https://github.com/ontograph/ontoindex/commit/6a953859e641799ab3031086bc835fb17e9729ff))
+* **graph:** improve exported graph overview ([e4f5c40](https://github.com/ontograph/ontoindex/commit/e4f5c40b052f46c60737741f34ce5e77a2561e6b))
+* materialize semantic ANN neighbors ([022098e](https://github.com/ontograph/ontoindex/commit/022098e3332bc94da85ce3dbb6a2523f0b7c4cb1))
+* **storage:** persist summary graph nodes ([b5fb0ad](https://github.com/ontograph/ontoindex/commit/b5fb0ad69223df66010eca9a78a87b8821836e58))
+
+
+### Bug Fixes
+
+* **installer:** fail fast on unsupported node 24 ([1918a1d](https://github.com/ontograph/ontoindex/commit/1918a1d560e55b26124df34571a87790a6a28175))
+* **mcp:** default external sessions to target repo ([9a0941f](https://github.com/ontograph/ontoindex/commit/9a0941f834ab04d216671dec8d8089fd0aab916a))
+
 ## [Unreleased]
 
 ## [1.9.5] - 2026-06-13

@@ -1,7 +1,7 @@
 {
   "name": "ontoindex-web",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "license": "AGPL-3.0-or-later",
   "engines": {
     "node": ">=20.0.0"
