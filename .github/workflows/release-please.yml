@@ -8,9 +8,11 @@ on:
 
 # Release-please is configured in manifest mode to open/update release PRs only.
 # It must not create GitHub releases, tags, or publish packages from this workflow.
+# The ontograph organization disables write permissions for GITHUB_TOKEN, so PR creation must use
+# a maintainer-provided PAT/GitHub App token in RELEASE_PLEASE_TOKEN. Without that secret this
+# workflow exits successfully with a notice instead of failing every push.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 # Concurrency convention: see CONTRIBUTING.md -> "GitHub Actions - Concurrency Convention".
 # Keep one release-please reconciliation per target branch.
@@ -22,12 +24,21 @@ jobs:
   release-pr:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
     steps:
+      - name: Skip release-please when PR token is not configured
+        if: ${{ env.RELEASE_PLEASE_TOKEN == '' }}
+        run: |
+          echo "::notice title=Release Please skipped::Set RELEASE_PLEASE_TOKEN with contents:write and pull_requests:write to enable release PR creation."
+
       # Pinned to v4.4.1. Verify SHA via:
       #   git ls-remote https://github.com/googleapis/release-please-action.git refs/tags/v4.4.1
       - name: Open or update release PR
+        if: ${{ env.RELEASE_PLEASE_TOKEN != '' }}
         uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
         with:
+          token: ${{ env.RELEASE_PLEASE_TOKEN }}
           config-file: .github/release-please-config.json
           manifest-file: .release-please-manifest.json
           skip-github-release: true
