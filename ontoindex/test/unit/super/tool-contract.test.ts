@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { gnToolContract } from '../../../src/mcp/super/tool-contract.js';
-import { getPublicToolRegistry } from '../../../src/mcp/shared/tool-registry.js';
+import {
+  getPublicToolRegistry,
+  getRegisteredFacadeToolNames,
+} from '../../../src/mcp/shared/tool-registry.js';
 
 const ORIGINAL_STARTUP_PROFILE = process.env.ONTOINDEX_MCP_STARTUP_PROFILE;
 
@@ -162,8 +165,15 @@ describe('gnToolContract — visible frontier', () => {
       internalCallable: expect.any(Array),
       internalOnly: expect.any(Array),
       clientOnly: expect.any(Array),
-      note: expect.stringContaining('Callable tools in the OntoIndex registry'),
+      facadeFirst: expect.any(Array),
+      compatibilityTools: expect.any(Array),
+      note: expect.stringContaining('Facade-first guidance prefers'),
     });
+    expect(new Set(report.visibleFrontier.facadeFirst)).toEqual(
+      new Set(getRegisteredFacadeToolNames()),
+    );
+    expect(report.visibleFrontier.note).toContain('discover({action: "tools"})');
+    expect(report.visibleFrontier.compatibilityTools.length).toBeGreaterThan(0);
     for (const tool of report.visibleFrontier.hostVisible) {
       expect(report.visibleFrontier.internalCallable).toContain(tool);
     }

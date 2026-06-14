@@ -75,9 +75,10 @@ function setupExecFile(
   options: {
     currentCommit?: string;
     repoRoot?: string;
+    statusOutput?: string;
   } = {},
 ) {
-  const { currentCommit = CURRENT_COMMIT, repoRoot = REPO_PATH } = options;
+  const { currentCommit = CURRENT_COMMIT, repoRoot = REPO_PATH, statusOutput = '' } = options;
 
   mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: any, callback: any) => {
     // git rev-parse --show-toplevel
@@ -88,6 +89,10 @@ function setupExecFile(
     // git rev-parse HEAD
     if (args.includes('HEAD') && args.includes('rev-parse')) {
       callback(null, currentCommit + '\n', '');
+      return {} as any;
+    }
+    if (args.includes('status') && args.includes('--porcelain')) {
+      callback(null, statusOutput, '');
       return {} as any;
     }
     callback(null, '', '');
@@ -125,6 +130,12 @@ describe('gnEnsureFresh', () => {
     expect(report.preCheck.isStale).toBe(false);
     expect(report.preCheck.currentCommit).toBe(CURRENT_COMMIT);
     expect(report.preCheck.indexedCommit).toBe(CURRENT_COMMIT);
+    expect(report.repoLabel).toBe(REPO_ID);
+    expect(report.repoPath).toBe(REPO_PATH);
+    expect(report.headCommit).toBe(CURRENT_COMMIT);
+    expect(report.indexedCommit).toBe(CURRENT_COMMIT);
+    expect(report.dirtyFileCount).toBe(0);
+    expect(report.scopeConfidence).toBe('high');
     expect(report.actionsTaken).toHaveLength(0);
     expect(report.warnings).toHaveLength(0);
     // No stale recommendation
@@ -154,6 +165,9 @@ describe('gnEnsureFresh', () => {
       currentCommit: CURRENT_COMMIT,
       isStale: false,
     });
+    expect(report.repoLabel).toBe('Test-Repo');
+    expect(report.repoPath).toBe(REPO_PATH);
+    expect(report.scopeConfidence).toBe('high');
     expect(report.warnings).toHaveLength(0);
   });
 
@@ -177,7 +191,22 @@ describe('gnEnsureFresh', () => {
     expect(headCwd).toBe(REPO_PATH);
     expect(report.preCheck.currentCommit).toBe(CURRENT_COMMIT);
     expect(report.preCheck.indexedCommit).toBe(CURRENT_COMMIT);
+    expect(report.repoLabel).toBe(REPO_ID);
+    expect(report.repoPath).toBe(REPO_PATH);
+    expect(report.scopeConfidence).toBe('high');
     expect(report.warnings).toHaveLength(0);
+  });
+
+  it('falls back to the cwd repo when no selector is provided', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+
+    const report = await gnEnsureFresh('', {});
+
+    expect(report.repoLabel).toBe(REPO_ID);
+    expect(report.repoPath).toBe(REPO_PATH);
+    expect(report.scopeConfidence).toBe('medium');
+    expect(report.dirtyFileCount).toBe(0);
   });
 
   // ---- Test 2: Stale without autoAnalyze → recommendations, no actions ----

@@ -97,6 +97,30 @@ function enumerateFacadeActions(): ActionPair[] {
 describe('facade completeness — every declared action must reach a backend handler', () => {
   const allPairs = enumerateFacadeActions();
 
+  it('discover/tools reports a facade-first frontier without hiding compatibility tools', async () => {
+    const backend = new LocalBackend();
+    const result = (await dispatchFacade('discover', 'tools', {}, backend)) as {
+      version: number;
+      count: number;
+      tools: Array<{ name: string; kind: string }>;
+      recommendedTools: Array<{ name: string; kind: string }>;
+      compatibilityTools: Array<{ name: string; kind: string }>;
+      recommendedCount: number;
+      compatibilityCount: number;
+      codebaseToolsHint: string;
+    };
+
+    expect(result.version).toBe(1);
+    expect(result.count).toBe(result.tools.length);
+    expect(result.recommendedCount).toBe(result.recommendedTools.length);
+    expect(result.compatibilityCount).toBe(result.compatibilityTools.length);
+    expect(result.recommendedTools.length).toBeGreaterThan(0);
+    expect(result.compatibilityTools.length).toBeGreaterThan(0);
+    expect(result.recommendedTools.every((entry) => entry.kind === 'facade')).toBe(true);
+    expect(result.compatibilityTools.every((entry) => entry.kind === 'super')).toBe(true);
+    expect(result.codebaseToolsHint).toContain('facade tools first');
+  });
+
   it('enumerates a non-trivial number of actions', () => {
     // Sanity: if this drops to zero, the test silently passes for everything.
     expect(allPairs.length).toBeGreaterThan(20);

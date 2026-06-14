@@ -14,6 +14,7 @@ import { readFileSync } from 'fs';
 import path, { join } from 'path';
 import { homedir } from 'os';
 import { execFileText } from '../../core/process/exec-file.js';
+import type { ScopeConfidence } from '../shared/target-context.js';
 
 const AUTO_ANALYZE_TIMEOUT_MS = Number.parseInt(
   process.env.ONTOINDEX_AUTO_ANALYZE_TIMEOUT_MS ?? '300000',
@@ -37,6 +38,13 @@ export interface EnsureFreshReport {
   version: 1;
   preCheck: { indexedCommit: string; currentCommit: string; isStale: boolean };
   embeddingsStatus: { count: number; required: boolean };
+  repoLabel?: string;
+  repoPath?: string;
+  indexedCommit?: string;
+  headCommit?: string;
+  isStale?: boolean;
+  dirtyFileCount?: number | null;
+  scopeConfidence?: ScopeConfidence;
   actionsTaken: string[];
   postCheck?: { indexedCommit: string; currentCommit: string; isStale: boolean };
   warnings: string[];
@@ -129,12 +137,46 @@ function findRegistryEntry(
   return undefined;
 }
 
+function registryEntryMatchesSelector(
+  registry: RegistryEntry[],
+  entry: RegistryEntry,
+  selector: string,
+): boolean {
+  const registryIds = buildRegistryIds(registry);
+  const selectorLower = selector.trim().toLowerCase();
+  const selectorPath = normalizeRepoPath(selector);
+  const entryName = entry.name?.toLowerCase();
+  const entryPath = normalizeRepoPath(entry.path);
+
+  return (
+    (entryName !== undefined &&
+      (entryName === selectorLower || registryIds.get(entry) === selectorLower)) ||
+    (selectorPath !== null && entryPath === selectorPath)
+  );
+}
+
 /** Build an empty report shell for early-return paths. */
-function emptyReport(warnings: string[], recommendations: string[]): EnsureFreshReport {
+function emptyReport(
+  warnings: string[],
+  recommendations: string[],
+  extras: Partial<
+    Pick<
+      EnsureFreshReport,
+      | 'repoLabel'
+      | 'repoPath'
+      | 'indexedCommit'
+      | 'headCommit'
+      | 'isStale'
+      | 'dirtyFileCount'
+      | 'scopeConfidence'
+    >
+  > = {},
+): EnsureFreshReport {
   return {
     version: 1,
     preCheck: { indexedCommit: '', currentCommit: '', isStale: false },
     embeddingsStatus: { count: 0, required: false },
+    ...extras,
     actionsTaken: [],
     warnings,
     recommendations,
@@ -199,6 +241,35 @@ function runAnalyzeProcess(
   });
 }
 
+async function countDirtyFiles(repoRoot: string): Promise<number | null> {
+  try {
+    const output = (
+      await execFileText('git', ['status', '--porcelain'], {
+        cwd: repoRoot,
+        timeoutMs: GIT_PROBE_TIMEOUT_MS,
+        maxBuffer: GIT_PROBE_MAX_BUFFER,
+      })
+    ).trim();
+    if (output.length === 0) return 0;
+    return output.split('\n').filter(Boolean).length;
+  } catch {
+    return null;
+  }
+}
+
+function deriveScopeConfidence(input: {
+  selectorProvided: boolean;
+  cwdFallbackUsed: boolean;
+  dirtyFileCount: number | null;
+  isStale: boolean;
+}): ScopeConfidence {
+  if (!input.selectorProvided && input.cwdFallbackUsed) return 'medium';
+  if (!input.selectorProvided) return 'unknown';
+  if (input.dirtyFileCount === null) return input.isStale ? 'medium' : 'high';
+  if (input.dirtyFileCount > 0 || input.isStale) return 'medium';
+  return 'high';
+}
+
 // ---------------------------------------------------------------------------
 // Main function
 // ---------------------------------------------------------------------------
@@ -229,10 +300,27 @@ export async function gnEnsureFresh(
     return emptyReport(
       [...warnings, 'repo not in registry — run ontoindex analyze'],
       recommendations,
+      {
+        repoLabel: selector,
+        repoPath: cwdRepoRoot ?? undefined,
+        indexedCommit: '',
+        headCommit: '',
+        isStale: false,
+        dirtyFileCount: null,
+        scopeConfidence: selector ? 'low' : 'unknown',
+      },
     );
   }
 
   const repoRoot = normalizeRepoPath(entry.path) ?? entry.path ?? process.cwd();
+  const selectorResolved =
+    selector !== undefined && registryEntryMatchesSelector(registry, entry, selector);
+  const cwdFallbackUsed = selector !== undefined && !selectorResolved;
+  if (cwdFallbackUsed) {
+    warnings.push(
+      `Repo selector "${selector}" did not match the registry entry that was used; falling back to the cwd-scoped repo ${repoRoot}.`,
+    );
+  }
 
   // ---- 3. Get current HEAD commit from the indexed repo path --------------
   let currentCommit = '';
@@ -251,6 +339,13 @@ export async function gnEnsureFresh(
   const indexedCommit: string = entry.lastCommit ?? '';
   const embeddingsCount: number = entry.stats?.embeddings ?? 0;
   const isStale = currentCommit !== '' && indexedCommit !== '' && currentCommit !== indexedCommit;
+  const dirtyFileCount = await countDirtyFiles(repoRoot);
+  const scopeConfidence = deriveScopeConfidence({
+    selectorProvided: selectorResolved,
+    cwdFallbackUsed: cwdFallbackUsed || selector === undefined,
+    dirtyFileCount,
+    isStale,
+  });
 
   // ---- 4. Build preCheck --------------------------------------------------
   const preCheck = { indexedCommit, currentCommit, isStale };
@@ -338,6 +433,13 @@ export async function gnEnsureFresh(
     version: 1,
     preCheck,
     embeddingsStatus,
+    repoLabel: entry.name ?? selector ?? repoRoot,
+    repoPath: repoRoot,
+    indexedCommit,
+    headCommit: currentCommit,
+    isStale,
+    dirtyFileCount,
+    scopeConfidence,
     actionsTaken,
     ...(postCheck !== undefined ? { postCheck } : {}),
     warnings,

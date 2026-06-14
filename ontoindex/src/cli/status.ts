@@ -5,6 +5,7 @@
  */
 
 import path from 'path';
+import type { RepoMeta } from '../storage/repo-manager.js';
 import {
   findRepo,
   getStoragePaths,
@@ -25,12 +26,39 @@ export const formatNativeGraphWriterStatus = (runtime: GraphWriterRuntime = {}):
   return `Native graph writer: ${status.flagName} ${enabled}, ${configured}, ${available} (${status.reason})`;
 };
 
+export const formatSemanticSearchStatus = (
+  meta?: Pick<RepoMeta, 'stats' | 'indexMode' | 'pipelineProfile'>,
+): string => {
+  const embeddings = meta?.stats?.embeddings;
+  if (typeof embeddings !== 'number') {
+    return 'Semantic search: absent (no index metadata yet; run ontoindex analyze --embeddings to populate)';
+  }
+
+  if (embeddings > 0) {
+    return `Semantic search: available (${embeddings.toLocaleString()} embeddings recorded)`;
+  }
+
+  const isSymbolsOnly =
+    meta?.indexMode === 'symbols-only' ||
+    meta?.pipelineProfile === 'symbols' ||
+    meta?.pipelineProfile === 'huge-repo-symbols';
+  const source = isSymbolsOnly ? 'symbols-only index' : '0 embeddings recorded';
+  return `Semantic search: absent (${source}; run ontoindex analyze --embeddings to populate)`;
+};
+
 async function resolveRepoStartPath(repoOpt?: string): Promise<string> {
   if (!repoOpt?.trim()) return process.cwd();
 
   const resolvedPath = path.resolve(repoOpt);
   const directRepo = await loadRepo(resolvedPath);
   if (directRepo) return directRepo.repoPath;
+
+  const isExplicitPath =
+    path.isAbsolute(repoOpt) ||
+    repoOpt.startsWith('.') ||
+    repoOpt.includes(path.sep) ||
+    repoOpt.includes(path.win32.sep);
+  if (isExplicitPath) return resolvedPath;
 
   const entries = await listRegisteredRepos({ validate: true });
   const lower = repoOpt.toLowerCase();
@@ -60,6 +88,7 @@ export const statusCommand = async (options?: { repo?: string }) => {
 
   if (!isGitRepo(cwd)) {
     console.log('Not a git repository.');
+    console.log(formatSemanticSearchStatus());
     console.log(nativeGraphWriterStatus);
     return;
   }
@@ -71,9 +100,15 @@ export const statusCommand = async (options?: { repo?: string }) => {
     const { storagePath } = getStoragePaths(repoRoot);
     if (await hasKuzuIndex(storagePath)) {
       console.log('Repository has a stale KuzuDB index from a previous version.');
+      console.log(
+        'Semantic search: absent (stale KuzuDB index; rebuild with ontoindex analyze --embeddings)',
+      );
       console.log('Run: ontoindex analyze   (rebuilds the index with LadybugDB)');
     } else {
       console.log('Repository not indexed.');
+      console.log(
+        'Semantic search: absent (no index metadata yet; run ontoindex analyze --embeddings to populate)',
+      );
       console.log('Run: ontoindex analyze');
     }
     console.log(nativeGraphWriterStatus);
@@ -88,6 +123,7 @@ export const statusCommand = async (options?: { repo?: string }) => {
   console.log(`Indexed commit: ${repo.meta.lastCommit?.slice(0, 7)}`);
   console.log(`Current commit: ${currentCommit?.slice(0, 7)}`);
   console.log(`Status: ${isUpToDate ? '✅ up-to-date' : '⚠️ stale (re-run ontoindex analyze)'}`);
+  console.log(formatSemanticSearchStatus(repo.meta));
   for (const line of formatIndexCapabilityWarnings(repo.meta)) {
     console.log(line);
   }

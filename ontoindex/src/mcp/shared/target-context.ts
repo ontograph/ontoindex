@@ -5,6 +5,10 @@ import {
   getSidecarStorePath,
   loadSidecarStoreState,
 } from '../../core/ingestion/enrichment/index.js';
+import {
+  summarizeGitPorcelainStatus,
+  type GitPorcelainWorkspaceSummary,
+} from '../../core/audit-lifecycle/freshness.js';
 import { readRegistry, type RegistryEntry } from '../../storage/repo-manager.js';
 
 const GIT_TIMEOUT_MS = 5_000;
@@ -14,6 +18,13 @@ export type TargetContextStatus = 'ok' | 'ambiguous' | 'no-index' | 'not-found';
 export type SnapshotMode = 'committed-head' | 'dirty-worktree-overlay' | 'diff-ref' | 'unknown';
 export type ReadinessStatus = 'available' | 'unavailable' | 'unknown' | 'degraded';
 export type QualityMode = 'fast' | 'balanced' | 'thorough';
+export type ScopeConfidence = 'high' | 'medium' | 'low' | 'unknown';
+export type DirtyWorkspaceState =
+  | 'clean'
+  | 'dirty-file'
+  | 'stale-index'
+  | 'unknown-untracked'
+  | 'unknown';
 
 export interface TargetContextReadiness {
   status: ReadinessStatus;
@@ -43,10 +54,21 @@ export interface TargetContextRepoSummary {
   path: string;
 }
 
+export interface TargetContextDirtyWorkspace {
+  state: DirtyWorkspaceState;
+  fileCount: number | null;
+  sourceFileCount: number | null;
+  stagedSourceFileCount: number | null;
+  unstagedSourceFileCount: number | null;
+  untrackedSourceFileCount: number | null;
+  unknownGraphCoverageCount: number | null;
+}
+
 export interface TargetContext {
   version: 1;
   status: TargetContextStatus;
   repoKey?: string;
+  repoLabel?: string;
   repoPath?: string;
   branch?: string;
   targetRef: string;
@@ -55,9 +77,12 @@ export interface TargetContext {
   indexedHead?: string;
   graphIndexId?: string;
   dirtyWorktree: boolean | null;
+  dirtyFileCount?: number | null;
+  dirtyWorkspace?: TargetContextDirtyWorkspace;
   changedSinceIndex: boolean | null;
   snapshotMode: SnapshotMode;
   qualityMode: QualityMode;
+  scopeConfidence?: ScopeConfidence;
   embeddings: TargetContextEmbeddingsReadiness;
   lsp: TargetContextLspReadiness;
   sidecar: TargetContextSidecarReadiness;
@@ -91,38 +116,142 @@ export async function resolveTargetContext(
   const registry = await readRegistrySafely(deps, warnings);
   const targetRef = options.targetRef?.trim() || 'HEAD';
   const base = createBaseContext(targetRef, warnings);
-  const resolution = resolveRegistryEntry(registry, options.repo);
+  const explicitRepo = options.repo?.trim() || undefined;
+  const envRepo = process.env.ONTOINDEX_MCP_REPO?.trim() || undefined;
+  const cwdRepoRoot = path.resolve(process.cwd());
+  const explicitResolution = explicitRepo ? resolveRegistryEntry(registry, explicitRepo) : null;
+  const envResolution = envRepo ? resolveRegistryEntry(registry, envRepo) : null;
+  const cwdResolution = resolveRegistryEntry(registry, cwdRepoRoot);
+  const noSelectorResolution = resolveRegistryEntry(registry, undefined);
+
+  let selectionSource: 'explicit' | 'env' | 'cwd' | 'single' = 'single';
+  let resolution = explicitRepo
+    ? explicitResolution!
+    : envResolution?.status === 'ok'
+      ? envResolution
+      : cwdResolution.status === 'ok'
+        ? cwdResolution
+        : noSelectorResolution;
+
+  if (explicitRepo) selectionSource = 'explicit';
+  if (explicitRepo && resolution.status !== 'ok') {
+    return {
+      ...base,
+      status: resolution.status,
+      availableRepos: registry.map(toRepoSummary),
+      action: actionWithRetryExamples(resolution.action, registry),
+      warnings,
+    };
+  }
+
+  if (!explicitRepo && envRepo && envResolution?.status === 'ok') {
+    if (cwdResolution.status === 'ok' && cwdResolution.entry.path !== envResolution.entry.path) {
+      const ambiguousMessage = buildAmbiguousRepoAction(
+        envRepo,
+        envResolution.entry.path,
+        cwdRepoRoot,
+        cwdResolution.entry.path,
+      );
+      warnings.push(ambiguousMessage);
+      return {
+        ...base,
+        status: 'ambiguous',
+        availableRepos: registry.map(toRepoSummary),
+        action: ambiguousMessage,
+        warnings,
+      };
+    }
+    resolution = envResolution;
+    selectionSource = 'env';
+  } else if (
+    !explicitRepo &&
+    envRepo &&
+    envResolution?.status !== 'ok' &&
+    cwdResolution.status === 'ok'
+  ) {
+    warnings.push(
+      `ONTOINDEX_MCP_REPO "${envRepo}" did not resolve; using MCP cwd ${cwdRepoRoot} instead.`,
+    );
+    resolution = cwdResolution;
+    selectionSource = 'cwd';
+  } else if (!explicitRepo && !envRepo && cwdResolution.status === 'ok') {
+    resolution = cwdResolution;
+    selectionSource = 'cwd';
+  } else if (!explicitRepo && !envRepo && resolution.status === 'ok') {
+    selectionSource = noSelectorResolution.status === 'ok' ? 'single' : 'cwd';
+  }
 
   if (resolution.status !== 'ok') {
     return {
       ...base,
       status: resolution.status,
       availableRepos: registry.map(toRepoSummary),
-      action: resolution.action,
+      action: actionWithRetryExamples(resolution.action, registry),
       warnings,
     };
   }
 
   const entry = resolution.entry;
   const repoPath = path.resolve(entry.path);
+  if (explicitRepo && envResolution?.status === 'ok' && envResolution.entry.path !== repoPath) {
+    warnings.push(
+      `ONTOINDEX_MCP_REPO "${envRepo}" resolves to ${envResolution.entry.path}, but the explicit repo "${explicitRepo}" resolved to ${repoPath}.`,
+    );
+  }
+  if (explicitRepo && cwdResolution.status === 'ok' && cwdResolution.entry.path !== repoPath) {
+    warnings.push(
+      `MCP cwd ${cwdRepoRoot} resolves to ${cwdResolution.entry.path}, but the explicit repo "${explicitRepo}" resolved to ${repoPath}.`,
+    );
+  }
   const execGit = deps.execGit ?? defaultExecGit;
   const [branch, currentHead, targetHead, statusOutput] = await Promise.all([
     gitProbe(execGit, repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'], warnings),
     gitProbe(execGit, repoPath, ['rev-parse', 'HEAD'], warnings),
     gitProbe(execGit, repoPath, ['rev-parse', targetRef], warnings),
-    gitProbe(execGit, repoPath, ['status', '--porcelain'], warnings),
+    gitProbe(
+      execGit,
+      repoPath,
+      ['status', '--porcelain=v1', '--untracked-files=all'],
+      warnings,
+      false,
+    ),
   ]);
-  const dirtyWorktree = statusOutput !== null ? statusOutput.trim().length > 0 : null;
+  const workspaceSummary = summarizeGitPorcelainStatus(statusOutput);
+  const dirtyWorktree = workspaceSummary !== null ? workspaceSummary.dirtyFileCount > 0 : null;
+  const dirtyFileCount = workspaceSummary?.dirtyFileCount ?? null;
   const indexedHead = entry.lastCommit || undefined;
   const changedSinceIndex =
     dirtyWorktree === null && (!currentHead || !indexedHead)
       ? null
       : dirtyWorktree === true || (!!currentHead && !!indexedHead && currentHead !== indexedHead);
+  const selectionMismatch =
+    (explicitRepo !== undefined &&
+      ((envResolution?.status === 'ok' && envResolution.entry.path !== repoPath) ||
+        (cwdResolution.status === 'ok' && cwdResolution.entry.path !== repoPath))) ||
+    (!explicitRepo &&
+      envRepo !== undefined &&
+      envResolution?.status === 'ok' &&
+      cwdResolution.status === 'ok' &&
+      envResolution.entry.path !== cwdResolution.entry.path);
+  const dirtyWorkspace = resolveDirtyWorkspace({
+    dirtyWorktree,
+    changedSinceIndex,
+    summary: workspaceSummary,
+  });
+  const scopeConfidence = resolveScopeConfidence({
+    status: 'ok',
+    dirtyWorktree,
+    changedSinceIndex,
+    selectionSource,
+    selectionMismatch,
+    dirtyWorkspace,
+  });
 
   return {
     ...base,
     status: 'ok',
     repoKey: entry.name,
+    repoLabel: entry.name ?? path.basename(repoPath),
     repoPath,
     ...(branch ? { branch } : {}),
     ...(targetHead ? { targetHead } : {}),
@@ -130,8 +259,11 @@ export async function resolveTargetContext(
     ...(indexedHead ? { indexedHead } : {}),
     ...(entry.indexedAt ? { graphIndexId: entry.indexedAt } : {}),
     dirtyWorktree,
+    dirtyFileCount,
+    dirtyWorkspace,
     changedSinceIndex,
     snapshotMode: resolveSnapshotMode(targetRef, dirtyWorktree),
+    scopeConfidence,
     embeddings: resolveEmbeddingsReadiness(entry, options.readiness?.embeddingsCount),
     lsp: resolveLspReadiness(options.readiness?.lspAvailable),
     sidecar: await resolveSidecarReadiness(entry, options.checkSidecar === true, deps, warnings),
@@ -146,9 +278,20 @@ function createBaseContext(targetRef: string, warnings: string[]): TargetContext
     status: 'no-index',
     targetRef,
     dirtyWorktree: null,
+    dirtyFileCount: null,
+    dirtyWorkspace: {
+      state: 'unknown',
+      fileCount: null,
+      sourceFileCount: null,
+      stagedSourceFileCount: null,
+      unstagedSourceFileCount: null,
+      untrackedSourceFileCount: null,
+      unknownGraphCoverageCount: null,
+    },
     changedSinceIndex: null,
     snapshotMode: 'unknown',
     qualityMode: resolveQualityMode(),
+    scopeConfidence: 'unknown',
     embeddings: { status: 'unknown', reason: 'repo-not-resolved' },
     lsp: { status: 'unknown', reason: 'not-probed' },
     sidecar: { status: 'unknown', reason: 'not-probed' },
@@ -227,9 +370,11 @@ async function gitProbe(
   cwd: string,
   args: string[],
   warnings: string[],
+  trimOutput = true,
 ): Promise<string | null> {
   try {
-    return (await execGit(cwd, args)).trim();
+    const output = await execGit(cwd, args);
+    return trimOutput ? output.trim() : output;
   } catch (err) {
     warnings.push(`git ${args.join(' ')} failed: ${formatError(err)}`);
     return null;
@@ -249,6 +394,97 @@ function resolveSnapshotMode(targetRef: string, dirtyWorktree: boolean | null): 
   if (targetRef !== 'HEAD') return 'diff-ref';
   if (dirtyWorktree === false) return 'committed-head';
   return 'unknown';
+}
+
+function resolveDirtyWorkspace(input: {
+  dirtyWorktree: boolean | null;
+  changedSinceIndex: boolean | null;
+  summary: GitPorcelainWorkspaceSummary | null;
+}): TargetContextDirtyWorkspace {
+  if (input.summary === null) {
+    return {
+      state: input.changedSinceIndex === true ? 'stale-index' : 'unknown',
+      fileCount: null,
+      sourceFileCount: null,
+      stagedSourceFileCount: null,
+      unstagedSourceFileCount: null,
+      untrackedSourceFileCount: null,
+      unknownGraphCoverageCount: null,
+    };
+  }
+
+  const {
+    dirtyFileCount,
+    sourceFileCount,
+    stagedSourceFileCount,
+    unstagedSourceFileCount,
+    untrackedSourceFileCount,
+    unknownGraphCoverageCount,
+  } = input.summary;
+
+  let state: DirtyWorkspaceState = 'clean';
+  if (untrackedSourceFileCount > 0) {
+    state = 'unknown-untracked';
+  } else if (stagedSourceFileCount > 0 || unstagedSourceFileCount > 0 || dirtyFileCount > 0) {
+    state = 'dirty-file';
+  } else if (input.changedSinceIndex === true) {
+    state = 'stale-index';
+  } else if (input.dirtyWorktree === null) {
+    state = 'unknown';
+  }
+
+  return {
+    state,
+    fileCount: dirtyFileCount,
+    sourceFileCount,
+    stagedSourceFileCount,
+    unstagedSourceFileCount,
+    untrackedSourceFileCount,
+    unknownGraphCoverageCount,
+  };
+}
+
+function resolveScopeConfidence(input: {
+  status: TargetContextStatus;
+  dirtyWorktree: boolean | null;
+  changedSinceIndex: boolean | null;
+  selectionSource: 'explicit' | 'env' | 'cwd' | 'single';
+  selectionMismatch: boolean;
+  dirtyWorkspace: TargetContextDirtyWorkspace;
+}): ScopeConfidence {
+  if (input.status !== 'ok') return input.status === 'ambiguous' ? 'low' : 'unknown';
+  if (input.selectionMismatch) return 'low';
+  if (input.dirtyWorkspace.state === 'unknown-untracked') return 'low';
+  if (input.dirtyWorkspace.state === 'unknown') return 'unknown';
+  if (input.dirtyWorkspace.state === 'dirty-file' || input.dirtyWorkspace.state === 'stale-index') {
+    return 'medium';
+  }
+  if (input.selectionSource === 'cwd') return 'medium';
+  if (input.dirtyWorktree === true || input.changedSinceIndex === true) return 'medium';
+  if (input.selectionSource === 'single') return 'medium';
+  return 'high';
+}
+
+function actionWithRetryExamples(action: string, registry: RegistryEntry[]): string {
+  const examples = registry
+    .map((entry) => {
+      const repoPath = path.resolve(entry.path);
+      return `${entry.name ?? repoPath} (${repoPath})`;
+    })
+    .slice(0, 3);
+  if (examples.length === 0) {
+    return `${action} Retry with repo: "/absolute/path/to/repo" or repo: "<repo-name>".`;
+  }
+  return `${action} Retry with repo: "/absolute/path/to/repo" or repo: "<repo-name>". Known repos: ${examples.join(', ')}.`;
+}
+
+function buildAmbiguousRepoAction(
+  envRepo: string,
+  envRepoPath: string,
+  cwdRepoRoot: string,
+  cwdRepoPath: string,
+): string {
+  return `Repository selection is ambiguous: ONTOINDEX_MCP_REPO "${envRepo}" resolves to ${envRepoPath}, while MCP cwd ${cwdRepoRoot} resolves to ${cwdRepoPath}. Retry with repo: "${envRepoPath}" or repo: "${cwdRepoPath}".`;
 }
 
 function resolveEmbeddingsReadiness(

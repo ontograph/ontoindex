@@ -27,7 +27,12 @@ import {
   formatLargeRepoSafeNote,
   parseLargeRepoSafeAppliedList,
 } from './analyze-large-repo-safe.js';
+import {
+  planExperimentalFileDeltaRefresh,
+  type ExperimentalFileDeltaPlan,
+} from '../core/analyze-delta.js';
 import type { PipelineProfile } from '../core/ingestion/pipeline.js';
+import type { EmbeddingLifecycleSummary } from '../core/run-analyze.js';
 
 const HEAP_MB = 8192;
 const HEAP_FLAG = `--max-old-space-size=${HEAP_MB}`;
@@ -81,6 +86,25 @@ function getErrorMessage(error: unknown): string {
     if (message) return String(message);
   }
   return String(error);
+}
+
+function formatEmbeddingLifecycle(summary?: EmbeddingLifecycleSummary): string {
+  if (!summary) return 'Embedding lifecycle: unknown';
+
+  switch (summary.state) {
+    case 'preserved':
+      return 'Embedding lifecycle: preserve (embeddings preserved from cache)';
+    case 'refreshed':
+      return 'Embedding lifecycle: refresh (embeddings refreshed)';
+    case 'skipped':
+      return `Embedding lifecycle: ${summary.mode} (embeddings skipped)`;
+    case 'absent':
+      return `Embedding lifecycle: ${summary.mode} (embeddings absent)`;
+    case 'available':
+      return `Embedding lifecycle: ${summary.mode} (embeddings available)`;
+  }
+
+  return 'Embedding lifecycle: unknown';
 }
 
 function parseAnalyzeLockRecord(contents: string): AnalyzeLockRecord | null {
@@ -233,6 +257,8 @@ interface AnalyzeOptions {
   /** Limit analysis to repository-relative file or directory roots. */
   includePath?: string[];
   markdownSidecar?: boolean;
+  /** Experimental: bounded symbols-only refresh from changed files. */
+  experimentalFileDelta?: boolean;
   /**
    * Override the default basename-derived registry `name` with a
    * user-supplied alias (#829). Disambiguates repos whose paths share a
@@ -325,7 +351,27 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     );
   }
 
-  const includePaths = resolveAnalyzeIncludePaths(options);
+  let includePaths = resolveAnalyzeIncludePaths(options);
+  let experimentalFileDeltaPlan: ExperimentalFileDeltaPlan | null = null;
+  const experimentalFileDeltaEligible =
+    options?.experimentalFileDelta === true &&
+    !includePaths &&
+    options?.embeddings !== true &&
+    options?.annNeighbors !== true &&
+    options?.skills !== true;
+
+  if (experimentalFileDeltaEligible) {
+    experimentalFileDeltaPlan = await planExperimentalFileDeltaRefresh(repoPath);
+    console.log(`  ${experimentalFileDeltaPlan.report}\n`);
+    if (experimentalFileDeltaPlan.safeToBound) {
+      includePaths = experimentalFileDeltaPlan.boundedIncludePaths;
+    }
+  } else if (options?.experimentalFileDelta) {
+    console.log(
+      '  Experimental file-delta refresh is disabled for this run; falling back to full analyze.\n',
+    );
+  }
+
   if (options?.hugeRepo && !options.allowHugeRoot && !includePaths) {
     console.error(
       '  --huge-repo requires at least one --include-path, or pass --allow-huge-root explicitly.\n',
@@ -418,22 +464,24 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   try {
     analyzeLock = await acquireAnalyzeLock(repoPath);
     const { runFullAnalysis } = await import('../core/run-analyze.js');
-    const profile = resolveAnalyzePipelineProfile(options);
+    const profile = experimentalFileDeltaPlan?.safeToBound
+      ? 'symbols'
+      : resolveAnalyzePipelineProfile(options);
     const result = await runFullAnalysis(
       repoPath,
       {
         // Pipeline re-index — OR'd with --skills because skill generation
         // needs a fresh pipelineResult. Has no bearing on the registry
         // collision guard (see allowDuplicateName below).
-        force: options?.force || options?.skills,
+        force: options?.force || options?.skills || experimentalFileDeltaPlan?.forceFullAnalyze,
         embeddings: options?.embeddings,
         annNeighbors: options?.annNeighbors,
         skipGit: options?.skipGit,
         markdownSidecar: options?.markdownSidecar,
         ...(profile ? { profile } : {}),
         ...(includePaths ? { includePaths } : {}),
-        skipAgentsMd: options?.skipAgentsMd,
-        noStats: options?.noStats,
+        skipAgentsMd: experimentalFileDeltaPlan?.safeToBound ? true : options?.skipAgentsMd,
+        noStats: experimentalFileDeltaPlan?.safeToBound ? true : options?.noStats,
         registryName: options?.name,
         // Registry-collision bypass — its own CLI flag, intentionally NOT
         // overloading --force. A user who hits the collision guard should
@@ -448,6 +496,44 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         onLog: barLog,
       },
     );
+
+    console.log(`  ${formatEmbeddingLifecycle(result.embeddingLifecycle)}`);
+
+    if (experimentalFileDeltaPlan?.safeToBound) {
+      if (result.alreadyUpToDate) {
+        clearInterval(elapsedTimer);
+        process.removeListener('SIGINT', sigintHandler);
+        console.log = origLog;
+        console.warn = origWarn;
+        console.error = origError;
+        bar.stop();
+        console.log('  Experimental file-delta refresh: no changes to apply\n');
+        return;
+      }
+      const s = result.stats;
+      const changedCount = experimentalFileDeltaPlan.changedFiles.length;
+      const totalTime = ((Date.now() - t0) / 1000).toFixed(1);
+
+      clearInterval(elapsedTimer);
+      process.removeListener('SIGINT', sigintHandler);
+      console.log = origLog;
+      console.warn = origWarn;
+      console.error = origError;
+      bar.update(100, { phase: 'Done' });
+      bar.stop();
+
+      console.log(`\n  Experimental file-delta refresh completed (${totalTime}s)\n`);
+      console.log(
+        `  Partial graph coverage only: ${changedCount.toLocaleString()} changed file(s) | ${(
+          s.nodes ?? 0
+        ).toLocaleString()} nodes | ${(s.edges ?? 0).toLocaleString()} edges | ${
+          s.communities ?? 0
+        } clusters | ${s.processes ?? 0} flows`,
+      );
+      console.log(`  ${repoPath}`);
+      console.log('');
+      return;
+    }
 
     if (result.alreadyUpToDate) {
       clearInterval(elapsedTimer);

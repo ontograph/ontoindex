@@ -121,6 +121,10 @@ export interface HelpReport {
   /** Human-readable description of the requested mode. */
   modeDescription?: string;
   superFunctions: SuperFunctionEntry[];
+  /** Facade tools that should be tried before low-level compatibility tools. */
+  recommendedFacadeTools: string[];
+  /** Remaining public compatibility tools after the facade-first frontier. */
+  compatibilityTools: string[];
   appliedFilters?: {
     query?: string;
     intent?: string[];
@@ -187,11 +191,14 @@ const MODE_DESCRIPTIONS: Record<AgentMode, string> = {
 const MODE_WORKFLOWS: Record<AgentMode, string[]> = {
   general: [
     '0. Set quality once: gn_quality_mode({level: "balanced"})',
-    '0b. Check docs readiness when docs/code trace matters: gn_docs({action: "readiness"})',
-    '1. Discover: gn_explore({query: "..."})',
-    '2. Zoom: gn_find_related({symbol: "..."})',
-    '3. Understand file: gn_explain_module({filePath: "..."})',
-    '4. Pre-edit safety: gn_safe_edit_check({symbol: "..."})',
+    '0a. Open the facade-first surface: discover({action: "tools"})',
+    '0b. Check docs readiness when docs/code trace matters: docs({action: "readiness"})',
+    '1. Search concepts with search({action: "semantic"})',
+    '2. Inspect symbols with inspect({action: "context"})',
+    '3. Check blast radius with impact({action: "symbol"})',
+    '4. Use audit({action: "report"}) for review or docs({action: "trace"}) for docs-backed questions',
+    '5. Refactor with refactor({action: "rename"}) when the edit is safe to make',
+    '6. Pre-edit safety: gn_safe_edit_check({symbol: "..."})',
     '7. Apply edit: gn_safe_refactor({intent, symbol, params})',
     '8. Pre-commit: gn_pre_commit_audit({scope: "staged"})',
     '9. Local diff review (CLI): `ontoindex review diff --base main` — local-only, no hosted credentials; run `ontoindex analyze` first for full graph results',
@@ -200,34 +207,41 @@ const MODE_WORKFLOWS: Record<AgentMode, string[]> = {
   ],
   audit: [
     '0a. Check tool contract when using audit/system tools: gn_tool_contract({})',
-    '0b. Check docs readiness when docs/code trace matters: gn_docs({action: "readiness"})',
-    '5. Manager audit loop: gn_audit_session_start({sourcePath: "..."}) -> gn_audit_session_verify({session: "..."}) -> gn_audit_session_dedupe({session: "..."}) -> gn_audit_session_bundle({session: "..."})',
-    '5a. Manager dispatch/review: gn_audit_session_dispatch({session: "...", bundleId: "..."}) -> worker edits -> gn_audit_session_review_worker({session: "...", bundleId: "..."})',
-    '5b. Primitive escape hatch: gn_audit_ingest({sourcePath: "..."}) -> gn_audit_session_lock({session: "...", action: "create"}) -> gn_audit_verify({session: "..."}) -> gn_audit_dedupe({session: "..."}) -> gn_audit_bundle({session: "..."})',
-    '5c. Avoid stale repeats: gn_audit_pr_marker_scan({path: "...", evidenceLine: 42}) -> gn_audit_replay({session: "..."}) or gn_audit_diff({sessionA: "...", sessionB: "..."}) -> gn_audit_export({session: "...", format: "both"})',
-    '6. Systems evidence: gn_audit_logic({path: "..."}) or gn_resource_trace({path: "..."}) or gn_extract_fsm({path: "...", stateVariable: "state"})',
-    '6a. Boundary/runtime reasoning: gn_trace_boundary({resource: "fd", start: "..."}) or gn_simulate_fault({target: "pidfd_open", returnValue: "-1"})',
+    '0b. Open the facade-first surface: discover({action: "tools"})',
+    '0c. Check docs readiness when docs/code trace matters: docs({action: "readiness"})',
+    '1. Start the manager loop with audit({action: "session_start"})',
+    '2. Verify with audit({action: "session_verify"})',
+    '3. Dedupe with audit({action: "session_dedupe"})',
+    '4. Bundle with audit({action: "session_bundle"})',
+    '5. Dispatch and review with audit({action: "session_dispatch"}) then audit({action: "session_review_worker"})',
+    '6. Use the primitive escape hatch only when needed: gn_audit_ingest({sourcePath: "..."}) -> gn_audit_session_lock({session: "...", action: "create"}) -> gn_audit_verify({session: "..."}) -> gn_audit_dedupe({session: "..."}) -> gn_audit_bundle({session: "..."})',
+    '7. Avoid stale repeats: gn_audit_pr_marker_scan({path: "...", evidenceLine: 42}) -> gn_audit_replay({session: "..."}) or gn_audit_diff({sessionA: "...", sessionB: "..."}) -> gn_audit_export({session: "...", format: "both"})',
+    '8. Systems evidence: gn_audit_logic({path: "..."}) or gn_resource_trace({path: "..."}) or gn_extract_fsm({path: "...", stateVariable: "state"})',
+    '9. Boundary/runtime reasoning: gn_trace_boundary({resource: "fd", start: "..."}) or gn_simulate_fault({target: "pidfd_open", returnValue: "-1"})',
     '10. Self-help: gn_diagnose({}) when troubleshooting',
   ],
   refactor: [
     '0. Set quality once: gn_quality_mode({level: "balanced"})',
-    '1. Discover: gn_explore({query: "..."})',
-    '2. Zoom: gn_find_related({symbol: "..."})',
-    '3. Understand file: gn_explain_module({filePath: "..."})',
-    '4. Pre-edit safety: gn_safe_edit_check({symbol: "..."})',
-    '7. Apply edit: gn_safe_refactor({intent, symbol, params})',
-    '8. Pre-commit: gn_pre_commit_audit({scope: "staged"})',
+    '1. Open the facade-first surface: discover({action: "tools"})',
+    '2. Search the graph with search({action: "semantic"})',
+    '3. Inspect the symbol with inspect({action: "context"})',
+    '4. Check the blast radius with impact({action: "symbol"})',
+    '5. Understand the file with gn_explain_module({filePath: "..."})',
+    '6. Pre-edit safety: gn_safe_edit_check({symbol: "..."})',
+    '7. Apply edit: refactor({action: "rename"})',
+    '8. Compatibility escape hatch: gn_safe_refactor({intent, symbol, params})',
+    '9. Pre-commit: gn_pre_commit_audit({scope: "staged"})',
     '10. Self-help: gn_diagnose({}) when troubleshooting',
   ],
   'query-projects': [
     '0. Set quality once: gn_quality_mode({level: "balanced"})',
     '1. Discover repos or groups: discover({action: "repos"}) or discover({action: "groups"})',
-    '2. Explore concepts: gn_explore({query: "..."})',
-    '3. Find related symbols: gn_find_related({symbol: "..."})',
-    '4. Understand a file: gn_explain_module({filePath: "..."})',
-    '5. Query impact (read-only): impact({target: "..."}) or gn_docs({action: "readiness"})',
-    '6. Search across the graph: search({query: "..."})',
-    '7. Inspect symbol context: inspect({name: "..."})',
+    '2. Search across the graph with search({action: "semantic"})',
+    '3. Inspect symbol context with inspect({action: "context"})',
+    '4. Query impact (read-only) with impact({action: "symbol"}) or docs({action: "readiness"})',
+    '5. Explore deeper concepts with gn_explore({query: "..."})',
+    '6. Find related symbols with gn_find_related({symbol: "..."})',
+    '7. Understand a file with gn_explain_module({filePath: "..."})',
     '8. Self-help: gn_diagnose({}) when troubleshooting',
   ],
 };
@@ -243,7 +257,7 @@ const REPO_READINESS_NOTES: string[] = [
 ];
 
 const STARTUP_PROFILE_INTEGRATION_NOTE =
-  'Computed from registry startup-profile helpers; MCP dispatch remains advertise-only during ADR 0027 migration.';
+  'Computed from registry startup-profile helpers; discover({action: "tools"}) should be the first stop for the facade-first surface, while gn_help preserves compatibility notes.';
 
 const HELP_EVIDENCE_GAP_CONDITIONS: readonly EvidenceGapCondition[] = [
   'stale_index',
@@ -267,6 +281,7 @@ export function gnHelp(
 ): HelpReport | CapabilityResponseEnvelope<Record<string, unknown>> {
   const { mode, repo } = params;
   const includeNonAuthoritativeEvidence = params.includeNonAuthoritativeEvidence === true;
+  const startupProfileState = getStartupProfileState();
 
   const allSuperEntries = getPublicToolRegistry({
     includeFacades: false,
@@ -274,6 +289,18 @@ export function gnHelp(
 
   const allSuperFunctions: SuperFunctionEntry[] = allSuperEntries.map((entry) =>
     mapToSuperFunctionEntry(entry),
+  );
+
+  const publicEntries = getPublicToolRegistry({
+    includeFacades: true,
+    mode,
+    startupProfile: startupProfileState.activeProfile,
+  });
+  const recommendedFacadeTools = sortedToolNames(
+    publicEntries.filter((entry) => entry.kind === 'facade'),
+  );
+  const compatibilityTools = sortedToolNames(
+    publicEntries.filter((entry) => entry.kind === 'super'),
   );
 
   let superFunctions = mode
@@ -323,18 +350,15 @@ export function gnHelp(
     ? MODE_WORKFLOWS[mode]
     : [
         '0. Set quality once: gn_quality_mode({level: "balanced"})',
-        '0a. Check tool contract when using audit/system tools: gn_tool_contract({})',
-        '0b. Check docs readiness when docs/code trace matters: gn_docs({action: "readiness"})',
-        '1. Discover: gn_explore({query: "..."})',
-        '2. Zoom: gn_find_related({symbol: "..."})',
-        '3. Understand file: gn_explain_module({filePath: "..."})',
-        '4. Pre-edit safety: gn_safe_edit_check({symbol: "..."})',
-        '5. Manager audit loop: gn_audit_session_start({sourcePath: "..."}) -> gn_audit_session_verify({session: "..."}) -> gn_audit_session_dedupe({session: "..."}) -> gn_audit_session_bundle({session: "..."})',
-        '5a. Manager dispatch/review: gn_audit_session_dispatch({session: "...", bundleId: "..."}) -> worker edits -> gn_audit_session_review_worker({session: "...", bundleId: "..."})',
-        '5b. Primitive escape hatch: gn_audit_ingest({sourcePath: "..."}) -> gn_audit_session_lock({session: "...", action: "create"}) -> gn_audit_verify({session: "..."}) -> gn_audit_dedupe({session: "..."}) -> gn_audit_bundle({session: "..."})',
-        '5c. Avoid stale repeats: gn_audit_pr_marker_scan({path: "...", evidenceLine: 42}) -> gn_audit_replay({session: "..."}) or gn_audit_diff({sessionA: "...", sessionB: "..."}) -> gn_audit_export({session: "...", format: "both"})',
-        '6. Systems evidence: gn_audit_logic({path: "..."}) or gn_resource_trace({path: "..."}) or gn_extract_fsm({path: "...", stateVariable: "state"})',
-        '6a. Boundary/runtime reasoning: gn_trace_boundary({resource: "fd", start: "..."}) or gn_simulate_fault({target: "pidfd_open", returnValue: "-1"})',
+        '0a. Open the facade-first surface: discover({action: "tools"})',
+        '0b. Check tool contract when using audit/system tools: gn_tool_contract({})',
+        '0c. Check docs readiness when docs/code trace matters: docs({action: "readiness"})',
+        '1. Search concepts with search({action: "semantic"})',
+        '2. Inspect symbols with inspect({action: "context"})',
+        '3. Check blast radius with impact({action: "symbol"})',
+        '4. Use audit({action: "report"}) for review or docs({action: "trace"}) for docs-backed questions',
+        '5. Refactor with refactor({action: "rename"}) when the edit is safe to make',
+        '6. Pre-edit safety: gn_safe_edit_check({symbol: "..."})',
         '7. Apply edit: gn_safe_refactor({intent, symbol, params})',
         '8. Pre-commit: gn_pre_commit_audit({scope: "staged"})',
         '9. Local diff review (CLI): `ontoindex review diff --base main` — local-only, no hosted credentials; run `ontoindex analyze` first for full graph results',
@@ -348,6 +372,8 @@ export function gnHelp(
     version: 1,
     ...(mode !== undefined ? { mode, modeDescription: MODE_DESCRIPTIONS[mode] } : {}),
     superFunctions,
+    recommendedFacadeTools,
+    compatibilityTools,
     ...((query ||
       requestedIntents.length > 0 ||
       requestedEvidenceClasses.length > 0 ||
@@ -366,16 +392,16 @@ export function gnHelp(
     }),
     recommendedWorkflow,
     primitivesAsEscapeHatch:
-      'Existing ontoindex_* tools (query, context, impact, rename, etc.) remain available as escape hatch for power users. Super-functions wrap them with auto-env-vars + verdicts + safety wrappers.',
+      'Use the facade tools first; direct ontoindex_* tools (query, context, impact, rename, etc.) remain available as compatibility escape hatches for power users. Super-functions wrap them with auto-env-vars + verdicts + safety wrappers.',
     ergonomicsReview: {
       toolCount: {
         superFunctions: allSuperFunctions.length,
         docsAwareTools: ['gn_docs', 'search', 'inspect', 'context', 'query'],
       },
       setupSteps: [
-        'Call gn_help({}) once to choose the smallest workflow.',
+        'Call discover({action: "tools"}) once to choose the facade-first workflow.',
+        'Call gn_help({}) when you need compatibility notes, mode filters, or evidence-class filters.',
         'Call gn_quality_mode({level: "balanced"}) once per session.',
-        'For docs/code work, call gn_docs({action: "readiness"}) before trace or drift.',
       ],
       responseSize: {
         compactByDefault: true,
@@ -387,16 +413,16 @@ export function gnHelp(
       schemaClarityNotes: [
         'gn_docs exposes typed actions instead of raw docs graph query strings.',
         'Docs trace and drift keep sidecar status, skip reasons, truncation, and candidate counts in compact output.',
-        'Facade aliases let common inspect/impact calls use target without learning backend parameter names.',
+        'Facade discovery now separates recommended facade tools from compatibility tools.',
       ],
       codebaseMemoryStyleComparison: [
         'Research-only comparison: prefer a small setup/help entrypoint, bounded context modes, and explicit stale/partial state.',
         'No runtime dependency or migration to Codebase-Memory-style storage is required.',
       ],
       recommendedChanges: [
+        'Prefer discover({action: "tools"}) as the first stop, then search({action: "semantic"}), inspect({action: "context"}), impact({action: "symbol"}), audit({action: "report"}), refactor({action: "rename"}), and docs({action: "readiness"}).',
         'Prefer gn_docs for requirement trace, API drift, docs context, and docs readiness questions; use includeMemories only for advisory context/readiness.',
         'Keep Markdown enrichment opt-ins explicit on search/inspect to avoid surprising response growth.',
-        'Use lower defaults with schema maximums so agents can ask for more only when needed.',
       ],
       workflowPrompts: {
         docsTrace: 'Which requirement implements REQ-1? -> gn_docs({action: "trace", id: "REQ-1"})',
@@ -404,12 +430,12 @@ export function gnHelp(
         editReadiness:
           'Is it safe to edit parseDocs()? -> gn_safe_edit_check({symbol: "parseDocs"})',
         setupHelp:
-          'How should I start this session? -> gn_help({}) then gn_quality_mode({level: "balanced"})',
+          'How should I start this session? -> discover({action: "tools"}) then gn_quality_mode({level: "balanced"})',
       },
     },
     evidenceExpansion,
     ...(repo !== undefined ? { readinessNotes: REPO_READINESS_NOTES } : {}),
-    startupProfile: getStartupProfileState(),
+    startupProfile: startupProfileState,
   };
 
   if (params.legacyResponse !== false) {
@@ -423,6 +449,14 @@ export function gnHelp(
     targetContext: createGlobalTargetContext('gn_help is global by default'),
     capabilitiesUsed: ['tool-registry'],
     nextTools: uniqueStrings([
+      'discover',
+      'search',
+      'inspect',
+      'impact',
+      'audit',
+      'refactor',
+      'docs',
+      'manage',
       'gn_quality_mode',
       'gn_explore',
       'gn_diagnose',

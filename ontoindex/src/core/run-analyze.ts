@@ -112,6 +112,19 @@ export interface AnalyzeOptions {
   includePaths?: string[];
 }
 
+export type EmbeddingLifecycleMode = 'off' | 'preserve' | 'refresh';
+export type EmbeddingLifecycleState =
+  | 'available'
+  | 'preserved'
+  | 'refreshed'
+  | 'skipped'
+  | 'absent';
+
+export interface EmbeddingLifecycleSummary {
+  mode: EmbeddingLifecycleMode;
+  state: EmbeddingLifecycleState;
+}
+
 export interface AnalyzeResult {
   repoName: string;
   repoPath: string;
@@ -123,9 +136,17 @@ export interface AnalyzeResult {
     processes?: number;
     embeddings?: number;
   };
+  embeddingLifecycle?: EmbeddingLifecycleSummary;
   alreadyUpToDate?: boolean;
   /** The raw pipeline result — only populated when needed by callers (e.g. skill generation). */
   pipelineResult?: PipelineResult;
+}
+
+export function resolveEmbeddingLifecycleMode(
+  options?: Pick<AnalyzeOptions, 'embeddings' | 'annNeighbors' | 'force'>,
+): EmbeddingLifecycleMode {
+  if (options?.embeddings !== true && options?.annNeighbors !== true) return 'off';
+  return options?.force ? 'refresh' : 'preserve';
 }
 
 /** Threshold: auto-skip embeddings for repos with more nodes than this */
@@ -756,7 +777,8 @@ export async function runFullAnalysis(
   const { storagePath, lbugPath } = getStoragePaths(repoPath);
   const includePaths = await normalizeRepositoryIncludePaths(repoPath, options.includePaths);
   const requestedProfile = requestedPipelineProfile(options.profile);
-  const embeddingsEnabledForRun = options.embeddings === true || options.annNeighbors === true;
+  const embeddingLifecycleMode = resolveEmbeddingLifecycleMode(options);
+  const embeddingsEnabledForRun = embeddingLifecycleMode !== 'off';
   const annNeighborBuildRequested = options.annNeighbors === true;
 
   // Clean up stale KuzuDB files from before the LadybugDB migration.
@@ -807,6 +829,10 @@ export async function runFullAnalysis(
         repoName: projectName,
         repoPath,
         stats: existingMeta.stats ?? {},
+        embeddingLifecycle: {
+          mode: embeddingLifecycleMode,
+          state: (existingMeta.stats?.embeddings ?? 0) > 0 ? 'available' : 'absent',
+        },
         alreadyUpToDate: true,
       };
     }
@@ -1163,6 +1189,30 @@ export async function runFullAnalysis(
           },
         }
       : {};
+    const embeddingLifecycle: EmbeddingLifecycleSummary = !embeddingsEnabledForRun
+      ? {
+          mode: embeddingLifecycleMode,
+          state: embeddingCount > 0 ? 'available' : 'absent',
+        }
+      : embeddingSkipped
+        ? {
+            mode: embeddingLifecycleMode,
+            state: 'skipped',
+          }
+        : options.force
+          ? {
+              mode: embeddingLifecycleMode,
+              state: 'refreshed',
+            }
+          : cachedEmbeddings.length > 0
+            ? {
+                mode: embeddingLifecycleMode,
+                state: 'preserved',
+              }
+            : {
+                mode: embeddingLifecycleMode,
+                state: 'available',
+              };
     const meta = {
       repoPath,
       lastCommit: currentCommit,
@@ -1274,6 +1324,7 @@ export async function runFullAnalysis(
       repoName: projectName,
       repoPath,
       stats: meta.stats,
+      embeddingLifecycle,
       pipelineResult,
     };
   } catch (err) {

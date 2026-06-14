@@ -721,8 +721,12 @@ describe('runFullAnalysis snapshot persistence', () => {
         return [];
       });
 
-      await runFullAnalysis(repoDir, { embeddings: true }, { onProgress: vi.fn() });
+      const result = await runFullAnalysis(repoDir, { embeddings: true }, { onProgress: vi.fn() });
 
+      expect(result.embeddingLifecycle).toEqual({
+        mode: 'preserve',
+        state: 'available',
+      });
       expect(embeddingPipelineMocks.runEmbeddingPipeline).toHaveBeenCalledTimes(1);
     } finally {
       await fs.rm(repoDir, { recursive: true, force: true });

@@ -60,6 +60,10 @@ program
     collectOption,
     [],
   )
+  .option(
+    '--experimental-file-delta',
+    'Experimental: try a bounded symbols-only refresh from changed files, otherwise fall back to full analyze',
+  )
   .option('--markdown-sidecar', 'Queue opt-in Markdown RAG sidecar enrichment after indexing')
   .option(
     '--name <alias>',

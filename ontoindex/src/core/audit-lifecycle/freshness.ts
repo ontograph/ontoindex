@@ -1,8 +1,43 @@
+import path from 'node:path';
 import { execFileText } from '../process/exec-file.js';
 import { resolveTargetHead, type AuditTargetHead } from './target-head.js';
 
 const GIT_TIMEOUT_MS = 5_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
+const SOURCE_FILE_EXTENSIONS = new Set([
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+  '.cts',
+  '.mts',
+  '.c',
+  '.cc',
+  '.cpp',
+  '.cxx',
+  '.h',
+  '.hh',
+  '.hpp',
+  '.py',
+  '.rs',
+  '.go',
+  '.java',
+  '.kt',
+  '.kts',
+  '.swift',
+  '.cs',
+  '.php',
+  '.rb',
+  '.dart',
+  '.lua',
+  '.sh',
+  '.sql',
+  '.vue',
+  '.html',
+  '.htm',
+]);
 
 export type AuditFreshnessState = 'clean' | 'dirty' | 'stale' | 'partial';
 export type AuditLifecycleStatus = string;
@@ -23,6 +58,16 @@ export interface AuditFreshnessMetadata {
   warnings: string[];
   recommendedAction?: string;
   checkedAt: string;
+}
+
+export interface GitPorcelainWorkspaceSummary {
+  dirtyFiles: AuditDirtyFile[];
+  dirtyFileCount: number;
+  sourceFileCount: number;
+  stagedSourceFileCount: number;
+  unstagedSourceFileCount: number;
+  untrackedSourceFileCount: number;
+  unknownGraphCoverageCount: number;
 }
 
 export interface ComputeAuditFreshnessOptions {
@@ -54,13 +99,14 @@ export async function computeAuditFreshness(
       )
     ).trim();
     const commitsAfterTarget = await countCommitsAfterTarget(target.gitRoot, target.commit);
-    const dirtyFiles = parsePorcelainStatus(
+    const workspaceSummary = summarizeGitPorcelainStatus(
       await execFileText(
         'git',
         ['status', '--porcelain=v1', '--untracked-files=all'],
         gitOptions(target.gitRoot),
       ),
     );
+    const dirtyFiles = workspaceSummary?.dirtyFiles ?? [];
     const changedFiles = Array.from(new Set(dirtyFiles.map((file) => file.path))).sort();
     const warnings = freshnessWarnings({
       currentHead,
@@ -102,6 +148,39 @@ export async function computeAuditFreshness(
 
 export function isFreshAuditEvidence(freshness: Pick<AuditFreshnessMetadata, 'state'>): boolean {
   return freshness.state === 'clean';
+}
+
+export function summarizeGitPorcelainStatus(
+  output: string | null,
+): GitPorcelainWorkspaceSummary | null {
+  if (output === null) return null;
+  const dirtyFiles = parsePorcelainStatus(output);
+  const sourceFiles = new Set<string>();
+  let stagedSourceFileCount = 0;
+  let unstagedSourceFileCount = 0;
+  let untrackedSourceFileCount = 0;
+
+  for (const file of dirtyFiles) {
+    if (!isSourceFilePath(file.path)) continue;
+    sourceFiles.add(file.path);
+    const isUntracked = file.indexStatus === '?' && file.worktreeStatus === '?';
+    if (isUntracked) {
+      untrackedSourceFileCount++;
+      continue;
+    }
+    if (file.indexStatus !== ' ' && file.indexStatus !== '?') stagedSourceFileCount++;
+    if (file.worktreeStatus !== ' ' && file.worktreeStatus !== '?') unstagedSourceFileCount++;
+  }
+
+  return {
+    dirtyFiles,
+    dirtyFileCount: dirtyFiles.length,
+    sourceFileCount: sourceFiles.size,
+    stagedSourceFileCount,
+    unstagedSourceFileCount,
+    untrackedSourceFileCount,
+    unknownGraphCoverageCount: untrackedSourceFileCount,
+  };
 }
 
 export function projectAuditStatusForFreshness<TStatus extends AuditLifecycleStatus>(
@@ -149,6 +228,10 @@ function parsePorcelainStatus(output: string): AuditDirtyFile[] {
       const path = rawPath.includes(' -> ') ? rawPath.split(' -> ').at(-1) || rawPath : rawPath;
       return { path, indexStatus, worktreeStatus };
     });
+}
+
+function isSourceFilePath(filePath: string): boolean {
+  return SOURCE_FILE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
 function freshnessState(input: { isDirty: boolean; isStale: boolean }): AuditFreshnessState {

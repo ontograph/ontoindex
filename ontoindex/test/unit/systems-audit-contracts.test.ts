@@ -12,7 +12,6 @@ import {
 import {
   collectCapabilityDiagnostics,
   createEnvelopeFromLegacy,
-  createGlobalTargetContext,
 } from '../../src/mcp/shared/response-envelope.js';
 import type { TargetContext } from '../../src/mcp/shared/target-context.js';
 
@@ -157,6 +156,39 @@ describe('systems-audit contracts', () => {
   });
 
   it('creates the shared capability-aware envelope shape required by ADR 0018', () => {
+    const targetContext: TargetContext = {
+      version: 1,
+      status: 'ok',
+      repoKey: 'fixture',
+      repoLabel: 'fixture',
+      repoPath: '/repo/fixture',
+      branch: 'main',
+      targetRef: 'HEAD',
+      targetHead: 'commit-1',
+      currentHead: 'commit-1',
+      indexedHead: 'commit-1',
+      dirtyWorktree: false,
+      dirtyFileCount: 0,
+      dirtyWorkspace: {
+        state: 'clean',
+        fileCount: 0,
+        sourceFileCount: 0,
+        stagedSourceFileCount: 0,
+        unstagedSourceFileCount: 0,
+        untrackedSourceFileCount: 0,
+        unknownGraphCoverageCount: 0,
+      },
+      changedSinceIndex: false,
+      snapshotMode: 'committed-head',
+      qualityMode: 'balanced',
+      scopeConfidence: 'high',
+      embeddings: { status: 'available', count: 2 },
+      lsp: { status: 'available', servers: { typescript: true, python: false, rust: false } },
+      sidecar: { status: 'available', reason: 'ok' },
+      policy: { status: 'unknown', reason: 'policy-profile-probe-not-configured' },
+      warnings: [],
+    };
+
     const response = createEnvelopeFromLegacy({
       legacy: {
         version: 1,
@@ -165,7 +197,7 @@ describe('systems-audit contracts', () => {
       },
       tool: 'gn_audit_verify',
       status: 'ok',
-      targetContext: createGlobalTargetContext('global help surface'),
+      targetContext,
       capabilitiesUsed: ['tool-registry'],
       nextTools: ['gn_help'],
     });
@@ -175,7 +207,12 @@ describe('systems-audit contracts', () => {
       tool: 'gn_audit_verify',
       version: 1,
       status: 'ok',
-      targetContext: { scope: 'global' },
+      targetContext: {
+        status: 'ok',
+        repoKey: 'fixture',
+        repoLabel: 'fixture',
+        repoPath: '/repo/fixture',
+      },
       capabilitiesUsed: ['tool-registry'],
       capabilitiesMissing: [],
       warnings: [],
@@ -185,6 +222,25 @@ describe('systems-audit contracts', () => {
         persistedPath: null,
       },
       nextTools: ['gn_help'],
+    });
+    expect(response.freshness).toMatchObject({
+      status: 'fresh',
+      repoLabel: 'fixture',
+      repoPath: '/repo/fixture',
+      indexedCommit: 'commit-1',
+      headCommit: 'commit-1',
+      isStale: false,
+      dirtyFileCount: 0,
+      dirtyWorkspace: {
+        state: 'clean',
+        fileCount: 0,
+        sourceFileCount: 0,
+        stagedSourceFileCount: 0,
+        unstagedSourceFileCount: 0,
+        untrackedSourceFileCount: 0,
+        unknownGraphCoverageCount: 0,
+      },
+      scopeConfidence: 'high',
     });
   });
 

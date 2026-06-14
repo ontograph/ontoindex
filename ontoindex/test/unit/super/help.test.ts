@@ -62,7 +62,13 @@ describe('gnHelp — return shape', () => {
       status: 'ok',
       targetContext: { scope: 'global' },
       capabilitiesUsed: ['tool-registry'],
-      nextTools: expect.arrayContaining(['gn_quality_mode', 'gn_explore', 'gn_diagnose']),
+      nextTools: expect.arrayContaining([
+        'discover',
+        'search',
+        'inspect',
+        'impact',
+        'gn_quality_mode',
+      ]),
     });
     expect((report.results as Record<string, unknown>).superFunctions).toBeDefined();
   });
@@ -101,16 +107,20 @@ describe('gnHelp — return shape', () => {
     }
   });
 
-  it('adds evidence-gap tools to capability envelope nextTools', () => {
+  it('adds facade-first tools to capability envelope nextTools', () => {
     const report = gnHelp({ legacyResponse: false });
 
     expect(report.nextTools).toEqual(
       expect.arrayContaining([
+        'discover',
+        'search',
+        'inspect',
+        'impact',
+        'audit',
+        'refactor',
+        'docs',
+        'manage',
         'gn_quality_mode',
-        'gn_explore',
-        'gn_diagnose',
-        'gn_ensure_fresh',
-        'gn_tool_contract',
       ]),
     );
   });
@@ -261,13 +271,31 @@ describe('gnHelp — ergonomics review', () => {
     expect(review.recommendedChanges.length).toBeGreaterThan(0);
   });
 
+  it('reports facade-first and compatibility tool sets', () => {
+    const report = gnHelp();
+    expect(report.recommendedFacadeTools).toEqual(
+      expect.arrayContaining([
+        'discover',
+        'search',
+        'inspect',
+        'impact',
+        'audit',
+        'refactor',
+        'docs',
+        'manage',
+      ]),
+    );
+    expect(report.compatibilityTools).toContain('gn_help');
+    expect(report.compatibilityTools).toContain('gn_tool_contract');
+  });
+
   it('documents common agent prompts for docs trace, API drift, edit readiness, and setup/help', () => {
     const prompts = gnHelp().ergonomicsReview.workflowPrompts;
 
     expect(prompts.docsTrace).toContain('gn_docs({action: "trace"');
     expect(prompts.apiDrift).toContain('gn_docs({action: "drift"})');
     expect(prompts.editReadiness).toContain('gn_safe_edit_check');
-    expect(prompts.setupHelp).toContain('gn_help({})');
+    expect(prompts.setupHelp).toContain('discover({action: "tools"})');
   });
 
   it('records Codebase-Memory-style comparison as research only', () => {
@@ -523,23 +551,25 @@ describe('SERENA-REV2: mode parameter', () => {
     expect(report.modeDescription).toMatch(/refactor/i);
   });
 
-  it('mode=general: recommendedWorkflow is non-empty and does not include audit-manager step', () => {
+  it('mode=general: recommendedWorkflow is non-empty and starts with the facade-first surface', () => {
     const report = gnHelp({ mode: 'general' });
     expect(report.recommendedWorkflow.length).toBeGreaterThan(0);
     const wf = report.recommendedWorkflow.join('\n');
+    expect(wf).toContain('discover({action: "tools"})');
     expect(wf).not.toContain('gn_audit_session_start');
   });
 
-  it('mode=audit: recommendedWorkflow includes manager audit loop', () => {
+  it('mode=audit: recommendedWorkflow includes the audit facade loop', () => {
     const report = gnHelp({ mode: 'audit' });
     const wf = report.recommendedWorkflow.join('\n');
-    expect(wf).toContain('gn_audit_session_start');
+    expect(wf).toContain('audit({action: "session_start"})');
   });
 
-  it('mode=refactor: recommendedWorkflow includes gn_safe_refactor', () => {
+  it('mode=refactor: recommendedWorkflow includes the facade-first surface', () => {
     const report = gnHelp({ mode: 'refactor' });
     const wf = report.recommendedWorkflow.join('\n');
-    expect(wf).toContain('gn_safe_refactor');
+    expect(wf).toContain('discover({action: "tools"})');
+    expect(wf).toContain('refactor({action: "rename"})');
   });
 
   it('mode=refactor: recommendedWorkflow does not include audit-session steps', () => {

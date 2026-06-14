@@ -2,12 +2,14 @@
 
 **Graph-powered code intelligence for AI agents.** OntoIndex builds a local code graph for a repository and exposes it through a CLI, an MCP server, an HTTP API, and a browser UI.
 
+The default path is local: install, analyze, setup, connect MCP, serve, and generate wiki output against a repository you control. Browser-hosted surfaces are optional clients on top of that local graph.
+
 > Important: OntoIndex has no official cryptocurrency, token, or coin. Any token using the OntoIndex name is not affiliated with this project or its maintainers.
 
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- Current release: `1.9.5`
+- Current release: `1.9.8`
 - Source repository: [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - Security policy: [SECURITY.md](SECURITY.md)
 - Enterprise contact: [erasyuk@gmail.com](mailto:erasyuk@gmail.com)
@@ -121,8 +123,8 @@ Use this path when npm publication is available in your environment.
 
 | Platform | Command |
 | --- | --- |
-| Linux/macOS | `npm install -g ontoindex@1.9.5 && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.5; ontoindex --version` |
+| Linux/macOS | `npm install -g ontoindex@1.9.8 && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.8; ontoindex --version` |
 
 ### Install from a Release Tarball URL
 
@@ -130,21 +132,23 @@ Use this when you want an immutable GitHub release asset.
 
 | Platform | Command |
 | --- | --- |
-| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.5/ontoindex-1.9.5.tgz && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.5/ontoindex-1.9.5.tgz; ontoindex --version` |
+| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.8/ontoindex-1.9.8.tgz && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.8/ontoindex-1.9.8.tgz; ontoindex --version` |
 
 ## First Run
 
-Run OntoIndex from the repository you want to index.
+Run OntoIndex from the repository you want to index. Start with the local CLI flow, then connect MCP or `serve` as needed; wiki generation is part of the same local workflow.
+
+If embeddings already exist, `ontoindex analyze` preserves them; use `ontoindex analyze --embeddings` when you want to refresh semantic vectors during a rebuild.
 
 | Task | Linux/macOS | Windows PowerShell |
 | --- | --- | --- |
 | Index current repository | `ontoindex analyze` | `ontoindex analyze` |
-| Check index status | `ontoindex status` | `ontoindex status` |
 | Configure supported MCP clients | `ontoindex setup` | `ontoindex setup` |
 | Start MCP server manually | `ontoindex mcp` | `ontoindex mcp` |
 | Start local HTTP backend | `ontoindex serve` | `ontoindex serve` |
 | Generate a wiki | `ontoindex wiki . --out docs/wiki` | `ontoindex wiki . --out docs/wiki` |
+| Check index status | `ontoindex status` | `ontoindex status` |
 
 When the OntoIndex executable is launched from a helper checkout or global tool path, set the target repository explicitly so the MCP server cannot silently serve the wrong repository.
 
@@ -279,9 +283,9 @@ Key steps:
 
 Supported language depth varies, but the shared model covers TypeScript, JavaScript, Python, Java, Kotlin, C#, Go, Rust, PHP, Ruby, Swift, C, C++, Dart, and protobuf-related parser support.
 
-## Web UI
+## Optional Web UI
 
-The hosted UI can connect to a local backend at `http://localhost:4747`.
+The hosted UI is optional and can connect to a local backend at `http://localhost:4747`.
 
 | Task | Linux/macOS | Windows PowerShell |
 | --- | --- | --- |
@@ -309,8 +313,8 @@ Images:
 
 | Image | Purpose |
 | --- | --- |
-| `ghcr.io/ontograph/ontoindex:1.9.5` | CLI, MCP server, and `ontoindex serve` backend |
-| `ghcr.io/ontograph/ontoindex-web:1.9.5` | Web UI |
+| `ghcr.io/ontograph/ontoindex:1.9.8` | CLI, MCP server, and `ontoindex serve` backend |
+| `ghcr.io/ontograph/ontoindex-web:1.9.8` | Web UI |
 
 ## Comparison With Related Tools
 

@@ -9,10 +9,15 @@ import {
   resolveAnalyzeIncludePaths,
   resolveAnalyzePipelineProfile,
 } from '../../src/cli/analyze.js';
+import { planExperimentalFileDeltaRefresh } from '../../src/core/analyze-delta.js';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
 
 vi.mock('../../src/core/run-analyze.js', () => ({
   runFullAnalysis: vi.fn(),
+}));
+
+vi.mock('../../src/core/analyze-delta.js', () => ({
+  planExperimentalFileDeltaRefresh: vi.fn(),
 }));
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
@@ -49,6 +54,7 @@ function initTempGitRepo(repoPath: string) {
 describe('CLI help surface', () => {
   afterEach(() => {
     vi.mocked(runFullAnalysis).mockReset();
+    vi.mocked(planExperimentalFileDeltaRefresh).mockReset();
     process.exitCode = undefined;
   });
 
@@ -60,6 +66,7 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('--huge-repo');
     expect(result.stdout).toContain('--allow-huge-root');
     expect(result.stdout).toContain('--include-path <path>');
+    expect(result.stdout).toContain('--experimental-file-delta');
   });
 
   it('maps the symbols-only analyze option to the symbols pipeline profile', () => {
@@ -134,6 +141,74 @@ describe('CLI help surface', () => {
           onProgress: expect.any(Function),
           onLog: expect.any(Function),
         }),
+      );
+    } finally {
+      if (originalNodeOptions === undefined) {
+        delete process.env.NODE_OPTIONS;
+      } else {
+        process.env.NODE_OPTIONS = originalNodeOptions;
+      }
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('routes experimental file-delta refresh into bounded symbols-only analysis', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-delta-scoped-'));
+    initTempGitRepo(tmpDir);
+    fs.mkdirSync(path.join(tmpDir, 'src'));
+    fs.writeFileSync(path.join(tmpDir, 'src/sample.ts'), 'export const sample = 1;\n');
+    const originalNodeOptions = process.env.NODE_OPTIONS;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    vi.mocked(planExperimentalFileDeltaRefresh).mockResolvedValue({
+      baselineCommit: 'abc123',
+      currentCommit: 'def456',
+      changedFiles: ['src/sample.ts'],
+      boundedIncludePaths: ['src/sample.ts'],
+      safeToBound: true,
+      forceFullAnalyze: false,
+      unsafeReasons: [],
+      report: 'Experimental file-delta refresh can use bounded symbols-only analysis.',
+    });
+    vi.mocked(runFullAnalysis).mockResolvedValue({
+      repoName: 'temp',
+      repoPath: tmpDir,
+      stats: { nodes: 3, edges: 2 },
+      alreadyUpToDate: false,
+    });
+    process.env.NODE_OPTIONS = `${originalNodeOptions || ''} --max-old-space-size=8192`.trim();
+
+    try {
+      await analyzeCommand(tmpDir, {
+        experimentalFileDelta: true,
+        skipAgentsMd: true,
+        noStats: true,
+      });
+
+      expect(planExperimentalFileDeltaRefresh).toHaveBeenCalledWith(tmpDir);
+      expect(runFullAnalysis).toHaveBeenCalledWith(
+        tmpDir,
+        expect.objectContaining({
+          profile: 'symbols',
+          includePaths: ['src/sample.ts'],
+        }),
+        expect.objectContaining({
+          onProgress: expect.any(Function),
+          onLog: expect.any(Function),
+        }),
+      );
+      expect(logSpy.mock.calls.map(([line]) => line)).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining(
+            'Experimental file-delta refresh can use bounded symbols-only analysis.',
+          ),
+          expect.stringContaining('Partial graph coverage only'),
+        ]),
       );
     } finally {
       if (originalNodeOptions === undefined) {

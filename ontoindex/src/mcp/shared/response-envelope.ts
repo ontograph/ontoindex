@@ -1,4 +1,8 @@
-import type { TargetContext } from './target-context.js';
+import type {
+  ScopeConfidence,
+  TargetContext,
+  TargetContextDirtyWorkspace,
+} from './target-context.js';
 
 export interface GlobalTargetContext {
   scope: 'global';
@@ -15,6 +19,14 @@ export interface CapabilityResponseFreshness {
   currentHead?: string;
   indexedHead?: string;
   snapshotMode?: string;
+  repoLabel?: string;
+  repoPath?: string;
+  indexedCommit?: string;
+  headCommit?: string;
+  isStale?: boolean;
+  dirtyFileCount?: number | null;
+  dirtyWorkspace?: TargetContextDirtyWorkspace;
+  scopeConfidence?: ScopeConfidence;
 }
 
 export interface CapabilityResponseEnvelope<
@@ -99,6 +111,7 @@ export function deriveEnvelopeFreshness(
           status: 'not-applicable' as const,
           actionable: true,
           reason: targetContext.reason,
+          scopeConfidence: 'unknown' as const,
         }
       : targetContext.status !== 'ok'
         ? {
@@ -109,6 +122,16 @@ export function deriveEnvelopeFreshness(
             currentHead: targetContext.currentHead,
             indexedHead: targetContext.indexedHead,
             snapshotMode: targetContext.snapshotMode,
+            repoLabel: targetContext.repoLabel ?? targetContext.repoKey,
+            repoPath: targetContext.repoPath,
+            indexedCommit: targetContext.indexedHead,
+            headCommit: targetContext.currentHead,
+            isStale: targetContext.changedSinceIndex === true,
+            dirtyFileCount: targetContext.dirtyFileCount ?? null,
+            ...(targetContext.dirtyWorkspace
+              ? { dirtyWorkspace: targetContext.dirtyWorkspace }
+              : {}),
+            scopeConfidence: targetContext.scopeConfidence ?? 'low',
           }
         : targetContext.indexedHead &&
             targetContext.targetHead &&
@@ -121,6 +144,17 @@ export function deriveEnvelopeFreshness(
               currentHead: targetContext.currentHead,
               indexedHead: targetContext.indexedHead,
               snapshotMode: targetContext.snapshotMode,
+              repoLabel: targetContext.repoLabel ?? targetContext.repoKey,
+              repoPath: targetContext.repoPath,
+              indexedCommit: targetContext.indexedHead,
+              headCommit: targetContext.currentHead,
+              isStale: true,
+              dirtyFileCount: targetContext.dirtyFileCount ?? null,
+              ...(targetContext.dirtyWorkspace
+                ? { dirtyWorkspace: targetContext.dirtyWorkspace }
+                : {}),
+              scopeConfidence:
+                targetContext.scopeConfidence ?? resolveScopeConfidence(targetContext),
             }
           : targetContext.dirtyWorktree === true
             ? {
@@ -131,6 +165,17 @@ export function deriveEnvelopeFreshness(
                 currentHead: targetContext.currentHead,
                 indexedHead: targetContext.indexedHead,
                 snapshotMode: targetContext.snapshotMode,
+                repoLabel: targetContext.repoLabel ?? targetContext.repoKey,
+                repoPath: targetContext.repoPath,
+                indexedCommit: targetContext.indexedHead,
+                headCommit: targetContext.currentHead,
+                isStale: targetContext.changedSinceIndex === true,
+                dirtyFileCount: targetContext.dirtyFileCount ?? null,
+                ...(targetContext.dirtyWorkspace
+                  ? { dirtyWorkspace: targetContext.dirtyWorkspace }
+                  : {}),
+                scopeConfidence:
+                  targetContext.scopeConfidence ?? resolveScopeConfidence(targetContext),
               }
             : {
                 status: 'fresh' as const,
@@ -140,6 +185,17 @@ export function deriveEnvelopeFreshness(
                 currentHead: targetContext.currentHead,
                 indexedHead: targetContext.indexedHead,
                 snapshotMode: targetContext.snapshotMode,
+                repoLabel: targetContext.repoLabel ?? targetContext.repoKey,
+                repoPath: targetContext.repoPath,
+                indexedCommit: targetContext.indexedHead,
+                headCommit: targetContext.currentHead,
+                isStale: targetContext.changedSinceIndex === true,
+                dirtyFileCount: targetContext.dirtyFileCount ?? null,
+                ...(targetContext.dirtyWorkspace
+                  ? { dirtyWorkspace: targetContext.dirtyWorkspace }
+                  : {}),
+                scopeConfidence:
+                  targetContext.scopeConfidence ?? resolveScopeConfidence(targetContext),
               };
 
   return { ...base, ...overrides };
@@ -268,6 +324,23 @@ function readLegacyNextTools(legacy: object): string[] {
   return Array.isArray(nextTools)
     ? nextTools.filter((value): value is string => typeof value === 'string')
     : [];
+}
+
+function resolveScopeConfidence(targetContext: TargetContext): ScopeConfidence {
+  if (targetContext.status !== 'ok') return 'unknown';
+  if (targetContext.scopeConfidence !== undefined) return targetContext.scopeConfidence;
+  if (targetContext.dirtyWorkspace?.state === 'unknown-untracked') return 'low';
+  if (targetContext.dirtyWorkspace?.state === 'unknown') return 'unknown';
+  if (
+    targetContext.dirtyWorkspace?.state === 'dirty-file' ||
+    targetContext.dirtyWorkspace?.state === 'stale-index'
+  ) {
+    return 'medium';
+  }
+  if (targetContext.dirtyWorktree === true || targetContext.changedSinceIndex === true) {
+    return 'medium';
+  }
+  return 'high';
 }
 
 function embeddingsAvailable(targetContext: EnvelopeTargetContext | undefined): boolean {

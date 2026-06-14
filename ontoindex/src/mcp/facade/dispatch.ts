@@ -32,14 +32,21 @@ export async function dispatchFacade(
       kind: entry.kind,
       description: entry.definition.description,
     }));
+    const recommendedTools = tools.filter((entry) => entry.kind === 'facade');
+    const compatibilityTools = tools.filter((entry) => entry.kind === 'super');
+
     return {
       version: 1,
       source: 'mcp-frontier',
       startupProfile,
       count: tools.length,
       tools,
+      recommendedTools,
+      compatibilityTools,
+      recommendedCount: recommendedTools.length,
+      compatibilityCount: compatibilityTools.length,
       codebaseToolsHint:
-        'Pass codebase: true to discover tools implemented by the indexed repository graph.',
+        'Use the recommended facade tools first; pass codebase: true to discover tools implemented by the indexed repository graph.',
     };
   }
 

@@ -64,6 +64,8 @@ export interface ToolContractVisibleFrontier {
   internalCallable: string[];
   hostVisible: string[];
   clientVisible: string[];
+  facadeFirst: string[];
+  compatibilityTools: string[];
   internalOnly: string[];
   clientOnly: string[];
 }
@@ -479,14 +481,21 @@ function computeVisibleFrontier(input: {
   const internalCallable = sorted(input.registryEntries.map((entry) => entry.name));
   const hostVisible = sorted(input.callable);
   const hostSet = new Set(hostVisible);
+  const facadeFirst = sorted(
+    input.registryEntries.filter((entry) => entry.kind === 'facade').map((entry) => entry.name),
+  );
+  const facadeFirstSet = new Set(facadeFirst);
 
   const clientVisible = hostVisible;
+  const compatibilityTools = hostVisible.filter((tool) => !facadeFirstSet.has(tool));
   const internalOnly = internalCallable.filter((tool) => !hostSet.has(tool));
   const clientOnly = hostVisible.filter((tool) => !input.registrySet.has(tool));
 
   const modeDescription = input.mode === 'default' ? 'all modes' : `mode "${input.mode}"`;
   const note = [
     `Callable tools in the OntoIndex registry (${modeDescription}) are compared with host-discoverable wrappers for this process.`,
+    `Facade-first guidance prefers ${facadeFirst.length} facade tools before ${compatibilityTools.length} compatibility tools.`,
+    'discover({action: "tools"}) should show the recommended facade surface first, with compatibility tools listed separately.',
     `Startup-profile filter currently set to "${input.startupProfile}" can hide internal tools from hosts.`,
     'If a host reports missing wrappers for visible tools, request the same startup-profile and frontier in that host context.',
   ].join(' ');
@@ -498,6 +507,8 @@ function computeVisibleFrontier(input: {
     internalCallable,
     hostVisible,
     clientVisible,
+    facadeFirst,
+    compatibilityTools,
     internalOnly,
     clientOnly,
   };
