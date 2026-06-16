@@ -200,12 +200,16 @@ function nullableString(value: unknown): string | null {
 }
 
 function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
 }
 
 function reasonCodeArray(value: unknown): LifecycleFinding['reasonCodes'] {
   return Array.isArray(value)
-    ? value.filter((item): item is LifecycleFinding['reasonCodes'][number] => typeof item === 'string')
+    ? value.filter(
+        (item): item is LifecycleFinding['reasonCodes'][number] => typeof item === 'string',
+      )
     : [];
 }
 

@@ -21,6 +21,7 @@ export const NODE_COLORS: Record<NodeLabel, string> = {
   Concept: '#06b6d4', // Cyan - semantic concept
   Process: '#f43f5e', // Rose - execution flow indicator
   Section: '#60a5fa', // Blue light - structural section
+  SummaryNode: '#94a3b8', // Slate light - generated summary metadata
   Struct: '#f59e0b', // Amber - like Class
   Trait: '#ec4899', // Pink - like Interface
   Impl: '#14b8a6', // Teal - like Method
@@ -63,6 +64,7 @@ export const NODE_SIZES: Record<NodeLabel, number> = {
   Concept: 5, // Semantic concept
   Process: 0, // Hidden by default - metadata node
   Section: 8, // Structural section - similar to Folder
+  SummaryNode: 0, // Hidden by default - metadata node
   Struct: 8, // Like Class
   Trait: 7, // Like Interface
   Impl: 3, // Like Method

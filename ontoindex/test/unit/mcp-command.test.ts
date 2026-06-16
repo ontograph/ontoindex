@@ -128,7 +128,9 @@ describe('mcpCommand', () => {
     getGitRootMock.mockReturnValue('/opt/demodb/_workfolder/OntoIndex');
     process.env.ONTOINDEX_MCP_REPO = 'wrong-repo';
     process.env.ONTOINDEX_MCP_PROJECT_CWD = '/project/env-target';
-    backendMocks.listRepos.mockResolvedValue([{ name: 'repo-a', path: '/project/explicit-target' }]);
+    backendMocks.listRepos.mockResolvedValue([
+      { name: 'repo-a', path: '/project/explicit-target' },
+    ]);
 
     await mcpCommand({ project: '/project/explicit-target' });
 
@@ -179,7 +181,9 @@ describe('mcpCommand', () => {
 
     expect(process.exitCode).toBeUndefined();
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('ONTOINDEX_MCP_REPO'));
-    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Resolved repo: repo-b -> /project/b'));
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('Resolved repo: repo-b -> /project/b'),
+    );
     expect(console.error).toHaveBeenCalledWith(
       expect.stringContaining('Project cwd: /opt/demodb/_workfolder/OntoIndex'),
     );

@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Monitor tree-sitter 0.25 upgrade readiness.
+"""Monitor tree-sitter 0.25 runtime and upstream ecosystem readiness.
 
 Tracks two things Dependabot cannot see:
 
   1. Peer-dep compatibility. Each tree-sitter-* grammar declares a peer
      dependency on the tree-sitter runtime. We want to know when every
      grammar's *latest npm release* satisfies tree-sitter@0.25.0 so we
-     can upgrade without --legacy-peer-deps.
+     can remove local vendor snapshots.
 
   2. Vendored upstream drift. vendor/tree-sitter-proto/ is a snapshot of
      coder3101/tree-sitter-proto's parser.c. When upstream moves, we want
      to know whether we can pick it up.
+
+It also checks OntoIndex's actual install path. Some grammars are vendored
+with patched package metadata while upstream npm releases lag behind. Those
+are upstream ecosystem blockers, not runtime blockers for the shipped package.
 
 Invoked from .github/workflows/tree-sitter-upgrade-readiness.yml daily.
 Runs locally too:
@@ -30,6 +34,7 @@ import json
 import os
 import pathlib
 import re
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -90,6 +95,60 @@ def read_current_runtime() -> str:
     if not match:
         raise SystemExit(f"could not parse tree-sitter version: {raw!r}")
     return f"{match.group(1)}.{match.group(2)}"
+
+
+def read_package_json() -> dict:
+    return json.loads((ONTOINDEX_DIR / "package.json").read_text())
+
+
+def package_specs() -> dict[str, str]:
+    pkg = read_package_json()
+    return {
+        **(pkg.get("dependencies") or {}),
+        **(pkg.get("optionalDependencies") or {}),
+    }
+
+
+def vendored_package_json(pkg_name: str) -> dict | None:
+    specs = package_specs()
+    spec = specs.get(pkg_name)
+    if not spec or not spec.startswith("file:"):
+        return None
+    pkg_path = (ONTOINDEX_DIR / spec.removeprefix("file:") / "package.json").resolve()
+    if not pkg_path.is_file():
+        return None
+    return json.loads(pkg_path.read_text())
+
+
+def runtime_load_smoke(grammar_names: list[str]) -> tuple[bool, list[str]]:
+    """Require each grammar from the current install. Empty output means pass."""
+    script = """
+const grammars = JSON.parse(process.argv[1]);
+const failed = [];
+for (const grammar of grammars) {
+  try { await import(grammar); } catch (error) { failed.push(`${grammar}: ${error.message}`); }
+}
+if (failed.length) {
+  console.log(JSON.stringify(failed));
+  process.exit(1);
+}
+"""
+    try:
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", script, json.dumps(grammar_names)],
+            cwd=ONTOINDEX_DIR,
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, [str(exc)]
+    if result.returncode == 0:
+        return True, []
+    try:
+        return False, json.loads(result.stdout.strip() or "[]")
+    except json.JSONDecodeError:
+        return False, [(result.stderr or result.stdout).strip() or "unknown load failure"]
 
 
 def npm_view_json(pkg: str) -> dict | None:
@@ -188,7 +247,8 @@ def md_h(text: str, level: int = 2) -> str:
 # ── Main ────────────────────────────────────────────────────────────────
 
 def main() -> int:
-    blockers: dict[str, str] = {}
+    upstream_blockers: dict[str, str] = {}
+    runtime_blockers: dict[str, str] = {}
     lines: list[str] = []
     lines.append(md_h("Tree-sitter 0.25 upgrade readiness", 1))
     lines.append("")
@@ -199,12 +259,13 @@ def main() -> int:
 
     lines.append(f"- Current runtime: `tree-sitter@{current_runtime}.x` (ABI {current_abi_range[0]}..{current_abi_range[1]})")
     lines.append(f"- Target runtime: `tree-sitter@{TARGET_RUNTIME}` (ABI {target_abi_range[0]}..{target_abi_range[1]})")
+    lines.append("- Scope: upstream npm readiness is tracked separately from OntoIndex's vendored runtime path.")
     lines.append("")
 
     # ── Grammar peer-dep compatibility ───────────────────────────────
     lines.append(md_h("Grammar compatibility", 2))
-    lines.append("| Grammar | npm latest | Peer dep | Satisfies 0.25? | ABI | Upstream ABI | Status |")
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append("| Grammar | npm latest | Peer dep | Satisfies 0.25? | Runtime source | Runtime status | ABI | Upstream ABI | Status |")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
 
     ready_count = 0
     total_count = len(GRAMMARS)
@@ -253,16 +314,16 @@ def main() -> int:
         # Determine status.
         if fetch_failed:
             status = "Unknown (fetch failed)"
-            blockers[name] = f"`{name}`: npm registry fetch failed — could not verify peer dep"
+            upstream_blockers[name] = f"`{name}`: npm registry fetch failed — could not verify peer dep"
         elif compatible:
             status = "Ready"
             ready_count += 1
         elif upstream_abi and upstream_abi >= 15:
             status = "Unreleased (ABI 15 on main)"
-            blockers[name] = f"`{name}`: ABI 15 on `{upstream_repo}` main but not published to npm"
+            upstream_blockers[name] = f"`{name}`: ABI 15 on `{upstream_repo}` main but not published to npm"
         else:
             status = "Blocking"
-            blockers[name] = f"`{name}@{npm_version}`: peer `{peer_display}` incompatible with 0.25"
+            upstream_blockers[name] = f"`{name}@{npm_version}`: peer `{peer_display}` incompatible with 0.25"
 
         # Also check upstream package.json for relaxed peer dep.
         if not compatible and not fetch_failed:
@@ -277,17 +338,70 @@ def main() -> int:
                     upstream_peer = (upstream_pkg.get("peerDependencies") or {}).get("tree-sitter")
                     if upstream_peer and satisfies_target(upstream_peer, TARGET_RUNTIME):
                         status = "Unreleased (peer relaxed on main)"
-                        blockers[name] = f"`{name}`: peer dep relaxed on `{upstream_repo}` main but not published to npm"
+                        upstream_blockers[name] = f"`{name}`: peer dep relaxed on `{upstream_repo}` main but not published to npm"
                 except json.JSONDecodeError:
                     pass
 
+        vendor_pkg = vendored_package_json(name)
+        if vendor_pkg:
+            vendor_peer = ((vendor_pkg.get("peerDependencies") or {}).get("tree-sitter"))
+            vendor_ok = satisfies_target(vendor_peer, TARGET_RUNTIME)
+            runtime_source = "vendored"
+            runtime_status = "Ready" if vendor_ok else f"Blocking peer `{vendor_peer or 'none'}`"
+            if not vendor_ok:
+                runtime_blockers[name] = f"`{name}` vendored peer `{vendor_peer}` is incompatible with `{TARGET_RUNTIME}`"
+        else:
+            runtime_source = "npm"
+            runtime_status = "Ready" if compatible else "Tracks upstream"
+
         compat_icon = "Yes" if compatible else "**No**"
         lines.append(
-            f"| `{name}` | {npm_version} | {peer_display} | {compat_icon} | {abi_display} | {upstream_abi_display} | {status} |"
+            f"| `{name}` | {npm_version} | {peer_display} | {compat_icon} | {runtime_source} | {runtime_status} | {abi_display} | {upstream_abi_display} | {status} |"
         )
 
     lines.append("")
-    lines.append(f"**{ready_count}/{total_count}** grammars ready for `tree-sitter@{TARGET_RUNTIME}`.")
+    lines.append(f"**{ready_count}/{total_count}** upstream npm grammars ready for `tree-sitter@{TARGET_RUNTIME}`.")
+    lines.append("")
+
+    # ── Runtime load smoke ───────────────────────────────────────────
+    lines.append(md_h("OntoIndex runtime load smoke", 2))
+    pkg = read_package_json()
+    optional_grammar_names = {
+        name
+        for name in (pkg.get("optionalDependencies") or {})
+        if name in GRAMMARS
+    }
+    smoke_ok, smoke_detail = runtime_load_smoke(sorted(GRAMMARS))
+    if smoke_ok:
+        lines.append("- All configured grammar packages load from the current OntoIndex install.")
+    else:
+        required_failures = [
+            failure
+            for failure in smoke_detail
+            if failure.split(":", 1)[0] not in optional_grammar_names
+        ]
+        optional_failures = [
+            failure
+            for failure in smoke_detail
+            if failure.split(":", 1)[0] in optional_grammar_names
+        ]
+
+        if required_failures:
+            lines.append("- **Failed:** one or more required grammar packages did not load from the current OntoIndex install.")
+            lines.append("")
+            lines.append("```text")
+            lines.extend(required_failures)
+            lines.append("```")
+            runtime_blockers["runtime-load-smoke"] = "current OntoIndex install cannot load one or more required grammar packages"
+        else:
+            lines.append("- Required grammar packages load from the current OntoIndex install.")
+
+        if optional_failures:
+            lines.append("- Optional grammar packages unavailable in this install:")
+            lines.append("")
+            lines.append("```text")
+            lines.extend(optional_failures)
+            lines.append("```")
     lines.append("")
 
     # ── Vendored proto drift ─────────────────────────────────────────
@@ -330,28 +444,39 @@ def main() -> int:
         can_upgrade = upstream_proto_abi <= target_abi_range[1]
         lines.append(f"- Upstream ABI {upstream_proto_abi} {'is' if can_upgrade else 'is NOT'} within target runtime range ({target_abi_range[0]}..{target_abi_range[1]})")
         if can_upgrade:
-            lines.append(f"- **Action:** after upgrading to tree-sitter@{TARGET_RUNTIME}, regenerate vendored parser.c from upstream `{upstream_sha}`")
+            lines.append(f"- **Action:** regenerate vendored parser.c from upstream `{upstream_sha}` when proto parsing needs the upstream changes")
+            upstream_blockers["vendored-proto-sync"] = "vendored tree-sitter-proto: upstream ABI-compatible changes are not yet mirrored"
         else:
             lines.append(f"- **Action:** wait for runtime upgrade beyond {TARGET_RUNTIME} that supports ABI {upstream_proto_abi}")
-            blockers["vendored-proto-abi"] = f"vendored tree-sitter-proto: upstream ABI {upstream_proto_abi} outside target range"
+            runtime_blockers["vendored-proto-abi"] = f"vendored tree-sitter-proto: upstream ABI {upstream_proto_abi} outside target range"
     elif not in_sync:
         lines.append("- **Action:** review upstream changes; vendored copy may need updating")
-        blockers["vendored-proto-sync"] = "vendored tree-sitter-proto: out of sync with upstream"
+        upstream_blockers["vendored-proto-sync"] = "vendored tree-sitter-proto: out of sync with upstream"
 
     # ── Summary ──────────────────────────────────────────────────────
     lines.append("")
     lines.append(md_h("Summary", 2))
-    if blockers:
-        lines.append(f"**{len(blockers)} blocker(s) remaining:**\n")
-        for b in blockers.values():
+    if runtime_blockers:
+        lines.append(f"**{len(runtime_blockers)} runtime blocker(s) remaining:**\n")
+        for b in runtime_blockers.values():
             lines.append(f"- {b}")
         lines.append("")
-        lines.append("Upgrade to `tree-sitter@0.25` is **blocked**.")
+        lines.append("Current OntoIndex runtime compatibility with `tree-sitter@0.25` is **blocked**.")
     else:
-        lines.append("All grammars are compatible. Upgrade to `tree-sitter@0.25` is **ready**.")
+        lines.append("Current OntoIndex runtime compatibility with `tree-sitter@0.25` is **ready**.")
+
+    lines.append("")
+    if upstream_blockers:
+        lines.append(f"**{len(upstream_blockers)} upstream npm/de-vendoring blocker(s) remaining:**\n")
+        for b in upstream_blockers.values():
+            lines.append(f"- {b}")
+        lines.append("")
+        lines.append("Upstream npm-only install readiness is **blocked**; keep vendored grammar packages.")
+    else:
+        lines.append("All upstream npm grammars are compatible. Vendored grammar packages can be retired after review.")
 
     print("\n".join(lines))
-    return 1 if blockers else 0
+    return 1 if (runtime_blockers or upstream_blockers) else 0
 
 
 if __name__ == "__main__":

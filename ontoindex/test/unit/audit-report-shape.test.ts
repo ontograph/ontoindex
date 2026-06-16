@@ -279,7 +279,10 @@ describe('AuditReportResult shape — structural drift gate', () => {
       vi.fn(
         () =>
           new Promise((resolve) =>
-            setTimeout(() => resolve({ entries: [{ name: 'tooSlow', filePath: 'src/slow.ts' }] }), 30),
+            setTimeout(
+              () => resolve({ entries: [{ name: 'tooSlow', filePath: 'src/slow.ts' }] }),
+              30,
+            ),
           ),
       ),
     );

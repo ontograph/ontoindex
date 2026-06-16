@@ -13,11 +13,13 @@ type MockBackend = {
   ensureRepoInitialized: ReturnType<typeof vi.fn>;
 };
 
-async function createHarness(options: {
-  callToolError?: string;
-  dispatchError?: string;
-  resolveRepoError?: string;
-} = {}): Promise<{ backend: MockBackend; handler: ToolCallHandler }> {
+async function createHarness(
+  options: {
+    callToolError?: string;
+    dispatchError?: string;
+    resolveRepoError?: string;
+  } = {},
+): Promise<{ backend: MockBackend; handler: ToolCallHandler }> {
   vi.resetModules();
 
   const { Server } = await import('@modelcontextprotocol/sdk/server/index.js');

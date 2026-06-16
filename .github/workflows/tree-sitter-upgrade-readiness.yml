@@ -1,6 +1,6 @@
 name: Tree-sitter Upgrade Readiness
 
-# Monitors readiness for upgrading tree-sitter to 0.25.x. Tracks:
+# Monitors runtime and upstream ecosystem readiness for tree-sitter 0.25.x. Tracks:
 #   1. Peer-dep compatibility — can each grammar install cleanly with
 #      tree-sitter@0.25.0 without --legacy-peer-deps?
 #   2. Vendored proto drift — has coder3101/tree-sitter-proto moved
@@ -93,7 +93,7 @@ jobs:
             const existing = open.find(i => i.title === title);
             if (existing) {
               // Extract ready/total count for the changelog comment.
-              const readyMatch = report.match(/\*\*(\d+)\/(\d+)\*\* grammars ready/);
+              const readyMatch = report.match(/\*\*(\d+)\/(\d+)\*\* upstream npm grammars ready/);
               const blockerMatch = report.match(/\*\*(\d+) blocker/);
               const ready = readyMatch ? readyMatch[1] : '?';
               const total = readyMatch ? readyMatch[2] : '?';
@@ -173,7 +173,7 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: existing.number,
-                body: 'All grammars are now compatible with tree-sitter@0.25. Upgrade is ready! Closing automatically.',
+                body: 'All runtime and upstream npm grammar checks are compatible with tree-sitter@0.25. Closing automatically.',
               });
               await github.rest.issues.update({
                 owner: context.repo.owner,

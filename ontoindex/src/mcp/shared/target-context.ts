@@ -487,7 +487,8 @@ function actionWithRetryExamples(
   registry: RegistryEntry[],
   requestedRepo?: string,
 ): string {
-  const reason = status === 'ambiguous' ? 'ambiguous' : status === 'not-found' ? 'not-found' : 'no-index';
+  const reason =
+    status === 'ambiguous' ? 'ambiguous' : status === 'not-found' ? 'not-found' : 'no-index';
   return formatRepoResolutionError({
     reason,
     requestedRepo,

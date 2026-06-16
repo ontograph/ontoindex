@@ -1,6 +1,6 @@
 {
   "name": "ontoindex",
-  "version": "1.9.11",
+  "version": "1.9.12",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "AGPL-3.0-or-later",
@@ -99,10 +99,10 @@
   "optionalDependencies": {
     "node-addon-api": "^8.8.0",
     "node-gyp-build": "^4.8.4",
-    "tree-sitter-dart": "file:./vendor/tree-sitter-dart",
+    "tree-sitter-dart": "file:vendor/tree-sitter-dart",
     "tree-sitter-kotlin": "file:./vendor/tree-sitter-kotlin",
     "tree-sitter-proto": "file:./vendor/tree-sitter-proto",
-    "tree-sitter-swift": "file:./vendor/tree-sitter-swift"
+    "tree-sitter-swift": "file:vendor/tree-sitter-swift"
   },
   "devDependencies": {
     "@types/cli-progress": "^3.11.6",
@@ -114,6 +114,7 @@
     "@types/seedrandom": "^3.0.8",
     "@vitest/coverage-v8": "^4.1.8",
     "graphology-types": "^0.24.8",
+    "node-gyp": "12.2.0",
     "ontoindex-shared": "file:../ontoindex-shared",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
@@ -123,9 +124,10 @@
     "@huggingface/transformers": {
       "onnxruntime-node": "$onnxruntime-node"
     },
+    "node-gyp": "12.2.0",
     "tree-sitter-c": "$tree-sitter-c"
   },
   "engines": {
-    "node": ">=20.0.0 <24.0.0"
+    "node": ">=22.12.0 <24.0.0"
   }
 }

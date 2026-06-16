@@ -17,7 +17,9 @@ describe('public response identity', () => {
       version: 1,
       source: 'mcp-frontier',
       startupProfile: 'default',
-      targetContext: createGlobalTargetContext('discover/tools does not require repository resolution'),
+      targetContext: createGlobalTargetContext(
+        'discover/tools does not require repository resolution',
+      ),
       count: 1,
       tools: [{ name: 'discover', kind: 'facade' }],
     };

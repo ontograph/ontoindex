@@ -884,7 +884,9 @@ describe('LocalBackend.resolveRepo', () => {
     await expect(backend.callTool('query', { query: 'test' })).rejects.toThrow(
       'Multiple repositories are indexed',
     );
-    await expect(backend.callTool('query', { query: 'test' })).rejects.toThrow('repo: "test-project"');
+    await expect(backend.callTool('query', { query: 'test' })).rejects.toThrow(
+      'repo: "test-project"',
+    );
   });
 
   it('resolves repo by name parameter', async () => {

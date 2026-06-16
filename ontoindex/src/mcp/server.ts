@@ -85,7 +85,11 @@ function formatToolCallErrorMessage(error: unknown, repo?: RepoIdentity | null):
   if (!repo) {
     return `Error: ${message}`;
   }
-  return JSON.stringify({ error: message, repoLabel: repo.repoLabel, repoPath: repo.repoPath }, null, 2);
+  return JSON.stringify(
+    { error: message, repoLabel: repo.repoLabel, repoPath: repo.repoPath },
+    null,
+    2,
+  );
 }
 
 /**
@@ -419,7 +423,7 @@ export function createMCPServer(backend: LocalBackend, options: { full?: boolean
       return {
         content: [{ type: 'text', text: resultText + hint }],
       };
-      } catch (error) {
+    } catch (error) {
       const scopedRepoIdentity = repoIdentity ?? readRepoIdentity(error);
       return {
         content: [{ type: 'text', text: formatToolCallErrorMessage(error, scopedRepoIdentity) }],
