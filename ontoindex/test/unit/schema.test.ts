@@ -23,6 +23,8 @@ import {
 } from '../../src/core/lbug/schema.js';
 
 describe('LadybugDB Schema', () => {
+  const relEndpoint = (src: string, tgt: string) => `FROM \`${src}\` TO \`${tgt}\``;
+
   describe('NODE_TABLES', () => {
     it('includes all core node types', () => {
       const core = [
@@ -155,56 +157,35 @@ describe('LadybugDB Schema', () => {
     });
 
     it('connects Function to Function (CALLS)', () => {
-      expect(RELATION_SCHEMA).toContain('FROM Function TO Function');
+      expect(RELATION_SCHEMA).toContain(relEndpoint('Function', 'Function'));
     });
 
     it('connects File to Function (CONTAINS/DEFINES)', () => {
-      expect(RELATION_SCHEMA).toContain('FROM File TO Function');
+      expect(RELATION_SCHEMA).toContain(relEndpoint('File', 'Function'));
     });
 
     it('connects symbols to Community (MEMBER_OF)', () => {
-      expect(RELATION_SCHEMA).toContain('FROM Function TO Community');
-      expect(RELATION_SCHEMA).toContain('FROM Class TO Community');
+      expect(RELATION_SCHEMA).toContain(relEndpoint('Function', 'Community'));
+      expect(RELATION_SCHEMA).toContain(relEndpoint('Class', 'Community'));
     });
 
     it('connects symbols to Process (STEP_IN_PROCESS)', () => {
-      expect(RELATION_SCHEMA).toContain('FROM Function TO Process');
-      expect(RELATION_SCHEMA).toContain('FROM Method TO Process');
+      expect(RELATION_SCHEMA).toContain(relEndpoint('Function', 'Process'));
+      expect(RELATION_SCHEMA).toContain(relEndpoint('Method', 'Process'));
     });
 
     it('connects Concept to grounded docs and code nodes (EXPLAINED_BY)', () => {
-      expect(RELATION_SCHEMA).toContain('FROM Concept TO File');
-      expect(RELATION_SCHEMA).toContain('FROM Concept TO Function');
-      expect(RELATION_SCHEMA).toContain('FROM Concept TO Class');
-      expect(RELATION_SCHEMA).toContain('FROM Concept TO Method');
-      expect(RELATION_SCHEMA).toContain('FROM Concept TO CodeElement');
+      expect(RELATION_SCHEMA).toContain(relEndpoint('Concept', 'File'));
+      expect(RELATION_SCHEMA).toContain(relEndpoint('Concept', 'Function'));
+      expect(RELATION_SCHEMA).toContain(relEndpoint('Concept', 'Class'));
+      expect(RELATION_SCHEMA).toContain(relEndpoint('Concept', 'Method'));
+      expect(RELATION_SCHEMA).toContain(relEndpoint('Concept', 'CodeElement'));
     });
 
-    it('has all FROM/TO pairs needed for HAS_METHOD edges', () => {
-      // HAS_METHOD sources: Class, Interface, Struct, Trait, Impl, Record
-      // HAS_METHOD targets: Method, Constructor (Property is now HAS_PROPERTY)
-      const sources = ['Class', 'Interface'];
-      const backtickSources = ['Struct', 'Trait', 'Impl', 'Record'];
-      const targets = ['Method'];
-      const backtickTargets = ['Constructor'];
-
-      // Non-backtick source → non-backtick target
-      for (const src of sources) {
-        for (const tgt of targets) {
-          expect(RELATION_SCHEMA).toContain(`FROM ${src} TO ${tgt}`);
-        }
-        for (const tgt of backtickTargets) {
-          expect(RELATION_SCHEMA).toContain(`FROM ${src} TO \`${tgt}\``);
-        }
-      }
-
-      // Backtick source → all targets
-      for (const src of backtickSources) {
-        for (const tgt of targets) {
-          expect(RELATION_SCHEMA).toContain(`FROM \`${src}\` TO ${tgt}`);
-        }
-        for (const tgt of backtickTargets) {
-          expect(RELATION_SCHEMA).toContain(`FROM \`${src}\` TO \`${tgt}\``);
+    it('has all FROM/TO pairs for every node table', () => {
+      for (const src of NODE_TABLES) {
+        for (const tgt of NODE_TABLES) {
+          expect(RELATION_SCHEMA).toContain(relEndpoint(src, tgt));
         }
       }
     });

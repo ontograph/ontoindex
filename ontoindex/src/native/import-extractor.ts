@@ -6,6 +6,9 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 
 let nativeModule: any = null;
+const shouldWarnNativeLoadFailure = Boolean(
+  process.env.ONTOINDEX_NATIVE_MODULE_PATH || process.env.ONTOINDEX_NATIVE_DEBUG,
+);
 
 try {
   // Try explicit override first, then common monorepo layouts.
@@ -27,15 +30,17 @@ try {
     }
   }
 
-  if (!nativeModule) {
+  if (!nativeModule && shouldWarnNativeLoadFailure) {
     console.warn(
       `[native] Failed to load native module from known locations: ${failures.join('; ')}`,
     );
   }
 } catch (e) {
-  console.warn(
-    `[native] Failed to load native module: ${e instanceof Error ? e.message : String(e)}`,
-  );
+  if (shouldWarnNativeLoadFailure) {
+    console.warn(
+      `[native] Failed to load native module: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
 }
 
 /**
