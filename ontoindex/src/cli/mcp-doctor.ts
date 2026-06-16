@@ -1,8 +1,15 @@
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { shellQuote } from '../mcp/shared/repo-resolution-errors.js';
 import { gnDiagnose, type DiagnoseParams, type DiagnoseReport } from '../mcp/super/diagnose.js';
+import { execFileText } from '../core/process/exec-file.js';
 
 export type McpDoctorVerdict = 'READY' | 'DEGRADED' | 'MISCONFIGURED';
+export type McpDoctorProcessLivenessStatus =
+  | 'ok'
+  | 'missing'
+  | 'mismatch'
+  | 'ambiguous'
+  | 'unavailable';
 
 export interface McpDoctorOptions {
   repo?: string;
@@ -22,6 +29,14 @@ export interface McpDoctorReport {
     status: 'skipped' | 'ok' | 'failed';
     reason?: string;
   };
+  processLiveness?: {
+    status: McpDoctorProcessLivenessStatus;
+    reason?: string;
+    pid?: number;
+    command?: string;
+    projectCwd?: string;
+    repairCommand?: string;
+  };
   nextCommand: string;
 }
 
@@ -30,6 +45,11 @@ export interface McpDoctorDeps {
   env?: NodeJS.ProcessEnv;
   diagnose?: (repo: string, params: DiagnoseParams) => Promise<DiagnoseReport>;
   smokeSymbol?: (repo: string, symbol: string) => Promise<void>;
+  processLiveness?: (
+    repo: string,
+    projectCwd: string,
+    repairCommand: string,
+  ) => Promise<McpDoctorReport['processLiveness']>;
 }
 
 export async function createMcpDoctorReport(
@@ -38,12 +58,9 @@ export async function createMcpDoctorReport(
 ): Promise<McpDoctorReport> {
   const env = deps.env ?? process.env;
   const cwd = deps.cwd?.() ?? process.cwd();
-  const repoSelector =
-    options.repo?.trim() ||
-    env.ONTOINDEX_MCP_REPO?.trim() ||
-    options.projectCwd?.trim() ||
-    env.ONTOINDEX_MCP_PROJECT_CWD?.trim() ||
-    cwd;
+  const repoSelector = resolveRepoSelector(options, env, cwd);
+  const projectCwd = resolveProjectCwd(options, env, cwd);
+  const explicitRepo = options.repo?.trim() || env.ONTOINDEX_MCP_REPO?.trim() || undefined;
   const diagnose = await (deps.diagnose ?? gnDiagnose)(repoSelector, {
     legacyResponse: true,
     checkLsp: true,
@@ -54,20 +71,21 @@ export async function createMcpDoctorReport(
   const symbolSmoke = await runSymbolSmoke(
     repoSelector,
     options.symbol,
-    options.projectCwd?.trim() || env.ONTOINDEX_MCP_PROJECT_CWD?.trim() || cwd,
+    projectCwd,
     deps.smokeSymbol,
   );
-  const verdict = resolveVerdict(diagnose, symbolSmoke);
   const restartPath =
     diagnose.misconfiguration.activeRepoPath ??
     diagnose.targetContext?.repoPath ??
-    options.projectCwd ??
-    env.ONTOINDEX_MCP_PROJECT_CWD ??
+    projectCwd ??
     repoSelector;
-  const fallbackRestartCommand =
-    options.repo?.trim()
-      ? `ontoindex mcp --project ${shellQuote(restartPath)} --repo ${shellQuote(options.repo.trim())}`
-      : `ontoindex mcp --project ${shellQuote(restartPath)}`;
+  const fallbackRestartCommand = buildRepairCommand(restartPath, explicitRepo);
+  const processLiveness = await (deps.processLiveness ?? probeMcpProcessLiveness)(
+    repoSelector,
+    projectCwd,
+    fallbackRestartCommand,
+  );
+  const verdict = resolveVerdict(diagnose, symbolSmoke, processLiveness);
 
   return {
     version: 1,
@@ -77,7 +95,11 @@ export async function createMcpDoctorReport(
     ...(options.symbol ? { symbol: options.symbol } : {}),
     diagnose,
     symbolSmoke,
-    nextCommand: diagnose.misconfiguration.recommendedCommand ?? fallbackRestartCommand,
+    ...(processLiveness ? { processLiveness } : {}),
+    nextCommand:
+      diagnose.misconfiguration.recommendedCommand ??
+      processLiveness?.repairCommand ??
+      fallbackRestartCommand,
   };
 }
 
@@ -111,7 +133,9 @@ export function formatMcpDoctorText(report: McpDoctorReport): string {
     `Repo selector: ${report.repoSelector}`,
   ];
   if (target?.repoLabel || target?.repoPath) {
-    lines.push(`Resolved repo: ${target.repoLabel ?? target.repoKey ?? '<unknown>'} -> ${target.repoPath ?? '<unknown>'}`);
+    lines.push(
+      `Resolved repo: ${target.repoLabel ?? target.repoKey ?? '<unknown>'} -> ${target.repoPath ?? '<unknown>'}`,
+    );
   }
   if (report.diagnose.misconfiguration.status === 'fail') {
     lines.push(`Misconfiguration: ${report.diagnose.misconfiguration.reason}`);
@@ -124,6 +148,31 @@ export function formatMcpDoctorText(report: McpDoctorReport): string {
   } else if (report.symbolSmoke?.status === 'ok') {
     lines.push('Symbol smoke: ok');
   }
+  if (report.processLiveness) {
+    const liveness = report.processLiveness;
+    if (liveness.status === 'ok') {
+      lines.push(`MCP process: ok (PID ${liveness.pid ?? 'unknown'})`);
+      if (liveness.command) {
+        lines.push(`Process command: ${liveness.command}`);
+      }
+    } else if (liveness.status === 'mismatch') {
+      lines.push(`MCP process: mismatch (${liveness.reason ?? 'wrong project cwd'})`);
+      if (liveness.command) {
+        lines.push(`Observed command: ${liveness.command}`);
+      }
+    } else if (liveness.status === 'ambiguous') {
+      lines.push(`MCP process: ambiguous (${liveness.reason ?? 'multiple matches'})`);
+    } else if (liveness.status === 'missing') {
+      lines.push(`MCP process: missing (${liveness.reason ?? 'no matching process found'})`);
+    } else {
+      lines.push(
+        `MCP process: unavailable (${liveness.reason ?? 'process discovery unavailable'})`,
+      );
+    }
+    if (liveness.repairCommand) {
+      lines.push(`Process repair: ${liveness.repairCommand}`);
+    }
+  }
   lines.push('', 'Next command:', `  ${report.nextCommand}`);
   return lines.join('\n');
 }
@@ -131,11 +180,40 @@ export function formatMcpDoctorText(report: McpDoctorReport): string {
 function resolveVerdict(
   diagnose: DiagnoseReport,
   symbolSmoke: McpDoctorReport['symbolSmoke'],
+  processLiveness: McpDoctorReport['processLiveness'],
 ): McpDoctorVerdict {
   if (diagnose.misconfiguration.status === 'fail') return 'MISCONFIGURED';
   if (diagnose.targetContext && diagnose.targetContext.status !== 'ok') return 'MISCONFIGURED';
+  if (processLiveness?.status === 'mismatch') return 'MISCONFIGURED';
+  if (processLiveness?.status === 'ambiguous' || processLiveness?.status === 'missing') {
+    return 'DEGRADED';
+  }
   if (symbolSmoke?.status === 'failed') return 'DEGRADED';
   return diagnose.degradedContext.status === 'degraded' ? 'DEGRADED' : 'READY';
+}
+
+function resolveRepoSelector(
+  options: McpDoctorOptions,
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+): string {
+  return (
+    options.repo?.trim() ||
+    env.ONTOINDEX_MCP_REPO?.trim() ||
+    options.projectCwd?.trim() ||
+    env.ONTOINDEX_MCP_PROJECT_CWD?.trim() ||
+    cwd
+  );
+}
+
+function resolveProjectCwd(options: McpDoctorOptions, env: NodeJS.ProcessEnv, cwd: string): string {
+  return options.projectCwd?.trim() || env.ONTOINDEX_MCP_PROJECT_CWD?.trim() || cwd;
+}
+
+function buildRepairCommand(projectCwd: string, repo?: string): string {
+  return repo
+    ? `ontoindex mcp --project ${shellQuote(projectCwd)} --repo ${shellQuote(repo)}`
+    : `ontoindex mcp --project ${shellQuote(projectCwd)}`;
 }
 
 async function runSymbolSmoke(
@@ -155,6 +233,123 @@ async function runSymbolSmoke(
   } catch (err) {
     return { status: 'failed', reason: err instanceof Error ? err.message : String(err) };
   }
+}
+
+async function probeMcpProcessLiveness(
+  repoSelector: string,
+  projectCwd: string,
+  repairCommand: string,
+): Promise<McpDoctorReport['processLiveness']> {
+  if (process.platform === 'win32') {
+    return {
+      status: 'unavailable',
+      reason: 'process-discovery-unsupported-platform',
+      repairCommand,
+    };
+  }
+
+  try {
+    const output = await execFileText('ps', ['-ax', '-o', 'pid=', '-o', 'args='], {
+      timeoutMs: 2_000,
+      maxBuffer: 64 * 1024,
+    });
+
+    const candidates: Array<{
+      pid: number;
+      command: string;
+      projectCwd?: string;
+    }> = [];
+
+    for (const line of output.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const match = trimmed.match(/^(\d+)\s+(.*)$/);
+      if (!match) continue;
+
+      const pid = Number.parseInt(match[1], 10);
+      if (!Number.isFinite(pid) || pid <= 0) continue;
+
+      const command = match[2].trim();
+      if (!looksLikeOntoindexMcpCommand(command)) continue;
+
+      candidates.push({
+        pid,
+        command,
+        projectCwd: extractCliOptionValue(command, '--project'),
+      });
+    }
+
+    const matching = candidates.filter((candidate) =>
+      matchesBoundPath(candidate.projectCwd, projectCwd),
+    );
+    if (matching.length === 1) {
+      const match = matching[0];
+      return {
+        status: 'ok',
+        pid: match.pid,
+        command: match.command,
+        projectCwd: match.projectCwd,
+        repairCommand,
+      };
+    }
+
+    if (matching.length > 1) {
+      return {
+        status: 'ambiguous',
+        reason: `multiple matching MCP processes found for ${projectCwd}`,
+        repairCommand,
+      };
+    }
+
+    if (candidates.length > 0) {
+      const observed = candidates[0];
+      return {
+        status: 'mismatch',
+        reason: `found running MCP process for ${observed.projectCwd ?? '<unknown>'}`,
+        pid: observed.pid,
+        command: observed.command,
+        projectCwd: observed.projectCwd,
+        repairCommand,
+      };
+    }
+
+    return {
+      status: 'missing',
+      reason: `no running MCP process matched ${repoSelector}`,
+      repairCommand,
+    };
+  } catch (err) {
+    return {
+      status: 'unavailable',
+      reason: err instanceof Error ? err.message : String(err),
+      repairCommand,
+    };
+  }
+}
+
+function looksLikeOntoindexMcpCommand(command: string): boolean {
+  return (
+    /(?:^|\s)mcp(?:\s|$)/.test(command) &&
+    command.includes('--project') &&
+    (command.includes('ontoindex') || command.includes('index.js'))
+  );
+}
+
+function extractCliOptionValue(command: string, option: string): string | undefined {
+  const optionPattern = option.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = command.match(
+    new RegExp(`(?:^|\\s)${optionPattern}(?:=|\\s+)(?:"([^"]+)"|'([^']+)'|([^\\s]+))`),
+  );
+  return match?.[1] ?? match?.[2] ?? match?.[3];
+}
+
+function matchesBoundPath(observed: string | undefined, expected: string): boolean {
+  if (!observed) return false;
+  const normalizedObserved = observed.replace(/\\/g, '/');
+  const normalizedExpected = expected.replace(/\\/g, '/');
+  return (
+    normalizedObserved === normalizedExpected || normalizedObserved.includes(normalizedExpected)
+  );
 }
 
 async function runProductionSymbolSmoke(

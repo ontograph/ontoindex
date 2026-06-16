@@ -69,6 +69,7 @@ Each ADR follows: **Context → Decision → Algorithm/Technique → Consequence
 | [0083](0083-open-knowledge-format-import-export-and-agent-context-bundles.md) | Open Knowledge Format import/export and agent context bundles | Postponed | Google Cloud Open Knowledge Format review; narrowed 2026-06-13 |
 | [0084](0084-html-first-visual-wiki-and-architecture-export-surfaces.md) | HTML graph export with functional slice filters | Proposed - Challenged/Core Extension Only | `plannotator/effective-html` review; narrowed 2026-06-13 |
 | [0085](0085-mcp-repo-resolution-without-env-harness.md) | MCP repo resolution without environment harness | Proposed - Challenged/Core Extension Only | MCP misconfiguration audit; narrowed 2026-06-14 |
+| [0086](0086-codegraph-inspired-agent-runtime-freshness-and-budget-controls.md) | CodeGraph-inspired agent runtime freshness and budget controls | Implemented (core runtime health and budget contract) | `./tmp/codegraph` donor review; narrowed and implemented 2026-06-16 |
 
 ## How to add a new ADR
 

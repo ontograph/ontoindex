@@ -3,6 +3,11 @@ import type {
   TargetContext,
   TargetContextDirtyWorkspace,
 } from './target-context.js';
+import {
+  deriveRecoverableRuntimeState,
+  type RecoverableRuntimeState,
+} from './recoverable-runtime-state.js';
+import type { RuntimeHealthSnapshot } from '../../core/runtime/runtime-health.js';
 
 export interface GlobalTargetContext {
   scope: 'global';
@@ -27,7 +32,15 @@ export interface CapabilityResponseFreshness {
   dirtyFileCount?: number | null;
   dirtyWorkspace?: TargetContextDirtyWorkspace;
   scopeConfidence?: ScopeConfidence;
+  runtimeHealthState?: RuntimeHealthSnapshot['freshnessState'];
+  runtimeDegradedReason?: string | null;
+  runtimeRepairCommand?: string;
 }
+
+export type RuntimeHealthFreshnessInput = Pick<
+  RuntimeHealthSnapshot,
+  'freshnessState' | 'degradedReason' | 'repairCommand'
+>;
 
 export interface CapabilityResponseEnvelope<
   TResult = Record<string, unknown>,
@@ -41,6 +54,7 @@ export interface CapabilityResponseEnvelope<
   capabilitiesUsed: string[];
   capabilitiesMissing: string[];
   freshness: CapabilityResponseFreshness;
+  recoverable?: RecoverableRuntimeState;
   results: TResult;
   evidence: TEvidence[];
   warnings: string[];
@@ -87,6 +101,8 @@ export interface EnvelopeFromLegacyOptions<
   status: string;
   targetContext: EnvelopeTargetContext;
   freshness?: CapabilityResponseFreshness;
+  runtimeHealth?: RuntimeHealthFreshnessInput | null;
+  recoverable?: RecoverableRuntimeState | null;
   evidence?: readonly TEvidence[];
   limits?: Record<string, unknown>;
   nextTools?: readonly string[];
@@ -102,6 +118,7 @@ const DEFAULT_OMIT_RESULT_KEYS = [
   'capabilitiesUsed',
   'capabilitiesMissing',
   'freshness',
+  'recoverable',
   'warnings',
   'limits',
   'nextTools',
@@ -213,6 +230,19 @@ export function deriveEnvelopeFreshness(
   return { ...base, ...overrides };
 }
 
+export function mergeRuntimeHealthFreshness(
+  freshness: CapabilityResponseFreshness,
+  runtimeHealth?: RuntimeHealthFreshnessInput | null,
+): CapabilityResponseFreshness {
+  if (!runtimeHealth) return freshness;
+  return {
+    ...freshness,
+    runtimeHealthState: runtimeHealth.freshnessState,
+    runtimeDegradedReason: runtimeHealth.degradedReason,
+    runtimeRepairCommand: runtimeHealth.repairCommand,
+  };
+}
+
 export function collectCapabilityDiagnostics(
   options: CapabilityDiagnosticsOptions,
 ): CapabilityDiagnostics {
@@ -262,12 +292,25 @@ export function createCapabilityResponseEnvelope<TResult, TEvidence = unknown>(i
   capabilitiesUsed?: readonly string[];
   capabilitiesMissing?: readonly string[];
   freshness: CapabilityResponseFreshness;
+  runtimeHealth?: RuntimeHealthFreshnessInput | null;
+  recoverable?: RecoverableRuntimeState | null;
   results: TResult;
   evidence?: readonly TEvidence[];
   warnings?: readonly string[];
   limits?: Record<string, unknown>;
   nextTools?: readonly string[];
 }): CapabilityResponseEnvelope<TResult, TEvidence> {
+  const recoverable =
+    input.recoverable === undefined
+      ? deriveRecoverableRuntimeState({
+          freshnessStatus: input.freshness.status,
+          freshnessReason: input.freshness.reason,
+          runtimeHealthState: input.runtimeHealth?.freshnessState,
+          runtimeDegradedReason: input.runtimeHealth?.degradedReason,
+          runtimeRepairCommand: input.runtimeHealth?.repairCommand,
+        })
+      : input.recoverable;
+
   return {
     envelopeVersion: '1',
     tool: input.tool,
@@ -276,7 +319,8 @@ export function createCapabilityResponseEnvelope<TResult, TEvidence = unknown>(i
     targetContext: input.targetContext,
     capabilitiesUsed: unique(input.capabilitiesUsed ?? []),
     capabilitiesMissing: unique(input.capabilitiesMissing ?? []),
-    freshness: input.freshness,
+    freshness: mergeRuntimeHealthFreshness(input.freshness, input.runtimeHealth),
+    ...(recoverable ? { recoverable } : {}),
     results: input.results,
     evidence: [...(input.evidence ?? [])],
     warnings: unique(input.warnings ?? []),
@@ -297,6 +341,8 @@ export function createEnvelopeFromLegacy<TLegacy extends object, TEvidence = unk
     capabilitiesUsed: diagnostics.capabilitiesUsed,
     capabilitiesMissing: diagnostics.capabilitiesMissing,
     freshness: input.freshness ?? deriveEnvelopeFreshness(input.targetContext),
+    runtimeHealth: input.runtimeHealth,
+    recoverable: input.recoverable,
     results: legacyReportToEnvelopeResults(input.legacy, input.omitResultKeys),
     evidence: input.evidence,
     warnings: [...readLegacyWarnings(input.legacy), ...diagnostics.warnings],
@@ -345,8 +391,7 @@ export function attachRepoScopeIdentityToError<T extends object>(
     return error as T & { repoLabel: string; repoPath: string };
   }
 
-  const repoLabel =
-    typeof error.repoLabel === 'string' ? error.repoLabel : (repo.name ?? repo.id);
+  const repoLabel = typeof error.repoLabel === 'string' ? error.repoLabel : (repo.name ?? repo.id);
   const repoPath = typeof error.repoPath === 'string' ? error.repoPath : repo.repoPath;
   if (!repoLabel || !repoPath) return error as T & { repoLabel: string; repoPath: string };
 

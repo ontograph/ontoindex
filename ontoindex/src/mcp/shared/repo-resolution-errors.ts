@@ -1,5 +1,10 @@
 import path from 'node:path';
 
+export {
+  createRepoNotIndexedRecoverableState,
+  createWrongRepoBindingRecoverableState,
+} from './recoverable-runtime-state.js';
+
 export interface RepoResolutionCandidate {
   label: string;
   path: string;
@@ -53,7 +58,9 @@ export function formatRepoResolutionError(options: RepoResolutionErrorOptions): 
   return [
     header,
     'Available:',
-    ...options.candidates.slice(0, 12).map((candidate) => `- ${candidate.label} -> ${candidate.path}`),
+    ...options.candidates
+      .slice(0, 12)
+      .map((candidate) => `- ${candidate.label} -> ${candidate.path}`),
     ...formatEnvironmentLines(options.environment),
     '',
     'Retry:',
@@ -61,7 +68,9 @@ export function formatRepoResolutionError(options: RepoResolutionErrorOptions): 
     '',
     'To use another project, restart MCP with:',
     `  ontoindex mcp --project ${shellQuote(intendedPath)}`,
-    retryLabel ? `  ontoindex mcp --project ${shellQuote(intendedPath)} --repo ${shellQuote(retryLabel)}` : '',
+    retryLabel
+      ? `  ontoindex mcp --project ${shellQuote(intendedPath)} --repo ${shellQuote(retryLabel)}`
+      : '',
   ].join('\n');
 }
 
@@ -78,7 +87,9 @@ export function formatMcpStartupMismatchError(options: McpStartupMismatchErrorOp
     '',
     'Restart command:',
     `  ${restartCommand}`,
-  ].filter(Boolean).join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 export function repoResolutionCandidatesFromEntries(

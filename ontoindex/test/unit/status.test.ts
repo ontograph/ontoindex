@@ -4,6 +4,10 @@ import {
   formatNativeGraphWriterStatus,
   formatSemanticSearchStatus,
 } from '../../src/cli/status.js';
+import {
+  formatRuntimeHealthDetailLines,
+  formatRuntimeHealthStatusLine,
+} from '../../src/core/runtime/runtime-health.js';
 import { appendIndexCapabilityWarnings } from '../../src/storage/index-capabilities.js';
 import type { RepoMeta } from '../../src/storage/repo-manager.js';
 
@@ -123,6 +127,42 @@ describe('status formatting', () => {
       warnings: ['pre-existing', 'WARNING: index capabilities are degraded.'],
     });
   });
+
+  it('formats runtime health snapshots with repair guidance', () => {
+    const health = {
+      version: 1 as const,
+      repoLabel: 'fixture',
+      repoPath: '/tmp/fixture',
+      indexedCommit: 'abc123def456',
+      currentCommit: 'abc123def456',
+      dirtyWorktree: false,
+      freshnessState: 'clean' as const,
+      degradedReason: null,
+      repairCommand: 'ontoindex status',
+      hasRuntimeArtifacts: false,
+      analyzeLock: {
+        path: '/tmp/fixture/.ontoindex/analyze.lock',
+        present: false,
+        state: 'absent' as const,
+      },
+      analysisCheckpoint: {
+        path: '/tmp/fixture/.ontoindex/analysis-checkpoint.json',
+        present: false,
+        state: 'absent' as const,
+      },
+      warnings: [],
+    };
+
+    expect(formatRuntimeHealthStatusLine(health)).toBe('Runtime health: clean');
+    expect(formatRuntimeHealthDetailLines(health)).toEqual([
+      '  Indexed commit: abc123d',
+      '  Current commit: abc123d',
+      '  Dirty worktree: no',
+      '  Analyze lock: absent',
+      '  Analysis checkpoint: absent',
+      '  Repair: ontoindex status',
+    ]);
+  });
 });
 
 describe('status command behavior', () => {
@@ -165,6 +205,10 @@ describe('status command behavior', () => {
     getNativeGraphWriterStatus: ReturnType<typeof vi.fn>;
   };
 
+  let runtimeHealthMocks: {
+    readRuntimeHealth: ReturnType<typeof vi.fn>;
+  };
+
   const importStatus = async () => import('../../src/cli/status.js');
 
   beforeEach(() => {
@@ -192,9 +236,44 @@ describe('status command behavior', () => {
       getNativeGraphWriterStatus: vi.fn().mockReturnValue(nativeGraphWriterStatus),
     };
 
+    runtimeHealthMocks = {
+      readRuntimeHealth: vi.fn().mockResolvedValue({
+        version: 1,
+        repoLabel: 'fixture',
+        repoPath: '/tmp/fixture',
+        indexedCommit: 'abc123def456',
+        currentCommit: 'abc123def456',
+        dirtyWorktree: false,
+        freshnessState: 'clean',
+        degradedReason: null,
+        repairCommand: 'ontoindex status',
+        hasRuntimeArtifacts: false,
+        analyzeLock: {
+          path: '/tmp/fixture/.ontoindex/analyze.lock',
+          present: false,
+          state: 'absent',
+        },
+        analysisCheckpoint: {
+          path: '/tmp/fixture/.ontoindex/analysis-checkpoint.json',
+          present: false,
+          state: 'absent',
+        },
+        warnings: [],
+      }),
+    };
+
     vi.doMock('../../src/storage/repo-manager.js', () => repoManagerMocks);
     vi.doMock('../../src/storage/git.js', () => gitMocks);
     vi.doMock('../../src/native/graph-writer.js', () => nativeMocks);
+    vi.doMock('../../src/core/runtime/runtime-health.js', async () => {
+      const actual = await vi.importActual<
+        typeof import('../../src/core/runtime/runtime-health.js')
+      >('../../src/core/runtime/runtime-health.js');
+      return {
+        ...actual,
+        readRuntimeHealth: runtimeHealthMocks.readRuntimeHealth,
+      };
+    });
   });
 
   afterEach(() => {
@@ -251,6 +330,7 @@ describe('status command behavior', () => {
       expect.arrayContaining([
         `Repository: ${repoPath}`,
         'Status: ✅ up-to-date',
+        'Runtime health: clean',
         'Semantic search: available (12 embeddings recorded)',
       ]),
     );

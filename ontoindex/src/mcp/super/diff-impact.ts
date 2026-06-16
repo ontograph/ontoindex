@@ -23,6 +23,12 @@ import {
   type CapabilityResponseEnvelope,
   type CapabilityResponseFreshness,
 } from '../shared/response-envelope.js';
+import {
+  buildDiffOutputBudget,
+  type DiffOutputBudgetLimits,
+  type DiffOutputBudgetSummary,
+} from '../shared/diff-output-budget.js';
+import { createOutputTruncatedRecoverableState } from '../shared/recoverable-runtime-state.js';
 import { resolveTargetContext } from '../shared/target-context.js';
 import {
   collectAdvisoryDocsEvidence,
@@ -63,15 +69,7 @@ export interface DiffImpactReport {
   version: 1;
   commitRange: string;
   basedOnReads?: BasedOnReadsSummary;
-  summary: {
-    totalChangedFiles: number;
-    emittedChangedFiles: number;
-    totalChangedSymbols: number;
-    emittedChangedSymbols: number;
-    detailTruncated: boolean;
-    truncatedFileCount: number;
-    truncatedSymbolCount: number;
-  };
+  summary: DiffOutputBudgetSummary;
   changedFiles: Array<{
     path: string;
     addedLines: number;
@@ -106,6 +104,7 @@ export interface DiffImpactReport {
   warnings: string[];
   warningDetails: Array<{ id: string; message: string; evidenceIds: string[] }>;
   graphSections: DiffReviewResult['graphSections'] | null;
+  limits: DiffOutputBudgetLimits;
   capabilityState: {
     freshness: CapabilityResponseFreshness;
     capabilitiesUsed: string[];
@@ -316,19 +315,22 @@ function createBaseDiffImpactReport(
   warnings: string[],
   overrides: Partial<DiffImpactReport> = {},
 ): DiffImpactReport {
+  const baseBudget = buildDiffOutputBudget({
+    totalChangedFiles: 0,
+    emittedChangedFiles: 0,
+    totalChangedSymbols: 0,
+    emittedChangedSymbols: 0,
+    truncatedFileCount: 0,
+    truncatedSymbolCount: 0,
+    maxChangedFiles: MAX_DIFF_IMPACT_DETAIL_FILES,
+    maxChangedSymbolsPerFile: MAX_DIFF_IMPACT_SYMBOLS_PER_FILE,
+  });
+
   return {
     version: 1,
     commitRange,
     basedOnReads: summarizeBasedOnReads(),
-    summary: {
-      totalChangedFiles: 0,
-      emittedChangedFiles: 0,
-      totalChangedSymbols: 0,
-      emittedChangedSymbols: 0,
-      detailTruncated: false,
-      truncatedFileCount: 0,
-      truncatedSymbolCount: 0,
-    },
+    summary: baseBudget.summary,
     changedFiles: [],
     affectedProcesses: [],
     totalSymbolsChanged: 0,
@@ -338,6 +340,7 @@ function createBaseDiffImpactReport(
     warnings,
     warningDetails: [],
     graphSections: null,
+    limits: baseBudget.limits,
     capabilityState: {
       freshness: DEFAULT_FRESHNESS,
       capabilitiesUsed: ['git-diff', 'graph-review', 'blast-radius'],
@@ -752,6 +755,20 @@ export async function gnDiffImpact(
       (count, file) => count + Math.min(file.changedSymbols.length, detailSymbolLimit),
       0,
     );
+  const diffOutputBudget = buildDiffOutputBudget({
+    totalChangedFiles: totalDetailedFiles,
+    emittedChangedFiles: emittedReviewedFiles.length,
+    totalChangedSymbols: totalDetailedSymbols,
+    emittedChangedSymbols: emittedDetailedSymbols,
+    truncatedFileCount,
+    truncatedSymbolCount,
+    maxChangedFiles: detailFileLimit,
+    maxChangedSymbolsPerFile: detailSymbolLimit,
+    retryHint:
+      truncatedFileCount > 0 || truncatedSymbolCount > 0
+        ? `Re-run gn_diff_impact with a narrower commit range or diff scope to inspect the omitted ${truncatedFileCount} file${truncatedFileCount === 1 ? '' : 's'} and ${truncatedSymbolCount} symbol${truncatedSymbolCount === 1 ? '' : 's'}.`
+        : undefined,
+  });
 
   recordEvidenceReadSafe({
     readClass: 'graph_evidence',
@@ -825,6 +842,9 @@ export async function gnDiffImpact(
   }
   if (truncatedSymbolCount > 0) {
     warnings.push(`Diff impact per-file symbol detail capped at ${detailSymbolLimit} symbols`);
+  }
+  if (diffOutputBudget.limits.retryHint) {
+    warnings.push(diffOutputBudget.limits.retryHint);
   }
 
   const processEvidenceEntries: Array<{ token: string; id: string }> = [];
@@ -1093,15 +1113,7 @@ export async function gnDiffImpact(
 
   return {
     ...createBaseDiffImpactReport(resolvedRange, uniqueWarnings),
-    summary: {
-      totalChangedFiles: totalDetailedFiles,
-      emittedChangedFiles: changedFiles.length,
-      totalChangedSymbols: totalDetailedSymbols,
-      emittedChangedSymbols: emittedDetailedSymbols,
-      detailTruncated: truncatedFileCount > 0 || truncatedSymbolCount > 0,
-      truncatedFileCount,
-      truncatedSymbolCount,
-    },
+    summary: diffOutputBudget.summary,
     changedFiles,
     affectedProcesses,
     totalSymbolsChanged,
@@ -1111,6 +1123,7 @@ export async function gnDiffImpact(
     suggestedReviewers,
     warningDetails,
     graphSections: reviewResult.graphSections ?? null,
+    limits: diffOutputBudget.limits,
     capabilityState: {
       freshness,
       capabilitiesUsed: uniqueStrings([
@@ -1149,6 +1162,7 @@ export interface ReviewDiffParams {
 
 export type ReviewDiffEnvelope = CapabilityResponseEnvelope<{
   resolvedRange: string;
+  summary: DiffOutputBudgetSummary;
   reviewedFiles: DiffReviewResult['reviewedFiles'];
   totalSymbolsChanged: number;
   highRiskSymbols: string[];
@@ -1258,6 +1272,20 @@ export async function gnReviewDiff(
   );
   const freshness = deriveEnvelopeFreshness(targetContext);
   const finalBudget = finishQueryBudgetSnapshot(budget, { startedAtMs: budgetStartedAtMs });
+  const diffOutputBudget = buildDiffOutputBudget({
+    totalChangedFiles: changedPaths.length,
+    emittedChangedFiles: reviewResult.reviewedFiles.length,
+    totalChangedSymbols: reviewResult.totalSymbolsChanged,
+    emittedChangedSymbols: reviewResult.totalSymbolsChanged,
+    truncatedFileCount: Math.max(0, changedPaths.length - reviewResult.reviewedFiles.length),
+    truncatedSymbolCount: 0,
+    maxChangedFiles: MAX_CHANGED_PATHS,
+    maxChangedSymbolsPerFile: MAX_DIFF_IMPACT_SYMBOLS_PER_FILE,
+    retryHint:
+      changedPaths.length > reviewResult.reviewedFiles.length
+        ? `Re-run gn_review_diff with a narrower commit range or diff scope to inspect the omitted ${changedPaths.length - reviewResult.reviewedFiles.length} file${changedPaths.length - reviewResult.reviewedFiles.length === 1 ? '' : 's'}.`
+        : undefined,
+  });
   const diagnostics = buildReviewDiffDiagnostics({
     changedPathCount: changedPaths.length,
     reviewResult,
@@ -1265,6 +1293,13 @@ export async function gnReviewDiff(
     freshness,
     budget: finalBudget,
   });
+  const recoverable = diffOutputBudget.limits.truncated
+    ? createOutputTruncatedRecoverableState({
+        retryCommand:
+          diffOutputBudget.limits.retryHint ??
+          'Re-run gn_review_diff with a narrower commit range or diff scope.',
+      })
+    : undefined;
 
   // ---- 6. Wrap in ADR 0018 envelope ---------------------------------------
   return createCapabilityResponseEnvelope({
@@ -1277,10 +1312,12 @@ export async function gnReviewDiff(
     targetContext,
     capabilitiesUsed: ['git-diff', 'graph-review', 'blast-radius'],
     freshness,
+    recoverable,
     results: {
       resolvedRange,
       reviewedFiles: reviewResult.reviewedFiles,
       totalSymbolsChanged: reviewResult.totalSymbolsChanged,
+      summary: diffOutputBudget.summary,
       highRiskSymbols: reviewResult.highRiskSymbols,
       affectedProcesses: reviewResult.affectedProcesses ?? [],
       affectedCommunities: reviewResult.affectedCommunities ?? [],
@@ -1288,7 +1325,13 @@ export async function gnReviewDiff(
       graphSections: reviewResult.graphSections ?? null,
       diagnostics,
     },
-    warnings: allWarnings,
-    limits: { maxChangedPaths: MAX_CHANGED_PATHS, budget: finalBudget },
+    warnings: diffOutputBudget.limits.retryHint
+      ? [...allWarnings, diffOutputBudget.limits.retryHint]
+      : allWarnings,
+    limits: {
+      maxChangedPaths: MAX_CHANGED_PATHS,
+      budget: finalBudget,
+      ...diffOutputBudget.limits,
+    },
   });
 }

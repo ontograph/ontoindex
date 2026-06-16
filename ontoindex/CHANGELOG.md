@@ -4,6 +4,23 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.11] - 2026-06-16
+
+### Added
+
+- Shared runtime-health reporting for status and MCP response metadata, including dirty, stale,
+  failed, and unclean-lock states with repair guidance.
+- Recoverable MCP runtime states for not-indexed, wrong-repo, stale/degraded, and truncated-output
+  paths.
+- Setup and `mcp-doctor` validation for configured client commands, cwd/repo binding, and process
+  liveness.
+
+### Changed
+
+- Diff-impact responses now use a bounded summary-first output profile for dirty or broad
+  worktrees.
+- ADR 0086 is marked implemented for the narrowed core runtime-health and budget contract.
+
 ## [1.9.10] - 2026-06-14
 
 ### Fixed

@@ -17,6 +17,16 @@ const execFileSyncMock = vi.fn(() => {
 });
 const getGitRootMock = vi.fn(() => '/mock/repo/path');
 const expectedMockRepoPath = path.resolve('/mock/repo/path');
+const existsSyncMock = vi.hoisted(() => vi.fn());
+
+vi.mock('fs', async () => {
+  const actual = await vi.importActual<typeof import('fs')>('fs');
+  existsSyncMock.mockImplementation(actual.existsSync);
+  return {
+    ...actual,
+    existsSync: existsSyncMock,
+  };
+});
 
 vi.mock('child_process', () => ({
   execFile: execFileMock,
@@ -42,7 +52,12 @@ describe('setupClaudeCode', () => {
   const expectPackagedMcpEntry = (entry: any) => {
     expect(entry).toMatchObject({
       command: process.execPath,
-      args: [expect.stringMatching(/dist[/\\]cli[/\\]index\.js$/), 'mcp', '--project', expectedMockRepoPath],
+      args: [
+        expect.stringMatching(/dist[/\\]cli[/\\]index\.js$/),
+        'mcp',
+        '--project',
+        expectedMockRepoPath,
+      ],
       env: {
         NODE_ENV: 'production',
         ONTOINDEX_MCP_AUTO_ANALYZE: '0',
@@ -95,6 +110,11 @@ describe('setupClaudeCode', () => {
     const config = JSON.parse(raw);
 
     expectPackagedMcpEntry(config.mcpServers.ontoindex);
+    expect(
+      console.log.mock.calls.some((call) =>
+        call.some((value) => typeof value === 'string' && value.includes('Warnings:')),
+      ),
+    ).toBe(false);
   });
 
   it('writes non-win32 MCP entry with packaged CLI path', async () => {
@@ -291,7 +311,9 @@ describe('setupClaudeCode', () => {
 
     const raw = await fs.readFile(path.join(codexDir, 'config.toml'), 'utf-8');
     expect(raw).toContain(`command = ${JSON.stringify(process.execPath)}`);
-    expect(raw).toMatch(/args = \[".*dist.*cli.*index\.js", "mcp", "--project", "\/mock\/repo\/path"\]/);
+    expect(raw).toMatch(
+      /args = \[".*dist.*cli.*index\.js", "mcp", "--project", "\/mock\/repo\/path"\]/,
+    );
     expect(raw).toContain('ONTOINDEX_MCP_AUTO_ANALYZE = "0"');
     expect(raw).toContain('ONTOINDEX_MCP_STARTUP_TIMEOUT_MS = "10000"');
     expect(raw).toContain('ONTOINDEX_MCP_STARTUP_TRACE = "1"');
@@ -300,6 +322,47 @@ describe('setupClaudeCode', () => {
     expect(raw).not.toContain('/dead/global/ontoindex');
     expect(raw).not.toContain('[mcp_servers.ontoindex.env]');
     expect(raw).not.toContain('[mcp_servers.ontoindex.tools.gn_explore]');
+  });
+
+  it('reports a packaged CLI validation error when the generated path goes missing', async () => {
+    setPlatform('linux');
+    existsSyncMock.mockImplementationOnce(() => true);
+    existsSyncMock.mockImplementationOnce(() => false);
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(path.join(tempHome, '.claude.json'), 'utf-8');
+    const config = JSON.parse(raw);
+
+    expectPackagedMcpEntry(config.mcpServers.ontoindex);
+    expect(
+      console.log.mock.calls.some((call) =>
+        call.some(
+          (value) =>
+            typeof value === 'string' && value.includes('Packaged CLI path does not exist:'),
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it('reports npx fallback mode without failing setup when no packaged entry is available', async () => {
+    setPlatform('linux');
+    existsSyncMock.mockImplementationOnce(() => false);
+    existsSyncMock.mockImplementationOnce(() => false);
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(path.join(tempHome, '.claude.json'), 'utf-8');
+    const config = JSON.parse(raw);
+
+    expect(config.mcpServers.ontoindex.command).toBe('npx');
+    expect(
+      console.log.mock.calls.some((call) =>
+        call.some((value) => typeof value === 'string' && value.includes('Using npx fallback')),
+      ),
+    ).toBe(true);
   });
 
   it('handles corrupt JSON gracefully', async () => {

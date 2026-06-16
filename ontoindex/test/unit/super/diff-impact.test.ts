@@ -486,6 +486,20 @@ describe('gnDiffImpact', () => {
         truncatedFileCount: 1,
         truncatedSymbolCount: 3,
       });
+      expect(report.limits).toMatchObject({
+        summaryFirst: true,
+        truncated: true,
+        maxChangedFiles: 1,
+        maxChangedSymbolsPerFile: 1,
+        emittedChangedFiles: 1,
+        totalChangedFiles: 2,
+        emittedChangedSymbols: 1,
+        totalChangedSymbols: 4,
+        truncatedFileCount: 1,
+        truncatedSymbolCount: 3,
+        cursor: null,
+      });
+      expect(report.limits.retryHint).toContain('narrower commit range');
       expect(report.changedFiles).toHaveLength(1);
       expect(report.changedFiles[0]).toMatchObject({
         path: 'src/a.ts',
@@ -532,6 +546,15 @@ describe('gnReviewDiff', () => {
     expect(envelope.version).toBe(1);
     expect(envelope.results).toBeDefined();
     expect(envelope.results.resolvedRange).toBe('HEAD~1..HEAD');
+    expect(envelope.results.summary).toMatchObject({
+      totalChangedFiles: 1,
+      emittedChangedFiles: 1,
+      totalChangedSymbols: 1,
+      emittedChangedSymbols: 1,
+      detailTruncated: false,
+      truncatedFileCount: 0,
+      truncatedSymbolCount: 0,
+    });
     expect(envelope.results.reviewedFiles).toBeInstanceOf(Array);
     expect(envelope.results.totalSymbolsChanged).toBeGreaterThanOrEqual(0);
     expect(envelope.results.highRiskSymbols).toBeInstanceOf(Array);
@@ -542,6 +565,13 @@ describe('gnReviewDiff', () => {
     expect(envelope.capabilitiesUsed).toContain('blast-radius');
     expect(envelope.warnings).toBeInstanceOf(Array);
     expect(envelope.limits.maxChangedPaths).toBe(500);
+    expect(envelope.limits).toMatchObject({
+      summaryFirst: true,
+      truncated: false,
+      maxChangedFiles: 500,
+      maxChangedSymbolsPerFile: 10,
+      cursor: null,
+    });
     expect(envelope.limits.budget).toMatchObject({
       maxCandidates: 500,
       emitted: 1,

@@ -119,6 +119,11 @@ describe('mcp-doctor', () => {
             warnings: [],
           },
         }),
+        processLiveness: async (_repo, _projectCwd, repairCommand) => ({
+          status: 'unavailable',
+          reason: 'not-probed',
+          repairCommand,
+        }),
       },
     );
 
@@ -143,6 +148,96 @@ describe('mcp-doctor', () => {
     });
   });
 
+  it('reports matching MCP process liveness and keeps the report ready', async () => {
+    const report = await createMcpDoctorReport(
+      { repo: 'fixture', projectCwd: '/repo/fixture' },
+      {
+        diagnose: async () => baseDiagnose,
+        processLiveness: async (repo, projectCwd, repairCommand) => {
+          expect(repo).toBe('fixture');
+          expect(projectCwd).toBe('/repo/fixture');
+          expect(repairCommand).toBe("ontoindex mcp --project '/repo/fixture' --repo 'fixture'");
+          return {
+            status: 'ok',
+            pid: 4321,
+            command: 'node /repo/ontoindex/dist/cli/index.js mcp --project /repo/fixture',
+            projectCwd: '/repo/fixture',
+            repairCommand,
+          };
+        },
+      },
+    );
+
+    expect(report.verdict).toBe('READY');
+    expect(report.processLiveness).toMatchObject({
+      status: 'ok',
+      pid: 4321,
+      projectCwd: '/repo/fixture',
+    });
+    expect(formatMcpDoctorText(report)).toContain('MCP process: ok (PID 4321)');
+  });
+
+  it('marks missing process discovery as DEGRADED with repair guidance', async () => {
+    const report = await createMcpDoctorReport(
+      { projectCwd: '/repo/fixture' },
+      {
+        diagnose: async () => baseDiagnose,
+        processLiveness: async (_repo, projectCwd, repairCommand) => ({
+          status: 'missing',
+          reason: `no running MCP process matched ${projectCwd}`,
+          repairCommand,
+        }),
+      },
+    );
+
+    expect(report.verdict).toBe('DEGRADED');
+    expect(report.nextCommand).toBe("ontoindex mcp --project '/repo/fixture'");
+    expect(formatMcpDoctorText(report)).toContain('MCP process: missing');
+    expect(formatMcpDoctorText(report)).toContain(
+      "Process repair: ontoindex mcp --project '/repo/fixture'",
+    );
+  });
+
+  it('treats a wrong-project process as MISCONFIGURED and degrades cleanly when discovery is unavailable', async () => {
+    const mismatchReport = await createMcpDoctorReport(
+      { repo: 'fixture', projectCwd: '/repo/fixture' },
+      {
+        diagnose: async () => baseDiagnose,
+        processLiveness: async (_repo, _projectCwd, repairCommand) => ({
+          status: 'mismatch',
+          reason: 'found running MCP process for /repo/other',
+          pid: 999,
+          command: 'node /repo/ontoindex/dist/cli/index.js mcp --project /repo/other',
+          projectCwd: '/repo/other',
+          repairCommand,
+        }),
+      },
+    );
+
+    expect(mismatchReport.verdict).toBe('MISCONFIGURED');
+    expect(formatMcpDoctorText(mismatchReport)).toContain('MCP process: mismatch');
+    expect(formatMcpDoctorText(mismatchReport)).toContain(
+      'Observed command: node /repo/ontoindex/dist/cli/index.js mcp --project /repo/other',
+    );
+
+    const unavailableReport = await createMcpDoctorReport(
+      { repo: 'fixture', projectCwd: '/repo/fixture' },
+      {
+        diagnose: async () => baseDiagnose,
+        processLiveness: async (_repo, _projectCwd, repairCommand) => ({
+          status: 'unavailable',
+          reason: 'process-discovery-unsupported-platform',
+          repairCommand,
+        }),
+      },
+    );
+
+    expect(unavailableReport.verdict).toBe('READY');
+    expect(formatMcpDoctorText(unavailableReport)).toContain(
+      'MCP process: unavailable (process-discovery-unsupported-platform)',
+    );
+  });
+
   it('returns DEGRADED for a correct but reduced-quality target', async () => {
     const report = await createMcpDoctorReport(
       { repo: 'fixture' },
@@ -155,6 +250,11 @@ describe('mcp-doctor', () => {
             affectedAreas: ['retrieval'],
             confidence: 'reduced',
           },
+        }),
+        processLiveness: async (_repo, _projectCwd, repairCommand) => ({
+          status: 'unavailable',
+          reason: 'not-probed',
+          repairCommand,
         }),
       },
     );
@@ -192,11 +292,19 @@ describe('mcp-doctor', () => {
             warnings: [],
           },
         }),
+        processLiveness: async (_repo, _projectCwd, repairCommand) => ({
+          status: 'unavailable',
+          reason: 'not-probed',
+          repairCommand,
+        }),
       },
     );
 
     expect(report.verdict).toBe('DEGRADED');
-    expect(report.symbolSmoke).toEqual({ status: 'failed', reason: 'context-smoke:symbol not found' });
+    expect(report.symbolSmoke).toEqual({
+      status: 'failed',
+      reason: 'context-smoke:symbol not found',
+    });
   });
 
   it('returns MISCONFIGURED for P1 repo-target mismatch', async () => {
@@ -246,9 +354,7 @@ describe('mcp-doctor', () => {
       },
     );
 
-    expect(report.nextCommand).toBe(
-      "ontoindex mcp --project '/repo/space path' --repo 'fixture'",
-    );
+    expect(report.nextCommand).toBe("ontoindex mcp --project '/repo/space path' --repo 'fixture'");
   });
 
   it('keeps JSON output stable enough for issue reports', async () => {
@@ -257,6 +363,11 @@ describe('mcp-doctor', () => {
       {
         diagnose: async () => baseDiagnose,
         smokeSymbol: async () => {},
+        processLiveness: async (_repo, _projectCwd, repairCommand) => ({
+          status: 'unavailable',
+          reason: 'not-probed',
+          repairCommand,
+        }),
       },
     );
 

@@ -13,8 +13,13 @@ import {
   listRegisteredRepos,
   loadRepo,
 } from '../storage/repo-manager.js';
-import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
+import { isGitRepo, getGitRoot } from '../storage/git.js';
 import { getNativeGraphWriterStatus, type GraphWriterRuntime } from '../native/graph-writer.js';
+import {
+  formatRuntimeHealthDetailLines,
+  formatRuntimeHealthStatusLine,
+  readRuntimeHealth,
+} from '../core/runtime/runtime-health.js';
 export { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js';
 import { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js';
 
@@ -94,10 +99,10 @@ export const statusCommand = async (options?: { repo?: string }) => {
   }
 
   const repo = await findRepo(cwd);
+  const repoRoot = getGitRoot(cwd) ?? cwd;
+  const { storagePath } = getStoragePaths(repoRoot);
   if (!repo) {
     // Check if there's a stale KuzuDB index that needs migration
-    const repoRoot = getGitRoot(cwd) ?? cwd;
-    const { storagePath } = getStoragePaths(repoRoot);
     if (await hasKuzuIndex(storagePath)) {
       console.log('Repository has a stale KuzuDB index from a previous version.');
       console.log(
@@ -106,6 +111,16 @@ export const statusCommand = async (options?: { repo?: string }) => {
       console.log('Run: ontoindex analyze   (rebuilds the index with LadybugDB)');
     } else {
       console.log('Repository not indexed.');
+      const runtimeHealth = await readRuntimeHealth(repoRoot, {
+        repoLabel: path.basename(repoRoot),
+        storagePath,
+      });
+      if (runtimeHealth.hasRuntimeArtifacts) {
+        console.log(formatRuntimeHealthStatusLine(runtimeHealth));
+        for (const line of formatRuntimeHealthDetailLines(runtimeHealth)) {
+          console.log(line);
+        }
+      }
       console.log(
         'Semantic search: absent (no index metadata yet; run ontoindex analyze --embeddings to populate)',
       );
@@ -115,17 +130,42 @@ export const statusCommand = async (options?: { repo?: string }) => {
     return;
   }
 
-  const currentCommit = getCurrentCommit(repo.repoPath);
-  const isUpToDate = currentCommit === repo.meta.lastCommit;
+  const runtimeHealth = await readRuntimeHealth(repo.repoPath, {
+    repoLabel: path.basename(repo.repoPath),
+    storagePath: repo.storagePath,
+    meta: repo.meta,
+  });
 
   console.log(`Repository: ${repo.repoPath}`);
   console.log(`Indexed: ${new Date(repo.meta.indexedAt).toLocaleString()}`);
-  console.log(`Indexed commit: ${repo.meta.lastCommit?.slice(0, 7)}`);
-  console.log(`Current commit: ${currentCommit?.slice(0, 7)}`);
-  console.log(`Status: ${isUpToDate ? '✅ up-to-date' : '⚠️ stale (re-run ontoindex analyze)'}`);
+  console.log(`Indexed commit: ${runtimeHealth.indexedCommit?.slice(0, 7) ?? 'unavailable'}`);
+  console.log(`Current commit: ${runtimeHealth.currentCommit?.slice(0, 7) ?? 'unavailable'}`);
+  console.log(`Status: ${describeRuntimeStatus(runtimeHealth)}`);
+  console.log(formatRuntimeHealthStatusLine(runtimeHealth));
+  for (const line of formatRuntimeHealthDetailLines(runtimeHealth)) {
+    console.log(line);
+  }
   console.log(formatSemanticSearchStatus(repo.meta));
   for (const line of formatIndexCapabilityWarnings(repo.meta)) {
     console.log(line);
   }
   console.log(nativeGraphWriterStatus);
 };
+
+function describeRuntimeStatus(health: Awaited<ReturnType<typeof readRuntimeHealth>>): string {
+  switch (health.freshnessState) {
+    case 'clean':
+      return '✅ up-to-date';
+    case 'stale':
+      return '⚠️ stale (re-run ontoindex analyze)';
+    case 'dirty':
+      return '⚠️ dirty worktree (commit, stash, or clean before re-running analyze)';
+    case 'degraded':
+      return '⚠️ degraded (runtime artifacts present)';
+    case 'untrusted':
+      return '⚠️ untrusted (runtime artifacts need repair)';
+    case 'failed-after-partial-run':
+      return '⛔ failed after partial analyze (repair required)';
+  }
+  return '⚠️ degraded (runtime artifacts present)';
+}

@@ -24,6 +24,7 @@ const execFileAsync = promisify(execFile);
 interface SetupResult {
   configured: string[];
   skipped: string[];
+  warnings: string[];
   errors: string[];
 }
 
@@ -31,6 +32,8 @@ interface McpEntry {
   command: string;
   args: string[];
   env?: Record<string, string>;
+  mode: 'packaged-cli' | 'binary' | 'npx';
+  cliPath?: string;
 }
 
 type JsonPrimitive = string | number | boolean | null;
@@ -126,20 +129,26 @@ function resolvePackagedCliPath(): string | null {
  * are slow enough to exceed editor MCP startup deadlines, and global binaries
  * can drift away from the repo's active development build.
  */
-function getMcpEntry(): McpEntry {
+function getMcpEntry(projectPath = resolveMcpRepoPath()): McpEntry {
   const cliPath = resolvePackagedCliPath();
-  const projectPath = resolveMcpRepoPath();
   if (cliPath) {
     return {
       command: process.execPath,
       args: [cliPath, 'mcp', '--project', projectPath],
       env: defaultMcpEnv(),
+      mode: 'packaged-cli',
+      cliPath,
     };
   }
 
   const bin = resolveOntoIndexBin();
   if (bin) {
-    return { command: bin, args: ['mcp', '--project', projectPath], env: defaultMcpEnv() };
+    return {
+      command: bin,
+      args: ['mcp', '--project', projectPath],
+      env: defaultMcpEnv(),
+      mode: 'binary',
+    };
   }
 
   // Last-resort fallback for source-tree setup before a build exists. This is
@@ -149,12 +158,14 @@ function getMcpEntry(): McpEntry {
       command: 'cmd',
       args: ['/c', 'npx', '-y', 'ontoindex', 'mcp', '--project', projectPath],
       env: defaultMcpEnv(),
+      mode: 'npx',
     };
   }
   return {
     command: 'npx',
     args: ['-y', 'ontoindex', 'mcp', '--project', projectPath],
     env: defaultMcpEnv(),
+    mode: 'npx',
   };
 }
 
@@ -162,15 +173,66 @@ function getMcpEntry(): McpEntry {
  * Merge ontoindex entry into an existing MCP config JSON object.
  * Returns the updated config.
  */
-function mergeMcpConfig(existing: unknown): JsonObject {
+function mergeMcpConfig(existing: unknown, entry: McpEntry): JsonObject {
   const config = isJsonObject(existing) ? existing : {};
   if (!isJsonObject(config.mcpServers)) {
     config.mcpServers = {};
   }
   const mcpServers = config.mcpServers;
-  const entry = getMcpEntry();
   mcpServers.ontoindex = mcpEntryToJsonObject(entry);
   return config;
+}
+
+interface McpEntryValidation {
+  warnings: string[];
+  errors: string[];
+}
+
+function validateMcpEntry(entry: McpEntry, projectPath: string): McpEntryValidation {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  const args = Array.isArray(entry.args) ? entry.args : [];
+
+  if (!entry.command || entry.command.trim().length === 0) {
+    errors.push('MCP entry command is missing');
+  }
+
+  if (!Array.isArray(entry.args) || !args.includes('mcp')) {
+    errors.push('MCP entry args must include "mcp"');
+  }
+
+  const projectFlagIndex = args.indexOf('--project');
+  if (projectFlagIndex === -1) {
+    errors.push('MCP entry args must include "--project <path>"');
+  } else if (projectFlagIndex === args.length - 1) {
+    errors.push('MCP entry args must include a project path after "--project"');
+  } else {
+    const entryProjectPath = path.resolve(args[projectFlagIndex + 1]);
+    if (entryProjectPath !== projectPath) {
+      errors.push(
+        `MCP entry project path resolves to ${entryProjectPath}, expected ${projectPath}`,
+      );
+    }
+  }
+
+  if (entry.env?.ONTOINDEX_MCP_AUTO_ANALYZE !== '0') {
+    errors.push('MCP entry env must disable auto analyze with ONTOINDEX_MCP_AUTO_ANALYZE=0');
+  }
+
+  if (entry.mode === 'packaged-cli') {
+    const cliPath = entry.cliPath || args[0];
+    if (!cliPath) {
+      errors.push('Packaged CLI entry is missing the CLI path');
+    } else if (!existsSync(cliPath)) {
+      errors.push(`Packaged CLI path does not exist: ${cliPath}`);
+    }
+  } else if (entry.mode === 'binary') {
+    warnings.push(`Using global ontoindex binary fallback: ${entry.command}`);
+  } else {
+    warnings.push(`Using npx fallback for MCP entry: ${entry.command}`);
+  }
+
+  return { warnings, errors };
 }
 
 /**
@@ -207,7 +269,7 @@ async function dirExists(dirPath: string): Promise<boolean> {
 
 // ─── Editor-specific setup ─────────────────────────────────────────
 
-async function setupCursor(result: SetupResult): Promise<void> {
+async function setupCursor(result: SetupResult, entry: McpEntry): Promise<void> {
   const cursorDir = path.join(os.homedir(), '.cursor');
   if (!(await dirExists(cursorDir))) {
     result.skipped.push('Cursor (not installed)');
@@ -217,7 +279,7 @@ async function setupCursor(result: SetupResult): Promise<void> {
   const mcpPath = path.join(cursorDir, 'mcp.json');
   try {
     const existing = await readJsonFile(mcpPath);
-    const updated = mergeMcpConfig(existing);
+    const updated = mergeMcpConfig(existing, entry);
     await writeJsonFile(mcpPath, updated);
     result.configured.push('Cursor');
   } catch (err: unknown) {
@@ -225,7 +287,7 @@ async function setupCursor(result: SetupResult): Promise<void> {
   }
 }
 
-async function setupClaudeCode(result: SetupResult): Promise<void> {
+async function setupClaudeCode(result: SetupResult, entry: McpEntry): Promise<void> {
   const claudeDir = path.join(os.homedir(), '.claude');
   if (!(await dirExists(claudeDir))) {
     result.skipped.push('Claude Code (not installed)');
@@ -236,7 +298,7 @@ async function setupClaudeCode(result: SetupResult): Promise<void> {
   const mcpPath = path.join(os.homedir(), '.claude.json');
   try {
     const existing = await readJsonFile(mcpPath);
-    const updated = mergeMcpConfig(existing);
+    const updated = mergeMcpConfig(existing, entry);
     await writeJsonFile(mcpPath, updated);
     result.configured.push('Claude Code');
   } catch (err: unknown) {
@@ -374,7 +436,7 @@ function resolveClaudeHookCliPath(): string {
   return candidates.find((candidate) => existsSync(candidate)) || candidates[0];
 }
 
-async function setupOpenCode(result: SetupResult): Promise<void> {
+async function setupOpenCode(result: SetupResult, entry: McpEntry): Promise<void> {
   const opencodeDir = path.join(os.homedir(), '.config', 'opencode');
   if (!(await dirExists(opencodeDir))) {
     result.skipped.push('OpenCode (not installed)');
@@ -390,7 +452,7 @@ async function setupOpenCode(result: SetupResult): Promise<void> {
     } else if (!isJsonObject(config.mcp)) {
       throw new TypeError('OpenCode mcp must be a JSON object');
     }
-    config.mcp.ontoindex = mcpEntryToJsonObject(getMcpEntry());
+    config.mcp.ontoindex = mcpEntryToJsonObject(entry);
     await writeJsonFile(configPath, config);
     result.configured.push('OpenCode');
   } catch (err: unknown) {
@@ -401,8 +463,7 @@ async function setupOpenCode(result: SetupResult): Promise<void> {
 /**
  * Build a TOML section for Codex MCP config (~/.codex/config.toml).
  */
-function getCodexMcpTomlSection(): string {
-  const entry = getMcpEntry();
+function getCodexMcpTomlSection(entry: McpEntry): string {
   const command = JSON.stringify(entry.command);
   const args = `[${entry.args.map((arg) => JSON.stringify(arg)).join(', ')}]`;
   const env =
@@ -418,7 +479,7 @@ function getCodexMcpTomlSection(): string {
  * Upsert OntoIndex MCP server config in Codex's config.toml.
  * Existing stale sections are replaced so setup can repair removed binaries.
  */
-async function upsertCodexConfigToml(configPath: string): Promise<void> {
+async function upsertCodexConfigToml(configPath: string, entry: McpEntry): Promise<void> {
   let existing = '';
   try {
     existing = await fs.readFile(configPath, 'utf-8');
@@ -426,7 +487,7 @@ async function upsertCodexConfigToml(configPath: string): Promise<void> {
     existing = '';
   }
 
-  const section = getCodexMcpTomlSection();
+  const section = getCodexMcpTomlSection(entry);
   const sectionRe =
     /^\[mcp_servers\.ontoindex(?:\.[^\]]+)?\]\n[\s\S]*?(?=^\[(?!mcp_servers\.ontoindex(?:\.|\]))|\s*$)/gm;
   const firstMatch = sectionRe.exec(existing);
@@ -447,7 +508,7 @@ async function upsertCodexConfigToml(configPath: string): Promise<void> {
   await fs.writeFile(configPath, `${nextContent.trimEnd()}\n`, 'utf-8');
 }
 
-async function setupCodex(result: SetupResult): Promise<void> {
+async function setupCodex(result: SetupResult, entry: McpEntry): Promise<void> {
   const codexDir = path.join(os.homedir(), '.codex');
   if (!(await dirExists(codexDir))) {
     result.skipped.push('Codex (not installed)');
@@ -456,7 +517,7 @@ async function setupCodex(result: SetupResult): Promise<void> {
 
   try {
     const configPath = path.join(codexDir, 'config.toml');
-    await upsertCodexConfigToml(configPath);
+    await upsertCodexConfigToml(configPath, entry);
     result.configured.push('Codex (MCP repaired in ~/.codex/config.toml)');
     return;
   } catch {
@@ -464,7 +525,6 @@ async function setupCodex(result: SetupResult): Promise<void> {
   }
 
   try {
-    const entry = getMcpEntry();
     await execFileAsync('codex', ['mcp', 'add', 'ontoindex', '--', entry.command, ...entry.args], {
       shell: process.platform === 'win32',
     });
@@ -623,14 +683,21 @@ export const setupCommand = async () => {
   const result: SetupResult = {
     configured: [],
     skipped: [],
+    warnings: [],
     errors: [],
   };
 
+  const projectPath = resolveMcpRepoPath();
+  const mcpEntry = getMcpEntry(projectPath);
+  const validation = validateMcpEntry(mcpEntry, projectPath);
+  result.warnings.push(...validation.warnings);
+  result.errors.push(...validation.errors);
+
   // Detect and configure each editor's MCP
-  await setupCursor(result);
-  await setupClaudeCode(result);
-  await setupOpenCode(result);
-  await setupCodex(result);
+  await setupCursor(result, mcpEntry);
+  await setupClaudeCode(result, mcpEntry);
+  await setupOpenCode(result, mcpEntry);
+  await setupCodex(result, mcpEntry);
 
   // Install global skills for platforms that support them
   await installClaudeCodeSkills(result);
@@ -652,6 +719,14 @@ export const setupCommand = async () => {
     console.log('  Skipped:');
     for (const name of result.skipped) {
       console.log(`    - ${name}`);
+    }
+  }
+
+  if (result.warnings.length > 0) {
+    console.log('');
+    console.log('  Warnings:');
+    for (const warning of result.warnings) {
+      console.log(`    ! ${warning}`);
     }
   }
 
