@@ -38,6 +38,14 @@ function relationship(
   };
 }
 
+function extractPayload(html: string): Record<string, unknown> {
+  const match = html.match(/const PAYLOAD = (.*?);\n\s*const COLOR_BY_LABEL =/s);
+  if (!match) {
+    throw new Error('Could not locate serialized payload in graph HTML output');
+  }
+  return JSON.parse(match[1]) as Record<string, unknown>;
+}
+
 describe('graph-html-export', () => {
   const graph = {
     nodes: [
@@ -111,5 +119,59 @@ describe('graph-html-export', () => {
     expect(html).toContain('"repoId":"ontoindex"');
     expect(html).toContain('"summary":true');
     expect(html).toContain('Graph Overview');
+  });
+
+  it('preserves optional graph metadata in the serialized HTML payload', () => {
+    const html = createGraphOverviewHtml(
+      {
+        nodes: [
+          node('file:meta', 'File', 'meta.ts', 'src/meta.ts', {
+            provenance: { source: 'scanner' },
+            truncated: true,
+            omittedCount: 3,
+            community: 'core',
+          }),
+        ],
+        relationships: [
+          {
+            ...relationship('file:meta', 'CONTAINS', 'file:meta'),
+            provenance: { source: 'scanner-edge' },
+            truncated: true,
+            omittedCount: 1,
+            community: 'core',
+          } as GraphRelationship & Record<string, unknown>,
+        ],
+      },
+      {
+        repoId: 'ontoindex',
+        repoPath: '/repo',
+        generatedAt: '2026-06-13T00:00:00.000Z',
+        indexedAt: '2026-06-13T00:00:00.000Z',
+        indexedHead: 'abc1234',
+        summary: false,
+      },
+    );
+
+    const payload = extractPayload(html);
+    expect(payload.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          provenance: { source: 'scanner' },
+          truncated: true,
+          omittedCount: 3,
+          community: 'core',
+        }),
+      ]),
+    );
+    expect(payload.relationships).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          provenance: { source: 'scanner-edge' },
+          truncated: true,
+          omittedCount: 1,
+          community: 'core',
+        }),
+      ]),
+    );
   });
 });

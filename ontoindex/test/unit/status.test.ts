@@ -205,6 +205,10 @@ describe('status command behavior', () => {
     getNativeGraphWriterStatus: ReturnType<typeof vi.fn>;
   };
 
+  let fsMocks: {
+    readFile: ReturnType<typeof vi.fn>;
+  };
+
   let runtimeHealthMocks: {
     readRuntimeHealth: ReturnType<typeof vi.fn>;
   };
@@ -236,6 +240,10 @@ describe('status command behavior', () => {
       getNativeGraphWriterStatus: vi.fn().mockReturnValue(nativeGraphWriterStatus),
     };
 
+    fsMocks = {
+      readFile: vi.fn(),
+    };
+
     runtimeHealthMocks = {
       readRuntimeHealth: vi.fn().mockResolvedValue({
         version: 1,
@@ -265,6 +273,7 @@ describe('status command behavior', () => {
     vi.doMock('../../src/storage/repo-manager.js', () => repoManagerMocks);
     vi.doMock('../../src/storage/git.js', () => gitMocks);
     vi.doMock('../../src/native/graph-writer.js', () => nativeMocks);
+    vi.doMock('node:fs/promises', () => fsMocks);
     vi.doMock('../../src/core/runtime/runtime-health.js', async () => {
       const actual = await vi.importActual<
         typeof import('../../src/core/runtime/runtime-health.js')
@@ -321,6 +330,7 @@ describe('status command behavior', () => {
         stats: { embeddings: 12 },
       }),
     );
+    fsMocks.readFile.mockRejectedValue(new Error('ENOENT'));
     gitMocks.isGitRepo.mockReturnValue(true);
 
     await statusCommand({ repo: 'mini-repo' });
@@ -333,6 +343,56 @@ describe('status command behavior', () => {
         'Runtime health: clean',
         'Semantic search: available (12 embeddings recorded)',
       ]),
+    );
+    expect(logSpy.mock.calls.map(([line]) => line)).not.toContain('Needs update: marker present');
+  });
+
+  it('reports a passive needs-update marker as present when the file is plain text', async () => {
+    const { statusCommand } = await importStatus();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const repoPath = '/tmp/indexed-repo';
+    repoManagerMocks.findRepo.mockResolvedValue(
+      makeRepo(repoPath, {
+        indexedAt: '2026-05-27T00:00:00.000Z',
+        lastCommit: 'abc123def456',
+        stats: { embeddings: 12 },
+      }),
+    );
+    fsMocks.readFile.mockResolvedValue('1\n');
+    gitMocks.isGitRepo.mockReturnValue(true);
+
+    await statusCommand({ repo: repoPath });
+
+    expect(logSpy.mock.calls.map(([line]) => line)).toEqual(
+      expect.arrayContaining(['Needs update: marker present', 'Repair: ontoindex analyze']),
+    );
+  });
+
+  it('reports a passive needs-update marker reason from JSON content', async () => {
+    const { statusCommand } = await importStatus();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const repoPath = '/tmp/indexed-repo';
+    repoManagerMocks.findRepo.mockResolvedValue(
+      makeRepo(repoPath, {
+        indexedAt: '2026-05-27T00:00:00.000Z',
+        lastCommit: 'abc123def456',
+        stats: { embeddings: 12 },
+      }),
+    );
+    fsMocks.readFile.mockResolvedValue(
+      JSON.stringify({
+        reason: 'docs changed',
+        createdAt: '2026-06-17T00:00:00.000Z',
+      }),
+    );
+    gitMocks.isGitRepo.mockReturnValue(true);
+
+    await statusCommand({ repo: repoPath });
+
+    expect(logSpy.mock.calls.map(([line]) => line)).toEqual(
+      expect.arrayContaining(['Needs update: docs changed', 'Repair: ontoindex analyze']),
     );
   });
 

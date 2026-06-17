@@ -4,6 +4,18 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.15] - 2026-06-17
+
+### Added
+
+- Added display-only graph-fact provenance classification and surfaced optional provenance on impact kernel nodes.
+- Added deterministic wiki navigation markdown helpers for community overview pages.
+
+### Changed
+
+- Graph HTML export payloads now preserve allowlisted metadata fields for provenance, truncation, omitted counts, and community labels.
+- `ontoindex status` now reports an existing passive `.ontoindex/needs_update` marker with repair guidance.
+
 ## [1.9.11] - 2026-06-16
 
 ### Added

@@ -20,6 +20,10 @@ export interface GraphHtmlPayloadNode {
   label: string;
   name: string;
   filePath?: string;
+  provenance?: unknown;
+  truncated?: boolean;
+  omittedCount?: number;
+  community?: unknown;
   areaIds: string[];
   processIds: string[];
   communityIds: string[];
@@ -30,6 +34,10 @@ export interface GraphHtmlPayloadRelationship {
   sourceId: string;
   targetId: string;
   type: string;
+  provenance?: unknown;
+  truncated?: boolean;
+  omittedCount?: number;
+  community?: unknown;
 }
 
 export interface GraphHtmlPayload {
@@ -85,6 +93,39 @@ function sortSliceOptions(options: Iterable<GraphHtmlSliceOption>): GraphHtmlSli
     if (byLabel !== 0) return byLabel;
     return a.id.localeCompare(b.id);
   });
+}
+
+function readOptionalGraphMetadata(
+  source: Record<string, unknown>,
+  nested?: Record<string, unknown>,
+): Pick<
+  GraphHtmlPayloadNode,
+  'provenance' | 'truncated' | 'omittedCount' | 'community'
+> {
+  const read = (key: string): unknown => {
+    if (Object.prototype.hasOwnProperty.call(source, key)) return source[key];
+    if (nested && Object.prototype.hasOwnProperty.call(nested, key)) return nested[key];
+    return undefined;
+  };
+
+  const metadata: Pick<
+    GraphHtmlPayloadNode,
+    'provenance' | 'truncated' | 'omittedCount' | 'community'
+  > = {};
+
+  const provenance = read('provenance');
+  if (provenance !== undefined) metadata.provenance = provenance;
+
+  const truncated = read('truncated');
+  if (typeof truncated === 'boolean') metadata.truncated = truncated;
+
+  const omittedCount = read('omittedCount');
+  if (typeof omittedCount === 'number') metadata.omittedCount = omittedCount;
+
+  const community = read('community');
+  if (community !== undefined) metadata.community = community;
+
+  return metadata;
 }
 
 function escapeScript(text: string): string {
@@ -178,6 +219,10 @@ export function buildGraphHtmlPayload(
 
   const payloadNodes = graph.nodes
     .map((node): GraphHtmlPayloadNode => {
+      const metadata = readOptionalGraphMetadata(
+        node as unknown as Record<string, unknown>,
+        node.properties as Record<string, unknown>,
+      );
       const areaIds = Array.from(areaIdsByNode.get(node.id) ?? []).sort();
       for (const areaId of areaIds) areaCounts.set(areaId, (areaCounts.get(areaId) ?? 0) + 1);
       return {
@@ -185,6 +230,7 @@ export function buildGraphHtmlPayload(
         label: node.label,
         name: normalizeName(node),
         filePath: normalizeFilePath(node),
+        ...metadata,
         areaIds,
         processIds: Array.from(processIdsByNode.get(node.id) ?? []).sort(),
         communityIds: Array.from(communityIdsByNode.get(node.id) ?? []).sort(),
@@ -205,6 +251,7 @@ export function buildGraphHtmlPayload(
         sourceId: relationship.sourceId,
         targetId: relationship.targetId,
         type: relationship.type,
+        ...readOptionalGraphMetadata(relationship as unknown as Record<string, unknown>),
       }),
     )
     .sort((a, b) => {

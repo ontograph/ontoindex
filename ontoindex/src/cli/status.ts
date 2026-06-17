@@ -4,6 +4,7 @@
  * Shows the indexing status of the current repository.
  */
 
+import { readFile } from 'node:fs/promises';
 import path from 'path';
 import type { RepoMeta } from '../storage/repo-manager.js';
 import {
@@ -92,14 +93,17 @@ export const statusCommand = async (options?: { repo?: string }) => {
   const nativeGraphWriterStatus = formatNativeGraphWriterStatus();
 
   if (!isGitRepo(cwd)) {
+    const needsUpdateReason = await readNeedsUpdateReason(cwd);
     console.log('Not a git repository.');
     console.log(formatSemanticSearchStatus());
+    printNeedsUpdateStatus(needsUpdateReason);
     console.log(nativeGraphWriterStatus);
     return;
   }
 
   const repo = await findRepo(cwd);
   const repoRoot = getGitRoot(cwd) ?? cwd;
+  const needsUpdateReason = await readNeedsUpdateReason(repoRoot);
   const { storagePath } = getStoragePaths(repoRoot);
   if (!repo) {
     // Check if there's a stale KuzuDB index that needs migration
@@ -126,6 +130,7 @@ export const statusCommand = async (options?: { repo?: string }) => {
       );
       console.log('Run: ontoindex analyze');
     }
+    printNeedsUpdateStatus(needsUpdateReason);
     console.log(nativeGraphWriterStatus);
     return;
   }
@@ -149,8 +154,41 @@ export const statusCommand = async (options?: { repo?: string }) => {
   for (const line of formatIndexCapabilityWarnings(repo.meta)) {
     console.log(line);
   }
+  printNeedsUpdateStatus(needsUpdateReason);
   console.log(nativeGraphWriterStatus);
 };
+
+async function readNeedsUpdateReason(repoRoot: string): Promise<string | null> {
+  try {
+    const marker = await readFile(path.join(repoRoot, '.ontoindex', 'needs_update'), 'utf8');
+    return parseNeedsUpdateReason(marker);
+  } catch {
+    return null;
+  }
+}
+
+function parseNeedsUpdateReason(marker: string): string {
+  const trimmed = marker.trim();
+  if (!trimmed) return 'marker present';
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed) as { reason?: unknown };
+      if (typeof parsed.reason === 'string') {
+        const reason = parsed.reason.trim();
+        if (reason) return reason;
+      }
+    } catch {
+      // Fall through to the default passive marker message.
+    }
+  }
+  return 'marker present';
+}
+
+function printNeedsUpdateStatus(reason: string | null): void {
+  if (!reason) return;
+  console.log(`Needs update: ${reason}`);
+  console.log('Repair: ontoindex analyze');
+}
 
 function describeRuntimeStatus(health: Awaited<ReturnType<typeof readRuntimeHealth>>): string {
   switch (health.freshnessState) {

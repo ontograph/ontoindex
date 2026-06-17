@@ -1,4 +1,8 @@
 import { executeParameterized, executeQuery } from '../lbug/pool-adapter.js';
+import {
+  classifyGraphFactProvenance,
+  type GraphFactProvenance,
+} from '../graph/fact-provenance.js';
 
 export type ImpactKernelDirection = 'upstream' | 'downstream';
 export type ImpactKernelCountScope = 'unique-direct-nodes' | 'unique-transitive-nodes';
@@ -27,6 +31,7 @@ export interface ImpactKernelNode {
   filePath: string;
   relationType: string | undefined;
   confidence: number;
+  provenance?: GraphFactProvenance;
 }
 
 export interface ImpactKernelGraphSnapshot {
@@ -372,6 +377,10 @@ export async function runImpactKernel(
             filePath,
             relationType,
             confidence: effectiveConfidence,
+            provenance: classifyGraphFactProvenance({
+              relationType,
+              confidence: effectiveConfidence,
+            }),
           });
         }
       }

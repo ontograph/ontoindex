@@ -10,6 +10,7 @@
  *   4. Confidence values are in the valid 0–1 range.
  */
 import { describe, it, expect } from 'vitest';
+import { classifyGraphFactProvenance } from '../../src/core/graph/fact-provenance.js';
 import {
   IMPACT_RELATION_CONFIDENCE,
   VALID_RELATION_TYPES,
@@ -96,6 +97,26 @@ describe('confidenceForRelType', () => {
 
   it('returns 0.5 for undefined relation type', () => {
     expect(confidenceForRelType(undefined)).toBe(0.5);
+  });
+});
+
+describe('graph fact provenance classification', () => {
+  it('classifies structural high-confidence impact nodes as extracted', () => {
+    expect(
+      classifyGraphFactProvenance({
+        relationType: 'HAS_METHOD',
+        confidence: 0.95,
+      }),
+    ).toBe('extracted');
+  });
+
+  it('classifies unknown fallback-confidence impact nodes as inferred', () => {
+    expect(
+      classifyGraphFactProvenance({
+        relationType: 'RELATES_TO',
+        confidence: 0.5,
+      }),
+    ).toBe('inferred');
   });
 });
 
