@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { generateSkillFiles } from '../../src/cli/skill-gen.js';
+import { generateSkillFiles, parseSkillTargets } from '../../src/cli/skill-gen.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { GraphNode, GraphRelationship, KnowledgeGraph } from '../../src/core/graph/types.js';
 import type {
@@ -595,6 +595,33 @@ describe('generateSkillFiles — file output', () => {
     const betaSkill = await fs.readFile(path.join(outputDir, 'beta', 'SKILL.md'), 'utf-8');
     expect(alphaSkill.length).toBeGreaterThan(0);
     expect(betaSkill.length).toBeGreaterThan(0);
+  });
+
+  it('can write generated skills for Codex project-local targets', async () => {
+    const { graph, communities, memberships } = twoCommSetup();
+
+    const result = await generateSkillFiles(
+      tmpDir,
+      'TestProject',
+      buildPipelineResult({
+        graph,
+        repoPath: tmpDir,
+        communities,
+        memberships,
+      }),
+      { targets: parseSkillTargets('claude,codex') },
+    );
+
+    expect(result.outputPaths).toEqual([
+      path.join(tmpDir, '.claude', 'skills', 'generated'),
+      path.join(tmpDir, '.agents', 'skills', 'generated'),
+    ]);
+    await expect(
+      fs.readFile(
+        path.join(tmpDir, '.agents', 'skills', 'generated', 'alpha', 'SKILL.md'),
+        'utf-8',
+      ),
+    ).resolves.toContain('Alpha');
   });
 
   /**

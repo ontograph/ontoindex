@@ -25,6 +25,12 @@ export interface GeneratedSkillInfo {
   fileCount: number;
 }
 
+export type SkillTarget = 'claude' | 'codex' | 'cursor' | 'opencode';
+
+export interface GenerateSkillFilesOptions {
+  targets?: SkillTarget[];
+}
+
 interface AggregatedCommunity {
   label: string;
   rawIds: string[];
@@ -66,13 +72,16 @@ export const generateSkillFiles = async (
   repoPath: string,
   projectName: string,
   pipelineResult: PipelineResult,
-): Promise<{ skills: GeneratedSkillInfo[]; outputPath: string }> => {
+  options: GenerateSkillFilesOptions = {},
+): Promise<{ skills: GeneratedSkillInfo[]; outputPath: string; outputPaths: string[] }> => {
   const { communityResult, processResult, graph } = pipelineResult;
-  const outputDir = path.join(repoPath, '.claude', 'skills', 'generated');
+  const targets = normalizeSkillTargets(options.targets);
+  const outputDirs = targets.map((target) => skillTargetOutputDir(repoPath, target));
+  const [outputDir] = outputDirs;
 
   if (!communityResult || !communityResult.memberships.length) {
     console.log('\n  Skills: no communities detected, skipping skill generation');
-    return { skills: [], outputPath: outputDir };
+    return { skills: [], outputPath: outputDir, outputPaths: outputDirs };
   }
 
   console.log('\n  Generating repo-specific skills...');
@@ -97,7 +106,7 @@ export const generateSkillFiles = async (
 
   if (significant.length === 0) {
     console.log('\n  Skills: no significant communities found (all below 3-symbol threshold)');
-    return { skills: [], outputPath: outputDir };
+    return { skills: [], outputPath: outputDir, outputPaths: outputDirs };
   }
 
   // Step 3: Build lookup maps
@@ -107,13 +116,15 @@ export const generateSkillFiles = async (
     communities,
   );
 
-  // Step 4: Clear and recreate output directory
-  try {
-    await fs.rm(outputDir, { recursive: true, force: true });
-  } catch {
-    /* may not exist */
+  // Step 4: Clear and recreate output directories
+  for (const dir of outputDirs) {
+    try {
+      await fs.rm(dir, { recursive: true, force: true });
+    } catch {
+      /* may not exist */
+    }
+    await fs.mkdir(dir, { recursive: true });
   }
-  await fs.mkdir(outputDir, { recursive: true });
 
   // Step 5: Generate skill files
   const skills: GeneratedSkillInfo[] = [];
@@ -158,10 +169,12 @@ export const generateSkillFiles = async (
       kebabName,
     );
 
-    // Write file
-    const skillDir = path.join(outputDir, kebabName);
-    await fs.mkdir(skillDir, { recursive: true });
-    await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf-8');
+    // Write file to each requested agent target.
+    for (const dir of outputDirs) {
+      const skillDir = path.join(dir, kebabName);
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf-8');
+    }
 
     const info: GeneratedSkillInfo = {
       name: kebabName,
@@ -176,10 +189,48 @@ export const generateSkillFiles = async (
     );
   }
 
-  console.log(`\n  ${skills.length} skills generated \u2192 .claude/skills/generated/`);
+  console.log(
+    `\n  ${skills.length} skills generated \u2192 ${outputDirs.map((dir) => path.relative(repoPath, dir)).join(', ')}`,
+  );
 
-  return { skills, outputPath: outputDir };
+  return { skills, outputPath: outputDir, outputPaths: outputDirs };
 };
+
+const ALL_SKILL_TARGETS: SkillTarget[] = ['claude', 'codex', 'cursor', 'opencode'];
+
+export function parseSkillTargets(value: string | undefined): SkillTarget[] {
+  if (!value || value.trim() === '') return ['claude'];
+  const raw = value
+    .split(',')
+    .map((target) => target.trim().toLowerCase())
+    .filter(Boolean);
+  const expanded: string[] = raw.includes('all') ? [...ALL_SKILL_TARGETS] : raw;
+  const invalid = expanded.filter((target) => !ALL_SKILL_TARGETS.includes(target as SkillTarget));
+  if (invalid.length > 0) {
+    throw new Error(
+      `Unknown skill target "${invalid[0]}". Use one of: claude, codex, cursor, opencode, all`,
+    );
+  }
+  return normalizeSkillTargets(expanded.map((target) => target as SkillTarget));
+}
+
+function normalizeSkillTargets(targets: SkillTarget[] | undefined): SkillTarget[] {
+  const normalized: SkillTarget[] = targets && targets.length > 0 ? targets : ['claude'];
+  return Array.from(new Set(normalized));
+}
+
+function skillTargetOutputDir(repoPath: string, target: SkillTarget): string {
+  switch (target) {
+    case 'claude':
+      return path.join(repoPath, '.claude', 'skills', 'generated');
+    case 'codex':
+      return path.join(repoPath, '.agents', 'skills', 'generated');
+    case 'cursor':
+      return path.join(repoPath, '.cursor', 'skills', 'generated');
+    case 'opencode':
+      return path.join(repoPath, '.config', 'opencode', 'skill', 'generated');
+  }
+}
 
 // ============================================================================
 // FALLBACK COMMUNITY BUILDER

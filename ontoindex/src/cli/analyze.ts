@@ -237,6 +237,7 @@ interface AnalyzeOptions {
   /** Build ANN_NEIGHBOR edges for symbol-neighborhood retrieval (implies embeddings). */
   annNeighbors?: boolean;
   skills?: boolean;
+  skillsTarget?: string;
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md ontoindex block updates. */
   skipAgentsMd?: boolean;
@@ -553,12 +554,13 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     if (options?.skills && result.pipelineResult) {
       updateBar(99, 'Generating skill files...');
       try {
-        const { generateSkillFiles } = await import('./skill-gen.js');
+        const { generateSkillFiles, parseSkillTargets } = await import('./skill-gen.js');
         const { generateAIContextFiles } = await import('./ai-context.js');
         const skillResult = await generateSkillFiles(
           repoPath,
           result.repoName,
           result.pipelineResult,
+          { targets: parseSkillTargets(options?.skillsTarget) },
         );
         if (skillResult.skills.length > 0) {
           barLog(`  Generated ${skillResult.skills.length} skill files`);

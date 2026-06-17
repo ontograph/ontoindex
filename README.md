@@ -9,7 +9,7 @@ The default path is local: install, analyze, setup, connect MCP, serve, and gene
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- Current release: `1.9.13`
+- Current release: `1.9.14`
 - Source repository: [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - Security policy: [SECURITY.md](SECURITY.md)
 - Enterprise contact: [erasyuk@gmail.com](mailto:erasyuk@gmail.com)
@@ -125,8 +125,8 @@ Use this path when npm publication is available in your environment.
 
 | Platform | Command |
 | --- | --- |
-| Linux/macOS | `npm install -g ontoindex@1.9.13 && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.13; ontoindex --version` |
+| Linux/macOS | `npm install -g ontoindex@1.9.14 && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.14; ontoindex --version` |
 
 ### Install from a Release Tarball URL
 
@@ -134,8 +134,8 @@ Use this when you want an immutable GitHub release asset.
 
 | Platform | Command |
 | --- | --- |
-| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.13/ontoindex-1.9.13.tgz && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.13/ontoindex-1.9.13.tgz; ontoindex --version` |
+| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.14/ontoindex-1.9.14.tgz && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.14/ontoindex-1.9.14.tgz; ontoindex --version` |
 
 ## First Run
 
@@ -146,12 +146,15 @@ If embeddings already exist, `ontoindex analyze` preserves them; use `ontoindex 
 | Task | Linux/macOS | Windows PowerShell |
 | --- | --- | --- |
 | Index current repository | `ontoindex analyze` | `ontoindex analyze` |
+| Generate repo skills for Claude and Codex | `ontoindex analyze --skills --skills-target claude,codex` | `ontoindex analyze --skills --skills-target claude,codex` |
 | Configure supported MCP clients | `ontoindex setup` | `ontoindex setup` |
 | Start MCP server manually | `ontoindex mcp` | `ontoindex mcp` |
 | Diagnose MCP configuration | `ontoindex mcp-doctor --repo <label-or-path> --project-cwd "$PWD" --json` | `ontoindex mcp-doctor --repo <label-or-path> --project-cwd "$PWD" --json` |
 | Start local HTTP backend | `ontoindex serve` | `ontoindex serve` |
 | Generate a wiki | `ontoindex wiki . --out docs/wiki` | `ontoindex wiki . --out docs/wiki` |
 | Check index status | `ontoindex status` | `ontoindex status` |
+
+`--skills-target` accepts `claude`, `codex`, `cursor`, `opencode`, or `all`. The default is `claude`, which writes generated project skills under `.claude/skills/generated/`; `codex` writes them under `.agents/skills/generated/`.
 
 When the OntoIndex executable is launched from a helper checkout or global tool path, set the target repository explicitly so the MCP server cannot silently serve the wrong repository.
 
@@ -318,8 +321,8 @@ Images:
 
 | Image | Purpose |
 | --- | --- |
-| `ghcr.io/ontograph/ontoindex:1.9.13` | CLI, MCP server, and `ontoindex serve` backend |
-| `ghcr.io/ontograph/ontoindex-web:1.9.13` | Web UI |
+| `ghcr.io/ontograph/ontoindex:1.9.14` | CLI, MCP server, and `ontoindex serve` backend |
+| `ghcr.io/ontograph/ontoindex-web:1.9.14` | Web UI |
 
 ## Comparison With Related Tools
 
