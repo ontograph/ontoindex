@@ -145,11 +145,11 @@ export const statusCommand = async (options?: { repo?: string }) => {
   console.log(`Indexed: ${new Date(repo.meta.indexedAt).toLocaleString()}`);
   console.log(`Indexed commit: ${runtimeHealth.indexedCommit?.slice(0, 7) ?? 'unavailable'}`);
   console.log(`Current commit: ${runtimeHealth.currentCommit?.slice(0, 7) ?? 'unavailable'}`);
-  console.log(`Status: ${describeRuntimeStatus(runtimeHealth)}`);
   console.log(formatRuntimeHealthStatusLine(runtimeHealth));
   for (const line of formatRuntimeHealthDetailLines(runtimeHealth)) {
     console.log(line);
   }
+  console.log(`Status: ${describeRuntimeStatus(runtimeHealth)}`);
   console.log(formatSemanticSearchStatus(repo.meta));
   for (const line of formatIndexCapabilityWarnings(repo.meta)) {
     console.log(line);

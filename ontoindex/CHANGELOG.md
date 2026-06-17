@@ -4,6 +4,23 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.16] - 2026-06-17
+
+### Added
+
+- `gn_diff_impact({ profile: "pr-pack" })` now returns a compact PR readiness summary with a
+  `READY` / `REVIEW` / `BLOCKED` verdict, stop conditions, sensitive-path hints, test-gap counts,
+  related-doc counts, and next validation commands.
+- `gn_review_diff` now includes response-local evidence trajectory metadata so agents can see
+  candidate, curated, pruned, verification, and pruning-reason facts without another graph query.
+- `gn_review_diff` now includes `contextCost` telemetry with emitted JSON size and known
+  candidate/emitted/pruned item counts.
+
+### Fixed
+
+- Added a package-local Prettier config for `ontoindex/` so CLI/core TypeScript formatting does not
+  inherit the root web Tailwind Prettier plugin.
+
 ## [1.9.11] - 2026-06-16
 
 ### Added

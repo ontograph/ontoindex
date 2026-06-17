@@ -67,6 +67,8 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('--allow-huge-root');
     expect(result.stdout).toContain('--include-path <path>');
     expect(result.stdout).toContain('--experimental-file-delta');
+    expect(result.stdout).toContain('--dry-run');
+    expect(result.stdout).toContain('--explain-file <path>');
   });
 
   it('maps the symbols-only analyze option to the symbols pipeline profile', () => {
@@ -97,6 +99,61 @@ describe('CLI help surface', () => {
         '--huge-repo requires at least one --include-path',
       );
     } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prints analyze dry-run preview without running analysis or writing an index', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-analyze-dry-run-'));
+    initTempGitRepo(tmpDir);
+    fs.mkdirSync(path.join(tmpDir, 'src'));
+    fs.writeFileSync(path.join(tmpDir, 'src/sample.ts'), 'export const sample = 1;\n');
+    const originalNodeOptions = process.env.NODE_OPTIONS;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    process.env.NODE_OPTIONS = `${originalNodeOptions || ''} --max-old-space-size=8192`.trim();
+    try {
+      await analyzeCommand(tmpDir, { dryRun: true });
+
+      expect(runFullAnalysis).not.toHaveBeenCalled();
+      expect(logSpy.mock.calls.flat().join('\n')).toContain('File scope preview');
+      expect(fs.existsSync(path.join(tmpDir, '.ontoindex'))).toBe(false);
+    } finally {
+      if (originalNodeOptions === undefined) {
+        delete process.env.NODE_OPTIONS;
+      } else {
+        process.env.NODE_OPTIONS = originalNodeOptions;
+      }
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('prints analyze explain-file output without running analysis or writing an index', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-analyze-explain-'));
+    initTempGitRepo(tmpDir);
+    fs.mkdirSync(path.join(tmpDir, 'src'));
+    fs.writeFileSync(path.join(tmpDir, 'src/sample.ts'), 'export const sample = 1;\n');
+    const originalNodeOptions = process.env.NODE_OPTIONS;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    process.env.NODE_OPTIONS = `${originalNodeOptions || ''} --max-old-space-size=8192`.trim();
+    try {
+      await analyzeCommand(tmpDir, { explainFile: 'src/sample.ts' });
+
+      expect(runFullAnalysis).not.toHaveBeenCalled();
+      expect(logSpy.mock.calls.flat().join('\n')).toContain('File scope explanation');
+      expect(logSpy.mock.calls.flat().join('\n')).toContain('Reason: included-extension');
+      expect(fs.existsSync(path.join(tmpDir, '.ontoindex'))).toBe(false);
+    } finally {
+      if (originalNodeOptions === undefined) {
+        delete process.env.NODE_OPTIONS;
+      } else {
+        process.env.NODE_OPTIONS = originalNodeOptions;
+      }
+      logSpy.mockRestore();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });

@@ -58,6 +58,7 @@ export interface CypherParams extends z.input<typeof CypherSchema> {}
 export const ContextSchema = BaseRepoSchema.extend({
   name: z.string().optional(),
   uid: z.string().optional(),
+  nodeId: z.string().optional(),
   file_path: z.string().optional(),
   kind: z.string().optional(),
   include_content: z.boolean().default(false),
@@ -162,6 +163,7 @@ export interface RenameByUidParams extends z.input<typeof RenameByUidSchema> {}
 export const ImpactSchema = BaseRepoSchema.extend({
   target: z.string(),
   target_uid: z.string().optional(),
+  nodeId: z.string().optional(),
   direction: z.enum(['upstream', 'downstream']),
   file_path: z.string().optional(),
   kind: z.string().optional(),

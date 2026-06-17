@@ -18,6 +18,15 @@ import {
 import { shellQuote } from '../shared/repo-resolution-errors.js';
 import { resolveTargetContext, type TargetContext } from '../shared/target-context.js';
 import { execFileText } from '../../core/process/exec-file.js';
+import {
+  collectFileScopePreview,
+  explainPathScope,
+  type FileScopeExplanation,
+  type FileScopePreview,
+} from '../../core/indexing/file-scope-preview.js';
+import type { RuntimeHealthSnapshot } from '../../core/runtime/runtime-health.js';
+import { readRecentOversizedToolCalls } from '../local/tool-telemetry.js';
+import { RESPONSE_GUARD_MAX_BYTES } from '../local/response-guard.js';
 import { getResourceContractSummaries } from '../resources.js';
 import {
   createEmptyEvidenceReadClassCounts,
@@ -40,6 +49,9 @@ export interface DiagnoseParams {
   checkEmbeddings?: boolean; // default: true
   checkIndexFreshness?: boolean; // default: true
   checkToolContract?: boolean; // default: true
+  includeFileScopePreview?: boolean;
+  explainFile?: string;
+  fileScopeLimit?: number;
   legacyResponse?: boolean;
 }
 
@@ -80,6 +92,11 @@ export interface DiagnoseReport {
     httpMcpSessionCap: number;
     truncationPolicy: string;
   };
+  responseBudgetHealth: {
+    guardLimitBytes: number;
+    recentOversizedTools: string[];
+    guardedPreviewAvailable: true;
+  };
   degradedContext: {
     status: 'ok' | 'degraded';
     reasons: string[];
@@ -99,6 +116,9 @@ export interface DiagnoseReport {
     recommendedCommand?: string;
   };
   targetContext?: TargetContext;
+  runtimeHealth?: RuntimeHealthSnapshot;
+  fileScopePreview?: FileScopePreview;
+  fileScopeExplanation?: FileScopeExplanation;
   toolContract?: Pick<
     ToolContractReport,
     'status' | 'runtime' | 'advertised' | 'callable' | 'missing' | 'extras'
@@ -334,6 +354,8 @@ export async function gnDiagnose(
   let indexFreshness: DiagnoseReport['indexFreshness'];
   let embeddingsCount = 0;
   let hasFreshReport = false;
+  let runtimeHealth: RuntimeHealthSnapshot | undefined;
+  let freshRepoPath: string | undefined;
 
   if (checkIndexFreshness || checkEmbeddings) {
     let freshReport;
@@ -345,6 +367,8 @@ export async function gnDiagnose(
 
     if (freshReport) {
       hasFreshReport = true;
+      runtimeHealth = freshReport.runtimeHealth;
+      freshRepoPath = freshReport.repoPath;
       // Propagate any warnings from gnEnsureFresh
       for (const w of freshReport.warnings) {
         warnings.push(w);
@@ -431,6 +455,11 @@ export async function gnDiagnose(
   const classification = buildClassificationSummary();
   const setup = buildSetupSummary(envVars);
   const responseLimits = buildResponseLimits(envVars);
+  const responseBudgetHealth: DiagnoseReport['responseBudgetHealth'] = {
+    guardLimitBytes: RESPONSE_GUARD_MAX_BYTES,
+    recentOversizedTools: await readRecentOversizedToolCalls({ limit: 5 }),
+    guardedPreviewAvailable: true,
+  };
 
   if (setup.mcp.autoAnalyze === 'enabled') {
     recommendations.push({
@@ -502,7 +531,33 @@ export async function gnDiagnose(
     });
   }
 
-  // ---- 8. Degraded context synthesis ----------------------------------------
+  // ---- 8. Optional file-scope diagnostics -----------------------------------
+  let fileScopePreview: DiagnoseReport['fileScopePreview'];
+  let fileScopeExplanation: DiagnoseReport['fileScopeExplanation'];
+  const fileScopeRepoPath =
+    targetContext?.status === 'ok' ? targetContext.repoPath : freshRepoPath ?? runtimeHealth?.repoPath;
+  const fileScopeLimit = Math.max(1, Math.min(params.fileScopeLimit ?? 10, 100));
+
+  if ((params.includeFileScopePreview || params.explainFile) && !fileScopeRepoPath) {
+    warnings.push('file-scope diagnostics requested but repo path could not be resolved');
+  } else if (fileScopeRepoPath) {
+    try {
+      if (params.includeFileScopePreview) {
+        fileScopePreview = await collectFileScopePreview(fileScopeRepoPath, {
+          limit: fileScopeLimit,
+        });
+      }
+      if (params.explainFile) {
+        fileScopeExplanation = await explainPathScope(fileScopeRepoPath, params.explainFile);
+      }
+    } catch (err) {
+      warnings.push(
+        'file-scope diagnostics failed: ' + (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
+
+  // ---- 9. Degraded context synthesis ----------------------------------------
   const misconfiguration = buildMisconfigurationReport(repoId, envVars, targetContext);
   if (misconfiguration.status === 'fail') {
     recommendations.unshift({
@@ -567,17 +622,21 @@ export async function gnDiagnose(
     confidence: degradedReasons.length > 0 ? 'reduced' : 'full',
   };
 
-  // ---- 8. Assemble report ---------------------------------------------------
+  // ---- 10. Assemble report --------------------------------------------------
   const report: DiagnoseReport = {
     version: 1,
     ...(indexFreshness !== undefined ? { indexFreshness } : {}),
     ...(embeddings !== undefined ? { embeddings } : {}),
     ...(lspAvailable !== undefined ? { lspAvailable } : {}),
     ...(targetContext !== undefined ? { targetContext } : {}),
+    ...(runtimeHealth !== undefined ? { runtimeHealth } : {}),
+    ...(fileScopePreview !== undefined ? { fileScopePreview } : {}),
+    ...(fileScopeExplanation !== undefined ? { fileScopeExplanation } : {}),
     ...(toolContract !== undefined ? { toolContract } : {}),
     classification,
     setup,
     responseLimits,
+    responseBudgetHealth,
     degradedContext,
     misconfiguration,
     envVars,

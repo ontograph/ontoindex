@@ -6,6 +6,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Mocks — declared before the module under test is imported.
@@ -24,6 +27,10 @@ vi.mock('../../../src/mcp/shared/target-context.js', () => ({
   resolveTargetContext: vi.fn(),
 }));
 
+vi.mock('../../../src/mcp/local/tool-telemetry.js', () => ({
+  readRecentOversizedToolCalls: vi.fn().mockResolvedValue([]),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks).
 // ---------------------------------------------------------------------------
@@ -33,10 +40,12 @@ import { gnEnsureFresh } from '../../../src/mcp/super/ensure-fresh.js';
 import { resolveTargetContext } from '../../../src/mcp/shared/target-context.js';
 import { gnDiagnose } from '../../../src/mcp/super/diagnose.js';
 import { ONTOINDEX_SUPER_TOOLS } from '../../../src/mcp/super/tool-definitions.js';
+import { readRecentOversizedToolCalls } from '../../../src/mcp/local/tool-telemetry.js';
 
 const mockExecFile = vi.mocked(execFile);
 const mockGnEnsureFresh = vi.mocked(gnEnsureFresh);
 const mockResolveTargetContext = vi.mocked(resolveTargetContext);
+const mockReadRecentOversizedToolCalls = vi.mocked(readRecentOversizedToolCalls);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -76,6 +85,30 @@ function makeFreshReport(options: { isStale?: boolean; embeddingsCount?: number 
     version: 1 as const,
     preCheck: { indexedCommit, currentCommit: CURRENT_COMMIT, isStale },
     embeddingsStatus: { count: embeddingsCount, required: false },
+    repoPath: TARGET_CONTEXT.repoPath,
+    runtimeHealth: {
+      version: 1 as const,
+      repoLabel: REPO_ID,
+      repoPath: TARGET_CONTEXT.repoPath,
+      indexedCommit,
+      currentCommit: CURRENT_COMMIT,
+      dirtyWorktree: false,
+      freshnessState: 'clean' as const,
+      degradedReason: null,
+      repairCommand: 'ontoindex status',
+      hasRuntimeArtifacts: false,
+      analyzeLock: {
+        path: `${TARGET_CONTEXT.repoPath}/.ontoindex/analyze.lock`,
+        present: false,
+        state: 'absent' as const,
+      },
+      analysisCheckpoint: {
+        path: `${TARGET_CONTEXT.repoPath}/.ontoindex/analysis-checkpoint.json`,
+        present: false,
+        state: 'absent' as const,
+      },
+      warnings: [],
+    },
     actionsTaken: [],
     warnings: [],
     recommendations: [],
@@ -120,6 +153,7 @@ beforeEach(() => {
   // Default: fresh index
   mockGnEnsureFresh.mockResolvedValue(makeFreshReport());
   mockResolveTargetContext.mockResolvedValue(TARGET_CONTEXT);
+  mockReadRecentOversizedToolCalls.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -149,10 +183,28 @@ describe('gnDiagnose', () => {
     });
 
     expect(report.version).toBe(1);
+    expect(report.responseBudgetHealth).toMatchObject({
+      guardLimitBytes: 512 * 1024,
+      guardedPreviewAvailable: true,
+      recentOversizedTools: [],
+    });
     expect(report.indexFreshness).toBeDefined();
     expect(report.indexFreshness!.isStale).toBe(false);
     expect(report.recommendations.some((r) => r.severity === 'WARN')).toBe(false);
     expect(report.warnings).toHaveLength(0);
+  });
+
+  it('includes recent oversized tools in response-budget health', async () => {
+    mockReadRecentOversizedToolCalls.mockResolvedValue(['impact', 'audit']);
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: false,
+      checkIndexFreshness: false,
+      checkToolContract: false,
+    });
+
+    expect(report.responseBudgetHealth.recentOversizedTools).toEqual(['impact', 'audit']);
   });
 
   // ---- Test 2: Stale index → WARN recommendation generated ------------------
@@ -577,6 +629,63 @@ describe('gnDiagnose', () => {
     expect(report.misconfiguration).toEqual({ status: 'ok' });
     expect(report.degradedContext.reasons).toContain('embeddings-unavailable');
     expect(report.degradedContext.reasons).not.toContain('mcp-service-target-mismatch');
+  });
+
+  it('does not compute file-scope diagnostics by default', async () => {
+    mockGnEnsureFresh.mockResolvedValue(makeFreshReport());
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: false,
+      checkIndexFreshness: true,
+      checkToolContract: false,
+    });
+
+    expect(report.fileScopePreview).toBeUndefined();
+    expect(report.fileScopeExplanation).toBeUndefined();
+    expect(report.runtimeHealth).toBeDefined();
+  });
+
+  it('returns requested file-scope preview and explanation', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-diagnose-file-scope-'));
+    try {
+      await fs.mkdir(path.join(tmpDir, 'src'), { recursive: true });
+      await fs.writeFile(path.join(tmpDir, 'src/index.ts'), 'export const value = 1;\n');
+      mockResolveTargetContext.mockResolvedValue({
+        ...TARGET_CONTEXT,
+        repoPath: tmpDir,
+      });
+      mockGnEnsureFresh.mockResolvedValue({
+        ...makeFreshReport(),
+        repoPath: tmpDir,
+        runtimeHealth: {
+          ...makeFreshReport().runtimeHealth,
+          repoPath: tmpDir,
+        },
+      });
+
+      const report = await gnDiagnose(REPO_ID, {
+        checkLsp: false,
+        checkEmbeddings: false,
+        checkIndexFreshness: true,
+        checkToolContract: false,
+        includeFileScopePreview: true,
+        explainFile: 'src/index.ts',
+        fileScopeLimit: 1,
+      });
+
+      expect(report.fileScopePreview).toMatchObject({
+        repoPath: tmpDir,
+        includedCount: 1,
+      });
+      expect(report.fileScopeExplanation).toMatchObject({
+        filePath: 'src/index.ts',
+        included: true,
+        reason: 'included-extension',
+      });
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it('returns the capability-aware envelope when legacyResponse is false', async () => {

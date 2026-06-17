@@ -3,6 +3,25 @@ import fs from 'fs/promises';
 import nodePath from 'path';
 import type { Path } from 'path-scurry';
 
+export type FileScopeReason =
+  | 'included-extension'
+  | 'builtin-ignore'
+  | 'gitignore'
+  | 'ontoindexignore'
+  | 'unsupported-extension'
+  | 'generated'
+  | 'missing';
+
+export interface FileScopeExplanation {
+  repoPath: string;
+  filePath: string;
+  included: boolean;
+  reason: FileScopeReason;
+  matchedPattern?: string;
+  source?: '.gitignore' | '.ontoindexignore' | 'builtin' | 'extension';
+  suggestedFix?: string;
+}
+
 const DEFAULT_IGNORE_LIST = new Set([
   // Version Control
   '.git',
@@ -257,6 +276,46 @@ const IGNORED_EXTENSIONS = new Set([
   '.dmg',
 ]);
 
+const INDEXABLE_EXTENSIONS = new Set([
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+  '.py',
+  '.java',
+  '.cpp',
+  '.cc',
+  '.cxx',
+  '.c',
+  '.h',
+  '.hpp',
+  '.cs',
+  '.go',
+  '.rs',
+  '.php',
+  '.rb',
+  '.swift',
+  '.kt',
+  '.kts',
+  '.scala',
+  '.m',
+  '.mm',
+  '.dart',
+  '.sol',
+  '.vue',
+  '.svelte',
+  '.astro',
+  '.md',
+  '.markdown',
+  '.mdx',
+  '.ipynb',
+  '.proto',
+  '.graphql',
+  '.gql',
+]);
+
 const includeThirdPartyGeneratedCode = (): boolean =>
   process.env.ONTOINDEX_INCLUDE_THIRD_PARTY === '1';
 
@@ -324,37 +383,62 @@ const IGNORED_FILES = new Set([
 // Users who need to include such directories should remove them from the hardcoded list.
 export const shouldIgnorePath = (filePath: string): boolean => {
   const normalizedPath = filePath.replace(/\\/g, '/');
+  return explainBuiltinPathScope(normalizedPath).ignored;
+};
+
+const explainBuiltinPathScope = (
+  normalizedPath: string,
+): { ignored: boolean; reason?: FileScopeReason; matchedPattern?: string; source?: 'builtin' } => {
   const parts = normalizedPath.split('/');
-  const fileName = parts[parts.length - 1];
+  const fileName = parts[parts.length - 1] ?? '';
   const fileNameLower = fileName.toLowerCase();
 
   // Check if any path segment is in ignore list
   for (const part of parts) {
     if (shouldIgnoreDirectoryName(part)) {
-      return true;
+      return { ignored: true, reason: 'builtin-ignore', matchedPattern: part, source: 'builtin' };
     }
   }
 
   if (isThirdPartyGeneratedPath(normalizedPath)) {
-    return true;
+    return {
+      ignored: true,
+      reason: 'generated',
+      matchedPattern: 'third-party-generated-path',
+      source: 'builtin',
+    };
   }
 
   // Check exact filename matches
   if (IGNORED_FILES.has(fileName) || IGNORED_FILES.has(fileNameLower)) {
-    return true;
+    return {
+      ignored: true,
+      reason: 'builtin-ignore',
+      matchedPattern: fileName,
+      source: 'builtin',
+    };
   }
 
   // Check extension
   const lastDotIndex = fileNameLower.lastIndexOf('.');
   if (lastDotIndex !== -1) {
     const ext = fileNameLower.substring(lastDotIndex);
-    if (IGNORED_EXTENSIONS.has(ext)) return true;
+    if (IGNORED_EXTENSIONS.has(ext)) {
+      return { ignored: true, reason: 'builtin-ignore', matchedPattern: ext, source: 'builtin' };
+    }
 
     // Handle compound extensions like .min.js, .bundle.js
     const secondLastDot = fileNameLower.lastIndexOf('.', lastDotIndex - 1);
     if (secondLastDot !== -1) {
       const compoundExt = fileNameLower.substring(secondLastDot);
-      if (IGNORED_EXTENSIONS.has(compoundExt)) return true;
+      if (IGNORED_EXTENSIONS.has(compoundExt)) {
+        return {
+          ignored: true,
+          reason: 'builtin-ignore',
+          matchedPattern: compoundExt,
+          source: 'builtin',
+        };
+      }
     }
   }
 
@@ -375,10 +459,15 @@ export const shouldIgnorePath = (filePath: string): boolean => {
     fileNameLower.endsWith('.d.ts')
   ) {
     // TypeScript declaration files
-    return true;
+    return {
+      ignored: true,
+      reason: 'generated',
+      matchedPattern: fileName,
+      source: 'builtin',
+    };
   }
 
-  return false;
+  return { ignored: false };
 };
 
 /** Check if a directory name is in the hardcoded ignore list */
@@ -420,6 +509,112 @@ export const loadIgnoreRules = async (
   }
 
   return hasRules ? ig : null;
+};
+
+const loadNamedIgnoreRules = async (
+  repoPath: string,
+  options?: IgnoreOptions,
+): Promise<Array<{ source: '.gitignore' | '.ontoindexignore'; ignore: Ignore }>> => {
+  const skipGitignore = options?.noGitignore ?? !!process.env.ONTOINDEX_NO_GITIGNORE;
+  const filenames = skipGitignore ? ['.ontoindexignore'] : ['.gitignore', '.ontoindexignore'];
+  const rules: Array<{ source: '.gitignore' | '.ontoindexignore'; ignore: Ignore }> = [];
+
+  for (const filename of filenames) {
+    try {
+      const content = await fs.readFile(nodePath.join(repoPath, filename), 'utf-8');
+      const ig = ignore().add(content);
+      rules.push({ source: filename as '.gitignore' | '.ontoindexignore', ignore: ig });
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        console.warn(`  Warning: could not read ${filename}: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  return rules;
+};
+
+const extensionOf = (filePath: string): string => {
+  const fileName = nodePath.basename(filePath).toLowerCase();
+  if (fileName.endsWith('.d.ts')) return '.d.ts';
+  return nodePath.extname(fileName);
+};
+
+export const explainPathScope = async (
+  repoPath: string,
+  filePath: string,
+  options?: IgnoreOptions,
+): Promise<FileScopeExplanation> => {
+  const absolutePath = nodePath.isAbsolute(filePath) ? filePath : nodePath.join(repoPath, filePath);
+  const relativePath = nodePath
+    .relative(repoPath, absolutePath)
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '');
+
+  try {
+    await fs.stat(absolutePath);
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return {
+        repoPath,
+        filePath: relativePath || filePath,
+        included: false,
+        reason: 'missing',
+        suggestedFix: 'check the path and run from the repository root',
+      };
+    }
+    throw err;
+  }
+
+  const builtin = explainBuiltinPathScope(relativePath);
+  if (builtin.ignored) {
+    return {
+      repoPath,
+      filePath: relativePath,
+      included: false,
+      reason: builtin.reason ?? 'builtin-ignore',
+      matchedPattern: builtin.matchedPattern,
+      source: builtin.source,
+      suggestedFix: 'remove or narrow the built-in/generated ignore source if this file is required',
+    };
+  }
+
+  const namedRules = await loadNamedIgnoreRules(repoPath, options);
+  for (const rule of namedRules) {
+    if (rule.ignore.ignores(relativePath)) {
+      return {
+        repoPath,
+        filePath: relativePath,
+        included: false,
+        reason: rule.source === '.gitignore' ? 'gitignore' : 'ontoindexignore',
+        matchedPattern: relativePath,
+        source: rule.source,
+        suggestedFix: `adjust ${rule.source} if this file should be indexed`,
+      };
+    }
+  }
+
+  const ext = extensionOf(relativePath);
+  if (!ext || !INDEXABLE_EXTENSIONS.has(ext)) {
+    return {
+      repoPath,
+      filePath: relativePath,
+      included: false,
+      reason: 'unsupported-extension',
+      source: 'extension',
+      suggestedFix: 'add a supported source extension if this file should be indexed',
+    };
+  }
+
+  return {
+    repoPath,
+    filePath: relativePath,
+    included: true,
+    reason: 'included-extension',
+    matchedPattern: ext,
+    source: 'extension',
+  };
 };
 
 /**

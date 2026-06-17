@@ -1,4 +1,4 @@
-import { appendFile, mkdir, rename, stat } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rename, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -14,6 +14,8 @@ interface TelemetryRecord {
   responseSizeBytes: number;
   ok: boolean;
 }
+
+export const TOOL_TELEMETRY_OVERSIZED_BYTES = 512 * 1024;
 
 async function rotateIfNeeded(): Promise<void> {
   try {
@@ -37,4 +39,32 @@ export function recordToolCall(record: TelemetryRecord): void {
       // intentionally swallowed
     }
   })();
+}
+
+export async function readRecentOversizedToolCalls(
+  options: { limit?: number } = {},
+): Promise<string[]> {
+  const limit = Math.max(1, Math.min(options.limit ?? 5, 20));
+  try {
+    const content = await readFile(TELEMETRY_PATH, 'utf8');
+    const seen = new Set<string>();
+    const result: string[] = [];
+    const lines = content.trim().split('\n').reverse();
+    for (const line of lines) {
+      if (result.length >= limit) break;
+      const parsed = JSON.parse(line) as Partial<TelemetryRecord>;
+      if (
+        typeof parsed.method === 'string' &&
+        typeof parsed.responseSizeBytes === 'number' &&
+        parsed.responseSizeBytes >= TOOL_TELEMETRY_OVERSIZED_BYTES &&
+        !seen.has(parsed.method)
+      ) {
+        seen.add(parsed.method);
+        result.push(parsed.method);
+      }
+    }
+    return result;
+  } catch {
+    return [];
+  }
 }

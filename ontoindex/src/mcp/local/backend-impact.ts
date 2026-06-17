@@ -8,7 +8,7 @@ import {
   runImpactKernel,
   type ImpactKernelRawCounts,
 } from '../../core/impact/impact-kernel.js';
-import { resolveSymbolCandidates } from './backend-symbol-resolution.js';
+import { resolveSymbolCandidates, toSymbolIdentity } from './backend-symbol-resolution.js';
 
 interface ImpactRepoHandle {
   id: string;
@@ -143,6 +143,7 @@ function numberOrInfinity(value: unknown): number {
 type ImpactParams = {
   target: string;
   target_uid?: string;
+  nodeId?: string;
   file_path?: string;
   kind?: string;
   direction: 'upstream' | 'downstream';
@@ -152,6 +153,13 @@ type ImpactParams = {
   minConfidence?: number;
   signal?: AbortSignal;
 };
+
+function retryCalls(repoName: string, nodeId: string, name: string): string[] {
+  return [
+    `inspect({ action: "context", repo: "${repoName}", uid: "${nodeId}" })`,
+    `impact({ action: "symbol", repo: "${repoName}", target_uid: "${nodeId}", target: "${name}" })`,
+  ];
+}
 
 export async function runImpact(
   repo: ImpactRepoHandle,
@@ -181,12 +189,12 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
 
   const outcome = await resolveSymbolCandidates(
     repo,
-    { uid: params.target_uid, name: target },
+    { uid: params.target_uid ?? params.nodeId, name: target },
     { file_path: params.file_path, kind: params.kind },
   );
 
   if (outcome.kind === 'not_found') {
-    const missing = params.target_uid ?? target;
+    const missing = params.target_uid ?? params.nodeId ?? target;
     return {
       error: `Target '${missing}' not found`,
       target: { name: target },
@@ -205,12 +213,14 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
       impactedCount: 0,
       risk: 'UNKNOWN',
       candidates: outcome.candidates.map((c) => ({
+        ...toSymbolIdentity(c),
         uid: c.id,
         name: c.name,
         kind: c.type,
         filePath: c.filePath,
         line: c.startLine,
         score: Number(c.score.toFixed(2)),
+        suggestedNextCalls: retryCalls(repo.name, c.id, c.name),
       })),
     };
   }

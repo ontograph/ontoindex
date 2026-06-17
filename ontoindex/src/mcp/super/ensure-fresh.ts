@@ -14,6 +14,10 @@ import { readFileSync } from 'fs';
 import path, { join } from 'path';
 import { homedir } from 'os';
 import { execFileText } from '../../core/process/exec-file.js';
+import {
+  readRuntimeHealth,
+  type RuntimeHealthSnapshot,
+} from '../../core/runtime/runtime-health.js';
 import type { ScopeConfidence } from '../shared/target-context.js';
 
 const AUTO_ANALYZE_TIMEOUT_MS = Number.parseInt(
@@ -45,6 +49,7 @@ export interface EnsureFreshReport {
   isStale?: boolean;
   dirtyFileCount?: number | null;
   scopeConfidence?: ScopeConfidence;
+  runtimeHealth?: RuntimeHealthSnapshot;
   actionsTaken: string[];
   postCheck?: { indexedCommit: string; currentCommit: string; isStale: boolean };
   warnings: string[];
@@ -349,6 +354,15 @@ export async function gnEnsureFresh(
 
   // ---- 4. Build preCheck --------------------------------------------------
   const preCheck = { indexedCommit, currentCommit, isStale };
+  const runtimeHealth = await readRuntimeHealth(repoRoot, {
+    repoLabel: entry.name ?? selector ?? repoRoot,
+    meta: {
+      repoPath: repoRoot,
+      lastCommit: indexedCommit,
+      indexedAt: '',
+      stats: {},
+    },
+  });
 
   // ---- 5. Embeddings status -----------------------------------------------
   const embeddingsStatus = {
@@ -369,6 +383,36 @@ export async function gnEnsureFresh(
     recommendations.push(
       'Embeddings not populated. Stop MCP processes first to release DB lock, then run: ontoindex analyze --embeddings',
     );
+  }
+
+  if (
+    params.autoAnalyze &&
+    (runtimeHealth.freshnessState === 'untrusted' ||
+      runtimeHealth.freshnessState === 'failed-after-partial-run')
+  ) {
+    recommendations.push(
+      `Index runtime health is ${runtimeHealth.freshnessState}; repair manually before autoAnalyze.`,
+    );
+    if (runtimeHealth.repairCommand) {
+      recommendations.push(runtimeHealth.repairCommand);
+    }
+
+    return {
+      version: 1,
+      preCheck,
+      embeddingsStatus,
+      repoLabel: entry.name ?? selector ?? repoRoot,
+      repoPath: repoRoot,
+      indexedCommit,
+      headCommit: currentCommit,
+      isStale,
+      dirtyFileCount,
+      scopeConfidence,
+      runtimeHealth,
+      actionsTaken,
+      warnings,
+      recommendations,
+    };
   }
 
   // ---- 7. Auto-analyze (only when explicitly requested AND stale) ---------
@@ -440,6 +484,7 @@ export async function gnEnsureFresh(
     isStale,
     dirtyFileCount,
     scopeConfidence,
+    runtimeHealth,
     actionsTaken,
     ...(postCheck !== undefined ? { postCheck } : {}),
     warnings,

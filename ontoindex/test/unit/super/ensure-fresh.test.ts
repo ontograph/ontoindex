@@ -25,6 +25,10 @@ vi.mock('os', () => ({
   homedir: vi.fn(() => '/home/testuser'),
 }));
 
+vi.mock('../../../src/core/runtime/runtime-health.js', () => ({
+  readRuntimeHealth: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks).
 // ---------------------------------------------------------------------------
@@ -33,10 +37,12 @@ import { EventEmitter } from 'events';
 import { execFile, spawn } from 'child_process';
 import { readFileSync } from 'fs';
 import { gnEnsureFresh } from '../../../src/mcp/super/ensure-fresh.js';
+import { readRuntimeHealth } from '../../../src/core/runtime/runtime-health.js';
 
 const mockExecFile = vi.mocked(execFile);
 const mockSpawn = vi.mocked(spawn);
 const mockReadFileSync = vi.mocked(readFileSync);
+const mockReadRuntimeHealth = vi.mocked(readRuntimeHealth);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -48,6 +54,36 @@ const CURRENT_COMMIT = 'abc123def456abc123def456abc123def456abc1';
 const INDEXED_COMMIT = 'abc123def456abc123def456abc123def456abc1'; // same = fresh
 
 const STALE_INDEXED_COMMIT = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
+
+function makeRuntimeHealth(
+  freshnessState:
+    | 'clean'
+    | 'stale'
+    | 'dirty'
+    | 'degraded'
+    | 'untrusted'
+    | 'failed-after-partial-run' = 'clean',
+) {
+  return {
+    version: 1 as const,
+    repoLabel: REPO_ID,
+    repoPath: REPO_PATH,
+    indexedCommit: INDEXED_COMMIT,
+    currentCommit: CURRENT_COMMIT,
+    dirtyWorktree: false,
+    freshnessState,
+    degradedReason: freshnessState === 'clean' ? null : `${freshnessState} reason`,
+    repairCommand: 'ontoindex analyze --force',
+    hasRuntimeArtifacts: freshnessState !== 'clean',
+    analyzeLock: { path: `${REPO_PATH}/.ontoindex/analyze.lock`, present: false, state: 'absent' as const },
+    analysisCheckpoint: {
+      path: `${REPO_PATH}/.ontoindex/analysis-checkpoint.json`,
+      present: false,
+      state: 'absent' as const,
+    },
+    warnings: [],
+  };
+}
 
 /** Build a minimal registry JSON string. */
 function makeRegistry(
@@ -117,6 +153,7 @@ describe('gnEnsureFresh', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setupSpawnExit();
+    mockReadRuntimeHealth.mockResolvedValue(makeRuntimeHealth());
   });
 
   // ---- Test 1: Fresh index → isStale: false --------------------------------
@@ -248,6 +285,19 @@ describe('gnEnsureFresh', () => {
     // postCheck should be populated
     expect(report.postCheck).toBeDefined();
     expect(report.postCheck!.isStale).toBe(false);
+  });
+
+  it('does not autoAnalyze when runtime health is untrusted', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadRuntimeHealth.mockResolvedValue(makeRuntimeHealth('untrusted'));
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(report.runtimeHealth?.freshnessState).toBe('untrusted');
+    expect(report.recommendations.some((item) => item.includes('repair manually'))).toBe(true);
+    expect(report.actionsTaken).toHaveLength(0);
   });
 
   // ---- Test 4: withEmbeddings: true adds --embeddings to analyze args ------

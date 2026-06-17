@@ -65,6 +65,11 @@ const baseDiagnose: DiagnoseReport = {
     httpMcpSessionCap: 32,
     truncationPolicy: 'bounded',
   },
+  responseBudgetHealth: {
+    guardLimitBytes: 512 * 1024,
+    recentOversizedTools: [],
+    guardedPreviewAvailable: true,
+  },
   degradedContext: {
     status: 'ok',
     reasons: [],
@@ -175,6 +180,30 @@ describe('mcp-doctor', () => {
       projectCwd: '/repo/fixture',
     });
     expect(formatMcpDoctorText(report)).toContain('MCP process: ok (PID 4321)');
+    expect(formatMcpDoctorText(report)).toContain('Response guard: 524288 bytes');
+    expect(formatMcpDoctorText(report)).toContain('Guarded preview: available');
+  });
+
+  it('prints recent oversized tools from diagnose response-budget health', async () => {
+    const report = await createMcpDoctorReport(
+      { repo: 'fixture', projectCwd: '/repo/fixture' },
+      {
+        diagnose: async () => ({
+          ...baseDiagnose,
+          responseBudgetHealth: {
+            ...baseDiagnose.responseBudgetHealth,
+            recentOversizedTools: ['impact', 'audit'],
+          },
+        }),
+        processLiveness: async (_repo, _projectCwd, repairCommand) => ({
+          status: 'unavailable',
+          reason: 'not-probed',
+          repairCommand,
+        }),
+      },
+    );
+
+    expect(formatMcpDoctorText(report)).toContain('Recent oversized tools: impact, audit');
   });
 
   it('marks missing process discovery as DEGRADED with repair guidance', async () => {

@@ -42,6 +42,16 @@ interface AmbiguousSymbol extends ResolvedSymbol {
   score: number;
 }
 
+export interface SymbolIdentity {
+  nodeId: string;
+  uid: string;
+  displayName: string;
+  filePath: string;
+  kind: string;
+  startLine?: number;
+  endLine?: number;
+}
+
 type SymbolResolutionOutcome =
   | {
       kind: 'ok';
@@ -156,6 +166,18 @@ function parseSymbolRow(r: QueryRow, include_content?: boolean): ResolvedSymbol 
     startLine: rowValue(r, 'startLine', 4) as number,
     endLine: rowValue(r, 'endLine', 5) as number,
     ...(include_content ? { content: rowValue(r, 'content', 6) as string | undefined } : {}),
+  };
+}
+
+export function toSymbolIdentity(symbol: ResolvedSymbol): SymbolIdentity {
+  return {
+    nodeId: symbol.id,
+    uid: symbol.id,
+    displayName: symbol.name,
+    filePath: symbol.filePath,
+    kind: symbol.type || '',
+    ...(typeof symbol.startLine === 'number' ? { startLine: symbol.startLine } : {}),
+    ...(typeof symbol.endLine === 'number' ? { endLine: symbol.endLine } : {}),
   };
 }
 

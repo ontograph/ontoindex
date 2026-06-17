@@ -31,6 +31,11 @@ import {
   planExperimentalFileDeltaRefresh,
   type ExperimentalFileDeltaPlan,
 } from '../core/analyze-delta.js';
+import {
+  collectFileScopePreview,
+  explainPathScope,
+  type FileScopePreview,
+} from '../core/indexing/file-scope-preview.js';
 import type { PipelineProfile } from '../core/ingestion/pipeline.js';
 import type { EmbeddingLifecycleSummary } from '../core/run-analyze.js';
 
@@ -260,6 +265,10 @@ interface AnalyzeOptions {
   markdownSidecar?: boolean;
   /** Experimental: bounded symbols-only refresh from changed files. */
   experimentalFileDelta?: boolean;
+  /** Preview file scope without writing .ontoindex. */
+  dryRun?: boolean;
+  /** Explain why one file would be included or skipped. */
+  explainFile?: string;
   /**
    * Override the default basename-derived registry `name` with a
    * user-supplied alias (#829). Disambiguates repos whose paths share a
@@ -290,6 +299,56 @@ export function resolveAnalyzeIncludePaths(
   return options?.includePath && options.includePath.length > 0
     ? [...options.includePath]
     : undefined;
+}
+
+function formatFileScopePreview(preview: FileScopePreview): string {
+  const lines = [
+    `  File scope preview for ${preview.repoPath}`,
+    '',
+    `  Total candidates: ${preview.totalCandidates.toLocaleString()}`,
+    `  Included: ${preview.includedCount.toLocaleString()}`,
+    `  Skipped: ${preview.skippedCount.toLocaleString()}`,
+    '',
+    '  Included by extension:',
+  ];
+
+  for (const [ext, count] of Object.entries(preview.includedByExtension)) {
+    lines.push(`    ${ext}: ${count.toLocaleString()}`);
+  }
+
+  if (preview.topSkippedDirectories.length > 0) {
+    lines.push('', '  Top skipped directories:');
+    for (const item of preview.topSkippedDirectories) {
+      lines.push(`    ${item.path}: ${item.count.toLocaleString()} (${item.reason})`);
+    }
+  }
+
+  if (preview.largestIncludedFiles.length > 0) {
+    lines.push('', '  Largest included files:');
+    for (const item of preview.largestIncludedFiles) {
+      lines.push(`    ${item.path}: ${item.bytes.toLocaleString()} bytes`);
+    }
+  }
+
+  if (preview.warnings.length > 0) {
+    lines.push('', '  Warnings:');
+    for (const warning of preview.warnings) lines.push(`    ${warning}`);
+  }
+
+  return lines.join('\n');
+}
+
+function formatFileScopeExplanation(explanation: Awaited<ReturnType<typeof explainPathScope>>): string {
+  const lines = [
+    `  File scope explanation for ${explanation.filePath}`,
+    '',
+    `  Included: ${explanation.included ? 'yes' : 'no'}`,
+    `  Reason: ${explanation.reason}`,
+  ];
+  if (explanation.source) lines.push(`  Source: ${explanation.source}`);
+  if (explanation.matchedPattern) lines.push(`  Matched: ${explanation.matchedPattern}`);
+  if (explanation.suggestedFix) lines.push(`  Suggested fix: ${explanation.suggestedFix}`);
+  return lines.join('\n');
 }
 
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
@@ -353,6 +412,25 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   }
 
   let includePaths = resolveAnalyzeIncludePaths(options);
+
+  if (options?.dryRun && options.explainFile) {
+    console.error('  Choose either --dry-run or --explain-file, not both.\n');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (options?.dryRun) {
+    const preview = await collectFileScopePreview(repoPath, { includePaths });
+    console.log(`${formatFileScopePreview(preview)}\n`);
+    return;
+  }
+
+  if (options?.explainFile) {
+    const explanation = await explainPathScope(repoPath, options.explainFile);
+    console.log(`${formatFileScopeExplanation(explanation)}\n`);
+    return;
+  }
+
   let experimentalFileDeltaPlan: ExperimentalFileDeltaPlan | null = null;
   const experimentalFileDeltaEligible =
     options?.experimentalFileDelta === true &&

@@ -40,6 +40,8 @@ program
   .command('analyze [path]')
   .description('Index a repository (full analysis)')
   .option('-f, --force', 'Force full re-index even if up to date')
+  .option('--dry-run', 'Preview file scope without writing .ontoindex')
+  .option('--explain-file <path>', 'Explain why a file would be included or skipped')
   .option('--embeddings', 'Enable embedding generation for semantic search (off by default)')
   .option('--ann-neighbors', 'Build symbol-neighborhood ANN_NEIGHBOR edges (off by default)')
   .option('--skills', 'Generate repo-specific skill files from detected communities')

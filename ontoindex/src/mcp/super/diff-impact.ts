@@ -20,39 +20,38 @@ import type { DiffReviewResult } from '../../core/review/review-types.js';
 import {
   createCapabilityResponseEnvelope,
   deriveEnvelopeFreshness,
-  type CapabilityResponseEnvelope,
-  type CapabilityResponseFreshness,
 } from '../shared/response-envelope.js';
-import {
-  buildDiffOutputBudget,
-  type DiffOutputBudgetLimits,
-  type DiffOutputBudgetSummary,
+import type {
+  CapabilityResponseEnvelope,
+  CapabilityResponseFreshness,
+} from '../shared/response-envelope.js';
+import { buildDiffOutputBudget } from '../shared/diff-output-budget.js';
+import type {
+  DiffOutputBudgetLimits,
+  DiffOutputBudgetSummary,
 } from '../shared/diff-output-budget.js';
 import { createOutputTruncatedRecoverableState } from '../shared/recoverable-runtime-state.js';
 import { resolveTargetContext } from '../shared/target-context.js';
-import {
-  collectAdvisoryDocsEvidence,
-  type AdvisoryDocsEvidenceReport,
-  type AdvisoryDocsEvidenceTarget,
-} from './docs-evidence.js';
+import { collectAdvisoryDocsEvidence } from './docs-evidence.js';
+import type { AdvisoryDocsEvidenceReport, AdvisoryDocsEvidenceTarget } from './docs-evidence.js';
 import {
   recordEvidenceReadSafe,
   summarizeBasedOnReads,
-  type BasedOnReadsSummary,
 } from '../../core/runtime/evidence-read-ledger.js';
+import type { BasedOnReadsSummary } from '../../core/runtime/evidence-read-ledger.js';
 import {
   addQueryBudgetDegradedReason,
   addQueryBudgetTruncatedReason,
   createQueryBudgetSnapshot,
   finishQueryBudgetSnapshot,
-  type QueryBudgetSnapshot,
   updateQueryBudgetSnapshot,
 } from '../../core/runtime/query-budget.js';
+import type { QueryBudgetSnapshot } from '../../core/runtime/query-budget.js';
 import {
   isEvidenceDiagnosticTruncationReason,
   summarizeEvidenceDiagnostics,
-  type EvidenceDiagnosticQualityKind,
 } from '../../core/runtime/evidence-diagnostics.js';
+import type { EvidenceDiagnosticQualityKind } from '../../core/runtime/evidence-diagnostics.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -63,6 +62,31 @@ export interface DiffImpactParams {
   scope?: 'staged' | 'commit-range' | 'branch'; // default: 'commit-range' if commitRange set, else 'staged'
   includeReviewers?: boolean; // default: true
   docsEvidence?: boolean; // opt-in advisory Markdown docs evidence
+  profile?: 'pr-pack';
+}
+
+type PrReadinessVerdict = 'READY' | 'REVIEW' | 'BLOCKED';
+
+interface PrReadinessStopCondition {
+  severity: 'INFO' | 'WARN' | 'ERROR';
+  reason: string;
+  fix?: string;
+}
+
+interface PrReadinessPack {
+  profile: 'pr-pack';
+  verdict: PrReadinessVerdict;
+  stopConditions: PrReadinessStopCondition[];
+  summary: {
+    changedFiles: number;
+    changedSymbols: number;
+    highRiskSymbols: number;
+    affectedProcesses: number;
+    testGapWarnings: number;
+    relatedDocs: number;
+    securitySensitivePaths: string[];
+  };
+  nextCommands: string[];
 }
 
 export interface DiffImpactReport {
@@ -125,6 +149,7 @@ export interface DiffImpactReport {
   }>;
   docEvidence?: AdvisoryDocsEvidenceReport;
   relatedDocs?: AdvisoryDocsEvidenceReport['relatedDocs'];
+  prReadiness?: PrReadinessPack;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +206,28 @@ interface ReviewDiffDiagnostics {
   limits: {
     maxRecords: number;
   };
+}
+
+type EvidenceTrajectoryVerification = 'verified' | 'partial' | 'unverified';
+
+interface EvidenceTrajectoryItem {
+  tool: string;
+  target: string;
+  candidates: number;
+  curated: number;
+  pruned: number;
+  verification: EvidenceTrajectoryVerification;
+  reasons: string[];
+}
+
+interface ContextCost {
+  emittedChars: number;
+  candidateItems?: number;
+  emittedItems?: number;
+  prunedItems?: number;
+  summaryFirst: boolean;
+  truncated: boolean;
+  reasons: string[];
 }
 
 const DEFAULT_FRESHNESS: CapabilityResponseFreshness = {
@@ -623,6 +670,96 @@ function buildReviewDiffDiagnostics(options: {
   };
 }
 
+const SECURITY_SENSITIVE_PATH_PATTERNS = [
+  /\.github\/workflows\//,
+  /(^|\/)scripts?\//,
+  /(^|\/)(auth|security|crypto|secrets?)(\/|\.|-|_)/i,
+  /(^|\/)(package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|npm-shrinkwrap\.json)$/,
+  /(^|\/)(Dockerfile|docker-compose\.ya?ml)$/i,
+];
+
+function isSecuritySensitivePath(filePath: string): boolean {
+  return SECURITY_SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(filePath));
+}
+
+function buildPrReadinessPack(options: {
+  report: Omit<DiffImpactReport, 'prReadiness'>;
+  docsEvidence?: AdvisoryDocsEvidenceReport;
+}): PrReadinessPack {
+  const { report, docsEvidence } = options;
+  const securitySensitivePaths = report.changedFiles
+    .map((file) => file.path)
+    .filter(isSecuritySensitivePath)
+    .slice(0, 10);
+  const testGapWarnings = report.warningDetails.filter((warning) =>
+    warning.message.includes('No linked test import evidence'),
+  ).length;
+  const stopConditions: PrReadinessStopCondition[] = [];
+
+  if (report.capabilityState.freshness.status === 'stale') {
+    stopConditions.push({
+      severity: 'ERROR',
+      reason: 'Index is stale for this diff.',
+      fix: 'Refresh the OntoIndex index before relying on PR readiness.',
+    });
+  }
+  if (report.highRiskSymbols.length > 0) {
+    stopConditions.push({
+      severity: 'ERROR',
+      reason: `${report.highRiskSymbols.length} high-risk changed symbol(s).`,
+      fix: 'Review blast radius and run targeted tests for the changed symbols.',
+    });
+  }
+  if (testGapWarnings > 0) {
+    stopConditions.push({
+      severity: 'WARN',
+      reason: `${testGapWarnings} changed file(s) have no linked test import evidence.`,
+      fix: 'Run or add focused tests for the changed surface.',
+    });
+  }
+  if (securitySensitivePaths.length > 0) {
+    stopConditions.push({
+      severity: 'WARN',
+      reason: `${securitySensitivePaths.length} security-sensitive path hint(s).`,
+      fix: 'Review scripts, workflow, auth, secret, crypto, or dependency changes manually.',
+    });
+  }
+  if (report.limits.truncated) {
+    stopConditions.push({
+      severity: 'WARN',
+      reason: 'Diff impact output was truncated.',
+      fix: report.limits.retryHint ?? 'Use a narrower diff scope.',
+    });
+  }
+
+  const verdict: PrReadinessVerdict = stopConditions.some((item) => item.severity === 'ERROR')
+    ? 'BLOCKED'
+    : stopConditions.some((item) => item.severity === 'WARN')
+    ? 'REVIEW'
+    : 'READY';
+
+  return {
+    profile: 'pr-pack',
+    verdict,
+    stopConditions,
+    summary: {
+      changedFiles: report.summary.totalChangedFiles,
+      changedSymbols: report.summary.totalChangedSymbols,
+      highRiskSymbols: report.highRiskSymbols.length,
+      affectedProcesses: report.affectedProcesses.length,
+      testGapWarnings,
+      relatedDocs: docsEvidence?.relatedDocs.length ?? 0,
+      securitySensitivePaths,
+    },
+    nextCommands: uniqueStrings([
+      'npm test',
+      'npm exec tsc -- --noEmit',
+      report.highRiskSymbols.length > 0 ? 'Run targeted tests for high-risk changed symbols' : '',
+      testGapWarnings > 0 ? 'Run focused tests for files without linked test evidence' : '',
+    ]),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Main function
 // ---------------------------------------------------------------------------
@@ -766,7 +903,9 @@ export async function gnDiffImpact(
     maxChangedSymbolsPerFile: detailSymbolLimit,
     retryHint:
       truncatedFileCount > 0 || truncatedSymbolCount > 0
-        ? `Re-run gn_diff_impact with a narrower commit range or diff scope to inspect the omitted ${truncatedFileCount} file${truncatedFileCount === 1 ? '' : 's'} and ${truncatedSymbolCount} symbol${truncatedSymbolCount === 1 ? '' : 's'}.`
+        ? `Re-run gn_diff_impact with a narrower commit range or diff scope to inspect the omitted ${truncatedFileCount} file${
+            truncatedFileCount === 1 ? '' : 's'
+          } and ${truncatedSymbolCount} symbol${truncatedSymbolCount === 1 ? '' : 's'}.`
         : undefined,
   });
 
@@ -1065,7 +1204,11 @@ export async function gnDiffImpact(
         target: targetSymbol
           ? { kind: 'symbol', name: targetSymbol.name, filePath }
           : { kind: 'file', name: filePath, filePath },
-        reason: `${targetSymbol?.name ?? filePath} in ${filePath} has no linked test import evidence in ${warningEvidenceIds[0] ?? makeEvidenceId('diff-warning:test-gap', filePath)}.`,
+        reason: `${
+          targetSymbol?.name ?? filePath
+        } in ${filePath} has no linked test import evidence in ${
+          warningEvidenceIds[0] ?? makeEvidenceId('diff-warning:test-gap', filePath)
+        }.`,
         confidence,
         evidenceIds,
         evidenceClasses: ['graph_evidence', 'runtime_diagnostic'],
@@ -1111,7 +1254,7 @@ export async function gnDiffImpact(
       ? await collectAdvisoryDocsEvidence(repoId, docsEvidenceTargets)
       : undefined;
 
-  return {
+  const report: DiffImpactReport = {
     ...createBaseDiffImpactReport(resolvedRange, uniqueWarnings),
     summary: diffOutputBudget.summary,
     changedFiles,
@@ -1138,6 +1281,13 @@ export async function gnDiffImpact(
     evidence,
     ...(docsEvidence ? { docEvidence: docsEvidence, relatedDocs: docsEvidence.relatedDocs } : {}),
   };
+
+  return params.profile === 'pr-pack'
+    ? {
+        ...report,
+        prReadiness: buildPrReadinessPack({ report, docsEvidence }),
+      }
+    : report;
 }
 
 // ---------------------------------------------------------------------------
@@ -1163,6 +1313,8 @@ export interface ReviewDiffParams {
 export type ReviewDiffEnvelope = CapabilityResponseEnvelope<{
   resolvedRange: string;
   summary: DiffOutputBudgetSummary;
+  evidenceTrajectory: EvidenceTrajectoryItem;
+  contextCost: ContextCost;
   reviewedFiles: DiffReviewResult['reviewedFiles'];
   totalSymbolsChanged: number;
   highRiskSymbols: string[];
@@ -1283,7 +1435,9 @@ export async function gnReviewDiff(
     maxChangedSymbolsPerFile: MAX_DIFF_IMPACT_SYMBOLS_PER_FILE,
     retryHint:
       changedPaths.length > reviewResult.reviewedFiles.length
-        ? `Re-run gn_review_diff with a narrower commit range or diff scope to inspect the omitted ${changedPaths.length - reviewResult.reviewedFiles.length} file${changedPaths.length - reviewResult.reviewedFiles.length === 1 ? '' : 's'}.`
+        ? `Re-run gn_review_diff with a narrower commit range or diff scope to inspect the omitted ${
+            changedPaths.length - reviewResult.reviewedFiles.length
+          } file${changedPaths.length - reviewResult.reviewedFiles.length === 1 ? '' : 's'}.`
         : undefined,
   });
   const diagnostics = buildReviewDiffDiagnostics({
@@ -1293,6 +1447,28 @@ export async function gnReviewDiff(
     freshness,
     budget: finalBudget,
   });
+  const evidenceTrajectory: EvidenceTrajectoryItem = {
+    tool: 'gn_review_diff',
+    target: resolvedRange,
+    candidates: diffOutputBudget.summary.totalChangedFiles,
+    curated: diffOutputBudget.summary.emittedChangedFiles,
+    pruned:
+      diffOutputBudget.summary.truncatedFileCount + diffOutputBudget.summary.truncatedSymbolCount,
+    verification:
+      diagnostics.summary.degraded > 0 ||
+      diagnostics.summary.ambiguous > 0 ||
+      finalBudget.truncatedReasons.length > 0 ||
+      finalBudget.degradedReasons.length > 0
+        ? 'partial'
+        : diagnostics.summary.authoritative > 0
+        ? 'verified'
+        : 'unverified',
+    reasons: uniqueStrings([
+      ...finalBudget.truncatedReasons,
+      ...finalBudget.degradedReasons,
+      diffOutputBudget.limits.retryHint ?? '',
+    ]),
+  };
   const recoverable = diffOutputBudget.limits.truncated
     ? createOutputTruncatedRecoverableState({
         retryCommand:
@@ -1300,9 +1476,17 @@ export async function gnReviewDiff(
           'Re-run gn_review_diff with a narrower commit range or diff scope.',
       })
     : undefined;
+  const contextCostBase: Omit<ContextCost, 'emittedChars'> = {
+    candidateItems: diffOutputBudget.summary.totalChangedFiles,
+    emittedItems: diffOutputBudget.summary.emittedChangedFiles,
+    prunedItems: evidenceTrajectory.pruned,
+    summaryFirst: diffOutputBudget.limits.summaryFirst,
+    truncated: diffOutputBudget.limits.truncated || finalBudget.truncated,
+    reasons: evidenceTrajectory.reasons,
+  };
 
   // ---- 6. Wrap in ADR 0018 envelope ---------------------------------------
-  return createCapabilityResponseEnvelope({
+  const envelope = createCapabilityResponseEnvelope({
     tool: 'gn_review_diff',
     version: 1,
     status:
@@ -1318,6 +1502,11 @@ export async function gnReviewDiff(
       reviewedFiles: reviewResult.reviewedFiles,
       totalSymbolsChanged: reviewResult.totalSymbolsChanged,
       summary: diffOutputBudget.summary,
+      evidenceTrajectory,
+      contextCost: {
+        emittedChars: 0,
+        ...contextCostBase,
+      },
       highRiskSymbols: reviewResult.highRiskSymbols,
       affectedProcesses: reviewResult.affectedProcesses ?? [],
       affectedCommunities: reviewResult.affectedCommunities ?? [],
@@ -1334,4 +1523,16 @@ export async function gnReviewDiff(
       ...diffOutputBudget.limits,
     },
   });
+
+  const emittedChars = JSON.stringify(envelope).length;
+  return {
+    ...envelope,
+    results: {
+      ...envelope.results,
+      contextCost: {
+        emittedChars,
+        ...contextCostBase,
+      },
+    },
+  };
 }

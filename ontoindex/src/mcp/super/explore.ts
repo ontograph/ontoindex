@@ -27,6 +27,21 @@ export interface ExploreParams {
   qualityMode?: 'fast' | 'balanced' | 'thorough'; // default: 'balanced'
   includeSkeletons?: boolean; // default: true
   includeCitations?: boolean; // default: true
+  profile?: 'task-pack';
+}
+
+interface SymbolRetryExamples {
+  inspect: string;
+  impact: string;
+}
+
+interface ExploreTaskPack {
+  query: string;
+  intent: IntentLabel;
+  topFiles: Array<{ filePath: string; reason: string }>;
+  topSymbols: Array<{ nodeId: string; name: string; filePath: string }>;
+  nextCalls: string[];
+  warnings: string[];
 }
 
 export interface ExploreReport {
@@ -49,6 +64,7 @@ export interface ExploreReport {
     cluster: string;
     citations?: GraphPathEdge[];
     coChangedFiles: string[];
+    retryExamples?: SymbolRetryExamples;
   }>;
   clusters: Array<{ name: string; role: string; fileCount: number; keyFiles: string[] }>;
   suggestedEntryPoints: Array<{
@@ -56,6 +72,7 @@ export interface ExploreReport {
     nodeId: string;
     rationale: string;
   }>;
+  taskPack?: ExploreTaskPack;
   warnings: string[];
 }
 
@@ -106,6 +123,49 @@ function rowValue(row: QueryRow, key: string, index: number): unknown {
 
 function rowString(row: QueryRow, key: string, index: number): string {
   return (rowValue(row, key, index) ?? '') as string;
+}
+
+function retryExamples(repoId: string, nodeId: string, name: string): SymbolRetryExamples {
+  return {
+    inspect: `inspect({ action: "context", repo: "${repoId}", uid: "${nodeId}" })`,
+    impact: `impact({ action: "symbol", repo: "${repoId}", target_uid: "${nodeId}", target: "${name}" })`,
+  };
+}
+
+function buildTaskPack(
+  repoId: string,
+  query: string,
+  intent: IntentLabel,
+  symbols: ExploreReport['topSymbols'],
+  warnings: string[],
+): ExploreTaskPack {
+  const topSymbols = symbols.slice(0, 3).map((sym) => ({
+    nodeId: sym.nodeId,
+    name: sym.name,
+    filePath: sym.filePath,
+  }));
+  const topFiles = Array.from(new Set(topSymbols.map((sym) => sym.filePath).filter(Boolean)))
+    .slice(0, 3)
+    .map((filePath, index) => ({
+      filePath,
+      reason: index === 0 ? 'top-ranked symbol file' : 'related top symbol file',
+    }));
+  const firstSymbol = topSymbols[0];
+  const nextCalls = firstSymbol
+    ? [
+        `inspect({ action: "context", repo: "${repoId}", uid: "${firstSymbol.nodeId}" })`,
+        `impact({ action: "symbol", repo: "${repoId}", target_uid: "${firstSymbol.nodeId}", target: "${firstSymbol.name}" })`,
+      ]
+    : [`gn_explore({ repo: "${repoId}", query: "${query}", depth: "deep" })`];
+
+  return {
+    query,
+    intent,
+    topFiles,
+    topSymbols,
+    nextCalls,
+    warnings: warnings.slice(0, 3),
+  };
 }
 
 async function mapLimited<T, R>(
@@ -300,6 +360,7 @@ export async function gnExplore(repoId: string, params: ExploreParams): Promise<
         cluster,
         ...(citations !== undefined ? { citations } : {}),
         coChangedFiles,
+        ...(nodeId ? { retryExamples: retryExamples(repoId, nodeId, name) } : {}),
       };
     },
   );
@@ -380,6 +441,9 @@ export async function gnExplore(repoId: string, params: ExploreParams): Promise<
     topSymbols: enrichedSymbols,
     clusters,
     suggestedEntryPoints,
+    ...(params.profile === 'task-pack'
+      ? { taskPack: buildTaskPack(repoId, params.query, classification.intent, enrichedSymbols, warnings) }
+      : {}),
     warnings,
   };
 }

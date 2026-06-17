@@ -440,4 +440,55 @@ describe('status command behavior', () => {
       'Semantic search: absent (symbols-only index; run ontoindex analyze --embeddings to populate)',
     );
   });
+
+  it('prints untrusted runtime health before healthy-looking status details', async () => {
+    const { statusCommand } = await importStatus();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const repoPath = '/tmp/untrusted-repo';
+    gitMocks.isGitRepo.mockReturnValue(true);
+    repoManagerMocks.findRepo.mockResolvedValue(
+      makeRepo(repoPath, {
+        indexedAt: '2026-05-27T00:00:00.000Z',
+        lastCommit: 'abc123def456',
+        stats: { embeddings: 12 },
+      }),
+    );
+    runtimeHealthMocks.readRuntimeHealth.mockResolvedValue({
+      version: 1,
+      repoLabel: 'fixture',
+      repoPath,
+      indexedCommit: 'abc123def456',
+      currentCommit: 'abc123def456',
+      dirtyWorktree: false,
+      freshnessState: 'untrusted',
+      degradedReason: 'analyze.lock is stale',
+      repairCommand: 'remove the stale analyze.lock, then rerun ontoindex analyze --force',
+      hasRuntimeArtifacts: true,
+      analyzeLock: {
+        path: `${repoPath}/.ontoindex/analyze.lock`,
+        present: true,
+        state: 'stale',
+      },
+      analysisCheckpoint: {
+        path: `${repoPath}/.ontoindex/analysis-checkpoint.json`,
+        present: false,
+        state: 'absent',
+      },
+      warnings: [],
+    });
+
+    await statusCommand({ repo: repoPath });
+
+    const lines = logSpy.mock.calls.map(([line]) => String(line));
+    expect(lines.indexOf('Runtime health: untrusted')).toBeLessThan(
+      lines.findIndex((line) => line.startsWith('Status:')),
+    );
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        'Status: ⚠️ untrusted (runtime artifacts need repair)',
+        '  Repair: remove the stale analyze.lock, then rerun ontoindex analyze --force',
+      ]),
+    );
+  });
 });

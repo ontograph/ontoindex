@@ -267,4 +267,53 @@ describe('gn_explore', () => {
     expect(types[1]).toBe('symbol');
     expect(types[2]).toBe('file');
   });
+
+  it('adds retry examples for top symbols with node ids', async () => {
+    mockBackendQuery.mockResolvedValue({
+      processes: [],
+      process_symbols: [
+        {
+          nodeId: 'Function:src/auth.ts:login',
+          id: 'Function:src/auth.ts:login',
+          name: 'login',
+          filePath: 'src/auth.ts',
+          type: 'Function',
+        },
+      ],
+      definitions: [],
+    });
+
+    const report = await gnExplore('test-repo', { query: 'login flow', depth: 'shallow' });
+
+    expect(report.topSymbols[0]).toMatchObject({
+      nodeId: 'Function:src/auth.ts:login',
+      retryExamples: {
+        inspect:
+          'inspect({ action: "context", repo: "test-repo", uid: "Function:src/auth.ts:login" })',
+        impact:
+          'impact({ action: "symbol", repo: "test-repo", target_uid: "Function:src/auth.ts:login", target: "login" })',
+      },
+    });
+  });
+
+  it('adds a bounded taskPack only when requested', async () => {
+    mockBackendQuery.mockResolvedValue(makeDefaultQueryResult(6));
+
+    const defaultReport = await gnExplore('test-repo', { query: 'search flow', depth: 'deep' });
+    expect(defaultReport.taskPack).toBeUndefined();
+
+    const report = await gnExplore('test-repo', {
+      query: 'search flow',
+      depth: 'deep',
+      profile: 'task-pack',
+    });
+
+    expect(report.taskPack).toMatchObject({
+      query: 'search flow',
+      intent: 'nl-conceptual',
+    });
+    expect(report.taskPack?.topSymbols.length).toBeLessThanOrEqual(3);
+    expect(report.taskPack?.topFiles.length).toBeLessThanOrEqual(3);
+    expect(report.taskPack?.nextCalls[0]).toContain('inspect({ action: "context"');
+  });
 });

@@ -1745,7 +1745,14 @@ export class LocalBackend implements BackendPort {
   }
 
   private normalizeToolParams(params: unknown): NormalizedToolParams {
-    return params && typeof params === 'object' ? { ...(params as Record<string, unknown>) } : {};
+    const normalized =
+      params && typeof params === 'object' ? { ...(params as Record<string, unknown>) } : {};
+    const nodeId = typeof normalized.nodeId === 'string' ? normalized.nodeId : undefined;
+    if (nodeId) {
+      normalized.uid ??= nodeId;
+      normalized.target_uid ??= nodeId;
+    }
+    return normalized;
   }
 
   private isGroupRepoDispatch(method: string, params: NormalizedToolParams): boolean {

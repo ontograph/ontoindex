@@ -1,5 +1,5 @@
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
-import { resolveSymbolCandidates } from './backend-symbol-resolution.js';
+import { resolveSymbolCandidates, toSymbolIdentity } from './backend-symbol-resolution.js';
 
 const MAX_CONTEXT_PROCESS_ROWS = (() => {
   const raw = Number.parseInt(process.env.ONTOINDEX_CONTEXT_PROCESS_LIMIT ?? '', 10);
@@ -18,6 +18,26 @@ type ResolvedContextSymbol = Extract<
   Awaited<ReturnType<typeof resolveSymbolCandidates>>,
   { kind: 'ok' }
 >['symbol'];
+
+function contextCompleteness(
+  sourceIncluded: boolean,
+  missingReasons: string[],
+  suggestedNextCalls?: string[],
+): Record<string, unknown> {
+  return {
+    sourceIncluded,
+    truncated: false,
+    missingReasons,
+    ...(suggestedNextCalls && suggestedNextCalls.length > 0 ? { suggestedNextCalls } : {}),
+  };
+}
+
+function retryCalls(repoId: string, nodeId: string, name: string): string[] {
+  return [
+    `inspect({ action: "context", repo: "${repoId}", uid: "${nodeId}" })`,
+    `impact({ action: "symbol", repo: "${repoId}", target_uid: "${nodeId}", target: "${name}" })`,
+  ];
+}
 
 function logContextQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
@@ -206,13 +226,16 @@ export async function context(
       status: 'ambiguous',
       message: `Found ${outcome.candidates.length} symbols matching '${name}'. Use uid, file_path, or kind to disambiguate.`,
       candidates: outcome.candidates.map((c) => ({
+        ...toSymbolIdentity(c),
         uid: c.id,
         name: c.name,
         kind: c.type,
         filePath: c.filePath,
         line: c.startLine,
         score: Number(c.score.toFixed(2)),
+        suggestedNextCalls: retryCalls(repo.id, c.id, c.name),
       })),
+      contextCompleteness: contextCompleteness(false, ['ambiguous-symbol']),
     };
   }
 
@@ -309,6 +332,10 @@ export async function context(
       ...(include_content && sym.content ? { content: sym.content } : {}),
       ...(methodMetadata ? { methodMetadata } : {}),
     },
+    contextCompleteness: contextCompleteness(Boolean(include_content && sym.content), [
+      ...(include_content ? [] : ['source-not-requested']),
+      ...(include_content && !sym.content ? ['source-unavailable'] : []),
+    ]),
     incoming: categorizeRows(incomingRows),
     outgoing: categorizeRows(outgoingRows),
     processes: processRows.map((row) => ({

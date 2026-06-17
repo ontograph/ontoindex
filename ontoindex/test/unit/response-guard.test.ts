@@ -16,6 +16,12 @@ describe('guardResponseSize', () => {
     const big = JSON.stringify({ data: 'z'.repeat(600 * 1024) });
     const out = JSON.parse(guardResponseSize(big));
     expect(out.truncated).toBe(true);
+    expect(out.responseBudget).toMatchObject({
+      mode: 'guarded-preview',
+      truncated: true,
+      retryHint: 'Reduce limit or add filters',
+    });
+    expect(out.responseBudget.estimatedBytes).toBeGreaterThan(out.preview.length);
     expect(out.hint).toBe('Reduce limit or add filters');
     expect(typeof out.preview).toBe('string');
     expect(out.preview.length).toBe(2000);

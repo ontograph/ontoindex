@@ -256,6 +256,28 @@ describe('LocalBackend.callTool', () => {
     expect(result[0].name).toBe('test-project');
   });
 
+  it('preserves responseBudget metadata when dispatch guards an oversized response', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(
+      Array.from({ length: 6000 }, (_, i) => ({
+        ...MOCK_REPO_ENTRY,
+        name: `repo-${i}`,
+        path: path.join(os.tmpdir(), `repo-${i}`),
+      })),
+    );
+    await backend.init({ forceRefresh: true });
+
+    const result = await backend.callTool('list_repos', {});
+
+    expect(result).toMatchObject({
+      truncated: true,
+      responseBudget: {
+        mode: 'guarded-preview',
+        truncated: true,
+        retryHint: 'Reduce limit or add filters',
+      },
+    });
+  });
+
   it('throws for unknown tool name', async () => {
     await expect(backend.callTool('nonexistent_tool', {})).rejects.toThrow(
       'Unknown tool method: nonexistent_tool',

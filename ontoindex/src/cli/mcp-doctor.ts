@@ -143,6 +143,14 @@ export function formatMcpDoctorText(report: McpDoctorReport): string {
   if (report.diagnose.degradedContext.reasons.length > 0) {
     lines.push(`Degraded reasons: ${report.diagnose.degradedContext.reasons.join(', ')}`);
   }
+  if (report.diagnose.responseBudgetHealth) {
+    const health = report.diagnose.responseBudgetHealth;
+    lines.push(`Response guard: ${health.guardLimitBytes} bytes`);
+    lines.push(`Guarded preview: ${health.guardedPreviewAvailable ? 'available' : 'unavailable'}`);
+    if (health.recentOversizedTools.length > 0) {
+      lines.push(`Recent oversized tools: ${health.recentOversizedTools.join(', ')}`);
+    }
+  }
   if (report.symbolSmoke?.status === 'failed') {
     lines.push(`Symbol smoke: failed (${report.symbolSmoke.reason ?? 'unknown'})`);
   } else if (report.symbolSmoke?.status === 'ok') {

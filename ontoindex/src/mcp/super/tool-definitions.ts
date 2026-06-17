@@ -424,6 +424,12 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
             'Opt in to advisory Markdown docs evidence for related requirements, API specs, and route drift. Does not affect risk reporting. Default: false.',
           default: false,
         },
+        profile: {
+          type: 'string',
+          enum: ['pr-pack'],
+          description:
+            'Optional compact PR readiness profile. pr-pack adds a bounded readiness verdict, stop conditions, and next commands without running CI, publishing, tagging, pushing, or wiki generation.',
+        },
       },
       required: [],
     },

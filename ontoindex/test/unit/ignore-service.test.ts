@@ -7,6 +7,7 @@ import {
   isHardcodedIgnoredDirectory,
   loadIgnoreRules,
   createIgnoreFilter,
+  explainPathScope,
 } from '../../src/config/ignore-service.js';
 
 describe('shouldIgnorePath', () => {
@@ -469,6 +470,95 @@ describe('createIgnoreFilter', () => {
     expect(filter.ignored(tsPath)).toBe(false);
 
     await fs.unlink(path.join(tmpDir, '.gitignore'));
+  });
+});
+
+describe('explainPathScope', () => {
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-scope-test-'));
+    await fs.mkdir(path.join(tmpDir, 'src'), { recursive: true });
+    await fs.mkdir(path.join(tmpDir, 'node_modules/pkg'), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, 'src/index.ts'), 'export const value = 1;\n');
+    await fs.writeFile(path.join(tmpDir, 'src/readme.txt'), 'notes\n');
+    await fs.writeFile(path.join(tmpDir, 'src/api.generated.ts'), 'export const generated = 1;\n');
+    await fs.writeFile(path.join(tmpDir, 'node_modules/pkg/index.js'), 'module.exports = {};\n');
+  });
+
+  afterAll(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns builtin-ignore for hardcoded ignored directories', async () => {
+    const result = await explainPathScope(tmpDir, 'node_modules/pkg/index.js');
+
+    expect(result.included).toBe(false);
+    expect(result.reason).toBe('builtin-ignore');
+    expect(result.source).toBe('builtin');
+    expect(result.matchedPattern).toBe('node_modules');
+  });
+
+  it('returns ontoindexignore for .ontoindexignore matches', async () => {
+    await fs.writeFile(path.join(tmpDir, '.ontoindexignore'), 'src/private.ts\n');
+    await fs.writeFile(path.join(tmpDir, 'src/private.ts'), 'export const secret = 1;\n');
+    try {
+      const result = await explainPathScope(tmpDir, 'src/private.ts');
+
+      expect(result.included).toBe(false);
+      expect(result.reason).toBe('ontoindexignore');
+      expect(result.source).toBe('.ontoindexignore');
+    } finally {
+      await fs.unlink(path.join(tmpDir, '.ontoindexignore'));
+      await fs.unlink(path.join(tmpDir, 'src/private.ts'));
+    }
+  });
+
+  it('returns gitignore for .gitignore matches', async () => {
+    await fs.writeFile(path.join(tmpDir, '.gitignore'), 'src/local.ts\n');
+    await fs.writeFile(path.join(tmpDir, 'src/local.ts'), 'export const local = 1;\n');
+    try {
+      const result = await explainPathScope(tmpDir, 'src/local.ts');
+
+      expect(result.included).toBe(false);
+      expect(result.reason).toBe('gitignore');
+      expect(result.source).toBe('.gitignore');
+    } finally {
+      await fs.unlink(path.join(tmpDir, '.gitignore'));
+      await fs.unlink(path.join(tmpDir, 'src/local.ts'));
+    }
+  });
+
+  it('returns included-extension for source files', async () => {
+    const result = await explainPathScope(tmpDir, 'src/index.ts');
+
+    expect(result.included).toBe(true);
+    expect(result.reason).toBe('included-extension');
+    expect(result.source).toBe('extension');
+    expect(result.matchedPattern).toBe('.ts');
+  });
+
+  it('returns unsupported-extension for files without ignored or source extensions', async () => {
+    const result = await explainPathScope(tmpDir, 'src/readme.txt');
+
+    expect(result.included).toBe(false);
+    expect(result.reason).toBe('unsupported-extension');
+    expect(result.source).toBe('extension');
+  });
+
+  it('returns generated for generated source files', async () => {
+    const result = await explainPathScope(tmpDir, 'src/api.generated.ts');
+
+    expect(result.included).toBe(false);
+    expect(result.reason).toBe('generated');
+    expect(result.source).toBe('builtin');
+  });
+
+  it('returns missing for paths that do not exist', async () => {
+    const result = await explainPathScope(tmpDir, 'src/missing.ts');
+
+    expect(result.included).toBe(false);
+    expect(result.reason).toBe('missing');
   });
 });
 

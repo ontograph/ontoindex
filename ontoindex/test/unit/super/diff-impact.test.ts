@@ -522,6 +522,48 @@ describe('gnDiffImpact', () => {
       }
     }
   });
+
+  it('adds compact pr-pack readiness without changing default output', async () => {
+    setupGitMocks(
+      'src/critical.ts\n.github/workflows/ci.yml\n',
+      '80\t0\tsrc/critical.ts\n4\t1\t.github/workflows/ci.yml\n',
+    );
+    setupGraphMocks({
+      symbolRows: [{ id: 'Function:src/critical.ts:dispatch', name: 'dispatch' }],
+      upstreamCount: 75,
+    });
+
+    const baseReport = await gnDiffImpact(REPO_ID, { commitRange: 'main...HEAD' });
+    const report = await gnDiffImpact(REPO_ID, {
+      commitRange: 'main...HEAD',
+      docsEvidence: true,
+      profile: 'pr-pack',
+    });
+
+    expect(baseReport.prReadiness).toBeUndefined();
+    expect(report.prReadiness).toMatchObject({
+      profile: 'pr-pack',
+      verdict: 'BLOCKED',
+      summary: {
+        changedFiles: 2,
+        changedSymbols: 2,
+        highRiskSymbols: 2,
+        affectedProcesses: 0,
+        testGapWarnings: 2,
+        relatedDocs: 1,
+        securitySensitivePaths: ['.github/workflows/ci.yml'],
+      },
+    });
+    expect(report.prReadiness?.stopConditions.map((condition) => condition.reason)).toEqual(
+      expect.arrayContaining([
+        '2 high-risk changed symbol(s).',
+        '2 changed file(s) have no linked test import evidence.',
+        '1 security-sensitive path hint(s).',
+      ]),
+    );
+    expect(report.prReadiness?.nextCommands).toContain('npm test');
+    expect(report.prReadiness?.nextCommands).toContain('npm exec tsc -- --noEmit');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -555,6 +597,24 @@ describe('gnReviewDiff', () => {
       truncatedFileCount: 0,
       truncatedSymbolCount: 0,
     });
+    expect(envelope.results.evidenceTrajectory).toMatchObject({
+      tool: 'gn_review_diff',
+      target: 'HEAD~1..HEAD',
+      candidates: 1,
+      curated: 1,
+      pruned: 0,
+      verification: 'verified',
+      reasons: [],
+    });
+    expect(envelope.results.contextCost).toMatchObject({
+      candidateItems: 1,
+      emittedItems: 1,
+      prunedItems: 0,
+      summaryFirst: true,
+      truncated: false,
+      reasons: [],
+    });
+    expect(envelope.results.contextCost.emittedChars).toBeGreaterThan(0);
     expect(envelope.results.reviewedFiles).toBeInstanceOf(Array);
     expect(envelope.results.totalSymbolsChanged).toBeGreaterThanOrEqual(0);
     expect(envelope.results.highRiskSymbols).toBeInstanceOf(Array);
@@ -658,6 +718,34 @@ describe('gnReviewDiff', () => {
       warning: 'Changed file scan capped at 2 paths',
       truncated: true,
     });
+  });
+
+  it('reports response-local evidence pruning metadata when review output is capped', async () => {
+    const paths = Array.from({ length: 501 }, (_, index) => `src/file-${index}.ts`).join('\n');
+    setupGitMocks(`${paths}\n`, '');
+    setupGraphMocks({ upstreamCount: 0 });
+
+    const envelope = await gnReviewDiff(REPO_ID, { commitRange: 'main...HEAD' });
+
+    expect(envelope.results.evidenceTrajectory).toMatchObject({
+      tool: 'gn_review_diff',
+      target: 'main...HEAD',
+      candidates: 500,
+      curated: 500,
+      pruned: 0,
+      verification: 'partial',
+      reasons: ['changed-path-cap'],
+    });
+    expect(envelope.results.contextCost).toMatchObject({
+      candidateItems: 500,
+      emittedItems: 500,
+      prunedItems: 0,
+      summaryFirst: true,
+      truncated: true,
+      reasons: ['changed-path-cap'],
+    });
+    expect(envelope.results.contextCost.emittedChars).toBeGreaterThan(0);
+    expect(envelope.warnings).toContain('Changed file scan capped at 500 paths');
   });
 
   // ---- RD-7: does not include reviewers (separate from gn_diff_impact) ----

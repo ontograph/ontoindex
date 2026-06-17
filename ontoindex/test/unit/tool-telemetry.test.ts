@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // Mock fs/promises and os before importing the module
 vi.mock('node:fs/promises', () => ({
   appendFile: vi.fn().mockResolvedValue(undefined),
+  readFile: vi.fn().mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })),
   rename: vi.fn().mockResolvedValue(undefined),
   stat: vi.fn().mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })),
   mkdir: vi.fn().mockResolvedValue(undefined),
@@ -12,10 +13,11 @@ vi.mock('node:os', () => ({
   homedir: vi.fn().mockReturnValue('/fake/home'),
 }));
 
-import { recordToolCall } from '../../src/mcp/local/tool-telemetry.js';
-import { appendFile, stat } from 'node:fs/promises';
+import { readRecentOversizedToolCalls, recordToolCall } from '../../src/mcp/local/tool-telemetry.js';
+import { appendFile, readFile, stat } from 'node:fs/promises';
 
 const appendMock = appendFile as unknown as ReturnType<typeof vi.fn>;
+const readFileMock = readFile as unknown as ReturnType<typeof vi.fn>;
 const statMock = stat as unknown as ReturnType<typeof vi.fn>;
 
 describe('recordToolCall', () => {
@@ -79,5 +81,30 @@ describe('recordToolCall', () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(renameMock).toHaveBeenCalledOnce();
     expect(renameMock.mock.calls[0][1]).toContain('.1');
+  });
+
+  it('returns an empty oversized list when telemetry is missing', async () => {
+    readFileMock.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+
+    await expect(readRecentOversizedToolCalls()).resolves.toEqual([]);
+  });
+
+  it('returns recent unique oversized tool names', async () => {
+    readFileMock.mockResolvedValue(
+      [
+        JSON.stringify({ method: 'small', responseSizeBytes: 10 }),
+        JSON.stringify({ method: 'impact', responseSizeBytes: 600 * 1024 }),
+        JSON.stringify({ method: 'audit', responseSizeBytes: 700 * 1024 }),
+        JSON.stringify({ method: 'impact', responseSizeBytes: 800 * 1024 }),
+      ].join('\n'),
+    );
+
+    await expect(readRecentOversizedToolCalls({ limit: 2 })).resolves.toEqual(['impact', 'audit']);
+  });
+
+  it('returns an empty oversized list when telemetry is corrupt', async () => {
+    readFileMock.mockResolvedValue('not-json\n');
+
+    await expect(readRecentOversizedToolCalls()).resolves.toEqual([]);
   });
 });
