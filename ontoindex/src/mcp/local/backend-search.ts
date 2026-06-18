@@ -149,6 +149,7 @@ interface BackendSearchOptions {
   intent_ensemble?: boolean;
   include_lsp_refs?: boolean;
   structured_output?: boolean;
+  retrieval_diagnostics?: boolean;
   retrieval_policy?: string;
   token_cost?: QueryTokenCostSnapshotInput;
 }
@@ -208,6 +209,27 @@ export interface StructuredRetrievalResult {
   capabilityState: RetrievalCapabilityState;
 }
 
+export interface RetrievalDiagnosticsLane {
+  name: string;
+  candidateCount: number;
+  emittedCount: number;
+  warnings: string[];
+}
+
+export interface RetrievalDiagnostics {
+  lanes: RetrievalDiagnosticsLane[];
+  warnings: string[];
+}
+
+interface DiagnosticLaneInput {
+  name: string;
+  candidateRows?: readonly EnrichedSymbolRow[];
+  emittedRows?: readonly EnrichedSymbolRow[];
+  candidateCount?: number;
+  emittedCount?: number;
+  warnings?: readonly string[];
+}
+
 type SearchResult =
   | { error: string }
   | {
@@ -234,6 +256,7 @@ type SearchResult =
       skeletons?: Record<string, string>;
       warning?: string;
       structured_retrieval?: StructuredRetrievalResult;
+      retrieval_diagnostics?: RetrievalDiagnostics;
     };
 
 interface TypedLaneSearchState {
@@ -384,6 +407,88 @@ function summarizeFrontierDiagnostics(frontier: SemanticFrontierSearchDiagnostic
     );
   }
   return lines;
+}
+
+function uniqueRowKey(row: { nodeId?: string; filePath?: string } | undefined): string | null {
+  if (!row) return null;
+  const key = row.nodeId || row.filePath;
+  return key ? String(key) : null;
+}
+
+function rowKeySet(rows: readonly { nodeId?: string; filePath?: string }[]): Set<string> {
+  const keys = new Set<string>();
+  for (const row of rows) {
+    const key = uniqueRowKey(row);
+    if (key) {
+      keys.add(key);
+    }
+  }
+  return keys;
+}
+
+function buildRetrievalDiagnostics(
+  lanes: readonly DiagnosticLaneInput[],
+  warnings: readonly string[] = [],
+): RetrievalDiagnostics {
+  const emittedKeySets = new Map<string, Set<string>>();
+  for (const lane of lanes) {
+    if (lane.emittedRows) {
+      emittedKeySets.set(lane.name, rowKeySet(lane.emittedRows));
+    }
+  }
+
+  const outputLanes = lanes.map((lane) => {
+    const candidateKeys = rowKeySet(lane.candidateRows ?? []);
+    const emittedKeys = emittedKeySets.get(lane.name) ?? new Set<string>();
+    const candidateCount =
+      lane.candidateCount !== undefined ? lane.candidateCount : candidateKeys.size;
+    const emittedCount =
+      lane.emittedCount !== undefined
+        ? lane.emittedCount
+        : [...candidateKeys].filter((key) => emittedKeys.has(key)).length;
+    return {
+      name: lane.name,
+      candidateCount: Math.max(0, Math.floor(candidateCount)),
+      emittedCount: Math.max(0, Math.floor(emittedCount)),
+      warnings: uniqueStrings([...(lane.warnings ?? [])]),
+    };
+  });
+
+  return {
+    lanes: outputLanes,
+    warnings: uniqueStrings([...warnings, ...outputLanes.flatMap((lane) => lane.warnings)]),
+  };
+}
+
+function buildRetrievalDiagnosticsFromCandidates(
+  candidates: readonly RetrievalCandidate[],
+  warnings: readonly string[] = [],
+): RetrievalDiagnostics {
+  const lanes = new Map<string, RetrievalCandidate[]>();
+  for (const candidate of candidates) {
+    const key = candidate.source || 'unknown';
+    const existing = lanes.get(key) ?? [];
+    existing.push(candidate);
+    lanes.set(key, existing);
+  }
+
+  return buildRetrievalDiagnostics(
+    [...lanes.entries()].map(([name, laneCandidates]) => ({
+      name,
+      candidateRows: laneCandidates.map((candidate) => ({
+        nodeId: candidate.id,
+        filePath: candidate.filePath,
+      })),
+      emittedRows: laneCandidates.map((candidate) => ({
+        nodeId: candidate.id,
+        filePath: candidate.filePath,
+      })),
+      candidateCount: laneCandidates.length,
+      emittedCount: laneCandidates.length,
+      warnings: [],
+    })),
+    warnings,
+  );
 }
 
 async function loadIndexedSymbolVectors(
@@ -1396,6 +1501,14 @@ export async function query(
             tokenCost: cachedTokenCost,
           },
         },
+        ...(params.retrieval_diagnostics === true
+          ? {
+              retrieval_diagnostics: buildRetrievalDiagnosticsFromCandidates(
+                cached.candidates,
+                cached.diagnostics.capabilityHealth.warnings,
+              ),
+            }
+          : {}),
       };
     } else if (cached) {
       cacheStatus = 'stale';
@@ -1407,6 +1520,7 @@ export async function query(
   let graphResults: EnrichedSymbolRow[] = [];
   let lockedResults: EnrichedSymbolRow[] = [];
   let typedWarnings: string[] = [];
+  let frontierResult: SymbolNeighborhoodFrontierSearchResult | undefined;
   let ftsUsed = true;
   let typedCapabilitiesUsed = new Set<string>();
   let typedCapabilitiesMissing = new Set<string>();
@@ -1444,7 +1558,7 @@ export async function query(
     ftsUsed = bm25SearchResult.ftsUsed;
 
     if (params.retrieval_policy === 'symbol-neighborhood') {
-      const frontierResult = await timer.time(
+      frontierResult = await timer.time(
         'semantic_frontier',
         runSymbolNeighborhoodFrontierSearch(
           repo,
@@ -1917,6 +2031,91 @@ export async function query(
     ...typedWarnings,
   );
 
+  const retrievalDiagnostics =
+    params.retrieval_diagnostics === true
+      ? buildRetrievalDiagnostics(
+          [
+            {
+              name: 'lexical',
+              candidateRows: bm25Results,
+              emittedRows: merged.map(([, item]) => ({
+                nodeId: item.data.nodeId,
+                filePath: item.data.filePath,
+              })),
+              warnings: !ftsUsed
+                ? [
+                    'FTS extension unavailable - keyword search degraded. Run: ontoindex analyze --force to rebuild indexes.',
+                  ]
+                : [],
+            },
+            {
+              name: 'vector',
+              candidateRows: semanticResults,
+              emittedRows: merged.map(([, item]) => ({
+                nodeId: item.data.nodeId,
+                filePath: item.data.filePath,
+              })),
+              warnings: uniqueStrings([
+                ...(typedCapabilitiesMissing.has('embeddings')
+                  ? ['Embeddings unavailable; typed retrieval downgraded vector lanes.']
+                  : []),
+                ...typedWarnings.filter((message) =>
+                  /vec line|hyde line|embeddings unavailable/i.test(message),
+                ),
+              ]),
+            },
+            {
+              name: 'graph',
+              candidateRows: graphResults,
+              emittedRows: merged.map(([, item]) => ({
+                nodeId: item.data.nodeId,
+                filePath: item.data.filePath,
+              })),
+              warnings: uniqueStrings([
+                ...typedWarnings.filter((message) =>
+                  /graph line|graph traversal|traversal hits/i.test(message),
+                ),
+              ]),
+            },
+            ...(searchInput.mode === 'typed'
+              ? [
+                  {
+                    name: 'exact',
+                    candidateRows: lockedResults,
+                    emittedRows: merged.map(([, item]) => ({
+                      nodeId: item.data.nodeId,
+                      filePath: item.data.filePath,
+                    })),
+                    warnings: uniqueStrings([
+                      ...typedWarnings.filter((message) =>
+                        /exact lookup returned no results|file line/i.test(message),
+                      ),
+                    ]),
+                  },
+                ]
+              : []),
+            ...(frontierResult
+              ? [
+                  {
+                    name: 'frontier',
+                    candidateRows: frontierResult.semanticResults,
+                    emittedRows: frontierResult.semanticResults,
+                    candidateCount:
+                      frontierResult.diagnostics?.visited ?? frontierResult.semanticResults.length,
+                    emittedCount: frontierResult.semanticResults.length,
+                    warnings: uniqueStrings([...frontierResult.warnings]),
+                  },
+                ]
+              : []),
+          ],
+          uniqueStrings([
+            ...typedWarnings,
+            ...(frontierResult?.warnings ?? []),
+            ...(frontierResult?.diagnostics?.warnings ?? []),
+          ]),
+        )
+      : undefined;
+
   if (
     structuredRetrieval &&
     cacheableFreshnessStatus(structuredRetrieval.capabilityState.freshness.status)
@@ -1948,6 +2147,7 @@ export async function query(
     ...(Object.keys(skeletons).length > 0 && { skeletons }),
     ...(warning && { warning }),
     ...(structuredRetrieval && { structured_retrieval: structuredRetrieval }),
+    ...(retrievalDiagnostics && { retrieval_diagnostics: retrievalDiagnostics }),
   };
 
   if (includeSkeleton) {

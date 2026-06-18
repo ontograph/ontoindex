@@ -13,7 +13,11 @@ vi.mock('node:os', () => ({
   homedir: vi.fn().mockReturnValue('/fake/home'),
 }));
 
-import { readRecentOversizedToolCalls, recordToolCall } from '../../src/mcp/local/tool-telemetry.js';
+import {
+  readRecentOversizedToolCalls,
+  readToolTelemetrySummary,
+  recordToolCall,
+} from '../../src/mcp/local/tool-telemetry.js';
 import { appendFile, readFile, stat } from 'node:fs/promises';
 
 const appendMock = appendFile as unknown as ReturnType<typeof vi.fn>;
@@ -100,6 +104,21 @@ describe('recordToolCall', () => {
     );
 
     await expect(readRecentOversizedToolCalls({ limit: 2 })).resolves.toEqual(['impact', 'audit']);
+  });
+
+  it('returns a compact summary with count and names', async () => {
+    readFileMock.mockResolvedValue(
+      [
+        JSON.stringify({ method: 'impact', responseSizeBytes: 600 * 1024 }),
+        JSON.stringify({ method: 'audit', responseSizeBytes: 700 * 1024 }),
+        JSON.stringify({ method: 'impact', responseSizeBytes: 800 * 1024 }),
+      ].join('\n'),
+    );
+
+    await expect(readToolTelemetrySummary({ limit: 5 })).resolves.toEqual({
+      recentOversizedCount: 2,
+      recentOversizedTools: ['impact', 'audit'],
+    });
   });
 
   it('returns an empty oversized list when telemetry is corrupt', async () => {

@@ -205,6 +205,13 @@ describe('MCP Facade Integration (M-1)', () => {
     expect(searchTool.inputSchema.properties.structured_output.description).toContain(
       'structured_retrieval candidates',
     );
+    expect(searchTool.inputSchema.properties.retrieval_diagnostics).toMatchObject({
+      type: 'boolean',
+      default: false,
+    });
+    expect(searchTool.inputSchema.properties.retrieval_diagnostics.description).toContain(
+      'retrieval diagnostics summary',
+    );
   });
 
   it('search(action="semantic") parses typed_query documents into the existing typed path', async () => {

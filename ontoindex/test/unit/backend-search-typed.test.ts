@@ -201,6 +201,7 @@ describe('backend-search typed input', () => {
       query_intent: 'identifier',
     });
     expect(result.warning).toBeUndefined();
+    expect(result).not.toHaveProperty('retrieval_diagnostics');
     expect(mockLoadAnnNeighborEdges).not.toHaveBeenCalled();
     expect(mockEmbedQuery).not.toHaveBeenCalled();
   });
@@ -579,6 +580,66 @@ describe('backend-search typed input', () => {
         },
       },
     });
+  });
+
+  it('emits opt-in retrieval diagnostics without changing the default response shape', async () => {
+    const lexicalHit = symbolRow({
+      nodeId: 'Function:src/core/cache.ts:LexicalHit',
+      name: 'LexicalHit',
+    });
+    const semanticHit = symbolRow({
+      nodeId: 'Function:src/core/cache.ts:VectorHit',
+      name: 'VectorHit',
+    });
+
+    mockExecuteParameterized.mockImplementation(async (_repoId, statement) => {
+      if (String(statement).includes('MATCH (e:CodeEmbedding)')) {
+        return [{ nodeId: lexicalHit.nodeId }];
+      }
+      return [];
+    });
+    mockBm25Search.mockResolvedValue({ results: [lexicalHit], ftsUsed: true });
+    mockSemanticSearch.mockResolvedValue([semanticHit]);
+
+    const result = await query({ id: 'repo-1', repoPath: '/repo', lastCommit: 'abc123' } as any, {
+      typedQuery: {
+        lines: [
+          { type: 'lex', query: 'cache lookup', lineNumber: 1 },
+          { type: 'vec', query: 'cache invalidation semantics', lineNumber: 2 },
+        ],
+      },
+      retrieval_diagnostics: true,
+    });
+
+    expect(result).toMatchObject({
+      retrieval_diagnostics: {
+        lanes: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'lexical',
+            candidateCount: 1,
+            emittedCount: 1,
+          }),
+          expect.objectContaining({
+            name: 'vector',
+            candidateCount: 1,
+            emittedCount: 1,
+            warnings: [],
+          }),
+          expect.objectContaining({
+            name: 'graph',
+            candidateCount: 0,
+            emittedCount: 0,
+          }),
+          expect.objectContaining({
+            name: 'exact',
+            candidateCount: 0,
+            emittedCount: 0,
+          }),
+        ]),
+        warnings: [],
+      },
+    });
+    expect(result).not.toHaveProperty('structured_retrieval');
   });
 
   it('preserves configured token cost metadata in structured retrieval diagnostics', async () => {

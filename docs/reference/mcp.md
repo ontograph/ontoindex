@@ -703,6 +703,11 @@ Use these when the client prefers a small stable tool list. Each facade has an `
 ```json
 {
   "summary": { "changedSymbols": 12, "highRiskSymbols": 1 },
+  "responseContract": {
+    "mode": "summary-first",
+    "anchorScheme": "source-identity-v1",
+    "omittedItems": 0
+  },
   "reviewers": ["maintainer@example.com"]
 }
 ```
@@ -724,6 +729,13 @@ Use these when the client prefers a small stable tool list. Each facade has an `
 {
   "version": 1,
   "capabilities": { "graph": "available" },
+  "results": {
+    "responseContract": {
+      "mode": "summary-first",
+      "anchorScheme": "source-identity-v1",
+      "omittedItems": 0
+    }
+  },
   "findings": [{ "severity": "warning", "path": "README.md" }]
 }
 ```
@@ -752,6 +764,11 @@ Use these when the client prefers a small stable tool list. Each facade has an `
 ```json
 {
   "status": "ok",
+  "responseContract": {
+    "mode": "summary-first",
+    "anchorScheme": "source-identity-v1",
+    "nextCursor": "gn-page-v1:10:10"
+  },
   "items": [{ "kind": "requirement", "id": "REQ-MCP-TOOLS" }],
   "inlineContext": "Docs context: 10 items..."
 }
@@ -862,6 +879,11 @@ Use these when the client prefers a small stable tool list. Each facade has an `
 ```json
 {
   "status": "pass",
+  "responseContract": {
+    "mode": "summary-first",
+    "anchorScheme": "source-identity-v1",
+    "omittedItems": 0
+  },
   "errors": [],
   "warnings": []
 }

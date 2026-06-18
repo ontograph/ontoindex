@@ -301,6 +301,7 @@ describe('gn_explore', () => {
 
     const defaultReport = await gnExplore('test-repo', { query: 'search flow', depth: 'deep' });
     expect(defaultReport.taskPack).toBeUndefined();
+    expect(defaultReport.retrievalDiagnostics).toBeUndefined();
 
     const report = await gnExplore('test-repo', {
       query: 'search flow',
@@ -315,5 +316,44 @@ describe('gn_explore', () => {
     expect(report.taskPack?.topSymbols.length).toBeLessThanOrEqual(3);
     expect(report.taskPack?.topFiles.length).toBeLessThanOrEqual(3);
     expect(report.taskPack?.nextCalls[0]).toContain('inspect({ action: "context"');
+  });
+
+  it('forwards retrieval diagnostics profile through the explore facade', async () => {
+    mockBackendQuery.mockResolvedValue({
+      ...makeDefaultQueryResult(1),
+      retrieval_diagnostics: {
+        lanes: [
+          {
+            name: 'lexical',
+            candidateCount: 1,
+            emittedCount: 1,
+            warnings: [],
+          },
+        ],
+        warnings: [],
+      },
+    });
+
+    const report = await gnExplore('test-repo', {
+      query: 'search flow',
+      profile: 'retrieval-diagnostics',
+    });
+
+    expect(mockBackendQuery).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        retrieval_diagnostics: true,
+      }),
+    );
+    expect(report.taskPack).toBeUndefined();
+    expect(report.retrievalDiagnostics).toMatchObject({
+      lanes: [
+        {
+          name: 'lexical',
+          candidateCount: 1,
+          emittedCount: 1,
+        },
+      ],
+    });
   });
 });

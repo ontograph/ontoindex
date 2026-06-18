@@ -16,6 +16,17 @@ const snapshot: EnrichmentSnapshot = {
   fileHash: 'hash-doc',
 };
 
+const adrRetrievalFixture = {
+  query: {
+    docPath: 'docs/adr/0085-mcp-repo-resolution-without-env-harness.md',
+    symbolId: 'Function:ontoindex/src/mcp/shared/target-context.ts:resolveTargetContext',
+  },
+  expectedAnchors: [
+    'docs/adr/0085-mcp-repo-resolution-without-env-harness.md',
+    'ontoindex/src/mcp/shared/target-context.ts',
+  ],
+} as const;
+
 function record(overrides: Partial<EnrichmentRecord> = {}): EnrichmentRecord {
   return createEnrichmentRecord({
     sourceIndexId: 'index-1',
@@ -57,6 +68,54 @@ function record(overrides: Partial<EnrichmentRecord> = {}): EnrichmentRecord {
   });
 }
 
+function adrRecord(): EnrichmentRecord {
+  return createEnrichmentRecord({
+    sourceIndexId: 'index-1',
+    sourceCommitHash: 'commit-1',
+    schemaVersion: 1,
+    analyzerId: 'markdown-sidecar',
+    analyzerVersion: '1.0.0',
+    filePath: adrRetrievalFixture.query.docPath,
+    fileHash: 'hash-adr',
+    status: 'complete',
+    confidence: 0.95,
+    records: [
+      {
+        kind: 'markdown-chunk',
+        chunkKey: 'chunk:mcp-repo-resolution',
+        docPath: adrRetrievalFixture.query.docPath,
+        fileHash: 'hash-adr',
+        headingPath: ['ADR 0085', 'Repo resolution'],
+        lineSpan: { start: 10, end: 18 },
+        chunkIndex: 1,
+        normalizedAnchor: 'mcp-repo-resolution',
+        contentHash: 'content-adr',
+        excerpt: 'Repo resolution stays inside the shared target context.',
+      },
+      {
+        kind: 'markdown-code-mention',
+        chunkKey: 'chunk:mcp-repo-resolution',
+        target: {
+          type: 'symbol',
+          id: adrRetrievalFixture.query.symbolId,
+          filePath: 'ontoindex/src/mcp/shared/target-context.ts',
+        },
+        confidence: 0.93,
+        resolutionStatus: 'resolved',
+        evidence: { text: 'target-context.ts', lineSpan: { start: 130, end: 130 } },
+      },
+    ],
+  });
+}
+
+function adrSnapshot(): EnrichmentSnapshot {
+  return {
+    ...snapshot,
+    filePath: adrRetrievalFixture.query.docPath,
+    fileHash: 'hash-adr',
+  };
+}
+
 describe('markdown passive retrieval', () => {
   it('returns related chunks and docs as metadata without reordering primary results', () => {
     const primaryResults = [
@@ -91,6 +150,20 @@ describe('markdown passive retrieval', () => {
         headingPaths: [['Orders', 'Checkout']],
       },
     ]);
+  });
+
+  it('keeps the ADR retrieval fixture anchors inside the bounded result set', () => {
+    const result = selectMarkdownPassiveRetrieval([], [adrRecord()], adrRetrievalFixture.query, {
+      topK: 3,
+      snapshotsByDocPath: { [adrRetrievalFixture.query.docPath]: adrSnapshot() },
+    });
+
+    const anchors = collectRetrievalAnchors(result);
+
+    expect(result.relatedChunks.length).toBeLessThanOrEqual(3);
+    for (const expectedAnchor of adrRetrievalFixture.expectedAnchors) {
+      expect(anchors.has(expectedAnchor)).toBe(true);
+    }
   });
 
   it('selects chunks through code mentions and keeps mention state as metadata', () => {
@@ -198,3 +271,27 @@ describe('markdown passive retrieval', () => {
     expect(result.skipped).toEqual([]);
   });
 });
+
+function collectRetrievalAnchors(result: {
+  relatedDocs: Array<{ docPath: string }>;
+  relatedChunks: Array<{
+    docPath: string;
+    mentions: Array<{ target: unknown }>;
+  }>;
+}): Set<string> {
+  const anchors = new Set<string>();
+  for (const doc of result.relatedDocs) {
+    anchors.add(doc.docPath);
+  }
+  for (const chunk of result.relatedChunks) {
+    anchors.add(chunk.docPath);
+    for (const mention of chunk.mentions) {
+      if (typeof mention.target !== 'object' || mention.target === null) continue;
+      const target = mention.target as { filePath?: unknown };
+      if (typeof target.filePath === 'string') {
+        anchors.add(target.filePath);
+      }
+    }
+  }
+  return anchors;
+}

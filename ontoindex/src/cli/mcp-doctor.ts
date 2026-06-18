@@ -1,6 +1,10 @@
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { shellQuote } from '../mcp/shared/repo-resolution-errors.js';
-import { gnDiagnose, type DiagnoseParams, type DiagnoseReport } from '../mcp/super/diagnose.js';
+import { gnDiagnose } from '../mcp/super/diagnose.js';
+import type { DiagnoseParams, DiagnoseReport } from '../mcp/super/diagnose.js';
 import { execFileText } from '../core/process/exec-file.js';
 
 export type McpDoctorVerdict = 'READY' | 'DEGRADED' | 'MISCONFIGURED';
@@ -37,6 +41,15 @@ export interface McpDoctorReport {
     projectCwd?: string;
     repairCommand?: string;
   };
+  setupHealth?: {
+    status: 'ok' | 'degraded' | 'misconfigured';
+    issues: Array<{
+      kind: 'stale-hardcoded-repo-path' | 'missing-generated-skill-dir';
+      path: string;
+      repairCommand: string;
+      message: string;
+    }>;
+  };
   nextCommand: string;
 }
 
@@ -50,6 +63,7 @@ export interface McpDoctorDeps {
     projectCwd: string,
     repairCommand: string,
   ) => Promise<McpDoctorReport['processLiveness']>;
+  setupHealth?: (projectCwd: string) => Promise<McpDoctorReport['setupHealth']>;
 }
 
 export async function createMcpDoctorReport(
@@ -85,7 +99,8 @@ export async function createMcpDoctorReport(
     projectCwd,
     fallbackRestartCommand,
   );
-  const verdict = resolveVerdict(diagnose, symbolSmoke, processLiveness);
+  const setupHealth = await (deps.setupHealth ?? probeSetupHealth)(projectCwd);
+  const verdict = resolveVerdict(diagnose, symbolSmoke, processLiveness, setupHealth);
 
   return {
     version: 1,
@@ -96,9 +111,11 @@ export async function createMcpDoctorReport(
     diagnose,
     symbolSmoke,
     ...(processLiveness ? { processLiveness } : {}),
+    ...(setupHealth && setupHealth.status !== 'ok' ? { setupHealth } : {}),
     nextCommand:
       diagnose.misconfiguration.recommendedCommand ??
       processLiveness?.repairCommand ??
+      setupHealth?.issues[0]?.repairCommand ??
       fallbackRestartCommand,
   };
 }
@@ -134,7 +151,9 @@ export function formatMcpDoctorText(report: McpDoctorReport): string {
   ];
   if (target?.repoLabel || target?.repoPath) {
     lines.push(
-      `Resolved repo: ${target.repoLabel ?? target.repoKey ?? '<unknown>'} -> ${target.repoPath ?? '<unknown>'}`,
+      `Resolved repo: ${target.repoLabel ?? target.repoKey ?? '<unknown>'} -> ${
+        target.repoPath ?? '<unknown>'
+      }`,
     );
   }
   if (report.diagnose.misconfiguration.status === 'fail') {
@@ -181,6 +200,14 @@ export function formatMcpDoctorText(report: McpDoctorReport): string {
       lines.push(`Process repair: ${liveness.repairCommand}`);
     }
   }
+  if (report.setupHealth && report.setupHealth.status !== 'ok') {
+    const setup = report.setupHealth;
+    lines.push(`Setup: ${setup.status}`);
+    for (const issue of setup.issues) {
+      lines.push(`Setup issue: ${issue.message}`);
+      lines.push(`Setup repair: ${issue.repairCommand}`);
+    }
+  }
   lines.push('', 'Next command:', `  ${report.nextCommand}`);
   return lines.join('\n');
 }
@@ -189,14 +216,17 @@ function resolveVerdict(
   diagnose: DiagnoseReport,
   symbolSmoke: McpDoctorReport['symbolSmoke'],
   processLiveness: McpDoctorReport['processLiveness'],
+  setupHealth?: McpDoctorReport['setupHealth'],
 ): McpDoctorVerdict {
   if (diagnose.misconfiguration.status === 'fail') return 'MISCONFIGURED';
   if (diagnose.targetContext && diagnose.targetContext.status !== 'ok') return 'MISCONFIGURED';
   if (processLiveness?.status === 'mismatch') return 'MISCONFIGURED';
+  if (setupHealth?.status === 'misconfigured') return 'MISCONFIGURED';
   if (processLiveness?.status === 'ambiguous' || processLiveness?.status === 'missing') {
     return 'DEGRADED';
   }
   if (symbolSmoke?.status === 'failed') return 'DEGRADED';
+  if (setupHealth?.status === 'degraded') return 'DEGRADED';
   return diagnose.degradedContext.status === 'degraded' ? 'DEGRADED' : 'READY';
 }
 
@@ -333,6 +363,114 @@ async function probeMcpProcessLiveness(
       repairCommand,
     };
   }
+}
+
+async function probeSetupHealth(projectCwd: string): Promise<McpDoctorReport['setupHealth']> {
+  const issues: NonNullable<McpDoctorReport['setupHealth']>['issues'] = [];
+  const normalizedProjectCwd = normalizePath(projectCwd);
+  const normalizedHome = normalizePath(os.homedir());
+  const repairCommand = 'ontoindex setup';
+
+  const configFiles = [
+    path.join(projectCwd, '.claude', 'settings.local.json'),
+    path.join(projectCwd, 'ontoindex', '.claude', 'settings.local.json'),
+  ];
+
+  for (const filePath of configFiles) {
+    const raw = await readTextIfExists(filePath);
+    if (!raw) continue;
+    const staleMentions = findStaleRepoPaths(raw, normalizedProjectCwd, normalizedHome);
+    if (staleMentions.length === 0) continue;
+    issues.push({
+      kind: 'stale-hardcoded-repo-path',
+      path: filePath,
+      repairCommand,
+      message: `${relativeOrAbsolute(
+        projectCwd,
+        filePath,
+      )} contains stale repo path(s): ${staleMentions.join(', ')}`,
+    });
+  }
+
+  const skillChecks = [
+    {
+      root: path.join(os.homedir(), '.claude'),
+      skillDir: path.join(os.homedir(), '.claude', 'skills'),
+    },
+    {
+      root: path.join(os.homedir(), '.codex'),
+      skillDir: path.join(os.homedir(), '.agents', 'skills'),
+    },
+    {
+      root: path.join(os.homedir(), '.cursor'),
+      skillDir: path.join(os.homedir(), '.cursor', 'skills'),
+    },
+    {
+      root: path.join(os.homedir(), '.config', 'opencode'),
+      skillDir: path.join(os.homedir(), '.config', 'opencode', 'skill'),
+    },
+  ];
+
+  for (const { root, skillDir } of skillChecks) {
+    if (!(await dirExists(root))) continue;
+    if (await dirExists(skillDir)) continue;
+    issues.push({
+      kind: 'missing-generated-skill-dir',
+      path: skillDir,
+      repairCommand,
+      message: `missing generated skill directory: ${skillDir}`,
+    });
+  }
+
+  if (issues.length === 0) return { status: 'ok', issues };
+  return {
+    status: issues.some((issue) => issue.kind === 'stale-hardcoded-repo-path')
+      ? 'misconfigured'
+      : 'degraded',
+    issues,
+  };
+}
+
+async function readTextIfExists(filePath: string): Promise<string | undefined> {
+  try {
+    return await fs.readFile(filePath, 'utf-8');
+  } catch {
+    return undefined;
+  }
+}
+
+async function dirExists(dirPath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(dirPath);
+    return stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function findStaleRepoPaths(
+  raw: string,
+  normalizedProjectCwd: string,
+  normalizedHome: string,
+): string[] {
+  const normalized = normalizePath(raw);
+
+  const stale = new Set<string>();
+  for (const match of normalized.match(/\/[^\s"'`<>]+/g) ?? []) {
+    if (match.startsWith(normalizedProjectCwd)) continue;
+    if (match.startsWith(normalizedHome)) continue;
+    stale.add(match.replace(/[.,;:]+$/, ''));
+  }
+  return [...stale];
+}
+
+function normalizePath(value: string): string {
+  return value.replace(/\\/g, '/');
+}
+
+function relativeOrAbsolute(baseDir: string, targetPath: string): string {
+  const relative = path.relative(baseDir, targetPath);
+  return relative.startsWith('..') ? targetPath : relative || '.';
 }
 
 function looksLikeOntoindexMcpCommand(command: string): boolean {

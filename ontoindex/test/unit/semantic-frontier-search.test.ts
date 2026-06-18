@@ -147,6 +147,54 @@ describe('semanticFrontierSearch', () => {
     expect(result.results[1].score).toBeGreaterThan(result.results[2].score);
   });
 
+  it('reports bounded lane diagnostics for the frontier search path', async () => {
+    const result = await semanticFrontierSearch({
+      repo: 'repo1',
+      queryVector: [1, 0],
+      topK: 5,
+      ef: 10,
+      maxVisited: 10,
+      seeds: [
+        {
+          nodeId: 'seed',
+          vector: [1, 0],
+          lanes: ['seed'],
+        },
+      ],
+      edges: [
+        {
+          fromId: 'seed',
+          toId: 'ann-1',
+          target: {
+            nodeId: 'ann-1',
+            vector: [1, 0],
+            lanes: ['ann'],
+          },
+        },
+      ],
+    });
+
+    expect(result.lanes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'vector',
+          candidateCount: 1,
+          emittedCount: 1,
+        }),
+        expect.objectContaining({
+          name: 'seed',
+          candidateCount: 1,
+          emittedCount: 1,
+        }),
+        expect.objectContaining({
+          name: 'ann',
+          candidateCount: 1,
+          emittedCount: 1,
+        }),
+      ]),
+    );
+  });
+
   it('propagates and reports seed lanes', async () => {
     const result = await semanticFrontierSearch({
       repo: 'repo1',

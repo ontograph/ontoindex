@@ -82,6 +82,12 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           description: 'Include graph-path citation edges for each top symbol. Default: true.',
           default: true,
         },
+        profile: {
+          type: 'string',
+          enum: ['task-pack', 'retrieval-diagnostics'],
+          description:
+            'Optional compact profile. task-pack adds bounded next calls; retrieval-diagnostics adds lane counts and lane-specific warnings without changing the default report shape.',
+        },
       },
       required: ['query'],
     },

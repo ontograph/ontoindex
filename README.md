@@ -9,7 +9,7 @@ The default path is local: install, analyze, setup, connect MCP, serve, and gene
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- Current release: `1.9.16`
+- Current release: `1.9.17`
 - Source repository: [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - Security policy: [SECURITY.md](SECURITY.md)
 - Enterprise contact: [erasyuk@gmail.com](mailto:erasyuk@gmail.com)
@@ -125,8 +125,8 @@ Use this path when npm publication is available in your environment.
 
 | Platform | Command |
 | --- | --- |
-| Linux/macOS | `npm install -g ontoindex@1.9.16 && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.16; ontoindex --version` |
+| Linux/macOS | `npm install -g ontoindex@1.9.17 && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.17; ontoindex --version` |
 
 ### Install from a Release Tarball URL
 
@@ -134,8 +134,8 @@ Use this when you want an immutable GitHub release asset.
 
 | Platform | Command |
 | --- | --- |
-| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.16/ontoindex-1.9.16.tgz && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.16/ontoindex-1.9.16.tgz; ontoindex --version` |
+| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.17/ontoindex-1.9.17.tgz && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.17/ontoindex-1.9.17.tgz; ontoindex --version` |
 
 ## First Run
 
@@ -321,8 +321,8 @@ Images:
 
 | Image | Purpose |
 | --- | --- |
-| `ghcr.io/ontograph/ontoindex:1.9.16` | CLI, MCP server, and `ontoindex serve` backend |
-| `ghcr.io/ontograph/ontoindex-web:1.9.16` | Web UI |
+| `ghcr.io/ontograph/ontoindex:1.9.17` | CLI, MCP server, and `ontoindex serve` backend |
+| `ghcr.io/ontograph/ontoindex-web:1.9.17` | Web UI |
 
 ## Comparison With Related Tools
 

@@ -49,6 +49,13 @@ describe('audit lifecycle CLI', () => {
     expect(output.advisory).toBe(true);
     expect(output.exitRecommendation).toBe('zero');
     expect(output.summary.findings).toBe(1);
+    expect(output.responseContract).toMatchObject({
+      mode: 'summary-first',
+      stablePrefix: 'repo-and-source',
+      expandable: false,
+      omittedItems: 0,
+    });
+    expect(output.responseContract.anchors).toHaveLength(0);
     expect(output.gate).toMatchObject({
       mode: 'advisory',
       source: 'default-advisory',

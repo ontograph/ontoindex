@@ -288,6 +288,17 @@ describe('audit lifecycle lint', () => {
       limits: { emitted: 1, total: 2, truncated: true, maxIssues: 1 },
       cursor: { offset: 0, pageSize: 1, returned: 1, total: 2, hasMore: true },
     });
+    expect(result.responseContract).toMatchObject({
+      mode: 'summary-first',
+      stablePrefix: 'repo-and-source',
+      deterministicOrder: true,
+      expandable: true,
+      anchorScheme: 'source-identity-v1',
+      omittedItems: 1,
+      nextCursor: (result.cursor as { next?: string }).next,
+      expandHint: `Rerun gn_audit_lint with cursor:"${(result.cursor as { next?: string }).next}" to fetch the next page.`,
+    });
+    expect(result.responseContract.anchors).toEqual(['repo:A-1:report:open-requires-fresh-evidence']);
     expect(result.issues).toEqual([expect.objectContaining({ findingId: 'A-1' })]);
 
     const nextPage = await runAuditLint('/repo', {
@@ -304,6 +315,14 @@ describe('audit lifecycle lint', () => {
       cursor: { offset: 1, pageSize: 1, returned: 1, total: 2, hasMore: false },
       limits: { emitted: 1, total: 2, truncated: true, maxIssues: 1 },
     });
+    expect(nextPage.responseContract).toMatchObject({
+      expandable: false,
+      omittedItems: 0,
+      expandHint: 'No additional audit page is available.',
+    });
+    expect(nextPage.responseContract.anchors).toEqual([
+      'repo:B-1:report:open-requires-fresh-evidence',
+    ]);
     expect(nextPage.issues).toEqual([expect.objectContaining({ findingId: 'B-1' })]);
   });
 
@@ -320,6 +339,16 @@ describe('audit lifecycle lint', () => {
         byRuleId: { 'open-requires-fresh-evidence': 1 },
       },
     });
+    expect(summary.responseContract).toMatchObject({
+      mode: 'summary-first',
+      stablePrefix: 'repo-and-source',
+      expandable: false,
+      omittedItems: 0,
+      expandHint: 'No additional audit page is available.',
+    });
+    expect(summary.responseContract.anchors).toEqual([
+      'repo:AUDIT-M5-001:report:open-requires-fresh-evidence',
+    ]);
     expect(summary.issues).toEqual([
       expect.objectContaining({
         ruleId: 'open-requires-fresh-evidence',
@@ -341,6 +370,7 @@ describe('audit lifecycle lint', () => {
         truncated: false,
       },
     });
+    expect('responseContract' in minimal).toBe(false);
     expect(minimal.nextAction).toContain('Fix reported lint issues');
     expect(minimal.issues).toBeUndefined();
   });

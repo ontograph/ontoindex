@@ -75,6 +75,13 @@ export interface SemanticFrontierSearchResult {
   readonly freshness?: QueryFreshnessStatus;
 }
 
+export interface SemanticFrontierLaneDiagnostics {
+  readonly name: string;
+  readonly candidateCount: number;
+  readonly emittedCount: number;
+  readonly warnings: string[];
+}
+
 export interface SemanticFrontierSearchDiagnostics {
   readonly repo: string;
   readonly repoPath?: string;
@@ -86,6 +93,7 @@ export interface SemanticFrontierSearchDiagnostics {
   readonly truncated: boolean;
   readonly seedLanes: string[];
   readonly warnings: string[];
+  readonly lanes: readonly SemanticFrontierLaneDiagnostics[];
   readonly fallbackReason?: string;
   readonly results: readonly SemanticFrontierSearchResult[];
 }
@@ -169,6 +177,24 @@ function addUnique(target: string[], value?: string): void {
   target.push(value);
 }
 
+function uniqueWarnings(items: readonly string[]): string[] {
+  return uniqSorted(items);
+}
+
+function laneDiagnostics(
+  name: string,
+  candidateCount: number,
+  emittedCount: number,
+  warnings: readonly string[] = [],
+): SemanticFrontierLaneDiagnostics {
+  return {
+    name,
+    candidateCount: Math.max(0, Math.floor(candidateCount)),
+    emittedCount: Math.max(0, Math.floor(emittedCount)),
+    warnings: uniqueWarnings(warnings),
+  };
+}
+
 /**
  * Expand ANN-like neighbors in a single in-process traversal and return ranked
  * diagnostics. No repeated external MCP/tool calls are made.
@@ -196,6 +222,7 @@ export async function semanticFrontierSearch(
     truncated: false,
     seedLanes,
     warnings: [],
+    lanes: [],
     results: [],
   };
 
@@ -205,6 +232,11 @@ export async function semanticFrontierSearch(
       embeddingReady: false,
       indexFreshness: 'degraded',
       fallbackReason: 'queryVector-invalid',
+      lanes: [
+        laneDiagnostics('vector', 0, 0, ['queryVector is missing or contains invalid numbers.']),
+        laneDiagnostics('seed', 0, 0),
+        laneDiagnostics('ann', 0, 0),
+      ],
       warnings: ['queryVector is missing or contains invalid numbers.'],
     };
   }
@@ -215,6 +247,11 @@ export async function semanticFrontierSearch(
       ...result,
       indexFreshness: 'unknown',
       fallbackReason: 'seed-missing',
+      lanes: [
+        laneDiagnostics('vector', 1, 1),
+        laneDiagnostics('seed', 0, 0, ['No valid seed ids were supplied.']),
+        laneDiagnostics('ann', 0, 0),
+      ],
       warnings: ['No valid seed ids were supplied.'],
     };
   }
@@ -230,6 +267,13 @@ export async function semanticFrontierSearch(
         ...result,
         indexFreshness: 'degraded',
         fallbackReason: 'neighbor-provider-failed',
+        lanes: [
+          laneDiagnostics('vector', 1, 1),
+          laneDiagnostics('seed', validSeeds.length, 0),
+          laneDiagnostics('ann', 0, 0, [
+            `neighborProvider failed: ${error instanceof Error ? error.message : String(error)}`,
+          ]),
+        ],
         warnings: [
           `neighborProvider failed: ${error instanceof Error ? error.message : String(error)}`,
         ],
@@ -254,6 +298,11 @@ export async function semanticFrontierSearch(
       ...result,
       indexFreshness: 'degraded',
       fallbackReason: 'neighbor-source-missing',
+      lanes: [
+        laneDiagnostics('vector', 1, 1),
+        laneDiagnostics('seed', validSeeds.length, 0),
+        laneDiagnostics('ann', 0, 0, ['No ANN edge source supplied.']),
+      ],
       warnings: ['No ANN edge source supplied.'],
     };
   }
@@ -414,6 +463,11 @@ export async function semanticFrontierSearch(
   result.results = scoredResults.slice(0, topK);
   result.truncated = truncatedByEf || truncatedByVisited;
   result.warnings = [...warnings].sort();
+  result.lanes = [
+    laneDiagnostics('vector', 1, 1),
+    laneDiagnostics('seed', validSeeds.length, validSeeds.length),
+    laneDiagnostics('ann', edges.length, scoredResults.length, [...warnings]),
+  ];
 
   if (result.results.length === 0) {
     if (!result.fallbackReason) {

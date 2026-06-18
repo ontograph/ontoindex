@@ -144,9 +144,12 @@ export function formatFileListForGrouping(
 ): string {
   return files
     .map((f) => {
+      const sortedSymbols = [...f.symbols].sort((a, b) =>
+        a.name.localeCompare(b.name) || a.type.localeCompare(b.type),
+      );
       const exports =
-        f.symbols.length > 0
-          ? f.symbols.map((s) => `${s.name} (${s.type})`).join(', ')
+        sortedSymbols.length > 0
+          ? sortedSymbols.map((s) => `${s.name} (${s.type})`).join(', ')
           : 'no exports';
       return `- ${f.filePath}: ${exports}`;
     })

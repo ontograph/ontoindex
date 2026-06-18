@@ -304,6 +304,17 @@ describe('collectAdvisoryDocsEvidence', () => {
       throw new Error('expected full report');
     expect(firstPage.docsEvidence).toHaveLength(1);
     expect(firstPage.limits).toMatchObject({ emitted: 1, total: 3, truncated: true, maxItems: 1 });
+    expect(firstPage.responseContract).toMatchObject({
+      mode: 'summary-first',
+      stablePrefix: 'repo-and-contract',
+      deterministicOrder: true,
+      expandable: true,
+      anchorScheme: 'source-identity-v1',
+      omittedItems: 2,
+      nextCursor: firstPage.cursor?.next,
+    });
+    expect(firstPage.responseContract.expandHint).toContain(firstPage.cursor?.next);
+    expect(firstPage.responseContract.anchors).toEqual(['test-repo:REQ-1:no-span:implemented']);
     expect(firstPage.cursor).toMatchObject({
       offset: 0,
       pageSize: 1,
@@ -320,6 +331,11 @@ describe('collectAdvisoryDocsEvidence', () => {
     if (!('docsEvidence' in secondPage) || !('cursor' in secondPage))
       throw new Error('expected full report');
     expect(secondPage.docsEvidence).toHaveLength(1);
+    expect(secondPage.responseContract).toMatchObject({
+      expandable: true,
+      omittedItems: 1,
+      anchors: ['test-repo:REQ-2:no-span:implemented'],
+    });
     expect(secondPage.cursor).toMatchObject({
       offset: 1,
       pageSize: 1,
@@ -342,6 +358,11 @@ describe('collectAdvisoryDocsEvidence', () => {
       implementationEvidenceCount: 1,
       testCount: 0,
     });
+    expect(summary.responseContract).toMatchObject({
+      mode: 'summary-first',
+      anchors: ['test-repo:REQ-1:no-span:implemented'],
+      omittedItems: 1,
+    });
 
     const minimal = await gnDocs('test-repo', { action: 'trace', minimal: true, maxItems: 1 });
     expect(minimal).toMatchObject({
@@ -354,6 +375,20 @@ describe('collectAdvisoryDocsEvidence', () => {
       },
     });
     expect(minimal.nextAction).toContain('cursor');
+    expect('responseContract' in minimal).toBe(false);
     expect('docsEvidence' in minimal).toBe(false);
+  });
+
+  it('returns deterministic docs response contracts for repeated fixtures', async () => {
+    const repo = await createRepo();
+    await writeSidecarStore(repo.storagePath, traceState(['REQ-1', 'REQ-2']));
+
+    const first = await gnDocs('test-repo', { action: 'trace', summary: true, maxItems: 1 });
+    const second = await gnDocs('test-repo', { action: 'trace', summary: true, maxItems: 1 });
+
+    if (!('responseContract' in first) || !('responseContract' in second)) {
+      throw new Error('expected full reports');
+    }
+    expect(second.responseContract).toEqual(first.responseContract);
   });
 });

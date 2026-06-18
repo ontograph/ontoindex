@@ -16,7 +16,7 @@ import path from 'path';
 import { getFileSkeleton } from '../../core/search/skeleton.js';
 import { computeGraphPath, type GraphPathEdge } from '../../core/search/graph-path.js';
 import { executeParameterized, initLbug } from '../../core/lbug/pool-adapter.js';
-import { query as backendQuery } from '../local/backend-search.js';
+import { query as backendQuery, type RetrievalDiagnostics } from '../local/backend-search.js';
 
 // Re-export so callers can use IntentLabel without importing intent-classifier.
 export type IntentLabel = Intent;
@@ -27,7 +27,7 @@ export interface ExploreParams {
   qualityMode?: 'fast' | 'balanced' | 'thorough'; // default: 'balanced'
   includeSkeletons?: boolean; // default: true
   includeCitations?: boolean; // default: true
-  profile?: 'task-pack';
+  profile?: 'task-pack' | 'retrieval-diagnostics';
 }
 
 interface SymbolRetryExamples {
@@ -73,6 +73,7 @@ export interface ExploreReport {
     rationale: string;
   }>;
   taskPack?: ExploreTaskPack;
+  retrievalDiagnostics?: RetrievalDiagnostics;
   warnings: string[];
 }
 
@@ -114,6 +115,7 @@ interface ExploreQueryResult {
   processes?: QueryProcess[];
   process_symbols?: QuerySymbol[];
   definitions?: QuerySymbol[];
+  retrieval_diagnostics?: RetrievalDiagnostics;
 }
 
 function rowValue(row: QueryRow, key: string, index: number): unknown {
@@ -295,6 +297,7 @@ export async function gnExplore(repoId: string, params: ExploreParams): Promise<
       query: params.query,
       include_citations: params.includeCitations !== false,
       intent_ensemble: true,
+      retrieval_diagnostics: params.profile === 'retrieval-diagnostics',
     })) as ExploreQueryResult;
   } catch (err) {
     warnings.push(`query primitive failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -442,7 +445,18 @@ export async function gnExplore(repoId: string, params: ExploreParams): Promise<
     clusters,
     suggestedEntryPoints,
     ...(params.profile === 'task-pack'
-      ? { taskPack: buildTaskPack(repoId, params.query, classification.intent, enrichedSymbols, warnings) }
+      ? {
+          taskPack: buildTaskPack(
+            repoId,
+            params.query,
+            classification.intent,
+            enrichedSymbols,
+            warnings,
+          ),
+        }
+      : {}),
+    ...(params.profile === 'retrieval-diagnostics' && queryResult.retrieval_diagnostics
+      ? { retrievalDiagnostics: queryResult.retrieval_diagnostics }
       : {}),
     warnings,
   };

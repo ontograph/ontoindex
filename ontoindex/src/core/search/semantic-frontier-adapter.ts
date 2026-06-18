@@ -64,6 +64,26 @@ const makeDisabledDiagnostics = (
   truncated: false,
   seedLanes: uniqueSortedLanes(seeds.flatMap((seed) => (seed.lanes ? [...seed.lanes] : []))),
   warnings: ['symbol-neighborhood frontier search disabled'],
+  lanes: [
+    {
+      name: 'vector',
+      candidateCount: 1,
+      emittedCount: 0,
+      warnings: [],
+    },
+    {
+      name: 'seed',
+      candidateCount: seeds.length,
+      emittedCount: 0,
+      warnings: [],
+    },
+    {
+      name: 'ann',
+      candidateCount: 0,
+      emittedCount: 0,
+      warnings: ['symbol-neighborhood frontier search disabled'],
+    },
+  ],
   fallbackReason: 'symbol-neighborhood-frontier-disabled',
   results: [],
 });

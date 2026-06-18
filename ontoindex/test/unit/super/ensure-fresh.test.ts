@@ -5,7 +5,7 @@
  * No real git process, filesystem, or registry access is used.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
 // Mocks — declared before the module under test is imported.
@@ -19,6 +19,10 @@ vi.mock('child_process', () => ({
 
 vi.mock('fs', () => ({
   readFileSync: vi.fn(),
+}));
+
+vi.mock('../../../src/storage/repo-manager.js', () => ({
+  loadMeta: vi.fn(),
 }));
 
 vi.mock('os', () => ({
@@ -38,11 +42,15 @@ import { execFile, spawn } from 'child_process';
 import { readFileSync } from 'fs';
 import { gnEnsureFresh } from '../../../src/mcp/super/ensure-fresh.js';
 import { readRuntimeHealth } from '../../../src/core/runtime/runtime-health.js';
+import { loadMeta } from '../../../src/storage/repo-manager.js';
 
 const mockExecFile = vi.mocked(execFile);
 const mockSpawn = vi.mocked(spawn);
 const mockReadFileSync = vi.mocked(readFileSync);
 const mockReadRuntimeHealth = vi.mocked(readRuntimeHealth);
+const mockLoadMeta = vi.mocked(loadMeta);
+
+let savedEnv: Record<string, string | undefined> = {};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -52,6 +60,7 @@ const REPO_ID = 'test-repo';
 const REPO_PATH = '/home/testuser/_wrk/test-repo';
 const CURRENT_COMMIT = 'abc123def456abc123def456abc123def456abc1';
 const INDEXED_COMMIT = 'abc123def456abc123def456abc123def456abc1'; // same = fresh
+const EMBEDDING_MODEL_HASH = 'hash-a';
 
 const STALE_INDEXED_COMMIT = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
 
@@ -75,7 +84,11 @@ function makeRuntimeHealth(
     degradedReason: freshnessState === 'clean' ? null : `${freshnessState} reason`,
     repairCommand: 'ontoindex analyze --force',
     hasRuntimeArtifacts: freshnessState !== 'clean',
-    analyzeLock: { path: `${REPO_PATH}/.ontoindex/analyze.lock`, present: false, state: 'absent' as const },
+    analyzeLock: {
+      path: `${REPO_PATH}/.ontoindex/analyze.lock`,
+      present: false,
+      state: 'absent' as const,
+    },
     analysisCheckpoint: {
       path: `${REPO_PATH}/.ontoindex/analysis-checkpoint.json`,
       present: false,
@@ -104,6 +117,24 @@ function makeRegistry(
       },
     },
   ]);
+}
+
+function makeMeta(
+  options: {
+    lastCommit?: string;
+    embeddings?: number;
+    modelHash?: string;
+  } = {},
+) {
+  return {
+    repoPath: REPO_PATH,
+    lastCommit: options.lastCommit ?? INDEXED_COMMIT,
+    indexedAt: '2026-06-17T00:00:00.000Z',
+    model_hash: options.modelHash ?? EMBEDDING_MODEL_HASH,
+    stats: {
+      embeddings: options.embeddings ?? 12,
+    },
+  };
 }
 
 /** Set up execFile to handle the standard calls. */
@@ -152,8 +183,27 @@ function setupSpawnExit(code: number = 0) {
 describe('gnEnsureFresh', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    savedEnv = {};
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('ONTOINDEX_')) {
+        savedEnv[key] = process.env[key];
+        delete process.env[key];
+      }
+    }
+    process.env.ONTOINDEX_EMBEDDING_MODEL_HASH = EMBEDDING_MODEL_HASH;
     setupSpawnExit();
     mockReadRuntimeHealth.mockResolvedValue(makeRuntimeHealth());
+    mockLoadMeta.mockResolvedValue(makeMeta() as any);
+  });
+
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('ONTOINDEX_')) delete process.env[key];
+    }
+    for (const [key, val] of Object.entries(savedEnv)) {
+      if (val === undefined) delete process.env[key];
+      else process.env[key] = val;
+    }
   });
 
   // ---- Test 1: Fresh index → isStale: false --------------------------------
@@ -319,11 +369,14 @@ describe('gnEnsureFresh', () => {
     mockReadFileSync.mockReturnValue(
       makeRegistry({ lastCommit: CURRENT_COMMIT, embeddings: 42 }) as any,
     );
+    mockLoadMeta.mockResolvedValue(makeMeta({ embeddings: 42 }) as any);
 
     const report = await gnEnsureFresh(REPO_ID, {});
 
     expect(report.embeddingsStatus.count).toBe(42);
     expect(report.embeddingsStatus.required).toBe(false);
+    expect(report.embeddingsStatus.status).toBe('ok');
+    expect(report.embeddingsStatus.repairCommand).toBeUndefined();
   });
 
   // ---- Bonus Test 6: withEmbeddings + count=0 → required: true + recommendation
@@ -332,11 +385,42 @@ describe('gnEnsureFresh', () => {
     mockReadFileSync.mockReturnValue(
       makeRegistry({ lastCommit: CURRENT_COMMIT, embeddings: 0 }) as any,
     );
+    mockLoadMeta.mockResolvedValue(makeMeta({ embeddings: 0 }) as any);
 
     const report = await gnEnsureFresh(REPO_ID, { withEmbeddings: true });
 
     expect(report.embeddingsStatus.required).toBe(true);
-    expect(report.recommendations.some((r) => r.includes('Embeddings not populated'))).toBe(true);
+    expect(report.embeddingsStatus.status).toBe('missing');
+    expect(report.recommendations.some((r) => r.includes('ontoindex analyze'))).toBe(true);
+  });
+
+  it('marks embeddingsStatus.metadata-unavailable when repo metadata is missing', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(
+      makeRegistry({ lastCommit: CURRENT_COMMIT, embeddings: 5 }) as any,
+    );
+    mockLoadMeta.mockResolvedValue(null);
+
+    const report = await gnEnsureFresh(REPO_ID, {});
+
+    expect(report.embeddingsStatus.status).toBe('metadata-unavailable');
+    expect(report.embeddingsStatus.reason).toMatch(/unavailable/i);
+    expect(report.embeddingsStatus.repairCommand).toBe('ontoindex analyze');
+  });
+
+  it('marks embeddingsStatus.drifted when the stored embedding hash differs from the runtime hash', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(
+      makeRegistry({ lastCommit: CURRENT_COMMIT, embeddings: 12 }) as any,
+    );
+    mockLoadMeta.mockResolvedValue(makeMeta({ modelHash: 'stored-hash', embeddings: 12 }) as any);
+    process.env.ONTOINDEX_EMBEDDING_MODEL_HASH = 'runtime-hash';
+
+    const report = await gnEnsureFresh(REPO_ID, {});
+
+    expect(report.embeddingsStatus.status).toBe('drifted');
+    expect(report.embeddingsStatus.reason).toContain('stored-hash');
+    expect(report.embeddingsStatus.repairCommand).toBe('ontoindex analyze --force --embeddings');
   });
 
   // ---- Bonus Test 7: repo not in registry → warning + empty preCheck ------

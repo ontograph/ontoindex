@@ -38,6 +38,25 @@ describe('runAnnNeighborFrontierSearch', () => {
     expect(result.fallbackReason).toBe('symbol-neighborhood-frontier-disabled');
     expect(result.truncated).toBe(false);
     expect(result.visited).toBe(0);
+    expect(result.lanes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'vector',
+          candidateCount: 1,
+          emittedCount: 0,
+        }),
+        expect.objectContaining({
+          name: 'seed',
+          candidateCount: 1,
+          emittedCount: 0,
+        }),
+        expect.objectContaining({
+          name: 'ann',
+          candidateCount: 0,
+          emittedCount: 0,
+        }),
+      ]),
+    );
   });
 
   it('loads ANN edges and runs frontier once when enabled', async () => {

@@ -4,6 +4,20 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.17] - 2026-06-18
+
+### Added
+
+- Added MCP runtime diagnostics for generated agent setup and response-budget health.
+- Added byte-stable response anchors and bounded expansion contracts for docs, audit, and diff surfaces.
+- Added opt-in retrieval diagnostics for semantic search and `gn_explore` so agents can inspect lane contribution and warnings.
+- Added embedding status reporting in `gn_diagnose` and `gn_ensure_fresh`, including missing, unavailable, and drifted states with repair guidance.
+
+### Changed
+
+- Wiki generation now emits more deterministic metadata and prompt surfaces for release documentation.
+- Added LLM-free retrieval regression fixtures for ADR/code-anchor expectations.
+
 ## [1.9.16] - 2026-06-17
 
 ### Added

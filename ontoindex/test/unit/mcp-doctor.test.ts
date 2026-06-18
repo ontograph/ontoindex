@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  createMcpDoctorReport,
-  formatMcpDoctorText,
-  type McpDoctorReport,
-} from '../../src/cli/mcp-doctor.js';
+import { createMcpDoctorReport, formatMcpDoctorText } from '../../src/cli/mcp-doctor.js';
+import type { McpDoctorReport } from '../../src/cli/mcp-doctor.js';
 import type { DiagnoseReport } from '../../src/mcp/super/diagnose.js';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 
 const localBackendMock = vi.hoisted(() => ({
   ctor: vi.fn(),
@@ -269,7 +269,7 @@ describe('mcp-doctor', () => {
 
   it('returns DEGRADED for a correct but reduced-quality target', async () => {
     const report = await createMcpDoctorReport(
-      { repo: 'fixture' },
+      { repo: 'fixture', projectCwd: '/repo/fixture' },
       {
         diagnose: async () => ({
           ...baseDiagnose,
@@ -384,6 +384,112 @@ describe('mcp-doctor', () => {
     );
 
     expect(report.nextCommand).toBe("ontoindex mcp --project '/repo/space path' --repo 'fixture'");
+  });
+
+  it('flags stale hardcoded repo paths in setup files as MISCONFIGURED', async () => {
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-mcp-doctor-home-'));
+    const tempRepo = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-mcp-doctor-repo-'));
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+
+    try {
+      process.env.HOME = tempHome;
+      process.env.USERPROFILE = tempHome;
+
+      await fs.mkdir(path.join(tempHome, '.claude', 'skills'), { recursive: true });
+      await fs.mkdir(path.join(tempHome, '.agents', 'skills'), { recursive: true });
+      await fs.mkdir(path.join(tempHome, '.cursor', 'skills'), { recursive: true });
+      await fs.mkdir(path.join(tempHome, '.config', 'opencode', 'skill'), { recursive: true });
+
+      await fs.mkdir(path.join(tempRepo, '.claude'), { recursive: true });
+      await fs.writeFile(
+        path.join(tempRepo, '.claude', 'settings.local.json'),
+        JSON.stringify(
+          {
+            permissions: {
+              allow: [
+                'Bash(git -C /home/er77/_wrk/OntoIndex/.claude/worktrees/agent-a9b3bc4e05bbb89c1 status)',
+              ],
+            },
+          },
+          null,
+          2,
+        ),
+      );
+
+      const report = await createMcpDoctorReport(
+        { repo: 'fixture', projectCwd: tempRepo },
+        {
+          cwd: () => tempRepo,
+          diagnose: async () => baseDiagnose,
+          processLiveness: async (_repo, _projectCwd, repairCommand) => ({
+            status: 'unavailable',
+            reason: 'not-probed',
+            repairCommand,
+          }),
+        },
+      );
+
+      expect(report.verdict).toBe('MISCONFIGURED');
+      expect(report.setupHealth?.status).toBe('misconfigured');
+      expect(formatMcpDoctorText(report)).toContain(
+        'Setup issue: .claude/settings.local.json contains stale repo path(s): /home/er77/_wrk/OntoIndex/.claude/worktrees/agent-a9b3bc4e05bbb89c1',
+      );
+      expect(formatMcpDoctorText(report)).toContain('Setup repair: ontoindex setup');
+    } finally {
+      process.env.HOME = originalHome;
+      process.env.USERPROFILE = originalUserProfile;
+      await fs.rm(tempHome, { recursive: true, force: true });
+      await fs.rm(tempRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('flags missing generated skill directories as DEGRADED', async () => {
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-mcp-doctor-home-'));
+    const tempRepo = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-mcp-doctor-repo-'));
+    const originalHome = process.env.HOME;
+    const originalUserProfile = process.env.USERPROFILE;
+
+    try {
+      process.env.HOME = tempHome;
+      process.env.USERPROFILE = tempHome;
+
+      await fs.mkdir(path.join(tempHome, '.claude'), { recursive: true });
+      await fs.mkdir(path.join(tempHome, '.agents', 'skills'), { recursive: true });
+      await fs.mkdir(path.join(tempHome, '.cursor', 'skills'), { recursive: true });
+      await fs.mkdir(path.join(tempHome, '.config', 'opencode', 'skill'), {
+        recursive: true,
+      });
+
+      const report = await createMcpDoctorReport(
+        { repo: 'fixture', projectCwd: tempRepo },
+        {
+          cwd: () => tempRepo,
+          diagnose: async () => baseDiagnose,
+          processLiveness: async (_repo, _projectCwd, repairCommand) => ({
+            status: 'unavailable',
+            reason: 'not-probed',
+            repairCommand,
+          }),
+        },
+      );
+
+      expect(report.verdict).toBe('DEGRADED');
+      expect(report.setupHealth?.status).toBe('degraded');
+      expect(formatMcpDoctorText(report)).toContain(
+        `Setup issue: missing generated skill directory: ${path.join(
+          tempHome,
+          '.claude',
+          'skills',
+        )}`,
+      );
+      expect(formatMcpDoctorText(report)).toContain('Setup repair: ontoindex setup');
+    } finally {
+      process.env.HOME = originalHome;
+      process.env.USERPROFILE = originalUserProfile;
+      await fs.rm(tempHome, { recursive: true, force: true });
+      await fs.rm(tempRepo, { recursive: true, force: true });
+    }
   });
 
   it('keeps JSON output stable enough for issue reports', async () => {

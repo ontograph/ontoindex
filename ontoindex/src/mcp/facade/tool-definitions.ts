@@ -125,6 +125,12 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
             'For action="semantic", include structured_retrieval candidates, evidence references, and capability state when the backend can produce them. Default: false.',
           default: false,
         },
+        retrieval_diagnostics: {
+          type: 'boolean',
+          description:
+            'For action="semantic", include an opt-in retrieval diagnostics summary with lane counts and lane-specific warnings. Default: false.',
+          default: false,
+        },
         task_context: {
           type: 'string',
           description: 'What you are working on. Helps semantic ranking.',

@@ -94,6 +94,7 @@ export interface DiffImpactReport {
   commitRange: string;
   basedOnReads?: BasedOnReadsSummary;
   summary: DiffOutputBudgetSummary;
+  responseContract: ReviewDiffResponseContract;
   changedFiles: Array<{
     path: string;
     addedLines: number;
@@ -150,6 +151,17 @@ export interface DiffImpactReport {
   docEvidence?: AdvisoryDocsEvidenceReport;
   relatedDocs?: AdvisoryDocsEvidenceReport['relatedDocs'];
   prReadiness?: PrReadinessPack;
+}
+
+interface ReviewDiffResponseContract {
+  mode: 'summary-first';
+  stablePrefix: 'repo-and-contract';
+  deterministicOrder: true;
+  expandable: boolean;
+  anchorScheme: 'source-identity-v1';
+  anchors: string[];
+  omittedItems?: number;
+  expandHint?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +247,14 @@ const DEFAULT_FRESHNESS: CapabilityResponseFreshness = {
   actionable: false,
   reason: 'target-context-unavailable',
 };
+
+interface ReviewResponseContractSource {
+  path: string;
+  changedSymbols: Array<{
+    nodeId: string;
+    name: string;
+  }>;
+}
 
 function gitCapture(repoRoot: string | undefined, args: string[]): string {
   return execFileSync('git', args, {
@@ -357,7 +377,44 @@ function buildRecommendationTrace(
   };
 }
 
+function createReviewDiffResponseContract(
+  repoId: string,
+  changedFiles: readonly ReviewResponseContractSource[],
+  options: {
+    omittedItems?: number;
+    expandHint?: string;
+  } = {},
+): ReviewDiffResponseContract {
+  const anchors = uniqueStrings(
+    changedFiles.flatMap((file) => [
+      `${repoId}:${file.path}`,
+      ...file.changedSymbols.map(
+        (symbol) => `${repoId}:${symbol.nodeId || `${file.path}:${symbol.name}`}`,
+      ),
+    ]),
+  );
+  const omittedItems = options.omittedItems ?? 0;
+  const expandable = omittedItems > 0;
+  return {
+    mode: 'summary-first',
+    stablePrefix: 'repo-and-contract',
+    deterministicOrder: true,
+    expandable,
+    anchorScheme: 'source-identity-v1',
+    anchors,
+    ...(omittedItems > 0 ? { omittedItems } : {}),
+    ...(expandable && options.expandHint ? { expandHint: options.expandHint } : {}),
+  };
+}
+
+function createReviewDiffExpandHint(toolName: string, omittedItems: number): string {
+  return `Rerun ${toolName} with a narrower commit range or diff scope to inspect the omitted ${omittedItems} item${
+    omittedItems === 1 ? '' : 's'
+  }.`;
+}
+
 function createBaseDiffImpactReport(
+  repoId: string,
   commitRange: string,
   warnings: string[],
   overrides: Partial<DiffImpactReport> = {},
@@ -378,6 +435,7 @@ function createBaseDiffImpactReport(
     commitRange,
     basedOnReads: summarizeBasedOnReads(),
     summary: baseBudget.summary,
+    responseContract: createReviewDiffResponseContract(repoId, []),
     changedFiles: [],
     affectedProcesses: [],
     totalSymbolsChanged: 0,
@@ -796,16 +854,19 @@ export async function gnDiffImpact(
 
   // ---- 2. Fetch changed file paths ----------------------------------------
   let changedPaths: string[] = [];
+  let omittedChangedPathCount = 0;
   try {
     const out = gitCapture(repoRoot, nameOnlyArgs);
-    const limited = applyChangedPathLimitForReview(out.split('\n').filter(Boolean));
+    const allChangedPaths = out.split('\n').filter(Boolean);
+    const limited = applyChangedPathLimitForReview(allChangedPaths);
     changedPaths = limited.changedPaths;
+    omittedChangedPathCount = Math.max(0, allChangedPaths.length - changedPaths.length);
     if (limited.truncated) {
       if (limited.warning) warnings.push(limited.warning);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return createBaseDiffImpactReport(resolvedRange, [`git diff failed: ${msg}`]);
+    return createBaseDiffImpactReport(repoId, resolvedRange, [`git diff failed: ${msg}`]);
   }
 
   // ---- 3. Empty diff — return empty report --------------------------------
@@ -824,7 +885,7 @@ export async function gnDiffImpact(
       );
     }
 
-    return createBaseDiffImpactReport(resolvedRange, [], {
+    return createBaseDiffImpactReport(repoId, resolvedRange, [], {
       capabilityState: {
         freshness,
         capabilitiesUsed: ['git-diff', 'graph-review', 'blast-radius'],
@@ -1255,8 +1316,26 @@ export async function gnDiffImpact(
       : undefined;
 
   const report: DiffImpactReport = {
-    ...createBaseDiffImpactReport(resolvedRange, uniqueWarnings),
+    ...createBaseDiffImpactReport(repoId, resolvedRange, uniqueWarnings),
     summary: diffOutputBudget.summary,
+    responseContract: createReviewDiffResponseContract(repoId, changedFiles, {
+      omittedItems:
+        omittedChangedPathCount +
+        diffOutputBudget.summary.truncatedFileCount +
+        diffOutputBudget.summary.truncatedSymbolCount,
+      expandHint:
+        omittedChangedPathCount +
+        diffOutputBudget.summary.truncatedFileCount +
+        diffOutputBudget.summary.truncatedSymbolCount >
+        0
+          ? createReviewDiffExpandHint(
+              'gn_diff_impact',
+              omittedChangedPathCount +
+                diffOutputBudget.summary.truncatedFileCount +
+                diffOutputBudget.summary.truncatedSymbolCount,
+            )
+          : undefined,
+    }),
     changedFiles,
     affectedProcesses,
     totalSymbolsChanged,
@@ -1313,6 +1392,7 @@ export interface ReviewDiffParams {
 export type ReviewDiffEnvelope = CapabilityResponseEnvelope<{
   resolvedRange: string;
   summary: DiffOutputBudgetSummary;
+  responseContract: ReviewDiffResponseContract;
   evidenceTrajectory: EvidenceTrajectoryItem;
   contextCost: ContextCost;
   reviewedFiles: DiffReviewResult['reviewedFiles'];
@@ -1372,10 +1452,13 @@ export async function gnReviewDiff(
 
   // ---- 2. Fetch changed file paths ----------------------------------------
   let changedPaths: string[] = [];
+  let omittedChangedPathCount = 0;
   try {
     const out = gitCapture(repoRoot, nameOnlyArgs);
-    const limited = applyChangedPathLimitForReview(out.split('\n').filter(Boolean));
+    const allChangedPaths = out.split('\n').filter(Boolean);
+    const limited = applyChangedPathLimitForReview(allChangedPaths);
     changedPaths = limited.changedPaths;
+    omittedChangedPathCount = Math.max(0, allChangedPaths.length - changedPaths.length);
     if (limited.truncated) {
       if (limited.warning) warnings.push(limited.warning);
       budget = addQueryBudgetTruncatedReason(budget, 'changed-path-cap');
@@ -1462,13 +1545,20 @@ export async function gnReviewDiff(
         ? 'partial'
         : diagnostics.summary.authoritative > 0
         ? 'verified'
-        : 'unverified',
+      : 'unverified',
     reasons: uniqueStrings([
       ...finalBudget.truncatedReasons,
       ...finalBudget.degradedReasons,
       diffOutputBudget.limits.retryHint ?? '',
     ]),
   };
+  const responseContract = createReviewDiffResponseContract(repoId, reviewResult.reviewedFiles, {
+    omittedItems: omittedChangedPathCount,
+    expandHint:
+      omittedChangedPathCount > 0
+        ? createReviewDiffExpandHint('gn_review_diff', omittedChangedPathCount)
+        : diffOutputBudget.limits.retryHint,
+  });
   const recoverable = diffOutputBudget.limits.truncated
     ? createOutputTruncatedRecoverableState({
         retryCommand:
@@ -1502,6 +1592,7 @@ export async function gnReviewDiff(
       reviewedFiles: reviewResult.reviewedFiles,
       totalSymbolsChanged: reviewResult.totalSymbolsChanged,
       summary: diffOutputBudget.summary,
+      responseContract,
       evidenceTrajectory,
       contextCost: {
         emittedChars: 0,

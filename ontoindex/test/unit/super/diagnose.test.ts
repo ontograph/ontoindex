@@ -28,7 +28,10 @@ vi.mock('../../../src/mcp/shared/target-context.js', () => ({
 }));
 
 vi.mock('../../../src/mcp/local/tool-telemetry.js', () => ({
-  readRecentOversizedToolCalls: vi.fn().mockResolvedValue([]),
+  readToolTelemetrySummary: vi.fn().mockResolvedValue({
+    recentOversizedCount: 0,
+    recentOversizedTools: [],
+  }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -40,12 +43,12 @@ import { gnEnsureFresh } from '../../../src/mcp/super/ensure-fresh.js';
 import { resolveTargetContext } from '../../../src/mcp/shared/target-context.js';
 import { gnDiagnose } from '../../../src/mcp/super/diagnose.js';
 import { ONTOINDEX_SUPER_TOOLS } from '../../../src/mcp/super/tool-definitions.js';
-import { readRecentOversizedToolCalls } from '../../../src/mcp/local/tool-telemetry.js';
+import { readToolTelemetrySummary } from '../../../src/mcp/local/tool-telemetry.js';
 
 const mockExecFile = vi.mocked(execFile);
 const mockGnEnsureFresh = vi.mocked(gnEnsureFresh);
 const mockResolveTargetContext = vi.mocked(resolveTargetContext);
-const mockReadRecentOversizedToolCalls = vi.mocked(readRecentOversizedToolCalls);
+const mockReadToolTelemetrySummary = vi.mocked(readToolTelemetrySummary);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -78,13 +81,35 @@ const TARGET_CONTEXT = {
 };
 
 /** Minimal gnEnsureFresh return for a fresh index with no embeddings. */
-function makeFreshReport(options: { isStale?: boolean; embeddingsCount?: number } = {}) {
+function makeFreshReport(
+  options: {
+    isStale?: boolean;
+    embeddingsCount?: number;
+    embeddingsStatus?: 'ok' | 'missing' | 'metadata-unavailable' | 'drifted';
+    repairCommand?: string;
+    reason?: string;
+  } = {},
+) {
   const { isStale = false, embeddingsCount = 0 } = options;
+  const embeddingsStatus = options.embeddingsStatus ?? (embeddingsCount > 0 ? 'ok' : 'missing');
+  const repairCommand =
+    options.repairCommand ??
+    (embeddingsStatus === 'missing'
+      ? `ontoindex analyze${isStale ? '' : ' --force'} --embeddings`
+      : embeddingsStatus === 'metadata-unavailable'
+        ? 'ontoindex analyze'
+        : undefined);
   const indexedCommit = isStale ? STALE_COMMIT : INDEXED_COMMIT;
   return {
     version: 1 as const,
     preCheck: { indexedCommit, currentCommit: CURRENT_COMMIT, isStale },
-    embeddingsStatus: { count: embeddingsCount, required: false },
+    embeddingsStatus: {
+      count: embeddingsCount,
+      required: false,
+      status: embeddingsStatus,
+      ...(options.reason !== undefined ? { reason: options.reason } : {}),
+      ...(repairCommand !== undefined ? { repairCommand } : {}),
+    },
     repoPath: TARGET_CONTEXT.repoPath,
     runtimeHealth: {
       version: 1 as const,
@@ -153,7 +178,10 @@ beforeEach(() => {
   // Default: fresh index
   mockGnEnsureFresh.mockResolvedValue(makeFreshReport());
   mockResolveTargetContext.mockResolvedValue(TARGET_CONTEXT);
-  mockReadRecentOversizedToolCalls.mockResolvedValue([]);
+  mockReadToolTelemetrySummary.mockResolvedValue({
+    recentOversizedCount: 0,
+    recentOversizedTools: [],
+  });
 });
 
 afterEach(() => {
@@ -195,7 +223,10 @@ describe('gnDiagnose', () => {
   });
 
   it('includes recent oversized tools in response-budget health', async () => {
-    mockReadRecentOversizedToolCalls.mockResolvedValue(['impact', 'audit']);
+    mockReadToolTelemetrySummary.mockResolvedValue({
+      recentOversizedCount: 2,
+      recentOversizedTools: ['impact', 'audit'],
+    });
 
     const report = await gnDiagnose(REPO_ID, {
       checkLsp: false,
@@ -205,6 +236,10 @@ describe('gnDiagnose', () => {
     });
 
     expect(report.responseBudgetHealth.recentOversizedTools).toEqual(['impact', 'audit']);
+    expect(report.toolTelemetrySummary).toEqual({
+      recentOversizedCount: 2,
+      recentOversizedTools: ['impact', 'audit'],
+    });
   });
 
   // ---- Test 2: Stale index → WARN recommendation generated ------------------
@@ -317,6 +352,23 @@ describe('gnDiagnose', () => {
     );
     expect(embRec).toBeDefined();
     expect(embRec!.fix).toBe('ontoindex analyze --embeddings');
+  });
+
+  it('recommends force embeddings when graph is fresh but embeddings are absent', async () => {
+    mockGnEnsureFresh.mockResolvedValue(makeFreshReport({ isStale: false, embeddingsCount: 0 }));
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: true,
+      checkIndexFreshness: true,
+      checkToolContract: false,
+    });
+
+    const embRec = report.recommendations.find(
+      (r) => r.severity === 'INFO' && r.detail.includes('Embeddings not populated'),
+    );
+    expect(embRec).toBeDefined();
+    expect(embRec!.fix).toBe('ontoindex analyze --force --embeddings');
   });
 
   // ---- Test 7: Quality-mode recommendation when ONTOINDEX_INTENT_ENSEMBLE not set
@@ -438,6 +490,58 @@ describe('gnDiagnose', () => {
       r.detail.includes('Embeddings not populated'),
     );
     expect(embRec).toBeUndefined();
+  });
+
+  it('surfaces drifted embedding metadata in the diagnose report', async () => {
+    mockGnEnsureFresh.mockResolvedValue(
+      makeFreshReport({
+        embeddingsCount: 150,
+        embeddingsStatus: 'drifted',
+        reason: 'embedding model hash mismatch',
+        repairCommand: 'ONTOINDEX_EMBEDDING_MODEL_HASH=stored-hash ontoindex analyze --embeddings',
+      }),
+    );
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: true,
+      checkIndexFreshness: false,
+    });
+
+    expect(report.embeddings).toMatchObject({
+      count: 150,
+      populated: false,
+      status: 'drifted',
+      repairCommand: 'ONTOINDEX_EMBEDDING_MODEL_HASH=stored-hash ontoindex analyze --embeddings',
+    });
+    expect(report.degradedContext.reasons).toContain('embeddings-drifted');
+    expect(report.recommendations.some((r) => r.severity === 'ERROR')).toBe(true);
+    expect(report.runtimeContextSummary.embeddings).toBe('absent');
+  });
+
+  it('surfaces metadata-unavailable embedding status in the diagnose report', async () => {
+    mockGnEnsureFresh.mockResolvedValue(
+      makeFreshReport({
+        embeddingsCount: 0,
+        embeddingsStatus: 'metadata-unavailable',
+        reason: 'repo metadata is unavailable',
+      }),
+    );
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: true,
+      checkIndexFreshness: false,
+    });
+
+    expect(report.embeddings).toMatchObject({
+      count: 0,
+      populated: false,
+      status: 'metadata-unavailable',
+      repairCommand: 'ontoindex analyze',
+    });
+    expect(report.degradedContext.reasons).toContain('embeddings-metadata-unavailable');
+    expect(report.runtimeContextSummary.embeddings).toBe('unknown');
   });
 
   // ---- Test 15: version field is always 1 ----------------------------------
@@ -574,6 +678,15 @@ describe('gnDiagnose', () => {
       changedSinceIndex: false,
       embeddings: { status: 'available', count: 150 },
       lsp: { status: 'available' },
+    });
+    expect(report.runtimeContextSummary).toMatchObject({
+      repoLabel: REPO_ID,
+      repoPath: '/tmp/test-repo',
+      freshness: 'fresh',
+      dirtyWorktree: false,
+      embeddings: 'available',
+      sidecar: 'unknown',
+      qualityMode: 'fast',
     });
   });
 

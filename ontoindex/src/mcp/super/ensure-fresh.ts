@@ -18,6 +18,7 @@ import {
   readRuntimeHealth,
   type RuntimeHealthSnapshot,
 } from '../../core/runtime/runtime-health.js';
+import { loadMeta, type RepoMeta } from '../../storage/repo-manager.js';
 import type { ScopeConfidence } from '../shared/target-context.js';
 
 const AUTO_ANALYZE_TIMEOUT_MS = Number.parseInt(
@@ -38,10 +39,18 @@ export interface EnsureFreshParams {
   killMcpForLock?: boolean; // deprecated; advisory only for safety
 }
 
+export type EmbeddingDriftStatus = 'ok' | 'missing' | 'metadata-unavailable' | 'drifted';
+
 export interface EnsureFreshReport {
   version: 1;
   preCheck: { indexedCommit: string; currentCommit: string; isStale: boolean };
-  embeddingsStatus: { count: number; required: boolean };
+  embeddingsStatus: {
+    count: number;
+    required: boolean;
+    status: EmbeddingDriftStatus;
+    reason?: string;
+    repairCommand?: string;
+  };
   repoLabel?: string;
   repoPath?: string;
   indexedCommit?: string;
@@ -180,7 +189,13 @@ function emptyReport(
   return {
     version: 1,
     preCheck: { indexedCommit: '', currentCommit: '', isStale: false },
-    embeddingsStatus: { count: 0, required: false },
+    embeddingsStatus: {
+      count: 0,
+      required: false,
+      status: 'metadata-unavailable',
+      reason: 'repo metadata is unavailable',
+      repairCommand: 'ontoindex analyze',
+    },
     ...extras,
     actionsTaken: [],
     warnings,
@@ -275,6 +290,66 @@ function deriveScopeConfidence(input: {
   return 'high';
 }
 
+function resolveEmbeddingsStatus(input: {
+  repoMeta: RepoMeta | null;
+  currentEmbeddingModelHash: string | undefined;
+  isStale: boolean;
+  withEmbeddings: boolean | undefined;
+}): EnsureFreshReport['embeddingsStatus'] {
+  const count = input.repoMeta?.stats?.embeddings ?? 0;
+  const metadataHash = input.repoMeta?.model_hash?.trim() || undefined;
+  const currentHash = input.currentEmbeddingModelHash?.trim() || undefined;
+  const required = input.withEmbeddings === true && count === 0;
+
+  if (!input.repoMeta) {
+    return {
+      count,
+      required,
+      status: 'metadata-unavailable',
+      reason: 'repo meta.json is unavailable',
+      repairCommand: 'ontoindex analyze',
+    };
+  }
+
+  if (count === 0) {
+    return {
+      count,
+      required,
+      status: 'missing',
+      reason: 'embeddings are not populated in repo metadata',
+      repairCommand: `ontoindex analyze${input.isStale ? '' : ' --force'} --embeddings`,
+    };
+  }
+
+  if (!metadataHash || !currentHash) {
+    return {
+      count,
+      required,
+      status: 'metadata-unavailable',
+      reason: !metadataHash
+        ? 'embedding fingerprint is missing from repo metadata'
+        : 'ONTOINDEX_EMBEDDING_MODEL_HASH is not set',
+      repairCommand: 'ontoindex analyze --force --embeddings',
+    };
+  }
+
+  if (metadataHash !== currentHash) {
+    return {
+      count,
+      required,
+      status: 'drifted',
+      reason: `embedding model hash mismatch: meta.json has "${metadataHash}" but the current environment has "${currentHash}"`,
+      repairCommand: 'ontoindex analyze --force --embeddings',
+    };
+  }
+
+  return {
+    count,
+    required,
+    status: 'ok',
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Main function
 // ---------------------------------------------------------------------------
@@ -328,6 +403,7 @@ export async function gnEnsureFresh(
   }
 
   // ---- 3. Get current HEAD commit from the indexed repo path --------------
+  const repoMeta = await loadMeta(join(repoRoot, '.ontoindex'));
   let currentCommit = '';
   try {
     currentCommit = (
@@ -342,7 +418,6 @@ export async function gnEnsureFresh(
   }
 
   const indexedCommit: string = entry.lastCommit ?? '';
-  const embeddingsCount: number = entry.stats?.embeddings ?? 0;
   const isStale = currentCommit !== '' && indexedCommit !== '' && currentCommit !== indexedCommit;
   const dirtyFileCount = await countDirtyFiles(repoRoot);
   const scopeConfidence = deriveScopeConfidence({
@@ -356,19 +431,16 @@ export async function gnEnsureFresh(
   const preCheck = { indexedCommit, currentCommit, isStale };
   const runtimeHealth = await readRuntimeHealth(repoRoot, {
     repoLabel: entry.name ?? selector ?? repoRoot,
-    meta: {
-      repoPath: repoRoot,
-      lastCommit: indexedCommit,
-      indexedAt: '',
-      stats: {},
-    },
+    meta: repoMeta,
   });
 
   // ---- 5. Embeddings status -----------------------------------------------
-  const embeddingsStatus = {
-    count: embeddingsCount,
-    required: params.withEmbeddings === true && embeddingsCount === 0,
-  };
+  const embeddingsStatus = resolveEmbeddingsStatus({
+    repoMeta,
+    currentEmbeddingModelHash: process.env.ONTOINDEX_EMBEDDING_MODEL_HASH,
+    isStale,
+    withEmbeddings: params.withEmbeddings,
+  });
 
   // ---- 6. Recommendations (always populated) ------------------------------
   if (isStale) {
@@ -379,9 +451,10 @@ export async function gnEnsureFresh(
       'For multi-agent sessions, let one coordinator run analyze; workers should continue with explicit stale-index consent or git-only workflows.',
     );
   }
-  if (params.withEmbeddings && embeddingsCount === 0) {
+  if (embeddingsStatus.status !== 'ok') {
     recommendations.push(
-      'Embeddings not populated. Stop MCP processes first to release DB lock, then run: ontoindex analyze --embeddings',
+      embeddingsStatus.repairCommand ??
+        'Embeddings not populated. Stop MCP processes first to release DB lock, then run: ontoindex analyze --embeddings',
     );
   }
 

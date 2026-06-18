@@ -8,30 +8,30 @@
  * environment, or filesystem.
  */
 
-import { gnEnsureFresh } from './ensure-fresh.js';
-import { gnToolContract, type ToolContractReport } from './tool-contract.js';
+import { gnEnsureFresh, type EmbeddingDriftStatus } from './ensure-fresh.js';
+import { gnToolContract } from './tool-contract.js';
+import type { ToolContractReport } from './tool-contract.js';
 import path from 'node:path';
-import {
-  createEnvelopeFromLegacy,
-  type CapabilityResponseEnvelope,
-} from '../shared/response-envelope.js';
+import { createEnvelopeFromLegacy } from '../shared/response-envelope.js';
+import type { CapabilityResponseEnvelope } from '../shared/response-envelope.js';
 import { shellQuote } from '../shared/repo-resolution-errors.js';
-import { resolveTargetContext, type TargetContext } from '../shared/target-context.js';
+import { resolveTargetContext } from '../shared/target-context.js';
+import type { TargetContext } from '../shared/target-context.js';
 import { execFileText } from '../../core/process/exec-file.js';
 import {
   collectFileScopePreview,
   explainPathScope,
-  type FileScopeExplanation,
-  type FileScopePreview,
+} from '../../core/indexing/file-scope-preview.js';
+import type {
+  FileScopeExplanation,
+  FileScopePreview,
 } from '../../core/indexing/file-scope-preview.js';
 import type { RuntimeHealthSnapshot } from '../../core/runtime/runtime-health.js';
-import { readRecentOversizedToolCalls } from '../local/tool-telemetry.js';
+import { readToolTelemetrySummary } from '../local/tool-telemetry.js';
 import { RESPONSE_GUARD_MAX_BYTES } from '../local/response-guard.js';
 import { getResourceContractSummaries } from '../resources.js';
-import {
-  createEmptyEvidenceReadClassCounts,
-  type EvidenceReadClass,
-} from '../../core/runtime/evidence-read-ledger.js';
+import { createEmptyEvidenceReadClassCounts } from '../../core/runtime/evidence-read-ledger.js';
+import type { EvidenceReadClass } from '../../core/runtime/evidence-read-ledger.js';
 
 const WHICH_TIMEOUT_MS = 2_000;
 const WHICH_MAX_BUFFER = 64 * 1024;
@@ -58,7 +58,13 @@ export interface DiagnoseParams {
 export interface DiagnoseReport {
   version: 1;
   indexFreshness?: { isStale: boolean; indexedCommit: string; currentCommit: string };
-  embeddings?: { count: number; populated: boolean };
+  embeddings?: {
+    count: number;
+    populated: boolean;
+    status: EmbeddingDriftStatus;
+    reason?: string;
+    repairCommand?: string;
+  };
   lspAvailable?: { typescript: boolean; python: boolean; rust: boolean };
   classification: {
     evidenceClasses: Array<{
@@ -96,6 +102,23 @@ export interface DiagnoseReport {
     guardLimitBytes: number;
     recentOversizedTools: string[];
     guardedPreviewAvailable: true;
+  };
+  toolTelemetrySummary: {
+    recentOversizedCount: number;
+    recentOversizedTools: string[];
+  };
+  runtimeContextSummary: {
+    repoLabel?: string;
+    repoPath?: string;
+    targetHead?: string;
+    indexedHead?: string;
+    freshness: 'fresh' | 'stale' | 'unknown';
+    dirtyWorktree: boolean | null;
+    dirtyFileCount: number | null;
+    embeddings: 'available' | 'absent' | 'unknown';
+    sidecar: string;
+    qualityMode: string;
+    nextRepairCommands: string[];
   };
   degradedContext: {
     status: 'ok' | 'degraded';
@@ -322,7 +345,58 @@ function buildMisconfigurationReport(
     ...(mcpRepo !== undefined ? { mcpRepo } : {}),
     ...(projectCwd !== undefined ? { projectCwd } : {}),
     processCwd,
-    recommendedCommand: `ontoindex mcp --project ${shellQuote(restartPath)}${repoId ? ` --repo ${shellQuote(repoId)}` : ''}`,
+    recommendedCommand: `ontoindex mcp --project ${shellQuote(restartPath)}${
+      repoId ? ` --repo ${shellQuote(repoId)}` : ''
+    }`,
+  };
+}
+
+function buildRuntimeContextSummary(options: {
+  targetContext?: TargetContext;
+  runtimeHealth?: RuntimeHealthSnapshot;
+  indexFreshness?: DiagnoseReport['indexFreshness'];
+  embeddings?: DiagnoseReport['embeddings'];
+  recommendations: DiagnoseReport['recommendations'];
+}): DiagnoseReport['runtimeContextSummary'] {
+  const { targetContext, runtimeHealth, indexFreshness, embeddings, recommendations } = options;
+  const nextRepairCommands = [...new Set(recommendations.map((r) => r.fix).filter(Boolean))].slice(
+    0,
+    5,
+  );
+  return {
+    ...(targetContext?.status === 'ok'
+      ? {
+          repoLabel: targetContext.repoLabel ?? targetContext.repoKey,
+          repoPath: targetContext.repoPath,
+          targetHead: targetContext.targetHead ?? targetContext.currentHead ?? undefined,
+          indexedHead: targetContext.indexedHead ?? undefined,
+        }
+      : runtimeHealth
+        ? {
+            repoLabel: runtimeHealth.repoLabel,
+            repoPath: runtimeHealth.repoPath,
+            targetHead: runtimeHealth.currentCommit || undefined,
+            indexedHead: runtimeHealth.indexedCommit || undefined,
+          }
+        : {}),
+    freshness:
+      indexFreshness === undefined ? 'unknown' : indexFreshness.isStale ? 'stale' : 'fresh',
+    dirtyWorktree: targetContext?.dirtyWorktree ?? runtimeHealth?.dirtyWorktree ?? null,
+    dirtyFileCount: targetContext?.dirtyFileCount ?? null,
+    embeddings:
+      embeddings === undefined
+        ? 'unknown'
+        : embeddings.status === 'ok'
+          ? 'available'
+          : embeddings.status === 'metadata-unavailable'
+            ? 'unknown'
+            : 'absent',
+    sidecar:
+      targetContext?.status === 'ok'
+        ? targetContext.sidecar.status
+        : (targetContext?.status ?? 'unknown'),
+    qualityMode: targetContext?.status === 'ok' ? targetContext.qualityMode : 'unknown',
+    nextRepairCommands,
   };
 }
 
@@ -353,6 +427,9 @@ export async function gnDiagnose(
   // ---- 1. Index freshness (via gnEnsureFresh in read-only mode) -------------
   let indexFreshness: DiagnoseReport['indexFreshness'];
   let embeddingsCount = 0;
+  let embeddingsStatus: EmbeddingDriftStatus | undefined;
+  let embeddingsReason: string | undefined;
+  let embeddingsRepairCommand: string | undefined;
   let hasFreshReport = false;
   let runtimeHealth: RuntimeHealthSnapshot | undefined;
   let freshRepoPath: string | undefined;
@@ -392,6 +469,9 @@ export async function gnDiagnose(
 
       if (checkEmbeddings) {
         embeddingsCount = freshReport.embeddingsStatus.count;
+        embeddingsStatus = freshReport.embeddingsStatus.status;
+        embeddingsReason = freshReport.embeddingsStatus.reason;
+        embeddingsRepairCommand = freshReport.embeddingsStatus.repairCommand;
       }
     }
   }
@@ -401,13 +481,34 @@ export async function gnDiagnose(
   // a freshReport. If gnEnsureFresh threw, there is no data to report.
   let embeddings: DiagnoseReport['embeddings'];
   if (checkEmbeddings && hasFreshReport) {
-    embeddings = { count: embeddingsCount, populated: embeddingsCount > 0 };
+    embeddings = {
+      count: embeddingsCount,
+      populated: embeddingsStatus === 'ok',
+      status: embeddingsStatus ?? (embeddingsCount > 0 ? 'metadata-unavailable' : 'missing'),
+      ...(embeddingsReason !== undefined ? { reason: embeddingsReason } : {}),
+      ...(embeddingsRepairCommand !== undefined ? { repairCommand: embeddingsRepairCommand } : {}),
+    };
 
-    if (embeddingsCount === 0) {
+    if (embeddings.status !== 'ok') {
+      const severity =
+        embeddings.status === 'drifted'
+          ? 'ERROR'
+          : embeddings.status === 'missing'
+            ? 'INFO'
+            : 'WARN';
       recommendations.push({
-        severity: 'INFO',
-        detail: 'Embeddings not populated',
-        fix: 'ontoindex analyze --embeddings',
+        severity,
+        detail:
+          embeddings.status === 'drifted'
+            ? 'Embeddings metadata drift detected'
+            : embeddings.status === 'missing'
+              ? 'Embeddings not populated'
+              : 'Embedding metadata unavailable',
+        fix:
+          embeddings.repairCommand ??
+          (embeddings.status === 'missing'
+            ? 'ontoindex analyze --embeddings'
+            : 'ontoindex analyze'),
       });
     }
   }
@@ -455,9 +556,10 @@ export async function gnDiagnose(
   const classification = buildClassificationSummary();
   const setup = buildSetupSummary(envVars);
   const responseLimits = buildResponseLimits(envVars);
+  const toolTelemetrySummary = await readToolTelemetrySummary({ limit: 5 });
   const responseBudgetHealth: DiagnoseReport['responseBudgetHealth'] = {
     guardLimitBytes: RESPONSE_GUARD_MAX_BYTES,
-    recentOversizedTools: await readRecentOversizedToolCalls({ limit: 5 }),
+    recentOversizedTools: toolTelemetrySummary.recentOversizedTools,
     guardedPreviewAvailable: true,
   };
 
@@ -484,7 +586,9 @@ export async function gnDiagnose(
     if (targetContext.status === 'ambiguous' || targetContext.status === 'not-found') {
       recommendations.push({
         severity: 'ERROR',
-        detail: `Target context ${targetContext.status}: ${targetContext.action ?? 'resolve repository target'}`,
+        detail: `Target context ${targetContext.status}: ${
+          targetContext.action ?? 'resolve repository target'
+        }`,
         fix: 'Pass an explicit repo name or absolute repo path.',
       });
     } else if (targetContext.status === 'no-index') {
@@ -535,7 +639,9 @@ export async function gnDiagnose(
   let fileScopePreview: DiagnoseReport['fileScopePreview'];
   let fileScopeExplanation: DiagnoseReport['fileScopeExplanation'];
   const fileScopeRepoPath =
-    targetContext?.status === 'ok' ? targetContext.repoPath : freshRepoPath ?? runtimeHealth?.repoPath;
+    targetContext?.status === 'ok'
+      ? targetContext.repoPath
+      : (freshRepoPath ?? runtimeHealth?.repoPath);
   const fileScopeLimit = Math.max(1, Math.min(params.fileScopeLimit ?? 10, 100));
 
   if ((params.includeFileScopePreview || params.explainFile) && !fileScopeRepoPath) {
@@ -582,8 +688,18 @@ export async function gnDiagnose(
     degradedReasons.push('index-stale');
     degradedAreas.add('freshness');
   }
-  if (embeddings?.populated === false) {
+  if (embeddings?.status === 'missing') {
     degradedReasons.push('embeddings-unavailable');
+    degradedAreas.add('retrieval');
+    degradedReasons.push('embeddings-missing');
+    degradedAreas.add('retrieval');
+  }
+  if (embeddings?.status === 'metadata-unavailable') {
+    degradedReasons.push('embeddings-metadata-unavailable');
+    degradedAreas.add('retrieval');
+  }
+  if (embeddings?.status === 'drifted') {
+    degradedReasons.push('embeddings-drifted');
     degradedAreas.add('retrieval');
   }
   if (lspAvailable?.typescript === false) {
@@ -622,6 +738,14 @@ export async function gnDiagnose(
     confidence: degradedReasons.length > 0 ? 'reduced' : 'full',
   };
 
+  const runtimeContextSummary = buildRuntimeContextSummary({
+    targetContext,
+    runtimeHealth,
+    indexFreshness,
+    embeddings,
+    recommendations,
+  });
+
   // ---- 10. Assemble report --------------------------------------------------
   const report: DiagnoseReport = {
     version: 1,
@@ -637,6 +761,8 @@ export async function gnDiagnose(
     setup,
     responseLimits,
     responseBudgetHealth,
+    toolTelemetrySummary,
+    runtimeContextSummary,
     degradedContext,
     misconfiguration,
     envVars,
@@ -667,13 +793,15 @@ export async function gnDiagnose(
       'response-limits',
     ],
     capabilitiesMissing: [
-      ...(embeddings?.populated === false ? ['embeddings'] : []),
+      ...(embeddings?.status === 'missing' ? ['embeddings'] : []),
+      ...(embeddings?.status === 'metadata-unavailable' ? ['embedding-metadata'] : []),
+      ...(embeddings?.status === 'drifted' ? ['embedding-drift'] : []),
       ...(lspAvailable?.typescript === false ? ['typescript-lsp'] : []),
       ...(lspAvailable?.python === false ? ['python-lsp'] : []),
       ...(lspAvailable?.rust === false ? ['rust-lsp'] : []),
       ...(setup.mcp.autoAnalyze === 'enabled' ? ['bounded-startup-policy'] : []),
     ],
-    semanticFallbackUsed: checkEmbeddings && embeddings?.populated === false,
+    semanticFallbackUsed: checkEmbeddings && embeddings?.status === 'missing',
     diagnosticsRequested: true,
     nextTools: ['gn_ensure_fresh', 'gn_quality_mode', 'gn_tool_contract'],
   });

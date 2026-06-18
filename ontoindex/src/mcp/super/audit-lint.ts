@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import {
   LocalAuditEventStore,
   lintAuditBundles,
@@ -38,12 +40,13 @@ export async function gnAuditLint(
   params: AuditLintParams,
 ): Promise<Record<string, unknown>> {
   const repo = await resolveAuditRepoHandle(repoId, params.repo);
-  return runAuditLint(repo.repoPath, params);
+  return runAuditLint(repo.repoPath, params, repo.id);
 }
 
 export async function runAuditLint(
   repoPath: string,
   params: AuditLintParams,
+  repoLabel = path.basename(repoPath),
 ): Promise<Record<string, unknown>> {
   const sessionId = params.sessionId ?? params.session;
   const scope = params.scope ?? 'report';
@@ -82,6 +85,18 @@ export async function runAuditLint(
   const page = paginateMcpItems(issues, { pageSize: maxIssues, cursor: params.cursor });
   const cursor = shouldExposeCursor(page.page) ? page.page : undefined;
   const truncated = page.page.offset > 0 || page.page.hasMore;
+  const findingsById = new Map(findings.map((finding) => [finding.findingId, finding]));
+  const bundlesById = new Map(bundles.map((bundle) => [bundle.id, bundle]));
+  const responseContract =
+    responseMode === 'minimal'
+      ? undefined
+      : createAuditLintResponseContract(
+          repoLabel,
+          page.page,
+          page.items,
+          findingsById,
+          bundlesById,
+        );
 
   if (params.persist !== false && sessionId) {
     await new LocalAuditEventStore(repoPath).appendEvent({
@@ -132,6 +147,7 @@ export async function runAuditLint(
     version: 1,
     action: 'audit-lint',
     responseMode,
+    ...(responseContract ? { responseContract } : {}),
     sessionId,
     ok,
     advisory: Boolean(params.advisory),
@@ -240,6 +256,101 @@ function sortAuditIssues(issues: readonly AuditLintIssue[]): AuditLintIssue[] {
     const bKey = [b.scope, b.ruleId, b.findingId ?? '', b.bundleId ?? '', b.message].join('\u0000');
     return aKey.localeCompare(bKey);
   });
+}
+
+interface AuditLintResponseContract {
+  mode: 'summary-first';
+  stablePrefix: 'repo-and-source';
+  deterministicOrder: true;
+  expandable: boolean;
+  anchorScheme: 'source-identity-v1';
+  anchors: string[];
+  omittedItems: number;
+  nextCursor?: string;
+  expandHint: string;
+}
+
+function createAuditLintResponseContract(
+  repoLabel: string,
+  page: McpResponseCursor,
+  issues: readonly AuditLintIssue[],
+  findingsById: Map<string, AuditLintFinding>,
+  bundlesById: Map<string, AuditLintBundle>,
+): AuditLintResponseContract {
+  const nextCursor = page.next;
+  return {
+    mode: 'summary-first',
+    stablePrefix: 'repo-and-source',
+    deterministicOrder: true,
+    expandable: Boolean(nextCursor),
+    anchorScheme: 'source-identity-v1',
+    anchors: issues.map((issue, index) =>
+      createAuditLintIssueAnchor(repoLabel, issue, findingsById, bundlesById, index),
+    ),
+    omittedItems: Math.max(0, page.total - page.offset - page.returned),
+    ...(nextCursor ? { nextCursor } : {}),
+    expandHint: nextCursor
+      ? `Rerun gn_audit_lint with cursor:"${nextCursor}" to fetch the next page.`
+      : 'No additional audit page is available.',
+  };
+}
+
+function createAuditLintIssueAnchor(
+  repoLabel: string,
+  issue: AuditLintIssue,
+  findingsById: Map<string, AuditLintFinding>,
+  bundlesById: Map<string, AuditLintBundle>,
+  index: number,
+): string {
+  const sourceIdentity =
+    issue.scope === 'report'
+      ? createAuditLintFindingSourceIdentity(
+          issue.findingId,
+          findingsById.get(issue.findingId ?? ''),
+          index,
+        )
+      : createAuditLintBundleSourceIdentity(
+          issue.bundleId,
+          bundlesById.get(issue.bundleId ?? ''),
+          index,
+        );
+  return [repoLabel, sourceIdentity, issue.scope, issue.ruleId].map(anchorPart).join(':');
+}
+
+function createAuditLintFindingSourceIdentity(
+  findingId: string | undefined,
+  finding: AuditLintFinding | undefined,
+  index: number,
+): string {
+  return (
+    findingId ??
+    finding?.findingId ??
+    finding?.claimDsl?.path ??
+    firstEvidencePath(finding?.verifiedEvidence) ??
+    firstEvidencePath(finding?.negativeEvidence) ??
+    firstEvidencePath(finding?.statusTransitionEvidence) ??
+    `finding-${index}`
+  );
+}
+
+function createAuditLintBundleSourceIdentity(
+  bundleId: string | undefined,
+  bundle: AuditLintBundle | undefined,
+  index: number,
+): string {
+  return bundleId ?? bundle?.id ?? `bundle-${index}`;
+}
+
+function firstEvidencePath(
+  evidence: ReadonlyArray<{ path?: string }> | undefined,
+): string | undefined {
+  return Array.isArray(evidence)
+    ? evidence.find((item) => typeof item.path === 'string' && item.path.length > 0)?.path
+    : undefined;
+}
+
+function anchorPart(value: string): string {
+  return value.replaceAll(':', '_').replace(/\s+/g, ' ').trim() || 'unknown';
 }
 
 function summarizeIssue(issue: AuditLintIssue): Record<string, unknown> {

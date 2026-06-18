@@ -252,6 +252,28 @@ describe('gnDiffImpact', () => {
     expect(report.totalSymbolsChanged).toBe(2);
   });
 
+  it('emits a deterministic responseContract for gnDiffImpact', async () => {
+    setupGitMocks('src/engine.ts\n', '20\t5\tsrc/engine.ts\n');
+    setupGraphMocks({
+      symbolRows: [{ id: 'Function:src/engine.ts:init', name: 'init' }],
+      upstreamCount: 2,
+      downstreamCount: 1,
+    });
+
+    const report = await gnDiffImpact(REPO_ID, { commitRange: 'HEAD~1..HEAD' });
+
+    expect(report.responseContract).toMatchObject({
+      mode: 'summary-first',
+      stablePrefix: 'repo-and-contract',
+      deterministicOrder: true,
+      expandable: false,
+      anchorScheme: 'source-identity-v1',
+      anchors: ['test-repo:src/engine.ts', 'test-repo:Function:src/engine.ts:init'],
+    });
+    expect(report.responseContract).not.toHaveProperty('omittedItems');
+    expect(report.responseContract).not.toHaveProperty('expandHint');
+  });
+
   // ---- Test 5: HIGH-risk symbol surfaced in highRiskSymbols ---------------
   it('surfaces HIGH-risk symbol names in highRiskSymbols', async () => {
     setupGitMocks('src/core/critical.ts\n', '100\t0\tsrc/core/critical.ts\n');
@@ -614,6 +636,16 @@ describe('gnReviewDiff', () => {
       truncated: false,
       reasons: [],
     });
+    expect(envelope.results.responseContract).toMatchObject({
+      mode: 'summary-first',
+      stablePrefix: 'repo-and-contract',
+      deterministicOrder: true,
+      expandable: false,
+      anchorScheme: 'source-identity-v1',
+      anchors: ['test-repo:src/foo.ts', 'test-repo:Function:src/foo.ts:doWork'],
+    });
+    expect(envelope.results.responseContract).not.toHaveProperty('omittedItems');
+    expect(envelope.results.responseContract).not.toHaveProperty('expandHint');
     expect(envelope.results.contextCost.emittedChars).toBeGreaterThan(0);
     expect(envelope.results.reviewedFiles).toBeInstanceOf(Array);
     expect(envelope.results.totalSymbolsChanged).toBeGreaterThanOrEqual(0);
@@ -744,6 +776,12 @@ describe('gnReviewDiff', () => {
       truncated: true,
       reasons: ['changed-path-cap'],
     });
+    expect(envelope.results.responseContract).toMatchObject({
+      expandable: true,
+      omittedItems: 1,
+    });
+    expect(envelope.results.responseContract.expandHint).toContain('narrower commit range');
+    expect(envelope.results.responseContract.anchors[0]).toBe('test-repo:src/file-0.ts');
     expect(envelope.results.contextCost.emittedChars).toBeGreaterThan(0);
     expect(envelope.warnings).toContain('Changed file scan capped at 500 paths');
   });

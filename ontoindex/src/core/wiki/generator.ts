@@ -90,6 +90,19 @@ interface ModuleTreeNode {
   children?: ModuleTreeNode[];
 }
 
+function sortModuleTreeFilePaths(tree: ModuleTreeNode[]): ModuleTreeNode[] {
+  return tree.map((node) => {
+    const normalized: ModuleTreeNode = {
+      ...node,
+      files: [...node.files].sort((a, b) => a.localeCompare(b)),
+    };
+    if (node.children && node.children.length > 0) {
+      normalized.children = sortModuleTreeFilePaths(node.children);
+    }
+    return normalized;
+  });
+}
+
 type ProgressCallback = (phase: string, percent: number, detail?: string) => void;
 
 interface WikiRunResult {
@@ -305,7 +318,7 @@ export class WikiGenerator {
     this.onProgress('gather', 10, `Found ${sourceFiles.length} source files`);
 
     // Phase 1: Build module tree
-    const moduleTree = await this.buildModuleTree(enrichedFiles);
+    const moduleTree = sortModuleTreeFilePaths(await this.buildModuleTree(enrichedFiles));
     pagesGenerated = 0;
 
     // Budget guard: estimate total tokens before committing to LLM calls
@@ -434,7 +447,7 @@ export class WikiGenerator {
       const parsed = JSON.parse(edited);
       if (Array.isArray(parsed) && parsed.length > 0) {
         this.onProgress('grouping', 25, 'Using edited module tree');
-        return parsed;
+        return sortModuleTreeFilePaths(parsed);
       }
     } catch {
       // No edited tree, check for original snapshot
@@ -447,7 +460,7 @@ export class WikiGenerator {
       const parsed = JSON.parse(existing);
       if (Array.isArray(parsed) && parsed.length > 0) {
         this.onProgress('grouping', 25, 'Using existing module tree (resuming)');
-        return parsed;
+        return sortModuleTreeFilePaths(parsed);
       }
     } catch {
       // No snapshot, generate new
@@ -493,10 +506,14 @@ export class WikiGenerator {
     }
 
     // Save immutable snapshot for resumability
-    await fs.writeFile(snapshotPath, JSON.stringify(tree, null, 2), 'utf-8');
+    await fs.writeFile(
+      snapshotPath,
+      JSON.stringify(sortModuleTreeFilePaths(tree), null, 2),
+      'utf-8',
+    );
     this.onProgress('grouping', 28, `Created ${tree.length} modules`);
 
-    return tree;
+    return sortModuleTreeFilePaths(tree);
   }
 
   /**
@@ -609,7 +626,7 @@ export class WikiGenerator {
    * Generate a leaf module page from source code + graph data.
    */
   private async generateLeafPage(node: ModuleTreeNode): Promise<void> {
-    const filePaths = node.files;
+    const filePaths = [...node.files].sort((a, b) => a.localeCompare(b));
     const sourceCode = await this.readSourceFiles(filePaths);
     const totalTokens = estimateTokens(sourceCode);
     let finalSourceCode = sourceCode;
@@ -669,7 +686,9 @@ export class WikiGenerator {
     }
 
     // Get cross-child call edges
-    const allChildFiles = node.children.flatMap((c) => c.files);
+    const allChildFiles = node.children
+      .flatMap((c) => c.files)
+      .sort((a, b) => a.localeCompare(b));
     const crossCalls = await getIntraModuleCallEdges(allChildFiles);
     const processes = await getProcessesForFiles(allChildFiles, 3);
 
@@ -769,7 +788,6 @@ export class WikiGenerator {
       await this.saveWikiMeta({
         ...existingMeta,
         fromCommit: currentCommit,
-        generatedAt: new Date().toISOString(),
       });
       return { pagesGenerated: 0, mode: 'incremental', failedModules: [] };
     }
@@ -1060,12 +1078,14 @@ export class WikiGenerator {
     const result: Record<string, string[]> = {};
     for (const node of tree) {
       if (node.children && node.children.length > 0) {
-        result[node.name] = node.children.flatMap((c) => c.files);
+        result[node.name] = node.children
+          .flatMap((c) => c.files)
+          .sort((a, b) => a.localeCompare(b));
         for (const child of node.children) {
-          result[child.name] = child.files;
+          result[child.name] = [...child.files].sort((a, b) => a.localeCompare(b));
         }
       } else {
-        result[node.name] = node.files;
+        result[node.name] = [...node.files].sort((a, b) => a.localeCompare(b));
       }
     }
     return result;
@@ -1236,17 +1256,22 @@ export class WikiGenerator {
   }
 
   private async saveWikiMeta(meta: WikiMeta): Promise<void> {
+    const normalizedMeta: WikiMeta = {
+      ...meta,
+      moduleTree: sortModuleTreeFilePaths(meta.moduleTree),
+    };
     await fs.writeFile(
       path.join(this.wikiDir, 'meta.json'),
-      JSON.stringify(meta, null, 2),
+      JSON.stringify(normalizedMeta, null, 2),
       'utf-8',
     );
   }
 
   private async saveModuleTree(tree: ModuleTreeNode[]): Promise<void> {
+    const normalizedTree = sortModuleTreeFilePaths(tree);
     await fs.writeFile(
       path.join(this.wikiDir, 'module_tree.json'),
-      JSON.stringify(tree, null, 2),
+      JSON.stringify(normalizedTree, null, 2),
       'utf-8',
     );
   }

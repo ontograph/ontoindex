@@ -97,6 +97,7 @@ export interface DocsMcpFullReport {
   action: DocsAction;
   report: string;
   responseMode: Exclude<McpResponseMode, 'minimal'>;
+  responseContract: DocsResponseContract;
   repo: {
     id: string;
     path?: string;
@@ -150,6 +151,18 @@ export interface DocsMcpMinimalReport {
 export type DocsMcpReport = DocsMcpFullReport | DocsMcpMinimalReport;
 
 type DocsEnvelope = DocsReportEnvelope;
+
+export interface DocsResponseContract {
+  mode: 'summary-first';
+  stablePrefix: 'repo-and-contract';
+  deterministicOrder: true;
+  expandable: boolean;
+  anchorScheme: 'source-identity-v1';
+  anchors: string[];
+  omittedItems: number;
+  nextCursor?: string;
+  expandHint: string;
+}
 
 interface DocsRepoHandle {
   id: string;
@@ -240,7 +253,7 @@ export async function runDocsMcpAction(
       );
     }
     return withInlineContext(
-      compactDocsEnvelope(action, loaded.baseReport, [], loaded.storeMissing, [], {
+      compactDocsEnvelope(action, loaded.baseReport, [], loaded.storeMissing, repo.name, [], {
         maxItems,
         maxCandidatesPerFact,
         responseMode,
@@ -274,6 +287,7 @@ export async function runDocsMcpAction(
       compactKnowledgeItem,
       summarizeKnowledgeItem,
       extractKnowledgeGraphFacts,
+      repo.name,
       advisoryMemories,
     );
   }
@@ -287,7 +301,7 @@ export async function runDocsMcpAction(
       });
     }
     return withInlineContext(
-      compactDocsEnvelope(action, loaded.baseReport, [], true, [], {
+      compactDocsEnvelope(action, loaded.baseReport, [], true, repo.name, [], {
         maxItems,
         maxCandidatesPerFact,
         responseMode,
@@ -325,6 +339,7 @@ export async function runDocsMcpAction(
       compactTraceItem,
       summarizeTraceItem,
       extractTraceGraphFacts,
+      repo.name,
     );
   }
 
@@ -359,6 +374,7 @@ export async function runDocsMcpAction(
     compactDriftItem,
     summarizeDriftItem,
     extractDriftGraphFacts,
+    repo.name,
   );
 }
 
@@ -458,6 +474,7 @@ function compactDocsEnvelope(
   envelope: DocsEnvelope,
   docsEvidence: unknown[],
   storeMissing: boolean,
+  repoLabel: string,
   primaryGraphFacts: unknown[] = [],
   limits?: {
     maxItems: number;
@@ -476,6 +493,12 @@ function compactDocsEnvelope(
     action,
     report: reportName(action, envelope),
     responseMode: limits?.responseMode ?? 'full',
+    responseContract: createDocsResponseContract(
+      repoLabel,
+      docsEvidence,
+      limits?.cursor,
+      limits?.nextAction,
+    ),
     repo: {
       id: envelope.repo.id,
       path: envelope.repo.path,
@@ -924,6 +947,7 @@ function finalizeDocsItemsReport<TItem>(
   toFullItem: (item: TItem) => Record<string, unknown>,
   toSummaryItem: (item: TItem) => Record<string, unknown>,
   extractGraphFacts: (items: readonly TItem[]) => unknown[],
+  repoLabel: string,
   advisoryMemories?: DocsAdvisoryMemorySummary,
 ): DocsMcpReport {
   const page = paginateMcpItems(envelope.items, { pageSize: maxItems, cursor: params.cursor });
@@ -950,19 +974,85 @@ function finalizeDocsItemsReport<TItem>(
   const docsEvidence = page.items.map(responseMode === 'summary' ? toSummaryItem : toFullItem);
   const primaryGraphFacts = responseMode === 'summary' ? [] : extractGraphFacts(page.items);
   return withInlineContext(
-    compactDocsEnvelope(action, envelope, docsEvidence, storeMissing, primaryGraphFacts, {
-      maxItems: page.page.pageSize,
-      maxCandidatesPerFact,
-      emitted: page.page.returned,
-      total: envelope.items.length,
-      truncated,
-      responseMode,
-      cursor,
-      nextAction,
-      advisoryMemories,
-    }),
+    compactDocsEnvelope(
+      action,
+      envelope,
+      docsEvidence,
+      storeMissing,
+      repoLabel,
+      primaryGraphFacts,
+      {
+        maxItems: page.page.pageSize,
+        maxCandidatesPerFact,
+        emitted: page.page.returned,
+        total: envelope.items.length,
+        truncated,
+        responseMode,
+        cursor,
+        nextAction,
+        advisoryMemories,
+      },
+    ),
     params,
   );
+}
+
+function createDocsResponseContract(
+  repoId: string,
+  docsEvidence: readonly unknown[],
+  cursor: McpResponseCursor | undefined,
+  nextAction: string | undefined,
+): DocsResponseContract {
+  const nextCursor = cursor?.next;
+  const omittedItems = cursor ? Math.max(0, cursor.total - cursor.offset - cursor.returned) : 0;
+  return {
+    mode: 'summary-first',
+    stablePrefix: 'repo-and-contract',
+    deterministicOrder: true,
+    expandable: Boolean(nextCursor),
+    anchorScheme: 'source-identity-v1',
+    anchors: docsEvidence.map((item, index) => createDocsEvidenceAnchor(repoId, item, index)),
+    omittedItems,
+    ...(nextCursor ? { nextCursor } : {}),
+    expandHint: nextCursor
+      ? `Rerun gn_docs with cursor:"${nextCursor}" to fetch the next page.`
+      : (nextAction ?? 'No additional docs page is available.'),
+  };
+}
+
+function createDocsEvidenceAnchor(repoId: string, item: unknown, index: number): string {
+  const record = isRecord(item) ? item : {};
+  const source =
+    readAnchorString(record.requirementId) ??
+    readAnchorString(record.routeKey) ??
+    readAnchorString(record.conceptId) ??
+    readAnchorString(record.docPath) ??
+    readAnchorString(record.path) ??
+    readAnchorString(record.sourceId) ??
+    `item-${index}`;
+  const span = anchorLineSpan(record.lineSpan);
+  const kind =
+    readAnchorString(record.kind) ??
+    readAnchorString(record.evidenceKind) ??
+    readAnchorString(record.status) ??
+    'docs';
+  return [repoId, source, span, kind].map(anchorPart).join(':');
+}
+
+function readAnchorString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function anchorLineSpan(value: unknown): string {
+  if (!isRecord(value)) return 'no-span';
+  const start = typeof value.start === 'number' ? value.start : undefined;
+  const end = typeof value.end === 'number' ? value.end : undefined;
+  if (start === undefined) return 'no-span';
+  return end === undefined || end === start ? `L${start}` : `L${start}-L${end}`;
+}
+
+function anchorPart(value: string): string {
+  return value.replaceAll(':', '_').replace(/\s+/g, ' ').trim() || 'unknown';
 }
 
 function createDocsNextAction(

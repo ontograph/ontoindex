@@ -68,3 +68,18 @@ export async function readRecentOversizedToolCalls(
     return [];
   }
 }
+
+export interface ToolTelemetrySummary {
+  recentOversizedCount: number;
+  recentOversizedTools: string[];
+}
+
+export async function readToolTelemetrySummary(
+  options: { limit?: number } = {},
+): Promise<ToolTelemetrySummary> {
+  const recentOversizedTools = await readRecentOversizedToolCalls(options);
+  return {
+    recentOversizedCount: recentOversizedTools.length,
+    recentOversizedTools,
+  };
+}

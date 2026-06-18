@@ -44,7 +44,9 @@ export async function generateHTMLViewer(wikiDir: string, projectName: string): 
 
   // Read all markdown files into a { slug: content } map
   const pages: Record<string, string> = {};
-  const dirEntries = (await fs.readdir(wikiDir)).filter((f) => f.endsWith('.md'));
+  const dirEntries = (await fs.readdir(wikiDir))
+    .filter((f) => f.endsWith('.md'))
+    .sort((a, b) => a.localeCompare(b));
   let embeddedBytes = 0;
   for (const f of dirEntries) {
     const stat = await fs.stat(path.join(wikiDir, f));
