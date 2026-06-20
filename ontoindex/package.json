@@ -1,6 +1,6 @@
 {
   "name": "ontoindex",
-  "version": "1.9.18",
+  "version": "1.9.19",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "AGPL-3.0-or-later",
@@ -81,7 +81,7 @@
     "pandemonium": "^2.4.1",
     "safe-regex": "^2.1.1",
     "seedrandom": "^3.0.5",
-    "tree-sitter": "^0.25.0",
+    "tree-sitter": "file:./vendor/tree-sitter",
     "tree-sitter-c": "file:./vendor/tree-sitter-c",
     "tree-sitter-c-sharp": "^0.23.5",
     "tree-sitter-cpp": "file:./vendor/tree-sitter-cpp",
@@ -128,6 +128,6 @@
     "tree-sitter-c": "$tree-sitter-c"
   },
   "engines": {
-    "node": ">=22.12.0 <24.0.0"
+    "node": ">=22.12.0 <26.0.0"
   }
 }

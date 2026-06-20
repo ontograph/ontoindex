@@ -1,0 +1,52 @@
+{
+  "name": "tree-sitter",
+  "version": "0.25.0",
+  "description": "Node.js bindings to the Tree-sitter parsing library",
+  "repository": "http://github.com/tree-sitter/node-tree-sitter",
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "Max Brunsfeld",
+    "email": "maxbrunsfeld@gmail.com"
+  },
+  "maintainers": [
+    {
+      "name": "Amaan Qureshi",
+      "email": "amaanq12@gmail.com"
+    }
+  ],
+  "contributors": [
+    {
+      "name": "Segev Finer",
+      "email": "segev208@gmail.com"
+    },
+    {
+      "name": "Boris Verkhovskiy",
+      "email": "boris.verk@gmail.com"
+    }
+  ],
+  "main": "index.js",
+  "types": "tree-sitter.d.ts",
+  "keywords": [
+    "incremental",
+    "parsing",
+    "tree-sitter"
+  ],
+  "files": [
+    "binding.gyp",
+    "tree-sitter.d.ts",
+    "prebuilds/*",
+    "src/*",
+    "vendor/tree-sitter/lib/include/*",
+    "vendor/tree-sitter/lib/src/*"
+  ],
+  "dependencies": {
+    "node-addon-api": "^8.3.0",
+    "node-gyp-build": "^4.8.4"
+  },
+  "scripts": {
+    "install": "node-gyp-build"
+  }
+}

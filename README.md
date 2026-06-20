@@ -9,7 +9,7 @@ The default path is local: install, analyze, setup, connect MCP, serve, and gene
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- Current release: `1.9.18`
+- Current release: `1.9.19`
 - Source repository: [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - Security policy: [SECURITY.md](SECURITY.md)
 - Enterprise contact: [erasyuk@gmail.com](mailto:erasyuk@gmail.com)
@@ -42,7 +42,7 @@ OntoIndex runs on Node.js and uses native parser packages for some languages. In
 
 | Requirement | Linux | Windows |
 | --- | --- | --- |
-| Node.js | Node.js `22.12.0` or newer in the `22 LTS` line plus `npm` | Node.js `22.12.0` or newer in the `22 LTS` line plus `npm 11.6.0+` |
+| Node.js | Node.js `22.12.0` through `25.x` plus `npm` | Node.js `22.12.0` through `25.x` plus `npm 11.6.0+` |
 | Git | `git` CLI for repository metadata and diff analysis | Git for Windows |
 | Native build tools | `python3`, `make`, and `g++` for optional native parser builds | Python 3 and Microsoft C++ Build Tools from Visual Studio Build Tools |
 | Shell | `bash` for the install script examples | PowerShell 5.1 or PowerShell 7 |
@@ -89,6 +89,8 @@ Windows note:
 
 - OntoIndex no longer supports Node.js 20 in the current release line because `commander@15`
   requires Node.js `22.12.0` or newer.
+- Node.js 24 and 25 use OntoIndex's vendored `tree-sitter` runtime source, patched to compile
+  native bindings with C++20 when prebuilds are unavailable.
 - With `Node.js 22 LTS`, use `npm 11.6.0` or newer on Windows.
 - Older npm releases can bundle `node-gyp` builds that fail to detect Visual Studio 2026 Build Tools.
 - Upgrade with `npm.cmd install -g npm@11.6.3` before retrying the installer.
@@ -125,8 +127,8 @@ Use this path when npm publication is available in your environment.
 
 | Platform | Command |
 | --- | --- |
-| Linux/macOS | `npm install -g ontoindex@1.9.18 && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.18; ontoindex --version` |
+| Linux/macOS | `npm install -g ontoindex@1.9.19 && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.19; ontoindex --version` |
 
 ### Install from a Release Tarball URL
 
@@ -134,8 +136,8 @@ Use this when you want an immutable GitHub release asset.
 
 | Platform | Command |
 | --- | --- |
-| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.18/ontoindex-1.9.18.tgz && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.18/ontoindex-1.9.18.tgz; ontoindex --version` |
+| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.19/ontoindex-1.9.19.tgz && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.19/ontoindex-1.9.19.tgz; ontoindex --version` |
 
 ## First Run
 
@@ -321,8 +323,8 @@ Images:
 
 | Image | Purpose |
 | --- | --- |
-| `ghcr.io/ontograph/ontoindex:1.9.18` | CLI, MCP server, and `ontoindex serve` backend |
-| `ghcr.io/ontograph/ontoindex-web:1.9.18` | Web UI |
+| `ghcr.io/ontograph/ontoindex:1.9.19` | CLI, MCP server, and `ontoindex serve` backend |
+| `ghcr.io/ontograph/ontoindex-web:1.9.19` | Web UI |
 
 ## Comparison With Related Tools
 

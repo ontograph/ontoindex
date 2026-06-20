@@ -4,6 +4,13 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.19] - 2026-06-20
+
+### Changed
+
+- Vendored the `tree-sitter` Node runtime source and patched native builds to use C++20, enabling
+  published installs on Node.js 24 and 25 when prebuilds are unavailable.
+
 ## [1.9.18] - 2026-06-20
 
 ### Added

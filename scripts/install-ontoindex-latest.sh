@@ -20,18 +20,17 @@ node_major="$(node -p 'process.versions.node.split(".")[0]')"
 node_minor="$(node -p 'process.versions.node.split(".")[1]')"
 node_version="$(node -p 'process.versions.node')"
 if [ "${node_major}" -lt 22 ] || { [ "${node_major}" -eq 22 ] && [ "${node_minor}" -lt 12 ]; }; then
-  echo "error: OntoIndex currently supports Node.js 22.12.x or newer in the 22 LTS line." >&2
+  echo "error: OntoIndex supports Node.js 22.12.0 through Node.js 25.x for published installs." >&2
   echo "error: detected Node.js ${node_version}." >&2
   echo "error: commander@15 requires Node.js >=22.12.0, and Windows native installs need newer npm/node-gyp." >&2
-  echo "error: recommended: use nvm to install and activate Node.js 22 LTS before retrying." >&2
+  echo "error: recommended: use nvm to install and activate Node.js 22 LTS or newer before retrying." >&2
   exit 1
 fi
-if [ "${node_major}" -ge 24 ]; then
-  echo "error: OntoIndex currently supports Node.js 22.x for published installs." >&2
+if [ "${node_major}" -ge 26 ]; then
+  echo "error: OntoIndex supports Node.js 22.12.0 through Node.js 25.x for published installs." >&2
   echo "error: detected Node.js ${node_major}.x." >&2
-  echo "error: tree-sitter@0.25.0 falls back to a native build that fails on Node 24 because it still compiles with C++17 while Node 24 requires C++20." >&2
-  echo "error: update your active Node.js runtime to 22 LTS, then rerun this installer." >&2
-  echo "error: recommended: use nvm to install and activate Node.js 22 LTS before retrying." >&2
+  echo "error: Node.js ${node_major}.x has not been validated with the vendored tree-sitter runtime yet." >&2
+  echo "error: recommended: use nvm to install and activate Node.js 22 LTS, 24, or 25 before retrying." >&2
   exit 1
 fi
 

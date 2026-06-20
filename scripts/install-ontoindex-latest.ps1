@@ -252,13 +252,13 @@ $null = Resolve-NpmCommand
 $nodeMajor = Get-NodeMajorVersion
 $npmVersion = Get-NpmVersion
 if ($nodeMajor -lt 22) {
-  throw "OntoIndex currently supports Node.js 22.12.x or newer in the 22 LTS line. Detected Node.js $nodeMajor.x. commander@15 requires Node.js >=22.12.0, and Windows native installs need newer npm/node-gyp. Recommended on Windows: use nvm-windows to install and activate Node.js 22 LTS before retrying."
+  throw "OntoIndex supports Node.js 22.12.0 through Node.js 25.x for published installs. Detected Node.js $nodeMajor.x. commander@15 requires Node.js >=22.12.0, and Windows native installs need newer npm/node-gyp. Recommended on Windows: use nvm-windows to install and activate Node.js 22 LTS or newer before retrying."
 }
 if ($nodeMajor -eq 22 -and -not (Test-VersionAtLeast -Version ((& node -p "process.versions.node") 2>$null) -Minimum "22.12.0")) {
   throw "OntoIndex requires Node.js 22.12.0 or newer. Detected Node.js $((& node -p "process.versions.node") 2>$null)."
 }
-if ($nodeMajor -ge 24) {
-  throw "OntoIndex currently supports Node.js 22.x for published installs. Detected Node.js $nodeMajor.x. tree-sitter@0.25.0 falls back to a native build that fails on Node 24 because it still compiles with C++17 while Node 24 requires C++20. Update your active Node.js runtime to 22 LTS, then rerun this installer. Recommended on Windows: use nvm-windows to install and activate Node.js 22 LTS before retrying."
+if ($nodeMajor -ge 26) {
+  throw "OntoIndex supports Node.js 22.12.0 through Node.js 25.x for published installs. Detected Node.js $nodeMajor.x. Node.js $nodeMajor.x has not been validated with the vendored tree-sitter runtime yet. Recommended on Windows: use nvm-windows to install and activate Node.js 22 LTS, 24, or 25 before retrying."
 }
 if (($IsWindows -or $env:OS -eq "Windows_NT") -and -not (Test-VersionAtLeast -Version $npmVersion -Minimum "11.6.0")) {
   throw "OntoIndex on Windows with Node.js 22.x requires npm 11.6.0 or newer. Detected npm $npmVersion. Older npm releases bundle node-gyp versions that can fail to detect Visual Studio 2026 Build Tools. Run 'npm.cmd install -g npm@11.6.3', verify 'npm --version', then rerun this installer."
