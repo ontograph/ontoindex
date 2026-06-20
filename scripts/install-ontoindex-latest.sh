@@ -169,6 +169,10 @@ fi
 echo "Installed OntoIndex:"
 validate_install "${install_prefix}" "${bin_path}"
 
+echo "Note: this installer uses npm to resolve third-party runtime packages."
+echo "A non-fatal npm warning about deprecated transitive packages can appear while upstream packages catch up."
+echo "For air-gapped installs, use a separately prepared npm cache or internal registry mirror."
+
 case ":${PATH}:" in
   *":${USER_PREFIX}/bin:"*) ;;
   *)

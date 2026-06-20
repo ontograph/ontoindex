@@ -4,6 +4,15 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.22] - 2026-06-20
+
+### Changed
+
+- Clarified installer behavior for third-party runtime packages: default installers keep npm-based
+  dependency resolution instead of shipping a large offline dependency bundle.
+- Added installer guidance for non-fatal transitive npm deprecation warnings and air-gapped
+  installs.
+
 ## [1.9.21] - 2026-06-20
 
 ### Fixed

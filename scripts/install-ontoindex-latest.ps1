@@ -349,6 +349,10 @@ try {
   throw
 }
 
+Write-Host "Note: this installer uses npm to resolve third-party runtime packages."
+Write-Host "A non-fatal npm warning about deprecated transitive packages can appear while upstream packages catch up."
+Write-Host "For air-gapped installs, use a separately prepared npm cache or internal registry mirror."
+
 if (($env:Path -split ';') -notcontains $NpmPrefix -and (Test-Path (Join-Path $NpmPrefix "ontoindex.cmd"))) {
   Write-Host ""
   Write-Host "Add this directory to your user PATH if ontoindex is not available in new terminals:"
