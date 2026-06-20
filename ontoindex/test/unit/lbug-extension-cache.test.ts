@@ -24,12 +24,15 @@ describe('LadybugDB extension cache lookup', () => {
   it('finds fts in the installer-populated cache directory', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-lbug-ext-'));
     const ftsPath = path.join(dir, 'libfts.lbug_extension');
+    const vectorPath = path.join(dir, 'libvector.lbug_extension');
     await fs.writeFile(ftsPath, 'test');
+    await fs.writeFile(vectorPath, 'test');
 
     delete process.env.ONTOINDEX_LADYBUG_EXTENSION_DIR;
     process.env.ONTOINDEX_LADYBUG_EXTENSIONS_CACHE = dir;
 
     await expect(resolveLocalLbugExtensionPath('fts')).resolves.toBe(ftsPath);
+    await expect(resolveLocalLbugExtensionPath('vector')).resolves.toBe(vectorPath);
     await fs.rm(dir, { recursive: true, force: true });
   });
 });

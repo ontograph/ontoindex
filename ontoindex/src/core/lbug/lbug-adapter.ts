@@ -1672,6 +1672,25 @@ export const loadVectorExtension = async (): Promise<void> => {
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
+
+  const localVectorPath = await resolveLocalLbugExtensionPath('vector');
+  if (localVectorPath) {
+    try {
+      await withLbugNativeTimeout(
+        conn.query(`LOAD EXTENSION '${quoteLbugString(localVectorPath)}'`),
+        `LOAD EXTENSION ${localVectorPath}`,
+      );
+      vectorExtensionLoaded = true;
+      return;
+    } catch (err) {
+      if (err instanceof LbugQueryTimeoutError) throw err;
+      console.error(
+        'OntoIndex: cached VECTOR extension load failed, falling back to LadybugDB extension install:',
+        getOptionalThrownMessage(err) || localVectorPath,
+      );
+    }
+  }
+
   try {
     await withLbugNativeTimeout(conn.query('INSTALL VECTOR'), 'INSTALL VECTOR');
     await withLbugNativeTimeout(conn.query('LOAD EXTENSION VECTOR'), 'LOAD EXTENSION VECTOR');
@@ -1686,7 +1705,21 @@ export const loadVectorExtension = async (): Promise<void> => {
     ) {
       vectorExtensionLoaded = true;
     } else {
-      console.error('OntoIndex: VECTOR extension load failed:', msg);
+      const hint =
+        localVectorPath ||
+        path.join(
+          process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'),
+          'ontoindex',
+          'ladybugdb-extensions',
+          'v0.17.0',
+          'linux_amd64',
+          'libvector.lbug_extension',
+        );
+      console.error(
+        'OntoIndex: VECTOR extension load failed:',
+        msg,
+        `Hint: download libvector.lbug_extension to ${hint} or set ONTOINDEX_LADYBUG_EXTENSION_DIR.`,
+      );
     }
   }
 };

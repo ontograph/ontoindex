@@ -47,6 +47,19 @@ download_ladybug_extensions() {
 
   (
     cd "${cache}"
+    if [ -f libfts.lbug_extension ] && [ -f libvector.lbug_extension ]; then
+      if [ -f SHA256SUMS.txt ] && command -v sha256sum >/dev/null 2>&1; then
+        if sha256sum -c SHA256SUMS.txt >/dev/null 2>&1; then
+          log "Using cached LadybugDB extensions; checksums already valid"
+          exit 0
+        fi
+        log "Cached LadybugDB extensions failed checksum; refreshing"
+      else
+        log "Using cached LadybugDB extensions; checksum file is not present"
+        exit 0
+      fi
+    fi
+
     log "Downloading LadybugDB extension checksums from ${base_url}"
     curl -fL --retry 10 --retry-all-errors --connect-timeout 20 --max-time 300 \
       -o SHA256SUMS.txt "${base_url}/SHA256SUMS.txt"

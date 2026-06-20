@@ -4,6 +4,14 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.24] - 2026-06-20
+
+### Fixed
+
+- Loaded cached LadybugDB `vector` extensions from the installer-populated GitHub release cache
+  before falling back to LadybugDB network installation.
+- Skipped Linux extension-cache downloads when both cached extension binaries already exist.
+
 ## [1.9.23] - 2026-06-20
 
 ### Fixed
