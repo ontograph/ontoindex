@@ -4,6 +4,19 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.23] - 2026-06-20
+
+### Fixed
+
+- Loaded cached LadybugDB `fts` extensions from the installer-populated GitHub release cache before
+  falling back to LadybugDB network installation.
+- Added a runtime hint for `libfts.lbug_extension` cache paths when FTS extension loading fails.
+
+### Changed
+
+- Added timestamped progress logs to the Linux installer so release lookup, extension prefetch,
+  npm install, and validation no longer appear to hang silently.
+
 ## [1.9.22] - 2026-06-20
 
 ### Changed

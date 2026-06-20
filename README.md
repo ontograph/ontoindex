@@ -9,7 +9,7 @@ The default path is local: install, analyze, setup, connect MCP, serve, and gene
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- Current release: `1.9.22`
+- Current release: `1.9.23`
 - Source repository: [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - Security policy: [SECURITY.md](SECURITY.md)
 - Enterprise contact: [erasyuk@gmail.com](mailto:erasyuk@gmail.com)
@@ -110,6 +110,10 @@ ONNX Runtime, and image/vector helpers for the current platform. A non-fatal npm
 from a transitive package can appear while upstream packages catch up. For air-gapped hosts, use an
 internal npm registry mirror or a prepared npm cache.
 
+On Linux x64, the installer also prefetches LadybugDB `fts` and `vector` extension binaries from
+the OntoIndex GitHub extension-cache release. At runtime, OntoIndex tries that cache before asking
+LadybugDB to download extensions during `INSTALL fts` / `INSTALL VECTOR`.
+
 If a Windows install previously failed partway through and left a broken `ontoindex.cmd` shim, repair the global install state before retrying:
 
 ```powershell
@@ -135,8 +139,8 @@ Use this path when npm publication is available in your environment.
 
 | Platform           | Command                                                    |
 | ------------------ | ---------------------------------------------------------- |
-| Linux/macOS        | `npm install -g ontoindex@1.9.22 && ontoindex --version`   |
-| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.22; ontoindex --version` |
+| Linux/macOS        | `npm install -g ontoindex@1.9.23 && ontoindex --version`   |
+| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.23; ontoindex --version` |
 
 ### Install from a Release Tarball URL
 
@@ -144,8 +148,8 @@ Use this when you want an immutable GitHub release asset.
 
 | Platform           | Command                                                                                                                         |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| Linux/macOS        | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.22/ontoindex-1.9.22.tgz && ontoindex --version`   |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.22/ontoindex-1.9.22.tgz; ontoindex --version` |
+| Linux/macOS        | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.23/ontoindex-1.9.23.tgz && ontoindex --version`   |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.23/ontoindex-1.9.23.tgz; ontoindex --version` |
 
 ## First Run
 
@@ -332,8 +336,8 @@ Images:
 
 | Image                                    | Purpose                                        |
 | ---------------------------------------- | ---------------------------------------------- |
-| `ghcr.io/ontograph/ontoindex:1.9.22`     | CLI, MCP server, and `ontoindex serve` backend |
-| `ghcr.io/ontograph/ontoindex-web:1.9.22` | Web UI                                         |
+| `ghcr.io/ontograph/ontoindex:1.9.23`     | CLI, MCP server, and `ontoindex serve` backend |
+| `ghcr.io/ontograph/ontoindex-web:1.9.23` | Web UI                                         |
 
 ## Comparison With Related Tools
 

@@ -4,6 +4,7 @@ import { createInterface } from 'readline';
 import { once } from 'events';
 import { finished } from 'stream/promises';
 import path from 'path';
+import os from 'os';
 import lbug, { type LbugValue } from '@ladybugdb/core';
 import { KnowledgeGraph } from '../graph/types.js';
 import {
@@ -287,6 +288,37 @@ const getThrownMessage = (err: unknown): string | undefined =>
 
 const getOptionalThrownMessage = (err: unknown): string | undefined =>
   err == null ? undefined : getThrownMessage(err);
+
+const quoteLbugString = (value: string): string => value.replace(/'/g, "\\'");
+
+export const resolveLocalLbugExtensionPath = async (
+  extensionName: 'fts' | 'vector',
+): Promise<string | null> => {
+  const cacheRoot = path.join(
+    process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'),
+    'ontoindex',
+    'ladybugdb-extensions',
+    'v0.17.0',
+    'linux_amd64',
+  );
+  const dirs = [
+    process.env.ONTOINDEX_LADYBUG_EXTENSION_DIR,
+    process.env.ONTOINDEX_LADYBUG_EXTENSIONS_CACHE,
+    cacheRoot,
+  ].filter((value): value is string => Boolean(value));
+
+  for (const dir of dirs) {
+    const candidate = path.join(dir, `lib${extensionName}.lbug_extension`);
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch {
+      // Try the next configured cache directory.
+    }
+  }
+
+  return null;
+};
 
 // Maximum rows allowed from internal (non-exploratory) .getAll() calls.
 // Exceeding this limit indicates an unexpectedly large result set; we throw
@@ -1573,6 +1605,25 @@ export const loadFTSExtension = async (): Promise<void> => {
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
+
+  const localFtsPath = await resolveLocalLbugExtensionPath('fts');
+  if (localFtsPath) {
+    try {
+      await withLbugNativeTimeout(
+        conn.query(`LOAD EXTENSION '${quoteLbugString(localFtsPath)}'`),
+        `LOAD EXTENSION ${localFtsPath}`,
+      );
+      ftsLoaded = true;
+      return;
+    } catch (err) {
+      if (err instanceof LbugQueryTimeoutError) throw err;
+      console.error(
+        'OntoIndex: cached FTS extension load failed, falling back to LadybugDB extension install:',
+        getOptionalThrownMessage(err) || localFtsPath,
+      );
+    }
+  }
+
   try {
     // Try loading locally first (no network required)
     await withLbugNativeTimeout(conn.query('LOAD EXTENSION fts'), 'LOAD EXTENSION fts');
@@ -1593,7 +1644,21 @@ export const loadFTSExtension = async (): Promise<void> => {
       ) {
         ftsLoaded = true;
       } else {
-        console.error('OntoIndex: FTS extension load failed:', msg);
+        const hint =
+          localFtsPath ||
+          path.join(
+            process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'),
+            'ontoindex',
+            'ladybugdb-extensions',
+            'v0.17.0',
+            'linux_amd64',
+            'libfts.lbug_extension',
+          );
+        console.error(
+          'OntoIndex: FTS extension load failed:',
+          msg,
+          `Hint: download libfts.lbug_extension to ${hint} or set ONTOINDEX_LADYBUG_EXTENSION_DIR.`,
+        );
       }
     }
   }
