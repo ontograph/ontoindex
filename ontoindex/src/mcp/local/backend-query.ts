@@ -7,9 +7,14 @@ import {
 import { collectBestChunks } from '../../core/embeddings/types.js';
 import { EMBEDDING_INDEX_NAME, EMBEDDING_TABLE_NAME } from '../../core/lbug/schema.js';
 import { findTopLevelResultLimit } from '../../core/cypher-limit.js';
+import { resolveSemanticVectorRowsFetcher } from '../../core/embeddings/zvec-semantic-backend.js';
 
 interface QueryRepoHandle {
   id: string;
+  repoPath?: string;
+  storagePath?: string;
+  lastCommit?: string;
+  indexedAt?: string;
 }
 
 type QueryErrorResponse = { error: string };
@@ -360,7 +365,7 @@ export async function semanticSearch(
     const dims = getEmbeddingDims();
     const queryVecStr = `[${queryVec.join(',')}]`;
 
-    const bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
+    const ladybugVectorRows = async (fetchLimit: number): Promise<EmbeddingSearchRow[]> => {
       const vectorQuery = `
         CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
           CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
@@ -374,7 +379,13 @@ export async function semanticSearch(
 
       const embResults = await executeQuery(repo.id, vectorQuery);
       return embResults.filter(isQueryRow).map(toEmbeddingSearchRow);
-    });
+    };
+
+    const vectorPlan = await resolveSemanticVectorRowsFetcher(repo, queryVec, ladybugVectorRows);
+    const bestChunks = await collectBestChunks(
+      limit,
+      vectorPlan.fetchRows as Parameters<typeof collectBestChunks>[1],
+    );
 
     if (bestChunks.size === 0) return [];
 

@@ -1,8 +1,21 @@
 import type { QueryFreshnessStatus } from '../../runtime/query-diagnostics.js';
-import { type RetrievalReplayMovementMetrics } from './replay-metrics.js';
+import type { RetrievalReplayMovementMetrics } from './replay-metrics.js';
 import type { RetrievalReplayCaseV1 } from './replay-case.js';
 
 export type RetrievalReplayVerdict = 'PASS' | 'WARN' | 'FAIL';
+
+export interface RetrievalReplayVectorBackendComparison {
+  baselineMedianMs: number;
+  candidateMedianMs: number;
+  expectedAnchorRegression?: boolean;
+}
+
+export interface RetrievalReplayVectorBackendGateResult
+  extends RetrievalReplayVectorBackendComparison {
+  medianSpeedup?: number;
+  verdict: RetrievalReplayVerdict;
+  reasons: string[];
+}
 
 export interface EvaluateRetrievalReplayGateInput {
   caseInput: RetrievalReplayCaseV1;
@@ -11,12 +24,14 @@ export interface EvaluateRetrievalReplayGateInput {
   missingCapabilities?: readonly string[];
   baselineInvalid?: boolean;
   baselineInvalidReasons?: readonly string[];
+  vectorBackendComparison?: RetrievalReplayVectorBackendComparison;
 }
 
 export interface RetrievalReplayGateResult {
   verdict: RetrievalReplayVerdict;
   status: 'ok' | 'baseline_invalid';
   reasons: string[];
+  vectorBackend?: RetrievalReplayVectorBackendGateResult;
 }
 
 export function evaluateRetrievalReplayGate(
@@ -31,6 +46,7 @@ export function evaluateRetrievalReplayGate(
   const freshness = normalizeFreshness(input.indexFreshness);
   const freshnessDrift = freshness !== undefined && freshness !== 'fresh';
   const movementFailReasons: string[] = [];
+  const vectorBackend = evaluateVectorBackendComparison(input.vectorBackendComparison);
 
   const minimumJaccardAtK = input.caseInput.expected.minimumJaccardAtK ?? 0;
   if (input.metrics.jaccardAtK < minimumJaccardAtK) {
@@ -55,6 +71,10 @@ export function evaluateRetrievalReplayGate(
     reasons.push(`missing required capabilities: ${unexpectedMissingCapabilities.join(', ')}`);
   }
 
+  if (vectorBackend?.reasons.length) {
+    reasons.push(...vectorBackend.reasons);
+  }
+
   if (freshnessDrift) {
     reasons.push(`index freshness is ${freshness}`);
   }
@@ -65,25 +85,33 @@ export function evaluateRetrievalReplayGate(
     }
     reasons.push('baseline_invalid: unable to compare against baseline snapshot assumptions');
     return {
-      verdict: movementFailReasons.length > 0 ? 'FAIL' : 'WARN',
+      verdict:
+        movementFailReasons.length > 0 || vectorBackend?.verdict === 'FAIL' ? 'FAIL' : 'WARN',
       status: 'baseline_invalid',
       reasons,
+      vectorBackend,
     };
   }
 
-  if (movementFailReasons.length > 0) {
+  if (movementFailReasons.length > 0 || vectorBackend?.verdict === 'FAIL') {
     return {
       verdict: 'FAIL',
       status: 'ok',
       reasons,
+      vectorBackend,
     };
   }
 
-  if (unexpectedMissingCapabilities.length > 0 || freshnessDrift) {
+  if (
+    unexpectedMissingCapabilities.length > 0 ||
+    freshnessDrift ||
+    vectorBackend?.verdict === 'WARN'
+  ) {
     return {
       verdict: 'WARN',
       status: 'ok',
       reasons,
+      vectorBackend,
     };
   }
 
@@ -91,6 +119,7 @@ export function evaluateRetrievalReplayGate(
     verdict: 'PASS',
     status: 'ok',
     reasons,
+    vectorBackend,
   };
 }
 
@@ -111,4 +140,51 @@ function normalizeFreshness(
     return normalized;
   }
   return undefined;
+}
+
+function evaluateVectorBackendComparison(
+  comparison?: RetrievalReplayVectorBackendComparison,
+): RetrievalReplayVectorBackendGateResult | undefined {
+  if (comparison === undefined) {
+    return undefined;
+  }
+
+  const reasons: string[] = [];
+  const baselineMedianMs = comparison.baselineMedianMs;
+  const candidateMedianMs = comparison.candidateMedianMs;
+  const expectedAnchorRegression = Boolean(comparison.expectedAnchorRegression);
+  const validNumbers =
+    Number.isFinite(baselineMedianMs) &&
+    Number.isFinite(candidateMedianMs) &&
+    baselineMedianMs > 0 &&
+    candidateMedianMs > 0;
+
+  if (!validNumbers) {
+    reasons.push('vector backend comparison is incomplete');
+    return {
+      baselineMedianMs,
+      candidateMedianMs,
+      expectedAnchorRegression,
+      verdict: 'WARN',
+      reasons,
+    };
+  }
+
+  const medianSpeedup = baselineMedianMs / candidateMedianMs;
+  if (medianSpeedup < 2) {
+    reasons.push(`vector backend median speedup ${medianSpeedup.toFixed(2)}x below minimum 2x`);
+  }
+
+  if (expectedAnchorRegression) {
+    reasons.push('expected-anchor regression detected');
+  }
+
+  return {
+    baselineMedianMs,
+    candidateMedianMs,
+    expectedAnchorRegression,
+    medianSpeedup,
+    verdict: reasons.length > 0 ? 'FAIL' : 'PASS',
+    reasons,
+  };
 }

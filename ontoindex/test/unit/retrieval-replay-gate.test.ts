@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { evaluateRetrievalReplayGate } from '../../src/core/search/replay/replay-gate.js';
-import {
-  RETRIEVAL_REPLAY_CASE_SCHEMA_VERSION,
-  type RetrievalReplayCaseV1,
-} from '../../src/core/search/replay/replay-case.js';
+import { RETRIEVAL_REPLAY_CASE_SCHEMA_VERSION } from '../../src/core/search/replay/replay-case.js';
+import type { RetrievalReplayCaseV1 } from '../../src/core/search/replay/replay-case.js';
 
 function makeCase(overrides: Partial<RetrievalReplayCaseV1>): RetrievalReplayCaseV1 {
   return {
@@ -159,6 +157,112 @@ describe('retrieval replay gate', () => {
 
     expect(staleIndexResult.verdict).toBe('WARN');
     expect(staleIndexResult.reasons).toContain('index freshness is stale');
+  });
+
+  it('passes when zvec comparison clears the 2x speedup and anchor gates', () => {
+    const caseInput = makeCase({
+      expected: {
+        topK: 2,
+        identities: [
+          { kind: 'symbol', uid: 'symbol:a', filePath: 'a.ts', name: 'A' },
+          { kind: 'file', filePath: 'b.ts' },
+        ],
+      },
+    });
+
+    const result = evaluateRetrievalReplayGate({
+      caseInput,
+      metrics: {
+        jaccardAtK: 1,
+        top1Stable: true,
+        rankDelta: 0,
+        missingExpected: 0,
+        newUnexpected: 0,
+        capabilityDrift: false,
+        freshnessDrift: false,
+        latencyDeltaMs: 0,
+        warnings: [],
+      },
+      vectorBackendComparison: {
+        baselineMedianMs: 20,
+        candidateMedianMs: 8,
+        expectedAnchorRegression: false,
+      },
+      indexFreshness: 'fresh',
+    });
+
+    expect(result.verdict).toBe('PASS');
+    expect(result.vectorBackend?.verdict).toBe('PASS');
+    expect(result.vectorBackend?.medianSpeedup).toBe(2.5);
+    expect(result.reasons).toEqual([]);
+  });
+
+  it('fails when the zvec comparison misses the 2x speedup or regresses anchors', () => {
+    const caseInput = makeCase({
+      expected: {
+        topK: 1,
+        identities: [{ kind: 'symbol', uid: 'symbol:a', filePath: 'a.ts', name: 'A' }],
+      },
+    });
+
+    const result = evaluateRetrievalReplayGate({
+      caseInput,
+      metrics: {
+        jaccardAtK: 1,
+        top1Stable: true,
+        rankDelta: 0,
+        missingExpected: 0,
+        newUnexpected: 0,
+        capabilityDrift: false,
+        freshnessDrift: false,
+        latencyDeltaMs: 0,
+        warnings: [],
+      },
+      vectorBackendComparison: {
+        baselineMedianMs: 20,
+        candidateMedianMs: 12,
+        expectedAnchorRegression: true,
+      },
+      indexFreshness: 'fresh',
+    });
+
+    expect(result.verdict).toBe('FAIL');
+    expect(result.vectorBackend?.verdict).toBe('FAIL');
+    expect(result.reasons).toContain('expected-anchor regression detected');
+    expect(result.reasons).toContain('vector backend median speedup 1.67x below minimum 2x');
+  });
+
+  it('warns when the zvec comparison is present but incomplete', () => {
+    const caseInput = makeCase({
+      expected: {
+        topK: 1,
+        identities: [{ kind: 'symbol', uid: 'symbol:a', filePath: 'a.ts', name: 'A' }],
+      },
+    });
+
+    const result = evaluateRetrievalReplayGate({
+      caseInput,
+      metrics: {
+        jaccardAtK: 1,
+        top1Stable: true,
+        rankDelta: 0,
+        missingExpected: 0,
+        newUnexpected: 0,
+        capabilityDrift: false,
+        freshnessDrift: false,
+        latencyDeltaMs: 0,
+        warnings: [],
+      },
+      vectorBackendComparison: {
+        baselineMedianMs: 0,
+        candidateMedianMs: 12,
+      },
+      indexFreshness: 'fresh',
+    });
+
+    expect(result.verdict).toBe('WARN');
+    expect(result.vectorBackend?.verdict).toBe('WARN');
+    expect(result.reasons).toContain('vector backend comparison is incomplete');
   });
 
   it('passes when movement is within thresholds and no drift', () => {

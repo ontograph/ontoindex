@@ -10,7 +10,7 @@ Works with **Cursor**, **Claude Code**, **Codex**, **Windsurf**, **Cline**, **Op
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- **Current release:** `1.9.1`
+- **Current release:** `1.9.18`
 - **Repository:** [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - **Web UI:** [ontoindex.vercel.app](https://ontoindex.vercel.app)
 

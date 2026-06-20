@@ -53,6 +53,10 @@ vi.mock('../../src/core/embeddings/ann-neighbor-store.js', () => ({
   loadAnnNeighborEdges: vi.fn(),
 }));
 
+vi.mock('../../src/core/embeddings/zvec-semantic-backend.js', () => ({
+  getSemanticVectorBackendStatus: vi.fn(),
+}));
+
 vi.mock('../../src/mcp/core/embedder.js', () => ({
   embedQuery: vi.fn(),
   isEmbedderReady: vi.fn(),
@@ -60,7 +64,8 @@ vi.mock('../../src/mcp/core/embedder.js', () => ({
 
 import { executeParameterized } from '../../src/core/lbug/pool-adapter.js';
 import { bm25Search, semanticSearch } from '../../src/mcp/local/backend-query.js';
-import { mergeSymbolsWithRRF, type EnrichedSymbolRow } from '../../src/core/search/symbol-merge.js';
+import { mergeSymbolsWithRRF } from '../../src/core/search/symbol-merge.js';
+import type { EnrichedSymbolRow } from '../../src/core/search/symbol-merge.js';
 import { applyEnsemble } from '../../src/core/search/per-intent-ensemble.js';
 import { graphTraversalRank } from '../../src/core/search/graph-traversal-rank.js';
 import { getFileSkeleton } from '../../src/core/search/skeleton.js';
@@ -72,6 +77,7 @@ import {
   loadAnnNeighborEdges,
   adaptAnnNeighborEdgesForFrontier,
 } from '../../src/core/embeddings/ann-neighbor-store.js';
+import { getSemanticVectorBackendStatus } from '../../src/core/embeddings/zvec-semantic-backend.js';
 import { classifyIntent } from '../../src/core/search/intent-classifier.js';
 import { SemanticRetrievalCache } from '../../src/core/search/semantic-cache.js';
 
@@ -87,6 +93,7 @@ const mockClassifyIntent = vi.mocked(classifyIntent);
 const mockResolveTargetContext = vi.mocked(resolveTargetContext);
 const mockLoadAnnNeighborEdges = vi.mocked(loadAnnNeighborEdges);
 const mockAdaptAnnNeighborEdgesForFrontier = vi.mocked(adaptAnnNeighborEdgesForFrontier);
+const mockGetSemanticVectorBackendStatus = vi.mocked(getSemanticVectorBackendStatus);
 const mockEmbedQuery = vi.mocked(embedQuery);
 const mockIsEmbedderReady = vi.mocked(isEmbedderReady);
 
@@ -172,8 +179,18 @@ describe('backend-search typed input', () => {
     mockResolveTargetContext.mockResolvedValue(targetContext());
     mockLoadAnnNeighborEdges.mockResolvedValue([]);
     mockAdaptAnnNeighborEdgesForFrontier.mockImplementation((edges) => edges);
+    mockGetSemanticVectorBackendStatus.mockResolvedValue({
+      requestedBackend: 'lbug',
+      actualBackend: 'lbug',
+      freshness: 'unknown',
+      circuitBroken: false,
+    });
     mockEmbedQuery.mockResolvedValue([0.11, 0.22, 0.33]);
     mockIsEmbedderReady.mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    delete process.env.ONTOINDEX_VECTOR_BACKEND;
   });
 
   it('keeps plain query callers working unchanged', async () => {
@@ -640,6 +657,39 @@ describe('backend-search typed input', () => {
       },
     });
     expect(result).not.toHaveProperty('structured_retrieval');
+  });
+
+  it('includes zvec backend diagnostics when retrieval diagnostics are requested', async () => {
+    process.env['ONTOINDEX_VECTOR_BACKEND'] = 'zvec';
+    mockGetSemanticVectorBackendStatus.mockResolvedValue({
+      requestedBackend: 'zvec',
+      actualBackend: 'lbug',
+      freshness: 'missing',
+      fallbackReason: 'zvec mirror metadata unavailable',
+      circuitBroken: false,
+    });
+
+    const result = await query({ id: 'repo-1', repoPath: '/repo', lastCommit: 'abc123' } as any, {
+      typedQuery: {
+        lines: [{ type: 'vec', query: 'cache invalidation semantics', lineNumber: 1 }],
+      },
+      retrieval_diagnostics: true,
+    });
+
+    expect(result.retrieval_diagnostics).toMatchObject({
+      vectorBackend: {
+        requestedBackend: 'zvec',
+        actualBackend: 'lbug',
+        freshness: 'missing',
+        fallbackReason: 'zvec mirror metadata unavailable',
+      },
+    });
+    expect(mockGetSemanticVectorBackendStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'repo-1',
+        repoPath: '/repo',
+      }),
+    );
   });
 
   it('preserves configured token cost metadata in structured retrieval diagnostics', async () => {

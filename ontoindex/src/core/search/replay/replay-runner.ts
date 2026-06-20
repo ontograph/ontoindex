@@ -1,19 +1,18 @@
-import {
-  computeRetrievalReplayMovementMetrics,
-  type ComputeRetrievalReplayMovementMetricsInput,
-  type RetrievalReplayMovementMetrics,
+import { computeRetrievalReplayMovementMetrics } from './replay-metrics.js';
+import type {
+  ComputeRetrievalReplayMovementMetricsInput,
+  RetrievalReplayMovementMetrics,
 } from './replay-metrics.js';
-import {
-  evaluateRetrievalReplayGate,
-  type RetrievalReplayGateResult,
-  type RetrievalReplayVerdict,
+import { evaluateRetrievalReplayGate } from './replay-gate.js';
+import type {
+  RetrievalReplayVectorBackendComparison,
+  RetrievalReplayVectorBackendGateResult,
+  RetrievalReplayGateResult,
+  RetrievalReplayVerdict,
 } from './replay-gate.js';
 import type { QueryFreshnessStatus } from '../../runtime/query-diagnostics.js';
-import {
-  RETRIEVAL_REPLAY_CASE_SCHEMA_VERSION,
-  type RetrievalReplayCaseV1,
-  type RetrievalReplayQualityMode,
-} from './replay-case.js';
+import { RETRIEVAL_REPLAY_CASE_SCHEMA_VERSION } from './replay-case.js';
+import type { RetrievalReplayCaseV1, RetrievalReplayQualityMode } from './replay-case.js';
 import type { RetrievalReplayIdentity } from './result-identity.js';
 
 export interface RetrievalReplayExecutorRun {
@@ -28,6 +27,7 @@ export interface RetrievalReplayExecutorRun {
   qualityMode?: RetrievalReplayQualityMode;
   enabledCapabilities?: readonly string[];
   missingCapabilities?: readonly string[];
+  vectorBackendComparison?: RetrievalReplayVectorBackendComparison;
   baselineInvalid?: boolean;
   baselineInvalidReason?: string;
   baselineElapsedMs?: number;
@@ -50,6 +50,7 @@ export interface ReplayCaseReport {
   missingCapabilities: string[];
   sidecarFreshness?: QueryFreshnessStatus | string;
   embeddingFreshness?: QueryFreshnessStatus | string;
+  vectorBackend?: RetrievalReplayVectorBackendGateResult;
   baselineInvalid: boolean;
   baselineInvalidReasons: string[];
   metrics: RetrievalReplayMovementMetrics;
@@ -111,6 +112,7 @@ async function executeReplayCase(
     metrics: movementMetrics,
     indexFreshness: runResult.indexFreshness,
     missingCapabilities: runResult.missingCapabilities,
+    vectorBackendComparison: runResult.vectorBackendComparison,
     baselineInvalid: runResult.baselineInvalid,
     baselineInvalidReasons: runResult.baselineInvalidReason
       ? [runResult.baselineInvalidReason]
@@ -138,6 +140,7 @@ async function executeReplayCase(
     missingCapabilities,
     sidecarFreshness: runResult.sidecarFreshness,
     embeddingFreshness: runResult.embeddingFreshness,
+    vectorBackend: gate.vectorBackend,
     baselineInvalid: Boolean(runResult.baselineInvalid),
     baselineInvalidReasons,
     metrics: movementMetrics,

@@ -1,5 +1,5 @@
-<!-- version: 1.7.6 -->
-<!-- Last updated: 2026-06-13 -->
+<!-- version: 1.7.7 -->
+<!-- Last updated: 2026-06-19 -->
 
 Last reviewed: 2026-04-21
 
@@ -17,7 +17,7 @@ Last reviewed: 2026-04-21
 ## Model Configuration
 
 - **Primary:** For coding tasks, use `gpt-5.4-mini` by default. Avoid `Auto`, unversioned `latest`, or a different model unless the user explicitly overrides it or the task is clearly non-coding.
-- **Sub-agents:** For coding tasks, delegated sub-agents must also use `gpt-5.4-mini` when the sub-agent surface can enforce it. If the tool cannot select or verify the model, state the requirement in the worker prompt, record the actual UI/runtime model when visible, and continue unless the user explicitly asks to block on exact model compliance.
+- **Sub-agents:** For coding tasks, delegated sub-agents must use the first available model from this order: `gemini-3.5-flash-low`, `gemini-3-flash-agent`, `gemini-pro-agent`, `claude-sonnet-4-6`, `gpt-5.3-codex-spark`, `gpt-5.4-mini`. If a model is unavailable, choose the next model in order. If a model fails on a given UTC date, do not retry that model until the next UTC date; try only the next model in order. If the tool cannot select or verify the model, state this ordered requirement in the worker prompt, record the actual UI/runtime model when visible, and continue unless the user explicitly asks to block on exact model compliance.
 - **Notes:** The OntoIndex CLI indexer does not call an LLM.
 
 ## Resource Budget
@@ -102,6 +102,7 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-06-19 | 1.7.7 | Updated delegated sub-agent model policy to use an ordered fallback list and same-day failure cooldown. |
 | 2026-06-13 | 1.7.6 | Updated model policy: coding tasks now default to `gpt-5.4-mini`, and delegated coding sub-agents must use `gpt-5.4-mini` when the tool can enforce it. |
 | 2026-06-13 | 1.7.5 | Added hard architecture-fit gate: all new proposals, changes, and refactors must prove they add real new functionality and only extend current core solutions in line with the existing architecture. |
 | 2026-06-08 | 1.7.4 | Relaxed delegated sub-agent model handling: prefer `gpt-5.3-codex-spark`, but continue with actual-runtime recording when exact model selection is unavailable unless the user explicitly requires blocking. |
@@ -122,7 +123,7 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 <!-- ontoindex:start -->
 # OntoIndex — Code Intelligence
 
-This project is indexed by OntoIndex as **ontoindex** (37393 symbols, 55439 relationships, 300 execution flows). Use the OntoIndex MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by OntoIndex as **ontoindex** (37685 symbols, 55934 relationships, 300 execution flows). Use the OntoIndex MCP tools to understand code, assess impact, and navigate safely.
 
 > If any OntoIndex tool warns the index is stale, coordinate first; exactly one process should run `ONTOINDEX_MAX_WORKERS=7 node /opt/demodb/_workfolder/OntoIndex/ontoindex/dist/cli/index.js analyze`.
 

@@ -27,6 +27,10 @@ vi.mock('../../../src/mcp/shared/target-context.js', () => ({
   resolveTargetContext: vi.fn(),
 }));
 
+vi.mock('../../../src/core/embeddings/zvec-semantic-backend.js', () => ({
+  getSemanticVectorBackendStatus: vi.fn(),
+}));
+
 vi.mock('../../../src/mcp/local/tool-telemetry.js', () => ({
   readToolTelemetrySummary: vi.fn().mockResolvedValue({
     recentOversizedCount: 0,
@@ -41,6 +45,7 @@ vi.mock('../../../src/mcp/local/tool-telemetry.js', () => ({
 import { execFile } from 'child_process';
 import { gnEnsureFresh } from '../../../src/mcp/super/ensure-fresh.js';
 import { resolveTargetContext } from '../../../src/mcp/shared/target-context.js';
+import { getSemanticVectorBackendStatus } from '../../../src/core/embeddings/zvec-semantic-backend.js';
 import { gnDiagnose } from '../../../src/mcp/super/diagnose.js';
 import { ONTOINDEX_SUPER_TOOLS } from '../../../src/mcp/super/tool-definitions.js';
 import { readToolTelemetrySummary } from '../../../src/mcp/local/tool-telemetry.js';
@@ -48,6 +53,7 @@ import { readToolTelemetrySummary } from '../../../src/mcp/local/tool-telemetry.
 const mockExecFile = vi.mocked(execFile);
 const mockGnEnsureFresh = vi.mocked(gnEnsureFresh);
 const mockResolveTargetContext = vi.mocked(resolveTargetContext);
+const mockGetSemanticVectorBackendStatus = vi.mocked(getSemanticVectorBackendStatus);
 const mockReadToolTelemetrySummary = vi.mocked(readToolTelemetrySummary);
 
 // ---------------------------------------------------------------------------
@@ -97,8 +103,8 @@ function makeFreshReport(
     (embeddingsStatus === 'missing'
       ? `ontoindex analyze${isStale ? '' : ' --force'} --embeddings`
       : embeddingsStatus === 'metadata-unavailable'
-        ? 'ontoindex analyze'
-        : undefined);
+      ? 'ontoindex analyze'
+      : undefined);
   const indexedCommit = isStale ? STALE_COMMIT : INDEXED_COMMIT;
   return {
     version: 1 as const,
@@ -178,6 +184,12 @@ beforeEach(() => {
   // Default: fresh index
   mockGnEnsureFresh.mockResolvedValue(makeFreshReport());
   mockResolveTargetContext.mockResolvedValue(TARGET_CONTEXT);
+  mockGetSemanticVectorBackendStatus.mockResolvedValue({
+    requestedBackend: 'lbug',
+    actualBackend: 'lbug',
+    freshness: 'unknown',
+    circuitBroken: false,
+  });
   mockReadToolTelemetrySummary.mockResolvedValue({
     recentOversizedCount: 0,
     recentOversizedTools: [],
@@ -742,6 +754,41 @@ describe('gnDiagnose', () => {
     expect(report.misconfiguration).toEqual({ status: 'ok' });
     expect(report.degradedContext.reasons).toContain('embeddings-unavailable');
     expect(report.degradedContext.reasons).not.toContain('mcp-service-target-mismatch');
+  });
+
+  it('includes bounded zvec backend diagnostics when ONTOINDEX_VECTOR_BACKEND=zvec', async () => {
+    process.env['ONTOINDEX_VECTOR_BACKEND'] = 'zvec';
+    mockGetSemanticVectorBackendStatus.mockResolvedValue({
+      requestedBackend: 'zvec',
+      actualBackend: 'lbug',
+      freshness: 'missing',
+      fallbackReason: 'zvec mirror metadata unavailable',
+      circuitBroken: false,
+    });
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: false,
+      checkIndexFreshness: false,
+      checkToolContract: false,
+    });
+
+    expect(mockGetSemanticVectorBackendStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: REPO_ID,
+        repoPath: '/tmp/test-repo',
+      }),
+    );
+    expect(report.vectorBackend).toMatchObject({
+      requestedBackend: 'zvec',
+      actualBackend: 'lbug',
+      freshness: 'missing',
+      fallbackReason: 'zvec mirror metadata unavailable',
+    });
+    expect(report.degradedContext.reasons).toContain('vector-backend-fallback');
+    expect(
+      report.recommendations.some((r) => r.detail.includes('Requested vector backend zvec')),
+    ).toBe(true);
   });
 
   it('does not compute file-scope diagnostics by default', async () => {

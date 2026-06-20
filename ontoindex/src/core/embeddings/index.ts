@@ -11,3 +11,4 @@ export * from './text-generator.js';
 export * from './embedding-pipeline.js';
 export * from './ann-neighbor.js';
 export * from './cuda-probe.js';
+export * from './zvec-mirror.js';

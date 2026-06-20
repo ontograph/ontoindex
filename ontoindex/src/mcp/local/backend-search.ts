@@ -3,41 +3,37 @@ import type {
   QueryCapabilityHealth,
   QueryFreshnessState,
 } from '../../core/runtime/query-diagnostics.js';
-import {
-  createQueryTokenCostSnapshot,
-  type QueryTokenCostSnapshot,
-  type QueryTokenCostSnapshotInput,
+import { createQueryTokenCostSnapshot } from '../../core/runtime/query-budget.js';
+import type {
+  QueryTokenCostSnapshot,
+  QueryTokenCostSnapshotInput,
 } from '../../core/runtime/query-budget.js';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
-import {
-  type GraphPathEdge,
-  type GraphPathReport,
-  computeGraphPathWithDiagnostics,
-} from '../../core/search/graph-path.js';
+import { computeGraphPathWithDiagnostics } from '../../core/search/graph-path.js';
+import type { GraphPathEdge, GraphPathReport } from '../../core/search/graph-path.js';
 import {
   bm25Search as bm25SearchImpl,
   semanticSearch as semanticSearchImpl,
 } from './backend-query.js';
-import {
-  mergeSymbolsWithRRF,
-  type EnrichedSymbolRow,
-  type RRFTraceEntry,
-} from '../../core/search/symbol-merge.js';
+import { mergeSymbolsWithRRF } from '../../core/search/symbol-merge.js';
+import type { EnrichedSymbolRow, RRFTraceEntry } from '../../core/search/symbol-merge.js';
 import { applyEnsemble, MIN_VEC_POOL_SIZE } from '../../core/search/per-intent-ensemble.js';
-import { graphTraversalRank, type GraphEdgeType } from '../../core/search/graph-traversal-rank.js';
+import { graphTraversalRank } from '../../core/search/graph-traversal-rank.js';
+import type { GraphEdgeType } from '../../core/search/graph-traversal-rank.js';
 import { appendQueryLog } from './query-log.js';
 import { getFileSkeleton } from '../../core/search/skeleton.js';
 import { SemanticRetrievalCache } from '../../core/search/semantic-cache.js';
-import {
-  semanticFrontierSearch,
-  type SemanticFrontierSearchDiagnostics,
-} from '../../core/search/semantic-frontier-search.js';
+import { semanticFrontierSearch } from '../../core/search/semantic-frontier-search.js';
+import type { SemanticFrontierSearchDiagnostics } from '../../core/search/semantic-frontier-search.js';
 import {
   adaptAnnNeighborEdgesForFrontier,
   loadAnnNeighborEdges,
 } from '../../core/embeddings/ann-neighbor-store.js';
-import { classifyIntent, type Intent } from '../../core/search/intent-classifier.js';
+import { getSemanticVectorBackendStatus } from '../../core/embeddings/zvec-semantic-backend.js';
+import type { SemanticVectorBackendStatus } from '../../core/embeddings/zvec-semantic-backend.js';
+import { classifyIntent } from '../../core/search/intent-classifier.js';
+import type { Intent } from '../../core/search/intent-classifier.js';
 import { lspBridge } from '../../core/lsp/bridge.js';
 import { EMBEDDING_TABLE_NAME } from '../../core/lbug/schema.js';
 import type {
@@ -219,6 +215,7 @@ export interface RetrievalDiagnosticsLane {
 export interface RetrievalDiagnostics {
   lanes: RetrievalDiagnosticsLane[];
   warnings: string[];
+  vectorBackend?: SemanticVectorBackendStatus;
 }
 
 interface DiagnosticLaneInput {
@@ -305,7 +302,9 @@ function logQueryTiming(query: string, phases: Record<string, number>): void {
   const totalMs = phases.wall ?? Object.values(phases).reduce((a, b) => a + b, 0);
   const truncated = query.length > 80 ? `${query.slice(0, 80)}…` : query;
   console.error(
-    `OntoIndex [query:timing] query=${JSON.stringify(truncated)} totalMs=${totalMs} phases=${JSON.stringify(phases)}`,
+    `OntoIndex [query:timing] query=${JSON.stringify(
+      truncated,
+    )} totalMs=${totalMs} phases=${JSON.stringify(phases)}`,
   );
 }
 
@@ -491,6 +490,16 @@ function buildRetrievalDiagnosticsFromCandidates(
   );
 }
 
+async function buildVectorBackendDiagnostics(
+  repo: SearchRepoHandle,
+): Promise<SemanticVectorBackendStatus | undefined> {
+  if (process.env.ONTOINDEX_VECTOR_BACKEND?.trim().toLowerCase() !== 'zvec') {
+    return undefined;
+  }
+
+  return getSemanticVectorBackendStatus(repo);
+}
+
 async function loadIndexedSymbolVectors(
   repoId: string,
   nodeIds: readonly string[],
@@ -582,11 +591,12 @@ async function runSymbolNeighborhoodFrontierSearch(
       if (!seed.nodeId) return undefined;
       const indexed = indexedSeedVectors.get(seed.nodeId);
       if (!indexed?.vector) return undefined;
-      return {
+      const frontierSeed: FrontierSearchInput = {
         nodeId: seed.nodeId,
         vector: indexed.vector,
         lanes: [seed.type || 'symbol'],
-      } satisfies FrontierSearchInput;
+      };
+      return frontierSeed;
     })
     .filter((seed): seed is FrontierSearchInput => seed !== undefined);
 
@@ -627,14 +637,15 @@ async function runSymbolNeighborhoodFrontierSearch(
   const semanticRows = frontier.results
     .map((result) => {
       const row = nodeMetadata.get(result.nodeId);
-      return {
+      const semanticRow: EnrichedSymbolRow = {
         nodeId: result.nodeId,
         name: result.name || row?.name || '',
         type: row?.type || '',
         filePath: result.filePath || row?.filePath || '',
         startLine: result.startLine ?? row?.startLine,
         endLine: result.endLine ?? row?.endLine,
-      } satisfies EnrichedSymbolRow;
+      };
+      return semanticRow;
     })
     .filter((row) => row.nodeId || row.filePath);
 
@@ -737,9 +748,13 @@ function mergeRetrievalEvidence(
   existing: RetrievalEvidenceReference[],
   next: RetrievalEvidenceReference,
 ): RetrievalEvidenceReference[] {
-  const nextKey = `${next.kind}:${next.source}:${next.lineNumber ?? 0}:${next.retrieval}:${next.query}`;
+  const nextKey = `${next.kind}:${next.source}:${next.lineNumber ?? 0}:${next.retrieval}:${
+    next.query
+  }`;
   for (const entry of existing) {
-    const entryKey = `${entry.kind}:${entry.source}:${entry.lineNumber ?? 0}:${entry.retrieval}:${entry.query}`;
+    const entryKey = `${entry.kind}:${entry.source}:${entry.lineNumber ?? 0}:${entry.retrieval}:${
+      entry.query
+    }`;
     if (entryKey === nextKey) {
       return existing;
     }
@@ -956,8 +971,8 @@ async function buildStructuredRetrievalResult(input: {
         status: usedCapabilities.has('embeddings')
           ? 'available'
           : missingCapabilities.has('embeddings')
-            ? 'unavailable'
-            : 'not-used',
+          ? 'unavailable'
+          : 'not-used',
         reason: missingCapabilities.has('embeddings') ? 'embeddings-not-populated' : undefined,
       },
     },
@@ -1240,7 +1255,9 @@ async function routeTypedQuery(
 
       const hasEmbeddings = await getEmbeddingsAvailability();
       state.warnings.push(
-        `Typed symbol line ${line.lineNumber} exact lookup returned no results; falling back to ${hasEmbeddings ? 'BM25 and vector' : 'BM25'}.`,
+        `Typed symbol line ${line.lineNumber} exact lookup returned no results; falling back to ${
+          hasEmbeddings ? 'BM25 and vector' : 'BM25'
+        }.`,
       );
       const bm25SearchResult = await timer.time(
         'bm25',
@@ -1467,6 +1484,8 @@ export async function query(
   let cacheStatus: 'hit' | 'miss' | 'stale' | 'expired' | undefined;
   let cacheAgeMs: number | undefined;
   let cacheEvictedEntries = 0;
+  const vectorBackendDiagnostics =
+    params.retrieval_diagnostics === true ? await buildVectorBackendDiagnostics(repo) : undefined;
 
   if (params.structured_output === true) {
     const cacheLookup = await cache.lookup(cacheKey, repo.lastCommit);
@@ -1503,10 +1522,13 @@ export async function query(
         },
         ...(params.retrieval_diagnostics === true
           ? {
-              retrieval_diagnostics: buildRetrievalDiagnosticsFromCandidates(
-                cached.candidates,
-                cached.diagnostics.capabilityHealth.warnings,
-              ),
+              retrieval_diagnostics: {
+                ...buildRetrievalDiagnosticsFromCandidates(
+                  cached.candidates,
+                  cached.diagnostics.capabilityHealth.warnings,
+                ),
+                ...(vectorBackendDiagnostics ? { vectorBackend: vectorBackendDiagnostics } : {}),
+              },
             }
           : {}),
       };
@@ -1753,7 +1775,7 @@ export async function query(
       // citation is best-effort
     }
 
-    const symbolEntry = {
+    const symbolEntry: SymbolEntry = {
       id: sym.nodeId,
       name: sym.name,
       type: sym.type,
@@ -1780,7 +1802,7 @@ export async function query(
           },
         ],
       }),
-    } satisfies SymbolEntry;
+    };
 
     if (processRows.length === 0) {
       definitions.push(symbolEntry);
@@ -1936,7 +1958,7 @@ export async function query(
   if (includeSkeleton) {
     skeletonDepth = process.env.ONTOINDEX_SKELETON_DEPTH
       ? parseInt(process.env.ONTOINDEX_SKELETON_DEPTH, 10)
-      : (SKELETON_DEPTH_BY_INTENT[queryIntent] ?? 3);
+      : SKELETON_DEPTH_BY_INTENT[queryIntent] ?? 3;
     if (dedupedSymbols.length > 0 || definitions.length > 0) {
       timer.start('skeleton');
       const topFilePaths = Array.from(
@@ -2033,87 +2055,91 @@ export async function query(
 
   const retrievalDiagnostics =
     params.retrieval_diagnostics === true
-      ? buildRetrievalDiagnostics(
-          [
-            {
-              name: 'lexical',
-              candidateRows: bm25Results,
-              emittedRows: merged.map(([, item]) => ({
-                nodeId: item.data.nodeId,
-                filePath: item.data.filePath,
-              })),
-              warnings: !ftsUsed
+      ? {
+          ...buildRetrievalDiagnostics(
+            [
+              {
+                name: 'lexical',
+                candidateRows: bm25Results,
+                emittedRows: merged.map(([, item]) => ({
+                  nodeId: item.data.nodeId,
+                  filePath: item.data.filePath,
+                })),
+                warnings: !ftsUsed
+                  ? [
+                      'FTS extension unavailable - keyword search degraded. Run: ontoindex analyze --force to rebuild indexes.',
+                    ]
+                  : [],
+              },
+              {
+                name: 'vector',
+                candidateRows: semanticResults,
+                emittedRows: merged.map(([, item]) => ({
+                  nodeId: item.data.nodeId,
+                  filePath: item.data.filePath,
+                })),
+                warnings: uniqueStrings([
+                  ...(typedCapabilitiesMissing.has('embeddings')
+                    ? ['Embeddings unavailable; typed retrieval downgraded vector lanes.']
+                    : []),
+                  ...typedWarnings.filter((message) =>
+                    /vec line|hyde line|embeddings unavailable/i.test(message),
+                  ),
+                ]),
+              },
+              {
+                name: 'graph',
+                candidateRows: graphResults,
+                emittedRows: merged.map(([, item]) => ({
+                  nodeId: item.data.nodeId,
+                  filePath: item.data.filePath,
+                })),
+                warnings: uniqueStrings([
+                  ...typedWarnings.filter((message) =>
+                    /graph line|graph traversal|traversal hits/i.test(message),
+                  ),
+                ]),
+              },
+              ...(searchInput.mode === 'typed'
                 ? [
-                    'FTS extension unavailable - keyword search degraded. Run: ontoindex analyze --force to rebuild indexes.',
+                    {
+                      name: 'exact',
+                      candidateRows: lockedResults,
+                      emittedRows: merged.map(([, item]) => ({
+                        nodeId: item.data.nodeId,
+                        filePath: item.data.filePath,
+                      })),
+                      warnings: uniqueStrings([
+                        ...typedWarnings.filter((message) =>
+                          /exact lookup returned no results|file line/i.test(message),
+                        ),
+                      ]),
+                    },
                   ]
-                : [],
-            },
-            {
-              name: 'vector',
-              candidateRows: semanticResults,
-              emittedRows: merged.map(([, item]) => ({
-                nodeId: item.data.nodeId,
-                filePath: item.data.filePath,
-              })),
-              warnings: uniqueStrings([
-                ...(typedCapabilitiesMissing.has('embeddings')
-                  ? ['Embeddings unavailable; typed retrieval downgraded vector lanes.']
-                  : []),
-                ...typedWarnings.filter((message) =>
-                  /vec line|hyde line|embeddings unavailable/i.test(message),
-                ),
-              ]),
-            },
-            {
-              name: 'graph',
-              candidateRows: graphResults,
-              emittedRows: merged.map(([, item]) => ({
-                nodeId: item.data.nodeId,
-                filePath: item.data.filePath,
-              })),
-              warnings: uniqueStrings([
-                ...typedWarnings.filter((message) =>
-                  /graph line|graph traversal|traversal hits/i.test(message),
-                ),
-              ]),
-            },
-            ...(searchInput.mode === 'typed'
-              ? [
-                  {
-                    name: 'exact',
-                    candidateRows: lockedResults,
-                    emittedRows: merged.map(([, item]) => ({
-                      nodeId: item.data.nodeId,
-                      filePath: item.data.filePath,
-                    })),
-                    warnings: uniqueStrings([
-                      ...typedWarnings.filter((message) =>
-                        /exact lookup returned no results|file line/i.test(message),
-                      ),
-                    ]),
-                  },
-                ]
-              : []),
-            ...(frontierResult
-              ? [
-                  {
-                    name: 'frontier',
-                    candidateRows: frontierResult.semanticResults,
-                    emittedRows: frontierResult.semanticResults,
-                    candidateCount:
-                      frontierResult.diagnostics?.visited ?? frontierResult.semanticResults.length,
-                    emittedCount: frontierResult.semanticResults.length,
-                    warnings: uniqueStrings([...frontierResult.warnings]),
-                  },
-                ]
-              : []),
-          ],
-          uniqueStrings([
-            ...typedWarnings,
-            ...(frontierResult?.warnings ?? []),
-            ...(frontierResult?.diagnostics?.warnings ?? []),
-          ]),
-        )
+                : []),
+              ...(frontierResult
+                ? [
+                    {
+                      name: 'frontier',
+                      candidateRows: frontierResult.semanticResults,
+                      emittedRows: frontierResult.semanticResults,
+                      candidateCount:
+                        frontierResult.diagnostics?.visited ??
+                        frontierResult.semanticResults.length,
+                      emittedCount: frontierResult.semanticResults.length,
+                      warnings: uniqueStrings([...frontierResult.warnings]),
+                    },
+                  ]
+                : []),
+            ],
+            uniqueStrings([
+              ...typedWarnings,
+              ...(frontierResult?.warnings ?? []),
+              ...(frontierResult?.diagnostics?.warnings ?? []),
+            ]),
+          ),
+          ...(vectorBackendDiagnostics ? { vectorBackend: vectorBackendDiagnostics } : {}),
+        }
       : undefined;
 
   if (
@@ -2153,7 +2179,9 @@ export async function query(
   if (includeSkeleton) {
     const approxTokens = JSON.stringify(result).length / 4;
     console.error(
-      `OntoIndex [skeleton:tokens] intent=${queryIntent} depth=${skeletonDepth} approxTokens=${Math.round(approxTokens)}`,
+      `OntoIndex [skeleton:tokens] intent=${queryIntent} depth=${skeletonDepth} approxTokens=${Math.round(
+        approxTokens,
+      )}`,
     );
   }
 

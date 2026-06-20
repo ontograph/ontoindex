@@ -5,10 +5,8 @@ import type {
   RetrievalReplayExecutorRun,
 } from '../../src/core/search/replay/replay-runner.js';
 import { replayRetrievalCases } from '../../src/core/search/replay/replay-runner.js';
-import {
-  RETRIEVAL_REPLAY_CASE_SCHEMA_VERSION,
-  type RetrievalReplayCaseV1,
-} from '../../src/core/search/replay/replay-case.js';
+import { RETRIEVAL_REPLAY_CASE_SCHEMA_VERSION } from '../../src/core/search/replay/replay-case.js';
+import type { RetrievalReplayCaseV1 } from '../../src/core/search/replay/replay-case.js';
 
 function makeCase(overrides: Partial<RetrievalReplayCaseV1> = {}): RetrievalReplayCaseV1 {
   return {
@@ -130,6 +128,34 @@ describe('retrieval replay runner', () => {
     const caseReport = report.cases[0];
     expect(caseReport.verdict).toBe('WARN');
     expect(caseReport.gate.reasons).toContain('missing required capabilities: embeddings');
+  });
+
+  it('threads zvec comparison evidence into the replay gate report', async () => {
+    const executor = makeExecutor({
+      identities: [{ kind: 'symbol', uid: 'symbol:a', filePath: 'a.ts', name: 'A' }],
+      vectorBackendComparison: {
+        baselineMedianMs: 18,
+        candidateMedianMs: 7,
+        expectedAnchorRegression: false,
+      },
+    });
+
+    const caseInput = makeCase({
+      expected: {
+        topK: 1,
+        identities: [{ kind: 'symbol', uid: 'symbol:a', filePath: 'a.ts', name: 'A' }],
+      },
+    });
+
+    const report = await replayRetrievalCases({
+      cases: [caseInput],
+      executor,
+    });
+
+    const caseReport = report.cases[0];
+    expect(caseReport.verdict).toBe('PASS');
+    expect(caseReport.vectorBackend?.verdict).toBe('PASS');
+    expect(caseReport.vectorBackend?.medianSpeedup).toBe(2.5714285714285716);
   });
 
   it('fails when top-1 changes and requireTop1Stable is set', async () => {

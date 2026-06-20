@@ -4,6 +4,16 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.18] - 2026-06-20
+
+### Added
+
+- Added an opt-in zvec semantic vector backend behind the existing semantic search contract, with
+  LadybugDB fallback, mirror freshness checks, and diagnostics.
+- Added replay-gate evidence for vector backend comparisons: candidate backends must show at least
+  2x median direct vector-query speedup and no expected-anchor regression.
+- Added ADR 0097 to document the narrowed zvec integration boundary.
+
 ## [1.9.17] - 2026-06-18
 
 ### Added

@@ -8,7 +8,8 @@
  * environment, or filesystem.
  */
 
-import { gnEnsureFresh, type EmbeddingDriftStatus } from './ensure-fresh.js';
+import { gnEnsureFresh } from './ensure-fresh.js';
+import type { EmbeddingDriftStatus } from './ensure-fresh.js';
 import { gnToolContract } from './tool-contract.js';
 import type { ToolContractReport } from './tool-contract.js';
 import path from 'node:path';
@@ -22,6 +23,8 @@ import {
   collectFileScopePreview,
   explainPathScope,
 } from '../../core/indexing/file-scope-preview.js';
+import { getSemanticVectorBackendStatus } from '../../core/embeddings/zvec-semantic-backend.js';
+import type { SemanticVectorBackendStatus } from '../../core/embeddings/zvec-semantic-backend.js';
 import type {
   FileScopeExplanation,
   FileScopePreview,
@@ -120,6 +123,7 @@ export interface DiagnoseReport {
     qualityMode: string;
     nextRepairCommands: string[];
   };
+  vectorBackend?: SemanticVectorBackendStatus;
   degradedContext: {
     status: 'ok' | 'degraded';
     reasons: string[];
@@ -372,13 +376,13 @@ function buildRuntimeContextSummary(options: {
           indexedHead: targetContext.indexedHead ?? undefined,
         }
       : runtimeHealth
-        ? {
-            repoLabel: runtimeHealth.repoLabel,
-            repoPath: runtimeHealth.repoPath,
-            targetHead: runtimeHealth.currentCommit || undefined,
-            indexedHead: runtimeHealth.indexedCommit || undefined,
-          }
-        : {}),
+      ? {
+          repoLabel: runtimeHealth.repoLabel,
+          repoPath: runtimeHealth.repoPath,
+          targetHead: runtimeHealth.currentCommit || undefined,
+          indexedHead: runtimeHealth.indexedCommit || undefined,
+        }
+      : {}),
     freshness:
       indexFreshness === undefined ? 'unknown' : indexFreshness.isStale ? 'stale' : 'fresh',
     dirtyWorktree: targetContext?.dirtyWorktree ?? runtimeHealth?.dirtyWorktree ?? null,
@@ -387,14 +391,14 @@ function buildRuntimeContextSummary(options: {
       embeddings === undefined
         ? 'unknown'
         : embeddings.status === 'ok'
-          ? 'available'
-          : embeddings.status === 'metadata-unavailable'
-            ? 'unknown'
-            : 'absent',
+        ? 'available'
+        : embeddings.status === 'metadata-unavailable'
+        ? 'unknown'
+        : 'absent',
     sidecar:
       targetContext?.status === 'ok'
         ? targetContext.sidecar.status
-        : (targetContext?.status ?? 'unknown'),
+        : targetContext?.status ?? 'unknown',
     qualityMode: targetContext?.status === 'ok' ? targetContext.qualityMode : 'unknown',
     nextRepairCommands,
   };
@@ -494,16 +498,16 @@ export async function gnDiagnose(
         embeddings.status === 'drifted'
           ? 'ERROR'
           : embeddings.status === 'missing'
-            ? 'INFO'
-            : 'WARN';
+          ? 'INFO'
+          : 'WARN';
       recommendations.push({
         severity,
         detail:
           embeddings.status === 'drifted'
             ? 'Embeddings metadata drift detected'
             : embeddings.status === 'missing'
-              ? 'Embeddings not populated'
-              : 'Embedding metadata unavailable',
+            ? 'Embeddings not populated'
+            : 'Embedding metadata unavailable',
         fix:
           embeddings.repairCommand ??
           (embeddings.status === 'missing'
@@ -573,6 +577,7 @@ export async function gnDiagnose(
 
   // ---- 5. Shared target context ---------------------------------------------
   let targetContext: DiagnoseReport['targetContext'];
+  let vectorBackend: DiagnoseReport['vectorBackend'];
   try {
     targetContext = await resolveTargetContext({
       repo: repoId,
@@ -602,6 +607,32 @@ export async function gnDiagnose(
     warnings.push(
       'resolveTargetContext failed: ' + (err instanceof Error ? err.message : String(err)),
     );
+  }
+
+  if (envVars['ONTOINDEX_VECTOR_BACKEND']?.trim().toLowerCase() === 'zvec') {
+    const vectorRepoPath =
+      targetContext?.status === 'ok'
+        ? targetContext.repoPath
+        : freshRepoPath ?? runtimeHealth?.repoPath;
+    try {
+      vectorBackend = await getSemanticVectorBackendStatus({
+        id: repoId,
+        repoPath: vectorRepoPath,
+      });
+      if (vectorBackend.actualBackend !== 'zvec') {
+        recommendations.push({
+          severity: 'WARN',
+          detail: `Requested vector backend zvec fell back to LadybugDB${
+            vectorBackend.fallbackReason ? `: ${vectorBackend.fallbackReason}` : ''
+          }`,
+          fix: 'Refresh the zvec mirror or unset ONTOINDEX_VECTOR_BACKEND to stay on LadybugDB.',
+        });
+      }
+    } catch (err) {
+      warnings.push(
+        'zvec backend diagnostics failed: ' + (err instanceof Error ? err.message : String(err)),
+      );
+    }
   }
 
   // ---- 6. MCP tool contract -------------------------------------------------
@@ -641,7 +672,7 @@ export async function gnDiagnose(
   const fileScopeRepoPath =
     targetContext?.status === 'ok'
       ? targetContext.repoPath
-      : (freshRepoPath ?? runtimeHealth?.repoPath);
+      : freshRepoPath ?? runtimeHealth?.repoPath;
   const fileScopeLimit = Math.max(1, Math.min(params.fileScopeLimit ?? 10, 100));
 
   if ((params.includeFileScopePreview || params.explainFile) && !fileScopeRepoPath) {
@@ -718,6 +749,12 @@ export async function gnDiagnose(
     degradedReasons.push(`target-context-${targetContext.status}`);
     degradedAreas.add('repo-targeting');
   }
+  if (vectorBackend?.actualBackend !== undefined && vectorBackend.actualBackend !== 'zvec') {
+    degradedReasons.push(
+      vectorBackend.circuitBroken ? 'vector-backend-circuit-broken' : 'vector-backend-fallback',
+    );
+    degradedAreas.add('retrieval');
+  }
   if (toolContract?.status === 'drift') {
     degradedReasons.push('tool-contract-drift');
     degradedAreas.add('mcp-contract');
@@ -757,6 +794,7 @@ export async function gnDiagnose(
     ...(fileScopePreview !== undefined ? { fileScopePreview } : {}),
     ...(fileScopeExplanation !== undefined ? { fileScopeExplanation } : {}),
     ...(toolContract !== undefined ? { toolContract } : {}),
+    ...(vectorBackend !== undefined ? { vectorBackend } : {}),
     classification,
     setup,
     responseLimits,
@@ -788,6 +826,7 @@ export async function gnDiagnose(
       ...(checkEmbeddings ? ['embeddings-probe'] : []),
       ...(checkLsp ? ['lsp-probe'] : []),
       ...(checkToolContract ? ['tool-contract'] : []),
+      ...(vectorBackend ? ['vector-backend-status'] : []),
       'classification-summary',
       'setup-summary',
       'response-limits',
