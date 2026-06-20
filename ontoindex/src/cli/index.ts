@@ -33,7 +33,7 @@ program.name('ontoindex').description('OntoIndex local CLI and MCP server').vers
 
 program
   .command('setup')
-  .description('One-time setup: configure MCP for Cursor, Claude Code, OpenCode, Codex')
+  .description('One-time setup: configure MCP for Cursor, Claude Code, OpenCode, Codex, Ontocode')
   .action(createLazyAction(() => import('./setup.js'), 'setupCommand'));
 
 program

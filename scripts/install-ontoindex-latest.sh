@@ -4,6 +4,9 @@ set -euo pipefail
 REPO="${ONTOINDEX_GITHUB_REPO:-ontograph/ontoindex}"
 API_URL="https://api.github.com/repos/${REPO}/releases/latest"
 USER_PREFIX="${ONTOINDEX_NPM_PREFIX:-${HOME}/.local}"
+LADYBUG_EXTENSIONS_REPO="${ONTOINDEX_LADYBUG_EXTENSIONS_REPO:-ontograph/ontoindex}"
+LADYBUG_EXTENSIONS_TAG="${ONTOINDEX_LADYBUG_EXTENSIONS_TAG:-ladybugdb-extensions-v0.17.0-linux-amd64}"
+LADYBUG_EXTENSIONS_CACHE="${ONTOINDEX_LADYBUG_EXTENSIONS_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/ontoindex/ladybugdb-extensions/v0.17.0/linux_amd64}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -15,6 +18,54 @@ need() {
 need curl
 need node
 need npm
+
+download_ladybug_extensions() {
+  if [ "${ONTOINDEX_SKIP_LADYBUG_EXTENSIONS:-0}" = "1" ]; then
+    return 0
+  fi
+
+  local os arch require base_url cache
+  os="$(uname -s 2>/dev/null || true)"
+  arch="$(uname -m 2>/dev/null || true)"
+  require="${ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS:-0}"
+
+  if [ "${os}" != "Linux" ] || { [ "${arch}" != "x86_64" ] && [ "${arch}" != "amd64" ]; }; then
+    echo "Skipping LadybugDB extension cache prefetch: unsupported platform ${os}/${arch}."
+    return 0
+  fi
+
+  cache="${LADYBUG_EXTENSIONS_CACHE}"
+  base_url="https://github.com/${LADYBUG_EXTENSIONS_REPO}/releases/download/${LADYBUG_EXTENSIONS_TAG}"
+
+  mkdir -p "${cache}"
+  echo "Prefetching LadybugDB fts/vector extensions into ${cache}"
+
+  (
+    cd "${cache}"
+    curl -fL --retry 10 --retry-all-errors --connect-timeout 20 --max-time 300 \
+      -o SHA256SUMS.txt "${base_url}/SHA256SUMS.txt"
+
+    for asset in libfts.lbug_extension libvector.lbug_extension; do
+      if [ -f "${asset}" ] && command -v sha256sum >/dev/null 2>&1 && grep " ${asset}$" SHA256SUMS.txt | sha256sum -c - >/dev/null 2>&1; then
+        continue
+      fi
+      if [ -f "${asset}" ] && command -v sha256sum >/dev/null 2>&1; then
+        rm -f "${asset}"
+      fi
+      curl -fL --retry 10 --retry-all-errors --connect-timeout 20 --max-time 300 --continue-at - \
+        -o "${asset}" "${base_url}/${asset}"
+    done
+
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum -c SHA256SUMS.txt
+    fi
+  ) || {
+    echo "warning: LadybugDB extension prefetch failed; OntoIndex install will continue." >&2
+    echo "warning: rerun with ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 to make this fatal." >&2
+    [ "${require}" = "1" ] && exit 1
+    return 0
+  }
+}
 
 node_major="$(node -p 'process.versions.node.split(".")[0]')"
 node_minor="$(node -p 'process.versions.node.split(".")[1]')"
@@ -33,6 +84,8 @@ if [ "${node_major}" -ge 26 ]; then
   echo "error: recommended: use nvm to install and activate Node.js 22 LTS, 24, or 25 before retrying." >&2
   exit 1
 fi
+
+download_ladybug_extensions
 
 write_linux_repair_instructions() {
   local prefix="${1}"

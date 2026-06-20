@@ -461,7 +461,7 @@ async function setupOpenCode(result: SetupResult, entry: McpEntry): Promise<void
 }
 
 /**
- * Build a TOML section for Codex MCP config (~/.codex/config.toml).
+ * Build a TOML section for Codex-compatible MCP config.
  */
 function getCodexMcpTomlSection(entry: McpEntry): string {
   const command = JSON.stringify(entry.command);
@@ -476,7 +476,7 @@ function getCodexMcpTomlSection(entry: McpEntry): string {
 }
 
 /**
- * Upsert OntoIndex MCP server config in Codex's config.toml.
+ * Upsert OntoIndex MCP server config in a Codex-compatible config.toml.
  * Existing stale sections are replaced so setup can repair removed binaries.
  */
 async function upsertCodexConfigToml(configPath: string, entry: McpEntry): Promise<void> {
@@ -531,6 +531,36 @@ async function setupCodex(result: SetupResult, entry: McpEntry): Promise<void> {
     result.configured.push('Codex');
   } catch (err: unknown) {
     result.errors.push(`Codex: ${caughtMessage(err)}`);
+  }
+}
+
+async function setupOntocode(result: SetupResult, entry: McpEntry): Promise<void> {
+  const ontocodeDir = path.join(os.homedir(), '.ontocode');
+  if (!(await dirExists(ontocodeDir))) {
+    result.skipped.push('Ontocode (not installed)');
+    return;
+  }
+
+  try {
+    const configPath = path.join(ontocodeDir, 'config.toml');
+    await upsertCodexConfigToml(configPath, entry);
+    result.configured.push('Ontocode (MCP repaired in ~/.ontocode/config.toml)');
+    return;
+  } catch {
+    // Fallback for unusual environments where direct config writes fail.
+  }
+
+  try {
+    await execFileAsync(
+      'ontocode',
+      ['mcp', 'add', 'ontoindex', '--', entry.command, ...entry.args],
+      {
+        shell: process.platform === 'win32',
+      },
+    );
+    result.configured.push('Ontocode');
+  } catch (err: unknown) {
+    result.errors.push(`Ontocode: ${caughtMessage(err)}`);
   }
 }
 
@@ -698,6 +728,7 @@ export const setupCommand = async () => {
   await setupClaudeCode(result, mcpEntry);
   await setupOpenCode(result, mcpEntry);
   await setupCodex(result, mcpEntry);
+  await setupOntocode(result, mcpEntry);
 
   // Install global skills for platforms that support them
   await installClaudeCodeSkills(result);

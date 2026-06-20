@@ -84,6 +84,23 @@ describe('setupCommand codex execution', () => {
     expect(raw).not.toContain('ontoindex@latest');
   });
 
+  it('writes Ontocode MCP config using the Codex-compatible config shape', async () => {
+    await fs.mkdir(path.join(tempHome, '.ontocode'), { recursive: true });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+
+    await setupCommand();
+
+    expect(execFileMock).not.toHaveBeenCalled();
+    const raw = await fs.readFile(path.join(tempHome, '.ontocode', 'config.toml'), 'utf-8');
+    expect(raw).toContain('[mcp_servers.ontoindex]');
+    expect(raw).toContain(`command = ${JSON.stringify(process.execPath)}`);
+    expect(raw).toMatch(/args = \[\".*dist.*cli.*index\.js\", \"mcp\", \"--project\", \".*\"\]/);
+    expect(raw).toContain('ONTOINDEX_MCP_AUTO_ANALYZE = "0"');
+    expect(raw).toContain('ONTOINDEX_MCP_STARTUP_TIMEOUT_MS = "10000"');
+    expect(raw).toContain('ONTOINDEX_MCP_STARTUP_TRACE = "1"');
+  });
+
   it('skips Codex setup entirely when ~/.codex is missing', async () => {
     await fs.rm(path.join(tempHome, '.codex'), { recursive: true, force: true });
 
