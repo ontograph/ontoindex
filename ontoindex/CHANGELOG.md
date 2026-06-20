@@ -4,6 +4,15 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.20] - 2026-06-20
+
+### Fixed
+
+- Removed install-time `tree-sitter` peer override warnings by vendoring all grammar packages that
+  depend on the patched vendored runtime.
+- Disabled grammar package install scripts inside vendored grammars so npm installs use shipped
+  prebuilds instead of trying brittle nested `node-gyp` rebuilds.
+
 ## [1.9.19] - 2026-06-20
 
 ### Changed

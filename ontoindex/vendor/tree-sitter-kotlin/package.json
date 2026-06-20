@@ -6,7 +6,6 @@
   "types": "bindings/node",
   "scripts": {
     "test": "tree-sitter test",
-    "install": "node-gyp-build",
     "generate": "tree-sitter generate",
     "parse": "tree-sitter parse",
     "build-wasm": "tree-sitter build --wasm",
@@ -42,14 +41,6 @@
   "dependencies": {
     "node-addon-api": "^7.1.0",
     "node-gyp-build": "^4.8.0"
-  },
-  "peerDependencies": {
-    "tree-sitter": "^0.25.0"
-  },
-  "peerDependenciesMeta": {
-    "tree_sitter": {
-      "optional": true
-    }
   },
   "devDependencies": {
     "tree-sitter-cli": "^0.22.6",

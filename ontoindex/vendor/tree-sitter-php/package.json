@@ -56,14 +56,6 @@
     "node-addon-api": "^8.2.2",
     "node-gyp-build": "^4.8.2"
   },
-  "peerDependencies": {
-    "tree-sitter": "^0.25.0"
-  },
-  "peerDependenciesMeta": {
-    "tree-sitter": {
-      "optional": true
-    }
-  },
   "devDependencies": {
     "eslint": "^9.14.0",
     "eslint-config-treesitter": "^1.0.2",
@@ -71,7 +63,6 @@
     "tree-sitter-cli": "^0.25.5"
   },
   "scripts": {
-    "install": "node-gyp-build",
     "lint": "eslint common/define-grammar.js",
     "test": "node --test bindings/node/*_test.js"
   }

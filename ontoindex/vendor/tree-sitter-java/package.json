@@ -52,16 +52,7 @@
     "prebuildify": "^6.0.1",
     "tree-sitter-cli": "^0.24.4"
   },
-  "peerDependencies": {
-    "tree-sitter": "^0.25.0"
-  },
-  "peerDependenciesMeta": {
-    "tree-sitter": {
-      "optional": true
-    }
-  },
   "scripts": {
-    "install": "node-gyp-build",
     "lint": "eslint grammar.js",
     "prestart": "tree-sitter build --wasm",
     "start": "tree-sitter playground",
