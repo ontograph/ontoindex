@@ -51,6 +51,22 @@ write_linux_repair_instructions() {
   echo "  [ -f \"${bin_path}\" ] && rm -f \"${bin_path}\"" >&2
 }
 
+remove_existing_install() {
+  local prefix="${1}"
+  local node_modules_root
+  local package_dir
+  local bin_path
+
+  node_modules_root="$(npm root -g --prefix "${prefix}")"
+  package_dir="${node_modules_root}/ontoindex"
+  bin_path="${prefix}/bin/ontoindex"
+
+  if [ -d "${package_dir}" ] || [ -f "${bin_path}" ]; then
+    echo "Removing previous OntoIndex install from ${prefix}"
+    rm -rf "${package_dir}" "${bin_path}"
+  fi
+}
+
 validate_install() {
   local prefix="${1}"
   local bin_path="${2}"
@@ -125,6 +141,7 @@ install_prefix="${default_prefix}"
 
 if [ -w "${default_prefix}" ]; then
   echo "Installing OntoIndex ${version} from ${asset_url}"
+  remove_existing_install "${default_prefix}"
   npm install "${install_args[@]}" || {
     write_linux_repair_instructions "${default_prefix}"
     exit 1
@@ -134,6 +151,7 @@ else
   mkdir -p "${USER_PREFIX}"
   echo "Default npm prefix is not writable: ${default_prefix}"
   echo "Installing OntoIndex ${version} into user prefix: ${USER_PREFIX}"
+  remove_existing_install "${USER_PREFIX}"
   npm install --prefix "${USER_PREFIX}" "${install_args[@]}" || {
     write_linux_repair_instructions "${USER_PREFIX}"
     exit 1

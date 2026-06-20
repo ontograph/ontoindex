@@ -214,6 +214,29 @@ function Write-WindowsRepairInstructions {
   Write-Host "  if (Test-Path '$($state.Ps1Shim)') { Remove-Item '$($state.Ps1Shim)' -Force }"
 }
 
+function Remove-ExistingOntoIndexInstall {
+  param([string]$Prefix)
+
+  $state = Get-OntoIndexInstallState $Prefix
+  $removed = $false
+
+  if (Test-Path $state.PackageDir) {
+    Remove-Item $state.PackageDir -Recurse -Force
+    $removed = $true
+  }
+
+  foreach ($shim in @($state.CmdShim, $state.Ps1Shim)) {
+    if (Test-Path $shim) {
+      Remove-Item $shim -Force
+      $removed = $true
+    }
+  }
+
+  if ($removed) {
+    Write-Host "Removed previous OntoIndex install from $($state.Prefix)"
+  }
+}
+
 function Test-OntoIndexInstall {
   param(
     [string]$Prefix,
@@ -290,6 +313,7 @@ try {
     throw "User prefix requested."
   }
 
+  Remove-ExistingOntoIndexInstall $defaultPrefix
   Invoke-Npm @("install", "-g", $assetUrl)
   $binPath = Find-OntoIndexCommand ""
 } catch {
@@ -298,6 +322,7 @@ try {
   Write-Host "Installing into user npm prefix: $NpmPrefix"
   New-Item -ItemType Directory -Force -Path $NpmPrefix | Out-Null
   try {
+    Remove-ExistingOntoIndexInstall $NpmPrefix
     Invoke-Npm @("install", "-g", "--prefix", $NpmPrefix, $assetUrl)
   } catch {
     Write-WindowsRepairInstructions $NpmPrefix

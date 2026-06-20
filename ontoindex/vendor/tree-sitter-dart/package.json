@@ -11,7 +11,6 @@
   ],
   "files": [
     "grammar.js",
-    "binding.gyp",
     "prebuilds/**",
     "bindings/node/*",
     "queries/*",
@@ -28,16 +27,6 @@
     "@seb-bl"
   ],
   "license": "ISC",
-  "dependencies": {
-    "node-addon-api": "^7.1.0",
-    "node-gyp-build": "^4.8.0"
-  },
-  "devDependencies": {
-    "node-gyp": "12.2.0",
-    "npm-watch": "^0.13.0",
-    "tree-sitter-cli": "^0.22.6",
-    "prebuildify": "^6.0.0"
-  },
   "watch": {
     "test": {
       "patterns": [
@@ -57,15 +46,6 @@
       ],
       "quiet": true
     }
-  },
-  "scripts": {
-    "build_init": "tree-sitter generate && node-gyp configure && node-gyp build",
-    "build": "tree-sitter generate && node-gyp build",
-    "test": "tree-sitter test",
-    "build-test": "tree-sitter generate && node-gyp build && tree-sitter test",
-    "watch-test": "npm-watch test",
-    "watch-grammar": "npm-watch build-test",
-    "prebuildify": "prebuildify --napi --strip"
   },
   "tree-sitter": [
     {

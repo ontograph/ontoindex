@@ -4,6 +4,13 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.21] - 2026-06-20
+
+### Fixed
+
+- Removed vendored grammar package dependency metadata so npm no longer creates nested
+  `vendor/tree-sitter-*/node_modules` directories during global installs or upgrades.
+
 ## [1.9.20] - 2026-06-20
 
 ### Fixed
