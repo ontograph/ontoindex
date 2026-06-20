@@ -8,6 +8,10 @@ LADYBUG_EXTENSIONS_REPO="${ONTOINDEX_LADYBUG_EXTENSIONS_REPO:-ontograph/ontoinde
 LADYBUG_EXTENSIONS_TAG="${ONTOINDEX_LADYBUG_EXTENSIONS_TAG:-ladybugdb-extensions-v0.17.0-linux-amd64}"
 LADYBUG_EXTENSIONS_CACHE="${ONTOINDEX_LADYBUG_EXTENSIONS_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/ontoindex/ladybugdb-extensions/v0.17.0/linux_amd64}"
 
+log() {
+  printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"
+}
+
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "error: required command not found: $1" >&2
@@ -21,6 +25,7 @@ need npm
 
 download_ladybug_extensions() {
   if [ "${ONTOINDEX_SKIP_LADYBUG_EXTENSIONS:-0}" = "1" ]; then
+    log "Skipping LadybugDB extension cache prefetch: ONTOINDEX_SKIP_LADYBUG_EXTENSIONS=1"
     return 0
   fi
 
@@ -30,7 +35,7 @@ download_ladybug_extensions() {
   require="${ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS:-0}"
 
   if [ "${os}" != "Linux" ] || { [ "${arch}" != "x86_64" ] && [ "${arch}" != "amd64" ]; }; then
-    echo "Skipping LadybugDB extension cache prefetch: unsupported platform ${os}/${arch}."
+    log "Skipping LadybugDB extension cache prefetch: unsupported platform ${os}/${arch}."
     return 0
   fi
 
@@ -38,25 +43,29 @@ download_ladybug_extensions() {
   base_url="https://github.com/${LADYBUG_EXTENSIONS_REPO}/releases/download/${LADYBUG_EXTENSIONS_TAG}"
 
   mkdir -p "${cache}"
-  echo "Prefetching LadybugDB fts/vector extensions into ${cache}"
+  log "Prefetching LadybugDB fts/vector extensions into ${cache}"
 
   (
     cd "${cache}"
+    log "Downloading LadybugDB extension checksums from ${base_url}"
     curl -fL --retry 10 --retry-all-errors --connect-timeout 20 --max-time 300 \
       -o SHA256SUMS.txt "${base_url}/SHA256SUMS.txt"
 
     for asset in libfts.lbug_extension libvector.lbug_extension; do
       if [ -f "${asset}" ] && command -v sha256sum >/dev/null 2>&1 && grep " ${asset}$" SHA256SUMS.txt | sha256sum -c - >/dev/null 2>&1; then
+        log "Using cached ${asset}"
         continue
       fi
       if [ -f "${asset}" ] && command -v sha256sum >/dev/null 2>&1; then
         rm -f "${asset}"
       fi
+      log "Downloading ${asset}"
       curl -fL --retry 10 --retry-all-errors --connect-timeout 20 --max-time 300 --continue-at - \
         -o "${asset}" "${base_url}/${asset}"
     done
 
     if command -v sha256sum >/dev/null 2>&1; then
+      log "Verifying LadybugDB extension checksums"
       sha256sum -c SHA256SUMS.txt
     fi
   ) || {
@@ -70,6 +79,7 @@ download_ladybug_extensions() {
 node_major="$(node -p 'process.versions.node.split(".")[0]')"
 node_minor="$(node -p 'process.versions.node.split(".")[1]')"
 node_version="$(node -p 'process.versions.node')"
+log "Detected Node.js ${node_version}, npm $(npm --version)"
 if [ "${node_major}" -lt 22 ] || { [ "${node_major}" -eq 22 ] && [ "${node_minor}" -lt 12 ]; }; then
   echo "error: OntoIndex supports Node.js 22.12.0 through Node.js 25.x for published installs." >&2
   echo "error: detected Node.js ${node_version}." >&2
@@ -115,7 +125,7 @@ remove_existing_install() {
   bin_path="${prefix}/bin/ontoindex"
 
   if [ -d "${package_dir}" ] || [ -f "${bin_path}" ]; then
-    echo "Removing previous OntoIndex install from ${prefix}"
+    log "Removing previous OntoIndex install from ${prefix}"
     rm -rf "${package_dir}" "${bin_path}"
   fi
 }
@@ -133,6 +143,7 @@ validate_install() {
   package_json="${package_dir}/package.json"
   cli_path="${package_dir}/dist/cli/index.js"
 
+  log "Validating installed package under ${package_dir}"
   if [ ! -f "${package_json}" ]; then
     echo "error: installed package metadata not found: ${package_json}" >&2
     write_linux_repair_instructions "${prefix}"
@@ -145,6 +156,7 @@ validate_install() {
     exit 1
   fi
 
+  log "Running native dependency smoke test"
   (
     cd "${package_dir}"
     node -e "require('tree-sitter'); require('@ladybugdb/core')"
@@ -154,6 +166,7 @@ validate_install() {
     exit 1
   }
 
+  log "Running ontoindex --version"
   "${bin_path}" --version || {
     echo "error: installed ontoindex command failed validation." >&2
     write_linux_repair_instructions "${prefix}"
@@ -161,7 +174,8 @@ validate_install() {
   }
 }
 
-release_json="$(curl -fsSL "${API_URL}")"
+log "Fetching latest OntoIndex release metadata from ${API_URL}"
+release_json="$(curl -fsSL --connect-timeout 20 --max-time 120 "${API_URL}")"
 
 asset_url="$(
   RELEASE_JSON="${release_json}" node <<'NODE'
@@ -187,14 +201,17 @@ console.log(match ? match[1] : "unknown");
 NODE
 )"
 
+log "Selected OntoIndex ${version} asset: ${asset_url}"
 default_prefix="$(npm config get prefix)"
 install_args=(-g "${asset_url}")
 bin_path=""
 install_prefix="${default_prefix}"
+log "npm global prefix: ${default_prefix}"
 
 if [ -w "${default_prefix}" ]; then
-  echo "Installing OntoIndex ${version} from ${asset_url}"
+  log "Installing OntoIndex ${version} from ${asset_url}"
   remove_existing_install "${default_prefix}"
+  log "Running npm install -g; native package install can take a few minutes"
   npm install "${install_args[@]}" || {
     write_linux_repair_instructions "${default_prefix}"
     exit 1
@@ -202,9 +219,10 @@ if [ -w "${default_prefix}" ]; then
   bin_path="$(command -v ontoindex || true)"
 else
   mkdir -p "${USER_PREFIX}"
-  echo "Default npm prefix is not writable: ${default_prefix}"
-  echo "Installing OntoIndex ${version} into user prefix: ${USER_PREFIX}"
+  log "Default npm prefix is not writable: ${default_prefix}"
+  log "Installing OntoIndex ${version} into user prefix: ${USER_PREFIX}"
   remove_existing_install "${USER_PREFIX}"
+  log "Running npm install --prefix ${USER_PREFIX} -g; native package install can take a few minutes"
   npm install --prefix "${USER_PREFIX}" "${install_args[@]}" || {
     write_linux_repair_instructions "${USER_PREFIX}"
     exit 1
@@ -219,9 +237,10 @@ if [ ! -x "${bin_path}" ]; then
   exit 1
 fi
 
-echo "Installed OntoIndex:"
+log "Installed OntoIndex:"
 validate_install "${install_prefix}" "${bin_path}"
 
+log "Install complete."
 echo "Note: this installer uses npm to resolve third-party runtime packages."
 echo "A non-fatal npm warning about deprecated transitive packages can appear while upstream packages catch up."
 echo "For air-gapped installs, use a separately prepared npm cache or internal registry mirror."
