@@ -52,11 +52,42 @@ describe('zvec-mirror helpers', () => {
     expect(digestA).toBe(digestB);
   });
 
+  it('keeps digest stable for legacy rows without chunkContentHash', () => {
+    const legacyRows = [
+      {
+        ...firstRow,
+        chunkContentHash: undefined,
+      },
+      {
+        ...secondRow,
+        chunkContentHash: undefined,
+      },
+    ];
+
+    const digestA = computeZvecEmbeddingRowsDigest(rows);
+    const digestB = computeZvecEmbeddingRowsDigest(legacyRows);
+
+    expect(digestB).toBe(digestA);
+  });
+
   it('changes the digest when contentHash changes', () => {
     const digestA = computeZvecEmbeddingRowsDigest(rows);
     const digestB = computeZvecEmbeddingRowsDigest([
       firstRow,
       { ...secondRow, contentHash: 'sha256:changed' },
+    ]);
+
+    expect(digestA).not.toBe(digestB);
+  });
+
+  it('changes the digest when chunkContentHash changes', () => {
+    const digestA = computeZvecEmbeddingRowsDigest([
+      firstRow,
+      { ...secondRow, chunkContentHash: 'chunk-1' } as const,
+    ]);
+    const digestB = computeZvecEmbeddingRowsDigest([
+      firstRow,
+      { ...secondRow, chunkContentHash: 'chunk-2' } as const,
     ]);
 
     expect(digestA).not.toBe(digestB);

@@ -14,6 +14,11 @@
  */
 
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import {
+  projectReadFirstFiles,
+  type ReadFirstFileFact,
+  type ReadFirstProjection,
+} from '../shared/read-first-projection.js';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -27,11 +32,22 @@ export interface FindRelatedParams {
   includeClusterSiblings?: boolean; // default: true
   includeCrossRepo?: boolean; // default: false (requires group config)
   maxItemsPerCategory?: number; // default: 10
+  format?: 'json' | 'files';
+}
+
+export interface FindRelatedCloseMatch {
+  nodeId: string;
+  name: string;
+  filePath: string;
+  kind: string;
+  reason: string;
+  suggestedNextCalls: string[];
 }
 
 export interface FindRelatedReport {
   version: 1;
   resolvedSymbol: { nodeId: string; name: string; filePath: string; kind: string };
+  closeMatches?: FindRelatedCloseMatch[];
   callers: Array<{
     nodeId: string;
     name: string;
@@ -47,6 +63,17 @@ export interface FindRelatedReport {
   coChangedFiles: Array<{ filePath: string; coChangeCount: number; lastChangedTogether: string }>;
   clusterSiblings: Array<{ nodeId: string; name: string; filePath: string; reason: string }>;
   crossRepoReferences?: Array<{ repoName: string; nodeId: string; name: string; filePath: string }>;
+  readFirstFiles: ReadFirstProjection['readFirstFiles'];
+  omittedCounts: ReadFirstProjection['omittedCounts'];
+  warnings: string[];
+}
+
+export interface FindRelatedFilesReport {
+  version: 1;
+  resolvedSymbol: { nodeId: string; name: string; filePath: string; kind: string };
+  closeMatches?: FindRelatedCloseMatch[];
+  readFirstFiles: ReadFirstProjection['readFirstFiles'];
+  omittedCounts: ReadFirstProjection['omittedCounts'];
   warnings: string[];
 }
 
@@ -65,6 +92,26 @@ function rowValue(row: QueryRow, key: string, index: number, fallback: unknown):
 
 function rowString(row: QueryRow, key: string, index: number, fallback = ''): string {
   return rowValue(row, key, index, fallback) as string;
+}
+
+function symbolRetryExamples(repoId: string, nodeId: string, name: string): string[] {
+  return [
+    `inspect({ action: "context", repo: "${repoId}", uid: "${nodeId}" })`,
+    `impact({ action: "symbol", repo: "${repoId}", target_uid: "${nodeId}", target: "${name}" })`,
+  ];
+}
+
+function describeCloseMatchReason(query: string, nodeId: string, name: string): string {
+  const needle = query.trim().toLowerCase();
+  const loweredName = name.toLowerCase();
+  const loweredNodeId = nodeId.toLowerCase();
+  if (!needle) return 'approximate symbol match';
+  if (loweredNodeId === needle) return 'canonical id match';
+  if (loweredName === needle) return 'exact symbol name match';
+  if (loweredNodeId.endsWith(needle)) return 'node id suffix match';
+  if (loweredName.includes(needle)) return 'symbol name contains query';
+  if (loweredNodeId.includes(needle)) return 'node id contains query';
+  return 'approximate symbol match';
 }
 
 /**
@@ -120,6 +167,63 @@ async function resolveSymbol(
     };
   } catch {
     return null;
+  }
+}
+
+async function fetchCloseMatches(
+  repoId: string,
+  symbol: string,
+  max: number,
+): Promise<FindRelatedCloseMatch[]> {
+  const needle = symbol.trim().toLowerCase();
+  if (!needle) return [];
+
+  try {
+    const rows: QueryRow[] = await executeParameterized(
+      repoId,
+      `MATCH (s)
+       WHERE s.name IS NOT NULL
+         AND s.id IS NOT NULL
+         AND (
+           toLower(s.name) CONTAINS $needle OR
+           toLower(s.id) CONTAINS $needle OR
+           toLower(s.id) ENDS WITH $needle
+         )
+       RETURN s.id AS nodeId, s.name AS name, s.filePath AS filePath, labels(s)[0] AS kind
+       ORDER BY
+         CASE
+           WHEN toLower(s.id) = $needle THEN 0
+           WHEN toLower(s.name) = $needle THEN 1
+           WHEN toLower(s.id) ENDS WITH $needle THEN 2
+           WHEN toLower(s.name) CONTAINS $needle THEN 3
+           ELSE 4
+         END,
+         s.name ASC
+       LIMIT $max`,
+      { needle, max },
+    );
+
+    const seen = new Set<string>();
+    const matches: FindRelatedCloseMatch[] = [];
+    for (const row of rows) {
+      const nodeId = rowString(row, 'nodeId', 0);
+      const name = rowString(row, 'name', 1);
+      const filePath = rowString(row, 'filePath', 2);
+      const kind = rowString(row, 'kind', 3);
+      if (!nodeId || seen.has(nodeId)) continue;
+      seen.add(nodeId);
+      matches.push({
+        nodeId,
+        name,
+        filePath,
+        kind,
+        reason: describeCloseMatchReason(symbol, nodeId, name),
+        suggestedNextCalls: symbolRetryExamples(repoId, nodeId, name),
+      });
+    }
+    return matches;
+  } catch {
+    return [];
   }
 }
 
@@ -240,16 +344,40 @@ async function fetchClusterSiblings(
   }
 }
 
+function addReadFirstCandidate(
+  facts: ReadFirstFileFact[],
+  filePath: string | null | undefined,
+  source: string,
+  reason: string,
+  priority: number,
+): void {
+  if (!filePath) return;
+  facts.push({ filePath, source, reason, priority });
+}
+
 // ---------------------------------------------------------------------------
 // Main export.
 // ---------------------------------------------------------------------------
 
 export async function gnFindRelated(
   repoId: string,
+  params: FindRelatedParams & { format: 'files' },
+): Promise<FindRelatedFilesReport>;
+export async function gnFindRelated(
+  repoId: string,
+  params: FindRelatedParams & { format?: 'json' },
+): Promise<FindRelatedReport>;
+export async function gnFindRelated(
+  repoId: string,
   params: FindRelatedParams,
-): Promise<FindRelatedReport> {
+): Promise<FindRelatedReport | FindRelatedFilesReport>;
+export async function gnFindRelated(
+  repoId: string,
+  params: FindRelatedParams,
+): Promise<FindRelatedReport | FindRelatedFilesReport> {
   const warnings: string[] = [];
   const max = params.maxItemsPerCategory ?? 10;
+  const readFirstMaxFiles = Number.isFinite(max) && max > 0 ? Math.min(max, 5) : 5;
 
   // Empty resolved symbol used as the "not found" sentinel.
   const emptyResolved = { nodeId: '', name: '', filePath: '', kind: '' };
@@ -258,18 +386,28 @@ export async function gnFindRelated(
   const resolved = await resolveSymbol(repoId, params.symbol);
   if (!resolved || !resolved.nodeId) {
     warnings.push('symbol not found in index');
-    return {
+    const closeMatches = await fetchCloseMatches(repoId, params.symbol, 5);
+    const emptyProjection = projectReadFirstFiles([], { maxFiles: readFirstMaxFiles });
+    const compactReport: FindRelatedFilesReport = {
       version: 1,
       resolvedSymbol: emptyResolved,
+      ...(closeMatches.length > 0 ? { closeMatches } : {}),
+      readFirstFiles: emptyProjection.readFirstFiles,
+      omittedCounts: emptyProjection.omittedCounts,
+      warnings,
+    };
+    if (params.format === 'files') return compactReport;
+    return {
+      ...compactReport,
       callers: [],
       callees: [],
       coChangedFiles: [],
       clusterSiblings: [],
-      warnings,
     };
   }
 
   const nodeId = resolved.nodeId;
+  const resolvedFilePath = resolved.filePath || (await fetchSymbolFilePath(repoId, nodeId));
 
   // --- 2. Callers ----------------------------------------------------------
   const callers: FindRelatedReport['callers'] =
@@ -281,11 +419,8 @@ export async function gnFindRelated(
 
   // --- 4. Co-changed files -------------------------------------------------
   let coChangedFiles: FindRelatedReport['coChangedFiles'] = [];
-  if (params.includeCoChanged !== false) {
-    const filePath = resolved.filePath || (await fetchSymbolFilePath(repoId, nodeId));
-    if (filePath) {
-      coChangedFiles = await fetchCoChangedFiles(repoId, filePath, max);
-    }
+  if (params.includeCoChanged !== false && resolvedFilePath) {
+    coChangedFiles = await fetchCoChangedFiles(repoId, resolvedFilePath, max);
   }
 
   // --- 5. Cluster siblings -------------------------------------------------
@@ -300,14 +435,46 @@ export async function gnFindRelated(
     warnings.push('cross-repo not yet wired');
   }
 
-  return {
+  const readFirstFacts: ReadFirstFileFact[] = [];
+  addReadFirstCandidate(
+    readFirstFacts,
+    resolvedFilePath,
+    'definition',
+    'resolved symbol definition',
+    0,
+  );
+  for (const caller of callers) {
+    addReadFirstCandidate(readFirstFacts, caller.filePath, 'caller', 'caller file', 1);
+  }
+  for (const callee of callees) {
+    addReadFirstCandidate(readFirstFacts, callee.filePath, 'callee', 'callee file', 2);
+  }
+  for (const coChanged of coChangedFiles) {
+    addReadFirstCandidate(readFirstFacts, coChanged.filePath, 'file', 'co-changed file', 3);
+  }
+  for (const sibling of clusterSiblings) {
+    addReadFirstCandidate(readFirstFacts, sibling.filePath, 'cluster', 'cluster sibling file', 4);
+  }
+
+  const readFirstProjection = projectReadFirstFiles(readFirstFacts, {
+    maxFiles: readFirstMaxFiles,
+  });
+  const compactReport: FindRelatedFilesReport = {
     version: 1,
     resolvedSymbol: resolved,
+    readFirstFiles: readFirstProjection.readFirstFiles,
+    omittedCounts: readFirstProjection.omittedCounts,
+    warnings,
+  };
+
+  if (params.format === 'files') return compactReport;
+
+  return {
+    ...compactReport,
     callers,
     callees,
     coChangedFiles,
     clusterSiblings,
     ...(crossRepoReferences !== undefined ? { crossRepoReferences } : {}),
-    warnings,
   };
 }

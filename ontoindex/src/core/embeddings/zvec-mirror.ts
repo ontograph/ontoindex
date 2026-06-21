@@ -28,6 +28,7 @@ export interface ZvecEmbeddingRowIdentity {
   nodeId: string;
   chunkIndex: number;
   contentHash: string;
+  chunkContentHash?: string;
 }
 
 export interface ZvecMirrorCurrentState {
@@ -49,11 +50,10 @@ export interface ZvecMirrorMetadata extends ZvecMirrorCurrentState {
   buildTimestamp: string;
 }
 
-export interface ZvecMirrorBuildInput
-  extends Omit<
-    ZvecMirrorCurrentState,
-    'schemaVersion' | 'codeEmbeddingRowCount' | 'codeEmbeddingRowDigest'
-  > {
+export interface ZvecMirrorBuildInput extends Omit<
+  ZvecMirrorCurrentState,
+  'schemaVersion' | 'codeEmbeddingRowCount' | 'codeEmbeddingRowDigest'
+> {
   codeEmbeddingRows: readonly ZvecEmbeddingRowIdentity[];
   buildTimestamp?: string | Date;
 }
@@ -200,8 +200,8 @@ export function evaluateZvecMirrorFreshness(
   const status: ZvecMirrorStatus = reasonCodes.has('schema-version-unsupported')
     ? 'unsupported'
     : reasonCodes.size > 0
-    ? 'stale'
-    : 'fresh';
+      ? 'stale'
+      : 'fresh';
 
   return {
     status,
@@ -325,16 +325,16 @@ function compareStringField(
       field === 'zvecPackageVersion'
         ? 'zvec-package-version-mismatch'
         : field === 'embeddingModelHash'
-        ? 'embedding-model-hash-mismatch'
-        : field === 'sourceCommit'
-        ? 'source-commit-mismatch'
-        : field === 'currentHead'
-        ? 'current-head-mismatch'
-        : field === 'codeEmbeddingRowDigest'
-        ? 'code-embedding-row-digest-mismatch'
-        : field === 'backendIndexType'
-        ? 'backend-index-type-mismatch'
-        : 'malformed-metadata',
+          ? 'embedding-model-hash-mismatch'
+          : field === 'sourceCommit'
+            ? 'source-commit-mismatch'
+            : field === 'currentHead'
+              ? 'current-head-mismatch'
+              : field === 'codeEmbeddingRowDigest'
+                ? 'code-embedding-row-digest-mismatch'
+                : field === 'backendIndexType'
+                  ? 'backend-index-type-mismatch'
+                  : 'malformed-metadata',
     );
   }
 }
@@ -382,9 +382,11 @@ function compareStableJsonField(
 }
 
 function canonicalEmbeddingRowKey(row: ZvecEmbeddingRowIdentity): string {
+  const chunkContentHash = normalizeOptionalStringOrNull(row.chunkContentHash);
   return stableJsonStringify({
     chunkIndex: normalizeInteger(row.chunkIndex, 'chunkIndex'),
     contentHash: normalizeRequiredString(row.contentHash, 'contentHash'),
+    ...(chunkContentHash === null ? {} : { chunkContentHash }),
     id: normalizeRequiredString(row.id, 'id'),
     nodeId: normalizeRequiredString(row.nodeId, 'nodeId'),
   });
@@ -398,6 +400,7 @@ function normalizeEmbeddingRows(
     nodeId: normalizeRequiredString(row.nodeId, 'nodeId'),
     chunkIndex: normalizeInteger(row.chunkIndex, 'chunkIndex'),
     contentHash: normalizeRequiredString(row.contentHash, 'contentHash'),
+    chunkContentHash: normalizeOptionalStringOrNull(row.chunkContentHash),
   }));
 }
 
@@ -416,6 +419,12 @@ function normalizeRequiredString(value: unknown, field: string): string {
     throw new Error(`${field} must be a non-empty string`);
   }
   return normalized;
+}
+
+function normalizeOptionalStringOrNull(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
 }
 
 function normalizeRequiredStringOrNull(value: unknown): string | null {

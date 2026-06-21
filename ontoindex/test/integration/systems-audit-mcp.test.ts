@@ -169,6 +169,53 @@ describe('systems audit MCP MVP modules', () => {
       'fixture',
     )) as Record<string, any>;
     expect(testSuggestion.suggestions[0].case).toContain('fd_leak_across_fork');
+
+    const targetedSuggestion = (await dispatchSuper(
+      'gn_test_suggestions',
+      {
+        symbol: 'SidecarManager::_spawn',
+        risk: 'fd-leak-across-fork',
+        targetedCoverage: {
+          linkedTests: ['test/sidecar-manager.test.ts'],
+          executedTests: ['test/sidecar-manager.test.ts'],
+        },
+      },
+      'fixture',
+    )) as Record<string, any>;
+    expect(targetedSuggestion.suggestions[0].file).toBe('test/sidecar-manager.test.ts');
+  });
+
+  it('prefers gn_test_gap evidence testFile when given the target report shape', async () => {
+    const targetedSuggestion = (await dispatchSuper(
+      'gn_test_suggestions',
+      {
+        symbol: 'SidecarManager::_spawn',
+        risk: 'fd-leak-across-fork',
+        targetedCoverage: {
+          targetedCoverage: 'found',
+          linkedTests: ['test/legacy-linked.test.ts'],
+          executedTests: ['test/legacy-executed.test.ts'],
+          evidence: [
+            { testFile: 'test/sidecar-manager.test.ts' },
+            { testFile: 'test/secondary.test.ts' },
+          ],
+        },
+      },
+      'fixture',
+    )) as Record<string, any>;
+    expect(targetedSuggestion.suggestions[0].file).toBe('test/sidecar-manager.test.ts');
+
+    const topLevelReportSuggestion = (await dispatchSuper(
+      'gn_test_suggestions',
+      {
+        symbol: 'SidecarManager::_spawn',
+        risk: 'fd-leak-across-fork',
+        targetedCoverage: 'found',
+        evidence: [{ testFile: 'test/from-target-report.test.ts' }],
+      },
+      'fixture',
+    )) as Record<string, any>;
+    expect(topLevelReportSuggestion.suggestions[0].file).toBe('test/from-target-report.test.ts');
   });
 
   it('gn_resource_trace accepts an absolute path under the repo root', async () => {

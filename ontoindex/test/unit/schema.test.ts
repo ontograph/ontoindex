@@ -197,6 +197,11 @@ describe('LadybugDB Schema', () => {
       expect(EMBEDDING_SCHEMA).toContain('embedding FLOAT[384]');
     });
 
+    it('stores both node- and chunk-level hashes', () => {
+      expect(EMBEDDING_SCHEMA).toContain('contentHash STRING');
+      expect(EMBEDDING_SCHEMA).toContain('chunkContentHash STRING');
+    });
+
     it('has vector index query', () => {
       expect(CREATE_VECTOR_INDEX_QUERY).toContain('CREATE_VECTOR_INDEX');
       expect(CREATE_VECTOR_INDEX_QUERY).toContain('cosine');

@@ -1,8 +1,9 @@
-const binding = typeof process.versions.bun === "string" ?
-    // Statically analyzable enough for `bun build --compile` to embed the tree-sitter.node napi addon
-    require(`./prebuilds/${process.platform}-${process.arch}/tree-sitter.node`) :
-    require('node-gyp-build')(__dirname);
-const {Query, Parser, NodeMethods, Tree, TreeCursor, LookaheadIterator} = binding;
+const binding =
+  typeof process.versions.bun === 'string'
+    ? // Statically analyzable enough for `bun build --compile` to embed the tree-sitter.node napi addon
+      require(`./prebuilds/${process.platform}-${process.arch}/tree-sitter.node`)
+    : require('node-gyp-build')(__dirname);
+const { Query, Parser, NodeMethods, Tree, TreeCursor, LookaheadIterator } = binding;
 
 const util = require('util');
 
@@ -10,7 +11,7 @@ const util = require('util');
  * Tree
  */
 
-const {rootNode, rootNodeWithOffset, edit} = Tree.prototype;
+const { rootNode, rootNodeWithOffset, edit } = Tree.prototype;
 
 Object.defineProperty(Tree.prototype, 'rootNode', {
   get() {
@@ -30,29 +31,35 @@ Object.defineProperty(Tree.prototype, 'rootNode', {
   },
   // Jest worker pool may attempt to override property due to race condition,
   // we don't want to error on this
-  configurable: true
+  configurable: true,
 });
 
-Tree.prototype.rootNodeWithOffset = function(offset_bytes, offset_extent) {
-  return unmarshalNode(rootNodeWithOffset.call(this, offset_bytes, offset_extent.row, offset_extent.column), this);
-}
+Tree.prototype.rootNodeWithOffset = function (offset_bytes, offset_extent) {
+  return unmarshalNode(
+    rootNodeWithOffset.call(this, offset_bytes, offset_extent.row, offset_extent.column),
+    this,
+  );
+};
 
-Tree.prototype.edit = function(arg) {
+Tree.prototype.edit = function (arg) {
   if (this instanceof Tree && edit) {
     edit.call(
       this,
-      arg.startPosition.row, arg.startPosition.column,
-      arg.oldEndPosition.row, arg.oldEndPosition.column,
-      arg.newEndPosition.row, arg.newEndPosition.column,
+      arg.startPosition.row,
+      arg.startPosition.column,
+      arg.oldEndPosition.row,
+      arg.oldEndPosition.column,
+      arg.newEndPosition.row,
+      arg.newEndPosition.column,
       arg.startIndex,
       arg.oldEndIndex,
-      arg.newEndIndex
+      arg.newEndIndex,
     );
   }
 };
 
-Tree.prototype.walk = function() {
-  return this.rootNode.walk()
+Tree.prototype.walk = function () {
+  return this.rootNode.walk();
 };
 
 /*
@@ -65,12 +72,23 @@ class SyntaxNode {
   }
 
   [util.inspect.custom]() {
-    return this.constructor.name + ' {\n' +
-      '  type: ' + this.type + ',\n' +
-      '  startPosition: ' + pointToString(this.startPosition) + ',\n' +
-      '  endPosition: ' + pointToString(this.endPosition) + ',\n' +
-      '  childCount: ' + this.childCount + ',\n' +
+    return (
+      this.constructor.name +
+      ' {\n' +
+      '  type: ' +
+      this.type +
+      ',\n' +
+      '  startPosition: ' +
+      pointToString(this.startPosition) +
+      ',\n' +
+      '  endPosition: ' +
+      pointToString(this.endPosition) +
+      ',\n' +
+      '  childCount: ' +
+      this.childCount +
+      ',\n' +
       '}'
+    );
   }
 
   get id() {
@@ -308,7 +326,7 @@ class SyntaxNode {
 
   descendantsOfType(types, start, end) {
     marshalNode(this);
-    if (typeof types === 'string') types = [types]
+    if (typeof types === 'string') types = [types];
     return unmarshalNodes(NodeMethods.descendantsOfType(this.tree, types, start, end), this.tree);
   }
 
@@ -326,11 +344,11 @@ class SyntaxNode {
 
   closest(types) {
     marshalNode(this);
-    if (typeof types === 'string') types = [types]
+    if (typeof types === 'string') types = [types];
     return unmarshalNode(NodeMethods.closest(this.tree, types), this.tree);
   }
 
-  walk () {
+  walk() {
     marshalNode(this);
     const cursor = NodeMethods.walk(this.tree);
     cursor.tree = this.tree;
@@ -343,56 +361,52 @@ class SyntaxNode {
  * Parser
  */
 
-const {parse, setLanguage} = Parser.prototype;
+const { parse, setLanguage } = Parser.prototype;
 const languageSymbol = Symbol('parser.language');
 
-Parser.prototype.setLanguage = function(language) {
+Parser.prototype.setLanguage = function (language) {
   if (this instanceof Parser && setLanguage) {
     setLanguage.call(this, language);
   }
   this[languageSymbol] = language;
   if (!language.nodeSubclasses) {
-    initializeLanguageNodeClasses(language)
+    initializeLanguageNodeClasses(language);
   }
   return this;
 };
 
-Parser.prototype.getLanguage = function(_language) {
+Parser.prototype.getLanguage = function (_language) {
   return this[languageSymbol] || null;
 };
 
-Parser.prototype.parse = function(input, oldTree, {bufferSize, includedRanges}={}) {
-  let getText, treeInput = input
+Parser.prototype.parse = function (input, oldTree, { bufferSize, includedRanges } = {}) {
+  let getText,
+    treeInput = input;
   if (typeof input === 'string') {
     const inputString = input;
-    input = (offset, _position) => inputString.slice(offset)
-    getText = getTextFromString
+    input = (offset, _position) => inputString.slice(offset);
+    getText = getTextFromString;
   } else {
-    getText = getTextFromFunction
+    getText = getTextFromFunction;
   }
-  const tree = this instanceof Parser && parse
-    ? parse.call(
-      this,
-      input,
-      oldTree,
-      bufferSize,
-      includedRanges,
-    )
-    : undefined;
+  const tree =
+    this instanceof Parser && parse
+      ? parse.call(this, input, oldTree, bufferSize, includedRanges)
+      : undefined;
 
   if (tree) {
-    tree.input = treeInput
-    tree.getText = getText
-    tree.language = this.getLanguage()
+    tree.input = treeInput;
+    tree.getText = getText;
+    tree.language = this.getLanguage();
   }
-  return tree
+  return tree;
 };
 
 /*
  * TreeCursor
  */
 
-const {startPosition, endPosition, currentNode} = TreeCursor.prototype;
+const { startPosition, endPosition, currentNode } = TreeCursor.prototype;
 
 Object.defineProperties(TreeCursor.prototype, {
   currentNode: {
@@ -401,7 +415,7 @@ Object.defineProperties(TreeCursor.prototype, {
         return unmarshalNode(currentNode.call(this), this.tree);
       }
     },
-    configurable: true
+    configurable: true,
   },
   startPosition: {
     get() {
@@ -410,7 +424,7 @@ Object.defineProperties(TreeCursor.prototype, {
         return unmarshalPoint();
       }
     },
-    configurable: true
+    configurable: true,
   },
   endPosition: {
     get() {
@@ -419,31 +433,31 @@ Object.defineProperties(TreeCursor.prototype, {
         return unmarshalPoint();
       }
     },
-    configurable: true
+    configurable: true,
   },
   nodeText: {
     get() {
-      return this.tree.getText(this)
+      return this.tree.getText(this);
     },
-    configurable: true
-  }
+    configurable: true,
+  },
 });
 
 /*
  * Query
  */
 
-const {_matches, _captures} = Query.prototype;
+const { _matches, _captures } = Query.prototype;
 
 const PREDICATE_STEP_TYPE = {
   DONE: 0,
   CAPTURE: 1,
   STRING: 2,
-}
+};
 
 const ZERO_POINT = { row: 0, column: 0 };
 
-Query.prototype._init = function() {
+Query.prototype._init = function () {
   /*
    * Initialize predicate functions
    * format: [type1, value1, type2, value2, ...]
@@ -456,15 +470,14 @@ Query.prototype._init = function() {
   const refutedProperties = new Array(patternCount);
   const predicates = new Array(patternCount);
 
-  const FIRST  = 0
-  const SECOND = 2
-  const THIRD  = 4
+  const FIRST = 0;
+  const SECOND = 2;
+  const THIRD = 4;
 
   for (let i = 0; i < predicateDescriptions.length; i++) {
     predicates[i] = [];
 
     for (let j = 0; j < predicateDescriptions[i].length; j++) {
-
       const steps = predicateDescriptions[i][j];
       const stepsLength = steps.length / 2;
 
@@ -483,12 +496,14 @@ Query.prototype._init = function() {
           isPositive = false;
         case 'any-eq?':
         case 'eq?':
-          if (stepsLength !== 3) throw new Error(
-            `Wrong number of arguments to \`#eq?\` predicate. Expected 2, got ${stepsLength - 1}`
-          );
-          if (steps[SECOND] !== PREDICATE_STEP_TYPE.CAPTURE) throw new Error(
-            `First argument of \`#eq?\` predicate must be a capture. Got "${steps[SECOND + 1]}"`
-          );
+          if (stepsLength !== 3)
+            throw new Error(
+              `Wrong number of arguments to \`#eq?\` predicate. Expected 2, got ${stepsLength - 1}`,
+            );
+          if (steps[SECOND] !== PREDICATE_STEP_TYPE.CAPTURE)
+            throw new Error(
+              `First argument of \`#eq?\` predicate must be a capture. Got "${steps[SECOND + 1]}"`,
+            );
           matchAll = !operator.startsWith('any-');
           if (steps[THIRD] === PREDICATE_STEP_TYPE.CAPTURE) {
             const captureName1 = steps[SECOND + 1];
@@ -501,13 +516,11 @@ Query.prototype._init = function() {
                 if (c.name === captureName2) nodes_2.push(c.node);
               }
               let compare = (n1, n2, positive) => {
-                return positive ?
-                  n1.text === n2.text :
-                  n1.text !== n2.text;
+                return positive ? n1.text === n2.text : n1.text !== n2.text;
               };
               return matchAll
-                ? nodes_1.every(n1 => nodes_2.some(n2 => compare(n1, n2, isPositive)))
-                : nodes_1.some(n1 => nodes_2.some(n2 => compare(n1, n2, isPositive)));
+                ? nodes_1.every((n1) => nodes_2.some((n2) => compare(n1, n2, isPositive)))
+                : nodes_1.some((n1) => nodes_2.some((n2) => compare(n1, n2, isPositive)));
             });
           } else {
             captureName = steps[SECOND + 1];
@@ -520,9 +533,7 @@ Query.prototype._init = function() {
                 if (c.name === captureName) nodes.push(c.node);
               }
               let test = isPositive ? matches : doesNotMatch;
-              return matchAll
-                ? nodes.every(test)
-                : nodes.some(test);
+              return matchAll ? nodes.every(test) : nodes.some(test);
             });
           }
           break;
@@ -532,15 +543,18 @@ Query.prototype._init = function() {
           isPositive = false;
         case 'any-match?':
         case 'match?':
-          if (stepsLength !== 3) throw new Error(
-            `Wrong number of arguments to \`#match?\` predicate. Expected 2, got ${stepsLength - 1}.`
-          );
-          if (steps[SECOND] !== PREDICATE_STEP_TYPE.CAPTURE) throw new Error(
-            `First argument of \`#match?\` predicate must be a capture. Got "${steps[SECOND + 1]}".`
-          );
-          if (steps[THIRD] !== PREDICATE_STEP_TYPE.STRING) throw new Error(
-            `Second argument of \`#match?\` predicate must be a string. Got @${steps[THIRD + 1]}.`
-          );
+          if (stepsLength !== 3)
+            throw new Error(
+              `Wrong number of arguments to \`#match?\` predicate. Expected 2, got ${stepsLength - 1}.`,
+            );
+          if (steps[SECOND] !== PREDICATE_STEP_TYPE.CAPTURE)
+            throw new Error(
+              `First argument of \`#match?\` predicate must be a capture. Got "${steps[SECOND + 1]}".`,
+            );
+          if (steps[THIRD] !== PREDICATE_STEP_TYPE.STRING)
+            throw new Error(
+              `Second argument of \`#match?\` predicate must be a string. Got @${steps[THIRD + 1]}.`,
+            );
           captureName = steps[SECOND + 1];
           const regex = new RegExp(steps[THIRD + 1]);
           matchAll = !operator.startsWith('any-');
@@ -550,36 +564,34 @@ Query.prototype._init = function() {
               if (c.name === captureName) nodes.push(c.node.text);
             }
             let test = (text, positive) => {
-              return positive ?
-                regex.test(text) :
-                !regex.test(text);
+              return positive ? regex.test(text) : !regex.test(text);
             };
             if (nodes.length === 0) return !isPositive;
             return matchAll
-              ? nodes.every(text => test(text, isPositive))
-              : nodes.some(text => test(text, isPositive))
+              ? nodes.every((text) => test(text, isPositive))
+              : nodes.some((text) => test(text, isPositive));
           });
           break;
 
         case 'set!':
-          if (stepsLength < 2 || stepsLength > 3) throw new Error(
-            `Wrong number of arguments to \`#set!\` predicate. Expected 1 or 2. Got ${stepsLength - 1}.`
-          );
-          if (steps.some((s, i) => (i % 2 !== 1) && s !== PREDICATE_STEP_TYPE.STRING)) throw new Error(
-            `Arguments to \`#set!\` predicate must be a strings.".`
-          );
+          if (stepsLength < 2 || stepsLength > 3)
+            throw new Error(
+              `Wrong number of arguments to \`#set!\` predicate. Expected 1 or 2. Got ${stepsLength - 1}.`,
+            );
+          if (steps.some((s, i) => i % 2 !== 1 && s !== PREDICATE_STEP_TYPE.STRING))
+            throw new Error(`Arguments to \`#set!\` predicate must be a strings.".`);
           if (!setProperties[i]) setProperties[i] = {};
           setProperties[i][steps[SECOND + 1]] = steps[THIRD] ? steps[THIRD + 1] : null;
           break;
 
         case 'is?':
         case 'is-not?':
-          if (stepsLength < 2 || stepsLength > 3) throw new Error(
-            `Wrong number of arguments to \`#${operator}\` predicate. Expected 1 or 2. Got ${stepsLength - 1}.`
-          );
-          if (steps.some((s, i) => (i % 2 !== 1) && s !== PREDICATE_STEP_TYPE.STRING)) throw new Error(
-            `Arguments to \`#${operator}\` predicate must be a strings.".`
-          );
+          if (stepsLength < 2 || stepsLength > 3)
+            throw new Error(
+              `Wrong number of arguments to \`#${operator}\` predicate. Expected 1 or 2. Got ${stepsLength - 1}.`,
+            );
+          if (steps.some((s, i) => i % 2 !== 1 && s !== PREDICATE_STEP_TYPE.STRING))
+            throw new Error(`Arguments to \`#${operator}\` predicate must be a strings.".`);
           const properties = operator === 'is?' ? assertedProperties : refutedProperties;
           if (!properties[i]) properties[i] = {};
           properties[i][steps[SECOND + 1]] = steps[THIRD] ? steps[THIRD + 1] : null;
@@ -588,17 +600,18 @@ Query.prototype._init = function() {
         case 'not-any-of?':
           isPositive = false;
         case 'any-of?':
-          if (stepsLength < 2) throw new Error(
-            `Wrong number of arguments to \`#${operator}\` predicate. Expected at least 1. Got ${stepsLength - 1}.`
-          );
-          if (steps[SECOND] !== PREDICATE_STEP_TYPE.CAPTURE) throw new Error(
-            `First argument of \`#${operator}\` predicate must be a capture. Got "${steps[1].value}".`
-          );
+          if (stepsLength < 2)
+            throw new Error(
+              `Wrong number of arguments to \`#${operator}\` predicate. Expected at least 1. Got ${stepsLength - 1}.`,
+            );
+          if (steps[SECOND] !== PREDICATE_STEP_TYPE.CAPTURE)
+            throw new Error(
+              `First argument of \`#${operator}\` predicate must be a capture. Got "${steps[1].value}".`,
+            );
           const stringValues = [];
           for (let k = THIRD; k < 2 * stepsLength; k += 2) {
-            if (steps[k] !== PREDICATE_STEP_TYPE.STRING) throw new Error(
-              `Arguments to \`#${operator}\` predicate must be a strings.".`
-            );
+            if (steps[k] !== PREDICATE_STEP_TYPE.STRING)
+              throw new Error(`Arguments to \`#${operator}\` predicate must be a strings.".`);
             stringValues.push(steps[k + 1]);
           }
           captureName = steps[SECOND + 1];
@@ -608,7 +621,7 @@ Query.prototype._init = function() {
               if (c.name === captureName) nodes.push(c.node.text);
             }
             if (nodes.length === 0) return !isPositive;
-            return nodes.every(text => stringValues.includes(text)) === isPositive;
+            return nodes.every((text) => stringValues.includes(text)) === isPositive;
           });
           break;
 
@@ -622,30 +635,38 @@ Query.prototype._init = function() {
   this.setProperties = Object.freeze(setProperties);
   this.assertedProperties = Object.freeze(assertedProperties);
   this.refutedProperties = Object.freeze(refutedProperties);
-}
+};
 
-Query.prototype.matches = function(
+Query.prototype.matches = function (
   node,
   {
     startPosition = ZERO_POINT,
     endPosition = ZERO_POINT,
     startIndex = 0,
     endIndex = 0,
-    matchLimit = 0xFFFFFFFF,
-    maxStartDepth = 0xFFFFFFFF,
-    timeoutMicros = 0
-  } = {}
+    matchLimit = 0xffffffff,
+    maxStartDepth = 0xffffffff,
+    timeoutMicros = 0,
+  } = {},
 ) {
   marshalNode(node);
-  const [returnedMatches, returnedNodes] = _matches.call(this, node.tree,
-    startPosition.row, startPosition.column,
-    endPosition.row, endPosition.column,
-    startIndex, endIndex, matchLimit, maxStartDepth, timeoutMicros
+  const [returnedMatches, returnedNodes] = _matches.call(
+    this,
+    node.tree,
+    startPosition.row,
+    startPosition.column,
+    endPosition.row,
+    endPosition.column,
+    startIndex,
+    endIndex,
+    matchLimit,
+    maxStartDepth,
+    timeoutMicros,
   );
   const nodes = unmarshalNodes(returnedNodes, node.tree);
   const results = [];
 
-  let i = 0
+  let i = 0;
   let nodeIndex = 0;
   while (i < returnedMatches.length) {
     const patternIndex = returnedMatches[i++];
@@ -656,11 +677,11 @@ Query.prototype.matches = function(
       captures.push({
         name: captureName,
         node: nodes[nodeIndex++],
-      })
+      });
     }
 
-    if (this.predicates[patternIndex].every(p => p(captures))) {
-      const result = {pattern: patternIndex, captures};
+    if (this.predicates[patternIndex].every((p) => p(captures))) {
+      const result = { pattern: patternIndex, captures };
       const setProperties = this.setProperties[patternIndex];
       const assertedProperties = this.assertedProperties[patternIndex];
       const refutedProperties = this.refutedProperties[patternIndex];
@@ -672,30 +693,38 @@ Query.prototype.matches = function(
   }
 
   return results;
-}
+};
 
-Query.prototype.captures = function(
+Query.prototype.captures = function (
   node,
   {
     startPosition = ZERO_POINT,
     endPosition = ZERO_POINT,
     startIndex = 0,
     endIndex = 0,
-    matchLimit = 0xFFFFFFFF,
-    maxStartDepth = 0xFFFFFFFF,
+    matchLimit = 0xffffffff,
+    maxStartDepth = 0xffffffff,
     timeoutMicros = 0,
-  } = {}
+  } = {},
 ) {
   marshalNode(node);
-  const [returnedMatches, returnedNodes] = _captures.call(this, node.tree,
-    startPosition.row, startPosition.column,
-    endPosition.row, endPosition.column,
-    startIndex, endIndex, matchLimit, maxStartDepth, timeoutMicros
+  const [returnedMatches, returnedNodes] = _captures.call(
+    this,
+    node.tree,
+    startPosition.row,
+    startPosition.column,
+    endPosition.row,
+    endPosition.column,
+    startIndex,
+    endIndex,
+    matchLimit,
+    maxStartDepth,
+    timeoutMicros,
   );
   const nodes = unmarshalNodes(returnedNodes, node.tree);
   const results = [];
 
-  let i = 0
+  let i = 0;
   let nodeIndex = 0;
   while (i < returnedMatches.length) {
     const patternIndex = returnedMatches[i++];
@@ -707,10 +736,10 @@ Query.prototype.captures = function(
       captures.push({
         name: captureName,
         node: nodes[nodeIndex++],
-      })
+      });
     }
 
-    if (this.predicates[patternIndex].every(p => p(captures))) {
+    if (this.predicates[patternIndex].every((p) => p(captures))) {
       const result = captures[captureIndex];
       const setProperties = this.setProperties[patternIndex];
       const assertedProperties = this.assertedProperties[patternIndex];
@@ -723,35 +752,35 @@ Query.prototype.captures = function(
   }
 
   return results;
-}
+};
 
 /*
  * LookaheadIterator
  */
 
-LookaheadIterator.prototype[Symbol.iterator] = function() {
+LookaheadIterator.prototype[Symbol.iterator] = function () {
   const self = this;
   return {
     next() {
       if (self._next()) {
-        return {done: false, value: self.currentType};
+        return { done: false, value: self.currentType };
       }
 
-      return {done: true, value: ''};
+      return { done: true, value: '' };
     },
   };
-}
+};
 
 /*
  * Other functions
  */
 
-function getTextFromString (node) {
+function getTextFromString(node) {
   return this.input.substring(node.startIndex, node.endIndex);
 }
 
-function getTextFromFunction ({startIndex, endIndex}) {
-  const {input} = this
+function getTextFromFunction({ startIndex, endIndex }) {
+  const { input } = this;
   let result = '';
   const goalLength = endIndex - startIndex;
   while (result.length < goalLength) {
@@ -761,13 +790,13 @@ function getTextFromFunction ({startIndex, endIndex}) {
   return result.slice(0, goalLength);
 }
 
-const {pointTransferArray} = binding;
+const { pointTransferArray } = binding;
 
 const NODE_FIELD_COUNT = 6;
-const ERROR_TYPE_ID = 0xFFFF
+const ERROR_TYPE_ID = 0xffff;
 
 function getID(buffer, offset) {
-  const low  = BigInt(buffer[offset]);
+  const low = BigInt(buffer[offset]);
   const high = BigInt(buffer[offset + 1]);
   return (high << 32n) + low;
 }
@@ -781,29 +810,25 @@ function unmarshalNode(value, tree, offset = 0, cache = null) {
 
   /* case 2: node being transferred */
   const nodeTypeId = value;
-  const NodeClass = nodeTypeId === ERROR_TYPE_ID
-    ? SyntaxNode
-    : tree.language.nodeSubclasses[nodeTypeId];
+  const NodeClass =
+    nodeTypeId === ERROR_TYPE_ID ? SyntaxNode : tree.language.nodeSubclasses[nodeTypeId];
 
-  const {nodeTransferArray} = binding;
-  const id = getID(nodeTransferArray, offset)
+  const { nodeTransferArray } = binding;
+  const id = getID(nodeTransferArray, offset);
   if (id === 0n) {
-    return null
+    return null;
   }
 
   let cachedResult;
-  if (cache && (cachedResult = cache.get(id)))
-    return cachedResult;
+  if (cache && (cachedResult = cache.get(id))) return cachedResult;
 
   const result = new NodeClass(tree);
   for (let i = 0; i < NODE_FIELD_COUNT; i++) {
     result[i] = nodeTransferArray[offset + i];
   }
 
-  if (cache)
-    cache.set(id, result);
-  else
-    tree._cacheNode(result);
+  if (cache) cache.set(id, result);
+  else tree._cacheNode(result);
 
   return result;
 }
@@ -812,11 +837,11 @@ function unmarshalNodes(nodes, tree) {
   const cache = new Map();
 
   let offset = 0;
-  for (let i = 0, {length} = nodes; i < length; i++) {
+  for (let i = 0, { length } = nodes; i < length; i++) {
     const node = unmarshalNode(nodes[i], tree, offset, cache);
     if (node !== nodes[i]) {
       nodes[i] = node;
-      offset += NODE_FIELD_COUNT
+      offset += NODE_FIELD_COUNT;
     }
   }
 
@@ -827,7 +852,7 @@ function unmarshalNodes(nodes, tree) {
 
 function marshalNode(node, offset = 0) {
   if (!(node.tree instanceof Tree)) {
-    throw new TypeError("SyntaxNode must belong to a Tree")
+    throw new TypeError('SyntaxNode must belong to a Tree');
   }
   const { nodeTransferArray } = binding;
   for (let i = 0; i < NODE_FIELD_COUNT; i++) {
@@ -842,7 +867,7 @@ function marshalNodes(nodes) {
 }
 
 function unmarshalPoint() {
-  return {row: pointTransferArray[0], column: pointTransferArray[1]};
+  return { row: pointTransferArray[0], column: pointTransferArray[1] };
 }
 
 function pointToString(point) {
@@ -861,7 +886,7 @@ function initializeLanguageNodeClasses(language) {
     const typeName = nodeTypeNamesById[id];
     if (!typeName) continue;
 
-    const typeInfo = nodeTypeInfo.find(info => info.named && info.type === typeName);
+    const typeInfo = nodeTypeInfo.find((info) => info.named && info.type === typeName);
     if (!typeInfo) continue;
 
     const fieldNames = [];
@@ -873,7 +898,8 @@ function initializeLanguageNodeClasses(language) {
         if (typeInfo.fields[fieldName].multiple) {
           const getterName = camelCase(fieldName) + 'Nodes';
           fieldNames.push(getterName);
-          classBody += `
+          classBody +=
+            `
             get ${getterName}() {
               marshalNode(this);
               return unmarshalNodes(NodeMethods.childNodesForFieldId(this.tree, ${fieldId}), this.tree);
@@ -882,7 +908,8 @@ function initializeLanguageNodeClasses(language) {
         } else {
           const getterName = camelCase(fieldName, false) + 'Node';
           fieldNames.push(getterName);
-          classBody += `
+          classBody +=
+            `
             get ${getterName}() {
               marshalNode(this);
               return unmarshalNode(NodeMethods.childNodeForFieldId(this.tree, ${fieldId}), this.tree);
@@ -894,12 +921,18 @@ function initializeLanguageNodeClasses(language) {
 
     const className = camelCase(typeName, true) + 'Node';
     const nodeSubclass = eval(`class ${className} extends SyntaxNode {${classBody}}; ${className}`);
-    nodeSubclass.prototype.type = typeName;
-    nodeSubclass.prototype.fields = Object.freeze(fieldNames.sort())
+    Object.defineProperty(nodeSubclass.prototype, 'type', {
+      value: typeName,
+      configurable: true,
+    });
+    Object.defineProperty(nodeSubclass.prototype, 'fields', {
+      value: Object.freeze(fieldNames.sort()),
+      configurable: true,
+    });
     nodeSubclasses[id] = nodeSubclass;
   }
 
-  language.nodeSubclasses = nodeSubclasses
+  language.nodeSubclasses = nodeSubclasses;
 }
 
 function camelCase(name, upperCase) {

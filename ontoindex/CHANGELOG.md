@@ -4,6 +4,21 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.25] - 2026-06-21
+
+### Added
+
+- Added target-mode test evidence discovery to `gn_test_gap` for symbols, files, and behavior
+  queries.
+- Added `gn_test_gap` to `gn_test_suggestions` handoff so existing targeted tests are reused before
+  suggesting a new test file.
+- Added read-first/files-only projection surfaces for exploration and module-neighborhood MCP tools.
+
+### Changed
+
+- Improved embedding, zvec, LadybugDB, runtime-health, and tree-sitter compatibility paths behind
+  the existing MCP/CLI surfaces.
+
 ## [1.9.21] - 2026-06-20
 
 ### Fixed
@@ -213,10 +228,12 @@ All notable changes to OntoIndex will be documented in this file.
 ## [1.6.1] - 2026-04-13
 
 ### Added
+
 - **Service group extractor expansion** — manifest extractor and broader extractor coverage (2/4 of #606 split) (#796)
 - **Dart call patterns** for `await`, cascade, lambda, and widget-tree contexts (#801)
 
 ### Fixed
+
 - **Stack overflow and memory exhaustion** on large repository analysis (#814)
 - **`tree-sitter-dart` install crash** — switched from git URL to npm tarball (#811)
 - **Generic TypeScript awaited function calls** missing from the call graph (#804)
@@ -224,11 +241,13 @@ All notable changes to OntoIndex will be documented in this file.
 - **Ruby `singleton_class` context** preserved during sequential parsing (#774)
 
 ### Changed
+
 - **DAG-based ingestion pipeline architecture** — pipeline phases now declare typed dependencies and run via a topologically sorted DAG; container-node logic extracted to `LanguageProvider`. Includes hardened lifecycle (try/finally cleanup, error wrapping, cycle reporting), tightened `ParseOutput.exportedTypeMap` immutability, and corrected phase dependencies (#809)
 
 ## [1.6.0] - 2026-04-12
 
 ### Added
+
 - **SemanticModel architecture refactor (SM-8 through SM-19)** — extracted registries into `model/` module with ISP-compliant interfaces: TypeRegistry, MethodRegistry, FieldRegistry, RegistrationTable, ResolutionContext (#786)
   - HeritageMap built from accumulated `ExtractedHeritage[]` for MRO-aware resolution (#739)
   - `lookupMethodByOwnerWithMRO` using HeritageMap for cross-class method dispatch (#740)
@@ -252,6 +271,7 @@ All notable changes to OntoIndex will be documented in this file.
 - **Fuzzy lookup counters** for performance visibility (#708)
 
 ### Fixed
+
 - **Stack overflow on large PHP files** — iterative AST traversal (#783)
 - **Large repository graph loading** failure (#732)
 - **Windows multi-repo switching** — false 404 errors and stale repo context (#633)
@@ -274,31 +294,37 @@ All notable changes to OntoIndex will be documented in this file.
 - **Security issues** and critical bugs from code review (#709)
 
 ### Changed
+
 - Replaced class-type fuzzy lookups with structured indices in type-env (#733, #734, #736)
 - Extracted `CLASS_LIKE_TYPES` constant (#693)
 
 ## [1.5.3] - 2026-04-01
 
 ### Added
+
 - **TypeScript/JavaScript MethodExtractor** config (#588)
 
 ### Fixed
+
 - **Wiki Azure OpenAI** compat and HTML viewer script injection (#618)
 
 ## [1.5.2] - 2026-04-01
 
 ### Fixed
+
 - **`ontoindex-shared` module not found** — `ontoindex-shared` was a `file:` workspace dependency never published to npm, causing `ERR_MODULE_NOT_FOUND` when installing `ontoindex` globally. The build now bundles shared code into `dist/_shared/` and rewrites imports to relative paths (#613)
 - **v1.5.1 publish regression** — npm's `prepare` lifecycle ran `tsc` after `prepack`, overwriting the rewritten imports before packing; both scripts now run the full build so the final tarball is always correct
 
 ## [1.5.1] - 2026-04-01 [YANKED]
 
 ### Fixed
+
 - Incomplete fix for `ontoindex-shared` bundling — `prepare` script overwrote rewritten imports during publish
 
 ## [1.5.0] - 2026-04-01
 
 ### Added
+
 - **Repo landing screen** — when the backend detects indexed repositories, the web UI now shows a landing page with selectable repo cards (name, stats, indexed date) instead of auto-loading the first repo; users can also analyze new repos directly from the landing screen (#607)
 - **Unified web & CLI ingestion pipeline** — complete architectural migration of the web app from a self-contained WASM browser app to a thin client backed by the CLI server; new `ontoindex-shared` package for cross-package type unification (#536)
   - New server endpoints: `/api/heartbeat` (SSE liveness), `/api/info`, `/api/repos`, `/api/file`, `/api/grep`, `/api/analyze` (SSE progress), `/api/embed`, `/api/mcp` (MCP-over-StreamableHTTP)
@@ -314,19 +340,23 @@ All notable changes to OntoIndex will be documented in this file.
 - **ESLint v9** — flat config with `unused-imports` auto-removal, `@typescript-eslint` rules, React hooks rules, CI `lint` job (#564)
 
 ### Fixed
+
 - **OpenCode MCP configuration** — corrected README MCP setup for OpenCode which requires `command` as an array containing both executable and arguments (#363)
 - **litellm security** — excluded vulnerable versions 1.82.7 and 1.82.8 in eval harness `pyproject.toml` (#580)
 
 ### Changed
+
 - **Reduced explicit `any` types** — 128 `no-explicit-any` warnings eliminated (689 → 561, 19% reduction) across `NodeProperties` index signature, ~80 `SyntaxNode` substitutions, typed worker protocol, and graphology community detection (#566)
 
 ### Docs
+
 - Added `ontoindex-shared` build step to web UI quick start instructions (#585)
 - Added enterprise offering section to README (#579)
 
 ## [1.4.10] - 2026-03-27
 
 ### Fixed
+
 - **MCP server install via npx** — resolve tree-sitter peer dependency conflicts that broke `npx -y ontoindex@latest mcp` (#537, #538)
   - Downgrade tree-sitter from ^0.25.0 to ^0.21.1 (only npm version where all 14 parsers agree)
   - Align all parser versions to their highest ^0.21.x-compatible releases
@@ -337,6 +367,7 @@ All notable changes to OntoIndex will be documented in this file.
 ## [1.4.9] - 2026-03-26
 
 ### Added
+
 - **COBOL language support** — standalone regex processor for fixed-format and free-format COBOL, JCL, COPY/REPLACING with pseudotext (#498)
   - 95% language feature coverage: CALL USING, EXEC SQL/CICS/DLI, DECLARATIVES, SET, INSPECT, INITIALIZE, STRING/UNSTRING, SORT/MERGE with INPUT/OUTPUT PROCEDURE, GO TO DEPENDING ON, MOVE CORRESPONDING, nested programs with per-program scoping
   - 90+ review findings resolved across 20 review cycles with 241 tests (180 unit + 61 integration)
@@ -353,11 +384,13 @@ All notable changes to OntoIndex will be documented in this file.
 - **Filter panel** — additional node types (#519)
 
 ### Changed
+
 - **BUILT_IN_NAMES** split into per-language provider fields (#523)
 - **tree-sitter** upgraded to 0.25.0 with all grammar packages (#516)
 - **Impact tool** — batched chunking and entry-point grouping for enrichment (#507)
 
 ### Fixed
+
 - **COBOL CRLF** — all `split('\n')` calls use `/\r?\n/` for Windows compatibility
 - **COBOL nested programs** — all graph edges (CALL, CANCEL, CICS, ENTRY, SQL, SEARCH) use `owningModuleId()` for correct attribution
 - **COBOL callAccum** — multi-line CALL USING with verb boundary detection, Area A paragraph guard, EXEC entry flush, division/END PROGRAM flush
@@ -370,6 +403,7 @@ All notable changes to OntoIndex will be documented in this file.
 ## [1.4.8] - 2026-03-23
 
 ### Added
+
 - **Type resolution Milestone D — Phases 10–13** consolidated into a single milestone with full integration test coverage across 11 languages (#387)
   - Phase A/B/C: overload disambiguation via argument literal types, constructor-visible virtual dispatch via `constructorTypeMap`, `parameterTypes` extraction in `extractMethodSignature`
   - Phase 14 enhancements: single-pass seeding, Tarjan's SCC for cyclic resolution, cross-file return types
@@ -388,6 +422,7 @@ All notable changes to OntoIndex will be documented in this file.
 - **Pre-commit hooks** via husky for typecheck + unit tests
 
 ### Fixed
+
 - **Python import alias resolution** — `import X as Y` now routes module aliases directly to `moduleAliasMap` in import processor (#417, #461)
 - **Python module-qualified calls** resolved via `moduleAliasMap` (#337)
 - **Python module-qualified constructor calls** (Issue #337)
@@ -409,17 +444,20 @@ All notable changes to OntoIndex will be documented in this file.
 - **package-lock.json** synced with `onnxruntime-node ^1.24.0`
 
 ### Changed
+
 - **Unified language dispatch** with compile-time exhaustive tables
 - **Prepare script simplified** — removed `scripts/prepare.cjs`
 - **Switched from .githooks to husky** for pre-commit hooks
 - **`@claude` workflow** restricted to maintainers and above via `author_association` check
 
 ### Performance
+
 - **O(1) per-chunk synthesis guard** using `boolean[]` instead of Set
 - **`sizeBefore` optimization** in type resolution
 - **Token truncation** improvements
 
 ### Chore
+
 - Strengthened Python module-import tests, un-skipped match/case, added perf guard
 - Added positive and negative tests for all 4 bug fixes
 - E2e tests for stale detection, sequential enrichment, stability (#396)
@@ -430,6 +468,7 @@ All notable changes to OntoIndex will be documented in this file.
 ## [1.4.7] - 2026-03-19
 
 ### Added
+
 - **Phase 8 field/property type resolution** — ACCESSES edges with `declaredType` for field reads/writes (#354)
 - **Phase 9 return-type variable binding** — call-result variable binding across 11 languages (#379)
   - `extractPendingAssignment` in per-language type extractors captures `let x = getUser()` patterns
@@ -443,6 +482,7 @@ All notable changes to OntoIndex will be documented in this file.
 - **MCP tool/resource descriptions** updated to reflect Phase 9 ACCESSES edge semantics and `declaredType` property
 
 ### Fixed
+
 - **mcp**: server crashes under parallel tool calls (#326, #349)
 - **parsing**: undefined error on languages missing from call routers (#364)
 - **web**: add missing Kotlin entries to `Record<SupportedLanguages>` maps
@@ -451,12 +491,14 @@ All notable changes to OntoIndex will be documented in this file.
 - **docs**: corrected stale "single-pass" type-resolution claims to reflect walk+fixpoint architecture
 
 ### Changed
+
 - **Upgrade `@ladybugdb/core` to 0.15.2** and remove segfault workarounds (#374)
 - **Type-resolution roadmap** overhauled — completed phases condensed to summaries, Phases 10–14 added with full engineering specs
 
 ## [1.4.6] - 2026-03-18
 
 ### Added
+
 - **Phase 7 type resolution** — return-aware loop inference for call-expression iterables (#341)
   - `ReturnTypeLookup` interface with `lookupReturnType` / `lookupRawReturnType` split
   - `ForLoopExtractorContext` context object replacing positional `(node, env)` signature
@@ -469,6 +511,7 @@ All notable changes to OntoIndex will be documented in this file.
   - `pendingCallResults` infrastructure (dormant — Phase 9 work)
 
 ### Fixed
+
 - **impact**: return structured error + partial results instead of crashing (#345)
 - **impact**: add `HAS_METHOD` and `OVERRIDES` to `VALID_RELATION_TYPES` (#350)
 - **cli**: write tool output to stdout via fd 1 instead of stderr (#346)
@@ -479,11 +522,13 @@ All notable changes to OntoIndex will be documented in this file.
 - **docs**: correct `pendingCallResults` description in roadmap and system docs
 
 ### Chore
+
 - Add `.worktrees/` to `.gitignore`
 
 ## [1.4.5] - 2026-03-17
 
 ### Added
+
 - **Ruby language support** for CLI and web (#111)
 - **TypeEnvironment API** with constructor inference, self/this/super resolution (#274)
 - **Return type inference** with doc-comment parsing (JSDoc, PHPDoc, YARD) and per-language type extractors (#284)
@@ -505,10 +550,12 @@ All notable changes to OntoIndex will be documented in this file.
 - `hookTimeout: 120000` in vitest config for CI beforeAll hooks
 
 ### Changed
+
 - **Migrated from KuzuDB to LadybugDB v0.15** (#275)
 - Dynamically discover and install agent skills in CLI (#270)
 
 ### Performance
+
 - Worker pool threshold — skip worker creation for small repos (<15 files or <512KB total)
 - AST walk pruning via `SKIP_SUBTREE_TYPES` for leaf-only nodes (string, comment, number literals)
 - Pre-computed `interestingNodeTypes` set — single Set.has() replaces 3 checks per AST node
@@ -516,6 +563,7 @@ All notable changes to OntoIndex will be documented in this file.
 - Replace `.children?.find()` with manual for loops in `extractFunctionName` to eliminate array allocations
 
 ### Fixed
+
 - Same-directory Python import resolution (#328)
 - Ruby method-level call resolution, HAS_METHOD edges, and dispatch table (#278)
 - C++ fixture file casing for case-sensitive CI

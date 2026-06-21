@@ -130,23 +130,36 @@ export async function resolveTargetContext(
   const envProjectPath = process.env.ONTOINDEX_MCP_PROJECT_CWD?.trim()
     ? path.resolve(process.env.ONTOINDEX_MCP_PROJECT_CWD.trim())
     : undefined;
-  const cwdRepoRoot = explicitProjectPath ?? path.resolve(process.cwd());
+  const cwdRepoRoot = path.resolve(process.cwd());
   const explicitResolution = explicitRepo ? resolveRegistryEntry(registry, explicitRepo) : null;
   const explicitProjectResolution = explicitProjectPath
-    ? resolveRegistryEntry(registry, explicitProjectPath)
+    ? resolveRegistryEntryByPath(registry, explicitProjectPath)
     : null;
   const envResolution = envRepo ? resolveRegistryEntry(registry, envRepo) : null;
   const envProjectResolution = envProjectPath
-    ? resolveRegistryEntry(registry, envProjectPath)
+    ? resolveRegistryEntryByPath(registry, envProjectPath)
     : null;
-  const cwdResolution = resolveRegistryEntry(registry, cwdRepoRoot);
+  const cwdResolution = resolveRegistryEntryByPath(registry, cwdRepoRoot);
   const noSelectorResolution = resolveRegistryEntry(registry, undefined);
+  const selectionSource: 'explicit' | 'env' | 'cwd' | 'single' | 'project' = explicitRepo
+    ? 'explicit'
+    : explicitProjectPath
+      ? 'project'
+      : cwdResolution.status === 'ok'
+        ? 'cwd'
+        : envResolution?.status === 'ok' || envProjectResolution?.status === 'ok'
+          ? 'env'
+          : noSelectorResolution.status === 'ok'
+            ? 'single'
+            : 'cwd';
 
-  let selectionSource: 'explicit' | 'env' | 'cwd' | 'single' | 'project' = 'single';
-  let resolution = explicitRepo
-    ? explicitResolution!
-    : explicitProjectResolution?.status === 'ok'
-      ? explicitProjectResolution
+  const selectedResolution = explicitRepo
+    ? explicitResolution
+    : explicitProjectPath
+      ? (explicitProjectResolution ?? {
+          status: 'not-found',
+          action: `Repository "${explicitProjectPath}" is not indexed. Run ontoindex analyze or pass a listed repo name/path.`,
+        })
       : cwdResolution.status === 'ok'
         ? cwdResolution
         : envResolution?.status === 'ok'
@@ -155,72 +168,53 @@ export async function resolveTargetContext(
             ? envProjectResolution
             : noSelectorResolution;
 
-  if (explicitRepo) selectionSource = 'explicit';
-  else if (explicitProjectResolution?.status === 'ok') selectionSource = 'project';
-  if (explicitRepo && resolution.status !== 'ok') {
+  if (selectedResolution.status !== 'ok') {
     return {
       ...base,
-      status: resolution.status,
+      status: selectedResolution.status,
       availableRepos: registry.map(toRepoSummary),
-      action: actionWithRetryExamples(resolution.status, registry, explicitRepo),
+      action: actionWithRetryExamples(
+        selectedResolution.status,
+        registry,
+        explicitRepo ?? explicitProjectPath ?? envRepo ?? envProjectPath,
+      ),
       warnings,
     };
   }
 
-  if (!explicitRepo && explicitProjectPath === undefined && cwdResolution.status === 'ok') {
-    resolution = cwdResolution;
-    selectionSource = 'cwd';
-  } else if (
-    !explicitRepo &&
-    explicitProjectPath === undefined &&
-    envRepo &&
-    envResolution?.status === 'ok'
-  ) {
-    resolution = envResolution;
-    selectionSource = 'env';
-  } else if (
-    !explicitRepo &&
-    explicitProjectPath === undefined &&
-    envProjectResolution?.status === 'ok'
-  ) {
-    resolution = envProjectResolution;
-    selectionSource = 'env';
-  } else if (!explicitRepo && !envRepo && resolution.status === 'ok') {
-    selectionSource = noSelectorResolution.status === 'ok' ? 'single' : 'cwd';
-  }
-
-  if (resolution.status !== 'ok') {
-    return {
-      ...base,
-      status: resolution.status,
-      availableRepos: registry.map(toRepoSummary),
-      action: actionWithRetryExamples(resolution.status, registry, explicitRepo ?? envRepo),
-      warnings,
-    };
-  }
-
-  const entry = resolution.entry;
+  const { entry } = selectedResolution;
   const repoPath = path.resolve(entry.path);
-  if (explicitRepo && envResolution?.status === 'ok' && envResolution.entry.path !== repoPath) {
-    warnings.push(
-      `ONTOINDEX_MCP_REPO "${envRepo}" resolves to ${envResolution.entry.path}, but the explicit repo "${explicitRepo}" resolved to ${repoPath}.`,
-    );
-  }
+  const execGit = deps.execGit ?? defaultExecGit;
+
   if (explicitRepo && cwdResolution.status === 'ok' && cwdResolution.entry.path !== repoPath) {
     warnings.push(
-      `MCP cwd ${cwdRepoRoot} resolves to ${cwdResolution.entry.path}, but the explicit repo "${explicitRepo}" resolved to ${repoPath}.`,
+      `MCP cwd ${cwdRepoRoot} resolves to ${cwdResolution.entry.path}, but explicit repo "${explicitRepo}" resolved to ${repoPath}.`,
+    );
+  }
+  if (explicitRepo && envResolution?.status === 'ok' && envResolution.entry.path !== repoPath) {
+    warnings.push(
+      `ONTOINDEX_MCP_REPO "${envRepo}" resolves to ${envResolution.entry.path}, but explicit repo "${explicitRepo}" resolved to ${repoPath}.`,
     );
   }
   if (
-    explicitRepo &&
-    explicitProjectResolution?.status === 'ok' &&
-    explicitProjectResolution.entry.path !== repoPath
+    explicitProjectPath &&
+    cwdResolution.status === 'ok' &&
+    cwdResolution.entry.path !== repoPath
   ) {
     warnings.push(
-      `Explicit project path ${explicitProjectResolution.entry.path} resolved differently than explicit repo "${explicitRepo}" -> ${repoPath}.`,
+      `MCP cwd ${cwdRepoRoot} resolves to ${cwdResolution.entry.path}, but explicit project "${explicitProjectPath}" resolved to ${repoPath}.`,
     );
   }
-  const execGit = deps.execGit ?? defaultExecGit;
+  if (
+    explicitProjectPath &&
+    envResolution?.status === 'ok' &&
+    envResolution.entry.path !== repoPath
+  ) {
+    warnings.push(
+      `ONTOINDEX_MCP_REPO "${envRepo}" resolves to ${envResolution.entry.path}, but explicit project "${explicitProjectPath}" resolved to ${repoPath}.`,
+    );
+  }
+
   const [branch, currentHead, targetHead, statusOutput] = await Promise.all([
     gitProbe(execGit, repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'], warnings),
     gitProbe(execGit, repoPath, ['rev-parse', 'HEAD'], warnings),
@@ -242,14 +236,8 @@ export async function resolveTargetContext(
       ? null
       : dirtyWorktree === true || (!!currentHead && !!indexedHead && currentHead !== indexedHead);
   const selectionMismatch =
-    (explicitRepo !== undefined &&
-      ((envResolution?.status === 'ok' && envResolution.entry.path !== repoPath) ||
-        (cwdResolution.status === 'ok' && cwdResolution.entry.path !== repoPath))) ||
-    (!explicitRepo &&
-      envRepo !== undefined &&
-      envResolution?.status === 'ok' &&
-      cwdResolution.status === 'ok' &&
-      envResolution.entry.path !== cwdResolution.entry.path);
+    (envResolution?.status === 'ok' && envResolution.entry.path !== repoPath) ||
+    (cwdResolution.status === 'ok' && cwdResolution.entry.path !== repoPath);
   const dirtyWorkspace = resolveDirtyWorkspace({
     dirtyWorktree,
     changedSinceIndex,
@@ -380,6 +368,56 @@ function matchesRepo(entry: RegistryEntry, repo: string, allowFuzzy: boolean): b
   if (entry.name.toLowerCase() === repoLower) return true;
   if (path.resolve(entry.path) === path.resolve(repo)) return true;
   return allowFuzzy && entry.name.toLowerCase().includes(repoLower);
+}
+
+function resolveRegistryEntryByPath(
+  registry: RegistryEntry[],
+  repoPath: string,
+): {
+  status: 'ok' | 'not-found' | 'ambiguous' | 'no-index';
+  entry?: RegistryEntry;
+  action?: string;
+} {
+  if (registry.length === 0) {
+    return { status: 'no-index', action: 'Run ontoindex analyze for the target repository.' };
+  }
+
+  const targetPath = path.resolve(repoPath);
+  const matches = registry
+    .map((entry) => {
+      const resolvedEntryPath = path.resolve(entry.path);
+      const rel = path.relative(resolvedEntryPath, targetPath);
+      if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) {
+        return {
+          entry,
+          depth: resolvedEntryPath.split(path.sep).filter(Boolean).length,
+          path: resolvedEntryPath,
+        };
+      }
+      return null;
+    })
+    .filter(Boolean);
+
+  if (matches.length === 0) {
+    return {
+      status: 'not-found',
+      action: `Repository path "${repoPath}" is not indexed. Run ontoindex analyze or pass a listed repo name/path.`,
+    };
+  }
+
+  const maxDepth = Math.max(...matches.map((match) => match!.depth));
+  const maxDepthMatches = matches.filter((match) => match!.depth === maxDepth);
+
+  if (maxDepthMatches.length === 1) {
+    return { status: 'ok', entry: maxDepthMatches[0]!.entry };
+  }
+
+  return {
+    status: 'ambiguous',
+    action: `Repository path "${repoPath}" matches multiple indexes. Use one of: ${maxDepthMatches
+      .map((match) => match!.path)
+      .join(', ')}`,
+  };
 }
 
 async function gitProbe(

@@ -33,6 +33,12 @@ export interface RuntimeAnalysisCheckpointState {
   reason?: string;
 }
 
+export interface RuntimeEmbeddingCheckpointState {
+  path: string;
+  present: boolean;
+  reason?: string;
+}
+
 export interface RuntimeHealthSnapshot {
   version: 1;
   repoLabel: string;
@@ -46,6 +52,7 @@ export interface RuntimeHealthSnapshot {
   hasRuntimeArtifacts: boolean;
   analyzeLock: RuntimeAnalyzeLockState;
   analysisCheckpoint: RuntimeAnalysisCheckpointState;
+  embeddingCheckpoint: RuntimeEmbeddingCheckpointState;
   warnings: string[];
 }
 
@@ -70,11 +77,13 @@ export async function readRuntimeHealth(
   const dirtyWorktree = await readDirtyWorktree(repoPath, warnings);
   const analyzeLock = await readAnalyzeLock(storagePath, warnings);
   const analysisCheckpoint = await readAnalysisCheckpoint(storagePath, warnings);
+  const embeddingCheckpoint = await readEmbeddingCheckpoint(storagePath, warnings);
   const indexedCommit = normalizeCommit(meta?.lastCommit);
   const metaReason = resolveMetaDegradedReason(meta);
   const hasRuntimeArtifacts =
     analyzeLock.present ||
     analysisCheckpoint.present ||
+    embeddingCheckpoint.present ||
     Boolean(metaReason) ||
     Boolean(meta?.partialCheckpointPath);
 
@@ -84,6 +93,7 @@ export async function readRuntimeHealth(
     dirtyWorktree,
     analyzeLock,
     analysisCheckpoint,
+    embeddingCheckpoint,
     metaReason,
     hasMeta: Boolean(meta),
   });
@@ -101,6 +111,7 @@ export async function readRuntimeHealth(
     hasRuntimeArtifacts,
     analyzeLock,
     analysisCheckpoint,
+    embeddingCheckpoint,
     warnings,
   };
 }
@@ -111,6 +122,7 @@ export function deriveRuntimeHealth(input: {
   dirtyWorktree: boolean | null;
   analyzeLock: RuntimeAnalyzeLockState;
   analysisCheckpoint: RuntimeAnalysisCheckpointState;
+  embeddingCheckpoint: RuntimeEmbeddingCheckpointState;
   metaReason: string | null;
   hasMeta: boolean;
 }): Pick<RuntimeHealthSnapshot, 'freshnessState' | 'degradedReason' | 'repairCommand'> {
@@ -134,6 +146,10 @@ export function deriveRuntimeHealth(input: {
         : input.analysisCheckpoint.state === 'partial'
           ? (input.analysisCheckpoint.reason ?? 'analysis-checkpoint.json shows a partial run')
           : null;
+  const embeddingCheckpointReason = input.embeddingCheckpoint.present
+    ? (input.embeddingCheckpoint.reason ??
+      'embedding-checkpoint.json exists from an incomplete embedding run')
+    : null;
 
   if (input.analysisCheckpoint.state === 'failed') {
     return {
@@ -210,6 +226,14 @@ export function deriveRuntimeHealth(input: {
     };
   }
 
+  if (input.embeddingCheckpoint.present) {
+    return {
+      freshnessState: 'degraded',
+      degradedReason: embeddingCheckpointReason,
+      repairCommand: 'ontoindex analyze',
+    };
+  }
+
   return {
     freshnessState: 'clean',
     degradedReason: null,
@@ -228,6 +252,7 @@ export function formatRuntimeHealthDetailLines(health: RuntimeHealthSnapshot): s
     `  Dirty worktree: ${formatBooleanState(health.dirtyWorktree)}`,
     `  Analyze lock: ${formatLockState(health.analyzeLock)}`,
     `  Analysis checkpoint: ${formatCheckpointState(health.analysisCheckpoint)}`,
+    `  Embedding checkpoint: ${health.embeddingCheckpoint.present ? 'present' : 'absent'}`,
   ];
 
   if (health.degradedReason) {
@@ -373,6 +398,29 @@ async function readAnalysisCheckpoint(
       path: checkpointPath,
       present: false,
       state: 'absent',
+    };
+  }
+}
+
+async function readEmbeddingCheckpoint(
+  storagePath: string,
+  warnings: string[],
+): Promise<RuntimeEmbeddingCheckpointState> {
+  const checkpointPath = path.join(storagePath, 'embedding-checkpoint.json');
+  try {
+    await fs.access(checkpointPath);
+    return {
+      path: checkpointPath,
+      present: true,
+      reason: 'embedding-checkpoint.json exists from an incomplete embedding run',
+    };
+  } catch (error) {
+    if (!isFileMissing(error)) {
+      warnings.push(`runtime health embedding-checkpoint.json probe failed: ${formatError(error)}`);
+    }
+    return {
+      path: checkpointPath,
+      present: false,
     };
   }
 }

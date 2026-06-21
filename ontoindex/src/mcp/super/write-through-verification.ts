@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import {
@@ -14,12 +15,16 @@ import {
 } from '../../core/impact/impact-kernel.js';
 import { execFileText } from '../../core/process/exec-file.js';
 import { detectChanges } from '../local/backend-detect-changes.js';
+import { semanticSearch } from '../local/backend-query.js';
+import { resolveSymbolCandidates } from '../local/backend-symbol-resolution.js';
 import { resolveAuditRepoHandle } from './audit-ingest.js';
 import { gnScopeGuard } from './audit-advanced.js';
 
 const GIT_TIMEOUT_MS = 5_000;
 const GIT_MAX_BUFFER = 16 * 1024 * 1024;
 const MAX_IMPACT_SYMBOLS = 25;
+const DEFAULT_TEST_EVIDENCE_LIMIT = 25;
+const MAX_TEST_EVIDENCE_LIMIT = 100;
 const PRODUCTION_SOURCE_EXTENSIONS = new Set([
   '.c',
   '.cc',
@@ -101,6 +106,10 @@ export interface TestGapParams {
   changedFiles?: string[];
   changedSymbols?: string[];
   executedTests?: string[];
+  symbol?: string;
+  filePath?: string;
+  query?: string;
+  maxItems?: number;
 }
 
 export interface WorkerScopeReviewParams {
@@ -172,6 +181,9 @@ export async function gnTestGap(
   params: TestGapParams,
 ): Promise<Record<string, unknown>> {
   const repo = await resolveAuditRepoHandle(repoId, params.repo);
+  if (hasTargetMode(params)) {
+    return buildTargetTestGapReport(repo, params);
+  }
   const actual = await collectVerificationDiff(repo, params);
   const linkedTestsBySymbol = await collectLinkedTestsBySymbol(repo, actual.symbolRecords);
   const report = buildTestGapReport({
@@ -183,6 +195,75 @@ export async function gnTestGap(
     ...report,
     actual: summarizeActual(actual),
     warnings: [...actual.warnings, ...collectWarnings(report)],
+  };
+}
+
+async function buildTargetTestGapReport(
+  repo: ImpactKernelRepoHandle,
+  params: TestGapParams,
+): Promise<Record<string, unknown>> {
+  const warnings: string[] = [];
+  const target = resolveTestGapTarget(params, warnings);
+  const maxItems = clampLimit(params.maxItems);
+  const symbolRecords = await resolveTargetSymbolRecords(repo, target, maxItems, warnings);
+  const fallbackRecord = targetToSymbolRecord(repo.repoPath, target);
+  const records = symbolRecords.length > 0 ? symbolRecords : [fallbackRecord];
+  const linkedTestsBySymbol = await collectLinkedTestsBySymbol(repo, records);
+  const linkedTests = normalizeStrings(
+    records.flatMap((record) => linkedTestsBySymbol.get(record.name) ?? []),
+  );
+  const heuristicTests = (
+    await findHeuristicTestFiles(repo.repoPath, fallbackRecord, maxItems + 1)
+  ).filter((test) => !linkedTests.includes(test));
+  const omittedHeuristic = Math.max(0, heuristicTests.length - maxItems);
+  const evidence = [
+    ...linkedTests.map((testFile) => ({
+      testFile,
+      testNames: [path.basename(testFile, path.extname(testFile))],
+      reason: 'Graph-linked test evidence for target symbol.',
+      evidenceClass: 'graph',
+      confidence: 'high',
+    })),
+    ...heuristicTests.slice(0, Math.max(0, maxItems - linkedTests.length)).map((testFile) => ({
+      testFile,
+      testNames: [path.basename(testFile, path.extname(testFile))],
+      reason: 'Test file path/name matches the target.',
+      evidenceClass: 'path-heuristic',
+      confidence: 'medium',
+    })),
+  ];
+  const targetedCoverage =
+    evidence.length > 0 ? 'found' : target.kind === 'query' ? 'unknown' : 'not-found';
+
+  return {
+    version: 1,
+    action: 'test-gap',
+    mode: 'target',
+    status: targetedCoverage === 'found' ? 'PASS' : 'NEEDS-VERIFY',
+    target,
+    resolvedSymbols: records
+      .filter((record) => record.id)
+      .map((record) => ({
+        id: record.id,
+        name: record.name,
+        filePath: record.filePath ?? null,
+        type: record.type ?? null,
+      })),
+    evidence,
+    runCommand: await inferTestCommand(
+      repo.repoPath,
+      fallbackRecord.filePath,
+      evidence[0]?.testFile,
+    ),
+    targetedCoverage,
+    omittedCounts: omittedHeuristic > 0 ? { heuristicTests: omittedHeuristic } : {},
+    nextTools: targetedCoverage === 'found' ? [] : ['gn_test_suggestions'],
+    heuristics: {
+      filenameDerivedCoverage: 'heuristic',
+      note: 'Filename-derived coverage remains heuristic until JUnit, coverage, or test-index data is ingested.',
+    },
+    warnings,
+    skipReasons: [],
   };
 }
 
@@ -534,6 +615,260 @@ function resolveDiffScope(
     return { scope: 'compare', baseRef: diffRef };
   }
   return { scope: scope ?? 'unstaged' };
+}
+
+function hasTargetMode(params: TestGapParams): boolean {
+  return Boolean(params.symbol || params.filePath || params.query);
+}
+
+function resolveTestGapTarget(
+  params: TestGapParams,
+  warnings: string[],
+): { kind: 'symbol' | 'filePath' | 'query'; value: string } {
+  const targets = [
+    params.symbol ? ({ kind: 'symbol', value: params.symbol } as const) : undefined,
+    params.filePath ? ({ kind: 'filePath', value: params.filePath } as const) : undefined,
+    params.query ? ({ kind: 'query', value: params.query } as const) : undefined,
+  ].filter(isDefined);
+  if (targets.length > 1) {
+    warnings.push(
+      'gn_test_gap target mode accepts one of symbol, filePath, or query; using first.',
+    );
+  }
+  const target = targets[0];
+  if (!target) throw new Error('symbol, filePath, or query is required for target mode');
+  return target;
+}
+
+function targetToSymbolRecord(
+  repoPath: string | undefined,
+  target: {
+    kind: 'symbol' | 'filePath' | 'query';
+    value: string;
+  },
+): VerificationSymbolRecord {
+  if (target.kind === 'filePath') {
+    const filePath =
+      (repoPath ? normalizeRepoRelativePath(repoPath, target.value) : undefined) ??
+      normalizeRepoPath(target.value);
+    return { name: path.basename(filePath).replace(/\.[^.]+$/u, ''), filePath };
+  }
+  return { name: target.value.trim() };
+}
+
+async function resolveTargetSymbolRecords(
+  repo: ImpactKernelRepoHandle,
+  target: { kind: 'symbol' | 'filePath' | 'query'; value: string },
+  limit: number,
+  warnings: string[],
+): Promise<VerificationSymbolRecord[]> {
+  try {
+    if (target.kind === 'symbol') {
+      const outcome = await resolveSymbolCandidates(repo, { name: target.value }, {});
+      if (outcome.kind === 'ok') return [resolvedSymbolToRecord(outcome.symbol)];
+      if (outcome.kind === 'ambiguous') {
+        warnings.push(`Symbol target "${target.value}" was ambiguous; using top candidates.`);
+        return outcome.candidates.slice(0, limit).map(resolvedSymbolToRecord);
+      }
+      warnings.push(`Symbol target "${target.value}" was not found in the graph.`);
+      return [];
+    }
+    if (target.kind === 'filePath') {
+      const filePath =
+        (repo.repoPath ? normalizeRepoRelativePath(repo.repoPath, target.value) : undefined) ??
+        normalizeRepoPath(target.value);
+      return await resolveFileSymbolRecords(repo, filePath, limit);
+    }
+    const results = await semanticSearch(repo, target.value, limit).catch((error) => {
+      warnings.push(
+        `Semantic query expansion unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return [];
+    });
+    return results
+      .map((result) => ({
+        id: typeof result.nodeId === 'string' ? result.nodeId : undefined,
+        name: String(result.name ?? '').trim(),
+        filePath: typeof result.filePath === 'string' ? result.filePath : undefined,
+        type: typeof result.type === 'string' ? result.type : undefined,
+      }))
+      .filter((record) => record.id && record.name);
+  } catch (error) {
+    warnings.push(
+      `Target graph resolution failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return [];
+  }
+}
+
+async function resolveFileSymbolRecords(
+  repo: ImpactKernelRepoHandle,
+  filePath: string,
+  limit: number,
+): Promise<VerificationSymbolRecord[]> {
+  const { executeParameterized } = await import('../../core/lbug/pool-adapter.js');
+  const rows = (await executeParameterized(
+    repo.id,
+    `
+    MATCH (n) WHERE n.filePath ENDS WITH $filePath
+      AND n.name IS NOT NULL
+    RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
+           n.filePath AS filePath
+    LIMIT $limit
+    `,
+    { filePath, limit },
+  )) as Array<Record<string, unknown>>;
+  return rows
+    .map((row) => ({
+      id: typeof row.id === 'string' ? row.id : undefined,
+      name: String(row.name ?? '').trim(),
+      filePath: typeof row.filePath === 'string' ? row.filePath : filePath,
+      type: typeof row.type === 'string' ? row.type : undefined,
+    }))
+    .filter((record) => record.id && record.name);
+}
+
+function resolvedSymbolToRecord(symbol: {
+  id: string;
+  name: string;
+  type?: string;
+  filePath?: string;
+}): VerificationSymbolRecord {
+  return {
+    id: symbol.id,
+    name: symbol.name,
+    ...(symbol.filePath ? { filePath: symbol.filePath } : {}),
+    ...(symbol.type ? { type: symbol.type } : {}),
+  };
+}
+
+async function findHeuristicTestFiles(
+  repoPath: string | undefined,
+  record: VerificationSymbolRecord,
+  limit: number,
+): Promise<string[]> {
+  if (!repoPath) return [];
+  const normalizedFile = record.filePath
+    ? normalizeRepoRelativePath(repoPath, record.filePath)
+    : undefined;
+  if (normalizedFile && isTestFilePath(normalizedFile)) return [normalizedFile];
+  const stem = heuristicStem(record).toLowerCase();
+  const terms = normalizeStrings(record.name.toLowerCase().split(/[^a-z0-9]+/u)).filter(
+    (term) => term.length > 2,
+  );
+  const tests = await listTestFiles(repoPath, Math.max(limit, MAX_TEST_EVIDENCE_LIMIT));
+  return tests
+    .filter((testFile) => {
+      const lowered = testFile.toLowerCase();
+      if (stem && lowered.includes(stem)) return true;
+      return terms.length > 0 && terms.every((term) => lowered.includes(term));
+    })
+    .slice(0, limit);
+}
+
+async function listTestFiles(repoPath: string, cap: number): Promise<string[]> {
+  const found: string[] = [];
+  async function visit(relativeDir: string): Promise<void> {
+    if (found.length >= cap) return;
+    const absoluteDir = path.join(repoPath, relativeDir);
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await fs.readdir(absoluteDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (found.length >= cap) return;
+      if (entry.name.startsWith('.') || shouldSkipTestWalkDir(entry.name)) continue;
+      const relativePath = normalizeRepoPath(path.join(relativeDir, entry.name));
+      if (entry.isDirectory()) {
+        await visit(relativePath);
+      } else if (entry.isFile() && isTestFilePath(relativePath)) {
+        found.push(relativePath);
+      }
+    }
+  }
+  await visit('');
+  return found.sort();
+}
+
+function shouldSkipTestWalkDir(name: string): boolean {
+  return ['build', 'coverage', 'dist', 'node_modules', 'tmp', 'vendor'].includes(name);
+}
+
+async function inferTestCommand(
+  repoPath: string | undefined,
+  targetFile: string | undefined,
+  testFile: string | undefined,
+): Promise<string | undefined> {
+  if (!repoPath) return undefined;
+  const startFile = testFile ?? targetFile;
+  const packageDir = await findNearestPackageDir(repoPath, startFile);
+  if (packageDir === undefined) return undefined;
+  const packageJsonPath = path.join(repoPath, packageDir, 'package.json');
+  try {
+    const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8')) as {
+      scripts?: Record<string, unknown>;
+    };
+    if (typeof packageJson.scripts?.test !== 'string') return undefined;
+  } catch {
+    return undefined;
+  }
+  if (!testFile) return packageDir ? `npm --prefix ${packageDir} test` : 'npm test';
+  const testArg = packageDir ? path.relative(packageDir, testFile) : testFile;
+  return packageDir
+    ? `npm --prefix ${packageDir} test -- ${normalizeRepoPath(testArg)}`
+    : `npm test -- ${testFile}`;
+}
+
+async function findNearestPackageDir(
+  repoPath: string,
+  startFile: string | undefined,
+): Promise<string | undefined> {
+  let dir = startFile
+    ? path.dirname(normalizeRepoRelativePath(repoPath, startFile) ?? normalizeRepoPath(startFile))
+    : '';
+  while (true) {
+    try {
+      await fs.access(path.join(repoPath, dir, 'package.json'));
+      return dir;
+    } catch {
+      const next = path.dirname(dir);
+      if (next === dir || next === '.') {
+        try {
+          await fs.access(path.join(repoPath, 'package.json'));
+          return '';
+        } catch {
+          return undefined;
+        }
+      }
+      dir = next;
+    }
+  }
+}
+
+function clampLimit(value: number | undefined): number {
+  if (!Number.isFinite(value)) return DEFAULT_TEST_EVIDENCE_LIMIT;
+  return Math.max(1, Math.min(MAX_TEST_EVIDENCE_LIMIT, Math.trunc(value)));
+}
+
+function normalizeRepoRelativePath(repoPath: string, value: string): string | undefined {
+  const absoluteRepoPath = path.resolve(repoPath);
+  const absoluteInputPath = path.isAbsolute(value)
+    ? path.resolve(value)
+    : path.resolve(absoluteRepoPath, value);
+  const relativePath = path.relative(absoluteRepoPath, absoluteInputPath);
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    return undefined;
+  }
+  return normalizeRepoPath(relativePath || path.basename(absoluteInputPath));
+}
+
+function normalizeRepoPath(value: string): string {
+  return value
+    .split(path.sep)
+    .join('/')
+    .replace(/^\.\/+/u, '');
 }
 
 function asSymbolRecord(value: unknown): VerificationSymbolRecord | undefined {

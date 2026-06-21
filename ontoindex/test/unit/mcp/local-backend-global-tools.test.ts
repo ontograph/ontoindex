@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { LocalBackend } from '../../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos } from '../../../src/storage/repo-manager.js';
+import { gnDiagnose } from '../../../src/mcp/super/diagnose.js';
 
 vi.mock('../../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn(),
@@ -13,6 +14,9 @@ vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
   isLbugReady: vi.fn().mockReturnValue(true),
   executeQuery: vi.fn().mockResolvedValue([]),
   executeParameterized: vi.fn().mockResolvedValue([]),
+}));
+vi.mock('../../../src/mcp/super/diagnose.js', () => ({
+  gnDiagnose: vi.fn().mockResolvedValue({ version: 1 }),
 }));
 
 describe('LocalBackend repo-agnostic tool dispatch', () => {
@@ -50,10 +54,17 @@ describe('LocalBackend repo-agnostic tool dispatch', () => {
     expect(result).toBeDefined();
   });
 
-  it('bypasses repo resolution for gn_diagnose', async () => {
-    const result = await backend.callTool('gn_diagnose', {});
+  it('routes gn_diagnose through repo resolution', async () => {
+    const result = await backend.callTool('gn_diagnose', { repo: 'repo-1' });
     expect(result).toBeDefined();
+    expect(gnDiagnose).toHaveBeenCalledWith('repo-1', { repo: 'repo-1' });
     // gn_diagnose returns a report
+  });
+
+  it('requires explicit repo for gn_diagnose when multiple repos are indexed', async () => {
+    await expect(backend.callTool('gn_diagnose', {})).rejects.toThrow(
+      'Multiple repositories are indexed',
+    );
   });
 
   it('still requires repo for repo-scoped tools', async () => {

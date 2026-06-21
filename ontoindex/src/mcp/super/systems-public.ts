@@ -37,7 +37,17 @@ export interface TestSuggestionsParams {
   path?: string;
   claimPattern?: string;
   risk?: string;
+  targetedCoverage?: TestSuggestionsTargetedCoverage | string;
+  evidence?: readonly unknown[];
   legacyResponse?: boolean;
+}
+
+export interface TestSuggestionsTargetedCoverage {
+  existingTests?: readonly unknown[];
+  linkedTests?: readonly unknown[];
+  executedTests?: readonly unknown[];
+  evidence?: readonly unknown[];
+  targetedCoverage?: unknown;
 }
 
 export async function gnResourceTrace(
@@ -136,13 +146,14 @@ export async function gnTestSuggestions(
   params: TestSuggestionsParams,
 ): Promise<Record<string, unknown>> {
   const symbol = params.symbol ?? 'auditedSymbol';
+  const targetedTests = collectTargetedTests(params);
+  const suggestedFile = targetedTests[0] ?? params.path ?? inferTestPath(symbol);
   const safeName = symbol
     .split(/::|\.|\/|\\/g)
     .filter(Boolean)
     .slice(-2)
     .join('_')
     .replace(/[^A-Za-z0-9_]/g, '_');
-  const basePath = params.path ?? inferTestPath(symbol);
   const risk = params.risk ?? params.claimPattern ?? 'audit-invariant';
   const report = {
     version: 1,
@@ -151,7 +162,7 @@ export async function gnTestSuggestions(
     symbol,
     suggestions: [
       {
-        file: basePath,
+        file: suggestedFile,
         case: `test_${safeName}_${normalizeCase(risk)}`,
         target: symbol,
         assertion: `Assert the ${risk} invariant remains true for ${symbol}.`,
@@ -313,6 +324,43 @@ function clamp(value: unknown, defaultValue: number): number {
   const parsed = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10);
   if (!Number.isFinite(parsed)) return defaultValue;
   return Math.max(1, Math.min(100, parsed));
+}
+
+function collectTargetedTests(
+  params: Pick<TestSuggestionsParams, 'targetedCoverage' | 'evidence'>,
+): string[] {
+  const targetedCoverage = params.targetedCoverage;
+  const topLevelEvidenceTests = collectEvidenceTests(params.evidence);
+  if (typeof targetedCoverage === 'string') return topLevelEvidenceTests;
+  if (targetedCoverage === undefined) return topLevelEvidenceTests;
+  const evidenceTests = collectEvidenceTests(targetedCoverage.evidence);
+  if (evidenceTests.length > 0) return evidenceTests;
+  return uniqueStrings([
+    ...topLevelEvidenceTests,
+    ...normalizeStrings(targetedCoverage.existingTests),
+    ...normalizeStrings(targetedCoverage.linkedTests),
+    ...normalizeStrings(targetedCoverage.executedTests),
+  ]);
+}
+
+function collectEvidenceTests(evidence: readonly unknown[] | undefined): string[] {
+  if (evidence === undefined) return [];
+  return evidence.flatMap((item) => {
+    if (typeof item !== 'object' || item === null) return [];
+    const testFile = (item as { testFile?: unknown }).testFile;
+    return typeof testFile === 'string' && testFile.trim().length > 0 ? [testFile.trim()] : [];
+  });
+}
+
+function normalizeStrings(values: readonly unknown[] | undefined): string[] {
+  if (values === undefined) return [];
+  return values.flatMap((value) =>
+    typeof value === 'string' ? [value.trim()].filter((item) => item.length > 0) : [],
+  );
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values)];
 }
 
 async function wrapSystemsEnvelope(

@@ -103,8 +103,8 @@ function makeFreshReport(
     (embeddingsStatus === 'missing'
       ? `ontoindex analyze${isStale ? '' : ' --force'} --embeddings`
       : embeddingsStatus === 'metadata-unavailable'
-      ? 'ontoindex analyze'
-      : undefined);
+        ? 'ontoindex analyze'
+        : undefined);
   const indexedCommit = isStale ? STALE_COMMIT : INDEXED_COMMIT;
   return {
     version: 1 as const,
@@ -788,6 +788,41 @@ describe('gnDiagnose', () => {
     expect(report.degradedContext.reasons).toContain('vector-backend-fallback');
     expect(
       report.recommendations.some((r) => r.detail.includes('Requested vector backend zvec')),
+    ).toBe(true);
+  });
+
+  it('includes bounded vector diagnostics when ONTOINDEX_VECTOR_BACKEND=auto', async () => {
+    process.env['ONTOINDEX_VECTOR_BACKEND'] = 'auto';
+    mockGetSemanticVectorBackendStatus.mockResolvedValue({
+      requestedBackend: 'auto',
+      actualBackend: 'lbug',
+      freshness: 'missing',
+      fallbackReason: 'zvec mirror unavailable',
+      circuitBroken: false,
+    });
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: false,
+      checkIndexFreshness: false,
+      checkToolContract: false,
+    });
+
+    expect(mockGetSemanticVectorBackendStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: REPO_ID,
+        repoPath: '/tmp/test-repo',
+      }),
+    );
+    expect(report.vectorBackend).toMatchObject({
+      requestedBackend: 'auto',
+      actualBackend: 'lbug',
+      freshness: 'missing',
+      fallbackReason: 'zvec mirror unavailable',
+    });
+    expect(report.degradedContext.reasons).toContain('vector-backend-fallback');
+    expect(
+      report.recommendations.some((r) => r.detail.includes('Requested vector backend auto')),
     ).toBe(true);
   });
 

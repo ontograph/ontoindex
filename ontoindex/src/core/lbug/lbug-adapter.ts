@@ -57,6 +57,14 @@ type CachedEmbeddingRow = LbugProjectionRow & {
   embedding?: unknown;
   contentHash?: unknown;
 };
+
+type ExistingEmbeddingHash = string;
+type ExistingChunkedEmbeddingHash = {
+  contentHash: string;
+  chunkContentHashes: ReadonlyMap<number, string>;
+};
+
+export type ExistingEmbeddingHashEntry = ExistingEmbeddingHash | ExistingChunkedEmbeddingHash;
 type FTSNode = {
   [key: string]: unknown;
   nodeId?: unknown;
@@ -1408,7 +1416,7 @@ export const loadCachedEmbeddings = async (): Promise<{
  */
 export const fetchExistingEmbeddingHashes = async (
   execQuery: (cypher: string) => Promise<LbugProjectionRows>,
-): Promise<Map<string, string> | undefined> => {
+): Promise<Map<string, ExistingEmbeddingHashEntry> | undefined> => {
   try {
     const countRows = await execQuery(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS count`);
     const existingRowCount = Number(
@@ -1422,32 +1430,109 @@ export const fetchExistingEmbeddingHashes = async (
       return undefined;
     }
 
-    const rows = await execQuery(
-      `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.contentHash AS contentHash`,
-    );
+    let hasChunkContentHash = true;
+    let rows: LbugProjectionRows;
+    try {
+      rows = await execQuery(
+        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.contentHash AS contentHash, e.chunkContentHash AS chunkContentHash`,
+      );
+    } catch (err: unknown) {
+      const msg = getOptionalThrownMessage(err) ?? '';
+      if (isMissingColumnOrTableError(msg)) {
+        hasChunkContentHash = false;
+        rows = await execQuery(
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.contentHash AS contentHash`,
+        );
+      } else {
+        throw err;
+      }
+    }
+
     if (!rows || rows.length === 0) return undefined;
-    const map = new Map<string, string>();
+    const map = new Map<string, ExistingEmbeddingHashEntry>();
+    const chunkContentHashByNode = new Map<string, Map<number, string>>();
+    const legacyChunkMetadata = new Set<string>();
+
+    const toNodeId = (value: unknown): string => {
+      if (typeof value === 'string') {
+        return value.trim();
+      }
+      if (typeof value === 'number' || typeof value === 'bigint' || typeof value === 'boolean') {
+        return String(value);
+      }
+      return '';
+    };
+
+    const toContentHash = (value: unknown): string => {
+      if (typeof value === 'string') {
+        const normalized = value.trim();
+        if (normalized.length > 0) return normalized;
+      }
+      return STALE_HASH_SENTINEL;
+    };
+
     for (const r of rows) {
-      const nodeId = r.nodeId ?? r[0];
+      const nodeId = toNodeId(r.nodeId ?? r[0]);
       const chunkIndex = r.chunkIndex ?? r[1];
       const startLine = r.startLine ?? r[2];
       const endLine = r.endLine ?? r[3];
-      const hash = r.contentHash ?? r[4] ?? STALE_HASH_SENTINEL;
-      if (nodeId) {
-        const hasChunkMetadata =
-          chunkIndex !== undefined &&
-          chunkIndex !== null &&
-          startLine !== undefined &&
-          startLine !== null &&
-          endLine !== undefined &&
-          endLine !== null;
-        // Empty/null contentHash or missing chunk metadata means legacy row — treat as stale.
-        map.set(
-          nodeId as string,
-          (hasChunkMetadata && hash ? hash : STALE_HASH_SENTINEL) as string,
-        );
+      const contentHash = toContentHash(r.contentHash ?? r[4]);
+      if (!nodeId) continue;
+
+      map.set(nodeId, contentHash);
+
+      if (!hasChunkContentHash) continue;
+
+      const chunkHash = (r as { chunkContentHash?: unknown }).chunkContentHash ?? r[5];
+      const hasChunkMetadata =
+        chunkIndex !== undefined &&
+        chunkIndex !== null &&
+        startLine !== undefined &&
+        startLine !== null &&
+        endLine !== undefined &&
+        endLine !== null;
+      if (!hasChunkMetadata) {
+        legacyChunkMetadata.add(nodeId);
+        continue;
+      }
+
+      const chunkIndexNumber = Number(chunkIndex);
+      if (!Number.isFinite(chunkIndexNumber)) {
+        legacyChunkMetadata.add(nodeId);
+        continue;
+      }
+
+      if (typeof chunkHash !== 'string' || chunkHash.trim().length === 0) {
+        legacyChunkMetadata.add(nodeId);
+        continue;
+      }
+
+      const nodeChunks = chunkContentHashByNode.get(nodeId) ?? new Map<number, string>();
+      nodeChunks.set(chunkIndexNumber, chunkHash);
+      chunkContentHashByNode.set(nodeId, nodeChunks);
+    }
+
+    for (const nodeId of legacyChunkMetadata) {
+      const existingHash = map.get(nodeId);
+      if (existingHash !== undefined) {
+        map.set(nodeId, String(existingHash));
+        chunkContentHashByNode.delete(nodeId);
       }
     }
+
+    for (const [nodeId, chunkMap] of chunkContentHashByNode) {
+      const contentHash = map.get(nodeId);
+      if (typeof contentHash !== 'string' || contentHash.length === 0) continue;
+      if (chunkMap.size === 0 || legacyChunkMetadata.has(nodeId)) {
+        map.set(nodeId, contentHash);
+        continue;
+      }
+      map.set(nodeId, {
+        contentHash,
+        chunkContentHashes: chunkMap,
+      });
+    }
+
     return map;
   } catch (err: unknown) {
     const msg = getOptionalThrownMessage(err) ?? '';
@@ -1456,7 +1541,7 @@ export const fetchExistingEmbeddingHashes = async (
       try {
         const rows = await execQuery(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId`);
         if (!rows || rows.length === 0) return undefined;
-        const map = new Map<string, string>();
+        const map = new Map<string, ExistingEmbeddingHashEntry>();
         for (const r of rows) {
           const nodeId = r.nodeId ?? r[0];
           if (nodeId) map.set(nodeId as string, STALE_HASH_SENTINEL);

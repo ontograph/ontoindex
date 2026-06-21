@@ -222,7 +222,7 @@ export interface ApiImpactParams extends z.input<typeof ApiImpactSchema> {}
 export const RepomapSchema = BaseRepoSchema.extend({
   focus: z.array(z.string()),
   token_budget: z.number().default(4000),
-  format: z.enum(['signatures', 'outline', 'full', 'compressed']).default('signatures'),
+  format: z.enum(['signatures', 'outline', 'full', 'compressed', 'files']).default('signatures'),
 });
 
 export interface RepomapParams extends z.input<typeof RepomapSchema> {}

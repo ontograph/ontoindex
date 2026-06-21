@@ -109,6 +109,13 @@ describe('gnExplainModule', () => {
 
     expect(report.version).toBe(1);
     expect(report.filePath).toBe('src/missing.ts');
+    expect(report.readFirstFiles).toEqual([]);
+    expect(report.omittedCounts).toEqual({
+      invalid: 0,
+      duplicate: 0,
+      truncated: 0,
+      total: 0,
+    });
     expect(report.publicAPI).toEqual([]);
     expect(report.warnings).toContain('file not in index — run ontoindex analyze');
   });
@@ -160,12 +167,49 @@ describe('gnExplainModule', () => {
       includeCoChange: true,
     });
 
+    expect(report.readFirstFiles).toEqual([
+      { filePath: 'src/foo.ts', reason: 'target module file', source: 'module' },
+      { filePath: 'src/bar.ts', reason: 'co-changed file', source: 'file' },
+      { filePath: 'src/baz.ts', reason: 'co-changed file #2', source: 'file' },
+    ]);
+    expect(report.omittedCounts).toEqual({
+      invalid: 0,
+      duplicate: 0,
+      truncated: 0,
+      total: 0,
+    });
     expect(report.coChangedFiles.length).toBeGreaterThan(0);
     for (let i = 1; i < report.coChangedFiles.length; i++) {
       expect(report.coChangedFiles[i - 1].coChangeCount).toBeGreaterThanOrEqual(
         report.coChangedFiles[i].coChangeCount,
       );
     }
+  });
+
+  it('returns the compact files projection when format is files', async () => {
+    setupDefaultMocks();
+
+    const report = await gnExplainModule('test-repo', {
+      filePath: 'src/foo.ts',
+      format: 'files',
+    });
+
+    expect(report).toEqual({
+      version: 1,
+      filePath: 'src/foo.ts',
+      readFirstFiles: [
+        { filePath: 'src/foo.ts', reason: 'target module file', source: 'module' },
+        { filePath: 'src/bar.ts', reason: 'co-changed file', source: 'file' },
+        { filePath: 'src/baz.ts', reason: 'co-changed file #2', source: 'file' },
+      ],
+      omittedCounts: {
+        invalid: 0,
+        duplicate: 0,
+        truncated: 0,
+        total: 0,
+      },
+      warnings: [],
+    });
   });
 
   it('estimates lineCount from exported symbols when graph and disk both fail', async () => {

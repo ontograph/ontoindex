@@ -17,6 +17,11 @@ import { getFileSkeleton } from '../../core/search/skeleton.js';
 import { computeGraphPath, type GraphPathEdge } from '../../core/search/graph-path.js';
 import { executeParameterized, initLbug } from '../../core/lbug/pool-adapter.js';
 import { query as backendQuery, type RetrievalDiagnostics } from '../local/backend-search.js';
+import {
+  projectReadFirstFiles,
+  type ReadFirstFileFact,
+  type ReadFirstProjection,
+} from '../shared/read-first-projection.js';
 
 // Re-export so callers can use IntentLabel without importing intent-classifier.
 export type IntentLabel = Intent;
@@ -28,11 +33,17 @@ export interface ExploreParams {
   includeSkeletons?: boolean; // default: true
   includeCitations?: boolean; // default: true
   profile?: 'task-pack' | 'retrieval-diagnostics';
+  format?: 'json' | 'files'; // default: 'json'
 }
 
 interface SymbolRetryExamples {
   inspect: string;
   impact: string;
+}
+
+interface ExploreNextCallSymbol {
+  nodeId: string;
+  name: string;
 }
 
 interface ExploreTaskPack {
@@ -42,6 +53,25 @@ interface ExploreTaskPack {
   topSymbols: Array<{ nodeId: string; name: string; filePath: string }>;
   nextCalls: string[];
   warnings: string[];
+  readFirstFiles: Array<{ filePath: string; reason: string; source: string }>;
+  omittedCounts: {
+    invalid: number;
+    duplicate: number;
+    truncated: number;
+    total: number;
+  };
+}
+
+export interface ExploreFilesReport {
+  version: 1;
+  query: {
+    original: string;
+    classified: { intent: IntentLabel; confidence: number };
+  };
+  readFirstFiles: ReadFirstProjection['readFirstFiles'];
+  omittedCounts: ReadFirstProjection['omittedCounts'];
+  warnings: string[];
+  nextCalls?: string[];
 }
 
 export interface ExploreReport {
@@ -91,6 +121,8 @@ const TOP_N_BY_DEPTH: Record<NonNullable<ExploreParams['depth']>, number> = {
   balanced: 5,
   deep: 10,
 };
+const TASK_PACK_TOP_SYMBOLS = 3;
+const TASK_PACK_READ_FIRST_MAX_FILES = 5;
 const ENRICH_SYMBOL_CONCURRENCY = 2;
 
 type QueryRow = Record<string, unknown> | readonly unknown[];
@@ -134,6 +166,28 @@ function retryExamples(repoId: string, nodeId: string, name: string): SymbolRetr
   };
 }
 
+function buildReadFirstFacts(symbols: Array<{ filePath: string }>): ReadFirstFileFact[] {
+  return symbols.map((sym, index) => ({
+    filePath: sym.filePath,
+    reason: index === 0 ? 'top-ranked symbol file' : `symbol candidate #${index + 1}`,
+    priority: index,
+    source: 'definition',
+  }));
+}
+
+function buildNextCalls(
+  repoId: string,
+  query: string,
+  firstSymbol?: ExploreNextCallSymbol,
+): string[] {
+  return firstSymbol
+    ? [
+        `inspect({ action: "context", repo: "${repoId}", uid: "${firstSymbol.nodeId}" })`,
+        `impact({ action: "symbol", repo: "${repoId}", target_uid: "${firstSymbol.nodeId}", target: "${firstSymbol.name}" })`,
+      ]
+    : [`gn_explore({ repo: "${repoId}", query: "${query}", depth: "deep" })`];
+}
+
 function buildTaskPack(
   repoId: string,
   query: string,
@@ -141,24 +195,22 @@ function buildTaskPack(
   symbols: ExploreReport['topSymbols'],
   warnings: string[],
 ): ExploreTaskPack {
-  const topSymbols = symbols.slice(0, 3).map((sym) => ({
+  const topSymbols = symbols.slice(0, TASK_PACK_TOP_SYMBOLS).map((sym) => ({
     nodeId: sym.nodeId,
     name: sym.name,
     filePath: sym.filePath,
   }));
   const topFiles = Array.from(new Set(topSymbols.map((sym) => sym.filePath).filter(Boolean)))
-    .slice(0, 3)
+    .slice(0, TASK_PACK_TOP_SYMBOLS)
     .map((filePath, index) => ({
       filePath,
       reason: index === 0 ? 'top-ranked symbol file' : 'related top symbol file',
     }));
   const firstSymbol = topSymbols[0];
-  const nextCalls = firstSymbol
-    ? [
-        `inspect({ action: "context", repo: "${repoId}", uid: "${firstSymbol.nodeId}" })`,
-        `impact({ action: "symbol", repo: "${repoId}", target_uid: "${firstSymbol.nodeId}", target: "${firstSymbol.name}" })`,
-      ]
-    : [`gn_explore({ repo: "${repoId}", query: "${query}", depth: "deep" })`];
+  const readFirstProjection = projectReadFirstFiles(buildReadFirstFacts(topSymbols), {
+    maxFiles: TASK_PACK_READ_FIRST_MAX_FILES,
+  });
+  const nextCalls = buildNextCalls(repoId, query, firstSymbol);
 
   return {
     query,
@@ -167,6 +219,8 @@ function buildTaskPack(
     topSymbols,
     nextCalls,
     warnings: warnings.slice(0, 3),
+    readFirstFiles: readFirstProjection.readFirstFiles,
+    omittedCounts: readFirstProjection.omittedCounts,
   };
 }
 
@@ -268,7 +322,22 @@ import { listRegisteredRepos } from '../../storage/repo-manager.js';
 // Main export.
 // ---------------------------------------------------------------------------
 
-export async function gnExplore(repoId: string, params: ExploreParams): Promise<ExploreReport> {
+export async function gnExplore(
+  repoId: string,
+  params: ExploreParams & { format: 'files' },
+): Promise<ExploreFilesReport>;
+export async function gnExplore(
+  repoId: string,
+  params: ExploreParams & { format?: 'json' },
+): Promise<ExploreReport>;
+export async function gnExplore(
+  repoId: string,
+  params: ExploreParams,
+): Promise<ExploreReport | ExploreFilesReport>;
+export async function gnExplore(
+  repoId: string,
+  params: ExploreParams,
+): Promise<ExploreReport | ExploreFilesReport> {
   const warnings: string[] = [];
   const allRepos = await listRegisteredRepos();
   const requestedRepo = repoId.toLowerCase();
@@ -313,6 +382,34 @@ export async function gnExplore(repoId: string, params: ExploreParams): Promise<
     ...(queryResult.definitions ?? []),
   ];
   const candidateSymbols = allSymbols.filter((s) => s && (s.nodeId || s.id)).slice(0, topN);
+  const topSymbolSummaries = candidateSymbols.map((sym) => ({
+    nodeId: (sym.nodeId ?? sym.id ?? '') as string,
+    name: (sym.name ?? '') as string,
+    filePath: (sym.filePath ?? '') as string,
+  }));
+  const nextCalls = buildNextCalls(repoId, params.query, topSymbolSummaries[0]);
+  const readFirstProjection = projectReadFirstFiles(buildReadFirstFacts(topSymbolSummaries), {
+    maxFiles: TASK_PACK_READ_FIRST_MAX_FILES,
+  });
+
+  if (params.format === 'files') {
+    const report: ExploreFilesReport = {
+      version: 1,
+      query: {
+        original: params.query,
+        classified: {
+          intent: classification.intent,
+          confidence: classification.confidence,
+        },
+      },
+      readFirstFiles: readFirstProjection.readFirstFiles,
+      omittedCounts: readFirstProjection.omittedCounts,
+      warnings,
+      nextCalls,
+    };
+
+    return report;
+  }
 
   // --- 4. Enrich each symbol with bounded DB concurrency -----------------
   const skeletonDepth = SKELETON_DEPTH_BY_INTENT[intent] ?? 3;

@@ -7,6 +7,8 @@
  * User#save.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
+import { createRequire } from 'node:module';
+import Parser from 'tree-sitter';
 import path from 'path';
 import {
   getRelationships,
@@ -16,6 +18,19 @@ import {
 } from './resolvers/helpers.js';
 
 const CROSS_FILE_FIXTURES = path.resolve(__dirname, '..', 'fixtures', 'cross-file-binding');
+const require = createRequire(import.meta.url);
+const describeKotlin = isKotlinParserAvailable() ? describe : describe.skip;
+
+function isKotlinParserAvailable(): boolean {
+  try {
+    const language = require('tree-sitter-kotlin') as Parser.Language;
+    const parser = new Parser();
+    parser.setLanguage(language);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Simple cross-file: models → service → app
@@ -323,7 +338,7 @@ describe('Phase 9 — Cross-File Call-Result Binding: Go', () => {
   });
 });
 
-describe('Phase 9 — Cross-File Call-Result Binding: Kotlin', () => {
+describeKotlin('Phase 9 — Cross-File Call-Result Binding: Kotlin', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -736,7 +751,7 @@ describe('Consumer-Before-Provider: C#', () => {
   });
 });
 
-describe('Consumer-Before-Provider: Kotlin', () => {
+describeKotlin('Consumer-Before-Provider: Kotlin', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {

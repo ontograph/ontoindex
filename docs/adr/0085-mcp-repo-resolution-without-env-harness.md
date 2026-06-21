@@ -1,6 +1,6 @@
 # ADR 0085: MCP Repo Resolution Without Environment Harness
 
-**Status:** Proposed - Challenged/Core Extension Only
+**Status:** Implemented - pending release
 **Date:** 2026-06-14
 **Source:** MCP misconfiguration audit and repo-scope defect review; narrowed against current MCP startup, shared target-context resolution, and diagnostics surfaces.
 

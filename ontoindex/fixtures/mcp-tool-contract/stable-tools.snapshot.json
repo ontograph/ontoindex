@@ -18,13 +18,21 @@
           },
           "depth": {
             "type": "string",
-            "enum": ["shallow", "balanced", "deep"],
+            "enum": [
+              "shallow",
+              "balanced",
+              "deep"
+            ],
             "description": "Controls how many top symbols are returned. shallow=3, balanced=5 (default), deep=10.",
             "default": "balanced"
           },
           "qualityMode": {
             "type": "string",
-            "enum": ["fast", "balanced", "thorough"],
+            "enum": [
+              "fast",
+              "balanced",
+              "thorough"
+            ],
             "description": "Search quality vs speed trade-off. Default: balanced.",
             "default": "balanced"
           },
@@ -37,18 +45,47 @@
             "type": "boolean",
             "description": "Include graph-path citation edges for each top symbol. Default: true.",
             "default": true
+          },
+          "profile": {
+            "type": "string",
+            "enum": [
+              "task-pack",
+              "retrieval-diagnostics"
+            ],
+            "description": "Optional compact profile. task-pack adds bounded next calls; retrieval-diagnostics adds lane counts and lane-specific warnings without changing the default report shape."
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "json",
+              "files"
+            ],
+            "description": "Return the full report (json) or only read-first files with reasons (files). Default: json.",
+            "default": "json"
           }
         },
-        "required": ["query"]
+        "required": [
+          "query"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "discovery",
       "intent": "Help me understand this concept",
       "whenToUse": "First exploration of unfamiliar code",
-      "workflowIntents": ["explore", "query"],
-      "producesEvidenceClasses": ["graph_evidence"],
+      "workflowIntents": [
+        "explore",
+        "query"
+      ],
+      "producesEvidenceClasses": [
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": false,
       "advisoryOnly": false
@@ -87,18 +124,39 @@
             "type": "number",
             "description": "Window in days for \"recently touched\" classification. Default: 30.",
             "default": 30
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "json",
+              "files"
+            ],
+            "description": "Return the full report (json) or only ordered read-first file paths with reasons (files). Default: json.",
+            "default": "json"
           }
         },
-        "required": ["filePath"]
+        "required": [
+          "filePath"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "discovery",
       "intent": "What does this file do?",
       "whenToUse": "Need overview of a specific file",
-      "workflowIntents": ["explore", "query"],
-      "producesEvidenceClasses": ["graph_evidence"],
+      "workflowIntents": [
+        "explore",
+        "query"
+      ],
+      "producesEvidenceClasses": [
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": false,
       "advisoryOnly": false
@@ -147,18 +205,39 @@
             "type": "number",
             "description": "Maximum items returned per category (callers, callees, etc). Default: 10.",
             "default": 10
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "json",
+              "files"
+            ],
+            "description": "Return the full report (json) or only ordered read-first file paths with reasons (files). Default: json.",
+            "default": "json"
           }
         },
-        "required": ["symbol"]
+        "required": [
+          "symbol"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "discovery",
       "intent": "What is near this symbol?",
       "whenToUse": "Symbol-level neighborhood",
-      "workflowIntents": ["explore", "query"],
-      "producesEvidenceClasses": ["graph_evidence"],
+      "workflowIntents": [
+        "explore",
+        "query"
+      ],
+      "producesEvidenceClasses": [
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": false,
       "advisoryOnly": false
@@ -180,7 +259,12 @@
           },
           "intent": {
             "type": "string",
-            "enum": ["rename", "modify-body", "delete", "general"],
+            "enum": [
+              "rename",
+              "modify-body",
+              "delete",
+              "general"
+            ],
             "description": "Type of edit planned. Influences verdict thresholds. Default: general.",
             "default": "general"
           },
@@ -200,16 +284,28 @@
             "default": true
           }
         },
-        "required": ["symbol"]
+        "required": [
+          "symbol"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "safety",
       "intent": "Is it safe to edit this?",
       "whenToUse": "Before any edit (replaces ontoindex_impact)",
-      "workflowIntents": ["edit", "release"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "edit",
+        "release"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "advisory",
       "auditAuthority": false,
       "advisoryOnly": true
@@ -235,16 +331,28 @@
             "default": false
           }
         },
-        "required": ["symbol"]
+        "required": [
+          "symbol"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "safety",
       "intent": "Can I delete this?",
       "whenToUse": "Dead-code check",
-      "workflowIntents": ["edit", "release"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "edit",
+        "release"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "advisory",
       "auditAuthority": false,
       "advisoryOnly": true
@@ -262,7 +370,12 @@
           },
           "scope": {
             "type": "string",
-            "enum": ["staged", "unstaged", "all", "branch"],
+            "enum": [
+              "staged",
+              "unstaged",
+              "all",
+              "branch"
+            ],
             "description": "Which changes to audit. staged = git diff --cached; unstaged = git diff; all = both; branch = all commits since main. Default: staged.",
             "default": "staged"
           },
@@ -283,12 +396,22 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "safety",
       "intent": "Is this commit ready to ship?",
       "whenToUse": "Before commit (replaces ontoindex_detect_changes)",
-      "workflowIntents": ["edit", "release"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "edit",
+        "release"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "release",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -344,16 +467,28 @@
             "default": true
           }
         },
-        "required": ["intent", "params"]
+        "required": [
+          "intent",
+          "params"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": false,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "refactor",
       "intent": "Apply rename/extract/move/modify safely",
       "whenToUse": "Any refactor (single dispatcher for 6 atomic tools; defaults to dryRun:true)",
-      "workflowIntents": ["edit", "refactor"],
-      "producesEvidenceClasses": ["graph_evidence"],
+      "workflowIntents": [
+        "edit",
+        "refactor"
+      ],
+      "producesEvidenceClasses": [
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": false,
       "advisoryOnly": false
@@ -389,12 +524,22 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "lifecycle",
       "intent": "Make sure the index is current",
       "whenToUse": "Before retrieval-heavy ops if repo edited recently",
-      "workflowIntents": ["lifecycle", "setup"],
-      "producesEvidenceClasses": ["graph_evidence"],
+      "workflowIntents": [
+        "lifecycle",
+        "setup"
+      ],
+      "producesEvidenceClasses": [
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": false,
       "advisoryOnly": false
@@ -408,26 +553,45 @@
         "properties": {
           "level": {
             "type": "string",
-            "enum": ["fast", "balanced", "thorough"],
+            "enum": [
+              "fast",
+              "balanced",
+              "thorough"
+            ],
             "description": "Quality preset to apply."
           },
           "duration": {
             "type": "string",
-            "enum": ["session", "until-revert"],
+            "enum": [
+              "session",
+              "until-revert"
+            ],
             "description": "Advisory only — both values set process.env for the lifetime of the process. Default: session.",
             "default": "session"
           }
         },
-        "required": ["level"]
+        "required": [
+          "level"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": false,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "lifecycle",
       "intent": "Set retrieval quality preset",
       "whenToUse": "At session start (fast/balanced/thorough)",
-      "workflowIntents": ["lifecycle", "setup"],
-      "producesEvidenceClasses": ["graph_evidence"],
+      "workflowIntents": [
+        "lifecycle",
+        "setup"
+      ],
+      "producesEvidenceClasses": [
+        "graph_evidence"
+      ],
       "permissionProfile": "runtime_admin",
       "auditAuthority": false,
       "advisoryOnly": false
@@ -449,7 +613,11 @@
           },
           "scope": {
             "type": "string",
-            "enum": ["staged", "commit-range", "branch"],
+            "enum": [
+              "staged",
+              "commit-range",
+              "branch"
+            ],
             "description": "Which changes to diff. staged = git diff --cached; branch = main...HEAD; commit-range requires commitRange param. Default: staged.",
             "default": "staged"
           },
@@ -462,18 +630,35 @@
             "type": "boolean",
             "description": "Opt in to advisory Markdown docs evidence for related requirements, API specs, and route drift. Does not affect risk reporting. Default: false.",
             "default": false
+          },
+          "profile": {
+            "type": "string",
+            "enum": [
+              "pr-pack"
+            ],
+            "description": "Optional compact PR readiness profile. pr-pack adds a bounded readiness verdict, stop conditions, and next commands without running CI, publishing, tagging, pushing, or wiki generation."
           }
         },
         "required": []
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "pr-review",
       "intent": "What is the blast radius of these commits? (MCP surface)",
       "whenToUse": "Commit-range or staged blast-radius analysis via MCP; pair with `ontoindex review diff` for local CLI review. Hosted PR adapter is a later Phase 6 feature.",
-      "workflowIntents": ["review", "release"],
-      "producesEvidenceClasses": ["graph_evidence"],
+      "workflowIntents": [
+        "review",
+        "release"
+      ],
+      "producesEvidenceClasses": [
+        "graph_evidence"
+      ],
       "permissionProfile": "advisory",
       "auditAuthority": false,
       "advisoryOnly": true
@@ -495,7 +680,11 @@
           },
           "scope": {
             "type": "string",
-            "enum": ["staged", "commit-range", "branch"],
+            "enum": [
+              "staged",
+              "commit-range",
+              "branch"
+            ],
             "description": "Which changes to diff. staged = git diff --cached; branch = main...HEAD; commit-range requires commitRange param. Default: staged.",
             "default": "staged"
           }
@@ -504,12 +693,22 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "pr-review",
       "intent": "Return graph-aware diff review in the ADR 0018 envelope",
       "whenToUse": "Machine-readable local diff review aligned with ontoindex review diff --json",
-      "workflowIntents": ["review", "release"],
-      "producesEvidenceClasses": ["graph_evidence"],
+      "workflowIntents": [
+        "review",
+        "release"
+      ],
+      "producesEvidenceClasses": [
+        "graph_evidence"
+      ],
       "permissionProfile": "advisory",
       "auditAuthority": false,
       "advisoryOnly": true
@@ -555,12 +754,22 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "self-help",
       "intent": "What is not optimal in my OntoIndex setup?",
       "whenToUse": "When something feels off; session-start health check",
-      "workflowIntents": ["diagnose", "setup"],
-      "producesEvidenceClasses": ["runtime_diagnostic"],
+      "workflowIntents": [
+        "diagnose",
+        "setup"
+      ],
+      "producesEvidenceClasses": [
+        "runtime_diagnostic"
+      ],
       "permissionProfile": "runtime_admin",
       "auditAuthority": false,
       "advisoryOnly": true
@@ -585,16 +794,28 @@
             "description": "Target language for the file extension suggestion (e.g. \"python\" → .py; anything else → .ts). Default: ts."
           }
         },
-        "required": ["intent"]
+        "required": [
+          "intent"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "self-help",
       "intent": "Where should I add new code for X?",
       "whenToUse": "When adding new code; cluster-aware placement suggestion",
-      "workflowIntents": ["diagnose", "setup"],
-      "producesEvidenceClasses": ["runtime_diagnostic"],
+      "workflowIntents": [
+        "diagnose",
+        "setup"
+      ],
+      "producesEvidenceClasses": [
+        "runtime_diagnostic"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": false,
       "advisoryOnly": true
@@ -608,13 +829,23 @@
         "properties": {
           "topic": {
             "type": "string",
-            "enum": ["overview", "docs", "editing", "setup"],
+            "enum": [
+              "overview",
+              "docs",
+              "editing",
+              "setup"
+            ],
             "description": "Optional discovery focus. Current response is compact and includes all topics; use this to document caller intent.",
             "default": "overview"
           },
           "mode": {
             "type": "string",
-            "enum": ["general", "audit", "refactor", "query-projects"],
+            "enum": [
+              "general",
+              "audit",
+              "refactor",
+              "query-projects"
+            ],
             "description": "Optional agent mode. When supplied, filters advertised tools and workflow guidance to the specified mode and adds mode/modeDescription to the report."
           },
           "query": {
@@ -646,7 +877,11 @@
           },
           "stability": {
             "type": "string",
-            "enum": ["stable", "experimental", "deprecated"],
+            "enum": [
+              "stable",
+              "experimental",
+              "deprecated"
+            ],
             "description": "Optional stability filter for registry-backed discovery results."
           },
           "includeNonAuthoritativeEvidence": {
@@ -674,12 +909,22 @@
       },
       "contractStatus": "stable",
       "structuredOutput": false,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "self-help",
       "intent": "List all super-functions",
       "whenToUse": "First call when discovering the surface",
-      "workflowIntents": ["diagnose", "setup"],
-      "producesEvidenceClasses": ["runtime_diagnostic"],
+      "workflowIntents": [
+        "diagnose",
+        "setup"
+      ],
+      "producesEvidenceClasses": [
+        "runtime_diagnostic"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": false,
       "advisoryOnly": true
@@ -697,7 +942,12 @@
           },
           "action": {
             "type": "string",
-            "enum": ["trace", "drift", "context", "readiness"],
+            "enum": [
+              "trace",
+              "drift",
+              "context",
+              "readiness"
+            ],
             "description": "Docs report action. Default: readiness.",
             "default": "readiness"
           },
@@ -746,7 +996,11 @@
           },
           "format": {
             "type": "string",
-            "enum": ["json", "inline", "both"],
+            "enum": [
+              "json",
+              "inline",
+              "both"
+            ],
             "description": "Optional derived formatter. Omitted/json returns canonical compact JSON only; inline/both also include inlineContext text derived from the JSON report.",
             "default": "json"
           },
@@ -769,12 +1023,23 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "docs",
       "intent": "Inspect docs trace, drift, context, or readiness",
       "whenToUse": "When you need bounded docs evidence without raw graph queries; use includeMemories only for advisory context/readiness and never as trace/drift evidence.",
-      "workflowIntents": ["docs", "readiness"],
-      "producesEvidenceClasses": ["advisory_memory", "docs_evidence"],
+      "workflowIntents": [
+        "docs",
+        "readiness"
+      ],
+      "producesEvidenceClasses": [
+        "advisory_memory",
+        "docs_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": false,
       "advisoryOnly": true
@@ -793,7 +1058,12 @@
           },
           "mode": {
             "type": "string",
-            "enum": ["general", "audit", "refactor", "query-projects"],
+            "enum": [
+              "general",
+              "audit",
+              "refactor",
+              "query-projects"
+            ],
             "description": "Optional agent mode. When supplied, adds a mode-filtered frontier comparison (`modeFrontier`) to the report comparing gn_help({mode}) advertised tools against mode-discoverable callable tools."
           }
         },
@@ -801,12 +1071,22 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "self-help",
       "intent": "Verify gn_help advertised tools match the registered callable MCP frontier",
       "whenToUse": "At session start or after Unknown tool errors to detect stale MCP/runtime drift",
-      "workflowIntents": ["diagnose", "setup"],
-      "producesEvidenceClasses": ["runtime_diagnostic"],
+      "workflowIntents": [
+        "diagnose",
+        "setup"
+      ],
+      "producesEvidenceClasses": [
+        "runtime_diagnostic"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": false,
       "advisoryOnly": true
@@ -865,12 +1145,22 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "audit",
       "intent": "Ingest an audit report as candidate findings",
       "whenToUse": "Before verifying or bundling audit findings; never emits OPEN",
-      "workflowIntents": ["audit", "verify"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "verify"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -931,12 +1221,22 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "audit",
       "intent": "Verify candidate findings against target HEAD",
       "whenToUse": "Before accepting OPEN or RESOLVED audit status",
-      "workflowIntents": ["audit", "verify"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "verify"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -975,16 +1275,29 @@
             "maximum": 100
           }
         },
-        "required": ["targetHead", "path"]
+        "required": [
+          "targetHead",
+          "path"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "audit",
       "intent": "Find commits that may have fixed a finding",
       "whenToUse": "When a finding may be stale or already resolved",
-      "workflowIntents": ["audit", "verify"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "verify"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -1010,7 +1323,13 @@
           },
           "strategy": {
             "type": "string",
-            "enum": ["exact", "symbol", "root-cause", "write-set", "test-surface"],
+            "enum": [
+              "exact",
+              "symbol",
+              "root-cause",
+              "write-set",
+              "test-surface"
+            ],
             "description": "Dedupe strategy. Default: root-cause.",
             "default": "root-cause"
           },
@@ -1027,16 +1346,28 @@
             "default": true
           }
         },
-        "required": ["session"]
+        "required": [
+          "session"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "audit",
       "intent": "Group verified findings into implementation bundles",
       "whenToUse": "After verification and linting, before implementation planning",
-      "workflowIntents": ["audit", "verify"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "verify"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -1062,7 +1393,11 @@
           },
           "scope": {
             "type": "string",
-            "enum": ["report", "bundle", "all"],
+            "enum": [
+              "report",
+              "bundle",
+              "all"
+            ],
             "description": "Rule set to run. Default: report.",
             "default": "report"
           },
@@ -1107,12 +1442,22 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "audit",
       "intent": "Check audit quality gates",
       "whenToUse": "Before accepting an audit report or bundle set",
-      "workflowIntents": ["audit", "verify"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "verify"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -1138,7 +1483,13 @@
           },
           "category": {
             "type": "string",
-            "enum": ["resource-leaks", "fork-safety", "signals", "toctou", "concurrency"],
+            "enum": [
+              "resource-leaks",
+              "fork-safety",
+              "signals",
+              "toctou",
+              "concurrency"
+            ],
             "description": "Rule category to run. Omit to run all MVP categories."
           },
           "maxFindings": {
@@ -1158,12 +1509,22 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "systems-audit",
       "intent": "Scan for systems anti-pattern evidence",
       "whenToUse": "When auditing resources, fork safety, signals, TOCTOU, or concurrency",
-      "workflowIntents": ["audit", "diagnose"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "diagnose"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -1189,7 +1550,13 @@
           },
           "strategy": {
             "type": "string",
-            "enum": ["exact", "symbol", "root-cause", "write-set", "test-surface"],
+            "enum": [
+              "exact",
+              "symbol",
+              "root-cause",
+              "write-set",
+              "test-surface"
+            ],
             "description": "Optional dedupe strategy filter."
           },
           "maxGroups": {
@@ -1200,16 +1567,28 @@
             "maximum": 100
           }
         },
-        "required": ["session"]
+        "required": [
+          "session"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "audit",
       "intent": "Collapse duplicate findings by root cause, write-set, symbol, or test surface",
       "whenToUse": "Before bundling noisy audit reports or re-emitted stale claims",
-      "workflowIntents": ["audit", "verify"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "verify"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -1239,7 +1618,12 @@
           },
           "redactionMode": {
             "type": "string",
-            "enum": ["none", "paths", "snippets", "sensitive"],
+            "enum": [
+              "none",
+              "paths",
+              "snippets",
+              "sensitive"
+            ],
             "description": "Prompt redaction policy. Default: sensitive.",
             "default": "sensitive"
           },
@@ -1266,16 +1650,28 @@
             "maximum": 100000
           }
         },
-        "required": ["session"]
+        "required": [
+          "session"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "audit",
       "intent": "Generate one concrete worker prompt for one verified bundle",
       "whenToUse": "After bundling and before assigning implementation work",
-      "workflowIntents": ["audit", "verify"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "verify"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "release",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -1321,16 +1717,30 @@
             "default": true
           }
         },
-        "required": ["session", "findingId", "reason"]
+        "required": [
+          "session",
+          "findingId",
+          "reason"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "audit",
       "intent": "Record fixed findings that must not be reopened while invariants hold",
       "whenToUse": "After a verified fix or RESOLVED-ALREADY classification",
-      "workflowIntents": ["audit", "verify"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "verify"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -1384,12 +1794,21 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "lifecycle",
       "intent": "Start the governed manager loop by ingesting findings and creating a session lock",
       "whenToUse": "Preferred first step for customer-facing audit work",
-      "workflowIntents": ["lifecycle", "setup"],
-      "producesEvidenceClasses": ["audit_evidence"],
+      "workflowIntents": [
+        "lifecycle",
+        "setup"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -1419,7 +1838,12 @@
           },
           "proofMode": {
             "type": "string",
-            "enum": ["heuristic", "path-sensitive", "resource-ledger", "runtime-required"],
+            "enum": [
+              "heuristic",
+              "path-sensitive",
+              "resource-ledger",
+              "runtime-required"
+            ],
             "description": "Advisory proof-mode label for the manager loop.",
             "default": "heuristic"
           },
@@ -1443,16 +1867,27 @@
             "default": true
           }
         },
-        "required": ["session"]
+        "required": [
+          "session"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "lifecycle",
       "intent": "Verify a locked audit session and enforce repeated-finding tombstones before work",
       "whenToUse": "Preferred verification step in the manager loop",
-      "workflowIntents": ["lifecycle", "setup"],
-      "producesEvidenceClasses": ["audit_evidence"],
+      "workflowIntents": [
+        "lifecycle",
+        "setup"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -1478,7 +1913,13 @@
           },
           "strategy": {
             "type": "string",
-            "enum": ["exact", "symbol", "root-cause", "write-set", "test-surface"],
+            "enum": [
+              "exact",
+              "symbol",
+              "root-cause",
+              "write-set",
+              "test-surface"
+            ],
             "description": "Dedupe strategy. Default: root-cause.",
             "default": "root-cause"
           },
@@ -1490,16 +1931,27 @@
             "maximum": 100
           }
         },
-        "required": ["session"]
+        "required": [
+          "session"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "lifecycle",
       "intent": "Collapse duplicates inside the locked manager loop",
       "whenToUse": "Before manager bundling or dispatch",
-      "workflowIntents": ["lifecycle", "setup"],
-      "producesEvidenceClasses": ["audit_evidence"],
+      "workflowIntents": [
+        "lifecycle",
+        "setup"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -1525,7 +1977,13 @@
           },
           "strategy": {
             "type": "string",
-            "enum": ["exact", "symbol", "root-cause", "write-set", "test-surface"],
+            "enum": [
+              "exact",
+              "symbol",
+              "root-cause",
+              "write-set",
+              "test-surface"
+            ],
             "description": "Bundle grouping strategy. Default: root-cause.",
             "default": "root-cause"
           },
@@ -1557,16 +2015,27 @@
             "default": true
           }
         },
-        "required": ["session"]
+        "required": [
+          "session"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "lifecycle",
       "intent": "Run dedupe first, then create implementation bundles in the manager loop",
       "whenToUse": "Preferred bundling step before dispatch",
-      "workflowIntents": ["lifecycle", "setup"],
-      "producesEvidenceClasses": ["audit_evidence"],
+      "workflowIntents": [
+        "lifecycle",
+        "setup"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -1596,7 +2065,12 @@
           },
           "redactionMode": {
             "type": "string",
-            "enum": ["none", "paths", "snippets", "sensitive"],
+            "enum": [
+              "none",
+              "paths",
+              "snippets",
+              "sensitive"
+            ],
             "description": "Prompt redaction policy. Default: sensitive.",
             "default": "sensitive"
           },
@@ -1613,16 +2087,27 @@
             "default": true
           }
         },
-        "required": ["session"]
+        "required": [
+          "session"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "lifecycle",
       "intent": "Generate a worker prompt only for a persisted, dispatchable manager bundle",
       "whenToUse": "Preferred worker handoff path after manager bundling",
-      "workflowIntents": ["lifecycle", "setup"],
-      "producesEvidenceClasses": ["audit_evidence"],
+      "workflowIntents": [
+        "lifecycle",
+        "setup"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence"
+      ],
       "permissionProfile": "release",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -1684,16 +2169,27 @@
             "default": true
           }
         },
-        "required": ["session"]
+        "required": [
+          "session"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "lifecycle",
       "intent": "Review worker edits with scope guard and required test checks",
       "whenToUse": "Preferred post-worker manager review step",
-      "workflowIntents": ["lifecycle", "setup"],
-      "producesEvidenceClasses": ["audit_evidence"],
+      "workflowIntents": [
+        "lifecycle",
+        "setup"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -1719,7 +2215,11 @@
           },
           "action": {
             "type": "string",
-            "enum": ["create", "load", "validate"],
+            "enum": [
+              "create",
+              "load",
+              "validate"
+            ],
             "description": "Lock operation. Default: validate.",
             "default": "validate"
           },
@@ -1740,16 +2240,27 @@
             "description": "Override OntoIndex version recorded in the lock."
           }
         },
-        "required": ["session"]
+        "required": [
+          "session"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "lifecycle",
       "intent": "Create or validate a hard HEAD/graph/tombstone lock for an audit session",
       "whenToUse": "Before lifecycle work and whenever current HEAD or graph freshness may have drifted",
-      "workflowIntents": ["lifecycle", "setup"],
-      "producesEvidenceClasses": ["audit_evidence"],
+      "workflowIntents": [
+        "lifecycle",
+        "setup"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -1797,16 +2308,29 @@
             "maximum": 50
           }
         },
-        "required": ["evidenceLine"]
+        "required": [
+          "evidenceLine"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "audit",
       "intent": "Find nearby PR/TODO/FIXME/follow-up/deferred markers around evidence",
       "whenToUse": "Before reflagging code that may already be known deferred debt or decision-gated work",
-      "workflowIntents": ["audit", "verify"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "verify"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -1838,16 +2362,30 @@
             "maximum": 500
           }
         },
-        "required": ["sessionA", "sessionB"]
+        "required": [
+          "sessionA",
+          "sessionB"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "audit",
       "intent": "Show semantic changes between two audit sessions",
       "whenToUse": "When comparing audit rounds or producing an audit changelog",
-      "workflowIntents": ["audit", "verify"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "verify"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -1883,16 +2421,28 @@
             "maximum": 500
           }
         },
-        "required": ["session"]
+        "required": [
+          "session"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "audit",
       "intent": "Plan re-verification of a prior session against a newer target HEAD",
       "whenToUse": "When avoiding regenerated stale Markdown audits after code has changed",
-      "workflowIntents": ["audit", "verify"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "verify"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -1918,7 +2468,11 @@
           },
           "format": {
             "type": "string",
-            "enum": ["json", "markdown", "both"],
+            "enum": [
+              "json",
+              "markdown",
+              "both"
+            ],
             "description": "Export format. Default: json.",
             "default": "json"
           },
@@ -1930,16 +2484,29 @@
             "maximum": 500
           }
         },
-        "required": ["session"]
+        "required": [
+          "session"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "audit",
       "intent": "Export canonical audit session JSON or generated Markdown",
       "whenToUse": "When producing audit artifacts without hand-written stale prose reports",
-      "workflowIntents": ["audit", "verify"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "verify"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -2001,16 +2568,29 @@
             "default": true
           }
         },
-        "required": ["session", "bundleId"]
+        "required": [
+          "session",
+          "bundleId"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "audit",
       "intent": "Check whether a worker stayed inside bundle scope",
       "whenToUse": "During manager review of an implementation diff",
-      "workflowIntents": ["audit", "verify"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "verify"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -2043,7 +2623,13 @@
           },
           "strategy": {
             "type": "string",
-            "enum": ["exact", "symbol", "root-cause", "write-set", "test-surface"],
+            "enum": [
+              "exact",
+              "symbol",
+              "root-cause",
+              "write-set",
+              "test-surface"
+            ],
             "description": "Bundle grouping strategy to evaluate. Default: root-cause."
           },
           "maxConflicts": {
@@ -2054,16 +2640,28 @@
             "maximum": 100
           }
         },
-        "required": ["session"]
+        "required": [
+          "session"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "audit",
       "intent": "Detect write-set, symbol, file, and test-surface conflicts between bundles",
       "whenToUse": "Before dispatching bundles in parallel",
-      "workflowIntents": ["audit", "verify"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "verify"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -2081,7 +2679,12 @@
           },
           "scope": {
             "type": "string",
-            "enum": ["unstaged", "staged", "all", "compare"],
+            "enum": [
+              "unstaged",
+              "staged",
+              "all",
+              "compare"
+            ],
             "description": "Diff scope to inspect. Default: unstaged.",
             "default": "unstaged"
           },
@@ -2140,12 +2743,21 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "lifecycle",
       "intent": "Compare expected scope against actual changed files, symbols, impact, and tests",
       "whenToUse": "After edits when detect_changes alone is too vague",
-      "workflowIntents": ["lifecycle", "setup"],
-      "producesEvidenceClasses": ["graph_evidence"],
+      "workflowIntents": [
+        "lifecycle",
+        "setup"
+      ],
+      "producesEvidenceClasses": [
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": false,
       "advisoryOnly": false
@@ -2153,7 +2765,7 @@
     {
       "name": "gn_test_gap",
       "kind": "super",
-      "description": "Post-edit test evidence review: report changed production symbols that have no linked tests or executed test evidence. Filename-derived matches remain heuristic until richer test data is ingested.",
+      "description": "Test evidence review: report changed production symbols with missing post-edit test evidence, or inspect pre-edit test evidence for a symbol, file, or behavior query. Filename-derived matches remain heuristic until richer test data is ingested.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2163,7 +2775,12 @@
           },
           "scope": {
             "type": "string",
-            "enum": ["unstaged", "staged", "all", "compare"],
+            "enum": [
+              "unstaged",
+              "staged",
+              "all",
+              "compare"
+            ],
             "description": "Diff scope to inspect. Default: unstaged.",
             "default": "unstaged"
           },
@@ -2195,18 +2812,47 @@
               "type": "string"
             },
             "description": "Tests actually executed."
+          },
+          "symbol": {
+            "type": "string",
+            "description": "Pre-edit target symbol to inspect for existing test evidence."
+          },
+          "filePath": {
+            "type": "string",
+            "description": "Pre-edit target file to inspect for existing test evidence."
+          },
+          "query": {
+            "type": "string",
+            "description": "Pre-edit behavior query to inspect for likely test evidence."
+          },
+          "maxItems": {
+            "type": "number",
+            "description": "Maximum target-mode evidence items returned. Default: 25, max: 100.",
+            "default": 25,
+            "minimum": 1,
+            "maximum": 100
           }
         },
         "required": []
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "lifecycle",
-      "intent": "Report changed production symbols with missing test evidence",
-      "whenToUse": "After edits to confirm changed code still has linked or executed tests",
-      "workflowIntents": ["lifecycle", "setup"],
-      "producesEvidenceClasses": ["graph_evidence"],
+      "intent": "Review post-edit test gaps or pre-edit target test evidence",
+      "whenToUse": "Before edits to find existing tests for a symbol/file/query, or after edits to confirm changed code still has linked or executed tests",
+      "workflowIntents": [
+        "lifecycle",
+        "setup"
+      ],
+      "producesEvidenceClasses": [
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": false,
       "advisoryOnly": false
@@ -2267,16 +2913,28 @@
             "description": "Override required tests for this review."
           }
         },
-        "required": ["session", "bundleId"]
+        "required": [
+          "session",
+          "bundleId"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "lifecycle",
       "intent": "Run write-through review for a dispatched bundle after worker edits",
       "whenToUse": "Preferred explicit worker verification step after bundle edits",
-      "workflowIntents": ["lifecycle", "setup"],
-      "producesEvidenceClasses": ["graph_evidence"],
+      "workflowIntents": [
+        "lifecycle",
+        "setup"
+      ],
+      "producesEvidenceClasses": [
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": false,
       "advisoryOnly": false
@@ -2325,12 +2983,23 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "systems-audit",
       "intent": "Trace POSIX resource ownership acquire/duplicate/release facts",
       "whenToUse": "When proving or rejecting fd, pid, pidfd, pipe, socket, fork, exec, or wait lifecycle claims",
-      "workflowIntents": ["audit", "diagnose"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "diagnose"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -2393,16 +3062,29 @@
             "default": true
           }
         },
-        "required": ["when"]
+        "required": [
+          "when"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "systems-audit",
       "intent": "Verify shallow branch/path invariants",
       "whenToUse": "When a finding depends on a specific branch such as fork failure or MSG_CTRUNC handling",
-      "workflowIntents": ["audit", "diagnose"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "diagnose"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -2438,6 +3120,20 @@
             "type": "string",
             "description": "Risk category under test."
           },
+          "targetedCoverage": {
+            "type": [
+              "object",
+              "string"
+            ],
+            "description": "Existing target coverage from gn_test_gap. May be the legacy object shape or the target-mode coverage status string."
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Evidence array from gn_test_gap target mode. When evidence[].testFile is present, gn_test_suggestions reuses it instead of inferring a new file."
+          },
           "legacyResponse": {
             "type": "boolean",
             "description": "Return the legacy pre-envelope response shape. Default: true. Set false to opt into the capability-aware response envelope.",
@@ -2448,12 +3144,22 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "systems-audit",
       "intent": "Suggest the smallest audit regression test shape",
       "whenToUse": "For a verified OPEN finding that needs test evidence before dispatch",
-      "workflowIntents": ["audit", "diagnose"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "diagnose"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -2484,7 +3190,12 @@
           },
           "mechanism": {
             "type": "string",
-            "enum": ["SCM_RIGHTS", "pidfd_getfd", "fork", "exec"],
+            "enum": [
+              "SCM_RIGHTS",
+              "pidfd_getfd",
+              "fork",
+              "exec"
+            ],
             "description": "Boundary handoff mechanism. Omit to infer from evidence."
           },
           "source": {
@@ -2497,16 +3208,30 @@
             "default": true
           }
         },
-        "required": ["resource", "start"]
+        "required": [
+          "resource",
+          "start"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "systems-audit",
       "intent": "Trace resource handoff across process boundaries",
       "whenToUse": "When following FD or process-boundary resource lifecycle evidence",
-      "workflowIntents": ["audit", "diagnose"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "diagnose"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -2559,12 +3284,23 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "systems-audit",
       "intent": "Extract state machines from enums and state variables",
       "whenToUse": "When state transitions or missing guards are spread across a class/module",
-      "workflowIntents": ["audit", "diagnose"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "diagnose"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -2609,12 +3345,23 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "systems-audit",
       "intent": "Map error sources, sinks, and swallowed failures",
       "whenToUse": "When auditing errno, exceptions, generic exits, or silent catch blocks",
-      "workflowIntents": ["audit", "diagnose"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "diagnose"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -2666,12 +3413,23 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "systems-audit",
       "intent": "Find lock-scope hazards and lock-order risks",
       "whenToUse": "When auditing mutex contention, blocking calls under locks, or inversion risk",
-      "workflowIntents": ["audit", "diagnose"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "diagnose"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -2723,12 +3481,23 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "systems-audit",
       "intent": "Find global quota and saturation side effects",
       "whenToUse": "When a symbol changes active counts, quotas, or max-concurrent constraints",
-      "workflowIntents": ["audit", "diagnose"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "diagnose"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -2788,16 +3557,30 @@
             "default": true
           }
         },
-        "required": ["source", "sink"]
+        "required": [
+          "source",
+          "sink"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "systems-audit",
       "intent": "Trace bounded untrusted source-to-sink data flow",
       "whenToUse": "When checking whether input reaches a dangerous sink without sanitization",
-      "workflowIntents": ["audit", "diagnose"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "diagnose"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -2831,12 +3614,19 @@
           },
           "sourceLanguage": {
             "type": "string",
-            "enum": ["cpp", "rust", "json"],
+            "enum": [
+              "cpp",
+              "rust",
+              "json"
+            ],
             "description": "Source language hint."
           },
           "targetLanguage": {
             "type": "string",
-            "enum": ["typescript", "json"],
+            "enum": [
+              "typescript",
+              "json"
+            ],
             "description": "Target language hint."
           },
           "maxFindings": {
@@ -2856,12 +3646,23 @@
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "systems-audit",
       "intent": "Compare cross-language payload and interface shapes",
       "whenToUse": "When C++/Rust/JSON payloads may not match TypeScript/JSON consumers",
-      "workflowIntents": ["audit", "diagnose"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "diagnose"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -2935,16 +3736,29 @@
             "default": true
           }
         },
-        "required": ["target"]
+        "required": [
+          "target"
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "systems-audit",
       "intent": "Simulate a target call returning a fault value",
       "whenToUse": "When reasoning about ENOSYS, failure returns, bypasses, and fallback paths",
-      "workflowIntents": ["audit", "diagnose"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "diagnose"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": true,
       "advisoryOnly": false
@@ -2958,7 +3772,14 @@
         "properties": {
           "action": {
             "type": "string",
-            "enum": ["repos", "routes", "tools", "packs", "groups", "sync"],
+            "enum": [
+              "repos",
+              "routes",
+              "tools",
+              "packs",
+              "groups",
+              "sync"
+            ],
             "description": "The discovery action to perform."
           },
           "repo": {
@@ -2966,17 +3787,29 @@
             "description": "Repository name or path."
           }
         },
-        "required": ["action"],
+        "required": [
+          "action"
+        ],
         "additionalProperties": true
       },
       "contractStatus": "stable",
       "structuredOutput": false,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "discovery",
       "intent": "Discover repositories, routes, tools, and analysis packs",
       "whenToUse": "When you need to find high-level project components or capabilities",
-      "workflowIntents": ["explore", "query"],
-      "producesEvidenceClasses": ["graph_evidence"],
+      "workflowIntents": [
+        "explore",
+        "query"
+      ],
+      "producesEvidenceClasses": [
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": false,
       "advisoryOnly": false,
@@ -3022,7 +3855,11 @@
         "properties": {
           "action": {
             "type": "string",
-            "enum": ["semantic", "cypher", "repomap"],
+            "enum": [
+              "semantic",
+              "cypher",
+              "repomap"
+            ],
             "description": "The search action to perform."
           },
           "repo": {
@@ -3046,6 +3883,11 @@
           "structured_output": {
             "type": "boolean",
             "description": "For action=\"semantic\", include structured_retrieval candidates, evidence references, and capability state when the backend can produce them. Default: false.",
+            "default": false
+          },
+          "retrieval_diagnostics": {
+            "type": "boolean",
+            "description": "For action=\"semantic\", include an opt-in retrieval diagnostics summary with lane counts and lane-specific warnings. Default: false.",
             "default": false
           },
           "task_context": {
@@ -3131,22 +3973,40 @@
           },
           "format": {
             "type": "string",
-            "enum": ["signatures", "outline", "full", "compressed"],
+            "enum": [
+              "signatures",
+              "outline",
+              "full",
+              "compressed",
+              "files"
+            ],
             "description": "Repomap output format.",
             "default": "signatures"
           }
         },
-        "required": ["action"],
+        "required": [
+          "action"
+        ],
         "additionalProperties": true
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "discovery",
       "intent": "Search the knowledge graph using semantic, Cypher, or repomap queries",
       "whenToUse": "When you need to find specific symbols, patterns, or files via the graph",
-      "workflowIntents": ["explore", "query"],
-      "producesEvidenceClasses": ["graph_evidence"],
+      "workflowIntents": [
+        "explore",
+        "query"
+      ],
+      "producesEvidenceClasses": [
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": false,
       "advisoryOnly": false,
@@ -3177,7 +4037,12 @@
         "properties": {
           "action": {
             "type": "string",
-            "enum": ["context", "evidence", "shape", "ipc"],
+            "enum": [
+              "context",
+              "evidence",
+              "shape",
+              "ipc"
+            ],
             "description": "The inspection action to perform."
           },
           "repo": {
@@ -3322,17 +4187,29 @@
             "description": "IPC trace symbol name."
           }
         },
-        "required": ["action"],
+        "required": [
+          "action"
+        ],
         "additionalProperties": true
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "discovery",
       "intent": "Inspect symbol context, evidence packs, API shapes, or IPC traces",
       "whenToUse": "When you need deep context or evidence for a specific symbol or route",
-      "workflowIntents": ["explore", "query"],
-      "producesEvidenceClasses": ["graph_evidence"],
+      "workflowIntents": [
+        "explore",
+        "query"
+      ],
+      "producesEvidenceClasses": [
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": false,
       "advisoryOnly": false,
@@ -3368,7 +4245,12 @@
         "properties": {
           "action": {
             "type": "string",
-            "enum": ["symbol", "batch", "route", "diff"],
+            "enum": [
+              "symbol",
+              "batch",
+              "route",
+              "diff"
+            ],
             "description": "The impact analysis action to perform."
           },
           "repo": {
@@ -3390,7 +4272,10 @@
           },
           "direction": {
             "type": "string",
-            "enum": ["upstream", "downstream"],
+            "enum": [
+              "upstream",
+              "downstream"
+            ],
             "description": "Impact direction for symbol and batch analysis. Defaults to upstream.",
             "default": "upstream"
           },
@@ -3468,17 +4353,29 @@
             "default": false
           }
         },
-        "required": ["action"],
+        "required": [
+          "action"
+        ],
         "additionalProperties": true
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "discovery",
       "intent": "Analyze impact of changes on symbols, routes, or batches of symbols",
       "whenToUse": "When checking the blast radius of a change (pre-edit or post-edit)",
-      "workflowIntents": ["explore", "query"],
-      "producesEvidenceClasses": ["graph_evidence"],
+      "workflowIntents": [
+        "explore",
+        "query"
+      ],
+      "producesEvidenceClasses": [
+        "graph_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": false,
       "advisoryOnly": false,
@@ -3564,17 +4461,29 @@
             "default": true
           }
         },
-        "required": ["action"],
+        "required": [
+          "action"
+        ],
         "additionalProperties": true
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "audit",
       "intent": "Run architectural audits, session workflows, and systems-audit checks",
       "whenToUse": "Primary entry point for the audit lifecycle and systems reasoning",
-      "workflowIntents": ["audit", "verify"],
-      "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
+      "workflowIntents": [
+        "audit",
+        "verify"
+      ],
+      "producesEvidenceClasses": [
+        "audit_evidence",
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": true,
       "advisoryOnly": false,
@@ -3806,7 +4715,11 @@
         "properties": {
           "action": {
             "type": "string",
-            "enum": ["rename", "replace", "sandbox"],
+            "enum": [
+              "rename",
+              "replace",
+              "sandbox"
+            ],
             "description": "The refactoring action to perform."
           },
           "repo": {
@@ -3818,17 +4731,28 @@
             "description": "Symbol name or UID alias for rename/replace actions."
           }
         },
-        "required": ["action"],
+        "required": [
+          "action"
+        ],
         "additionalProperties": true
       },
       "contractStatus": "stable",
       "structuredOutput": false,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "refactor",
       "intent": "Perform safe refactoring: rename symbols, replace bodies, or stage in sandbox",
       "whenToUse": "When applying code changes through the refactoring engine",
-      "workflowIntents": ["edit", "refactor"],
-      "producesEvidenceClasses": ["graph_evidence"],
+      "workflowIntents": [
+        "edit",
+        "refactor"
+      ],
+      "producesEvidenceClasses": [
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": false,
       "advisoryOnly": false,
@@ -3859,21 +4783,35 @@
         "properties": {
           "action": {
             "type": "string",
-            "enum": ["session", "route_map"],
+            "enum": [
+              "session",
+              "route_map"
+            ],
             "description": "The management action to perform."
           }
         },
-        "required": ["action"],
+        "required": [
+          "action"
+        ],
         "additionalProperties": true
       },
       "contractStatus": "stable",
       "structuredOutput": false,
-      "modes": ["general", "audit", "refactor"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor"
+      ],
       "category": "lifecycle",
       "intent": "Manage OntoIndex sessions and internal route maps",
       "whenToUse": "When performing administrative session or route management",
-      "workflowIntents": ["lifecycle", "setup"],
-      "producesEvidenceClasses": ["graph_evidence"],
+      "workflowIntents": [
+        "lifecycle",
+        "setup"
+      ],
+      "producesEvidenceClasses": [
+        "graph_evidence"
+      ],
       "permissionProfile": "write_apply",
       "auditAuthority": false,
       "advisoryOnly": false,
@@ -3899,7 +4837,12 @@
         "properties": {
           "action": {
             "type": "string",
-            "enum": ["trace", "drift", "context", "readiness"],
+            "enum": [
+              "trace",
+              "drift",
+              "context",
+              "readiness"
+            ],
             "description": "The docs action to perform."
           },
           "repo": {
@@ -3951,7 +4894,11 @@
           },
           "format": {
             "type": "string",
-            "enum": ["json", "inline", "both"],
+            "enum": [
+              "json",
+              "inline",
+              "both"
+            ],
             "description": "Optional derived formatter. Omitted/json returns canonical compact JSON only; inline/both also include inlineContext text derived from the JSON report.",
             "default": "json"
           },
@@ -3970,17 +4917,30 @@
             "maximum": 50
           }
         },
-        "required": ["action"],
+        "required": [
+          "action"
+        ],
         "additionalProperties": true
       },
       "contractStatus": "stable",
       "structuredOutput": true,
-      "modes": ["general", "audit", "refactor", "query-projects"],
+      "modes": [
+        "general",
+        "audit",
+        "refactor",
+        "query-projects"
+      ],
       "category": "docs",
       "intent": "Docs-specific safe agent reports for trace, drift, context, and readiness",
       "whenToUse": "When reasoning about requirements and documentation coverage",
-      "workflowIntents": ["docs", "readiness"],
-      "producesEvidenceClasses": ["advisory_memory", "docs_evidence"],
+      "workflowIntents": [
+        "docs",
+        "readiness"
+      ],
+      "producesEvidenceClasses": [
+        "advisory_memory",
+        "docs_evidence"
+      ],
       "permissionProfile": "read_only",
       "auditAuthority": false,
       "advisoryOnly": true,

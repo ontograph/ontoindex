@@ -9,6 +9,7 @@ const { embeddingPipelineMocks } = vi.hoisted(() => ({
   embeddingPipelineMocks: {
     runEmbeddingPipeline: vi.fn().mockResolvedValue(undefined),
     batchInsertEmbeddings: vi.fn().mockResolvedValue(undefined),
+    EMBEDDING_TEXT_VERSION: 'v2',
   },
 }));
 
@@ -24,6 +25,9 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   executeWithReusedStatement: vi.fn(),
   createFTSIndex: vi.fn().mockResolvedValue(undefined),
   closeLbug: vi.fn().mockResolvedValue(undefined),
+  fetchExistingEmbeddingHashes: vi
+    .fn()
+    .mockResolvedValue(new Map<string, { contentHash: string }>()),
   loadCachedEmbeddings: vi.fn().mockResolvedValue({
     embeddingNodeIds: new Set(),
     embeddings: [],
@@ -70,6 +74,7 @@ import {
   getLbugStats,
   loadGraphToLbug,
 } from '../../src/core/lbug/lbug-adapter.js';
+import { fetchExistingEmbeddingHashes } from '../../src/core/lbug/lbug-adapter.js';
 import {
   loadSidecarStoreState,
   MARKDOWN_DOCUMENT_ANALYZER_ID,
@@ -84,6 +89,9 @@ const executeWithReusedStatementMock = executeWithReusedStatement as unknown as 
 >;
 const getLbugStatsMock = getLbugStats as unknown as ReturnType<typeof vi.fn>;
 const loadGraphToLbugMock = loadGraphToLbug as unknown as ReturnType<typeof vi.fn>;
+const fetchExistingEmbeddingHashesMock = fetchExistingEmbeddingHashes as unknown as ReturnType<
+  typeof vi.fn
+>;
 const loadMetaMock = loadMeta as unknown as ReturnType<typeof vi.fn>;
 const saveMetaMock = saveMeta as unknown as ReturnType<typeof vi.fn>;
 
@@ -272,6 +280,47 @@ describe('runFullAnalysis snapshot persistence', () => {
       await expect(
         fs.stat(path.join(repoDir, '.ontoindex', 'analysis-checkpoint.json')),
       ).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('passes embedding checkpoint options and incremental hash source to pipeline', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
+    try {
+      loadMetaMock.mockResolvedValue({
+        lastCommit: 'previous-commit',
+        model_hash: '',
+      });
+      runPipelineMock.mockResolvedValue({
+        graph: createKnowledgeGraph(),
+        repoPath: repoDir,
+        totalFileCount: 0,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockImplementation(async () => []);
+
+      await runFullAnalysis(
+        repoDir,
+        {
+          embeddings: true,
+        },
+        { onProgress: vi.fn() },
+      );
+
+      expect(fetchExistingEmbeddingHashesMock).toHaveBeenCalledTimes(1);
+      expect(embeddingPipelineMocks.runEmbeddingPipeline).toHaveBeenCalledTimes(1);
+
+      const embeddingCall = embeddingPipelineMocks.runEmbeddingPipeline.mock.calls.at(-1);
+      expect(embeddingCall?.[6]).toBeInstanceOf(Map);
+      expect(embeddingCall?.[9]).toEqual({
+        path: path.join(repoDir, '.ontoindex', 'embedding-checkpoint.json'),
+        embeddingTextVersion: 'v2',
+        modelHash: '',
+        headCommit: 'abc123',
+      });
     } finally {
       await fs.rm(repoDir, { recursive: true, force: true });
     }

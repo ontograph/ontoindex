@@ -316,6 +316,82 @@ describe('gn_explore', () => {
     expect(report.taskPack?.topSymbols.length).toBeLessThanOrEqual(3);
     expect(report.taskPack?.topFiles.length).toBeLessThanOrEqual(3);
     expect(report.taskPack?.nextCalls[0]).toContain('inspect({ action: "context"');
+    expect(report.taskPack?.readFirstFiles.length).toBeLessThanOrEqual(5);
+    expect(report.taskPack?.readFirstFiles[0]).toMatchObject({
+      filePath: 'src/mod0.ts',
+      source: 'definition',
+    });
+    expect(report.taskPack?.omittedCounts).toEqual({
+      invalid: 0,
+      duplicate: 0,
+      truncated: 0,
+      total: 0,
+    });
+  });
+
+  it("format: 'files' returns compact read-first output", async () => {
+    mockBackendQuery.mockResolvedValue(makeDefaultQueryResult(6));
+
+    const report = await gnExplore('test-repo', {
+      query: 'search flow',
+      depth: 'deep',
+      format: 'files',
+    });
+
+    expect(report).toMatchObject({
+      version: 1,
+      query: {
+        original: 'search flow',
+        classified: {
+          intent: 'nl-conceptual',
+          confidence: 0.8,
+        },
+      },
+      warnings: [],
+      nextCalls: [
+        'inspect({ action: "context", repo: "test-repo", uid: "node-0" })',
+        'impact({ action: "symbol", repo: "test-repo", target_uid: "node-0", target: "fn0" })',
+      ],
+    });
+    expect(report.readFirstFiles).toEqual([
+      {
+        filePath: 'src/mod0.ts',
+        reason: 'top-ranked symbol file',
+        source: 'definition',
+      },
+      {
+        filePath: 'src/mod1.ts',
+        reason: 'symbol candidate #2',
+        source: 'definition',
+      },
+      {
+        filePath: 'src/mod2.ts',
+        reason: 'symbol candidate #3',
+        source: 'definition',
+      },
+      {
+        filePath: 'src/mod3.ts',
+        reason: 'symbol candidate #4',
+        source: 'definition',
+      },
+      {
+        filePath: 'src/mod4.ts',
+        reason: 'symbol candidate #5',
+        source: 'definition',
+      },
+    ]);
+    expect(report.omittedCounts).toEqual({
+      invalid: 0,
+      duplicate: 0,
+      truncated: 1,
+      total: 1,
+    });
+    expect((report as any).topSymbols).toBeUndefined();
+    expect((report as any).topProcesses).toBeUndefined();
+    expect((report as any).clusters).toBeUndefined();
+    expect((report as any).taskPack).toBeUndefined();
+    expect(mockGetFileSkeleton).not.toHaveBeenCalled();
+    expect(mockComputeGraphPath).not.toHaveBeenCalled();
   });
 
   it('forwards retrieval diagnostics profile through the explore facade', async () => {

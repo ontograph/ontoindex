@@ -493,7 +493,8 @@ function buildRetrievalDiagnosticsFromCandidates(
 async function buildVectorBackendDiagnostics(
   repo: SearchRepoHandle,
 ): Promise<SemanticVectorBackendStatus | undefined> {
-  if (process.env.ONTOINDEX_VECTOR_BACKEND?.trim().toLowerCase() !== 'zvec') {
+  const requestedBackend = process.env.ONTOINDEX_VECTOR_BACKEND?.trim().toLowerCase();
+  if (requestedBackend !== 'zvec' && requestedBackend !== 'auto') {
     return undefined;
   }
 
@@ -971,8 +972,8 @@ async function buildStructuredRetrievalResult(input: {
         status: usedCapabilities.has('embeddings')
           ? 'available'
           : missingCapabilities.has('embeddings')
-          ? 'unavailable'
-          : 'not-used',
+            ? 'unavailable'
+            : 'not-used',
         reason: missingCapabilities.has('embeddings') ? 'embeddings-not-populated' : undefined,
       },
     },
@@ -1958,7 +1959,7 @@ export async function query(
   if (includeSkeleton) {
     skeletonDepth = process.env.ONTOINDEX_SKELETON_DEPTH
       ? parseInt(process.env.ONTOINDEX_SKELETON_DEPTH, 10)
-      : SKELETON_DEPTH_BY_INTENT[queryIntent] ?? 3;
+      : (SKELETON_DEPTH_BY_INTENT[queryIntent] ?? 3);
     if (dedupedSymbols.length > 0 || definitions.length > 0) {
       timer.start('skeleton');
       const topFilePaths = Array.from(

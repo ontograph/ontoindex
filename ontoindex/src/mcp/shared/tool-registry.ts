@@ -619,8 +619,9 @@ const TOOL_METADATA_LIST: ToolContractMetadata[] = [
     kind: 'super',
     modes: ALL_AGENT_MODES,
     category: 'lifecycle',
-    intent: 'Report changed production symbols with missing test evidence',
-    whenToUse: 'After edits to confirm changed code still has linked or executed tests',
+    intent: 'Review post-edit test gaps or pre-edit target test evidence',
+    whenToUse:
+      'Before edits to find existing tests for a symbol/file/query, or after edits to confirm changed code still has linked or executed tests',
     contractStatus: 'stable',
     visibility: 'public',
     structuredOutput: true,
@@ -1227,12 +1228,7 @@ const EVIDENCE_SOURCE_BASE_METADATA: Record<
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-const REPO_OPTIONAL_SUPER_TOOL_NAMES = new Set([
-  'gn_help',
-  'gn_tool_contract',
-  'gn_quality_mode',
-  'gn_diagnose',
-]);
+const REPO_OPTIONAL_SUPER_TOOL_NAMES = new Set(['gn_help', 'gn_tool_contract', 'gn_quality_mode']);
 
 const CORE_PROFILE_SUPER_TOOL_NAMES: ReadonlySet<string> = new Set([
   'gn_help',

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { createRequire } from 'node:module';
 import {
   inferCallForm,
   extractReceiverName,
@@ -10,13 +11,27 @@ import TypeScript from 'tree-sitter-typescript';
 import Python from 'tree-sitter-python';
 import Java from 'tree-sitter-java';
 import CSharp from 'tree-sitter-c-sharp';
-import Kotlin from 'tree-sitter-kotlin';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import CPP from 'tree-sitter-cpp';
 import PHP from 'tree-sitter-php';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
+
+const require = createRequire(import.meta.url);
+const Kotlin = loadOptionalLanguage('tree-sitter-kotlin');
+const describeKotlin = Kotlin ? describe : describe.skip;
+
+function loadOptionalLanguage(packageName: string): Parser.Language | null {
+  try {
+    const language = require(packageName) as Parser.Language;
+    const testParser = new Parser();
+    testParser.setLanguage(language);
+    return language;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Helper: parse code, run the language query, and return all @call captures
@@ -232,7 +247,7 @@ describe('inferCallForm', () => {
     });
   });
 
-  describe('Kotlin', () => {
+  describeKotlin('Kotlin', () => {
     it('detects free call', () => {
       parser.setLanguage(Kotlin);
       const code = `fun main() { doStuff() }`;
@@ -408,7 +423,7 @@ describe('extractReceiverName', () => {
     });
   });
 
-  describe('Kotlin', () => {
+  describeKotlin('Kotlin', () => {
     it('extracts receiver from navigation_expression', () => {
       parser.setLanguage(Kotlin);
       const code = `fun main() { user.save() }`;

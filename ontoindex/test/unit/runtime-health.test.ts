@@ -4,6 +4,7 @@ import {
   deriveRuntimeHealth,
   type RuntimeAnalysisCheckpointState,
   type RuntimeAnalyzeLockState,
+  type RuntimeEmbeddingCheckpointState,
 } from '../../src/core/runtime/runtime-health.js';
 
 function makeLock(state: RuntimeAnalyzeLockState['state']): RuntimeAnalyzeLockState {
@@ -36,6 +37,16 @@ function makeCheckpoint(
   };
 }
 
+function makeEmbeddingCheckpoint(
+  state: RuntimeEmbeddingCheckpointState['present'],
+): RuntimeEmbeddingCheckpointState {
+  return {
+    path: '/tmp/fixture/.ontoindex/embedding-checkpoint.json',
+    present: state,
+    reason: state ? 'embedding-checkpoint.json exists from an incomplete embedding run' : undefined,
+  };
+}
+
 describe('deriveRuntimeHealth', () => {
   const base = {
     indexedCommit: 'abc123def456',
@@ -43,6 +54,7 @@ describe('deriveRuntimeHealth', () => {
     dirtyWorktree: false,
     analyzeLock: makeLock('absent'),
     analysisCheckpoint: makeCheckpoint('absent'),
+    embeddingCheckpoint: makeEmbeddingCheckpoint(false),
     metaReason: null,
     hasMeta: true,
   } as const;
@@ -131,6 +143,19 @@ describe('deriveRuntimeHealth', () => {
       freshnessState: 'failed-after-partial-run',
       degradedReason: 'native writer failed',
       repairCommand: 'ontoindex analyze --force',
+    });
+  });
+
+  it('degrades when an embedding checkpoint is present', () => {
+    expect(
+      deriveRuntimeHealth({
+        ...base,
+        embeddingCheckpoint: makeEmbeddingCheckpoint(true),
+      }),
+    ).toEqual({
+      freshnessState: 'degraded',
+      degradedReason: 'embedding-checkpoint.json exists from an incomplete embedding run',
+      repairCommand: 'ontoindex analyze',
     });
   });
 });

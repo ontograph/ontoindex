@@ -4,6 +4,21 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.25] - 2026-06-21
+
+### Added
+
+- Added target-mode test evidence discovery to `gn_test_gap` for symbols, files, and behavior
+  queries.
+- Added `gn_test_gap` to `gn_test_suggestions` handoff so existing targeted tests are reused before
+  suggesting a new test file.
+- Added read-first/files-only projection surfaces for exploration and module-neighborhood MCP tools.
+
+### Changed
+
+- Improved embedding, zvec, LadybugDB, runtime-health, and tree-sitter compatibility paths behind
+  the existing MCP/CLI surfaces.
+
 ## [1.9.24] - 2026-06-20
 
 ### Fixed

@@ -2,6 +2,11 @@ import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { personalizedPageRank, buildFullAdjacency } from '../../core/graph/pagerank.js';
 import { compressSymbol } from '../../core/graph/repomap-compressor.js';
 import { estimateTokens } from '../../core/wiki/llm-client.js';
+import {
+  projectReadFirstFiles,
+  type ReadFirstFileFact,
+  type ReadFirstProjection,
+} from '../shared/read-first-projection.js';
 import { enrichCandidateLabels } from './backend-symbol-resolution.js';
 
 // Only the fields repomap actually reads. Keeping this local avoids a
@@ -39,7 +44,7 @@ type RepomapRelationshipRow = {
   type: string;
 };
 
-type RepomapFormat = 'signatures' | 'outline' | 'full' | 'compressed';
+type RepomapFormat = 'signatures' | 'outline' | 'full' | 'compressed' | 'files';
 
 type RepomapParams = {
   focus: string[];
@@ -61,7 +66,7 @@ type RepomapSymbol = {
 
 type RepomapSuccessResult = {
   status: 'success';
-  format: RepomapFormat;
+  format: Exclude<RepomapFormat, 'files'>;
   token_budget: number;
   tokens_used: number;
   symbol_count: number;
@@ -69,15 +74,27 @@ type RepomapSuccessResult = {
   message?: string;
 };
 
+type RepomapFilesResult = {
+  status: 'success';
+  format: 'files';
+  token_budget: number;
+  tokens_used: number;
+  symbol_count: number;
+  readFirstFiles: ReadFirstProjection['readFirstFiles'];
+  omittedCounts: ReadFirstProjection['omittedCounts'];
+  message?: string;
+};
+
 type RepomapErrorResult = {
   error: string;
 };
 
-type RepomapResult = RepomapSuccessResult | RepomapErrorResult;
+type RepomapResult = RepomapSuccessResult | RepomapFilesResult | RepomapErrorResult;
 
 const FILE_FOCUS_FETCH_LIMIT = 200;
 const SYMBOL_FOCUS_FETCH_LIMIT = 20;
 const META_FETCH_LIMIT = 200;
+const REPOMAP_READ_FIRST_MAX_FILES = 5;
 
 function repomapRowValue(row: RepomapRawRow, key: RepomapRowKey, index: number): unknown {
   const keyedValue = (row as RepomapObjectRow)[key];
@@ -184,6 +201,39 @@ async function resolveRepomapFocusRows(repo: RepoHandle, item: string): Promise<
   return symbolRows.sort(sortRepomapRows);
 }
 
+function buildRepomapReadFirstProjection(
+  focusRows: RepomapNodeRow[],
+  rankedNodeIds: readonly string[],
+  metaMap: Map<string, RepomapNodeRow>,
+): ReadFirstProjection {
+  const facts: ReadFirstFileFact[] = [];
+
+  for (const row of focusRows) {
+    if (!row.filePath) continue;
+
+    facts.push({
+      filePath: row.filePath,
+      source: 'focus',
+      reason: 'focus file',
+      priority: 0,
+    });
+  }
+
+  for (const nodeId of rankedNodeIds) {
+    const row = metaMap.get(nodeId);
+    if (!row?.filePath) continue;
+
+    facts.push({
+      filePath: row.filePath,
+      source: 'repomap',
+      reason: `ranked symbol ${row.name ?? row.id}`,
+      priority: 1,
+    });
+  }
+
+  return projectReadFirstFiles(facts, { maxFiles: REPOMAP_READ_FIRST_MAX_FILES });
+}
+
 /**
  * Repomap tool — graph-ranked context summary.
  *
@@ -193,6 +243,14 @@ async function resolveRepomapFocusRows(repo: RepoHandle, item: string): Promise<
  * 4. Fetch signatures/code for top symbols within token budget
  * 5. Optional 'compressed' format prunes implementation bodies
  */
+export async function runRepomap<F extends RepomapFormat>(
+  repo: RepoHandle,
+  params: RepomapParams & { format?: F },
+): Promise<
+  F extends 'files'
+    ? RepomapFilesResult | RepomapErrorResult
+    : RepomapSuccessResult | RepomapErrorResult
+>;
 export async function runRepomap(repo: RepoHandle, params: RepomapParams): Promise<RepomapResult> {
   const { focus, token_budget = 4000, format = 'signatures' } = params;
 
@@ -207,11 +265,27 @@ export async function runRepomap(repo: RepoHandle, params: RepomapParams): Promi
   }
   const seedArray = dedupeIds(seedRows.map((row) => row.id));
   const seedIds = new Set<string>(seedArray);
+  const emptyReadFirstProjection = projectReadFirstFiles([], {
+    maxFiles: REPOMAP_READ_FIRST_MAX_FILES,
+  });
 
   // Step 2: Fetch local graph relationships for PageRank
   // We fetch nodes and relationships within depth 2 of the seeds to keep it fast
   // but still provide good context.
   if (seedArray.length === 0) {
+    if (format === 'files') {
+      return {
+        status: 'success',
+        format,
+        token_budget,
+        tokens_used: 0,
+        symbol_count: 0,
+        readFirstFiles: emptyReadFirstProjection.readFirstFiles,
+        omittedCounts: emptyReadFirstProjection.omittedCounts,
+        message: 'No focus items matched any indexed symbols.',
+      };
+    }
+
     return {
       status: 'success',
       format,
@@ -262,6 +336,20 @@ export async function runRepomap(repo: RepoHandle, params: RepomapParams): Promi
 
   const metaMap = new Map<string, RepomapNodeRow>();
   for (const row of normalizedMetaRows) metaMap.set(row.id, row);
+
+  const readFirstProjection = buildRepomapReadFirstProjection(seedRows, rankedNodeIds, metaMap);
+
+  if (format === 'files') {
+    return {
+      status: 'success',
+      format,
+      token_budget,
+      tokens_used: estimateTokens(JSON.stringify(readFirstProjection)),
+      symbol_count: metaMap.size,
+      readFirstFiles: readFirstProjection.readFirstFiles,
+      omittedCounts: readFirstProjection.omittedCounts,
+    };
+  }
 
   // Step 6: Fill budget
   const symbols: RepomapSymbol[] = [];

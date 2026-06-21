@@ -105,6 +105,11 @@ describe('ONTOINDEX_TOOLS', () => {
     expect(renameTool.inputSchema.required).toContain('new_name');
   });
 
+  it('repomap tool schema includes files format', () => {
+    const repomapTool = ONTOINDEX_TOOLS.find((t) => t.name === 'repomap')!;
+    expect(repomapTool.inputSchema.properties.format.enum).toContain('files');
+  });
+
   it('detect_changes tool has no required parameters', () => {
     const detectTool = ONTOINDEX_TOOLS.find((t) => t.name === 'detect_changes')!;
     expect(detectTool.inputSchema.required).toEqual([]);

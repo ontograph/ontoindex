@@ -203,6 +203,34 @@ describe('resolveTargetContext', () => {
     }
   });
 
+  it('uses the longest matching cwd repo path when multiple parent/child paths match', async () => {
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/repo/mono/sub/work');
+    const previousRepo = process.env.ONTOINDEX_MCP_REPO;
+    process.env.ONTOINDEX_MCP_REPO = 'parent-repo';
+    try {
+      const { resolveTargetContext } = await loadActualResolver();
+
+      const context = await resolveTargetContext(
+        {},
+        {
+          readRegistry: async () => [
+            { ...registryEntry, name: 'parent-repo', path: '/repo/mono' },
+            { ...registryEntry, name: 'child-repo', path: '/repo/mono/sub' },
+          ],
+          execGit: execGitFor(CURRENT_COMMIT),
+        },
+      );
+
+      expect(context.status).toBe('ok');
+      expect(context.repoLabel).toBe('child-repo');
+      expect(context.repoPath).toBe(path.resolve('/repo/mono/sub'));
+    } finally {
+      if (previousRepo === undefined) delete process.env.ONTOINDEX_MCP_REPO;
+      else process.env.ONTOINDEX_MCP_REPO = previousRepo;
+      cwdSpy.mockRestore();
+    }
+  });
+
   it('uses explicit projectPath before cwd and env fallback', async () => {
     const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/repo/other');
     const previousRepo = process.env.ONTOINDEX_MCP_REPO;
@@ -224,6 +252,34 @@ describe('resolveTargetContext', () => {
       expect(context.status).toBe('ok');
       expect(context.repoLabel).toBe(REPO_ID);
       expect(context.repoPath).toBe(path.resolve('/repo/test-repo'));
+    } finally {
+      if (previousRepo === undefined) delete process.env.ONTOINDEX_MCP_REPO;
+      else process.env.ONTOINDEX_MCP_REPO = previousRepo;
+      cwdSpy.mockRestore();
+    }
+  });
+
+  it('does not fall back to ONTOINDEX_MCP_REPO when explicit repo is provided', async () => {
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/repo/other');
+    const previousRepo = process.env.ONTOINDEX_MCP_REPO;
+    process.env.ONTOINDEX_MCP_REPO = 'repo-2';
+    try {
+      const { resolveTargetContext } = await loadActualResolver();
+
+      const context = await resolveTargetContext(
+        { repo: 'ontoindex' },
+        {
+          readRegistry: async () => [
+            { ...registryEntry, name: 'repo-1', path: '/repo/ontoindex' },
+            { ...registryEntry, name: 'repo-2', path: '/repo/other' },
+          ],
+          execGit: execGitFor(CURRENT_COMMIT),
+        },
+      );
+
+      expect(context.status).toBe('not-found');
+      expect(context.action).toContain('Repository "ontoindex" not found');
+      expect(context.repoLabel).toBeUndefined();
     } finally {
       if (previousRepo === undefined) delete process.env.ONTOINDEX_MCP_REPO;
       else process.env.ONTOINDEX_MCP_REPO = previousRepo;

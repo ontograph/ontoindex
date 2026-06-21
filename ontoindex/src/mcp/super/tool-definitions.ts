@@ -23,7 +23,7 @@ interface ToolDefinition {
     properties: Record<
       string,
       {
-        type: string;
+        type: string | string[];
         description?: string;
         enum?: string[];
         items?: { type: string };
@@ -88,6 +88,13 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           description:
             'Optional compact profile. task-pack adds bounded next calls; retrieval-diagnostics adds lane counts and lane-specific warnings without changing the default report shape.',
         },
+        format: {
+          type: 'string',
+          enum: ['json', 'files'],
+          description:
+            'Return the full report (json) or only read-first files with reasons (files). Default: json.',
+          default: 'json',
+        },
       },
       required: ['query'],
     },
@@ -127,6 +134,13 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           type: 'number',
           description: 'Window in days for "recently touched" classification. Default: 30.',
           default: 30,
+        },
+        format: {
+          type: 'string',
+          enum: ['json', 'files'],
+          description:
+            'Return the full report (json) or only ordered read-first file paths with reasons (files). Default: json.',
+          default: 'json',
         },
       },
       required: ['filePath'],
@@ -177,6 +191,13 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           type: 'number',
           description: 'Maximum items returned per category (callers, callees, etc). Default: 10.',
           default: 10,
+        },
+        format: {
+          type: 'string',
+          enum: ['json', 'files'],
+          description:
+            'Return the full report (json) or only ordered read-first file paths with reasons (files). Default: json.',
+          default: 'json',
         },
       },
       required: ['symbol'],
@@ -1652,7 +1673,7 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
   {
     name: 'gn_test_gap',
     description:
-      'Post-edit test evidence review: report changed production symbols that have no linked tests or executed test evidence. Filename-derived matches remain heuristic until richer test data is ingested.',
+      'Test evidence review: report changed production symbols with missing post-edit test evidence, or inspect pre-edit test evidence for a symbol, file, or behavior query. Filename-derived matches remain heuristic until richer test data is ingested.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1685,6 +1706,25 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           type: 'array',
           items: { type: 'string' },
           description: 'Tests actually executed.',
+        },
+        symbol: {
+          type: 'string',
+          description: 'Pre-edit target symbol to inspect for existing test evidence.',
+        },
+        filePath: {
+          type: 'string',
+          description: 'Pre-edit target file to inspect for existing test evidence.',
+        },
+        query: {
+          type: 'string',
+          description: 'Pre-edit behavior query to inspect for likely test evidence.',
+        },
+        maxItems: {
+          type: 'number',
+          description: 'Maximum target-mode evidence items returned. Default: 25, max: 100.',
+          default: 25,
+          minimum: 1,
+          maximum: 100,
         },
       },
       required: [],
@@ -1819,6 +1859,17 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
         path: { type: 'string', description: 'Preferred test file path.' },
         claimPattern: { type: 'string', description: 'Claim pattern or invariant under test.' },
         risk: { type: 'string', description: 'Risk category under test.' },
+        targetedCoverage: {
+          type: ['object', 'string'],
+          description:
+            'Existing target coverage from gn_test_gap. May be the legacy object shape or the target-mode coverage status string.',
+        },
+        evidence: {
+          type: 'array',
+          items: { type: 'object' },
+          description:
+            'Evidence array from gn_test_gap target mode. When evidence[].testFile is present, gn_test_suggestions reuses it instead of inferring a new file.',
+        },
         legacyResponse: legacyResponseProperty,
       },
       required: [],

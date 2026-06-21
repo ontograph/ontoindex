@@ -175,6 +175,50 @@ describe('zvec semantic backend routing', () => {
     expect(result[0]?.name).toBe('CacheStore');
   });
 
+  it('uses zvec when auto is requested and the mirror is fresh', async () => {
+    process.env.ONTOINDEX_VECTOR_BACKEND = 'auto';
+    const zvecQueryHits = vi.fn().mockResolvedValue([
+      {
+        nodeId: embeddingRows[0].nodeId,
+        chunkIndex: 0,
+        startLine: 10,
+        endLine: 40,
+        distance: 0.02,
+      },
+    ]);
+    setZvecSemanticSearchDriverForTests({
+      freshness: freshFreshness,
+      queryVectorHits: zvecQueryHits,
+    });
+
+    const result = await semanticSearch(repo, 'cache store', 5);
+
+    expect(zvecQueryHits).toHaveBeenCalledTimes(1);
+    expect(mockExecuteQuery).not.toHaveBeenCalledWith(
+      'repo-1',
+      expect.stringContaining('QUERY_VECTOR_INDEX'),
+    );
+    expect(result[0]?.name).toBe('CacheStore');
+  });
+
+  it('falls back to LadybugDB when a stale zvec mirror is requested via auto', async () => {
+    process.env.ONTOINDEX_VECTOR_BACKEND = 'auto';
+    const zvecQueryHits = vi.fn();
+    setZvecSemanticSearchDriverForTests({
+      freshness: staleFreshness,
+      queryVectorHits: zvecQueryHits,
+    });
+
+    const result = await semanticSearch(repo, 'cache store', 5);
+
+    expect(zvecQueryHits).not.toHaveBeenCalled();
+    expect(mockExecuteQuery).toHaveBeenCalledWith(
+      'repo-1',
+      expect.stringContaining('QUERY_VECTOR_INDEX'),
+    );
+    expect(result[0]?.name).toBe('CacheStore');
+  });
+
   it('trips the zvec breaker after the first runtime query failure and skips later retries until reset', async () => {
     process.env.ONTOINDEX_VECTOR_BACKEND = 'zvec';
     const zvecQueryHits = vi
@@ -216,6 +260,20 @@ describe('zvec semantic backend routing', () => {
 
     expect(status).toMatchObject({
       requestedBackend: 'zvec',
+      actualBackend: 'lbug',
+      freshness: 'missing',
+      fallbackReason: expect.stringContaining('unavailable'),
+      circuitBroken: false,
+    });
+  });
+
+  it('reports requestedBackend as auto when auto is configured but zvec is unavailable', async () => {
+    process.env.ONTOINDEX_VECTOR_BACKEND = 'auto';
+
+    const status = await getSemanticVectorBackendStatus({ id: 'repo-2' } as any);
+
+    expect(status).toMatchObject({
+      requestedBackend: 'auto',
       actualBackend: 'lbug',
       freshness: 'missing',
       fallbackReason: expect.stringContaining('unavailable'),

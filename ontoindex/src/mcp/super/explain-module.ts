@@ -14,6 +14,10 @@ import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { execFileText } from '../../core/process/exec-file.js';
 import { getFileSkeleton } from '../../core/search/skeleton.js';
 import { listRegisteredRepos } from '../../storage/repo-manager.js';
+import {
+  projectReadFirstFiles,
+  type ReadFirstProjection,
+} from '../shared/read-first-projection.js';
 
 const PUBLIC_API_LIMIT = 500;
 const SOURCE_READ_MAX_BYTES = 1024 * 1024;
@@ -98,6 +102,7 @@ const PUBLIC_API_KIND_BY_LOWERCASE = new Map<string, PublicApiKind>([
 
 export interface ExplainModuleParams {
   filePath: string;
+  format?: 'json' | 'files';
   includeSkeleton?: boolean; // default: true
   includePublicAPI?: boolean; // default: true
   includeCoChange?: boolean; // default: true
@@ -108,6 +113,8 @@ export interface ExplainModuleReport {
   version: 1;
   filePath: string;
   fileSkeleton?: string;
+  readFirstFiles: ReadFirstProjection['readFirstFiles'];
+  omittedCounts: ReadFirstProjection['omittedCounts'];
   publicAPI: Array<{
     name: string;
     kind: PublicApiKind;
@@ -120,6 +127,11 @@ export interface ExplainModuleReport {
   fileStats: { lineCount: number; symbolCount: number; importCount: number };
   warnings: string[];
 }
+
+export type ExplainModuleFilesReport = Pick<
+  ExplainModuleReport,
+  'version' | 'filePath' | 'readFirstFiles' | 'omittedCounts' | 'warnings'
+>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -264,8 +276,16 @@ async function resolveRepoRoot(repoId: string): Promise<string> {
 
 export async function gnExplainModule(
   repoId: string,
+  params: ExplainModuleParams & { format: 'files' },
+): Promise<ExplainModuleFilesReport>;
+export async function gnExplainModule(
+  repoId: string,
   params: ExplainModuleParams,
-): Promise<ExplainModuleReport> {
+): Promise<ExplainModuleReport>;
+export async function gnExplainModule(
+  repoId: string,
+  params: ExplainModuleParams,
+): Promise<ExplainModuleReport | ExplainModuleFilesReport> {
   const warnings: string[] = [];
   const repoRoot = await resolveRepoRoot(repoId);
 
@@ -279,14 +299,25 @@ export async function gnExplainModule(
   );
 
   if (fileRows.length === 0) {
-    return {
+    const emptyReadFirstProjection = projectReadFirstFiles();
+    const compactReport: ExplainModuleFilesReport = {
       version: 1,
       filePath: params.filePath,
+      readFirstFiles: emptyReadFirstProjection.readFirstFiles,
+      omittedCounts: emptyReadFirstProjection.omittedCounts,
+      warnings: ['file not in index — run ontoindex analyze'],
+    };
+
+    if (params.format === 'files') {
+      return compactReport;
+    }
+
+    return {
+      ...compactReport,
       publicAPI: [],
       coChangedFiles: [],
       recentlyTouched: { lastCommitDate: '', daysAgo: -1 },
       fileStats: { lineCount: 0, symbolCount: 0, importCount: 0 },
-      warnings: ['file not in index — run ontoindex analyze'],
     };
   }
 
@@ -382,6 +413,24 @@ export async function gnExplainModule(
     }
   }
 
+  const readFirstProjection = projectReadFirstFiles(
+    [
+      {
+        filePath: params.filePath,
+        reason: 'target module file',
+        source: 'module',
+        priority: 0,
+      },
+      ...coChangedFiles.map((file, index) => ({
+        filePath: file.path,
+        reason: index === 0 ? 'co-changed file' : `co-changed file #${index + 1}`,
+        source: 'file',
+        priority: 1 + index / 1000,
+      })),
+    ],
+    { maxFiles: 5 },
+  );
+
   // ---- 6. Last-commit date -----------------------------------------------
   let lastCommitDate = '';
   let daysAgo = -1;
@@ -467,6 +516,8 @@ export async function gnExplainModule(
   const report: ExplainModuleReport = {
     version: 1,
     filePath: params.filePath,
+    readFirstFiles: readFirstProjection.readFirstFiles,
+    omittedCounts: readFirstProjection.omittedCounts,
     publicAPI,
     coChangedFiles,
     recentlyTouched: { lastCommitDate, daysAgo },
@@ -479,6 +530,11 @@ export async function gnExplainModule(
   }
   if (cluster !== undefined) {
     report.cluster = cluster;
+  }
+
+  if (params.format === 'files') {
+    const { version, filePath, readFirstFiles, omittedCounts, warnings } = report;
+    return { version, filePath, readFirstFiles, omittedCounts, warnings };
   }
 
   return report;

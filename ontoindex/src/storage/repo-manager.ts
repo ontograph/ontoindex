@@ -34,6 +34,7 @@ export interface RepoMeta {
    * from different model versions in the same index.
    */
   model_hash?: string;
+  embeddingVectorIndexDigest?: string;
   stats?: {
     files?: number;
     nodes?: number;

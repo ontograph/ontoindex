@@ -177,7 +177,7 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
         },
         format: {
           type: 'string',
-          enum: ['signatures', 'outline', 'full', 'compressed'],
+          enum: ['signatures', 'outline', 'full', 'compressed', 'files'],
           description: 'Repomap output format.',
           default: 'signatures',
         },

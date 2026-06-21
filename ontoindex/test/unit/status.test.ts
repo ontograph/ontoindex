@@ -150,6 +150,10 @@ describe('status formatting', () => {
         present: false,
         state: 'absent' as const,
       },
+      embeddingCheckpoint: {
+        path: '/tmp/fixture/.ontoindex/embedding-checkpoint.json',
+        present: false,
+      },
       warnings: [],
     };
 
@@ -160,6 +164,7 @@ describe('status formatting', () => {
       '  Dirty worktree: no',
       '  Analyze lock: absent',
       '  Analysis checkpoint: absent',
+      '  Embedding checkpoint: absent',
       '  Repair: ontoindex status',
     ]);
   });
@@ -265,6 +270,10 @@ describe('status command behavior', () => {
           path: '/tmp/fixture/.ontoindex/analysis-checkpoint.json',
           present: false,
           state: 'absent',
+        },
+        embeddingCheckpoint: {
+          path: '/tmp/fixture/.ontoindex/embedding-checkpoint.json',
+          present: false,
         },
         warnings: [],
       }),
@@ -474,6 +483,10 @@ describe('status command behavior', () => {
         path: `${repoPath}/.ontoindex/analysis-checkpoint.json`,
         present: false,
         state: 'absent',
+      },
+      embeddingCheckpoint: {
+        path: `${repoPath}/.ontoindex/embedding-checkpoint.json`,
+        present: false,
       },
       warnings: [],
     });

@@ -37,7 +37,7 @@ export interface SemanticVectorSearchRow {
 
 export interface SemanticVectorSearchPlan {
   backend: 'lbug' | 'zvec';
-  requestedBackend: 'lbug' | 'zvec';
+  requestedBackend: 'lbug' | 'zvec' | 'auto';
   available: boolean;
   freshness: ZvecMirrorFreshnessResult['status'];
   fallbackReason?: string;
@@ -53,7 +53,7 @@ export interface ZvecSemanticSearchDriver {
 }
 
 export interface SemanticVectorBackendStatus {
-  requestedBackend: 'lbug' | 'zvec';
+  requestedBackend: 'lbug' | 'zvec' | 'auto';
   actualBackend: 'lbug' | 'zvec';
   freshness: ZvecMirrorFreshnessResult['status'] | 'unknown';
   fallbackReason?: string;
@@ -87,17 +87,24 @@ const errorMessage = (error: unknown): string => {
   return 'unknown error';
 };
 
-const normalizeBackendBackend = (value: unknown): 'lbug' | 'zvec' | null => {
+const normalizeBackendBackend = (value: unknown): 'lbug' | 'zvec' | 'auto' | null => {
   if (typeof value !== 'string') return null;
-  return value.trim().toLowerCase() === 'zvec'
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'zvec'
     ? 'zvec'
-    : value.trim().toLowerCase() === 'lbug'
-    ? 'lbug'
-    : null;
+    : normalized === 'auto'
+      ? 'auto'
+      : normalized === 'lbug'
+        ? 'lbug'
+        : null;
 };
 
-const resolveRequestedVectorBackend = (): 'lbug' | 'zvec' => {
-  return normalizeBackendBackend(process.env.ONTOINDEX_VECTOR_BACKEND) === 'zvec' ? 'zvec' : 'lbug';
+const resolveRequestedVectorBackend = (): 'lbug' | 'zvec' | 'auto' => {
+  return normalizeBackendBackend(process.env.ONTOINDEX_VECTOR_BACKEND) ?? 'lbug';
+};
+
+const isZvecRequested = (requestedBackend: 'lbug' | 'zvec' | 'auto'): boolean => {
+  return requestedBackend !== 'lbug';
 };
 
 const pathExists = async (candidate: string): Promise<boolean> => {
@@ -526,7 +533,7 @@ export async function getSemanticVectorBackendStatus(
 ): Promise<SemanticVectorBackendStatus> {
   const requestedBackend = resolveRequestedVectorBackend();
 
-  if (requestedBackend !== 'zvec') {
+  if (!isZvecRequested(requestedBackend)) {
     return {
       requestedBackend,
       actualBackend: 'lbug',
@@ -625,14 +632,14 @@ export async function resolveSemanticVectorRowsFetcher(
   fallbackFetchRows: (fetchLimit: number) => Promise<SemanticVectorSearchRow[]>,
 ): Promise<SemanticVectorSearchPlan> {
   const requestedBackend = resolveRequestedVectorBackend();
-  if (requestedBackend !== 'zvec' || zvecCircuitBroken) {
+  if (!isZvecRequested(requestedBackend) || zvecCircuitBroken) {
     return {
       backend: 'lbug',
       requestedBackend,
-      available: requestedBackend !== 'zvec',
+      available: !isZvecRequested(requestedBackend),
       freshness: zvecCircuitBroken ? 'error' : 'fresh',
       fallbackReason: zvecCircuitBroken
-        ? zvecCircuitReason ?? 'zvec circuit breaker tripped'
+        ? (zvecCircuitReason ?? 'zvec circuit breaker tripped')
         : undefined,
       fetchRows: fallbackFetchRows,
     };

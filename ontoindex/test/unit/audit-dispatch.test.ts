@@ -319,6 +319,50 @@ describe('manager audit dispatch wrapper', () => {
     );
   });
 
+  it('reports pre-edit target test evidence in gn_test_gap', async () => {
+    await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+    await fs.mkdir(path.join(repo, 'test'), { recursive: true });
+    await fs.writeFile(path.join(repo, 'package.json'), '{"scripts":{"test":"vitest run"}}\n');
+    await fs.writeFile(path.join(repo, 'src/process.cpp'), 'void spawnChild() {}\n');
+    await fs.writeFile(path.join(repo, 'test/process.test.ts'), 'test("spawnChild", () => {});\n');
+
+    const result = await gnTestGap(repo, {
+      repo,
+      filePath: 'src/process.cpp',
+    });
+
+    expect(result).toMatchObject({
+      action: 'test-gap',
+      mode: 'target',
+      status: 'PASS',
+      targetedCoverage: 'found',
+    });
+    expect(result.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          testFile: 'test/process.test.ts',
+          evidenceClass: 'path-heuristic',
+        }),
+      ]),
+    );
+    expect(result.runCommand).toBe('npm test -- test/process.test.ts');
+  });
+
+  it('points missing pre-edit target coverage to gn_test_suggestions', async () => {
+    const result = await gnTestGap(repo, {
+      repo,
+      symbol: 'spawnChild',
+    });
+
+    expect(result).toMatchObject({
+      action: 'test-gap',
+      mode: 'target',
+      status: 'NEEDS-VERIFY',
+      targetedCoverage: 'not-found',
+      nextTools: ['gn_test_suggestions'],
+    });
+  });
+
   it('does not count markdown headings as changed production symbols in test gaps', () => {
     const result = buildTestGapReport({
       symbolRecords: [

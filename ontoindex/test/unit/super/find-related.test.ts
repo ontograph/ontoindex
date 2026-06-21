@@ -79,6 +79,16 @@ function siblingRow(
   return { nodeId, name, filePath, clusterName };
 }
 
+/** A close-match row. */
+function closeMatchRow(
+  nodeId = 'Function:src/auth.ts:parseToken',
+  name = 'parseToken',
+  filePath = 'src/auth.ts',
+  kind = 'Function',
+): any {
+  return { nodeId, name, filePath, kind };
+}
+
 // ---------------------------------------------------------------------------
 // Tests.
 // ---------------------------------------------------------------------------
@@ -110,6 +120,46 @@ describe('gnFindRelated', () => {
     const firstCall = mockExecuteParameterized.mock.calls[0];
     expect(firstCall[1]).toContain('s.name = $name');
     expect(firstCall[2]).toEqual({ name: 'parseToken' });
+  });
+
+  // ---- Test 1b: read-first projection is included in default output -------
+
+  it('projects read-first files and omitted counts in the default report', async () => {
+    mockExecuteParameterized
+      .mockResolvedValueOnce([resolvedRow()]) // resolve
+      .mockResolvedValueOnce([
+        callerRow('Function:src/app.ts:handle', 'handle', 'src/app.ts'),
+        callerRow('Function:src/middleware.ts:gate', 'gate', 'src/middleware.ts'),
+      ]) // callers
+      .mockResolvedValueOnce([calleeRow()]) // callees
+      .mockResolvedValueOnce([coChangedRow('src/utils.ts')]) // co-changed
+      .mockResolvedValueOnce([siblingRow()]); // cluster siblings
+
+    const report = await gnFindRelated(REPO_ID, { symbol: 'parseToken' });
+
+    expect(report.readFirstFiles.map((item) => item.filePath)).toEqual([
+      'src/auth.ts',
+      'src/app.ts',
+      'src/middleware.ts',
+      'src/utils.ts',
+      'src/other.ts',
+    ]);
+    expect(report.readFirstFiles.map((item) => item.source)).toEqual([
+      'definition',
+      'caller',
+      'caller',
+      'callee',
+      'cluster',
+    ]);
+    expect(report.omittedCounts).toEqual({
+      invalid: 0,
+      duplicate: 1,
+      truncated: 0,
+      total: 1,
+    });
+    expect(report.callers).toHaveLength(2);
+    expect(report.callees).toHaveLength(1);
+    expect(report.clusterSiblings).toHaveLength(1);
   });
 
   // ---- Test 2: callers limited to maxItemsPerCategory ---------------------
@@ -202,6 +252,39 @@ describe('gnFindRelated', () => {
     expect(report.warnings).toHaveLength(0);
   });
 
+  // ---- Test 5a: compact files format returns read-first projection only ----
+
+  it('returns only the files projection when format is files', async () => {
+    mockExecuteParameterized
+      .mockResolvedValueOnce([resolvedRow()]) // resolve
+      .mockResolvedValueOnce([callerRow()]) // callers
+      .mockResolvedValueOnce([calleeRow()]) // callees
+      .mockResolvedValueOnce([coChangedRow()]) // co-changed
+      .mockResolvedValueOnce([siblingRow()]); // cluster siblings
+
+    const report = await gnFindRelated(REPO_ID, { symbol: 'parseToken', format: 'files' });
+
+    expect(report).toEqual(
+      expect.objectContaining({
+        version: 1,
+        resolvedSymbol: expect.objectContaining({ nodeId: 'Function:src/auth.ts:parseToken' }),
+        readFirstFiles: expect.any(Array),
+        omittedCounts: expect.objectContaining({
+          invalid: 0,
+          duplicate: 0,
+          truncated: 0,
+          total: 0,
+        }),
+        warnings: [],
+      }),
+    );
+    expect(report).not.toHaveProperty('callers');
+    expect(report).not.toHaveProperty('callees');
+    expect(report).not.toHaveProperty('coChangedFiles');
+    expect(report).not.toHaveProperty('clusterSiblings');
+    expect(report).not.toHaveProperty('crossRepoReferences');
+  });
+
   // ---- Test 5b: crossRepoReferences empty + warning when includeCrossRepo true
 
   it('returns empty crossRepoReferences and warning when includeCrossRepo is true', async () => {
@@ -225,7 +308,12 @@ describe('gnFindRelated', () => {
 
   it('returns warning and empty report when symbol is not found', async () => {
     // Fuzzy lookup returns no rows
-    mockExecuteParameterized.mockResolvedValueOnce([]);
+    mockExecuteParameterized
+      .mockResolvedValueOnce([]) // resolve
+      .mockResolvedValueOnce([
+        closeMatchRow(),
+        closeMatchRow('Class:src/auth.ts:Auth', 'Auth', 'src/auth.ts', 'Class'),
+      ]); // close matches
 
     const report = await gnFindRelated(REPO_ID, { symbol: 'nonExistentSymbol' });
 
@@ -235,7 +323,69 @@ describe('gnFindRelated', () => {
     expect(report.callees).toHaveLength(0);
     expect(report.coChangedFiles).toHaveLength(0);
     expect(report.clusterSiblings).toHaveLength(0);
+    expect(report.readFirstFiles).toHaveLength(0);
+    expect(report.omittedCounts).toEqual({
+      invalid: 0,
+      duplicate: 0,
+      truncated: 0,
+      total: 0,
+    });
     expect(report.warnings).toContain('symbol not found in index');
+    expect(report.closeMatches).toHaveLength(2);
+    expect(report.closeMatches?.[0]).toEqual(
+      expect.objectContaining({
+        nodeId: 'Function:src/auth.ts:parseToken',
+        name: 'parseToken',
+        filePath: 'src/auth.ts',
+        kind: 'Function',
+        suggestedNextCalls: [
+          'inspect({ action: "context", repo: "test-repo", uid: "Function:src/auth.ts:parseToken" })',
+          'impact({ action: "symbol", repo: "test-repo", target_uid: "Function:src/auth.ts:parseToken", target: "parseToken" })',
+        ],
+      }),
+    );
+    const resolveCall = mockExecuteParameterized.mock.calls[0];
+    const closeMatchCall = mockExecuteParameterized.mock.calls[1];
+    expect(resolveCall[1]).toContain('s.name = $name');
+    expect(closeMatchCall[1]).toContain('toLower(s.name) CONTAINS $needle');
+    expect(closeMatchCall[2]).toEqual({ needle: 'nonExistentSymbol'.toLowerCase(), max: 5 });
+  });
+
+  // ---- Test 6b: compact files format includes close matches on not found ---
+
+  it('returns close matches in files format when symbol is not found', async () => {
+    mockExecuteParameterized
+      .mockResolvedValueOnce([]) // resolve
+      .mockResolvedValueOnce([closeMatchRow()]); // close matches
+
+    const report = await gnFindRelated(REPO_ID, { symbol: 'nonExistentSymbol', format: 'files' });
+
+    expect(report).toEqual(
+      expect.objectContaining({
+        version: 1,
+        resolvedSymbol: expect.objectContaining({ nodeId: '' }),
+        closeMatches: expect.arrayContaining([
+          expect.objectContaining({
+            nodeId: 'Function:src/auth.ts:parseToken',
+            suggestedNextCalls: expect.arrayContaining([
+              'inspect({ action: "context", repo: "test-repo", uid: "Function:src/auth.ts:parseToken" })',
+            ]),
+          }),
+        ]),
+        readFirstFiles: [],
+        omittedCounts: expect.objectContaining({
+          invalid: 0,
+          duplicate: 0,
+          truncated: 0,
+          total: 0,
+        }),
+        warnings: ['symbol not found in index'],
+      }),
+    );
+    expect(report).not.toHaveProperty('callers');
+    expect(report).not.toHaveProperty('callees');
+    expect(report).not.toHaveProperty('coChangedFiles');
+    expect(report).not.toHaveProperty('clusterSiblings');
   });
 
   // ---- Test 7: canonical nodeId bypasses fuzzy lookup ----------------------

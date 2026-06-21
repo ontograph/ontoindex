@@ -1067,7 +1067,6 @@ const REPO_AGNOSTIC_TOOL_NAMES = [
   'gn_help',
   'gn_tool_contract',
   'gn_quality_mode',
-  'gn_diagnose',
 ] as const;
 
 const REPO_AGNOSTIC_TOOL_METHODS = new Set<string>(REPO_AGNOSTIC_TOOL_NAMES);
@@ -1083,6 +1082,7 @@ const KNOWN_METHODS = new Set<string>([
   'cypher',
   'context',
   'impact',
+  'gn_diagnose',
   'detect_changes',
   'cycle_detect',
   'coupling_matrix',
@@ -1180,10 +1180,6 @@ export class LocalBackend implements BackendPort {
         const { gnToolContract } = await import('../super/tool-contract.js');
         return gnToolContract(params as any);
       },
-      gn_diagnose: async (params) => {
-        const { gnDiagnose } = await import('../super/diagnose.js');
-        return gnDiagnose('', params as any);
-      },
     };
     this.repoToolHandlers = {
       query: (repo, params) => this.query(repo, params as QueryParams),
@@ -1193,6 +1189,10 @@ export class LocalBackend implements BackendPort {
       },
       context: (repo, params) => this.context(repo, params as ContextParams),
       impact: (repo, params) => this.impact(repo, params as ImpactParams),
+      gn_diagnose: async (repo, params) => {
+        const { gnDiagnose } = await import('../super/diagnose.js');
+        return gnDiagnose(repo.id, params as any);
+      },
       detect_changes: async (repo, params) => {
         await this.ensureInitialized(repo.id);
         return detectChangesImpl(repo, params as DetectChangesParams);

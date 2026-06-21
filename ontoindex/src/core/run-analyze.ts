@@ -24,6 +24,8 @@ import {
   executeWithReusedStatement,
   closeLbug,
   loadCachedEmbeddings,
+  fetchExistingEmbeddingHashes,
+  type ExistingEmbeddingHashEntry,
   createFTSIndex,
 } from './lbug/lbug-adapter.js';
 import {
@@ -56,6 +58,7 @@ import {
   getSidecarStorePath,
   LocalSidecarStore,
 } from './ingestion/enrichment/index.js';
+import { EMBEDDING_TEXT_VERSION } from './embeddings/embedding-pipeline.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -792,6 +795,7 @@ export async function runFullAnalysis(
   const repoHasGit = hasGitDir(repoPath);
   const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
   const existingMeta = await loadMeta(storagePath);
+  let embeddingVectorIndexDigest = existingMeta?.embeddingVectorIndexDigest;
 
   // ── Embedding model hash guard ────────────────────────────────────
   // Refuse to re-embed against an existing index built with a different
@@ -852,6 +856,7 @@ export async function runFullAnalysis(
   // ── Cache embeddings from existing index before rebuild ────────────
   let cachedEmbeddingNodeIds = new Set<string>();
   let cachedEmbeddings: CachedEmbedding[] = [];
+  let existingEmbeddings: Map<string, ExistingEmbeddingHashEntry> | undefined;
 
   if (embeddingsEnabledForRun && existingMeta && !options.force) {
     try {
@@ -860,6 +865,7 @@ export async function runFullAnalysis(
       const cached = await loadCachedEmbeddings();
       cachedEmbeddingNodeIds = cached.embeddingNodeIds;
       cachedEmbeddings = cached.embeddings;
+      existingEmbeddings = await fetchExistingEmbeddingHashes(executeQuery);
       await closeLbug();
     } catch {
       try {
@@ -1095,19 +1101,32 @@ export async function runFullAnalysis(
         httpMode ? 'Connecting to embedding endpoint...' : 'Loading embedding model...',
       );
       const { runEmbeddingPipeline } = await import('./embeddings/embedding-pipeline.js');
-      // Build a Map<nodeId, contentHash> from cached embeddings for incremental mode
-      let existingEmbeddings: Map<string, string> | undefined;
+      // Use durable rows as the incremental source of truth when available.
+      let incrementalEmbeddings: Map<string, ExistingEmbeddingHashEntry> | undefined =
+        existingEmbeddings;
+
+      // If durable rows are not available, keep previous fast path behavior.
       if (cachedEmbeddingNodeIds.size > 0) {
-        existingEmbeddings = new Map<string, string>();
+        if (!incrementalEmbeddings) {
+          incrementalEmbeddings = new Map<string, ExistingEmbeddingHashEntry>();
+        }
         for (const e of cachedEmbeddings) {
-          existingEmbeddings.set(e.nodeId, e.contentHash ?? STALE_HASH_SENTINEL);
+          if (!incrementalEmbeddings.has(e.nodeId)) {
+            incrementalEmbeddings.set(e.nodeId, e.contentHash ?? STALE_HASH_SENTINEL);
+          }
         }
       }
 
       const { readServerMapping } = await import('./embeddings/server-mapping.js');
       const projectName = path.basename(repoPath);
       const serverName = await readServerMapping(projectName);
-      await runEmbeddingPipeline(
+      const embeddingCheckpointOptions = {
+        path: path.join(storagePath, 'embedding-checkpoint.json'),
+        embeddingTextVersion: EMBEDDING_TEXT_VERSION,
+        modelHash: process.env.ONTOINDEX_EMBEDDING_MODEL_HASH ?? existingMeta?.model_hash ?? '',
+        headCommit: currentCommit,
+      };
+      const embeddingPipelineResult = await runEmbeddingPipeline(
         executeQuery,
         executeWithReusedStatement,
         (p) => {
@@ -1123,8 +1142,15 @@ export async function runFullAnalysis(
         {},
         cachedEmbeddingNodeIds.size > 0 ? cachedEmbeddingNodeIds : undefined,
         { repoName: projectName, serverName },
-        existingEmbeddings,
+        incrementalEmbeddings,
+        undefined,
+        embeddingVectorIndexDigest,
+        embeddingCheckpointOptions,
       );
+
+      if (embeddingPipelineResult?.vectorIndexDigest) {
+        embeddingVectorIndexDigest = embeddingPipelineResult.vectorIndexDigest;
+      }
     }
 
     // ── Phase 5: Finalize (98–100%) ───────────────────────────────────
@@ -1228,6 +1254,7 @@ export async function runFullAnalysis(
         embeddings: embeddingCount,
       },
       ...(includePaths.length > 0 ? { includePaths } : {}),
+      ...(embeddingVectorIndexDigest !== undefined ? { embeddingVectorIndexDigest } : {}),
       ...(degradedFiles.size > 0
         ? {
             degradedFiles: [...degradedFiles.entries()].map(([filePath, reason]) => ({

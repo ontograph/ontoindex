@@ -376,13 +376,13 @@ function buildRuntimeContextSummary(options: {
           indexedHead: targetContext.indexedHead ?? undefined,
         }
       : runtimeHealth
-      ? {
-          repoLabel: runtimeHealth.repoLabel,
-          repoPath: runtimeHealth.repoPath,
-          targetHead: runtimeHealth.currentCommit || undefined,
-          indexedHead: runtimeHealth.indexedCommit || undefined,
-        }
-      : {}),
+        ? {
+            repoLabel: runtimeHealth.repoLabel,
+            repoPath: runtimeHealth.repoPath,
+            targetHead: runtimeHealth.currentCommit || undefined,
+            indexedHead: runtimeHealth.indexedCommit || undefined,
+          }
+        : {}),
     freshness:
       indexFreshness === undefined ? 'unknown' : indexFreshness.isStale ? 'stale' : 'fresh',
     dirtyWorktree: targetContext?.dirtyWorktree ?? runtimeHealth?.dirtyWorktree ?? null,
@@ -391,14 +391,14 @@ function buildRuntimeContextSummary(options: {
       embeddings === undefined
         ? 'unknown'
         : embeddings.status === 'ok'
-        ? 'available'
-        : embeddings.status === 'metadata-unavailable'
-        ? 'unknown'
-        : 'absent',
+          ? 'available'
+          : embeddings.status === 'metadata-unavailable'
+            ? 'unknown'
+            : 'absent',
     sidecar:
       targetContext?.status === 'ok'
         ? targetContext.sidecar.status
-        : targetContext?.status ?? 'unknown',
+        : (targetContext?.status ?? 'unknown'),
     qualityMode: targetContext?.status === 'ok' ? targetContext.qualityMode : 'unknown',
     nextRepairCommands,
   };
@@ -498,16 +498,16 @@ export async function gnDiagnose(
         embeddings.status === 'drifted'
           ? 'ERROR'
           : embeddings.status === 'missing'
-          ? 'INFO'
-          : 'WARN';
+            ? 'INFO'
+            : 'WARN';
       recommendations.push({
         severity,
         detail:
           embeddings.status === 'drifted'
             ? 'Embeddings metadata drift detected'
             : embeddings.status === 'missing'
-            ? 'Embeddings not populated'
-            : 'Embedding metadata unavailable',
+              ? 'Embeddings not populated'
+              : 'Embedding metadata unavailable',
         fix:
           embeddings.repairCommand ??
           (embeddings.status === 'missing'
@@ -609,11 +609,12 @@ export async function gnDiagnose(
     );
   }
 
-  if (envVars['ONTOINDEX_VECTOR_BACKEND']?.trim().toLowerCase() === 'zvec') {
+  const requestedVectorBackend = envVars['ONTOINDEX_VECTOR_BACKEND']?.trim().toLowerCase();
+  if (requestedVectorBackend === 'zvec' || requestedVectorBackend === 'auto') {
     const vectorRepoPath =
       targetContext?.status === 'ok'
         ? targetContext.repoPath
-        : freshRepoPath ?? runtimeHealth?.repoPath;
+        : (freshRepoPath ?? runtimeHealth?.repoPath);
     try {
       vectorBackend = await getSemanticVectorBackendStatus({
         id: repoId,
@@ -622,7 +623,7 @@ export async function gnDiagnose(
       if (vectorBackend.actualBackend !== 'zvec') {
         recommendations.push({
           severity: 'WARN',
-          detail: `Requested vector backend zvec fell back to LadybugDB${
+          detail: `Requested vector backend ${vectorBackend.requestedBackend} fell back to LadybugDB${
             vectorBackend.fallbackReason ? `: ${vectorBackend.fallbackReason}` : ''
           }`,
           fix: 'Refresh the zvec mirror or unset ONTOINDEX_VECTOR_BACKEND to stay on LadybugDB.',
@@ -672,7 +673,7 @@ export async function gnDiagnose(
   const fileScopeRepoPath =
     targetContext?.status === 'ok'
       ? targetContext.repoPath
-      : freshRepoPath ?? runtimeHealth?.repoPath;
+      : (freshRepoPath ?? runtimeHealth?.repoPath);
   const fileScopeLimit = Math.max(1, Math.min(params.fileScopeLimit ?? 10, 100));
 
   if ((params.includeFileScopePreview || params.explainFile) && !fileScopeRepoPath) {

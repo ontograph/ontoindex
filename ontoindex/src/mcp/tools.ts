@@ -16,7 +16,7 @@ export interface ToolDefinition {
     properties: Record<
       string,
       {
-        type: string;
+        type: string | string[];
         description?: string;
         default?: unknown;
         items?: { type: string };
@@ -1473,8 +1473,8 @@ Unlike query() which searches by keyword, repomap ranks by GRAPH PROXIMITY to yo
         format: {
           type: 'string',
           description:
-            'Output format: "signatures" (compact), "outline" (medium), "full" (verbose), "compressed" (signature-only bodies)',
-          enum: ['signatures', 'outline', 'full', 'compressed'],
+            'Output format: "signatures" (compact), "outline" (medium), "full" (verbose), "compressed" (signature-only bodies), "files" (read-first projection)',
+          enum: ['signatures', 'outline', 'full', 'compressed', 'files'],
           default: 'signatures',
         },
         repo: {
