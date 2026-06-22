@@ -114,7 +114,7 @@
     "@types/seedrandom": "^3.0.8",
     "@vitest/coverage-v8": "^4.1.8",
     "graphology-types": "^0.24.8",
-    "node-gyp": "12.2.0",
+    "node-gyp": "13.0.0",
     "ontoindex-shared": "file:../ontoindex-shared",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
@@ -124,7 +124,7 @@
     "@huggingface/transformers": {
       "onnxruntime-node": "$onnxruntime-node"
     },
-    "node-gyp": "12.2.0",
+    "node-gyp": "13.0.0",
     "tree-sitter-c": "$tree-sitter-c"
   },
   "engines": {
