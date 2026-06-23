@@ -19,7 +19,7 @@
     "test:e2e:report": "playwright show-report"
   },
   "dependencies": {
-    "@langchain/anthropic": "^1.4.0",
+    "@langchain/anthropic": "^1.5.1",
     "@langchain/core": "^1.1.48",
     "@langchain/google-genai": "^2.1.31",
     "@langchain/langgraph": "^1.4.0",
