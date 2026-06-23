@@ -102,7 +102,7 @@ From a local checkout:
 | Linux/macOS        | `./scripts/install-ontoindex-latest.sh`                                           |
 | Windows PowerShell | `powershell -ExecutionPolicy Bypass -File .\scripts\install-ontoindex-latest.ps1` |
 
-The installers fetch the latest GitHub release, locate the `ontoindex-*.tgz` asset, and install it with `npm install -g`. If a global install is not writable, they fall back to a user npm prefix.
+The installers fetch the latest GitHub release, locate the `ontoindex-*.tgz` asset, and install it with `npm install -g`. If `ONTOINDEX_LOCAL_ASSET` points to a tarball, or an `ontoindex-*.tgz` file already exists in the current directory or beside the script, the Linux/macOS installer uses that local tarball first instead of going back to GitHub. If a global install is not writable, the installers fall back to a user npm prefix.
 
 The default installer is not an offline bundle of every third-party package. It ships OntoIndex
 sources and vendored parser sources, then lets npm resolve runtime dependencies such as LadybugDB,
@@ -128,6 +128,7 @@ Installer configuration:
 | Purpose                        | Linux/macOS                                                                    | Windows PowerShell                                                                     |
 | ------------------------------ | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
 | Use another release repository | `ONTOINDEX_GITHUB_REPO=owner/repo ./scripts/install-ontoindex-latest.sh`       | `$env:ONTOINDEX_GITHUB_REPO='owner/repo'; .\scripts\install-ontoindex-latest.ps1`      |
+| Use a local downloaded tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-1.9.25.tgz" ./scripts/install-ontoindex-latest.sh` | — |
 | Use a user npm prefix          | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`    | `$env:ONTOINDEX_NPM_PREFIX="$env:APPDATA\npm"; .\scripts\install-ontoindex-latest.ps1` |
 | Force user prefix              | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`    | `.\scripts\install-ontoindex-latest.ps1 -ForceUserPrefix`                              |
 | Require Linux FTS/vector cache | `ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh` | —                                                                                      |

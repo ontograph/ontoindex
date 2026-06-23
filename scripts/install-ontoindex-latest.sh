@@ -7,6 +7,16 @@ USER_PREFIX="${ONTOINDEX_NPM_PREFIX:-${HOME}/.local}"
 LADYBUG_EXTENSIONS_REPO="${ONTOINDEX_LADYBUG_EXTENSIONS_REPO:-ontograph/ontoindex}"
 LADYBUG_EXTENSIONS_TAG="${ONTOINDEX_LADYBUG_EXTENSIONS_TAG:-ladybugdb-extensions-v0.17.0-linux-amd64}"
 LADYBUG_EXTENSIONS_CACHE="${ONTOINDEX_LADYBUG_EXTENSIONS_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/ontoindex/ladybugdb-extensions/v0.17.0/linux_amd64}"
+CURL_CONNECT_TIMEOUT="${ONTOINDEX_INSTALL_CURL_CONNECT_TIMEOUT:-10}"
+CURL_RETRY_COUNT="${ONTOINDEX_INSTALL_CURL_RETRIES:-2}"
+CURL_RETRY_DELAY="${ONTOINDEX_INSTALL_CURL_RETRY_DELAY:-1}"
+CURL_MAX_TIME_RELEASE="${ONTOINDEX_INSTALL_RELEASE_MAX_TIME:-45}"
+CURL_MAX_TIME_DOWNLOAD="${ONTOINDEX_INSTALL_DOWNLOAD_MAX_TIME:-120}"
+
+SCRIPT_DIR=""
+if [ "${BASH_SOURCE[0]:-}" != "" ] && [ -e "${BASH_SOURCE[0]}" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+fi
 
 log() {
   printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"
@@ -22,6 +32,47 @@ need() {
 need curl
 need node
 need npm
+
+curl_retry_args() {
+  local max_time="${1}"
+  printf '%s\n' \
+    --retry "${CURL_RETRY_COUNT}" \
+    --retry-delay "${CURL_RETRY_DELAY}" \
+    --retry-all-errors \
+    --connect-timeout "${CURL_CONNECT_TIMEOUT}" \
+    --max-time "${max_time}"
+}
+
+find_local_asset() {
+  local candidate dir
+
+  if [ "${ONTOINDEX_LOCAL_ASSET:-}" != "" ]; then
+    candidate="${ONTOINDEX_LOCAL_ASSET}"
+    if [ -f "${candidate}" ]; then
+      (
+        cd "$(dirname "${candidate}")"
+        pwd -P
+      ) | {
+        read -r abs_dir
+        printf '%s/%s\n' "${abs_dir}" "$(basename "${candidate}")"
+      }
+      return 0
+    fi
+    echo "error: ONTOINDEX_LOCAL_ASSET does not exist: ${candidate}" >&2
+    exit 1
+  fi
+
+  for dir in "${PWD}" "${SCRIPT_DIR}"; do
+    [ -n "${dir}" ] || continue
+    candidate="$(ls -1t "${dir}"/ontoindex-*.tgz 2>/dev/null | head -n1 || true)"
+    if [ -n "${candidate}" ]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  return 1
+}
 
 download_ladybug_extensions() {
   if [ "${ONTOINDEX_SKIP_LADYBUG_EXTENSIONS:-0}" = "1" ]; then
@@ -61,7 +112,7 @@ download_ladybug_extensions() {
     fi
 
     log "Downloading LadybugDB extension checksums from ${base_url}"
-    curl -fL --retry 10 --retry-all-errors --connect-timeout 20 --max-time 300 \
+    curl -fL $(curl_retry_args "${CURL_MAX_TIME_DOWNLOAD}") \
       -o SHA256SUMS.txt "${base_url}/SHA256SUMS.txt"
 
     for asset in libfts.lbug_extension libvector.lbug_extension; do
@@ -73,7 +124,7 @@ download_ladybug_extensions() {
         rm -f "${asset}"
       fi
       log "Downloading ${asset}"
-      curl -fL --retry 10 --retry-all-errors --connect-timeout 20 --max-time 300 --continue-at - \
+      curl -fL $(curl_retry_args "${CURL_MAX_TIME_DOWNLOAD}") --continue-at - \
         -o "${asset}" "${base_url}/${asset}"
     done
 
@@ -132,6 +183,7 @@ remove_existing_install() {
   local node_modules_root
   local package_dir
   local bin_path
+  local resolved_command
 
   node_modules_root="$(npm root -g --prefix "${prefix}")"
   package_dir="${node_modules_root}/ontoindex"
@@ -140,6 +192,12 @@ remove_existing_install() {
   if [ -d "${package_dir}" ] || [ -f "${bin_path}" ]; then
     log "Removing previous OntoIndex install from ${prefix}"
     rm -rf "${package_dir}" "${bin_path}"
+  fi
+
+  resolved_command="$(command -v ontoindex 2>/dev/null || true)"
+  if [ -n "${resolved_command}" ] && [ -L "${resolved_command}" ] && [ ! -e "${resolved_command}" ]; then
+    log "Removing broken ontoindex shim from PATH: ${resolved_command}"
+    rm -f "${resolved_command}"
   fi
 }
 
@@ -187,11 +245,15 @@ validate_install() {
   }
 }
 
-log "Fetching latest OntoIndex release metadata from ${API_URL}"
-release_json="$(curl -fsSL --connect-timeout 20 --max-time 120 "${API_URL}")"
+asset_url="$(find_local_asset || true)"
+if [ -n "${asset_url}" ]; then
+  log "Using local OntoIndex tarball: ${asset_url}"
+else
+  log "Fetching latest OntoIndex release metadata from ${API_URL}"
+  release_json="$(curl -fsSL $(curl_retry_args "${CURL_MAX_TIME_RELEASE}") "${API_URL}")"
 
-asset_url="$(
-  RELEASE_JSON="${release_json}" node <<'NODE'
+  asset_url="$(
+    RELEASE_JSON="${release_json}" node <<'NODE'
 const release = JSON.parse(process.env.RELEASE_JSON);
 const asset = (release.assets || []).find((candidate) =>
   /^ontoindex-[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?\.tgz$/.test(candidate.name),
@@ -205,7 +267,8 @@ if (!asset) {
 
 console.log(asset.browser_download_url);
 NODE
-)"
+  )"
+fi
 
 version="$(
   ASSET_URL="${asset_url}" node <<'NODE'
@@ -257,6 +320,9 @@ log "Install complete."
 echo "Note: this installer uses npm to resolve third-party runtime packages."
 echo "A non-fatal npm warning about deprecated transitive packages can appear while upstream packages catch up."
 echo "For air-gapped installs, use a separately prepared npm cache or internal registry mirror."
+if [ "${install_prefix}" = "${USER_PREFIX}" ] && ! printf '%s' ":${PATH}:" | grep -Fq ":${USER_PREFIX}/bin:"; then
+  echo "Add ${USER_PREFIX}/bin to PATH to use ontoindex in new shells."
+fi
 
 case ":${PATH}:" in
   *":${USER_PREFIX}/bin:"*) ;;
