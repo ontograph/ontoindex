@@ -226,7 +226,7 @@ function Save-ReleaseAsset {
     [string]$AssetName
   )
 
-  $timeoutSeconds = Get-EnvInt -Name "ONTOINDEX_INSTALL_DOWNLOAD_TIMEOUT_SEC" -Default 600
+  $timeoutSeconds = Get-EnvInt -Name "ONTOINDEX_INSTALL_DOWNLOAD_TIMEOUT_SEC" -Default 1600
   $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ontoindex-install-" + [System.Guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
   $assetPath = Join-Path $tempDir $AssetName
