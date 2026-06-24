@@ -279,7 +279,28 @@ NODE
 
 log "Selected OntoIndex ${version} asset: ${asset_url}"
 default_prefix="$(npm config get prefix)"
-install_args=(-g "${asset_url}")
+install_asset="${asset_url}"
+temp_asset_dir=""
+cleanup_temp_asset() {
+  [ -n "${temp_asset_dir}" ] && rm -rf "${temp_asset_dir}"
+}
+trap cleanup_temp_asset EXIT
+
+if [ ! -f "${asset_url}" ]; then
+  temp_asset_dir="$(mktemp -d)"
+  install_asset="${temp_asset_dir}/$(basename "${asset_url}")"
+  log "Downloading release asset to a temporary file: ${install_asset}"
+  curl -fL $(curl_retry_args "${CURL_MAX_TIME_DOWNLOAD}") -o "${install_asset}" "${asset_url}" || {
+    rm -rf "${temp_asset_dir}"
+    exit 1
+  }
+  if [ ! -s "${install_asset}" ]; then
+    echo "error: downloaded release asset is empty: ${install_asset}" >&2
+    rm -rf "${temp_asset_dir}"
+    exit 1
+  fi
+fi
+install_args=(-g "${install_asset}")
 bin_path=""
 install_prefix="${default_prefix}"
 log "npm global prefix: ${default_prefix}"

@@ -197,6 +197,42 @@ function Get-OntoIndexInstallState {
   }
 }
 
+function Save-ReleaseAsset {
+  param(
+    [string]$AssetUrl,
+    [string]$AssetName
+  )
+
+  $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ontoindex-install-" + [System.Guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+  $assetPath = Join-Path $tempDir $AssetName
+  $lastError = $null
+
+  for ($attempt = 1; $attempt -le 3; $attempt++) {
+    try {
+      Write-Host "Downloading release asset to a temporary file (attempt $attempt/3)"
+      Invoke-WebRequest -UseBasicParsing -Uri $AssetUrl -OutFile $assetPath -Headers @{ "User-Agent" = "ontoindex-installer" }
+      if ((Get-Item $assetPath).Length -gt 0) {
+        return [pscustomobject]@{
+          Path = $assetPath
+          TempDir = $tempDir
+        }
+      }
+
+      throw "Downloaded asset is empty."
+    } catch {
+      $lastError = $_.Exception.Message
+      Remove-Item $assetPath -Force -ErrorAction SilentlyContinue
+      if ($attempt -lt 3) {
+        Start-Sleep -Seconds (2 * $attempt)
+      }
+    }
+  }
+
+  Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+  throw "Failed to download OntoIndex release asset after 3 attempts: $lastError"
+}
+
 function Write-WindowsRepairInstructions {
   param([string]$Prefix)
 
@@ -308,33 +344,41 @@ $installPrefix = $defaultPrefix
 
 Write-Host "Installing OntoIndex $version from $assetUrl"
 
+$downloadedAsset = Save-ReleaseAsset -AssetUrl $assetUrl -AssetName $asset.name
+$installSource = $downloadedAsset.Path
+
 try {
-  if ($ForceUserPrefix) {
-    throw "User prefix requested."
-  }
-
-  Remove-ExistingOntoIndexInstall $defaultPrefix
-  Invoke-Npm @("install", "-g", $assetUrl)
-  $binPath = Find-OntoIndexCommand ""
-} catch {
-  Write-Host "Global install failed or was skipped: $($_.Exception.Message)"
-  Write-WindowsRepairInstructions $defaultPrefix
-  Write-Host "Installing into user npm prefix: $NpmPrefix"
-  New-Item -ItemType Directory -Force -Path $NpmPrefix | Out-Null
   try {
-    Remove-ExistingOntoIndexInstall $NpmPrefix
-    Invoke-Npm @("install", "-g", "--prefix", $NpmPrefix, $assetUrl)
+    if ($ForceUserPrefix) {
+      throw "User prefix requested."
+    }
+
+    Remove-ExistingOntoIndexInstall $defaultPrefix
+    Invoke-Npm @("install", "-g", $installSource)
+    $binPath = Find-OntoIndexCommand ""
   } catch {
-    Write-WindowsRepairInstructions $NpmPrefix
-    throw
-  }
+    $globalInstallError = $_.Exception.Message
+    Write-Host "Global install failed or was skipped: $globalInstallError"
+    Write-Host "Installing into user npm prefix: $NpmPrefix"
+    New-Item -ItemType Directory -Force -Path $NpmPrefix | Out-Null
+    try {
+      Remove-ExistingOntoIndexInstall $NpmPrefix
+      Invoke-Npm @("install", "-g", "--prefix", $NpmPrefix, $installSource)
+    } catch {
+      Write-WindowsRepairInstructions $defaultPrefix
+      Write-WindowsRepairInstructions $NpmPrefix
+      throw
+    }
 
-  if (($env:Path -split ';') -notcontains $NpmPrefix) {
-    $env:Path = "$NpmPrefix;$env:Path"
-  }
+    if (($env:Path -split ';') -notcontains $NpmPrefix) {
+      $env:Path = "$NpmPrefix;$env:Path"
+    }
 
-  $installPrefix = $NpmPrefix
-  $binPath = Find-OntoIndexCommand $NpmPrefix
+    $installPrefix = $NpmPrefix
+    $binPath = Find-OntoIndexCommand $NpmPrefix
+  }
+} finally {
+  Remove-Item $downloadedAsset.TempDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 if ([string]::IsNullOrWhiteSpace($binPath)) {
