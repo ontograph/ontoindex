@@ -6,6 +6,27 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Get-EnvInt {
+  param(
+    [string]$Name,
+    [int]$Default
+  )
+
+  $value = [Environment]::GetEnvironmentVariable($Name)
+  $parsed = 0
+  if (-not [string]::IsNullOrWhiteSpace($value) -and [int]::TryParse($value, [ref]$parsed) -and $parsed -gt 0) {
+    return $parsed
+  }
+
+  return $Default
+}
+
+function Write-InstallerLog {
+  param([string]$Message)
+
+  Write-Host "[$(Get-Date -Format 'HH:mm:ss')] $Message"
+}
+
 function Get-NodeMajorVersion {
   $version = & node -p "process.versions.node"
   if ($LASTEXITCODE -ne 0) {
@@ -92,6 +113,7 @@ function Invoke-Npm {
   param([string[]]$Arguments)
 
   $npmCommand = Resolve-NpmCommand
+  Write-InstallerLog "Running npm $($Arguments -join ' ')"
   if ($IsWindows -or $env:OS -eq "Windows_NT") {
     & cmd.exe /d /c $npmCommand @Arguments
   } else {
@@ -100,6 +122,7 @@ function Invoke-Npm {
   if ($LASTEXITCODE -ne 0) {
     throw "npm failed with exit code $LASTEXITCODE"
   }
+  Write-InstallerLog "npm command completed"
 }
 
 function Invoke-NpmCapture {
@@ -203,6 +226,7 @@ function Save-ReleaseAsset {
     [string]$AssetName
   )
 
+  $timeoutSeconds = Get-EnvInt -Name "ONTOINDEX_INSTALL_DOWNLOAD_TIMEOUT_SEC" -Default 180
   $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ontoindex-install-" + [System.Guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
   $assetPath = Join-Path $tempDir $AssetName
@@ -210,9 +234,11 @@ function Save-ReleaseAsset {
 
   for ($attempt = 1; $attempt -le 3; $attempt++) {
     try {
-      Write-Host "Downloading release asset to a temporary file (attempt $attempt/3)"
-      Invoke-WebRequest -UseBasicParsing -Uri $AssetUrl -OutFile $assetPath -Headers @{ "User-Agent" = "ontoindex-installer" }
-      if ((Get-Item $assetPath).Length -gt 0) {
+      Write-InstallerLog "Downloading release asset to $assetPath (attempt $attempt/3, timeout ${timeoutSeconds}s)"
+      Invoke-WebRequest -UseBasicParsing -Uri $AssetUrl -OutFile $assetPath -TimeoutSec $timeoutSeconds -Headers @{ "User-Agent" = "ontoindex-installer" }
+      $assetSize = (Get-Item $assetPath).Length
+      if ($assetSize -gt 0) {
+        Write-InstallerLog "Downloaded $AssetName ($assetSize bytes)"
         return [pscustomobject]@{
           Path = $assetPath
           TempDir = $tempDir
@@ -222,9 +248,12 @@ function Save-ReleaseAsset {
       throw "Downloaded asset is empty."
     } catch {
       $lastError = $_.Exception.Message
+      Write-InstallerLog "Download attempt $attempt failed: $lastError"
       Remove-Item $assetPath -Force -ErrorAction SilentlyContinue
       if ($attempt -lt 3) {
-        Start-Sleep -Seconds (2 * $attempt)
+        $sleepSeconds = 2 * $attempt
+        Write-InstallerLog "Retrying download in ${sleepSeconds}s"
+        Start-Sleep -Seconds $sleepSeconds
       }
     }
   }
@@ -324,7 +353,9 @@ if (($IsWindows -or $env:OS -eq "Windows_NT") -and -not (Test-VersionAtLeast -Ve
 }
 
 $apiUrl = "https://api.github.com/repos/$Repo/releases/latest"
-$release = Invoke-RestMethod -Uri $apiUrl -Headers @{ "User-Agent" = "ontoindex-installer" }
+$releaseTimeoutSeconds = Get-EnvInt -Name "ONTOINDEX_INSTALL_RELEASE_TIMEOUT_SEC" -Default 45
+Write-InstallerLog "Fetching latest release metadata from $apiUrl (timeout ${releaseTimeoutSeconds}s)"
+$release = Invoke-RestMethod -Uri $apiUrl -TimeoutSec $releaseTimeoutSeconds -Headers @{ "User-Agent" = "ontoindex-installer" }
 $asset = $release.assets | Where-Object {
   $_.name -match '^ontoindex-[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?\.tgz$'
 } | Select-Object -First 1
@@ -346,6 +377,14 @@ Write-Host "Installing OntoIndex $version from $assetUrl"
 
 $downloadedAsset = Save-ReleaseAsset -AssetUrl $assetUrl -AssetName $asset.name
 $installSource = $downloadedAsset.Path
+$npmNetworkArgs = @(
+  "--loglevel=info",
+  "--fetch-retries=3",
+  "--fetch-timeout=120000",
+  "--fetch-retry-factor=2",
+  "--fetch-retry-mintimeout=1000",
+  "--fetch-retry-maxtimeout=30000"
+)
 
 try {
   try {
@@ -354,16 +393,16 @@ try {
     }
 
     Remove-ExistingOntoIndexInstall $defaultPrefix
-    Invoke-Npm @("install", "-g", $installSource)
+    Invoke-Npm (@("install", "-g") + $npmNetworkArgs + @($installSource))
     $binPath = Find-OntoIndexCommand ""
   } catch {
     $globalInstallError = $_.Exception.Message
-    Write-Host "Global install failed or was skipped: $globalInstallError"
-    Write-Host "Installing into user npm prefix: $NpmPrefix"
+    Write-InstallerLog "Global install failed or was skipped: $globalInstallError"
+    Write-InstallerLog "Installing into user npm prefix: $NpmPrefix"
     New-Item -ItemType Directory -Force -Path $NpmPrefix | Out-Null
     try {
       Remove-ExistingOntoIndexInstall $NpmPrefix
-      Invoke-Npm @("install", "-g", "--prefix", $NpmPrefix, $installSource)
+      Invoke-Npm (@("install", "-g", "--prefix", $NpmPrefix) + $npmNetworkArgs + @($installSource))
     } catch {
       Write-WindowsRepairInstructions $defaultPrefix
       Write-WindowsRepairInstructions $NpmPrefix
