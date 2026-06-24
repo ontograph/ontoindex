@@ -226,7 +226,7 @@ function Save-ReleaseAsset {
     [string]$AssetName
   )
 
-  $timeoutSeconds = Get-EnvInt -Name "ONTOINDEX_INSTALL_DOWNLOAD_TIMEOUT_SEC" -Default 180
+  $timeoutSeconds = Get-EnvInt -Name "ONTOINDEX_INSTALL_DOWNLOAD_TIMEOUT_SEC" -Default 600
   $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ontoindex-install-" + [System.Guid]::NewGuid().ToString("N"))
   New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
   $assetPath = Join-Path $tempDir $AssetName
@@ -353,7 +353,7 @@ if (($IsWindows -or $env:OS -eq "Windows_NT") -and -not (Test-VersionAtLeast -Ve
 }
 
 $apiUrl = "https://api.github.com/repos/$Repo/releases/latest"
-$releaseTimeoutSeconds = Get-EnvInt -Name "ONTOINDEX_INSTALL_RELEASE_TIMEOUT_SEC" -Default 45
+$releaseTimeoutSeconds = Get-EnvInt -Name "ONTOINDEX_INSTALL_RELEASE_TIMEOUT_SEC" -Default 600
 Write-InstallerLog "Fetching latest release metadata from $apiUrl (timeout ${releaseTimeoutSeconds}s)"
 $release = Invoke-RestMethod -Uri $apiUrl -TimeoutSec $releaseTimeoutSeconds -Headers @{ "User-Agent" = "ontoindex-installer" }
 $asset = $release.assets | Where-Object {
@@ -380,7 +380,7 @@ $installSource = $downloadedAsset.Path
 $npmNetworkArgs = @(
   "--loglevel=info",
   "--fetch-retries=3",
-  "--fetch-timeout=120000",
+  "--fetch-timeout=600000",
   "--fetch-retry-factor=2",
   "--fetch-retry-mintimeout=1000",
   "--fetch-retry-maxtimeout=30000"
