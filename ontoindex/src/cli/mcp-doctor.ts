@@ -162,6 +162,23 @@ export function formatMcpDoctorText(report: McpDoctorReport): string {
   if (report.diagnose.degradedContext.reasons.length > 0) {
     lines.push(`Degraded reasons: ${report.diagnose.degradedContext.reasons.join(', ')}`);
   }
+  if (report.diagnose.auditFreshness) {
+    const audit = report.diagnose.auditFreshness;
+    if (audit.status === 'stale') {
+      const tgt = audit.targetHead ? audit.targetHead.slice(0, 12) : 'unknown';
+      const cur = audit.currentHead ? audit.currentHead.slice(0, 12) : 'unknown';
+      lines.push(`Audit freshness: stale (target ${tgt} vs current ${cur})`);
+    } else {
+      lines.push(`Audit freshness: ${audit.status}`);
+    }
+    if (audit.repairCommand && audit.status !== 'clean') {
+      lines.push(`Audit repair: ${audit.repairCommand}`);
+    }
+  }
+  if (report.diagnose.mcpResourceBridge) {
+    const bridge = report.diagnose.mcpResourceBridge;
+    lines.push(`MCP resource bridge: ${bridge.exposed ? `exposed (${bridge.exposedTo.join(', ')})` : 'not exposed'}`);
+  }
   if (report.diagnose.responseBudgetHealth) {
     const health = report.diagnose.responseBudgetHealth;
     lines.push(`Response guard: ${health.guardLimitBytes} bytes`);

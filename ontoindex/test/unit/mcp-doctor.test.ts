@@ -292,6 +292,44 @@ describe('mcp-doctor', () => {
     expect(formatMcpDoctorText(report)).toContain('Degraded reasons: embeddings-unavailable');
   });
 
+  it('prints audit freshness and MCP resource bridge diagnostics from gn_diagnose', async () => {
+    const report = await createMcpDoctorReport(
+      { repo: 'fixture', projectCwd: '/repo/fixture' },
+      {
+        diagnose: async () => ({
+          ...baseDiagnose,
+          degradedContext: {
+            status: 'degraded',
+            reasons: ['audit-stale'],
+            affectedAreas: ['audit-freshness'],
+            confidence: 'reduced',
+          },
+          auditFreshness: {
+            status: 'stale',
+            targetHead: 'deadbeefdeadbeef',
+            currentHead: 'abc123def4567890',
+            sessionId: 'session-123',
+            repairCommand: 'gn_audit_replay({session: "session-123"})',
+          },
+          mcpResourceBridge: {
+            exposed: true,
+            exposedTo: ['Claude Code', 'Codex'],
+          },
+        }),
+        processLiveness: async (_repo, _projectCwd, repairCommand) => ({
+          status: 'unavailable',
+          reason: 'not-probed',
+          repairCommand,
+        }),
+      },
+    );
+
+    const formatted = formatMcpDoctorText(report);
+    expect(formatted).toContain('Audit freshness: stale (target deadbeefdead vs current abc123def456)');
+    expect(formatted).toContain('Audit repair: gn_audit_replay({session: "session-123"})');
+    expect(formatted).toContain('MCP resource bridge: exposed (Claude Code, Codex)');
+  });
+
   it('marks production smoke failures as DEGRADED when diagnose is otherwise healthy', async () => {
     localBackendMock.callTool.mockResolvedValueOnce({
       error: 'symbol not found',

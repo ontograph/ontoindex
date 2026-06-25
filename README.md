@@ -111,8 +111,9 @@ from a transitive package can appear while upstream packages catch up. For air-g
 internal npm registry mirror or a prepared npm cache.
 
 On Linux x64, the installer also prefetches LadybugDB `fts` and `vector` extension binaries from
-the OntoIndex GitHub extension-cache release. At runtime, OntoIndex tries that cache before asking
-LadybugDB to download extensions during `INSTALL fts` / `INSTALL VECTOR`.
+the OntoIndex GitHub extension-cache release. On Windows x64, the PowerShell installer prefetches
+the same binaries from the LadybugDB extension host into the local cache. At runtime, OntoIndex
+tries that cache before asking LadybugDB to download extensions during `INSTALL fts` / `INSTALL VECTOR`.
 
 If a Windows install previously failed partway through and left a broken `ontoindex.cmd` shim, repair the global install state before retrying:
 
@@ -131,8 +132,8 @@ Installer configuration:
 | Use a local downloaded tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-1.9.25.tgz" ./scripts/install-ontoindex-latest.sh` | — |
 | Use a user npm prefix          | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`    | `$env:ONTOINDEX_NPM_PREFIX="$env:APPDATA\npm"; .\scripts\install-ontoindex-latest.ps1` |
 | Force user prefix              | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`    | `.\scripts\install-ontoindex-latest.ps1 -ForceUserPrefix`                              |
-| Require Linux FTS/vector cache | `ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh` | —                                                                                      |
-| Skip Linux FTS/vector cache    | `ONTOINDEX_SKIP_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh`    | —                                                                                      |
+| Require FTS/vector cache prefetch | `ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1` |
+| Skip FTS/vector cache prefetch    | `ONTOINDEX_SKIP_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh`    | `$env:ONTOINDEX_SKIP_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1`    |
 
 ### Install with npm
 

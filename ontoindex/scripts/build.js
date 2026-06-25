@@ -19,6 +19,7 @@ const SHARED_ROOT = path.resolve(ROOT, '..', 'ontoindex-shared');
 const DIST = path.join(ROOT, 'dist');
 const SHARED_DEST = path.join(DIST, '_shared');
 const DIST_SUPER_DISPATCH = path.join(DIST, 'mcp', 'super', 'dispatch.js');
+const LADYBUG_EXTENSIONS_VERSION = 'v0.17.0';
 fs.rmSync(DIST, { recursive: true, force: true });
 fs.rmSync(path.join(ROOT, 'tsconfig.tsbuildinfo'), { force: true });
 fs.rmSync(path.join(SHARED_ROOT, 'dist'), { recursive: true, force: true });
@@ -69,7 +70,73 @@ function walk(dir, extensions, cb) {
   }
 }
 
+function currentLbugExtensionPlatformDir() {
+  const arch = process.arch === 'x64' ? 'amd64' : process.arch;
+  if (process.platform === 'linux' || process.platform === 'win32') {
+    return `${process.platform}_${arch}`;
+  }
+  return null;
+}
+
+function defaultLbugExtensionsBaseDir() {
+  if (process.env.XDG_CACHE_HOME) {
+    return path.join(process.env.XDG_CACHE_HOME, 'ontoindex', 'ladybugdb-extensions');
+  }
+  if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
+    return path.join(process.env.LOCALAPPDATA, 'ontoindex', 'ladybugdb-extensions');
+  }
+  return path.join(process.env.HOME || '', '.cache', 'ontoindex', 'ladybugdb-extensions');
+}
+
+function resolveLadybugExtensionSourceDir() {
+  const platformDir = currentLbugExtensionPlatformDir();
+  if (!platformDir) return null;
+
+  const defaultCache = path.join(
+    defaultLbugExtensionsBaseDir(),
+    LADYBUG_EXTENSIONS_VERSION,
+    platformDir,
+  );
+  const dirs = [
+    process.env.ONTOINDEX_LADYBUG_EXTENSION_DIR,
+    process.env.ONTOINDEX_LADYBUG_EXTENSIONS_CACHE,
+    defaultCache,
+  ].filter(Boolean);
+
+  for (const dir of dirs) {
+    if (
+      fs.existsSync(path.join(dir, 'libfts.lbug_extension')) &&
+      fs.existsSync(path.join(dir, 'libvector.lbug_extension'))
+    ) {
+      return { dir, platformDir };
+    }
+  }
+
+  return null;
+}
+
+function copyBundledLadybugExtensions() {
+  const source = resolveLadybugExtensionSourceDir();
+  if (!source) {
+    console.log('[build] skipping bundled LadybugDB extensions (cache not found).');
+    return;
+  }
+
+  const destDir = path.join(
+    DIST,
+    'ladybugdb-extensions',
+    LADYBUG_EXTENSIONS_VERSION,
+    source.platformDir,
+  );
+  fs.mkdirSync(destDir, { recursive: true });
+  for (const file of ['libfts.lbug_extension', 'libvector.lbug_extension']) {
+    fs.copyFileSync(path.join(source.dir, file), path.join(destDir, file));
+  }
+  console.log(`[build] bundled LadybugDB extensions from ${source.dir}`);
+}
+
 walk(DIST, ['.js', '.d.ts'], rewriteFile);
+copyBundledLadybugExtensions();
 
 // ── 5. Make CLI entry executable ────────────────────────────────────
 const cliEntry = path.join(DIST, 'cli', 'index.js');

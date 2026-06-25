@@ -218,6 +218,14 @@ describe('status command behavior', () => {
     readRuntimeHealth: ReturnType<typeof vi.fn>;
   };
 
+  let execFileMocks: {
+    execFileText: ReturnType<typeof vi.fn>;
+  };
+
+  let auditFreshnessMocks: {
+    computeAuditFreshness: ReturnType<typeof vi.fn>;
+  };
+
   const importStatus = async () => import('../../src/cli/status.js');
 
   beforeEach(() => {
@@ -279,10 +287,26 @@ describe('status command behavior', () => {
       }),
     };
 
+    execFileMocks = {
+      execFileText: vi.fn().mockResolvedValue(''),
+    };
+
+    auditFreshnessMocks = {
+      computeAuditFreshness: vi.fn(),
+    };
+
     vi.doMock('../../src/storage/repo-manager.js', () => repoManagerMocks);
     vi.doMock('../../src/storage/git.js', () => gitMocks);
     vi.doMock('../../src/native/graph-writer.js', () => nativeMocks);
     vi.doMock('node:fs/promises', () => fsMocks);
+    vi.doMock('../../src/core/process/exec-file.js', () => execFileMocks);
+    vi.doMock('../../src/core/audit-lifecycle/index.js', async () => {
+      const actual = await vi.importActual<any>('../../src/core/audit-lifecycle/index.js');
+      return {
+        ...actual,
+        computeAuditFreshness: (...args: any[]) => auditFreshnessMocks.computeAuditFreshness(...args),
+      };
+    });
     vi.doMock('../../src/core/runtime/runtime-health.js', async () => {
       const actual = await vi.importActual<
         typeof import('../../src/core/runtime/runtime-health.js')
@@ -501,6 +525,67 @@ describe('status command behavior', () => {
       expect.arrayContaining([
         'Status: ⚠️ untrusted (runtime artifacts need repair)',
         '  Repair: remove the stale analyze.lock, then rerun ontoindex analyze --force',
+      ]),
+    );
+  });
+
+  it('surfaces diagnostics summary and audit freshness in status output', async () => {
+    const { statusCommand } = await importStatus();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const repoPath = '/tmp/indexed-repo';
+    repoManagerMocks.findRepo.mockResolvedValue(
+      makeRepo(repoPath, {
+        indexedAt: '2026-05-27T00:00:00.000Z',
+        lastCommit: 'abc123def456',
+        stats: { embeddings: 12 },
+      }),
+    );
+    gitMocks.isGitRepo.mockReturnValue(true);
+
+    // Mock readFile to return a projection when target is read
+    fsMocks.readFile.mockImplementation(async (filePath) => {
+      if (filePath.endsWith('needs_update')) {
+        throw new Error('ENOENT');
+      }
+      if (filePath.endsWith('audit-projection.json')) {
+        return JSON.stringify({
+          sessions: [
+            {
+              id: 'sess1',
+              targetHead: 'abc123def456',
+            },
+          ],
+        });
+      }
+      throw new Error('ENOENT');
+    });
+
+    // Mock execFileText for git porcelain status
+    execFileMocks.execFileText.mockResolvedValue('M  src/cli/status.ts\n?? tmp/foo.txt\n');
+
+    // Mock computeAuditFreshness to return clean
+    auditFreshnessMocks.computeAuditFreshness.mockResolvedValue({
+      state: 'clean',
+      targetHead: {
+        commit: 'abc123def456',
+        shortCommit: 'abc123d',
+      },
+      currentHead: 'abc123def456',
+      dirtyFiles: [],
+      warnings: [],
+    });
+
+    await statusCommand({ repo: repoPath });
+
+    const lines = logSpy.mock.calls.map(([line]) => String(line));
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        'Graph index: clean',
+        'Dirty worktree: yes, 2 files changed',
+        'Embeddings: available, 12 recorded',
+        'Audit projection: clean, target abc123de',
+        'MCP resources: not checked by status; run mcp-doctor --json',
       ]),
     );
   });

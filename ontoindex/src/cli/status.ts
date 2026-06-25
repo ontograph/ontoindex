@@ -20,9 +20,18 @@ import {
   formatRuntimeHealthDetailLines,
   formatRuntimeHealthStatusLine,
   readRuntimeHealth,
+  type RuntimeHealthSnapshot,
 } from '../core/runtime/runtime-health.js';
 export { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js';
 import { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js';
+import {
+  type AuditFreshnessMetadata,
+  type AuditProjection,
+  getAuditProjectionPath,
+  computeAuditFreshness,
+} from '../core/audit-lifecycle/index.js';
+import { summarizeGitPorcelainStatus } from '../core/audit-lifecycle/freshness.js';
+import { execFileText } from '../core/process/exec-file.js';
 
 export const formatNativeGraphWriterStatus = (runtime: GraphWriterRuntime = {}): string => {
   const status = getNativeGraphWriterStatus(runtime);
@@ -156,6 +165,7 @@ export const statusCommand = async (options?: { repo?: string }) => {
   }
   printNeedsUpdateStatus(needsUpdateReason);
   console.log(nativeGraphWriterStatus);
+  await printDiagnosticsSummary(repo, repoRoot, runtimeHealth);
 };
 
 async function readNeedsUpdateReason(repoRoot: string): Promise<string | null> {
@@ -206,4 +216,95 @@ function describeRuntimeStatus(health: Awaited<ReturnType<typeof readRuntimeHeal
       return '⛔ failed after partial analyze (repair required)';
   }
   return '⚠️ degraded (runtime artifacts present)';
+}
+
+async function getAuditProjectionStatus(repoRoot: string): Promise<string> {
+  const projectionPath = getAuditProjectionPath(repoRoot);
+  try {
+    const raw = await readFile(projectionPath, 'utf8');
+    const projection = JSON.parse(raw) as AuditProjection;
+    const latestSession = projection.sessions?.[projection.sessions.length - 1];
+    if (!latestSession) {
+      return 'Audit projection: no sessions recorded';
+    }
+
+    const targetHead = latestSession.targetHead;
+    if (!targetHead) {
+      return 'Audit projection: invalid session (missing targetHead)';
+    }
+
+    let freshness: AuditFreshnessMetadata;
+    try {
+      freshness = await computeAuditFreshness(repoRoot, { ref: targetHead });
+    } catch (err) {
+      const shortTarget = targetHead.slice(0, 8);
+      return `Audit projection: stale/unresolvable, target ${shortTarget} (git error: ${(err as Error).message})`;
+    }
+
+    const shortTarget = targetHead.slice(0, 8);
+    const shortCurrent = freshness.currentHead ? freshness.currentHead.slice(0, 8) : 'unknown';
+
+    if (freshness.state === 'clean') {
+      return `Audit projection: clean, target ${shortTarget}`;
+    }
+
+    if (freshness.state === 'stale') {
+      return `Audit projection: stale, target ${shortTarget} vs current ${shortCurrent}`;
+    }
+
+    if (freshness.state === 'dirty') {
+      return `Audit projection: dirty, target ${shortTarget} (${freshness.dirtyFiles.length} files changed)`;
+    }
+
+    return `Audit projection: ${freshness.state}, target ${shortTarget}`;
+  } catch (error: any) {
+    if (error && error.code === 'ENOENT') {
+      return 'Audit projection: absent';
+    }
+    return `Audit projection: error loading status (${(error as Error).message})`;
+  }
+}
+
+async function countDirtyFiles(repoRoot: string): Promise<{ dirty: boolean; count: number }> {
+  try {
+    const gitOutput = await execFileText(
+      'git',
+      ['status', '--porcelain=v1', '--untracked-files=all'],
+      { cwd: repoRoot, timeoutMs: 5000, maxBuffer: 1024 * 1024 }
+    );
+    const summary = summarizeGitPorcelainStatus(gitOutput);
+    if (!summary) return { dirty: false, count: 0 };
+    return {
+      dirty: summary.dirtyFileCount > 0,
+      count: summary.dirtyFileCount,
+    };
+  } catch {
+    return { dirty: false, count: 0 };
+  }
+}
+
+async function printDiagnosticsSummary(
+  repo: Awaited<ReturnType<typeof findRepo>>,
+  repoRoot: string,
+  runtimeHealth: RuntimeHealthSnapshot,
+) {
+  const graphStatus =
+    runtimeHealth.indexedCommit && runtimeHealth.currentCommit
+      ? runtimeHealth.indexedCommit === runtimeHealth.currentCommit
+        ? 'clean'
+        : 'stale'
+      : 'unknown';
+  const dirtyInfo = await countDirtyFiles(repoRoot);
+  const dirtyStr = dirtyInfo.dirty ? `yes, ${dirtyInfo.count} files changed` : 'no';
+  const embeddingsCount = repo?.meta?.stats?.embeddings ?? 0;
+  const embeddingsStatus = embeddingsCount > 0 ? 'available' : 'missing';
+  const embeddingsStr = `${embeddingsStatus}, ${embeddingsCount} recorded`;
+  const auditProjectionStatus = await getAuditProjectionStatus(repoRoot);
+
+  console.log('');
+  console.log(`Graph index: ${graphStatus}`);
+  console.log(`Dirty worktree: ${dirtyStr}`);
+  console.log(`Embeddings: ${embeddingsStr}`);
+  console.log(auditProjectionStatus);
+  console.log('MCP resources: not checked by status; run mcp-doctor --json');
 }

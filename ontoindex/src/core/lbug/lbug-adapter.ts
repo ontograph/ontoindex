@@ -5,6 +5,7 @@ import { once } from 'events';
 import { finished } from 'stream/promises';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
 import lbug, { type LbugValue } from '@ladybugdb/core';
 import { KnowledgeGraph } from '../graph/types.js';
 import {
@@ -299,20 +300,54 @@ const getOptionalThrownMessage = (err: unknown): string | undefined =>
 
 const quoteLbugString = (value: string): string => value.replace(/'/g, "\\'");
 
+const LADYBUG_EXTENSIONS_VERSION = 'v0.17.0';
+
+const currentLbugExtensionPlatformDir = (): string | null => {
+  const arch = process.arch === 'x64' ? 'amd64' : process.arch;
+  if (process.platform === 'linux' || process.platform === 'win32') {
+    return `${process.platform}_${arch}`;
+  }
+  return null;
+};
+
+const defaultLbugExtensionsBaseDir = (): string => {
+  if (process.env.XDG_CACHE_HOME) {
+    return path.join(process.env.XDG_CACHE_HOME, 'ontoindex', 'ladybugdb-extensions');
+  }
+  if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
+    return path.join(process.env.LOCALAPPDATA, 'ontoindex', 'ladybugdb-extensions');
+  }
+  return path.join(os.homedir(), '.cache', 'ontoindex', 'ladybugdb-extensions');
+};
+
+const defaultLbugExtensionsCacheDir = (): string | null => {
+  const platformDir = currentLbugExtensionPlatformDir();
+  return platformDir
+    ? path.join(defaultLbugExtensionsBaseDir(), LADYBUG_EXTENSIONS_VERSION, platformDir)
+    : null;
+};
+
+const bundledLbugExtensionsDir = (): string | null => {
+  const platformDir = currentLbugExtensionPlatformDir();
+  if (!platformDir) return null;
+  const packageRoot = path.dirname(fileURLToPath(new URL('../../../package.json', import.meta.url)));
+  return path.join(
+    packageRoot,
+    'dist',
+    'ladybugdb-extensions',
+    LADYBUG_EXTENSIONS_VERSION,
+    platformDir,
+  );
+};
+
 export const resolveLocalLbugExtensionPath = async (
   extensionName: 'fts' | 'vector',
 ): Promise<string | null> => {
-  const cacheRoot = path.join(
-    process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'),
-    'ontoindex',
-    'ladybugdb-extensions',
-    'v0.17.0',
-    'linux_amd64',
-  );
   const dirs = [
     process.env.ONTOINDEX_LADYBUG_EXTENSION_DIR,
     process.env.ONTOINDEX_LADYBUG_EXTENSIONS_CACHE,
-    cacheRoot,
+    bundledLbugExtensionsDir(),
+    defaultLbugExtensionsCacheDir(),
   ].filter((value): value is string => Boolean(value));
 
   for (const dir of dirs) {
@@ -1732,11 +1767,7 @@ export const loadFTSExtension = async (): Promise<void> => {
         const hint =
           localFtsPath ||
           path.join(
-            process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'),
-            'ontoindex',
-            'ladybugdb-extensions',
-            'v0.17.0',
-            'linux_amd64',
+            defaultLbugExtensionsCacheDir() ?? defaultLbugExtensionsBaseDir(),
             'libfts.lbug_extension',
           );
         console.error(
@@ -1793,11 +1824,7 @@ export const loadVectorExtension = async (): Promise<void> => {
       const hint =
         localVectorPath ||
         path.join(
-          process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'),
-          'ontoindex',
-          'ladybugdb-extensions',
-          'v0.17.0',
-          'linux_amd64',
+          defaultLbugExtensionsCacheDir() ?? defaultLbugExtensionsBaseDir(),
           'libvector.lbug_extension',
         );
       console.error(

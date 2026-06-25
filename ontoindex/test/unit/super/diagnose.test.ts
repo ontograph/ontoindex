@@ -31,6 +31,15 @@ vi.mock('../../../src/core/embeddings/zvec-semantic-backend.js', () => ({
   getSemanticVectorBackendStatus: vi.fn(),
 }));
 
+vi.mock('../../../src/core/audit-lifecycle/index.js', () => ({
+  getAuditProjectionPath: vi.fn().mockReturnValue('/tmp/test-repo/.ontoindex/audit/audit-projection.json'),
+  computeAuditFreshness: vi.fn().mockResolvedValue({
+    state: 'clean',
+    currentHead: 'abc123def456abc123def456abc123def456abc1',
+    dirtyFiles: [],
+  }),
+}));
+
 vi.mock('../../../src/mcp/local/tool-telemetry.js', () => ({
   readToolTelemetrySummary: vi.fn().mockResolvedValue({
     recentOversizedCount: 0,
@@ -45,6 +54,10 @@ vi.mock('../../../src/mcp/local/tool-telemetry.js', () => ({
 import { execFile } from 'child_process';
 import { gnEnsureFresh } from '../../../src/mcp/super/ensure-fresh.js';
 import { resolveTargetContext } from '../../../src/mcp/shared/target-context.js';
+import {
+  computeAuditFreshness,
+  getAuditProjectionPath,
+} from '../../../src/core/audit-lifecycle/index.js';
 import { getSemanticVectorBackendStatus } from '../../../src/core/embeddings/zvec-semantic-backend.js';
 import { gnDiagnose } from '../../../src/mcp/super/diagnose.js';
 import { ONTOINDEX_SUPER_TOOLS } from '../../../src/mcp/super/tool-definitions.js';
@@ -54,6 +67,8 @@ const mockExecFile = vi.mocked(execFile);
 const mockGnEnsureFresh = vi.mocked(gnEnsureFresh);
 const mockResolveTargetContext = vi.mocked(resolveTargetContext);
 const mockGetSemanticVectorBackendStatus = vi.mocked(getSemanticVectorBackendStatus);
+const mockComputeAuditFreshness = vi.mocked(computeAuditFreshness);
+const mockGetAuditProjectionPath = vi.mocked(getAuditProjectionPath);
 const mockReadToolTelemetrySummary = vi.mocked(readToolTelemetrySummary);
 
 // ---------------------------------------------------------------------------
@@ -910,6 +925,111 @@ describe('gnDiagnose', () => {
     });
     expect((report.results as Record<string, unknown>).embeddings).toMatchObject({
       populated: false,
+    });
+  });
+  // ---- Test 16: Audit freshness diagnostics ---------------------------------
+  it('returns status: missing when audit-projection.json does not exist', async () => {
+    vi.spyOn(fs, 'readFile').mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: false,
+      checkIndexFreshness: false,
+    });
+
+    expect(report.auditFreshness).toEqual({ status: 'missing' });
+  });
+
+  it('returns status: clean when audit-projection matches HEAD and has no dirty files', async () => {
+    const projection = {
+      sessions: [
+        {
+          id: 'session-123',
+          targetHead: CURRENT_COMMIT,
+          createdAt: '2026-06-24T12:00:00.000Z',
+        },
+      ],
+    };
+    vi.spyOn(fs, 'readFile').mockResolvedValue(JSON.stringify(projection));
+    mockComputeAuditFreshness.mockResolvedValue({
+      state: 'clean',
+      currentHead: CURRENT_COMMIT,
+      dirtyFiles: [],
+      targetHead: { commit: CURRENT_COMMIT } as any,
+      changedFiles: [],
+      warnings: [],
+      checkedAt: '',
+    });
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: false,
+      checkIndexFreshness: false,
+    });
+
+    expect(report.auditFreshness).toEqual({
+      status: 'clean',
+      targetHead: CURRENT_COMMIT,
+      currentHead: CURRENT_COMMIT,
+      sessionId: 'session-123',
+    });
+  });
+
+  it('returns status: stale and adds WARN recommendation when audit targetHead differs from current HEAD', async () => {
+    const projection = {
+      sessions: [
+        {
+          id: 'session-123',
+          targetHead: STALE_COMMIT,
+          createdAt: '2026-06-24T12:00:00.000Z',
+        },
+      ],
+    };
+    vi.spyOn(fs, 'readFile').mockResolvedValue(JSON.stringify(projection));
+    mockComputeAuditFreshness.mockResolvedValue({
+      state: 'stale',
+      currentHead: CURRENT_COMMIT,
+      dirtyFiles: [],
+      targetHead: { commit: STALE_COMMIT } as any,
+      changedFiles: [],
+      warnings: [],
+      checkedAt: '',
+    });
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: false,
+      checkIndexFreshness: false,
+    });
+
+    expect(report.auditFreshness).toEqual({
+      status: 'stale',
+      targetHead: STALE_COMMIT,
+      currentHead: CURRENT_COMMIT,
+      sessionId: 'session-123',
+      repairCommand: 'gn_audit_replay({session: "session-123"})',
+    });
+    expect(report.recommendations.some((r) => r.severity === 'WARN' && r.detail.includes('stale'))).toBe(true);
+  });
+
+  // ---- Test 17: MCP resource bridge diagnostics -----------------------------
+  it('reports mcpResourceBridge status correctly', async () => {
+    vi.spyOn(fs, 'readFile').mockImplementation((p) => {
+      if (p.toString().endsWith('.claude.json')) {
+        return Promise.resolve(JSON.stringify({ mcpServers: { ontoindex: {} } }));
+      }
+      return Promise.reject(new Error('ENOENT'));
+    });
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: false,
+      checkIndexFreshness: false,
+    });
+
+    expect(report.mcpResourceBridge).toEqual({
+      exposed: true,
+      exposedTo: ['Claude Code'],
     });
   });
 });

@@ -4,6 +4,25 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.26] - 2026-06-25
+
+### Added
+
+- Added audit freshness and MCP resource bridge reporting to existing diagnostics surfaces:
+  `status`, `mcp-doctor`, and `gn_diagnose`.
+- Added bundled LadybugDB `fts` and `vector` extension packaging from the local extension cache
+  into release builds, with runtime lookup support for packaged Linux and Windows artifacts.
+
+### Changed
+
+- Windows release installs now prefetch LadybugDB `fts` and `vector` extensions into the local
+  cache before npm installation when available from the LadybugDB extension host.
+
+### Fixed
+
+- Stale audit repair guidance in `gn_diagnose` now points to audit replay rather than incorrectly
+  suggesting `audit verify` as the repair path.
+
 ## [1.9.25] - 2026-06-21
 
 ### Added

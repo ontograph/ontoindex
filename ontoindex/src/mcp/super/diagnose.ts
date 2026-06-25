@@ -13,6 +13,12 @@ import type { EmbeddingDriftStatus } from './ensure-fresh.js';
 import { gnToolContract } from './tool-contract.js';
 import type { ToolContractReport } from './tool-contract.js';
 import path from 'node:path';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import {
+  getAuditProjectionPath,
+  computeAuditFreshness,
+} from '../../core/audit-lifecycle/index.js';
 import { createEnvelopeFromLegacy } from '../shared/response-envelope.js';
 import type { CapabilityResponseEnvelope } from '../shared/response-envelope.js';
 import { shellQuote } from '../shared/repo-resolution-errors.js';
@@ -56,6 +62,29 @@ export interface DiagnoseParams {
   explainFile?: string;
   fileScopeLimit?: number;
   legacyResponse?: boolean;
+}
+
+export interface AuditFreshnessReport {
+  status: 'clean' | 'stale' | 'dirty' | 'missing' | 'unknown';
+  targetHead?: string;
+  currentHead?: string;
+  sessionId?: string;
+  repairCommand?: string;
+}
+
+export interface McpResourceBridgeReport {
+  exposed: boolean;
+  exposedTo: string[];
+}
+
+function auditReplayCommand(sessionId: string | undefined): string | undefined {
+  const normalized = sessionId?.trim();
+  if (!normalized) return undefined;
+  return `gn_audit_replay({session: "${normalized}"})`;
+}
+
+function hasCodexCompatibleMcpSection(content: string): boolean {
+  return /^\[mcp_servers\.ontoindex(?:\.[^\]]+)?\]/m.test(content);
 }
 
 export interface DiagnoseReport {
@@ -150,6 +179,8 @@ export interface DiagnoseReport {
     ToolContractReport,
     'status' | 'runtime' | 'advertised' | 'callable' | 'missing' | 'extras'
   >;
+  auditFreshness?: AuditFreshnessReport;
+  mcpResourceBridge?: McpResourceBridgeReport;
   envVars: Record<string, string | undefined>;
   recommendations: Array<{ severity: 'INFO' | 'WARN' | 'ERROR'; detail: string; fix: string }>;
   warnings: string[];
@@ -695,6 +726,92 @@ export async function gnDiagnose(
     }
   }
 
+  // ---- 8.5. Audit freshness diagnostics -------------------------------------
+  let auditFreshness: DiagnoseReport['auditFreshness'];
+  const auditRepoPath =
+    targetContext?.status === 'ok'
+      ? targetContext.repoPath
+      : (freshRepoPath ?? runtimeHealth?.repoPath);
+
+  if (auditRepoPath) {
+    try {
+      const projectionPath = getAuditProjectionPath(auditRepoPath);
+      const raw = await fs.readFile(projectionPath, 'utf8');
+      const projection = JSON.parse(raw);
+      const latestSession = projection.sessions?.[projection.sessions.length - 1];
+      if (latestSession && latestSession.targetHead) {
+        const targetHead = latestSession.targetHead;
+        const sessionId = latestSession.id;
+        const repairCommand = auditReplayCommand(sessionId);
+        try {
+          const freshness = await computeAuditFreshness(auditRepoPath, { ref: targetHead });
+          const status = freshness.state; // 'clean' | 'dirty' | 'stale' | 'partial'
+          auditFreshness = {
+            status: status === 'partial' ? 'unknown' : status,
+            targetHead,
+            currentHead: freshness.currentHead,
+            sessionId,
+            ...(status === 'clean' || !repairCommand ? {} : { repairCommand }),
+          };
+
+          if (status === 'stale') {
+            recommendations.push({
+              severity: 'WARN',
+              detail: `Audit projection is stale (target ${targetHead.slice(0, 12)} vs current ${freshness.currentHead?.slice(0, 12)})`,
+              fix:
+                repairCommand ??
+                'Replay or restart the audit session against the current target HEAD.',
+            });
+          } else if (status === 'dirty') {
+            recommendations.push({
+              severity: 'WARN',
+              detail: `Audit projection target has dirty worktree (${freshness.dirtyFiles.length} files changed)`,
+              fix: repairCommand
+                ? `commit, stash, or clean the worktree, then rerun ${repairCommand}`
+                : 'Commit, stash, or clean the worktree, then replay or restart the audit session.',
+            });
+          }
+        } catch (err) {
+          auditFreshness = {
+            status: 'unknown',
+            targetHead,
+            sessionId,
+            ...(repairCommand ? { repairCommand } : {}),
+          };
+          warnings.push(`computeAuditFreshness failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        auditFreshness = { status: 'missing' };
+      }
+    } catch (error: any) {
+      if (error && error.code === 'ENOENT') {
+        auditFreshness = { status: 'missing' };
+      } else {
+        auditFreshness = { status: 'unknown' };
+        warnings.push(`failed to load audit projection status: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  } else {
+    auditFreshness = { status: 'unknown' };
+  }
+
+  // ---- 8.6. MCP resource bridge diagnostics ---------------------------------
+  let mcpResourceBridge: DiagnoseReport['mcpResourceBridge'];
+  try {
+    const bridgeReport = await checkMcpResourceBridge();
+    mcpResourceBridge = bridgeReport;
+    if (!bridgeReport.exposed) {
+      recommendations.push({
+        severity: 'INFO',
+        detail: 'OntoIndex MCP server is not registered in known client configurations (Claude Code, Cursor, OpenCode, Codex, Ontocode).',
+        fix: 'Run ontoindex setup to register the MCP server in your tools.',
+      });
+    }
+  } catch (err) {
+    mcpResourceBridge = { exposed: false, exposedTo: [] };
+    warnings.push(`checkMcpResourceBridge failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   // ---- 9. Degraded context synthesis ----------------------------------------
   const misconfiguration = buildMisconfigurationReport(repoId, envVars, targetContext);
   if (misconfiguration.status === 'fail') {
@@ -769,6 +886,15 @@ export async function gnDiagnose(
     degradedAreas.add('runtime');
   }
 
+  if (auditFreshness?.status === 'stale') {
+    degradedReasons.push('audit-stale');
+    degradedAreas.add('audit-freshness');
+  }
+  if (auditFreshness?.status === 'dirty') {
+    degradedReasons.push('audit-dirty');
+    degradedAreas.add('audit-freshness');
+  }
+
   const degradedContext: DiagnoseReport['degradedContext'] = {
     status: degradedReasons.length > 0 ? 'degraded' : 'ok',
     reasons: degradedReasons,
@@ -796,6 +922,8 @@ export async function gnDiagnose(
     ...(fileScopeExplanation !== undefined ? { fileScopeExplanation } : {}),
     ...(toolContract !== undefined ? { toolContract } : {}),
     ...(vectorBackend !== undefined ? { vectorBackend } : {}),
+    auditFreshness,
+    mcpResourceBridge,
     classification,
     setup,
     responseLimits,
@@ -831,6 +959,8 @@ export async function gnDiagnose(
       'classification-summary',
       'setup-summary',
       'response-limits',
+      'audit-freshness-probe',
+      'mcp-resource-bridge-probe',
     ],
     capabilitiesMissing: [
       ...(embeddings?.status === 'missing' ? ['embeddings'] : []),
@@ -845,4 +975,73 @@ export async function gnDiagnose(
     diagnosticsRequested: true,
     nextTools: ['gn_ensure_fresh', 'gn_quality_mode', 'gn_tool_contract'],
   });
+}
+
+
+async function checkMcpResourceBridge(): Promise<{ exposed: boolean; exposedTo: string[] }> {
+  const exposedTo: string[] = [];
+  const home = os.homedir();
+
+  // 1. Claude Code
+  try {
+    const claudeJsonPath = path.join(home, '.claude.json');
+    const contentStr = await fs.readFile(claudeJsonPath, 'utf8');
+    const parsed = JSON.parse(contentStr);
+    if (parsed?.mcpServers?.ontoindex) {
+      exposedTo.push('Claude Code');
+    }
+  } catch {
+    // ignore
+  }
+
+  // 2. Cursor
+  try {
+    const cursorMcpPath = path.join(home, '.cursor', 'mcp.json');
+    const contentStr = await fs.readFile(cursorMcpPath, 'utf8');
+    const parsed = JSON.parse(contentStr);
+    if (parsed?.mcpServers?.ontoindex) {
+      exposedTo.push('Cursor');
+    }
+  } catch {
+    // ignore
+  }
+
+  // 3. OpenCode
+  try {
+    const opencodeJsonPath = path.join(home, '.config', 'opencode', 'opencode.json');
+    const contentStr = await fs.readFile(opencodeJsonPath, 'utf8');
+    const parsed = JSON.parse(contentStr);
+    if (parsed?.mcp?.ontoindex) {
+      exposedTo.push('OpenCode');
+    }
+  } catch {
+    // ignore
+  }
+
+  // 4. Ontocode
+  try {
+    const codexConfigPath = path.join(home, '.codex', 'config.toml');
+    const contentStr = await fs.readFile(codexConfigPath, 'utf8');
+    if (hasCodexCompatibleMcpSection(contentStr)) {
+      exposedTo.push('Codex');
+    }
+  } catch {
+    // ignore
+  }
+
+  // 5. Ontocode
+  try {
+    const ontocodeConfigPath = path.join(home, '.ontocode', 'config.toml');
+    const contentStr = await fs.readFile(ontocodeConfigPath, 'utf8');
+    if (hasCodexCompatibleMcpSection(contentStr)) {
+      exposedTo.push('Ontocode');
+    }
+  } catch {
+    // ignore
+  }
+
+  return {
+    exposed: exposedTo.length > 0,
+    exposedTo,
+  };
 }

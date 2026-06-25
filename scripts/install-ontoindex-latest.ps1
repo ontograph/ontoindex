@@ -262,6 +262,73 @@ function Save-ReleaseAsset {
   throw "Failed to download OntoIndex release asset after 3 attempts: $lastError"
 }
 
+function Get-LadybugExtensionsCachePath {
+  $configured = [Environment]::GetEnvironmentVariable("ONTOINDEX_LADYBUG_EXTENSIONS_CACHE")
+  if (-not [string]::IsNullOrWhiteSpace($configured)) {
+    return $configured
+  }
+
+  $base = if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+    Join-Path $env:LOCALAPPDATA "ontoindex\ladybugdb-extensions"
+  } else {
+    Join-Path $HOME ".cache\ontoindex\ladybugdb-extensions"
+  }
+
+  return (Join-Path $base "v0.17.0\win_amd64")
+}
+
+function Download-LadybugExtensions {
+  if ([Environment]::GetEnvironmentVariable("ONTOINDEX_SKIP_LADYBUG_EXTENSIONS") -eq "1") {
+    Write-InstallerLog "Skipping LadybugDB extension cache prefetch: ONTOINDEX_SKIP_LADYBUG_EXTENSIONS=1"
+    return
+  }
+
+  if (-not ($IsWindows -or $env:OS -eq "Windows_NT")) {
+    return
+  }
+
+  $require = [Environment]::GetEnvironmentVariable("ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS")
+  $cacheDir = Get-LadybugExtensionsCachePath
+  $baseUrl = [Environment]::GetEnvironmentVariable("ONTOINDEX_LADYBUG_EXTENSIONS_BASE_URL")
+  if ([string]::IsNullOrWhiteSpace($baseUrl)) {
+    $baseUrl = "https://extension.ladybugdb.com/v0.17.0/win_amd64"
+  }
+  $timeoutSeconds = Get-EnvInt -Name "ONTOINDEX_INSTALL_DOWNLOAD_TIMEOUT_SEC" -Default 600
+
+  try {
+    New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+    Write-InstallerLog "Prefetching LadybugDB fts/vector extensions into $cacheDir"
+
+    foreach ($asset in @(
+      @{ File = "libfts.lbug_extension"; Url = "$baseUrl/fts/libfts.lbug_extension" },
+      @{ File = "libvector.lbug_extension"; Url = "$baseUrl/vector/libvector.lbug_extension" }
+    )) {
+      $assetPath = Join-Path $cacheDir $asset.File
+      if ((Test-Path $assetPath) -and ((Get-Item $assetPath).Length -gt 0)) {
+        Write-InstallerLog "Using cached $($asset.File)"
+        continue
+      }
+
+      if (Test-Path $assetPath) {
+        Remove-Item $assetPath -Force -ErrorAction SilentlyContinue
+      }
+
+      Write-InstallerLog "Downloading $($asset.File) from $($asset.Url)"
+      Invoke-WebRequest -UseBasicParsing -Uri $asset.Url -OutFile $assetPath -TimeoutSec $timeoutSeconds -Headers @{ "User-Agent" = "ontoindex-installer" }
+
+      if (-not (Test-Path $assetPath) -or ((Get-Item $assetPath).Length -le 0)) {
+        throw "Downloaded asset is empty: $($asset.File)"
+      }
+    }
+  } catch {
+    Write-Warning "LadybugDB extension prefetch failed; OntoIndex install will continue."
+    Write-Warning "Rerun with ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 to make this fatal."
+    if ($require -eq "1") {
+      throw
+    }
+  }
+}
+
 function Write-WindowsRepairInstructions {
   param([string]$Prefix)
 
@@ -351,6 +418,8 @@ if ($nodeMajor -ge 26) {
 if (($IsWindows -or $env:OS -eq "Windows_NT") -and -not (Test-VersionAtLeast -Version $npmVersion -Minimum "11.6.0")) {
   throw "OntoIndex on Windows with Node.js 22.x requires npm 11.6.0 or newer. Detected npm $npmVersion. Older npm releases bundle node-gyp versions that can fail to detect Visual Studio 2026 Build Tools. Run 'npm.cmd install -g npm@11.6.3', verify 'npm --version', then rerun this installer."
 }
+
+Download-LadybugExtensions
 
 $apiUrl = "https://api.github.com/repos/$Repo/releases/latest"
 $releaseTimeoutSeconds = Get-EnvInt -Name "ONTOINDEX_INSTALL_RELEASE_TIMEOUT_SEC" -Default 600
