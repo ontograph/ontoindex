@@ -93,6 +93,70 @@ function Require-Command {
   }
 }
 
+function Resolve-WgetCommand {
+  $wgetExe = Get-Command "wget.exe" -ErrorAction SilentlyContinue
+  if ($wgetExe) {
+    return $wgetExe
+  }
+
+  $wget = Get-Command "wget" -ErrorAction SilentlyContinue
+  if ($wget) {
+    return $wget
+  }
+
+  throw "Required command not found: wget. Install wget or use a PowerShell environment where the wget alias is available, then rerun this script."
+}
+
+function Invoke-WgetDownload {
+  param(
+    [string]$Uri,
+    [string]$OutFile,
+    [int]$TimeoutSec
+  )
+
+  $wget = Resolve-WgetCommand
+  if ($wget.CommandType -eq "Application") {
+    & $wget.Source `
+      "--user-agent=ontoindex-installer" `
+      "--tries=3" `
+      "--waitretry=2" `
+      "--timeout=$TimeoutSec" `
+      "--read-timeout=$TimeoutSec" `
+      "-O" $OutFile `
+      $Uri
+    if ($LASTEXITCODE -ne 0) {
+      throw "wget download failed with exit code $LASTEXITCODE"
+    }
+    return
+  }
+
+  & $wget.Source -UseBasicParsing -Uri $Uri -OutFile $OutFile -TimeoutSec $TimeoutSec -Headers @{ "User-Agent" = "ontoindex-installer" }
+}
+
+function Invoke-WgetJson {
+  param(
+    [string]$Uri,
+    [int]$TimeoutSec
+  )
+
+  $wget = Resolve-WgetCommand
+  if ($wget.CommandType -eq "Application") {
+    $json = & $wget.Source `
+      "--user-agent=ontoindex-installer" `
+      "--tries=3" `
+      "--waitretry=2" `
+      "--timeout=$TimeoutSec" `
+      "--read-timeout=$TimeoutSec" `
+      "-qO-" `
+      $Uri
+    if ($LASTEXITCODE -ne 0) {
+      throw "wget metadata fetch failed with exit code $LASTEXITCODE"
+    }
+    return $json | ConvertFrom-Json
+  }
+
+  return & $wget.Source -UseBasicParsing -Uri $Uri -TimeoutSec $TimeoutSec -Headers @{ "User-Agent" = "ontoindex-installer" } | ConvertFrom-Json
+}
 function Resolve-NpmCommand {
   if ($IsWindows -or $env:OS -eq "Windows_NT") {
     $npmCmd = Get-Command "npm.cmd" -ErrorAction SilentlyContinue
@@ -235,7 +299,7 @@ function Save-ReleaseAsset {
   for ($attempt = 1; $attempt -le 3; $attempt++) {
     try {
       Write-InstallerLog "Downloading release asset to $assetPath (attempt $attempt/3, timeout ${timeoutSeconds}s)"
-      Invoke-WebRequest -UseBasicParsing -Uri $AssetUrl -OutFile $assetPath -TimeoutSec $timeoutSeconds -Headers @{ "User-Agent" = "ontoindex-installer" }
+      Invoke-WgetDownload -Uri $AssetUrl -OutFile $assetPath -TimeoutSec $timeoutSeconds
       $assetSize = (Get-Item $assetPath).Length
       if ($assetSize -gt 0) {
         Write-InstallerLog "Downloaded $AssetName ($assetSize bytes)"
@@ -314,7 +378,7 @@ function Download-LadybugExtensions {
       }
 
       Write-InstallerLog "Downloading $($asset.File) from $($asset.Url)"
-      Invoke-WebRequest -UseBasicParsing -Uri $asset.Url -OutFile $assetPath -TimeoutSec $timeoutSeconds -Headers @{ "User-Agent" = "ontoindex-installer" }
+      Invoke-WgetDownload -Uri $asset.Url -OutFile $assetPath -TimeoutSec $timeoutSeconds
 
       if (-not (Test-Path $assetPath) -or ((Get-Item $assetPath).Length -le 0)) {
         throw "Downloaded asset is empty: $($asset.File)"
@@ -403,6 +467,7 @@ function Test-OntoIndexInstall {
 
 Require-Command "node"
 $null = Resolve-NpmCommand
+$null = Resolve-WgetCommand
 
 $nodeMajor = Get-NodeMajorVersion
 $npmVersion = Get-NpmVersion
@@ -424,7 +489,7 @@ Download-LadybugExtensions
 $apiUrl = "https://api.github.com/repos/$Repo/releases/latest"
 $releaseTimeoutSeconds = Get-EnvInt -Name "ONTOINDEX_INSTALL_RELEASE_TIMEOUT_SEC" -Default 600
 Write-InstallerLog "Fetching latest release metadata from $apiUrl (timeout ${releaseTimeoutSeconds}s)"
-$release = Invoke-RestMethod -Uri $apiUrl -TimeoutSec $releaseTimeoutSeconds -Headers @{ "User-Agent" = "ontoindex-installer" }
+$release = Invoke-WgetJson -Uri $apiUrl -TimeoutSec $releaseTimeoutSeconds
 $asset = $release.assets | Where-Object {
   $_.name -match '^ontoindex-[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?\.tgz$'
 } | Select-Object -First 1

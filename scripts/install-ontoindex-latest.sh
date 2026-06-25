@@ -7,11 +7,11 @@ USER_PREFIX="${ONTOINDEX_NPM_PREFIX:-${HOME}/.local}"
 LADYBUG_EXTENSIONS_REPO="${ONTOINDEX_LADYBUG_EXTENSIONS_REPO:-ontograph/ontoindex}"
 LADYBUG_EXTENSIONS_TAG="${ONTOINDEX_LADYBUG_EXTENSIONS_TAG:-ladybugdb-extensions-v0.17.0-linux-amd64}"
 LADYBUG_EXTENSIONS_CACHE="${ONTOINDEX_LADYBUG_EXTENSIONS_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/ontoindex/ladybugdb-extensions/v0.17.0/linux_amd64}"
-CURL_CONNECT_TIMEOUT="${ONTOINDEX_INSTALL_CURL_CONNECT_TIMEOUT:-10}"
-CURL_RETRY_COUNT="${ONTOINDEX_INSTALL_CURL_RETRIES:-2}"
-CURL_RETRY_DELAY="${ONTOINDEX_INSTALL_CURL_RETRY_DELAY:-1}"
-CURL_MAX_TIME_RELEASE="${ONTOINDEX_INSTALL_RELEASE_MAX_TIME:-45}"
-CURL_MAX_TIME_DOWNLOAD="${ONTOINDEX_INSTALL_DOWNLOAD_MAX_TIME:-120}"
+WGET_CONNECT_TIMEOUT="${ONTOINDEX_INSTALL_WGET_CONNECT_TIMEOUT:-${ONTOINDEX_INSTALL_CURL_CONNECT_TIMEOUT:-10}}"
+WGET_RETRY_COUNT="${ONTOINDEX_INSTALL_WGET_RETRIES:-${ONTOINDEX_INSTALL_CURL_RETRIES:-2}}"
+WGET_RETRY_DELAY="${ONTOINDEX_INSTALL_WGET_RETRY_DELAY:-${ONTOINDEX_INSTALL_CURL_RETRY_DELAY:-1}}"
+WGET_MAX_TIME_RELEASE="${ONTOINDEX_INSTALL_RELEASE_MAX_TIME:-${ONTOINDEX_INSTALL_CURL_MAX_TIME_RELEASE:-45}}"
+WGET_MAX_TIME_DOWNLOAD="${ONTOINDEX_INSTALL_DOWNLOAD_MAX_TIME:-${ONTOINDEX_INSTALL_CURL_MAX_TIME_DOWNLOAD:-120}}"
 
 SCRIPT_DIR=""
 if [ "${BASH_SOURCE[0]:-}" != "" ] && [ -e "${BASH_SOURCE[0]}" ]; then
@@ -29,18 +29,32 @@ need() {
   fi
 }
 
-need curl
+need wget
 need node
 need npm
 
-curl_retry_args() {
+wget_args() {
   local max_time="${1}"
+  local tries=$((WGET_RETRY_COUNT + 1))
   printf '%s\n' \
-    --retry "${CURL_RETRY_COUNT}" \
-    --retry-delay "${CURL_RETRY_DELAY}" \
-    --retry-all-errors \
-    --connect-timeout "${CURL_CONNECT_TIMEOUT}" \
-    --max-time "${max_time}"
+    --tries="${tries}" \
+    --waitretry="${WGET_RETRY_DELAY}" \
+    --read-timeout="${max_time}" \
+    --timeout="${WGET_CONNECT_TIMEOUT}" \
+    --user-agent=ontoindex-installer
+}
+
+wget_to_stdout() {
+  local max_time="${1}"
+  local url="${2}"
+  wget $(wget_args "${max_time}") -qO- "${url}"
+}
+
+wget_to_file() {
+  local max_time="${1}"
+  local output="${2}"
+  local url="${3}"
+  wget $(wget_args "${max_time}") -O "${output}" "${url}"
 }
 
 find_local_asset() {
@@ -112,8 +126,7 @@ download_ladybug_extensions() {
     fi
 
     log "Downloading LadybugDB extension checksums from ${base_url}"
-    curl -fL $(curl_retry_args "${CURL_MAX_TIME_DOWNLOAD}") \
-      -o SHA256SUMS.txt "${base_url}/SHA256SUMS.txt"
+    wget_to_file "${WGET_MAX_TIME_DOWNLOAD}" SHA256SUMS.txt "${base_url}/SHA256SUMS.txt"
 
     for asset in libfts.lbug_extension libvector.lbug_extension; do
       if [ -f "${asset}" ] && command -v sha256sum >/dev/null 2>&1 && grep " ${asset}$" SHA256SUMS.txt | sha256sum -c - >/dev/null 2>&1; then
@@ -124,8 +137,7 @@ download_ladybug_extensions() {
         rm -f "${asset}"
       fi
       log "Downloading ${asset}"
-      curl -fL $(curl_retry_args "${CURL_MAX_TIME_DOWNLOAD}") --continue-at - \
-        -o "${asset}" "${base_url}/${asset}"
+      wget_to_file "${WGET_MAX_TIME_DOWNLOAD}" "${asset}" "${base_url}/${asset}"
     done
 
     if command -v sha256sum >/dev/null 2>&1; then
@@ -250,7 +262,7 @@ if [ -n "${asset_url}" ]; then
   log "Using local OntoIndex tarball: ${asset_url}"
 else
   log "Fetching latest OntoIndex release metadata from ${API_URL}"
-  release_json="$(curl -fsSL $(curl_retry_args "${CURL_MAX_TIME_RELEASE}") "${API_URL}")"
+  release_json="$(wget_to_stdout "${WGET_MAX_TIME_RELEASE}" "${API_URL}")"
 
   asset_url="$(
     RELEASE_JSON="${release_json}" node <<'NODE'
@@ -290,7 +302,7 @@ if [ ! -f "${asset_url}" ]; then
   temp_asset_dir="$(mktemp -d)"
   install_asset="${temp_asset_dir}/$(basename "${asset_url}")"
   log "Downloading release asset to a temporary file: ${install_asset}"
-  curl -fL $(curl_retry_args "${CURL_MAX_TIME_DOWNLOAD}") -o "${install_asset}" "${asset_url}" || {
+  wget_to_file "${WGET_MAX_TIME_DOWNLOAD}" "${install_asset}" "${asset_url}" || {
     rm -rf "${temp_asset_dir}"
     exit 1
   }
