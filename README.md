@@ -129,7 +129,7 @@ Installer configuration:
 | Purpose                        | Linux/macOS                                                                    | Windows PowerShell                                                                     |
 | ------------------------------ | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
 | Use another release repository | `ONTOINDEX_GITHUB_REPO=owner/repo ./scripts/install-ontoindex-latest.sh`       | `$env:ONTOINDEX_GITHUB_REPO='owner/repo'; .\scripts\install-ontoindex-latest.ps1`      |
-| Use a local downloaded tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-1.9.25.tgz" ./scripts/install-ontoindex-latest.sh` | — |
+| Use a local downloaded tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-1.9.27.tgz" ./scripts/install-ontoindex-latest.sh` | — |
 | Use a user npm prefix          | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`    | `$env:ONTOINDEX_NPM_PREFIX="$env:APPDATA\npm"; .\scripts\install-ontoindex-latest.ps1` |
 | Force user prefix              | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`    | `.\scripts\install-ontoindex-latest.ps1 -ForceUserPrefix`                              |
 | Require FTS/vector cache prefetch | `ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1` |
@@ -141,8 +141,8 @@ Use this path when npm publication is available in your environment.
 
 | Platform           | Command                                                    |
 | ------------------ | ---------------------------------------------------------- |
-| Linux/macOS        | `npm install -g ontoindex@1.9.25 && ontoindex --version`   |
-| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.25; ontoindex --version` |
+| Linux/macOS        | `npm install -g ontoindex@1.9.27 && ontoindex --version`   |
+| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.27; ontoindex --version` |
 
 ### Install from a Release Tarball URL
 
@@ -150,8 +150,8 @@ Use this when you want an immutable GitHub release asset.
 
 | Platform           | Command                                                                                                                         |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| Linux/macOS        | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.25/ontoindex-1.9.25.tgz && ontoindex --version`   |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.25/ontoindex-1.9.25.tgz; ontoindex --version` |
+| Linux/macOS        | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.27/ontoindex-1.9.27.tgz && ontoindex --version`   |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.27/ontoindex-1.9.27.tgz; ontoindex --version` |
 
 ## First Run
 

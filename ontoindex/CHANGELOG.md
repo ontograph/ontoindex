@@ -4,6 +4,20 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.27] - 2026-06-25
+
+### Changed
+
+- Switched the Linux/macOS and Windows release installers to use `wget` for release metadata,
+  release asset, and LadybugDB extension downloads.
+
+### Fixed
+
+- Persisted `model_hash` into `.ontoindex/meta.json` during analyze so diagnostics can distinguish
+  present embeddings from missing embedding metadata.
+- Stopped `gn_ensure_fresh` from degrading a populated embedding index solely because the MCP
+  process environment does not define `ONTOINDEX_EMBEDDING_MODEL_HASH`.
+
 ## [1.9.26] - 2026-06-25
 
 ### Added
