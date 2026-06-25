@@ -29,9 +29,17 @@ need() {
   fi
 }
 
-need wget
 need node
 need npm
+
+has_command() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+if ! has_command wget && ! has_command curl; then
+  echo "error: required downloader not found: install wget or curl" >&2
+  exit 127
+fi
 
 wget_args() {
   local max_time="${1}"
@@ -47,14 +55,37 @@ wget_args() {
 wget_to_stdout() {
   local max_time="${1}"
   local url="${2}"
-  wget $(wget_args "${max_time}") -qO- "${url}"
+  if has_command wget; then
+    wget $(wget_args "${max_time}") -qO- "${url}" && return 0
+    log "wget failed for ${url}; retrying with curl"
+  fi
+  curl -fsSL \
+    --retry "${WGET_RETRY_COUNT}" \
+    --retry-delay "${WGET_RETRY_DELAY}" \
+    --retry-all-errors \
+    --connect-timeout "${WGET_CONNECT_TIMEOUT}" \
+    --max-time "${max_time}" \
+    -A ontoindex-installer \
+    "${url}"
 }
 
 wget_to_file() {
   local max_time="${1}"
   local output="${2}"
   local url="${3}"
-  wget $(wget_args "${max_time}") -O "${output}" "${url}"
+  if has_command wget; then
+    wget $(wget_args "${max_time}") -O "${output}" "${url}" && return 0
+    log "wget failed for ${url}; retrying with curl"
+  fi
+  curl -fL \
+    --retry "${WGET_RETRY_COUNT}" \
+    --retry-delay "${WGET_RETRY_DELAY}" \
+    --retry-all-errors \
+    --connect-timeout "${WGET_CONNECT_TIMEOUT}" \
+    --max-time "${max_time}" \
+    -A ontoindex-installer \
+    -o "${output}" \
+    "${url}"
 }
 
 find_local_asset() {
