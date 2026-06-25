@@ -65,6 +65,7 @@ describe('direct CLI tool commands', () => {
       goal: undefined,
       limit: 3,
       include_content: false,
+      include_explanations: false,
       repo: 'ontoindex',
     });
   });
@@ -90,6 +91,7 @@ describe('direct CLI tool commands', () => {
       goal: undefined,
       limit: undefined,
       include_content: false,
+      include_explanations: false,
       repo: 'ontoindex',
     });
   });
@@ -111,10 +113,34 @@ describe('direct CLI tool commands', () => {
       goal: undefined,
       limit: undefined,
       include_content: false,
+      include_explanations: false,
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
       include_markdown_ppr: true,
+      repo: undefined,
+    });
+  });
+
+  it('forwards path filters and explanation opt-in query flags to LocalBackend params', async () => {
+    callToolMock.mockResolvedValue({ results: [] });
+    const { queryCommand } = await import('../../src/cli/tool.js');
+
+    await queryCommand('auth flow', {
+      includeExplanations: true,
+      includePath: ['src/core', 'src/mcp'],
+      excludePath: ['src/core/generated'],
+    });
+
+    expect(callToolMock).toHaveBeenCalledWith('query', {
+      query: 'auth flow',
+      task_context: undefined,
+      goal: undefined,
+      limit: undefined,
+      include_content: false,
+      include_explanations: true,
+      include_paths: ['src/core', 'src/mcp'],
+      exclude_paths: ['src/core/generated'],
       repo: undefined,
     });
   });

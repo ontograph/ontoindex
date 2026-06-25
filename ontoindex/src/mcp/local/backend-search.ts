@@ -99,6 +99,7 @@ interface SymbolEntry {
   citation_path?: string;
   module?: string;
   content?: string;
+  explanation?: string;
   ceScore?: number;
   citations?: CitationEntry[];
   passiveFacts?: GraphPathEdge[];
@@ -113,6 +114,7 @@ interface DefinitionEntry {
   name?: string;
   type: string;
   filePath: string;
+  explanation?: string;
 }
 
 interface ProcessBucket {
@@ -140,6 +142,9 @@ interface BackendSearchOptions {
   limit?: number;
   max_symbols?: number;
   include_content?: boolean;
+  include_explanations?: boolean;
+  include_paths?: string[];
+  exclude_paths?: string[];
   include_skeleton?: boolean;
   include_citations?: boolean;
   intent_ensemble?: boolean;
@@ -894,6 +899,119 @@ function definitionsForCachedCandidates(
     });
 }
 
+function normalizePathPrefix(raw: string): string {
+  return raw.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '').replace(/\/+$/, '');
+}
+
+function matchesPathPrefixes(
+  filePath: string | undefined,
+  includePaths: readonly string[],
+  excludePaths: readonly string[],
+): boolean {
+  if (!filePath) return includePaths.length === 0;
+  const normalizedPath = normalizePathPrefix(filePath);
+  const matchesPrefix = (prefix: string) =>
+    normalizedPath === prefix || normalizedPath.startsWith(`${prefix}/`);
+  if (excludePaths.some(matchesPrefix)) return false;
+  if (includePaths.length === 0) return true;
+  return includePaths.some(matchesPrefix);
+}
+
+function filterMergedByPathPrefixes(
+  merged: MergedSymbolEntry[],
+  includePaths: readonly string[],
+  excludePaths: readonly string[],
+): MergedSymbolEntry[] {
+  if (includePaths.length === 0 && excludePaths.length === 0) return merged;
+  return merged.filter(([, item]) =>
+    matchesPathPrefixes(item.data.filePath, includePaths, excludePaths),
+  );
+}
+
+function filterCandidatesByPathPrefixes(
+  candidates: RetrievalCandidate[],
+  includePaths: readonly string[],
+  excludePaths: readonly string[],
+): RetrievalCandidate[] {
+  if (includePaths.length === 0 && excludePaths.length === 0) return candidates;
+  return candidates.filter((candidate) =>
+    matchesPathPrefixes(candidate.filePath, includePaths, excludePaths),
+  );
+}
+
+function buildSearchExplanation(
+  item: MergedSymbolEntry[1],
+  queryIntent: Intent,
+): string | undefined {
+  const sources = Array.from(new Set((item.trace ?? []).map((entry) => entry.source)));
+  if (sources.length === 0 && item.data.ceScore === undefined) return undefined;
+  const readableSources = sources.map((source) => {
+    switch (source) {
+      case 'bm25':
+        return 'BM25';
+      case 'semantic':
+        return 'semantic';
+      case 'graph':
+        return 'graph traversal';
+      case 'ce':
+        return 'cross-encoder';
+      default:
+        return source;
+    }
+  });
+  const parts: string[] = [];
+  if (readableSources.length > 0) parts.push(`Matched by ${readableSources.join(' + ')}`);
+  if (item.data.ceScore !== undefined) parts.push(`CE rerank ${item.data.ceScore.toFixed(2)}`);
+  parts.push(`intent ${queryIntent}`);
+  return parts.join('; ');
+}
+
+function isLikelyGenericEntryFile(filePath: string | undefined): boolean {
+  const normalized = normalizePathPrefix(filePath ?? '').toLowerCase();
+  if (!normalized) return false;
+  const base = normalized.split('/').pop() ?? normalized;
+  return [
+    'app.tsx',
+    'app.jsx',
+    'main.tsx',
+    'main.jsx',
+    'index.tsx',
+    'index.jsx',
+    'index.ts',
+    'index.js',
+  ].includes(base);
+}
+
+function applyGenericEntryFileFallbackReorder(
+  merged: MergedSymbolEntry[],
+  lockedResults: readonly EnrichedSymbolRow[],
+): MergedSymbolEntry[] {
+  if (merged.length < 2) return merged;
+  const lockedKeys = new Set(lockedResults.map((row) => row.nodeId || row.filePath));
+  const locked: MergedSymbolEntry[] = [];
+  const prioritized: MergedSymbolEntry[] = [];
+  const generic: MergedSymbolEntry[] = [];
+
+  for (const entry of merged) {
+    const [key, item] = entry;
+    if (lockedKeys.has(key)) {
+      locked.push(entry);
+      continue;
+    }
+    if (item.data.ceScore !== undefined) {
+      prioritized.push(entry);
+      continue;
+    }
+    if (isLikelyGenericEntryFile(item.data.filePath)) {
+      generic.push(entry);
+      continue;
+    }
+    prioritized.push(entry);
+  }
+
+  return generic.length === 0 ? merged : [...locked, ...prioritized, ...generic];
+}
+
 function formatCapabilityWarning(
   freshness: RetrievalCapabilityState['freshness'],
   missingCapabilities: Set<string>,
@@ -1467,6 +1585,9 @@ export async function query(
   })();
   const embeddingModelHash = await loadEmbeddingModelHash(repo.id);
   const requestedTokenCost = createQueryTokenCostSnapshot(params.token_cost);
+  const includePaths = (params.include_paths ?? []).map(normalizePathPrefix).filter(Boolean);
+  const excludePaths = (params.exclude_paths ?? []).map(normalizePathPrefix).filter(Boolean);
+  const includeExplanations = params.include_explanations === true;
   const cache = new SemanticRetrievalCache(repo.repoPath);
   const cacheKey = SemanticRetrievalCache.computeKey({
     query: searchQuery,
@@ -1498,16 +1619,21 @@ export async function query(
       cached.diagnostics.capabilityHealth &&
       cacheableFreshnessStatus(cached.diagnostics.freshness.status)
     ) {
+      const filteredCandidates = filterCandidatesByPathPrefixes(
+        cached.candidates,
+        includePaths,
+        excludePaths,
+      );
       const cachedTokenCost = cached.diagnostics.capabilityHealth.tokenCost ?? requestedTokenCost;
       return {
         processes: [],
         process_symbols: [],
-        definitions: definitionsForCachedCandidates(cached.candidates),
+        definitions: definitionsForCachedCandidates(filteredCandidates),
         timing: cached.diagnostics.timing || {},
         query_intent: queryIntent,
         structured_retrieval: {
-          candidates: cached.candidates,
-          rows: structuredRowsForCandidates(cached.candidates),
+          candidates: filteredCandidates,
+          rows: structuredRowsForCandidates(filteredCandidates),
           capabilityState: {
             ...cached.diagnostics.capabilityHealth,
             warnings: uniqueStrings([
@@ -1683,8 +1809,10 @@ export async function query(
   const merged = abstentionEnabled
     ? mergedRaw.filter(([, item]) => item.score >= abstentionThreshold)
     : mergedRaw;
+  const mergedFiltered = filterMergedByPathPrefixes(merged, includePaths, excludePaths);
+  const mergedReordered = applyGenericEntryFileFallbackReorder(mergedFiltered, lockedResults);
 
-  if (abstentionEnabled && merged.length === 0) {
+  if (abstentionEnabled && mergedReordered.length === 0) {
     return { abstained: true, processes: [], process_symbols: [], definitions: [], timing: {} };
   }
 
@@ -1692,13 +1820,14 @@ export async function query(
   const processMap = new Map<string, ProcessBucket>();
   const definitions: Array<DefinitionEntry | SymbolEntry> = [];
 
-  for (const [, item] of merged) {
+  for (const [, item] of mergedReordered) {
     const sym = item.data;
     if (!sym.nodeId) {
       definitions.push({
         name: sym.name,
         type: sym.type || 'File',
         filePath: sym.filePath,
+        ...(includeExplanations ? { explanation: buildSearchExplanation(item, queryIntent) } : {}),
       });
       continue;
     }
@@ -1786,6 +1915,7 @@ export async function query(
       ...(citationPath ? { citation_path: citationPath } : {}),
       ...(module ? { module } : {}),
       ...(includeContent && content ? { content } : {}),
+      ...(includeExplanations ? { explanation: buildSearchExplanation(item, queryIntent) } : {}),
       // ceScore: additive field present only when CE rerank is active (W2b-v10).
       ...(sym.ceScore !== undefined ? { ceScore: sym.ceScore } : {}),
       // citations: additive field present only when ONTOINDEX_CITATIONS=1 (W3a-v10).

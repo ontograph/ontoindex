@@ -9,7 +9,7 @@ The default path is local: install, analyze, setup, connect MCP, serve, and gene
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- Current release: `1.9.25`
+- Current release: `1.9.28`
 - Source repository: [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - Security policy: [SECURITY.md](SECURITY.md)
 - Enterprise contact: [erasyuk@gmail.com](mailto:erasyuk@gmail.com)
@@ -129,7 +129,7 @@ Installer configuration:
 | Purpose                        | Linux/macOS                                                                    | Windows PowerShell                                                                     |
 | ------------------------------ | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
 | Use another release repository | `ONTOINDEX_GITHUB_REPO=owner/repo ./scripts/install-ontoindex-latest.sh`       | `$env:ONTOINDEX_GITHUB_REPO='owner/repo'; .\scripts\install-ontoindex-latest.ps1`      |
-| Use a local downloaded tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-1.9.27.tgz" ./scripts/install-ontoindex-latest.sh` | — |
+| Use a local downloaded tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-1.9.28.tgz" ./scripts/install-ontoindex-latest.sh` | — |
 | Use a user npm prefix          | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`    | `$env:ONTOINDEX_NPM_PREFIX="$env:APPDATA\npm"; .\scripts\install-ontoindex-latest.ps1` |
 | Force user prefix              | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`    | `.\scripts\install-ontoindex-latest.ps1 -ForceUserPrefix`                              |
 | Require FTS/vector cache prefetch | `ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1` |
@@ -141,8 +141,8 @@ Use this path when npm publication is available in your environment.
 
 | Platform           | Command                                                    |
 | ------------------ | ---------------------------------------------------------- |
-| Linux/macOS        | `npm install -g ontoindex@1.9.27 && ontoindex --version`   |
-| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.27; ontoindex --version` |
+| Linux/macOS        | `npm install -g ontoindex@1.9.28 && ontoindex --version`   |
+| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.28; ontoindex --version` |
 
 ### Install from a Release Tarball URL
 
@@ -150,8 +150,8 @@ Use this when you want an immutable GitHub release asset.
 
 | Platform           | Command                                                                                                                         |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| Linux/macOS        | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.27/ontoindex-1.9.27.tgz && ontoindex --version`   |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.27/ontoindex-1.9.27.tgz; ontoindex --version` |
+| Linux/macOS        | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.28/ontoindex-1.9.28.tgz && ontoindex --version`   |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.28/ontoindex-1.9.28.tgz; ontoindex --version` |
 
 ## First Run
 
@@ -162,6 +162,8 @@ If embeddings already exist, `ontoindex analyze` preserves them; use `ontoindex 
 | Task                                      | Linux/macOS                                                               | Windows PowerShell                                                        |
 | ----------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | Index current repository                  | `ontoindex analyze`                                                       | `ontoindex analyze`                                                       |
+| Semantic query scoped to backend files    | `ontoindex query "search ranking" --include-path ontoindex/src/mcp/local` | `ontoindex query "search ranking" --include-path ontoindex/src/mcp/local` |
+| Semantic query with explanations          | `ontoindex query "search ranking" --include-explanations`                 | `ontoindex query "search ranking" --include-explanations`                 |
 | Generate repo skills for Claude and Codex | `ontoindex analyze --skills --skills-target claude,codex`                 | `ontoindex analyze --skills --skills-target claude,codex`                 |
 | Configure supported MCP clients           | `ontoindex setup`                                                         | `ontoindex setup`                                                         |
 | Start MCP server manually                 | `ontoindex mcp`                                                           | `ontoindex mcp`                                                           |

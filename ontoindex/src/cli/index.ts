@@ -375,6 +375,19 @@ program
   .option('-g, --goal <text>', 'What you want to find')
   .option('-l, --limit <n>', 'Max processes to return (default: 5)')
   .option('--content', 'Include full symbol source code')
+  .option('--include-explanations', 'Include bounded explanation text for symbol-level results')
+  .option(
+    '--include-path <path>',
+    'Keep only results under this repository-relative path prefix; repeat for multiple prefixes',
+    collectOption,
+    [],
+  )
+  .option(
+    '--exclude-path <path>',
+    'Remove results under this repository-relative path prefix; repeat for multiple prefixes',
+    collectOption,
+    [],
+  )
   .option('--typed', 'Parse <search_query> as a typed query document before searching')
   .option('--consume-enrichment-facts', 'Opt in to HippoRAG enrichment fact consumption')
   .option(

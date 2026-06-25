@@ -103,6 +103,24 @@ SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). W
           description: 'Include full symbol source code (default: false)',
           default: false,
         },
+        include_explanations: {
+          type: 'boolean',
+          description:
+            'Include bounded explanation text for why symbol-level results ranked (default: false).',
+          default: false,
+        },
+        include_paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Optional repository-relative path prefixes to keep in semantic results. Applies to symbol-level emitted rows and drops empty processes.',
+        },
+        exclude_paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Optional repository-relative path prefixes to remove from semantic results. Applies after retrieval/ranking selection and drops empty processes.',
+        },
         retrieval_policy: {
           type: 'string',
           enum: [...RETRIEVAL_POLICY_NAMES],

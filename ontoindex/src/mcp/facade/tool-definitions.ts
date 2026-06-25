@@ -139,6 +139,24 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
           type: 'string',
           description: 'What you want to find. Helps semantic ranking.',
         },
+        include_explanations: {
+          type: 'boolean',
+          description:
+            'For action="semantic", include bounded explanation text for why symbol-level results ranked. Default: false.',
+          default: false,
+        },
+        include_paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'For action="semantic", optional repository-relative path prefixes to keep in emitted results.',
+        },
+        exclude_paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'For action="semantic", optional repository-relative path prefixes to remove from emitted results.',
+        },
         limit: {
           type: 'number',
           description: 'Maximum semantic processes/results to return.',

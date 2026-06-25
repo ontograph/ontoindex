@@ -105,6 +105,9 @@ export async function queryCommand(
     goal?: string;
     limit?: string;
     content?: boolean;
+    includeExplanations?: boolean;
+    includePath?: string[];
+    excludePath?: string[];
     typed?: boolean;
     consumeEnrichmentFacts?: boolean;
     includePassiveRelatedFacts?: boolean;
@@ -124,8 +127,11 @@ export async function queryCommand(
     goal: options?.goal,
     limit: options?.limit ? parseInt(options.limit) : undefined,
     include_content: options?.content ?? false,
+    include_explanations: options?.includeExplanations ?? false,
     repo: options?.repo,
   };
+  if (options?.includePath?.length) params.include_paths = options.includePath;
+  if (options?.excludePath?.length) params.exclude_paths = options.excludePath;
   if (options?.typed) {
     params.typedQuery = query;
   } else {

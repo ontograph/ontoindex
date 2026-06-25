@@ -223,6 +223,113 @@ describe('backend-search typed input', () => {
     expect(mockEmbedQuery).not.toHaveBeenCalled();
   });
 
+  it('filters emitted symbol-level results by include_paths and exclude_paths', async () => {
+    mockClassifyIntent.mockReturnValue({
+      intent: 'nl-conceptual',
+      confidence: 0.8,
+      matchedKeywords: [],
+    });
+    const coreRow = symbolRow({
+      nodeId: 'Function:src/core/cache.ts:CacheStore',
+      filePath: 'src/core/cache.ts',
+      name: 'CacheStore',
+    });
+    const uiRow = symbolRow({
+      nodeId: 'Function:src/ui/App.tsx:App',
+      filePath: 'src/ui/App.tsx',
+      name: 'App',
+    });
+    mockBm25Search.mockResolvedValue({ results: [coreRow, uiRow], ftsUsed: true });
+    mockSemanticSearch.mockResolvedValue([coreRow, uiRow]);
+
+    const result = await query({ id: 'repo-1', repoPath: '/repo', lastCommit: 'abc123' } as any, {
+      query: 'cache store',
+      limit: 5,
+      include_paths: ['src/core'],
+      exclude_paths: ['src/core/generated'],
+    });
+
+    expect(result.definitions).toEqual([
+      expect.objectContaining({ name: 'CacheStore', filePath: 'src/core/cache.ts' }),
+    ]);
+  });
+
+  it('includes explanation text on symbol-level emitted rows when include_explanations is true', async () => {
+    mockClassifyIntent.mockReturnValue({
+      intent: 'nl-conceptual',
+      confidence: 0.8,
+      matchedKeywords: [],
+    });
+    const row = symbolRow({
+      nodeId: 'Function:src/core/cache.ts:CacheStore',
+      filePath: 'src/core/cache.ts',
+      name: 'CacheStore',
+      ceScore: 0.93,
+    });
+    mockBm25Search.mockResolvedValue({ results: [row], ftsUsed: true });
+    mockSemanticSearch.mockResolvedValue([row]);
+    mockMergeSymbolsWithRRF.mockReturnValue([
+      [
+        row.nodeId!,
+        {
+          score: 1,
+          data: row,
+          trace: [
+            { source: 'bm25', rank: 1, rawScore: 10, weight: 1, contribution: 1 / 61 },
+            { source: 'semantic', rank: 1, rawScore: 0.8, weight: 1, contribution: 1 / 61 },
+          ],
+        },
+      ],
+    ]);
+
+    const result = await query({ id: 'repo-1', repoPath: '/repo', lastCommit: 'abc123' } as any, {
+      query: 'cache store',
+      limit: 5,
+      include_explanations: true,
+    });
+
+    expect(result.definitions).toEqual([
+      expect.objectContaining({
+        name: 'CacheStore',
+        explanation: expect.stringContaining('Matched by BM25 + semantic'),
+      }),
+    ]);
+  });
+
+  it('pushes generic entry files behind non-generic unlocked rows', async () => {
+    mockClassifyIntent.mockReturnValue({
+      intent: 'nl-conceptual',
+      confidence: 0.8,
+      matchedKeywords: [],
+    });
+    const appRow = symbolRow({
+      nodeId: 'Function:src/ui/App.tsx:App',
+      filePath: 'src/ui/App.tsx',
+      name: 'App',
+    });
+    const implRow = symbolRow({
+      nodeId: 'Function:src/core/proceduralGeneration.ts:generateWorld',
+      filePath: 'src/core/proceduralGeneration.ts',
+      name: 'generateWorld',
+    });
+    mockBm25Search.mockResolvedValue({ results: [appRow, implRow], ftsUsed: true });
+    mockSemanticSearch.mockResolvedValue([appRow, implRow]);
+    mockMergeSymbolsWithRRF.mockReturnValue([
+      [appRow.nodeId!, { score: 2, data: appRow }],
+      [implRow.nodeId!, { score: 1, data: implRow }],
+    ]);
+
+    const result = await query({ id: 'repo-1', repoPath: '/repo', lastCommit: 'abc123' } as any, {
+      query: 'procedural generation',
+      limit: 5,
+    });
+
+    expect(result.definitions.map((entry) => entry.filePath)).toEqual([
+      'src/core/proceduralGeneration.ts',
+      'src/ui/App.tsx',
+    ]);
+  });
+
   it('opt-in symbol-neighborhood retrieval policy engages frontier search on plain queries', async () => {
     mockBm25Search.mockResolvedValue({
       results: [symbolRow()],
