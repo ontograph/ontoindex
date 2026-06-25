@@ -1241,6 +1241,8 @@ export async function runFullAnalysis(
                 mode: embeddingLifecycleMode,
                 state: 'available',
               };
+    const persistedModelHash =
+      process.env.ONTOINDEX_EMBEDDING_MODEL_HASH?.trim() || existingMeta?.model_hash?.trim();
     const meta = {
       repoPath,
       lastCommit: currentCommit,
@@ -1254,6 +1256,7 @@ export async function runFullAnalysis(
         embeddings: embeddingCount,
       },
       ...(includePaths.length > 0 ? { includePaths } : {}),
+      ...(persistedModelHash ? { model_hash: persistedModelHash } : {}),
       ...(embeddingVectorIndexDigest !== undefined ? { embeddingVectorIndexDigest } : {}),
       ...(degradedFiles.size > 0
         ? {

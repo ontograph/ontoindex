@@ -322,6 +322,14 @@ function resolveEmbeddingsStatus(input: {
   }
 
   if (!metadataHash || !currentHash) {
+    if (metadataHash && !currentHash) {
+      return {
+        count,
+        required,
+        status: 'ok',
+        reason: 'runtime embedding model hash is not set; drift check skipped',
+      };
+    }
     return {
       count,
       required,

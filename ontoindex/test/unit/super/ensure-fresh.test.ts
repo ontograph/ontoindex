@@ -423,6 +423,21 @@ describe('gnEnsureFresh', () => {
     expect(report.embeddingsStatus.repairCommand).toBe('ontoindex analyze --force --embeddings');
   });
 
+  it('keeps embeddingsStatus.ok when embeddings exist and the runtime hash is unset', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(
+      makeRegistry({ lastCommit: CURRENT_COMMIT, embeddings: 12 }) as any,
+    );
+    mockLoadMeta.mockResolvedValue(makeMeta({ modelHash: 'stored-hash', embeddings: 12 }) as any);
+    delete process.env.ONTOINDEX_EMBEDDING_MODEL_HASH;
+
+    const report = await gnEnsureFresh(REPO_ID, {});
+
+    expect(report.embeddingsStatus.status).toBe('ok');
+    expect(report.embeddingsStatus.count).toBe(12);
+    expect(report.embeddingsStatus.reason).toContain('drift check skipped');
+  });
+
   // ---- Bonus Test 7: repo not in registry → warning + empty preCheck ------
   it('returns warning when repo is not found in registry', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT });

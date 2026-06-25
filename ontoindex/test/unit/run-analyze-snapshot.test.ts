@@ -782,6 +782,50 @@ describe('runFullAnalysis snapshot persistence', () => {
     }
   });
 
+  it('persists model_hash in meta.json when embeddings are generated', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
+    const previousModelHash = process.env.ONTOINDEX_EMBEDDING_MODEL_HASH;
+    process.env.ONTOINDEX_EMBEDDING_MODEL_HASH = 'test-embedding-hash';
+    try {
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'section:docs',
+        label: 'Section',
+        properties: { name: 'Docs', filePath: 'docs.md', content: '# Docs' } as any,
+      });
+
+      runPipelineMock.mockResolvedValue({
+        graph,
+        repoPath: repoDir,
+        totalFileCount: 1,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockImplementation(async (query: string) => {
+        if (query.includes('RETURN count(n) AS cnt')) return [{ cnt: 1 }];
+        if (query.includes('RETURN count(e) AS cnt')) return [{ cnt: 7 }];
+        return [];
+      });
+
+      await runFullAnalysis(repoDir, { embeddings: true }, { onProgress: vi.fn() });
+
+      expect(saveMetaMock).toHaveBeenCalledWith(
+        path.join(repoDir, '.ontoindex'),
+        expect.objectContaining({
+          model_hash: 'test-embedding-hash',
+          stats: expect.objectContaining({
+            embeddings: 7,
+          }),
+        }),
+      );
+    } finally {
+      if (previousModelHash === undefined) delete process.env.ONTOINDEX_EMBEDDING_MODEL_HASH;
+      else process.env.ONTOINDEX_EMBEDDING_MODEL_HASH = previousModelHash;
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it('builds and persists ANN_NEIGHBOR edges when --ann-neighbors is requested', async () => {
     const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
     try {
