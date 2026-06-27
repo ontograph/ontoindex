@@ -74,9 +74,11 @@ npm config get msvs_version
 Linux and macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ontograph/ontoindex/master/scripts/install-ontoindex-latest.sh | bash
+wget -qO- https://raw.githubusercontent.com/ontograph/ontoindex/master/scripts/install-ontoindex-latest.sh | bash
 ontoindex --version
 ```
+
+If `wget` is unavailable, `curl -fsSL https://raw.githubusercontent.com/ontograph/ontoindex/master/scripts/install-ontoindex-latest.sh | bash` works as a fallback.
 
 Windows PowerShell:
 
@@ -340,8 +342,8 @@ Images:
 
 | Image                                    | Purpose                                        |
 | ---------------------------------------- | ---------------------------------------------- |
-| `ghcr.io/ontograph/ontoindex:1.9.25`     | CLI, MCP server, and `ontoindex serve` backend |
-| `ghcr.io/ontograph/ontoindex-web:1.9.25` | Web UI                                         |
+| `ghcr.io/ontograph/ontoindex:1.9.29`     | CLI, MCP server, and `ontoindex serve` backend |
+| `ghcr.io/ontograph/ontoindex-web:1.9.29` | Web UI                                         |
 
 ## Comparison With Related Tools
 

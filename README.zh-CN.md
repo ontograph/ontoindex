@@ -7,7 +7,7 @@
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- 当前版本：`1.9.5`
+- 当前版本：`1.9.29`
 - 源代码仓库：[github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - 安全策略：[SECURITY.md](SECURITY.md)
 - 企业联系：[erasyuk@gmail.com](mailto:erasyuk@gmail.com)
@@ -27,8 +27,8 @@ OntoIndex 通过预先构建仓库图来降低这种不确定性。图中记录�
 | --- | --- |
 | 代码图 | 文件、目录、函数、类、方法、接口、属性、route、tool、文档章节和流程节点 |
 | 关系 | `CONTAINS`, `DEFINES`, `CALLS`, `IMPORTS`, `EXTENDS`, `IMPLEMENTS`, `MEMBER_OF`, `STEP_IN_PROCESS`, `HANDLES_ROUTE` 等边 |
-| 搜索 | BM25、图搜索、可选语义检索、reciprocal-rank fusion，以及按流程分组的结果 |
-| Agent 安全 | 影响分析、diff 到符号映射、pre-commit audit、review helper 和目标仓库校验 |
+| 搜索 | BM25、图搜索、可选语义检索、可选 zvec 向量 backend、reciprocal-rank fusion，以及按流程分组的结果 |
+| Agent 安全 | 影响分析、diff 到符号映射、pre-commit audit、review helper、目标测试证据和目标仓库校验 |
 | 接口 | CLI、MCP stdio server、HTTP API、生成的 wiki、生成的 skills、React/Vite web UI |
 | 多仓库 | 命名仓库注册表、repo label、group contract 和跨仓库上下文 |
 
@@ -40,7 +40,7 @@ OntoIndex 运行在 Node.js 上，并且部分语言解析器会使用 native pa
 
 | 需求 | Linux | Windows |
 | --- | --- | --- |
-| Node.js | Node.js `20 LTS` 或 `22 LTS`，以及 `npm` | Node.js `20 LTS` 或 `22 LTS`，以及 `npm` |
+| Node.js | Node.js `22.12.0` 到 `25.x`，以及 `npm` | Node.js `22.12.0` 到 `25.x`，以及 `npm 11.6.0+` |
 | Git | 用于仓库元数据和 diff 分析的 `git` CLI | Git for Windows |
 | Native build tools | `python3`, `make`, `g++`，用于可选 native parser build | Python 3 和 Visual Studio Build Tools 中的 Microsoft C++ Build Tools |
 | Shell | 安装脚本示例使用 `bash` | PowerShell 5.1 或 PowerShell 7 |
@@ -72,9 +72,11 @@ npm config get msvs_version
 Linux 和 macOS：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ontograph/ontoindex/master/scripts/install-ontoindex-latest.sh | bash
+wget -qO- https://raw.githubusercontent.com/ontograph/ontoindex/master/scripts/install-ontoindex-latest.sh | bash
 ontoindex --version
 ```
+
+如果没有 `wget`，可以回退到 `curl -fsSL https://raw.githubusercontent.com/ontograph/ontoindex/master/scripts/install-ontoindex-latest.sh | bash`。
 
 Windows PowerShell：
 
@@ -85,7 +87,9 @@ ontoindex --version
 
 Windows 说明：
 
-- 在 Windows 上配合 `Node.js 22 LTS` 时，请使用 `npm 11.6.0` 或更新版本。
+- 当前发布线已经不再支持 Node.js 20，因为 `commander@15` 要求 Node.js `22.12.0` 或更高版本。
+- 在 Node.js 24 和 25 上，如果没有可用 prebuild，OntoIndex 会使用 vendored `tree-sitter` runtime 源码并以 C++20 编译 native bindings。
+- 在 Windows 上使用 `Node.js 22 LTS` 时，请搭配 `npm 11.6.0` 或更高版本。
 - 较旧的 npm 可能会捆绑无法识别 Visual Studio 2026 Build Tools 的 `node-gyp`。
 - 重试安装前先执行 `npm.cmd install -g npm@11.6.3` 升级 npm。
 
@@ -96,7 +100,11 @@ Windows 说明：
 | Linux/macOS | `./scripts/install-ontoindex-latest.sh` |
 | Windows PowerShell | `powershell -ExecutionPolicy Bypass -File .\scripts\install-ontoindex-latest.ps1` |
 
-安装脚本会读取最新 GitHub release，查找 `ontoindex-*.tgz` asset，并使用 `npm install -g` 安装。如果全局 npm prefix 不可写，会回退到用户级 npm prefix。
+安装脚本会读取最新 GitHub release，查找 `ontoindex-*.tgz` asset，并使用 `npm install -g` 安装。如果 `ONTOINDEX_LOCAL_ASSET` 指向某个 tarball，或者当前目录/脚本旁边已经存在 `ontoindex-*.tgz`，Linux/macOS 安装器会优先使用本地 tarball，而不是再次请求 GitHub。如果全局 npm prefix 不可写，会回退到用户级 npm prefix。
+
+默认安装器并不是把所有第三方包都打进离线 bundle。发布包包含 OntoIndex 源码和 vendored parser 源码，然后由 npm 按当前平台解析 LadybugDB、ONNX Runtime 以及 image/vector helpers 等运行时依赖。上游依赖尚未更新时，可能会看到非致命的 npm deprecated transitive warning。对于 air-gapped 环境，请使用内部 npm registry mirror 或预先准备好的 npm cache。
+
+在 Linux x64 上，安装器还会把 LadybugDB 的 `fts` 和 `vector` 扩展二进制预取到本地 cache，来源是 OntoIndex GitHub extension-cache release。在 Windows x64 上，PowerShell 安装器会从 LadybugDB extension host 预取相同的二进制到本地 cache。运行时，OntoIndex 会先尝试这个 cache，只有找不到时才让 LadybugDB 在执行 `INSTALL fts` / `INSTALL VECTOR` 时联网下载。
 
 如果 Windows 安装曾经中途失败并留下损坏的 `ontoindex.cmd` shim，请先清理全局安装状态再重试：
 
@@ -112,8 +120,11 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 | 目的 | Linux/macOS | Windows PowerShell |
 | --- | --- | --- |
 | 使用其他 release 仓库 | `ONTOINDEX_GITHUB_REPO=owner/repo ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_GITHUB_REPO='owner/repo'; .\scripts\install-ontoindex-latest.ps1` |
+| 使用本地下载的 tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-1.9.29.tgz" ./scripts/install-ontoindex-latest.sh` | — |
 | 使用用户级 npm prefix | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_NPM_PREFIX="$env:APPDATA\npm"; .\scripts\install-ontoindex-latest.ps1` |
 | 强制使用用户级 prefix | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh` | `.\scripts\install-ontoindex-latest.ps1 -ForceUserPrefix` |
+| 强制预取 `fts`/`vector` cache | `ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1` |
+| 跳过 `fts`/`vector` cache 预取 | `ONTOINDEX_SKIP_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_SKIP_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1` |
 
 ### 使用 npm 安装
 
@@ -121,8 +132,8 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 
 | 平台 | 命令 |
 | --- | --- |
-| Linux/macOS | `npm install -g ontoindex@1.9.5 && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.5; ontoindex --version` |
+| Linux/macOS | `npm install -g ontoindex@1.9.29 && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.29; ontoindex --version` |
 
 ### 从 release tarball URL 安装
 
@@ -130,21 +141,29 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 
 | 平台 | 命令 |
 | --- | --- |
-| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.5/ontoindex-1.9.5.tgz && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.5/ontoindex-1.9.5.tgz; ontoindex --version` |
+| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.29/ontoindex-1.9.29.tgz && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.29/ontoindex-1.9.29.tgz; ontoindex --version` |
 
 ## 首次运行
 
-请在你要索引的仓库中运行 OntoIndex。
+请在你要索引的仓库中运行 OntoIndex。默认流程是本地优先：先走 CLI，再按需要接入 MCP 或 `serve`；wiki 生成也复用同一个本地图后端。
+
+如果 embeddings 已经存在，`ontoindex analyze` 会保留它们；当你想在重建索引时同步刷新 semantic vectors，请使用 `ontoindex analyze --embeddings`。
 
 | 任务 | Linux/macOS | Windows PowerShell |
 | --- | --- | --- |
 | 索引当前仓库 | `ontoindex analyze` | `ontoindex analyze` |
+| 只针对 backend 路径做语义查询 | `ontoindex query "search ranking" --include-path ontoindex/src/mcp/local` | `ontoindex query "search ranking" --include-path ontoindex/src/mcp/local` |
+| 带解释文本的语义查询 | `ontoindex query "search ranking" --include-explanations` | `ontoindex query "search ranking" --include-explanations` |
+| 为 Claude 和 Codex 生成 skills | `ontoindex analyze --skills --skills-target claude,codex` | `ontoindex analyze --skills --skills-target claude,codex` |
 | 查看索引状态 | `ontoindex status` | `ontoindex status` |
 | 配置支持的 MCP 客户端 | `ontoindex setup` | `ontoindex setup` |
 | 手动启动 MCP server | `ontoindex mcp` | `ontoindex mcp` |
+| 诊断 MCP 配置 | `ontoindex mcp-doctor --repo <label-or-path> --project-cwd "$PWD" --json` | `ontoindex mcp-doctor --repo <label-or-path> --project-cwd "$PWD" --json` |
 | 启动本地 HTTP backend | `ontoindex serve` | `ontoindex serve` |
 | 生成 wiki | `ontoindex wiki . --out docs/wiki` | `ontoindex wiki . --out docs/wiki` |
+
+`--skills-target` 支持 `claude`、`codex`、`cursor`、`opencode` 或 `all`。默认值是 `claude`，生成的项目 skills 会写入 `.claude/skills/generated/`；`codex` 则写入 `.agents/skills/generated/`。
 
 如果 OntoIndex executable 是从 helper checkout 或全局工具路径启动的，请显式设置目标仓库，避免 MCP server 误服务其他项目。
 
@@ -170,6 +189,8 @@ ontoindex mcp --repo my-project
 
 启动时，OntoIndex 会打印 executable 的工作目录和目标项目路径。如果 `ONTOINDEX_MCP_REPO` 或 `--repo` 指向 `ONTOINDEX_MCP_PROJECT_CWD` 之外的位置，启动会失败，除非设置 `ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1`。
 
+`ontoindex mcp-doctor --repo <label-or-path> --project-cwd <path> --json` 会解析相同的仓库选择器，并返回 `READY`、`DEGRADED` 或 `MISCONFIGURED`；如果发现 scope mismatch，还会给出对应的重启命令。
+
 ## MCP 设置
 
 `ontoindex setup` 会自动配置支持的 MCP 客户端。手动示例适用于调试，或用于不支持自动配置的客户端。
@@ -178,6 +199,7 @@ ontoindex mcp --repo my-project
 | --- | --- | --- |
 | Claude Code | `claude mcp add ontoindex -- ontoindex mcp` | `claude mcp add ontoindex -- ontoindex mcp` |
 | Codex | `codex mcp add ontoindex -- ontoindex mcp` | `codex mcp add ontoindex -- ontoindex mcp` |
+| Ontocode | `ontocode mcp add ontoindex -- ontoindex mcp` | `ontocode mcp add ontoindex -- ontoindex mcp` |
 | 任意 MCP client | command: `ontoindex`, args: `["mcp"]` | command: `ontoindex`, args: `["mcp"]` |
 
 Cursor 示例：
@@ -279,9 +301,9 @@ scan -> structure -> [markdown, cobol] -> parse -> [routes, tools, orm]
 
 不同语言的深度不同，但统一模型覆盖 TypeScript、JavaScript、Python、Java、Kotlin、C#、Go、Rust、PHP、Ruby、Swift、C、C++、Dart 和 protobuf-related parser support。
 
-## Web UI
+## Optional Web UI
 
-Hosted UI 可以连接本地 backend `http://localhost:4747`。
+Hosted UI 是可选客户端，可以连接本地 backend `http://localhost:4747`。
 
 | 任务 | Linux/macOS | Windows PowerShell |
 | --- | --- | --- |
@@ -309,8 +331,8 @@ Images:
 
 | Image | 用途 |
 | --- | --- |
-| `ghcr.io/ontograph/ontoindex:1.9.5` | CLI、MCP server 和 `ontoindex serve` backend |
-| `ghcr.io/ontograph/ontoindex-web:1.9.5` | Web UI |
+| `ghcr.io/ontograph/ontoindex:1.9.29` | CLI、MCP server 和 `ontoindex serve` backend |
+| `ghcr.io/ontograph/ontoindex-web:1.9.29` | Web UI |
 
 ## 与相关工具比较
 

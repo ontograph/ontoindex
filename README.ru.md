@@ -7,7 +7,7 @@
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- Текущий релиз: `1.9.5`
+- Текущий релиз: `1.9.29`
 - Исходный репозиторий: [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - Политика безопасности: [SECURITY.md](SECURITY.md)
 - Enterprise-контакт: [erasyuk@gmail.com](mailto:erasyuk@gmail.com)
@@ -27,8 +27,8 @@ OntoIndex снижает этот риск за счет предварител�
 | --- | --- |
 | Граф кода | Файлы, папки, функции, классы, методы, интерфейсы, свойства, маршруты, инструменты, разделы документации и узлы процессов |
 | Связи | `CONTAINS`, `DEFINES`, `CALLS`, `IMPORTS`, `EXTENDS`, `IMPLEMENTS`, `MEMBER_OF`, `STEP_IN_PROCESS`, `HANDLES_ROUTE` и связанные ребра |
-| Поиск | BM25, поиск по графу, опциональный семантический поиск, reciprocal-rank fusion и результаты, сгруппированные по процессам |
-| Безопасность агента | Impact analysis, сопоставление diff с символами, pre-commit audit, review-помощники и проверка целевого репозитория |
+| Поиск | BM25, поиск по графу, опциональный семантический поиск, опциональный векторный backend zvec, reciprocal-rank fusion и результаты, сгруппированные по процессам |
+| Безопасность агента | impact analysis, сопоставление diff с символами, pre-commit audit, review-помощники, target test evidence и проверка целевого репозитория |
 | Интерфейсы | CLI, MCP stdio server, HTTP API, генерируемая wiki, генерируемые skills и React/Vite web UI |
 | Multi-repo | Именованный реестр репозиториев, repo labels, group contracts и cross-repo контекст |
 
@@ -40,7 +40,7 @@ OntoIndex работает на Node.js и использует native parser pa
 
 | Требование | Linux | Windows |
 | --- | --- | --- |
-| Node.js | Node.js `20 LTS` или `22 LTS` и `npm` | Node.js `20 LTS` или `22 LTS` и `npm` |
+| Node.js | Node.js `22.12.0`-`25.x` и `npm` | Node.js `22.12.0`-`25.x` и `npm 11.6.0+` |
 | Git | `git` CLI для метаданных репозитория и анализа diff | Git for Windows |
 | Native build tools | `python3`, `make`, `g++` для опциональных native parser builds | Python 3 и Microsoft C++ Build Tools из Visual Studio Build Tools |
 | Shell | `bash` для install-script примеров | PowerShell 5.1 или PowerShell 7 |
@@ -72,9 +72,11 @@ npm config get msvs_version
 Linux и macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ontograph/ontoindex/master/scripts/install-ontoindex-latest.sh | bash
+wget -qO- https://raw.githubusercontent.com/ontograph/ontoindex/master/scripts/install-ontoindex-latest.sh | bash
 ontoindex --version
 ```
+
+Если `wget` недоступен, можно использовать `curl -fsSL https://raw.githubusercontent.com/ontograph/ontoindex/master/scripts/install-ontoindex-latest.sh | bash`.
 
 Windows PowerShell:
 
@@ -85,9 +87,11 @@ ontoindex --version
 
 Примечание для Windows:
 
-- С `Node.js 22 LTS` используйте `npm 11.6.0` или новее.
-- Более старые версии npm могут поставлять `node-gyp`, который не видит Visual Studio 2026 Build Tools.
-- Перед повторной установкой обновите npm: `npm.cmd install -g npm@11.6.3`.
+- В текущей линии релизов OntoIndex больше не поддерживает Node.js 20, потому что `commander@15` требует Node.js `22.12.0` или новее.
+- На Node.js 24 и 25 OntoIndex использует vendored runtime `tree-sitter`, пропатченный для сборки native bindings с C++20, если prebuild недоступен.
+- Для `Node.js 22 LTS` в Windows используйте `npm 11.6.0` или новее.
+- Более старые версии npm могут тянуть `node-gyp`, который не находит Visual Studio 2026 Build Tools.
+- Перед повторной попыткой обновите npm: `npm.cmd install -g npm@11.6.3`.
 
 Из локального checkout:
 
@@ -96,7 +100,11 @@ ontoindex --version
 | Linux/macOS | `./scripts/install-ontoindex-latest.sh` |
 | Windows PowerShell | `powershell -ExecutionPolicy Bypass -File .\scripts\install-ontoindex-latest.ps1` |
 
-Скрипты получают последний GitHub-релиз, находят asset `ontoindex-*.tgz` и устанавливают его через `npm install -g`. Если глобальный install prefix недоступен для записи, скрипт использует user npm prefix.
+Скрипты получают последний GitHub-релиз, находят asset `ontoindex-*.tgz` и устанавливают его через `npm install -g`. Если `ONTOINDEX_LOCAL_ASSET` указывает на tarball, либо файл `ontoindex-*.tgz` уже лежит в текущем каталоге или рядом со скриптом, Linux/macOS-установщик сначала использует локальный tarball и не идет в GitHub. Если глобальный install prefix недоступен для записи, установщик переключается на user npm prefix.
+
+Этот install path не является офлайн-бандлом всех сторонних пакетов. В состав релиза входят исходники OntoIndex и vendored parser sources, после чего npm разрешает runtime-зависимости под текущую платформу: LadybugDB, ONNX Runtime и image/vector helpers. Нефатальные npm warnings о deprecated transitive packages возможны, пока upstream не обновился. Для air-gapped сред используйте внутренний npm mirror или заранее подготовленный npm cache.
+
+На Linux x64 установщик также заранее скачивает LadybugDB-расширения `fts` и `vector` из GitHub release с extension cache OntoIndex. На Windows x64 PowerShell-установщик заранее скачивает те же бинарники из LadybugDB extension host в локальный cache. Во время выполнения OntoIndex сначала пробует этот cache и только потом просит LadybugDB скачать расширения при `INSTALL fts` / `INSTALL VECTOR`.
 
 Если установка в Windows оборвалась на середине и оставила сломанный shim `ontoindex.cmd`, очистите глобальное состояние перед повторной попыткой:
 
@@ -112,8 +120,11 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 | Цель | Linux/macOS | Windows PowerShell |
 | --- | --- | --- |
 | Другой release repo | `ONTOINDEX_GITHUB_REPO=owner/repo ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_GITHUB_REPO='owner/repo'; .\scripts\install-ontoindex-latest.ps1` |
+| Локальный скачанный tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-1.9.29.tgz" ./scripts/install-ontoindex-latest.sh` | — |
 | User npm prefix | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_NPM_PREFIX="$env:APPDATA\npm"; .\scripts\install-ontoindex-latest.ps1` |
 | Принудительно user prefix | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh` | `.\scripts\install-ontoindex-latest.ps1 -ForceUserPrefix` |
+| Обязательная prefetch `fts`/`vector` cache | `ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1` |
+| Пропустить prefetch `fts`/`vector` cache | `ONTOINDEX_SKIP_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_SKIP_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1` |
 
 ### Установка через npm
 
@@ -121,8 +132,8 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 
 | Платформа | Команда |
 | --- | --- |
-| Linux/macOS | `npm install -g ontoindex@1.9.5 && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.5; ontoindex --version` |
+| Linux/macOS | `npm install -g ontoindex@1.9.29 && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g ontoindex@1.9.29; ontoindex --version` |
 
 ### Установка из release tarball URL
 
@@ -130,21 +141,29 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 
 | Платформа | Команда |
 | --- | --- |
-| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.5/ontoindex-1.9.5.tgz && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.5/ontoindex-1.9.5.tgz; ontoindex --version` |
+| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.29/ontoindex-1.9.29.tgz && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v1.9.29/ontoindex-1.9.29.tgz; ontoindex --version` |
 
 ## Первый запуск
 
-Запускайте OntoIndex из репозитория, который хотите индексировать.
+Запускайте OntoIndex из репозитория, который хотите индексировать. Базовый путь локальный: сначала CLI, затем при необходимости MCP или `serve`; генерация wiki использует тот же локальный graph backend.
+
+Если embeddings уже существуют, `ontoindex analyze` сохраняет их; используйте `ontoindex analyze --embeddings`, когда хотите обновить semantic vectors во время новой сборки индекса.
 
 | Задача | Linux/macOS | Windows PowerShell |
 | --- | --- | --- |
 | Индексировать текущий репозиторий | `ontoindex analyze` | `ontoindex analyze` |
+| Семантический запрос только по backend-файлам | `ontoindex query "search ranking" --include-path ontoindex/src/mcp/local` | `ontoindex query "search ranking" --include-path ontoindex/src/mcp/local` |
+| Семантический запрос с пояснениями | `ontoindex query "search ranking" --include-explanations` | `ontoindex query "search ranking" --include-explanations` |
+| Сгенерировать skills для Claude и Codex | `ontoindex analyze --skills --skills-target claude,codex` | `ontoindex analyze --skills --skills-target claude,codex` |
 | Проверить статус индекса | `ontoindex status` | `ontoindex status` |
 | Настроить поддерживаемые MCP-клиенты | `ontoindex setup` | `ontoindex setup` |
 | Запустить MCP server вручную | `ontoindex mcp` | `ontoindex mcp` |
+| Диагностика конфигурации MCP | `ontoindex mcp-doctor --repo <label-or-path> --project-cwd "$PWD" --json` | `ontoindex mcp-doctor --repo <label-or-path> --project-cwd "$PWD" --json` |
 | Запустить локальный HTTP backend | `ontoindex serve` | `ontoindex serve` |
 | Сгенерировать wiki | `ontoindex wiki . --out docs/wiki` | `ontoindex wiki . --out docs/wiki` |
+
+`--skills-target` принимает `claude`, `codex`, `cursor`, `opencode` или `all`. Значение по умолчанию — `claude`: generated project skills пишутся в `.claude/skills/generated/`; для `codex` — в `.agents/skills/generated/`.
 
 Если executable OntoIndex запущен из helper checkout или global tool path, явно задайте целевой репозиторий, чтобы MCP server не обслуживал другой проект.
 
@@ -170,6 +189,8 @@ ontoindex mcp --repo my-project
 
 При старте OntoIndex печатает рабочую директорию executable и путь к целевому проекту. Если `ONTOINDEX_MCP_REPO` или `--repo` указывает за пределы `ONTOINDEX_MCP_PROJECT_CWD`, startup завершается ошибкой, если не задано `ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1`.
 
+`ontoindex mcp-doctor --repo <label-or-path> --project-cwd <path> --json` разрешает тот же селектор репозитория и возвращает `READY`, `DEGRADED` или `MISCONFIGURED`; при обнаружении mismatch он также предлагает команду перезапуска с правильным project scope.
+
 ## MCP Setup
 
 `ontoindex setup` автоматически настраивает поддерживаемые MCP-клиенты. Ручные примеры полезны для отладки и клиентов без auto-setup.
@@ -178,6 +199,7 @@ ontoindex mcp --repo my-project
 | --- | --- | --- |
 | Claude Code | `claude mcp add ontoindex -- ontoindex mcp` | `claude mcp add ontoindex -- ontoindex mcp` |
 | Codex | `codex mcp add ontoindex -- ontoindex mcp` | `codex mcp add ontoindex -- ontoindex mcp` |
+| Ontocode | `ontocode mcp add ontoindex -- ontoindex mcp` | `ontocode mcp add ontoindex -- ontoindex mcp` |
 | Любой MCP client | command: `ontoindex`, args: `["mcp"]` | command: `ontoindex`, args: `["mcp"]` |
 
 Cursor:
@@ -279,9 +301,9 @@ scan -> structure -> [markdown, cobol] -> parse -> [routes, tools, orm]
 
 Глубина поддержки зависит от языка, но общая модель покрывает TypeScript, JavaScript, Python, Java, Kotlin, C#, Go, Rust, PHP, Ruby, Swift, C, C++, Dart и protobuf-related parser support.
 
-## Web UI
+## Optional Web UI
 
-Hosted UI может подключаться к локальному backend `http://localhost:4747`.
+Hosted UI опционален и может подключаться к локальному backend `http://localhost:4747`.
 
 | Задача | Linux/macOS | Windows PowerShell |
 | --- | --- | --- |
@@ -309,8 +331,8 @@ Images:
 
 | Image | Назначение |
 | --- | --- |
-| `ghcr.io/ontograph/ontoindex:1.9.5` | CLI, MCP server и `ontoindex serve` backend |
-| `ghcr.io/ontograph/ontoindex-web:1.9.5` | Web UI |
+| `ghcr.io/ontograph/ontoindex:1.9.29` | CLI, MCP server и `ontoindex serve` backend |
+| `ghcr.io/ontograph/ontoindex-web:1.9.29` | Web UI |
 
 ## Сравнение с похожими инструментами
 
