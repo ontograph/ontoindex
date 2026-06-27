@@ -70,6 +70,16 @@ const baseDiagnose: DiagnoseReport = {
     recentOversizedTools: [],
     guardedPreviewAvailable: true,
   },
+  runtimeContextSummary: {
+    freshness: 'fresh',
+    scopeConfidence: 'high',
+    dirtyWorktree: false,
+    dirtyFileCount: 0,
+    embeddings: 'available',
+    sidecar: 'unknown',
+    qualityMode: 'fast',
+    nextRepairCommands: [],
+  },
   degradedContext: {
     status: 'ok',
     reasons: [],
@@ -179,6 +189,9 @@ describe('mcp-doctor', () => {
       pid: 4321,
       projectCwd: '/repo/fixture',
     });
+    expect(formatMcpDoctorText(report)).toContain('Freshness: fresh');
+    expect(formatMcpDoctorText(report)).toContain('Scope confidence: high');
+    expect(formatMcpDoctorText(report)).toContain('Embeddings: available');
     expect(formatMcpDoctorText(report)).toContain('MCP process: ok (PID 4321)');
     expect(formatMcpDoctorText(report)).toContain('Response guard: 524288 bytes');
     expect(formatMcpDoctorText(report)).toContain('Guarded preview: available');
@@ -328,6 +341,56 @@ describe('mcp-doctor', () => {
     expect(formatted).toContain('Audit freshness: stale (target deadbeefdead vs current abc123def456)');
     expect(formatted).toContain('Audit repair: gn_audit_replay({session: "session-123"})');
     expect(formatted).toContain('MCP resource bridge: exposed (Claude Code, Codex)');
+  });
+
+  it('reuses diagnose support diagnostics in text output', async () => {
+    const report = await createMcpDoctorReport(
+      { repo: 'fixture', projectCwd: '/repo/fixture' },
+      {
+        diagnose: async () => ({
+          ...baseDiagnose,
+          support: {
+            lbugStore: {
+              path: '/repo/fixture/.ontoindex/lbug',
+              exists: true,
+              sizeBytes: 2048,
+              modifiedAt: '2026-06-27T12:00:00.000Z',
+              walPresent: false,
+              lockPresent: true,
+            },
+            ladybugExtensions: {
+              hintDir: '/tmp/extensions',
+              ftsAvailable: true,
+              vectorAvailable: false,
+            },
+            timeoutHints: {
+              nativeGetAllMs: 30000,
+            },
+          },
+          auditFreshness: {
+            status: 'dirty',
+            targetHead: 'deadbeefdeadbeef',
+            currentHead: 'abc123def4567890',
+            repairCommand: 'gn_audit_replay({session: "session-123"})',
+          },
+        }),
+        processLiveness: async (_repo, _projectCwd, repairCommand) => ({
+          status: 'unavailable',
+          reason: 'not-probed',
+          repairCommand,
+        }),
+      },
+    );
+
+    const formatted = formatMcpDoctorText(report);
+    expect(formatted).toContain(
+      'Ladybug store: present (2.0 KB, modified 2026-06-27T12:00:00.000Z)',
+    );
+    expect(formatted).toContain('Ladybug sidecars: wal absent, lock present');
+    expect(formatted).toContain('Ladybug extensions: fts available, vector missing');
+    expect(formatted).toContain('Ladybug timeout: native getAll 30000ms');
+    expect(formatted).toContain('Ladybug extension hint: /tmp/extensions');
+    expect(formatted).toContain('Audit replay: gn_audit_replay({session: "session-123"})');
   });
 
   it('marks production smoke failures as DEGRADED when diagnose is otherwise healthy', async () => {

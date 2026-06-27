@@ -4,6 +4,23 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.29] - 2026-06-27
+
+### Added
+
+- Added tracker-state Markdown sidecar facts so docs readiness/context surfaces can expose open
+  tasks, block reasons, no-dispatch gates, reopen criteria, and next actions through the existing
+  `gn_docs` contract.
+- Added repository-relative path scoping to diff review surfaces so dirty worktrees can be audited
+  or reviewed without introducing a separate workflow.
+
+### Changed
+
+- Unified diagnostic freshness, embedding, audit, resource-bridge, and Ladybug support reporting
+  across `status`, `mcp-doctor`, and audit failure paths.
+- Clarified CLI and MCP discovery text so `list_repos` points users to the existing `ontoindex list`
+  CLI equivalent instead of implying a missing command.
+
 ## [1.9.25] - 2026-06-21
 
 ### Added

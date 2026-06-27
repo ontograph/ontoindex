@@ -87,6 +87,7 @@ export interface ContextParams extends z.input<typeof ContextSchema> {}
 export const DetectChangesSchema = BaseRepoSchema.extend({
   scope: z.enum(['unstaged', 'staged', 'all', 'compare']).default('unstaged'),
   base_ref: z.string().optional(),
+  include_paths: z.array(z.string().min(1)).default([]),
 });
 
 export interface DetectChangesParams extends z.input<typeof DetectChangesSchema> {}

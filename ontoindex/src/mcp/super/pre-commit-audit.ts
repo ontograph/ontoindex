@@ -11,6 +11,10 @@ import { execFileSync } from 'child_process';
 import { emitOrganicRecommendation } from '../../core/recommendations/organic.js';
 import type { OrganicRecommendation } from '../../core/recommendations/types.js';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import {
+  formatScopedPathOmissionWarning,
+  scopeChangedPathsByPrefixes,
+} from '../../core/review/diff-review.js';
 import type { AffectedProcess } from '../../core/review/review-types.js';
 import {
   deriveEnvelopeFreshness,
@@ -36,6 +40,7 @@ export interface PreCommitAuditParams {
   scope?: 'staged' | 'unstaged' | 'all' | 'branch'; // default: 'staged'
   expectedSymbols?: string[]; // user's stated intent
   docsEvidence?: boolean; // opt-in advisory Markdown docs evidence
+  includePaths?: string[];
 }
 
 export interface CommitAuditReport {
@@ -418,6 +423,7 @@ export async function gnPreCommitAudit(
 
   // ---- 1. Build git diff args per scope ----------------------------------
   const scope = params.scope ?? 'staged';
+  const includePaths = params.includePaths ?? [];
   let diffArgs: string[];
   let patchArgs: string[];
   switch (scope) {
@@ -448,7 +454,12 @@ export async function gnPreCommitAudit(
   let graphQueryFailed = false;
   try {
     const out = gitCapture(repoRoot, diffArgs);
-    changedPaths = out.split('\n').filter(Boolean);
+    const allChangedPaths = out.split('\n').filter(Boolean);
+    const scoped = scopeChangedPathsByPrefixes(allChangedPaths, includePaths);
+    changedPaths = scoped.inScopePaths;
+    if (scoped.omittedPaths.length > 0) {
+      warnings.push(formatScopedPathOmissionWarning(scoped.omittedPaths, includePaths));
+    }
     if (changedPaths.length > MAX_CHANGED_PATHS) {
       changedPaths = changedPaths.slice(0, MAX_CHANGED_PATHS);
       changedPathScanCapped = true;
@@ -468,8 +479,14 @@ export async function gnPreCommitAudit(
   if (changedPaths.length === 0) {
     return baseReport({
       verdict: 'READY',
-      reasoning: 'No staged changes to audit',
-      preCommitChecklist: [{ check: 'staged diff non-empty', passed: false, detail: 'no changes' }],
+      reasoning: includePaths.length > 0 ? 'No in-scope changes to audit' : 'No staged changes to audit',
+      preCommitChecklist: [
+        {
+          check: 'staged diff non-empty',
+          passed: false,
+          detail: includePaths.length > 0 ? 'no in-scope changes' : 'no changes',
+        },
+      ],
     });
   }
 

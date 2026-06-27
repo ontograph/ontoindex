@@ -95,7 +95,7 @@ export const mcpCommand = async (
   const inferredProjectPath = getProjectPathFromCwd();
   const explicitProjectPath = options.project?.trim() ? path.resolve(options.project.trim()) : null;
   const configuredProjectPath = resolveConfiguredProjectPath();
-  const targetProjectPath = explicitProjectPath ?? inferredProjectPath ?? configuredProjectPath;
+  const targetProjectPath = explicitProjectPath ?? configuredProjectPath ?? inferredProjectPath;
   const repoFilter =
     options.repo ?? (explicitProjectPath === null ? process.env.ONTOINDEX_MCP_REPO : undefined);
   const repoFilterSource = resolveRepoFilterSource(options);

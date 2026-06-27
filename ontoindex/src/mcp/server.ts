@@ -111,7 +111,7 @@ export function getNextStepHint(
 
   switch (toolName) {
     case 'list_repos':
-      return `\n\n---\n**Next:** READ ontoindex://repo/{name}/context for any repo above to get its overview and check staleness.`;
+      return `\n\n---\n**Next:** READ ontoindex://repo/{name}/context for any repo above to get its overview and check staleness. Outside MCP, the CLI equivalent is \`ontoindex list\`.`;
 
     case 'query':
       return `\n\n---\n**Next:** To understand a specific symbol in depth, use context({name: "<symbol_name>"${repoParam}}) to see categorized refs and process participation.`;

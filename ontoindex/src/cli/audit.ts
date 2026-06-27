@@ -18,6 +18,7 @@ import { loadLifecycleFindings, runAuditVerify } from '../mcp/super/audit-verify
 import { loadAuditBundles, runAuditLint } from '../mcp/super/audit-lint.js';
 import { runAuditBundle } from '../mcp/super/audit-bundle.js';
 import type { AuditLintBundle } from '../core/audit-lifecycle/index.js';
+import { gnDiagnose } from '../mcp/super/diagnose.js';
 import {
   formatAuditLintJUnit,
   formatAuditLintSarif,
@@ -25,6 +26,7 @@ import {
   resolveAuditCiGate,
   withAuditCiGate,
 } from './ci-export.js';
+import { formatSupportLines } from './status.js';
 
 interface AuditCommandOptions {
   annotate?: boolean;
@@ -54,6 +56,21 @@ interface AuditLifecycleCommandOptions {
 function caughtMessage(err: unknown): unknown {
   if (err == null) return undefined;
   return (Object(err) as { readonly message?: unknown }).message;
+}
+
+export async function collectAuditFailureSupportLines(repoRoot: string): Promise<string[]> {
+  try {
+    const diagnose = await gnDiagnose(repoRoot, {
+      legacyResponse: true,
+      checkLsp: false,
+      checkEmbeddings: false,
+      checkIndexFreshness: false,
+      checkToolContract: false,
+    });
+    return formatSupportLines(diagnose);
+  } catch {
+    return [];
+  }
 }
 
 export const auditCommand = async (options: AuditCommandOptions = {}) => {
@@ -119,6 +136,14 @@ export const auditCommand = async (options: AuditCommandOptions = {}) => {
     console.log(`\n  Audit report written to: ${outputFile}\n`);
   } catch (err: unknown) {
     console.error(`\n  Error: ${caughtMessage(err)}\n`);
+    const supportLines = await collectAuditFailureSupportLines(gitRoot);
+    if (supportLines.length > 0) {
+      console.error('  Support hints:');
+      for (const line of supportLines) {
+        console.error(`  - ${line}`);
+      }
+      console.error('');
+    }
     process.exitCode = 1;
   } finally {
     await closeLbug(repoId);

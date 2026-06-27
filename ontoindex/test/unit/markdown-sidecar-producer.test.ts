@@ -7,13 +7,14 @@ import {
   CURRENT_MARKDOWN_DOCUMENT_FACT_SCHEMA_VERSION,
   createMarkdownChunkKey,
   isMarkdownAcceptanceCriterionFact,
-  isMarkdownApiSpecFact,
-  isMarkdownDocOwnerFact,
-  isMarkdownRequirementFact,
-  isMarkdownTestMentionFact,
-  normalizeMarkdownAnchor,
-  type MarkdownCodeMentionFact,
-} from '../../src/core/ingestion/enrichment/markdown-document-facts.js';
+    isMarkdownApiSpecFact,
+    isMarkdownDocOwnerFact,
+    isMarkdownRequirementFact,
+    isMarkdownTestMentionFact,
+    isMarkdownTrackerStateFact,
+    normalizeMarkdownAnchor,
+    type MarkdownCodeMentionFact,
+  } from '../../src/core/ingestion/enrichment/markdown-document-facts.js';
 import {
   capExcerpt,
   hashText,
@@ -397,6 +398,43 @@ describe('markdown sidecar producer', () => {
       }),
     ]);
     expect(facts.some((fact) => fact.kind === 'markdown-code-mention')).toBe(true);
+  });
+
+  it('emits an explicit tracker-state fact only for opted-in tracker-state frontmatter', () => {
+    const source = [
+      '---',
+      'ontoindex:',
+      '  kind: tracker-state',
+      '  openTasks:',
+      '    - Finish Slice 6 parity',
+      '  blockedReasons:',
+      '    - Docs sidecar contract missing',
+      '  noDispatchReason: Waiting for explicit tracker facts',
+      '  reopenCriteria:',
+      '    - Add tracker-state contract to docs sidecar',
+      '  nextAction: Keep the loop closed',
+      '---',
+      '# Tracker Doc',
+    ].join('\n');
+
+    const facts = produceMarkdownSidecarFacts({
+      docPath: 'docs/tracker.md',
+      source,
+      sourceCommitHash: 'commit-a',
+    });
+    const trackerFacts = facts.filter(isMarkdownTrackerStateFact);
+
+    expect(trackerFacts).toEqual([
+      expect.objectContaining({
+        contract: 'frontmatter-v1',
+        openTasks: ['Finish Slice 6 parity'],
+        blockedReasons: ['Docs sidecar contract missing'],
+        noDispatchReason: 'Waiting for explicit tracker facts',
+        reopenCriteria: ['Add tracker-state contract to docs sidecar'],
+        nextAction: 'Keep the loop closed',
+        lineSpan: { start: 4, end: 11 },
+      }),
+    ]);
   });
 
   it('enforces excerpt byte and line caps', () => {

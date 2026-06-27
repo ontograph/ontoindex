@@ -266,6 +266,47 @@ describe('gnPreCommitAudit', () => {
     );
   });
 
+  it('filters gnPreCommitAudit to includePaths and warns about omitted ambient files', async () => {
+    setupGitDiff('src/foo.ts\ndocs/note.md\n');
+    setupGraphMocks({ upstreamCount: 3 });
+
+    const report = await gnPreCommitAudit(REPO_ID, {
+      scope: 'staged',
+      includePaths: ['src'],
+    });
+
+    expect(report.verdict).toBe('READY');
+    expect(report.changedFiles).toHaveLength(1);
+    expect(report.changedFiles[0].path).toBe('src/foo.ts');
+    expect(report.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('Omitted 1 changed file outside includePaths (src): docs/note.md'),
+      ]),
+    );
+  });
+
+  it('returns READY with an explicit no in-scope changes message when includePaths omit all dirty files', async () => {
+    setupGitDiff('docs/note.md\n');
+    mockExecute.mockResolvedValue([]);
+
+    const report = await gnPreCommitAudit(REPO_ID, {
+      scope: 'staged',
+      includePaths: ['src'],
+    });
+
+    expect(report.verdict).toBe('READY');
+    expect(report.changedFiles).toHaveLength(0);
+    expect(report.reasoning).toContain('No in-scope changes to audit');
+    expect(report.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('Omitted 1 changed file outside includePaths (src): docs/note.md'),
+      ]),
+    );
+    expect(
+      report.preCommitChecklist.find((c) => c.check === 'staged diff non-empty')?.detail,
+    ).toBe('no in-scope changes');
+  });
+
   // ---- Test 5: scope 'branch' uses main...HEAD git diff args -------------
   it("uses 'main...HEAD' args when scope is 'branch'", async () => {
     setupGitDiff('src/utils.ts\n');

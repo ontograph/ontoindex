@@ -4,6 +4,25 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [1.9.29] - 2026-06-27
+
+### Added
+
+- Added `markdown-tracker-state` frontmatter facts and surfaced them through `gn_docs` readiness and
+  context responses, including open tasks, blocked reasons, no-dispatch reasons, reopen criteria,
+  and next-action hints.
+- Added `includePath` / `include_paths` support for review, diff-impact, pre-commit audit, and
+  detect-changes flows so agents can limit analysis to repository-relative path prefixes in dirty
+  worktrees.
+
+### Changed
+
+- `ontoindex status`, `mcp-doctor`, and audit failure handling now share the same diagnostic
+  reporting path for freshness, embeddings, audit freshness, MCP resource exposure, Ladybug store
+  support, and extension timeout hints.
+- MCP/CLI setup and help text now describe `list_repos` as an MCP tool with `ontoindex list` as the
+  CLI equivalent.
+
 ## [1.9.27] - 2026-06-25
 
 ### Changed

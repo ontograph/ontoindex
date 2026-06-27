@@ -13,7 +13,11 @@ import type { Command } from 'commander';
 import { getGitRoot } from '../storage/git.js';
 import { getStoragePaths, loadMeta } from '../storage/repo-manager.js';
 import { initLbug, closeLbug } from '../core/lbug/pool-adapter.js';
-import { buildDiffReview } from '../core/review/diff-review.js';
+import {
+  buildDiffReview,
+  formatScopedPathOmissionWarning,
+  scopeChangedPathsByPrefixes,
+} from '../core/review/diff-review.js';
 import type { DiffReviewResult } from '../core/review/review-types.js';
 import { resolveTargetContext } from '../mcp/shared/target-context.js';
 import type { TargetContext } from '../mcp/shared/target-context.js';
@@ -31,6 +35,7 @@ const GIT_TIMEOUT_MS = 5_000;
 const GIT_MAX_BUFFER = 16 * 1024 * 1024;
 const MAX_CHANGED_PATHS = 500;
 const REVIEW_DIFF_VERSION = 1;
+const collectOption = (value: string, previous: string[] = []): string[] => [...previous, value];
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,6 +48,7 @@ export interface ReviewDiffOptions {
   staged?: boolean;
   json?: boolean;
   repo?: string;
+  includePath?: string[];
 }
 
 export interface ReviewDiffArgs {
@@ -250,7 +256,14 @@ export async function reviewDiffCommand(opts: ReviewDiffOptions): Promise<void> 
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: GIT_MAX_BUFFER,
     });
-    changedPaths = out.split('\n').filter(Boolean);
+    const allChangedPaths = out.split('\n').filter(Boolean);
+    const scoped = scopeChangedPathsByPrefixes(allChangedPaths, opts.includePath ?? []);
+    changedPaths = scoped.inScopePaths;
+    if (scoped.omittedPaths.length > 0) {
+      warnings.push(
+        formatScopedPathOmissionWarning(scoped.omittedPaths, opts.includePath ?? []),
+      );
+    }
     if (changedPaths.length > MAX_CHANGED_PATHS) {
       changedPaths = changedPaths.slice(0, MAX_CHANGED_PATHS);
       warnings.push(`Changed file scan capped at ${MAX_CHANGED_PATHS} paths`);
@@ -372,6 +385,12 @@ export function registerReviewCommands(program: Command): void {
     .option('--head <ref>', 'Head git ref (default: HEAD; used with --base)')
     .option('--range <range>', 'Explicit diff range (e.g. main...feature), overrides --base/--head')
     .option('--staged', 'Compare staged changes only (default when no range is given)')
+    .option(
+      '--include-path <path>',
+      'Limit review to repository-relative path prefixes; repeat for multiple roots',
+      collectOption,
+      [],
+    )
     .option('--json', 'Emit ADR 0018 JSON envelope (machine-readable)')
     .option('-r, --repo <name>', 'Indexed repository name or path (default: current git root)')
     .addHelpText(
@@ -388,6 +407,9 @@ Examples:
 
   # Explicit range:
   ontoindex review diff --range main...feature/my-branch
+
+  # Limit review to one slice in a dirty worktree:
+  ontoindex review diff --base main --include-path src/core --include-path src/mcp
 
   # Last 5 commits:
   ontoindex review diff --range HEAD~5..HEAD

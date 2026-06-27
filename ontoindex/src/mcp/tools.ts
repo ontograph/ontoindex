@@ -360,6 +360,12 @@ Returns: changed symbols, affected processes, and a risk summary.`,
           type: 'string',
           description: 'Branch/commit for "compare" scope (e.g., "main")',
         },
+        include_paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Optional repository-relative path prefixes to keep in diff impact results. Changed files outside these prefixes are omitted and reported as warnings.',
+        },
         repo: {
           type: 'string',
           description: 'Repository name or path. Omit if only one repo is indexed.',

@@ -1,5 +1,5 @@
-<!-- version: 1.7.7 -->
-<!-- Last updated: 2026-06-19 -->
+<!-- version: 1.7.8 -->
+<!-- Last updated: 2026-06-27 -->
 
 Last reviewed: 2026-04-21
 
@@ -35,6 +35,38 @@ For multi-step work, state up front:
 3. Which **validation commands** you will run (`cd ontoindex && npm test`, `npx tsc --noEmit`).
 
 On long threads, *"Remember: apply all AGENTS.md rules"* re-weights these instructions against context dilution.
+
+## Development Protocol (hard rule)
+
+All development tasks in this repo default to a bounded manager loop using OntoIndex evidence.
+
+### Roles
+
+- **Manager:** current session
+- **Senior reviewer:** `gemini-pro-agent`
+- **Implementation worker:** `gpt-5.3-codex-spark` high, fallback `gpt-5.4-mini` high
+- **Verification worker:** `gpt-5.4-mini` high
+
+Required behavior:
+
+- the manager stays bound to the loop and proceeds all opened tasks in scope instead of stopping at restatement or tracker rewrite;
+- use OntoIndex evidence to choose and validate the next task before dispatching or editing;
+- keep manager, review, implementation, and verification responsibilities distinct in the loop output and prompts;
+- if a listed role model is unavailable, use the next listed model for that role and record the actual runtime model when visible.
+
+### Continue Policy
+
+For continuation turns, follow this order exactly:
+
+1. if `active_next_task` exists, execute it;
+2. else if the last decision was `no-dispatch`, reply with the exact reopen gate;
+3. else refuse to rewrite tracking without new evidence.
+
+### Tracking Guardrails
+
+- do not reopen, rewrite, or advance tracking from chat memory alone;
+- do not replace an explicit `no-dispatch` decision with a fresh plan unless new evidence changes the gate;
+- when a loop is blocked, return the precise reopen condition, not a paraphrased summary.
 
 ## Architecture Fit Gate (hard rule)
 
@@ -102,6 +134,7 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-06-27 | 1.7.8 | Added a hard default development protocol: bounded manager loop with OntoIndex evidence, fixed role assignments, exact continue policy, and tracking guardrails. |
 | 2026-06-19 | 1.7.7 | Updated delegated sub-agent model policy to use an ordered fallback list and same-day failure cooldown. |
 | 2026-06-13 | 1.7.6 | Updated model policy: coding tasks now default to `gpt-5.4-mini`, and delegated coding sub-agents must use `gpt-5.4-mini` when the tool can enforce it. |
 | 2026-06-13 | 1.7.5 | Added hard architecture-fit gate: all new proposals, changes, and refactors must prove they add real new functionality and only extend current core solutions in line with the existing architecture. |

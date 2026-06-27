@@ -32,6 +32,11 @@ export interface BuildDiffReviewOptions {
   maxSymbolsPerFile?: number;
 }
 
+export interface ScopedChangedPaths {
+  inScopePaths: string[];
+  omittedPaths: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -49,6 +54,52 @@ function rowNum(row: QueryRow, key: string, index: number): number {
   const keyed = (row as Record<string, unknown>)[key];
   const raw = keyed !== undefined ? keyed : Array.isArray(row) ? row[index] : undefined;
   return Number(raw) || 0;
+}
+
+export function normalizeChangedPathPrefix(raw: string): string {
+  return raw.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '').replace(/\/+$/, '');
+}
+
+function matchesChangedPathPrefix(filePath: string, prefix: string): boolean {
+  const normalizedPath = normalizeChangedPathPrefix(filePath);
+  return normalizedPath === prefix || normalizedPath.startsWith(`${prefix}/`);
+}
+
+export function scopeChangedPathsByPrefixes(
+  changedPaths: readonly string[],
+  includePaths: readonly string[],
+): ScopedChangedPaths {
+  if (includePaths.length === 0) {
+    return { inScopePaths: [...changedPaths], omittedPaths: [] };
+  }
+
+  const normalizedPrefixes = includePaths.map(normalizeChangedPathPrefix).filter(Boolean);
+  if (normalizedPrefixes.length === 0) {
+    return { inScopePaths: [...changedPaths], omittedPaths: [] };
+  }
+
+  const inScopePaths: string[] = [];
+  const omittedPaths: string[] = [];
+  for (const changedPath of changedPaths) {
+    if (normalizedPrefixes.some((prefix) => matchesChangedPathPrefix(changedPath, prefix))) {
+      inScopePaths.push(changedPath);
+    } else {
+      omittedPaths.push(changedPath);
+    }
+  }
+  return { inScopePaths, omittedPaths };
+}
+
+export function formatScopedPathOmissionWarning(
+  omittedPaths: readonly string[],
+  includePaths: readonly string[],
+): string {
+  const preview = omittedPaths.slice(0, 3).join(', ');
+  const extraCount = Math.max(0, omittedPaths.length - 3);
+  const suffix = extraCount > 0 ? `, and ${extraCount} more` : '';
+  return `Omitted ${omittedPaths.length} changed file${
+    omittedPaths.length === 1 ? '' : 's'
+  } outside includePaths (${includePaths.join(', ')}): ${preview}${suffix}`;
 }
 
 // ---------------------------------------------------------------------------

@@ -24,14 +24,8 @@ import {
 } from '../core/runtime/runtime-health.js';
 export { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js';
 import { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js';
-import {
-  type AuditFreshnessMetadata,
-  type AuditProjection,
-  getAuditProjectionPath,
-  computeAuditFreshness,
-} from '../core/audit-lifecycle/index.js';
-import { summarizeGitPorcelainStatus } from '../core/audit-lifecycle/freshness.js';
-import { execFileText } from '../core/process/exec-file.js';
+import { gnDiagnose } from '../mcp/super/diagnose.js';
+import type { AuditFreshnessReport, DiagnoseReport } from '../mcp/super/diagnose.js';
 
 export const formatNativeGraphWriterStatus = (runtime: GraphWriterRuntime = {}): string => {
   const status = getNativeGraphWriterStatus(runtime);
@@ -165,7 +159,7 @@ export const statusCommand = async (options?: { repo?: string }) => {
   }
   printNeedsUpdateStatus(needsUpdateReason);
   console.log(nativeGraphWriterStatus);
-  await printDiagnosticsSummary(repo, repoRoot, runtimeHealth);
+  await printDiagnosticsSummary(repoRoot, storagePath);
 };
 
 async function readNeedsUpdateReason(repoRoot: string): Promise<string | null> {
@@ -218,93 +212,131 @@ function describeRuntimeStatus(health: Awaited<ReturnType<typeof readRuntimeHeal
   return '⚠️ degraded (runtime artifacts present)';
 }
 
-async function getAuditProjectionStatus(repoRoot: string): Promise<string> {
-  const projectionPath = getAuditProjectionPath(repoRoot);
-  try {
-    const raw = await readFile(projectionPath, 'utf8');
-    const projection = JSON.parse(raw) as AuditProjection;
-    const latestSession = projection.sessions?.[projection.sessions.length - 1];
-    if (!latestSession) {
-      return 'Audit projection: no sessions recorded';
-    }
-
-    const targetHead = latestSession.targetHead;
-    if (!targetHead) {
-      return 'Audit projection: invalid session (missing targetHead)';
-    }
-
-    let freshness: AuditFreshnessMetadata;
-    try {
-      freshness = await computeAuditFreshness(repoRoot, { ref: targetHead });
-    } catch (err) {
-      const shortTarget = targetHead.slice(0, 8);
-      return `Audit projection: stale/unresolvable, target ${shortTarget} (git error: ${(err as Error).message})`;
-    }
-
-    const shortTarget = targetHead.slice(0, 8);
-    const shortCurrent = freshness.currentHead ? freshness.currentHead.slice(0, 8) : 'unknown';
-
-    if (freshness.state === 'clean') {
-      return `Audit projection: clean, target ${shortTarget}`;
-    }
-
-    if (freshness.state === 'stale') {
-      return `Audit projection: stale, target ${shortTarget} vs current ${shortCurrent}`;
-    }
-
-    if (freshness.state === 'dirty') {
-      return `Audit projection: dirty, target ${shortTarget} (${freshness.dirtyFiles.length} files changed)`;
-    }
-
-    return `Audit projection: ${freshness.state}, target ${shortTarget}`;
-  } catch (error: any) {
-    if (error && error.code === 'ENOENT') {
-      return 'Audit projection: absent';
-    }
-    return `Audit projection: error loading status (${(error as Error).message})`;
+function formatGraphIndexStatus(freshness: DiagnoseReport['runtimeContextSummary']['freshness']): string {
+  switch (freshness) {
+    case 'fresh':
+      return 'clean';
+    case 'stale':
+      return 'stale';
+    default:
+      return 'unknown';
   }
 }
 
-async function countDirtyFiles(repoRoot: string): Promise<{ dirty: boolean; count: number }> {
-  try {
-    const gitOutput = await execFileText(
-      'git',
-      ['status', '--porcelain=v1', '--untracked-files=all'],
-      { cwd: repoRoot, timeoutMs: 5000, maxBuffer: 1024 * 1024 }
-    );
-    const summary = summarizeGitPorcelainStatus(gitOutput);
-    if (!summary) return { dirty: false, count: 0 };
-    return {
-      dirty: summary.dirtyFileCount > 0,
-      count: summary.dirtyFileCount,
-    };
-  } catch {
-    return { dirty: false, count: 0 };
+function formatDirtyWorktreeStatus(
+  dirtyWorktree: boolean | null,
+  dirtyFileCount: number | null,
+): string {
+  if (dirtyWorktree === null) return 'unknown';
+  if (!dirtyWorktree) return 'no';
+  return `yes, ${dirtyFileCount ?? 0} files changed`;
+}
+
+function formatEmbeddingsDiagnostics(report: DiagnoseReport): string {
+  const count = report.embeddings?.count ?? 0;
+  const status = report.embeddings?.status;
+  switch (status) {
+    case 'ok':
+      return `Embeddings: available, ${count} recorded`;
+    case 'drifted':
+      return `Embeddings: drifted metadata, ${count} recorded`;
+    case 'metadata-unavailable':
+      return `Embeddings: metadata unavailable, ${count} recorded`;
+    case 'missing':
+      return `Embeddings: missing, ${count} recorded`;
+    default:
+      return `Embeddings: ${report.runtimeContextSummary.embeddings}`;
   }
 }
 
-async function printDiagnosticsSummary(
-  repo: Awaited<ReturnType<typeof findRepo>>,
-  repoRoot: string,
-  runtimeHealth: RuntimeHealthSnapshot,
-) {
-  const graphStatus =
-    runtimeHealth.indexedCommit && runtimeHealth.currentCommit
-      ? runtimeHealth.indexedCommit === runtimeHealth.currentCommit
-        ? 'clean'
-        : 'stale'
-      : 'unknown';
-  const dirtyInfo = await countDirtyFiles(repoRoot);
-  const dirtyStr = dirtyInfo.dirty ? `yes, ${dirtyInfo.count} files changed` : 'no';
-  const embeddingsCount = repo?.meta?.stats?.embeddings ?? 0;
-  const embeddingsStatus = embeddingsCount > 0 ? 'available' : 'missing';
-  const embeddingsStr = `${embeddingsStatus}, ${embeddingsCount} recorded`;
-  const auditProjectionStatus = await getAuditProjectionStatus(repoRoot);
+function formatAuditProjectionStatus(audit: AuditFreshnessReport | undefined): string {
+  if (!audit) return 'Audit projection: unknown';
+  if (audit.status === 'clean') {
+    return `Audit projection: clean, target ${audit.targetHead?.slice(0, 8) ?? 'unknown'}`;
+  }
+  if (audit.status === 'stale') {
+    return `Audit projection: stale, target ${audit.targetHead?.slice(0, 8) ?? 'unknown'} vs current ${
+      audit.currentHead?.slice(0, 8) ?? 'unknown'
+    }`;
+  }
+  if (audit.status === 'dirty') {
+    return `Audit projection: dirty, target ${audit.targetHead?.slice(0, 8) ?? 'unknown'}`;
+  }
+  if (audit.status === 'missing') {
+    return 'Audit projection: absent';
+  }
+  return `Audit projection: ${audit.status}`;
+}
+
+function formatMcpResourcesStatus(report: DiagnoseReport): string {
+  const bridge = report.mcpResourceBridge;
+  if (!bridge) return 'MCP resources: unknown';
+  if (!bridge.exposed) return 'MCP resources: not exposed';
+  return `MCP resources: exposed (${bridge.exposedTo.join(', ')})`;
+}
+
+export function formatSupportLines(report: DiagnoseReport): string[] {
+  const support = report.support;
+  if (!support) return [];
+
+  const lines = [
+    support.lbugStore.exists
+      ? `Ladybug store: present (${formatStoreSize(support.lbugStore.sizeBytes)}, modified ${support.lbugStore.modifiedAt ?? 'unknown'})`
+      : 'Ladybug store: absent',
+    `Ladybug sidecars: wal ${support.lbugStore.walPresent ? 'present' : 'absent'}, lock ${support.lbugStore.lockPresent ? 'present' : 'absent'}`,
+    `Ladybug extensions: fts ${support.ladybugExtensions.ftsAvailable ? 'available' : 'missing'}, vector ${support.ladybugExtensions.vectorAvailable ? 'available' : 'missing'}`,
+    `Ladybug timeout: native getAll ${support.timeoutHints.nativeGetAllMs}ms`,
+  ];
+
+  if (
+    support.ladybugExtensions.hintDir &&
+    (!support.ladybugExtensions.ftsAvailable || !support.ladybugExtensions.vectorAvailable)
+  ) {
+    lines.push(`Ladybug extension hint: ${support.ladybugExtensions.hintDir}`);
+  }
+  if (report.auditFreshness?.repairCommand) {
+    lines.push(`Audit replay: ${report.auditFreshness.repairCommand}`);
+  }
+  return lines;
+}
+
+function formatStoreSize(sizeBytes: number | undefined): string {
+  const size = sizeBytes ?? 0;
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+async function printDiagnosticsSummary(repoRoot: string, _storagePath: string) {
+  let diagnose: DiagnoseReport;
+  try {
+    diagnose = await gnDiagnose(repoRoot, {
+      legacyResponse: true,
+      checkLsp: false,
+      checkEmbeddings: true,
+      checkIndexFreshness: true,
+      checkToolContract: false,
+    });
+  } catch (error) {
+    console.log('');
+    console.log(`Diagnostics: unavailable (${error instanceof Error ? error.message : String(error)})`);
+    return;
+  }
 
   console.log('');
-  console.log(`Graph index: ${graphStatus}`);
-  console.log(`Dirty worktree: ${dirtyStr}`);
-  console.log(`Embeddings: ${embeddingsStr}`);
-  console.log(auditProjectionStatus);
-  console.log('MCP resources: not checked by status; run mcp-doctor --json');
+  console.log(`Graph index: ${formatGraphIndexStatus(diagnose.runtimeContextSummary.freshness)}`);
+  console.log(
+    `Dirty worktree: ${formatDirtyWorktreeStatus(
+      diagnose.runtimeContextSummary.dirtyWorktree,
+      diagnose.runtimeContextSummary.dirtyFileCount,
+    )}`,
+  );
+  console.log(`Scope confidence: ${diagnose.runtimeContextSummary.scopeConfidence ?? 'unknown'}`);
+  console.log(formatEmbeddingsDiagnostics(diagnose));
+  console.log(formatAuditProjectionStatus(diagnose.auditFreshness));
+  console.log(formatMcpResourcesStatus(diagnose));
+  for (const line of formatSupportLines(diagnose)) {
+    console.log(line);
+  }
 }

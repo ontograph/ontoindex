@@ -752,6 +752,27 @@ describe('gnReviewDiff', () => {
     });
   });
 
+  it('filters gnDiffImpact to includePaths and warns about omitted ambient files', async () => {
+    setupGitMocks('src/api.ts\ndocs/note.md\n', '5\t1\tsrc/api.ts\n1\t0\tdocs/note.md\n');
+    setupGraphMocks({
+      symbolRows: [{ id: 'Function:src/api.ts:handleReq', name: 'handleReq' }],
+      upstreamCount: 2,
+    });
+
+    const report = await gnDiffImpact(REPO_ID, {
+      commitRange: 'HEAD~1..HEAD',
+      includePaths: ['src'],
+    });
+
+    expect(report.changedFiles).toHaveLength(1);
+    expect(report.changedFiles[0].path).toBe('src/api.ts');
+    expect(report.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('Omitted 1 changed file outside includePaths (src): docs/note.md'),
+      ]),
+    );
+  });
+
   it('reports response-local evidence pruning metadata when review output is capped', async () => {
     const paths = Array.from({ length: 501 }, (_, index) => `src/file-${index}.ts`).join('\n');
     setupGitMocks(`${paths}\n`, '');
@@ -784,6 +805,27 @@ describe('gnReviewDiff', () => {
     expect(envelope.results.responseContract.anchors[0]).toBe('test-repo:src/file-0.ts');
     expect(envelope.results.contextCost.emittedChars).toBeGreaterThan(0);
     expect(envelope.warnings).toContain('Changed file scan capped at 500 paths');
+  });
+
+  it('filters gnReviewDiff to includePaths and warns about omitted ambient files', async () => {
+    setupGitMocks('src/x.ts\ndocs/note.md\n', '3\t1\tsrc/x.ts\n1\t0\tdocs/note.md\n');
+    setupGraphMocks({
+      symbolRows: [{ id: 'Function:src/x.ts:run', name: 'run' }],
+      upstreamCount: 1,
+    });
+
+    const envelope = await gnReviewDiff(REPO_ID, {
+      commitRange: 'HEAD~1..HEAD',
+      includePaths: ['src'],
+    });
+
+    expect(envelope.results.reviewedFiles).toHaveLength(1);
+    expect(envelope.results.reviewedFiles[0].path).toBe('src/x.ts');
+    expect(envelope.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('Omitted 1 changed file outside includePaths (src): docs/note.md'),
+      ]),
+    );
   });
 
   // ---- RD-7: does not include reviewers (separate from gn_diff_impact) ----

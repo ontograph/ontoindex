@@ -22,6 +22,8 @@ import {
   type MarkdownDocumentFact,
   type MarkdownEntityFact,
   type MarkdownFrontmatterMetadata,
+  type MarkdownTrackerState,
+  type MarkdownTrackerStateFact,
   type MarkdownHttpMethod,
   type MarkdownLineSpan,
   type MarkdownLinkFact,
@@ -83,6 +85,16 @@ interface LinkReference {
 interface ParsedFrontmatter {
   metadata: MarkdownFrontmatterMetadata;
   ownerLine?: ParsedLine;
+  trackerState?: ParsedTrackerState;
+}
+
+interface ParsedTrackerField {
+  values: string[];
+  lines: ParsedLine[];
+}
+
+interface ParsedTrackerState extends MarkdownTrackerState {
+  lines: ParsedLine[];
 }
 
 const DEFAULT_EXCERPT_MAX_BYTES = 2048;
@@ -175,6 +187,7 @@ function extractTypedFacts(
 ): MarkdownDocumentFact[] {
   return [
     ...extractDocOwnerFact(docPath, section, sourceChunkKey, frontmatter),
+    ...extractTrackerStateFacts(docPath, section, sourceChunkKey, frontmatter),
     ...extractRequirementFacts(docPath, section, sourceChunkKey, frontmatter.metadata),
     ...extractAcceptanceCriteriaFacts(docPath, section, sourceChunkKey, frontmatter.metadata),
     ...extractApiSpecFacts(docPath, section, sourceChunkKey, frontmatter.metadata),
@@ -184,15 +197,29 @@ function extractTypedFacts(
 
 function parseFrontmatterMetadata(lines: ParsedLine[]): ParsedFrontmatter {
   const metadata: MarkdownFrontmatterMetadata = {};
+  const trackerFields: Partial<
+    Record<'openTasks' | 'blockedReasons' | 'reopenCriteria' | 'noDispatchReason' | 'nextAction', ParsedTrackerField>
+  > = {};
   if (lines[0]?.text.trim() !== '---') {
     return { metadata };
   }
 
   let currentScope: string | undefined;
+  let currentTrackerListKey: 'openTasks' | 'blockedReasons' | 'reopenCriteria' | undefined;
   let ownerLine: ParsedLine | undefined;
   for (const line of lines.slice(1)) {
     if (line.text.trim() === '---') {
       break;
+    }
+    const listMatch = /^(?<indent>\s*)-\s*(?<value>.+?)\s*$/.exec(line.text);
+    if (listMatch && currentTrackerListKey) {
+      appendTrackerValue(
+        trackerFields,
+        currentTrackerListKey,
+        parseFrontmatterScalar(listMatch.groups?.value),
+        line,
+      );
+      continue;
     }
     const match = /^(?<indent>\s*)(?<key>[A-Za-z0-9_.-]+):\s*(?<value>.*)$/.exec(line.text);
     if (!match?.groups) {
@@ -205,7 +232,10 @@ function parseFrontmatterMetadata(lines: ParsedLine[]): ParsedFrontmatter {
       currentScope = value === undefined ? key : undefined;
     }
     const scopedKey = indent > 0 && currentScope ? `${currentScope}.${key}` : key;
+    currentTrackerListKey = undefined;
     if (value === undefined) {
+      currentTrackerListKey = trackerListKey(scopedKey);
+      if (currentTrackerListKey) ensureTrackerField(trackerFields, currentTrackerListKey, line);
       continue;
     }
     if (scopedKey === 'ontoindex.kind') {
@@ -217,13 +247,33 @@ function parseFrontmatterMetadata(lines: ParsedLine[]): ParsedFrontmatter {
       ownerLine = line;
     } else if (scopedKey === 'status' || scopedKey === 'ontoindex.status') {
       metadata.status = value;
+    } else if (scopedKey === 'ontoindex.noDispatchReason') {
+      appendTrackerValue(trackerFields, 'noDispatchReason', value, line);
+    } else if (scopedKey === 'ontoindex.nextAction') {
+      appendTrackerValue(trackerFields, 'nextAction', value, line);
+    } else {
+      const listKey = trackerListKey(scopedKey);
+      if (listKey) {
+        for (const item of parseFrontmatterListValue(value)) {
+          appendTrackerValue(trackerFields, listKey, item, line);
+        }
+      }
     }
   }
 
-  return ownerLine ? { metadata, ownerLine } : { metadata };
+  const trackerState =
+    metadata.ontoindexKind === 'tracker-state' ? buildTrackerState(trackerFields) : undefined;
+  return {
+    metadata,
+    ...(ownerLine ? { ownerLine } : {}),
+    ...(trackerState ? { trackerState } : {}),
+  };
 }
 
-function parseFrontmatterScalar(value: string): string | undefined {
+function parseFrontmatterScalar(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
   const trimmed = value.trim();
   if (trimmed.length === 0) {
     return undefined;
@@ -273,6 +323,48 @@ function extractDocOwnerFact(
     fact.ontoindexKind = frontmatter.metadata.ontoindexKind;
   }
   return [fact];
+}
+
+function extractTrackerStateFacts(
+  docPath: string,
+  section: Section,
+  sourceChunkKey: string,
+  frontmatter: ParsedFrontmatter,
+): MarkdownTrackerStateFact[] {
+  if (!frontmatter.trackerState) return [];
+  const firstLine = frontmatter.trackerState.lines[0];
+  if (!firstLine || !sectionContainsLine(section, firstLine.number)) return [];
+  const start = Math.min(...frontmatter.trackerState.lines.map((line) => line.number));
+  const end = Math.max(...frontmatter.trackerState.lines.map((line) => line.number));
+  const lineSpan = { start, end };
+  return [
+    {
+      kind: 'markdown-tracker-state',
+      contract: 'frontmatter-v1',
+      schemaVersion: CURRENT_MARKDOWN_DOCUMENT_FACT_SCHEMA_VERSION,
+      docPath,
+      headingPath: section.heading?.path ?? [],
+      lineSpan,
+      sourceChunkKey,
+      normalizedKey: normalizedTypedKey('markdown-tracker-state', docPath, 'frontmatter-v1'),
+      confidence: 1,
+      evidence: {
+        text: 'tracker-state',
+        raw: frontmatter.trackerState.lines.map((line) => line.text).join('\n'),
+        lineSpan,
+      },
+      openTasks: frontmatter.trackerState.openTasks,
+      blockedReasons: frontmatter.trackerState.blockedReasons,
+      reopenCriteria: frontmatter.trackerState.reopenCriteria,
+      ...(frontmatter.trackerState.noDispatchReason
+        ? { noDispatchReason: frontmatter.trackerState.noDispatchReason }
+        : {}),
+      ...(frontmatter.trackerState.nextAction
+        ? { nextAction: frontmatter.trackerState.nextAction }
+        : {}),
+      ...metadataFields(frontmatter.metadata),
+    },
+  ];
 }
 
 function extractRequirementFacts(
@@ -592,6 +684,85 @@ function metadataFields(metadata: MarkdownFrontmatterMetadata): {
 } {
   const normalized = metadataOrUndefined(metadata);
   return normalized === undefined ? {} : { metadata: normalized };
+}
+
+function trackerListKey(
+  scopedKey: string,
+): 'openTasks' | 'blockedReasons' | 'reopenCriteria' | undefined {
+  if (scopedKey === 'ontoindex.openTasks') return 'openTasks';
+  if (scopedKey === 'ontoindex.blockedReasons') return 'blockedReasons';
+  if (scopedKey === 'ontoindex.reopenCriteria') return 'reopenCriteria';
+  return undefined;
+}
+
+function ensureTrackerField(
+  trackerFields: Partial<
+    Record<'openTasks' | 'blockedReasons' | 'reopenCriteria' | 'noDispatchReason' | 'nextAction', ParsedTrackerField>
+  >,
+  key: 'openTasks' | 'blockedReasons' | 'reopenCriteria',
+  line: ParsedLine,
+): void {
+  trackerFields[key] ??= { values: [], lines: [line] };
+}
+
+function appendTrackerValue(
+  trackerFields: Partial<
+    Record<'openTasks' | 'blockedReasons' | 'reopenCriteria' | 'noDispatchReason' | 'nextAction', ParsedTrackerField>
+  >,
+  key: 'openTasks' | 'blockedReasons' | 'reopenCriteria' | 'noDispatchReason' | 'nextAction',
+  value: string | undefined,
+  line: ParsedLine,
+): void {
+  const field = trackerFields[key] ?? { values: [], lines: [] };
+  if (field.lines.at(-1)?.number !== line.number) field.lines.push(line);
+  if (value && value.length > 0) field.values.push(value);
+  trackerFields[key] = field;
+}
+
+function parseFrontmatterListValue(value: string): string[] {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) return trimmed ? [trimmed] : [];
+  return trimmed
+    .slice(1, -1)
+    .split(',')
+    .map((item) => parseFrontmatterScalar(item))
+    .filter((item): item is string => Boolean(item));
+}
+
+function buildTrackerState(
+  trackerFields: Partial<
+    Record<'openTasks' | 'blockedReasons' | 'reopenCriteria' | 'noDispatchReason' | 'nextAction', ParsedTrackerField>
+  >,
+): ParsedTrackerState | undefined {
+  const openTasks = trackerFields.openTasks?.values ?? [];
+  const blockedReasons = trackerFields.blockedReasons?.values ?? [];
+  const reopenCriteria = trackerFields.reopenCriteria?.values ?? [];
+  const noDispatchReason = trackerFields.noDispatchReason?.values[0];
+  const nextAction = trackerFields.nextAction?.values[0];
+  const lines = [
+    ...(trackerFields.openTasks?.lines ?? []),
+    ...(trackerFields.blockedReasons?.lines ?? []),
+    ...(trackerFields.reopenCriteria?.lines ?? []),
+    ...(trackerFields.noDispatchReason?.lines ?? []),
+    ...(trackerFields.nextAction?.lines ?? []),
+  ];
+  if (
+    openTasks.length === 0 &&
+    blockedReasons.length === 0 &&
+    reopenCriteria.length === 0 &&
+    noDispatchReason === undefined &&
+    nextAction === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    openTasks,
+    blockedReasons,
+    reopenCriteria,
+    ...(noDispatchReason ? { noDispatchReason } : {}),
+    ...(nextAction ? { nextAction } : {}),
+    lines,
+  };
 }
 
 function splitLines(source: string): ParsedLine[] {

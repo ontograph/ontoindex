@@ -142,6 +142,21 @@ describe('mcpCommand', () => {
     expect(startMCPServer).toHaveBeenCalled();
   });
 
+  it('uses ONTOINDEX_MCP_PROJECT_CWD as the preferred startup project path when no --project is supplied', async () => {
+    getGitRootMock.mockReturnValue('/opt/demodb/_workfolder/OntoIndex');
+    process.env.ONTOINDEX_MCP_PROJECT_CWD = '/project/from-env';
+    backendMocks.listRepos.mockResolvedValue([{ name: 'repo-a', path: '/project/from-env' }]);
+
+    await mcpCommand();
+
+    expect(LocalBackend).toHaveBeenCalledWith({
+      repoFilter: undefined,
+      preferredProjectPath: '/project/from-env',
+    });
+    expect(process.exitCode).toBeUndefined();
+    expect(startMCPServer).toHaveBeenCalled();
+  });
+
   it('fails fast when --repo resolves to a different project', async () => {
     getGitRootMock.mockReturnValue('/opt/demodb/_workfolder/OntoIndex');
     process.env.ONTOINDEX_MCP_PROJECT_CWD = '/project/a';
@@ -157,7 +172,7 @@ describe('mcpCommand', () => {
       expect.stringContaining('--repo "repo-b" resolves to repo-b -> /project/b'),
     );
     expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining('Project cwd: /opt/demodb/_workfolder/OntoIndex'),
+      expect.stringContaining('Project cwd: /project/a'),
     );
     expect(console.error).toHaveBeenCalledWith(
       expect.stringContaining(`Process cwd: ${process.cwd()}`),
@@ -165,7 +180,7 @@ describe('mcpCommand', () => {
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Restart command:'));
     expect(console.error).toHaveBeenCalledWith(
       expect.stringContaining(
-        "ontoindex mcp --project '/opt/demodb/_workfolder/OntoIndex' --repo 'repo-b'",
+        "ontoindex mcp --project '/project/a' --repo 'repo-b'",
       ),
     );
   });
@@ -185,7 +200,7 @@ describe('mcpCommand', () => {
       expect.stringContaining('Resolved repo: repo-b -> /project/b'),
     );
     expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining('Project cwd: /opt/demodb/_workfolder/OntoIndex'),
+      expect.stringContaining('Project cwd: /project/a'),
     );
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Restart command:'));
     expect(backendMocks.dispose).not.toHaveBeenCalled();

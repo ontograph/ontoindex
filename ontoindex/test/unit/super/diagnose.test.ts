@@ -31,6 +31,17 @@ vi.mock('../../../src/core/embeddings/zvec-semantic-backend.js', () => ({
   getSemanticVectorBackendStatus: vi.fn(),
 }));
 
+vi.mock('../../../src/core/lbug/lbug-adapter.js', () => ({
+  getLbugRuntimeDiagnostics: vi.fn().mockResolvedValue({
+    extensionHintDir: '/tmp/lbug-ext',
+    getAllTimeoutMs: 30000,
+    extensions: {
+      fts: { available: true, path: '/tmp/lbug-ext/libfts.lbug_extension' },
+      vector: { available: true, path: '/tmp/lbug-ext/libvector.lbug_extension' },
+    },
+  }),
+}));
+
 vi.mock('../../../src/core/audit-lifecycle/index.js', () => ({
   getAuditProjectionPath: vi.fn().mockReturnValue('/tmp/test-repo/.ontoindex/audit/audit-projection.json'),
   computeAuditFreshness: vi.fn().mockResolvedValue({
@@ -59,6 +70,7 @@ import {
   getAuditProjectionPath,
 } from '../../../src/core/audit-lifecycle/index.js';
 import { getSemanticVectorBackendStatus } from '../../../src/core/embeddings/zvec-semantic-backend.js';
+import { getLbugRuntimeDiagnostics } from '../../../src/core/lbug/lbug-adapter.js';
 import { gnDiagnose } from '../../../src/mcp/super/diagnose.js';
 import { ONTOINDEX_SUPER_TOOLS } from '../../../src/mcp/super/tool-definitions.js';
 import { readToolTelemetrySummary } from '../../../src/mcp/local/tool-telemetry.js';
@@ -67,6 +79,7 @@ const mockExecFile = vi.mocked(execFile);
 const mockGnEnsureFresh = vi.mocked(gnEnsureFresh);
 const mockResolveTargetContext = vi.mocked(resolveTargetContext);
 const mockGetSemanticVectorBackendStatus = vi.mocked(getSemanticVectorBackendStatus);
+const mockGetLbugRuntimeDiagnostics = vi.mocked(getLbugRuntimeDiagnostics);
 const mockComputeAuditFreshness = vi.mocked(computeAuditFreshness);
 const mockGetAuditProjectionPath = vi.mocked(getAuditProjectionPath);
 const mockReadToolTelemetrySummary = vi.mocked(readToolTelemetrySummary);
@@ -204,6 +217,14 @@ beforeEach(() => {
     actualBackend: 'lbug',
     freshness: 'unknown',
     circuitBroken: false,
+  });
+  mockGetLbugRuntimeDiagnostics.mockResolvedValue({
+    extensionHintDir: '/tmp/lbug-ext',
+    getAllTimeoutMs: 30000,
+    extensions: {
+      fts: { available: true, path: '/tmp/lbug-ext/libfts.lbug_extension' },
+      vector: { available: true, path: '/tmp/lbug-ext/libvector.lbug_extension' },
+    },
   });
   mockReadToolTelemetrySummary.mockResolvedValue({
     recentOversizedCount: 0,
@@ -710,6 +731,7 @@ describe('gnDiagnose', () => {
       repoLabel: REPO_ID,
       repoPath: '/tmp/test-repo',
       freshness: 'fresh',
+      scopeConfidence: 'unknown',
       dirtyWorktree: false,
       embeddings: 'available',
       sidecar: 'unknown',
@@ -1030,6 +1052,50 @@ describe('gnDiagnose', () => {
     expect(report.mcpResourceBridge).toEqual({
       exposed: true,
       exposedTo: ['Claude Code'],
+    });
+  });
+
+  it('includes bounded support diagnostics for the Ladybug store and runtime', async () => {
+    vi.spyOn(fs, 'readFile').mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    vi.spyOn(fs, 'stat').mockImplementation(async (targetPath: fs.PathLike) => {
+      if (targetPath.toString().endsWith('/.ontoindex/lbug')) {
+        return { size: 4096, mtime: new Date('2026-06-27T12:00:00.000Z') } as any;
+      }
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    mockGetLbugRuntimeDiagnostics.mockResolvedValue({
+      extensionHintDir: '/tmp/lbug-ext',
+      getAllTimeoutMs: 30000,
+      extensions: {
+        fts: { available: true, path: '/tmp/lbug-ext/libfts.lbug_extension' },
+        vector: { available: false, path: null },
+      },
+    });
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: false,
+      checkIndexFreshness: false,
+      checkToolContract: false,
+    });
+
+    expect(report.support).toEqual({
+      lbugStore: {
+        path: '/tmp/test-repo/.ontoindex/lbug',
+        exists: true,
+        sizeBytes: 4096,
+        modifiedAt: '2026-06-27T12:00:00.000Z',
+        walPresent: false,
+        lockPresent: false,
+      },
+      ladybugExtensions: {
+        hintDir: '/tmp/lbug-ext',
+        ftsAvailable: true,
+        vectorAvailable: false,
+      },
+      timeoutHints: {
+        nativeGetAllMs: 30000,
+      },
     });
   });
 });

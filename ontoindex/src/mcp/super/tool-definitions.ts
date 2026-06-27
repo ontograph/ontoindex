@@ -288,6 +288,12 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
             'Which changes to audit. staged = git diff --cached; unstaged = git diff; all = both; branch = all commits since main. Default: staged.',
           default: 'staged',
         },
+        includePaths: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Optional repository-relative path prefixes to keep in the commit audit. Changed files outside these prefixes are omitted and reported as warnings.',
+        },
         expectedSymbols: {
           type: 'array',
           items: { type: 'string' },
@@ -440,6 +446,12 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
             'Which changes to diff. staged = git diff --cached; branch = main...HEAD; commit-range requires commitRange param. Default: staged.',
           default: 'staged',
         },
+        includePaths: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Optional repository-relative path prefixes to keep in the diff report. Changed files outside these prefixes are omitted and reported as warnings.',
+        },
         includeReviewers: {
           type: 'boolean',
           description: 'Suggest reviewers from git blame/log history. Default: true.',
@@ -484,6 +496,12 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           description:
             'Which changes to diff. staged = git diff --cached; branch = main...HEAD; commit-range requires commitRange param. Default: staged.',
           default: 'staged',
+        },
+        includePaths: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Optional repository-relative path prefixes to keep in the review envelope. Changed files outside these prefixes are omitted and reported as warnings.',
         },
       },
       required: [],

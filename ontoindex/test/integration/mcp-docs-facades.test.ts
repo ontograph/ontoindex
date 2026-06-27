@@ -162,6 +162,38 @@ describe('MCP Docs Facade Integration', () => {
     expect(result.limits.maxItems).toBe(25);
   });
 
+  it('surfaces explicit tracker-state facts in readiness and prefers tracker nextAction when sidecar is healthy', async () => {
+    const repo = await tempRepoHandle();
+    await writeSidecar(repo, [trackerState()]);
+
+    const result = await runDocsMcpAction(repo, { action: 'readiness' });
+
+    expect(result.trackerState).toMatchObject({
+      contract: 'explicit-frontmatter-v1',
+      sourceDocs: ['docs/tracker.md'],
+      openTasks: ['Finish Slice 6 parity'],
+      blockedReasons: ['Docs sidecar contract missing'],
+      noDispatchReason: 'Waiting for explicit tracker facts',
+      reopenCriteria: ['Add tracker-state contract to docs sidecar'],
+      nextAction: 'Keep the loop closed',
+    });
+  });
+
+  it('surfaces explicit tracker-state facts in context output without replacing knowledge evidence', async () => {
+    const repo = await tempRepoHandle();
+    await writeSidecar(repo, [requirement('REQ-1'), resolution('REQ-1'), trackerState()]);
+
+    const result = await runDocsMcpAction(repo, { action: 'context' });
+
+    expect(result.docsEvidence).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: 'knowledge-concept' })]),
+    );
+    expect(result.trackerState).toMatchObject({
+      openTasks: ['Finish Slice 6 parity'],
+      blockedReasons: ['Docs sidecar contract missing'],
+    });
+  });
+
   it('clamps docs response limits to the schema maximums', async () => {
     const repo = await tempRepoHandle();
     await writeSidecar(repo, [requirement('REQ-1')]);
@@ -597,5 +629,32 @@ function apiSpec(method: string, path: string): Record<string, unknown> {
     method,
     path,
     routeKey: `${method} ${path}`,
+  };
+}
+
+function trackerState(): Record<string, unknown> {
+  return {
+    kind: 'markdown-tracker-state',
+    contract: 'frontmatter-v1',
+    schemaVersion: 1,
+    docPath: 'docs/tracker.md',
+    headingPath: [],
+    lineSpan: { start: 2, end: 8 },
+    sourceChunkKey: 'chunk:tracker',
+    normalizedKey: 'markdown-tracker-state:docs/tracker.md:frontmatter-v1',
+    confidence: 1,
+    evidence: {
+      text: 'tracker-state',
+      raw: 'tracker-state frontmatter',
+      lineSpan: { start: 2, end: 8 },
+    },
+    openTasks: ['Finish Slice 6 parity'],
+    blockedReasons: ['Docs sidecar contract missing'],
+    noDispatchReason: 'Waiting for explicit tracker facts',
+    reopenCriteria: ['Add tracker-state contract to docs sidecar'],
+    nextAction: 'Keep the loop closed',
+    metadata: {
+      ontoindexKind: 'tracker-state',
+    },
   };
 }

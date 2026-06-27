@@ -363,6 +363,15 @@ export const resolveLocalLbugExtensionPath = async (
   return null;
 };
 
+export interface LbugRuntimeDiagnostics {
+  extensionHintDir: string | null;
+  getAllTimeoutMs: number;
+  extensions: {
+    fts: { available: boolean; path: string | null };
+    vector: { available: boolean; path: string | null };
+  };
+}
+
 // Maximum rows allowed from internal (non-exploratory) .getAll() calls.
 // Exceeding this limit indicates an unexpectedly large result set; we throw
 // rather than silently truncate to avoid data loss in callers that assume
@@ -381,6 +390,25 @@ const MAX_EXISTING_EMBEDDING_HASHES = (() => {
 // driver. If the driver stalls (e.g. a hung query or native deadlock) without
 // this boundary the process would hang forever.
 const GET_ALL_TIMEOUT_MS = 30_000;
+
+export const getLbugRuntimeDiagnostics = async (): Promise<LbugRuntimeDiagnostics> => {
+  const [ftsPath, vectorPath] = await Promise.all([
+    resolveLocalLbugExtensionPath('fts'),
+    resolveLocalLbugExtensionPath('vector'),
+  ]);
+  return {
+    extensionHintDir:
+      process.env.ONTOINDEX_LADYBUG_EXTENSION_DIR ||
+      process.env.ONTOINDEX_LADYBUG_EXTENSIONS_CACHE ||
+      bundledLbugExtensionsDir() ||
+      defaultLbugExtensionsCacheDir(),
+    getAllTimeoutMs: GET_ALL_TIMEOUT_MS,
+    extensions: {
+      fts: { available: ftsPath !== null, path: ftsPath },
+      vector: { available: vectorPath !== null, path: vectorPath },
+    },
+  };
+};
 
 class LbugQueryTimeoutError extends Error {
   constructor(message: string) {

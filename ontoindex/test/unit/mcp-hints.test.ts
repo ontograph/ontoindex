@@ -29,4 +29,11 @@ describe('MCP Next-Step Hints', () => {
     expect(hint).toContain('include_markdown_context: true');
     expect(hint).toContain('repo: "my-repo"');
   });
+
+  it('clarifies the CLI equivalent for list_repos', () => {
+    const hint = getNextStepHint('list_repos', {});
+
+    expect(hint).toContain('ontoindex://repo/{name}/context');
+    expect(hint).toContain('CLI equivalent is `ontoindex list`');
+  });
 });

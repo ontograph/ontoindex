@@ -434,6 +434,12 @@ program
   .description('Map git diff hunks to indexed symbols and affected execution flows')
   .option('-s, --scope <scope>', 'What to analyze: unstaged, staged, all, or compare', 'unstaged')
   .option('-b, --base-ref <ref>', 'Branch/commit for compare scope (e.g. main)')
+  .option(
+    '--include-path <path>',
+    'Limit diff impact to repository-relative path prefixes; repeat for multiple roots',
+    collectOption,
+    [],
+  )
   .option('-r, --repo <name>', 'Target repository')
   .action(createLazyAction(() => import('./tool.js'), 'detectChangesCommand'));
 

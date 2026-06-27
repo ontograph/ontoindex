@@ -14,8 +14,14 @@ import {
   createMissingDocsSidecarStatusReport,
   getDocsSidecarStaleReasons,
 } from '../../core/ingestion/enrichment/docs-sidecar-status.js';
-import { isMarkdownApiSpecFact } from '../../core/ingestion/enrichment/markdown-document-facts.js';
-import type { MarkdownDocumentFact } from '../../core/ingestion/enrichment/markdown-document-facts.js';
+import {
+  isMarkdownApiSpecFact,
+  isMarkdownTrackerStateFact,
+} from '../../core/ingestion/enrichment/markdown-document-facts.js';
+import type {
+  MarkdownDocumentFact,
+  MarkdownTrackerStateFact,
+} from '../../core/ingestion/enrichment/markdown-document-facts.js';
 import type { MarkdownDocResolutionRecord } from '../../core/ingestion/enrichment/markdown-doc-resolver.js';
 import {
   createMarkdownApiDriftReport,
@@ -92,6 +98,16 @@ const MAX_INLINE_CONTEXT_TOKENS = 4000;
 const DEFAULT_INLINE_CONTEXT_EVIDENCE_ITEMS = 6;
 const MAX_INLINE_CONTEXT_EVIDENCE_ITEMS = 50;
 
+export interface DocsTrackerStateSummary {
+  contract: 'explicit-frontmatter-v1';
+  sourceDocs: string[];
+  openTasks: string[];
+  blockedReasons: string[];
+  reopenCriteria: string[];
+  noDispatchReason?: string;
+  nextAction?: string;
+}
+
 export interface DocsMcpFullReport {
   version: 1;
   action: DocsAction;
@@ -116,6 +132,7 @@ export interface DocsMcpFullReport {
   warnings: string[];
   advisoryMemories?: DocsAdvisoryMemorySummary;
   basedOnReads?: BasedOnReadsSummary;
+  trackerState?: DocsTrackerStateSummary;
   limits: {
     truncated: boolean;
     maxItems: number;
@@ -144,6 +161,7 @@ export interface DocsMcpMinimalReport {
   };
   advisoryMemories?: DocsAdvisoryMemorySummary;
   basedOnReads?: BasedOnReadsSummary;
+  trackerState?: DocsTrackerStateSummary;
   cursor?: McpResponseCursor;
   nextAction: string;
 }
@@ -226,6 +244,9 @@ export async function runDocsMcpAction(
     loaded.baseReport.limits.maxCandidatesPerFact,
     MAX_DOCS_MCP_CANDIDATES_PER_FACT,
   );
+  const allFacts = collectMarkdownFacts(loaded.state);
+  const trackerState = summarizeTrackerState(collectTrackerStateFacts(loaded.state));
+  const knowledgeFacts = allFacts.filter((fact) => !isMarkdownTrackerStateFact(fact));
 
   recordEvidenceReadSafe({
     readClass: 'docs_evidence',
@@ -250,6 +271,7 @@ export async function runDocsMcpAction(
         undefined,
         undefined,
         advisoryMemories,
+        trackerState,
       );
     }
     return withInlineContext(
@@ -257,8 +279,15 @@ export async function runDocsMcpAction(
         maxItems,
         maxCandidatesPerFact,
         responseMode,
-        nextAction: createDocsNextAction(action, loaded.baseReport, undefined, loaded.storeMissing),
+        nextAction: createDocsNextAction(
+          action,
+          loaded.baseReport,
+          undefined,
+          loaded.storeMissing,
+          trackerState,
+        ),
         advisoryMemories,
+        trackerState,
       }),
       params,
     );
@@ -269,7 +298,7 @@ export async function runDocsMcpAction(
     const report = createKnowledgeContextEnvelope(
       createMarkdownKnowledgeReport({
         baseReport: loaded.baseReport,
-        facts: collectMarkdownFacts(loaded.state),
+        facts: knowledgeFacts,
         resolutions: collectMarkdownDocResolutionRecords(loaded.state),
         maxItems: knowledgeMaxItems,
         maxCandidatesPerFact,
@@ -289,6 +318,7 @@ export async function runDocsMcpAction(
       extractKnowledgeGraphFacts,
       repo.name,
       advisoryMemories,
+      trackerState,
     );
   }
 
@@ -306,6 +336,7 @@ export async function runDocsMcpAction(
         maxCandidatesPerFact,
         responseMode,
         nextAction: createDocsNextAction(action, loaded.baseReport, undefined, true),
+        trackerState,
       }),
       params,
     );
@@ -352,7 +383,7 @@ export async function runDocsMcpAction(
     targetType: 'action',
     repo: repo.id,
   });
-  const facts = collectMarkdownFacts(loaded.state);
+  const facts = allFacts;
   const report = createMarkdownApiDriftReport({
     baseReport: loaded.baseReport,
     docCandidates: createDocRouteCandidates(facts.filter(isMarkdownApiSpecFact)),
@@ -486,6 +517,7 @@ function compactDocsEnvelope(
     cursor?: McpResponseCursor;
     nextAction?: string;
     advisoryMemories?: DocsAdvisoryMemorySummary;
+    trackerState?: DocsTrackerStateSummary;
   },
 ): DocsMcpFullReport {
   return {
@@ -517,6 +549,7 @@ function compactDocsEnvelope(
     warnings: envelope.warnings,
     ...(limits?.advisoryMemories ? { advisoryMemories: limits.advisoryMemories } : {}),
     basedOnReads: summarizeBasedOnReads(),
+    ...(limits?.trackerState ? { trackerState: limits.trackerState } : {}),
     limits: {
       truncated: limits?.truncated ?? envelope.limits.truncated,
       maxItems: limits?.maxItems ?? envelope.limits.maxItems,
@@ -788,6 +821,31 @@ function collectMarkdownFacts(state: SidecarStoreState): MarkdownDocumentFact[] 
   );
 }
 
+function collectTrackerStateFacts(state: SidecarStoreState): MarkdownTrackerStateFact[] {
+  return collectMarkdownFacts(state).filter(isMarkdownTrackerStateFact);
+}
+
+function summarizeTrackerState(
+  facts: readonly MarkdownTrackerStateFact[],
+): DocsTrackerStateSummary | undefined {
+  if (facts.length === 0) return undefined;
+  const noDispatchReasons = uniqueStrings(
+    facts.map((fact) => fact.noDispatchReason).filter((value): value is string => Boolean(value)),
+  );
+  const nextActions = uniqueStrings(
+    facts.map((fact) => fact.nextAction).filter((value): value is string => Boolean(value)),
+  );
+  return {
+    contract: 'explicit-frontmatter-v1',
+    sourceDocs: uniqueStrings(facts.map((fact) => fact.docPath)),
+    openTasks: uniqueStrings(facts.flatMap((fact) => fact.openTasks)),
+    blockedReasons: uniqueStrings(facts.flatMap((fact) => fact.blockedReasons)),
+    reopenCriteria: uniqueStrings(facts.flatMap((fact) => fact.reopenCriteria)),
+    ...(noDispatchReasons.length === 1 ? { noDispatchReason: noDispatchReasons[0] } : {}),
+    ...(nextActions.length === 1 ? { nextAction: nextActions[0] } : {}),
+  };
+}
+
 function collectMarkdownDocResolutionRecords(
   state: SidecarStoreState,
 ): MarkdownDocResolutionRecord[] {
@@ -800,6 +858,10 @@ function collectMarkdownDocResolutionRecords(
 
 function isMarkdownDocumentFact(value: { kind: string }): value is MarkdownDocumentFact {
   return value.kind.startsWith('markdown-') && value.kind !== 'markdown-doc-resolution';
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values.filter((value) => value.length > 0))];
 }
 
 function isMarkdownDocResolutionRecord(value: {
@@ -949,6 +1011,7 @@ function finalizeDocsItemsReport<TItem>(
   extractGraphFacts: (items: readonly TItem[]) => unknown[],
   repoLabel: string,
   advisoryMemories?: DocsAdvisoryMemorySummary,
+  trackerState?: DocsTrackerStateSummary,
 ): DocsMcpReport {
   const page = paginateMcpItems(envelope.items, { pageSize: maxItems, cursor: params.cursor });
   const cursor = shouldExposeCursor(page.page) ? page.page : undefined;
@@ -968,6 +1031,7 @@ function finalizeDocsItemsReport<TItem>(
       cursor,
       nextAction,
       advisoryMemories,
+      trackerState,
     );
   }
 
@@ -991,6 +1055,7 @@ function finalizeDocsItemsReport<TItem>(
         cursor,
         nextAction,
         advisoryMemories,
+        trackerState,
       },
     ),
     params,
@@ -1060,6 +1125,7 @@ function createDocsNextAction(
   envelope: DocsEnvelope,
   cursor: McpResponseCursor | undefined,
   storeMissing: boolean,
+  trackerState?: DocsTrackerStateSummary,
 ): string {
   if (cursor?.next) return `Rerun ${action} with cursor:"${cursor.next}" to fetch the next page.`;
   const skipReasons = createSkipReasons(
@@ -1073,6 +1139,7 @@ function createDocsNextAction(
   if (skipReasons.includes('sidecar-stale') || skipReasons.includes('sidecar-partial')) {
     return 'Run `ontoindex docs refresh` (or `ontoindex analyze --markdown-sidecar`) before using this report for write decisions.';
   }
+  if (trackerState?.nextAction) return trackerState.nextAction;
   if (envelope.warnings.length > 0) return 'Review warnings before acting on this report.';
   return 'No follow-up required.';
 }
@@ -1085,6 +1152,7 @@ function createMinimalDocsReport(
   cursor?: McpResponseCursor,
   nextAction = createDocsNextAction(action, envelope, cursor, storeMissing),
   advisoryMemories?: DocsAdvisoryMemorySummary,
+  trackerState?: DocsTrackerStateSummary,
 ): DocsMcpMinimalReport {
   return {
     version: 1,
@@ -1104,6 +1172,7 @@ function createMinimalDocsReport(
       truncated: limits.truncated,
     },
     ...(advisoryMemories ? { advisoryMemories } : {}),
+    ...(trackerState ? { trackerState } : {}),
     basedOnReads: summarizeBasedOnReads(),
     ...(cursor ? { cursor } : {}),
     nextAction,

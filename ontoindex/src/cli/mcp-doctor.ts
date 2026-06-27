@@ -6,6 +6,7 @@ import { shellQuote } from '../mcp/shared/repo-resolution-errors.js';
 import { gnDiagnose } from '../mcp/super/diagnose.js';
 import type { DiagnoseParams, DiagnoseReport } from '../mcp/super/diagnose.js';
 import { execFileText } from '../core/process/exec-file.js';
+import { formatSupportLines } from './status.js';
 
 export type McpDoctorVerdict = 'READY' | 'DEGRADED' | 'MISCONFIGURED';
 export type McpDoctorProcessLivenessStatus =
@@ -144,6 +145,7 @@ export async function mcpDoctorCommand(options: McpDoctorOptions = {}): Promise<
 
 export function formatMcpDoctorText(report: McpDoctorReport): string {
   const target = report.diagnose.targetContext;
+  const runtime = report.diagnose.runtimeContextSummary;
   const lines = [
     'OntoIndex MCP Doctor',
     `Verdict: ${report.verdict}`,
@@ -155,6 +157,22 @@ export function formatMcpDoctorText(report: McpDoctorReport): string {
         target.repoPath ?? '<unknown>'
       }`,
     );
+  }
+  if (runtime) {
+    lines.push(`Freshness: ${runtime.freshness}`);
+    if (runtime.scopeConfidence) {
+      lines.push(`Scope confidence: ${runtime.scopeConfidence}`);
+    }
+    if (runtime.dirtyWorktree !== null) {
+      lines.push(
+        `Dirty worktree: ${
+          runtime.dirtyWorktree
+            ? `yes${runtime.dirtyFileCount !== null ? `, ${runtime.dirtyFileCount} files changed` : ''}`
+            : 'no'
+        }`,
+      );
+    }
+    lines.push(`Embeddings: ${runtime.embeddings}`);
   }
   if (report.diagnose.misconfiguration.status === 'fail') {
     lines.push(`Misconfiguration: ${report.diagnose.misconfiguration.reason}`);
@@ -187,6 +205,7 @@ export function formatMcpDoctorText(report: McpDoctorReport): string {
       lines.push(`Recent oversized tools: ${health.recentOversizedTools.join(', ')}`);
     }
   }
+  lines.push(...formatSupportLines(report.diagnose));
   if (report.symbolSmoke?.status === 'failed') {
     lines.push(`Symbol smoke: failed (${report.symbolSmoke.reason ?? 'unknown'})`);
   } else if (report.symbolSmoke?.status === 'ok') {

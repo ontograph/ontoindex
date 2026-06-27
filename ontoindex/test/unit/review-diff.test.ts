@@ -18,6 +18,10 @@ import {
   parseReviewNumstat,
   formatReviewDiffText,
 } from '../../src/cli/review.js';
+import {
+  formatScopedPathOmissionWarning,
+  scopeChangedPathsByPrefixes,
+} from '../../src/core/review/diff-review.js';
 import type { DiffReviewResult } from '../../src/core/review/review-types.js';
 
 // ---------------------------------------------------------------------------
@@ -89,6 +93,22 @@ describe('parseReviewNumstat', () => {
     const output = '1\t2\tpath\twith\ttabs.ts\n';
     const result = parseReviewNumstat(output);
     expect(result.has('path\twith\ttabs.ts')).toBe(true);
+  });
+});
+
+describe('scopeChangedPathsByPrefixes', () => {
+  it('keeps only in-scope paths and tracks omitted ambient files', () => {
+    const scoped = scopeChangedPathsByPrefixes(['src/a.ts', 'docs/note.md'], ['src']);
+    expect(scoped).toEqual({
+      inScopePaths: ['src/a.ts'],
+      omittedPaths: ['docs/note.md'],
+    });
+  });
+
+  it('formats omitted ambient-file warnings for review surfaces', () => {
+    expect(formatScopedPathOmissionWarning(['docs/note.md'], ['src'])).toContain(
+      'Omitted 1 changed file outside includePaths (src): docs/note.md',
+    );
   });
 });
 
@@ -590,6 +610,12 @@ describe('REV-4: review diff help — local-only contract', () => {
   it('shows example for explicit range', () => {
     const help = getReviewDiffHelp();
     expect(help).toContain('--range');
+  });
+
+  it('shows include-path scoping for dirty worktrees', () => {
+    const help = getReviewDiffHelp();
+    expect(help).toContain('--include-path <path>');
+    expect(help).toContain('src/core --include-path src/mcp');
   });
 
   it('describes --json as machine-readable', () => {

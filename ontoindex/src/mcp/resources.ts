@@ -690,7 +690,9 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push('  - detect_changes: Git-diff impact analysis (what do your changes affect)');
   lines.push('  - rename: Multi-file coordinated rename with confidence tags');
   lines.push('  - cypher: Raw graph queries');
-  lines.push('  - list_repos: Discover all indexed repositories');
+  lines.push(
+    '  - list_repos: Discover all indexed repositories (MCP tool; CLI equivalent: `ontoindex list`)',
+  );
 
   if (
     analysisCatalog &&
@@ -1107,7 +1109,7 @@ async function getSetupResource(backend: LocalBackend): Promise<string> {
       '| `detect_changes` | Git-diff impact — what do your current changes affect |',
       '| `rename` | Multi-file coordinated rename with confidence-tagged edits |',
       '| `cypher` | Raw graph queries |',
-      '| `list_repos` | Discover indexed repos |',
+      '| `list_repos` | Discover indexed repos (MCP tool; CLI equivalent: `ontoindex list`) |',
       '',
       '## Resources',
       '',

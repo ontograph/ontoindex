@@ -133,10 +133,12 @@ export async function detectChanges(
   params: {
     scope?: string;
     base_ref?: string;
+    include_paths?: string[];
   },
 ): Promise<DetectChangesResult> {
   const scope = params.scope || 'unstaged';
   const warnings: string[] = [];
+  const includePaths = (params.include_paths ?? []).map(normalizePathPrefix).filter(Boolean);
 
   let diffArgs: string[];
   switch (scope) {
@@ -164,14 +166,35 @@ export async function detectChanges(
     return { error: `Git diff failed: ${message}` };
   }
 
-  const fileDiffs: FileDiff[] = parseDiffHunks(diffOutput, {
+  const parsedDiffs: FileDiff[] = parseDiffHunks(diffOutput, {
     maxFiles: MAX_DIFF_FILES + 1,
     maxHunksPerFile: MAX_HUNKS_PER_FILE,
     maxTotalHunks: MAX_TOTAL_HUNKS,
   });
-  if (fileDiffs.length > MAX_DIFF_FILES) {
-    fileDiffs.length = MAX_DIFF_FILES;
+  if (parsedDiffs.length > MAX_DIFF_FILES) {
+    parsedDiffs.length = MAX_DIFF_FILES;
     warnings.push(`Diff file scan capped at ${MAX_DIFF_FILES} files`);
+  }
+
+  if (parsedDiffs.length === 0) {
+    return {
+      summary: {
+        changed_count: 0,
+        affected_count: 0,
+        risk_level: 'none',
+        message: 'No changes detected.',
+      },
+      changed_symbols: [],
+      affected_processes: [],
+      warnings,
+    };
+  }
+
+  const { inScopeDiffs, omittedPaths } = filterFileDiffsByIncludePaths(parsedDiffs, includePaths);
+  const fileDiffs = inScopeDiffs;
+
+  if (omittedPaths.length > 0) {
+    warnings.push(formatOmittedPathsWarning(omittedPaths, includePaths));
   }
 
   if (fileDiffs.length === 0) {
@@ -180,7 +203,7 @@ export async function detectChanges(
         changed_count: 0,
         affected_count: 0,
         risk_level: 'none',
-        message: 'No changes detected.',
+        message: includePaths.length > 0 ? 'No in-scope changes detected.' : 'No changes detected.',
       },
       changed_symbols: [],
       affected_processes: [],
@@ -294,4 +317,42 @@ export async function detectChanges(
     affected_processes: Array.from(affectedProcesses.values()),
     warnings,
   };
+}
+
+function normalizePathPrefix(raw: string): string {
+  return raw.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '').replace(/\/+$/, '');
+}
+
+function fileMatchesPrefix(filePath: string, prefix: string): boolean {
+  const normalizedPath = normalizePathPrefix(filePath);
+  return normalizedPath === prefix || normalizedPath.startsWith(`${prefix}/`);
+}
+
+function filterFileDiffsByIncludePaths(
+  fileDiffs: readonly FileDiff[],
+  includePaths: readonly string[],
+): { inScopeDiffs: FileDiff[]; omittedPaths: string[] } {
+  if (includePaths.length === 0) {
+    return { inScopeDiffs: [...fileDiffs], omittedPaths: [] };
+  }
+
+  const inScopeDiffs: FileDiff[] = [];
+  const omittedPaths: string[] = [];
+  for (const fileDiff of fileDiffs) {
+    if (includePaths.some((prefix) => fileMatchesPrefix(fileDiff.filePath, prefix))) {
+      inScopeDiffs.push(fileDiff);
+    } else {
+      omittedPaths.push(fileDiff.filePath);
+    }
+  }
+  return { inScopeDiffs, omittedPaths };
+}
+
+function formatOmittedPathsWarning(omittedPaths: readonly string[], includePaths: readonly string[]): string {
+  const preview = omittedPaths.slice(0, 3).join(', ');
+  const extraCount = Math.max(0, omittedPaths.length - 3);
+  const suffix = extraCount > 0 ? `, and ${extraCount} more` : '';
+  return `Omitted ${omittedPaths.length} changed file${
+    omittedPaths.length === 1 ? '' : 's'
+  } outside include_paths (${includePaths.join(', ')}): ${preview}${suffix}`;
 }

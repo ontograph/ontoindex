@@ -4,6 +4,7 @@ import {
   formatNativeGraphWriterStatus,
   formatSemanticSearchStatus,
 } from '../../src/cli/status.js';
+import type { DiagnoseReport } from '../../src/mcp/super/diagnose.js';
 import {
   formatRuntimeHealthDetailLines,
   formatRuntimeHealthStatusLine,
@@ -226,6 +227,10 @@ describe('status command behavior', () => {
     computeAuditFreshness: ReturnType<typeof vi.fn>;
   };
 
+  let diagnoseMocks: {
+    gnDiagnose: ReturnType<typeof vi.fn>;
+  };
+
   const importStatus = async () => import('../../src/cli/status.js');
 
   beforeEach(() => {
@@ -295,11 +300,16 @@ describe('status command behavior', () => {
       computeAuditFreshness: vi.fn(),
     };
 
+    diagnoseMocks = {
+      gnDiagnose: vi.fn().mockResolvedValue(makeDiagnoseReport()),
+    };
+
     vi.doMock('../../src/storage/repo-manager.js', () => repoManagerMocks);
     vi.doMock('../../src/storage/git.js', () => gitMocks);
     vi.doMock('../../src/native/graph-writer.js', () => nativeMocks);
     vi.doMock('node:fs/promises', () => fsMocks);
     vi.doMock('../../src/core/process/exec-file.js', () => execFileMocks);
+    vi.doMock('../../src/mcp/super/diagnose.js', () => diagnoseMocks);
     vi.doMock('../../src/core/audit-lifecycle/index.js', async () => {
       const actual = await vi.importActual<any>('../../src/core/audit-lifecycle/index.js');
       return {
@@ -321,6 +331,99 @@ describe('status command behavior', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
+
+  function makeDiagnoseReport(
+    overrides: Partial<DiagnoseReport> = {},
+  ): DiagnoseReport {
+    return {
+      version: 1,
+      classification: {
+        evidenceClasses: [],
+        resourceContracts: {
+          definitions: 0,
+          templates: 0,
+          total: 0,
+          byEvidenceClass: {
+            graph_evidence: 0,
+            docs_evidence: 0,
+            audit_evidence: 0,
+            runtime_diagnostic: 0,
+            advisory_memory: 0,
+            unknown: 0,
+          },
+          suitability: { auditEligible: 0, docs: 0, diagnostics: 0 },
+        },
+      },
+      setup: {
+        mcp: {
+          repoFilter: null,
+          autoAnalyze: 'unset',
+          startupTimeoutMs: 30000,
+          startupTrace: false,
+        },
+        auth: {
+          httpApiToken: 'generated-per-process',
+          enforcement: 'metadata-only',
+        },
+      },
+      responseLimits: {
+        mcpCypherLimitMax: 5000,
+        processDetailStepLimit: 1000,
+        httpMcpSessionCap: 32,
+        truncationPolicy: 'bounded',
+      },
+      responseBudgetHealth: {
+        guardLimitBytes: 512 * 1024,
+        recentOversizedTools: [],
+        guardedPreviewAvailable: true,
+      },
+      toolTelemetrySummary: {
+        recentOversizedCount: 0,
+        recentOversizedTools: [],
+      },
+      runtimeContextSummary: {
+        repoLabel: 'fixture',
+        repoPath: '/tmp/fixture',
+        freshness: 'fresh',
+        scopeConfidence: 'high',
+        dirtyWorktree: false,
+        dirtyFileCount: 0,
+        embeddings: 'available',
+        sidecar: 'unknown',
+        qualityMode: 'fast',
+        nextRepairCommands: [],
+      },
+      degradedContext: {
+        status: 'ok',
+        reasons: [],
+        affectedAreas: [],
+        confidence: 'full',
+      },
+      misconfiguration: { status: 'ok' },
+      auditFreshness: { status: 'missing' },
+      mcpResourceBridge: { exposed: false, exposedTo: [] },
+      support: {
+        lbugStore: {
+          path: '/tmp/fixture/.ontoindex/lbug',
+          exists: false,
+          walPresent: false,
+          lockPresent: false,
+        },
+        ladybugExtensions: {
+          hintDir: '/tmp/extensions',
+          ftsAvailable: true,
+          vectorAvailable: true,
+        },
+        timeoutHints: {
+          nativeGetAllMs: 30000,
+        },
+      },
+      envVars: {},
+      recommendations: [],
+      warnings: [],
+      ...overrides,
+    };
+  }
 
   it('keeps explicit repo paths inspectable even when they are unindexed', async () => {
     const { statusCommand } = await importStatus();
@@ -426,6 +529,64 @@ describe('status command behavior', () => {
 
     expect(logSpy.mock.calls.map(([line]) => line)).toEqual(
       expect.arrayContaining(['Needs update: docs changed', 'Repair: ontoindex analyze']),
+    );
+  });
+
+  it('prints support diagnostics for the Ladybug store, extensions, timeout, and audit replay hint', async () => {
+    const { statusCommand } = await importStatus();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const repoPath = '/tmp/indexed-repo';
+    repoManagerMocks.findRepo.mockResolvedValue(
+      makeRepo(repoPath, {
+        indexedAt: '2026-05-27T00:00:00.000Z',
+        lastCommit: 'abc123def456',
+        stats: { embeddings: 12 },
+      }),
+    );
+    gitMocks.isGitRepo.mockReturnValue(true);
+    fsMocks.readFile.mockRejectedValue(new Error('ENOENT'));
+    diagnoseMocks.gnDiagnose.mockResolvedValue(
+      makeDiagnoseReport({
+        auditFreshness: {
+          status: 'stale',
+          targetHead: 'abc123def456',
+          currentHead: 'fedcba654321',
+          sessionId: 'S-1',
+          repairCommand: 'gn_audit_replay({session: "S-1"})',
+        },
+        support: {
+          lbugStore: {
+            path: '/tmp/indexed-repo/.ontoindex/lbug',
+            exists: true,
+            sizeBytes: 2048,
+            modifiedAt: '2026-06-27T12:00:00.000Z',
+            walPresent: false,
+            lockPresent: false,
+          },
+          ladybugExtensions: {
+            hintDir: '/tmp/extensions',
+            ftsAvailable: true,
+            vectorAvailable: false,
+          },
+          timeoutHints: {
+            nativeGetAllMs: 30000,
+          },
+        },
+      }),
+    );
+
+    await statusCommand({ repo: repoPath });
+
+    expect(logSpy.mock.calls.map(([line]) => line)).toEqual(
+      expect.arrayContaining([
+        'Ladybug store: present (2.0 KB, modified 2026-06-27T12:00:00.000Z)',
+        'Ladybug sidecars: wal absent, lock absent',
+        'Ladybug extensions: fts available, vector missing',
+        'Ladybug timeout: native getAll 30000ms',
+        'Ladybug extension hint: /tmp/extensions',
+        'Audit replay: gn_audit_replay({session: "S-1"})',
+      ]),
     );
   });
 
@@ -543,38 +704,36 @@ describe('status command behavior', () => {
     );
     gitMocks.isGitRepo.mockReturnValue(true);
 
-    // Mock readFile to return a projection when target is read
-    fsMocks.readFile.mockImplementation(async (filePath) => {
-      if (filePath.endsWith('needs_update')) {
-        throw new Error('ENOENT');
-      }
-      if (filePath.endsWith('audit-projection.json')) {
-        return JSON.stringify({
-          sessions: [
-            {
-              id: 'sess1',
-              targetHead: 'abc123def456',
-            },
-          ],
-        });
-      }
-      throw new Error('ENOENT');
-    });
-
-    // Mock execFileText for git porcelain status
-    execFileMocks.execFileText.mockResolvedValue('M  src/cli/status.ts\n?? tmp/foo.txt\n');
-
-    // Mock computeAuditFreshness to return clean
-    auditFreshnessMocks.computeAuditFreshness.mockResolvedValue({
-      state: 'clean',
-      targetHead: {
-        commit: 'abc123def456',
-        shortCommit: 'abc123d',
-      },
-      currentHead: 'abc123def456',
-      dirtyFiles: [],
-      warnings: [],
-    });
+    diagnoseMocks.gnDiagnose.mockResolvedValue(
+      makeDiagnoseReport({
+        runtimeContextSummary: {
+          repoLabel: 'indexed-repo',
+          repoPath,
+          freshness: 'fresh',
+          scopeConfidence: 'medium',
+          dirtyWorktree: true,
+          dirtyFileCount: 2,
+          embeddings: 'available',
+          sidecar: 'unknown',
+          qualityMode: 'fast',
+          nextRepairCommands: [],
+        },
+        embeddings: {
+          count: 12,
+          populated: true,
+          status: 'ok',
+        },
+        auditFreshness: {
+          status: 'clean',
+          targetHead: 'abc123def456',
+          currentHead: 'abc123def456',
+        },
+        mcpResourceBridge: {
+          exposed: false,
+          exposedTo: [],
+        },
+      }),
+    );
 
     await statusCommand({ repo: repoPath });
 
@@ -583,9 +742,10 @@ describe('status command behavior', () => {
       expect.arrayContaining([
         'Graph index: clean',
         'Dirty worktree: yes, 2 files changed',
+        'Scope confidence: medium',
         'Embeddings: available, 12 recorded',
         'Audit projection: clean, target abc123de',
-        'MCP resources: not checked by status; run mcp-doctor --json',
+        'MCP resources: not exposed',
       ]),
     );
   });

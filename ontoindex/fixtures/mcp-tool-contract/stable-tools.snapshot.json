@@ -379,6 +379,13 @@
             "description": "Which changes to audit. staged = git diff --cached; unstaged = git diff; all = both; branch = all commits since main. Default: staged.",
             "default": "staged"
           },
+          "includePaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional repository-relative path prefixes to keep in the commit audit. Changed files outside these prefixes are omitted and reported as warnings."
+          },
           "expectedSymbols": {
             "type": "array",
             "items": {
@@ -621,6 +628,13 @@
             "description": "Which changes to diff. staged = git diff --cached; branch = main...HEAD; commit-range requires commitRange param. Default: staged.",
             "default": "staged"
           },
+          "includePaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional repository-relative path prefixes to keep in the diff report. Changed files outside these prefixes are omitted and reported as warnings."
+          },
           "includeReviewers": {
             "type": "boolean",
             "description": "Suggest reviewers from git blame/log history. Default: true.",
@@ -687,6 +701,13 @@
             ],
             "description": "Which changes to diff. staged = git diff --cached; branch = main...HEAD; commit-range requires commitRange param. Default: staged.",
             "default": "staged"
+          },
+          "includePaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional repository-relative path prefixes to keep in the review envelope. Changed files outside these prefixes are omitted and reported as warnings."
           }
         },
         "required": []
@@ -3897,6 +3918,25 @@
           "goal": {
             "type": "string",
             "description": "What you want to find. Helps semantic ranking."
+          },
+          "include_explanations": {
+            "type": "boolean",
+            "description": "For action=\"semantic\", include bounded explanation text for why symbol-level results ranked. Default: false.",
+            "default": false
+          },
+          "include_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "For action=\"semantic\", optional repository-relative path prefixes to keep in emitted results."
+          },
+          "exclude_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "For action=\"semantic\", optional repository-relative path prefixes to remove from emitted results."
           },
           "limit": {
             "type": "number",

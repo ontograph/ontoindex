@@ -15,7 +15,11 @@ import { execFileSync } from 'child_process';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { emitOrganicRecommendation } from '../../core/recommendations/organic.js';
 import type { OrganicRecommendation } from '../../core/recommendations/types.js';
-import { buildDiffReview } from '../../core/review/diff-review.js';
+import {
+  buildDiffReview,
+  formatScopedPathOmissionWarning,
+  scopeChangedPathsByPrefixes,
+} from '../../core/review/diff-review.js';
 import type { DiffReviewResult } from '../../core/review/review-types.js';
 import {
   createCapabilityResponseEnvelope,
@@ -63,6 +67,7 @@ export interface DiffImpactParams {
   includeReviewers?: boolean; // default: true
   docsEvidence?: boolean; // opt-in advisory Markdown docs evidence
   profile?: 'pr-pack';
+  includePaths?: string[];
 }
 
 type PrReadinessVerdict = 'READY' | 'REVIEW' | 'BLOCKED';
@@ -830,7 +835,7 @@ export async function gnDiffImpact(
   const repoRoot = resolveRepoRoot();
 
   // ---- 1. Build git diff args based on scope / commitRange ----------------
-  const { commitRange, scope, includeReviewers = true } = params;
+  const { commitRange, scope, includeReviewers = true, includePaths = [] } = params;
 
   let nameOnlyArgs: string[];
   let numstatArgs: string[];
@@ -858,9 +863,13 @@ export async function gnDiffImpact(
   try {
     const out = gitCapture(repoRoot, nameOnlyArgs);
     const allChangedPaths = out.split('\n').filter(Boolean);
-    const limited = applyChangedPathLimitForReview(allChangedPaths);
+    const scoped = scopeChangedPathsByPrefixes(allChangedPaths, includePaths);
+    if (scoped.omittedPaths.length > 0) {
+      warnings.push(formatScopedPathOmissionWarning(scoped.omittedPaths, includePaths));
+    }
+    const limited = applyChangedPathLimitForReview(scoped.inScopePaths);
     changedPaths = limited.changedPaths;
-    omittedChangedPathCount = Math.max(0, allChangedPaths.length - changedPaths.length);
+    omittedChangedPathCount = Math.max(0, scoped.inScopePaths.length - changedPaths.length);
     if (limited.truncated) {
       if (limited.warning) warnings.push(limited.warning);
     }
@@ -885,7 +894,7 @@ export async function gnDiffImpact(
       );
     }
 
-    return createBaseDiffImpactReport(repoId, resolvedRange, [], {
+    return createBaseDiffImpactReport(repoId, resolvedRange, uniqueStrings(warnings), {
       capabilityState: {
         freshness,
         capabilitiesUsed: ['git-diff', 'graph-review', 'blast-radius'],
@@ -1385,6 +1394,8 @@ export interface ReviewDiffParams {
   commitRange?: string;
   /** Which changes to diff. Default: 'staged'. */
   scope?: 'staged' | 'commit-range' | 'branch';
+  /** Optional repository-relative path prefixes to keep in the diff review. */
+  includePaths?: string[];
   /** Repository identifier. Required when multiple repos are indexed. */
   repo?: string;
 }
@@ -1430,7 +1441,7 @@ export async function gnReviewDiff(
   const repoRoot = resolveRepoRoot();
 
   // ---- 1. Resolve git diff args -------------------------------------------
-  const { commitRange, scope } = params;
+  const { commitRange, scope, includePaths = [] } = params;
 
   let nameOnlyArgs: string[];
   let numstatArgs: string[];
@@ -1456,9 +1467,13 @@ export async function gnReviewDiff(
   try {
     const out = gitCapture(repoRoot, nameOnlyArgs);
     const allChangedPaths = out.split('\n').filter(Boolean);
-    const limited = applyChangedPathLimitForReview(allChangedPaths);
+    const scoped = scopeChangedPathsByPrefixes(allChangedPaths, includePaths);
+    if (scoped.omittedPaths.length > 0) {
+      warnings.push(formatScopedPathOmissionWarning(scoped.omittedPaths, includePaths));
+    }
+    const limited = applyChangedPathLimitForReview(scoped.inScopePaths);
     changedPaths = limited.changedPaths;
-    omittedChangedPathCount = Math.max(0, allChangedPaths.length - changedPaths.length);
+    omittedChangedPathCount = Math.max(0, scoped.inScopePaths.length - changedPaths.length);
     if (limited.truncated) {
       if (limited.warning) warnings.push(limited.warning);
       budget = addQueryBudgetTruncatedReason(budget, 'changed-path-cap');

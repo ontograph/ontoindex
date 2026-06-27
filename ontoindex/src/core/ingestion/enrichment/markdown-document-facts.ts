@@ -11,7 +11,8 @@ export type MarkdownDocumentFactKind =
   | 'markdown-acceptance-criterion'
   | 'markdown-api-spec'
   | 'markdown-test-mention'
-  | 'markdown-doc-owner';
+  | 'markdown-doc-owner'
+  | 'markdown-tracker-state';
 
 export interface MarkdownLineSpan {
   start: number;
@@ -29,6 +30,14 @@ export interface MarkdownFrontmatterMetadata {
   service?: string;
   owner?: string;
   status?: string;
+}
+
+export interface MarkdownTrackerState {
+  openTasks: string[];
+  blockedReasons: string[];
+  noDispatchReason?: string;
+  reopenCriteria: string[];
+  nextAction?: string;
 }
 
 export interface MarkdownRawEvidence {
@@ -174,6 +183,11 @@ export interface MarkdownDocOwnerFact extends MarkdownTypedFactBase {
   ontoindexKind?: string;
 }
 
+export interface MarkdownTrackerStateFact extends MarkdownTypedFactBase, MarkdownTrackerState {
+  kind: 'markdown-tracker-state';
+  contract: 'frontmatter-v1';
+}
+
 export type MarkdownDocumentFact =
   | MarkdownChunkFact
   | MarkdownLinkFact
@@ -183,7 +197,8 @@ export type MarkdownDocumentFact =
   | MarkdownAcceptanceCriterionFact
   | MarkdownApiSpecFact
   | MarkdownTestMentionFact
-  | MarkdownDocOwnerFact;
+  | MarkdownDocOwnerFact
+  | MarkdownTrackerStateFact;
 
 export function isMarkdownRequirementFact(fact: EnrichmentFact): fact is MarkdownRequirementFact {
   return fact.kind === 'markdown-requirement';
@@ -205,6 +220,12 @@ export function isMarkdownTestMentionFact(fact: EnrichmentFact): fact is Markdow
 
 export function isMarkdownDocOwnerFact(fact: EnrichmentFact): fact is MarkdownDocOwnerFact {
   return fact.kind === 'markdown-doc-owner';
+}
+
+export function isMarkdownTrackerStateFact(
+  fact: EnrichmentFact,
+): fact is MarkdownTrackerStateFact {
+  return fact.kind === 'markdown-tracker-state';
 }
 
 export function normalizeMarkdownAnchor(label: string): string {

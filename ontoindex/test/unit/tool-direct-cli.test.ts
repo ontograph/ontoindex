@@ -159,15 +159,47 @@ describe('direct CLI tool commands', () => {
     await detectChangesCommand({
       scope: 'compare',
       baseRef: 'main',
+      includePath: ['src/core', 'src/mcp'],
       repo: 'ontoindex',
     });
 
     expect(callToolMock).toHaveBeenCalledWith('detect_changes', {
       scope: 'compare',
       base_ref: 'main',
+      include_paths: ['src/core', 'src/mcp'],
       repo: 'ontoindex',
     });
     expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('Risk level: low'));
+  });
+
+  it('prints detect_changes warnings when scope filtering omits ambient dirty files', async () => {
+    callToolMock.mockResolvedValue({
+      summary: { changed_files: 1, changed_count: 1, affected_count: 0, risk_level: 'low' },
+      warnings: ['Omitted 1 changed file outside include_paths (src): docs/notes.md'],
+    });
+    const { detectChangesCommand } = await import('../../src/cli/tool.js');
+
+    await detectChangesCommand({ includePath: ['src'] });
+
+    expect(writeSyncMock).toHaveBeenCalledWith(
+      1,
+      expect.stringContaining('Warnings:\n  - Omitted 1 changed file outside include_paths (src): docs/notes.md'),
+    );
+  });
+
+  it('prints scoped no-change messages from detect_changes summary', async () => {
+    callToolMock.mockResolvedValue({
+      summary: { changed_files: 0, changed_count: 0, affected_count: 0, risk_level: 'none', message: 'No in-scope changes detected.' },
+      warnings: ['Omitted 1 changed file outside include_paths (src): docs/notes.md'],
+    });
+    const { detectChangesCommand } = await import('../../src/cli/tool.js');
+
+    await detectChangesCommand({ includePath: ['src'] });
+
+    expect(writeSyncMock).toHaveBeenCalledWith(
+      1,
+      expect.stringContaining('No in-scope changes detected.\n\nWarnings:\n  - Omitted 1 changed file outside include_paths (src): docs/notes.md'),
+    );
   });
 
   it('prints "No changes detected." when changed_count is 0', async () => {

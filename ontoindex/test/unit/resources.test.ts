@@ -314,6 +314,7 @@ describe('readResource', () => {
     const result = await readResource('ontoindex://setup', backend);
     expect(result).toContain('OntoIndex MCP');
     expect(result).toContain('proj');
+    expect(result).toContain('CLI equivalent: `ontoindex list`');
   });
 
   it('returns fallback when setup has no repos', async () => {
@@ -351,6 +352,7 @@ describe('readResource', () => {
     expect(backend.resolveRepo).toHaveBeenCalledWith('test-project');
     expect(result).toContain('test-project');
     expect(result).toContain('files: 10');
+    expect(result).toContain('CLI equivalent: `ontoindex list`');
   });
 
   it('includes analysis catalog summary in context when manifests exist', async () => {

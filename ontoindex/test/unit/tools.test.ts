@@ -115,6 +115,15 @@ describe('ONTOINDEX_TOOLS', () => {
     expect(detectTool.inputSchema.required).toEqual([]);
   });
 
+  it('detect_changes exposes optional include_paths path-prefix filtering', () => {
+    const detectTool = ONTOINDEX_TOOLS.find((t) => t.name === 'detect_changes')!;
+    expect(detectTool.inputSchema.properties.include_paths).toMatchObject({
+      type: 'array',
+      items: { type: 'string' },
+    });
+    expect(detectTool.inputSchema.required).not.toContain('include_paths');
+  });
+
   it('list_repos tool has no parameters', () => {
     const listTool = ONTOINDEX_TOOLS.find((t) => t.name === 'list_repos')!;
     expect(Object.keys(listTool.inputSchema.properties)).toHaveLength(0);

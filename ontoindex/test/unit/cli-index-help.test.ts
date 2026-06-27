@@ -320,6 +320,7 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('ontoindex detect-changes|detect_changes [options]');
     expect(result.stdout).toContain('--scope <scope>');
     expect(result.stdout).toContain('--base-ref <ref>');
+    expect(result.stdout).toContain('--include-path <path>');
     expect(result.stdout).toContain('--repo <name>');
   });
 

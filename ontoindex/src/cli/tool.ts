@@ -79,6 +79,7 @@ interface DetectChangesSummaryFormat {
   changed_count?: unknown;
   affected_count?: unknown;
   risk_level?: unknown;
+  message?: unknown;
 }
 
 interface ChangedSymbolFormat {
@@ -240,8 +241,17 @@ function formatDetectChangesResult(result: unknown): string {
   if (error) return `Error: ${error}`;
 
   const summary = (recordField(result, 'summary') || {}) as DetectChangesSummaryFormat;
+  const warnings = asFormatterArray<string>(recordField(result, 'warnings'));
   if ((summary.changed_count || 0) === 0) {
-    return 'No changes detected.';
+    const lines = [String(summary.message || 'No changes detected.')];
+    if (warnings.length > 0) {
+      lines.push('');
+      lines.push('Warnings:');
+      for (const warning of warnings) {
+        lines.push(`  - ${warning}`);
+      }
+    }
+    return lines.join('\n');
   }
 
   const lines: string[] = [];
@@ -275,6 +285,14 @@ function formatDetectChangesResult(result: unknown): string {
     }
   }
 
+  if (warnings.length > 0) {
+    lines.push('');
+    lines.push('Warnings:');
+    for (const warning of warnings) {
+      lines.push(`  - ${warning}`);
+    }
+  }
+
   return lines.join('\n').trim();
 }
 
@@ -282,12 +300,15 @@ export async function detectChangesCommand(options?: {
   scope?: string;
   baseRef?: string;
   repo?: string;
+  includePath?: string[];
 }): Promise<void> {
   const backend = await getBackend();
-  const result = await backend.callTool('detect_changes', {
+  const params: Record<string, unknown> = {
     scope: options?.scope || 'unstaged',
     base_ref: options?.baseRef,
     repo: options?.repo,
-  });
+  };
+  if (options?.includePath?.length) params.include_paths = options.includePath;
+  const result = await backend.callTool('detect_changes', params);
   output(formatDetectChangesResult(result));
 }

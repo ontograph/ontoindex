@@ -23,7 +23,7 @@ import { createEnvelopeFromLegacy } from '../shared/response-envelope.js';
 import type { CapabilityResponseEnvelope } from '../shared/response-envelope.js';
 import { shellQuote } from '../shared/repo-resolution-errors.js';
 import { resolveTargetContext } from '../shared/target-context.js';
-import type { TargetContext } from '../shared/target-context.js';
+import type { ScopeConfidence, TargetContext } from '../shared/target-context.js';
 import { execFileText } from '../../core/process/exec-file.js';
 import {
   collectFileScopePreview,
@@ -41,6 +41,8 @@ import { RESPONSE_GUARD_MAX_BYTES } from '../local/response-guard.js';
 import { getResourceContractSummaries } from '../resources.js';
 import { createEmptyEvidenceReadClassCounts } from '../../core/runtime/evidence-read-ledger.js';
 import type { EvidenceReadClass } from '../../core/runtime/evidence-read-ledger.js';
+import { getStoragePaths } from '../../storage/repo-manager.js';
+import { getLbugRuntimeDiagnostics } from '../../core/lbug/lbug-adapter.js';
 
 const WHICH_TIMEOUT_MS = 2_000;
 const WHICH_MAX_BUFFER = 64 * 1024;
@@ -145,6 +147,7 @@ export interface DiagnoseReport {
     targetHead?: string;
     indexedHead?: string;
     freshness: 'fresh' | 'stale' | 'unknown';
+    scopeConfidence?: ScopeConfidence;
     dirtyWorktree: boolean | null;
     dirtyFileCount: number | null;
     embeddings: 'available' | 'absent' | 'unknown';
@@ -181,6 +184,24 @@ export interface DiagnoseReport {
   >;
   auditFreshness?: AuditFreshnessReport;
   mcpResourceBridge?: McpResourceBridgeReport;
+  support?: {
+    lbugStore: {
+      path: string;
+      exists: boolean;
+      sizeBytes?: number;
+      modifiedAt?: string;
+      walPresent: boolean;
+      lockPresent: boolean;
+    };
+    ladybugExtensions: {
+      hintDir: string | null;
+      ftsAvailable: boolean;
+      vectorAvailable: boolean;
+    };
+    timeoutHints: {
+      nativeGetAllMs: number;
+    };
+  };
   envVars: Record<string, string | undefined>;
   recommendations: Array<{ severity: 'INFO' | 'WARN' | 'ERROR'; detail: string; fix: string }>;
   warnings: string[];
@@ -344,6 +365,51 @@ function buildResponseLimits(
   };
 }
 
+async function readOptionalFileStat(filePath: string): Promise<{
+  exists: boolean;
+  sizeBytes?: number;
+  modifiedAt?: string;
+}> {
+  try {
+    const info = await fs.stat(filePath);
+    return {
+      exists: true,
+      sizeBytes: info.size,
+      modifiedAt: info.mtime.toISOString(),
+    };
+  } catch {
+    return { exists: false };
+  }
+}
+
+async function buildSupportDiagnostics(repoPath: string): Promise<NonNullable<DiagnoseReport['support']>> {
+  const { lbugPath } = getStoragePaths(repoPath);
+  const [storeStat, walStat, lockStat, runtime] = await Promise.all([
+    readOptionalFileStat(lbugPath),
+    readOptionalFileStat(`${lbugPath}.wal`),
+    readOptionalFileStat(`${lbugPath}.lock`),
+    getLbugRuntimeDiagnostics(),
+  ]);
+  return {
+    lbugStore: {
+      path: lbugPath,
+      exists: storeStat.exists,
+      ...(storeStat.sizeBytes === undefined ? {} : { sizeBytes: storeStat.sizeBytes }),
+      ...(storeStat.modifiedAt === undefined ? {} : { modifiedAt: storeStat.modifiedAt }),
+      walPresent: walStat.exists,
+      lockPresent: lockStat.exists,
+    },
+    ladybugExtensions: {
+      hintDir: runtime.extensionHintDir,
+      ftsAvailable: runtime.extensions.fts.available,
+      vectorAvailable: runtime.extensions.vector.available,
+    },
+    timeoutHints: {
+      nativeGetAllMs: runtime.getAllTimeoutMs,
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Main function
 // ---------------------------------------------------------------------------
@@ -400,18 +466,20 @@ function buildRuntimeContextSummary(options: {
   );
   return {
     ...(targetContext?.status === 'ok'
-      ? {
-          repoLabel: targetContext.repoLabel ?? targetContext.repoKey,
-          repoPath: targetContext.repoPath,
-          targetHead: targetContext.targetHead ?? targetContext.currentHead ?? undefined,
-          indexedHead: targetContext.indexedHead ?? undefined,
-        }
-      : runtimeHealth
+        ? {
+            repoLabel: targetContext.repoLabel ?? targetContext.repoKey,
+            repoPath: targetContext.repoPath,
+            targetHead: targetContext.targetHead ?? targetContext.currentHead ?? undefined,
+            indexedHead: targetContext.indexedHead ?? undefined,
+            scopeConfidence: targetContext.scopeConfidence ?? 'unknown',
+          }
+        : runtimeHealth
         ? {
             repoLabel: runtimeHealth.repoLabel,
             repoPath: runtimeHealth.repoPath,
             targetHead: runtimeHealth.currentCommit || undefined,
             indexedHead: runtimeHealth.indexedCommit || undefined,
+            scopeConfidence: 'unknown',
           }
         : {}),
     freshness:
@@ -812,6 +880,18 @@ export async function gnDiagnose(
     warnings.push(`checkMcpResourceBridge failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  // ---- 8.7. Support diagnostics ---------------------------------------------
+  let support: DiagnoseReport['support'];
+  if (auditRepoPath) {
+    try {
+      support = await buildSupportDiagnostics(auditRepoPath);
+    } catch (err) {
+      warnings.push(
+        `support diagnostics failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   // ---- 9. Degraded context synthesis ----------------------------------------
   const misconfiguration = buildMisconfigurationReport(repoId, envVars, targetContext);
   if (misconfiguration.status === 'fail') {
@@ -924,6 +1004,7 @@ export async function gnDiagnose(
     ...(vectorBackend !== undefined ? { vectorBackend } : {}),
     auditFreshness,
     mcpResourceBridge,
+    ...(support !== undefined ? { support } : {}),
     classification,
     setup,
     responseLimits,

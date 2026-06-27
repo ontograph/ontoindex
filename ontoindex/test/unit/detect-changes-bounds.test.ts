@@ -75,4 +75,47 @@ describe('detect_changes performance bounds', () => {
       expect.arrayContaining([expect.stringContaining('Process impact lookup capped')]),
     );
   });
+
+  it('filters changed files by include_paths and reports omitted ambient files', async () => {
+    childProcessMocks.execFile.mockImplementation((_cmd, _args, _options, callback) => {
+      callback(
+        null,
+        [
+          'diff --git a/src/auth.ts b/src/auth.ts',
+          '--- a/src/auth.ts',
+          '+++ b/src/auth.ts',
+          '@@ -1,0 +1 @@',
+          '+changed',
+          'diff --git a/docs/notes.md b/docs/notes.md',
+          '--- a/docs/notes.md',
+          '+++ b/docs/notes.md',
+          '@@ -1,0 +1 @@',
+          '+changed',
+          '',
+        ].join('\n'),
+      );
+    });
+    lbugMocks.executeParameterized
+      .mockResolvedValueOnce([
+        { id: 'sym-1', name: 'login', type: 'Function', filePath: 'src/auth.ts' },
+      ])
+      .mockResolvedValueOnce([]);
+
+    const { detectChanges } = await import('../../src/mcp/local/backend-detect-changes.js');
+    const result = await detectChanges(
+      { id: 'repo', repoPath: '/repo' },
+      { include_paths: ['src'] },
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.summary).toMatchObject({ changed_files: 1, changed_count: 1 });
+    expect(result.changed_symbols).toHaveLength(1);
+    expect(result.changed_symbols?.[0]?.filePath).toBe('src/auth.ts');
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('Omitted 1 changed file outside include_paths (src): docs/notes.md'),
+      ]),
+    );
+    expect(lbugMocks.executeParameterized).toHaveBeenCalledTimes(2);
+  });
 });
