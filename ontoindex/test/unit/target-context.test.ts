@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
+import type { Ignore } from 'ignore';
 
 const REPO_ID = 'test-repo';
 const CURRENT_COMMIT = 'abc123def456abc123def456abc123def456abc1';
@@ -150,6 +151,97 @@ describe('resolveTargetContext', () => {
     expect(context.scopeConfidence).toBe('low');
   });
 
+  it('keeps scoped confidence high when dirty files are outside scope', async () => {
+    const { resolveTargetContext } = await loadActualResolver();
+
+    const context = await resolveTargetContext(
+      { repo: REPO_ID, scopePaths: ['src/owner'] },
+      {
+        readRegistry: async () => [registryEntry],
+        execGit: execGitFor(CURRENT_COMMIT, ' M docs/notes.md\n?? tmp/donor.ts\n'),
+      },
+    );
+
+    expect(context.dirtyWorktree).toBe(true);
+    expect(context.dirtyFileCount).toBe(2);
+    expect(context.dirtyWorkspace?.fileCount).toBe(2);
+    expect(context.scopePaths).toEqual(['src/owner']);
+    expect(context.scopedDirtyWorkspace).toMatchObject({
+      state: 'clean',
+      fileCount: 0,
+      sourceFileCount: 0,
+    });
+    expect(context.scopeConfidence).toBe('high');
+    expect(context.scopeConfidenceReason).toBe('scoped-worktree-clean');
+  });
+
+  it('marks tracked source files inside scope as medium confidence', async () => {
+    const { resolveTargetContext } = await loadActualResolver();
+
+    const context = await resolveTargetContext(
+      { repo: REPO_ID, scopePaths: ['./src/owner/'] },
+      {
+        readRegistry: async () => [registryEntry],
+        execGit: execGitFor(CURRENT_COMMIT, ' M src/owner/file.ts\n M docs/notes.md\n'),
+      },
+    );
+
+    expect(context.scopePaths).toEqual(['src/owner']);
+    expect(context.scopedDirtyWorkspace).toMatchObject({
+      state: 'dirty-file',
+      fileCount: 1,
+      sourceFileCount: 1,
+      unstagedSourceFileCount: 1,
+    });
+    expect(context.scopeConfidence).toBe('medium');
+    expect(context.scopeConfidenceReason).toBe('dirty-source-files-in-scope');
+  });
+
+  it('marks untracked source files inside scope as low confidence', async () => {
+    const { resolveTargetContext } = await loadActualResolver();
+
+    const context = await resolveTargetContext(
+      { repo: REPO_ID, scopePaths: ['src/owner'] },
+      {
+        readRegistry: async () => [registryEntry],
+        execGit: execGitFor(CURRENT_COMMIT, '?? src/owner/new.ts\n'),
+      },
+    );
+
+    expect(context.scopedDirtyWorkspace).toMatchObject({
+      state: 'unknown-untracked',
+      fileCount: 1,
+      sourceFileCount: 1,
+      untrackedSourceFileCount: 1,
+    });
+    expect(context.scopeConfidence).toBe('low');
+    expect(context.scopeConfidenceReason).toBe('untracked-source-files-in-scope');
+  });
+
+  it('does not degrade scoped confidence for ignored dirty paths', async () => {
+    const { resolveTargetContext } = await loadActualResolver();
+
+    const context = await resolveTargetContext(
+      { repo: REPO_ID, scopePaths: ['src/owner'] },
+      {
+        readRegistry: async () => [registryEntry],
+        execGit: execGitFor(CURRENT_COMMIT, ' M src/owner/generated.ts\n'),
+        loadIgnoreRules: async () =>
+          ({
+            ignores: (filePath: string) => filePath === 'src/owner/generated.ts',
+          }) as Ignore,
+      },
+    );
+
+    expect(context.dirtyFileCount).toBe(1);
+    expect(context.scopedDirtyWorkspace).toMatchObject({
+      state: 'clean',
+      fileCount: 0,
+      sourceFileCount: 0,
+    });
+    expect(context.scopeConfidence).toBe('high');
+  });
+
   it('falls back to the cwd repo when no repo is provided', async () => {
     const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/repo/test-repo');
     try {
@@ -283,6 +375,32 @@ describe('resolveTargetContext', () => {
     } finally {
       if (previousRepo === undefined) delete process.env.ONTOINDEX_MCP_REPO;
       else process.env.ONTOINDEX_MCP_REPO = previousRepo;
+      cwdSpy.mockRestore();
+    }
+  });
+
+  it('emits a stable repo path mismatch warning for explicit repo selection', async () => {
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/repo/other');
+    try {
+      const { resolveTargetContext } = await loadActualResolver();
+
+      const context = await resolveTargetContext(
+        { repo: REPO_ID },
+        {
+          readRegistry: async () => [
+            registryEntry,
+            { ...registryEntry, name: 'other-repo', path: '/repo/other' },
+          ],
+          execGit: execGitFor(CURRENT_COMMIT),
+        },
+      );
+
+      expect(context.status).toBe('ok');
+      expect(context.scopeConfidence).toBe('low');
+      expect(context.scopeConfidenceReason).toBe('repo-path-mismatch');
+      expect(context.warnings.join('\n')).toContain('REPO_PATH_MISMATCH');
+      expect(context.warnings.join('\n')).toContain('repo: "/repo/test-repo"');
+    } finally {
       cwdSpy.mockRestore();
     }
   });

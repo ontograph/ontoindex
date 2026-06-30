@@ -7,8 +7,10 @@ import {
 } from '../../core/ingestion/enrichment/index.js';
 import {
   summarizeGitPorcelainStatus,
+  type AuditDirtyFile,
   type GitPorcelainWorkspaceSummary,
 } from '../../core/audit-lifecycle/freshness.js';
+import { loadIgnoreRules, shouldIgnorePath } from '../../config/ignore-service.js';
 import { readRegistry, type RegistryEntry } from '../../storage/repo-manager.js';
 import {
   formatRepoResolutionError,
@@ -84,10 +86,14 @@ export interface TargetContext {
   dirtyWorktree: boolean | null;
   dirtyFileCount?: number | null;
   dirtyWorkspace?: TargetContextDirtyWorkspace;
+  scopePaths?: string[];
+  scopedDirtyWorkspace?: TargetContextDirtyWorkspace;
   changedSinceIndex: boolean | null;
   snapshotMode: SnapshotMode;
   qualityMode: QualityMode;
   scopeConfidence?: ScopeConfidence;
+  scopeConfidenceReason?: string;
+  repairCommand?: string;
   embeddings: TargetContextEmbeddingsReadiness;
   lsp: TargetContextLspReadiness;
   sidecar: TargetContextSidecarReadiness;
@@ -101,6 +107,7 @@ export interface ResolveTargetContextOptions {
   repo?: string;
   projectPath?: string;
   targetRef?: string;
+  scopePaths?: string[];
   checkSidecar?: boolean;
   readiness?: {
     embeddingsCount?: number;
@@ -111,6 +118,7 @@ export interface ResolveTargetContextOptions {
 export interface ResolveTargetContextDeps {
   readRegistry?: () => Promise<RegistryEntry[]>;
   execGit?: (cwd: string, args: string[]) => Promise<string>;
+  loadIgnoreRules?: typeof loadIgnoreRules;
   loadSidecarState?: typeof loadSidecarStoreState;
 }
 
@@ -188,12 +196,22 @@ export async function resolveTargetContext(
 
   if (explicitRepo && cwdResolution.status === 'ok' && cwdResolution.entry.path !== repoPath) {
     warnings.push(
-      `MCP cwd ${cwdRepoRoot} resolves to ${cwdResolution.entry.path}, but explicit repo "${explicitRepo}" resolved to ${repoPath}.`,
+      repoPathMismatchWarning({
+        selector: `explicit repo "${explicitRepo}"`,
+        selectedPath: repoPath,
+        conflictingSource: `MCP cwd ${cwdRepoRoot}`,
+        conflictingPath: cwdResolution.entry.path,
+      }),
     );
   }
   if (explicitRepo && envResolution?.status === 'ok' && envResolution.entry.path !== repoPath) {
     warnings.push(
-      `ONTOINDEX_MCP_REPO "${envRepo}" resolves to ${envResolution.entry.path}, but explicit repo "${explicitRepo}" resolved to ${repoPath}.`,
+      repoPathMismatchWarning({
+        selector: `explicit repo "${explicitRepo}"`,
+        selectedPath: repoPath,
+        conflictingSource: `ONTOINDEX_MCP_REPO "${envRepo}"`,
+        conflictingPath: envResolution.entry.path,
+      }),
     );
   }
   if (
@@ -202,7 +220,12 @@ export async function resolveTargetContext(
     cwdResolution.entry.path !== repoPath
   ) {
     warnings.push(
-      `MCP cwd ${cwdRepoRoot} resolves to ${cwdResolution.entry.path}, but explicit project "${explicitProjectPath}" resolved to ${repoPath}.`,
+      repoPathMismatchWarning({
+        selector: `explicit project "${explicitProjectPath}"`,
+        selectedPath: repoPath,
+        conflictingSource: `MCP cwd ${cwdRepoRoot}`,
+        conflictingPath: cwdResolution.entry.path,
+      }),
     );
   }
   if (
@@ -211,7 +234,12 @@ export async function resolveTargetContext(
     envResolution.entry.path !== repoPath
   ) {
     warnings.push(
-      `ONTOINDEX_MCP_REPO "${envRepo}" resolves to ${envResolution.entry.path}, but explicit project "${explicitProjectPath}" resolved to ${repoPath}.`,
+      repoPathMismatchWarning({
+        selector: `explicit project "${explicitProjectPath}"`,
+        selectedPath: repoPath,
+        conflictingSource: `ONTOINDEX_MCP_REPO "${envRepo}"`,
+        conflictingPath: envResolution.entry.path,
+      }),
     );
   }
 
@@ -231,10 +259,11 @@ export async function resolveTargetContext(
   const dirtyWorktree = workspaceSummary !== null ? workspaceSummary.dirtyFileCount > 0 : null;
   const dirtyFileCount = workspaceSummary?.dirtyFileCount ?? null;
   const indexedHead = entry.lastCommit || undefined;
+  const headChangedSinceIndex = !!currentHead && !!indexedHead && currentHead !== indexedHead;
   const changedSinceIndex =
     dirtyWorktree === null && (!currentHead || !indexedHead)
       ? null
-      : dirtyWorktree === true || (!!currentHead && !!indexedHead && currentHead !== indexedHead);
+      : dirtyWorktree === true || headChangedSinceIndex;
   const selectionMismatch =
     (envResolution?.status === 'ok' && envResolution.entry.path !== repoPath) ||
     (cwdResolution.status === 'ok' && cwdResolution.entry.path !== repoPath);
@@ -243,13 +272,28 @@ export async function resolveTargetContext(
     changedSinceIndex,
     summary: workspaceSummary,
   });
-  const scopeConfidence = resolveScopeConfidence({
+  const scopePaths = normalizeScopePaths(options.scopePaths);
+  const scopedWorkspaceSummary =
+    scopePaths.length > 0
+      ? await resolveScopedWorkspaceSummary(repoPath, workspaceSummary, scopePaths, deps, warnings)
+      : null;
+  const scopedDirtyWorkspace =
+    scopedWorkspaceSummary !== null
+      ? resolveDirtyWorkspace({
+          dirtyWorktree: scopedWorkspaceSummary.dirtyFileCount > 0,
+          changedSinceIndex: headChangedSinceIndex,
+          summary: scopedWorkspaceSummary,
+        })
+      : undefined;
+  const confidence = resolveScopeConfidence({
     status: 'ok',
     dirtyWorktree,
     changedSinceIndex,
+    headChangedSinceIndex,
     selectionSource,
     selectionMismatch,
-    dirtyWorkspace,
+    dirtyWorkspace: scopedDirtyWorkspace ?? dirtyWorkspace,
+    scoped: scopedDirtyWorkspace !== undefined,
   });
 
   return {
@@ -266,9 +310,13 @@ export async function resolveTargetContext(
     dirtyWorktree,
     dirtyFileCount,
     dirtyWorkspace,
+    ...(scopePaths.length > 0 ? { scopePaths } : {}),
+    ...(scopedDirtyWorkspace ? { scopedDirtyWorkspace } : {}),
     changedSinceIndex,
     snapshotMode: resolveSnapshotMode(targetRef, dirtyWorktree),
-    scopeConfidence,
+    scopeConfidence: confidence.value,
+    scopeConfidenceReason: confidence.reason,
+    ...(confidence.repairCommand ? { repairCommand: confidence.repairCommand } : {}),
     embeddings: resolveEmbeddingsReadiness(entry, options.readiness?.embeddingsCount),
     lsp: resolveLspReadiness(options.readiness?.lspAvailable),
     sidecar: await resolveSidecarReadiness(entry, options.checkSidecar === true, deps, warnings),
@@ -499,25 +547,138 @@ function resolveDirtyWorkspace(input: {
   };
 }
 
+async function resolveScopedWorkspaceSummary(
+  repoPath: string,
+  summary: GitPorcelainWorkspaceSummary | null,
+  scopePaths: string[],
+  deps: ResolveTargetContextDeps,
+  warnings: string[],
+): Promise<GitPorcelainWorkspaceSummary | null> {
+  if (summary === null) return null;
+  const ignoreRules = await loadIgnoreRulesSafely(repoPath, deps, warnings);
+  const dirtyFiles = summary.dirtyFiles.filter((file) => {
+    const normalizedPath = normalizeRepoRelativePath(file.path);
+    if (!matchesAnyScope(normalizedPath, scopePaths)) return false;
+    if (shouldIgnorePath(normalizedPath)) return false;
+    return !(ignoreRules?.ignores(normalizedPath) ?? false);
+  });
+
+  return summarizeGitPorcelainStatus(formatDirtyFilesAsPorcelain(dirtyFiles));
+}
+
+async function loadIgnoreRulesSafely(
+  repoPath: string,
+  deps: ResolveTargetContextDeps,
+  warnings: string[],
+) {
+  try {
+    return await (deps.loadIgnoreRules ?? loadIgnoreRules)(repoPath);
+  } catch (err) {
+    warnings.push(`target context ignore probe failed: ${formatError(err)}`);
+    return null;
+  }
+}
+
+function formatDirtyFilesAsPorcelain(dirtyFiles: AuditDirtyFile[]): string {
+  return dirtyFiles
+    .map((file) => `${file.indexStatus}${file.worktreeStatus} ${file.path}`)
+    .join('\n');
+}
+
+function normalizeScopePaths(paths: string[] | undefined): string[] {
+  return Array.from(
+    new Set(
+      (paths ?? [])
+        .map(normalizeRepoRelativePath)
+        .map((value) => value.replace(/\/+$/, ''))
+        .filter(Boolean),
+    ),
+  );
+}
+
+function normalizeRepoRelativePath(filePath: string): string {
+  return filePath.replace(/\\/g, '/').replace(/^\/+/, '').replace(/^\.\//, '');
+}
+
+function matchesAnyScope(filePath: string, scopePaths: string[]): boolean {
+  return scopePaths.some(
+    (scopePath) => filePath === scopePath || filePath.startsWith(`${scopePath}/`),
+  );
+}
+
 function resolveScopeConfidence(input: {
   status: TargetContextStatus;
   dirtyWorktree: boolean | null;
   changedSinceIndex: boolean | null;
+  headChangedSinceIndex: boolean;
   selectionSource: 'explicit' | 'env' | 'cwd' | 'single' | 'project';
   selectionMismatch: boolean;
   dirtyWorkspace: TargetContextDirtyWorkspace;
-}): ScopeConfidence {
-  if (input.status !== 'ok') return input.status === 'ambiguous' ? 'low' : 'unknown';
-  if (input.selectionMismatch) return 'low';
-  if (input.dirtyWorkspace.state === 'unknown-untracked') return 'low';
-  if (input.dirtyWorkspace.state === 'unknown') return 'unknown';
-  if (input.dirtyWorkspace.state === 'dirty-file' || input.dirtyWorkspace.state === 'stale-index') {
-    return 'medium';
+  scoped: boolean;
+}): { value: ScopeConfidence; reason: string; repairCommand?: string } {
+  if (input.status !== 'ok') {
+    return {
+      value: input.status === 'ambiguous' ? 'low' : 'unknown',
+      reason: `target-context-${input.status}`,
+    };
   }
-  if (input.selectionSource === 'cwd') return 'medium';
-  if (input.dirtyWorktree === true || input.changedSinceIndex === true) return 'medium';
-  if (input.selectionSource === 'single') return 'medium';
-  return 'high';
+  if (input.selectionMismatch) {
+    return {
+      value: 'low',
+      reason: 'repo-path-mismatch',
+      repairCommand: 'Retry with the indexed repo path or matching repo label.',
+    };
+  }
+  if (input.dirtyWorkspace.state === 'unknown-untracked') {
+    return {
+      value: 'low',
+      reason: input.scoped ? 'untracked-source-files-in-scope' : 'untracked-source-files',
+      repairCommand: 'Add, ignore, or remove untracked source files, then retry.',
+    };
+  }
+  if (input.dirtyWorkspace.state === 'unknown') {
+    return { value: 'unknown', reason: 'workspace-state-unknown' };
+  }
+  if (input.dirtyWorkspace.state === 'dirty-file' || input.dirtyWorkspace.state === 'stale-index') {
+    return {
+      value: 'medium',
+      reason:
+        input.dirtyWorkspace.state === 'stale-index'
+          ? 'index-head-stale'
+          : input.scoped
+            ? 'dirty-source-files-in-scope'
+            : 'dirty-source-files',
+      repairCommand:
+        input.dirtyWorkspace.state === 'stale-index'
+          ? 'Re-run ontoindex analyze for the target repo.'
+          : 'Clean, stash, or commit dirty files, then retry.',
+    };
+  }
+  if (input.scoped && !input.headChangedSinceIndex && input.dirtyWorkspace.state === 'clean') {
+    return { value: 'high', reason: 'scoped-worktree-clean' };
+  }
+  if (input.selectionSource === 'cwd') return { value: 'medium', reason: 'implicit-cwd-repo' };
+  if (input.dirtyWorktree === true || input.changedSinceIndex === true) {
+    return {
+      value: 'medium',
+      reason: input.headChangedSinceIndex ? 'index-head-stale' : 'dirty-worktree',
+      repairCommand: input.headChangedSinceIndex
+        ? 'Re-run ontoindex analyze for the target repo.'
+        : 'Clean, stash, or commit dirty files, then retry.',
+    };
+  }
+  if (input.selectionSource === 'single')
+    return { value: 'medium', reason: 'implicit-single-repo' };
+  return { value: 'high', reason: 'target-context-aligned' };
+}
+
+function repoPathMismatchWarning(input: {
+  selector: string;
+  selectedPath: string;
+  conflictingSource: string;
+  conflictingPath: string;
+}): string {
+  return `REPO_PATH_MISMATCH: ${input.conflictingSource} resolves to ${input.conflictingPath}, but ${input.selector} resolved to ${input.selectedPath}. Retry with repo: "${input.selectedPath}".`;
 }
 
 function actionWithRetryExamples(
