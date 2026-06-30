@@ -187,6 +187,16 @@ function makeMiniRepoCopy(basename: string, prefix: string): string {
   return repo;
 }
 
+function cloneRepo(sourceRepo: string, basename: string, prefix: string): string {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const repo = path.join(parent, basename);
+  const result = spawnSync('git', ['clone', sourceRepo, repo], { stdio: 'pipe', encoding: 'utf8' });
+  if (result.status !== 0) {
+    throw new Error(`git clone failed: ${result.stderr}`);
+  }
+  return repo;
+}
+
 describe('CLI end-to-end', () => {
   it('status command exits cleanly', () => {
     const result = runCli('status', MINI_REPO);
@@ -202,6 +212,72 @@ describe('CLI end-to-end', () => {
 
   it('analyze command runs pipeline on mini-repo', () => {
     ensureMiniRepoIndexed();
+  }, 120_000);
+
+  it('bootstrap export and hydrate survive a real CLI round-trip', () => {
+    ensureMiniRepoIndexed();
+
+    const clonedRepo = cloneRepo(MINI_REPO, 'mini-repo-bootstrap', 'gn-bootstrap-clone-');
+    const cloneParent = path.dirname(clonedRepo);
+    const artifactPath = path.join(cloneParent, 'mini-repo-bootstrap.json.gz');
+
+    try {
+      const exportResult = runCliRaw(
+        ['export', 'bootstrap', '--out', artifactPath],
+        MINI_REPO,
+        60000,
+      );
+      if (exportResult.status === null) return;
+      expect(
+        exportResult.status,
+        [
+          `export bootstrap exited with ${exportResult.status}`,
+          `stdout: ${exportResult.stdout}`,
+          `stderr: ${exportResult.stderr}`,
+        ].join('\n'),
+      ).toBe(0);
+      expect(fs.existsSync(artifactPath)).toBe(true);
+
+      const hydrateResult = runCliRaw(
+        ['export', 'bootstrap-hydrate', artifactPath, '--name', 'mini-repo-bootstrap'],
+        clonedRepo,
+        60000,
+      );
+      expect(
+        hydrateResult.status,
+        [
+          `bootstrap-hydrate exited with ${hydrateResult.status}`,
+          `stdout: ${hydrateResult.stdout}`,
+          `stderr: ${hydrateResult.stderr}`,
+        ].join('\n'),
+      ).toBe(0);
+      expect(fs.existsSync(path.join(clonedRepo, '.ontoindex', 'bootstrap-source.json'))).toBe(true);
+      expect(fs.existsSync(path.join(clonedRepo, '.ontoindex', 'snapshot.json'))).toBe(true);
+      expect(fs.readFileSync(path.join(clonedRepo, '.gitignore'), 'utf8')).toContain('.ontoindex');
+
+      const statusResult = runCli('status', clonedRepo, 30000);
+      expect(
+        statusResult.status,
+        [`status exited with ${statusResult.status}`, `stderr: ${statusResult.stderr}`].join('\n'),
+      ).toBe(0);
+      expect(statusResult.stdout).toContain('Bootstrap source: restored');
+
+      const queryResult = runCliRaw(['query', 'validateInput'], clonedRepo, 30000);
+      expect(
+        queryResult.status,
+        [`query exited with ${queryResult.status}`, `stderr: ${queryResult.stderr}`].join('\n'),
+      ).toBe(0);
+      expect(queryResult.stdout + queryResult.stderr).toMatch(/validateInput/);
+
+      const impactResult = runCliRaw(['impact', 'validateInput'], clonedRepo, 30000);
+      expect(
+        impactResult.status,
+        [`impact exited with ${impactResult.status}`, `stderr: ${impactResult.stderr}`].join('\n'),
+      ).toBe(0);
+      expect(impactResult.stdout + impactResult.stderr).toMatch(/validateInput|Risk|Impacted/i);
+    } finally {
+      fs.rmSync(cloneParent, { recursive: true, force: true });
+    }
   }, 120_000);
 
   // ─── analyze --name <alias> + --allow-duplicate-name (#829) ──────

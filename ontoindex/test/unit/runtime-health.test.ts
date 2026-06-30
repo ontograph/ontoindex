@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   deriveRuntimeHealth,
+  formatRuntimeHealthDetailLines,
   type RuntimeAnalysisCheckpointState,
   type RuntimeAnalyzeLockState,
+  type RuntimeBootstrapSourceState,
   type RuntimeEmbeddingCheckpointState,
 } from '../../src/core/runtime/runtime-health.js';
 
@@ -47,6 +49,18 @@ function makeEmbeddingCheckpoint(
   };
 }
 
+function makeBootstrapSource(
+  present: RuntimeBootstrapSourceState['present'],
+): RuntimeBootstrapSourceState {
+  return {
+    path: '/tmp/fixture/.ontoindex/bootstrap-source.json',
+    present,
+    restoredAt: present ? '2026-06-30T00:00:00.000Z' : undefined,
+    sourceRepoLabel: present ? 'fixture-src' : undefined,
+    sourceIndexedCommit: present ? 'abc123def456' : undefined,
+  };
+}
+
 describe('deriveRuntimeHealth', () => {
   const base = {
     indexedCommit: 'abc123def456',
@@ -55,6 +69,7 @@ describe('deriveRuntimeHealth', () => {
     analyzeLock: makeLock('absent'),
     analysisCheckpoint: makeCheckpoint('absent'),
     embeddingCheckpoint: makeEmbeddingCheckpoint(false),
+    bootstrapSource: makeBootstrapSource(false),
     metaReason: null,
     hasMeta: true,
   } as const;
@@ -157,5 +172,27 @@ describe('deriveRuntimeHealth', () => {
       degradedReason: 'embedding-checkpoint.json exists from an incomplete embedding run',
       repairCommand: 'ontoindex analyze',
     });
+  });
+
+  it('includes bootstrap provenance in detail lines when present', () => {
+    expect(
+      formatRuntimeHealthDetailLines({
+        version: 1,
+        repoLabel: 'fixture',
+        repoPath: '/tmp/fixture',
+        indexedCommit: 'abc123def456',
+        currentCommit: 'abc123def456',
+        dirtyWorktree: false,
+        freshnessState: 'clean',
+        degradedReason: null,
+        repairCommand: 'ontoindex status',
+        hasRuntimeArtifacts: false,
+        analyzeLock: makeLock('absent'),
+        analysisCheckpoint: makeCheckpoint('absent'),
+        embeddingCheckpoint: makeEmbeddingCheckpoint(false),
+        bootstrapSource: makeBootstrapSource(true),
+        warnings: [],
+      }),
+    ).toContain('  Bootstrap source: restored 2026-06-30T00:00:00.000Z from fixture-src @ abc123d');
   });
 });

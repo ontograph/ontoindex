@@ -94,6 +94,14 @@ function makeRuntimeHealth(
       present: false,
       state: 'absent' as const,
     },
+    embeddingCheckpoint: {
+      path: `${REPO_PATH}/.ontoindex/embedding-checkpoint.json`,
+      present: false,
+    },
+    bootstrapSource: {
+      path: `${REPO_PATH}/.ontoindex/bootstrap-source.json`,
+      present: false,
+    },
     warnings: [],
   };
 }

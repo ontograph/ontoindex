@@ -166,6 +166,14 @@ function makeFreshReport(
         present: false,
         state: 'absent' as const,
       },
+      embeddingCheckpoint: {
+        path: `${TARGET_CONTEXT.repoPath}/.ontoindex/embedding-checkpoint.json`,
+        present: false,
+      },
+      bootstrapSource: {
+        path: `${TARGET_CONTEXT.repoPath}/.ontoindex/bootstrap-source.json`,
+        present: false,
+      },
       warnings: [],
     },
     actionsTaken: [],

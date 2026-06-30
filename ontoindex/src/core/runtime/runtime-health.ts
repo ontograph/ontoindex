@@ -39,6 +39,17 @@ export interface RuntimeEmbeddingCheckpointState {
   reason?: string;
 }
 
+export interface RuntimeBootstrapSourceState {
+  path: string;
+  present: boolean;
+  restoredAt?: string;
+  artifactGeneratedAt?: string;
+  sourceIndexedCommit?: string | null;
+  sourceRepoLabel?: string;
+  sourceOntoindexVersion?: string;
+  reason?: string;
+}
+
 export interface RuntimeHealthSnapshot {
   version: 1;
   repoLabel: string;
@@ -53,6 +64,7 @@ export interface RuntimeHealthSnapshot {
   analyzeLock: RuntimeAnalyzeLockState;
   analysisCheckpoint: RuntimeAnalysisCheckpointState;
   embeddingCheckpoint: RuntimeEmbeddingCheckpointState;
+  bootstrapSource: RuntimeBootstrapSourceState;
   warnings: string[];
 }
 
@@ -78,6 +90,7 @@ export async function readRuntimeHealth(
   const analyzeLock = await readAnalyzeLock(storagePath, warnings);
   const analysisCheckpoint = await readAnalysisCheckpoint(storagePath, warnings);
   const embeddingCheckpoint = await readEmbeddingCheckpoint(storagePath, warnings);
+  const bootstrapSource = await readBootstrapSource(storagePath, warnings);
   const indexedCommit = normalizeCommit(meta?.lastCommit);
   const metaReason = resolveMetaDegradedReason(meta);
   const hasRuntimeArtifacts =
@@ -112,6 +125,7 @@ export async function readRuntimeHealth(
     analyzeLock,
     analysisCheckpoint,
     embeddingCheckpoint,
+    bootstrapSource,
     warnings,
   };
 }
@@ -254,6 +268,14 @@ export function formatRuntimeHealthDetailLines(health: RuntimeHealthSnapshot): s
     `  Analysis checkpoint: ${formatCheckpointState(health.analysisCheckpoint)}`,
     `  Embedding checkpoint: ${health.embeddingCheckpoint.present ? 'present' : 'absent'}`,
   ];
+
+  if (health.bootstrapSource.present) {
+    lines.push(
+      `  Bootstrap source: restored ${health.bootstrapSource.restoredAt ?? 'unknown'} from ${
+        health.bootstrapSource.sourceRepoLabel ?? 'artifact'
+      } @ ${shortCommit(health.bootstrapSource.sourceIndexedCommit ?? null)}`,
+    );
+  }
 
   if (health.degradedReason) {
     lines.push(`  Reason: ${health.degradedReason}`);
@@ -420,6 +442,45 @@ async function readEmbeddingCheckpoint(
     }
     return {
       path: checkpointPath,
+      present: false,
+    };
+  }
+}
+
+async function readBootstrapSource(
+  storagePath: string,
+  warnings: string[],
+): Promise<RuntimeBootstrapSourceState> {
+  const bootstrapPath = path.join(storagePath, 'bootstrap-source.json');
+  try {
+    const raw = await fs.readFile(bootstrapPath, 'utf-8');
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      path: bootstrapPath,
+      present: true,
+      restoredAt: typeof parsed.restoredAt === 'string' ? parsed.restoredAt : undefined,
+      artifactGeneratedAt:
+        typeof parsed.artifactGeneratedAt === 'string' ? parsed.artifactGeneratedAt : undefined,
+      sourceIndexedCommit:
+        typeof parsed.sourceIndexedCommit === 'string' ? parsed.sourceIndexedCommit : null,
+      sourceRepoLabel:
+        typeof parsed.sourceRepoLabel === 'string' ? parsed.sourceRepoLabel : undefined,
+      sourceOntoindexVersion:
+        typeof parsed.sourceOntoindexVersion === 'string'
+          ? parsed.sourceOntoindexVersion
+          : undefined,
+    };
+  } catch (error) {
+    if (!isFileMissing(error)) {
+      warnings.push(`runtime health bootstrap-source.json probe failed: ${formatError(error)}`);
+      return {
+        path: bootstrapPath,
+        present: true,
+        reason: 'bootstrap-source.json exists but could not be parsed',
+      };
+    }
+    return {
+      path: bootstrapPath,
       present: false,
     };
   }

@@ -15,12 +15,26 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import type { Command } from 'commander';
 
-import { getGitRoot } from '../storage/git.js';
-import { getStoragePaths, loadMeta } from '../storage/repo-manager.js';
+import { getGitRoot, getInferredRepoName } from '../storage/git.js';
+import {
+  RegistryNameCollisionError,
+  addToGitignore,
+  findRepo,
+  getStoragePaths,
+  listRegisteredRepos,
+  loadRepo,
+  loadMeta,
+  registerRepo,
+  saveMeta,
+} from '../storage/repo-manager.js';
 import { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js';
 import { initLbug, closeLbug, executeQuery } from '../core/lbug/pool-adapter.js';
+import { getLbugRuntimeDiagnostics } from '../core/lbug/lbug-adapter.js';
 import { buildDiffReview } from '../core/review/diff-review.js';
 import type { DiffReviewResult, ReviewFile } from '../core/review/review-types.js';
 import { resolveTargetContext } from '../mcp/shared/target-context.js';
@@ -69,6 +83,8 @@ import {
   type SemanticContractResult,
   type SemanticContractViolation,
 } from '../core/runtime/semantic-contracts.js';
+import { readRuntimeHealth } from '../core/runtime/runtime-health.js';
+import { CURRENT_CONTRACT } from '../core/contract/versions.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -83,9 +99,64 @@ const MAX_DOCS_KNOWLEDGE_DIAGNOSTIC_EVIDENCE = 2;
 const MAX_SEMANTIC_CONTRACT_VIOLATIONS = 10;
 /** Bump when the bundle file schema changes in a backwards-incompatible way. */
 const BUNDLE_SCHEMA_VERSION = 1;
+const BOOTSTRAP_ARTIFACT_SCHEMA_VERSION = 1;
+const BOOTSTRAP_ARTIFACT_NAME = 'bootstrap-index.json.gz';
+const BOOTSTRAP_SOURCE_NAME = 'bootstrap-source.json';
+const BOOTSTRAP_SNAPSHOT_NAME = 'snapshot.json';
+const require = createRequire(import.meta.url);
+const CLI_PACKAGE = require('../../package.json') as {
+  version?: string;
+  dependencies?: Record<string, string | undefined>;
+};
+const ONTOINDEX_VERSION = CLI_PACKAGE.version ?? 'unknown';
+const LADYBUG_CORE_VERSION = CLI_PACKAGE.dependencies?.['@ladybugdb/core'] ?? null;
 
-function resolveRepoRoot(repoOpt?: string): string {
-  if (repoOpt) return path.resolve(repoOpt);
+async function resolveRepoRoot(repoOpt?: string): Promise<string> {
+  if (repoOpt?.trim()) {
+    const normalizedRepo = repoOpt.trim();
+    const resolvedPath = path.resolve(normalizedRepo);
+    const bareRelativePathExists =
+      !path.isAbsolute(normalizedRepo) &&
+      !normalizedRepo.startsWith('.') &&
+      !normalizedRepo.includes(path.sep) &&
+      !normalizedRepo.includes(path.win32.sep) &&
+      fs.existsSync(resolvedPath);
+    const isExplicitPath =
+      path.isAbsolute(normalizedRepo) ||
+      normalizedRepo.startsWith('.') ||
+      normalizedRepo.includes(path.sep) ||
+      normalizedRepo.includes(path.win32.sep) ||
+      bareRelativePathExists;
+    if (isExplicitPath) {
+      const directRepo = await loadRepo(resolvedPath);
+      if (directRepo) return directRepo.repoPath;
+
+      const containingRepo = await findRepo(resolvedPath);
+      if (containingRepo) return containingRepo.repoPath;
+
+      return getGitRoot(resolvedPath) ?? resolvedPath;
+    }
+
+    const entries = await listRegisteredRepos({ validate: true });
+    const lower = normalizedRepo.toLowerCase();
+    const matches = entries.filter(
+      (entry) => entry.name.toLowerCase() === lower || path.resolve(entry.path) === resolvedPath,
+    );
+    if (matches.length === 1) return matches[0].path;
+    if (matches.length > 1) {
+      throw new Error(
+        `Repository "${normalizedRepo}" is ambiguous. Use an absolute path. Matches: ${matches
+          .map((entry) => `${entry.name} (${entry.path})`)
+          .join(', ')}`,
+      );
+    }
+    throw new Error(
+      `Repository "${normalizedRepo}" is not indexed. Available: ${entries
+        .map((entry) => entry.name)
+        .join(', ')}`,
+    );
+  }
+
   try {
     return execFileSync('git', ['rev-parse', '--show-toplevel'], {
       encoding: 'utf8',
@@ -95,6 +166,45 @@ function resolveRepoRoot(repoOpt?: string): string {
   } catch {
     return getGitRoot(process.cwd()) ?? process.cwd();
   }
+}
+
+async function registrationOptsForHydratedRepo(
+  repoRoot: string,
+  opts: Pick<ExportBootstrapHydrateOptions, 'name' | 'allowDuplicateName'>,
+): Promise<Pick<ExportBootstrapHydrateOptions, 'name' | 'allowDuplicateName'>> {
+  const resolved = path.resolve(repoRoot);
+  const entries = await listRegisteredRepos({ validate: false });
+  const existing = entries.find((entry) => {
+    const entryPath = path.resolve(entry.path);
+    return process.platform === 'win32'
+      ? entryPath.toLowerCase() === resolved.toLowerCase()
+      : entryPath === resolved;
+  });
+  const name =
+    opts.name !== undefined
+      ? opts.name
+      : existing
+        ? undefined
+        : (getInferredRepoName(repoRoot) ?? path.basename(repoRoot));
+
+  if (name !== undefined && !opts.allowDuplicateName) {
+    const collision = entries.find((entry) => {
+      const entryPath = path.resolve(entry.path);
+      const samePath =
+        process.platform === 'win32'
+          ? entryPath.toLowerCase() === resolved.toLowerCase()
+          : entryPath === resolved;
+      return !samePath && entry.name.toLowerCase() === name.toLowerCase();
+    });
+    if (collision) {
+      throw new RegistryNameCollisionError(name, collision.path, resolved);
+    }
+  }
+
+  return {
+    ...(name !== undefined ? { name } : {}),
+    allowDuplicateName: opts.allowDuplicateName,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +225,18 @@ export interface ExportGraphHtmlOptions {
   out?: string;
   repo?: string;
   summary?: boolean;
+}
+
+export interface ExportBootstrapOptions {
+  out?: string;
+  repo?: string;
+}
+
+export interface ExportBootstrapHydrateOptions {
+  repo?: string;
+  force?: boolean;
+  name?: string;
+  allowDuplicateName?: boolean;
 }
 
 /** Top-level metadata written to every artifact in the bundle. */
@@ -175,6 +297,56 @@ export interface ReviewBundleSemanticContracts {
   };
 }
 
+interface BootstrapArtifactRuntime {
+  ontoindexVersion: string;
+  ladybugCoreVersion: string | null;
+  contract: unknown;
+  platform: NodeJS.Platform;
+  arch: string;
+  nodeModuleAbi: string | null;
+  extensions: {
+    ftsAvailable: boolean;
+    vectorAvailable: boolean;
+  };
+}
+
+interface BootstrapArtifactPayload {
+  meta: Record<string, unknown>;
+  snapshotJson: string | null;
+  lbugBase64: string;
+  lbugSha256: string;
+  lbugSizeBytes: number;
+}
+
+interface BootstrapArtifact {
+  _note: string;
+  artifactType: 'bootstrap-index';
+  schemaVersion: number;
+  format: {
+    container: 'json+gzip';
+    graphStoreEncoding: 'base64';
+    graphStoreField: 'payload.lbugBase64';
+  };
+  generatedAt: string;
+  repoLabel: string;
+  sourceIndexedCommit: string | null;
+  runtime: BootstrapArtifactRuntime;
+  integrity: {
+    payloadSha256: string;
+  };
+  payload: BootstrapArtifactPayload;
+}
+
+interface BootstrapSourceRecord {
+  schemaVersion: 1;
+  restoredAt: string;
+  artifactGeneratedAt: string;
+  artifactPayloadSha256: string;
+  sourceIndexedCommit: string | null;
+  sourceRepoLabel: string;
+  sourceOntoindexVersion: string;
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for unit tests)
 // ---------------------------------------------------------------------------
@@ -223,6 +395,145 @@ export function buildBundleProvenance(
     snapshotMode: targetContext.snapshotMode,
     warnings: [...new Set([...targetContext.warnings, ...warnings])],
   };
+}
+
+function sha256Hex(input: Buffer | string): string {
+  return createHash('sha256').update(input).digest('hex');
+}
+
+function buildBootstrapRuntimeSnapshot(
+  diagnostics: Awaited<ReturnType<typeof getLbugRuntimeDiagnostics>>,
+): BootstrapArtifactRuntime {
+  return {
+    ontoindexVersion: ONTOINDEX_VERSION,
+    ladybugCoreVersion: LADYBUG_CORE_VERSION,
+    contract: CURRENT_CONTRACT,
+    platform: process.platform,
+    arch: process.arch,
+    nodeModuleAbi: process.versions.modules ?? null,
+    extensions: {
+      ftsAvailable: diagnostics.extensions.fts.available,
+      vectorAvailable: diagnostics.extensions.vector.available,
+    },
+  };
+}
+
+function buildBootstrapArtifact(options: {
+  repoLabel: string;
+  meta: Record<string, unknown>;
+  snapshotJson: string | null;
+  lbugBuffer: Buffer;
+  runtime: BootstrapArtifactRuntime;
+}): BootstrapArtifact {
+  const payload: BootstrapArtifactPayload = {
+    meta: options.meta,
+    snapshotJson: options.snapshotJson,
+    lbugBase64: options.lbugBuffer.toString('base64'),
+    lbugSha256: sha256Hex(options.lbugBuffer),
+    lbugSizeBytes: options.lbugBuffer.byteLength,
+  };
+  return {
+    _note: 'Bootstrap artifact — restore into local .ontoindex state before using the index',
+    artifactType: 'bootstrap-index',
+    schemaVersion: BOOTSTRAP_ARTIFACT_SCHEMA_VERSION,
+    format: {
+      container: 'json+gzip',
+      graphStoreEncoding: 'base64',
+      graphStoreField: 'payload.lbugBase64',
+    },
+    generatedAt: new Date().toISOString(),
+    repoLabel: options.repoLabel,
+    sourceIndexedCommit:
+      typeof options.meta.lastCommit === 'string' ? options.meta.lastCommit : null,
+    runtime: options.runtime,
+    integrity: {
+      payloadSha256: sha256Hex(JSON.stringify(payload)),
+    },
+    payload,
+  };
+}
+
+function writeCompressedArtifact(filePath: string, artifact: BootstrapArtifact): void {
+  const compressed = gzipSync(JSON.stringify(artifact, null, 2) + '\n');
+  fs.writeFileSync(filePath, compressed);
+}
+
+function readCompressedArtifact(filePath: string): BootstrapArtifact {
+  const raw = fs.readFileSync(filePath);
+  return JSON.parse(gunzipSync(raw).toString('utf8')) as BootstrapArtifact;
+}
+
+function validateBootstrapArtifact(artifact: BootstrapArtifact): void {
+  if (artifact.schemaVersion !== BOOTSTRAP_ARTIFACT_SCHEMA_VERSION) {
+    throw new Error(
+      `Bootstrap artifact schema ${artifact.schemaVersion} is not supported by this OntoIndex build.`,
+    );
+  }
+  if (artifact.artifactType !== 'bootstrap-index') {
+    throw new Error(`Unsupported bootstrap artifact type: ${String(artifact.artifactType)}`);
+  }
+  if (
+    artifact.format?.container !== 'json+gzip' ||
+    artifact.format?.graphStoreEncoding !== 'base64' ||
+    artifact.format?.graphStoreField !== 'payload.lbugBase64'
+  ) {
+    throw new Error('Bootstrap artifact format metadata is unsupported by this OntoIndex build.');
+  }
+  const payloadSha256 = sha256Hex(JSON.stringify(artifact.payload));
+  if (payloadSha256 !== artifact.integrity.payloadSha256) {
+    throw new Error('Bootstrap artifact payload digest mismatch.');
+  }
+  const lbugBuffer = Buffer.from(artifact.payload.lbugBase64, 'base64');
+  if (sha256Hex(lbugBuffer) !== artifact.payload.lbugSha256) {
+    throw new Error('Bootstrap artifact graph store digest mismatch.');
+  }
+}
+
+function ensureBootstrapCompatibility(artifact: BootstrapArtifact): void {
+  const reasons: string[] = [];
+  if (artifact.runtime.platform !== process.platform) {
+    reasons.push(`platform ${artifact.runtime.platform} != ${process.platform}`);
+  }
+  if (artifact.runtime.arch !== process.arch) {
+    reasons.push(`arch ${artifact.runtime.arch} != ${process.arch}`);
+  }
+  if ((artifact.runtime.nodeModuleAbi ?? null) !== (process.versions.modules ?? null)) {
+    reasons.push(
+      `node ABI ${artifact.runtime.nodeModuleAbi ?? 'unknown'} != ${process.versions.modules ?? 'unknown'}`,
+    );
+  }
+  if (artifact.runtime.ladybugCoreVersion !== LADYBUG_CORE_VERSION) {
+    reasons.push(
+      `Ladybug core ${artifact.runtime.ladybugCoreVersion ?? 'unknown'} != ${LADYBUG_CORE_VERSION ?? 'unknown'}`,
+    );
+  }
+  if (JSON.stringify(artifact.runtime.contract) !== JSON.stringify(CURRENT_CONTRACT)) {
+    reasons.push('OntoIndex contract metadata does not match the current build');
+  }
+  if (reasons.length > 0) {
+    throw new Error(`${reasons.join('; ')}. Rebuild the index with this OntoIndex version.`);
+  }
+}
+
+function removeBootstrapConflicts(storagePath: string): void {
+  const paths = [
+    path.join(storagePath, 'lbug'),
+    path.join(storagePath, 'lbug.wal'),
+    path.join(storagePath, 'lbug.lock'),
+    path.join(storagePath, 'analysis-checkpoint.json'),
+    path.join(storagePath, 'embedding-checkpoint.json'),
+    path.join(storagePath, 'analyze.lock'),
+    path.join(storagePath, 'needs_update'),
+    path.join(storagePath, BOOTSTRAP_SOURCE_NAME),
+    path.join(storagePath, BOOTSTRAP_SNAPSHOT_NAME),
+  ];
+  for (const filePath of paths) {
+    try {
+      fs.rmSync(filePath, { force: true });
+    } catch {
+      // best effort
+    }
+  }
 }
 
 export function buildReviewBundleDiagnostics(
@@ -739,7 +1050,7 @@ export async function exportReviewBundleCommand(opts: ExportReviewBundleOptions)
   const warnings: string[] = [];
 
   // ---- 1. Resolve git repo root -------------------------------------------
-  const repoRoot = resolveRepoRoot(opts.repo);
+  const repoRoot = await resolveRepoRoot(opts.repo);
 
   // ---- 2. Resolve target context and freshness ----------------------------
   const targetContext = await resolveTargetContext({
@@ -1399,7 +1710,7 @@ export async function exportCommunityEvidencePackCommand(opts: {
   const communityId = opts.community ?? 'default';
   const limit = opts.limit ?? 100;
 
-  const repoRoot = resolveRepoRoot(opts.repo);
+  const repoRoot = await resolveRepoRoot(opts.repo);
 
   const { storagePath, lbugPath } = getStoragePaths(repoRoot);
   const meta = await loadMeta(storagePath);
@@ -1437,7 +1748,7 @@ export async function exportCommunityEvidencePackCommand(opts: {
 }
 
 export async function exportGraphHtmlCommand(opts: ExportGraphHtmlOptions): Promise<void> {
-  const repoRoot = resolveRepoRoot(opts.repo);
+  const repoRoot = await resolveRepoRoot(opts.repo);
   const { storagePath, lbugPath } = getStoragePaths(repoRoot);
   const meta = await loadMeta(storagePath);
 
@@ -1482,6 +1793,116 @@ export async function exportGraphHtmlCommand(opts: ExportGraphHtmlOptions): Prom
   }
 }
 
+export async function exportBootstrapCommand(opts: ExportBootstrapOptions): Promise<void> {
+  const repoRoot = await resolveRepoRoot(opts.repo);
+  const { storagePath, lbugPath } = getStoragePaths(repoRoot);
+  const meta = await loadMeta(storagePath);
+
+  if (!meta) {
+    console.error('No OntoIndex index found. Run `ontoindex analyze` first.');
+    process.exit(1);
+  }
+  if (!fs.existsSync(lbugPath)) {
+    console.error('No Ladybug graph store found. Run `ontoindex analyze` first.');
+    process.exit(1);
+  }
+
+  const runtimeHealth = await readRuntimeHealth(repoRoot, {
+    repoLabel: path.basename(repoRoot),
+    storagePath,
+    meta,
+  });
+  if (
+    runtimeHealth.freshnessState === 'stale' ||
+    runtimeHealth.freshnessState === 'degraded' ||
+    runtimeHealth.freshnessState === 'untrusted' ||
+    runtimeHealth.freshnessState === 'failed-after-partial-run'
+  ) {
+    console.error(
+      `Bootstrap export blocked: ${runtimeHealth.degradedReason ?? runtimeHealth.freshnessState}.`,
+    );
+    console.error(`Repair: ${runtimeHealth.repairCommand}`);
+    process.exit(1);
+  }
+
+  const runtimeDiagnostics = await getLbugRuntimeDiagnostics();
+  const lbugBuffer = fs.readFileSync(lbugPath);
+  const snapshotPath = path.join(storagePath, BOOTSTRAP_SNAPSHOT_NAME);
+  const snapshotJson = fs.existsSync(snapshotPath) ? fs.readFileSync(snapshotPath, 'utf8') : null;
+  const artifact = buildBootstrapArtifact({
+    repoLabel: path.basename(repoRoot),
+    meta: meta as unknown as Record<string, unknown>,
+    snapshotJson,
+    lbugBuffer,
+    runtime: buildBootstrapRuntimeSnapshot(runtimeDiagnostics),
+  });
+
+  const outPath = opts.out
+    ? path.resolve(opts.out)
+    : path.join(repoRoot, '.ontoindex', 'exports', BOOTSTRAP_ARTIFACT_NAME);
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  writeCompressedArtifact(outPath, artifact);
+
+  console.log(`bootstrap artifact exported to: ${path.relative(process.cwd(), outPath)}`);
+  console.log(`  indexed commit: ${artifact.sourceIndexedCommit ?? 'unknown'}`);
+  console.log(`  graph store: ${artifact.payload.lbugSizeBytes.toLocaleString()} bytes`);
+  if (runtimeHealth.freshnessState === 'dirty') {
+    console.warn('  warning: worktree is dirty; artifact still reflects the indexed commit only');
+  }
+}
+
+export async function exportBootstrapHydrateCommand(
+  artifactPath: string,
+  opts: ExportBootstrapHydrateOptions,
+): Promise<void> {
+  const repoRoot = await resolveRepoRoot(opts.repo);
+  const { storagePath, lbugPath } = getStoragePaths(repoRoot);
+  const existingMeta = await loadMeta(storagePath);
+  if ((existingMeta || fs.existsSync(lbugPath)) && !opts.force) {
+    console.error(
+      'A local OntoIndex index already exists. Re-run with `--force` to replace the local .ontoindex state.',
+    );
+    process.exit(1);
+  }
+  const registrationOpts = await registrationOptsForHydratedRepo(repoRoot, opts);
+
+  const artifact = readCompressedArtifact(path.resolve(artifactPath));
+  validateBootstrapArtifact(artifact);
+  ensureBootstrapCompatibility(artifact);
+
+  const lbugBuffer = Buffer.from(artifact.payload.lbugBase64, 'base64');
+  const meta = artifact.payload.meta;
+  fs.mkdirSync(storagePath, { recursive: true });
+  removeBootstrapConflicts(storagePath);
+  fs.writeFileSync(lbugPath, lbugBuffer);
+  await saveMeta(storagePath, meta as any);
+  if (typeof artifact.payload.snapshotJson === 'string') {
+    fs.writeFileSync(
+      path.join(storagePath, BOOTSTRAP_SNAPSHOT_NAME),
+      artifact.payload.snapshotJson,
+      'utf8',
+    );
+  }
+
+  const bootstrapSource: BootstrapSourceRecord = {
+    schemaVersion: 1,
+    restoredAt: new Date().toISOString(),
+    artifactGeneratedAt: artifact.generatedAt,
+    artifactPayloadSha256: artifact.integrity.payloadSha256,
+    sourceIndexedCommit: artifact.sourceIndexedCommit,
+    sourceRepoLabel: artifact.repoLabel,
+    sourceOntoindexVersion: artifact.runtime.ontoindexVersion,
+  };
+  writeJsonArtifact(storagePath, BOOTSTRAP_SOURCE_NAME, bootstrapSource);
+
+  await registerRepo(repoRoot, meta as any, registrationOpts);
+  await addToGitignore(repoRoot);
+
+  console.log(`bootstrap artifact restored into: ${path.relative(process.cwd(), storagePath)}`);
+  console.log(`  indexed commit: ${artifact.sourceIndexedCommit ?? 'unknown'}`);
+  console.log('  next: ontoindex status');
+}
+
 // Command registration
 // ---------------------------------------------------------------------------
 
@@ -1500,6 +1921,34 @@ export function registerExportCommands(program: Command): void {
       'Export only the summary graph surface (folders/files/modules/processes/communities)',
     )
     .action(exportGraphHtmlCommand);
+
+  exportCmd
+    .command('bootstrap')
+    .description('Export a compressed bootstrap artifact for the current Ladybug-backed index')
+    .option('--out <file>', `Output file (default: .ontoindex/exports/${BOOTSTRAP_ARTIFACT_NAME})`)
+    .option('-r, --repo <name>', 'Indexed repository name or path')
+    .addHelpText(
+      'after',
+      `
+Notes:
+  - v1 format is a gzipped JSON artifact.
+  - The Ladybug graph store is embedded as base64 in payload.lbugBase64.
+  - This favors deterministic single-file transport over minimal size.
+`,
+    )
+    .action(exportBootstrapCommand);
+
+  exportCmd
+    .command('bootstrap-hydrate <artifact>')
+    .description('Restore a compressed bootstrap artifact into the local .ontoindex state')
+    .option('-r, --repo <path>', 'Target repository path (default: current git root)')
+    .option('-f, --force', 'Replace any existing local .ontoindex state')
+    .option('--name <alias>', 'Register the hydrated repo under a custom registry alias')
+    .option(
+      '--allow-duplicate-name',
+      'Allow the custom alias to coexist with another repo using the same name',
+    )
+    .action(exportBootstrapHydrateCommand);
 
   exportCmd
     .command('review-bundle')

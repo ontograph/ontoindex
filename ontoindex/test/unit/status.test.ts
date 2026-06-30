@@ -155,6 +155,10 @@ describe('status formatting', () => {
         path: '/tmp/fixture/.ontoindex/embedding-checkpoint.json',
         present: false,
       },
+      bootstrapSource: {
+        path: '/tmp/fixture/.ontoindex/bootstrap-source.json',
+        present: false,
+      },
       warnings: [],
     };
 
@@ -286,6 +290,10 @@ describe('status command behavior', () => {
         },
         embeddingCheckpoint: {
           path: '/tmp/fixture/.ontoindex/embedding-checkpoint.json',
+          present: false,
+        },
+        bootstrapSource: {
+          path: '/tmp/fixture/.ontoindex/bootstrap-source.json',
           present: false,
         },
         warnings: [],
@@ -671,6 +679,10 @@ describe('status command behavior', () => {
       },
       embeddingCheckpoint: {
         path: `${repoPath}/.ontoindex/embedding-checkpoint.json`,
+        present: false,
+      },
+      bootstrapSource: {
+        path: `${repoPath}/.ontoindex/bootstrap-source.json`,
         present: false,
       },
       warnings: [],
