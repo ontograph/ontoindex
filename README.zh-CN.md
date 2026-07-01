@@ -161,7 +161,7 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 | 手动启动 MCP server | `ontoindex mcp` | `ontoindex mcp` |
 | 诊断 MCP 配置 | `ontoindex mcp-doctor --repo <label-or-path> --project-cwd "$PWD" --json` | `ontoindex mcp-doctor --repo <label-or-path> --project-cwd "$PWD" --json` |
 | 启动本地 HTTP backend | `ontoindex serve` | `ontoindex serve` |
-| 生成 wiki | `ontoindex wiki . --out docs/wiki` | `ontoindex wiki . --out docs/wiki` |
+| 生成 wiki | `ontoindex wiki . --out local_docs/wiki` | `ontoindex wiki . --out local_docs/wiki` |
 
 `--skills-target` 支持 `claude`、`codex`、`cursor`、`opencode` 或 `all`。默认值是 `claude`，生成的项目 skills 会写入 `.claude/skills/generated/`；`codex` 则写入 `.agents/skills/generated/`。
 
@@ -368,7 +368,6 @@ Images:
 | [`ontoindex-native/`](ontoindex-native/) | 可选 native helpers |
 | [`ontoindex-claude-plugin/`](ontoindex-claude-plugin/) | Claude integration assets |
 | [`ontoindex-cursor-integration/`](ontoindex-cursor-integration/) | Cursor integration assets |
-| [`docs/`](docs/) | ADRs、guides、generated wiki 和 references |
 | [`eval/`](eval/) | Evaluation harness |
 
 ## 开发
@@ -391,9 +390,6 @@ Images:
 - [GUARDRAILS.md](GUARDRAILS.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [TESTING.md](TESTING.md)
-- [docs/README.md](docs/README.md)
-- [docs/adr/0000-index.md](docs/adr/0000-index.md)
-- [docs/ref/mcp.md](docs/ref/mcp.md)
 
 ## 安全与隐私
 

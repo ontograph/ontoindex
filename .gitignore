@@ -17,7 +17,15 @@ dist/
 .DS_Store
 Thumbs.db
 
-.claude/settings.local.json
+/.claude/
+/.codex/
+/AGENTS.md
+/CLAUDE.md
+/docs/
+/ontoindex/.claude/
+/ontoindex/AGENTS.md
+/ontoindex/CLAUDE.md
+/ontoindex/docs/
 
 # Environment variables
 .env
@@ -46,14 +54,6 @@ HANDOFF*.md
 
 .env*.local
 .ontoindex
-.claude/settings.local.json
-
-# Claude Code worktrees
-.claude/worktrees/
-
-# Claude code skills
-.claude/skills/generated/
-
 # Assets (screenshots, images)
 assets/
 
@@ -92,12 +92,6 @@ ontoindex-native/native/*.node
 /github/scripts/triage/__pycache__/
 
 .claude-flow/
-
-.claude/agents/
-.claude/commands/
-.claude/helpers
-.claude/skills/
-!.claude/skills/ontoindex/
 
 .history/
 

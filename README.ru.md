@@ -161,7 +161,7 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 | Запустить MCP server вручную | `ontoindex mcp` | `ontoindex mcp` |
 | Диагностика конфигурации MCP | `ontoindex mcp-doctor --repo <label-or-path> --project-cwd "$PWD" --json` | `ontoindex mcp-doctor --repo <label-or-path> --project-cwd "$PWD" --json` |
 | Запустить локальный HTTP backend | `ontoindex serve` | `ontoindex serve` |
-| Сгенерировать wiki | `ontoindex wiki . --out docs/wiki` | `ontoindex wiki . --out docs/wiki` |
+| Сгенерировать wiki | `ontoindex wiki . --out local_docs/wiki` | `ontoindex wiki . --out local_docs/wiki` |
 
 `--skills-target` принимает `claude`, `codex`, `cursor`, `opencode` или `all`. Значение по умолчанию — `claude`: generated project skills пишутся в `.claude/skills/generated/`; для `codex` — в `.agents/skills/generated/`.
 
@@ -368,7 +368,6 @@ Images:
 | [`ontoindex-native/`](ontoindex-native/) | Опциональные native helpers |
 | [`ontoindex-claude-plugin/`](ontoindex-claude-plugin/) | Claude integration assets |
 | [`ontoindex-cursor-integration/`](ontoindex-cursor-integration/) | Cursor integration assets |
-| [`docs/`](docs/) | ADRs, guides, generated wiki и references |
 | [`eval/`](eval/) | Evaluation harness |
 
 ## Разработка
@@ -391,9 +390,6 @@ Dev prerequisites те же, что и для установки, плюс packa
 - [GUARDRAILS.md](GUARDRAILS.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [TESTING.md](TESTING.md)
-- [docs/README.md](docs/README.md)
-- [docs/adr/0000-index.md](docs/adr/0000-index.md)
-- [docs/ref/mcp.md](docs/ref/mcp.md)
 
 ## Security and Privacy
 

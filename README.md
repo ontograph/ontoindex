@@ -171,7 +171,7 @@ If embeddings already exist, `ontoindex analyze` preserves them; use `ontoindex 
 | Start MCP server manually                 | `ontoindex mcp`                                                           | `ontoindex mcp`                                                           |
 | Diagnose MCP configuration                | `ontoindex mcp-doctor --repo <label-or-path> --project-cwd "$PWD" --json` | `ontoindex mcp-doctor --repo <label-or-path> --project-cwd "$PWD" --json` |
 | Start local HTTP backend                  | `ontoindex serve`                                                         | `ontoindex serve`                                                         |
-| Generate a wiki                           | `ontoindex wiki . --out docs/wiki`                                        | `ontoindex wiki . --out docs/wiki`                                        |
+| Generate a wiki                           | `ontoindex wiki . --out local_docs/wiki`                                  | `ontoindex wiki . --out local_docs/wiki`                                  |
 | Check index status                        | `ontoindex status`                                                        | `ontoindex status`                                                        |
 
 `--skills-target` accepts `claude`, `codex`, `cursor`, `opencode`, or `all`. The default is `claude`, which writes generated project skills under `.claude/skills/generated/`; `codex` writes them under `.agents/skills/generated/`.
@@ -379,7 +379,6 @@ Practical guidance:
 | [`ontoindex-native/`](ontoindex-native/)                         | Optional native helpers                         |
 | [`ontoindex-claude-plugin/`](ontoindex-claude-plugin/)           | Claude integration assets                       |
 | [`ontoindex-cursor-integration/`](ontoindex-cursor-integration/) | Cursor integration assets                       |
-| [`docs/`](docs/)                                                 | ADRs, guides, generated wiki, and references    |
 | [`eval/`](eval/)                                                 | Evaluation harness                              |
 
 ## Development
@@ -402,9 +401,6 @@ Useful references:
 - [GUARDRAILS.md](GUARDRAILS.md)
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [TESTING.md](TESTING.md)
-- [docs/README.md](docs/README.md)
-- [docs/adr/0000-index.md](docs/adr/0000-index.md)
-- [docs/ref/mcp.md](docs/ref/mcp.md)
 
 ## Security and Privacy
 

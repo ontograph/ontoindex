@@ -38,7 +38,7 @@ From a source checkout, install the latest GitHub release tarball with:
 ../scripts/install-ontoindex-latest.sh
 ```
 
-That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command.
+That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates the local editor context files the integrations need — all in one command.
 
 To configure MCP for your editor, run `npx ontoindex setup` once — or set it up manually below.
 
@@ -160,8 +160,6 @@ ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ONTOINDEX_MCP_REPO=/path/to/targe
 ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ONTOINDEX_MCP_REPO=/path/to/target/repo ontoindex mcp --repo my-target-repo
 ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1 ontoindex mcp   # override when intentionally cross-repo
 ```
-
-Full MCP tool examples live in the repository reference: [`../docs/reference/mcp.md`](../docs/reference/mcp.md).
 
 ## MCP Resources
 

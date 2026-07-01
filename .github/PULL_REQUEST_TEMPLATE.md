@@ -14,7 +14,7 @@
 - [ ] `ontoindex-web/` (Vite / React UI)
 - [ ] `.github/` (workflows, actions)
 - [ ] `eval/` or other tooling
-- [ ] Docs / agent config only (`AGENTS.md`, `CLAUDE.md`, `.cursor/`, `llms.txt`, etc.)
+- [ ] Docs / agent config only (`.cursor/`, `llms.txt`, etc.)
 
 ## Scope & constraints
 
@@ -48,5 +48,4 @@
 ## Checklist
 
 - [ ] PR body meets repo minimum length (workflow may label short descriptions)
-- [ ] If `AGENTS.md` / overlays changed: headers, scope block, and changelog updated per project conventions
 - [ ] No secrets, tokens, or machine-specific paths committed
