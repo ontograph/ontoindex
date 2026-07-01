@@ -20,7 +20,6 @@ import {
   formatRuntimeHealthDetailLines,
   formatRuntimeHealthStatusLine,
   readRuntimeHealth,
-  type RuntimeHealthSnapshot,
 } from '../core/runtime/runtime-health.js';
 export { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js';
 import { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js';

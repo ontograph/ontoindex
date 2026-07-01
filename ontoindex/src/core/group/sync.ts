@@ -13,6 +13,7 @@ import { detectServiceBoundaries, assignService } from './service-boundary-detec
 import type { CypherExecutor } from './contract-extractor.js';
 import { writeContractRegistry } from './storage.js';
 import type { ContractRegistry } from './types.js';
+import { readFileContents, walkRepositoryPaths } from '../ingestion/filesystem-walker.js';
 
 interface SyncOptions {
   extractorOverride?:
@@ -34,6 +35,43 @@ interface SyncResult {
   missingRepos: string[];
   repoSnapshots: Record<string, RepoSnapshot>;
 }
+
+const SHARED_LIB_HEADER_EXTENSIONS = new Set(['.h', '.hpp', '.hxx', '.hh', '.cuh']);
+const SHARED_LIB_SOURCE_EXTENSIONS = new Set([
+  ...SHARED_LIB_HEADER_EXTENSIONS,
+  '.c',
+  '.cc',
+  '.cpp',
+  '.cxx',
+  '.cu',
+]);
+const INCLUDE_ROOT_DIR_NAMES = new Set(['include', 'includes', 'inc', 'header', 'headers', 'public']);
+const COMMON_TOOLCHAIN_HEADERS = new Set([
+  'assert.h',
+  'errno.h',
+  'fcntl.h',
+  'inttypes.h',
+  'limits.h',
+  'locale.h',
+  'math.h',
+  'signal.h',
+  'stdarg.h',
+  'stdbool.h',
+  'stddef.h',
+  'stdint.h',
+  'stdio.h',
+  'stdlib.h',
+  'string.h',
+  'strings.h',
+  'sys/socket.h',
+  'sys/stat.h',
+  'sys/types.h',
+  'time.h',
+  'unistd.h',
+  'windows.h',
+  'winsock2.h',
+]);
+const INCLUDE_REGEX = /^[ \t]*#\s*include\s*(?:"([^"]+)"|<([^>]+)>)/gm;
 
 export function stableRepoPoolId(entry: RegistryEntry, allEntries: RegistryEntry[]): string {
   const base = entry.name.toLowerCase();
@@ -78,6 +116,202 @@ function dedupeCrossLinks(links: CrossLink[]): CrossLink[] {
   return out;
 }
 
+function normalizeIncludePath(raw: string): string {
+  return raw.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+/g, '/');
+}
+
+function stripBlockComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '');
+}
+
+function isSharedLibHeader(filePath: string): boolean {
+  return SHARED_LIB_HEADER_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+function isSharedLibSource(filePath: string): boolean {
+  return SHARED_LIB_SOURCE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+function shouldExtractIncludePath(includePath: string): boolean {
+  return !includePath.startsWith('../') && (includePath.includes('/') || includePath.includes('.'));
+}
+
+function addLocalIncludeCandidate(candidates: Set<string>, candidatePath: string): void {
+  const normalizedCandidate = normalizeIncludePath(candidatePath);
+  candidates.add(normalizedCandidate);
+  if (path.posix.extname(normalizedCandidate) !== '') return;
+  for (const ext of SHARED_LIB_HEADER_EXTENSIONS) {
+    candidates.add(`${normalizedCandidate}${ext}`);
+  }
+}
+
+function collectIncludeRoots(headerFiles: string[]): string[] {
+  const includeRoots = new Set<string>();
+  for (const filePath of headerFiles) {
+      const normalizedPath = normalizeIncludePath(filePath);
+      const parts = normalizedPath.split('/');
+      for (let i = 0; i < parts.length - 1; i++) {
+      if (!INCLUDE_ROOT_DIR_NAMES.has(parts[i].toLowerCase())) continue;
+      includeRoots.add(parts.slice(0, i + 1).join('/'));
+    }
+  }
+  return [...includeRoots];
+}
+
+function providerIncludeContractPath(filePath: string, includeRoots: string[]): string {
+  const normalizedPath = normalizeIncludePath(filePath);
+  let bestMatch = normalizedPath;
+  for (const includeRoot of includeRoots) {
+    const prefix = `${includeRoot}/`;
+    if (!normalizedPath.startsWith(prefix)) continue;
+    const candidate = normalizedPath.slice(prefix.length);
+    if (!candidate) continue;
+    if (bestMatch === normalizedPath || candidate.length < bestMatch.length) {
+      bestMatch = candidate;
+    }
+  }
+  return bestMatch;
+}
+
+function localIncludeCandidates(
+  importerPath: string,
+  includePath: string,
+  includeRoots: string[],
+): string[] {
+  const normalizedInclude = normalizeIncludePath(includePath);
+  const importerDir = path.posix.dirname(importerPath.replace(/\\/g, '/'));
+  const candidates = new Set<string>();
+  addLocalIncludeCandidate(candidates, normalizedInclude);
+  if (importerDir !== '.') {
+    addLocalIncludeCandidate(candidates, path.posix.join(importerDir, normalizedInclude));
+  }
+  for (const includeRoot of includeRoots) {
+    addLocalIncludeCandidate(candidates, path.posix.join(includeRoot, normalizedInclude));
+  }
+  return [...candidates];
+}
+
+function resolveRepoLocalInclude(
+  importerPath: string,
+  includePath: string,
+  localFiles: Set<string>,
+  includeRoots: string[],
+): string | undefined {
+  for (const candidate of localIncludeCandidates(importerPath, includePath, includeRoots)) {
+    if (localFiles.has(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+async function extractSharedLibContracts(
+  repoPath: string,
+  repo: string,
+  serviceForFile: (filePath: string) => string | undefined,
+): Promise<StoredContract[]> {
+  const scannedFiles = await walkRepositoryPaths(repoPath);
+  const repoFiles = scannedFiles.map((file) => file.path.replace(/\\/g, '/'));
+  const headerFiles = repoFiles.filter(isSharedLibHeader);
+  const localFileSet = new Set(repoFiles.map((file) => normalizeIncludePath(file)));
+  const includeRoots = collectIncludeRoots(headerFiles);
+  const sourceFiles = repoFiles.filter(isSharedLibSource);
+  const sourceContents = await readFileContents(repoPath, sourceFiles);
+  const contracts: StoredContract[] = [];
+  const seen = new Set<string>();
+
+  for (const filePath of headerFiles) {
+    const contractPath = providerIncludeContractPath(filePath, includeRoots);
+    const contractId = `lib::include/${contractPath}`;
+    const key = `provider::${filePath}::${contractId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    contracts.push({
+      contractId,
+      type: 'lib',
+      role: 'provider',
+      symbolUid: `File:${filePath}`,
+      symbolRef: { filePath, name: path.basename(filePath) },
+      symbolName: path.basename(filePath),
+      confidence: 0.95,
+      meta: { source: 'shared_libs', kind: 'include-provider' },
+      repo,
+      service: serviceForFile(filePath),
+    });
+  }
+
+  for (const filePath of sourceFiles) {
+    const content = sourceContents.get(filePath);
+    if (!content) continue;
+    const sanitizedContent = stripBlockComments(content);
+    const consumerService = serviceForFile(filePath);
+
+    for (const match of sanitizedContent.matchAll(INCLUDE_REGEX)) {
+      const rawInclude = (match[1] ?? match[2])?.trim();
+      if (!rawInclude) continue;
+      const includeKind = match[1] ? 'quoted' : 'angle';
+
+      const normalizedInclude = normalizeIncludePath(rawInclude);
+      const localIncludePath = resolveRepoLocalInclude(
+        filePath,
+        normalizedInclude,
+        localFileSet,
+        includeRoots,
+      );
+      if (localIncludePath) {
+        const providerService = serviceForFile(localIncludePath);
+        if (!providerService || providerService === consumerService) continue;
+
+        const contractPath = providerIncludeContractPath(localIncludePath, includeRoots);
+        const contractId = `lib::include/${contractPath}`;
+        const key = `consumer::${filePath}::${contractId}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        contracts.push({
+          contractId,
+          type: 'lib',
+          role: 'consumer',
+          symbolUid: `File:${filePath}`,
+          symbolRef: { filePath, name: path.basename(filePath) },
+          symbolName: path.basename(filePath),
+          confidence: 0.85,
+          meta: {
+            source: 'shared_libs',
+            kind: 'include-consumer',
+            includePath: normalizedInclude,
+            resolvedLocalPath: localIncludePath,
+          },
+          repo,
+          service: consumerService,
+        });
+        continue;
+      }
+
+      if (includeKind === 'angle' && COMMON_TOOLCHAIN_HEADERS.has(normalizedInclude.toLowerCase())) {
+        continue;
+      }
+      if (!shouldExtractIncludePath(normalizedInclude)) continue;
+
+      const contractId = `lib::include/${normalizedInclude}`;
+      const key = `consumer::${filePath}::${contractId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      contracts.push({
+        contractId,
+        type: 'lib',
+        role: 'consumer',
+        symbolUid: `File:${filePath}`,
+        symbolRef: { filePath, name: path.basename(filePath) },
+        symbolName: path.basename(filePath),
+        confidence: 0.85,
+        meta: { source: 'shared_libs', kind: 'include-consumer', includePath: normalizedInclude },
+        repo,
+        service: consumerService,
+      });
+    }
+  }
+
+  return contracts;
+}
+
 export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promise<SyncResult> {
   const missingRepos: string[] = [];
   const repoSnapshots: Record<string, RepoSnapshot> = {};
@@ -94,6 +328,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     const httpEx = new HttpRouteExtractor();
     const grpcEx = new GrpcExtractor();
     const topicEx = new TopicExtractor();
+    const needsLbug = config.detect.http || config.detect.grpc || config.detect.topics;
     dbExecutors = new Map<string, CypherExecutor>();
     const openPoolIds: string[] = [];
 
@@ -108,46 +343,55 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
         const poolId = handle.id;
         const lbugPath = path.join(handle.storagePath, 'lbug');
         try {
-          await initLbug(poolId, lbugPath);
-          openPoolIds.push(poolId);
-
-          const executor: CypherExecutor = (query, params) =>
-            executeParameterized(poolId, query, params ?? {});
-
-          dbExecutors.set(groupPath, executor);
-
           const boundaries = await detectServiceBoundaries(handle.repoPath);
 
-          if (config.detect.http) {
-            const extracted = await httpEx.extract(executor, handle.repoPath, handle);
-            for (const c of extracted) {
-              autoContracts.push({
-                ...c,
-                repo: groupPath,
-                service: assignService(c.symbolRef.filePath, boundaries),
-              });
-            }
+          if (config.detect.shared_libs) {
+            const extracted = await extractSharedLibContracts(handle.repoPath, groupPath, (filePath) =>
+              assignService(filePath, boundaries),
+            );
+            autoContracts.push(...extracted);
           }
 
-          if (config.detect.grpc) {
-            const extracted = await grpcEx.extract(executor, handle.repoPath, handle);
-            for (const c of extracted) {
-              autoContracts.push({
-                ...c,
-                repo: groupPath,
-                service: assignService(c.symbolRef.filePath, boundaries),
-              });
-            }
-          }
+          if (needsLbug) {
+            await initLbug(poolId, lbugPath);
+            openPoolIds.push(poolId);
 
-          if (config.detect.topics) {
-            const extracted = await topicEx.extract(executor, handle.repoPath, handle);
-            for (const c of extracted) {
-              autoContracts.push({
-                ...c,
-                repo: groupPath,
-                service: assignService(c.symbolRef.filePath, boundaries),
-              });
+            const executor: CypherExecutor = (query, params) =>
+              executeParameterized(poolId, query, params ?? {});
+
+            dbExecutors.set(groupPath, executor);
+
+            if (config.detect.http) {
+              const extracted = await httpEx.extract(executor, handle.repoPath, handle);
+              for (const c of extracted) {
+                autoContracts.push({
+                  ...c,
+                  repo: groupPath,
+                  service: assignService(c.symbolRef.filePath, boundaries),
+                });
+              }
+            }
+
+            if (config.detect.grpc) {
+              const extracted = await grpcEx.extract(executor, handle.repoPath, handle);
+              for (const c of extracted) {
+                autoContracts.push({
+                  ...c,
+                  repo: groupPath,
+                  service: assignService(c.symbolRef.filePath, boundaries),
+                });
+              }
+            }
+
+            if (config.detect.topics) {
+              const extracted = await topicEx.extract(executor, handle.repoPath, handle);
+              for (const c of extracted) {
+                autoContracts.push({
+                  ...c,
+                  repo: groupPath,
+                  service: assignService(c.symbolRef.filePath, boundaries),
+                });
+              }
             }
           }
 

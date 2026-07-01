@@ -68,7 +68,7 @@ const DEFAULT_ZVEC_INDEX_PARAMS = Object.freeze({
 let zvecCircuitBroken = false;
 let zvecCircuitReason: string | null = null;
 let zvecDriverOverride: ZvecSemanticSearchDriver | null | undefined = undefined;
-let zvecRuntimeCache = new Map<string, Promise<ZvecSemanticSearchDriver | null>>();
+const zvecRuntimeCache = new Map<string, Promise<ZvecSemanticSearchDriver | null>>();
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);

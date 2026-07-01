@@ -9,7 +9,7 @@ The default path is local: install, analyze, setup, connect MCP, serve, and gene
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- Current release: `2.0.1`
+- Current release: `2.0.3`
 - Source repository: [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - Security policy: [SECURITY.md](SECURITY.md)
 - Enterprise contact: [erasyuk@gmail.com](mailto:erasyuk@gmail.com)
@@ -131,7 +131,7 @@ Installer configuration:
 | Purpose                        | Linux/macOS                                                                    | Windows PowerShell                                                                     |
 | ------------------------------ | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
 | Use another release repository | `ONTOINDEX_GITHUB_REPO=owner/repo ./scripts/install-ontoindex-latest.sh`       | `$env:ONTOINDEX_GITHUB_REPO='owner/repo'; .\scripts\install-ontoindex-latest.ps1`      |
-| Use a local downloaded tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-2.0.1.tgz" ./scripts/install-ontoindex-latest.sh` | — |
+| Use a local downloaded tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-2.0.3.tgz" ./scripts/install-ontoindex-latest.sh` | — |
 | Use a user npm prefix          | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`    | `$env:ONTOINDEX_NPM_PREFIX="$env:APPDATA\npm"; .\scripts\install-ontoindex-latest.ps1` |
 | Force user prefix              | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`    | `.\scripts\install-ontoindex-latest.ps1 -ForceUserPrefix`                              |
 | Require FTS/vector cache prefetch | `ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1` |
@@ -143,8 +143,8 @@ Use this path when npm publication is available in your environment.
 
 | Platform           | Command                                                    |
 | ------------------ | ---------------------------------------------------------- |
-| Linux/macOS        | `npm install -g ontoindex@2.0.1 && ontoindex --version`   |
-| Windows PowerShell | `npm.cmd install -g ontoindex@2.0.1; ontoindex --version` |
+| Linux/macOS        | `npm install -g ontoindex@2.0.3 && ontoindex --version`   |
+| Windows PowerShell | `npm.cmd install -g ontoindex@2.0.3; ontoindex --version` |
 
 ### Install from a Release Tarball URL
 
@@ -152,8 +152,8 @@ Use this when you want an immutable GitHub release asset.
 
 | Platform           | Command                                                                                                                         |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| Linux/macOS        | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.1/ontoindex-2.0.1.tgz && ontoindex --version`   |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.1/ontoindex-2.0.1.tgz; ontoindex --version` |
+| Linux/macOS        | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.3/ontoindex-2.0.3.tgz && ontoindex --version`   |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.3/ontoindex-2.0.3.tgz; ontoindex --version` |
 
 ## First Run
 
@@ -342,8 +342,8 @@ Images:
 
 | Image                                    | Purpose                                        |
 | ---------------------------------------- | ---------------------------------------------- |
-| `ghcr.io/ontograph/ontoindex:2.0.1`     | CLI, MCP server, and `ontoindex serve` backend |
-| `ghcr.io/ontograph/ontoindex-web:2.0.1` | Web UI                                         |
+| `ghcr.io/ontograph/ontoindex:2.0.3`     | CLI, MCP server, and `ontoindex serve` backend |
+| `ghcr.io/ontograph/ontoindex-web:2.0.3` | Web UI                                         |
 
 ## Comparison With Related Tools
 

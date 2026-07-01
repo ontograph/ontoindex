@@ -75,7 +75,7 @@ detect:
   http: true
   grpc: true
   topics: true
-  shared_libs: true
+  shared_libs: false
   embedding_fallback: false
 
 matching:
@@ -90,7 +90,7 @@ Field notes (schema in [`types.ts`](../../ontoindex/src/core/group/types.ts)):
 - `name` — required; used for the group directory name and all CLI / MCP calls.
 - `repos` — a mapping from **group path** (a logical name you choose; can be a hierarchy like `backend/orders`) to **registry name** (the name shown by `npx ontoindex list`). Both sides appear throughout the tooling: contract rows use the group path; `@<group>/<groupPath>` routes tools to a single member.
 - `links` — optional manifest escape hatch, one entry per explicit cross-repo contract. Validated by the parser: `from` and `to` must be known repo paths, `type` must be one of `http | grpc | topic | lib | custom`, and `role` must be `provider | consumer`.
-- `detect` — toggles per extractor family. Defaults (set in `config-parser.ts`) turn `http`, `grpc`, `topics`, and `shared_libs` on; disable the ones you don't use to speed up sync.
+- `detect` — toggles per extractor family. Defaults (set in `config-parser.ts`) turn `http`, `grpc`, and `topics` on. `shared_libs` is opt-in because include scanning walks source files directly; enable it only when you want C/C++ header contracts in the group registry.
 - `matching` — thresholds for the matching cascade. The exact match is always run; other strategies depend on indexer state.
 
 ### 3. Sync the group

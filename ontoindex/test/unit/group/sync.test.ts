@@ -29,6 +29,41 @@ describe('syncGroup', () => {
     matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
   });
 
+  const makeSharedLibConfig = (repos: Record<string, string>): GroupConfig => ({
+    ...makeConfig(repos),
+    detect: {
+      http: false,
+      grpc: false,
+      topics: false,
+      shared_libs: true,
+      embedding_fallback: false,
+    },
+  });
+
+  function createTempRepo(prefix: string, files: Record<string, string>): string {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    for (const [relPath, content] of Object.entries(files)) {
+      const absPath = path.join(repoDir, relPath);
+      fs.mkdirSync(path.dirname(absPath), { recursive: true });
+      fs.writeFileSync(absPath, content);
+    }
+    return repoDir;
+  }
+
+  async function withMockedPoolAdapter<T>(run: () => Promise<T>): Promise<T> {
+    const { vi } = await import('vitest');
+    const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
+    const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
+    const closeSpy = vi.spyOn(poolAdapter, 'closeLbug').mockResolvedValue(undefined);
+
+    try {
+      return await run();
+    } finally {
+      initSpy.mockRestore();
+      closeSpy.mockRestore();
+    }
+  }
+
   it('returns SyncResult with contracts and cross-links', async () => {
     const config = makeConfig({ 'app/backend': 'backend-repo', 'app/frontend': 'frontend-repo' });
 
@@ -333,6 +368,626 @@ describe('syncGroup', () => {
       expect(registry.contracts).toHaveLength(0);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('suppresses local quoted includes in shared_libs detection', async () => {
+    const repoDir = createTempRepo('ontoindex-sync-local-include-', {
+      'src/local.h': '#pragma once\n',
+      'src/main.cpp': '#include "local.h"\nint main() { return 0; }\n',
+    });
+    const config = makeSharedLibConfig({ 'app/repo': 'repo' });
+
+    try {
+      const result = await withMockedPoolAdapter(() =>
+        syncGroup(config, {
+          resolveRepoHandle: async () => ({
+            id: 'app-repo',
+            path: 'app/repo',
+            repoPath: repoDir,
+            storagePath: path.join(repoDir, '.ontoindex'),
+          }),
+          skipWrite: true,
+        }),
+      );
+
+      expect(
+        result.contracts.filter((contract) => contract.type === 'lib' && contract.role === 'consumer'),
+      ).toHaveLength(0);
+      expect(
+        result.contracts.some(
+          (contract) =>
+            contract.type === 'lib' &&
+            contract.role === 'provider' &&
+            contract.contractId === 'lib::include/src/local.h',
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('suppresses repo-local include-root headers in shared_libs detection', async () => {
+    const repoDir = createTempRepo('ontoindex-sync-include-root-local-', {
+      'include/shared/api.h': '#pragma once\n',
+      'src/main.cpp': '#include "shared/api.h"\nint main() { return 0; }\n',
+    });
+    const config = makeSharedLibConfig({ 'app/repo': 'repo' });
+
+    try {
+      const result = await withMockedPoolAdapter(() =>
+        syncGroup(config, {
+          resolveRepoHandle: async () => ({
+            id: 'app-repo',
+            path: 'app/repo',
+            repoPath: repoDir,
+            storagePath: path.join(repoDir, '.ontoindex'),
+          }),
+          skipWrite: true,
+        }),
+      );
+
+      expect(
+        result.contracts.filter((contract) => contract.type === 'lib' && contract.role === 'consumer'),
+      ).toHaveLength(0);
+      expect(
+        result.contracts.some(
+          (contract) =>
+            contract.type === 'lib' &&
+            contract.role === 'provider' &&
+            contract.contractId === 'lib::include/shared/api.h',
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('suppresses repo-local headers-root includes in shared_libs detection', async () => {
+    const repoDir = createTempRepo('ontoindex-sync-headers-root-local-', {
+      'headers/api.h': '#pragma once\n',
+      'src/main.cpp': '#include "api.h"\nint main() { return 0; }\n',
+    });
+    const config = makeSharedLibConfig({ 'app/repo': 'repo' });
+
+    try {
+      const result = await withMockedPoolAdapter(() =>
+        syncGroup(config, {
+          resolveRepoHandle: async () => ({
+            id: 'app-repo',
+            path: 'app/repo',
+            repoPath: repoDir,
+            storagePath: path.join(repoDir, '.ontoindex'),
+          }),
+          skipWrite: true,
+        }),
+      );
+
+      expect(
+        result.contracts.filter((contract) => contract.type === 'lib' && contract.role === 'consumer'),
+      ).toHaveLength(0);
+      expect(
+        result.contracts.some(
+          (contract) =>
+            contract.type === 'lib' &&
+            contract.role === 'provider' &&
+            contract.contractId === 'lib::include/api.h',
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves same-repo cross-service local includes in shared_libs detection', async () => {
+    const repoDir = createTempRepo('ontoindex-sync-local-cross-service-', {
+      'services/auth/package.json': '{}\n',
+      'services/auth/include/api.h': '#pragma once\n',
+      'services/gateway/package.json': '{}\n',
+      'services/gateway/src/main.cpp':
+        '#include "../../auth/include/api.h"\nint main() { return 0; }\n',
+    });
+    const config = makeSharedLibConfig({ 'platform/monorepo': 'repo' });
+
+    try {
+      const result = await withMockedPoolAdapter(() =>
+        syncGroup(config, {
+          resolveRepoHandle: async () => ({
+            id: 'platform-monorepo',
+            path: 'platform/monorepo',
+            repoPath: repoDir,
+            storagePath: path.join(repoDir, '.ontoindex'),
+          }),
+          skipWrite: true,
+        }),
+      );
+
+      expect(
+        result.contracts.some(
+          (contract) =>
+            contract.type === 'lib' &&
+            contract.role === 'consumer' &&
+            contract.contractId === 'lib::include/api.h' &&
+            contract.service === 'services/gateway',
+        ),
+      ).toBe(true);
+      expect(result.crossLinks).toHaveLength(1);
+      expect(result.crossLinks[0].contractId).toBe('lib::include/api.h');
+      expect(result.crossLinks[0].from.repo).toBe('platform/monorepo');
+      expect(result.crossLinks[0].from.service).toBe('services/gateway');
+      expect(result.crossLinks[0].to.service).toBe('services/auth');
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('emits one unresolved quoted include consumer contract for shared_libs detection', async () => {
+    const repoDir = createTempRepo('ontoindex-sync-unresolved-include-', {
+      'src/main.cpp': '#include "shared/api.h"\nint main() { return 0; }\n',
+    });
+    const config = makeSharedLibConfig({ 'app/consumer': 'consumer' });
+
+    try {
+      const result = await withMockedPoolAdapter(() =>
+        syncGroup(config, {
+          resolveRepoHandle: async () => ({
+            id: 'app-consumer',
+            path: 'app/consumer',
+            repoPath: repoDir,
+            storagePath: path.join(repoDir, '.ontoindex'),
+          }),
+          skipWrite: true,
+        }),
+      );
+
+      const consumers = result.contracts.filter(
+        (contract) => contract.type === 'lib' && contract.role === 'consumer',
+      );
+      expect(consumers).toHaveLength(1);
+      expect(consumers[0].contractId).toBe('lib::include/shared/api.h');
+      expect(consumers[0].symbolUid).toBe('File:src/main.cpp');
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('extracts angle-bracket shared_libs consumers without Ladybug DB', async () => {
+    const repoDir = createTempRepo('ontoindex-sync-angle-no-lbug-', {
+      'src/main.cpp': '#include <shared/api.h>\nint main() { return 0; }\n',
+    });
+    const config = makeSharedLibConfig({ 'app/consumer': 'consumer' });
+    const { vi } = await import('vitest');
+    const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
+    const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockRejectedValue(new Error('missing lbug'));
+    const closeSpy = vi.spyOn(poolAdapter, 'closeLbug').mockResolvedValue(undefined);
+
+    try {
+      const result = await syncGroup(config, {
+        resolveRepoHandle: async () => ({
+          id: 'app-consumer',
+          path: 'app/consumer',
+          repoPath: repoDir,
+          storagePath: path.join(repoDir, '.ontoindex'),
+        }),
+        skipWrite: true,
+      });
+
+      const consumers = result.contracts.filter(
+        (contract) => contract.type === 'lib' && contract.role === 'consumer',
+      );
+      expect(initSpy).not.toHaveBeenCalled();
+      expect(result.missingRepos).toHaveLength(0);
+      expect(consumers).toHaveLength(1);
+      expect(consumers[0].contractId).toBe('lib::include/shared/api.h');
+    } finally {
+      initSpy.mockRestore();
+      closeSpy.mockRestore();
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips bare angle-bracket toolchain headers in shared_libs detection', async () => {
+    const consumerRepo = createTempRepo('ontoindex-sync-toolchain-consumer-', {
+      'src/main.cpp': '#include <stdint.h>\nint main() { return 0; }\n',
+    });
+    const providerRepo = createTempRepo('ontoindex-sync-toolchain-provider-', {
+      'stdint.h': '#pragma once\n',
+    });
+    const config = makeSharedLibConfig({
+      'app/consumer': 'consumer',
+      'libs/provider': 'provider',
+    });
+
+    try {
+      const result = await withMockedPoolAdapter(() =>
+        syncGroup(config, {
+          resolveRepoHandle: async (_name, groupPath) => ({
+            id: groupPath.replace(/\//g, '-'),
+            path: groupPath,
+            repoPath: groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+            storagePath: path.join(
+              groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+              '.ontoindex',
+            ),
+          }),
+          skipWrite: true,
+        }),
+      );
+
+      expect(
+        result.contracts.filter(
+          (contract) =>
+            contract.type === 'lib' &&
+            contract.role === 'consumer' &&
+            contract.contractId === 'lib::include/stdint.h',
+        ),
+      ).toHaveLength(0);
+      expect(result.crossLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(consumerRepo, { recursive: true, force: true });
+      fs.rmSync(providerRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('skips slash-separated angle-bracket toolchain headers in shared_libs detection', async () => {
+    const consumerRepo = createTempRepo('ontoindex-sync-toolchain-slash-consumer-', {
+      'src/main.cpp': '#include <sys/socket.h>\nint main() { return 0; }\n',
+    });
+    const providerRepo = createTempRepo('ontoindex-sync-toolchain-slash-provider-', {
+      'sys/socket.h': '#pragma once\n',
+    });
+    const config = makeSharedLibConfig({
+      'app/consumer': 'consumer',
+      'libs/provider': 'provider',
+    });
+
+    try {
+      const result = await withMockedPoolAdapter(() =>
+        syncGroup(config, {
+          resolveRepoHandle: async (_name, groupPath) => ({
+            id: groupPath.replace(/\//g, '-'),
+            path: groupPath,
+            repoPath: groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+            storagePath: path.join(
+              groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+              '.ontoindex',
+            ),
+          }),
+          skipWrite: true,
+        }),
+      );
+
+      expect(
+        result.contracts.filter(
+          (contract) =>
+            contract.type === 'lib' &&
+            contract.role === 'consumer' &&
+            contract.contractId === 'lib::include/sys/socket.h',
+        ),
+      ).toHaveLength(0);
+      expect(result.crossLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(consumerRepo, { recursive: true, force: true });
+      fs.rmSync(providerRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('matches bare angle-bracket shared headers in another repo', async () => {
+    const consumerRepo = createTempRepo('ontoindex-sync-angle-bare-consumer-', {
+      'src/main.cpp': '#include <api.h>\nint main() { return 0; }\n',
+    });
+    const providerRepo = createTempRepo('ontoindex-sync-angle-bare-provider-', {
+      'include/api.h': '#pragma once\n',
+    });
+    const config = makeSharedLibConfig({
+      'app/consumer': 'consumer',
+      'libs/provider': 'provider',
+    });
+
+    try {
+      const result = await withMockedPoolAdapter(() =>
+        syncGroup(config, {
+          resolveRepoHandle: async (_name, groupPath) => ({
+            id: groupPath.replace(/\//g, '-'),
+            path: groupPath,
+            repoPath: groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+            storagePath: path.join(
+              groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+              '.ontoindex',
+            ),
+          }),
+          skipWrite: true,
+        }),
+      );
+
+      expect(
+        result.contracts.some(
+          (contract) =>
+            contract.type === 'lib' &&
+            contract.role === 'consumer' &&
+            contract.contractId === 'lib::include/api.h',
+        ),
+      ).toBe(true);
+      expect(result.crossLinks).toHaveLength(1);
+      expect(result.crossLinks[0].contractId).toBe('lib::include/api.h');
+      expect(result.crossLinks[0].to.repo).toBe('libs/provider');
+    } finally {
+      fs.rmSync(consumerRepo, { recursive: true, force: true });
+      fs.rmSync(providerRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores block-commented includes in shared_libs detection', async () => {
+    const repoDir = createTempRepo('ontoindex-sync-commented-include-', {
+      'src/main.cpp': '/*\n#include "shared/api.h"\n*/\nint main() { return 0; }\n',
+    });
+    const config = makeSharedLibConfig({ 'app/consumer': 'consumer' });
+
+    try {
+      const result = await withMockedPoolAdapter(() =>
+        syncGroup(config, {
+          resolveRepoHandle: async () => ({
+            id: 'app-consumer',
+            path: 'app/consumer',
+            repoPath: repoDir,
+            storagePath: path.join(repoDir, '.ontoindex'),
+          }),
+          skipWrite: true,
+        }),
+      );
+
+      expect(
+        result.contracts.filter((contract) => contract.type === 'lib' && contract.role === 'consumer'),
+      ).toHaveLength(0);
+      expect(result.crossLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('matches shared_libs include consumers to provider headers in another repo', async () => {
+    const consumerRepo = createTempRepo('ontoindex-sync-include-consumer-', {
+      'src/main.cpp': '#include "shared/api.h"\nint main() { return 0; }\n',
+    });
+    const providerRepo = createTempRepo('ontoindex-sync-include-provider-', {
+      'shared/api.h': '#pragma once\n',
+    });
+    const config = makeSharedLibConfig({
+      'app/consumer': 'consumer',
+      'libs/provider': 'provider',
+    });
+
+    try {
+      const result = await withMockedPoolAdapter(() =>
+        syncGroup(config, {
+          resolveRepoHandle: async (_name, groupPath) => ({
+            id: groupPath.replace(/\//g, '-'),
+            path: groupPath,
+            repoPath: groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+            storagePath: path.join(
+              groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+              '.ontoindex',
+            ),
+          }),
+          skipWrite: true,
+        }),
+      );
+
+      expect(result.crossLinks).toHaveLength(1);
+      expect(result.crossLinks[0].contractId).toBe('lib::include/shared/api.h');
+      expect(result.crossLinks[0].matchType).toBe('exact');
+      expect(result.crossLinks[0].from.repo).toBe('app/consumer');
+      expect(result.crossLinks[0].to.repo).toBe('libs/provider');
+    } finally {
+      fs.rmSync(consumerRepo, { recursive: true, force: true });
+      fs.rmSync(providerRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('matches include-root providers to consumers in another repo', async () => {
+    const consumerRepo = createTempRepo('ontoindex-sync-include-root-consumer-', {
+      'src/main.cpp': '#include "shared/api.h"\nint main() { return 0; }\n',
+    });
+    const providerRepo = createTempRepo('ontoindex-sync-include-root-provider-', {
+      'include/shared/api.h': '#pragma once\n',
+    });
+    const config = makeSharedLibConfig({
+      'app/consumer': 'consumer',
+      'libs/provider': 'provider',
+    });
+
+    try {
+      const result = await withMockedPoolAdapter(() =>
+        syncGroup(config, {
+          resolveRepoHandle: async (_name, groupPath) => ({
+            id: groupPath.replace(/\//g, '-'),
+            path: groupPath,
+            repoPath: groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+            storagePath: path.join(
+              groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+              '.ontoindex',
+            ),
+          }),
+          skipWrite: true,
+        }),
+      );
+
+      expect(result.crossLinks).toHaveLength(1);
+      expect(result.crossLinks[0].contractId).toBe('lib::include/shared/api.h');
+      expect(result.crossLinks[0].to.repo).toBe('libs/provider');
+    } finally {
+      fs.rmSync(consumerRepo, { recursive: true, force: true });
+      fs.rmSync(providerRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('matches angle-bracket shared_libs consumers to provider headers in another repo', async () => {
+    const consumerRepo = createTempRepo('ontoindex-sync-angle-consumer-', {
+      'src/main.cpp': '#include <shared/api.h>\nint main() { return 0; }\n',
+    });
+    const providerRepo = createTempRepo('ontoindex-sync-angle-provider-', {
+      'shared/api.h': '#pragma once\n',
+    });
+    const config = makeSharedLibConfig({
+      'app/consumer': 'consumer',
+      'libs/provider': 'provider',
+    });
+
+    try {
+      const result = await withMockedPoolAdapter(() =>
+        syncGroup(config, {
+          resolveRepoHandle: async (_name, groupPath) => ({
+            id: groupPath.replace(/\//g, '-'),
+            path: groupPath,
+            repoPath: groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+            storagePath: path.join(
+              groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+              '.ontoindex',
+            ),
+          }),
+          skipWrite: true,
+        }),
+      );
+
+      expect(result.crossLinks).toHaveLength(1);
+      expect(result.crossLinks[0].contractId).toBe('lib::include/shared/api.h');
+      expect(result.crossLinks[0].matchType).toBe('exact');
+      expect(result.crossLinks[0].from.repo).toBe('app/consumer');
+      expect(result.crossLinks[0].to.repo).toBe('libs/provider');
+    } finally {
+      fs.rmSync(consumerRepo, { recursive: true, force: true });
+      fs.rmSync(providerRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('matches public-root providers in another repo', async () => {
+    const consumerRepo = createTempRepo('ontoindex-sync-public-root-consumer-', {
+      'src/main.cpp': '#include "api.h"\nint main() { return 0; }\n',
+    });
+    const providerRepo = createTempRepo('ontoindex-sync-public-root-provider-', {
+      'src/public/api.h': '#pragma once\n',
+    });
+    const config = makeSharedLibConfig({
+      'app/consumer': 'consumer',
+      'libs/provider': 'provider',
+    });
+
+    try {
+      const result = await withMockedPoolAdapter(() =>
+        syncGroup(config, {
+          resolveRepoHandle: async (_name, groupPath) => ({
+            id: groupPath.replace(/\//g, '-'),
+            path: groupPath,
+            repoPath: groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+            storagePath: path.join(
+              groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+              '.ontoindex',
+            ),
+          }),
+          skipWrite: true,
+        }),
+      );
+
+      expect(result.crossLinks).toHaveLength(1);
+      expect(result.crossLinks[0].contractId).toBe('lib::include/api.h');
+      expect(result.crossLinks[0].to.repo).toBe('libs/provider');
+    } finally {
+      fs.rmSync(consumerRepo, { recursive: true, force: true });
+      fs.rmSync(providerRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('does not suppress cross-repo includes based on suffix-only local matches', async () => {
+    const consumerRepo = createTempRepo('ontoindex-sync-include-suffix-local-', {
+      'src/main.cpp': '#include "shared/api.h"\nint main() { return 0; }\n',
+      'vendor/shared/api.h': '#pragma once\n',
+    });
+    const providerRepo = createTempRepo('ontoindex-sync-include-suffix-provider-', {
+      'shared/api.h': '#pragma once\n',
+    });
+    const config = makeSharedLibConfig({
+      'app/consumer': 'consumer',
+      'libs/provider': 'provider',
+    });
+
+    try {
+      const result = await withMockedPoolAdapter(() =>
+        syncGroup(config, {
+          resolveRepoHandle: async (_name, groupPath) => ({
+            id: groupPath.replace(/\//g, '-'),
+            path: groupPath,
+            repoPath: groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+            storagePath: path.join(
+              groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+              '.ontoindex',
+            ),
+          }),
+          skipWrite: true,
+        }),
+      );
+
+      const consumers = result.contracts.filter(
+        (contract) => contract.type === 'lib' && contract.role === 'consumer',
+      );
+      expect(consumers).toHaveLength(1);
+      expect(consumers[0].contractId).toBe('lib::include/shared/api.h');
+      expect(result.crossLinks).toHaveLength(1);
+      expect(result.crossLinks[0].contractId).toBe('lib::include/shared/api.h');
+      expect(result.crossLinks[0].to.repo).toBe('libs/provider');
+    } finally {
+      fs.rmSync(consumerRepo, { recursive: true, force: true });
+      fs.rmSync(providerRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves case-sensitive include paths in shared_libs contracts', async () => {
+    const consumerRepo = createTempRepo('ontoindex-sync-case-consumer-', {
+      'src/main.cpp': '#include "shared/api.h"\nint main() { return 0; }\n',
+    });
+    const providerRepo = createTempRepo('ontoindex-sync-case-provider-', {
+      'shared/API.h': '#pragma once\n',
+    });
+    const config = makeSharedLibConfig({
+      'app/consumer': 'consumer',
+      'libs/provider': 'provider',
+    });
+
+    try {
+      const result = await withMockedPoolAdapter(() =>
+        syncGroup(config, {
+          resolveRepoHandle: async (_name, groupPath) => ({
+            id: groupPath.replace(/\//g, '-'),
+            path: groupPath,
+            repoPath: groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+            storagePath: path.join(
+              groupPath === 'app/consumer' ? consumerRepo : providerRepo,
+              '.ontoindex',
+            ),
+          }),
+          skipWrite: true,
+        }),
+      );
+
+      expect(
+        result.contracts.some(
+          (contract) =>
+            contract.type === 'lib' &&
+            contract.role === 'provider' &&
+            contract.contractId === 'lib::include/shared/API.h',
+        ),
+      ).toBe(true);
+      expect(
+        result.contracts.some(
+          (contract) =>
+            contract.type === 'lib' &&
+            contract.role === 'consumer' &&
+            contract.contractId === 'lib::include/shared/api.h',
+        ),
+      ).toBe(true);
+      expect(result.crossLinks).toHaveLength(0);
+    } finally {
+      fs.rmSync(consumerRepo, { recursive: true, force: true });
+      fs.rmSync(providerRepo, { recursive: true, force: true });
     }
   });
 });

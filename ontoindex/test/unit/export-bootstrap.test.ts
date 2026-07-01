@@ -264,8 +264,11 @@ describe('bootstrap export and hydrate', () => {
       lastCommit: 'abc123def456',
     });
 
-    const entries = await listRegisteredRepos();
-    expect(entries.some((entry) => entry.name === 'restored-bootstrap-repo' && path.resolve(entry.path) === path.resolve(restoreHandle.dbPath))).toBe(true);
+    const entries = await listRegisteredRepos({ validate: true });
+    const restoredEntry = entries.find(
+      (entry) => path.resolve(entry.path) === path.resolve(restoreHandle.dbPath),
+    );
+    expect(restoredEntry?.name).toBe('restored-bootstrap-repo');
   });
 
   it('rejects ambiguous default hydrated names when another checkout already owns that repo identity', async () => {

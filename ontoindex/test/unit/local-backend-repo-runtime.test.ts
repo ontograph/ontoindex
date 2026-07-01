@@ -1,15 +1,17 @@
 import { describe, expect, it } from 'vitest';
+import path from 'node:path';
 import type { RepoHandle } from 'ontoindex-shared';
 
 import { resolveRepoFromHandles } from '../../src/mcp/local/local-backend-repo-runtime.js';
 
 function makeRepo(id: string, name: string, repoPath: string): RepoHandle {
+  const resolvedRepoPath = path.resolve(repoPath);
   return {
     id,
     name,
-    repoPath,
-    storagePath: `${repoPath}/.ontoindex`,
-    lbugPath: `${repoPath}/.ontoindex/lbug.db`,
+    repoPath: resolvedRepoPath,
+    storagePath: `${resolvedRepoPath}/.ontoindex`,
+    lbugPath: `${resolvedRepoPath}/.ontoindex/lbug.db`,
     indexedAt: '2026-06-13T00:00:00.000Z',
     lastCommit: 'abc123',
   };

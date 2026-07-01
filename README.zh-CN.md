@@ -7,7 +7,7 @@
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- 当前版本：`2.0.1`
+- 当前版本：`2.0.3`
 - 源代码仓库：[github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - 安全策略：[SECURITY.md](SECURITY.md)
 - 企业联系：[erasyuk@gmail.com](mailto:erasyuk@gmail.com)
@@ -120,7 +120,7 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 | 目的 | Linux/macOS | Windows PowerShell |
 | --- | --- | --- |
 | 使用其他 release 仓库 | `ONTOINDEX_GITHUB_REPO=owner/repo ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_GITHUB_REPO='owner/repo'; .\scripts\install-ontoindex-latest.ps1` |
-| 使用本地下载的 tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-2.0.1.tgz" ./scripts/install-ontoindex-latest.sh` | — |
+| 使用本地下载的 tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-2.0.3.tgz" ./scripts/install-ontoindex-latest.sh` | — |
 | 使用用户级 npm prefix | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_NPM_PREFIX="$env:APPDATA\npm"; .\scripts\install-ontoindex-latest.ps1` |
 | 强制使用用户级 prefix | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh` | `.\scripts\install-ontoindex-latest.ps1 -ForceUserPrefix` |
 | 强制预取 `fts`/`vector` cache | `ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1` |
@@ -132,8 +132,8 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 
 | 平台 | 命令 |
 | --- | --- |
-| Linux/macOS | `npm install -g ontoindex@2.0.1 && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g ontoindex@2.0.1; ontoindex --version` |
+| Linux/macOS | `npm install -g ontoindex@2.0.3 && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g ontoindex@2.0.3; ontoindex --version` |
 
 ### 从 release tarball URL 安装
 
@@ -141,8 +141,8 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 
 | 平台 | 命令 |
 | --- | --- |
-| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.1/ontoindex-2.0.1.tgz && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.1/ontoindex-2.0.1.tgz; ontoindex --version` |
+| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.3/ontoindex-2.0.3.tgz && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.3/ontoindex-2.0.3.tgz; ontoindex --version` |
 
 ## 首次运行
 
@@ -331,8 +331,8 @@ Images:
 
 | Image | 用途 |
 | --- | --- |
-| `ghcr.io/ontograph/ontoindex:2.0.1` | CLI、MCP server 和 `ontoindex serve` backend |
-| `ghcr.io/ontograph/ontoindex-web:2.0.1` | Web UI |
+| `ghcr.io/ontograph/ontoindex:2.0.3` | CLI、MCP server 和 `ontoindex serve` backend |
+| `ghcr.io/ontograph/ontoindex-web:2.0.3` | Web UI |
 
 ## 与相关工具比较
 

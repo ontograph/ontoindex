@@ -111,6 +111,61 @@ Envelope fields include:
 - `freshness.status` — `fresh` | `stale` | `degraded`
 - `warnings` — stale-index, dirty-worktree, or capped-paths notices
 
+## GitHub PR adapter
+
+`ontoindex pr impact <number>` resolves PR refs via `gh`, verifies the refs are
+available locally, and then runs the same review engine as `ontoindex review diff`.
+
+Examples:
+
+```bash
+# Human-readable PR review:
+ontoindex pr impact 42
+
+# Machine-readable PR review:
+ontoindex pr impact 42 --json
+```
+
+Use the same interpretation rules as `review diff`: the PR adapter does not
+create a second diff-impact engine or a second review schema.
+
+## Optional synthesis critic pass
+
+If you want a stricter final review without adding a second runtime review
+engine, run `ontoindex review diff --json` or `ontoindex pr impact --json` and
+feed the ADR 0018 envelope plus your draft review into a final prompt-only
+critic pass.
+
+Recommended prompt:
+
+```text
+You are a synthesis critic for OntoIndex review output.
+
+Inputs:
+1. The ADR 0018 JSON from `ontoindex review diff --json` or `ontoindex pr impact --json`
+2. A draft human review written from that output
+
+Rules:
+- Do not invent facts beyond the JSON envelope.
+- Every finding must cite concrete evidence from the input: changed file paths,
+  high-risk symbols, affected processes, affected communities, freshness state,
+  warnings, or explicit commands that still need to be run.
+- Surface stale/degraded freshness limits before low-risk commentary.
+- Drop generic advice that is not tied to the actual changed paths or graph output.
+- Preserve the underlying review facts; do not replace the current review engine.
+
+Output:
+1. Missing evidence
+2. Unsupported claims
+3. Generic or off-scope content
+4. Required corrections before posting
+5. Ready to post: yes/no
+```
+
+Treat this as a final quality gate over existing review output, not as a new
+always-on analysis lane. If the critic returns `Ready to post: no`, revise the
+draft review and rerun the same prompt against the same JSON envelope.
+
 ## Output fields explained
 
 | Field | Meaning |
@@ -134,8 +189,6 @@ or CI workflows; use `gn_diff_impact` when inside an MCP agent session.
 
 These features are explicitly deferred until the local CLI contract is stable:
 
-- **Hosted PR adapter** (`ontoindex pr impact 42`): fetches a PR ref and wraps the local report.
-  Requires explicit remote and auth configuration. Not part of the current release.
 - **Review bundle export** (`ontoindex export review-bundle`): writes a disposable snapshot under
   a gitignored path. Not part of the current release.
 - **Hub and surprising-connection reports**: ranking-only discovery views. Will never trim complete

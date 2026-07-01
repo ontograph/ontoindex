@@ -534,8 +534,9 @@ describe('mcp-doctor', () => {
       expect(report.verdict).toBe('MISCONFIGURED');
       expect(report.setupHealth?.status).toBe('misconfigured');
       expect(formatMcpDoctorText(report)).toContain(
-        'Setup issue: .claude/settings.local.json contains stale repo path(s): /home/er77/_wrk/OntoIndex/.claude/worktrees/agent-a9b3bc4e05bbb89c1',
+        'Setup issue: .claude/settings.local.json contains stale repo path(s):',
       );
+      expect(formatMcpDoctorText(report)).toContain('agent-a9b3bc4e05bbb89c1');
       expect(formatMcpDoctorText(report)).toContain('Setup repair: ontoindex setup');
     } finally {
       process.env.HOME = originalHome;

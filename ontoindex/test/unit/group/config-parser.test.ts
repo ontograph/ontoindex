@@ -59,6 +59,7 @@ repos:
     expect(config.links).toEqual([]);
     expect(config.packages).toEqual({});
     expect(config.detect.http).toBe(true);
+    expect(config.detect.shared_libs).toBe(false);
     expect(config.matching.bm25_threshold).toBe(0.7);
   });
 

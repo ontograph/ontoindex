@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
 
 const { backendMocks, serverMocks } = vi.hoisted(() => ({
   backendMocks: {
@@ -11,6 +12,8 @@ const { backendMocks, serverMocks } = vi.hoisted(() => ({
   },
 }));
 const getGitRootMock = vi.hoisted(() => vi.fn(() => '/target/repo'));
+
+const resolvedPath = (value: string) => path.resolve(value);
 
 vi.mock('../../src/mcp/local/local-backend.js', () => ({
   LocalBackend: vi.fn(function LocalBackendMock() {
@@ -100,7 +103,7 @@ describe('mcpCommand', () => {
       expect.stringContaining('OntoIndex: MCP target project path:'),
     );
     expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining('/opt/demodb/_workfolder/ontocode'),
+      expect.stringContaining(resolvedPath('/opt/demodb/_workfolder/ontocode')),
     );
     expect(backendMocks.dispose).not.toHaveBeenCalled();
   });
@@ -118,7 +121,7 @@ describe('mcpCommand', () => {
 
     expect(LocalBackend).toHaveBeenCalledWith({
       repoFilter: undefined,
-      preferredProjectPath: '/opt/demodb/_workfolder/OntoIndex',
+      preferredProjectPath: resolvedPath('/opt/demodb/_workfolder/OntoIndex'),
     });
     expect(process.exitCode).toBeUndefined();
     expect(startMCPServer).toHaveBeenCalled();
@@ -136,7 +139,7 @@ describe('mcpCommand', () => {
 
     expect(LocalBackend).toHaveBeenCalledWith({
       repoFilter: undefined,
-      preferredProjectPath: '/project/explicit-target',
+      preferredProjectPath: resolvedPath('/project/explicit-target'),
     });
     expect(process.exitCode).toBeUndefined();
     expect(startMCPServer).toHaveBeenCalled();
@@ -151,7 +154,7 @@ describe('mcpCommand', () => {
 
     expect(LocalBackend).toHaveBeenCalledWith({
       repoFilter: undefined,
-      preferredProjectPath: '/project/from-env',
+      preferredProjectPath: resolvedPath('/project/from-env'),
     });
     expect(process.exitCode).toBeUndefined();
     expect(startMCPServer).toHaveBeenCalled();
@@ -169,10 +172,12 @@ describe('mcpCommand', () => {
     expect(backendMocks.dispose).toHaveBeenCalled();
     expect(startMCPServer).not.toHaveBeenCalled();
     expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining('--repo "repo-b" resolves to repo-b -> /project/b'),
+      expect.stringContaining(
+        `--repo "repo-b" resolves to repo-b -> ${resolvedPath('/project/b')}`,
+      ),
     );
     expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining('Project cwd: /project/a'),
+      expect.stringContaining(`Project cwd: ${resolvedPath('/project/a')}`),
     );
     expect(console.error).toHaveBeenCalledWith(
       expect.stringContaining(`Process cwd: ${process.cwd()}`),
@@ -180,7 +185,7 @@ describe('mcpCommand', () => {
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Restart command:'));
     expect(console.error).toHaveBeenCalledWith(
       expect.stringContaining(
-        "ontoindex mcp --project '/project/a' --repo 'repo-b'",
+        `ontoindex mcp --project '${resolvedPath('/project/a')}' --repo 'repo-b'`,
       ),
     );
   });
@@ -197,10 +202,10 @@ describe('mcpCommand', () => {
     expect(process.exitCode).toBeUndefined();
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('ONTOINDEX_MCP_REPO'));
     expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining('Resolved repo: repo-b -> /project/b'),
+      expect.stringContaining(`Resolved repo: repo-b -> ${resolvedPath('/project/b')}`),
     );
     expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining('Project cwd: /project/a'),
+      expect.stringContaining(`Project cwd: ${resolvedPath('/project/a')}`),
     );
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Restart command:'));
     expect(backendMocks.dispose).not.toHaveBeenCalled();
@@ -251,7 +256,7 @@ describe('mcpCommand', () => {
 
     expect(LocalBackend).toHaveBeenCalledWith({
       repoFilter: 'only-this-repo',
-      preferredProjectPath: '/target/repo',
+      preferredProjectPath: resolvedPath('/target/repo'),
     });
     expect(process.exitCode).toBeUndefined();
   });
@@ -263,7 +268,7 @@ describe('mcpCommand', () => {
 
     expect(LocalBackend).toHaveBeenCalledWith({
       repoFilter: 'only-this-repo',
-      preferredProjectPath: '/target/repo',
+      preferredProjectPath: resolvedPath('/target/repo'),
     });
     expect(process.exitCode).toBeUndefined();
   });

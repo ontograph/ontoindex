@@ -92,11 +92,13 @@ const REPO_ID = 'test-repo';
 const CURRENT_COMMIT = 'abc123def456abc123def456abc123def456abc1';
 const INDEXED_COMMIT = 'abc123def456abc123def456abc123def456abc1';
 const STALE_COMMIT = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
+const TARGET_REPO_PATH = path.resolve('/tmp/test-repo');
+const TARGET_LBUG_PATH = path.join(TARGET_REPO_PATH, '.ontoindex', 'lbug');
 const TARGET_CONTEXT = {
   version: 1 as const,
   status: 'ok' as const,
   repoKey: REPO_ID,
-  repoPath: '/tmp/test-repo',
+  repoPath: TARGET_REPO_PATH,
   branch: 'main',
   targetRef: 'HEAD',
   targetHead: CURRENT_COMMIT,
@@ -1089,7 +1091,7 @@ describe('gnDiagnose', () => {
 
     expect(report.support).toEqual({
       lbugStore: {
-        path: '/tmp/test-repo/.ontoindex/lbug',
+        path: TARGET_LBUG_PATH,
         exists: true,
         sizeBytes: 4096,
         modifiedAt: '2026-06-27T12:00:00.000Z',

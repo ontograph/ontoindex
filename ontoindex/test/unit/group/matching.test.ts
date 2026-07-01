@@ -40,8 +40,9 @@ describe('normalizeContractId', () => {
     expect(normalizeContractId('topic::  Employee.Hired  ')).toBe('topic::employee.hired');
   });
 
-  it('lowercases lib package coordinates', () => {
+  it('preserves case for lib include paths and normalizes package coordinates', () => {
     expect(normalizeContractId('lib::@Hr/Common::UserDTO')).toBe('lib::@hr/common::userdto');
+    expect(normalizeContractId('lib::include/shared/API.h')).toBe('lib::include/shared/API.h');
   });
 });
 
@@ -193,6 +194,17 @@ describe('runExactMatch', () => {
     expect(matched[0].contractId).toBe('http::*::/api/users');
     expect(matched[0].to.repo).toBe('backend');
     expect(unmatched).toHaveLength(0);
+  });
+
+  it('treats lib contract IDs as case-sensitive', () => {
+    const contracts: StoredContract[] = [
+      { ...makeContract('lib::include/shared/API.h', 'provider', 'backend'), type: 'lib' },
+      { ...makeContract('lib::include/shared/api.h', 'consumer', 'frontend'), type: 'lib' },
+    ];
+
+    const { matched, unmatched } = runExactMatch(contracts);
+    expect(matched).toHaveLength(0);
+    expect(unmatched).toHaveLength(2);
   });
 });
 

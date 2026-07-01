@@ -67,7 +67,7 @@ export function normalizeContractId(id: string): string {
     case 'topic':
       return `topic::${rest.trim().toLowerCase()}`;
     case 'lib':
-      return `lib::${rest.toLowerCase()}`;
+      return rest.startsWith('include/') ? `lib::${rest}` : `lib::${rest.toLowerCase()}`;
     default:
       return id;
   }

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import type { PathLike } from 'node:fs';
+import path from 'node:path';
 import { exportGraphHtmlCommand } from '../../src/cli/export.js';
 import { getStoragePaths, loadMeta } from '../../src/storage/repo-manager.js';
 import { buildExportableGraph } from '../../src/core/graph/exportable-graph.js';
@@ -17,11 +18,15 @@ vi.mock('../../src/core/lbug/pool-adapter.js', () => ({
 }));
 
 describe('exportGraphHtmlCommand', () => {
+  const repoRoot = path.resolve('/repo');
+  const exportsDir = path.join(repoRoot, '.ontoindex', 'exports');
+  const wikiDir = path.join(repoRoot, '.ontoindex', 'wiki');
+
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getStoragePaths).mockReturnValue({
-      storagePath: '/repo/.ontoindex',
-      lbugPath: '/repo/.ontoindex/lbug.db',
+      storagePath: path.join(repoRoot, '.ontoindex'),
+      lbugPath: path.join(repoRoot, '.ontoindex', 'lbug.db'),
     } as any);
     vi.mocked(loadMeta).mockResolvedValue({
       indexedAt: '2026-06-13T00:00:00.000Z',
@@ -38,9 +43,9 @@ describe('exportGraphHtmlCommand', () => {
     await exportGraphHtmlCommand({ repo: '/repo', out: '/repo/.ontoindex/exports' });
 
     expect(buildExportableGraph).toHaveBeenCalled();
-    expect(fs.mkdirSync).toHaveBeenCalledWith('/repo/.ontoindex/exports', { recursive: true });
+    expect(fs.mkdirSync).toHaveBeenCalledWith(exportsDir, { recursive: true });
     expect(fs.writeFileSync).toHaveBeenCalledWith(
-      '/repo/.ontoindex/exports/graph-overview.html',
+      path.join(exportsDir, 'graph-overview.html'),
       expect.stringContaining(
         'Interactive architecture graph for modules, execution flows, and functional areas.',
       ),
@@ -51,12 +56,15 @@ describe('exportGraphHtmlCommand', () => {
 
   it('refreshes the wiki viewer when exporting into a wiki directory', async () => {
     vi.mocked(fs.existsSync).mockImplementation((filePath: PathLike) => {
-      const normalized = String(filePath);
-      return normalized.endsWith('/module_tree.json') || normalized.endsWith('/meta.json');
+      const normalized = path.normalize(String(filePath));
+      return (
+        normalized.endsWith(path.join('wiki', 'module_tree.json')) ||
+        normalized.endsWith(path.join('wiki', 'meta.json'))
+      );
     });
 
     await exportGraphHtmlCommand({ repo: '/repo', out: '/repo/.ontoindex/wiki', summary: true });
 
-    expect(generateHTMLViewer).toHaveBeenCalledWith('/repo/.ontoindex/wiki', 'repo');
+    expect(generateHTMLViewer).toHaveBeenCalledWith(wikiDir, 'repo');
   });
 });

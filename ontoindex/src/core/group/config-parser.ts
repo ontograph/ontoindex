@@ -11,7 +11,7 @@ const DEFAULT_DETECT = {
   http: true,
   grpc: true,
   topics: true,
-  shared_libs: true,
+  shared_libs: false,
   embedding_fallback: true,
 };
 

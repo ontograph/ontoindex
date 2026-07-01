@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
 import {
   formatIndexCapabilityWarnings,
   formatNativeGraphWriterStatus,
@@ -444,7 +445,7 @@ describe('status command behavior', () => {
     await statusCommand({ repo: repoPath });
 
     expect(repoManagerMocks.listRegisteredRepos).not.toHaveBeenCalled();
-    expect(repoManagerMocks.loadRepo).toHaveBeenCalledWith(repoPath);
+    expect(repoManagerMocks.loadRepo).toHaveBeenCalledWith(path.resolve(repoPath));
     expect(logSpy.mock.calls.map(([line]) => line)).toEqual(
       expect.arrayContaining(['Repository not indexed.', 'Run: ontoindex analyze']),
     );

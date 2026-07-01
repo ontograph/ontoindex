@@ -1,9 +1,25 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import type { Ignore } from 'ignore';
 
 const REPO_ID = 'test-repo';
 const CURRENT_COMMIT = 'abc123def456abc123def456abc123def456abc1';
+let originalMcpRepo: string | undefined;
+let originalProjectCwd: string | undefined;
+
+beforeEach(() => {
+  originalMcpRepo = process.env.ONTOINDEX_MCP_REPO;
+  originalProjectCwd = process.env.ONTOINDEX_MCP_PROJECT_CWD;
+  delete process.env.ONTOINDEX_MCP_REPO;
+  delete process.env.ONTOINDEX_MCP_PROJECT_CWD;
+});
+
+afterEach(() => {
+  if (originalMcpRepo === undefined) delete process.env.ONTOINDEX_MCP_REPO;
+  else process.env.ONTOINDEX_MCP_REPO = originalMcpRepo;
+  if (originalProjectCwd === undefined) delete process.env.ONTOINDEX_MCP_PROJECT_CWD;
+  else process.env.ONTOINDEX_MCP_PROJECT_CWD = originalProjectCwd;
+});
 
 describe('resolveTargetContext', () => {
   async function loadActualResolver() {
@@ -399,7 +415,7 @@ describe('resolveTargetContext', () => {
       expect(context.scopeConfidence).toBe('low');
       expect(context.scopeConfidenceReason).toBe('repo-path-mismatch');
       expect(context.warnings.join('\n')).toContain('REPO_PATH_MISMATCH');
-      expect(context.warnings.join('\n')).toContain('repo: "/repo/test-repo"');
+      expect(context.warnings.join('\n')).toContain(`repo: "${path.resolve('/repo/test-repo')}"`);
     } finally {
       cwdSpy.mockRestore();
     }

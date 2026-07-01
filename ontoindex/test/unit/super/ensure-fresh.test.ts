@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import path from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Mocks — declared before the module under test is imported.
@@ -57,7 +58,7 @@ let savedEnv: Record<string, string | undefined> = {};
 // ---------------------------------------------------------------------------
 
 const REPO_ID = 'test-repo';
-const REPO_PATH = '/home/testuser/_wrk/test-repo';
+const REPO_PATH = path.resolve('/home/testuser/_wrk/test-repo');
 const CURRENT_COMMIT = 'abc123def456abc123def456abc123def456abc1';
 const INDEXED_COMMIT = 'abc123def456abc123def456abc123def456abc1'; // same = fresh
 const EMBEDDING_MODEL_HASH = 'hash-a';
