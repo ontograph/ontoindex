@@ -116,7 +116,7 @@
     "graphology-types": "^0.24.8",
     "node-gyp": "12.2.0",
     "ontoindex-shared": "file:../ontoindex-shared",
-    "tsx": "^4.22.4",
+    "tsx": "^4.22.5",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   },
