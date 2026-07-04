@@ -202,6 +202,19 @@ program
   .option('--max-tokens <n>', 'Abort if estimated token budget exceeds N (default: no limit)')
   .action(createLazyAction(() => import('./wiki.js'), 'wikiCommand'));
 
+program
+  .command('duplicate-code')
+  .description('Advisory duplicate-code discovery (exact mode wraps jscpd via npx)')
+  .option('--mode <mode>', 'exact | semantic (semantic is proof-gated, not implemented)', 'exact')
+  .option('--min-lines <n>', 'Minimum duplicated lines to report')
+  .option('--min-tokens <n>', 'Minimum duplicated tokens to report')
+  .option('--include <glob>', 'Include glob (repeatable)', collectOption, [])
+  .option('--exclude <glob>', 'Exclude glob (repeatable, added to defaults)', collectOption, [])
+  .option('--path <path>', 'Path to scan (default: current directory)')
+  .option('--output <path>', 'Write normalized JSON report to a file')
+  .option('--json', 'Emit normalized JSON report')
+  .action(createLazyAction(() => import('./duplicate-code.js'), 'duplicateCodeCommand'));
+
 const auditProgram = program
   .command('audit')
   .description('Generate a structured audit report from the knowledge graph')

@@ -4,6 +4,19 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.4] - 2026-07-04
+
+### Added
+
+- Added `ontoindex duplicate-code --mode exact`, a CLI-only advisory wrapper around pinned
+  `jscpd@5.0.11` that reports exact duplicate-code groups as bounded summaries or normalized JSON.
+- Added duplicate-code ADR and implementation-plan documentation covering the exact-mode scope and
+  the proof gate for future semantic duplicate candidates.
+
+### Changed
+
+- Updated public install examples and release metadata for the `2.0.4` release.
+
 ## [1.9.29] - 2026-06-27
 
 ### Added
