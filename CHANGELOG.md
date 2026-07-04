@@ -4,6 +4,19 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.5] - 2026-07-04
+
+### Added
+
+- `ontoindex setup` now writes `ONTOINDEX.md` guidance into Claude Code, Codex, and Ontocode
+  home directories and adds a single `@ONTOINDEX.md` include when the client instruction file does
+  not already reference OntoIndex guidance.
+
+### Changed
+
+- Installer scripts and `ontoindex setup` help text now point users to rerun `ontoindex setup`
+  after installation or upgrades, and explicitly describe the setup step as idempotent.
+
 ## [2.0.4] - 2026-07-04
 
 ### Added

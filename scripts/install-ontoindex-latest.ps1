@@ -569,6 +569,9 @@ try {
 Write-Host "Note: this installer uses npm to resolve third-party runtime packages."
 Write-Host "A non-fatal npm warning about deprecated transitive packages can appear while upstream packages catch up."
 Write-Host "For air-gapped installs, use a separately prepared npm cache or internal registry mirror."
+Write-Host ""
+Write-Host "Next step: run 'ontoindex setup' after installation to configure MCP clients and agent guidance."
+Write-Host "The setup command is idempotent and will not duplicate existing OntoIndex settings."
 
 if (($env:Path -split ';') -notcontains $NpmPrefix -and (Test-Path (Join-Path $NpmPrefix "ontoindex.cmd"))) {
   Write-Host ""

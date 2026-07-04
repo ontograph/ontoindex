@@ -7,7 +7,7 @@
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- Текущий релиз: `2.0.4`
+- Текущий релиз: `2.0.5`
 - Исходный репозиторий: [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - Политика безопасности: [SECURITY.md](SECURITY.md)
 - Enterprise-контакт: [erasyuk@gmail.com](mailto:erasyuk@gmail.com)
@@ -120,7 +120,7 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 | Цель | Linux/macOS | Windows PowerShell |
 | --- | --- | --- |
 | Другой release repo | `ONTOINDEX_GITHUB_REPO=owner/repo ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_GITHUB_REPO='owner/repo'; .\scripts\install-ontoindex-latest.ps1` |
-| Локальный скачанный tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-2.0.4.tgz" ./scripts/install-ontoindex-latest.sh` | — |
+| Локальный скачанный tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-2.0.5.tgz" ./scripts/install-ontoindex-latest.sh` | — |
 | User npm prefix | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_NPM_PREFIX="$env:APPDATA\npm"; .\scripts\install-ontoindex-latest.ps1` |
 | Принудительно user prefix | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh` | `.\scripts\install-ontoindex-latest.ps1 -ForceUserPrefix` |
 | Обязательная prefetch `fts`/`vector` cache | `ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1` |
@@ -132,8 +132,8 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 
 | Платформа | Команда |
 | --- | --- |
-| Linux/macOS | `npm install -g ontoindex@2.0.4 && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g ontoindex@2.0.4; ontoindex --version` |
+| Linux/macOS | `npm install -g ontoindex@2.0.5 && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g ontoindex@2.0.5; ontoindex --version` |
 
 ### Установка из release tarball URL
 
@@ -141,8 +141,8 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 
 | Платформа | Команда |
 | --- | --- |
-| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.4/ontoindex-2.0.4.tgz && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.4/ontoindex-2.0.4.tgz; ontoindex --version` |
+| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.5/ontoindex-2.0.5.tgz && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.5/ontoindex-2.0.5.tgz; ontoindex --version` |
 
 ## Первый запуск
 
@@ -331,8 +331,8 @@ Images:
 
 | Image | Назначение |
 | --- | --- |
-| `ghcr.io/ontograph/ontoindex:2.0.4` | CLI, MCP server и `ontoindex serve` backend |
-| `ghcr.io/ontograph/ontoindex-web:2.0.4` | Web UI |
+| `ghcr.io/ontograph/ontoindex:2.0.5` | CLI, MCP server и `ontoindex serve` backend |
+| `ghcr.io/ontograph/ontoindex-web:2.0.5` | Web UI |
 
 ## Сравнение с похожими инструментами
 

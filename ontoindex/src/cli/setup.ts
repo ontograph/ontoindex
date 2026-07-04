@@ -73,6 +73,32 @@ function caughtMessage(err: unknown): unknown {
   return err instanceof Error ? err.message : (err as { message: unknown }).message;
 }
 
+const ONTOINDEX_AGENT_GUIDANCE = `# OntoIndex
+
+When the user asks to use OntoIndex, or when code work depends on architecture,
+impact, review, routing, or graph context, use available OntoIndex MCP tools
+before claiming graph-backed analysis. Useful tools include \`search\`, \`inspect\`,
+\`impact\`, \`gn_explore\`, \`gn_diagnose\`, \`gn_diff_impact\`, \`gn_review_diff\`,
+\`gn_verify_diff\`, and related \`gn_*\` tools.
+
+Never claim OntoIndex was used unless an OntoIndex MCP call or \`ontoindex://\`
+resource read actually returned. If only \`rg\`, \`sed\`, shell commands, or local
+file reads were used, say that. If OntoIndex is unavailable, stale, degraded, or
+not configured for the repo, state the exact limitation and verify directly from
+source. The \`ontoindex\` CLI may not be on PATH; prefer MCP tools/resources.
+
+For simple exact file lookup or newly-created unindexed files, direct source
+inspection is acceptable; do not label it OntoIndex evidence.
+
+For non-trivial code research/analysis on an indexed repo, use OntoIndex early,
+then verify exact claims from source:
+
+- Architecture / "how does X work" -> \`gn_explore\` or \`search\` plus \`inspect\`
+- "What breaks if I change X" / impact -> \`impact\` or \`gn_diff_impact\`
+- Bug trace / "where does this error come from" -> \`search\` plus \`inspect\`; use \`gn_diagnose\` when index/tool health is suspect
+- Review a diff's blast radius -> \`gn_review_diff\` or \`gn_diff_impact\`
+`;
+
 function resolveMcpRepoPath(): string {
   const cwd = process.cwd();
   const repoRoot = getGitRoot(cwd);
@@ -264,6 +290,49 @@ async function dirExists(dirPath: string): Promise<boolean> {
     return stat.isDirectory();
   } catch {
     return false;
+  }
+}
+
+function hasOntoIndexIncludeOrBlock(content: string): boolean {
+  return (
+    /(^|\r?\n)\s*@ONTOINDEX\.md\s*(\r?\n|$)/.test(content) ||
+    /<!--\s*ontoindex\s*-->/i.test(content) ||
+    /\bONTOINDEX\.md\b/i.test(content)
+  );
+}
+
+async function ensureOntoIndexAgentGuidance(
+  result: SetupResult,
+  clientName: string,
+  configDir: string,
+  instructionFileName: 'AGENTS.md' | 'CLAUDE.md',
+): Promise<void> {
+  if (!(await dirExists(configDir))) return;
+
+  const ontoindexPath = path.join(configDir, 'ONTOINDEX.md');
+  const instructionPath = path.join(configDir, instructionFileName);
+
+  try {
+    await fs.mkdir(configDir, { recursive: true });
+    await fs.writeFile(ontoindexPath, ONTOINDEX_AGENT_GUIDANCE, 'utf-8');
+
+    let instructionContent = '';
+    try {
+      instructionContent = await fs.readFile(instructionPath, 'utf-8');
+    } catch {
+      instructionContent = '# Global Agent Instructions\n';
+    }
+
+    if (!hasOntoIndexIncludeOrBlock(instructionContent)) {
+      instructionContent = `${instructionContent.trimEnd()}\n\n@ONTOINDEX.md\n`;
+      await fs.writeFile(instructionPath, instructionContent, 'utf-8');
+    }
+
+    result.configured.push(
+      `${clientName} OntoIndex guidance (~/${path.basename(configDir)}/ONTOINDEX.md)`,
+    );
+  } catch (err: unknown) {
+    result.errors.push(`${clientName} OntoIndex guidance: ${caughtMessage(err)}`);
   }
 }
 
@@ -608,11 +677,14 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
     try {
       if (source.isDirectory) {
         const dirSource = path.join(skillsRoot, skillName);
+        const skillContent = await fs.readFile(path.join(dirSource, 'SKILL.md'), 'utf-8');
+        if (!hasYamlFrontmatter(skillContent)) continue;
         await copyDirRecursive(dirSource, skillDir);
         installed.push(skillName);
       } else {
         const flatSource = path.join(skillsRoot, `${skillName}.md`);
         const content = await fs.readFile(flatSource, 'utf-8');
+        if (!hasYamlFrontmatter(content)) continue;
         await fs.mkdir(skillDir, { recursive: true });
         await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf-8');
         installed.push(skillName);
@@ -623,6 +695,34 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
   }
 
   return installed;
+}
+
+function hasYamlFrontmatter(content: string): boolean {
+  return /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.test(content);
+}
+
+async function removeInvalidLegacyGitNexusSkills(skillsDir: string): Promise<string[]> {
+  let entries;
+  try {
+    entries = await fs.readdir(skillsDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const removed: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith('gitnexus-')) continue;
+    const skillDir = path.join(skillsDir, entry.name);
+    try {
+      const content = await fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf-8');
+      if (hasYamlFrontmatter(content)) continue;
+    } catch {
+      continue;
+    }
+    await fs.rm(skillDir, { recursive: true, force: true });
+    removed.push(entry.name);
+  }
+  return removed;
 }
 
 /**
@@ -689,7 +789,13 @@ async function installCodexSkills(result: SetupResult): Promise<void> {
 
   const skillsDir = path.join(os.homedir(), '.agents', 'skills');
   try {
+    const removedLegacy = await removeInvalidLegacyGitNexusSkills(skillsDir);
     const installed = await installSkillsTo(skillsDir);
+    if (removedLegacy.length > 0) {
+      result.configured.push(
+        `Removed invalid legacy GitNexus Codex skills (${removedLegacy.length})`,
+      );
+    }
     if (installed.length > 0) {
       result.configured.push(`Codex skills (${installed.length} skills → ~/.agents/skills/)`);
     }
@@ -729,6 +835,26 @@ export const setupCommand = async () => {
   await setupOpenCode(result, mcpEntry);
   await setupCodex(result, mcpEntry);
   await setupOntocode(result, mcpEntry);
+
+  // Install agent guidance that prevents false OntoIndex-use claims.
+  await ensureOntoIndexAgentGuidance(
+    result,
+    'Claude Code',
+    path.join(os.homedir(), '.claude'),
+    'CLAUDE.md',
+  );
+  await ensureOntoIndexAgentGuidance(
+    result,
+    'Codex',
+    path.join(os.homedir(), '.codex'),
+    'AGENTS.md',
+  );
+  await ensureOntoIndexAgentGuidance(
+    result,
+    'Ontocode',
+    path.join(os.homedir(), '.ontocode'),
+    'AGENTS.md',
+  );
 
   // Install global skills for platforms that support them
   await installClaudeCodeSkills(result);
@@ -781,6 +907,7 @@ export const setupCommand = async () => {
   console.log('  Next steps:');
   console.log('    1. cd into any git repo');
   console.log('    2. Run: ontoindex analyze');
-  console.log('    3. Open the repo in your editor — MCP is ready!');
+  console.log('    3. Run: ontoindex setup (safe to rerun after installs/upgrades)');
+  console.log('    4. Open the repo in your editor — MCP is ready!');
   console.log('');
 };

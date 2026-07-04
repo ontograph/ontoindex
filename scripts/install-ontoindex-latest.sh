@@ -384,6 +384,9 @@ log "Install complete."
 echo "Note: this installer uses npm to resolve third-party runtime packages."
 echo "A non-fatal npm warning about deprecated transitive packages can appear while upstream packages catch up."
 echo "For air-gapped installs, use a separately prepared npm cache or internal registry mirror."
+echo ""
+echo "Next step: run 'ontoindex setup' after installation to configure MCP clients and agent guidance."
+echo "The setup command is idempotent and will not duplicate existing OntoIndex settings."
 if [ "${install_prefix}" = "${USER_PREFIX}" ] && ! printf '%s' ":${PATH}:" | grep -Fq ":${USER_PREFIX}/bin:"; then
   echo "Add ${USER_PREFIX}/bin to PATH to use ontoindex in new shells."
 fi

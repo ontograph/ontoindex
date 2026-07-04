@@ -103,7 +103,21 @@ describe('setupCommand skills integration', () => {
       path.join(tempHome, '.agents', 'skills', 'ontoindex-cli', 'SKILL.md'),
       'utf-8',
     );
+    expect(codexSkill.startsWith('---')).toBe(true);
     expect(codexSkill).toContain('OntoIndex CLI Commands');
+  });
+
+  it('removes invalid legacy GitNexus Codex skills during setup', async () => {
+    await fs.mkdir(path.join(tempHome, '.codex'), { recursive: true });
+    process.env.PATH = '';
+
+    const legacySkillDir = path.join(tempHome, '.agents', 'skills', 'gitnexus-pr-review');
+    await fs.mkdir(legacySkillDir, { recursive: true });
+    await fs.writeFile(path.join(legacySkillDir, 'SKILL.md'), '# PR Review\n', 'utf-8');
+
+    await setupCommand();
+
+    await expect(fs.access(legacySkillDir)).rejects.toThrow();
   });
 
   it('does not duplicate the Codex MCP section on repeated fallback setup runs', async () => {

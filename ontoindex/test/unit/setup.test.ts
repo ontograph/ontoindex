@@ -446,4 +446,54 @@ describe('setupClaudeCode', () => {
 
     expectPackagedMcpEntry(config.mcpServers.ontoindex);
   });
+
+  it('writes OntoIndex agent guidance once for Claude, Codex, and Ontocode', async () => {
+    setPlatform('linux');
+    await fs.mkdir(path.join(tempHome, '.codex'), { recursive: true });
+    await fs.mkdir(path.join(tempHome, '.ontocode'), { recursive: true });
+    await fs.writeFile(
+      path.join(tempHome, '.codex', 'AGENTS.md'),
+      '# Global Agent Instructions\n\n@LEAN-CTX.md\n',
+      'utf-8',
+    );
+    await fs.writeFile(
+      path.join(tempHome, '.ontocode', 'AGENTS.md'),
+      '# Global Agent Instructions\n\n@LEAN-CTX.md\n',
+      'utf-8',
+    );
+    await fs.writeFile(
+      path.join(tempHome, '.claude', 'CLAUDE.md'),
+      '# Global Agent Instructions\n',
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+    await setupCommand();
+
+    for (const dirName of ['.claude', '.codex', '.ontocode']) {
+      const guidance = await fs.readFile(path.join(tempHome, dirName, 'ONTOINDEX.md'), 'utf-8');
+      expect(guidance).toContain('Never claim OntoIndex was used');
+      expect(guidance).toContain('gn_explore');
+    }
+
+    const claudeInstructions = await fs.readFile(
+      path.join(tempHome, '.claude', 'CLAUDE.md'),
+      'utf-8',
+    );
+    const codexInstructions = await fs.readFile(
+      path.join(tempHome, '.codex', 'AGENTS.md'),
+      'utf-8',
+    );
+    const ontocodeInstructions = await fs.readFile(
+      path.join(tempHome, '.ontocode', 'AGENTS.md'),
+      'utf-8',
+    );
+
+    for (const content of [claudeInstructions, codexInstructions, ontocodeInstructions]) {
+      expect(content.match(/@ONTOINDEX\.md/g)).toHaveLength(1);
+    }
+    expect(codexInstructions).toContain('@LEAN-CTX.md');
+    expect(ontocodeInstructions).toContain('@LEAN-CTX.md');
+  });
 });
