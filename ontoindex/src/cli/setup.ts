@@ -397,17 +397,17 @@ async function installClaudeCodeSkills(result: SetupResult): Promise<void> {
  * Install OntoIndex hooks to ~/.claude/settings.json for Claude Code.
  * Merges hook config without overwriting existing hooks.
  */
-async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
-  const claudeDir = path.join(os.homedir(), '.claude');
-  if (!(await dirExists(claudeDir))) return;
+async function installGenericHooks(
+  result: SetupResult,
+  clientName: string,
+  configDir: string,
+  hooksFileName: string,
+): Promise<void> {
+  if (!(await dirExists(configDir))) return;
 
-  const settingsPath = path.join(claudeDir, 'settings.json');
-
-  // Source hooks bundled within the ontoindex package (hooks/claude/)
+  const settingsPath = path.join(configDir, hooksFileName);
   const pluginHooksPath = path.join(__dirname, '..', '..', 'hooks', 'claude');
-
-  // Copy unified hook script to ~/.claude/hooks/ontoindex/
-  const destHooksDir = path.join(claudeDir, 'hooks', 'ontoindex');
+  const destHooksDir = path.join(configDir, 'hooks', 'ontoindex');
 
   try {
     await fs.mkdir(destHooksDir, { recursive: true });
@@ -416,8 +416,6 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
     const dest = path.join(destHooksDir, 'ontoindex-hook.cjs');
     try {
       let content = await fs.readFile(src, 'utf-8');
-      // Inject resolved CLI path so the copied hook can find the CLI
-      // even when it's no longer inside the npm package tree
       const resolvedCli = resolveClaudeHookCliPath();
       const normalizedCli = path.resolve(resolvedCli).replace(/\\/g, '/');
       const jsonCli = JSON.stringify(normalizedCli);
@@ -433,20 +431,16 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
     const hookPath = path.join(destHooksDir, 'ontoindex-hook.cjs').replace(/\\/g, '/');
     const hookCmd = `node "${hookPath.replace(/"/g, '\\"')}"`;
 
-    // Merge hook config into ~/.claude/settings.json
-    const parsedSettings = await readJsonFile(settingsPath);
-    const existing = legacyConfigObject(parsedSettings, 'Claude Code settings');
+    let parsedSettings = await readJsonFile(settingsPath);
+    // Codex/Ontocode use a top-level hooks object usually, but let's be robust
+    const existing = legacyConfigObject(parsedSettings, `${clientName} config`);
     if (!Object.hasOwn(existing, 'hooks')) {
       existing.hooks = {};
     } else if (!isJsonObject(existing.hooks)) {
-      throw new TypeError('Claude Code hooks must be a JSON object');
+      throw new TypeError(`${clientName} hooks must be a JSON object`);
     }
     const hooks = existing.hooks;
 
-    // NOTE: SessionStart hooks are broken on Windows (Claude Code bug #23576).
-    // Session context is delivered via CLAUDE.md / skills instead.
-
-    // Helper: add a hook entry if one with 'ontoindex-hook' isn't already registered
     function ensureHookEntry(
       eventName: string,
       matcher: string,
@@ -461,7 +455,7 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
       } else if (isJsonArray(currentEventHooks)) {
         eventHooks = currentEventHooks;
       } else {
-        throw new TypeError(`Claude Code ${eventName} hooks must be an array`);
+        throw new TypeError(`${clientName} ${eventName} hooks must be an array`);
       }
       const hasHook = eventHooks.some(
         (h) =>
@@ -491,10 +485,32 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
     ensureHookEntry('PostToolUse', 'Bash', 10, 'Checking OntoIndex index freshness...');
 
     await writeJsonFile(settingsPath, existing);
-    result.configured.push('Claude Code hooks (PreToolUse, PostToolUse)');
+    result.configured.push(`${clientName} hooks (PreToolUse, PostToolUse)`);
   } catch (err: unknown) {
-    result.errors.push(`Claude Code hooks: ${caughtMessage(err)}`);
+    result.errors.push(`${clientName} hooks: ${caughtMessage(err)}`);
   }
+}
+
+async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
+  return installGenericHooks(
+    result,
+    'Claude Code',
+    path.join(os.homedir(), '.claude'),
+    'settings.json',
+  );
+}
+
+async function installCodexHooks(result: SetupResult): Promise<void> {
+  return installGenericHooks(result, 'Codex', path.join(os.homedir(), '.codex'), 'hooks.json');
+}
+
+async function installOntocodeHooks(result: SetupResult): Promise<void> {
+  return installGenericHooks(
+    result,
+    'Ontocode',
+    path.join(os.homedir(), '.ontocode'),
+    'hooks.json',
+  );
 }
 
 function resolveClaudeHookCliPath(): string {
@@ -856,12 +872,17 @@ export const setupCommand = async () => {
     'AGENTS.md',
   );
 
-  // Install global skills for platforms that support them
+  // Install global skills and hooks for platforms that support them
   await installClaudeCodeSkills(result);
   await installClaudeCodeHooks(result);
+
   await installCursorSkills(result);
   await installOpenCodeSkills(result);
+
   await installCodexSkills(result);
+  await installCodexHooks(result);
+
+  await installOntocodeHooks(result);
 
   // Print results
   if (result.configured.length > 0) {

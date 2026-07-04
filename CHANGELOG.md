@@ -4,6 +4,14 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.6] - 2026-07-04
+
+### Added
+- Setup CLI now configures native PreToolUse and PostToolUse integration hooks across Codex and Ontocode (in addition to Claude Code) for automatic index augmentation and freshness checks.
+
+### Changed
+- Filtered `minimum`, `maximum`, and `default` boundaries out of the MCP tools JSON schema broadcast, mitigating hallucination issues with strict LLM clients like Gemini without compromising server-side validation.
+
 ## [2.0.5] - 2026-07-04
 
 ### Added

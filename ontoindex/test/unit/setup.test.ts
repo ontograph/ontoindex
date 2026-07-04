@@ -8,6 +8,28 @@ const execFileMock = vi.fn((...args: any[]) => {
   if (typeof callback === 'function') {
     callback(null, '', '');
   }
+
+  it('installs hooks for Codex and Ontocode', async () => {
+    setPlatform('linux');
+    await fs.mkdir(path.join(tempHome, '.codex'), { recursive: true });
+    await fs.mkdir(path.join(tempHome, '.ontocode'), { recursive: true });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const codexHooksRaw = await fs.readFile(path.join(tempHome, '.codex', 'hooks.json'), 'utf-8');
+    const codexHooks = JSON.parse(codexHooksRaw);
+    expect(codexHooks.hooks.PreToolUse).toBeDefined();
+    expect(codexHooks.hooks.PostToolUse).toBeDefined();
+
+    const ontocodeHooksRaw = await fs.readFile(
+      path.join(tempHome, '.ontocode', 'hooks.json'),
+      'utf-8',
+    );
+    const ontocodeHooks = JSON.parse(ontocodeHooksRaw);
+    expect(ontocodeHooks.hooks.PreToolUse).toBeDefined();
+    expect(ontocodeHooks.hooks.PostToolUse).toBeDefined();
+  });
 });
 
 // By default, execFileSync throws (simulating `which ontoindex` not found)
@@ -205,7 +227,7 @@ describe('setupClaudeCode', () => {
 
     await expect(fs.readFile(settingsPath, 'utf-8')).resolves.toBe(original);
     expect(console.log).toHaveBeenCalledWith(
-      '    ! Claude Code hooks: Claude Code settings must be a JSON object',
+      '    ! Claude Code hooks: Claude Code config must be a JSON object',
     );
   });
 
