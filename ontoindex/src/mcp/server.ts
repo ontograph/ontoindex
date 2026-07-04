@@ -368,11 +368,27 @@ export function createMCPServer(backend: LocalBackend, options: { full?: boolean
   const activeTools = options.full
     ? INTERNAL_TOOL_HANDLERS
     : getPublicToolDefinitions({ startupProfile });
+  // Helper to remove strict constraints from schemas for better LLM (e.g. Gemini) compatibility
+  function relaxSchemaForClient(schema: any): any {
+    if (Array.isArray(schema)) {
+      return schema.map(relaxSchemaForClient);
+    }
+    if (schema !== null && typeof schema === 'object') {
+      const relaxed: any = {};
+      for (const [k, v] of Object.entries(schema)) {
+        if (['default', 'minimum', 'maximum', 'minLength'].includes(k)) continue;
+        relaxed[k] = relaxSchemaForClient(v);
+      }
+      return relaxed;
+    }
+    return schema;
+  }
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: activeTools.map((tool) => ({
       name: tool.name,
       description: tool.description,
-      inputSchema: tool.inputSchema,
+      inputSchema: relaxSchemaForClient(tool.inputSchema),
     })),
   }));
 
