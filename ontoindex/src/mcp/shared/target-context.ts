@@ -194,7 +194,11 @@ export async function resolveTargetContext(
   const repoPath = path.resolve(entry.path);
   const execGit = deps.execGit ?? defaultExecGit;
 
-  if (explicitRepo && cwdResolution.status === 'ok' && cwdResolution.entry.path !== repoPath) {
+  if (
+    explicitRepo &&
+    cwdResolution.status === 'ok' &&
+    !sameResolvedPath(cwdResolution.entry.path, repoPath)
+  ) {
     warnings.push(
       repoPathMismatchWarning({
         selector: `explicit repo "${explicitRepo}"`,
@@ -204,7 +208,11 @@ export async function resolveTargetContext(
       }),
     );
   }
-  if (explicitRepo && envResolution?.status === 'ok' && envResolution.entry.path !== repoPath) {
+  if (
+    explicitRepo &&
+    envResolution?.status === 'ok' &&
+    !sameResolvedPath(envResolution.entry.path, repoPath)
+  ) {
     warnings.push(
       repoPathMismatchWarning({
         selector: `explicit repo "${explicitRepo}"`,
@@ -217,7 +225,7 @@ export async function resolveTargetContext(
   if (
     explicitProjectPath &&
     cwdResolution.status === 'ok' &&
-    cwdResolution.entry.path !== repoPath
+    !sameResolvedPath(cwdResolution.entry.path, repoPath)
   ) {
     warnings.push(
       repoPathMismatchWarning({
@@ -231,7 +239,7 @@ export async function resolveTargetContext(
   if (
     explicitProjectPath &&
     envResolution?.status === 'ok' &&
-    envResolution.entry.path !== repoPath
+    !sameResolvedPath(envResolution.entry.path, repoPath)
   ) {
     warnings.push(
       repoPathMismatchWarning({
@@ -265,8 +273,8 @@ export async function resolveTargetContext(
       ? null
       : dirtyWorktree === true || headChangedSinceIndex;
   const selectionMismatch =
-    (envResolution?.status === 'ok' && envResolution.entry.path !== repoPath) ||
-    (cwdResolution.status === 'ok' && cwdResolution.entry.path !== repoPath);
+    (envResolution?.status === 'ok' && !sameResolvedPath(envResolution.entry.path, repoPath)) ||
+    (cwdResolution.status === 'ok' && !sameResolvedPath(cwdResolution.entry.path, repoPath));
   const dirtyWorkspace = resolveDirtyWorkspace({
     dirtyWorktree,
     changedSinceIndex,
@@ -353,6 +361,12 @@ function createBaseContext(targetRef: string, warnings: string[]): TargetContext
   };
 }
 
+function sameResolvedPath(a: string, b: string): boolean {
+  const left = path.resolve(a);
+  const right = path.resolve(b);
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
 async function readRegistrySafely(
   deps: ResolveTargetContextDeps,
   warnings: string[],
@@ -414,7 +428,7 @@ function resolveRegistryEntry(
 function matchesRepo(entry: RegistryEntry, repo: string, allowFuzzy: boolean): boolean {
   const repoLower = repo.toLowerCase();
   if (entry.name.toLowerCase() === repoLower) return true;
-  if (path.resolve(entry.path) === path.resolve(repo)) return true;
+  if (sameResolvedPath(entry.path, repo)) return true;
   return allowFuzzy && entry.name.toLowerCase().includes(repoLower);
 }
 

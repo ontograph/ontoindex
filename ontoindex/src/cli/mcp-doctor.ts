@@ -195,7 +195,9 @@ export function formatMcpDoctorText(report: McpDoctorReport): string {
   }
   if (report.diagnose.mcpResourceBridge) {
     const bridge = report.diagnose.mcpResourceBridge;
-    lines.push(`MCP resource bridge: ${bridge.exposed ? `exposed (${bridge.exposedTo.join(', ')})` : 'not exposed'}`);
+    lines.push(
+      `MCP resource bridge: ${bridge.exposed ? `exposed (${bridge.exposedTo.join(', ')})` : 'not exposed'}`,
+    );
   }
   if (report.diagnose.responseBudgetHealth) {
     const health = report.diagnose.responseBudgetHealth;
@@ -506,7 +508,7 @@ function normalizePath(value: string): string {
 
 function relativeOrAbsolute(baseDir: string, targetPath: string): string {
   const relative = path.relative(baseDir, targetPath);
-  return relative.startsWith('..') ? targetPath : relative || '.';
+  return normalizePath(relative.startsWith('..') ? targetPath : relative || '.');
 }
 
 function looksLikeOntoindexMcpCommand(command: string): boolean {

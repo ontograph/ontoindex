@@ -431,7 +431,7 @@ async function installGenericHooks(
     const hookPath = path.join(destHooksDir, 'ontoindex-hook.cjs').replace(/\\/g, '/');
     const hookCmd = `node "${hookPath.replace(/"/g, '\\"')}"`;
 
-    let parsedSettings = await readJsonFile(settingsPath);
+    const parsedSettings = await readJsonFile(settingsPath);
     // Codex/Ontocode use a top-level hooks object usually, but let's be robust
     const existing = legacyConfigObject(parsedSettings, `${clientName} config`);
     if (!Object.hasOwn(existing, 'hooks')) {

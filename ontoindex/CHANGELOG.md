@@ -4,6 +4,13 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.9] - 2026-07-07
+
+### Fixed
+- Repaired `ontoindex setup` hook installation lint fallout by keeping the parsed settings payload immutable after load.
+- Normalized MCP doctor setup-path output to forward slashes so stale `.claude/settings.local.json` diagnostics stay readable and testable across platforms.
+- Made target-context and diagnose repo-path matching case-insensitive on Windows-style paths, preventing false scope-confidence downgrades and misconfiguration warnings when only path casing differs.
+
 ## [2.0.8] - 2026-07-07
 
 ### Fixed

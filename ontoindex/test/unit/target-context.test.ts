@@ -283,6 +283,31 @@ describe('resolveTargetContext', () => {
     }
   });
 
+  it('matches explicit repo paths case-insensitively on Windows', async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', {
+      value: 'win32',
+      configurable: true,
+    });
+    try {
+      const { resolveTargetContext } = await loadActualResolver();
+
+      const context = await resolveTargetContext(
+        { repo: '/Repo/Test-Repo' },
+        {
+          readRegistry: async () => [registryEntry],
+          execGit: execGitFor(CURRENT_COMMIT),
+        },
+      );
+
+      expect(context.status).toBe('ok');
+      expect(context.repoPath).toBe(path.resolve('/repo/test-repo'));
+      expect(context.scopeConfidence).toBe('high');
+    } finally {
+      if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor);
+    }
+  });
+
   it('prefers cwd resolution over ONTOINDEX_MCP_REPO when they disagree', async () => {
     const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/repo/other');
     const previousRepo = process.env.ONTOINDEX_MCP_REPO;

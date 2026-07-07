@@ -43,7 +43,9 @@ vi.mock('../../../src/core/lbug/lbug-adapter.js', () => ({
 }));
 
 vi.mock('../../../src/core/audit-lifecycle/index.js', () => ({
-  getAuditProjectionPath: vi.fn().mockReturnValue('/tmp/test-repo/.ontoindex/audit/audit-projection.json'),
+  getAuditProjectionPath: vi
+    .fn()
+    .mockReturnValue('/tmp/test-repo/.ontoindex/audit/audit-projection.json'),
   computeAuditFreshness: vi.fn().mockResolvedValue({
     state: 'clean',
     currentHead: 'abc123def456abc123def456abc123def456abc1',
@@ -961,7 +963,9 @@ describe('gnDiagnose', () => {
   });
   // ---- Test 16: Audit freshness diagnostics ---------------------------------
   it('returns status: missing when audit-projection.json does not exist', async () => {
-    vi.spyOn(fs, 'readFile').mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    vi.spyOn(fs, 'readFile').mockRejectedValue(
+      Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
+    );
 
     const report = await gnDiagnose(REPO_ID, {
       checkLsp: false,
@@ -1041,7 +1045,9 @@ describe('gnDiagnose', () => {
       sessionId: 'session-123',
       repairCommand: 'gn_audit_replay({session: "session-123"})',
     });
-    expect(report.recommendations.some((r) => r.severity === 'WARN' && r.detail.includes('stale'))).toBe(true);
+    expect(
+      report.recommendations.some((r) => r.severity === 'WARN' && r.detail.includes('stale')),
+    ).toBe(true);
   });
 
   // ---- Test 17: MCP resource bridge diagnostics -----------------------------
@@ -1066,7 +1072,9 @@ describe('gnDiagnose', () => {
   });
 
   it('includes bounded support diagnostics for the Ladybug store and runtime', async () => {
-    vi.spyOn(fs, 'readFile').mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    vi.spyOn(fs, 'readFile').mockRejectedValue(
+      Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
+    );
     vi.spyOn(fs, 'stat').mockImplementation(async (targetPath: fs.PathLike) => {
       if (targetPath.toString().endsWith('/.ontoindex/lbug')) {
         return { size: 4096, mtime: new Date('2026-06-27T12:00:00.000Z') } as any;
@@ -1107,5 +1115,34 @@ describe('gnDiagnose', () => {
         nativeGetAllMs: 30000,
       },
     });
+  });
+
+  it('does not flag repo path mismatches that differ only by case on Windows', async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    const previousProjectCwd = process.env.ONTOINDEX_MCP_PROJECT_CWD;
+    Object.defineProperty(process, 'platform', {
+      value: 'win32',
+      configurable: true,
+    });
+    process.env.ONTOINDEX_MCP_PROJECT_CWD = '/Repo/Test-Repo';
+    mockResolveTargetContext.mockResolvedValue({
+      ...TARGET_CONTEXT,
+      repoPath: '/repo/test-repo',
+    });
+
+    try {
+      const report = await gnDiagnose(REPO_ID, {
+        checkLsp: false,
+        checkEmbeddings: false,
+        checkIndexFreshness: false,
+        checkToolContract: false,
+      });
+
+      expect(report.misconfiguration).toEqual({ status: 'ok' });
+    } finally {
+      if (previousProjectCwd === undefined) delete process.env.ONTOINDEX_MCP_PROJECT_CWD;
+      else process.env.ONTOINDEX_MCP_PROJECT_CWD = previousProjectCwd;
+      if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor);
+    }
   });
 });

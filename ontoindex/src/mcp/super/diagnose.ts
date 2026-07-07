@@ -15,10 +15,7 @@ import type { ToolContractReport } from './tool-contract.js';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
-import {
-  getAuditProjectionPath,
-  computeAuditFreshness,
-} from '../../core/audit-lifecycle/index.js';
+import { getAuditProjectionPath, computeAuditFreshness } from '../../core/audit-lifecycle/index.js';
 import { createEnvelopeFromLegacy } from '../shared/response-envelope.js';
 import type { CapabilityResponseEnvelope } from '../shared/response-envelope.js';
 import { shellQuote } from '../shared/repo-resolution-errors.js';
@@ -254,6 +251,12 @@ function parsePositiveInt(
   return Math.max(min, Math.min(max, parsed));
 }
 
+function sameResolvedPath(a: string, b: string): boolean {
+  const left = path.resolve(a);
+  const right = path.resolve(b);
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
 function buildClassificationSummary(): DiagnoseReport['classification'] {
   const contracts = getResourceContractSummaries();
   const byEvidenceClass = createEmptyEvidenceReadClassCounts();
@@ -382,7 +385,9 @@ async function readOptionalFileStat(filePath: string): Promise<{
   }
 }
 
-async function buildSupportDiagnostics(repoPath: string): Promise<NonNullable<DiagnoseReport['support']>> {
+async function buildSupportDiagnostics(
+  repoPath: string,
+): Promise<NonNullable<DiagnoseReport['support']>> {
   const { lbugPath } = getStoragePaths(repoPath);
   const [storeStat, walStat, lockStat, runtime] = await Promise.all([
     readOptionalFileStat(lbugPath),
@@ -426,10 +431,10 @@ function buildMisconfigurationReport(
   const activeRepoLabel = targetContext?.repoLabel ?? targetContext?.repoKey;
   const pathMismatch =
     activeRepoPath !== undefined &&
-    ((projectCwd !== undefined && path.resolve(projectCwd) !== path.resolve(activeRepoPath)) ||
+    ((projectCwd !== undefined && !sameResolvedPath(projectCwd, activeRepoPath)) ||
       (mcpRepo !== undefined &&
         path.isAbsolute(mcpRepo) &&
-        path.resolve(mcpRepo) !== path.resolve(activeRepoPath)));
+        !sameResolvedPath(mcpRepo, activeRepoPath)));
   const targetMismatch =
     targetContext?.status === 'ambiguous' || targetContext?.status === 'not-found' || pathMismatch;
 
@@ -466,14 +471,14 @@ function buildRuntimeContextSummary(options: {
   );
   return {
     ...(targetContext?.status === 'ok'
-        ? {
-            repoLabel: targetContext.repoLabel ?? targetContext.repoKey,
-            repoPath: targetContext.repoPath,
-            targetHead: targetContext.targetHead ?? targetContext.currentHead ?? undefined,
-            indexedHead: targetContext.indexedHead ?? undefined,
-            scopeConfidence: targetContext.scopeConfidence ?? 'unknown',
-          }
-        : runtimeHealth
+      ? {
+          repoLabel: targetContext.repoLabel ?? targetContext.repoKey,
+          repoPath: targetContext.repoPath,
+          targetHead: targetContext.targetHead ?? targetContext.currentHead ?? undefined,
+          indexedHead: targetContext.indexedHead ?? undefined,
+          scopeConfidence: targetContext.scopeConfidence ?? 'unknown',
+        }
+      : runtimeHealth
         ? {
             repoLabel: runtimeHealth.repoLabel,
             repoPath: runtimeHealth.repoPath,
@@ -846,7 +851,9 @@ export async function gnDiagnose(
             sessionId,
             ...(repairCommand ? { repairCommand } : {}),
           };
-          warnings.push(`computeAuditFreshness failed: ${err instanceof Error ? err.message : String(err)}`);
+          warnings.push(
+            `computeAuditFreshness failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       } else {
         auditFreshness = { status: 'missing' };
@@ -856,7 +863,9 @@ export async function gnDiagnose(
         auditFreshness = { status: 'missing' };
       } else {
         auditFreshness = { status: 'unknown' };
-        warnings.push(`failed to load audit projection status: ${error instanceof Error ? error.message : String(error)}`);
+        warnings.push(
+          `failed to load audit projection status: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
   } else {
@@ -871,13 +880,16 @@ export async function gnDiagnose(
     if (!bridgeReport.exposed) {
       recommendations.push({
         severity: 'INFO',
-        detail: 'OntoIndex MCP server is not registered in known client configurations (Claude Code, Cursor, OpenCode, Codex, Ontocode).',
+        detail:
+          'OntoIndex MCP server is not registered in known client configurations (Claude Code, Cursor, OpenCode, Codex, Ontocode).',
         fix: 'Run ontoindex setup to register the MCP server in your tools.',
       });
     }
   } catch (err) {
     mcpResourceBridge = { exposed: false, exposedTo: [] };
-    warnings.push(`checkMcpResourceBridge failed: ${err instanceof Error ? err.message : String(err)}`);
+    warnings.push(
+      `checkMcpResourceBridge failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   // ---- 8.7. Support diagnostics ---------------------------------------------
@@ -1057,7 +1069,6 @@ export async function gnDiagnose(
     nextTools: ['gn_ensure_fresh', 'gn_quality_mode', 'gn_tool_contract'],
   });
 }
-
 
 async function checkMcpResourceBridge(): Promise<{ exposed: boolean; exposedTo: string[] }> {
   const exposedTo: string[] = [];
