@@ -198,7 +198,10 @@ function extractTypedFacts(
 function parseFrontmatterMetadata(lines: ParsedLine[]): ParsedFrontmatter {
   const metadata: MarkdownFrontmatterMetadata = {};
   const trackerFields: Partial<
-    Record<'openTasks' | 'blockedReasons' | 'reopenCriteria' | 'noDispatchReason' | 'nextAction', ParsedTrackerField>
+    Record<
+      'openTasks' | 'blockedReasons' | 'reopenCriteria' | 'noDispatchReason' | 'nextAction',
+      ParsedTrackerField
+    >
   > = {};
   if (lines[0]?.text.trim() !== '---') {
     return { metadata };
@@ -697,7 +700,10 @@ function trackerListKey(
 
 function ensureTrackerField(
   trackerFields: Partial<
-    Record<'openTasks' | 'blockedReasons' | 'reopenCriteria' | 'noDispatchReason' | 'nextAction', ParsedTrackerField>
+    Record<
+      'openTasks' | 'blockedReasons' | 'reopenCriteria' | 'noDispatchReason' | 'nextAction',
+      ParsedTrackerField
+    >
   >,
   key: 'openTasks' | 'blockedReasons' | 'reopenCriteria',
   line: ParsedLine,
@@ -707,7 +713,10 @@ function ensureTrackerField(
 
 function appendTrackerValue(
   trackerFields: Partial<
-    Record<'openTasks' | 'blockedReasons' | 'reopenCriteria' | 'noDispatchReason' | 'nextAction', ParsedTrackerField>
+    Record<
+      'openTasks' | 'blockedReasons' | 'reopenCriteria' | 'noDispatchReason' | 'nextAction',
+      ParsedTrackerField
+    >
   >,
   key: 'openTasks' | 'blockedReasons' | 'reopenCriteria' | 'noDispatchReason' | 'nextAction',
   value: string | undefined,
@@ -731,7 +740,10 @@ function parseFrontmatterListValue(value: string): string[] {
 
 function buildTrackerState(
   trackerFields: Partial<
-    Record<'openTasks' | 'blockedReasons' | 'reopenCriteria' | 'noDispatchReason' | 'nextAction', ParsedTrackerField>
+    Record<
+      'openTasks' | 'blockedReasons' | 'reopenCriteria' | 'noDispatchReason' | 'nextAction',
+      ParsedTrackerField
+    >
   >,
 ): ParsedTrackerState | undefined {
   const openTasks = trackerFields.openTasks?.values ?? [];

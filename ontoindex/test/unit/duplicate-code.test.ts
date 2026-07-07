@@ -25,13 +25,16 @@ describe('buildJscpdArgs', () => {
   });
 
   it('applies min-lines/min-tokens and merges user excludes and includes', () => {
-    const args = buildJscpdArgs({
-      minLines: '30',
-      minTokens: '70',
-      exclude: ['**/legacy/**'],
-      include: ['src/**'],
-      path: 'packages/app',
-    }, '/tmp/out');
+    const args = buildJscpdArgs(
+      {
+        minLines: '30',
+        minTokens: '70',
+        exclude: ['**/legacy/**'],
+        include: ['src/**'],
+        path: 'packages/app',
+      },
+      '/tmp/out',
+    );
     expect(args).toContain('--min-lines');
     expect(args[args.indexOf('--min-lines') + 1]).toBe('30');
     expect(args[args.indexOf('--min-tokens') + 1]).toBe('70');
@@ -128,7 +131,6 @@ describe('formatSummary', () => {
 // duplicateCodeCommand guards (no real jscpd spawn)
 // ---------------------------------------------------------------------------
 
-
 describe('duplicateCodeCommand mode guards', () => {
   let errSpy: ReturnType<typeof vi.spyOn>;
 
@@ -141,7 +143,7 @@ describe('duplicateCodeCommand mode guards', () => {
     process.exitCode = undefined;
   });
 
-  it("rejects --mode both with a non-zero exit and no spawn", async () => {
+  it('rejects --mode both with a non-zero exit and no spawn', async () => {
     const { duplicateCodeCommand } = await import('../../src/cli/duplicate-code.js');
     await duplicateCodeCommand({ mode: 'both' });
     expect(process.exitCode).toBe(2);

@@ -323,7 +323,8 @@ describe('status command behavior', () => {
       const actual = await vi.importActual<any>('../../src/core/audit-lifecycle/index.js');
       return {
         ...actual,
-        computeAuditFreshness: (...args: any[]) => auditFreshnessMocks.computeAuditFreshness(...args),
+        computeAuditFreshness: (...args: any[]) =>
+          auditFreshnessMocks.computeAuditFreshness(...args),
       };
     });
     vi.doMock('../../src/core/runtime/runtime-health.js', async () => {
@@ -341,9 +342,7 @@ describe('status command behavior', () => {
     vi.restoreAllMocks();
   });
 
-  function makeDiagnoseReport(
-    overrides: Partial<DiagnoseReport> = {},
-  ): DiagnoseReport {
+  function makeDiagnoseReport(overrides: Partial<DiagnoseReport> = {}): DiagnoseReport {
     return {
       version: 1,
       classification: {

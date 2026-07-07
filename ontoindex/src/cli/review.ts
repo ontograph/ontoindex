@@ -260,9 +260,7 @@ export async function reviewDiffCommand(opts: ReviewDiffOptions): Promise<void> 
     const scoped = scopeChangedPathsByPrefixes(allChangedPaths, opts.includePath ?? []);
     changedPaths = scoped.inScopePaths;
     if (scoped.omittedPaths.length > 0) {
-      warnings.push(
-        formatScopedPathOmissionWarning(scoped.omittedPaths, opts.includePath ?? []),
-      );
+      warnings.push(formatScopedPathOmissionWarning(scoped.omittedPaths, opts.includePath ?? []));
     }
     if (changedPaths.length > MAX_CHANGED_PATHS) {
       changedPaths = changedPaths.slice(0, MAX_CHANGED_PATHS);

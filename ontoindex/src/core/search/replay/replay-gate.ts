@@ -10,8 +10,7 @@ export interface RetrievalReplayVectorBackendComparison {
   expectedAnchorRegression?: boolean;
 }
 
-export interface RetrievalReplayVectorBackendGateResult
-  extends RetrievalReplayVectorBackendComparison {
+export interface RetrievalReplayVectorBackendGateResult extends RetrievalReplayVectorBackendComparison {
   medianSpeedup?: number;
   verdict: RetrievalReplayVerdict;
   reasons: string[];

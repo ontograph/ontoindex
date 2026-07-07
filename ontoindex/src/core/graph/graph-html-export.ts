@@ -98,10 +98,7 @@ function sortSliceOptions(options: Iterable<GraphHtmlSliceOption>): GraphHtmlSli
 function readOptionalGraphMetadata(
   source: Record<string, unknown>,
   nested?: Record<string, unknown>,
-): Pick<
-  GraphHtmlPayloadNode,
-  'provenance' | 'truncated' | 'omittedCount' | 'community'
-> {
+): Pick<GraphHtmlPayloadNode, 'provenance' | 'truncated' | 'omittedCount' | 'community'> {
   const read = (key: string): unknown => {
     if (Object.prototype.hasOwnProperty.call(source, key)) return source[key];
     if (nested && Object.prototype.hasOwnProperty.call(nested, key)) return nested[key];

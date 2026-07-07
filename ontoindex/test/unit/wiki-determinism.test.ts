@@ -18,12 +18,7 @@ const llmConfig = {
 };
 
 function makeGenerator(): WikiGenerator {
-  return new WikiGenerator(
-    '/repo',
-    '/repo/.ontoindex',
-    '/repo/.ontoindex/lbug',
-    llmConfig,
-  );
+  return new WikiGenerator('/repo', '/repo/.ontoindex', '/repo/.ontoindex/lbug', llmConfig);
 }
 
 describe('wiki determinism cleanup', () => {
@@ -82,7 +77,10 @@ describe('wiki determinism cleanup', () => {
   it('embeds markdown pages in sorted file order', async () => {
     await fs.writeFile(path.join(tmpDir, 'b.md'), 'B', 'utf-8');
     await fs.writeFile(path.join(tmpDir, 'a.md'), 'A', 'utf-8');
-    await fs.writeFile(path.join(tmpDir, 'meta.json'), JSON.stringify({ generatedAt: '2026-06-17T00:00:00.000Z' }));
+    await fs.writeFile(
+      path.join(tmpDir, 'meta.json'),
+      JSON.stringify({ generatedAt: '2026-06-17T00:00:00.000Z' }),
+    );
     await fs.writeFile(path.join(tmpDir, 'module_tree.json'), JSON.stringify([]));
 
     const outputPath = await generateHTMLViewer(tmpDir, 'Repo');

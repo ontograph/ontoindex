@@ -4,10 +4,7 @@ import { gunzipSync } from 'node:zlib';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import {
-  exportBootstrapCommand,
-  exportBootstrapHydrateCommand,
-} from '../../src/cli/export.js';
+import { exportBootstrapCommand, exportBootstrapHydrateCommand } from '../../src/cli/export.js';
 import {
   RegistryNameCollisionError,
   getStoragePaths,
@@ -171,20 +168,20 @@ describe('bootstrap export and hydrate', () => {
       lastCommit: 'abc123def456',
       indexedAt: '2026-06-30T00:00:00.000Z',
     });
-    await expect(fs.readFile(path.join(restoredPaths.storagePath, 'snapshot.json'), 'utf8')).resolves.toBe(
-      originalSnapshot,
-    );
-    await expect(fs.readFile(path.join(restoredPaths.storagePath, 'bootstrap-source.json'), 'utf8')).resolves.toContain(
-      '"sourceIndexedCommit": "abc123def456"',
-    );
-    await expect(fs.readFile(path.join(restoreHandle.dbPath, '.gitignore'), 'utf8')).resolves.toContain(
-      '.ontoindex',
-    );
+    await expect(
+      fs.readFile(path.join(restoredPaths.storagePath, 'snapshot.json'), 'utf8'),
+    ).resolves.toBe(originalSnapshot);
+    await expect(
+      fs.readFile(path.join(restoredPaths.storagePath, 'bootstrap-source.json'), 'utf8'),
+    ).resolves.toContain('"sourceIndexedCommit": "abc123def456"');
+    await expect(
+      fs.readFile(path.join(restoreHandle.dbPath, '.gitignore'), 'utf8'),
+    ).resolves.toContain('.ontoindex');
 
     const entries = await listRegisteredRepos();
-    expect(entries.some((entry) => path.resolve(entry.path) === path.resolve(restoreHandle.dbPath))).toBe(
-      true,
-    );
+    expect(
+      entries.some((entry) => path.resolve(entry.path) === path.resolve(restoreHandle.dbPath)),
+    ).toBe(true);
   });
 
   it('force hydrate replaces stale snapshot state from an older local index', async () => {
@@ -212,12 +209,12 @@ describe('bootstrap export and hydrate', () => {
     await exportBootstrapHydrateCommand(artifactPath, { repo: restoreHandle.dbPath, force: true });
 
     await expect(fs.readFile(restoredPaths.lbugPath)).resolves.toEqual(originalLbug);
-    await expect(fs.readFile(path.join(restoredPaths.storagePath, 'snapshot.json'), 'utf8')).resolves.toBe(
-      originalSnapshot,
-    );
-    await expect(fs.readFile(path.join(restoredPaths.storagePath, 'bootstrap-source.json'), 'utf8')).resolves.toContain(
-      '"sourceIndexedCommit": "abc123def456"',
-    );
+    await expect(
+      fs.readFile(path.join(restoredPaths.storagePath, 'snapshot.json'), 'utf8'),
+    ).resolves.toBe(originalSnapshot);
+    await expect(
+      fs.readFile(path.join(restoredPaths.storagePath, 'bootstrap-source.json'), 'utf8'),
+    ).resolves.toContain('"sourceIndexedCommit": "abc123def456"');
   });
 
   it('preserves bare relative repo paths for bootstrap export', async () => {
@@ -290,8 +287,12 @@ describe('bootstrap export and hydrate', () => {
     const restoredPaths = getStoragePaths(restoreHandle.dbPath);
     expect(await loadMeta(restoredPaths.storagePath)).toBeNull();
     await expect(fs.access(restoredPaths.lbugPath)).rejects.toThrow();
-    await expect(fs.access(path.join(restoredPaths.storagePath, 'snapshot.json'))).rejects.toThrow();
-    await expect(fs.access(path.join(restoredPaths.storagePath, 'bootstrap-source.json'))).rejects.toThrow();
+    await expect(
+      fs.access(path.join(restoredPaths.storagePath, 'snapshot.json')),
+    ).rejects.toThrow();
+    await expect(
+      fs.access(path.join(restoredPaths.storagePath, 'bootstrap-source.json')),
+    ).rejects.toThrow();
 
     await exportBootstrapHydrateCommand(artifactPath, {
       repo: restoreHandle.dbPath,

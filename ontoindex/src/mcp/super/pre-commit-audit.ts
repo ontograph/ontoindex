@@ -479,7 +479,8 @@ export async function gnPreCommitAudit(
   if (changedPaths.length === 0) {
     return baseReport({
       verdict: 'READY',
-      reasoning: includePaths.length > 0 ? 'No in-scope changes to audit' : 'No staged changes to audit',
+      reasoning:
+        includePaths.length > 0 ? 'No in-scope changes to audit' : 'No staged changes to audit',
       preCommitChecklist: [
         {
           check: 'staged diff non-empty',

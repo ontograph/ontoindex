@@ -40,7 +40,11 @@ export function classifyGraphFactProvenance(input: GraphFactProvenanceInput): Gr
     return 'ambiguous';
   }
 
-  if (typeof input.confidence !== 'number' || !Number.isFinite(input.confidence) || input.confidence < 0.5) {
+  if (
+    typeof input.confidence !== 'number' ||
+    !Number.isFinite(input.confidence) ||
+    input.confidence < 0.5
+  ) {
     return 'ambiguous';
   }
 

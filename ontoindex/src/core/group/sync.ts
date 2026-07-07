@@ -45,7 +45,14 @@ const SHARED_LIB_SOURCE_EXTENSIONS = new Set([
   '.cxx',
   '.cu',
 ]);
-const INCLUDE_ROOT_DIR_NAMES = new Set(['include', 'includes', 'inc', 'header', 'headers', 'public']);
+const INCLUDE_ROOT_DIR_NAMES = new Set([
+  'include',
+  'includes',
+  'inc',
+  'header',
+  'headers',
+  'public',
+]);
 const COMMON_TOOLCHAIN_HEADERS = new Set([
   'assert.h',
   'errno.h',
@@ -148,9 +155,9 @@ function addLocalIncludeCandidate(candidates: Set<string>, candidatePath: string
 function collectIncludeRoots(headerFiles: string[]): string[] {
   const includeRoots = new Set<string>();
   for (const filePath of headerFiles) {
-      const normalizedPath = normalizeIncludePath(filePath);
-      const parts = normalizedPath.split('/');
-      for (let i = 0; i < parts.length - 1; i++) {
+    const normalizedPath = normalizeIncludePath(filePath);
+    const parts = normalizedPath.split('/');
+    for (let i = 0; i < parts.length - 1; i++) {
       if (!INCLUDE_ROOT_DIR_NAMES.has(parts[i].toLowerCase())) continue;
       includeRoots.add(parts.slice(0, i + 1).join('/'));
     }
@@ -285,7 +292,10 @@ async function extractSharedLibContracts(
         continue;
       }
 
-      if (includeKind === 'angle' && COMMON_TOOLCHAIN_HEADERS.has(normalizedInclude.toLowerCase())) {
+      if (
+        includeKind === 'angle' &&
+        COMMON_TOOLCHAIN_HEADERS.has(normalizedInclude.toLowerCase())
+      ) {
         continue;
       }
       if (!shouldExtractIncludePath(normalizedInclude)) continue;
@@ -346,8 +356,10 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           const boundaries = await detectServiceBoundaries(handle.repoPath);
 
           if (config.detect.shared_libs) {
-            const extracted = await extractSharedLibContracts(handle.repoPath, groupPath, (filePath) =>
-              assignService(filePath, boundaries),
+            const extracted = await extractSharedLibContracts(
+              handle.repoPath,
+              groupPath,
+              (filePath) => assignService(filePath, boundaries),
             );
             autoContracts.push(...extracted);
           }

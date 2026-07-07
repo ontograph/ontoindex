@@ -183,13 +183,21 @@ describe('direct CLI tool commands', () => {
 
     expect(writeSyncMock).toHaveBeenCalledWith(
       1,
-      expect.stringContaining('Warnings:\n  - Omitted 1 changed file outside include_paths (src): docs/notes.md'),
+      expect.stringContaining(
+        'Warnings:\n  - Omitted 1 changed file outside include_paths (src): docs/notes.md',
+      ),
     );
   });
 
   it('prints scoped no-change messages from detect_changes summary', async () => {
     callToolMock.mockResolvedValue({
-      summary: { changed_files: 0, changed_count: 0, affected_count: 0, risk_level: 'none', message: 'No in-scope changes detected.' },
+      summary: {
+        changed_files: 0,
+        changed_count: 0,
+        affected_count: 0,
+        risk_level: 'none',
+        message: 'No in-scope changes detected.',
+      },
       warnings: ['Omitted 1 changed file outside include_paths (src): docs/notes.md'],
     });
     const { detectChangesCommand } = await import('../../src/cli/tool.js');
@@ -198,7 +206,9 @@ describe('direct CLI tool commands', () => {
 
     expect(writeSyncMock).toHaveBeenCalledWith(
       1,
-      expect.stringContaining('No in-scope changes detected.\n\nWarnings:\n  - Omitted 1 changed file outside include_paths (src): docs/notes.md'),
+      expect.stringContaining(
+        'No in-scope changes detected.\n\nWarnings:\n  - Omitted 1 changed file outside include_paths (src): docs/notes.md',
+      ),
     );
   });
 

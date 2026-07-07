@@ -576,7 +576,8 @@ export const explainPathScope = async (
       reason: builtin.reason ?? 'builtin-ignore',
       matchedPattern: builtin.matchedPattern,
       source: builtin.source,
-      suggestedFix: 'remove or narrow the built-in/generated ignore source if this file is required',
+      suggestedFix:
+        'remove or narrow the built-in/generated ignore source if this file is required',
     };
   }
 

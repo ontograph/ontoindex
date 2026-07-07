@@ -98,10 +98,7 @@ export interface NormalizedReport {
  * Normalize raw jscpd JSON into the ADR-required report shape. Pure function.
  * Tolerates missing fields so a parse failure never throws mid-report.
  */
-export function normalizeJscpdJson(
-  raw: unknown,
-  options: DuplicateCodeOptions,
-): NormalizedReport {
+export function normalizeJscpdJson(raw: unknown, options: DuplicateCodeOptions): NormalizedReport {
   const obj = (raw ?? {}) as Record<string, unknown>;
   const duplicates = Array.isArray(obj.duplicates) ? obj.duplicates : [];
   const statistics = (obj.statistics ?? {}) as Record<string, unknown>;

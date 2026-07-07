@@ -1,9 +1,6 @@
 import path from 'node:path';
 
-import {
-  explainPathScope,
-  type FileScopeExplanation,
-} from '../../config/ignore-service.js';
+import { explainPathScope, type FileScopeExplanation } from '../../config/ignore-service.js';
 import { walkRepositoryPaths } from '../ingestion/filesystem-walker.js';
 
 export interface FileScopePreview {

@@ -302,9 +302,9 @@ describe('gnPreCommitAudit', () => {
         expect.stringContaining('Omitted 1 changed file outside includePaths (src): docs/note.md'),
       ]),
     );
-    expect(
-      report.preCommitChecklist.find((c) => c.check === 'staged diff non-empty')?.detail,
-    ).toBe('no in-scope changes');
+    expect(report.preCommitChecklist.find((c) => c.check === 'staged diff non-empty')?.detail).toBe(
+      'no in-scope changes',
+    );
   });
 
   // ---- Test 5: scope 'branch' uses main...HEAD git diff args -------------

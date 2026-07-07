@@ -29,10 +29,10 @@ describe('LadybugDB extension cache lookup', () => {
       process.env.ONTOINDEX_LADYBUG_EXTENSIONS_CACHE = originalCache;
     }
     if (platformDir) {
-      return fs.rm(
-        path.join(repoRoot, 'dist', 'ladybugdb-extensions', 'v0.17.0', platformDir),
-        { recursive: true, force: true },
-      );
+      return fs.rm(path.join(repoRoot, 'dist', 'ladybugdb-extensions', 'v0.17.0', platformDir), {
+        recursive: true,
+        force: true,
+      });
     }
   });
 

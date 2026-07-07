@@ -348,7 +348,10 @@ function filterFileDiffsByIncludePaths(
   return { inScopeDiffs, omittedPaths };
 }
 
-function formatOmittedPathsWarning(omittedPaths: readonly string[], includePaths: readonly string[]): string {
+function formatOmittedPathsWarning(
+  omittedPaths: readonly string[],
+  includePaths: readonly string[],
+): string {
   const preview = omittedPaths.slice(0, 3).join(', ');
   const extraCount = Math.max(0, omittedPaths.length - 3);
   const suffix = extraCount > 0 ? `, and ${extraCount} more` : '';

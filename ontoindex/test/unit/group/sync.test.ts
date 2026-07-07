@@ -392,7 +392,9 @@ describe('syncGroup', () => {
       );
 
       expect(
-        result.contracts.filter((contract) => contract.type === 'lib' && contract.role === 'consumer'),
+        result.contracts.filter(
+          (contract) => contract.type === 'lib' && contract.role === 'consumer',
+        ),
       ).toHaveLength(0);
       expect(
         result.contracts.some(
@@ -428,7 +430,9 @@ describe('syncGroup', () => {
       );
 
       expect(
-        result.contracts.filter((contract) => contract.type === 'lib' && contract.role === 'consumer'),
+        result.contracts.filter(
+          (contract) => contract.type === 'lib' && contract.role === 'consumer',
+        ),
       ).toHaveLength(0);
       expect(
         result.contracts.some(
@@ -464,7 +468,9 @@ describe('syncGroup', () => {
       );
 
       expect(
-        result.contracts.filter((contract) => contract.type === 'lib' && contract.role === 'consumer'),
+        result.contracts.filter(
+          (contract) => contract.type === 'lib' && contract.role === 'consumer',
+        ),
       ).toHaveLength(0);
       expect(
         result.contracts.some(
@@ -737,7 +743,9 @@ describe('syncGroup', () => {
       );
 
       expect(
-        result.contracts.filter((contract) => contract.type === 'lib' && contract.role === 'consumer'),
+        result.contracts.filter(
+          (contract) => contract.type === 'lib' && contract.role === 'consumer',
+        ),
       ).toHaveLength(0);
       expect(result.crossLinks).toHaveLength(0);
     } finally {

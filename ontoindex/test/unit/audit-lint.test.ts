@@ -298,7 +298,9 @@ describe('audit lifecycle lint', () => {
       nextCursor: (result.cursor as { next?: string }).next,
       expandHint: `Rerun gn_audit_lint with cursor:"${(result.cursor as { next?: string }).next}" to fetch the next page.`,
     });
-    expect(result.responseContract.anchors).toEqual(['repo:A-1:report:open-requires-fresh-evidence']);
+    expect(result.responseContract.anchors).toEqual([
+      'repo:A-1:report:open-requires-fresh-evidence',
+    ]);
     expect(result.issues).toEqual([expect.objectContaining({ findingId: 'A-1' })]);
 
     const nextPage = await runAuditLint('/repo', {

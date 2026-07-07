@@ -798,8 +798,8 @@ function buildPrReadinessPack(options: {
   const verdict: PrReadinessVerdict = stopConditions.some((item) => item.severity === 'ERROR')
     ? 'BLOCKED'
     : stopConditions.some((item) => item.severity === 'WARN')
-    ? 'REVIEW'
-    : 'READY';
+      ? 'REVIEW'
+      : 'READY';
 
   return {
     profile: 'pr-pack',
@@ -1334,8 +1334,8 @@ export async function gnDiffImpact(
         diffOutputBudget.summary.truncatedSymbolCount,
       expandHint:
         omittedChangedPathCount +
-        diffOutputBudget.summary.truncatedFileCount +
-        diffOutputBudget.summary.truncatedSymbolCount >
+          diffOutputBudget.summary.truncatedFileCount +
+          diffOutputBudget.summary.truncatedSymbolCount >
         0
           ? createReviewDiffExpandHint(
               'gn_diff_impact',
@@ -1559,8 +1559,8 @@ export async function gnReviewDiff(
       finalBudget.degradedReasons.length > 0
         ? 'partial'
         : diagnostics.summary.authoritative > 0
-        ? 'verified'
-      : 'unverified',
+          ? 'verified'
+          : 'unverified',
     reasons: uniqueStrings([
       ...finalBudget.truncatedReasons,
       ...finalBudget.degradedReasons,

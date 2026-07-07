@@ -251,7 +251,9 @@ describe('CLI end-to-end', () => {
           `stderr: ${hydrateResult.stderr}`,
         ].join('\n'),
       ).toBe(0);
-      expect(fs.existsSync(path.join(clonedRepo, '.ontoindex', 'bootstrap-source.json'))).toBe(true);
+      expect(fs.existsSync(path.join(clonedRepo, '.ontoindex', 'bootstrap-source.json'))).toBe(
+        true,
+      );
       expect(fs.existsSync(path.join(clonedRepo, '.ontoindex', 'snapshot.json'))).toBe(true);
       expect(fs.readFileSync(path.join(clonedRepo, '.gitignore'), 'utf8')).toContain('.ontoindex');
 

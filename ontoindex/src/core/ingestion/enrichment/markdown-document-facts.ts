@@ -222,9 +222,7 @@ export function isMarkdownDocOwnerFact(fact: EnrichmentFact): fact is MarkdownDo
   return fact.kind === 'markdown-doc-owner';
 }
 
-export function isMarkdownTrackerStateFact(
-  fact: EnrichmentFact,
-): fact is MarkdownTrackerStateFact {
+export function isMarkdownTrackerStateFact(fact: EnrichmentFact): fact is MarkdownTrackerStateFact {
   return fact.kind === 'markdown-tracker-state';
 }
 

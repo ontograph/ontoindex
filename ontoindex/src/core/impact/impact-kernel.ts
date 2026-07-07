@@ -1,8 +1,5 @@
 import { executeParameterized, executeQuery } from '../lbug/pool-adapter.js';
-import {
-  classifyGraphFactProvenance,
-  type GraphFactProvenance,
-} from '../graph/fact-provenance.js';
+import { classifyGraphFactProvenance, type GraphFactProvenance } from '../graph/fact-provenance.js';
 
 export type ImpactKernelDirection = 'upstream' | 'downstream';
 export type ImpactKernelCountScope = 'unique-direct-nodes' | 'unique-transitive-nodes';

@@ -686,9 +686,7 @@ export class WikiGenerator {
     }
 
     // Get cross-child call edges
-    const allChildFiles = node.children
-      .flatMap((c) => c.files)
-      .sort((a, b) => a.localeCompare(b));
+    const allChildFiles = node.children.flatMap((c) => c.files).sort((a, b) => a.localeCompare(b));
     const crossCalls = await getIntraModuleCallEdges(allChildFiles);
     const processes = await getProcessesForFiles(allChildFiles, 3);
 

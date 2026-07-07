@@ -330,7 +330,9 @@ const defaultLbugExtensionsCacheDir = (): string | null => {
 const bundledLbugExtensionsDir = (): string | null => {
   const platformDir = currentLbugExtensionPlatformDir();
   if (!platformDir) return null;
-  const packageRoot = path.dirname(fileURLToPath(new URL('../../../package.json', import.meta.url)));
+  const packageRoot = path.dirname(
+    fileURLToPath(new URL('../../../package.json', import.meta.url)),
+  );
   return path.join(
     packageRoot,
     'dist',

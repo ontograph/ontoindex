@@ -338,7 +338,9 @@ describe('mcp-doctor', () => {
     );
 
     const formatted = formatMcpDoctorText(report);
-    expect(formatted).toContain('Audit freshness: stale (target deadbeefdead vs current abc123def456)');
+    expect(formatted).toContain(
+      'Audit freshness: stale (target deadbeefdead vs current abc123def456)',
+    );
     expect(formatted).toContain('Audit repair: gn_audit_replay({session: "session-123"})');
     expect(formatted).toContain('MCP resource bridge: exposed (Claude Code, Codex)');
   });

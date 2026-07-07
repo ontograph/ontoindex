@@ -211,7 +211,9 @@ function describeRuntimeStatus(health: Awaited<ReturnType<typeof readRuntimeHeal
   return '⚠️ degraded (runtime artifacts present)';
 }
 
-function formatGraphIndexStatus(freshness: DiagnoseReport['runtimeContextSummary']['freshness']): string {
+function formatGraphIndexStatus(
+  freshness: DiagnoseReport['runtimeContextSummary']['freshness'],
+): string {
   switch (freshness) {
     case 'fresh':
       return 'clean';
@@ -319,7 +321,9 @@ async function printDiagnosticsSummary(repoRoot: string, _storagePath: string) {
     });
   } catch (error) {
     console.log('');
-    console.log(`Diagnostics: unavailable (${error instanceof Error ? error.message : String(error)})`);
+    console.log(
+      `Diagnostics: unavailable (${error instanceof Error ? error.message : String(error)})`,
+    );
     return;
   }
 

@@ -52,9 +52,9 @@ describe('collectFileScopePreview', () => {
     expect(preview.topSkippedDirectories).toEqual([
       { path: 'src', count: 1, reason: 'large-file' },
     ]);
-    expect(preview.warnings.some((warning) => warning.includes('large-file-skipped:src/big.ts'))).toBe(
-      true,
-    );
+    expect(
+      preview.warnings.some((warning) => warning.includes('large-file-skipped:src/big.ts')),
+    ).toBe(true);
     expect(preview.largestIncludedFiles.map((file) => file.path)).not.toContain('dist/bundle.js');
     expect(preview.largestIncludedFiles[0].path).toMatch(/^src\//);
   });

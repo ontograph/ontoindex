@@ -113,7 +113,9 @@ describe('detect_changes performance bounds', () => {
     expect(result.changed_symbols?.[0]?.filePath).toBe('src/auth.ts');
     expect(result.warnings).toEqual(
       expect.arrayContaining([
-        expect.stringContaining('Omitted 1 changed file outside include_paths (src): docs/notes.md'),
+        expect.stringContaining(
+          'Omitted 1 changed file outside include_paths (src): docs/notes.md',
+        ),
       ]),
     );
     expect(lbugMocks.executeParameterized).toHaveBeenCalledTimes(2);

@@ -7,14 +7,14 @@ import {
   CURRENT_MARKDOWN_DOCUMENT_FACT_SCHEMA_VERSION,
   createMarkdownChunkKey,
   isMarkdownAcceptanceCriterionFact,
-    isMarkdownApiSpecFact,
-    isMarkdownDocOwnerFact,
-    isMarkdownRequirementFact,
-    isMarkdownTestMentionFact,
-    isMarkdownTrackerStateFact,
-    normalizeMarkdownAnchor,
-    type MarkdownCodeMentionFact,
-  } from '../../src/core/ingestion/enrichment/markdown-document-facts.js';
+  isMarkdownApiSpecFact,
+  isMarkdownDocOwnerFact,
+  isMarkdownRequirementFact,
+  isMarkdownTestMentionFact,
+  isMarkdownTrackerStateFact,
+  normalizeMarkdownAnchor,
+  type MarkdownCodeMentionFact,
+} from '../../src/core/ingestion/enrichment/markdown-document-facts.js';
 import {
   capExcerpt,
   hashText,

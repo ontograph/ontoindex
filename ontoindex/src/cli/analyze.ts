@@ -338,7 +338,9 @@ function formatFileScopePreview(preview: FileScopePreview): string {
   return lines.join('\n');
 }
 
-function formatFileScopeExplanation(explanation: Awaited<ReturnType<typeof explainPathScope>>): string {
+function formatFileScopeExplanation(
+  explanation: Awaited<ReturnType<typeof explainPathScope>>,
+): string {
   const lines = [
     `  File scope explanation for ${explanation.filePath}`,
     '',

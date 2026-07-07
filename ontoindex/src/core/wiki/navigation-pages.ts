@@ -96,11 +96,7 @@ export function renderWikiCommunityPage(input: WikiNavigationCommunity): string 
   }
   if (typeof input.omittedSymbolCount === 'number' && input.omittedSymbolCount > 0) {
     lines.push(
-      `- Omitted symbols: ${formatCountLabel(
-        input.omittedSymbolCount,
-        'symbol',
-        'symbols',
-      )}`,
+      `- Omitted symbols: ${formatCountLabel(input.omittedSymbolCount, 'symbol', 'symbols')}`,
     );
   }
 
