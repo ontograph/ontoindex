@@ -4,6 +4,16 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.8] - 2026-07-07
+
+### Fixed
+- Repaired `ontoindex setup` TOML MCP upserts so rerunning setup replaces the full
+  `[mcp_servers.ontoindex]` block instead of leaving duplicate `args` keys behind in
+  Codex-compatible `config.toml` files.
+
+### Changed
+- Updated public install examples and release metadata for the `2.0.8` release.
+
 ## [2.0.6] - 2026-07-04
 
 ### Added

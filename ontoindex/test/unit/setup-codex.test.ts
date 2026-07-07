@@ -101,6 +101,41 @@ describe('setupCommand codex execution', () => {
     expect(raw).toContain('ONTOINDEX_MCP_STARTUP_TRACE = "1"');
   });
 
+  it('replaces an existing Ontocode MCP block instead of leaving duplicate keys behind', async () => {
+    await fs.mkdir(path.join(tempHome, '.ontocode'), { recursive: true });
+    await fs.writeFile(
+      path.join(tempHome, '.ontocode', 'config.toml'),
+      [
+        '[model_providers.fake]',
+        'name = "fake"',
+        '',
+        '[mcp_servers.ontoindex]',
+        'command = "old-node"',
+        'args = ["old-cli", "mcp", "--project", "/tmp/old"]',
+        '',
+        '[mcp_servers.ontoindex.env]',
+        'ONTOINDEX_MCP_AUTO_ANALYZE = "1"',
+        '',
+        '[profiles.default]',
+        'model = "fake"',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+
+    await setupCommand();
+
+    const raw = await fs.readFile(path.join(tempHome, '.ontocode', 'config.toml'), 'utf-8');
+    expect(raw.match(/\[mcp_servers\.ontoindex\]/g) ?? []).toHaveLength(1);
+    expect(raw.match(/^args = /gm) ?? []).toHaveLength(1);
+    expect(raw).not.toContain('[mcp_servers.ontoindex.env]');
+    expect(raw).not.toContain('old-node');
+    expect(raw).toContain('[model_providers.fake]');
+    expect(raw).toContain('[profiles.default]');
+  });
+
   it('skips Codex setup entirely when ~/.codex is missing', async () => {
     await fs.rm(path.join(tempHome, '.codex'), { recursive: true, force: true });
 

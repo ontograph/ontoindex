@@ -560,6 +560,53 @@ function getCodexMcpTomlSection(entry: McpEntry): string {
   return `[mcp_servers.ontoindex]\ncommand = ${command}\nargs = ${args}\n${env}`;
 }
 
+function isTomlSectionHeader(line: string): boolean {
+  return /^\[\[?.+\]\]?\s*$/.test(line.trim());
+}
+
+function isOntoindexMcpSectionHeader(line: string): boolean {
+  const match = line.trim().match(/^\[([^\]]+)\]\s*$/);
+  if (!match) return false;
+  const sectionName = match[1];
+  return (
+    sectionName === 'mcp_servers.ontoindex' || sectionName.startsWith('mcp_servers.ontoindex.')
+  );
+}
+
+function findOntoindexMcpSectionRange(existing: string): { start: number; end: number } | null {
+  const lines = existing.match(/^.*(?:\n|$)/gm) ?? [];
+  let startLine = -1;
+  let endLine = lines.length;
+  let offset = 0;
+  const offsets: number[] = [];
+
+  for (const line of lines) {
+    offsets.push(offset);
+    offset += line.length;
+  }
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!isTomlSectionHeader(line)) continue;
+    if (startLine === -1) {
+      if (isOntoindexMcpSectionHeader(line)) {
+        startLine = i;
+      }
+      continue;
+    }
+    if (!isOntoindexMcpSectionHeader(line)) {
+      endLine = i;
+      break;
+    }
+  }
+
+  if (startLine === -1) return null;
+  return {
+    start: offsets[startLine],
+    end: endLine < offsets.length ? offsets[endLine] : existing.length,
+  };
+}
+
 /**
  * Upsert OntoIndex MCP server config in a Codex-compatible config.toml.
  * Existing stale sections are replaced so setup can repair removed binaries.
@@ -573,15 +620,12 @@ async function upsertCodexConfigToml(configPath: string, entry: McpEntry): Promi
   }
 
   const section = getCodexMcpTomlSection(entry);
-  const sectionRe =
-    /^\[mcp_servers\.ontoindex(?:\.[^\]]+)?\]\n[\s\S]*?(?=^\[(?!mcp_servers\.ontoindex(?:\.|\]))|\s*$)/gm;
-  const firstMatch = sectionRe.exec(existing);
-  sectionRe.lastIndex = 0;
-  const nextContent = firstMatch
+  const existingRange = findOntoindexMcpSectionRange(existing);
+  const nextContent = existingRange
     ? [
-        existing.slice(0, firstMatch.index).trimEnd(),
+        existing.slice(0, existingRange.start).trimEnd(),
         section.trimEnd(),
-        existing.slice(firstMatch.index).replace(sectionRe, '').trimStart(),
+        existing.slice(existingRange.end).trimStart(),
       ]
         .filter((part) => part.length > 0)
         .join('\n\n')
