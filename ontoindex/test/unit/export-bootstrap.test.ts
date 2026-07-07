@@ -54,6 +54,14 @@ describe('bootstrap export and hydrate', () => {
     }
   };
 
+  const canonicalPath = async (targetPath: string): Promise<string> => {
+    try {
+      return await fs.realpath(targetPath);
+    } catch {
+      return path.resolve(targetPath);
+    }
+  };
+
   beforeEach(async () => {
     vi.clearAllMocks();
     repoHandle = await createTempDir('ontoindex-bootstrap-src-');
@@ -179,8 +187,11 @@ describe('bootstrap export and hydrate', () => {
     ).resolves.toContain('.ontoindex');
 
     const entries = await listRegisteredRepos();
+    const restoredRepoPath = await canonicalPath(restoreHandle.dbPath);
     expect(
-      entries.some((entry) => path.resolve(entry.path) === path.resolve(restoreHandle.dbPath)),
+      await Promise.all(entries.map(async (entry) => canonicalPath(entry.path))).then((paths) =>
+        paths.includes(restoredRepoPath),
+      ),
     ).toBe(true);
   });
 
@@ -262,9 +273,15 @@ describe('bootstrap export and hydrate', () => {
     });
 
     const entries = await listRegisteredRepos({ validate: true });
-    const restoredEntry = entries.find(
-      (entry) => path.resolve(entry.path) === path.resolve(restoreHandle.dbPath),
-    );
+    const restoredRepoPath = await canonicalPath(restoreHandle.dbPath);
+    const restoredEntry = (
+      await Promise.all(
+        entries.map(async (entry) => ({
+          entry,
+          canonicalPath: await canonicalPath(entry.path),
+        })),
+      )
+    ).find(({ canonicalPath }) => canonicalPath === restoredRepoPath)?.entry;
     expect(restoredEntry?.name).toBe('restored-bootstrap-repo');
   });
 
