@@ -16,3 +16,8 @@ assets/
 repomix-output*
 docs/wiki/
 tmp/
+ontoindex-web/src/components/CodeReferencesPanel.tsx
+ontoindex-web/src/components/FileTreePanel.tsx
+ontoindex-web/src/components/ProcessesPanel.tsx
+ontoindex-web/src/components/QueryFAB.tsx
+ontoindex-web/src/components/RightPanel.tsx
