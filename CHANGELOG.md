@@ -4,6 +4,14 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.7] - 2026-07-07
+
+### Added
+- Added MCP client call-shape troubleshooting so Ontocode-style users can distinguish client-router `unsupported call: mcp__ontoindex__...` failures from OntoIndex server or index issues.
+
+### Changed
+- Generated MCP function ADR pages now include the canonical Ontocode-style `namespace="mcp__ontoindex", name="<tool>"` call identity and flattened-name troubleshooting guidance.
+
 ## [2.0.6] - 2026-07-04
 
 ### Added

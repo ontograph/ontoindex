@@ -131,7 +131,7 @@ Installer configuration:
 | Purpose                        | Linux/macOS                                                                    | Windows PowerShell                                                                     |
 | ------------------------------ | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
 | Use another release repository | `ONTOINDEX_GITHUB_REPO=owner/repo ./scripts/install-ontoindex-latest.sh`       | `$env:ONTOINDEX_GITHUB_REPO='owner/repo'; .\scripts\install-ontoindex-latest.ps1`      |
-| Use a local downloaded tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-2.0.6.tgz" ./scripts/install-ontoindex-latest.sh` | — |
+| Use a local downloaded tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-2.0.7.tgz" ./scripts/install-ontoindex-latest.sh` | — |
 | Use a user npm prefix          | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`    | `$env:ONTOINDEX_NPM_PREFIX="$env:APPDATA\npm"; .\scripts\install-ontoindex-latest.ps1` |
 | Force user prefix              | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`    | `.\scripts\install-ontoindex-latest.ps1 -ForceUserPrefix`                              |
 | Require FTS/vector cache prefetch | `ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1` |
@@ -152,8 +152,8 @@ Use this when you want an immutable GitHub release asset.
 
 | Platform           | Command                                                                                                                         |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| Linux/macOS        | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.6/ontoindex-2.0.6.tgz && ontoindex --version`   |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.6/ontoindex-2.0.6.tgz; ontoindex --version` |
+| Linux/macOS        | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.7/ontoindex-2.0.7.tgz && ontoindex --version`   |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.7/ontoindex-2.0.7.tgz; ontoindex --version` |
 
 ## First Run
 
@@ -201,6 +201,19 @@ ontoindex mcp --repo my-project
 At startup, OntoIndex prints both the executable working directory and the target project path. If `ONTOINDEX_MCP_REPO` or `--repo` points outside `ONTOINDEX_MCP_PROJECT_CWD`, startup fails unless `ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1` is set.
 
 `ontoindex mcp-doctor --repo <label-or-path> --project-cwd <path> --json` resolves the same repo selector and reports `READY`, `DEGRADED`, or `MISCONFIGURED`; when it detects a mismatch, it includes a restart command for the target project scope.
+
+### MCP Client Call Shape
+
+OntoIndex MCP tools use the client-provided namespace plus tool name. For Ontocode-style clients,
+the canonical call identity is:
+
+```text
+namespace="mcp__ontoindex", name="inspect"
+```
+
+If a client reports `unsupported call: mcp__ontoindex__inspect`, the call was rejected by that
+client's tool router before it reached the OntoIndex MCP server. Fix the client/router call-shape
+normalization or call the tool as `name="inspect"` with `namespace="mcp__ontoindex"`.
 
 ## MCP Setup
 

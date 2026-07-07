@@ -120,7 +120,7 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 | 目的 | Linux/macOS | Windows PowerShell |
 | --- | --- | --- |
 | 使用其他 release 仓库 | `ONTOINDEX_GITHUB_REPO=owner/repo ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_GITHUB_REPO='owner/repo'; .\scripts\install-ontoindex-latest.ps1` |
-| 使用本地下载的 tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-2.0.6.tgz" ./scripts/install-ontoindex-latest.sh` | — |
+| 使用本地下载的 tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-2.0.7.tgz" ./scripts/install-ontoindex-latest.sh` | — |
 | 使用用户级 npm prefix | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_NPM_PREFIX="$env:APPDATA\npm"; .\scripts\install-ontoindex-latest.ps1` |
 | 强制使用用户级 prefix | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh` | `.\scripts\install-ontoindex-latest.ps1 -ForceUserPrefix` |
 | 强制预取 `fts`/`vector` cache | `ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1` |
@@ -141,8 +141,8 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 
 | 平台 | 命令 |
 | --- | --- |
-| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.6/ontoindex-2.0.6.tgz && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.6/ontoindex-2.0.6.tgz; ontoindex --version` |
+| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.7/ontoindex-2.0.7.tgz && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.7/ontoindex-2.0.7.tgz; ontoindex --version` |
 
 ## 首次运行
 

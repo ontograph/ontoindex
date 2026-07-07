@@ -211,6 +211,16 @@ ${predecessor(entry)}
 
 Call this function through an MCP client connected to the OntoIndex server.
 
+Canonical Ontocode-style MCP identity:
+
+\`\`\`text
+namespace="mcp__ontoindex", name="${name}"
+\`\`\`
+
+If a client reports \`unsupported call: mcp__ontoindex__${name}\`, the client router rejected the
+flattened call name before OntoIndex received it. Use the namespace/name shape above or fix the
+client's flattened-name normalization.
+
 \`\`\`json
 ${JSON.stringify(example, null, 2)}
 \`\`\`

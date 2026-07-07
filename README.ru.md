@@ -120,7 +120,7 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 | Цель | Linux/macOS | Windows PowerShell |
 | --- | --- | --- |
 | Другой release repo | `ONTOINDEX_GITHUB_REPO=owner/repo ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_GITHUB_REPO='owner/repo'; .\scripts\install-ontoindex-latest.ps1` |
-| Локальный скачанный tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-2.0.6.tgz" ./scripts/install-ontoindex-latest.sh` | — |
+| Локальный скачанный tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-2.0.7.tgz" ./scripts/install-ontoindex-latest.sh` | — |
 | User npm prefix | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_NPM_PREFIX="$env:APPDATA\npm"; .\scripts\install-ontoindex-latest.ps1` |
 | Принудительно user prefix | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh` | `.\scripts\install-ontoindex-latest.ps1 -ForceUserPrefix` |
 | Обязательная prefetch `fts`/`vector` cache | `ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1` |
@@ -141,8 +141,8 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 
 | Платформа | Команда |
 | --- | --- |
-| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.6/ontoindex-2.0.6.tgz && ontoindex --version` |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.6/ontoindex-2.0.6.tgz; ontoindex --version` |
+| Linux/macOS | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.7/ontoindex-2.0.7.tgz && ontoindex --version` |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v2.0.7/ontoindex-2.0.7.tgz; ontoindex --version` |
 
 ## Первый запуск
 
