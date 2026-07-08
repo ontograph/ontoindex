@@ -55,7 +55,7 @@
     "prepack": "node scripts/build.js"
   },
   "dependencies": {
-    "@ladybugdb/core": "^0.17.1",
+    "@ladybugdb/core": "^0.18.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@scarf/scarf": "^1.4.0",
     "cli-progress": "^3.12.0",
