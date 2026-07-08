@@ -95,7 +95,7 @@
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
-    "node-addon-api": "^8.8.0",
+    "node-addon-api": "^8.9.0",
     "node-gyp-build": "^4.8.4",
     "tree-sitter-dart": "file:vendor/tree-sitter-dart",
     "tree-sitter-kotlin": "file:./vendor/tree-sitter-kotlin",
