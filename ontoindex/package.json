@@ -1,6 +1,6 @@
 {
   "name": "ontoindex",
-  "version": "2.0.10",
+  "version": "2.0.11-rc.1",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "AGPL-3.0-or-later",
