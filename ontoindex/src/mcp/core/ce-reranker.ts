@@ -21,8 +21,6 @@ if (!process.env.ORT_LOG_LEVEL) {
   process.env.ORT_LOG_LEVEL = '3';
 }
 
-import { env, AutoTokenizer, AutoModelForSequenceClassification } from '@huggingface/transformers';
-
 type CERerankTensorData = ArrayLike<number>;
 
 interface CERerankTensor {
@@ -61,6 +59,42 @@ let initPromise: Promise<void> | null = null;
 
 const sigmoid = (x: number): number => 1 / (1 + Math.exp(-x));
 
+interface TransformersModule {
+  env: {
+    allowLocalModels: boolean;
+    cacheDir?: string;
+  };
+  AutoTokenizer: {
+    from_pretrained(modelId: string): Promise<CERerankTokenizer>;
+  };
+  AutoModelForSequenceClassification: {
+    from_pretrained(
+      modelId: string,
+      options: {
+        dtype: 'fp32';
+        device: 'cpu';
+      },
+    ): Promise<CERerankModel>;
+  };
+}
+
+let transformersModulePromise: Promise<TransformersModule> | null = null;
+
+async function loadTransformers(): Promise<TransformersModule> {
+  transformersModulePromise ??= import('@huggingface/transformers')
+    .then((module) => module as unknown as TransformersModule)
+    .catch((error: unknown) => {
+      transformersModulePromise = null;
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        'CE reranking requires optional packages @huggingface/transformers and onnxruntime-node. ' +
+          'Install them next to ontoindex before setting ONTOINDEX_CE_RERANK. ' +
+          `Original error: ${reason}`,
+      );
+    });
+  return transformersModulePromise;
+}
+
 // W2b-v11 batch config: cap sub-batch size to bound padding overhead from
 // mixed-length docs (W2a risk flag: uniform synthetic docs underestimate real
 // corpus padding).  Default 30 keeps p50 well under 800ms budget.
@@ -82,6 +116,8 @@ async function initCEReranker(): Promise<void> {
   isInitializing = true;
   initPromise = (async () => {
     try {
+      const { env, AutoTokenizer, AutoModelForSequenceClassification } = await loadTransformers();
+
       env.allowLocalModels = true;
       env.cacheDir = process.env.HF_HOME ?? `${process.env.HOME}/.cache/huggingface`;
 

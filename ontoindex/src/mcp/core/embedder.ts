@@ -13,12 +13,6 @@ if (!process.env.ORT_LOG_LEVEL) {
 }
 
 import {
-  pipeline,
-  env,
-  type FeatureExtractionPipeline,
-  type PretrainedModelOptions,
-} from '@huggingface/transformers';
-import {
   isHttpMode,
   getHttpDimensions,
   httpEmbedQuery,
@@ -26,6 +20,17 @@ import {
 import { silenceStdout, restoreStdout, realStderrWrite } from '../../core/lbug/pool-adapter.js';
 import { isCudaAvailable } from '../../core/embeddings/cuda-probe.js';
 import { DEFAULT_EMBEDDING_CONFIG } from '../../core/embeddings/types.js';
+
+interface FeatureExtractionPipeline {
+  (
+    input: string,
+    options: {
+      pooling: 'mean';
+      normalize: true;
+    },
+  ): Promise<{ data: ArrayLike<number> }>;
+  dispose?: () => void | Promise<void>;
+}
 
 // Model config — single source of truth in DEFAULT_EMBEDDING_CONFIG.modelId
 const MODEL_ID = DEFAULT_EMBEDDING_CONFIG.modelId;
@@ -38,7 +43,11 @@ let initPromise: Promise<FeatureExtractionPipeline> | null = null;
 type FeatureExtractionPipelineFactory = (
   task: 'feature-extraction',
   model: string,
-  options: PretrainedModelOptions,
+  options: {
+    device: 'dml' | 'cuda' | 'cpu';
+    dtype: 'fp32';
+    session_options: { logSeverityLevel: number };
+  },
 ) => Promise<FeatureExtractionPipeline>;
 
 type StderrWrite = {
@@ -46,7 +55,32 @@ type StderrWrite = {
   (str: string, encoding?: BufferEncoding, cb?: (err?: Error | null) => void): boolean;
 };
 
-const createFeatureExtractionPipeline: FeatureExtractionPipelineFactory = pipeline;
+interface TransformersModule {
+  pipeline: FeatureExtractionPipelineFactory;
+  env: {
+    allowLocalModels: boolean;
+    cacheDir?: string;
+  };
+}
+
+let transformersModulePromise: Promise<TransformersModule> | null = null;
+
+async function loadTransformers(): Promise<TransformersModule> {
+  transformersModulePromise ??= import('@huggingface/transformers')
+    .then((module) => module as unknown as TransformersModule)
+    .catch((error: unknown) => {
+      transformersModulePromise = null;
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        'Local semantic search requires optional packages @huggingface/transformers and ' +
+          'onnxruntime-node. Install them next to ontoindex, or configure HTTP embeddings with ' +
+          'ONTOINDEX_EMBEDDING_URL and ONTOINDEX_EMBEDDING_MODEL. ' +
+          `Original error: ${reason}`,
+      );
+    });
+  return transformersModulePromise;
+}
+
 const silentStderrWrite: StderrWrite = () => true;
 
 /**
@@ -69,6 +103,9 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
 
   initPromise = (async () => {
     try {
+      const { pipeline, env } = await loadTransformers();
+      const createFeatureExtractionPipeline: FeatureExtractionPipelineFactory = pipeline;
+
       env.allowLocalModels = false;
       // Default cache to user-writable location. transformers.js defaults to
       // ./node_modules/.cache inside its own install dir, which is unwritable

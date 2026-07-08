@@ -4,9 +4,17 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.10] - 2026-07-08
+
+### Fixed
+
+- Made the local Hugging Face embedding and CE reranking runtime optional for global installs, preventing `onnxruntime-node` downloads from exhausting disk space during `npm install -g ontoindex`.
+- Added runtime guidance for local embedding/reranking initialization when optional packages are not installed, while keeping HTTP embedding mode usable without those native dependencies.
+
 ## [2.0.9] - 2026-07-07
 
 ### Fixed
+
 - Repaired `ontoindex setup` hook installation lint fallout by keeping the parsed settings payload immutable after load.
 - Restored repo-wide Prettier compliance for the stable publish workflow by formatting the checked `ontoindex` source/test files and excluding donor snapshots under `tmp/` from release-time formatting checks.
 - Normalized MCP doctor setup-path output to forward slashes so stale `.claude/settings.local.json` diagnostics stay readable and testable across platforms.
@@ -15,19 +23,23 @@ All notable changes to OntoIndex will be documented in this file.
 ## [2.0.8] - 2026-07-07
 
 ### Fixed
+
 - Repaired `ontoindex setup` TOML MCP upserts so rerunning setup replaces the full
   `[mcp_servers.ontoindex]` block instead of leaving duplicate `args` keys behind in
   Codex-compatible `config.toml` files.
 
 ### Changed
+
 - Updated public install examples and release metadata for the `2.0.8` release.
 
 ## [2.0.6] - 2026-07-04
 
 ### Added
+
 - Setup CLI now configures native PreToolUse and PostToolUse integration hooks across Codex and Ontocode (in addition to Claude Code) for automatic index augmentation and freshness checks.
 
 ### Changed
+
 - Filtered `minimum`, `maximum`, and `default` boundaries out of the MCP tools JSON schema broadcast, mitigating hallucination issues with strict LLM clients like Gemini without compromising server-side validation.
 
 ## [2.0.5] - 2026-07-04

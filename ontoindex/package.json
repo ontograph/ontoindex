@@ -1,6 +1,6 @@
 {
   "name": "ontoindex",
-  "version": "2.0.9",
+  "version": "2.0.10",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "AGPL-3.0-or-later",
@@ -55,7 +55,6 @@
     "prepack": "node scripts/build.js"
   },
   "dependencies": {
-    "@huggingface/transformers": "^4.2.0",
     "@ladybugdb/core": "^0.17.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@scarf/scarf": "^1.4.0",
@@ -76,7 +75,6 @@
     "micromark-extension-frontmatter": "^2.0.0",
     "micromark-extension-gfm": "^3.0.0",
     "mnemonist": "^0.40.4",
-    "onnxruntime-node": "^1.26.0",
     "p-limit": "^7.3.0",
     "pandemonium": "^2.4.1",
     "safe-regex": "^2.1.1",
@@ -109,12 +107,14 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/js-yaml": "^4.0.9",
+    "@huggingface/transformers": "^4.2.0",
     "@types/node": "^25.9.2",
     "@types/safe-regex": "^1.1.6",
     "@types/seedrandom": "^3.0.8",
     "@vitest/coverage-v8": "^4.1.8",
     "graphology-types": "^0.24.8",
     "node-gyp": "12.2.0",
+    "onnxruntime-node": "^1.26.0",
     "ontoindex-shared": "file:../ontoindex-shared",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",

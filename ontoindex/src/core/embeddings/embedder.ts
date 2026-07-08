@@ -14,15 +14,20 @@ if (!process.env.ORT_LOG_LEVEL) {
   process.env.ORT_LOG_LEVEL = '3';
 }
 
-import {
-  pipeline,
-  env,
-  type FeatureExtractionPipeline,
-  type PretrainedModelOptions,
-} from '@huggingface/transformers';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
 import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
 import { isCudaAvailable } from './cuda-probe.js';
+
+interface FeatureExtractionPipeline {
+  (
+    input: string | string[],
+    options: {
+      pooling: 'mean';
+      normalize: true;
+    },
+  ): Promise<{ data: ArrayLike<number> }>;
+  dispose?: () => void | Promise<void>;
+}
 
 // Module-level state for singleton pattern
 let embedderInstance: FeatureExtractionPipeline | null = null;
@@ -38,10 +43,39 @@ type ModelProgressCallback = (progress: ModelProgress) => void;
 type FeatureExtractionPipelineFactory = (
   task: 'feature-extraction',
   model: string,
-  options: PretrainedModelOptions,
+  options: {
+    device: 'dml' | 'cuda' | 'cpu' | 'wasm';
+    dtype: 'fp32';
+    progress_callback?: (data: unknown) => void;
+    session_options: { logSeverityLevel: number };
+  },
 ) => Promise<FeatureExtractionPipeline>;
 
-const createFeatureExtractionPipeline: FeatureExtractionPipelineFactory = pipeline;
+interface TransformersModule {
+  pipeline: FeatureExtractionPipelineFactory;
+  env: {
+    allowLocalModels: boolean;
+    cacheDir?: string;
+  };
+}
+
+let transformersModulePromise: Promise<TransformersModule> | null = null;
+
+async function loadTransformers(): Promise<TransformersModule> {
+  transformersModulePromise ??= import('@huggingface/transformers')
+    .then((module) => module as unknown as TransformersModule)
+    .catch((error: unknown) => {
+      transformersModulePromise = null;
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        'Local embeddings require optional packages @huggingface/transformers and onnxruntime-node. ' +
+          'Install them next to ontoindex, or configure HTTP embeddings with ' +
+          'ONTOINDEX_EMBEDDING_URL and ONTOINDEX_EMBEDDING_MODEL. ' +
+          `Original error: ${reason}`,
+      );
+    });
+  return transformersModulePromise;
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
@@ -107,6 +141,9 @@ export const initEmbedder = async (
 
   initPromise = (async () => {
     try {
+      const { pipeline, env } = await loadTransformers();
+      const createFeatureExtractionPipeline: FeatureExtractionPipelineFactory = pipeline;
+
       // Configure transformers.js environment
       env.allowLocalModels = false;
       // Default cache to user-writable location. transformers.js defaults to
