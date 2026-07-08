@@ -111,7 +111,7 @@
     "@types/node": "^25.9.2",
     "@types/safe-regex": "^1.1.6",
     "@types/seedrandom": "^3.0.8",
-    "@vitest/coverage-v8": "^4.1.8",
+    "@vitest/coverage-v8": "^4.1.10",
     "graphology-types": "^0.24.8",
     "node-gyp": "12.2.0",
     "onnxruntime-node": "^1.26.0",
