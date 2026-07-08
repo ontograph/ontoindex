@@ -741,7 +741,7 @@ describe('gnDiagnose', () => {
     });
     expect(report.runtimeContextSummary).toMatchObject({
       repoLabel: REPO_ID,
-      repoPath: '/tmp/test-repo',
+      repoPath: TARGET_REPO_PATH,
       freshness: 'fresh',
       scopeConfidence: 'unknown',
       dirtyWorktree: false,
@@ -825,7 +825,7 @@ describe('gnDiagnose', () => {
     expect(mockGetSemanticVectorBackendStatus).toHaveBeenCalledWith(
       expect.objectContaining({
         id: REPO_ID,
-        repoPath: '/tmp/test-repo',
+        repoPath: TARGET_REPO_PATH,
       }),
     );
     expect(report.vectorBackend).toMatchObject({
@@ -860,7 +860,7 @@ describe('gnDiagnose', () => {
     expect(mockGetSemanticVectorBackendStatus).toHaveBeenCalledWith(
       expect.objectContaining({
         id: REPO_ID,
-        repoPath: '/tmp/test-repo',
+        repoPath: TARGET_REPO_PATH,
       }),
     );
     expect(report.vectorBackend).toMatchObject({
@@ -1076,7 +1076,7 @@ describe('gnDiagnose', () => {
       Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
     );
     vi.spyOn(fs, 'stat').mockImplementation(async (targetPath: fs.PathLike) => {
-      if (targetPath.toString().endsWith('/.ontoindex/lbug')) {
+      if (targetPath.toString() === TARGET_LBUG_PATH) {
         return { size: 4096, mtime: new Date('2026-06-27T12:00:00.000Z') } as any;
       }
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
