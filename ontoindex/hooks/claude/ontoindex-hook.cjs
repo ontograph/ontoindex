@@ -196,8 +196,7 @@ function splitAugmentStderr(stderr) {
   const start = frame.index + frame[1].length;
   const end = frame.index + frame[0].length;
   const augmentation = frame[2];
-  const diagnostics =
-    output.slice(0, start) + output.slice(end).replace(/^\r?\n/, '');
+  const diagnostics = output.slice(0, start) + output.slice(end).replace(/^\r?\n/, '');
   return { augmentation, diagnostics };
 }
 
