@@ -14,9 +14,10 @@ import {
   validateInspectArguments,
 } from '../../scripts/kimi-k3-mcp-smoke.mjs';
 
+const repoPath = parseArgs([]).repoPath;
 const toolText = JSON.stringify({
   repoLabel: 'ontoindex',
-  repoPath: '/opt/demodb/_workfolder/OntoIndex',
+  repoPath,
   symbol: {
     name: 'createMCPServer',
     filePath: 'ontoindex/src/mcp/server.ts',
@@ -50,7 +51,7 @@ describe('Kimi K3 MCP smoke harness', () => {
   it('extracts the repository and symbol evidence', () => {
     expect(extractInspectEvidence(toolText)).toEqual({
       repoLabel: 'ontoindex',
-      repoPath: '/opt/demodb/_workfolder/OntoIndex',
+      repoPath,
       symbolName: 'createMCPServer',
       filePath: 'ontoindex/src/mcp/server.ts',
       startLine: 294,
@@ -220,7 +221,7 @@ describe('Kimi K3 MCP smoke harness', () => {
         readRegistry: async () => [
           {
             name: 'ontoindex',
-            path: '/opt/demodb/_workfolder/OntoIndex',
+            path: repoPath,
             lastCommit: 'head',
           },
         ],
@@ -260,7 +261,7 @@ describe('Kimi K3 MCP smoke harness', () => {
         readRegistry: async () => [
           {
             name: 'ontoindex',
-            path: '/opt/demodb/_workfolder/OntoIndex',
+            path: repoPath,
             lastCommit: 'head',
           },
         ],

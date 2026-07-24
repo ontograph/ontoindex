@@ -256,8 +256,8 @@ describe('registerRepo name override + collision guard (#829)', () => {
       // semantics for downstream `err.name === '…Error'` checks).
       expect(err.registryName).toBe('shared');
       expect(err.name).toBe('RegistryNameCollisionError');
-      expect(path.resolve(err.existingPath)).toBe(path.resolve(tmpRepoA.dbPath));
-      expect(path.resolve(err.requestedPath)).toBe(path.resolve(tmpRepoB.dbPath));
+      expect(await fs.realpath(err.existingPath)).toBe(await fs.realpath(tmpRepoA.dbPath));
+      expect(await fs.realpath(err.requestedPath)).toBe(await fs.realpath(tmpRepoB.dbPath));
     }
 
     // Registry still only has the first entry — the failed call didn't
