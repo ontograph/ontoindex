@@ -98,6 +98,18 @@ const errorMessage = (err: unknown): unknown => {
   return hasProperties(err) ? err.message : undefined;
 };
 
+const sameRepoPath = (left: string, right: string): boolean =>
+  process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+
+const canonicalRepoPath = async (repoPath: string): Promise<string> => {
+  const resolved = path.resolve(repoPath);
+  try {
+    return await fs.realpath(resolved);
+  } catch {
+    return resolved;
+  }
+};
+
 // ─── Local Storage Helpers ─────────────────────────────────────────────
 
 /**
@@ -535,23 +547,7 @@ interface RegisterRepoOptions {
    * re-analyses of the same path without `--name` preserve the alias.
    */
   name?: string;
-  /**
-   * Allow two DIFFERENT repo paths to register under the same alias
-   * (#829). Mapped from the `--allow-duplicate-name` CLI flag.
-   *
-   * Scope: this flag governs cross-path alias sharing only — one repo
-   * path always has exactly one registry entry (and therefore exactly
-   * one alias). Re-analyzing the same path with `--name Y` overwrites
-   * a previous `--name X`; it does NOT create a second entry or a
-   * second alias for the same path (see the upsert-by-resolved-path
-   * logic in {@link registerRepo} and the
-   * `re-registerRepo with a different name overrides the previous
-   * alias` test in `test/unit/repo-manager.test.ts`).
-   *
-   * Distinct from `--force` (which only triggers pipeline re-index);
-   * a user accepting a duplicate alias should not be forced to also
-   * re-run the full pipeline.
-   */
+  /** Deprecated compatibility field. Duplicate names are always rejected. */
   allowDuplicateName?: boolean;
 }
 
@@ -575,8 +571,7 @@ export class RegistryNameCollisionError extends Error {
   ) {
     super(
       `Registry name "${registryName}" is already used by "${existingPath}".\n` +
-        `Pass --name <alias> to register "${requestedPath}" under a different name, ` +
-        `or --allow-duplicate-name to allow both paths under the same name (leaves -r <name> ambiguous for these two).`,
+        `Pass --name <unique-alias> to register "${requestedPath}" under a different name.`,
     );
     this.name = 'RegistryNameCollisionError';
   }
@@ -612,11 +607,8 @@ const hasCustomAlias = (entry: RegistryEntry, inferredName: string | null): bool
  *   4. `path.basename(repoPath)` (the original default)
  *
  * Duplicate-name guard: if another path already uses the resolved
- * `name`, throw {@link RegistryNameCollisionError} unless
- * `opts.allowDuplicateName` is set. The guard ONLY fires when the user explicitly passed a
- * `name`; un-aliased basename collisions continue to register silently
- * so existing users who don't know about `--name` see no behaviour
- * change.
+ * `name`, throw {@link RegistryNameCollisionError}. Existing duplicate
+ * registry entries remain readable, but no new ambiguity is introduced.
  *
  * Returns the `name` that was actually written to the registry — the
  * caller can re-use it to keep AGENTS.md / skill files aligned with the
@@ -628,15 +620,16 @@ export const registerRepo = async (
   opts?: RegisterRepoOptions,
 ): Promise<string> => {
   return withRegistryMutation(async () => {
-    const resolved = path.resolve(repoPath);
+    const resolved = await canonicalRepoPath(repoPath);
     const { storagePath } = getStoragePaths(resolved);
 
     const entries = await readRegistry();
-    const existingIdx = entries.findIndex((e) => {
-      const a = path.resolve(e.path);
-      const b = resolved;
-      return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
-    });
+    const canonicalEntryPaths = await Promise.all(
+      entries.map((entry) => canonicalRepoPath(entry.path)),
+    );
+    const existingIdx = canonicalEntryPaths.findIndex((entryPath) =>
+      sameRepoPath(entryPath, resolved),
+    );
     const existing = existingIdx >= 0 ? entries[existingIdx] : null;
 
     // Precedence: explicit --name > preserved alias > remote-inferred > basename.
@@ -660,17 +653,14 @@ export const registerRepo = async (
       }
     }
 
-    const explicitName = opts?.name !== undefined || isPreservedAlias;
-    if (explicitName && !opts?.allowDuplicateName) {
-      const collidingEntry = entries.find(
-        (e, i) =>
-          i !== existingIdx &&
-          e.name.toLowerCase() === name.toLowerCase() &&
-          path.resolve(e.path) !== resolved,
-      );
-      if (collidingEntry) {
-        throw new RegistryNameCollisionError(name, collidingEntry.path, resolved);
-      }
+    const collidingEntry = entries.find(
+      (e, i) =>
+        i !== existingIdx &&
+        e.name.toLowerCase() === name.toLowerCase() &&
+        !sameRepoPath(canonicalEntryPaths[i], resolved),
+    );
+    if (collidingEntry) {
+      throw new RegistryNameCollisionError(name, collidingEntry.path, resolved);
     }
 
     const entry: RegistryEntry = {
@@ -699,9 +689,14 @@ export const registerRepo = async (
  */
 export const unregisterRepo = async (repoPath: string): Promise<void> => {
   await withRegistryMutation(async () => {
-    const resolved = path.resolve(repoPath);
+    const resolved = await canonicalRepoPath(repoPath);
     const entries = await readRegistry();
-    const filtered = entries.filter((e) => path.resolve(e.path) !== resolved);
+    const canonicalEntryPaths = await Promise.all(
+      entries.map((entry) => canonicalRepoPath(entry.path)),
+    );
+    const filtered = entries.filter(
+      (_, index) => !sameRepoPath(canonicalEntryPaths[index], resolved),
+    );
     await writeRegistry(filtered);
   });
 };

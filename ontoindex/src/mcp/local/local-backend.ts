@@ -1576,19 +1576,22 @@ export class LocalBackend implements BackendPort {
    */
   async resolveRepo(repoParam?: string): Promise<RepoHandle> {
     const result = this.resolveRepoFromCache(repoParam);
-    if (result) return result;
+    if (result.kind === 'resolved') return result.repo;
 
     // Miss — refresh registry and try once more
     await this.init();
     const retried = this.resolveRepoFromCache(repoParam);
-    if (retried) return retried;
+    if (retried.kind === 'resolved') return retried.repo;
 
     // Still no match — throw with helpful message
     if (this.repos.size === 0) {
       throw new Error('No indexed repositories. Run: ontoindex analyze');
     }
-    const labels = buildAvailableRepoLabels(this.repos);
-    const candidates = [...this.repos.values()].map((handle, index) => ({
+    const unresolvedRepos =
+      retried.kind === 'ambiguous' ? retried.candidates : [...this.repos.values()];
+    const unresolvedRepoMap = new Map(unresolvedRepos.map((handle) => [handle.id, handle]));
+    const labels = buildAvailableRepoLabels(unresolvedRepoMap);
+    const candidates = unresolvedRepos.map((handle, index) => ({
       label: labels[index] ?? handle.name,
       path: handle.repoPath,
     }));
@@ -1596,7 +1599,7 @@ export class LocalBackend implements BackendPort {
     if (repoParam) {
       throw new Error(
         formatRepoResolutionError({
-          reason: 'not-found',
+          reason: retried.kind === 'ambiguous' ? 'ambiguous' : 'not-found',
           requestedRepo: repoParam,
           candidates,
           environment: repoResolutionEnvironmentFromProcess(),
@@ -1618,7 +1621,7 @@ export class LocalBackend implements BackendPort {
   /**
    * Try to resolve a repo from the in-memory cache. Returns null on miss.
    */
-  private resolveRepoFromCache(repoParam?: string): RepoHandle | null {
+  private resolveRepoFromCache(repoParam?: string): ReturnType<typeof resolveRepoFromHandles> {
     return resolveRepoFromHandles(this.repos, repoParam, this.preferredProjectPath);
   }
 

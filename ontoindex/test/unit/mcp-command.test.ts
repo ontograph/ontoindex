@@ -108,6 +108,35 @@ describe('mcpCommand', () => {
     expect(backendMocks.dispose).not.toHaveBeenCalled();
   });
 
+  it('uses the target project path to disambiguate duplicate repo labels', async () => {
+    backendMocks.listRepos.mockResolvedValue([
+      { name: 'codex', path: '/opt/demodb/_workfolder/ontocode-f1-layout' },
+      { name: 'codex', path: '/opt/demodb/_workfolder/ontocode' },
+    ]);
+
+    await mcpCommand({ repo: 'codex', project: '/opt/demodb/_workfolder/ontocode' });
+
+    expect(process.exitCode).toBeUndefined();
+    expect(startMCPServer).toHaveBeenCalled();
+    expect(backendMocks.dispose).not.toHaveBeenCalled();
+  });
+
+  it('blocks duplicate repo labels when the target project matches neither path', async () => {
+    backendMocks.listRepos.mockResolvedValue([
+      { name: 'codex', path: '/opt/demodb/_workfolder/ontocode-f1-layout' },
+      { name: 'codex', path: '/opt/demodb/_workfolder/ontocode' },
+    ]);
+
+    await mcpCommand({ repo: 'codex', project: '/opt/demodb/_workfolder/unrelated' });
+
+    expect(process.exitCode).toBe(1);
+    expect(startMCPServer).not.toHaveBeenCalled();
+    expect(backendMocks.dispose).toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('Repository "codex" is ambiguous'),
+    );
+  });
+
   it('passes the target project path to the backend when no repo filter is pinned', async () => {
     getGitRootMock.mockReturnValue('/opt/demodb/_workfolder/OntoIndex');
     delete process.env.ONTOINDEX_MCP_REPO;

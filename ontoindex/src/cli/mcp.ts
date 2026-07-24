@@ -79,6 +79,28 @@ function formatRepoFilterLabel(repoFilter: string | undefined): string {
   return repoFilter;
 }
 
+function selectProjectCandidate<T extends { path: string }>(
+  candidates: T[],
+  projectPath: string,
+): T | null {
+  const resolvedProject = path.resolve(projectPath);
+  const containing = candidates
+    .filter((candidate) => {
+      const candidatePath = path.resolve(candidate.path);
+      return (
+        resolvedProject === candidatePath ||
+        resolvedProject.startsWith(`${candidatePath}${path.sep}`)
+      );
+    })
+    .sort((a, b) => path.resolve(b.path).length - path.resolve(a.path).length);
+  if (containing.length === 0) return null;
+  const longestLength = path.resolve(containing[0].path).length;
+  return containing.filter((candidate) => path.resolve(candidate.path).length === longestLength)
+    .length === 1
+    ? containing[0]
+    : null;
+}
+
 export const mcpCommand = async (
   options: { full?: boolean; repo?: string; project?: string } = {},
 ) => {
@@ -138,7 +160,11 @@ export const mcpCommand = async (
       );
     }
   } else {
-    const repoCandidates = repoResolutionCandidatesFromEntries(repos);
+    let repoCandidates = repoResolutionCandidatesFromEntries(repos);
+    if (repoFilter && repoCandidates.length > 1) {
+      const projectCandidate = selectProjectCandidate(repoCandidates, targetProjectPath);
+      if (projectCandidate) repoCandidates = [projectCandidate];
+    }
     if (repoFilter && repoCandidates.length > 1) {
       const detail = formatRepoResolutionError({
         reason: 'ambiguous',

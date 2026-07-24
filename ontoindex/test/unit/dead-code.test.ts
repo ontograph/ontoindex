@@ -674,6 +674,9 @@ describe('dead_code', () => {
     it('derives mixed confidence buckets from absolute file paths in a real git repo', async () => {
       tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-dead-code-git-'));
       initGitRepo(tmpDir);
+      const recentCommitDates = [3, 2, 1].map((daysAgo) =>
+        new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString(),
+      );
 
       commitFile(
         tmpDir,
@@ -685,25 +688,25 @@ describe('dead_code', () => {
         tmpDir,
         'src/medium.ts',
         'export function mediumConfidence() { return 1; }\n',
-        '2026-04-20T00:00:00Z',
+        recentCommitDates[0],
       );
       commitFile(
         tmpDir,
         'src/low.ts',
         'export function lowConfidence() { return 1; }\n',
-        '2026-04-18T00:00:00Z',
+        recentCommitDates[0],
       );
       commitFile(
         tmpDir,
         'src/low.ts',
         'export function lowConfidence() { return 2; }\n',
-        '2026-04-19T00:00:00Z',
+        recentCommitDates[1],
       );
       commitFile(
         tmpDir,
         'src/low.ts',
         'export function lowConfidence() { return 3; }\n',
-        '2026-04-20T00:00:00Z',
+        recentCommitDates[2],
       );
 
       wireDb({

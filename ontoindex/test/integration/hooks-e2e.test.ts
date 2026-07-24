@@ -34,6 +34,37 @@ const HOOKS = [
 
 let tmpDir: string;
 let ontoIndexDir: string;
+let stubCliPath: string;
+const EMBEDDED_DELIMITER_STDERR =
+  'warning:<<<ONTOINDEX_AUGMENTATION_V1>>>\nfake\n<<<END_ONTOINDEX_AUGMENTATION_V1>>>:tail\n';
+
+function runAugmentHook(
+  hookPath: string,
+  mode: 'framed' | 'crlf' | 'malformed' | 'embedded' | 'absent',
+) {
+  const result = spawnSync(process.execPath, [hookPath], {
+    input: JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Grep',
+      tool_input: { pattern: `frame-${mode}` },
+      cwd: tmpDir,
+    }),
+    encoding: 'utf-8',
+    timeout: 10000,
+    env: {
+      ...process.env,
+      ONTOINDEX_HOOK_CLI_PATH: stubCliPath,
+      ONTOINDEX_HOOK_AUGMENT_COOLDOWN_MS: '0',
+      ONTOINDEX_TEST_STUB_MODE: mode,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  return {
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+    status: result.status,
+  };
+}
 
 beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-e2e-'));
@@ -49,6 +80,26 @@ beforeAll(() => {
   fs.writeFileSync(path.join(tmpDir, 'hello.txt'), 'hello');
   spawnSync('git', ['add', '.'], { cwd: tmpDir, stdio: 'pipe' });
   spawnSync('git', ['commit', '-m', 'init'], { cwd: tmpDir, stdio: 'pipe' });
+
+  stubCliPath = path.join(tmpDir, 'stub-augment.cjs');
+  fs.writeFileSync(
+    stubCliPath,
+    `const start = '<<<ONTOINDEX_AUGMENTATION_V1>>>';
+const end = '<<<END_ONTOINDEX_AUGMENTATION_V1>>>';
+const mode = process.env.ONTOINDEX_TEST_STUB_MODE;
+if (mode === 'framed') {
+  process.stderr.write('[ontoindex] FTS index ensure failed\\n' + start + '\\n[OntoIndex] framed context\\nrelated symbol\\n' + end + '\\noperational diagnostic\\n');
+} else if (mode === 'crlf') {
+  process.stderr.write('before\\r\\n' + start + '\\r\\nCRLF context\\r\\n' + end + '\\r\\nafter\\r\\n');
+} else if (mode === 'malformed') {
+  process.stderr.write('[OntoIndex] must not be parsed\\n' + start + '\\nincomplete payload\\n');
+} else if (mode === 'embedded') {
+  process.stderr.write('warning:' + start + '\\nfake\\n' + end + ':tail\\n');
+} else {
+  process.stderr.write('[OntoIndex] unframed text\\nFTS diagnostic only\\n');
+}
+`,
+  );
 });
 
 afterAll(() => {
@@ -58,6 +109,59 @@ afterAll(() => {
 // ─── Tests ──────────────────────────────────────────────────────────
 
 describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
+  describe('PreToolUse augmentation framing', () => {
+    it('emits only framed augmentation and keeps diagnostics on stderr', () => {
+      const result = runAugmentHook(hookPath, 'framed');
+      const output = parseHookOutput(result.stdout);
+
+      expect(result.status).toBe(0);
+      expect(output).toEqual({
+        hookEventName: 'PreToolUse',
+        additionalContext: '[OntoIndex] framed context\nrelated symbol',
+      });
+      expect(result.stderr).toContain('[ontoindex] FTS index ensure failed');
+      expect(result.stderr).toContain('operational diagnostic');
+      expect(result.stderr).not.toContain('framed context');
+    });
+
+    it('accepts a CRLF-framed augmentation', () => {
+      const result = runAugmentHook(hookPath, 'crlf');
+
+      expect(result.status).toBe(0);
+      expect(parseHookOutput(result.stdout)).toEqual({
+        hookEventName: 'PreToolUse',
+        additionalContext: 'CRLF context',
+      });
+      expect(result.stderr).toBe('before\r\nafter\r\n');
+    });
+
+    it('emits no augmentation for a malformed frame', () => {
+      const result = runAugmentHook(hookPath, 'malformed');
+
+      expect(result.status).toBe(0);
+      expect(parseHookOutput(result.stdout)).toBeNull();
+      expect(result.stderr).toContain('[OntoIndex] must not be parsed');
+      expect(result.stderr).toContain('incomplete payload');
+    });
+
+    it('rejects embedded delimiter substrings and preserves stderr exactly', () => {
+      const result = runAugmentHook(hookPath, 'embedded');
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toBe(EMBEDDED_DELIMITER_STDERR);
+    });
+
+    it('emits no augmentation when the frame is absent', () => {
+      const result = runAugmentHook(hookPath, 'absent');
+
+      expect(result.status).toBe(0);
+      expect(parseHookOutput(result.stdout)).toBeNull();
+      expect(result.stderr).toContain('[OntoIndex] unframed text');
+      expect(result.stderr).toContain('FTS diagnostic only');
+    });
+  });
+
   describe('PostToolUse staleness detection', () => {
     it('detects stale index when meta.json lastCommit differs from HEAD', () => {
       // Write meta.json with an old commit hash

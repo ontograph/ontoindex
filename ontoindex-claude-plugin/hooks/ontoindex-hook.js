@@ -25,6 +25,8 @@ const AUGMENT_LOCK_STALE_MS = readIntEnv(
   1000,
   300000,
 );
+const AUGMENT_FRAME_START = '<<<ONTOINDEX_AUGMENTATION_V1>>>';
+const AUGMENT_FRAME_END = '<<<END_ONTOINDEX_AUGMENTATION_V1>>>';
 
 function readIntEnv(name, fallback, min, max) {
   const parsed = Number.parseInt(process.env[name] || '', 10);
@@ -179,6 +181,25 @@ function finishAugment(paths) {
   }
 }
 
+function splitAugmentStderr(stderr) {
+  const output = stderr || '';
+  const frame = output.match(
+    /(^|\r?\n)<<<ONTOINDEX_AUGMENTATION_V1>>>\r?\n([\s\S]*?)\r?\n<<<END_ONTOINDEX_AUGMENTATION_V1>>>(?=\r?\n|$)/,
+  );
+  const hasOneFrame =
+    frame &&
+    output.split(AUGMENT_FRAME_START).length === 2 &&
+    output.split(AUGMENT_FRAME_END).length === 2;
+
+  if (!hasOneFrame) return { augmentation: '', diagnostics: output };
+
+  const start = frame.index + frame[1].length;
+  const end = frame.index + frame[0].length;
+  const augmentation = frame[2];
+  const diagnostics = output.slice(0, start) + output.slice(end).replace(/^\r?\n/, '');
+  return { augmentation, diagnostics };
+}
+
 /**
  * Spawn a ontoindex CLI command synchronously.
  * Detects binary on PATH once, then runs exactly once.
@@ -188,6 +209,16 @@ function finishAugment(paths) {
  */
 function runOntoIndexCli(args, cwd, timeout) {
   const isWin = process.platform === 'win32';
+  const cliPath = process.env.ONTOINDEX_HOOK_CLI_PATH;
+
+  if (cliPath) {
+    return spawnSync(process.execPath, [cliPath, ...args], {
+      encoding: 'utf-8',
+      timeout,
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  }
 
   // Detect whether 'ontoindex' is on PATH (cheap check, no execution)
   let useDirectBinary = false;
@@ -252,8 +283,10 @@ function handlePreToolUse(input) {
   let result = '';
   try {
     const child = runOntoIndexCli(['augment', '--', pattern], cwd, AUGMENT_TIMEOUT_MS);
+    const { augmentation, diagnostics } = splitAugmentStderr(child.stderr);
+    if (diagnostics) process.stderr.write(diagnostics);
     if (!child.error && child.status === 0) {
-      result = child.stderr || '';
+      result = augmentation;
     }
   } catch {
     /* graceful failure */

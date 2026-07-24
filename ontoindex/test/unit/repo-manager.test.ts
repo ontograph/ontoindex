@@ -222,6 +222,21 @@ describe('registerRepo name override + collision guard (#829)', () => {
     expect(entries[0].name).toBe('new-alias');
   });
 
+  it('treats symlinked paths as the same repository registration', async () => {
+    const symlinkPath = path.join(tmpHome.dbPath, 'repo-link');
+    await fs.symlink(tmpRepoA.dbPath, symlinkPath, 'dir');
+
+    await registerRepo(tmpRepoA.dbPath, meta, { name: 'original' });
+    await registerRepo(symlinkPath, meta, { name: 'via-link' });
+
+    const entries = await listRegisteredRepos();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      name: 'via-link',
+      path: await fs.realpath(tmpRepoA.dbPath),
+    });
+  });
+
   it('registerRepo throws RegistryNameCollisionError when another path uses the name', async () => {
     await registerRepo(tmpRepoA.dbPath, meta, { name: 'shared' });
 
@@ -252,17 +267,18 @@ describe('registerRepo name override + collision guard (#829)', () => {
     expect(entries[0].name).toBe('shared');
   });
 
-  it('registerRepo({ name, allowDuplicateName: true }) allows the duplicate to coexist', async () => {
+  it('registerRepo rejects duplicate names even when the legacy bypass is supplied', async () => {
     await registerRepo(tmpRepoA.dbPath, meta, { name: 'shared' });
-    await registerRepo(tmpRepoB.dbPath, meta, { name: 'shared', allowDuplicateName: true });
+    await expect(
+      registerRepo(tmpRepoB.dbPath, meta, {
+        name: 'shared',
+        allowDuplicateName: true,
+      }),
+    ).rejects.toBeInstanceOf(RegistryNameCollisionError);
 
     const entries = await listRegisteredRepos();
-    expect(entries).toHaveLength(2);
-    expect(entries.every((e) => e.name === 'shared')).toBe(true);
-    // Both paths are stored distinctly — the collision is surfaced to the
-    // user via resolveRepo / list output, not hidden at the storage layer.
-    const paths = entries.map((e) => path.resolve(e.path)).sort();
-    expect(paths).toEqual([path.resolve(tmpRepoA.dbPath), path.resolve(tmpRepoB.dbPath)].sort());
+    expect(entries).toHaveLength(1);
+    expect(entries[0].name).toBe('shared');
   });
 
   it('serializes concurrent registry updates without losing entries', async () => {
@@ -447,15 +463,12 @@ describe('registerRepo name override + collision guard (#829)', () => {
 
     await expect(fs.access(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
 
-    await registerRepo(tmpRepoB.dbPath, meta, { name: 'shared', allowDuplicateName: true });
+    await registerRepo(tmpRepoB.dbPath, meta, { name: 'unique' });
     const entries = await listRegisteredRepos();
-    expect(entries.map((entry) => entry.name).sort()).toEqual(['shared', 'shared']);
+    expect(entries.map((entry) => entry.name).sort()).toEqual(['shared', 'unique']);
   });
 
-  it('basename collisions without an explicit --name still register silently (backward-compat)', async () => {
-    // Create two sibling dirs whose basenames collide. Neither caller
-    // passes { name }, so the guard must NOT fire — this preserves the
-    // pre-#829 behaviour for users who don't know about --name yet.
+  it('rejects inferred basename collisions without an explicit --name', async () => {
     const parentA = await createTempDir('ontoindex-collide-parent-a-');
     const parentB = await createTempDir('ontoindex-collide-parent-b-');
     const sharedBasename = 'app';
@@ -466,12 +479,11 @@ describe('registerRepo name override + collision guard (#829)', () => {
 
     try {
       await registerRepo(pathA, meta);
-      await registerRepo(pathB, meta); // must NOT throw
+      await expect(registerRepo(pathB, meta)).rejects.toBeInstanceOf(RegistryNameCollisionError);
 
       const entries = await listRegisteredRepos();
-      expect(entries).toHaveLength(2);
+      expect(entries).toHaveLength(1);
       expect(entries[0].name).toBe(sharedBasename);
-      expect(entries[1].name).toBe(sharedBasename);
     } finally {
       await parentA.cleanup();
       await parentB.cleanup();

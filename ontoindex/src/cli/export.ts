@@ -170,8 +170,8 @@ async function resolveRepoRoot(repoOpt?: string): Promise<string> {
 
 async function registrationOptsForHydratedRepo(
   repoRoot: string,
-  opts: Pick<ExportBootstrapHydrateOptions, 'name' | 'allowDuplicateName'>,
-): Promise<Pick<ExportBootstrapHydrateOptions, 'name' | 'allowDuplicateName'>> {
+  opts: Pick<ExportBootstrapHydrateOptions, 'name'>,
+): Promise<Pick<ExportBootstrapHydrateOptions, 'name'>> {
   const resolved = path.resolve(repoRoot);
   const entries = await listRegisteredRepos({ validate: false });
   const existing = entries.find((entry) => {
@@ -187,7 +187,7 @@ async function registrationOptsForHydratedRepo(
         ? undefined
         : (getInferredRepoName(repoRoot) ?? path.basename(repoRoot));
 
-  if (name !== undefined && !opts.allowDuplicateName) {
+  if (name !== undefined) {
     const collision = entries.find((entry) => {
       const entryPath = path.resolve(entry.path);
       const samePath =
@@ -203,7 +203,6 @@ async function registrationOptsForHydratedRepo(
 
   return {
     ...(name !== undefined ? { name } : {}),
-    allowDuplicateName: opts.allowDuplicateName,
   };
 }
 
@@ -236,6 +235,7 @@ export interface ExportBootstrapHydrateOptions {
   repo?: string;
   force?: boolean;
   name?: string;
+  /** Deprecated compatibility flag. Duplicate names are always rejected. */
   allowDuplicateName?: boolean;
 }
 
@@ -1855,6 +1855,9 @@ export async function exportBootstrapHydrateCommand(
   artifactPath: string,
   opts: ExportBootstrapHydrateOptions,
 ): Promise<void> {
+  if (opts.allowDuplicateName) {
+    throw new Error('--allow-duplicate-name is no longer supported. Use --name <unique-alias>.');
+  }
   const repoRoot = await resolveRepoRoot(opts.repo);
   const { storagePath, lbugPath } = getStoragePaths(repoRoot);
   const existingMeta = await loadMeta(storagePath);
@@ -1946,7 +1949,7 @@ Notes:
     .option('--name <alias>', 'Register the hydrated repo under a custom registry alias')
     .option(
       '--allow-duplicate-name',
-      'Allow the custom alias to coexist with another repo using the same name',
+      'Deprecated: duplicate repository names are rejected; use --name <unique-alias>',
     )
     .action(exportBootstrapHydrateCommand);
 

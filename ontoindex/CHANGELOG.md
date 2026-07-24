@@ -4,6 +4,22 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.11] - 2026-07-24
+
+### Added
+
+- Added a deterministic Kimi K3 MCP smoke harness with repository, tool-call, evidence, and answer-grounding gates.
+
+### Changed
+
+- MCP repository selection now uses the active project path to disambiguate legacy duplicate labels and reports every candidate when ambiguity remains.
+- Repository registration now canonicalizes symlinked paths and rejects new duplicate labels, including the deprecated `--allow-duplicate-name` bypass.
+- Hook augmentation output now uses an explicit sentinel frame so operational diagnostics stay on stderr instead of leaking into agent context.
+
+### Fixed
+
+- LadybugDB pool startup now tries the resolved cached FTS extension path before falling back to `LOAD EXTENSION fts`.
+
 ## [2.0.10] - 2026-07-08
 
 ### Fixed

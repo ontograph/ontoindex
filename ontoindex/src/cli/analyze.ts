@@ -276,13 +276,7 @@ interface AnalyzeOptions {
    * `--name` preserve the alias.
    */
   name?: string;
-  /**
-   * Allow registration even when another path already uses the same
-   * `--name` alias (#829). Intentionally a distinct flag from `--force`
-   * because the user may want to coexist under the same name WITHOUT
-   * paying the cost of a pipeline re-index. Maps to registerRepo's
-   * `allowDuplicateName` option end-to-end.
-   */
+  /** Deprecated compatibility flag. Duplicate names are always rejected. */
   allowDuplicateName?: boolean;
 }
 
@@ -355,6 +349,9 @@ function formatFileScopeExplanation(
 
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
   if (ensureHeap()) return;
+  if (options?.allowDuplicateName) {
+    throw new Error('--allow-duplicate-name is no longer supported. Use --name <unique-alias>.');
+  }
 
   const largeRepoSafeApplied =
     (options?.largeRepoSafe || options?.hugeRepo) &&
@@ -552,8 +549,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       repoPath,
       {
         // Pipeline re-index — OR'd with --skills because skill generation
-        // needs a fresh pipelineResult. Has no bearing on the registry
-        // collision guard (see allowDuplicateName below).
+        // needs a fresh pipelineResult.
         force: options?.force || options?.skills || experimentalFileDeltaPlan?.forceFullAnalyze,
         embeddings: options?.embeddings,
         annNeighbors: options?.annNeighbors,
@@ -565,11 +561,6 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         noStats: experimentalFileDeltaPlan?.safeToBound ? true : options?.noStats,
         skipNativeClose: process.env.ONTOINDEX_ANALYZE_NATIVE_CLOSE !== '1',
         registryName: options?.name,
-        // Registry-collision bypass — its own CLI flag, intentionally NOT
-        // overloading --force. A user who hits the collision guard should
-        // be able to accept the duplicate name without also paying the
-        // cost of a full pipeline re-index. See #829 review round 2.
-        allowDuplicateName: options?.allowDuplicateName,
       },
       {
         onProgress: (_phase, percent, message) => {
@@ -723,10 +714,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       console.error(`\n  Registry name collision:\n`);
       console.error(`    "${err.registryName}" is already used by "${err.existingPath}".\n`);
       console.error(`  Options:`);
-      console.error(`    • Pick a different alias:  ontoindex analyze --name <alias>`);
-      console.error(
-        `    • Allow the duplicate:     ontoindex analyze --allow-duplicate-name  (leaves "-r ${err.registryName}" ambiguous)`,
-      );
+      console.error(`    • Pick a different alias:  ontoindex analyze --name <unique-alias>`);
       console.error('');
       process.exitCode = 1;
       return;

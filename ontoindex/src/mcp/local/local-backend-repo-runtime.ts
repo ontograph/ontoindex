@@ -1,4 +1,5 @@
 import fs from 'fs/promises';
+import syncFs from 'node:fs';
 import path from 'path';
 import { RepoHandle } from 'ontoindex-shared';
 
@@ -95,43 +96,88 @@ async function decorateInitError(
   return err instanceof Error ? err : new Error(message);
 }
 
-function resolveRepoByParam(handles: Iterable<RepoHandle>, repoParam: string): RepoHandle | null {
+export type RepoResolution =
+  | { kind: 'resolved'; repo: RepoHandle }
+  | { kind: 'not-found' }
+  | { kind: 'ambiguous'; candidates: RepoHandle[] };
+
+function resolved(repo: RepoHandle): RepoResolution {
+  return { kind: 'resolved', repo };
+}
+
+function canonicalRepoPath(repoPath: string): string {
+  const resolvedPath = path.resolve(repoPath);
+  try {
+    return syncFs.realpathSync.native(resolvedPath);
+  } catch {
+    return resolvedPath;
+  }
+}
+
+function choosePreferredRepo(candidates: RepoHandle[], preferredRepoPath?: string): RepoResolution {
+  if (candidates.length === 1) return resolved(candidates[0]);
+  if (!preferredRepoPath) return { kind: 'ambiguous', candidates };
+
+  const preferred = canonicalRepoPath(preferredRepoPath);
+  const containing = candidates
+    .filter((handle) => {
+      const repoPath = canonicalRepoPath(handle.repoPath);
+      return preferred === repoPath || preferred.startsWith(`${repoPath}${path.sep}`);
+    })
+    .sort((a, b) => canonicalRepoPath(b.repoPath).length - canonicalRepoPath(a.repoPath).length);
+
+  if (containing.length === 0) return { kind: 'ambiguous', candidates };
+  const longestLength = canonicalRepoPath(containing[0].repoPath).length;
+  const longest = containing.filter(
+    (handle) => canonicalRepoPath(handle.repoPath).length === longestLength,
+  );
+  return longest.length === 1 ? resolved(longest[0]) : { kind: 'ambiguous', candidates };
+}
+
+function resolveRepoByParam(
+  handles: Iterable<RepoHandle>,
+  repoParam: string,
+  preferredRepoPath?: string,
+): RepoResolution {
   const allHandles = Array.from(handles);
   const paramLower = repoParam.toLowerCase();
 
-  for (const handle of allHandles) {
-    if (handle.id === paramLower) return handle;
-  }
+  const resolvedPath = canonicalRepoPath(repoParam);
+  const pathMatches = allHandles.filter(
+    (handle) => canonicalRepoPath(handle.repoPath) === resolvedPath,
+  );
+  if (pathMatches.length > 0) return choosePreferredRepo(pathMatches, preferredRepoPath);
 
-  for (const handle of allHandles) {
-    if (handle.name.toLowerCase() === paramLower) return handle;
-  }
+  const nameMatches = allHandles.filter((handle) => handle.name.toLowerCase() === paramLower);
+  if (nameMatches.length > 0) return choosePreferredRepo(nameMatches, preferredRepoPath);
 
-  const resolved = path.resolve(repoParam);
-  for (const handle of allHandles) {
-    if (handle.repoPath === resolved) return handle;
-  }
+  const idMatches = allHandles.filter((handle) => handle.id === paramLower);
+  if (idMatches.length > 0) return choosePreferredRepo(idMatches, preferredRepoPath);
 
-  for (const handle of allHandles) {
-    if (handle.name.toLowerCase().includes(paramLower)) return handle;
-  }
+  const partialMatches = allHandles.filter((handle) =>
+    handle.name.toLowerCase().includes(paramLower),
+  );
+  if (partialMatches.length > 0) return choosePreferredRepo(partialMatches, preferredRepoPath);
 
-  return null;
+  return { kind: 'not-found' };
 }
 
 export function resolveRepoFromHandles(
   repos: ReadonlyMap<string, RepoHandle>,
   repoParam?: string,
   preferredRepoPath?: string,
-): RepoHandle | null {
-  if (repos.size === 0) return null;
-  if (repoParam) return resolveRepoByParam(repos.values(), repoParam);
+): RepoResolution {
+  if (repos.size === 0) return { kind: 'not-found' };
+  if (repoParam) return resolveRepoByParam(repos.values(), repoParam, preferredRepoPath);
   if (preferredRepoPath) {
-    const preferred = resolveRepoByParam(repos.values(), preferredRepoPath);
-    if (preferred) return preferred;
+    const preferred = choosePreferredRepo([...repos.values()], preferredRepoPath);
+    if (preferred.kind === 'resolved') return preferred;
   }
-  if (repos.size === 1) return repos.values().next().value ?? null;
-  return null;
+  if (repos.size === 1) {
+    const repo = repos.values().next().value;
+    return repo ? resolved(repo) : { kind: 'not-found' };
+  }
+  return { kind: 'ambiguous', candidates: [...repos.values()] };
 }
 
 export function buildAvailableRepoLabels(repos: ReadonlyMap<string, RepoHandle>): string[] {

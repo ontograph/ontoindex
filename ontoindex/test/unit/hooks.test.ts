@@ -35,6 +35,9 @@ const PLUGIN_HOOK = path.resolve(
   'hooks',
   'ontoindex-hook.js',
 );
+const AUGMENT_COMMAND = path.resolve(__dirname, '..', '..', 'src', 'cli', 'augment.ts');
+const AUGMENT_FRAME_START = '<<<ONTOINDEX_AUGMENTATION_V1>>>';
+const AUGMENT_FRAME_END = '<<<END_ONTOINDEX_AUGMENTATION_V1>>>';
 
 // ─── Test fixtures: temporary .ontoindex directory ───────────────────
 
@@ -235,6 +238,31 @@ describe('PreToolUse augment hardening', () => {
       expect(source).toMatch(
         /try\s*\{[\s\S]*runOntoIndexCli[\s\S]*\}\s*catch\s*\{[\s\S]*\}\s*finally\s*\{[\s\S]*finishAugment\(augmentLease\);[\s\S]*\}/,
       );
+    });
+  }
+});
+
+describe('PreToolUse augmentation frame contract', () => {
+  it('augmentCommand emits the explicit sentinel frame on stderr', () => {
+    const source = fs.readFileSync(AUGMENT_COMMAND, 'utf-8');
+    expect(source).toContain(AUGMENT_FRAME_START);
+    expect(source).toContain(AUGMENT_FRAME_END);
+    expect(source).toContain('process.stderr.write(`${AUGMENT_FRAME_START}');
+  });
+
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
+    it(`${label} hook consumes only the sentinel frame and preserves diagnostics`, () => {
+      const source = fs.readFileSync(hookPath, 'utf-8');
+      expect(source).toContain(AUGMENT_FRAME_START);
+      expect(source).toContain(AUGMENT_FRAME_END);
+      expect(source).toContain('function splitAugmentStderr(stderr)');
+      expect(source).toContain('if (diagnostics) process.stderr.write(diagnostics)');
+      expect(source).toContain('ONTOINDEX_HOOK_CLI_PATH');
+      expect(source).not.toMatch(/includes\(['"]\[OntoIndex\]/);
+      expect(source).not.toMatch(/indexOf\(['"]\[OntoIndex\]/);
     });
   }
 });

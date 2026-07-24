@@ -17,6 +17,7 @@
 
 import fs from 'fs/promises';
 import lbug, { type LbugValue } from '@ladybugdb/core';
+import { resolveLocalLbugExtensionPath } from './lbug-adapter.js';
 
 export type LbugQueryRow = {
   readonly [field: string]: unknown;
@@ -440,8 +441,24 @@ async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): 
   try {
     if (!shared.ftsLoaded) {
       try {
-        await withTimeout(conn.query('LOAD EXTENSION fts'), QUERY_TIMEOUT_MS, 'LOAD EXTENSION fts');
-        shared.ftsLoaded = true;
+        const localFtsPath = await resolveLocalLbugExtensionPath('fts');
+        if (localFtsPath) {
+          try {
+            const loadQuery = `LOAD EXTENSION '${localFtsPath.replace(/'/g, "\\'")}'`;
+            await withTimeout(conn.query(loadQuery), QUERY_TIMEOUT_MS, loadQuery);
+            shared.ftsLoaded = true;
+          } catch (err) {
+            if (err instanceof QueryTimeoutError) throw err;
+          }
+        }
+        if (!shared.ftsLoaded) {
+          await withTimeout(
+            conn.query('LOAD EXTENSION fts'),
+            QUERY_TIMEOUT_MS,
+            'LOAD EXTENSION fts',
+          );
+          shared.ftsLoaded = true;
+        }
       } catch (err) {
         if (err instanceof QueryTimeoutError) throw err;
         // FTS extension may not be installed — FTS queries will fail gracefully

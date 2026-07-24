@@ -25,6 +25,8 @@ const AUGMENT_LOCK_STALE_MS = readIntEnv(
   1000,
   300000,
 );
+const AUGMENT_FRAME_START = '<<<ONTOINDEX_AUGMENTATION_V1>>>';
+const AUGMENT_FRAME_END = '<<<END_ONTOINDEX_AUGMENTATION_V1>>>';
 
 function readIntEnv(name, fallback, min, max) {
   const parsed = Number.parseInt(process.env[name] || '', 10);
@@ -179,6 +181,26 @@ function finishAugment(paths) {
   }
 }
 
+function splitAugmentStderr(stderr) {
+  const output = stderr || '';
+  const frame = output.match(
+    /(^|\r?\n)<<<ONTOINDEX_AUGMENTATION_V1>>>\r?\n([\s\S]*?)\r?\n<<<END_ONTOINDEX_AUGMENTATION_V1>>>(?=\r?\n|$)/,
+  );
+  const hasOneFrame =
+    frame &&
+    output.split(AUGMENT_FRAME_START).length === 2 &&
+    output.split(AUGMENT_FRAME_END).length === 2;
+
+  if (!hasOneFrame) return { augmentation: '', diagnostics: output };
+
+  const start = frame.index + frame[1].length;
+  const end = frame.index + frame[0].length;
+  const augmentation = frame[2];
+  const diagnostics =
+    output.slice(0, start) + output.slice(end).replace(/^\r?\n/, '');
+  return { augmentation, diagnostics };
+}
+
 /**
  * Resolve the ontoindex CLI path.
  * 1. Relative path (works when script is inside npm package)
@@ -186,6 +208,8 @@ function finishAugment(paths) {
  * 3. Fall back to npx (returns empty string)
  */
 function resolveCliPath() {
+  if (process.env.ONTOINDEX_HOOK_CLI_PATH) return process.env.ONTOINDEX_HOOK_CLI_PATH;
+
   let cliPath = path.resolve(__dirname, '..', '..', 'dist', 'cli', 'index.js');
   if (!fs.existsSync(cliPath)) {
     try {
@@ -243,8 +267,10 @@ function handlePreToolUse(input) {
   let result = '';
   try {
     const child = runOntoIndexCli(cliPath, ['augment', '--', pattern], cwd, AUGMENT_TIMEOUT_MS);
+    const { augmentation, diagnostics } = splitAugmentStderr(child.stderr);
+    if (diagnostics) process.stderr.write(diagnostics);
     if (!child.error && child.status === 0) {
-      result = child.stderr || '';
+      result = augmentation;
     }
   } catch {
     /* graceful failure */

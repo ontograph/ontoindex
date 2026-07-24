@@ -923,6 +923,19 @@ describe('LocalBackend.resolveRepo', () => {
     expect(result).toHaveProperty('processes');
   });
 
+  it('reports every duplicate label candidate when the project path cannot disambiguate', async () => {
+    (listRegisteredRepos as any).mockResolvedValue([
+      { ...MOCK_REPO_ENTRY, name: 'codex', path: '/workspace/ontocode' },
+      { ...MOCK_REPO_ENTRY, name: 'codex', path: '/workspace/ontocode-f1-layout' },
+    ]);
+    backend = new LocalBackend({ preferredProjectPath: '/workspace/unrelated' });
+    await backend.init();
+
+    await expect(backend.callTool('query', { query: 'auth', repo: 'codex' })).rejects.toThrow(
+      /Repository "codex" is ambiguous[\s\S]*\/workspace\/ontocode[\s\S]*\/workspace\/ontocode-f1-layout/,
+    );
+  });
+
   it('resolves repo by absolute path parameter', async () => {
     setupMultipleRepos();
     await backend.init();

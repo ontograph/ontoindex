@@ -4,6 +4,20 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.11] - 2026-07-24
+
+### Added
+
+- Added a deterministic Kimi K3 MCP smoke harness for validating repository-scoped tool use and grounded responses.
+
+### Changed
+
+- Hardened MCP repository selection, duplicate-label handling, canonical repository paths, and hook augmentation framing.
+
+### Fixed
+
+- Loaded cached LadybugDB FTS extensions before the bare extension fallback in pooled database startup.
+
 ## [2.0.8] - 2026-07-07
 
 ### Fixed

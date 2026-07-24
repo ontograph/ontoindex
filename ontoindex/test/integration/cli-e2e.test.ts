@@ -282,23 +282,18 @@ describe('CLI end-to-end', () => {
     }
   }, 120_000);
 
-  // ─── analyze --name <alias> + --allow-duplicate-name (#829) ──────
+  // ─── analyze --name <alias> collision handling ───────────────────
   //
   // End-to-end regression guard for the name-collision feature:
   //   1. `analyze --name X` persists the alias to ~/.ontoindex/registry.json
   //   2. A second `analyze --name X` on a DIFFERENT path is rejected with
   //      a collision error (exit code 1, "already used" in output)
-  //   3. `analyze --name X --allow-duplicate-name` bypasses the guard;
-  //      both entries coexist in registry.json
-  //   4. Pipeline-re-index flags (e.g. --skills) WITHOUT
-  //      --allow-duplicate-name must STILL hit the collision guard —
-  //      the bypass must stay gated on its dedicated flag so it isn't
-  //      silently triggered by unrelated pipeline signals
-  //      (review round 2/3 design decision).
+  //   3. The legacy `--allow-duplicate-name` flag fails closed.
+  //   4. Pipeline-re-index flags (e.g. --skills) still hit the collision guard.
   //
   // This test invokes the real CLI → runFullAnalysis → registerRepo
   // chain, so any wiring regression fails here.
-  describe('analyze --name <alias> and --allow-duplicate-name (#829)', () => {
+  describe('analyze --name <alias> collision handling', () => {
     // Path-equality assertions across CLI spawn boundaries are fragile
     // cross-platform:
     //   - macOS: os.tmpdir() returns /var/folders/...; child processes
@@ -312,7 +307,7 @@ describe('CLI end-to-end', () => {
     // distinctness. That covers the behavior this test is here to
     // protect without depending on exact-string path equality.
 
-    it('--name alias stores; collision rejects; --allow-duplicate-name bypasses', () => {
+    it('--name alias stores and every duplicate path is rejected', () => {
       // Isolate the global registry so this test never touches the
       // developer's real ~/.ontoindex.
       const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-home-'));
@@ -366,10 +361,7 @@ describe('CLI end-to-end', () => {
         // must not have silently added, overwritten, or corrupted state.
         expect(afterStep2[0].path).toBe(afterStep1[0].path);
 
-        // Step 3: REGRESSION GUARD for the missing collision-bypass wire
-        // (originally a --force passthrough bug; per review round 3 the
-        // bypass moved to its own --allow-duplicate-name flag to avoid
-        // conflating it with pipeline re-index).
+        // Step 3: the legacy bypass now fails closed.
         const r3 = runCliWithEnv(
           ['analyze', '--name', 'shared', '--allow-duplicate-name'],
           repoB,
@@ -377,33 +369,16 @@ describe('CLI end-to-end', () => {
           60000,
         );
         if (r3.status === null) return;
-        expect(
-          r3.status,
-          [
-            `step 3 (--allow-duplicate-name bypass) exited with ${r3.status}`,
-            `stdout: ${r3.stdout}`,
-            `stderr: ${r3.stderr}`,
-          ].join('\n'),
-        ).toBe(0);
+        expect(r3.status).toBe(1);
+        expect(`${r3.stdout}${r3.stderr}`).toMatch(/no longer supported|unique-alias/i);
 
         const afterStep3 = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
-        expect(afterStep3).toHaveLength(2);
-        expect(afterStep3.every((e: { name: string }) => e.name === 'shared')).toBe(true);
-        // Both entries point to distinct paths (we registered two different
-        // repos under the same alias) and both have the right basename.
-        const step3Basenames = afterStep3.map((e: { path: string }) => path.basename(e.path));
-        expect(step3Basenames).toEqual(['collide-app', 'collide-app']);
-        const step3Paths = new Set(afterStep3.map((e: { path: string }) => e.path));
-        expect(step3Paths.size).toBe(2);
-        // One of the two entries is the original from step 1 — unchanged.
-        expect(afterStep3.map((e: { path: string }) => e.path)).toContain(afterStep1[0].path);
+        expect(afterStep3).toEqual(afterStep1);
 
         // Step 4: REGRESSION GUARD for the design decision in review
         // round 2/3 — pipeline-re-index flags must NOT bypass the
         // registry collision guard. `--skills` triggers pipeline
-        // re-run (skills generation needs a fresh pipelineResult) but
-        // must leave the registry guard in force. Bypass requires the
-        // explicit --allow-duplicate-name flag.
+        // re-run but must leave the registry guard in force.
         const repoC = makeMiniRepoCopy('collide-app', 'gn-collide-c-');
         const parentC = path.dirname(repoC);
         try {
@@ -417,12 +392,11 @@ describe('CLI end-to-end', () => {
           expect(r4.status).toBe(1);
           const r4Output = `${r4.stdout}${r4.stderr}`;
           expect(r4Output).toMatch(/Registry name collision|already used/i);
-          // The error hint should point at the new flag.
-          expect(r4Output).toMatch(/--allow-duplicate-name/);
+          expect(r4Output).toMatch(/--name <unique-alias>/);
 
-          // Registry unchanged — still only A + B under "shared".
+          // Registry unchanged — only repo A remains under "shared".
           const afterStep4 = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
-          expect(afterStep4).toHaveLength(2);
+          expect(afterStep4).toEqual(afterStep1);
         } finally {
           fs.rmSync(parentC, { recursive: true, force: true });
         }

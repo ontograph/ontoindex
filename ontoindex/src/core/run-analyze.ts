@@ -77,8 +77,7 @@ export interface AnalyzeOptions {
   /**
    * Force a full re-index of the pipeline. Callers may OR this with
    * other flags that imply re-analysis (e.g. `--skills`), so the value
-   * here is the PIPELINE-force signal, NOT the registry-collision
-   * bypass. See `allowDuplicateName` below.
+   * here is the pipeline-force signal.
    */
   force?: boolean;
   embeddings?: boolean;
@@ -98,15 +97,6 @@ export interface AnalyzeOptions {
    * this alias instead of the path-derived basename.
    */
   registryName?: string;
-  /**
-   * Bypass the `RegistryNameCollisionError` guard and allow two paths
-   * to register under the same `name` (#829). Controlled by the
-   * dedicated `--allow-duplicate-name` CLI flag, intentionally
-   * independent from `--force` — users who hit the collision guard
-   * should be able to accept the duplicate without paying the cost
-   * of a pipeline re-index.
-   */
-  allowDuplicateName?: boolean;
   /** Queue post-index Markdown sidecar enrichment. Default off. */
   markdownSidecar?: boolean;
   /** Skip native LadybugDB close; callers must terminate the process promptly. */
@@ -828,7 +818,6 @@ export async function runFullAnalysis(
     if (currentCommit !== '') {
       const projectName = await registerRepo(repoPath, existingMeta, {
         name: options.registryName,
-        allowDuplicateName: options.allowDuplicateName,
       });
       gcTelemetry?.stop();
       return {
@@ -1269,18 +1258,13 @@ export async function runFullAnalysis(
       ...symbolsOnlyMetadata,
     };
     await saveMeta(storagePath, meta);
-    // Forward the --name alias and the registry-collision bypass bit.
-    // `allowDuplicateName` is its own concern — independent from the
-    // pipeline `force` above. The CLI maps it from
-    // `--allow-duplicate-name` only; `--force` and `--skills` both
-    // trigger pipeline re-run but never bypass the registry guard.
+    // Forward the --name alias.
     // The returned name is the one actually written to the registry
     // (after applying the precedence chain in registerRepo) — reuse it
     // so AGENTS.md / skill files reference the same name MCP clients
     // will look up (#979).
     const projectName = await registerRepo(repoPath, meta, {
       name: options.registryName,
-      allowDuplicateName: options.allowDuplicateName,
     });
 
     await saveGraphDiffSnapshot(storagePath, pipelineResult.graph, indexedAt, currentCommit);

@@ -78,8 +78,7 @@ program
   )
   .option(
     '--allow-duplicate-name',
-    'Register this repo even if another path already uses the same --name alias. ' +
-      'Leaves `-r <name>` ambiguous for the two paths; use -r <path> to disambiguate.',
+    'Deprecated: duplicate repository names are rejected; use --name <unique-alias>.',
   )
   .option('-v, --verbose', 'Enable verbose ingestion warnings (default: false)')
   .addHelpText(
