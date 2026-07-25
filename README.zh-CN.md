@@ -7,7 +7,7 @@
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- 当前版本：`2.0.8`
+- 当前版本：`2.1.1`
 - 源代码仓库：[github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - 安全策略：[SECURITY.md](SECURITY.md)
 - 企业联系：[erasyuk@gmail.com](mailto:erasyuk@gmail.com)

@@ -4,6 +4,17 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-07-25
+
+### Added
+
+- Added comprehensive MCP test suites and plans for model validation (Kimi K3, Grok 4.5, GLM-5.2-Max).
+- Added refactoring plans for system warning hooks, context transaction barriers, and hook augmentation diagnostics separation.
+
+### Changed
+
+- Updated release documentation and pinned version strings to v2.1.1.
+
 ## [2.0.11] - 2026-07-24
 
 ### Added

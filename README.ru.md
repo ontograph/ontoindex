@@ -7,7 +7,7 @@
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- Текущий релиз: `2.0.8`
+- Текущий релиз: `2.1.1`
 - Исходный репозиторий: [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - Политика безопасности: [SECURITY.md](SECURITY.md)
 - Enterprise-контакт: [erasyuk@gmail.com](mailto:erasyuk@gmail.com)
