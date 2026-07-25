@@ -4,6 +4,13 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-07-25
+
+### Fixed
+
+- GitHub releases now include the built `ontoindex-X.Y.Z.tgz` package required by the Linux/macOS and Windows installers.
+- GitHub release creation now runs before npm publication so registry failures cannot leave the latest release without its installer asset.
+
 ## [2.1.1] - 2026-07-25
 
 ### Added

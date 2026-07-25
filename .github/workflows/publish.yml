@@ -113,11 +113,9 @@ jobs:
         run: npm publish --dry-run
         working-directory: ontoindex
 
-      - name: Publish to npm
-        run: npm publish --provenance --access public
+      - name: Pack GitHub release asset
+        run: npm pack --pack-destination ..
         working-directory: ontoindex
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Extract release notes from CHANGELOG
         id: changelog
@@ -138,3 +136,11 @@ jobs:
         with:
           body_path: ${{ steps.changelog.outputs.fallback == 'false' && '/tmp/release-notes.md' || '' }}
           generate_release_notes: ${{ steps.changelog.outputs.fallback == 'true' }}
+          files: ontoindex-*.tgz
+          fail_on_unmatched_files: true
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        working-directory: ontoindex
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
