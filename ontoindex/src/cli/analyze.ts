@@ -61,6 +61,7 @@ interface AnalyzeLockRecord {
   pid?: unknown;
   token?: unknown;
   startedAt?: unknown;
+  processStartIdentity?: unknown;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -155,6 +156,62 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+async function readProcessStartIdentity(pid: number): Promise<string | null> {
+  if (process.platform !== 'linux') return null;
+  try {
+    const stat = await fs.readFile(`/proc/${pid}/stat`, 'utf-8');
+    const fields = stat
+      .slice(stat.lastIndexOf(')') + 2)
+      .trim()
+      .split(/\s+/);
+    return fields[19] || null;
+  } catch {
+    return null;
+  }
+}
+
+async function isAnalyzeLockOwnerActive(record: AnalyzeLockRecord): Promise<boolean | null> {
+  const pid = typeof record.pid === 'number' ? record.pid : null;
+  if (pid === null) return null;
+  if (!isProcessAlive(pid)) return false;
+
+  const recordedIdentity =
+    typeof record.processStartIdentity === 'string' ? record.processStartIdentity : null;
+  if (!recordedIdentity) return true;
+  const currentIdentity = await readProcessStartIdentity(pid);
+  if (!currentIdentity) return null;
+  return currentIdentity === recordedIdentity;
+}
+
+async function archiveStaleAnalyzeDiagnostics(
+  storagePath: string,
+  lockContents: string,
+  token: string | undefined,
+): Promise<void> {
+  const recoveryPath = path.join(storagePath, 'recovery');
+  await fs.mkdir(recoveryPath, { recursive: true });
+  let checkpoint: string | undefined;
+  try {
+    checkpoint = (
+      await fs.readFile(path.join(storagePath, 'analysis-checkpoint.json'), 'utf-8')
+    ).slice(0, 64 * 1024);
+  } catch {}
+  const suffix = `${Date.now()}-${(token ?? 'legacy').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32)}`;
+  await fs.writeFile(
+    path.join(recoveryPath, `stale-analyze-${suffix}.json`),
+    JSON.stringify(
+      {
+        archivedAt: new Date().toISOString(),
+        lock: lockContents.slice(0, 16 * 1024),
+        ...(checkpoint ? { checkpoint } : {}),
+      },
+      null,
+      2,
+    ),
+    'utf-8',
+  );
+}
+
 async function removeAnalyzeLockIfOwner(
   lockPath: string,
   expectedPid: number,
@@ -172,11 +229,12 @@ async function removeAnalyzeLockIfOwner(
   }
 }
 
-async function acquireAnalyzeLock(repoPath: string): Promise<AnalyzeLock> {
+export async function acquireAnalyzeLock(repoPath: string): Promise<AnalyzeLock> {
   const { storagePath } = getStoragePaths(repoPath);
   await fs.mkdir(storagePath, { recursive: true });
   const lockPath = path.join(storagePath, 'analyze.lock');
   const token = randomUUID();
+  const processStartIdentity = await readProcessStartIdentity(process.pid);
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -188,6 +246,7 @@ async function acquireAnalyzeLock(repoPath: string): Promise<AnalyzeLock> {
               pid: process.pid,
               token,
               startedAt: new Date().toISOString(),
+              ...(processStartIdentity ? { processStartIdentity } : {}),
               repoPath,
               command: process.argv.join(' '),
             },
@@ -212,22 +271,25 @@ async function acquireAnalyzeLock(repoPath: string): Promise<AnalyzeLock> {
       if (getErrorCode(err) !== 'EEXIST') throw err;
 
       let existing: AnalyzeLockRecord | null = null;
+      let existingContents = '';
       try {
-        existing = parseAnalyzeLockRecord(await fs.readFile(lockPath, 'utf-8'));
+        existingContents = await fs.readFile(lockPath, 'utf-8');
+        existing = parseAnalyzeLockRecord(existingContents);
       } catch {}
 
       const pid = typeof existing?.pid === 'number' ? existing.pid : null;
-      if (pid !== null && !isProcessAlive(pid)) {
+      const ownerActive = existing ? await isAnalyzeLockOwnerActive(existing) : null;
+      if (pid !== null && ownerActive === false) {
         const staleToken = typeof existing?.token === 'string' ? existing.token : undefined;
-        await removeAnalyzeLockIfOwner(lockPath, pid, staleToken);
-        continue;
+        await archiveStaleAnalyzeDiagnostics(storagePath, existingContents, staleToken);
+        if (await removeAnalyzeLockIfOwner(lockPath, pid, staleToken)) continue;
       }
 
       const owner = pid !== null ? `PID ${pid}` : 'another process';
       const startedAt =
         typeof existing?.startedAt === 'string' ? ` since ${existing.startedAt}` : '';
       throw new Error(
-        `OntoIndex analyze is already running for this repo (${owner}${startedAt}). ` +
+        `${ownerActive === null ? 'Cannot safely recover' : 'OntoIndex analyze is already running'} for this repo (${owner}${startedAt}). ` +
           `Lock: ${lockPath}`,
       );
     }

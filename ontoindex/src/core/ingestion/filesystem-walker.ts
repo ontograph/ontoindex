@@ -3,6 +3,11 @@ import fs from 'fs/promises';
 import path from 'path';
 import { globStream } from 'glob';
 import { createIgnoreFilter } from '../../config/ignore-service.js';
+import {
+  getLanguageFromFilename,
+  getLanguageFromShebang,
+  type SupportedLanguages,
+} from 'ontoindex-shared';
 
 export interface FileEntry {
   path: string;
@@ -14,6 +19,12 @@ export interface ScannedFile {
   path: string;
   size: number;
   degraded?: boolean;
+  /**
+   * Content-aware fallback language for extensionless executable scripts,
+   * detected from the first shebang line during scan. Only set when the path
+   * yields no extension/basename language; extension detection always wins.
+   */
+  shebangLanguage?: SupportedLanguages | null;
 }
 
 export interface WalkRepositoryOptions {
@@ -32,6 +43,38 @@ const READ_CONCURRENCY = 32;
 const DEFAULT_MAX_FILE_SIZE = 512 * 1024;
 
 const toPosixPath = (value: string): string => value.replace(/\\/g, '/');
+
+/** Bytes read from the head of an extensionless file to inspect its shebang. */
+const SHEBANG_PROBE_BYTES = 256;
+
+/**
+ * Bounded first-line detection for extensionless scripts. Reads at most
+ * SHEBANG_PROBE_BYTES from the file head — never the whole file — and maps a
+ * supported shebang (Python, Ruby, Node/JS, PHP) to its language. Returns null
+ * for any read error, missing shebang, or unsupported interpreter (shell/bash
+ * stay unsupported).
+ */
+async function detectShebangLanguage(fullPath: string): Promise<SupportedLanguages | null> {
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(fullPath, 'r');
+    const buffer = Buffer.alloc(SHEBANG_PROBE_BYTES);
+    const { bytesRead } = await handle.read(buffer, 0, SHEBANG_PROBE_BYTES, 0);
+    return getLanguageFromShebang(buffer.toString('utf8', 0, bytesRead));
+  } catch {
+    return null;
+  } finally {
+    await handle?.close();
+  }
+}
+
+/** True when a path has no recognised extension or extensionless basename. */
+function hasNoPathLanguage(relativePath: string): boolean {
+  if (getLanguageFromFilename(relativePath) !== null) return false;
+  const basename = relativePath.split('/').pop() ?? relativePath;
+  // A leading-dot dotfile (.bashrc) has no extension; a trailing/middle dot does.
+  return basename.lastIndexOf('.') <= 0;
+}
 
 function isPathInside(parent: string, child: string): boolean {
   const relative = path.relative(parent, child);
@@ -135,7 +178,16 @@ export const walkRepositoryPaths = async (
           options?.onSkippedLargeFile?.(file);
           return null;
         }
-        return { path: skippedPath, size: stat.size };
+        // Extensionless scripts: attach a bounded shebang-detected language so
+        // downstream parse routing can pick them up without re-reading later.
+        // Extension/basename detection always wins, so only probe when the path
+        // yields no language of its own.
+        const shebangLanguage = hasNoPathLanguage(skippedPath)
+          ? await detectShebangLanguage(fullPath)
+          : undefined;
+        return shebangLanguage
+          ? { path: skippedPath, size: stat.size, shebangLanguage }
+          : { path: skippedPath, size: stat.size };
       }),
     );
 

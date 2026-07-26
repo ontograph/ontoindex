@@ -21,6 +21,7 @@ vi.mock('../../src/core/search/graph-traversal-rank.js', () => ({
 
 vi.mock('../../src/mcp/local/query-log.js', () => ({
   appendQueryLog: vi.fn(),
+  queryLogEnabled: () => false,
 }));
 
 vi.mock('../../src/core/search/intent-classifier.js', () => ({

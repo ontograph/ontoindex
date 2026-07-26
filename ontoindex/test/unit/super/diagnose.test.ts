@@ -890,6 +890,51 @@ describe('gnDiagnose', () => {
     expect(report.runtimeHealth).toBeDefined();
   });
 
+  it('exposes degraded-file aggregates through runtime health', async () => {
+    const aggregates = {
+      sampledDegradedCount: 4,
+      groups: [
+        {
+          cause: 'file exceeds scan file-size cap',
+          phase: 'scan',
+          language: 'python',
+          count: 4,
+        },
+      ],
+      omittedGroupCount: 1,
+    };
+    mockGnEnsureFresh.mockResolvedValue({
+      ...makeFreshReport(),
+      runtimeHealth: {
+        ...makeFreshReport().runtimeHealth,
+        degradedFileAggregates: aggregates,
+      },
+    });
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: false,
+      checkIndexFreshness: true,
+      checkToolContract: false,
+    });
+
+    expect(report.runtimeHealth?.degradedFileAggregates).toEqual(aggregates);
+  });
+
+  it('omits degraded-file aggregates from runtime health when absent', async () => {
+    mockGnEnsureFresh.mockResolvedValue(makeFreshReport());
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: false,
+      checkIndexFreshness: true,
+      checkToolContract: false,
+    });
+
+    expect(report.runtimeHealth).toBeDefined();
+    expect(report.runtimeHealth?.degradedFileAggregates).toBeUndefined();
+  });
+
   it('returns requested file-scope preview and explanation', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-diagnose-file-scope-'));
     try {

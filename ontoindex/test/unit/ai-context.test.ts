@@ -69,6 +69,30 @@ describe('generateAIContextFiles', () => {
     expect(content).not.toContain('npx ontoindex');
   });
 
+  it('orders the small-tool ladder and states the commit-based freshness rule', async () => {
+    const stats = { nodes: 50, edges: 100, processes: 5 };
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+
+    const content = await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
+
+    // Concise ordered ladder: explore/search -> inspect -> impact -> verify-diff.
+    const explore = content.indexOf('1. **Explore/search**');
+    const inspect = content.indexOf('2. **Inspect context**');
+    const impact = content.indexOf('3. **Impact before edits**');
+    const verify = content.indexOf('4. **gn_verify_diff before commit**');
+    expect(explore).toBeGreaterThan(-1);
+    expect(inspect).toBeGreaterThan(explore);
+    expect(impact).toBeGreaterThan(inspect);
+    expect(verify).toBeGreaterThan(impact);
+
+    // Commit-based index + forbid silent dirty-worktree assumptions.
+    expect(content).toContain('The graph index is commit-based');
+    expect(content).toContain('current HEAD differs from the indexed commit');
+    expect(content).toContain(
+      'Never silently assume dirty or uncommitted worktree changes are represented in the graph',
+    );
+  });
+
   it('does not duplicate content that already lives in skill files (#856)', async () => {
     // The six sections listed in issue #856 are redundant with the skill
     // files shipped alongside the CLAUDE.md block (both are loaded into
@@ -114,12 +138,14 @@ describe('generateAIContextFiles', () => {
   it('updates existing CLAUDE.md without duplicating', async () => {
     const stats = { nodes: 10 };
 
-    // Run twice
+    // Run twice and require the update to be byte-identical.
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+    const claudeMdPath = path.join(tmpDir, 'CLAUDE.md');
+    const firstContent = await fs.readFile(claudeMdPath, 'utf-8');
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
 
-    const claudeMdPath = path.join(tmpDir, 'CLAUDE.md');
     const content = await fs.readFile(claudeMdPath, 'utf-8');
+    expect(content).toBe(firstContent);
 
     // Should only have one ontoindex section
     const starts = (content.match(/ontoindex:start/g) || []).length;

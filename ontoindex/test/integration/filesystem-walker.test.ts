@@ -7,6 +7,7 @@ import {
   walkRepositoryPaths,
   readFileContents,
 } from '../../src/core/ingestion/filesystem-walker.js';
+import { SupportedLanguages } from 'ontoindex-shared';
 
 describe('filesystem-walker', () => {
   let tmpDir: string;
@@ -64,6 +65,51 @@ describe('filesystem-walker', () => {
       const files = await walkRepositoryPaths(tmpDir);
       const paths = files.map((f) => f.path.replace(/\\/g, '/'));
       expect(paths.every((p) => !p.includes('node_modules'))).toBe(true);
+    });
+
+    describe('extensionless shebang detection', () => {
+      let shebangDir: string;
+
+      beforeAll(async () => {
+        shebangDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-shebang-'));
+        await fs.writeFile(path.join(shebangDir, 'manage'), '#!/usr/bin/env python3\nprint(1)\n');
+        await fs.writeFile(path.join(shebangDir, 'rake-task'), '#!/usr/bin/ruby\nputs 1\n');
+        await fs.writeFile(path.join(shebangDir, 'cli'), '#!/usr/bin/env node\nconsole.log(1)\n');
+        await fs.writeFile(path.join(shebangDir, 'artisan'), '#!/usr/bin/env php\n<?php echo 1;\n');
+        await fs.writeFile(path.join(shebangDir, 'deploy'), '#!/bin/bash\necho hi\n');
+        await fs.writeFile(path.join(shebangDir, 'plain'), 'just some text\n');
+        // Extension always wins over content — this .ts is TypeScript regardless of shebang.
+        await fs.writeFile(
+          path.join(shebangDir, 'typed.ts'),
+          '#!/usr/bin/env node\nexport const x = 1;\n',
+        );
+      });
+
+      afterAll(async () => {
+        await fs.rm(shebangDir, { recursive: true, force: true }).catch(() => {});
+      });
+
+      const findFile = (files: { path: string; shebangLanguage?: unknown }[], name: string) =>
+        files.find((f) => f.path.replace(/\\/g, '/') === name);
+
+      it('attaches supported shebang languages to extensionless scripts', async () => {
+        const files = await walkRepositoryPaths(shebangDir);
+        expect(findFile(files, 'manage')?.shebangLanguage).toBe(SupportedLanguages.Python);
+        expect(findFile(files, 'rake-task')?.shebangLanguage).toBe(SupportedLanguages.Ruby);
+        expect(findFile(files, 'cli')?.shebangLanguage).toBe(SupportedLanguages.JavaScript);
+        expect(findFile(files, 'artisan')?.shebangLanguage).toBe(SupportedLanguages.PHP);
+      });
+
+      it('never attaches a language for shell shebangs or non-shebang files', async () => {
+        const files = await walkRepositoryPaths(shebangDir);
+        expect(findFile(files, 'deploy')?.shebangLanguage).toBeUndefined();
+        expect(findFile(files, 'plain')?.shebangLanguage).toBeUndefined();
+      });
+
+      it('does not attach a shebang language when the extension already resolves', async () => {
+        const files = await walkRepositoryPaths(shebangDir);
+        expect(findFile(files, 'typed.ts')?.shebangLanguage).toBeUndefined();
+      });
     });
 
     it('skips .git directory', async () => {

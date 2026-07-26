@@ -9,7 +9,11 @@ import type { SymbolTableReader, SymbolTableWriter, ExtractedHeritage } from './
 // SymbolTableReader is used for the FieldExtractorContext stub; the
 // parsing functions themselves need Writer because they call .add().
 import { ASTCache } from './ast-cache.js';
-import { getLanguageFromFilename, SupportedLanguages } from 'ontoindex-shared';
+import {
+  getLanguageFromFilename,
+  getLanguageFromShebang,
+  SupportedLanguages,
+} from 'ontoindex-shared';
 import { extractVueScript, isVueSetupTopLevel } from './vue-sfc-extractor.js';
 import { extractLightweight } from './lightweight-extractor.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
@@ -455,7 +459,9 @@ const collectParseableWorkerInputs = async (
     getActiveORMClientIdentifiers(repoPath),
   ]);
   for (const file of files) {
-    const language = getLanguageFromFilename(file.path);
+    // Extension/basename wins; extensionless scripts fall back to the bounded
+    // first-line shebang so worker inputs match parent/sequential decisions.
+    const language = getLanguageFromFilename(file.path) ?? getLanguageFromShebang(file.content);
     if (language) {
       const pathBasedInput = usePathBasedParseWorkerInput();
       const cppTypeOwnerHints = selectCppTypeOwnerHintsForFile(file, cppTypeOwnerIndex);
@@ -946,7 +952,9 @@ const prepareSequentialFile = async (
   astCache: ASTCache,
   skippedLanguages: Map<string, number>,
 ): Promise<PreparedSequentialFile | null> => {
-  const language = getLanguageFromFilename(file.path);
+  // Extension/basename wins; extensionless scripts fall back to the bounded
+  // first-line shebang so sequential parsing matches parent/worker decisions.
+  const language = getLanguageFromFilename(file.path) ?? getLanguageFromShebang(file.content);
   if (!language) return null;
 
   if (!isLanguageAvailable(language)) {
@@ -1454,7 +1462,7 @@ const processSequentialFiles = async (
     const preparedFile = await prepareSequentialFile(parser, file, astCache, skippedLanguages);
     if (!preparedFile) {
       // Lightweight fallback for oversized or unparseable files
-      const language = getLanguageFromFilename(file.path);
+      const language = getLanguageFromFilename(file.path) ?? getLanguageFromShebang(file.content);
       if (language && isLanguageAvailable(language)) {
         const lightweightResult = extractLightweight(file.path, file.content, language);
         appendWorkerExtractedData(

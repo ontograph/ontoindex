@@ -104,6 +104,11 @@ describe('status formatting', () => {
         { filePath: 'include/rtl/string.hxx', reason: 'scope extraction skipped' },
         { filePath: 'editeng/source/editeng/editdoc.cxx', reason: 'scope extraction skipped' },
       ],
+      degradedFileAggregates: {
+        sampledDegradedCount: 2,
+        groups: [{ cause: 'scope extraction skipped', phase: 'scan', language: 'cpp', count: 2 }],
+        omittedGroupCount: 0,
+      },
       partialCheckpointPath: '.ontoindex/analysis-checkpoint.json',
     };
 
@@ -114,7 +119,8 @@ describe('status formatting', () => {
       '  Processes: unavailable',
       '  Impact analysis: degraded',
       '  Skipped phases: communities, processes',
-      '  Degraded files: 2',
+      '  Degraded files (sampled): 2',
+      '    - scope extraction skipped [phase: scan, lang: cpp]: 2',
       '  Partial checkpoint: .ontoindex/analysis-checkpoint.json',
     ]);
   });

@@ -93,8 +93,8 @@ jobs:
         shell: bash
         run: |
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          if ! [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
-            echo "::error::Tag does not follow semver: v$TAG_VERSION"
+          if ! [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Stable publish tags must use X.Y.Z without prerelease suffixes: v$TAG_VERSION"
             exit 1
           fi
           PKG_VERSION=$(node -p "require('./package.json').version")
@@ -138,6 +138,12 @@ jobs:
           generate_release_notes: ${{ steps.changelog.outputs.fallback == 'true' }}
           files: ontoindex-*.tgz
           fail_on_unmatched_files: true
+
+      - name: Verify live GitHub release asset
+        run: node scripts/verify-release-asset.mjs
+        working-directory: ontoindex
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Publish to npm
         run: npm publish --provenance --access public

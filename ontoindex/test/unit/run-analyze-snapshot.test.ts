@@ -440,7 +440,7 @@ describe('runFullAnalysis snapshot persistence', () => {
     }
   });
 
-  it('records degraded file telemetry in metadata', async () => {
+  it('records degraded file telemetry and grouped aggregates in metadata', async () => {
     const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
     try {
       const graph = createKnowledgeGraph();
@@ -460,6 +460,14 @@ describe('runFullAnalysis snapshot persistence', () => {
             degradedFiles: [
               {
                 filePath: 'sc/huge.bin',
+                reason: 'file exceeds scan file-size cap',
+              },
+              {
+                filePath: 'sc/huge2.bin',
+                reason: 'file exceeds scan file-size cap',
+              },
+              {
+                filePath: 'sc/huge.py',
                 reason: 'file exceeds scan file-size cap',
               },
             ],
@@ -485,10 +493,396 @@ describe('runFullAnalysis snapshot persistence', () => {
             {
               filePath: 'sc/huge.bin',
               reason: 'file exceeds scan file-size cap',
+              phase: 'scan',
+              language: 'unknown',
+            },
+            {
+              filePath: 'sc/huge2.bin',
+              reason: 'file exceeds scan file-size cap',
+              phase: 'scan',
+              language: 'unknown',
+            },
+            {
+              filePath: 'sc/huge.py',
+              reason: 'file exceeds scan file-size cap',
+              phase: 'scan',
+              language: 'python',
             },
           ],
+          degradedFileAggregates: {
+            sampledDegradedCount: 3,
+            groups: [
+              {
+                cause: 'file exceeds scan file-size cap',
+                phase: 'scan',
+                language: 'unknown',
+                count: 2,
+              },
+              {
+                cause: 'file exceeds scan file-size cap',
+                phase: 'scan',
+                language: 'python',
+                count: 1,
+              },
+            ],
+            omittedGroupCount: 0,
+          },
         }),
       );
+      // No duplicate nested sample list: the top-level degradedFiles carries it.
+      const savedMeta = saveMetaMock.mock.calls[0][1] as {
+        degradedFileAggregates: { sampleFiles?: unknown };
+      };
+      expect(savedMeta.degradedFileAggregates.sampleFiles).toBeUndefined();
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists bounded relationship distributions that sum to the total', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
+    try {
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'func:a',
+        label: 'Function',
+        properties: { name: 'a', filePath: 'src/a.ts' } as any,
+      });
+      graph.addNode({
+        id: 'func:b',
+        label: 'Function',
+        properties: { name: 'b', filePath: 'src/a.ts' } as any,
+      });
+      graph.addNode({
+        id: 'file:a',
+        label: 'File',
+        properties: { name: 'a.ts', filePath: 'src/a.ts' } as any,
+      });
+      graph.addRelationship({
+        id: 'rel:call-strong',
+        sourceId: 'func:a',
+        targetId: 'func:b',
+        type: 'CALLS',
+        confidence: 0.9,
+        reason: 'direct',
+      });
+      graph.addRelationship({
+        id: 'rel:call-weak',
+        sourceId: 'func:b',
+        targetId: 'func:a',
+        type: 'CALLS',
+        confidence: 0.6,
+        reason: 'weak',
+      });
+      graph.addRelationship({
+        id: 'rel:contains',
+        sourceId: 'file:a',
+        targetId: 'func:a',
+        type: 'CONTAINS',
+        confidence: 0.4,
+        reason: 'contains',
+      });
+
+      runPipelineMock.mockResolvedValue({
+        graph,
+        repoPath: repoDir,
+        totalFileCount: 1,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockResolvedValue([]);
+
+      await runFullAnalysis(repoDir, {}, { onProgress: vi.fn() });
+
+      const savedMeta = saveMetaMock.mock.calls[0][1] as {
+        relationshipDistributions: {
+          totalRelationships: number;
+          byType: Array<{ type: string; count: number }>;
+          byProvenance: { extracted: number; inferred: number; ambiguous: number };
+        };
+      };
+      const dist = savedMeta.relationshipDistributions;
+      expect(dist.totalRelationships).toBe(3);
+      expect(dist.byType).toEqual([
+        { type: 'CALLS', count: 2 },
+        { type: 'CONTAINS', count: 1 },
+      ]);
+      expect(dist.byProvenance).toEqual({ extracted: 1, inferred: 1, ambiguous: 1 });
+
+      const typeSum = dist.byType.reduce((sum, entry) => sum + entry.count, 0);
+      const bandSum =
+        dist.byProvenance.extracted + dist.byProvenance.inferred + dist.byProvenance.ambiguous;
+      expect(typeSum).toBe(dist.totalRelationships);
+      expect(bandSum).toBe(dist.totalRelationships);
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes empty relationship distributions for a graph with no relationships', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
+    try {
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'file:a',
+        label: 'File',
+        properties: { name: 'a.ts', filePath: 'src/a.ts' } as any,
+      });
+
+      runPipelineMock.mockResolvedValue({
+        graph,
+        repoPath: repoDir,
+        totalFileCount: 1,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockResolvedValue([]);
+
+      await runFullAnalysis(repoDir, {}, { onProgress: vi.fn() });
+
+      const savedMeta = saveMetaMock.mock.calls[0][1] as {
+        relationshipDistributions: unknown;
+      };
+      expect(savedMeta.relationshipDistributions).toEqual({
+        totalRelationships: 0,
+        byType: [],
+        byProvenance: { extracted: 0, inferred: 0, ambiguous: 0 },
+      });
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads legacy meta without relationshipDistributions and writes the new field', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
+    try {
+      // Legacy meta: an index built before this field existed. A different
+      // commit forces a rebuild so the existing meta is consumed as a reader,
+      // proving legacy readers/inputs tolerate the absent aggregate field.
+      loadMetaMock.mockResolvedValue({
+        repoPath: repoDir,
+        lastCommit: 'legacy-commit',
+        indexedAt: new Date().toISOString(),
+        stats: { files: 1, nodes: 1, edges: 0 },
+      });
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'func:a',
+        label: 'Function',
+        properties: { name: 'a', filePath: 'src/a.ts' } as any,
+      });
+      graph.addNode({
+        id: 'func:b',
+        label: 'Function',
+        properties: { name: 'b', filePath: 'src/a.ts' } as any,
+      });
+      graph.addRelationship({
+        id: 'rel:a-b',
+        sourceId: 'func:a',
+        targetId: 'func:b',
+        type: 'CALLS',
+        confidence: 0.9,
+        reason: 'direct',
+      });
+
+      runPipelineMock.mockResolvedValue({
+        graph,
+        repoPath: repoDir,
+        totalFileCount: 1,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockResolvedValue([]);
+
+      await runFullAnalysis(repoDir, {}, { onProgress: vi.fn() });
+
+      const savedMeta = saveMetaMock.mock.calls[0][1] as {
+        relationshipDistributions: { totalRelationships: number };
+      };
+      expect(savedMeta.relationshipDistributions.totalRelationships).toBe(1);
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('normalizes variable-size reasons into a single stable cause group', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
+    try {
+      const graph = createKnowledgeGraph();
+      runPipelineMock.mockImplementation(
+        async (_repoPath: string, _onProgress: unknown, options?: PipelineOptions) => {
+          options?.onTelemetry?.({
+            event: 'scan-degraded-files',
+            phaseName: 'scan',
+            elapsedMs: 10,
+            rssBytes: 0,
+            heapUsedBytes: 0,
+            heapTotalBytes: 0,
+            heapLimitBytes: 0,
+            graphNodes: 0,
+            graphRelationships: 0,
+            degradedReason: 'scan-file-size-cap',
+            degradedFiles: [
+              { filePath: 'a.py', reason: 'file exceeds scan file-size cap (1024 bytes)' },
+              { filePath: 'b.py', reason: 'file exceeds scan file-size cap (999999 bytes)' },
+              { filePath: 'c.py', reason: 'file exceeds scan file-size cap (42 bytes)' },
+            ],
+          });
+          return {
+            graph,
+            repoPath: repoDir,
+            totalFileCount: 0,
+            communityResult: undefined,
+            processResult: undefined,
+            usedWorkerPool: false,
+          };
+        },
+      );
+      executeQueryMock.mockResolvedValue([]);
+
+      await runFullAnalysis(repoDir, { profile: 'symbols' }, { onProgress: vi.fn() });
+
+      const savedMeta = saveMetaMock.mock.calls[0][1] as {
+        degradedFileAggregates: {
+          sampledDegradedCount: number;
+          groups: Array<{ cause: string; count: number }>;
+          omittedGroupCount: number;
+        };
+      };
+      expect(savedMeta.degradedFileAggregates.sampledDegradedCount).toBe(3);
+      expect(savedMeta.degradedFileAggregates.groups).toEqual([
+        {
+          cause: 'file exceeds scan file-size cap (N bytes)',
+          phase: 'scan',
+          language: 'python',
+          count: 3,
+        },
+      ]);
+      expect(savedMeta.degradedFileAggregates.omittedGroupCount).toBe(0);
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('dedupes a path degraded across phases and caps persisted samples', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
+    try {
+      const graph = createKnowledgeGraph();
+      runPipelineMock.mockImplementation(
+        async (_repoPath: string, _onProgress: unknown, options?: PipelineOptions) => {
+          // 150 scan-degraded files; the first also reappears in the parse phase.
+          options?.onTelemetry?.({
+            event: 'scan-degraded-files',
+            phaseName: 'scan',
+            elapsedMs: 10,
+            rssBytes: 0,
+            heapUsedBytes: 0,
+            heapTotalBytes: 0,
+            heapLimitBytes: 0,
+            graphNodes: 0,
+            graphRelationships: 0,
+            degradedReason: 'scan-file-size-cap',
+            degradedFiles: Array.from({ length: 150 }, (_v, i) => ({
+              filePath: `src/file${i}.py`,
+              reason: 'file exceeds scan file-size cap',
+            })),
+          });
+          options?.onTelemetry?.({
+            event: 'parse-degraded-files',
+            phaseName: 'parse',
+            elapsedMs: 20,
+            rssBytes: 0,
+            heapUsedBytes: 0,
+            heapTotalBytes: 0,
+            heapLimitBytes: 0,
+            graphNodes: 0,
+            graphRelationships: 0,
+            degradedReason: 'parse-quarantine',
+            degradedFiles: [{ filePath: 'src/file0.py', reason: 'parse quarantine' }],
+          });
+          return {
+            graph,
+            repoPath: repoDir,
+            totalFileCount: 0,
+            communityResult: undefined,
+            processResult: undefined,
+            usedWorkerPool: false,
+          };
+        },
+      );
+      executeQueryMock.mockResolvedValue([]);
+
+      await runFullAnalysis(repoDir, { profile: 'symbols' }, { onProgress: vi.fn() });
+
+      const savedMeta = saveMetaMock.mock.calls[0][1] as {
+        degradedFiles: unknown[];
+        degradedFileAggregates: {
+          sampledDegradedCount: number;
+          groups: Array<{ phase: string; count: number }>;
+        };
+      };
+      // First-seen phase wins for a duplicate path (scan before parse).
+      expect(savedMeta.degradedFileAggregates.sampledDegradedCount).toBe(150);
+      // Persisted samples are capped at 100.
+      expect(savedMeta.degradedFiles).toHaveLength(100);
+      const scanGroup = savedMeta.degradedFileAggregates.groups.find((g) => g.phase === 'scan');
+      expect(scanGroup?.count).toBe(150);
+      expect(savedMeta.degradedFileAggregates.groups.some((g) => g.phase === 'parse')).toBe(false);
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds persisted groups to top-N and records the omitted count', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
+    try {
+      const graph = createKnowledgeGraph();
+      runPipelineMock.mockImplementation(
+        async (_repoPath: string, _onProgress: unknown, options?: PipelineOptions) => {
+          // 25 distinct non-numeric causes -> 25 distinct groups (> DEGRADED_GROUP_LIMIT of 20).
+          options?.onTelemetry?.({
+            event: 'scan-degraded-files',
+            phaseName: 'scan',
+            elapsedMs: 10,
+            rssBytes: 0,
+            heapUsedBytes: 0,
+            heapTotalBytes: 0,
+            heapLimitBytes: 0,
+            graphNodes: 0,
+            graphRelationships: 0,
+            degradedReason: 'scan-file-size-cap',
+            degradedFiles: Array.from({ length: 25 }, (_v, i) => ({
+              filePath: `src/file${i}.py`,
+              reason: `cause variant ${String.fromCharCode(65 + i)}`,
+            })),
+          });
+          return {
+            graph,
+            repoPath: repoDir,
+            totalFileCount: 0,
+            communityResult: undefined,
+            processResult: undefined,
+            usedWorkerPool: false,
+          };
+        },
+      );
+      executeQueryMock.mockResolvedValue([]);
+
+      await runFullAnalysis(repoDir, { profile: 'symbols' }, { onProgress: vi.fn() });
+
+      const savedMeta = saveMetaMock.mock.calls[0][1] as {
+        degradedFileAggregates: {
+          sampledDegradedCount: number;
+          groups: unknown[];
+          omittedGroupCount: number;
+        };
+      };
+      expect(savedMeta.degradedFileAggregates.sampledDegradedCount).toBe(25);
+      expect(savedMeta.degradedFileAggregates.groups).toHaveLength(20);
+      expect(savedMeta.degradedFileAggregates.omittedGroupCount).toBe(5);
     } finally {
       await fs.rm(repoDir, { recursive: true, force: true });
     }

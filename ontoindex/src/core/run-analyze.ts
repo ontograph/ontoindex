@@ -36,7 +36,9 @@ import {
   registerRepo,
   cleanupOldKuzuFiles,
 } from '../storage/repo-manager.js';
+import type { DegradedFileGroupCount } from '../storage/repo-manager.js';
 import { getCurrentCommit, hasGitDir } from '../storage/git.js';
+import { getLanguageFromFilename } from 'ontoindex-shared';
 import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import type { PipelineResult } from '../types/pipeline.js';
@@ -49,6 +51,10 @@ import {
 } from './embeddings/ann-neighbor.js';
 import { persistAnnNeighborEdges } from './embeddings/ann-neighbor-store.js';
 import type { KnowledgeGraph } from './graph/types.js';
+import {
+  summarizeRelationshipDistributions,
+  type RelationshipDistributions,
+} from './graph/fact-provenance.js';
 import { FTS_INDEXES } from './search/bm25-index.js';
 import v8 from 'node:v8';
 import { PerformanceObserver } from 'node:perf_hooks';
@@ -157,6 +163,20 @@ interface GraphDiffSnapshot {
 type AnalyzeTelemetryEvent = Parameters<NonNullable<PipelineOptions['onTelemetry']>>[0];
 
 type AnalyzeDegradedFile = NonNullable<AnalyzeTelemetryEvent['degradedFiles']>[number];
+
+/** Maximum degraded groups persisted/projected; remainder is counted, not listed. */
+const DEGRADED_GROUP_LIMIT = 20;
+/** Maximum degraded sample files persisted in meta.json. */
+const DEGRADED_SAMPLE_LIMIT = 100;
+
+/**
+ * Collapse a raw degradation reason into a stable cause category so variable
+ * details (byte sizes, per-file limits, counts) do not fragment grouping into
+ * one group per file. Bounded samples retain the original reason.
+ */
+function normalizeDegradationCause(reason: string): string {
+  return reason.replace(/\d+/g, 'N').replace(/\s+/g, ' ').trim();
+}
 
 function requestedPipelineProfile(profile: PipelineProfile | undefined): PipelineProfile {
   return profile ?? 'full';
@@ -867,12 +887,22 @@ export async function runFullAnalysis(
 
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
   let pipelineResult: PipelineResult;
-  const degradedFiles = new Map<string, string>();
-  const recordDegradedFiles = (files?: readonly AnalyzeDegradedFile[]): void => {
+  const degradedFiles = new Map<string, { reason: string; phase: string; language: string }>();
+  const recordDegradedFiles = (
+    files?: readonly AnalyzeDegradedFile[],
+    phaseName?: string,
+  ): void => {
     if (!files) return;
     for (const file of files) {
       if (!degradedFiles.has(file.filePath)) {
-        degradedFiles.set(file.filePath, file.reason);
+        const phase = phaseName ?? 'unknown';
+        const lang = getLanguageFromFilename(file.filePath);
+        const language = lang ?? 'unknown';
+        degradedFiles.set(file.filePath, {
+          reason: file.reason,
+          phase,
+          language,
+        });
       }
     }
   };
@@ -880,7 +910,7 @@ export async function runFullAnalysis(
     const pipelineOptions: PipelineOptions = {};
     if (checkpointEnabled || telemetryEnabled) {
       pipelineOptions.onTelemetry = (event) => {
-        recordDegradedFiles(event.degradedFiles);
+        recordDegradedFiles(event.degradedFiles, event.phaseName);
         partialCheckpoint?.record(event);
         if (telemetryEnabled) {
           log(
@@ -1232,6 +1262,22 @@ export async function runFullAnalysis(
               };
     const persistedModelHash =
       process.env.ONTOINDEX_EMBEDDING_MODEL_HASH?.trim() || existingMeta?.model_hash?.trim();
+    // Single bounded pass over existing relationships; retains aggregate maps
+    // only, never per-edge provenance. Reuses classifyGraphFactProvenance via
+    // summarizeRelationshipDistributions with only relationType and confidence.
+    const relationshipDistributions: RelationshipDistributions = summarizeRelationshipDistributions(
+      (visit) =>
+        pipelineResult.graph.forEachRelationship((rel) =>
+          visit({ type: rel.type, confidence: rel.confidence }),
+        ),
+    );
+    emitTelemetry({
+      event: 'relationship-distributions',
+      phaseName: 'meta',
+      graphNodes: pipelineResult.graph.nodeCount,
+      graphRelationships: pipelineResult.graph.relationshipCount,
+      relationshipDistributions,
+    });
     const meta = {
       repoPath,
       lastCommit: currentCommit,
@@ -1244,16 +1290,51 @@ export async function runFullAnalysis(
         processes: pipelineResult.processResult?.stats.totalProcesses,
         embeddings: embeddingCount,
       },
+      relationshipDistributions,
       ...(includePaths.length > 0 ? { includePaths } : {}),
       ...(persistedModelHash ? { model_hash: persistedModelHash } : {}),
       ...(embeddingVectorIndexDigest !== undefined ? { embeddingVectorIndexDigest } : {}),
       ...(degradedFiles.size > 0
-        ? {
-            degradedFiles: [...degradedFiles.entries()].map(([filePath, reason]) => ({
+        ? (() => {
+            const allEntries = [...degradedFiles.entries()].map(([filePath, data]) => ({
               filePath,
-              reason,
-            })),
-          }
+              reason: data.reason,
+              phase: data.phase,
+              language: data.language,
+            }));
+            const groupMap = new Map<string, DegradedFileGroupCount>();
+            for (const entry of allEntries) {
+              const cause = normalizeDegradationCause(entry.reason);
+              const key = `${cause}|${entry.phase}|${entry.language}`;
+              const existing = groupMap.get(key);
+              if (existing) {
+                existing.count++;
+              } else {
+                groupMap.set(key, {
+                  cause,
+                  phase: entry.phase,
+                  language: entry.language,
+                  count: 1,
+                });
+              }
+            }
+            const allGroups = [...groupMap.values()].sort((a, b) => {
+              if (b.count !== a.count) return b.count - a.count;
+              if (a.cause !== b.cause) return a.cause.localeCompare(b.cause);
+              if (a.phase !== b.phase) return a.phase.localeCompare(b.phase);
+              return a.language.localeCompare(b.language);
+            });
+            const groups = allGroups.slice(0, DEGRADED_GROUP_LIMIT);
+            const sampleFiles = allEntries.slice(0, DEGRADED_SAMPLE_LIMIT);
+            return {
+              degradedFiles: sampleFiles,
+              degradedFileAggregates: {
+                sampledDegradedCount: allEntries.length,
+                groups,
+                omittedGroupCount: allGroups.length - groups.length,
+              },
+            };
+          })()
         : {}),
       ...symbolsOnlyMetadata,
     };

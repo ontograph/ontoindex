@@ -21,10 +21,35 @@ Options:
   --output-dir <path>    Defaults to docs/plans/benchmarks.
   --sample-ms <n>        RSS sampling interval. Defaults to 1000.
   --timeout-ms <n>       Kill benchmark after this many ms. Defaults to 0, disabled.
+  --max-peak-rss-mib <n> Fail if peak process-tree RSS exceeds this many MiB. Opt-in.
   --run-id <id>          Stable run id for output filenames.
+  --scenario-manifest <path>  Run pinned scenarios from a strict JSON manifest instead of a single repo.
+  --list-scenarios       With --scenario-manifest, print parsed scenarios and exit without running.
   --dry-run              Print the command and output paths without executing.
   --help                 Show this help.
 `;
+
+const SCENARIO_TOP_LEVEL_KEYS = new Set(['version', 'description', 'scenarios']);
+const SCENARIO_KEYS = new Set([
+  'id',
+  'description',
+  'repoPath',
+  'repoIdentity',
+  'commit',
+  'mode',
+  'cli',
+  'timeoutMs',
+  'maxPeakRssMiB',
+  'graphQuality',
+]);
+const GRAPH_QUALITY_KEYS = new Set(['minTotalRelationships', 'minProvenance', 'minByType']);
+const PROVENANCE_BANDS = new Set(['extracted', 'inferred', 'ambiguous']);
+const SCENARIO_MODES = new Set(['analyze', 'force-analyze', 'status']);
+const SCENARIO_CLIS = new Set(['source', 'built']);
+// Rejects shell/command metacharacters so no declarative field can smuggle a command.
+const UNSAFE_STRING = /[\n\r\t`$;|&<>]/;
+// Metadata (description) may carry punctuation but never control characters.
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 
 function parseArgs(argv) {
   const opts = {
@@ -35,9 +60,12 @@ function parseArgs(argv) {
     outputDir: path.join(workspaceRoot, 'docs', 'plans', 'benchmarks'),
     sampleMs: 1000,
     timeoutMs: 0,
+    maxPeakRssMib: null,
     runId: '',
     dryRun: false,
     writeAgentsMd: false,
+    scenarioManifest: null,
+    listScenarios: false,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -64,8 +92,17 @@ function parseArgs(argv) {
       case '--timeout-ms':
         opts.timeoutMs = Number(argv[++i]);
         break;
+      case '--max-peak-rss-mib':
+        opts.maxPeakRssMib = Number(argv[++i]);
+        break;
       case '--run-id':
         opts.runId = argv[++i];
+        break;
+      case '--scenario-manifest':
+        opts.scenarioManifest = argv[++i];
+        break;
+      case '--list-scenarios':
+        opts.listScenarios = true;
         break;
       case '--dry-run':
         opts.dryRun = true;
@@ -95,6 +132,12 @@ function parseArgs(argv) {
   if (!Number.isFinite(opts.timeoutMs) || opts.timeoutMs < 0) {
     throw new Error('--timeout-ms must be a number >= 0');
   }
+  if (
+    opts.maxPeakRssMib !== null &&
+    (!Number.isFinite(opts.maxPeakRssMib) || opts.maxPeakRssMib <= 0)
+  ) {
+    throw new Error('--max-peak-rss-mib must be a positive finite number');
+  }
 
   opts.repo = path.resolve(opts.repo);
   opts.outputDir = path.resolve(opts.outputDir);
@@ -102,6 +145,353 @@ function parseArgs(argv) {
   opts.runId =
     opts.runId || `${new Date().toISOString().slice(0, 10)}-${opts.mode}-${slug(opts.label)}`;
   return opts;
+}
+
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function assertSafeString(value, label) {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`Scenario field "${label}" must be a non-empty string`);
+  }
+  if (UNSAFE_STRING.test(value)) {
+    throw new Error(`Scenario field "${label}" contains disallowed characters`);
+  }
+  return value;
+}
+
+function assertMetadataString(value, label) {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`Scenario field "${label}" must be a non-empty string`);
+  }
+  if (CONTROL_CHARS.test(value)) {
+    throw new Error(`Scenario field "${label}" contains control characters`);
+  }
+  return value;
+}
+
+function assertPositiveInteger(value, label) {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`Scenario field "${label}" must be a positive integer`);
+  }
+  return value;
+}
+
+function assertNonNegativeInteger(value, label) {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`Scenario field "${label}" must be a non-negative integer`);
+  }
+  return value;
+}
+
+function assertPositiveFinite(value, label) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`Scenario field "${label}" must be a positive finite number`);
+  }
+  return value;
+}
+
+function assertNoUnknownKeys(obj, allowed, label) {
+  for (const key of Object.keys(obj)) {
+    if (!allowed.has(key)) {
+      throw new Error(`Unknown ${label} key "${key}"`);
+    }
+  }
+}
+
+function parseGraphQualityFloors(raw, scenarioId) {
+  if (!isPlainObject(raw)) {
+    throw new Error(`Scenario "${scenarioId}" graphQuality must be an object`);
+  }
+  assertNoUnknownKeys(raw, GRAPH_QUALITY_KEYS, 'graphQuality');
+  if (!('minTotalRelationships' in raw)) {
+    throw new Error(`Scenario "${scenarioId}" graphQuality requires minTotalRelationships`);
+  }
+  const floors = {
+    minTotalRelationships: assertPositiveInteger(
+      raw.minTotalRelationships,
+      'graphQuality.minTotalRelationships',
+    ),
+  };
+
+  if ('minProvenance' in raw) {
+    if (!isPlainObject(raw.minProvenance)) {
+      throw new Error(`Scenario "${scenarioId}" graphQuality.minProvenance must be an object`);
+    }
+    assertNoUnknownKeys(raw.minProvenance, PROVENANCE_BANDS, 'graphQuality.minProvenance');
+    floors.minProvenance = {};
+    for (const [band, value] of Object.entries(raw.minProvenance)) {
+      floors.minProvenance[band] = assertNonNegativeInteger(
+        value,
+        `graphQuality.minProvenance.${band}`,
+      );
+    }
+  }
+
+  if ('minByType' in raw) {
+    if (!isPlainObject(raw.minByType)) {
+      throw new Error(`Scenario "${scenarioId}" graphQuality.minByType must be an object`);
+    }
+    floors.minByType = {};
+    for (const [type, value] of Object.entries(raw.minByType)) {
+      if (!/^[A-Z][A-Z_]*$/.test(type)) {
+        throw new Error(
+          `Scenario "${scenarioId}" graphQuality.minByType key "${type}" is not a relationship type`,
+        );
+      }
+      floors.minByType[type] = assertNonNegativeInteger(value, `graphQuality.minByType.${type}`);
+    }
+  }
+
+  if (!floors.minProvenance && !floors.minByType) {
+    throw new Error(
+      `Scenario "${scenarioId}" graphQuality requires at least one of minProvenance or minByType`,
+    );
+  }
+  return floors;
+}
+
+function parseScenario(raw, seenIds) {
+  if (!isPlainObject(raw)) {
+    throw new Error('Each scenario must be an object');
+  }
+  const id = assertSafeString(raw.id, 'id');
+  if (seenIds.has(id)) {
+    throw new Error(`Duplicate scenario id "${id}"`);
+  }
+  seenIds.add(id);
+  assertNoUnknownKeys(raw, SCENARIO_KEYS, `scenario "${id}"`);
+
+  const commit = raw.commit;
+  if (typeof commit !== 'string' || !/^[0-9a-f]{40}$/.test(commit)) {
+    throw new Error(`Scenario "${id}" commit must be an exact 40-character lowercase hex SHA`);
+  }
+  if (!SCENARIO_MODES.has(raw.mode)) {
+    throw new Error(`Scenario "${id}" mode must be one of analyze, force-analyze, status`);
+  }
+  const cli = raw.cli === undefined ? 'source' : raw.cli;
+  if (!SCENARIO_CLIS.has(cli)) {
+    throw new Error(`Scenario "${id}" cli must be one of source, built`);
+  }
+  if (!('graphQuality' in raw)) {
+    throw new Error(`Scenario "${id}" requires graphQuality floors`);
+  }
+
+  const scenario = {
+    id,
+    repoPath: assertSafeString(raw.repoPath, 'repoPath'),
+    repoIdentity: assertSafeString(raw.repoIdentity, 'repoIdentity'),
+    commit,
+    mode: raw.mode,
+    cli,
+    timeoutMs: assertPositiveInteger(raw.timeoutMs, 'timeoutMs'),
+    maxPeakRssMiB: assertPositiveFinite(raw.maxPeakRssMiB, 'maxPeakRssMiB'),
+    graphQuality: parseGraphQualityFloors(raw.graphQuality, id),
+  };
+  if ('description' in raw) {
+    scenario.description = assertMetadataString(raw.description, 'description');
+  }
+  return scenario;
+}
+
+function parseScenarioManifest(rawText) {
+  let parsed;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (error) {
+    throw new Error(`Scenario manifest is not valid JSON: ${error.message}`);
+  }
+  if (!isPlainObject(parsed)) {
+    throw new Error('Scenario manifest must be a JSON object');
+  }
+  assertNoUnknownKeys(parsed, SCENARIO_TOP_LEVEL_KEYS, 'manifest');
+  if (parsed.version !== 1) {
+    throw new Error('Scenario manifest version must be 1');
+  }
+  if (!Array.isArray(parsed.scenarios) || parsed.scenarios.length === 0) {
+    throw new Error('Scenario manifest must declare a non-empty scenarios array');
+  }
+
+  const seenIds = new Set();
+  const scenarios = parsed.scenarios.map((raw) => parseScenario(raw, seenIds));
+  return { version: parsed.version, scenarios };
+}
+
+function normalizeRemoteIdentity(value) {
+  if (typeof value !== 'string') return '';
+  let s = value.trim();
+  if (s.length === 0) return '';
+  // scp-like ssh form: git@host:owner/repo(.git)
+  const scp = s.match(/^[^@/]+@([^:/]+):(.+)$/);
+  if (scp) s = `https://${scp[1]}/${scp[2]}`;
+  s = s
+    .replace(/^ssh:\/\//, 'https://')
+    .replace(/^git:\/\//, 'https://')
+    .replace(/^http:\/\//, 'https://');
+  // Drop any user@ authority prefix from URL forms.
+  s = s.replace(/^https:\/\/[^@/]+@/, 'https://');
+  s = s.replace(/\.git$/, '').replace(/\/+$/, '');
+  return s.toLowerCase();
+}
+
+function evaluateScenarioPreflight({
+  repoPath,
+  repoAvailable,
+  expectedIdentity,
+  actualIdentity,
+  expectedCommit,
+  actualCommit,
+  dirty,
+}) {
+  if (!repoAvailable) {
+    return {
+      status: 'repo-unavailable',
+      reason: `repository checkout unavailable at ${repoPath}; provision it before running`,
+      repoPath,
+    };
+  }
+  const wantIdentity = normalizeRemoteIdentity(expectedIdentity);
+  const gotIdentity = normalizeRemoteIdentity(actualIdentity);
+  if (wantIdentity !== gotIdentity) {
+    return {
+      status: 'identity-mismatch',
+      reason: `checkout remote ${gotIdentity || '(none)'} does not match pinned identity ${wantIdentity}`,
+      expectedIdentity: wantIdentity,
+      actualIdentity: gotIdentity,
+    };
+  }
+  if (dirty) {
+    return { status: 'dirty', reason: 'working tree is dirty; refusing to run pinned scenario' };
+  }
+  if (!actualCommit) {
+    return {
+      status: 'commit-unavailable',
+      reason: 'unable to resolve HEAD commit; failing closed',
+      expectedCommit,
+    };
+  }
+  if (actualCommit !== expectedCommit) {
+    return {
+      status: 'commit-mismatch',
+      reason: `HEAD ${actualCommit} does not match pinned commit ${expectedCommit}`,
+      expectedCommit,
+      actualCommit,
+    };
+  }
+  return { status: 'ok', commit: actualCommit };
+}
+
+function evaluateGraphQuality(distributions, floors) {
+  if (!distributions) {
+    return {
+      status: 'unavailable',
+      failures: [
+        'relationship distributions unavailable; failing closed against graph-quality floors',
+      ],
+    };
+  }
+  const failures = [];
+  if (distributions.totalRelationships < floors.minTotalRelationships) {
+    failures.push(
+      `total relationships ${distributions.totalRelationships} below floor ${floors.minTotalRelationships}`,
+    );
+  }
+  for (const [band, min] of Object.entries(floors.minProvenance ?? {})) {
+    const actual = distributions.byProvenance?.[band] ?? 0;
+    if (actual < min) {
+      failures.push(`provenance ${band} ${actual} below floor ${min}`);
+    }
+  }
+  if (floors.minByType) {
+    const typeCounts = new Map(
+      (distributions.byType ?? []).map((entry) => [entry.type, entry.count]),
+    );
+    for (const [type, min] of Object.entries(floors.minByType)) {
+      const actual = typeCounts.get(type) ?? 0;
+      if (actual < min) {
+        failures.push(`relationship type ${type} ${actual} below floor ${min}`);
+      }
+    }
+  }
+  return { status: failures.length ? 'failed' : 'pass', failures };
+}
+
+function scenarioToBenchmarkOptions(scenario, manifestDir, baseOpts) {
+  return {
+    repo: path.resolve(manifestDir, scenario.repoPath),
+    label: scenario.repoIdentity,
+    mode: scenario.mode,
+    cli: scenario.cli,
+    outputDir: baseOpts.outputDir,
+    sampleMs: baseOpts.sampleMs,
+    timeoutMs: scenario.timeoutMs,
+    maxPeakRssMib: scenario.maxPeakRssMiB,
+    runId: `${new Date().toISOString().slice(0, 10)}-${scenario.mode}-${slug(scenario.id)}`,
+    dryRun: baseOpts.dryRun,
+    writeAgentsMd: false,
+    graphQuality: scenario.graphQuality,
+  };
+}
+
+function listScenarioSummaries(scenarios, manifestDir) {
+  return scenarios.map((scenario) => ({
+    id: scenario.id,
+    repoIdentity: scenario.repoIdentity,
+    resolvedRepoPath: path.resolve(manifestDir, scenario.repoPath),
+    commit: scenario.commit,
+    mode: scenario.mode,
+    cli: scenario.cli,
+    timeoutMs: scenario.timeoutMs,
+    maxPeakRssMiB: scenario.maxPeakRssMiB,
+    graphQuality: scenario.graphQuality,
+  }));
+}
+
+async function runScenarioManifest(opts) {
+  const manifestPath = path.resolve(opts.scenarioManifest);
+  const manifestDir = path.dirname(manifestPath);
+  const rawText = await fs.readFile(manifestPath, 'utf8');
+  const { scenarios } = parseScenarioManifest(rawText);
+
+  if (opts.listScenarios) {
+    console.log(JSON.stringify(listScenarioSummaries(scenarios, manifestDir), null, 2));
+    return;
+  }
+
+  // Preflight and run every scenario, aggregating failures. One failing scenario
+  // sets a nonzero exit code but does not abort the remaining scenarios.
+  for (const scenario of scenarios) {
+    const repo = path.resolve(manifestDir, scenario.repoPath);
+    const preflight = evaluateScenarioPreflight({
+      repoPath: repo,
+      repoAvailable: isGitWorktree(repo),
+      expectedIdentity: scenario.repoIdentity,
+      actualIdentity: gitRemoteUrl(repo),
+      expectedCommit: scenario.commit,
+      actualCommit: git(['rev-parse', 'HEAD'], repo),
+      dirty: gitHasChanges(repo),
+    });
+    if (preflight.status !== 'ok') {
+      console.error(`[bench] scenario "${scenario.id}" preflight failed: ${preflight.reason}`);
+      if (!process.exitCode) process.exitCode = 1;
+      continue;
+    }
+
+    const benchmarkOpts = scenarioToBenchmarkOptions(scenario, manifestDir, opts);
+    // runBenchmark evaluates graph-quality floors internally and persists the
+    // outcome to JSON/Markdown before it returns; the runner consumes that.
+    const record = await runBenchmark(benchmarkOpts);
+    if (opts.dryRun || !record) continue;
+
+    const quality = record.outcome.graphQuality;
+    if (quality && quality.status !== 'pass') {
+      console.error(
+        `[bench] scenario "${scenario.id}" graph-quality gate ${quality.status}: ${quality.failures.join('; ')}`,
+      );
+      if (!process.exitCode) process.exitCode = 1;
+    }
+  }
 }
 
 function slug(value) {
@@ -118,6 +508,14 @@ function git(args, cwd) {
 
 function gitHasChanges(cwd) {
   return git(['status', '--porcelain'], cwd).length > 0;
+}
+
+function isGitWorktree(cwd) {
+  return git(['rev-parse', '--is-inside-work-tree'], cwd) === 'true';
+}
+
+function gitRemoteUrl(cwd) {
+  return git(['config', '--get', 'remote.origin.url'], cwd);
 }
 
 function collectRelevantEnv() {
@@ -288,6 +686,7 @@ async function runBenchmark(opts) {
     runnerDirty,
     mode: opts.mode,
     cli: opts.cli,
+    maxPeakRssMib: opts.maxPeakRssMib,
     command: [command.cmd, ...command.args].join(' '),
     cwd: command.cwd,
     relevantEnv,
@@ -331,7 +730,13 @@ async function runBenchmark(opts) {
   if (opts.dryRun) {
     console.log(
       JSON.stringify(
-        { command: record.command, cwd: command.cwd, markdownPath, jsonPath },
+        {
+          command: record.command,
+          cwd: command.cwd,
+          markdownPath,
+          jsonPath,
+          maxPeakRssMib: opts.maxPeakRssMib,
+        },
         null,
         2,
       ),
@@ -418,12 +823,67 @@ async function runBenchmark(opts) {
     stderrTail: stderr,
   };
 
+  const peakRssThreshold = evaluatePeakRssThreshold(record.outcome.peakRssKiB, opts.maxPeakRssMib);
+  record.outcome.peakRssThreshold = peakRssThreshold;
+
+  // Evaluate graph-quality floors before persisting so the JSON/Markdown reports
+  // record the outcome even when the gate fails closed.
+  const graphQuality = opts.graphQuality
+    ? evaluateGraphQuality(record.outcome.relationshipDistributions, opts.graphQuality)
+    : null;
+  if (graphQuality) record.outcome.graphQuality = graphQuality;
+
   await fs.writeFile(jsonPath, JSON.stringify(record, null, 2) + '\n');
   await fs.writeFile(markdownPath, renderMarkdown(record));
   console.log(`\n[bench] wrote ${markdownPath}`);
   console.log(`[bench] wrote ${jsonPath}`);
 
   if (exit.code !== 0) process.exitCode = exit.code ?? 1;
+
+  if (peakRssThreshold.status === 'exceeded' || peakRssThreshold.status === 'rss-unavailable') {
+    console.error(`[bench] peak-RSS threshold failure: ${peakRssThreshold.reason}`);
+    if (!process.exitCode) process.exitCode = 1;
+  }
+
+  if (graphQuality && graphQuality.status !== 'pass') {
+    console.error(
+      `[bench] graph-quality gate ${graphQuality.status}: ${graphQuality.failures.join('; ')}`,
+    );
+    if (!process.exitCode) process.exitCode = 1;
+  }
+
+  return record;
+}
+
+function evaluatePeakRssThreshold(peakRssKiB, maxPeakRssMib) {
+  if (maxPeakRssMib === null || maxPeakRssMib === undefined) {
+    return { requested: false, status: 'not-requested' };
+  }
+  const peakRssMib = Number.isFinite(peakRssKiB) && peakRssKiB > 0 ? peakRssKiB / 1024 : null;
+  if (peakRssMib === null) {
+    return {
+      requested: true,
+      status: 'rss-unavailable',
+      maxPeakRssMib,
+      peakRssMib: null,
+      reason: `peak RSS unavailable; failing closed against threshold ${maxPeakRssMib} MiB`,
+    };
+  }
+  if (peakRssMib > maxPeakRssMib) {
+    return {
+      requested: true,
+      status: 'exceeded',
+      maxPeakRssMib,
+      peakRssMib: round(peakRssMib, 2),
+      reason: `peak RSS ${round(peakRssMib, 2)} MiB exceeded threshold ${maxPeakRssMib} MiB`,
+    };
+  }
+  return {
+    requested: true,
+    status: 'within',
+    maxPeakRssMib,
+    peakRssMib: round(peakRssMib, 2),
+  };
 }
 
 function mergePeakMemory(current, sample) {
@@ -500,6 +960,7 @@ ${record.command}
 - Peak child process RSS: ${record.outcome.peakChildProcessRssKiB ? `${record.outcome.peakChildProcessRssKiB} KiB` : 'unavailable'}
 - Peak process count: ${record.outcome.peakProcessCount ?? 'unavailable'}
 - Peak child process count: ${record.outcome.peakChildProcessCount ?? 'unavailable'}
+- Peak RSS threshold: ${renderPeakRssThreshold(record.maxPeakRssMib, record.outcome.peakRssThreshold)}
 - GC events: ${record.outcome.gcSummary?.count ?? 'unavailable'}
 - GC time: ${Number.isFinite(record.outcome.gcSummary?.durationMs) ? formatMs(record.outcome.gcSummary.durationMs) : 'unavailable'}
 - Top child processes by RSS: ${renderTopChildProcesses(record.outcome.topChildProcessesByRss)}
@@ -528,6 +989,14 @@ ${phaseRows || '| unavailable | | no phase telemetry captured |'}
 
 - Plan: ${renderCrossFilePlan(record.outcome.crossFilePlan)}
 - Slowest files: ${renderSlowestCrossFileFiles(record.outcome.slowCrossFileFiles)}
+
+## Relationship Distributions
+
+${renderRelationshipDistributions(record.outcome.relationshipDistributions)}
+
+## Graph Quality
+
+${renderGraphQuality(record.outcome.graphQuality)}
 
 ## LadybugDB Telemetry
 
@@ -627,6 +1096,9 @@ function summarizeTelemetry(telemetry) {
     slowestFiles: telemetry.find((event) => event.event === 'parse-slowest-files')?.slowFiles ?? [],
     slowestExtractors:
       telemetry.find((event) => event.event === 'parse-slowest-extractors')?.slowExtractors ?? [],
+    relationshipDistributions:
+      telemetry.find((event) => event.event === 'relationship-distributions')
+        ?.relationshipDistributions ?? null,
   };
 }
 
@@ -755,11 +1227,44 @@ function renderDegradedSummary(events) {
   return `${total} files across ${events.length} chunk event(s); last reason: ${last.degradedReason ?? 'unknown'}`;
 }
 
+function renderRelationshipDistributions(distributions) {
+  if (!distributions) return '- unavailable';
+  const { totalRelationships, byType, byProvenance } = distributions;
+  const typeRows =
+    byType && byType.length
+      ? byType.map((entry) => `  - ${entry.type}: ${entry.count}`).join('\n')
+      : '  - none';
+  return `- Total relationships: ${totalRelationships}
+- By provenance: extracted ${byProvenance.extracted}, inferred ${byProvenance.inferred}, ambiguous ${byProvenance.ambiguous}
+- By type:
+${typeRows}`;
+}
+
+function renderGraphQuality(quality) {
+  if (!quality) return '- not evaluated';
+  if (quality.status === 'pass') return '- Status: pass';
+  const failures = (quality.failures ?? []).map((failure) => `  - ${failure}`).join('\n');
+  return `- Status: ${quality.status}\n- Failures:\n${failures || '  - none'}`;
+}
+
 function renderTopChildProcesses(processes) {
   if (!processes?.length) return '';
   return processes
     .map((sample) => `${sample.pid}:${sample.command || 'unknown'} ${sample.rssKiB} KiB`)
     .join('; ');
+}
+
+function renderPeakRssThreshold(maxPeakRssMib, threshold) {
+  if (maxPeakRssMib === null || maxPeakRssMib === undefined) return 'not requested';
+  if (!threshold) return `${maxPeakRssMib} MiB (not evaluated)`;
+  if (threshold.status === 'rss-unavailable') {
+    return `${maxPeakRssMib} MiB threshold; peak RSS unavailable (failed closed)`;
+  }
+  const observed = Number.isFinite(threshold.peakRssMib)
+    ? `${threshold.peakRssMib} MiB`
+    : 'unavailable';
+  const label = threshold.status === 'exceeded' ? 'exceeded' : 'within';
+  return `${observed} vs ${maxPeakRssMib} MiB (${label})`;
 }
 
 function renderThroughput(throughput) {
@@ -900,10 +1405,34 @@ function round(value, decimals) {
   return Math.round(value * factor) / factor;
 }
 
-try {
-  await runBenchmark(parseArgs(process.argv.slice(2)));
-} catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
-  console.error(usage);
-  process.exit(1);
+export {
+  parseArgs,
+  runBenchmark,
+  runScenarioManifest,
+  renderMarkdown,
+  evaluatePeakRssThreshold,
+  summarizeTelemetry,
+  renderRelationshipDistributions,
+  renderGraphQuality,
+  parseScenarioManifest,
+  evaluateScenarioPreflight,
+  normalizeRemoteIdentity,
+  evaluateGraphQuality,
+  scenarioToBenchmarkOptions,
+  listScenarioSummaries,
+};
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  try {
+    const opts = parseArgs(process.argv.slice(2));
+    if (opts.scenarioManifest) {
+      await runScenarioManifest(opts);
+    } else {
+      await runBenchmark(opts);
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    console.error(usage);
+    process.exit(1);
+  }
 }

@@ -39,6 +39,7 @@ npm-debug.log*
 
 # Testing
 coverage/
+ontoindex/test/bench/current.json
 
 # Misc
 *.local

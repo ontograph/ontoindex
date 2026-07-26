@@ -380,3 +380,68 @@ describe('parse-impl sequential fallback cleanup (U6)', () => {
     expect(spies.astCacheClearCalls).toBeGreaterThan(clearsBefore);
   });
 });
+
+describe('parse-impl extensionless shebang agreement', () => {
+  let repoPath = '';
+
+  beforeEach(() => {
+    failureConfig.readFileContentsFailAfter = Infinity;
+    failureConfig.readFileContentsCalls = 0;
+    failureConfig.processCalls = false;
+  });
+
+  afterEach(() => {
+    if (repoPath && fs.existsSync(repoPath)) {
+      fs.rmSync(repoPath, { recursive: true, force: true });
+    }
+  });
+
+  // Parent scan attaches `shebangLanguage`; runChunkedParseAndResolve must keep
+  // the file and the sequential parser must agree via getLanguageFromShebang.
+  const scannedWithShebang = (
+    repo: string,
+    files: { rel: string; shebangLanguage?: string | null }[],
+  ) =>
+    files.map(({ rel, shebangLanguage }) => ({
+      path: rel,
+      size: fs.statSync(path.join(repo, rel)).size,
+      ...(shebangLanguage !== undefined ? { shebangLanguage } : {}),
+    }));
+
+  it('parses an extensionless Python script the parent tagged from its shebang', async () => {
+    repoPath = makeTempRepo({
+      manage: '#!/usr/bin/env python3\ndef shebang_parent_py():\n    return 1\n',
+    });
+    const graph = createKnowledgeGraph();
+    const result = await runChunkedParseAndResolve(
+      graph,
+      scannedWithShebang(repoPath, [{ rel: 'manage', shebangLanguage: 'python' }]),
+      ['manage'],
+      1,
+      repoPath,
+      Date.now(),
+      () => {},
+      { skipWorkers: true },
+    );
+    expect(result.bindingAccumulator).toBeDefined();
+    expect(graph.nodes.map((n) => n.properties.name)).toContain('shebang_parent_py');
+  });
+
+  it('produces no nodes for an extensionless shell script (shell is unsupported)', async () => {
+    repoPath = makeTempRepo({ deploy: '#!/bin/bash\ndeploy() { echo hi; }\n' });
+    const graph = createKnowledgeGraph();
+    // Even if a scan entry existed, the parent never tags shell, and the
+    // sequential parser has no shell language — nothing is parsed.
+    await runChunkedParseAndResolve(
+      graph,
+      scannedWithShebang(repoPath, [{ rel: 'deploy' }]),
+      ['deploy'],
+      1,
+      repoPath,
+      Date.now(),
+      () => {},
+      { skipWorkers: true },
+    );
+    expect(graph.nodeCount).toBe(0);
+  });
+});

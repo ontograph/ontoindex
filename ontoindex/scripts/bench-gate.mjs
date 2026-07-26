@@ -1,5 +1,65 @@
 import fs from 'fs/promises';
-import path from 'path';
+
+const MAX_REGRESSION = 0.15;
+
+function readBaseline(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('baseline must be an object');
+  }
+  if (
+    typeof value.numerator !== 'string' ||
+    value.numerator.length === 0 ||
+    typeof value.control !== 'string' ||
+    value.control.length === 0 ||
+    value.numerator === value.control ||
+    !Number.isFinite(value.ratio) ||
+    value.ratio <= 0
+  ) {
+    throw new Error('baseline must define distinct numerator/control names and a positive ratio');
+  }
+  return value;
+}
+
+function readVitestResults(value) {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    !Array.isArray(value.files) ||
+    value.files.length === 0
+  ) {
+    throw new Error('current benchmark data must contain a non-empty files array');
+  }
+
+  const results = new Map();
+  for (const file of value.files) {
+    if (!file || !Array.isArray(file.groups)) {
+      throw new Error('current benchmark file must contain a groups array');
+    }
+    for (const group of file.groups) {
+      if (!group || !Array.isArray(group.benchmarks)) {
+        throw new Error('current benchmark group must contain a benchmarks array');
+      }
+      for (const benchmark of group.benchmarks) {
+        if (
+          !benchmark ||
+          typeof benchmark.name !== 'string' ||
+          benchmark.name.length === 0 ||
+          !Number.isFinite(benchmark.mean) ||
+          benchmark.mean <= 0
+        ) {
+          throw new Error('current benchmark result must have a name and positive finite mean');
+        }
+        if (results.has(benchmark.name)) {
+          throw new Error(`duplicate current benchmark result "${benchmark.name}"`);
+        }
+        results.set(benchmark.name, benchmark);
+      }
+    }
+  }
+
+  if (results.size === 0) throw new Error('current benchmark data contains no benchmark results');
+  return results;
+}
 
 async function run() {
   const baselinePath = 'test/bench/baseline.json';
@@ -7,44 +67,33 @@ async function run() {
 
   try {
     const baselineRaw = await fs.readFile(baselinePath, 'utf8');
-    const baseline = JSON.parse(baselineRaw);
+    const baseline = readBaseline(JSON.parse(baselineRaw));
 
     const currentRaw = await fs.readFile(currentPath, 'utf8');
-    const currentResults = JSON.parse(currentRaw);
+    const currentResults = readVitestResults(JSON.parse(currentRaw));
 
-    // Vitest JSON reporter (if it worked) would have a different structure.
-    // For this task, we assume a simplified structure that matches baseline.
-    // We'll map vitest's real output to this structure in the CI command.
+    const numerator = currentResults.get(baseline.numerator);
+    const control = currentResults.get(baseline.control);
+    if (!numerator) throw new Error(`missing current benchmark result "${baseline.numerator}"`);
+    if (!control) throw new Error(`missing current benchmark result "${baseline.control}"`);
 
-    let failed = false;
-    for (const [name, base] of Object.entries(baseline)) {
-      const curr = currentResults[name];
-      if (!curr) {
-        console.warn(`⚠️ Warning: No current results for benchmark "${name}"`);
-        continue;
-      }
+    const ratio = numerator.mean / control.mean;
+    if (!Number.isFinite(ratio) || ratio <= 0)
+      throw new Error('current benchmark ratio is invalid');
+    const regression = (ratio - baseline.ratio) / baseline.ratio;
+    const status = regression > MAX_REGRESSION ? 'FAIL' : 'PASS';
+    console.log(
+      `${status} ${baseline.numerator} / ${baseline.control}: ${baseline.ratio.toFixed(4)} -> ${ratio.toFixed(4)} (${(regression * 100).toFixed(1)}%)`,
+    );
 
-      const regression = (curr.mean - base.mean) / base.mean;
-      const status = regression > 0.15 ? '❌ FAIL' : '✅ PASS';
-
-      console.log(
-        `${status} ${name}: ${base.mean.toFixed(2)}ms -> ${curr.mean.toFixed(2)}ms (${(regression * 100).toFixed(1)}%)`,
-      );
-
-      if (regression > 0.15) {
-        failed = true;
-      }
-    }
-
-    if (failed) {
-      console.error('\n🚨 Benchmark regression detected (> 15%)!');
-      process.exit(1);
+    if (regression > MAX_REGRESSION) {
+      throw new Error('benchmark regression detected (> 15%)');
     } else {
-      console.log('\n✨ Performance within acceptable limits.');
+      console.log('\nPerformance within acceptable limits.');
     }
   } catch (error) {
     console.error(`Error running bench-gate: ${error.message}`);
-    process.exit(1);
+    process.exitCode = 1;
   }
 }
 

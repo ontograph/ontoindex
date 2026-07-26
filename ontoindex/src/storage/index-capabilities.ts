@@ -37,7 +37,18 @@ export const formatIndexCapabilityWarnings = (meta: RepoMeta): string[] => {
   if (meta.skippedPhases?.length) {
     lines.push(`  Skipped phases: ${meta.skippedPhases.join(', ')}`);
   }
-  if (meta.degradedFiles?.length) {
+  if (meta.degradedFileAggregates) {
+    const { sampledDegradedCount, groups, omittedGroupCount } = meta.degradedFileAggregates;
+    lines.push(`  Degraded files (sampled): ${sampledDegradedCount}`);
+    for (const group of groups) {
+      lines.push(
+        `    - ${group.cause} [phase: ${group.phase}, lang: ${group.language}]: ${group.count}`,
+      );
+    }
+    if (omittedGroupCount > 0) {
+      lines.push(`    - (+${omittedGroupCount} more group(s) omitted)`);
+    }
+  } else if (meta.degradedFiles?.length) {
     lines.push(`  Degraded files: ${meta.degradedFiles.length}`);
   }
   if (meta.partialCheckpointPath) {

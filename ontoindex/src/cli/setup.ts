@@ -93,10 +93,15 @@ inspection is acceptable; do not label it OntoIndex evidence.
 For non-trivial code research/analysis on an indexed repo, use OntoIndex early,
 then verify exact claims from source:
 
-- Architecture / "how does X work" -> \`gn_explore\` or \`search\` plus \`inspect\`
-- "What breaks if I change X" / impact -> \`impact\` or \`gn_diff_impact\`
-- Bug trace / "where does this error come from" -> \`search\` plus \`inspect\`; use \`gn_diagnose\` when index/tool health is suspect
-- Review a diff's blast radius -> \`gn_review_diff\` or \`gn_diff_impact\`
+1. Explore/search -> \`gn_explore\` or \`search\`
+2. Inspect/context -> \`inspect\` for callers, callees, and execution flows
+3. Impact before edits -> \`impact\` or \`gn_diff_impact\`
+4. gn_verify_diff before commit -> \`gn_verify_diff\` to confirm scope
+
+The graph index is commit-based. When current HEAD differs from the indexed
+commit, exactly one process must re-analyze before graph-backed claims. Never
+silently assume dirty or uncommitted worktree changes are represented in the
+graph; verify current source or the diff for those changes.
 `;
 
 function resolveMcpRepoPath(): string {

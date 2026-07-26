@@ -79,6 +79,58 @@ export const getLanguageFromFilename = (filename: string): SupportedLanguages | 
 };
 
 /**
+ * Interpreter basename → language, for the only shebang interpreters that have a
+ * SupportedLanguages member, a LanguageProvider, and a parser loader.
+ *
+ * Shell/bash/zsh/sh are intentionally absent: there is no shell SupportedLanguages
+ * member, provider, or parser, so a shell shebang must never be aliased to a
+ * supported language.
+ */
+const SHEBANG_INTERPRETER_MAP: Record<string, SupportedLanguages> = {
+  python: SupportedLanguages.Python,
+  ruby: SupportedLanguages.Ruby,
+  node: SupportedLanguages.JavaScript,
+  nodejs: SupportedLanguages.JavaScript,
+  php: SupportedLanguages.PHP,
+};
+
+/**
+ * Additive, content-aware fallback: map a file's shebang to a SupportedLanguage.
+ *
+ * This is a SEPARATE entry point from getLanguageFromFilename; extension and
+ * basename detection always win and should be consulted first. Detection is
+ * bounded to the first line — the argument may be the whole file, but only the
+ * text up to the first CR or LF is inspected.
+ *
+ * Returns null when there is no `#!` shebang or the interpreter is unsupported.
+ * Handles direct interpreter paths, `/usr/bin/env` with flags or VAR=val prefixes,
+ * surrounding whitespace, CRLF line endings, and versioned names (e.g. python3.11).
+ */
+export const getLanguageFromShebang = (text: string): SupportedLanguages | null => {
+  // Bounded to a single line: cut at the first CR or LF.
+  const newlineIdx = text.search(/[\r\n]/);
+  const line = (newlineIdx >= 0 ? text.slice(0, newlineIdx) : text).trim();
+  if (!line.startsWith('#!')) return null;
+
+  const tokens = line.slice(2).trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return null;
+
+  let interpreter = tokens[0];
+  // `/usr/bin/env [flags] <interp>`: skip env and any -flags or VAR=val prefixes.
+  if ((interpreter.split('/').pop() ?? interpreter) === 'env') {
+    const interp = tokens.slice(1).find((t) => !t.startsWith('-') && !t.includes('='));
+    if (interp === undefined) return null;
+    interpreter = interp;
+  }
+
+  const base = (interpreter.split('/').pop() ?? interpreter).toLowerCase();
+  // Try exact, then strip a trailing version suffix (python3, python3.11, php8.2).
+  return (
+    SHEBANG_INTERPRETER_MAP[base] ?? SHEBANG_INTERPRETER_MAP[base.replace(/[0-9.]+$/, '')] ?? null
+  );
+};
+
+/**
  * Exhaustive map: every SupportedLanguages member → Prism syntax identifier.
  *
  * If a new language is added to the enum without adding an entry here,

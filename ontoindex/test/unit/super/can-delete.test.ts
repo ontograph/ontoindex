@@ -18,17 +18,38 @@ vi.mock('../../../src/mcp/super/_helpers/test-coverage.js', () => ({
   findTestFiles: vi.fn(),
 }));
 
+vi.mock('../../../src/core/process/exec-file.js', () => ({
+  execFileText: vi.fn(),
+}));
+
+vi.mock('../../../src/storage/git.js', () => ({
+  getCurrentCommit: vi.fn(),
+}));
+
+vi.mock('../../../src/storage/repo-manager.js', () => ({
+  getStoragePaths: vi.fn(() => ({ storagePath: '/repo/.ontoindex' })),
+  listRegisteredRepos: vi.fn(),
+  loadMeta: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks).
 // ---------------------------------------------------------------------------
 
 import { executeParameterized } from '../../../src/core/lbug/pool-adapter.js';
 import { findTestFiles } from '../../../src/mcp/super/_helpers/test-coverage.js';
+import { execFileText } from '../../../src/core/process/exec-file.js';
+import { getCurrentCommit } from '../../../src/storage/git.js';
+import { listRegisteredRepos, loadMeta } from '../../../src/storage/repo-manager.js';
 import { gnCanDelete } from '../../../src/mcp/super/can-delete.js';
 
 // Typed mock handles.
 const mockExecuteParameterized = executeParameterized as unknown as ReturnType<typeof vi.fn>;
 const mockFindTestFiles = findTestFiles as unknown as ReturnType<typeof vi.fn>;
+const mockExecFileText = vi.mocked(execFileText);
+const mockGetCurrentCommit = vi.mocked(getCurrentCommit);
+const mockListRegisteredRepos = vi.mocked(listRegisteredRepos);
+const mockLoadMeta = vi.mocked(loadMeta);
 
 // ---------------------------------------------------------------------------
 // Helpers.
@@ -53,11 +74,6 @@ function callerRow(
   filePath = 'src/app.ts',
 ): any {
   return { nodeId, name, filePath };
-}
-
-/** A test-file row (IMPORTS edge from test file). */
-function testFileRow(filePath = 'src/__tests__/utils.test.ts'): any {
-  return { filePath };
 }
 
 /** A co-change row. */
@@ -102,22 +118,47 @@ function mockOrphanSymbol(): void {
 describe('gnCanDelete', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    mockListRegisteredRepos.mockResolvedValue([
+      {
+        name: REPO_ID,
+        path: '/repo',
+        storagePath: '/repo/.ontoindex',
+        indexedAt: '2026-07-25T00:00:00.000Z',
+        lastCommit: 'abc123',
+      },
+    ]);
+    mockLoadMeta.mockResolvedValue({
+      repoPath: '/repo',
+      lastCommit: 'abc123',
+      indexedAt: '2026-07-25T00:00:00.000Z',
+      pipelineProfile: 'full',
+    });
+    mockGetCurrentCommit.mockReturnValue('abc123');
+    mockExecFileText.mockImplementation(async (_command, args) => {
+      if (args[0] === 'git' || args[0] === 'grep') return '';
+      if (args.includes('grep')) return '';
+      if (args.includes('ls-files')) return 'src/utils.ts\n';
+      return '';
+    });
   });
 
-  // ---- Test 1: DELETE-SAFE for orphan symbol -------------------------------
+  // ---- Test 1: fail closed for a reference-free symbol ----------------------
 
-  it('returns DELETE-SAFE for an orphan symbol with no callers, tests, or co-change activity', async () => {
+  it('returns CAUTION for a reference-free symbol when build-manifest proof is unavailable', async () => {
     mockOrphanSymbol();
 
     const report = await gnCanDelete(REPO_ID, { symbol: 'orphanHelper' });
 
     expect(report.version).toBe(1);
-    expect(report.verdict).toBe('DELETE-SAFE');
-    expect(report.blockers).toHaveLength(0);
+    expect(report.verdict).toBe('CAUTION');
+    expect(report.blockers).toContainEqual({
+      type: 'incomplete-evidence',
+      detail: 'build-manifest coverage unavailable',
+    });
     expect(report.callers).toHaveLength(0);
     expect(report.tests).toHaveLength(0);
     expect(report.coChangeNetwork.recentTouchDays).toBe(-1);
-    expect(report.warnings).toHaveLength(0);
+    expect(report.warnings).toContain('build-manifest coverage unavailable');
     expect(report.symbol.nodeId).toBe('Function:src/utils.ts:orphanHelper');
   });
 
@@ -202,24 +243,27 @@ describe('gnCanDelete', () => {
 
   // ---- Bonus test 6: symbol not in index → DELETE-SAFE + warning -----------
 
-  it('returns DELETE-SAFE with "symbol not in index" warning when symbol is not found', async () => {
+  it('fails closed when the symbol is not found', async () => {
     // Fuzzy lookup returns no rows
     mockExecuteParameterized.mockResolvedValueOnce([]);
 
     const report = await gnCanDelete(REPO_ID, { symbol: 'nonExistentSymbol' });
 
     expect(report.version).toBe(1);
-    expect(report.verdict).toBe('DELETE-SAFE');
+    expect(report.verdict).toBe('CAUTION');
     expect(report.symbol.nodeId).toBe('');
     expect(report.symbol.name).toBe('nonExistentSymbol');
-    expect(report.reasoning).toContain('already gone');
+    expect(report.reasoning).toContain('cannot be proven');
     expect(report.warnings).toContain('symbol not in index');
-    expect(report.blockers).toHaveLength(0);
+    expect(report.blockers).toContainEqual({
+      type: 'incomplete-evidence',
+      detail: 'symbol resolution failed',
+    });
   });
 
-  // ---- Bonus test 7: DELETE-SAFE when co-change is old (>= 7 days) ---------
+  // ---- Bonus test 7: old co-change remains non-positive without full proof --
 
-  it('returns DELETE-SAFE when co-change activity is old (not recent)', async () => {
+  it('returns CAUTION when co-change activity is old but build-manifest proof is unavailable', async () => {
     mockExecuteParameterized
       .mockResolvedValueOnce([resolvedRow()]) // resolve
       .mockResolvedValueOnce([]) // callers
@@ -228,8 +272,60 @@ describe('gnCanDelete', () => {
 
     const report = await gnCanDelete(REPO_ID, { symbol: 'orphanHelper' });
 
-    expect(report.verdict).toBe('DELETE-SAFE');
+    expect(report.verdict).toBe('CAUTION');
     expect(report.coChangeNetwork.recentTouchDays).toBeGreaterThanOrEqual(7);
     expect(report.blockers.filter((b) => b.type === 'co-change-recent')).toHaveLength(0);
+  });
+
+  it.each([
+    ['CornerGroup', 'new cool.CornerGroup()'],
+    ['CornerHeader', 'new cool.CornerHeader()'],
+    ['GroupBase', 'class RowGroup extends GroupBase {}'],
+    ['CanvasTileLayer', 'window.L.CalcTileLayer = window.L.CanvasTileLayer.extend({})'],
+  ])('blocks bounded dynamic production reference for %s', async (name, sourceLine) => {
+    mockExecuteParameterized
+      .mockResolvedValueOnce([
+        resolvedRow(`Class:src/groups.ts:${name}`, name, 'src/groups.ts', 'Class'),
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockFindTestFiles.mockResolvedValueOnce({ coveringTests: [], likelihoodOfCoverage: 'NONE' });
+    mockExecFileText.mockImplementation(async (_command, args) => {
+      if (args.includes('grep')) {
+        return `src/groups.ts:1:export class ${name} {}\nsrc/app.ts:8:${sourceLine}\n`;
+      }
+      if (args.includes('ls-files')) return 'src/groups.ts\n';
+      return '';
+    });
+
+    const report = await gnCanDelete(REPO_ID, { symbol: name });
+
+    expect(report.verdict).toBe('DO-NOT-DELETE');
+    expect(report.evidence.sourceReferences).toContainEqual(
+      expect.objectContaining({ filePath: 'src/app.ts', text: sourceLine }),
+    );
+  });
+
+  it('fails closed when the index is stale', async () => {
+    mockOrphanSymbol();
+    mockGetCurrentCommit.mockReturnValue('def456');
+
+    const report = await gnCanDelete(REPO_ID, { symbol: 'orphanHelper' });
+
+    expect(report.verdict).toBe('CAUTION');
+    expect(report.evidence.freshness).toBe('stale');
+  });
+
+  it('fails closed when a graph evidence lane throws', async () => {
+    mockExecuteParameterized
+      .mockResolvedValueOnce([resolvedRow()])
+      .mockRejectedValueOnce(new Error('graph unavailable'))
+      .mockResolvedValueOnce([]);
+    mockFindTestFiles.mockResolvedValueOnce({ coveringTests: [], likelihoodOfCoverage: 'NONE' });
+
+    const report = await gnCanDelete(REPO_ID, { symbol: 'orphanHelper' });
+
+    expect(report.verdict).toBe('CAUTION');
+    expect(report.evidence.graph).toBe('unavailable');
   });
 });

@@ -24,6 +24,9 @@ vi.mock('../../src/core/search/graph-traversal-rank.js', () => ({
 
 vi.mock('../../src/mcp/local/query-log.js', () => ({
   appendQueryLog: vi.fn(),
+  queryLogEnabled: vi.fn(() => true),
+  MAX_RESULT_IDS: 10,
+  MAX_QUERY_CHARS: 256,
 }));
 
 vi.mock('../../src/core/search/skeleton.js', () => ({
@@ -69,7 +72,7 @@ import type { EnrichedSymbolRow } from '../../src/core/search/symbol-merge.js';
 import { applyEnsemble } from '../../src/core/search/per-intent-ensemble.js';
 import { graphTraversalRank } from '../../src/core/search/graph-traversal-rank.js';
 import { getFileSkeleton } from '../../src/core/search/skeleton.js';
-import { appendQueryLog } from '../../src/mcp/local/query-log.js';
+import { appendQueryLog, queryLogEnabled } from '../../src/mcp/local/query-log.js';
 import { resolveTargetContext } from '../../src/mcp/shared/target-context.js';
 import { query } from '../../src/mcp/local/backend-search.js';
 import { embedQuery, isEmbedderReady } from '../../src/mcp/core/embedder.js';
@@ -89,6 +92,7 @@ const mockApplyEnsemble = vi.mocked(applyEnsemble);
 const mockGraphTraversalRank = vi.mocked(graphTraversalRank);
 const mockGetFileSkeleton = vi.mocked(getFileSkeleton);
 const mockAppendQueryLog = vi.mocked(appendQueryLog);
+const mockQueryLogEnabled = vi.mocked(queryLogEnabled);
 const mockClassifyIntent = vi.mocked(classifyIntent);
 const mockResolveTargetContext = vi.mocked(resolveTargetContext);
 const mockLoadAnnNeighborEdges = vi.mocked(loadAnnNeighborEdges);
@@ -175,6 +179,7 @@ describe('backend-search typed input', () => {
         ),
     );
     mockAppendQueryLog.mockResolvedValue(undefined);
+    mockQueryLogEnabled.mockReturnValue(true);
     mockGetFileSkeleton.mockResolvedValue('');
     mockResolveTargetContext.mockResolvedValue(targetContext());
     mockLoadAnnNeighborEdges.mockResolvedValue([]);
@@ -1301,5 +1306,112 @@ describe('backend-search typed input', () => {
 
     lookupSpy.mockRestore();
     setSpy.mockRestore();
+  });
+
+  describe('centralized query-log exit', () => {
+    it('logs disabled cache status and plain retrieval mode for non-structured queries', async () => {
+      await query({ id: 'repo-1', repoPath: '/repo', lastCommit: 'abc123' } as any, {
+        query: 'symbol: CacheStore',
+        limit: 3,
+        retrieval_policy: 'graph-only',
+      });
+
+      expect(mockAppendQueryLog).toHaveBeenCalledTimes(1);
+      const [, entry] = mockAppendQueryLog.mock.calls[0];
+      expect(entry).toMatchObject({
+        cacheStatus: 'disabled',
+        retrievalMode: 'plain',
+        retrievalPolicy: 'graph-only',
+        truncated: false,
+      });
+      expect(typeof entry.responseBytes).toBe('number');
+      expect(entry.responseBytes).toBeGreaterThanOrEqual(0);
+    });
+
+    it('logs typed retrieval mode and miss cache status for structured misses', async () => {
+      const lookupSpy = vi.spyOn(SemanticRetrievalCache.prototype, 'lookup').mockResolvedValue({
+        status: 'miss',
+        result: null,
+      });
+
+      await query({ id: 'repo-1', repoPath: '/repo', lastCommit: 'abc123' } as any, {
+        typedQuery: {
+          lines: [{ type: 'symbol', query: 'CacheStore', lineNumber: 1 }],
+        },
+        structured_output: true,
+      });
+
+      const [, entry] = mockAppendQueryLog.mock.calls[0];
+      expect(entry).toMatchObject({ cacheStatus: 'miss', retrievalMode: 'typed' });
+
+      lookupSpy.mockRestore();
+    });
+
+    it('logs a hit cache status on the structured cache-hit early return', async () => {
+      const lookupSpy = vi.spyOn(SemanticRetrievalCache.prototype, 'lookup').mockResolvedValue({
+        status: 'hit',
+        ageMs: 100,
+        result: {
+          candidates: [
+            {
+              id: 'retrieval:Function:src/core/cache.ts:CacheStore',
+              kind: 'symbol',
+              label: 'CacheStore',
+              filePath: 'src/core/cache.ts',
+              startLine: 10,
+              endLine: 40,
+              source: 'symbol',
+              evidence: [],
+              freshness: 'fresh',
+            },
+          ],
+          diagnostics: {
+            timing: {},
+            capabilityHealth: {
+              capabilitiesUsed: ['typed-query'],
+              capabilitiesMissing: [],
+              warnings: [],
+            },
+            freshness: { status: 'fresh', actionable: false, reason: 'indexedHead == targetHead' },
+          },
+          timestamp: Date.now() - 100,
+          indexedHead: 'abc123',
+        },
+      });
+
+      await query({ id: 'repo-1', repoPath: '/repo', lastCommit: 'abc123' } as any, {
+        typedQuery: {
+          lines: [{ type: 'symbol', query: 'CacheStore', lineNumber: 1 }],
+        },
+        structured_output: true,
+      });
+
+      const [, entry] = mockAppendQueryLog.mock.calls[0];
+      expect(entry).toMatchObject({ cacheStatus: 'hit', retrievalMode: 'typed' });
+
+      lookupSpy.mockRestore();
+    });
+
+    it('skips serialization and logging when the query log is disabled', async () => {
+      mockQueryLogEnabled.mockReturnValue(false);
+
+      await query({ id: 'repo-1', repoPath: '/repo', lastCommit: 'abc123' } as any, {
+        query: 'symbol: CacheStore',
+        limit: 3,
+      });
+
+      expect(mockAppendQueryLog).not.toHaveBeenCalled();
+    });
+
+    it('remains non-fatal when appendQueryLog rejects', async () => {
+      mockAppendQueryLog.mockRejectedValue(new Error('disk full'));
+
+      await expect(
+        query({ id: 'repo-1', repoPath: '/repo', lastCommit: 'abc123' } as any, {
+          query: 'symbol: CacheStore',
+          limit: 3,
+        }),
+      ).resolves.toBeDefined();
+    });
   });
 });

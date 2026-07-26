@@ -468,7 +468,8 @@ export async function gnEnsureFresh(
 
   if (
     params.autoAnalyze &&
-    (runtimeHealth.freshnessState === 'untrusted' ||
+    ((runtimeHealth.freshnessState === 'untrusted' &&
+      runtimeHealth.analyzeLock.state !== 'stale') ||
       runtimeHealth.freshnessState === 'failed-after-partial-run')
   ) {
     recommendations.push(
@@ -499,7 +500,7 @@ export async function gnEnsureFresh(
   // ---- 7. Auto-analyze (only when explicitly requested AND stale) ---------
   let postCheck: EnsureFreshReport['postCheck'];
 
-  if (params.autoAnalyze && isStale) {
+  if (params.autoAnalyze && (isStale || runtimeHealth.analyzeLock.state === 'stale')) {
     // Note: this CAN block on DuckDB write-lock if MCP processes are running.
     if (params.killMcpForLock) {
       warnings.push(

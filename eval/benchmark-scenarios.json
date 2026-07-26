@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "description": "Pinned, deterministic benchmark scenarios for the large-codebase harness. Each scenario targets an independent, caller-provisioned checkout (never this repository), selects only existing benchmark options (mode, timeout, peak-RSS limit), and declares graph-quality floors. repoPath is a required sibling checkout path resolved relative to this manifest; the harness never clones or fetches. repoIdentity is the canonical remote URL and is verified against the checkout's origin (normalizing .git and ssh forms). Commits are exact 40-char SHAs; the harness fails closed when the checkout is missing, its remote identity differs, the tree is dirty, or HEAD does not match the pinned commit, all before spawning any benchmark. No scenario field maps to an arbitrary command.",
+  "scenarios": [
+    {
+      "id": "entire-graph-force-analyze",
+      "description": "Force-analyze of the independent entireio/entire-graph repository pinned to commit 76eb362. Provision it as a clean sibling checkout at ../entire-graph (relative to this repository root) checked out to the pinned commit before running; the harness will not clone or fetch. Graph-quality floors are conservative low regression guards for a small repository, not expected values; missing distributions fail closed. No network access is required at run time.",
+      "repoPath": "../../entire-graph",
+      "repoIdentity": "https://github.com/entireio/entire-graph",
+      "commit": "76eb362dfd436c9a5103140cdb34779d797b6885",
+      "mode": "force-analyze",
+      "cli": "source",
+      "timeoutMs": 1800000,
+      "maxPeakRssMiB": 8192,
+      "graphQuality": {
+        "minTotalRelationships": 50,
+        "minProvenance": {
+          "extracted": 10,
+          "inferred": 0,
+          "ambiguous": 0
+        },
+        "minByType": {
+          "CONTAINS": 10
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,300 @@
+{
+  "version": 2,
+  "schema": "precision-baseline/v2",
+  "description": "TASK-7 deterministic call-resolution precision baseline. Manifest is the sole baseline update point. Each language draws positive (correct CALLS resolution) and negative (must-not-resolve-elsewhere) evidence from existing resolver fixtures without inventing semantics. Precision = truePositives / (truePositives + falsePositives). falseNegatives counts expected edges that produced zero matching CALLS edges (a miss); missing resolution is never counted as a false positive and never enters the precision denominator. A case with expectFilePath=null is an expected-unresolved case that passes only when no matching CALLS edge exists. Languages with a `parser` field are gated on optional/native grammars: when the grammar is unavailable at runtime the suite records an explicit skipped outcome rather than silently omitting the language. baseline (top-level) is the full-availability aggregate (sum of every per-language baseline); the runtime aggregate is asserted over whichever parser-gated languages are available.",
+  "matching": "exact-targetFilePath",
+  "skipGraphPhases": true,
+  "languages": [
+    {
+      "language": "cpp",
+      "fixture": "cpp-local-shadow",
+      "cases": [
+        {
+          "source": "run",
+          "target": "save",
+          "expectFilePath": "src/main.cpp",
+          "forbidFilePath": "src/utils.h"
+        }
+      ],
+      "baseline": {
+        "truePositives": 1,
+        "falsePositives": 0,
+        "falseNegatives": 0,
+        "expectedUnresolved": 0,
+        "precision": 1
+      }
+    },
+    {
+      "language": "csharp",
+      "fixture": "csharp-local-shadow",
+      "cases": [
+        {
+          "source": "Run",
+          "target": "Save",
+          "expectFilePath": "App/Main.cs",
+          "forbidFilePath": "Utils/Logger.cs"
+        }
+      ],
+      "baseline": {
+        "truePositives": 1,
+        "falsePositives": 0,
+        "falseNegatives": 0,
+        "expectedUnresolved": 0,
+        "precision": 1
+      }
+    },
+    {
+      "language": "go",
+      "fixture": "go-local-shadow",
+      "cases": [
+        {
+          "source": "main",
+          "target": "Save",
+          "expectFilePath": "cmd/main.go",
+          "forbidFilePath": "internal/utils/utils.go"
+        }
+      ],
+      "baseline": {
+        "truePositives": 1,
+        "falsePositives": 0,
+        "falseNegatives": 0,
+        "expectedUnresolved": 0,
+        "precision": 1
+      }
+    },
+    {
+      "language": "java",
+      "fixture": "java-local-shadow",
+      "cases": [
+        {
+          "source": "run",
+          "target": "save",
+          "expectFilePath": "src/main/java/com/example/app/Main.java",
+          "forbidFilePath": "src/main/java/com/example/utils/Logger.java"
+        }
+      ],
+      "baseline": {
+        "truePositives": 1,
+        "falsePositives": 0,
+        "falseNegatives": 0,
+        "expectedUnresolved": 0,
+        "precision": 1
+      }
+    },
+    {
+      "language": "javascript",
+      "fixture": "javascript-chain-call",
+      "cases": [
+        {
+          "source": "processUser",
+          "target": "save",
+          "expectFilePath": "src/user.js",
+          "forbidFilePath": "src/repo.js"
+        }
+      ],
+      "baseline": {
+        "truePositives": 1,
+        "falsePositives": 0,
+        "falseNegatives": 0,
+        "expectedUnresolved": 0,
+        "precision": 1
+      }
+    },
+    {
+      "language": "php",
+      "fixture": "php-local-shadow",
+      "cases": [
+        {
+          "source": "run",
+          "target": "save",
+          "expectFilePath": "app/Services/Main.php",
+          "forbidFilePath": "app/Utils/Logger.php"
+        }
+      ],
+      "baseline": {
+        "truePositives": 1,
+        "falsePositives": 0,
+        "falseNegatives": 0,
+        "expectedUnresolved": 0,
+        "precision": 1
+      }
+    },
+    {
+      "language": "python",
+      "fixture": "python-local-shadow",
+      "cases": [
+        {
+          "source": "main",
+          "target": "save",
+          "expectFilePath": "app.py",
+          "forbidFilePath": "utils.py"
+        }
+      ],
+      "baseline": {
+        "truePositives": 1,
+        "falsePositives": 0,
+        "falseNegatives": 0,
+        "expectedUnresolved": 0,
+        "precision": 1
+      }
+    },
+    {
+      "language": "ruby",
+      "fixture": "ruby-local-shadow",
+      "cases": [
+        {
+          "source": "run_app",
+          "target": "do_work",
+          "expectFilePath": "lib/app.rb",
+          "forbidFilePath": "lib/utils.rb"
+        }
+      ],
+      "baseline": {
+        "truePositives": 1,
+        "falsePositives": 0,
+        "falseNegatives": 0,
+        "expectedUnresolved": 0,
+        "precision": 1
+      }
+    },
+    {
+      "language": "rust",
+      "fixture": "rust-local-shadow",
+      "cases": [
+        {
+          "source": "run",
+          "target": "save",
+          "expectFilePath": "src/main.rs",
+          "forbidFilePath": "src/utils.rs"
+        }
+      ],
+      "baseline": {
+        "truePositives": 1,
+        "falsePositives": 0,
+        "falseNegatives": 0,
+        "expectedUnresolved": 0,
+        "precision": 1
+      }
+    },
+    {
+      "language": "typescript",
+      "fixture": "typescript-local-shadow",
+      "cases": [
+        {
+          "source": "run",
+          "target": "save",
+          "expectFilePath": "src/app.ts",
+          "forbidFilePath": "src/utils.ts"
+        }
+      ],
+      "baseline": {
+        "truePositives": 1,
+        "falsePositives": 0,
+        "falseNegatives": 0,
+        "expectedUnresolved": 0,
+        "precision": 1
+      }
+    },
+    {
+      "language": "kotlin",
+      "fixture": "kotlin-local-shadow",
+      "parser": "kotlin",
+      "cases": [
+        {
+          "source": "run",
+          "target": "save",
+          "expectFilePath": "src/main/kotlin/app/Main.kt",
+          "forbidFilePath": "src/main/kotlin/utils/Logger.kt"
+        }
+      ],
+      "baseline": {
+        "truePositives": 1,
+        "falsePositives": 0,
+        "falseNegatives": 0,
+        "expectedUnresolved": 0,
+        "precision": 1
+      }
+    },
+    {
+      "language": "dart",
+      "fixture": "dart-calls",
+      "parser": "dart",
+      "cases": [
+        {
+          "source": "run",
+          "target": "writeAudit",
+          "expectFilePath": "one.dart",
+          "forbidFilePath": "zero.dart"
+        }
+      ],
+      "baseline": {
+        "truePositives": 1,
+        "falsePositives": 0,
+        "falseNegatives": 0,
+        "expectedUnresolved": 0,
+        "precision": 1
+      }
+    },
+    {
+      "language": "swift",
+      "fixture": "swift-self-this-resolution",
+      "parser": "swift",
+      "cases": [
+        {
+          "source": "process",
+          "target": "save",
+          "expectFilePath": "Sources/Models/User.swift",
+          "forbidFilePath": "Sources/Models/Repo.swift"
+        }
+      ],
+      "baseline": {
+        "truePositives": 1,
+        "falsePositives": 0,
+        "falseNegatives": 0,
+        "expectedUnresolved": 0,
+        "precision": 1
+      }
+    },
+    {
+      "language": "cobol",
+      "fixture": "cobol-app",
+      "cases": [
+        {
+          "source": "CUSTUPDT",
+          "target": "AUDITLOG",
+          "expectFilePath": "AUDITLOG.cbl",
+          "forbidFilePath": "CUSTUPDT.cbl"
+        },
+        {
+          "source": "PROCESS-PARAGRAPH",
+          "target": "READ-CUSTOMER",
+          "expectFilePath": "CUSTUPDT.cbl"
+        },
+        {
+          "source": "MAIN-PARAGRAPH",
+          "target": "EXIT-PARAGRAPH",
+          "expectFilePath": "RPTGEN.cbl"
+        },
+        {
+          "source": "CUSTUPDT",
+          "target": "WS-PROG-NAME",
+          "expectFilePath": null
+        }
+      ],
+      "baseline": {
+        "truePositives": 3,
+        "falsePositives": 0,
+        "falseNegatives": 0,
+        "expectedUnresolved": 1,
+        "precision": 1
+      }
+    }
+  ],
+  "baseline": {
+    "truePositives": 16,
+    "falsePositives": 0,
+    "falseNegatives": 0,
+    "expectedUnresolved": 1,
+    "precision": 1
+  }
+}

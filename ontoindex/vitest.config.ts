@@ -70,6 +70,7 @@ export default defineConfig({
         test: {
           name: 'lbug-db',
           include: [
+            'test/bench/**/*.bench.ts',
             'test/integration/lbug-core-adapter.test.ts',
             'test/integration/lbug-pool.test.ts',
             'test/integration/lbug-pool-stability.test.ts',

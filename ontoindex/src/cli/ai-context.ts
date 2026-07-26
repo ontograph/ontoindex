@@ -98,15 +98,16 @@ function generateOntoIndexContent(
 
 This project is indexed by OntoIndex as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}. Use the OntoIndex MCP tools to understand code, assess impact, and navigate safely.
 
-> If any OntoIndex tool warns the index is stale, coordinate first; exactly one process should run \`${analyzeCommand}\`.
+> The graph index is commit-based. If any OntoIndex tool warns the index is stale, or current HEAD differs from the indexed commit, coordinate first; exactly one process must run \`${analyzeCommand}\` before graph-backed claims. Never silently assume dirty or uncommitted worktree changes are represented in the graph — verify current source or the diff for those changes.
 
 ## Always Do
 
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run MCP \`impact({action: "symbol", repo: "${projectName}", target: "symbolName", direction: "upstream"})\` or CLI \`${cliCommand} impact --repo ${projectName} <symbol>\`, then report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run MCP \`gn_verify_diff({repo: "${projectName}", scope: "all"})\` or CLI \`${cliCommand} detect-changes --repo ${projectName}\` before committing** to verify your changes only affect expected symbols and execution flows.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use MCP \`search({action: "semantic", repo: "${projectName}", query: "concept"})\` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use MCP \`inspect({action: "context", repo: "${projectName}", target: "symbolName"})\`.
+Use OntoIndex in this order:
+
+1. **Explore/search** — MCP \`search({action: "semantic", repo: "${projectName}", query: "concept"})\` to find execution flows instead of grepping.
+2. **Inspect context** — MCP \`inspect({action: "context", repo: "${projectName}", target: "symbolName"})\` for a symbol's callers, callees, and execution flows.
+3. **Impact before edits** — MCP \`impact({action: "symbol", repo: "${projectName}", target: "symbolName", direction: "upstream"})\` or CLI \`${cliCommand} impact --repo ${projectName} <symbol>\`; report the blast radius and MUST warn on HIGH or CRITICAL risk before editing.
+4. **gn_verify_diff before commit** — MCP \`gn_verify_diff({repo: "${projectName}", scope: "all"})\` or CLI \`${cliCommand} detect-changes --repo ${projectName}\` to confirm only expected symbols and execution flows changed.
 
 ## Never Do
 

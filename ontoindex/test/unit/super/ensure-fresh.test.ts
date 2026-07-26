@@ -84,6 +84,12 @@ function makeRuntimeHealth(
     freshnessState,
     degradedReason: freshnessState === 'clean' ? null : `${freshnessState} reason`,
     repairCommand: 'ontoindex analyze --force',
+    repairAction: {
+      tool: 'ontoindex' as const,
+      command: 'analyze' as const,
+      args: ['--force'],
+      reason: 'fixture repair',
+    },
     hasRuntimeArtifacts: freshnessState !== 'clean',
     analyzeLock: {
       path: `${REPO_PATH}/.ontoindex/analyze.lock`,
@@ -357,6 +363,28 @@ describe('gnEnsureFresh', () => {
     expect(report.runtimeHealth?.freshnessState).toBe('untrusted');
     expect(report.recommendations.some((item) => item.includes('repair manually'))).toBe(true);
     expect(report.actionsTaken).toHaveLength(0);
+  });
+
+  it('routes stale-lock recovery through one managed analyze invocation', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadRuntimeHealth.mockResolvedValue({
+      ...makeRuntimeHealth('untrusted'),
+      analyzeLock: {
+        path: `${REPO_PATH}/.ontoindex/analyze.lock`,
+        present: true,
+        state: 'stale' as const,
+        pid: 123,
+      },
+    });
+    mockReadFileSync
+      .mockReturnValueOnce(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any)
+      .mockReturnValueOnce(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    expect(mockSpawn.mock.calls[0][1]).toContain('analyze');
+    expect(report.actionsTaken).toHaveLength(1);
   });
 
   // ---- Test 4: withEmbeddings: true adds --embeddings to analyze args ------

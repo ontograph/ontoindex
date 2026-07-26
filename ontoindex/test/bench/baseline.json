@@ -1,0 +1,12 @@
+{
+  "numerator": "hybrid RRF merge of 10 BM25 and 10 semantic results",
+  "control": "control sort and slice of 20 numeric scores",
+  "ratio": 1.6271004399998796,
+  "calibration": {
+    "method": "median production/control ratio from five independent Vitest runs",
+    "ratios": [
+      1.5818345845784818, 1.706365448298547, 1.5863622196728637, 1.719682848501264,
+      1.6271004399998796
+    ]
+  }
+}

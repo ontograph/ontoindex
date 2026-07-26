@@ -76,7 +76,7 @@ let Kotlin: TreeSitterLanguage | null = null;
 try {
   Kotlin = _require('tree-sitter-kotlin');
 } catch {}
-import { getLanguageFromFilename } from 'ontoindex-shared';
+import { getLanguageFromFilename, getLanguageFromShebang } from 'ontoindex-shared';
 import {
   FUNCTION_NODE_TYPES,
   getDefinitionNodeFromCaptures,
@@ -860,7 +860,9 @@ const processBatch = async (
   // Group by language to minimize setLanguage calls
   const byLanguage = new Map<SupportedLanguages, HydratedParseWorkerInput[]>();
   for (const file of hydratedFiles) {
-    const lang = getLanguageFromFilename(file.path);
+    // Extension/basename wins; fall back to the bounded first-line shebang for
+    // extensionless scripts so the worker agrees with parent/sequential paths.
+    const lang = getLanguageFromFilename(file.path) ?? getLanguageFromShebang(file.content);
     if (!lang) continue;
     let list = byLanguage.get(lang);
     if (!list) {

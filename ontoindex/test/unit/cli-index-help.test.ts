@@ -199,7 +199,39 @@ describe('CLI help surface', () => {
           onLog: expect.any(Function),
         }),
       );
+      expect(fs.existsSync(path.join(tmpDir, '.ontoindex', 'analyze.lock'))).toBe(false);
     } finally {
+      if (originalNodeOptions === undefined) {
+        delete process.env.NODE_OPTIONS;
+      } else {
+        process.env.NODE_OPTIONS = originalNodeOptions;
+      }
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('clears the analyze lock when analysis fails', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-analyze-failure-lock-'));
+    initTempGitRepo(tmpDir);
+    fs.writeFileSync(path.join(tmpDir, 'sample.ts'), 'export const sample = 1;\n');
+    const originalNodeOptions = process.env.NODE_OPTIONS;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    vi.mocked(runFullAnalysis).mockRejectedValue(new Error('fixture analysis failure'));
+    process.env.NODE_OPTIONS = `${originalNodeOptions || ''} --max-old-space-size=8192`.trim();
+
+    try {
+      await analyzeCommand(tmpDir, { skipAgentsMd: true, noStats: true });
+
+      expect(process.exitCode).toBe(1);
+      expect(fs.existsSync(path.join(tmpDir, '.ontoindex', 'analyze.lock'))).toBe(false);
+    } finally {
+      process.exitCode = undefined;
       if (originalNodeOptions === undefined) {
         delete process.env.NODE_OPTIONS;
       } else {

@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
-import { mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { link, mkdir, open, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { QueryExecutionDiagnostics } from '../runtime/query-diagnostics.js';
 import type { RetrievalCandidate } from '../../mcp/local/backend-search.js';
@@ -23,6 +23,7 @@ export interface SemanticCacheSetResult {
 export interface SemanticRetrievalCacheOptions {
   ttlMs?: number;
   maxEntries?: number;
+  maxBytes?: number;
   now?: () => number;
 }
 
@@ -37,12 +38,14 @@ export class SemanticRetrievalCache {
   private readonly cacheDir: string;
   private readonly ttlMs: number;
   private readonly maxEntries: number;
+  private readonly maxBytes: number;
   private readonly now: () => number;
 
   constructor(repoPath: string | undefined, options: SemanticRetrievalCacheOptions = {}) {
     this.cacheDir = join(repoPath ?? process.cwd(), '.ontoindex', 'cache', 'semantic');
     this.ttlMs = Math.max(0, options.ttlMs ?? DEFAULT_TTL_MS);
     this.maxEntries = Math.max(1, Math.floor(options.maxEntries ?? DEFAULT_MAX_ENTRIES));
+    this.maxBytes = Math.max(0, Math.floor(options.maxBytes ?? Infinity));
     this.now = options.now ?? Date.now;
   }
 
@@ -55,7 +58,8 @@ export class SemanticRetrievalCache {
     try {
       const path = join(this.cacheDir, `${key}.json`);
       const data = await readFile(path, 'utf8');
-      const cached: CachedQueryResult = JSON.parse(data);
+      const cached: unknown = JSON.parse(data);
+      if (!isCachedQueryResult(cached)) return { status: 'miss', result: null };
       const ageMs = Math.max(0, this.now() - cached.timestamp);
 
       if (cached.indexedHead !== indexedHead) {
@@ -80,11 +84,18 @@ export class SemanticRetrievalCache {
     try {
       await mkdir(this.cacheDir, { recursive: true });
       const path = join(this.cacheDir, `${key}.json`);
+      const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
       const data = JSON.stringify({
         ...result,
         timestamp: this.now(),
       });
-      await writeFile(path, data, 'utf8');
+      try {
+        await writeFile(temporaryPath, data, 'utf8');
+        await rename(temporaryPath, path);
+      } catch (error) {
+        await unlink(temporaryPath).catch(() => {});
+        throw error;
+      }
       return { evicted: await this.evictOverflow() };
     } catch {
       // Best-effort
@@ -94,27 +105,64 @@ export class SemanticRetrievalCache {
 
   private async evictOverflow(): Promise<number> {
     const names = (await readdir(this.cacheDir)).filter((name) => name.endsWith('.json'));
-    const overflow = names.length - this.maxEntries;
-    if (overflow <= 0) return 0;
-
-    const entries = await Promise.all(
+    const readSnapshot = async (path: string) => {
+      const handle = await open(path, 'r');
+      try {
+        const data = await handle.readFile();
+        const stats = await handle.stat();
+        return {
+          data,
+          bytes: stats.size,
+          identity: `${stats.dev}:${stats.ino}`,
+        };
+      } finally {
+        await handle.close();
+      }
+    };
+    const scanned = await Promise.all(
       names.map(async (name) => {
         try {
           const path = join(this.cacheDir, name);
-          const data = await readFile(path, 'utf8');
-          const cached = JSON.parse(data) as Partial<CachedQueryResult>;
-          return { name, timestamp: Number(cached.timestamp) || 0 };
+          const snapshot = await readSnapshot(path);
+          try {
+            const cached: unknown = JSON.parse(snapshot.data.toString('utf8'));
+            if (!isCachedQueryResult(cached)) throw new Error('Invalid cache entry');
+            return { name, timestamp: cached.timestamp, garbage: false, ...snapshot };
+          } catch {
+            return { name, timestamp: 0, garbage: true, ...snapshot };
+          }
         } catch {
-          return { name, timestamp: 0 };
+          return null;
         }
       }),
     );
 
-    const evictable = entries.sort((a, b) => a.timestamp - b.timestamp).slice(0, overflow);
+    const entries = scanned
+      .filter((entry) => entry !== null)
+      .sort(
+        (a, b) =>
+          Number(b.garbage) - Number(a.garbage) ||
+          a.timestamp - b.timestamp ||
+          (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
+      );
+    let totalBytes = entries.reduce((total, entry) => total + entry.bytes, 0);
     let evicted = 0;
-    for (const entry of evictable) {
+    while (entries[0]?.garbage || entries.length > this.maxEntries || totalBytes > this.maxBytes) {
+      const entry = entries.shift();
+      if (!entry) break;
       try {
-        await unlink(join(this.cacheDir, entry.name));
+        const path = join(this.cacheDir, entry.name);
+        await this.beforeEvictionCheck(path);
+        const evictionPath = `${path}.${process.pid}.${randomUUID()}.evict.tmp`;
+        await rename(path, evictionPath);
+        const current = await readSnapshot(evictionPath);
+        if (current.identity !== entry.identity || !current.data.equals(entry.data)) {
+          await link(evictionPath, path).catch(() => {});
+          await unlink(evictionPath).catch(() => {});
+          continue;
+        }
+        await unlink(evictionPath);
+        totalBytes -= entry.bytes;
         evicted++;
       } catch {
         // Best-effort
@@ -122,6 +170,8 @@ export class SemanticRetrievalCache {
     }
     return evicted;
   }
+
+  protected async beforeEvictionCheck(_path: string): Promise<void> {}
 
   static computeKey(params: {
     query: string;
@@ -153,4 +203,16 @@ export class SemanticRetrievalCache {
     });
     return createHash('sha256').update(raw).digest('hex');
   }
+}
+
+function isCachedQueryResult(value: unknown): value is CachedQueryResult {
+  if (!value || typeof value !== 'object') return false;
+  const cached = value as Partial<CachedQueryResult>;
+  return (
+    Array.isArray(cached.candidates) &&
+    !!cached.diagnostics &&
+    typeof cached.diagnostics === 'object' &&
+    Number.isFinite(cached.timestamp) &&
+    typeof cached.indexedHead === 'string'
+  );
 }

@@ -77,12 +77,24 @@ describe('response envelope repo identity', () => {
         freshnessState: 'dirty',
         degradedReason: 'dirty worktree contains uncommitted changes',
         repairCommand: 'commit, stash, or clean the worktree, then rerun ontoindex analyze',
+        repairAction: {
+          tool: 'ontoindex',
+          command: 'analyze',
+          args: [],
+          reason: 'analyze after the worktree is clean',
+        },
       }),
     ).toEqual({
       ...freshness,
       runtimeHealthState: 'dirty',
       runtimeDegradedReason: 'dirty worktree contains uncommitted changes',
       runtimeRepairCommand: 'commit, stash, or clean the worktree, then rerun ontoindex analyze',
+      runtimeRepairAction: {
+        tool: 'ontoindex',
+        command: 'analyze',
+        args: [],
+        reason: 'analyze after the worktree is clean',
+      },
     });
   });
 
@@ -103,6 +115,12 @@ describe('response envelope repo identity', () => {
         freshnessState: 'stale',
         degradedReason: 'current commit does not match indexed commit',
         repairCommand: 'ontoindex analyze',
+        repairAction: {
+          tool: 'ontoindex',
+          command: 'analyze',
+          args: [],
+          reason: 'refresh the stale index',
+        },
       },
       results: { ok: true },
     });
@@ -112,6 +130,12 @@ describe('response envelope repo identity', () => {
       runtimeHealthState: 'stale',
       runtimeDegradedReason: 'current commit does not match indexed commit',
       runtimeRepairCommand: 'ontoindex analyze',
+      runtimeRepairAction: {
+        tool: 'ontoindex',
+        command: 'analyze',
+        args: [],
+        reason: 'refresh the stale index',
+      },
     });
   });
 
@@ -130,6 +154,12 @@ describe('response envelope repo identity', () => {
         freshnessState: 'stale',
         degradedReason: 'current commit does not match indexed commit',
         repairCommand: 'ontoindex analyze',
+        repairAction: {
+          tool: 'ontoindex',
+          command: 'analyze',
+          args: [],
+          reason: 'refresh the stale index',
+        },
       },
       results: { ok: true },
     });

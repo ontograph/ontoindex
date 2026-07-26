@@ -229,3 +229,43 @@ describe('processParsing fallback', () => {
     expect(graph.nodeCount).toBe(0);
   });
 });
+
+describe('processParsing extensionless shebang scripts', () => {
+  const runSequential = async (files: { path: string; content: string }[]) => {
+    const graph = createKnowledgeGraph();
+    const ctx = createResolutionContext();
+    const astCache = createASTCache(files.length);
+    // No worker pool → sequential path (prepareSequentialFile) parses directly.
+    const result = await processParsing(
+      graph,
+      files,
+      '/dummy/repo/path',
+      ctx.model.symbols,
+      astCache,
+      undefined,
+      undefined,
+    );
+    return { graph, symbolTable: ctx.model.symbols, result };
+  };
+
+  it('parses an extensionless Python script from its shebang', async () => {
+    const { graph } = await runSequential([
+      { path: 'manage', content: '#!/usr/bin/env python3\ndef shebang_py():\n    return 1\n' },
+    ]);
+    expect(graph.nodes.map((n) => n.properties.name)).toContain('shebang_py');
+  });
+
+  it('parses an extensionless Node script from its shebang', async () => {
+    const { symbolTable } = await runSequential([
+      { path: 'cli', content: '#!/usr/bin/env node\nexport function shebangJs() {}\n' },
+    ]);
+    expect(symbolTable.lookupCallableByName('shebangJs').length).toBeGreaterThan(0);
+  });
+
+  it('drops an extensionless shell script — shell is never aliased', async () => {
+    const { graph } = await runSequential([
+      { path: 'deploy', content: '#!/bin/bash\ndeploy() { echo hi; }\n' },
+    ]);
+    expect(graph.nodeCount).toBe(0);
+  });
+});

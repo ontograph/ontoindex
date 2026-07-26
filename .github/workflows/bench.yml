@@ -3,8 +3,20 @@ name: Performance Benchmark
 on:
   pull_request:
     paths:
+      - '.github/workflows/bench.yml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'ontoindex/package.json'
+      - 'ontoindex/package-lock.json'
       - 'ontoindex/src/**'
-      - 'ontoindex/test/bench/**'
+      - 'ontoindex/scripts/**'
+      - 'ontoindex/test/**'
+      - 'ontoindex/tsconfig.json'
+      - 'ontoindex/vitest.config.ts'
+      - 'ontoindex-shared/package.json'
+      - 'ontoindex-shared/package-lock.json'
+      - 'ontoindex-shared/src/**'
+      - 'ontoindex-shared/tsconfig.json'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -34,14 +46,7 @@ jobs:
       - name: Run Benchmarks
         run: |
           cd ontoindex
-          # Attempt to run real benchmarks
-          # If they fail or don't produce JSON, we'd need a real reporter.
-          # For now, we simulate the production of current.json for the gate test.
-          npx vitest bench test/bench/query.bench.ts --project=lbug-db || true
-
-          # Simulate current.json based on baseline (for CI demo)
-          # In a real setup, we'd use a real reporter.
-          cp test/bench/baseline.json test/bench/current.json
+          npx vitest bench test/bench/query.bench.ts --project=lbug-db --outputJson test/bench/current.json
 
       - name: Benchmark Gate
-        run: node scripts/bench-gate.mjs
+        run: cd ontoindex && node scripts/bench-gate.mjs

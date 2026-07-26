@@ -157,12 +157,294 @@ export function buildChatRequest({ model, messages, requireTool }) {
   };
 }
 
+export const GRAPH_LOCATE_TOOLS = Object.freeze(
+  new Set([
+    'inspect',
+    'search',
+    'impact',
+    'discover',
+    'docs',
+    'refactor',
+    'manage',
+    'audit',
+    'gn_graph_walk',
+    'gn_explore',
+    'gn_explain_module',
+    'gn_find_related',
+    'gn_safe_edit_check',
+    'gn_can_delete',
+    'gn_pre_commit_audit',
+    'gn_safe_refactor',
+    'gn_ensure_fresh',
+    'gn_quality_mode',
+    'gn_diff_impact',
+    'gn_review_diff',
+    'gn_diagnose',
+    'gn_propose_location',
+    'gn_tool_contract',
+    'gn_docs',
+    'gn_audit_ingest',
+    'gn_audit_verify',
+    'gn_fix_history',
+    'gn_audit_bundle',
+    'gn_audit_lint',
+    'gn_audit_dedupe',
+    'gn_dispatch_prompt',
+    'gn_audit_tombstone_create',
+    'gn_audit_session_start',
+    'gn_audit_session_verify',
+    'gn_audit_session_dedupe',
+    'gn_audit_session_bundle',
+    'gn_audit_session_dispatch',
+    'gn_audit_session_review_worker',
+    'gn_audit_session_lock',
+    'gn_audit_pr_marker_scan',
+    'gn_audit_diff',
+    'gn_audit_replay',
+    'gn_audit_export',
+    'gn_verify_diff',
+    'gn_test_gap',
+    'gn_worker_scope_review',
+    'gn_scope_guard',
+    'gn_bundle_conflicts',
+    'gn_audit_logic',
+    'gn_resource_trace',
+    'gn_path_verify',
+    'gn_test_suggestions',
+    'gn_trace_boundary',
+    'gn_extract_fsm',
+    'gn_error_topology',
+    'gn_concurrency_audit',
+    'gn_pressure_impact',
+    'gn_taint_trace',
+    'gn_abi_diff',
+    'gn_simulate_fault',
+  ]),
+);
+
+export function isGraphLocateTool(toolName) {
+  if (typeof toolName !== 'string') return false;
+  const name = toolName.trim();
+  return (
+    GRAPH_LOCATE_TOOLS.has(name) ||
+    name.startsWith('gn_') ||
+    name.startsWith('ontoindex_') ||
+    name.startsWith('ontoindex:') ||
+    name.startsWith('ontoindex__')
+  );
+}
+
+export const FALLBACK_LOCATE_TOOLS = Object.freeze(
+  new Set([
+    'rg',
+    'ripgrep',
+    'grep',
+    'find',
+    'file_search',
+    'text_search',
+    'search_files',
+    'glob',
+    'ctx_search',
+    'ctx_glob',
+    'read',
+    'read_file',
+    'cat',
+    'view_file',
+    'read_file_content',
+    'fs_read',
+    'file_read',
+    'ctx_read',
+    'shell',
+    'bash',
+    'exec',
+    'terminal',
+    'command',
+    'run_shell',
+    'execute_command',
+    'exec_command',
+    'ctx_shell',
+  ]),
+);
+
+export function isFallbackLocateTool(toolName) {
+  if (typeof toolName !== 'string') return false;
+  return FALLBACK_LOCATE_TOOLS.has(toolName.trim());
+}
+
+export function extractTranscriptLocateMetadata(transcript) {
+  const malformedResult = Object.freeze({
+    firstLocateMechanism: 'malformed',
+    graphLocateCount: 0,
+    fallbackLocateCount: 0,
+    graphShare: 0,
+  });
+
+  if (!transcript || typeof transcript !== 'object') {
+    return { ...malformedResult };
+  }
+
+  if (transcript.error) {
+    return { ...malformedResult };
+  }
+
+  const calls = [];
+  let isMalformed = false;
+  const scannedArrays = new WeakSet();
+
+  function collectCalls(list) {
+    if (!Array.isArray(list)) {
+      isMalformed = true;
+      return;
+    }
+    if (scannedArrays.has(list)) return;
+    scannedArrays.add(list);
+
+    for (const item of list) {
+      if (!item || typeof item !== 'object') {
+        isMalformed = true;
+        return;
+      }
+      let name = null;
+      let rawArgs = null;
+
+      if (typeof item.name === 'string' && item.name.trim()) {
+        name = item.name.trim();
+        rawArgs = item.arguments;
+      } else if (item.function && typeof item.function === 'object') {
+        if (typeof item.function.name === 'string' && item.function.name.trim()) {
+          name = item.function.name.trim();
+          rawArgs = item.function.arguments;
+        } else {
+          isMalformed = true;
+          return;
+        }
+      } else {
+        isMalformed = true;
+        return;
+      }
+
+      if (rawArgs !== undefined && rawArgs !== null && typeof rawArgs === 'string') {
+        try {
+          JSON.parse(rawArgs);
+        } catch {
+          isMalformed = true;
+          return;
+        }
+      }
+
+      calls.push({ name });
+    }
+  }
+
+  function scan(obj) {
+    if (!obj || typeof obj !== 'object' || isMalformed) return;
+
+    if (Array.isArray(obj)) {
+      for (const elem of obj) {
+        if (!elem || typeof elem !== 'object') {
+          isMalformed = true;
+          return;
+        }
+        if (elem.tool_calls !== undefined) {
+          collectCalls(elem.tool_calls);
+        } else if (elem.function || typeof elem.name === 'string') {
+          collectCalls([elem]);
+        }
+      }
+      return;
+    }
+
+    if (obj.firstResponse && typeof obj.firstResponse === 'object') {
+      scan(obj.firstResponse);
+    }
+    if (obj.secondResponse && typeof obj.secondResponse === 'object') {
+      scan(obj.secondResponse);
+    }
+    if (obj.assistantToolMessage && typeof obj.assistantToolMessage === 'object') {
+      if (obj.assistantToolMessage.tool_calls !== undefined) {
+        collectCalls(obj.assistantToolMessage.tool_calls);
+      }
+    }
+    if (obj.choices !== undefined) {
+      if (!Array.isArray(obj.choices)) {
+        isMalformed = true;
+        return;
+      }
+      for (const choice of obj.choices) {
+        if (!choice || typeof choice !== 'object') {
+          isMalformed = true;
+          return;
+        }
+        if (choice.message && typeof choice.message === 'object') {
+          if (choice.message.tool_calls !== undefined) {
+            collectCalls(choice.message.tool_calls);
+          }
+        }
+      }
+    }
+    if (obj.messages && Array.isArray(obj.messages)) {
+      for (const msg of obj.messages) {
+        if (msg && typeof msg === 'object' && msg.tool_calls !== undefined) {
+          collectCalls(msg.tool_calls);
+        }
+      }
+    }
+    if (obj.tool_calls !== undefined) {
+      collectCalls(obj.tool_calls);
+    }
+  }
+
+  scan(transcript);
+
+  if (isMalformed) {
+    return { ...malformedResult };
+  }
+
+  if (calls.length === 0) {
+    return {
+      firstLocateMechanism: 'none',
+      graphLocateCount: 0,
+      fallbackLocateCount: 0,
+      graphShare: 0,
+    };
+  }
+
+  let firstLocateMechanism = 'none';
+  let graphLocateCount = 0;
+  let fallbackLocateCount = 0;
+
+  for (const call of calls) {
+    if (isGraphLocateTool(call.name)) {
+      graphLocateCount += 1;
+      if (firstLocateMechanism === 'none') {
+        firstLocateMechanism = 'graph';
+      }
+    } else if (isFallbackLocateTool(call.name)) {
+      fallbackLocateCount += 1;
+      if (firstLocateMechanism === 'none') {
+        firstLocateMechanism = 'fallback';
+      }
+    }
+  }
+
+  const denominator = graphLocateCount + fallbackLocateCount;
+  const graphShare = denominator > 0 ? graphLocateCount / denominator : 0;
+
+  return {
+    firstLocateMechanism,
+    graphLocateCount,
+    fallbackLocateCount,
+    graphShare,
+  };
+}
+
 export function gradeModelRun({
   requestedModel,
   effectiveModel,
   assistantToolMessage,
   finalMessage,
   toolText,
+  transcript,
 }) {
   const calls = assistantToolMessage?.tool_calls ?? [];
   const call = calls[0];
@@ -200,7 +482,17 @@ export function gradeModelRun({
       typeof finalMessage?.content === 'string' && finalMessage.content.trim().length > 0,
   };
 
-  return { gates, passed: Object.values(gates).every(Boolean), evidence, parsedArguments };
+  const locateMetadata = extractTranscriptLocateMetadata(
+    transcript ?? (assistantToolMessage ? { assistantToolMessage } : {}),
+  );
+
+  return {
+    gates,
+    passed: Object.values(gates).every(Boolean),
+    evidence,
+    parsedArguments,
+    locateMetadata,
+  };
 }
 
 export function classifyOverall({ preflight, control, kimi, mcpOnly, blockReason = null }) {
@@ -439,12 +731,15 @@ async function runModel({ label, model, baseUrl, apiKey, mcpClient, fetchImpl, t
     timeoutMs,
   });
   const finalMessage = secondResponse.choices?.[0]?.message ?? {};
+  const transcriptData = { firstRequest, firstResponse, toolText, secondRequest, secondResponse };
+  const locateMetadata = extractTranscriptLocateMetadata(transcriptData);
   const grade = gradeModelRun({
     requestedModel: label === 'kimi' ? 'kimi-k3' : model,
     effectiveModel: firstResponse.model || model,
     assistantToolMessage,
     finalMessage,
     toolText,
+    transcript: transcriptData,
   });
   return {
     result: {
@@ -454,8 +749,12 @@ async function runModel({ label, model, baseUrl, apiKey, mcpClient, fetchImpl, t
       passed: grade.passed,
       gates: grade.gates,
       evidence: grade.evidence,
+      locateMetadata,
     },
-    transcript: { firstRequest, firstResponse, toolText, secondRequest, secondResponse },
+    transcript: {
+      ...transcriptData,
+      locateMetadata,
+    },
   };
 }
 
@@ -464,6 +763,8 @@ async function runModelSafely(options) {
     return await runModel(options);
   } catch (error) {
     const message = errorMessage(error);
+    const transcriptData = { error: message };
+    const locateMetadata = extractTranscriptLocateMetadata(transcriptData);
     return {
       result: {
         label: options.label,
@@ -473,8 +774,12 @@ async function runModelSafely(options) {
         gates: {},
         evidence: null,
         error: message,
+        locateMetadata,
       },
-      transcript: { error: message },
+      transcript: {
+        ...transcriptData,
+        locateMetadata,
+      },
     };
   }
 }

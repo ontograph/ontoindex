@@ -7,7 +7,10 @@ import {
   deriveRecoverableRuntimeState,
   type RecoverableRuntimeState,
 } from './recoverable-runtime-state.js';
-import type { RuntimeHealthSnapshot } from '../../core/runtime/runtime-health.js';
+import type {
+  RuntimeHealthSnapshot,
+  RuntimeRepairAction,
+} from '../../core/runtime/runtime-health.js';
 
 export interface GlobalTargetContext {
   scope: 'global';
@@ -35,11 +38,12 @@ export interface CapabilityResponseFreshness {
   runtimeHealthState?: RuntimeHealthSnapshot['freshnessState'];
   runtimeDegradedReason?: string | null;
   runtimeRepairCommand?: string;
+  runtimeRepairAction?: RuntimeRepairAction;
 }
 
 export type RuntimeHealthFreshnessInput = Pick<
   RuntimeHealthSnapshot,
-  'freshnessState' | 'degradedReason' | 'repairCommand'
+  'freshnessState' | 'degradedReason' | 'repairCommand' | 'repairAction'
 >;
 
 export interface CapabilityResponseEnvelope<
@@ -240,6 +244,7 @@ export function mergeRuntimeHealthFreshness(
     runtimeHealthState: runtimeHealth.freshnessState,
     runtimeDegradedReason: runtimeHealth.degradedReason,
     runtimeRepairCommand: runtimeHealth.repairCommand,
+    runtimeRepairAction: runtimeHealth.repairAction,
   };
 }
 

@@ -21,7 +21,14 @@ import type { EnrichedSymbolRow, RRFTraceEntry } from '../../core/search/symbol-
 import { applyEnsemble, MIN_VEC_POOL_SIZE } from '../../core/search/per-intent-ensemble.js';
 import { graphTraversalRank } from '../../core/search/graph-traversal-rank.js';
 import type { GraphEdgeType } from '../../core/search/graph-traversal-rank.js';
-import { appendQueryLog } from './query-log.js';
+import {
+  appendQueryLog,
+  queryLogEnabled,
+  MAX_RESULT_IDS,
+  MAX_QUERY_CHARS as QUERY_LOG_MAX_QUERY_CHARS,
+} from './query-log.js';
+import type { RetrievalMode } from './query-log.js';
+import { RESPONSE_GUARD_MAX_BYTES } from './response-guard.js';
 import { getFileSkeleton } from '../../core/search/skeleton.js';
 import { SemanticRetrievalCache } from '../../core/search/semantic-cache.js';
 import { semanticFrontierSearch } from '../../core/search/semantic-frontier-search.js';
@@ -311,6 +318,62 @@ function logQueryTiming(query: string, phases: Record<string, number>): void {
       truncated,
     )} totalMs=${totalMs} phases=${JSON.stringify(phases)}`,
   );
+}
+
+/**
+ * Single durable-log exit point for {@link query}. Centralizes response
+ * serialization so every structured search return (cache hit, normal,
+ * degraded/fallback, and error) records one bounded query-log line without
+ * duplicating JSON.stringify across the function's many return points.
+ *
+ * `cacheStatus` is undefined when the cache path was never consulted (no
+ * structured output requested); it is logged as 'disabled' in that case.
+ * Truncation reasons are derived from the query/result-id caps and the
+ * response-size guard, so `truncated` reflects real bounding, not degradation.
+ * Logging is opt-out and non-fatal: disabled logging skips serialization, and
+ * write failures are swallowed by {@link appendQueryLog}.
+ */
+function logQueryExit(args: {
+  repoId: string;
+  query: string;
+  result: unknown;
+  resultIds: string[];
+  phases?: Record<string, number>;
+  ftsUsed?: boolean;
+  cacheStatus?: 'hit' | 'miss' | 'stale' | 'expired';
+  retrievalMode: RetrievalMode;
+  retrievalPolicy?: string;
+}): void {
+  if (!queryLogEnabled()) return;
+  let responseBytes: number | undefined;
+  try {
+    // Pre-guard size: serialized result bytes before the MCP response-size guard trims it.
+    responseBytes = Buffer.byteLength(JSON.stringify(args.result ?? ''), 'utf8');
+  } catch {
+    responseBytes = undefined;
+  }
+  const reasons: string[] = [];
+  if (args.query.length > QUERY_LOG_MAX_QUERY_CHARS) {
+    reasons.push('query-chars-capped');
+  }
+  if (args.resultIds.length > MAX_RESULT_IDS) {
+    reasons.push('result-ids-capped');
+  }
+  if (responseBytes !== undefined && responseBytes > RESPONSE_GUARD_MAX_BYTES) {
+    reasons.push('response-bytes-exceeds-guard');
+  }
+  appendQueryLog(args.repoId, {
+    query: args.query,
+    resultIds: args.resultIds.slice(0, MAX_RESULT_IDS),
+    phases: args.phases,
+    ftsUsed: args.ftsUsed,
+    cacheStatus: args.cacheStatus ?? 'disabled',
+    responseBytes,
+    truncated: reasons.length > 0,
+    truncatedReasons: reasons,
+    retrievalMode: args.retrievalMode,
+    retrievalPolicy: args.retrievalPolicy,
+  }).catch(() => {});
 }
 
 function toBackendSearchInput(params: BackendSearchParams): BackendSearchInput {
@@ -1536,14 +1599,32 @@ export async function query(
   params: BackendSearchParams,
 ): Promise<SearchResult> {
   if (!('typedQuery' in params) && (typeof params.query !== 'string' || !params.query.trim())) {
-    return { error: 'query parameter is required and cannot be empty.' };
+    const errorResult = { error: 'query parameter is required and cannot be empty.' };
+    logQueryExit({
+      repoId: repo.id,
+      query: typeof params.query === 'string' ? params.query : '',
+      result: errorResult,
+      resultIds: [],
+      retrievalMode: 'typedQuery' in params ? 'typed' : 'plain',
+      retrievalPolicy: params.retrieval_policy,
+    });
+    return errorResult;
   }
 
   const searchInput = toBackendSearchInput(params);
   const searchQuery = backendSearchInputToQuery(searchInput);
 
   if (!searchQuery) {
-    return { error: 'query parameter is required and cannot be empty.' };
+    const errorResult = { error: 'query parameter is required and cannot be empty.' };
+    logQueryExit({
+      repoId: repo.id,
+      query: searchQuery,
+      result: errorResult,
+      resultIds: [],
+      retrievalMode: searchInput.mode,
+      retrievalPolicy: params.retrieval_policy,
+    });
+    return errorResult;
   }
 
   const processLimit = params.limit || 5;
@@ -1625,7 +1706,7 @@ export async function query(
         excludePaths,
       );
       const cachedTokenCost = cached.diagnostics.capabilityHealth.tokenCost ?? requestedTokenCost;
-      return {
+      const cacheHitResult = {
         processes: [],
         process_symbols: [],
         definitions: definitionsForCachedCandidates(filteredCandidates),
@@ -1642,7 +1723,7 @@ export async function query(
             ]),
             freshness: cached.diagnostics.freshness,
             cacheHit: true,
-            cacheStatus: 'hit',
+            cacheStatus: 'hit' as const,
             cacheAgeMs: cacheLookup.ageMs ?? Date.now() - cached.timestamp,
             tokenCost: cachedTokenCost,
           },
@@ -1659,6 +1740,17 @@ export async function query(
             }
           : {}),
       };
+      logQueryExit({
+        repoId: repo.id,
+        query: searchQuery,
+        result: cacheHitResult,
+        resultIds: filteredCandidates.map((candidate) => candidate.id),
+        phases: cacheHitResult.timing,
+        cacheStatus: 'hit',
+        retrievalMode: searchInput.mode,
+        retrievalPolicy: params.retrieval_policy,
+      });
+      return cacheHitResult;
     } else if (cached) {
       cacheStatus = 'stale';
     }
@@ -1813,6 +1905,16 @@ export async function query(
   const mergedReordered = applyGenericEntryFileFallbackReorder(mergedFiltered, lockedResults);
 
   if (abstentionEnabled && mergedReordered.length === 0) {
+    logQueryExit({
+      repoId: repo.id,
+      query: searchQuery,
+      result: { abstained: true, processes: [], process_symbols: [], definitions: [], timing: {} },
+      resultIds: [],
+      ftsUsed,
+      cacheStatus: params.structured_output === true ? (cacheStatus ?? 'miss') : undefined,
+      retrievalMode: searchInput.mode,
+      retrievalPolicy: params.retrieval_policy,
+    });
     return { abstained: true, processes: [], process_symbols: [], definitions: [], timing: {} };
   }
 
@@ -2167,16 +2269,6 @@ export async function query(
     timer.stop();
   }
 
-  // v6 W0d: durable per-query log for production-data collection.
-  // Captures top-10 result IDs alongside timing/fts info. Opt-out via
-  // ONTOINDEX_QUERY_LOG=0. See ontoindex/src/mcp/local/query-log.ts.
-  appendQueryLog(repo.id, {
-    query: searchQuery,
-    resultIds: dedupedSymbols.slice(0, 10).map((s) => String(s.id)),
-    phases: timing,
-    ftsUsed,
-  }).catch(() => {});
-
   const warning = combineWarnings(
     !ftsUsed
       ? 'FTS extension unavailable - keyword search degraded. Run: ontoindex analyze --force to rebuild indexes.'
@@ -2315,6 +2407,21 @@ export async function query(
       )}`,
     );
   }
+
+  // v6 W0d: durable per-query log for production-data collection, centralized at
+  // the normal/degraded/fallback exit. Opt-out via ONTOINDEX_QUERY_LOG=0.
+  // See ontoindex/src/mcp/local/query-log.ts.
+  logQueryExit({
+    repoId: repo.id,
+    query: searchQuery,
+    result,
+    resultIds: dedupedSymbols.map((s) => String(s.id)),
+    phases: timing,
+    ftsUsed,
+    cacheStatus: params.structured_output === true ? (cacheStatus ?? 'miss') : undefined,
+    retrievalMode: searchInput.mode,
+    retrievalPolicy: params.retrieval_policy,
+  });
 
   return result;
 }

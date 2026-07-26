@@ -3,11 +3,17 @@ import { describe, expect, it } from 'vitest';
 import {
   deriveRuntimeHealth,
   formatRuntimeHealthDetailLines,
+  readAnalyzeLock,
+  readRuntimeHealth,
   type RuntimeAnalysisCheckpointState,
   type RuntimeAnalyzeLockState,
   type RuntimeBootstrapSourceState,
   type RuntimeEmbeddingCheckpointState,
 } from '../../src/core/runtime/runtime-health.js';
+import type { RepoMeta } from '../../src/storage/repo-manager.js';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 function makeLock(state: RuntimeAnalyzeLockState['state']): RuntimeAnalyzeLockState {
   return {
@@ -79,6 +85,12 @@ describe('deriveRuntimeHealth', () => {
       freshnessState: 'clean',
       degradedReason: null,
       repairCommand: 'ontoindex status',
+      repairAction: {
+        tool: 'ontoindex',
+        command: 'status',
+        args: [],
+        reason: 'runtime state is healthy; inspect status only',
+      },
     });
   });
 
@@ -92,6 +104,12 @@ describe('deriveRuntimeHealth', () => {
       freshnessState: 'stale',
       degradedReason: 'current commit does not match indexed commit',
       repairCommand: 'ontoindex analyze',
+      repairAction: {
+        tool: 'ontoindex',
+        command: 'analyze',
+        args: [],
+        reason: 'refresh the stale index',
+      },
     });
   });
 
@@ -106,6 +124,12 @@ describe('deriveRuntimeHealth', () => {
       freshnessState: 'stale',
       degradedReason: 'current commit does not match indexed commit',
       repairCommand: 'ontoindex analyze',
+      repairAction: {
+        tool: 'ontoindex',
+        command: 'analyze',
+        args: [],
+        reason: 'refresh the stale index',
+      },
     });
   });
 
@@ -119,6 +143,12 @@ describe('deriveRuntimeHealth', () => {
       freshnessState: 'dirty',
       degradedReason: 'dirty worktree contains uncommitted changes',
       repairCommand: 'commit, stash, or clean the worktree, then rerun ontoindex analyze',
+      repairAction: {
+        tool: 'ontoindex',
+        command: 'analyze',
+        args: [],
+        reason: 'analyze after the worktree is clean',
+      },
     });
   });
 
@@ -132,6 +162,12 @@ describe('deriveRuntimeHealth', () => {
       freshnessState: 'degraded',
       degradedReason: 'analyze.lock is owned by PID 123',
       repairCommand: 'wait for the active analyze run to finish',
+      repairAction: {
+        tool: 'ontoindex',
+        command: 'status',
+        args: [],
+        reason: 'observe the live analysis owner without displacing it',
+      },
     });
   });
 
@@ -144,7 +180,13 @@ describe('deriveRuntimeHealth', () => {
     ).toEqual({
       freshnessState: 'untrusted',
       degradedReason: 'analyze.lock refers to PID 123, which is no longer running',
-      repairCommand: 'remove the stale analyze.lock, then rerun ontoindex analyze --force',
+      repairCommand: 'ontoindex analyze --force',
+      repairAction: {
+        tool: 'ontoindex',
+        command: 'analyze',
+        args: ['--force'],
+        reason: 'recover the stale lock through managed analysis',
+      },
     });
   });
 
@@ -158,6 +200,12 @@ describe('deriveRuntimeHealth', () => {
       freshnessState: 'failed-after-partial-run',
       degradedReason: 'native writer failed',
       repairCommand: 'ontoindex analyze --force',
+      repairAction: {
+        tool: 'ontoindex',
+        command: 'analyze',
+        args: ['--force'],
+        reason: 'retry the managed analysis after a failed partial run',
+      },
     });
   });
 
@@ -171,6 +219,12 @@ describe('deriveRuntimeHealth', () => {
       freshnessState: 'degraded',
       degradedReason: 'embedding-checkpoint.json exists from an incomplete embedding run',
       repairCommand: 'ontoindex analyze',
+      repairAction: {
+        tool: 'ontoindex',
+        command: 'analyze',
+        args: [],
+        reason: 'resume the incomplete embedding lifecycle',
+      },
     });
   });
 
@@ -194,5 +248,80 @@ describe('deriveRuntimeHealth', () => {
         warnings: [],
       }),
     ).toContain('  Bootstrap source: restored 2026-06-30T00:00:00.000Z from fixture-src @ abc123d');
+  });
+
+  it('detects PID reuse from process start identity', async () => {
+    const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-health-lock-'));
+    try {
+      await fs.writeFile(
+        path.join(storagePath, 'analyze.lock'),
+        JSON.stringify({
+          pid: process.pid,
+          processStartIdentity: 'different-process',
+          startedAt: new Date().toISOString(),
+        }),
+      );
+
+      const lock = await readAnalyzeLock(storagePath, []);
+
+      expect(lock.state).toBe('stale');
+      expect(lock.reason).toContain('reused');
+    } finally {
+      await fs.rm(storagePath, { recursive: true, force: true });
+    }
+  });
+
+  it('projects degraded-file aggregates and honest sampled reason from meta', async () => {
+    const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-health-agg-'));
+    try {
+      const meta: RepoMeta = {
+        repoPath: '.',
+        lastCommit: 'abc123',
+        indexedAt: '2026-05-27T00:00:00.000Z',
+        degradedFileAggregates: {
+          sampledDegradedCount: 7,
+          groups: [
+            {
+              cause: 'file exceeds scan file-size cap',
+              phase: 'scan',
+              language: 'python',
+              count: 7,
+            },
+          ],
+          omittedGroupCount: 0,
+        },
+      };
+
+      const health = await readRuntimeHealth(repoPath, {
+        repoLabel: 'agg-fixture',
+        storagePath: repoPath,
+        meta,
+      });
+
+      expect(health.degradedFileAggregates).toEqual(meta.degradedFileAggregates);
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
+  });
+
+  it('omits degraded-file aggregates from the snapshot when meta has none', async () => {
+    const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-health-agg-absent-'));
+    try {
+      const meta: RepoMeta = {
+        repoPath: '.',
+        lastCommit: 'abc123',
+        indexedAt: '2026-05-27T00:00:00.000Z',
+      };
+
+      const health = await readRuntimeHealth(repoPath, {
+        repoLabel: 'absent-fixture',
+        storagePath: repoPath,
+        meta,
+      });
+
+      expect(health.degradedFileAggregates).toBeUndefined();
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
   });
 });

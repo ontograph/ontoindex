@@ -4,7 +4,12 @@ import path from 'node:path';
 import { execFileText } from '../process/exec-file.js';
 import { summarizeGitPorcelainStatus } from '../../core/audit-lifecycle/freshness.js';
 import { getCurrentCommit } from '../../storage/git.js';
-import { getStoragePaths, loadMeta, type RepoMeta } from '../../storage/repo-manager.js';
+import {
+  getStoragePaths,
+  loadMeta,
+  type RepoMeta,
+  type DegradedFileAggregates,
+} from '../../storage/repo-manager.js';
 
 export type RuntimeHealthState =
   | 'clean'
@@ -20,7 +25,15 @@ export interface RuntimeAnalyzeLockState {
   state: 'absent' | 'active' | 'stale' | 'unknown';
   pid?: number;
   startedAt?: string;
+  processStartIdentity?: string;
   reason?: string;
+}
+
+export interface RuntimeRepairAction {
+  tool: 'ontoindex';
+  command: 'analyze' | 'status';
+  args: string[];
+  reason: string;
 }
 
 export interface RuntimeAnalysisCheckpointState {
@@ -60,11 +73,14 @@ export interface RuntimeHealthSnapshot {
   freshnessState: RuntimeHealthState;
   degradedReason: string | null;
   repairCommand: string;
+  repairAction?: RuntimeRepairAction;
   hasRuntimeArtifacts: boolean;
   analyzeLock: RuntimeAnalyzeLockState;
   analysisCheckpoint: RuntimeAnalysisCheckpointState;
   embeddingCheckpoint: RuntimeEmbeddingCheckpointState;
   bootstrapSource: RuntimeBootstrapSourceState;
+  /** Bounded degraded-file aggregates from meta.json, projected verbatim. */
+  degradedFileAggregates?: DegradedFileAggregates;
   warnings: string[];
 }
 
@@ -100,7 +116,7 @@ export async function readRuntimeHealth(
     Boolean(metaReason) ||
     Boolean(meta?.partialCheckpointPath);
 
-  const { freshnessState, degradedReason, repairCommand } = deriveRuntimeHealth({
+  const { freshnessState, degradedReason, repairCommand, repairAction } = deriveRuntimeHealth({
     indexedCommit,
     currentCommit,
     dirtyWorktree,
@@ -121,11 +137,15 @@ export async function readRuntimeHealth(
     freshnessState,
     degradedReason,
     repairCommand,
+    repairAction,
     hasRuntimeArtifacts,
     analyzeLock,
     analysisCheckpoint,
     embeddingCheckpoint,
     bootstrapSource,
+    ...(meta?.degradedFileAggregates
+      ? { degradedFileAggregates: meta.degradedFileAggregates }
+      : {}),
     warnings,
   };
 }
@@ -139,7 +159,18 @@ export function deriveRuntimeHealth(input: {
   embeddingCheckpoint: RuntimeEmbeddingCheckpointState;
   metaReason: string | null;
   hasMeta: boolean;
-}): Pick<RuntimeHealthSnapshot, 'freshnessState' | 'degradedReason' | 'repairCommand'> {
+}): Pick<
+  RuntimeHealthSnapshot,
+  'freshnessState' | 'degradedReason' | 'repairCommand' | 'repairAction'
+> {
+  const repair = (
+    command: RuntimeRepairAction['command'],
+    args: string[],
+    reason: string,
+  ): Pick<RuntimeHealthSnapshot, 'repairCommand' | 'repairAction'> => ({
+    repairCommand: `ontoindex ${command}${args.length ? ` ${args.join(' ')}` : ''}`,
+    repairAction: { tool: 'ontoindex', command, args, reason },
+  });
   const dirtyReason =
     input.dirtyWorktree === true ? 'dirty worktree contains uncommitted changes' : null;
   const staleReason =
@@ -169,7 +200,7 @@ export function deriveRuntimeHealth(input: {
     return {
       freshnessState: 'failed-after-partial-run',
       degradedReason: checkpointReason,
-      repairCommand: 'ontoindex analyze --force',
+      ...repair('analyze', ['--force'], 'retry the managed analysis after a failed partial run'),
     };
   }
 
@@ -180,7 +211,7 @@ export function deriveRuntimeHealth(input: {
         input.hasMeta && !input.indexedCommit
           ? 'meta.json does not contain an indexed commit'
           : 'runtime health lacks an indexed commit or current commit',
-      repairCommand: 'ontoindex analyze --force',
+      ...repair('analyze', ['--force'], 'rebuild untrusted runtime state through the lock owner'),
     };
   }
 
@@ -188,7 +219,7 @@ export function deriveRuntimeHealth(input: {
     return {
       freshnessState: 'untrusted',
       degradedReason: lockReason,
-      repairCommand: 'remove the stale analyze.lock, then rerun ontoindex analyze --force',
+      ...repair('analyze', ['--force'], 'recover the stale lock through managed analysis'),
     };
   }
 
@@ -200,7 +231,7 @@ export function deriveRuntimeHealth(input: {
           ? (input.analyzeLock.reason ?? 'analyze.lock exists but could not be trusted')
           : (input.analysisCheckpoint.reason ??
             'analysis-checkpoint.json exists but could not be trusted'),
-      repairCommand: 'ontoindex analyze --force',
+      ...repair('analyze', ['--force'], 'let managed analysis validate or recover runtime state'),
     };
   }
 
@@ -208,7 +239,7 @@ export function deriveRuntimeHealth(input: {
     return {
       freshnessState: 'stale',
       degradedReason: staleReason,
-      repairCommand: 'ontoindex analyze',
+      ...repair('analyze', [], 'refresh the stale index'),
     };
   }
 
@@ -217,6 +248,12 @@ export function deriveRuntimeHealth(input: {
       freshnessState: 'dirty',
       degradedReason: dirtyReason,
       repairCommand: 'commit, stash, or clean the worktree, then rerun ontoindex analyze',
+      repairAction: {
+        tool: 'ontoindex',
+        command: 'analyze',
+        args: [],
+        reason: 'analyze after the worktree is clean',
+      },
     };
   }
 
@@ -225,10 +262,17 @@ export function deriveRuntimeHealth(input: {
       freshnessState: 'degraded',
       degradedReason:
         input.analyzeLock.state === 'active' ? (lockReason ?? checkpointReason) : checkpointReason,
-      repairCommand:
-        input.analyzeLock.state === 'active'
-          ? 'wait for the active analyze run to finish'
-          : 'ontoindex analyze',
+      ...(input.analyzeLock.state === 'active'
+        ? {
+            repairCommand: 'wait for the active analyze run to finish',
+            repairAction: {
+              tool: 'ontoindex' as const,
+              command: 'status' as const,
+              args: [],
+              reason: 'observe the live analysis owner without displacing it',
+            },
+          }
+        : repair('analyze', [], 'resume analysis through the managed command')),
     };
   }
 
@@ -236,7 +280,7 @@ export function deriveRuntimeHealth(input: {
     return {
       freshnessState: 'degraded',
       degradedReason: input.metaReason,
-      repairCommand: 'ontoindex analyze',
+      ...repair('analyze', [], 'restore full index capabilities'),
     };
   }
 
@@ -244,14 +288,14 @@ export function deriveRuntimeHealth(input: {
     return {
       freshnessState: 'degraded',
       degradedReason: embeddingCheckpointReason,
-      repairCommand: 'ontoindex analyze',
+      ...repair('analyze', [], 'resume the incomplete embedding lifecycle'),
     };
   }
 
   return {
     freshnessState: 'clean',
     degradedReason: null,
-    repairCommand: 'ontoindex status',
+    ...repair('status', [], 'runtime state is healthy; inspect status only'),
   };
 }
 
@@ -298,6 +342,9 @@ function resolveMetaDegradedReason(meta: RepoMeta | null | undefined): string | 
   if (meta.skippedPhases?.length) {
     return `skipped phases recorded: ${meta.skippedPhases.join(', ')}`;
   }
+  if (meta.degradedFileAggregates) {
+    return `degraded files sampled: ${meta.degradedFileAggregates.sampledDegradedCount}`;
+  }
   if (meta.degradedFiles?.length) {
     return `degraded files recorded: ${meta.degradedFiles.length}`;
   }
@@ -322,7 +369,7 @@ async function readDirtyWorktree(repoPath: string, warnings: string[]): Promise<
   }
 }
 
-async function readAnalyzeLock(
+export async function readAnalyzeLock(
   storagePath: string,
   warnings: string[],
 ): Promise<RuntimeAnalyzeLockState> {
@@ -332,6 +379,8 @@ async function readAnalyzeLock(
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const pid = typeof parsed.pid === 'number' ? parsed.pid : undefined;
     const startedAt = typeof parsed.startedAt === 'string' ? parsed.startedAt : undefined;
+    const processStartIdentity =
+      typeof parsed.processStartIdentity === 'string' ? parsed.processStartIdentity : undefined;
     if (pid === undefined) {
       return {
         path: lockPath,
@@ -342,16 +391,33 @@ async function readAnalyzeLock(
       };
     }
 
+    const currentIdentity = await readProcessStartIdentity(pid);
     const active = isProcessAlive(pid);
+    const identityMatches =
+      !processStartIdentity || !currentIdentity
+        ? undefined
+        : processStartIdentity === currentIdentity;
+    const state =
+      !active || identityMatches === false
+        ? 'stale'
+        : identityMatches === undefined
+          ? 'unknown'
+          : 'active';
     return {
       path: lockPath,
       present: true,
-      state: active ? 'active' : 'stale',
+      state,
       pid,
       startedAt,
-      reason: active
-        ? `analyze.lock is owned by PID ${pid}`
-        : `analyze.lock refers to PID ${pid}, which is no longer running`,
+      ...(processStartIdentity ? { processStartIdentity } : {}),
+      reason:
+        state === 'active'
+          ? `analyze.lock is owned by PID ${pid} with matching process identity`
+          : state === 'stale'
+            ? identityMatches === false
+              ? `analyze.lock PID ${pid} was reused by a different process`
+              : `analyze.lock refers to PID ${pid}, which is no longer running`
+            : `analyze.lock PID ${pid} is running but process identity could not be verified`,
     };
   } catch (error) {
     if (!isFileMissing(error)) {
@@ -492,6 +558,20 @@ function isProcessAlive(pid: number): boolean {
     return true;
   } catch (error) {
     return isPermissionError(error);
+  }
+}
+
+async function readProcessStartIdentity(pid: number): Promise<string | null> {
+  if (process.platform !== 'linux') return null;
+  try {
+    const stat = await fs.readFile(`/proc/${pid}/stat`, 'utf-8');
+    const fields = stat
+      .slice(stat.lastIndexOf(')') + 2)
+      .trim()
+      .split(/\s+/);
+    return fields[19] || null;
+  } catch {
+    return null;
   }
 }
 

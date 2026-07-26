@@ -491,12 +491,33 @@ describe('setupClaudeCode', () => {
 
     const { setupCommand } = await import('../../src/cli/setup.js');
     await setupCommand();
+    const firstGuidance = await Promise.all(
+      ['.claude', '.codex', '.ontocode'].map((dirName) =>
+        fs.readFile(path.join(tempHome, dirName, 'ONTOINDEX.md'), 'utf-8'),
+      ),
+    );
     await setupCommand();
 
-    for (const dirName of ['.claude', '.codex', '.ontocode']) {
+    for (const [index, dirName] of ['.claude', '.codex', '.ontocode'].entries()) {
       const guidance = await fs.readFile(path.join(tempHome, dirName, 'ONTOINDEX.md'), 'utf-8');
+      expect(guidance).toBe(firstGuidance[index]);
       expect(guidance).toContain('Never claim OntoIndex was used');
       expect(guidance).toContain('gn_explore');
+      // Concise ordered ladder: explore/search -> inspect -> impact -> verify-diff.
+      const explore = guidance.indexOf('1. Explore/search');
+      const inspect = guidance.indexOf('2. Inspect/context');
+      const impact = guidance.indexOf('3. Impact before edits');
+      const verify = guidance.indexOf('4. gn_verify_diff before commit');
+      expect(explore).toBeGreaterThan(-1);
+      expect(inspect).toBeGreaterThan(explore);
+      expect(impact).toBeGreaterThan(inspect);
+      expect(verify).toBeGreaterThan(impact);
+      // Commit-based index + forbid silent dirty-worktree assumptions.
+      expect(guidance).toContain('The graph index is commit-based');
+      expect(guidance).toContain('current HEAD differs from the indexed');
+      expect(guidance).toContain(
+        'silently assume dirty or uncommitted worktree changes are represented in the',
+      );
     }
 
     const claudeInstructions = await fs.readFile(

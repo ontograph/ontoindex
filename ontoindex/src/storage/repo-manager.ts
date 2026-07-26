@@ -11,6 +11,40 @@ import path from 'path';
 import os from 'os';
 import { getInferredRepoName } from './git.js';
 import { CURRENT_CONTRACT } from '../core/contract/versions.js';
+import type { RelationshipDistributions } from '../core/graph/fact-provenance.js';
+
+export interface DegradedFileEntry {
+  filePath: string;
+  reason: string;
+  phase?: string;
+  language?: string;
+}
+
+export interface DegradedFileGroupCount {
+  /** Stable, normalized degradation cause (byte sizes and limits removed). */
+  cause: string;
+  phase: string;
+  language: string;
+  count: number;
+}
+
+export interface DegradedFileAggregates {
+  /**
+   * Number of degraded files reflected in these aggregates. This is derived
+   * from bounded per-phase telemetry samples, not a true repository-wide
+   * degraded-file total, so it is named `sampled*` to avoid overclaiming.
+   */
+  sampledDegradedCount: number;
+  /** Bounded, deterministically ordered group counts (top-N by count). */
+  groups: DegradedFileGroupCount[];
+  /** Groups omitted from `groups` because of the top-N bound. */
+  omittedGroupCount: number;
+  /**
+   * Optional sample entries. Omitted when the top-level `degradedFiles` list
+   * already carries the same bounded sample to avoid duplicate nesting.
+   */
+  sampleFiles?: DegradedFileEntry[];
+}
 
 export interface RepoMeta {
   repoPath: string;
@@ -25,8 +59,15 @@ export interface RepoMeta {
   };
   skippedPhases?: string[];
   includePaths?: string[];
-  degradedFiles?: { filePath: string; reason: string }[];
+  degradedFiles?: DegradedFileEntry[];
+  degradedFileAggregates?: DegradedFileAggregates;
   partialCheckpointPath?: string;
+  /**
+   * Bounded relation-type and provenance-band distributions for the built
+   * graph. Optional and additive: legacy meta without this field remains
+   * readable. Both distributions sum exactly to the total relationship count.
+   */
+  relationshipDistributions?: RelationshipDistributions;
   /**
    * Hash of the embedding model used to populate this index. Checked on
    * re-analyze against `process.env.ONTOINDEX_EMBEDDING_MODEL_HASH`; a

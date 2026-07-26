@@ -22,6 +22,48 @@ describe('index-capabilities', () => {
       expect(result).toContain('WARNING: index capabilities are degraded.');
       expect(result).toContain('  Profile: huge-repo-symbols (deep enrichment skipped)');
     });
+
+    it('formats degradedFileAggregates with cause, phase, language, and sampled counts', () => {
+      const result = formatIndexCapabilityWarnings({
+        indexMode: 'symbols-only',
+        degradedFileAggregates: {
+          sampledDegradedCount: 5,
+          groups: [
+            { cause: 'file exceeds cap', phase: 'parse', language: 'python', count: 3 },
+            { cause: 'file exceeds cap', phase: 'parse', language: 'unknown', count: 2 },
+          ],
+          omittedGroupCount: 0,
+        },
+      } as any);
+      expect(result).toContain('  Degraded files (sampled): 5');
+      expect(result).toContain('    - file exceeds cap [phase: parse, lang: python]: 3');
+      expect(result).toContain('    - file exceeds cap [phase: parse, lang: unknown]: 2');
+    });
+
+    it('reports omitted degraded groups when the top-N bound truncates', () => {
+      const result = formatIndexCapabilityWarnings({
+        indexMode: 'symbols-only',
+        degradedFileAggregates: {
+          sampledDegradedCount: 9,
+          groups: [{ cause: 'file exceeds cap', phase: 'parse', language: 'python', count: 4 }],
+          omittedGroupCount: 2,
+        },
+      } as any);
+      expect(result).toContain('  Degraded files (sampled): 9');
+      expect(result).toContain('    - (+2 more group(s) omitted)');
+    });
+
+    it('falls back to legacy degradedFiles count without aggregates', () => {
+      const result = formatIndexCapabilityWarnings({
+        indexMode: 'symbols-only',
+        degradedFiles: [
+          { filePath: 'a.py', reason: 'skipped' },
+          { filePath: 'b.py', reason: 'skipped' },
+        ],
+      } as any);
+      expect(result).toContain('  Degraded files: 2');
+      expect(result.some((line) => line.includes('sampled'))).toBe(false);
+    });
   });
 
   describe('appendIndexCapabilityWarnings', () => {

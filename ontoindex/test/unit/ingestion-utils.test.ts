@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { getLanguageFromFilename, SupportedLanguages } from 'ontoindex-shared';
+import {
+  getLanguageFromFilename,
+  getLanguageFromShebang,
+  SupportedLanguages,
+} from 'ontoindex-shared';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
 import { findDescendant, type SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 import type { NodeLabel } from 'ontoindex-shared';
@@ -129,6 +133,61 @@ describe('getLanguageFromFilename', () => {
     it('returns null for empty string', () => {
       expect(getLanguageFromFilename('')).toBeNull();
     });
+  });
+});
+
+describe('getLanguageFromShebang', () => {
+  it('maps /usr/bin/env interpreters (Python, Ruby, Node, PHP)', () => {
+    expect(getLanguageFromShebang('#!/usr/bin/env python\n...')).toBe(SupportedLanguages.Python);
+    expect(getLanguageFromShebang('#!/usr/bin/env ruby\n...')).toBe(SupportedLanguages.Ruby);
+    expect(getLanguageFromShebang('#!/usr/bin/env node\n...')).toBe(SupportedLanguages.JavaScript);
+    expect(getLanguageFromShebang('#!/usr/bin/env php\n...')).toBe(SupportedLanguages.PHP);
+  });
+
+  it('maps direct interpreter paths', () => {
+    expect(getLanguageFromShebang('#!/usr/bin/python3\n')).toBe(SupportedLanguages.Python);
+    expect(getLanguageFromShebang('#!/usr/local/bin/ruby\n')).toBe(SupportedLanguages.Ruby);
+    expect(getLanguageFromShebang('#!/usr/bin/node\n')).toBe(SupportedLanguages.JavaScript);
+    expect(getLanguageFromShebang('#!/usr/bin/nodejs\n')).toBe(SupportedLanguages.JavaScript);
+    expect(getLanguageFromShebang('#!/usr/bin/php\n')).toBe(SupportedLanguages.PHP);
+  });
+
+  it('handles versioned interpreter names', () => {
+    expect(getLanguageFromShebang('#!/usr/bin/env python3.11\n')).toBe(SupportedLanguages.Python);
+    expect(getLanguageFromShebang('#!/usr/bin/php8.2\n')).toBe(SupportedLanguages.PHP);
+  });
+
+  it('handles env flags and VAR=val prefixes before the interpreter', () => {
+    expect(getLanguageFromShebang('#!/usr/bin/env -S python -u\n')).toBe(SupportedLanguages.Python);
+    expect(getLanguageFromShebang('#!/usr/bin/env FOO=bar ruby\n')).toBe(SupportedLanguages.Ruby);
+  });
+
+  it('tolerates leading whitespace and interpreter arguments', () => {
+    expect(getLanguageFromShebang('   #!/usr/bin/env   python\n')).toBe(SupportedLanguages.Python);
+    expect(getLanguageFromShebang('#!/usr/bin/python -B -O\n')).toBe(SupportedLanguages.Python);
+  });
+
+  it('handles CRLF line endings and only inspects the first line', () => {
+    expect(getLanguageFromShebang('#!/usr/bin/env node\r\nconsole.log(1)\r\n')).toBe(
+      SupportedLanguages.JavaScript,
+    );
+    // A second-line shebang must not be honoured.
+    expect(getLanguageFromShebang('const x = 1\n#!/usr/bin/env python\n')).toBeNull();
+  });
+
+  it('never aliases shell/bash — shell is unsupported', () => {
+    expect(getLanguageFromShebang('#!/bin/sh\n')).toBeNull();
+    expect(getLanguageFromShebang('#!/bin/bash\n')).toBeNull();
+    expect(getLanguageFromShebang('#!/usr/bin/env bash\n')).toBeNull();
+    expect(getLanguageFromShebang('#!/usr/bin/env zsh\n')).toBeNull();
+  });
+
+  it('returns null for other unsupported interpreters and non-shebang text', () => {
+    expect(getLanguageFromShebang('#!/usr/bin/env perl\n')).toBeNull();
+    expect(getLanguageFromShebang('#!/usr/bin/awk -f\n')).toBeNull();
+    expect(getLanguageFromShebang('not a shebang\n')).toBeNull();
+    expect(getLanguageFromShebang('#! \n')).toBeNull();
+    expect(getLanguageFromShebang('')).toBeNull();
   });
 });
 

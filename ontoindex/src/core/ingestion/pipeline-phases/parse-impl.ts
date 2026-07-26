@@ -48,7 +48,11 @@ import {
 } from '../heritage-processor.js';
 import { createResolutionContext } from '../model/resolution-context.js';
 import { createASTCache } from '../ast-cache.js';
-import { type PipelineProgress, getLanguageFromFilename } from 'ontoindex-shared';
+import {
+  type PipelineProgress,
+  type SupportedLanguages,
+  getLanguageFromFilename,
+} from 'ontoindex-shared';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
 import { createWorkerPool, WORKER_SUB_BATCH_SIZE } from '../workers/worker-pool.js';
@@ -88,7 +92,7 @@ const MAX_PARSE_TIMING_REPORTS = 10;
 
 // ── Main parse + resolve function ──────────────────────────────────────────
 
-type ScannedFile = { path: string; size: number };
+type ScannedFile = { path: string; size: number; shebangLanguage?: SupportedLanguages | null };
 type ProgressFn = (progress: PipelineProgress) => void;
 type ChunkWorkerData = NonNullable<Awaited<ReturnType<typeof processParsing>>>;
 type FileTiming = {
@@ -340,8 +344,13 @@ export async function runChunkedParseAndResolve(
   const ctx = createResolutionContext();
   const symbolTable = ctx.model.symbols;
 
+  // Extension/basename detection wins; the scan-time shebang fallback only
+  // supplies a language for extensionless scripts that have none from the path.
+  const effectiveScannedLanguage = (f: ScannedFile): SupportedLanguages | null =>
+    getLanguageFromFilename(f.path) ?? f.shebangLanguage ?? null;
+
   let parseableScanned = scannedFiles.filter((f) => {
-    const lang = getLanguageFromFilename(f.path);
+    const lang = effectiveScannedLanguage(f);
     return lang && isLanguageAvailable(lang);
   });
 
@@ -372,7 +381,7 @@ export async function runChunkedParseAndResolve(
   // Warn about files skipped due to unavailable parsers
   const skippedByLang = new Map<string, number>();
   for (const f of scannedFiles) {
-    const lang = getLanguageFromFilename(f.path);
+    const lang = effectiveScannedLanguage(f);
     if (lang && !isLanguageAvailable(lang)) {
       skippedByLang.set(lang, (skippedByLang.get(lang) || 0) + 1);
     }
