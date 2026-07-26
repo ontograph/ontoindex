@@ -384,8 +384,10 @@ AFTER THIS: Use impact() on any cycle member to understand blast radius. For raw
 
 OUTPUT:
 - cycles: SCCs with more than one member (or self-loops when min_cycle_length = 1), sorted by size
-- each cycle: members [{ id, name, filePath, kind }], edge_types present inside the cycle, cycle_length, affected_files
-- summary: total_cycles, largest_cycle_size, affected_files`,
+- each cycle: members [{ id, name, filePath, kind }], edge_types present inside the cycle, cycle_length, affected_files, min_edge_confidence
+- summary: total_cycles, largest_cycle_size, affected_files
+
+NOTE: a low min_edge_confidence (0.5) means the cycle rests on a name-only "global"-tier call edge and may be a resolution artifact. Raise min_confidence above 0.5 to see only cycles backed by same-file or import-scoped edges.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -400,6 +402,14 @@ OUTPUT:
           default: 2,
           minimum: 1,
           maximum: 1000,
+        },
+        min_confidence: {
+          type: 'number',
+          description:
+            'Minimum edge confidence to traverse (default: 0.5, keeps all edges). Use 0.9 to exclude name-only "global"-tier call edges.',
+          default: 0.5,
+          minimum: 0,
+          maximum: 1,
         },
         file_filter: {
           type: 'string',

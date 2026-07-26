@@ -95,6 +95,7 @@ export interface DetectChangesParams extends z.input<typeof DetectChangesSchema>
 export const CycleDetectSchema = BaseRepoSchema.extend({
   edge_types: z.array(z.string()).default(['IMPORTS', 'CALLS']),
   min_cycle_length: z.number().min(1).max(1000).default(2),
+  min_confidence: z.number().min(0).max(1).default(0.5),
   file_filter: z.string().optional(),
   limit: z.number().min(1).max(200).default(30),
 });

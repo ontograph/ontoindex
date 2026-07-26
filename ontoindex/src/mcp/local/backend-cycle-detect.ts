@@ -14,7 +14,7 @@ function mapCyclesToFindings(cycles: DetectedCycle[]): DiagnosticFinding[] {
       ruleId: 'GNC-101',
       ruleName: 'Circular Dependency',
       severity: c.cycle_length > 5 ? 'critical' : 'warning',
-      confidence: 1.0,
+      confidence: c.min_edge_confidence,
       message: `Circular dependency detected involving ${c.cycle_length} symbols: ${c.members.map((m) => m.name).join(' -> ')}.`,
       location: {
         filePath: c.members[0].filePath,
@@ -38,6 +38,7 @@ interface CycleEdgeRow {
   targetName: string | null;
   targetFilePath: string | null;
   edgeType: string;
+  confidence: number | null;
 }
 
 interface CycleNode {
@@ -59,6 +60,8 @@ interface DetectedCycle {
   affected_files: number;
   edge_types: string[];
   members: CycleMember[];
+  /** Lowest edge confidence inside the cycle: the weakest link holding it together. */
+  min_edge_confidence: number;
 }
 
 interface CycleDetectResult {
@@ -67,6 +70,7 @@ interface CycleDetectResult {
   repo: string;
   edge_types: string[];
   min_cycle_length: number;
+  min_confidence: number;
   limit: number;
   file_filter?: string;
   cycles: DetectedCycle[];
@@ -99,6 +103,17 @@ function parsePositiveInt(value: unknown, fallback: number, minimum = 1, maximum
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   const rounded = Math.trunc(value);
   return Math.min(maximum, Math.max(minimum, rounded));
+}
+
+/**
+ * Default 0.5 keeps every resolved edge, matching prior behavior. Raising it
+ * above 0.5 drops `global`-tier call edges, which are name-only guesses and the
+ * usual source of phantom cycles (e.g. a local `.update()` bound to an
+ * unrelated class method).
+ */
+function normalizeMinConfidence(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0.5;
+  return Math.min(1, Math.max(0, value));
 }
 
 function normalizeFilePath(filePath: string | null | undefined): string {
@@ -214,12 +229,14 @@ export async function runCycleDetect(
   params: {
     edge_types?: string[];
     min_cycle_length?: number;
+    min_confidence?: number;
     file_filter?: string;
     limit?: number;
   },
 ): Promise<CycleDetectResult> {
   const edgeTypes = normalizeEdgeTypes(params?.edge_types);
   const minCycleLength = parsePositiveInt(params?.min_cycle_length, 2);
+  const minConfidence = normalizeMinConfidence(params?.min_confidence);
   const limit = parsePositiveInt(params?.limit, 30);
   const fileFilter =
     typeof params?.file_filter === 'string' && params.file_filter.trim().length > 0
@@ -239,6 +256,7 @@ export async function runCycleDetect(
       repo: repo.name,
       edge_types: [],
       min_cycle_length: minCycleLength,
+      min_confidence: minConfidence,
       limit,
       ...(fileFilter ? { file_filter: fileFilter } : {}),
       cycles: [],
@@ -254,6 +272,7 @@ export async function runCycleDetect(
       repo: repo.name,
       edge_types: edgeTypes,
       min_cycle_length: minCycleLength,
+      min_confidence: minConfidence,
       limit,
       ...(fileFilter ? { file_filter: fileFilter } : {}),
       cycles: [],
@@ -268,6 +287,7 @@ export async function runCycleDetect(
       `
       MATCH (source)-[r:CodeRelation]->(target)
       WHERE r.type IN $edgeTypes
+        AND (r.confidence IS NULL OR r.confidence >= $minConfidence)
       RETURN
         source.id AS sourceId,
         source.name AS sourceName,
@@ -275,10 +295,11 @@ export async function runCycleDetect(
         target.id AS targetId,
         target.name AS targetName,
         target.filePath AS targetFilePath,
-        r.type AS edgeType
+        r.type AS edgeType,
+        r.confidence AS confidence
       LIMIT ${MAX_CYCLE_EDGE_ROWS}
       `,
-      { edgeTypes },
+      { edgeTypes, minConfidence },
     )) as CycleEdgeRow[];
     const warnings =
       rows.length >= MAX_CYCLE_EDGE_ROWS
@@ -322,9 +343,13 @@ export async function runCycleDetect(
 
       const memberIds = new Set(component);
       const cycleEdgeTypes = new Set<string>();
+      let minEdgeConfidence = 1;
       for (const edge of edges) {
         if (!memberIds.has(edge.sourceId) || !memberIds.has(edge.targetId)) continue;
         cycleEdgeTypes.add(edge.edgeType);
+        if (typeof edge.confidence === 'number' && edge.confidence < minEdgeConfidence) {
+          minEdgeConfidence = edge.confidence;
+        }
       }
 
       const members = sortMembers(
@@ -344,6 +369,7 @@ export async function runCycleDetect(
         affected_files: affectedFiles,
         edge_types: [...cycleEdgeTypes].sort((a, b) => a.localeCompare(b)),
         members,
+        min_edge_confidence: minEdgeConfidence,
       });
     }
 
@@ -366,6 +392,7 @@ export async function runCycleDetect(
       repo: repo.name,
       edge_types: edgeTypes,
       min_cycle_length: minCycleLength,
+      min_confidence: minConfidence,
       limit,
       ...(fileFilter ? { file_filter: fileFilter } : {}),
       cycles: cycles.slice(0, limit),
@@ -383,6 +410,7 @@ export async function runCycleDetect(
       repo: repo.name,
       edge_types: edgeTypes,
       min_cycle_length: minCycleLength,
+      min_confidence: minConfidence,
       limit,
       ...(fileFilter ? { file_filter: fileFilter } : {}),
       cycles: [],

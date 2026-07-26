@@ -463,30 +463,51 @@ async function hasJsxUsageAnywhere(
  * come from the live (reachable) subgraph. A candidate with incoming
  * refs only from other dead candidates is still dead (dead island);
  * only a ref from a live node is evidence the BFS missed something.
+ *
+ * Batched over chunks of candidate ids: one round-trip per chunk rather
+ * than one per candidate, which dominated runtime on large repos where
+ * the connection pool serializes thousands of small queries.
  */
-async function fetchIncomingCallerIds(repoId: string, symId: string): Promise<string[]> {
-  try {
-    const rows = await executeParameterized(
-      repoId,
-      `
-        MATCH (caller)-[r:CodeRelation]->(n)
-        WHERE n.id = $symId
-          AND r.type IN ['CALLS', 'IMPORTS', 'DEFINES', 'HAS_METHOD',
-                          'HAS_PROPERTY', 'EXTENDS', 'IMPLEMENTS',
-                          'OVERRIDES', 'METHOD_OVERRIDES', 'ACCESSES']
-        RETURN caller.id AS callerId
-      `,
-      { symId },
-    );
-    const out: string[] = [];
-    for (const r of rows || []) {
-      const id = r.callerId ?? r[0];
-      if (typeof id === 'string') out.push(id);
+async function fetchIncomingCallerIdsBySymbol(
+  repoId: string,
+  symIds: readonly string[],
+  chunkSize = 500,
+): Promise<Map<string, string[]>> {
+  const bySymbol = new Map<string, string[]>();
+  const relFilter = FORWARD_EDGE_TYPES.map((t) => `'${t}'`).join(', ');
+
+  for (let start = 0; start < symIds.length; start += chunkSize) {
+    const chunk = symIds.slice(start, start + chunkSize);
+    const idList = chunk.map((id) => `'${id.replace(/'/g, "''")}'`).join(', ');
+    if (idList.length === 0) continue;
+
+    let rows: Array<Record<string, unknown>>;
+    try {
+      rows = await executeParameterized(
+        repoId,
+        `
+          MATCH (caller)-[r:CodeRelation]->(n)
+          WHERE n.id IN [${idList}]
+            AND r.type IN [${relFilter}]
+          RETURN n.id AS symId, caller.id AS callerId
+        `,
+        {},
+      );
+    } catch {
+      continue;
     }
-    return out;
-  } catch {
-    return [];
+
+    for (const row of rows || []) {
+      const symId = (row.symId ?? row[0]) as unknown;
+      const callerId = (row.callerId ?? row[1]) as unknown;
+      if (typeof symId !== 'string' || typeof callerId !== 'string') continue;
+      const existing = bySymbol.get(symId);
+      if (existing === undefined) bySymbol.set(symId, [callerId]);
+      else existing.push(callerId);
+    }
   }
+
+  return bySymbol;
 }
 
 async function loadExcludeConfig(repoName: string): Promise<string[]> {
@@ -630,10 +651,15 @@ async function verifyDeadCodeCandidates(
 ): Promise<{ survivors: DeadCodeEntry[]; verifiedReachableCount: number }> {
   if (!verify) return { survivors: [...candidates], verifiedReachableCount: 0 };
 
+  const callersBySymbol = await fetchIncomingCallerIdsBySymbol(
+    repo.id,
+    candidates.map((entry) => entry.id),
+  );
+
   let verifiedReachableCount = 0;
   const survivors: DeadCodeEntry[] = [];
   for (const entry of candidates) {
-    const callerIds = await fetchIncomingCallerIds(repo.id, entry.id);
+    const callerIds = callersBySymbol.get(entry.id) ?? [];
     const liveRefs = callerIds.filter((id) => reachableAll.has(id)).length;
     if (liveRefs > 0) {
       verifiedReachableCount++;
@@ -921,12 +947,20 @@ export async function runDeadCode(
       entries,
     });
 
+    // reachableAll spans every node kind the BFS walked; restrict the
+    // reported count to the same symbol kinds as totalSymbols so the two
+    // numbers are comparable.
+    const reachableSymbolCount = allSymbols.reduce(
+      (total, symbol) => (reachableAll.has(symbol.id) ? total + 1 : total),
+      0,
+    );
+
     const result = {
       status: 'success',
       tool: 'dead_code',
       repo: repo.name,
       totalSymbols: allSymbols.length,
-      reachableCount: reachableAll.size,
+      reachableCount: reachableSymbolCount,
       deadCount,
       verifiedReachableCount,
       suppressed_count: suppressedCount,

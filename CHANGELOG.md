@@ -4,6 +4,15 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.1.4] - 2026-07-26
+
+### Fixed
+
+- Fixed MCP shutdown on `SIGINT` and `SIGTERM` so cleanup completes with a numeric exit code instead of throwing before LadybugDB resources are released.
+- Batched dead-code candidate verification queries, cutting the full local audit runtime from about 17 seconds to 8 seconds on the OntoIndex repository.
+- Made dead-code reachability totals count the same symbol kinds as `totalSymbols`.
+- Added confidence-aware cycle detection: reports now expose the weakest edge confidence and can exclude name-only global call-resolution edges with `min_confidence`.
+
 ## [2.1.3] - 2026-07-26
 
 ### Added

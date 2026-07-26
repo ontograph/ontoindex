@@ -16,6 +16,12 @@ const CYCLE_SEED = [
    CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 1.0, reason: 'direct', step: 0}]->(b)`,
   `MATCH (a:Function), (b:Function) WHERE a.id = 'func:beta' AND b.id = 'func:alpha'
    CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 1.0, reason: 'direct', step: 0}]->(b)`,
+  `CREATE (fl:Function {id: 'func:weakLeft', name: 'weakLeft', filePath: 'src/weak/left.ts', startLine: 1, endLine: 5, isExported: true, content: '', description: ''})`,
+  `CREATE (fr:Function {id: 'func:weakRight', name: 'weakRight', filePath: 'src/weak/right.ts', startLine: 1, endLine: 5, isExported: true, content: '', description: ''})`,
+  `MATCH (a:Function), (b:Function) WHERE a.id = 'func:weakLeft' AND b.id = 'func:weakRight'
+   CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 0.5, reason: 'global', step: 0}]->(b)`,
+  `MATCH (a:Function), (b:Function) WHERE a.id = 'func:weakRight' AND b.id = 'func:weakLeft'
+   CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 0.5, reason: 'global', step: 0}]->(b)`,
 ];
 
 withTestLbugDB(
@@ -29,10 +35,10 @@ withTestLbugDB(
         );
 
         expect(result.status).toBe('success');
-        expect(result.summary.total_cycles).toBe(2);
+        expect(result.summary.total_cycles).toBe(3);
         expect(result.summary.largest_cycle_size).toBe(2);
-        expect(result.summary.affected_files).toBe(4);
-        expect(result.cycles).toHaveLength(2);
+        expect(result.summary.affected_files).toBe(6);
+        expect(result.cycles).toHaveLength(3);
         expect(result.cycles).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
@@ -58,7 +64,7 @@ withTestLbugDB(
       it('returns stable golden SCC output ordering and shape', async () => {
         const result = await runCycleDetect(
           { id: handle.repoId, name: 'cycle-test' },
-          { edge_types: ['IMPORTS', 'CALLS'] },
+          { edge_types: ['IMPORTS', 'CALLS'], min_confidence: 0.9 },
         );
 
         expect(result).toEqual({
@@ -67,6 +73,7 @@ withTestLbugDB(
           repo: 'cycle-test',
           edge_types: ['IMPORTS', 'CALLS'],
           min_cycle_length: 2,
+          min_confidence: 0.9,
           limit: 30,
           cycles: [
             {
@@ -87,6 +94,7 @@ withTestLbugDB(
                   kind: 'File',
                 },
               ],
+              min_edge_confidence: 1,
             },
             {
               cycle_length: 2,
@@ -106,6 +114,7 @@ withTestLbugDB(
                   kind: 'Function',
                 },
               ],
+              min_edge_confidence: 1,
             },
           ],
           warnings: [],
@@ -146,6 +155,30 @@ withTestLbugDB(
           'src/services/alpha.ts',
           'src/services/beta.ts',
         ]);
+      });
+
+      it('excludes cycles that rest on low-confidence edges when min_confidence is raised', async () => {
+        const all = await runCycleDetect(
+          { id: handle.repoId, name: 'cycle-test' },
+          { edge_types: ['CALLS'] },
+        );
+        const weak = all.cycles.find((cycle) =>
+          cycle.members.some((member) => member.name === 'weakLeft'),
+        );
+        expect(weak?.min_edge_confidence).toBe(0.5);
+
+        const strict = await runCycleDetect(
+          { id: handle.repoId, name: 'cycle-test' },
+          { edge_types: ['CALLS'], min_confidence: 0.9 },
+        );
+
+        expect(strict.min_confidence).toBe(0.9);
+        expect(
+          strict.cycles.some((cycle) => cycle.members.some((member) => member.name === 'weakLeft')),
+        ).toBe(false);
+        expect(
+          strict.cycles.some((cycle) => cycle.members.some((member) => member.name === 'alpha')),
+        ).toBe(true);
       });
 
       it('preserves template interpolation behavior for Symbol error messages', async () => {

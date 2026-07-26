@@ -93,9 +93,14 @@ function wireDb(opts: {
       return [...targets].map((id) => ({ id }));
     }
     if (/MATCH \(caller\)-\[r:CodeRelation\]->\(n\)/.test(query)) {
-      const id = params?.symId;
-      const callers = incoming.get(id) ?? [];
-      return callers.map((callerId) => ({ callerId }));
+      const match = query.match(/n\.id IN \[([^\]]+)\]/);
+      if (!match) return [];
+      const ids = match[1].split(',').map((s) => s.trim().replace(/^'/, '').replace(/'$/, ''));
+      const rows: Array<{ symId: string; callerId: string }> = [];
+      for (const symId of ids) {
+        for (const callerId of incoming.get(symId) ?? []) rows.push({ symId, callerId });
+      }
+      return rows;
     }
     if (/MATCH \(handler\)-\[r:CodeRelation\]->\(route:Route\)/.test(query)) {
       return routeHandlerSeeds.map((id) => ({ id }));

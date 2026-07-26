@@ -573,8 +573,10 @@ export async function startMCPServer(
   };
 
   // Handle graceful shutdown
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  // Wrapped: Node passes the signal name to handlers, and process.exit()
+  // throws ERR_INVALID_ARG_TYPE on a string exit code.
+  process.on('SIGINT', () => void shutdown(0));
+  process.on('SIGTERM', () => void shutdown(0));
 
   // Log crashes to stderr so they aren't silently lost.
   // uncaughtException is fatal — shut down.
