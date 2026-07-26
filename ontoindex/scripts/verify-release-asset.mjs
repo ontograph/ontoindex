@@ -122,7 +122,9 @@ export async function verifyReleaseAsset({
       throw new Error('tarball is missing bin entry ontoindex: dist/cli/index.js');
     }
 
-    const entries = execFileSync('tar', ['-tzf', tarball], { encoding: 'utf8' }).split('\n');
+    const entries = execFileSync('tar', ['-tzf', tarball], { encoding: 'utf8' })
+      .split('\n')
+      .map((entry) => entry.replaceAll('\\', '/'));
     if (!entries.includes('package/dist/cli/index.js')) {
       throw new Error('tarball is missing package/dist/cli/index.js');
     }
