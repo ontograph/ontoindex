@@ -229,44 +229,54 @@ async function removeAnalyzeLockIfOwner(
   }
 }
 
+async function createAnalyzeLockFile(
+  lockPath: string,
+  token: string,
+  processStartIdentity: string | null,
+  repoPath: string,
+): Promise<AnalyzeLock> {
+  const handle = await fs.open(lockPath, 'wx');
+  try {
+    await handle.writeFile(
+      JSON.stringify(
+        {
+          pid: process.pid,
+          token,
+          startedAt: new Date().toISOString(),
+          ...(processStartIdentity ? { processStartIdentity } : {}),
+          repoPath,
+          command: process.argv.join(' '),
+        },
+        null,
+        2,
+      ),
+      'utf-8',
+    );
+  } finally {
+    await handle.close();
+  }
+  let released = false;
+  return {
+    path: lockPath,
+    release: async () => {
+      if (released) return;
+      released = true;
+      await removeAnalyzeLockIfOwner(lockPath, process.pid, token);
+    },
+  };
+}
+
 export async function acquireAnalyzeLock(repoPath: string): Promise<AnalyzeLock> {
   const { storagePath } = getStoragePaths(repoPath);
   await fs.mkdir(storagePath, { recursive: true });
   const lockPath = path.join(storagePath, 'analyze.lock');
+  const recoveryLockPath = `${lockPath}.recovery`;
   const token = randomUUID();
   const processStartIdentity = await readProcessStartIdentity(process.pid);
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const handle = await fs.open(lockPath, 'wx');
-      try {
-        await handle.writeFile(
-          JSON.stringify(
-            {
-              pid: process.pid,
-              token,
-              startedAt: new Date().toISOString(),
-              ...(processStartIdentity ? { processStartIdentity } : {}),
-              repoPath,
-              command: process.argv.join(' '),
-            },
-            null,
-            2,
-          ),
-          'utf-8',
-        );
-      } finally {
-        await handle.close();
-      }
-      let released = false;
-      return {
-        path: lockPath,
-        release: async () => {
-          if (released) return;
-          released = true;
-          await removeAnalyzeLockIfOwner(lockPath, process.pid, token);
-        },
-      };
+      return await createAnalyzeLockFile(lockPath, token, processStartIdentity, repoPath);
     } catch (err: unknown) {
       if (getErrorCode(err) !== 'EEXIST') throw err;
 
@@ -280,9 +290,35 @@ export async function acquireAnalyzeLock(repoPath: string): Promise<AnalyzeLock>
       const pid = typeof existing?.pid === 'number' ? existing.pid : null;
       const ownerActive = existing ? await isAnalyzeLockOwnerActive(existing) : null;
       if (pid !== null && ownerActive === false) {
-        const staleToken = typeof existing?.token === 'string' ? existing.token : undefined;
-        await archiveStaleAnalyzeDiagnostics(storagePath, existingContents, staleToken);
-        if (await removeAnalyzeLockIfOwner(lockPath, pid, staleToken)) continue;
+        let recoveryHandle;
+        try {
+          recoveryHandle = await fs.open(recoveryLockPath, 'wx');
+        } catch (recoveryError: unknown) {
+          if (getErrorCode(recoveryError) === 'EEXIST') {
+            throw new Error(`Another process is recovering the analyze lock. Lock: ${lockPath}`);
+          }
+          throw recoveryError;
+        }
+
+        try {
+          existingContents = await fs.readFile(lockPath, 'utf-8');
+          existing = parseAnalyzeLockRecord(existingContents);
+          const currentPid = typeof existing?.pid === 'number' ? existing.pid : null;
+          const currentOwnerActive = existing ? await isAnalyzeLockOwnerActive(existing) : null;
+          if (currentPid === null || currentOwnerActive !== false) {
+            throw new Error(`Cannot safely recover for this repo. Lock: ${lockPath}`);
+          }
+          const currentToken = existing?.token;
+          const staleToken = typeof currentToken === 'string' ? currentToken : undefined;
+          await archiveStaleAnalyzeDiagnostics(storagePath, existingContents, staleToken);
+          if (!(await removeAnalyzeLockIfOwner(lockPath, currentPid, staleToken))) {
+            throw new Error(`Cannot safely recover for this repo. Lock: ${lockPath}`);
+          }
+          return await createAnalyzeLockFile(lockPath, token, processStartIdentity, repoPath);
+        } finally {
+          await recoveryHandle.close();
+          await fs.unlink(recoveryLockPath).catch(() => {});
+        }
       }
 
       const owner = pid !== null ? `PID ${pid}` : 'another process';

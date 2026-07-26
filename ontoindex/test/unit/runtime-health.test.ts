@@ -250,26 +250,29 @@ describe('deriveRuntimeHealth', () => {
     ).toContain('  Bootstrap source: restored 2026-06-30T00:00:00.000Z from fixture-src @ abc123d');
   });
 
-  it('detects PID reuse from process start identity', async () => {
-    const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-health-lock-'));
-    try {
-      await fs.writeFile(
-        path.join(storagePath, 'analyze.lock'),
-        JSON.stringify({
-          pid: process.pid,
-          processStartIdentity: 'different-process',
-          startedAt: new Date().toISOString(),
-        }),
-      );
+  it.skipIf(process.platform !== 'linux')(
+    'detects PID reuse from process start identity',
+    async () => {
+      const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-health-lock-'));
+      try {
+        await fs.writeFile(
+          path.join(storagePath, 'analyze.lock'),
+          JSON.stringify({
+            pid: process.pid,
+            processStartIdentity: 'different-process',
+            startedAt: new Date().toISOString(),
+          }),
+        );
 
-      const lock = await readAnalyzeLock(storagePath, []);
+        const lock = await readAnalyzeLock(storagePath, []);
 
-      expect(lock.state).toBe('stale');
-      expect(lock.reason).toContain('reused');
-    } finally {
-      await fs.rm(storagePath, { recursive: true, force: true });
-    }
-  });
+        expect(lock.state).toBe('stale');
+        expect(lock.reason).toContain('reused');
+      } finally {
+        await fs.rm(storagePath, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('projects degraded-file aggregates and honest sampled reason from meta', async () => {
     const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-health-agg-'));

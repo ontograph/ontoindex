@@ -14,14 +14,6 @@ async function makeRepo(): Promise<string> {
   return repo;
 }
 
-async function processIdentity(pid = process.pid): Promise<string> {
-  const stat = await fs.readFile(`/proc/${pid}/stat`, 'utf-8');
-  return stat
-    .slice(stat.lastIndexOf(')') + 2)
-    .trim()
-    .split(/\s+/)[19];
-}
-
 async function writeLock(repo: string, record: Record<string, unknown>): Promise<string> {
   const lockPath = path.join(repo, '.ontoindex', 'analyze.lock');
   await fs.writeFile(lockPath, JSON.stringify(record), 'utf-8');
@@ -39,7 +31,6 @@ describe('analyze lock lifecycle', () => {
       pid: process.pid,
       token: 'live',
       startedAt: new Date().toISOString(),
-      processStartIdentity: await processIdentity(),
     });
 
     await expect(acquireAnalyzeLock(repo)).rejects.toThrow('already running');
@@ -71,19 +62,22 @@ describe('analyze lock lifecycle', () => {
     await expect(fs.access(lockPath)).rejects.toThrow();
   });
 
-  it('treats a reused PID as stale when process identity differs', async () => {
-    const repo = await makeRepo();
-    await writeLock(repo, {
-      pid: process.pid,
-      token: 'reused',
-      startedAt: new Date().toISOString(),
-      processStartIdentity: 'not-the-current-process',
-    });
+  it.skipIf(process.platform !== 'linux')(
+    'treats a reused PID as stale when process identity differs',
+    async () => {
+      const repo = await makeRepo();
+      await writeLock(repo, {
+        pid: process.pid,
+        token: 'reused',
+        startedAt: new Date().toISOString(),
+        processStartIdentity: 'not-the-current-process',
+      });
 
-    const lock = await acquireAnalyzeLock(repo);
-    expect(JSON.parse(await fs.readFile(lock.path, 'utf-8')).token).not.toBe('reused');
-    await lock.release();
-  });
+      const lock = await acquireAnalyzeLock(repo);
+      expect(JSON.parse(await fs.readFile(lock.path, 'utf-8')).token).not.toBe('reused');
+      await lock.release();
+    },
+  );
 
   it('fails closed for a malformed lock', async () => {
     const repo = await makeRepo();
