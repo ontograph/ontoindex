@@ -27,6 +27,10 @@ function retryableResponse(response, retry404) {
   );
 }
 
+export function parseTarEntries(output) {
+  return output.split(/\r?\n/).map((entry) => entry.replaceAll('\\', '/'));
+}
+
 async function fetchWithRetry(url, options, fetchImpl, sleepImpl, label, retry404 = false) {
   for (let attempt = 1; attempt <= MAX_METADATA_ATTEMPTS; attempt++) {
     let response;
@@ -122,9 +126,7 @@ export async function verifyReleaseAsset({
       throw new Error('tarball is missing bin entry ontoindex: dist/cli/index.js');
     }
 
-    const entries = execFileSync('tar', ['-tzf', tarball], { encoding: 'utf8' })
-      .split('\n')
-      .map((entry) => entry.replaceAll('\\', '/'));
+    const entries = parseTarEntries(execFileSync('tar', ['-tzf', tarball], { encoding: 'utf8' }));
     if (!entries.includes('package/dist/cli/index.js')) {
       throw new Error('tarball is missing package/dist/cli/index.js');
     }

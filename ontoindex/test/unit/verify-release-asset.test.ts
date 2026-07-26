@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { verifyReleaseAsset } from '../../scripts/verify-release-asset.mjs';
+import { parseTarEntries, verifyReleaseAsset } from '../../scripts/verify-release-asset.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const tempDirs: string[] = [];
@@ -54,6 +54,12 @@ afterEach(() => {
 });
 
 describe('verifyReleaseAsset', () => {
+  it('normalizes Windows tar output paths and line endings', () => {
+    expect(parseTarEntries('package\\dist\\cli\\index.js\r\n')).toContain(
+      'package/dist/cli/index.js',
+    );
+  });
+
   it('accepts exactly one expected release asset with the matching package and CLI', async () => {
     const fetchImpl = fetchFixture([asset()]);
 
