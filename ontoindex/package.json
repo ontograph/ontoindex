@@ -92,7 +92,7 @@
     "tree-sitter-ruby": "file:./vendor/tree-sitter-ruby",
     "tree-sitter-rust": "file:./vendor/tree-sitter-rust",
     "tree-sitter-typescript": "file:./vendor/tree-sitter-typescript",
-    "uuid": "^14.0.0",
+    "uuid": "^14.0.1",
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
