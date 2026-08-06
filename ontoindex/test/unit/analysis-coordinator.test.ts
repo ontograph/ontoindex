@@ -58,7 +58,7 @@ setTimeout(() => {}, 30000);
     await waitFor(async () => (await getAnalysisJob(repoPath, first.job.id))?.runnerPid);
     const running = await getAnalysisJob(repoPath, first.job.id);
     expect(running).toMatchObject({ status: 'running', targetHead: 'head-a' });
-    if (running?.runnerPid) process.kill(running.runnerPid, 'SIGTERM');
+    if (running?.runnerPid) await terminateProcess(running.runnerPid);
   });
 
   it('refuses to reuse an active job for a different target snapshot', async () => {
@@ -87,7 +87,7 @@ setTimeout(() => {}, 30000);
     const processRecord = await waitFor(
       async () => (await getAnalysisJob(repoPath, first.job.id))?.runnerPid,
     );
-    if (processRecord) process.kill(processRecord, 'SIGTERM');
+    if (processRecord) await terminateProcess(processRecord);
   });
 
   it('refuses to reuse an active job for a different command', async () => {
@@ -116,7 +116,7 @@ setTimeout(() => {}, 30000);
     const processRecord = await waitFor(
       async () => (await getAnalysisJob(repoPath, first.job.id))?.runnerPid,
     );
-    if (processRecord) process.kill(processRecord, 'SIGTERM');
+    if (processRecord) await terminateProcess(processRecord);
   });
 
   it('removes expired terminal job records and logs', async () => {
@@ -391,6 +391,16 @@ function isAlive(pid: number): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function terminateProcess(pid: number): Promise<void> {
+  process.kill(pid, 'SIGTERM');
+  if (await waitFor(async () => (isAlive(pid) ? undefined : true), 100, 50)) return;
+
+  process.kill(pid, 'SIGKILL');
+  if (!(await waitFor(async () => (isAlive(pid) ? undefined : true), 100, 50))) {
+    throw new Error(`Process ${pid} did not exit during test cleanup`);
   }
 }
 

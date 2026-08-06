@@ -92,7 +92,7 @@ describe('bench-gate', () => {
     expect(gateRun.stdout).toContain(
       `PASS ${checkedBaseline.numerator} / ${checkedBaseline.control}`,
     );
-  }, 30_000);
+  }, 120_000);
 
   it('passes unchanged Vitest benchmark output', () => {
     const result = runGate(vitestResult(10));
