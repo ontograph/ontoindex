@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: 22
           cache: 'npm'
@@ -34,8 +34,12 @@ jobs:
         id: run_check
         run: |
           cd ontoindex
+          # `set +e` is required: job steps run under `bash -e`, so a failing
+          # check would abort the step before the exit code is captured.
+          set +e
           npx ontoindex check > check_output.txt 2>&1
           exit_code=$?
+          set -e
           echo "CHECK_OUTPUT<<EOF" >> $GITHUB_ENV
           cat check_output.txt >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
@@ -51,13 +55,12 @@ jobs:
         if: always() && github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STATUS: ${{ steps.run_check.outputs.status }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          STATUS="${{ steps.run_check.outputs.status }}"
-          if [ "$STATUS" == "failed" ]; then
-            gh pr comment ${{ github.event.pull_request.number }} --body "### ❌ OntoIndex Check Failed
-            \`\`\`
-            ${{ env.CHECK_OUTPUT }}
-            \`\`\`"
+          if [ "$STATUS" = "failed" ]; then
+            printf '### OntoIndex Check Failed\n\n```\n%s\n```\n' "$CHECK_OUTPUT" > comment.md
+            gh pr comment "$PR_NUMBER" --body-file comment.md
           else
-            gh pr comment ${{ github.event.pull_request.number }} --body "### ✅ OntoIndex Check Passed"
+            gh pr comment "$PR_NUMBER" --body "### OntoIndex Check Passed"
           fi
