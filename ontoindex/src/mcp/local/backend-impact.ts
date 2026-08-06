@@ -1,4 +1,14 @@
+import { createHash } from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { getLanguageFromFilename } from 'ontoindex-shared';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { createKnowledgeGraph } from '../../core/graph/graph.js';
+import { createASTCache } from '../../core/ingestion/ast-cache.js';
+import { processParsing } from '../../core/ingestion/parsing-processor.js';
+import { createResolutionContext } from '../../core/ingestion/model/resolution-context.js';
+import { isLanguageAvailable } from '../../core/tree-sitter/parser-loader.js';
+import { execFileText } from '../../core/process/exec-file.js';
 import {
   IMPACT_RELATION_CONFIDENCE,
   VALID_RELATION_TYPES,
@@ -51,6 +61,16 @@ interface AffectedModule {
 
 type ImpactDirection = ImpactParams['direction'];
 type ImpactRisk = 'UNKNOWN' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+type ResolutionReason =
+  | 'selector-invalid'
+  | 'not-in-index'
+  | 'dirty-file-not-indexed'
+  | 'untracked-file-not-indexed'
+  | 'deleted-file'
+  | 'ambiguous'
+  | 'unsupported-language'
+  | 'source-status-failed'
+  | 'source-parse-failed';
 
 interface ImpactCandidate {
   uid: string;
@@ -72,6 +92,9 @@ interface ImpactBaseResult {
   impactedCount: number;
   risk: ImpactRisk;
   error?: string;
+  resolutionReason?: ResolutionReason;
+  resolutionStatus?: 'graph' | 'source-only';
+  graphImpactAvailable?: boolean;
 }
 
 interface ImpactErrorResult extends ImpactBaseResult {
@@ -85,6 +108,24 @@ interface ImpactAmbiguousResult extends ImpactBaseResult {
   message: string;
   risk: 'UNKNOWN';
   candidates: ImpactCandidate[];
+  resolutionReason: 'ambiguous';
+}
+
+interface ImpactSourceOnlyResult extends ImpactBaseResult {
+  risk: 'UNKNOWN';
+  resolutionStatus: 'source-only';
+  graphImpactAvailable: false;
+  resolutionReason: 'dirty-file-not-indexed' | 'untracked-file-not-indexed';
+  sourceIdentity: {
+    nodeId: string;
+    name: string;
+    kind: string;
+    filePath: string;
+    startLine?: number;
+    endLine?: number;
+    sourceDigest: string;
+  };
+  suggestion: string;
 }
 
 interface ImpactSuccessResult extends ImpactBaseResult {
@@ -108,7 +149,11 @@ interface ImpactSuccessResult extends ImpactBaseResult {
   rawCounts?: ImpactKernelRawCounts;
 }
 
-type ImpactResult = ImpactErrorResult | ImpactAmbiguousResult | ImpactSuccessResult;
+type ImpactResult =
+  | ImpactErrorResult
+  | ImpactAmbiguousResult
+  | ImpactSourceOnlyResult
+  | ImpactSuccessResult;
 
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
@@ -182,10 +227,27 @@ export async function runImpact(
 async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise<ImpactResult> {
   throwIfAborted(params.signal);
   const { target, direction } = params;
+  if (!target?.trim() && !params.target_uid && !params.nodeId) {
+    return unknownImpact(
+      params,
+      'selector-invalid',
+      'A non-empty target or target_uid is required.',
+    );
+  }
   const maxDepth = clampImpactDepth(params.maxDepth);
   const relationTypes = resolveRelationTypes(params.relationTypes);
   const includeTests = params.includeTests ?? false;
   const minConfidence = params.minConfidence ?? 0;
+
+  const sourceFallback = await resolveSourceOnly(repo, params);
+  if (sourceFallback?.kind === 'found') return sourceOnlyImpact(sourceFallback, direction);
+  if (sourceFallback?.kind === 'unavailable') {
+    return unknownImpact(
+      params,
+      sourceFallback.reason,
+      `Current source could not resolve '${target}' in '${params.file_path}'.`,
+    );
+  }
 
   const outcome = await resolveSymbolCandidates(
     repo,
@@ -201,6 +263,8 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
       direction,
       impactedCount: 0,
       risk: 'UNKNOWN',
+      resolutionReason: 'not-in-index',
+      graphImpactAvailable: false,
     };
   }
 
@@ -212,6 +276,7 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
       direction,
       impactedCount: 0,
       risk: 'UNKNOWN',
+      resolutionReason: 'ambiguous',
       candidates: outcome.candidates.map((c) => ({
         ...toSymbolIdentity(c),
         uid: c.id,
@@ -240,6 +305,153 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
     minConfidence,
     signal: params.signal,
   });
+}
+
+function sourceOnlyImpact(
+  source: Extract<Awaited<ReturnType<typeof resolveSourceOnly>>, { kind: 'found' }>,
+  direction: ImpactDirection,
+): ImpactSourceOnlyResult {
+  return {
+    target: { id: source.nodeId, name: source.name, type: source.type, filePath: source.filePath },
+    direction,
+    impactedCount: 0,
+    risk: 'UNKNOWN',
+    resolutionStatus: 'source-only',
+    graphImpactAvailable: false,
+    resolutionReason: source.reason,
+    sourceIdentity: {
+      nodeId: source.nodeId,
+      name: source.name,
+      kind: source.type,
+      filePath: source.filePath,
+      ...(source.startLine !== undefined ? { startLine: source.startLine } : {}),
+      ...(source.endLine !== undefined ? { endLine: source.endLine } : {}),
+      sourceDigest: source.sourceDigest,
+    },
+    suggestion:
+      'Current source proves symbol identity, but graph impact is unavailable. Re-analyze this repository before treating impact as authoritative.',
+  };
+}
+
+function unknownImpact(
+  params: ImpactParams,
+  resolutionReason: ResolutionReason,
+  error: string,
+): ImpactErrorResult {
+  return {
+    error,
+    target: { name: params.target },
+    direction: params.direction,
+    impactedCount: 0,
+    risk: 'UNKNOWN',
+    resolutionReason,
+    graphImpactAvailable: false,
+  };
+}
+
+async function resolveSourceOnly(
+  repo: ImpactRepoHandle,
+  params: ImpactParams,
+): Promise<
+  | {
+      kind: 'found';
+      reason: 'dirty-file-not-indexed' | 'untracked-file-not-indexed';
+      nodeId: string;
+      name: string;
+      type: string;
+      filePath: string;
+      startLine?: number;
+      endLine?: number;
+      sourceDigest: string;
+    }
+  | { kind: 'unavailable'; reason: Exclude<ResolutionReason, 'selector-invalid'> }
+  | null
+> {
+  if (!repo.repoPath || !params.file_path) return null;
+  const filePath = params.file_path.replace(/\\/g, '/');
+  const absolutePath = path.resolve(repo.repoPath, filePath);
+  const repoRoot = path.resolve(repo.repoPath);
+  if (absolutePath !== repoRoot && !absolutePath.startsWith(`${repoRoot}${path.sep}`)) {
+    return { kind: 'unavailable', reason: 'not-in-index' };
+  }
+
+  const stat = await fs.stat(absolutePath).catch(() => null);
+  const status = await fileStatus(repoRoot, filePath).catch(() => 'unknown' as const);
+  if (status === 'unknown') {
+    // Some registered repositories are graph stores without a source checkout.
+    // With no current file to overlay, continue with graph resolution.
+    return stat ? { kind: 'unavailable', reason: 'source-status-failed' } : null;
+  }
+  if (status === 'deleted') return { kind: 'unavailable', reason: 'deleted-file' };
+  if (status !== 'dirty' && status !== 'untracked') return null;
+  if (!stat) return { kind: 'unavailable', reason: 'deleted-file' };
+  if (!stat.isFile() || stat.size > 2 * 1024 * 1024) {
+    return { kind: 'unavailable', reason: 'source-parse-failed' };
+  }
+  const language = getLanguageFromFilename(filePath);
+  if (!language || !isLanguageAvailable(language)) {
+    return { kind: 'unavailable', reason: 'unsupported-language' };
+  }
+
+  const content = await fs.readFile(absolutePath, 'utf8');
+  const graph = createKnowledgeGraph();
+  const context = createResolutionContext();
+  const astCache = createASTCache(1);
+  try {
+    await processParsing(
+      graph,
+      [{ path: filePath, content }],
+      repoRoot,
+      context.model.symbols,
+      astCache,
+    );
+  } catch {
+    return { kind: 'unavailable', reason: 'source-parse-failed' };
+  } finally {
+    astCache.clear();
+  }
+
+  const target = params.target?.trim() ?? '';
+  const targetUid = params.target_uid ?? params.nodeId;
+  const simpleTarget = target.split(/::|\./).pop() ?? target;
+  const matches = graph.nodes.filter((node) => {
+    const name = String(node.properties?.name ?? '');
+    return node.id === targetUid || name === target || name === simpleTarget || node.id === target;
+  });
+  if (matches.length !== 1) {
+    return { kind: 'unavailable', reason: matches.length > 1 ? 'ambiguous' : 'not-in-index' };
+  }
+  const node = matches[0];
+  return {
+    kind: 'found',
+    reason: status === 'untracked' ? 'untracked-file-not-indexed' : 'dirty-file-not-indexed',
+    nodeId: node.id,
+    name: String(node.properties?.name ?? simpleTarget),
+    type: node.label,
+    filePath: String(node.properties?.filePath ?? filePath),
+    startLine: numberProperty(node.properties?.startLine),
+    endLine: numberProperty(node.properties?.endLine),
+    sourceDigest: createHash('sha256').update(content).digest('hex'),
+  };
+}
+
+async function fileStatus(
+  repoPath: string,
+  filePath: string,
+): Promise<'clean' | 'dirty' | 'untracked' | 'deleted'> {
+  const output = await execFileText('git', ['status', '--porcelain=v1', '--', filePath], {
+    cwd: repoPath,
+    timeoutMs: 5_000,
+    maxBuffer: 1024 * 1024,
+  });
+  const code = output.slice(0, 2);
+  if (code === '??') return 'untracked';
+  if (code.includes('D')) return 'deleted';
+  return code.trim() ? 'dirty' : 'clean';
+}
+
+function numberProperty(value: unknown): number | undefined {
+  return typeof value === 'number' ? value : undefined;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

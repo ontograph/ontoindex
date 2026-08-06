@@ -48,6 +48,7 @@ const LEDGER_PROGRESS_DEBOUNCE_MS = 1_000;
 interface ChildRegistrationOptions {
   onTerminalExit?: () => void;
   killGraceMs?: number;
+  processGroup?: boolean;
 }
 
 export class JobManager {
@@ -56,6 +57,7 @@ export class JobManager {
   private timeouts = new Map<string, ReturnType<typeof setTimeout>>();
   private killTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private childOptions = new Map<string, ChildRegistrationOptions>();
+  private childCancellationReasons = new Map<string, string>();
   private cancelHandlers = new Map<string, () => void>();
   private emitter = new EventEmitter();
   private cleanupTimer: ReturnType<typeof setInterval>;
@@ -246,12 +248,6 @@ export class JobManager {
 
     // Clean up tracking when child exits
     child.on('exit', () => {
-      this.children.delete(jobId);
-      const killTimer = this.killTimers.get(jobId);
-      if (killTimer) {
-        clearTimeout(killTimer);
-        this.killTimers.delete(jobId);
-      }
       const t = this.timeouts.get(jobId);
       if (t) {
         clearTimeout(t);
@@ -259,9 +255,15 @@ export class JobManager {
       }
       const job = this.jobs.get(jobId);
       const registeredOptions = this.childOptions.get(jobId);
-      this.childOptions.delete(jobId);
-      if (job && this.isTerminal(job.status)) {
-        registeredOptions?.onTerminalExit?.();
+      const cancellationReason = this.childCancellationReasons.get(jobId);
+      if (job && cancellationReason) {
+        void this.finishCancelledChild(jobId, child, registeredOptions, cancellationReason);
+      } else if (job && this.isTerminal(job.status)) {
+        void this.finishTerminalChild(jobId, child, registeredOptions);
+      } else {
+        this.children.delete(jobId);
+        this.childOptions.delete(jobId);
+        this.clearKillTimer(jobId);
       }
     });
   }
@@ -289,19 +291,36 @@ export class JobManager {
 
     const child = this.children.get(jobId);
     if (child) {
-      child.kill('SIGTERM');
       const options = this.childOptions.get(jobId);
+      const cancellationReason = reason || 'Analysis cancelled';
+      signalChild(child, 'SIGTERM', options?.processGroup === true);
+      if (options?.processGroup) {
+        this.childCancellationReasons.set(jobId, cancellationReason);
+      }
       const killGraceMs = options?.killGraceMs ?? CHILD_KILL_GRACE_MS;
       if (!this.killTimers.has(jobId)) {
         const killTimer = setTimeout(() => {
-          const currentChild = this.children.get(jobId);
           const currentJob = this.jobs.get(jobId);
-          if (currentChild && currentJob && this.isTerminal(currentJob.status)) {
-            currentChild.kill('SIGKILL');
+          if (
+            currentJob &&
+            (this.isTerminal(currentJob.status) || this.childCancellationReasons.has(jobId))
+          ) {
+            signalChild(child, 'SIGKILL', options?.processGroup === true);
           }
         }, killGraceMs);
         killTimer.unref?.();
         this.killTimers.set(jobId, killTimer);
+      }
+      if (options?.processGroup) {
+        this.updateJob(jobId, {
+          progress: {
+            phase: 'cancelling',
+            percent: job.progress.percent,
+            message: cancellationReason,
+          },
+          error: cancellationReason,
+        });
+        return true;
       }
     }
 
@@ -313,6 +332,44 @@ export class JobManager {
     return true;
   }
 
+  private async finishCancelledChild(
+    jobId: string,
+    child: ChildProcess,
+    options: ChildRegistrationOptions | undefined,
+    reason: string,
+  ): Promise<void> {
+    if (options?.processGroup && child.pid) {
+      await waitForProcessGroupExit(child.pid);
+    }
+    this.childCancellationReasons.delete(jobId);
+    this.children.delete(jobId);
+    this.childOptions.delete(jobId);
+    this.clearKillTimer(jobId);
+    this.updateJob(jobId, { status: 'failed', error: reason });
+    options?.onTerminalExit?.();
+  }
+
+  private async finishTerminalChild(
+    jobId: string,
+    child: ChildProcess,
+    options: ChildRegistrationOptions | undefined,
+  ): Promise<void> {
+    if (options?.processGroup && child.pid) {
+      await waitForProcessGroupExit(child.pid);
+    }
+    this.children.delete(jobId);
+    this.childOptions.delete(jobId);
+    this.clearKillTimer(jobId);
+    options?.onTerminalExit?.();
+  }
+
+  private clearKillTimer(jobId: string): void {
+    const killTimer = this.killTimers.get(jobId);
+    if (!killTimer) return;
+    clearTimeout(killTimer);
+    this.killTimers.delete(jobId);
+  }
+
   /** Subscribe to progress events for a job. Returns unsubscribe function. */
   onProgress(jobId: string, listener: (progress: AnalyzeJobProgress) => void): () => void {
     const event = `progress:${jobId}`;
@@ -322,8 +379,8 @@ export class JobManager {
 
   async dispose() {
     // Kill all active child processes
-    for (const child of this.children.values()) {
-      child.kill('SIGTERM');
+    for (const [jobId, child] of this.children) {
+      signalChild(child, 'SIGTERM', this.childOptions.get(jobId)?.processGroup === true);
     }
     this.children.clear();
 
@@ -337,6 +394,7 @@ export class JobManager {
     }
     this.killTimers.clear();
     this.childOptions.clear();
+    this.childCancellationReasons.clear();
     this.cancelHandlers.clear();
 
     clearInterval(this.cleanupTimer);
@@ -368,5 +426,30 @@ export class JobManager {
     if (changed) {
       this.scheduleLedgerSave(true);
     }
+  }
+}
+
+function signalChild(child: ChildProcess, signal: NodeJS.Signals, processGroup: boolean): void {
+  try {
+    if (processGroup && process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch {
+    // The child or process group may already have exited.
+  }
+}
+
+async function waitForProcessGroupExit(pid: number): Promise<void> {
+  if (process.platform === 'win32') return;
+  while (isProcessGroupAlive(pid)) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+function isProcessGroupAlive(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch {
+    return false;
   }
 }

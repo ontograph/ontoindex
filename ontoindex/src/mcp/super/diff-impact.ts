@@ -36,6 +36,8 @@ import type {
 } from '../shared/diff-output-budget.js';
 import { createOutputTruncatedRecoverableState } from '../shared/recoverable-runtime-state.js';
 import { resolveTargetContext } from '../shared/target-context.js';
+import type { GraphAuthorityState } from '../shared/target-context.js';
+import { getCallableToolNames } from '../shared/tool-registry.js';
 import { collectAdvisoryDocsEvidence } from './docs-evidence.js';
 import type { AdvisoryDocsEvidenceReport, AdvisoryDocsEvidenceTarget } from './docs-evidence.js';
 import {
@@ -56,6 +58,7 @@ import {
   summarizeEvidenceDiagnostics,
 } from '../../core/runtime/evidence-diagnostics.js';
 import type { EvidenceDiagnosticQualityKind } from '../../core/runtime/evidence-diagnostics.js';
+import { resolveBranchComparisonBase } from '../../storage/git.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -182,6 +185,7 @@ const MAX_DIFF_IMPACT_DETAIL_FILES = 25;
 const MAX_DIFF_IMPACT_SYMBOLS_PER_FILE = 10;
 const REVIEW_DIFF_DIAGNOSTICS_NOTE =
   'Evidence diagnostics are bounded quality metadata for review triage; they are not audit authority.';
+const CALLABLE_TOOL_NAMES = getCallableToolNames({ includeFacades: true });
 
 type QueryRow = Record<string, unknown> | readonly unknown[];
 type TestCoverageRow = QueryRow;
@@ -283,15 +287,6 @@ export function applyChangedPathLimitForReview(
     truncated: true,
     warning: `Changed file scan capped at ${maxChangedPaths} paths`,
   };
-}
-
-/** Resolve the repo root via git. Falls back to process.cwd(). */
-function resolveRepoRoot(): string {
-  try {
-    return gitCapture(undefined, ['rev-parse', '--show-toplevel']).trim();
-  } catch {
-    return process.cwd();
-  }
 }
 
 /** Parse `git diff --numstat` output into a map of path → { added, removed }. */
@@ -534,10 +529,13 @@ function buildReviewDiffDiagnostics(options: {
   reviewResult: DiffReviewResult;
   warnings: readonly string[];
   freshness: CapabilityResponseFreshness;
+  graphAuthorityState?: GraphAuthorityState;
   budget: QueryBudgetSnapshot;
 }): ReviewDiffDiagnostics {
-  const { changedPathCount, reviewResult, warnings, freshness, budget } = options;
-  const graphEvidenceAuthority = freshness.actionable ? 'authoritative' : 'advisory';
+  const { changedPathCount, reviewResult, warnings, freshness, graphAuthorityState, budget } =
+    options;
+  const graphEvidenceAuthority =
+    graphAuthorityState === 'authoritative' ? 'authoritative' : 'advisory';
   const graphEvidenceAdvisory = graphEvidenceAuthority === 'advisory';
   const records: ReviewDiffDiagnosticRecord[] = [
     reviewDiffDiagnosticRecord({
@@ -759,11 +757,11 @@ function buildPrReadinessPack(options: {
   ).length;
   const stopConditions: PrReadinessStopCondition[] = [];
 
-  if (report.capabilityState.freshness.status === 'stale') {
+  if (!report.capabilityState.freshness.actionable) {
     stopConditions.push({
       severity: 'ERROR',
-      reason: 'Index is stale for this diff.',
-      fix: 'Refresh the OntoIndex index before relying on PR readiness.',
+      reason: 'Authoritative graph evidence is unavailable for this diff.',
+      fix: 'Refresh or rebuild the OntoIndex index before relying on PR readiness.',
     });
   }
   if (report.highRiskSymbols.length > 0) {
@@ -832,7 +830,19 @@ export async function gnDiffImpact(
   params: DiffImpactParams,
 ): Promise<DiffImpactReport> {
   const warnings: string[] = [];
-  const repoRoot = resolveRepoRoot();
+  const targetContext = await resolveTargetContext({
+    repo: repoId,
+    verifyGraphAuthority: true,
+    requiredGraphCapabilities: ['symbols', 'impact', 'processes'],
+  });
+  if (targetContext.status !== 'ok' || !targetContext.repoPath) {
+    throw new Error(
+      targetContext.action ?? `Repository "${repoId}" did not resolve to an indexed path.`,
+    );
+  }
+  const repoRoot = targetContext.repoPath;
+  const freshness = deriveEnvelopeFreshness(targetContext);
+  const capabilityWarnings = [...targetContext.warnings];
 
   // ---- 1. Build git diff args based on scope / commitRange ----------------
   const { commitRange, scope, includeReviewers = true, includePaths = [] } = params;
@@ -847,9 +857,10 @@ export async function gnDiffImpact(
     numstatArgs = ['diff', commitRange, '--numstat'];
     resolvedRange = commitRange;
   } else if (scope === 'branch') {
-    nameOnlyArgs = ['diff', 'main...HEAD', '--name-only'];
-    numstatArgs = ['diff', 'main...HEAD', '--numstat'];
-    resolvedRange = 'main...HEAD';
+    const branchRange = resolveBranchComparisonBase(repoRoot).range;
+    nameOnlyArgs = ['diff', branchRange, '--name-only'];
+    numstatArgs = ['diff', branchRange, '--numstat'];
+    resolvedRange = branchRange;
   } else {
     // 'staged' (default) or 'commit-range' without an explicit range
     nameOnlyArgs = ['diff', '--cached', '--name-only'];
@@ -880,20 +891,6 @@ export async function gnDiffImpact(
 
   // ---- 3. Empty diff — return empty report --------------------------------
   if (changedPaths.length === 0) {
-    let freshness = DEFAULT_FRESHNESS;
-    const capabilityWarnings: string[] = [];
-    try {
-      const targetContext = await resolveTargetContext({ repo: repoId });
-      if (targetContext && typeof targetContext === 'object') {
-        freshness = deriveEnvelopeFreshness(targetContext);
-        capabilityWarnings.push(...targetContext.warnings);
-      }
-    } catch (err) {
-      capabilityWarnings.push(
-        `target context unavailable: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-
     return createBaseDiffImpactReport(repoId, resolvedRange, uniqueStrings(warnings), {
       capabilityState: {
         freshness,
@@ -919,20 +916,6 @@ export async function gnDiffImpact(
   // authoritative upstream counts; downstream counts are heuristic.
   const reviewResult = await buildDiffReview(repoId, changedPaths, numstatMap);
   warnings.push(...reviewResult.warnings);
-
-  let freshness = DEFAULT_FRESHNESS;
-  const capabilityWarnings: string[] = [];
-  try {
-    const targetContext = await resolveTargetContext({ repo: repoId });
-    if (targetContext && typeof targetContext === 'object') {
-      freshness = deriveEnvelopeFreshness(targetContext);
-      capabilityWarnings.push(...targetContext.warnings);
-    }
-  } catch (err) {
-    capabilityWarnings.push(
-      `target context unavailable: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
 
   const evidence: DiffImpactReport['evidence'] = [];
   const fileEvidenceByPath = new Map<string, string>();
@@ -1172,8 +1155,7 @@ export async function gnDiffImpact(
   }
 
   const capabilitiesMissing = uniqueStrings([
-    freshness.status === 'stale' ? 'fresh-graph' : '',
-    freshness.status === 'degraded' ? 'clean-worktree' : '',
+    targetContext.graphAuthority?.state !== 'authoritative' ? 'authoritative-graph' : '',
     freshness.status === 'unknown' ? 'target-context' : '',
     reviewResult.graphSections?.processesAvailable === false ? 'process-enrichment' : '',
     reviewResult.graphSections?.communitiesAvailable === false ? 'community-enrichment' : '',
@@ -1202,25 +1184,28 @@ export async function gnDiffImpact(
         capabilitiesMissing,
       });
       recommendations.push(
-        emitOrganicRecommendation({
-          id: makeEvidenceId(
-            'recommendation:high-risk-symbol',
-            symbol.nodeId || `${file.path}:${symbol.name}`,
-          ),
-          action: 'review-high-risk-symbol',
-          target: { kind: 'symbol', name: symbol.name, filePath: file.path },
-          reason: `${symbol.name} in ${file.path} is flagged by ${symbol.evidenceIds[0]} with ${symbol.impact.upstreamCount} upstream callers.`,
-          confidence,
-          evidenceIds: symbol.evidenceIds,
-          evidenceClasses: ['graph_evidence'],
-          scoreTrace: buildRecommendationTrace(baseConfidence, confidence, {
-            freshness,
-            heuristic: symbol.impact.heuristic === true,
-            partialGraph,
-            capabilitiesMissing,
-          }),
-          nextTools: ['gn_review_diff'],
-        }),
+        emitOrganicRecommendation(
+          {
+            id: makeEvidenceId(
+              'recommendation:high-risk-symbol',
+              symbol.nodeId || `${file.path}:${symbol.name}`,
+            ),
+            action: 'review-high-risk-symbol',
+            target: { kind: 'symbol', name: symbol.name, filePath: file.path },
+            reason: `${symbol.name} in ${file.path} is flagged by ${symbol.evidenceIds[0]} with ${symbol.impact.upstreamCount} upstream callers.`,
+            confidence,
+            evidenceIds: symbol.evidenceIds,
+            evidenceClasses: ['graph_evidence'],
+            scoreTrace: buildRecommendationTrace(baseConfidence, confidence, {
+              freshness,
+              heuristic: symbol.impact.heuristic === true,
+              partialGraph,
+              capabilitiesMissing,
+            }),
+            nextTools: ['gn_review_diff'],
+          },
+          { callableToolNames: CALLABLE_TOOL_NAMES },
+        ),
       );
     }
   }
@@ -1233,21 +1218,24 @@ export async function gnDiffImpact(
       capabilitiesMissing,
     });
     recommendations.push(
-      emitOrganicRecommendation({
-        id: makeEvidenceId('recommendation:affected-process', process.id || process.name),
-        action: 'review-affected-process',
-        target: { kind: 'process', name: process.name },
-        reason: `${process.name} includes ${process.changedStepCount} changed steps in ${process.evidenceIds[0]}.`,
-        confidence,
-        evidenceIds: process.evidenceIds,
-        evidenceClasses: ['graph_evidence'],
-        scoreTrace: buildRecommendationTrace(baseConfidence, confidence, {
-          freshness,
-          partialGraph,
-          capabilitiesMissing,
-        }),
-        nextTools: ['gn_review_diff'],
-      }),
+      emitOrganicRecommendation(
+        {
+          id: makeEvidenceId('recommendation:affected-process', process.id || process.name),
+          action: 'review-affected-process',
+          target: { kind: 'process', name: process.name },
+          reason: `${process.name} includes ${process.changedStepCount} changed steps in ${process.evidenceIds[0]}.`,
+          confidence,
+          evidenceIds: process.evidenceIds,
+          evidenceClasses: ['graph_evidence'],
+          scoreTrace: buildRecommendationTrace(baseConfidence, confidence, {
+            freshness,
+            partialGraph,
+            capabilitiesMissing,
+          }),
+          nextTools: ['gn_review_diff'],
+        },
+        { callableToolNames: CALLABLE_TOOL_NAMES },
+      ),
     );
   }
 
@@ -1268,27 +1256,30 @@ export async function gnDiffImpact(
       capabilitiesMissing,
     });
     recommendations.push(
-      emitOrganicRecommendation({
-        id: makeEvidenceId('recommendation:test-gap', targetSymbol?.nodeId || filePath),
-        action: 'review-test-gap',
-        target: targetSymbol
-          ? { kind: 'symbol', name: targetSymbol.name, filePath }
-          : { kind: 'file', name: filePath, filePath },
-        reason: `${
-          targetSymbol?.name ?? filePath
-        } in ${filePath} has no linked test import evidence in ${
-          warningEvidenceIds[0] ?? makeEvidenceId('diff-warning:test-gap', filePath)
-        }.`,
-        confidence,
-        evidenceIds,
-        evidenceClasses: ['graph_evidence', 'runtime_diagnostic'],
-        scoreTrace: buildRecommendationTrace(baseConfidence, confidence, {
-          freshness,
-          partialGraph,
-          capabilitiesMissing,
-        }),
-        nextTools: ['gn_test_gap'],
-      }),
+      emitOrganicRecommendation(
+        {
+          id: makeEvidenceId('recommendation:test-gap', targetSymbol?.nodeId || filePath),
+          action: 'review-test-gap',
+          target: targetSymbol
+            ? { kind: 'symbol', name: targetSymbol.name, filePath }
+            : { kind: 'file', name: filePath, filePath },
+          reason: `${
+            targetSymbol?.name ?? filePath
+          } in ${filePath} has no linked test import evidence in ${
+            warningEvidenceIds[0] ?? makeEvidenceId('diff-warning:test-gap', filePath)
+          }.`,
+          confidence,
+          evidenceIds,
+          evidenceClasses: ['graph_evidence', 'runtime_diagnostic'],
+          scoreTrace: buildRecommendationTrace(baseConfidence, confidence, {
+            freshness,
+            partialGraph,
+            capabilitiesMissing,
+          }),
+          nextTools: ['gn_test_gap'],
+        },
+        { callableToolNames: CALLABLE_TOOL_NAMES },
+      ),
     );
   }
 
@@ -1438,7 +1429,17 @@ export async function gnReviewDiff(
     emitted: 0,
   });
   const warnings: string[] = [];
-  const repoRoot = resolveRepoRoot();
+  const targetContext = await resolveTargetContext({
+    repo: repoId,
+    verifyGraphAuthority: true,
+    requiredGraphCapabilities: ['symbols', 'impact', 'processes'],
+  });
+  if (targetContext.status !== 'ok' || !targetContext.repoPath) {
+    throw new Error(
+      targetContext.action ?? `Repository "${repoId}" did not resolve to an indexed path.`,
+    );
+  }
+  const repoRoot = targetContext.repoPath;
 
   // ---- 1. Resolve git diff args -------------------------------------------
   const { commitRange, scope, includePaths = [] } = params;
@@ -1452,9 +1453,10 @@ export async function gnReviewDiff(
     numstatArgs = ['diff', commitRange, '--numstat'];
     resolvedRange = commitRange;
   } else if (scope === 'branch') {
-    nameOnlyArgs = ['diff', 'main...HEAD', '--name-only'];
-    numstatArgs = ['diff', 'main...HEAD', '--numstat'];
-    resolvedRange = 'main...HEAD';
+    const branchRange = resolveBranchComparisonBase(repoRoot).range;
+    nameOnlyArgs = ['diff', branchRange, '--name-only'];
+    numstatArgs = ['diff', branchRange, '--numstat'];
+    resolvedRange = branchRange;
   } else {
     nameOnlyArgs = ['diff', '--cached', '--name-only'];
     numstatArgs = ['diff', '--cached', '--numstat'];
@@ -1517,9 +1519,6 @@ export async function gnReviewDiff(
   const allWarnings = [...new Set([...warnings, ...reviewResult.warnings])];
 
   // ---- 5. Target context for provenance envelope --------------------------
-  const targetContext = await resolveTargetContext({ repo: repoId }).catch(() =>
-    resolveTargetContext(),
-  );
   const freshness = deriveEnvelopeFreshness(targetContext);
   const finalBudget = finishQueryBudgetSnapshot(budget, { startedAtMs: budgetStartedAtMs });
   const diffOutputBudget = buildDiffOutputBudget({
@@ -1543,6 +1542,7 @@ export async function gnReviewDiff(
     reviewResult,
     warnings: allWarnings,
     freshness,
+    graphAuthorityState: targetContext.graphAuthority?.state,
     budget: finalBudget,
   });
   const evidenceTrajectory: EvidenceTrajectoryItem = {

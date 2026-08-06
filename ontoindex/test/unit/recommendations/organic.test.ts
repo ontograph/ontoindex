@@ -103,6 +103,23 @@ describe('organic recommendations', () => {
     expect(valid.nonToolActions).toEqual(['manual_patch_with_guard']);
   });
 
+  it('requires transport callers to supply their callable tool registry', () => {
+    const result = validateOrganicRecommendation({
+      id: 'rec-missing-tool-registry',
+      action: 'review-test-gap',
+      target: { kind: 'symbol', name: 'parseToken' },
+      reason: 'parseToken is missing coverage in tg-1.',
+      confidence: 'medium',
+      evidenceIds: ['tg-1'],
+      evidenceClasses: ['graph_evidence'],
+      nextTools: ['gn_test_gap'],
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('expected missing registry validation failure');
+    expect(result.errors).toEqual([expect.objectContaining({ field: 'nextTools[0]' })]);
+  });
+
   it('rejects generic reasons that do not reference concrete evidence', () => {
     const result = validateOrganicRecommendation(
       {

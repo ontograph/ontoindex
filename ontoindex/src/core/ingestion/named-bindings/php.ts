@@ -8,8 +8,12 @@ export function extractPhpNamedBindings(importNode: SyntaxNode): NamedBinding[] 
 
   // Skip 'use function' and 'use const' declarations — these import callables/constants,
   // not class types, and should not be added to namedImportMap as type bindings.
-  const useTypeNode = importNode.childForFieldName?.('type');
-  if (useTypeNode && (useTypeNode.text === 'function' || useTypeNode.text === 'const')) {
+  const useType = importNode.childForFieldName?.('type')?.text;
+  if (
+    useType === 'function' ||
+    useType === 'const' ||
+    /^use\s+(?:function|const)\b/.test(importNode.text)
+  ) {
     return undefined;
   }
 

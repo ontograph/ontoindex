@@ -18,11 +18,13 @@ import type { SupportedLanguages } from 'ontoindex-shared';
  * Result of resolving an import via language-specific dispatch.
  * - 'files': resolved to one or more files -> add to ImportMap
  * - 'package': resolved to a directory -> add graph edges + store dirSuffix in PackageMap
+ * - 'scope': candidate files that may contain the imported symbol -> add to ImportMap only
  * - null: no resolution (external dependency, etc.)
  */
 export type ImportResult =
   | { kind: 'files'; files: string[] }
   | { kind: 'package'; files: string[]; dirSuffix: string }
+  | { kind: 'scope'; files: string[] }
   | null;
 
 /** Bundled language-specific configs loaded once per ingestion run. */

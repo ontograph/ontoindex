@@ -2,29 +2,30 @@
  * gn_ensure_fresh — Index lifecycle helper super-function.
  *
  * Reports whether the OntoIndex index is stale (indexed commit ≠ current HEAD),
- * surfaces embeddings status, and optionally re-runs `ontoindex analyze`
- * when `autoAnalyze: true` is passed.
+ * surfaces embeddings status, and optionally submits a durable `ontoindex analyze`
+ * job when `autoAnalyze: true` is passed.
  *
  * This is a READ-ONLY super-function by default (autoAnalyze defaults to false).
  * It never modifies the index without explicit caller consent.
  */
 
-import { spawn } from 'child_process';
 import { readFileSync } from 'fs';
 import path, { join } from 'path';
 import { homedir } from 'os';
 import { execFileText } from '../../core/process/exec-file.js';
+import {
+  submitAnalysisJob,
+  type AnalysisJobRecord,
+} from '../../core/analysis/analysis-coordinator.js';
 import {
   readRuntimeHealth,
   type RuntimeHealthSnapshot,
 } from '../../core/runtime/runtime-health.js';
 import { loadMeta, type RepoMeta } from '../../storage/repo-manager.js';
 import type { ScopeConfidence } from '../shared/target-context.js';
+import { resolveTargetContext } from '../shared/target-context.js';
+import { createEnvelopeFromLegacy } from '../shared/response-envelope.js';
 
-const AUTO_ANALYZE_TIMEOUT_MS = Number.parseInt(
-  process.env.ONTOINDEX_AUTO_ANALYZE_TIMEOUT_MS ?? '300000',
-  10,
-);
 const GIT_PROBE_TIMEOUT_MS = 5_000;
 const GIT_PROBE_MAX_BUFFER = 1024 * 1024;
 
@@ -37,9 +38,23 @@ export interface EnsureFreshParams {
   withEmbeddings?: boolean; // default: false
   autoAnalyze?: boolean; // default: false (require explicit confirm)
   killMcpForLock?: boolean; // deprecated; advisory only for safety
+  legacyResponse?: boolean; // default: true
 }
 
 export type EmbeddingDriftStatus = 'ok' | 'missing' | 'metadata-unavailable' | 'drifted';
+
+export type AnalysisSubmission =
+  | { status: 'not-requested' }
+  | { status: 'not-needed' }
+  | { status: 'blocked'; reasonCode: string; message: string }
+  | { status: 'queued'; jobId: string }
+  | { status: 'reused'; jobId: string }
+  | {
+      status: 'failed';
+      errorCode: 'ANALYZE_JOB_SUBMISSION_FAILED';
+      causeCode?: string;
+      message: string;
+    };
 
 export interface EnsureFreshReport {
   version: 1;
@@ -60,6 +75,8 @@ export interface EnsureFreshReport {
   scopeConfidence?: ScopeConfidence;
   runtimeHealth?: RuntimeHealthSnapshot;
   actionsTaken: string[];
+  analysisSubmission: AnalysisSubmission;
+  analysisJob?: AnalysisJobRecord;
   postCheck?: { indexedCommit: string; currentCommit: string; isStale: boolean };
   warnings: string[];
   recommendations: string[];
@@ -185,6 +202,7 @@ function emptyReport(
       | 'scopeConfidence'
     >
   > = {},
+  analysisSubmission: AnalysisSubmission = { status: 'not-requested' },
 ): EnsureFreshReport {
   return {
     version: 1,
@@ -198,6 +216,7 @@ function emptyReport(
     },
     ...extras,
     actionsTaken: [],
+    analysisSubmission,
     warnings,
     recommendations,
   };
@@ -213,52 +232,6 @@ function currentCliCommand(): { command: string; argsPrefix: string[]; displayPr
     };
   }
   return { command: 'ontoindex', argsPrefix: [], displayPrefix: 'ontoindex' };
-}
-
-function runAnalyzeProcess(
-  command: string,
-  args: string[],
-  cwd: string,
-  timeoutMs: number,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd,
-      stdio: 'inherit',
-    });
-
-    let timedOut = false;
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGTERM');
-      killTimer = setTimeout(() => {
-        child.kill('SIGKILL');
-      }, 5_000);
-    }, timeoutMs);
-
-    child.once('error', (err) => {
-      clearTimeout(timeout);
-      if (killTimer) clearTimeout(killTimer);
-      reject(err);
-    });
-
-    child.once('exit', (code, signal) => {
-      clearTimeout(timeout);
-      if (killTimer) clearTimeout(killTimer);
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      if (timedOut) {
-        reject(new Error(`analyze timed out after ${timeoutMs}ms`));
-        return;
-      }
-      reject(
-        new Error(`analyze exited with code ${code ?? 'null'}${signal ? ` signal ${signal}` : ''}`),
-      );
-    });
-  });
 }
 
 async function countDirtyFiles(repoRoot: string): Promise<number | null> {
@@ -362,13 +335,65 @@ function resolveEmbeddingsStatus(input: {
 // Main function
 // ---------------------------------------------------------------------------
 
+export function gnEnsureFresh(
+  repoId: string,
+  params: EnsureFreshParams & { legacyResponse: false },
+): Promise<ReturnType<typeof createEnvelopeFromLegacy<EnsureFreshReport>>>;
+export function gnEnsureFresh(
+  repoId: string,
+  params: EnsureFreshParams,
+): Promise<EnsureFreshReport>;
 export async function gnEnsureFresh(
+  repoId: string,
+  params: EnsureFreshParams,
+): Promise<EnsureFreshReport | ReturnType<typeof createEnvelopeFromLegacy<EnsureFreshReport>>> {
+  const report = await buildEnsureFreshReport(repoId, params);
+  if (params.legacyResponse !== false) return report;
+  const targetContext = await resolveTargetContext({
+    repo: params.repo ?? repoId,
+    verifyGraphAuthority: true,
+    requiredGraphCapabilities: ['symbols'],
+  });
+  return createEnvelopeFromLegacy({
+    legacy: report,
+    tool: 'gn_ensure_fresh',
+    status:
+      report.analysisSubmission.status === 'failed'
+        ? 'error'
+        : report.analysisSubmission.status === 'blocked'
+          ? 'degraded'
+          : report.analysisJob
+            ? report.analysisJob.status
+            : 'success',
+    targetContext,
+    runtimeHealth: report.runtimeHealth,
+    capabilitiesUsed: ['git', 'graph-metadata'],
+    nextTools: report.analysisJob ? ['gn_analyze_job'] : [],
+    omitResultKeys: [
+      'runtimeHealth',
+      'preCheck',
+      'repoLabel',
+      'repoPath',
+      'indexedCommit',
+      'headCommit',
+      'isStale',
+      'dirtyFileCount',
+      'scopeConfidence',
+      'postCheck',
+    ],
+  });
+}
+
+async function buildEnsureFreshReport(
   repoId: string,
   params: EnsureFreshParams,
 ): Promise<EnsureFreshReport> {
   const warnings: string[] = [];
   const recommendations: string[] = [];
   const actionsTaken: string[] = [];
+  let analysisSubmission: AnalysisSubmission = params.autoAnalyze
+    ? { status: 'not-needed' }
+    : { status: 'not-requested' };
 
   // ---- 1. Read registry ---------------------------------------------------
   const registryPath = join(homedir(), '.ontoindex', 'registry.json');
@@ -377,7 +402,18 @@ export async function gnEnsureFresh(
     registry = parseRegistryJson(readFileSync(registryPath, 'utf8'));
   } catch (err) {
     warnings.push('cannot read ~/.ontoindex/registry.json: ' + String(err));
-    return emptyReport(warnings, recommendations);
+    return emptyReport(
+      warnings,
+      recommendations,
+      {},
+      params.autoAnalyze
+        ? {
+            status: 'blocked',
+            reasonCode: 'REGISTRY_UNAVAILABLE',
+            message: 'Repository registry is unavailable; analysis cannot be submitted.',
+          }
+        : { status: 'not-requested' },
+    );
   }
 
   // ---- 2. Resolve the repo from the same registry semantics as MCP --------
@@ -397,6 +433,13 @@ export async function gnEnsureFresh(
         dirtyFileCount: null,
         scopeConfidence: selector ? 'low' : 'unknown',
       },
+      params.autoAnalyze
+        ? {
+            status: 'blocked',
+            reasonCode: 'REPO_NOT_REGISTERED',
+            message: 'Repository is not registered; analysis cannot be submitted.',
+          }
+        : { status: 'not-requested' },
     );
   }
 
@@ -468,10 +511,14 @@ export async function gnEnsureFresh(
 
   if (
     params.autoAnalyze &&
-    ((runtimeHealth.freshnessState === 'untrusted' &&
-      runtimeHealth.analyzeLock.state !== 'stale') ||
-      runtimeHealth.freshnessState === 'failed-after-partial-run')
+    runtimeHealth.freshnessState === 'untrusted' &&
+    runtimeHealth.analyzeLock.state !== 'stale'
   ) {
+    analysisSubmission = {
+      status: 'blocked',
+      reasonCode: runtimeHealth.freshnessState,
+      message: `Index runtime health is ${runtimeHealth.freshnessState}; repair manually before autoAnalyze.`,
+    };
     recommendations.push(
       `Index runtime health is ${runtimeHealth.freshnessState}; repair manually before autoAnalyze.`,
     );
@@ -492,15 +539,21 @@ export async function gnEnsureFresh(
       scopeConfidence,
       runtimeHealth,
       actionsTaken,
+      analysisSubmission,
       warnings,
       recommendations,
     };
   }
 
   // ---- 7. Auto-analyze (only when explicitly requested AND stale) ---------
-  let postCheck: EnsureFreshReport['postCheck'];
+  let analysisJob: AnalysisJobRecord | undefined;
 
-  if (params.autoAnalyze && (isStale || runtimeHealth.analyzeLock.state === 'stale')) {
+  if (
+    params.autoAnalyze &&
+    (isStale ||
+      runtimeHealth.analyzeLock.state === 'stale' ||
+      runtimeHealth.freshnessState === 'failed-after-partial-run')
+  ) {
     // Note: this CAN block on DuckDB write-lock if MCP processes are running.
     if (params.killMcpForLock) {
       warnings.push(
@@ -513,37 +566,47 @@ export async function gnEnsureFresh(
 
     const cli = currentCliCommand();
     const args = [...cli.argsPrefix, 'analyze'];
+    const forceRecovery =
+      runtimeHealth.analyzeLock.state === 'stale' ||
+      runtimeHealth.freshnessState === 'failed-after-partial-run';
+    if (forceRecovery) args.push('--force');
     if (params.withEmbeddings) args.push('--embeddings');
 
     try {
-      await runAnalyzeProcess(
-        cli.command,
+      const submitted = await submitAnalysisJob({
+        repoPath: repoRoot,
+        targetHead: currentCommit,
+        command: cli.command,
         args,
-        repoRoot,
-        Number.isFinite(AUTO_ANALYZE_TIMEOUT_MS) ? AUTO_ANALYZE_TIMEOUT_MS : 300000,
-      );
+        options: { withEmbeddings: params.withEmbeddings === true },
+      });
+      analysisJob = submitted.job;
+      analysisSubmission = {
+        status: submitted.reused ? 'reused' : 'queued',
+        jobId: analysisJob.id,
+      };
       actionsTaken.push(
-        `Ran: ${cli.displayPrefix} analyze${params.withEmbeddings ? ' --embeddings' : ''}`,
+        `${submitted.reused ? 'Reused' : 'Started'} analysis job ${analysisJob.id}: ${cli.displayPrefix} analyze${forceRecovery ? ' --force' : ''}${params.withEmbeddings ? ' --embeddings' : ''}`,
       );
-
-      if (params.killMcpForLock) {
-        recommendations.push(
-          "If you stopped an MCP server manually, restart it via your editor's MCP config or: ontoindex mcp --repo <repo>",
-        );
-      }
-
-      // Re-read registry for postCheck
-      const updatedRegistry = parseRegistryJson(readFileSync(registryPath, 'utf8'));
-      const updatedEntry = findRegistryEntry(updatedRegistry, selector, repoRoot);
-      if (updatedEntry) {
-        postCheck = {
-          indexedCommit: updatedEntry.lastCommit ?? '',
-          currentCommit,
-          isStale: currentCommit !== updatedEntry.lastCommit,
-        };
-      }
+      recommendations.push(
+        `Poll gn_analyze_job with jobId "${analysisJob.id}" for terminal status, exit code, generation ID, and log path.`,
+      );
     } catch (err) {
-      warnings.push('analyze failed: ' + (err instanceof Error ? err.message : String(err)));
+      const message = err instanceof Error ? err.message : String(err);
+      const causeCode =
+        err && typeof err === 'object' && 'code' in err && typeof err.code === 'string'
+          ? err.code
+          : undefined;
+      analysisSubmission = {
+        status: 'failed',
+        errorCode: 'ANALYZE_JOB_SUBMISSION_FAILED',
+        ...(causeCode ? { causeCode } : {}),
+        message,
+      };
+      warnings.push('analyze job submission failed: ' + message);
+      recommendations.push(
+        'Inspect any active analysis job under .ontoindex/analysis-jobs before retrying autoAnalyze.',
+      );
     }
   }
 
@@ -568,7 +631,8 @@ export async function gnEnsureFresh(
     scopeConfidence,
     runtimeHealth,
     actionsTaken,
-    ...(postCheck !== undefined ? { postCheck } : {}),
+    analysisSubmission,
+    ...(analysisJob !== undefined ? { analysisJob } : {}),
     warnings,
     recommendations,
   };

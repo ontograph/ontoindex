@@ -4,6 +4,7 @@ import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn().mockResolvedValue([]),
+  resolveActiveIndexGeneration: vi.fn().mockResolvedValue(null),
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
 }));
 

@@ -9,6 +9,7 @@ export type SuperTool =
   | 'gn_pre_commit_audit'
   | 'gn_safe_refactor'
   | 'gn_ensure_fresh'
+  | 'gn_analyze_job'
   | 'gn_quality_mode'
   | 'gn_diff_impact'
   | 'gn_review_diff'

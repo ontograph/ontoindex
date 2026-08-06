@@ -23,7 +23,10 @@ import type { Command } from 'commander';
 import { getGitRoot, getInferredRepoName } from '../storage/git.js';
 import {
   RegistryNameCollisionError,
+  activateIndexGeneration,
   addToGitignore,
+  createIndexGeneration,
+  discardIndexGeneration,
   findRepo,
   getStoragePaths,
   listRegisteredRepos,
@@ -31,6 +34,7 @@ import {
   loadMeta,
   registerRepo,
   saveMeta,
+  type IndexGenerationPaths,
 } from '../storage/repo-manager.js';
 import { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js';
 import { initLbug, closeLbug, executeQuery } from '../core/lbug/pool-adapter.js';
@@ -515,17 +519,50 @@ function ensureBootstrapCompatibility(artifact: BootstrapArtifact): void {
   }
 }
 
+function validateStagedBootstrapGeneration(
+  generation: IndexGenerationPaths,
+  artifact: BootstrapArtifact,
+): void {
+  const stagedLbug = fs.readFileSync(generation.lbugPath);
+  if (
+    stagedLbug.byteLength !== artifact.payload.lbugSizeBytes ||
+    sha256Hex(stagedLbug) !== artifact.payload.lbugSha256
+  ) {
+    throw new Error('Staged bootstrap graph store failed integrity validation.');
+  }
+
+  const stagedMeta = JSON.parse(fs.readFileSync(generation.metaPath, 'utf8')) as Record<
+    string,
+    unknown
+  >;
+  const expectedMeta = JSON.parse(
+    JSON.stringify({
+      ...artifact.payload.meta,
+      generationId: generation.generationId,
+      repoPath: '.',
+      contract: CURRENT_CONTRACT,
+    }),
+  ) as Record<string, unknown>;
+  if (JSON.stringify(stagedMeta) !== JSON.stringify(expectedMeta)) {
+    throw new Error('Staged bootstrap metadata failed integrity validation.');
+  }
+
+  if (typeof artifact.payload.snapshotJson === 'string') {
+    if (fs.readFileSync(generation.snapshotPath, 'utf8') !== artifact.payload.snapshotJson) {
+      throw new Error('Staged bootstrap snapshot failed integrity validation.');
+    }
+  } else if (fs.existsSync(generation.snapshotPath)) {
+    throw new Error('Staged bootstrap unexpectedly contains a snapshot.');
+  }
+}
+
 function removeBootstrapConflicts(storagePath: string): void {
   const paths = [
-    path.join(storagePath, 'lbug'),
-    path.join(storagePath, 'lbug.wal'),
-    path.join(storagePath, 'lbug.lock'),
     path.join(storagePath, 'analysis-checkpoint.json'),
     path.join(storagePath, 'embedding-checkpoint.json'),
     path.join(storagePath, 'analyze.lock'),
     path.join(storagePath, 'needs_update'),
     path.join(storagePath, BOOTSTRAP_SOURCE_NAME),
-    path.join(storagePath, BOOTSTRAP_SNAPSHOT_NAME),
   ];
   for (const filePath of paths) {
     try {
@@ -1874,17 +1911,22 @@ export async function exportBootstrapHydrateCommand(
   ensureBootstrapCompatibility(artifact);
 
   const lbugBuffer = Buffer.from(artifact.payload.lbugBase64, 'base64');
-  const meta = artifact.payload.meta;
+  const generationId = `bootstrap-${Date.now()}-${artifact.integrity.payloadSha256.slice(0, 12)}`;
+  const meta = { ...artifact.payload.meta, generationId };
   fs.mkdirSync(storagePath, { recursive: true });
   removeBootstrapConflicts(storagePath);
-  fs.writeFileSync(lbugPath, lbugBuffer);
-  await saveMeta(storagePath, meta as any);
-  if (typeof artifact.payload.snapshotJson === 'string') {
-    fs.writeFileSync(
-      path.join(storagePath, BOOTSTRAP_SNAPSHOT_NAME),
-      artifact.payload.snapshotJson,
-      'utf8',
-    );
+  const generation = await createIndexGeneration(storagePath, generationId);
+  try {
+    fs.writeFileSync(generation.lbugPath, lbugBuffer);
+    await saveMeta(generation.generationPath, meta as any);
+    if (typeof artifact.payload.snapshotJson === 'string') {
+      fs.writeFileSync(generation.snapshotPath, artifact.payload.snapshotJson, 'utf8');
+    }
+    validateStagedBootstrapGeneration(generation, artifact);
+    await activateIndexGeneration(storagePath, generation);
+  } catch (err) {
+    await discardIndexGeneration(generation);
+    throw err;
   }
 
   const bootstrapSource: BootstrapSourceRecord = {
@@ -1896,13 +1938,34 @@ export async function exportBootstrapHydrateCommand(
     sourceRepoLabel: artifact.repoLabel,
     sourceOntoindexVersion: artifact.runtime.ontoindexVersion,
   };
-  writeJsonArtifact(storagePath, BOOTSTRAP_SOURCE_NAME, bootstrapSource);
-
-  await registerRepo(repoRoot, meta as any, registrationOpts);
-  await addToGitignore(repoRoot);
+  const postActivationWarnings: string[] = [];
+  try {
+    writeJsonArtifact(storagePath, BOOTSTRAP_SOURCE_NAME, bootstrapSource);
+  } catch (err) {
+    postActivationWarnings.push(
+      `bootstrap provenance was not recorded: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  try {
+    await registerRepo(repoRoot, meta as any, registrationOpts);
+  } catch (err) {
+    postActivationWarnings.push(
+      `repository registry was not updated: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  try {
+    await addToGitignore(repoRoot);
+  } catch (err) {
+    postActivationWarnings.push(
+      `.gitignore was not updated: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 
   console.log(`bootstrap artifact restored into: ${path.relative(process.cwd(), storagePath)}`);
   console.log(`  indexed commit: ${artifact.sourceIndexedCommit ?? 'unknown'}`);
+  for (const warning of postActivationWarnings) {
+    console.warn(`  warning: ${warning}`);
+  }
   console.log('  next: ontoindex status');
 }
 

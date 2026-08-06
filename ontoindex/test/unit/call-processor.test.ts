@@ -113,7 +113,7 @@ describe('processCallsFromExtracted', () => {
     expect(rels[0].reason).toBe('import-resolved');
   });
 
-  it('resolves unique global symbol with moderate confidence', async () => {
+  it('rejects unique same-language name-only global symbols by default', async () => {
     ctx.model.symbols.add(
       'src/other.ts',
       'uniqueFunc',
@@ -131,10 +131,61 @@ describe('processCallsFromExtracted', () => {
 
     await processCallsFromExtracted(graph, calls, ctx);
 
-    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
-    expect(rels).toHaveLength(1);
-    expect(rels[0].confidence).toBe(0.5);
-    expect(rels[0].reason).toBe('global');
+    expect(graph.relationships.filter((r) => r.type === 'CALLS')).toHaveLength(0);
+  });
+
+  it('rejects unique cross-language name-only global symbols', async () => {
+    ctx.model.symbols.add(
+      'src/other.py',
+      'uniqueFunc',
+      'Function:src/other.py:uniqueFunc',
+      'Function',
+    );
+
+    await processCallsFromExtracted(
+      graph,
+      [
+        {
+          filePath: 'src/index.ts',
+          calledName: 'uniqueFunc',
+          sourceId: 'Function:src/index.ts:main',
+        },
+      ],
+      ctx,
+    );
+
+    expect(
+      graph.relationships.filter((relationship) => relationship.type === 'CALLS'),
+    ).toHaveLength(0);
+  });
+
+  it('allows unique name-only global symbols behind the compatibility flag', async () => {
+    process.env.ONTOINDEX_ALLOW_GLOBAL_NAME_CALLS = '1';
+    try {
+      ctx.model.symbols.add(
+        'src/other.ts',
+        'uniqueFunc',
+        'Function:src/other.ts:uniqueFunc',
+        'Function',
+      );
+      await processCallsFromExtracted(
+        graph,
+        [
+          {
+            filePath: 'src/index.ts',
+            calledName: 'uniqueFunc',
+            sourceId: 'Function:src/index.ts:main',
+          },
+        ],
+        ctx,
+      );
+      const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+      expect(rels).toHaveLength(1);
+      expect(rels[0].confidence).toBe(0.5);
+      expect(rels[0].reason).toBe('global');
+    } finally {
+      delete process.env.ONTOINDEX_ALLOW_GLOBAL_NAME_CALLS;
+    }
   });
 
   it('refuses ambiguous global symbols — no CALLS edge created', async () => {

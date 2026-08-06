@@ -10,7 +10,9 @@ export default [
     ignores: [
       '**/dist/**',
       '**/node_modules/**',
+      '**/.venv/**',
       '**/coverage/**',
+      'tmp/**',
       'ontoindex/vendor/**',
       'ontoindex-web/src/vendor/**',
       'ontoindex/test/fixtures/**',

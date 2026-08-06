@@ -157,6 +157,7 @@ export const QUERY_PROJECTS_TOOL_NAMES: ReadonlySet<string> = new Set([
   'gn_help',
   'gn_tool_contract',
   'gn_ensure_fresh',
+  'gn_analyze_job',
   'gn_quality_mode',
   // facade read-only surfaces
   'discover',
@@ -312,6 +313,19 @@ const TOOL_METADATA_LIST: ToolContractMetadata[] = [
     contractStatus: 'stable',
     visibility: 'public',
     structuredOutput: true,
+  },
+  {
+    name: 'gn_analyze_job',
+    kind: 'super',
+    modes: ALL_AGENT_MODES,
+    category: 'lifecycle',
+    intent: 'Observe or cancel a durable repository analysis job',
+    whenToUse: 'After gn_ensure_fresh starts or reuses an asynchronous analysis job',
+    contractStatus: 'stable',
+    visibility: 'public',
+    structuredOutput: true,
+    permissionProfile: 'runtime_admin',
+    advisoryOnly: true,
   },
   {
     name: 'gn_quality_mode',
@@ -1235,6 +1249,7 @@ const CORE_PROFILE_SUPER_TOOL_NAMES: ReadonlySet<string> = new Set([
   'gn_tool_contract',
   'gn_diagnose',
   'gn_ensure_fresh',
+  'gn_analyze_job',
   'gn_quality_mode',
 ]);
 

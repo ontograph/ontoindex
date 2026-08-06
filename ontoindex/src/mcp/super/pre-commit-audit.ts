@@ -8,9 +8,12 @@
  */
 
 import { execFileSync } from 'child_process';
+import fs from 'fs/promises';
+import path from 'path';
 import { emitOrganicRecommendation } from '../../core/recommendations/organic.js';
 import type { OrganicRecommendation } from '../../core/recommendations/types.js';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { runBoundaryViolations } from '../local/backend-boundary-violations.js';
 import {
   formatScopedPathOmissionWarning,
   scopeChangedPathsByPrefixes,
@@ -21,6 +24,7 @@ import {
   type CapabilityResponseFreshness,
 } from '../shared/response-envelope.js';
 import { resolveTargetContext, type TargetContext } from '../shared/target-context.js';
+import { getCallableToolNames } from '../shared/tool-registry.js';
 import {
   collectAdvisoryDocsEvidence,
   type AdvisoryDocsEvidenceReport,
@@ -31,6 +35,7 @@ import {
   summarizeBasedOnReads,
   type BasedOnReadsSummary,
 } from '../../core/runtime/evidence-read-ledger.js';
+import { resolveBranchComparisonBase } from '../../storage/git.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -41,6 +46,16 @@ export interface PreCommitAuditParams {
   expectedSymbols?: string[]; // user's stated intent
   docsEvidence?: boolean; // opt-in advisory Markdown docs evidence
   includePaths?: string[];
+}
+
+export type PreCommitCheckState = 'PASS' | 'FAIL' | 'DEGRADED' | 'SKIPPED';
+
+export interface PreCommitChecklistItem {
+  check: string;
+  state: PreCommitCheckState;
+  /** Compatibility projection for existing consumers. */
+  passed: boolean;
+  detail: string;
 }
 
 export interface CommitAuditReport {
@@ -60,7 +75,7 @@ export interface CommitAuditReport {
     deltaPp: number;
   };
   suggestedReviewers?: string[];
-  preCommitChecklist: Array<{ check: string; passed: boolean; detail: string }>;
+  preCommitChecklist: PreCommitChecklistItem[];
   warnings: string[];
   docEvidence?: AdvisoryDocsEvidenceReport;
   relatedDocs?: AdvisoryDocsEvidenceReport['relatedDocs'];
@@ -108,6 +123,84 @@ const GIT_MAX_BUFFER = 16 * 1024 * 1024;
 const MAX_CHANGED_PATHS = 500;
 const MAX_REVIEWER_PATHS = 100;
 const MAX_SYMBOLS_PER_FILE = 50;
+const BOUNDARY_RULES_FILE = 'ontoindex-boundary-rules.json';
+const CALLABLE_TOOL_NAMES = getCallableToolNames({ includeFacades: true });
+
+interface BoundaryChecklistResult {
+  state: PreCommitCheckState;
+  detail: string;
+}
+
+function checklistItem(
+  check: string,
+  state: PreCommitCheckState,
+  detail: string,
+): PreCommitChecklistItem {
+  return { check, state, passed: state === 'PASS' || state === 'SKIPPED', detail };
+}
+
+/**
+ * Evaluate the committed boundary rule set for the checklist.
+ *
+ * Reports `passed: false` for a missing, unreadable, or malformed rules file so a
+ * broken rule set can never look like a clean architecture result. When no rules
+ * file exists the check is reported as skipped and passing, because a repository
+ * that has not opted in has not violated anything.
+ */
+async function evaluateBoundaryRules(
+  repoId: string,
+  repoRoot: string,
+): Promise<BoundaryChecklistResult> {
+  const rulesPath = path.join(repoRoot, BOUNDARY_RULES_FILE);
+  let raw: string;
+  try {
+    raw = await fs.readFile(rulesPath, 'utf8');
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { state: 'SKIPPED', detail: `${BOUNDARY_RULES_FILE} not present — skipped` };
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    return { state: 'FAIL', detail: `${BOUNDARY_RULES_FILE} could not be read: ${message}` };
+  }
+
+  let rules: unknown;
+  try {
+    rules = JSON.parse(raw);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { state: 'FAIL', detail: `${BOUNDARY_RULES_FILE} is not valid JSON: ${message}` };
+  }
+  if (!Array.isArray(rules) || rules.length === 0) {
+    return { state: 'FAIL', detail: `${BOUNDARY_RULES_FILE} must contain a non-empty JSON array` };
+  }
+
+  try {
+    const result = (await runBoundaryViolations(
+      { id: repoId, name: repoId, repoPath: repoRoot },
+      { rules_file: rulesPath },
+    )) as unknown as {
+      status?: string;
+      error?: string;
+      summary?: { rules_checked?: number; rules_violated?: number; total_violations?: number };
+    };
+    if (result.status !== 'success') {
+      return { state: 'FAIL', detail: result.error ?? 'boundary rule evaluation failed' };
+    }
+    const checked = result.summary?.rules_checked ?? 0;
+    const violated = result.summary?.rules_violated ?? 0;
+    const total = result.summary?.total_violations ?? 0;
+    return {
+      state: total === 0 ? 'PASS' : 'FAIL',
+      detail:
+        total === 0
+          ? `${checked} boundary rule(s) clean`
+          : `${total} violation(s) across ${violated} of ${checked} rule(s)`,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { state: 'FAIL', detail: `boundary rule evaluation failed: ${message}` };
+  }
+}
 const MAX_RECOMMENDATIONS = 12;
 
 type QueryRow = Record<string, unknown> | readonly unknown[];
@@ -150,16 +243,6 @@ function classifyRisk(upstreamCount: number): 'LOW' | 'MEDIUM' | 'HIGH' {
   if (upstreamCount > 50) return 'HIGH';
   if (upstreamCount >= 10) return 'MEDIUM';
   return 'LOW';
-}
-
-/** Resolve the repo root. Uses process.cwd() as the fallback. */
-function resolveRepoRoot(): string {
-  try {
-    const out = gitCapture(undefined, ['rev-parse', '--show-toplevel']).trim();
-    return out;
-  } catch {
-    return process.cwd();
-  }
 }
 
 function parseChangedLineRanges(diffOutput: string): Map<string, LineRange[]> {
@@ -302,7 +385,6 @@ export async function gnPreCommitAudit(
   params: PreCommitAuditParams,
 ): Promise<CommitAuditReport> {
   const warnings: string[] = [];
-  const repoRoot = resolveRepoRoot();
   const evidence: CommitAuditEvidence[] = [];
   const evidenceIdRef = { value: 1 };
   const capabilitiesMissing = new Set<string>();
@@ -320,10 +402,17 @@ export async function gnPreCommitAudit(
     maxSymbolsPerFile: MAX_SYMBOLS_PER_FILE,
   };
 
-  const targetContext = await resolveTargetContext({ repo: repoId })
-    .catch(() => resolveTargetContext())
-    .catch((err) => createUnknownTargetContext(err instanceof Error ? err.message : String(err)));
+  const authorityOptions = {
+    verifyGraphAuthority: true,
+    requiredGraphCapabilities: ['symbols', 'impact', 'processes'] as const,
+  };
+  const targetContext = await resolveTargetContext({ repo: repoId, ...authorityOptions }).catch(
+    (err) => createUnknownTargetContext(err instanceof Error ? err.message : String(err)),
+  );
+  const repoRoot =
+    targetContext.status === 'ok' && targetContext.repoPath ? targetContext.repoPath : null;
   const freshness = deriveEnvelopeFreshness(targetContext);
+  const graphAuthoritative = targetContext.graphAuthority?.state === 'authoritative';
   const freshnessWarning = summarizeFreshness(freshness);
   if (freshnessWarning !== null) {
     warnings.push(freshnessWarning);
@@ -335,16 +424,14 @@ export async function gnPreCommitAudit(
     });
   }
   if (freshness.status === 'stale') capabilitiesMissing.add('fresh-index');
-  if (freshness.status === 'degraded') capabilitiesMissing.add('clean-worktree');
   if (freshness.status === 'unknown') capabilitiesMissing.add('target-context');
   if (targetContext.dirtyWorktree === true) {
-    capabilitiesMissing.add('clean-worktree');
     const dirtyWarning = 'Audit target context includes a dirty worktree overlay.';
     warnings.push(dirtyWarning);
     pushEvidence(evidence, evidenceIdRef, {
       kind: 'freshness',
       summary: dirtyWarning,
-      status: 'degraded',
+      status: graphAuthoritative ? 'info' : 'degraded',
     });
   }
 
@@ -421,6 +508,20 @@ export async function gnPreCommitAudit(
     };
   };
 
+  if (repoRoot === null) {
+    return baseReport({
+      verdict: 'DO-NOT-COMMIT',
+      reasoning: 'requested repository could not be resolved',
+      preCommitChecklist: [
+        checklistItem(
+          'repository resolved',
+          'FAIL',
+          targetContext.action ?? 'target context did not provide a repository path',
+        ),
+      ],
+    });
+  }
+
   // ---- 1. Build git diff args per scope ----------------------------------
   const scope = params.scope ?? 'staged';
   const includePaths = params.includePaths ?? [];
@@ -440,8 +541,19 @@ export async function gnPreCommitAudit(
       patchArgs = ['diff', 'HEAD', '--unified=0'];
       break;
     case 'branch':
-      diffArgs = ['diff', 'main...HEAD', '--name-only'];
-      patchArgs = ['diff', 'main...HEAD', '--unified=0'];
+      try {
+        const branchRange = resolveBranchComparisonBase(repoRoot).range;
+        diffArgs = ['diff', branchRange, '--name-only'];
+        patchArgs = ['diff', branchRange, '--unified=0'];
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        return baseReport({
+          verdict: 'DO-NOT-COMMIT',
+          reasoning: 'branch comparison base could not be resolved',
+          preCommitChecklist: [checklistItem('branch comparison base resolved', 'FAIL', detail)],
+          warnings: [detail],
+        });
+      }
       break;
     default:
       diffArgs = ['diff', '--cached', '--name-only'];
@@ -453,8 +565,14 @@ export async function gnPreCommitAudit(
   let changedPathScanCapped = false;
   let graphQueryFailed = false;
   try {
-    const out = gitCapture(repoRoot, diffArgs);
-    const allChangedPaths = out.split('\n').filter(Boolean);
+    const trackedPaths = gitCapture(repoRoot, diffArgs).split('\n').filter(Boolean);
+    const untrackedPaths =
+      scope === 'all' || scope === 'unstaged'
+        ? gitCapture(repoRoot, ['ls-files', '--others', '--exclude-standard'])
+            .split('\n')
+            .filter(Boolean)
+        : [];
+    const allChangedPaths = uniqueStrings([...trackedPaths, ...untrackedPaths]);
     const scoped = scopeChangedPathsByPrefixes(allChangedPaths, includePaths);
     changedPaths = scoped.inScopePaths;
     if (scoped.omittedPaths.length > 0) {
@@ -469,9 +587,9 @@ export async function gnPreCommitAudit(
     const msg = err instanceof Error ? err.message : String(err);
     return baseReport({
       verdict: 'DO-NOT-COMMIT',
-      reasoning: 'git diff failed — cannot audit without diff output',
-      preCommitChecklist: [{ check: 'git diff reachable', passed: false, detail: msg }],
-      warnings: [`git diff failed: ${msg}`],
+      reasoning: 'git changed-path scan failed — cannot audit incomplete change output',
+      preCommitChecklist: [checklistItem('git diff reachable', 'FAIL', msg)],
+      warnings: [`git changed-path scan failed: ${msg}`],
     });
   }
 
@@ -482,11 +600,11 @@ export async function gnPreCommitAudit(
       reasoning:
         includePaths.length > 0 ? 'No in-scope changes to audit' : 'No staged changes to audit',
       preCommitChecklist: [
-        {
-          check: 'staged diff non-empty',
-          passed: false,
-          detail: includePaths.length > 0 ? 'no in-scope changes' : 'no changes',
-        },
+        checklistItem(
+          'staged diff non-empty',
+          'SKIPPED',
+          includePaths.length > 0 ? 'no in-scope changes' : 'no changes',
+        ),
       ],
     });
   }
@@ -775,9 +893,18 @@ export async function gnPreCommitAudit(
       .map((f) => f.path)
       .join(', ');
     reasoning = `HIGH-risk symbols changed in: ${highFiles}. Upstream impact > 50 callers. Manual review required before committing.`;
-  } else if (graphQueryFailed || changedPathScanCapped || hasUnexpected || coverageDrop) {
+  } else if (
+    !graphAuthoritative ||
+    graphQueryFailed ||
+    changedPathScanCapped ||
+    hasUnexpected ||
+    coverageDrop
+  ) {
     verdict = 'REVIEW';
     const reasons: string[] = [];
+    if (!graphAuthoritative) {
+      reasons.push(targetContext.graphAuthority?.reason ?? 'graph authority unavailable');
+    }
     if (graphQueryFailed) {
       reasons.push('graph audit incomplete');
     }
@@ -797,50 +924,57 @@ export async function gnPreCommitAudit(
   }
 
   // ---- 9. Pre-commit checklist -------------------------------------------
+  const boundaryCheck = await evaluateBoundaryRules(repoId, repoRoot);
   const preCommitChecklist: CommitAuditReport['preCommitChecklist'] = [
-    {
-      check: 'staged diff non-empty',
-      passed: changedPaths.length > 0,
-      detail: `${changedPaths.length} file(s) changed`,
-    },
-    {
-      check: 'changed file scan complete',
-      passed: !changedPathScanCapped,
-      detail: changedPathScanCapped
+    checklistItem(
+      'graph authority established',
+      graphAuthoritative ? 'PASS' : 'DEGRADED',
+      targetContext.graphAuthority?.reason ?? 'graph authority unavailable',
+    ),
+    checklistItem('staged diff non-empty', 'PASS', `${changedPaths.length} file(s) changed`),
+    checklistItem(
+      'changed file scan complete',
+      changedPathScanCapped ? 'DEGRADED' : 'PASS',
+      changedPathScanCapped
         ? `audit capped at ${MAX_CHANGED_PATHS} changed paths; review required`
         : 'all changed paths included in audit',
-    },
-    {
-      check: 'graph audit complete',
-      passed: !graphQueryFailed,
-      detail: graphQueryFailed
+    ),
+    checklistItem(
+      'graph audit complete',
+      graphQueryFailed ? 'DEGRADED' : 'PASS',
+      graphQueryFailed
         ? 'one or more graph queries failed; manual review required'
         : 'graph queries completed',
-    },
-    {
-      check: 'no HIGH-risk symbols',
-      passed: !hasHighRisk,
-      detail: hasHighRisk
+    ),
+    checklistItem(
+      'no HIGH-risk symbols',
+      hasHighRisk ? 'FAIL' : 'PASS',
+      hasHighRisk
         ? 'HIGH-risk impact detected — upstream callers > 50'
         : 'all symbol risks are LOW or MEDIUM',
-    },
-    {
-      check: 'symbols match expected scope',
-      passed: !hasUnexpected,
-      detail: hasUnexpected
+    ),
+    checklistItem(
+      'symbols match expected scope',
+      params.expectedSymbols === undefined ? 'SKIPPED' : hasUnexpected ? 'DEGRADED' : 'PASS',
+      hasUnexpected
         ? `unexpected: ${unexpectedSymbols.slice(0, 3).join(', ')}`
         : params.expectedSymbols !== undefined
           ? 'all changed symbols are within expected scope'
           : 'expectedSymbols not provided — skipped',
-    },
-    {
-      check: 'test coverage stable',
-      passed: !coverageDrop,
-      detail: coverageDrop
+    ),
+    checklistItem(
+      'test coverage stable',
+      coverageDrop ? 'DEGRADED' : 'PASS',
+      coverageDrop
         ? `coverage dropped ${Math.abs(deltaPp).toFixed(1)}pp`
         : 'coverage held or improved',
-    },
+    ),
+    checklistItem('boundary rules', boundaryCheck.state, boundaryCheck.detail),
   ];
+  if (boundaryCheck.state === 'FAIL') {
+    verdict = 'DO-NOT-COMMIT';
+    reasoning = `Boundary rules failed: ${boundaryCheck.detail}.`;
+  }
   const docsEvidence =
     params.docsEvidence === true
       ? await collectAdvisoryDocsEvidence(repoId, docsEvidenceTargets)
@@ -849,7 +983,9 @@ export async function gnPreCommitAudit(
   const pushRecommendation = (draft: Parameters<typeof emitOrganicRecommendation>[0]) => {
     if (recommendations.length >= MAX_RECOMMENDATIONS) return;
     try {
-      recommendations.push(emitOrganicRecommendation(draft));
+      recommendations.push(
+        emitOrganicRecommendation(draft, { callableToolNames: CALLABLE_TOOL_NAMES }),
+      );
     } catch (err) {
       warnings.push(
         `organic recommendation rejected: ${err instanceof Error ? err.message : String(err)}`,

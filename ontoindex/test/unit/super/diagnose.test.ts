@@ -76,6 +76,7 @@ import { getLbugRuntimeDiagnostics } from '../../../src/core/lbug/lbug-adapter.j
 import { gnDiagnose } from '../../../src/mcp/super/diagnose.js';
 import { ONTOINDEX_SUPER_TOOLS } from '../../../src/mcp/super/tool-definitions.js';
 import { readToolTelemetrySummary } from '../../../src/mcp/local/tool-telemetry.js';
+import { RESPONSE_GUARD_MAX_BYTES } from '../../../src/mcp/local/response-guard.js';
 
 const mockExecFile = vi.mocked(execFile);
 const mockGnEnsureFresh = vi.mocked(gnEnsureFresh);
@@ -272,7 +273,7 @@ describe('gnDiagnose', () => {
 
     expect(report.version).toBe(1);
     expect(report.responseBudgetHealth).toMatchObject({
-      guardLimitBytes: 512 * 1024,
+      guardLimitBytes: RESPONSE_GUARD_MAX_BYTES,
       guardedPreviewAvailable: true,
       recentOversizedTools: [],
     });

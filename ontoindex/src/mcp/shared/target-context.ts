@@ -12,6 +12,14 @@ import {
 } from '../../core/audit-lifecycle/freshness.js';
 import { loadIgnoreRules, shouldIgnorePath } from '../../config/ignore-service.js';
 import { readRegistry, type RegistryEntry } from '../../storage/repo-manager.js';
+import { loadMeta, resolveActiveIndexGeneration } from '../../storage/repo-manager.js';
+import {
+  computeSourceManifest,
+  manifestsMatch,
+  SOURCE_MANIFEST_CONTRACT,
+  SOURCE_MANIFEST_VERSION,
+  sourceManifestDigest,
+} from '../../core/indexing/source-manifest.js';
 import {
   formatRepoResolutionError,
   repoResolutionCandidatesFromEntries,
@@ -32,6 +40,17 @@ export type DirtyWorkspaceState =
   | 'stale-index'
   | 'unknown-untracked'
   | 'unknown';
+
+export type GraphAuthorityState = 'authoritative' | 'review' | 'degraded';
+export type GraphAuthorityCapability = 'symbols' | 'impact' | 'processes';
+
+export interface TargetContextGraphAuthority {
+  state: GraphAuthorityState;
+  reason: string;
+  generationId?: string;
+  manifestDigest?: string;
+  coverage?: 'complete' | 'degraded' | 'unknown';
+}
 
 export interface TargetContextReadiness {
   status: ReadinessStatus;
@@ -83,6 +102,7 @@ export interface TargetContext {
   currentHead?: string;
   indexedHead?: string;
   graphIndexId?: string;
+  graphAuthority?: TargetContextGraphAuthority;
   dirtyWorktree: boolean | null;
   dirtyFileCount?: number | null;
   dirtyWorkspace?: TargetContextDirtyWorkspace;
@@ -109,6 +129,8 @@ export interface ResolveTargetContextOptions {
   targetRef?: string;
   scopePaths?: string[];
   checkSidecar?: boolean;
+  verifyGraphAuthority?: boolean;
+  requiredGraphCapabilities?: readonly GraphAuthorityCapability[];
   readiness?: {
     embeddingsCount?: number;
     lspAvailable?: { typescript: boolean; python: boolean; rust: boolean };
@@ -120,6 +142,9 @@ export interface ResolveTargetContextDeps {
   execGit?: (cwd: string, args: string[]) => Promise<string>;
   loadIgnoreRules?: typeof loadIgnoreRules;
   loadSidecarState?: typeof loadSidecarStoreState;
+  loadMeta?: typeof loadMeta;
+  computeSourceManifest?: typeof computeSourceManifest;
+  resolveActiveIndexGeneration?: typeof resolveActiveIndexGeneration;
 }
 
 export async function resolveTargetContext(
@@ -267,6 +292,21 @@ export async function resolveTargetContext(
   const dirtyWorktree = workspaceSummary !== null ? workspaceSummary.dirtyFileCount > 0 : null;
   const dirtyFileCount = workspaceSummary?.dirtyFileCount ?? null;
   const indexedHead = entry.lastCommit || undefined;
+  const graphAuthority = options.verifyGraphAuthority
+    ? await resolveGraphAuthority(
+        repoPath,
+        await (deps.loadMeta ?? loadMeta)(entry.storagePath),
+        deps.computeSourceManifest ?? computeSourceManifest,
+        (
+          await (deps.resolveActiveIndexGeneration ?? resolveActiveIndexGeneration)(
+            entry.storagePath,
+          )
+        )?.generationId,
+        options.requiredGraphCapabilities ?? [],
+        targetHead,
+        currentHead,
+      )
+    : undefined;
   const headChangedSinceIndex = !!currentHead && !!indexedHead && currentHead !== indexedHead;
   const changedSinceIndex =
     dirtyWorktree === null && (!currentHead || !indexedHead)
@@ -315,6 +355,7 @@ export async function resolveTargetContext(
     ...(currentHead ? { currentHead } : {}),
     ...(indexedHead ? { indexedHead } : {}),
     ...(entry.indexedAt ? { graphIndexId: entry.indexedAt } : {}),
+    ...(graphAuthority ? { graphAuthority } : {}),
     dirtyWorktree,
     dirtyFileCount,
     dirtyWorkspace,
@@ -331,6 +372,126 @@ export async function resolveTargetContext(
     policy: { status: 'unknown', reason: 'policy-profile-probe-not-configured' },
     warnings,
   };
+}
+
+async function resolveGraphAuthority(
+  repoPath: string,
+  meta: Awaited<ReturnType<typeof loadMeta>>,
+  computeManifest: typeof computeSourceManifest,
+  activeGenerationId: string | undefined,
+  requiredCapabilities: readonly GraphAuthorityCapability[],
+  targetHead: string | undefined,
+  currentHead: string | undefined,
+): Promise<TargetContextGraphAuthority> {
+  if (!meta?.sourceManifest) {
+    return { state: 'degraded', reason: 'index manifest missing', coverage: 'unknown' };
+  }
+  if (!activeGenerationId || !meta.generationId || activeGenerationId !== meta.generationId) {
+    return {
+      state: 'degraded',
+      reason: 'active graph generation does not match metadata generation',
+      generationId: meta.generationId ?? meta.indexedAt,
+      manifestDigest: sourceManifestDigest(meta.sourceManifest),
+      coverage: meta.sourceManifest.coverage,
+    };
+  }
+  const manifestVersion: unknown = (meta.sourceManifest as { version?: unknown }).version;
+  const analyzerContractVersion: unknown = (
+    meta.sourceManifest as { analyzerContractVersion?: unknown }
+  ).analyzerContractVersion;
+  if (
+    manifestVersion !== SOURCE_MANIFEST_VERSION ||
+    analyzerContractVersion !== SOURCE_MANIFEST_CONTRACT
+  ) {
+    return {
+      state: 'degraded',
+      reason: 'index manifest version or analyzer contract is unsupported',
+      generationId: meta.generationId ?? meta.indexedAt,
+      coverage: meta.sourceManifest.coverage,
+    };
+  }
+  const manifestDigest = sourceManifestDigest(meta.sourceManifest);
+  const missingCapabilities = requiredCapabilities.filter(
+    (capability) => !generationHasCapability(meta, capability),
+  );
+  if (missingCapabilities.length > 0) {
+    return {
+      state: 'degraded',
+      reason: `required graph capabilities unavailable: ${missingCapabilities.join(', ')}`,
+      generationId: meta.generationId ?? meta.indexedAt,
+      manifestDigest,
+      coverage: meta.sourceManifest.coverage,
+    };
+  }
+  if (!targetHead || !currentHead) {
+    return {
+      state: 'degraded',
+      reason: 'target commit unavailable for graph authority',
+      generationId: meta.generationId ?? meta.indexedAt,
+      manifestDigest,
+      coverage: meta.sourceManifest.coverage,
+    };
+  }
+  if (targetHead && currentHead && targetHead !== currentHead) {
+    return {
+      state: 'review',
+      reason: 'graph authority describes current checkout, not requested target ref',
+      generationId: meta.generationId ?? meta.indexedAt,
+      manifestDigest,
+      coverage: meta.sourceManifest.coverage,
+    };
+  }
+  try {
+    const current = await computeManifest(repoPath, {
+      includePaths: meta.sourceManifest.includePaths,
+      pipelineProfile: meta.sourceManifest.pipelineProfile,
+    });
+    if (!manifestsMatch(meta.sourceManifest, current)) {
+      return {
+        state: 'review',
+        reason: 'current source manifest does not match indexed manifest',
+        generationId: meta.generationId ?? meta.indexedAt,
+        manifestDigest,
+        coverage: meta.sourceManifest.coverage,
+      };
+    }
+    if (meta.sourceManifest.coverage !== 'complete') {
+      return {
+        state: 'degraded',
+        reason: `indexed coverage is ${meta.sourceManifest.coverage}`,
+        generationId: meta.generationId ?? meta.indexedAt,
+        manifestDigest,
+        coverage: meta.sourceManifest.coverage,
+      };
+    }
+    return {
+      state: 'authoritative',
+      reason: 'current source manifest matches indexed generation',
+      generationId: meta.generationId ?? meta.indexedAt,
+      manifestDigest,
+      coverage: 'complete',
+    };
+  } catch (err) {
+    return {
+      state: 'degraded',
+      reason: `source manifest unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      generationId: meta.generationId ?? meta.indexedAt,
+      coverage: meta.sourceManifest.coverage,
+    };
+  }
+}
+
+function generationHasCapability(
+  meta: NonNullable<Awaited<ReturnType<typeof loadMeta>>>,
+  capability: GraphAuthorityCapability,
+): boolean {
+  const reducedProfile =
+    meta.pipelineProfile === 'symbols' ||
+    meta.pipelineProfile === 'huge-repo-symbols' ||
+    meta.indexMode === 'symbols-only';
+  if (capability === 'symbols') return meta.capabilities?.symbols === true || !reducedProfile;
+  if (capability === 'impact') return meta.capabilities?.impact === 'full';
+  return meta.capabilities?.processes === true;
 }
 
 function createBaseContext(targetRef: string, warnings: string[]): TargetContext {

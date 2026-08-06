@@ -114,6 +114,7 @@ export function resolveImportTargetAcrossLanguages(
     return null;
   }
   if (result === null) return null;
+  if (result.kind === 'scope') return null;
 
   // Both `files` and `package` variants expose a `files` array; the
   // package variant also carries `dirSuffix` which we ignore at the

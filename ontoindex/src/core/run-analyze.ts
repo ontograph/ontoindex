@@ -35,6 +35,10 @@ import {
   addToGitignore,
   registerRepo,
   cleanupOldKuzuFiles,
+  createIndexGeneration,
+  discardIndexGeneration,
+  activateIndexGeneration,
+  type IndexGenerationPaths,
 } from '../storage/repo-manager.js';
 import type { DegradedFileGroupCount } from '../storage/repo-manager.js';
 import { getCurrentCommit, hasGitDir } from '../storage/git.js';
@@ -65,6 +69,11 @@ import {
   LocalSidecarStore,
 } from './ingestion/enrichment/index.js';
 import { EMBEDDING_TEXT_VERSION } from './embeddings/embedding-pipeline.js';
+import {
+  computeSourceManifest,
+  manifestsMatch,
+  sourceInputsMatch,
+} from './indexing/source-manifest.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -789,9 +798,17 @@ export async function runFullAnalysis(
     );
   };
 
-  const { storagePath, lbugPath } = getStoragePaths(repoPath);
+  const { storagePath, lbugPath: activeLbugPath } = getStoragePaths(repoPath);
+  const repoHasGit = hasGitDir(repoPath);
+  if (repoHasGit) {
+    await addToGitignore(repoPath);
+  }
   const includePaths = await normalizeRepositoryIncludePaths(repoPath, options.includePaths);
   const requestedProfile = requestedPipelineProfile(options.profile);
+  const inputManifest = await computeSourceManifest(repoPath, {
+    includePaths,
+    pipelineProfile: requestedProfile,
+  });
   const embeddingLifecycleMode = resolveEmbeddingLifecycleMode(options);
   const embeddingsEnabledForRun = embeddingLifecycleMode !== 'off';
   const annNeighborBuildRequested = options.annNeighbors === true;
@@ -802,7 +819,6 @@ export async function runFullAnalysis(
     log('Migrating from KuzuDB to LadybugDB — rebuilding index...');
   }
 
-  const repoHasGit = hasGitDir(repoPath);
   const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
   const existingMeta = await loadMeta(storagePath);
   let embeddingVectorIndexDigest = existingMeta?.embeddingVectorIndexDigest;
@@ -832,7 +848,9 @@ export async function runFullAnalysis(
     !options.force &&
     existingMeta.lastCommit === currentCommit &&
     persistedPipelineProfile(existingMeta) === requestedProfile &&
-    sameStringList(existingMeta.includePaths, includePaths)
+    sameStringList(existingMeta.includePaths, includePaths) &&
+    manifestsMatch(existingMeta.sourceManifest, inputManifest) &&
+    existingMeta.sourceManifest?.coverage === 'complete'
   ) {
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
     if (currentCommit !== '') {
@@ -870,7 +888,7 @@ export async function runFullAnalysis(
   if (embeddingsEnabledForRun && existingMeta && !options.force) {
     try {
       progress('embeddings', 0, 'Caching embeddings...');
-      await initLbug(lbugPath);
+      await initLbug(activeLbugPath);
       const cached = await loadCachedEmbeddings();
       cachedEmbeddingNodeIds = cached.embeddingNodeIds;
       cachedEmbeddings = cached.embeddings;
@@ -908,9 +926,9 @@ export async function runFullAnalysis(
   };
   try {
     const pipelineOptions: PipelineOptions = {};
-    if (checkpointEnabled || telemetryEnabled) {
-      pipelineOptions.onTelemetry = (event) => {
-        recordDegradedFiles(event.degradedFiles, event.phaseName);
+    pipelineOptions.onTelemetry = (event) => {
+      recordDegradedFiles(event.degradedFiles, event.phaseName);
+      if (checkpointEnabled || telemetryEnabled) {
         partialCheckpoint?.record(event);
         if (telemetryEnabled) {
           log(
@@ -920,8 +938,8 @@ export async function runFullAnalysis(
             })}`,
           );
         }
-      };
-    }
+      }
+    };
     if (options.profile !== undefined) {
       pipelineOptions.profile = options.profile;
     }
@@ -955,15 +973,13 @@ export async function runFullAnalysis(
   });
   const lbugStart = Date.now();
 
-  await closeLbug();
-  const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`];
-  for (const f of lbugFiles) {
-    try {
-      await fs.rm(f, { recursive: true, force: true });
-    } catch {
-      /* swallow */
-    }
-  }
+  const generationId = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  let stagedGeneration: IndexGenerationPaths | null = await createIndexGeneration(
+    storagePath,
+    generationId,
+  );
+  const generationStoragePath = stagedGeneration.generationPath;
+  const lbugPath = stagedGeneration.lbugPath;
 
   await initLbug(lbugPath);
   try {
@@ -975,7 +991,7 @@ export async function runFullAnalysis(
     await loadGraphToLbug(
       pipelineResult.graph,
       pipelineResult.repoPath,
-      storagePath,
+      generationStoragePath,
       (msg, event) => {
         lbugMsgCount++;
         const pct = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
@@ -1140,7 +1156,7 @@ export async function runFullAnalysis(
       const projectName = path.basename(repoPath);
       const serverName = await readServerMapping(projectName);
       const embeddingCheckpointOptions = {
-        path: path.join(storagePath, 'embedding-checkpoint.json'),
+        path: path.join(generationStoragePath, 'embedding-checkpoint.json'),
         embeddingTextVersion: EMBEDDING_TEXT_VERSION,
         modelHash: process.env.ONTOINDEX_EMBEDDING_MODEL_HASH ?? existingMeta?.model_hash ?? '',
         headCommit: currentCommit,
@@ -1212,7 +1228,7 @@ export async function runFullAnalysis(
     }
 
     const symbolsProfile = options.profile === 'symbols' || options.profile === 'huge-repo-symbols';
-    const symbolsOnlyMetadata = symbolsProfile
+    const pipelineCapabilityMetadata = symbolsProfile
       ? {
           indexMode: 'symbols-only' as const,
           pipelineProfile: options.profile,
@@ -1235,7 +1251,14 @@ export async function runFullAnalysis(
             processes: false,
           },
         }
-      : {};
+      : {
+          pipelineProfile: requestedProfile,
+          capabilities: {
+            symbols: true,
+            impact: 'full' as const,
+            processes: pipelineResult.processResult !== undefined,
+          },
+        };
     const embeddingLifecycle: EmbeddingLifecycleSummary = !embeddingsEnabledForRun
       ? {
           mode: embeddingLifecycleMode,
@@ -1278,10 +1301,22 @@ export async function runFullAnalysis(
       graphRelationships: pipelineResult.graph.relationshipCount,
       relationshipDistributions,
     });
+    const finalManifest = await computeSourceManifest(repoPath, {
+      includePaths,
+      pipelineProfile: requestedProfile,
+      degradedPaths: [...degradedFiles.keys()],
+    });
+    if (!sourceInputsMatch(inputManifest, finalManifest)) {
+      throw new Error(
+        'Source inputs changed during analysis; refusing to publish graph generation.',
+      );
+    }
     const meta = {
       repoPath,
       lastCommit: currentCommit,
       indexedAt,
+      generationId,
+      sourceManifest: finalManifest,
       stats: {
         files: pipelineResult.totalFileCount,
         nodes: stats.nodes,
@@ -1336,20 +1371,24 @@ export async function runFullAnalysis(
             };
           })()
         : {}),
-      ...symbolsOnlyMetadata,
+      ...pipelineCapabilityMetadata,
     };
-    await saveMeta(storagePath, meta);
-    // Forward the --name alias.
-    // The returned name is the one actually written to the registry
-    // (after applying the precedence chain in registerRepo) — reuse it
-    // so AGENTS.md / skill files reference the same name MCP clients
-    // will look up (#979).
+    await saveGraphDiffSnapshot(
+      generationStoragePath,
+      pipelineResult.graph,
+      indexedAt,
+      currentCommit,
+    );
+    await saveMeta(generationStoragePath, meta);
+
+    await closeLbug();
+    await activateIndexGeneration(storagePath, stagedGeneration);
+    stagedGeneration = null;
+
+    // Forward the --name alias after the complete generation is active.
     const projectName = await registerRepo(repoPath, meta, {
       name: options.registryName,
     });
-
-    await saveGraphDiffSnapshot(storagePath, pipelineResult.graph, indexedAt, currentCommit);
-    partialCheckpoint?.clear();
 
     if (options.markdownSidecar === true) {
       progress('sidecar', 98, 'Queueing Markdown sidecar enrichment...');
@@ -1372,11 +1411,6 @@ export async function runFullAnalysis(
       } else {
         log('  Markdown sidecar enrichment enabled, but no Markdown documents were found');
       }
-    }
-
-    // Only attempt to update .gitignore when a .git directory is present.
-    if (hasGitDir(repoPath)) {
-      await addToGitignore(repoPath);
     }
 
     // ── Generate AI context files (best-effort) ───────────────────────
@@ -1434,6 +1468,9 @@ export async function runFullAnalysis(
       }
     } catch {
       /* swallow */
+    }
+    if (stagedGeneration !== null) {
+      await discardIndexGeneration(stagedGeneration).catch(() => {});
     }
     partialCheckpoint?.markFailed(err);
     gcTelemetry?.stop();

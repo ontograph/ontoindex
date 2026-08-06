@@ -74,6 +74,7 @@ import { extractReturnTypeName, stripNullable } from './type-extractors/shared.j
 import type { LiteralTypeInferrer } from './type-extractors/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { CaptureMap } from './language-provider.js';
+import { canPublishCallEdge } from './call-resolution/global-call-authority.js';
 
 /** Per-file resolved type bindings for exported symbols.
  *  Populated during call processing, consumed by Phase 14 re-resolution pass. */
@@ -657,6 +658,7 @@ interface ResolveResult {
   nodeId: string;
   confidence: number;
   reason: string;
+  filePath?: string;
   returnType?: string;
 }
 
@@ -910,6 +912,19 @@ const resolveExtractedLanguageCallSite = (
   );
 
   if (!resolved) return true;
+
+  if (
+    !canPublishCallEdge(
+      langCallSite.callForm,
+      resolved.reason,
+      Boolean(langCallSite.receiverName || receiverTypeName),
+      file.path,
+      resolved.filePath,
+      process.env,
+      ctx.importMap.get(file.path),
+    )
+  )
+    return true;
 
   graph.addRelationship({
     id: generateId('CALLS', `${sourceId}:${langCallSite.calledName}->${resolved.nodeId}`),
@@ -1295,6 +1310,19 @@ const resolvePreparedSequentialFile = (
       );
 
       if (!resolved) return;
+      if (
+        !canPublishCallEdge(
+          callForm,
+          resolved.reason,
+          Boolean(receiverName || receiverTypeName),
+          file.path,
+          resolved.filePath,
+          process.env,
+          ctx.importMap.get(file.path),
+        )
+      ) {
+        return;
+      }
       const relId = generateId('CALLS', `${sourceId}:${calledName}->${resolved.nodeId}`);
 
       graph.addRelationship({
@@ -1597,6 +1625,7 @@ const toResolveResult = (definition: SymbolDefinition, tier: ResolutionTier): Re
   confidence: TIER_CONFIDENCE[tier],
   reason:
     tier === 'same-file' ? 'same-file' : tier === 'import-scoped' ? 'import-resolved' : 'global',
+  filePath: definition.filePath,
   returnType: definition.returnType,
 });
 
@@ -2735,6 +2764,7 @@ const makeAccessEmitter = (graph: KnowledgeGraph, sourceId: string): OnFieldReso
 const makeCallEmitter = (graph: KnowledgeGraph, sourceId: string): OnCallResolved => {
   const emitted = new Set<string>();
   return (step: MixedChainStep, resolved: ResolveResult): void => {
+    if (!canPublishCallEdge('member', resolved.reason, true)) return;
     const key = `${sourceId}\0${step.name}\0${resolved.nodeId}`;
     if (emitted.has(key)) return;
     emitted.add(key);
@@ -3056,6 +3086,18 @@ const emitResolvedCallEdges = (
   ctx: ResolutionContext,
   heritageMap?: HeritageMap,
 ): void => {
+  if (
+    !canPublishCallEdge(
+      effectiveCall.callForm,
+      resolved.reason,
+      Boolean(effectiveCall.receiverName || effectiveCall.receiverTypeName),
+      effectiveCall.filePath,
+      resolved.filePath,
+      process.env,
+      ctx.importMap.get(effectiveCall.filePath),
+    )
+  )
+    return;
   const relId = generateId(
     'CALLS',
     `${effectiveCall.sourceId}:${effectiveCall.calledName}->${resolved.nodeId}`,

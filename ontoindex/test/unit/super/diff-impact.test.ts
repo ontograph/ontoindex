@@ -24,6 +24,15 @@ vi.mock('../../../src/mcp/shared/target-context.js', () => ({
   resolveTargetContext: vi.fn(),
 }));
 
+vi.mock('../../../src/storage/git.js', () => ({
+  resolveBranchComparisonBase: vi.fn(() => ({
+    ref: 'main',
+    commit: 'base123',
+    range: 'main...HEAD',
+    source: 'main',
+  })),
+}));
+
 vi.mock('../../../src/mcp/super/docs-evidence.js', () => ({
   collectAdvisoryDocsEvidence: vi.fn(async () => ({
     enabled: true,
@@ -91,6 +100,13 @@ const MOCK_TARGET_CONTEXT = {
   targetHead: 'abc123',
   currentHead: 'abc123',
   indexedHead: 'abc123',
+  graphAuthority: {
+    state: 'authoritative' as const,
+    reason: 'current source manifest matches indexed generation',
+    generationId: 'generation-1',
+    manifestDigest: 'manifest-1',
+    coverage: 'complete' as const,
+  },
   dirtyWorktree: false,
   changedSinceIndex: false,
   snapshotMode: 'live' as const,
@@ -196,6 +212,51 @@ describe('gnDiffImpact', () => {
     const numstatCall = mockExecFileSync.mock.calls.find((c) => c[1].includes('--numstat'));
     expect(numstatCall).toBeDefined();
     expect(numstatCall![1]).toContain('HEAD~3..HEAD');
+    expect(nameOnlyCall?.[2]).toMatchObject({ cwd: '/repo' });
+    expect(mockResolveTargetContext).toHaveBeenCalledWith({
+      repo: REPO_ID,
+      verifyGraphAuthority: true,
+      requiredGraphCapabilities: ['symbols', 'impact', 'processes'],
+    });
+  });
+
+  it('rejects an unresolved explicit repository before executing git', async () => {
+    mockResolveTargetContext.mockResolvedValue({
+      ...MOCK_TARGET_CONTEXT,
+      status: 'not-found',
+      repoPath: undefined,
+      action: 'Repository "missing" is not indexed.',
+    } as any);
+
+    await expect(gnDiffImpact('missing', { scope: 'staged' })).rejects.toThrow(
+      'Repository "missing" is not indexed.',
+    );
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+  });
+
+  it('uses the requested repository path when process cwd points at another repository', async () => {
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/repo-a');
+    mockResolveTargetContext.mockResolvedValue({
+      ...MOCK_TARGET_CONTEXT,
+      repoPath: '/repo-b',
+    } as any);
+    setupGitMocks('src/foo.ts\n', '5\t2\tsrc/foo.ts\n');
+    setupGraphMocks({ upstreamCount: 2 });
+
+    try {
+      await gnDiffImpact(REPO_ID, { commitRange: 'HEAD~1..HEAD' });
+    } finally {
+      cwdSpy.mockRestore();
+    }
+
+    expect(mockExecFileSync.mock.calls.some((call) => call[1].includes('--show-toplevel'))).toBe(
+      false,
+    );
+    expect(
+      mockExecFileSync.mock.calls
+        .filter((call) => call[0] === 'git')
+        .every((call) => (call[2] as { cwd?: string } | undefined)?.cwd === '/repo-b'),
+    ).toBe(true);
   });
 
   // ---- Test 2: scope 'staged' → --cached args -----------------------------
@@ -428,6 +489,11 @@ describe('gnDiffImpact', () => {
       indexedHead: 'abc123',
       currentHead: 'def456',
       changedSinceIndex: true,
+      graphAuthority: {
+        ...MOCK_TARGET_CONTEXT.graphAuthority,
+        state: 'review',
+        reason: 'target commit differs from indexed generation',
+      },
     } as any);
 
     const report = await gnDiffImpact(REPO_ID, { commitRange: 'main...HEAD' });
@@ -439,7 +505,7 @@ describe('gnDiffImpact', () => {
     expect(['low', 'medium']).toContain(highRiskRecommendation?.confidence);
     expect(highRiskRecommendation?.confidence).not.toBe('high');
     expect(report.capabilityState.freshness.status).toBe('stale');
-    expect(report.capabilityState.capabilitiesMissing).toContain('fresh-graph');
+    expect(report.capabilityState.capabilitiesMissing).toContain('authoritative-graph');
   });
 
   it('keeps opt-in docs evidence advisory and out of recommendation authority', async () => {
@@ -672,6 +738,98 @@ describe('gnReviewDiff', () => {
       degradedReasons: [],
     });
     expect((envelope.limits.budget as { elapsedMs?: number }).elapsedMs).toBeGreaterThanOrEqual(0);
+    const diffCall = mockExecFileSync.mock.calls.find((call) => call[1].includes('--name-only'));
+    expect(diffCall?.[2]).toMatchObject({ cwd: '/repo' });
+    expect(mockResolveTargetContext).toHaveBeenCalledWith({
+      repo: REPO_ID,
+      verifyGraphAuthority: true,
+      requiredGraphCapabilities: ['symbols', 'impact', 'processes'],
+    });
+  });
+
+  it('marks graph diagnostics advisory when manifest authority is unavailable', async () => {
+    mockResolveTargetContext.mockResolvedValue({
+      ...MOCK_TARGET_CONTEXT,
+      graphAuthority: {
+        state: 'degraded',
+        reason: 'index manifest missing',
+        coverage: 'unknown',
+      },
+    } as any);
+    setupGitMocks('src/foo.ts\n', '5\t2\tsrc/foo.ts\n');
+    setupGraphMocks({ upstreamCount: 2 });
+
+    const envelope = await gnReviewDiff(REPO_ID, { commitRange: 'HEAD~1..HEAD' });
+
+    expect(envelope.freshness).toMatchObject({
+      status: 'degraded',
+      actionable: false,
+      graphAuthorityState: 'degraded',
+    });
+    expect(envelope.results.diagnostics.records).toContainEqual(
+      expect.objectContaining({
+        subject: 'changed symbols',
+        authority: 'advisory',
+        degraded: true,
+      }),
+    );
+  });
+
+  it.each([
+    ['source mismatch', 'review', 'current source manifest does not match indexed manifest'],
+    ['degraded coverage', 'degraded', 'indexed coverage is degraded'],
+    ['missing capability', 'degraded', 'required graph capabilities unavailable: processes'],
+  ] as const)('marks graph diagnostics advisory for %s', async (_label, state, reason) => {
+    mockResolveTargetContext.mockResolvedValue({
+      ...MOCK_TARGET_CONTEXT,
+      graphAuthority: {
+        state,
+        reason,
+        generationId: 'generation-1',
+        manifestDigest: 'manifest-1',
+        coverage: 'complete',
+      },
+    } as any);
+    setupGitMocks('src/foo.ts\n', '5\t2\tsrc/foo.ts\n');
+    setupGraphMocks({ upstreamCount: 2 });
+
+    const envelope = await gnReviewDiff(REPO_ID, { commitRange: 'HEAD~1..HEAD' });
+
+    expect(envelope.status).toBe('degraded');
+    expect(envelope.freshness.actionable).toBe(false);
+    expect(envelope.results.diagnostics.records).toContainEqual(
+      expect.objectContaining({
+        subject: 'changed symbols',
+        authority: 'advisory',
+        degraded: true,
+      }),
+    );
+  });
+
+  // ---- RD-2: scope 'branch' resolves to main...HEAD -----------------------
+  it('uses the requested repository path when process cwd points at another repository', async () => {
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/repo-a');
+    mockResolveTargetContext.mockResolvedValue({
+      ...MOCK_TARGET_CONTEXT,
+      repoPath: '/repo-b',
+    } as any);
+    setupGitMocks('src/foo.ts\n', '5\t2\tsrc/foo.ts\n');
+    setupGraphMocks({ upstreamCount: 2 });
+
+    try {
+      await gnReviewDiff(REPO_ID, { commitRange: 'HEAD~1..HEAD' });
+    } finally {
+      cwdSpy.mockRestore();
+    }
+
+    expect(mockExecFileSync.mock.calls.some((call) => call[1].includes('--show-toplevel'))).toBe(
+      false,
+    );
+    expect(
+      mockExecFileSync.mock.calls
+        .filter((call) => call[0] === 'git')
+        .every((call) => (call[2] as { cwd?: string } | undefined)?.cwd === '/repo-b'),
+    ).toBe(true);
   });
 
   // ---- RD-2: scope 'branch' resolves to main...HEAD -----------------------

@@ -368,7 +368,7 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
   {
     name: 'gn_ensure_fresh',
     description:
-      'Index lifecycle helper: reports whether the OntoIndex index is stale (indexed commit ≠ current HEAD), surfaces embeddings status, and optionally re-runs `ontoindex analyze` using the current CLI process when autoAnalyze: true is passed.\n\nThis is a READ-ONLY super-function by default (autoAnalyze defaults to false).',
+      'Index lifecycle helper: reports whether the OntoIndex index is stale (indexed commit ≠ current HEAD), surfaces embeddings status, and optionally submits a durable `ontoindex analyze` job when autoAnalyze: true is passed.\n\nThis is a READ-ONLY super-function by default (autoAnalyze defaults to false).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -384,7 +384,7 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
         autoAnalyze: {
           type: 'boolean',
           description:
-            'Automatically run ontoindex analyze when the index is stale. Default: false.',
+            'Submit a durable ontoindex analyze job when refresh is required. Default: false.',
           default: false,
         },
         killMcpForLock: {
@@ -393,8 +393,34 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
             'Advisory only: report lock-release guidance before analyzing. OntoIndex will not terminate MCP processes. Default: false.',
           default: false,
         },
+        legacyResponse: legacyResponseProperty,
       },
       required: [],
+    },
+  },
+  {
+    name: 'gn_analyze_job',
+    description:
+      'Observe or cancel a durable repository analysis job previously returned by gn_ensure_fresh(autoAnalyze=true).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        repo: {
+          type: 'string',
+          description: 'Repository name or path. Omit if only one repo is indexed.',
+        },
+        jobId: {
+          type: 'string',
+          description: 'Analysis job ID returned by gn_ensure_fresh.',
+        },
+        action: {
+          type: 'string',
+          enum: ['status', 'cancel'],
+          description: 'Job operation. Default: status.',
+          default: 'status',
+        },
+      },
+      required: ['jobId'],
     },
   },
   {

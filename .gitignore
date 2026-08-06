@@ -110,3 +110,6 @@ local_docs/
 
 # v7+ pilot DBs
 pilot/
+
+# Local test result dump
+/.post-authority.json

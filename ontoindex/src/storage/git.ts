@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import { statSync } from 'fs';
 import path from 'path';
 
@@ -127,6 +127,92 @@ export const parseRepoNameFromUrl = (url: string | null | undefined): string | n
 export const getInferredRepoName = (repoPath: string): string | null => {
   return parseRepoNameFromUrl(getRemoteOriginUrl(repoPath));
 };
+
+export interface BranchComparisonBase {
+  ref: string;
+  commit: string;
+  range: string;
+  source: 'config' | 'origin-head' | 'main' | 'master' | 'branch-config';
+}
+
+function gitOutput(repoPath: string, args: string[]): string {
+  return execFileSync('git', args, {
+    cwd: repoPath,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: GIT_SYNC_TIMEOUT_MS,
+    maxBuffer: GIT_SYNC_MAX_BUFFER,
+  }).trim();
+}
+
+function resolveCommit(repoPath: string, ref: string): string | null {
+  try {
+    return (
+      gitOutput(repoPath, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]) || null
+    );
+  } catch {
+    return null;
+  }
+}
+
+function configuredValue(repoPath: string, key: string): string | null {
+  try {
+    return gitOutput(repoPath, ['config', '--get', key]) || null;
+  } catch {
+    return null;
+  }
+}
+
+export function resolveBranchComparisonBase(repoPath: string): BranchComparisonBase {
+  const explicit = configuredValue(repoPath, 'ontoindex.defaultBranch');
+  const originHead = (() => {
+    try {
+      const ref = gitOutput(repoPath, [
+        'symbolic-ref',
+        '--quiet',
+        '--short',
+        'refs/remotes/origin/HEAD',
+      ]);
+      return ref && ref !== 'origin/HEAD' ? ref : null;
+    } catch {
+      return null;
+    }
+  })();
+  const currentBranch = (() => {
+    try {
+      return gitOutput(repoPath, ['symbolic-ref', '--quiet', '--short', 'HEAD']) || null;
+    } catch {
+      return null;
+    }
+  })();
+  const branchConfigured = currentBranch
+    ? configuredValue(repoPath, `branch.${currentBranch}.ontoindexBase`)
+    : null;
+  const candidates: Array<{ ref: string | null; source: BranchComparisonBase['source'] }> = [
+    { ref: explicit, source: 'config' },
+    { ref: originHead, source: 'origin-head' },
+    { ref: 'main', source: 'main' },
+    { ref: 'origin/main', source: 'main' },
+    { ref: 'master', source: 'master' },
+    { ref: 'origin/master', source: 'master' },
+    { ref: branchConfigured, source: 'branch-config' },
+  ];
+  for (const candidate of candidates) {
+    if (!candidate.ref || candidate.ref === currentBranch) continue;
+    const commit = resolveCommit(repoPath, candidate.ref);
+    if (commit) {
+      return {
+        ref: candidate.ref,
+        commit,
+        range: `${candidate.ref}...HEAD`,
+        source: candidate.source,
+      };
+    }
+  }
+  throw new Error(
+    'Could not resolve a branch comparison base. Pass an explicit commit range or configure ontoindex.defaultBranch.',
+  );
+}
 
 interface DiffHunk {
   startLine: number;

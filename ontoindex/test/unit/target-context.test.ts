@@ -47,6 +47,19 @@ describe('resolveTargetContext', () => {
     };
   }
 
+  const manifest = {
+    version: 1 as const,
+    head: CURRENT_COMMIT,
+    sourceDigest: 'source-1',
+    sourceEntryCount: 1,
+    includePaths: [],
+    scopeDigest: 'scope-1',
+    ignorePolicyDigest: 'ignore-1',
+    pipelineProfile: 'full' as const,
+    analyzerContractVersion: 'ontoindex-source-manifest-v1' as const,
+    coverage: 'complete' as const,
+  };
+
   it('resolves fresh target/current/index context', async () => {
     const { resolveTargetContext } = await loadActualResolver();
 
@@ -93,6 +106,7 @@ describe('resolveTargetContext', () => {
       sidecar: { status: 'unknown', reason: 'not-probed' },
       policy: { status: 'unknown' },
     });
+    expect(context.graphAuthority).toBeUndefined();
   });
 
   it('marks stale index state as changed since index', async () => {
@@ -137,6 +151,135 @@ describe('resolveTargetContext', () => {
     expect(context.changedSinceIndex).toBe(true);
     expect(context.snapshotMode).toBe('dirty-worktree-overlay');
     expect(context.scopeConfidence).toBe('medium');
+  });
+
+  it('verifies an exactly indexed dirty source snapshot as authoritative', async () => {
+    const { resolveTargetContext } = await loadActualResolver();
+    const context = await resolveTargetContext(
+      { repo: REPO_ID, verifyGraphAuthority: true },
+      {
+        readRegistry: async () => [registryEntry],
+        execGit: execGitFor(CURRENT_COMMIT, ' M src/file.ts\n'),
+        loadMeta: async () => ({
+          repoPath: '.',
+          lastCommit: CURRENT_COMMIT,
+          indexedAt: 'graph-index-1',
+          generationId: 'generation-1',
+          sourceManifest: manifest,
+        }),
+        resolveActiveIndexGeneration: async () => ({
+          generationId: 'generation-1',
+          generationPath: '/repo/test-repo/.ontoindex/generations/generation-1',
+          lbugPath: '/repo/test-repo/.ontoindex/generations/generation-1/lbug',
+          metaPath: '/repo/test-repo/.ontoindex/generations/generation-1/meta.json',
+          snapshotPath: '/repo/test-repo/.ontoindex/generations/generation-1/snapshot.json',
+        }),
+        computeSourceManifest: async () => manifest,
+      },
+    );
+
+    expect(context.graphAuthority).toMatchObject({
+      state: 'authoritative',
+      generationId: 'generation-1',
+      coverage: 'complete',
+    });
+  });
+
+  it('requires review when authority is requested for a different target ref', async () => {
+    const { resolveTargetContext } = await loadActualResolver();
+    const historicalCommit = 'def456abc123def456abc123def456abc123def4';
+    const context = await resolveTargetContext(
+      { repo: REPO_ID, targetRef: 'HEAD~1', verifyGraphAuthority: true },
+      {
+        readRegistry: async () => [registryEntry],
+        execGit: async (_cwd, args) => {
+          const key = args.join(' ');
+          if (key === 'rev-parse --abbrev-ref HEAD') return 'main\n';
+          if (key === 'rev-parse HEAD') return `${CURRENT_COMMIT}\n`;
+          if (key === 'rev-parse HEAD~1') return `${historicalCommit}\n`;
+          if (key === 'status --porcelain=v1 --untracked-files=all') return '';
+          return `${CURRENT_COMMIT}\n`;
+        },
+        loadMeta: async () => ({
+          repoPath: '.',
+          lastCommit: CURRENT_COMMIT,
+          indexedAt: 'graph-index-1',
+          generationId: 'generation-1',
+          sourceManifest: manifest,
+        }),
+        resolveActiveIndexGeneration: async () => ({
+          generationId: 'generation-1',
+          generationPath: '/repo/test-repo/.ontoindex/generations/generation-1',
+          lbugPath: '/repo/test-repo/.ontoindex/generations/generation-1/lbug',
+          metaPath: '/repo/test-repo/.ontoindex/generations/generation-1/meta.json',
+          snapshotPath: '/repo/test-repo/.ontoindex/generations/generation-1/snapshot.json',
+        }),
+        computeSourceManifest: async () => manifest,
+      },
+    );
+
+    expect(context.graphAuthority).toMatchObject({
+      state: 'review',
+      reason: 'graph authority describes current checkout, not requested target ref',
+    });
+  });
+
+  it('requires review when source identity changes after indexing', async () => {
+    const { resolveTargetContext } = await loadActualResolver();
+    const context = await resolveTargetContext(
+      { repo: REPO_ID, verifyGraphAuthority: true },
+      {
+        readRegistry: async () => [registryEntry],
+        execGit: execGitFor(CURRENT_COMMIT),
+        loadMeta: async () => ({
+          repoPath: '.',
+          lastCommit: CURRENT_COMMIT,
+          indexedAt: 'graph-index-1',
+          generationId: 'generation-1',
+          sourceManifest: manifest,
+        }),
+        resolveActiveIndexGeneration: async () => ({
+          generationId: 'generation-1',
+          generationPath: '/repo/test-repo/.ontoindex/generations/generation-1',
+          lbugPath: '/repo/test-repo/.ontoindex/generations/generation-1/lbug',
+          metaPath: '/repo/test-repo/.ontoindex/generations/generation-1/meta.json',
+          snapshotPath: '/repo/test-repo/.ontoindex/generations/generation-1/snapshot.json',
+        }),
+        computeSourceManifest: async () => ({ ...manifest, sourceDigest: 'source-2' }),
+      },
+    );
+
+    expect(context.graphAuthority).toMatchObject({ state: 'review' });
+  });
+
+  it('degrades legacy or unpaired generations in strict mode', async () => {
+    const { resolveTargetContext } = await loadActualResolver();
+    const context = await resolveTargetContext(
+      { repo: REPO_ID, verifyGraphAuthority: true },
+      {
+        readRegistry: async () => [registryEntry],
+        execGit: execGitFor(CURRENT_COMMIT),
+        loadMeta: async () => ({
+          repoPath: '.',
+          lastCommit: CURRENT_COMMIT,
+          indexedAt: 'graph-index-1',
+          generationId: 'generation-meta',
+          sourceManifest: manifest,
+        }),
+        resolveActiveIndexGeneration: async () => ({
+          generationId: 'generation-active',
+          generationPath: '/repo/test-repo/.ontoindex/generations/generation-active',
+          lbugPath: '/repo/test-repo/.ontoindex/generations/generation-active/lbug',
+          metaPath: '/repo/test-repo/.ontoindex/generations/generation-active/meta.json',
+          snapshotPath: '/repo/test-repo/.ontoindex/generations/generation-active/snapshot.json',
+        }),
+      },
+    );
+
+    expect(context.graphAuthority).toMatchObject({
+      state: 'degraded',
+      reason: 'active graph generation does not match metadata generation',
+    });
   });
 
   it('marks untracked source files as unknown graph coverage', async () => {

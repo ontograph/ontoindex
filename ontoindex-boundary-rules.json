@@ -1,0 +1,14 @@
+[
+  {
+    "from": "ontoindex/src/core/**",
+    "to": "ontoindex/src/mcp/super/**",
+    "label": "core must not call MCP super-functions",
+    "forbidden_edge_types": ["CALLS"]
+  },
+  {
+    "from": "ontoindex/src/core/**",
+    "to": "ontoindex/src/mcp/shared/**",
+    "label": "core must not call MCP shared policy helpers",
+    "forbidden_edge_types": ["CALLS"]
+  }
+]

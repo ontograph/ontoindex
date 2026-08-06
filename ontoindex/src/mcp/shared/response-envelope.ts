@@ -39,6 +39,9 @@ export interface CapabilityResponseFreshness {
   runtimeDegradedReason?: string | null;
   runtimeRepairCommand?: string;
   runtimeRepairAction?: RuntimeRepairAction;
+  graphAuthorityState?: 'authoritative' | 'review' | 'degraded';
+  graphGenerationId?: string;
+  graphManifestDigest?: string;
 }
 
 export type RuntimeHealthFreshnessInput = Pick<
@@ -138,6 +141,15 @@ export function deriveEnvelopeFreshness(
   targetContext: EnvelopeTargetContext,
   overrides: Partial<CapabilityResponseFreshness> = {},
 ): CapabilityResponseFreshness {
+  const graphAuthority = 'scope' in targetContext ? undefined : targetContext.graphAuthority;
+  const authorityTargetIdentity =
+    'scope' in targetContext
+      ? 'current'
+      : !targetContext.targetHead || !targetContext.currentHead
+        ? 'unknown'
+        : targetContext.targetHead === targetContext.currentHead
+          ? 'current'
+          : 'different';
   const base =
     'scope' in targetContext
       ? {
@@ -159,7 +171,7 @@ export function deriveEnvelopeFreshness(
             repoPath: targetContext.repoPath,
             indexedCommit: targetContext.indexedHead,
             headCommit: targetContext.currentHead,
-            isStale: targetContext.changedSinceIndex === true,
+            isStale: hasCommitMismatch(targetContext),
             dirtyFileCount: targetContext.dirtyFileCount ?? null,
             ...(targetContext.dirtyWorkspace
               ? { dirtyWorkspace: targetContext.dirtyWorkspace }
@@ -202,7 +214,7 @@ export function deriveEnvelopeFreshness(
                 repoPath: targetContext.repoPath,
                 indexedCommit: targetContext.indexedHead,
                 headCommit: targetContext.currentHead,
-                isStale: targetContext.changedSinceIndex === true,
+                isStale: hasCommitMismatch(targetContext),
                 dirtyFileCount: targetContext.dirtyFileCount ?? null,
                 ...(targetContext.dirtyWorkspace
                   ? { dirtyWorkspace: targetContext.dirtyWorkspace }
@@ -222,7 +234,7 @@ export function deriveEnvelopeFreshness(
                 repoPath: targetContext.repoPath,
                 indexedCommit: targetContext.indexedHead,
                 headCommit: targetContext.currentHead,
-                isStale: targetContext.changedSinceIndex === true,
+                isStale: hasCommitMismatch(targetContext),
                 dirtyFileCount: targetContext.dirtyFileCount ?? null,
                 ...(targetContext.dirtyWorkspace
                   ? { dirtyWorkspace: targetContext.dirtyWorkspace }
@@ -231,7 +243,36 @@ export function deriveEnvelopeFreshness(
                   targetContext.scopeConfidence ?? resolveScopeConfidence(targetContext),
               };
 
-  return { ...base, ...overrides };
+  const authorityOverrides = graphAuthority
+    ? {
+        graphAuthorityState: graphAuthority.state,
+        ...(graphAuthority.generationId ? { graphGenerationId: graphAuthority.generationId } : {}),
+        ...(graphAuthority.manifestDigest
+          ? { graphManifestDigest: graphAuthority.manifestDigest }
+          : {}),
+        ...(graphAuthority.state === 'authoritative' && authorityTargetIdentity === 'current'
+          ? {
+              status: 'fresh' as const,
+              actionable: true,
+              reason: graphAuthority.reason,
+            }
+          : {
+              status:
+                graphAuthority.state === 'review' || authorityTargetIdentity === 'different'
+                  ? ('stale' as const)
+                  : ('degraded' as const),
+              actionable: false,
+              reason:
+                authorityTargetIdentity === 'current'
+                  ? graphAuthority.reason
+                  : authorityTargetIdentity === 'unknown'
+                    ? 'target commit unavailable for graph authority'
+                    : 'graph authority describes current checkout, not requested target ref',
+              isStale: hasCommitMismatch(targetContext),
+            }),
+      }
+    : {};
+  return { ...base, ...authorityOverrides, ...overrides };
 }
 
 export function mergeRuntimeHealthFreshness(
@@ -502,6 +543,14 @@ function defaultLimits(): Record<string, unknown> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function hasCommitMismatch(targetContext: EnvelopeTargetContext): boolean {
+  return (
+    !('scope' in targetContext) &&
+    Boolean(targetContext.indexedHead && targetContext.targetHead) &&
+    targetContext.indexedHead !== targetContext.targetHead
+  );
 }
 
 function toRecord(value: object): Record<string, unknown> {

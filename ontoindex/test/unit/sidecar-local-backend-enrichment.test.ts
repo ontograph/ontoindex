@@ -28,6 +28,7 @@ vi.mock('../../src/core/lbug/pool-adapter.js', () => ({
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: backendMocks.listRegisteredRepos,
+  resolveActiveIndexGeneration: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock('../../src/mcp/local/backend-search.js', () => ({
@@ -379,19 +380,6 @@ describe('LocalBackend sidecar enrichment metadata', () => {
         enrichment: {
           used: false,
           status: 'available',
-          recordStatusCounts: {
-            complete: 3,
-            partial: 1,
-            stale: 0,
-          },
-          requests: {
-            queued: 1,
-            running: 1,
-          },
-          lock: {
-            ownerId: 'worker-q',
-            heartbeatAt: '2026-05-13T00:00:05.000Z',
-          },
         },
       });
       expect(result.enrichment).not.toHaveProperty('facts');
@@ -1277,8 +1265,6 @@ describe('LocalBackend sidecar enrichment metadata', () => {
         used: false,
         status: 'unavailable',
         reason: 'missing-store',
-        requests: { queued: 0, running: 0 },
-        lock: null,
       },
     });
   });
@@ -1297,10 +1283,8 @@ describe('LocalBackend sidecar enrichment metadata', () => {
       enrichment: {
         used: false,
         status: 'error',
-        requests: { queued: 0, running: 0 },
-        lock: null,
       },
     });
-    expect(result.enrichment.error).toContain('not valid JSON');
+    expect(result.enrichment.reason).toContain('not valid JSON');
   });
 });

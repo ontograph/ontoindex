@@ -17,6 +17,10 @@ import {
   registerRepo,
   listRegisteredRepos,
   RegistryNameCollisionError,
+  activateIndexGeneration,
+  createIndexGeneration,
+  loadRepo,
+  resolveActiveIndexGeneration,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
 import { parseRepoNameFromUrl, getInferredRepoName } from '../../src/storage/git.js';
@@ -53,6 +57,84 @@ describe('getStoragePaths', () => {
     const paths = getStoragePaths('/home/user/project');
     expect(paths.lbugPath.startsWith(paths.storagePath)).toBe(true);
     expect(paths.metaPath.startsWith(paths.storagePath)).toBe(true);
+  });
+});
+
+describe('index generations', () => {
+  it('atomically changes the active generation while old files remain immutable', async () => {
+    const temp = await createTempDir('ontoindex-generations-');
+    const storagePath = path.join(temp.dbPath, '.ontoindex');
+    try {
+      const first = await createIndexGeneration(storagePath, 'generation-1');
+      await fs.writeFile(first.lbugPath, 'first');
+      await fs.writeFile(first.metaPath, '{}');
+      await fs.writeFile(first.snapshotPath, '{}');
+      const activeFirst = await activateIndexGeneration(storagePath, first);
+
+      expect(await fs.readFile(path.join(storagePath, 'lbug'), 'utf8')).toBe('first');
+      expect((await resolveActiveIndexGeneration(storagePath))?.generationId).toBe('generation-1');
+
+      const second = await createIndexGeneration(storagePath, 'generation-2');
+      await fs.writeFile(second.lbugPath, 'second');
+      await fs.writeFile(second.metaPath, '{}');
+      await fs.writeFile(second.snapshotPath, '{}');
+      await activateIndexGeneration(storagePath, second);
+
+      expect(await fs.readFile(path.join(storagePath, 'lbug'), 'utf8')).toBe('second');
+      expect(await fs.readFile(activeFirst.lbugPath, 'utf8')).toBe('first');
+      expect((await resolveActiveIndexGeneration(storagePath))?.generationId).toBe('generation-2');
+    } finally {
+      await temp.cleanup();
+    }
+  });
+
+  it('copies a legacy index into an immutable generation before publication', async () => {
+    const temp = await createTempDir('ontoindex-legacy-generation-');
+    const storagePath = path.join(temp.dbPath, '.ontoindex');
+    try {
+      await fs.mkdir(storagePath, { recursive: true });
+      await fs.writeFile(path.join(storagePath, 'lbug'), 'legacy');
+      await fs.writeFile(path.join(storagePath, 'meta.json'), '{}');
+
+      const staged = await createIndexGeneration(storagePath, 'generation-new');
+      const legacy = await resolveActiveIndexGeneration(storagePath);
+
+      expect(legacy?.generationId).toMatch(/^legacy-/);
+      expect(await fs.readFile(legacy!.lbugPath, 'utf8')).toBe('legacy');
+      expect(await fs.readFile(path.join(storagePath, 'lbug'), 'utf8')).toBe('legacy');
+      await fs.rm(staged.generationPath, { recursive: true, force: true });
+    } finally {
+      await temp.cleanup();
+    }
+  });
+
+  it('binds loaded repository metadata and graph paths to one active generation', async () => {
+    const temp = await createTempDir('ontoindex-load-generation-');
+    const repoPath = temp.dbPath;
+    const storagePath = path.join(repoPath, '.ontoindex');
+    try {
+      const generation = await createIndexGeneration(storagePath, 'generation-1');
+      await fs.writeFile(generation.lbugPath, 'graph');
+      await fs.writeFile(
+        generation.metaPath,
+        JSON.stringify({
+          repoPath: '.',
+          lastCommit: 'abc123',
+          indexedAt: '2026-08-05T00:00:00.000Z',
+          generationId: 'generation-1',
+        }),
+      );
+      await fs.writeFile(generation.snapshotPath, '{}');
+      const active = await activateIndexGeneration(storagePath, generation);
+
+      const repo = await loadRepo(repoPath);
+
+      expect(repo?.lbugPath).toBe(active.lbugPath);
+      expect(repo?.metaPath).toBe(active.metaPath);
+      expect(repo?.meta.generationId).toBe(active.generationId);
+    } finally {
+      await temp.cleanup();
+    }
   });
 });
 

@@ -385,6 +385,21 @@ describe('phpPsr4Strategy', () => {
     expect(result).toEqual({ kind: 'files', files });
   });
 
+  it('returns every namespace file as a lookup-only scope for function imports', () => {
+    const files = ['app/Services/Formatter.php', 'app/Services/FormatterExtended.php'];
+    const ctx = makeCtx(files, {
+      composerConfig: { psr4: new Map([['App\\', 'app/']]) },
+    });
+
+    const result = phpPsr4Strategy(
+      'ontoindex-php-symbol:App\\Services\\format_text',
+      'index.php',
+      ctx,
+    );
+
+    expect(result).toEqual({ kind: 'scope', files });
+  });
+
   it('returns null when no file matches the namespace via PSR-4 or suffix fallback', () => {
     const ctx = makeCtx(['app/Services/OtherService.php'], {
       composerConfig: { psr4: new Map([['App\\', 'app/']]) },

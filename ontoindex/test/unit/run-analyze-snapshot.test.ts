@@ -236,7 +236,7 @@ describe('runFullAnalysis snapshot persistence', () => {
         }),
       );
       expect(saveMetaMock).toHaveBeenCalledWith(
-        path.join(repoDir, '.ontoindex'),
+        expect.stringContaining(path.join(repoDir, '.ontoindex', 'generations', '.staging-')),
         expect.objectContaining({
           indexMode: 'symbols-only',
           pipelineProfile: 'symbols',
@@ -256,7 +256,7 @@ describe('runFullAnalysis snapshot persistence', () => {
     }
   });
 
-  it('does not pass diagnostic telemetry or write a checkpoint for normal full analysis', async () => {
+  it('collects internal degradation telemetry without writing a normal-run checkpoint', async () => {
     const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
     try {
       const graph = createKnowledgeGraph();
@@ -275,7 +275,7 @@ describe('runFullAnalysis snapshot persistence', () => {
       expect(runPipelineMock).toHaveBeenCalledWith(
         repoDir,
         expect.any(Function),
-        expect.not.objectContaining({ onTelemetry: expect.any(Function) }),
+        expect.objectContaining({ onTelemetry: expect.any(Function) }),
       );
       await expect(
         fs.stat(path.join(repoDir, '.ontoindex', 'analysis-checkpoint.json')),
@@ -316,7 +316,7 @@ describe('runFullAnalysis snapshot persistence', () => {
       const embeddingCall = embeddingPipelineMocks.runEmbeddingPipeline.mock.calls.at(-1);
       expect(embeddingCall?.[6]).toBeInstanceOf(Map);
       expect(embeddingCall?.[9]).toEqual({
-        path: path.join(repoDir, '.ontoindex', 'embedding-checkpoint.json'),
+        path: expect.stringContaining(path.join(repoDir, '.ontoindex', 'generations', '.staging-')),
         embeddingTextVersion: 'v2',
         modelHash: '',
         headCommit: 'abc123',
@@ -357,7 +357,7 @@ describe('runFullAnalysis snapshot persistence', () => {
         }),
       );
       expect(saveMetaMock).toHaveBeenCalledWith(
-        path.join(repoDir, '.ontoindex'),
+        expect.stringContaining(path.join(repoDir, '.ontoindex', 'generations', '.staging-')),
         expect.objectContaining({
           includePaths: ['sc/'],
         }),
@@ -487,7 +487,7 @@ describe('runFullAnalysis snapshot persistence', () => {
       await runFullAnalysis(repoDir, { profile: 'symbols' }, { onProgress: vi.fn() });
 
       expect(saveMetaMock).toHaveBeenCalledWith(
-        path.join(repoDir, '.ontoindex'),
+        expect.stringContaining(path.join(repoDir, '.ontoindex', 'generations', '.staging-')),
         expect.objectContaining({
           degradedFiles: [
             {
@@ -1013,6 +1013,41 @@ describe('runFullAnalysis snapshot persistence', () => {
     }
   });
 
+  it('rejects a source mutation during analysis and leaves the active graph unchanged', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
+    try {
+      const sourcePath = path.join(repoDir, 'source.ts');
+      const storagePath = path.join(repoDir, '.ontoindex');
+      await fs.writeFile(sourcePath, 'export const value = 1;\n');
+      await fs.mkdir(storagePath, { recursive: true });
+      await fs.writeFile(path.join(storagePath, 'lbug'), 'active graph');
+      await fs.writeFile(path.join(storagePath, 'meta.json'), '{}');
+
+      runPipelineMock.mockImplementation(async () => {
+        await fs.writeFile(sourcePath, 'export const value = 2;\n');
+        return {
+          graph: createKnowledgeGraph(),
+          repoPath: repoDir,
+          totalFileCount: 1,
+          communityResult: undefined,
+          processResult: undefined,
+          usedWorkerPool: false,
+        };
+      });
+      executeQueryMock.mockResolvedValue([]);
+
+      await expect(runFullAnalysis(repoDir, {}, { onProgress: vi.fn() })).rejects.toThrow(
+        'Source inputs changed during analysis',
+      );
+
+      expect(await fs.readFile(path.join(storagePath, 'lbug'), 'utf8')).toBe('active graph');
+      const generationEntries = await fs.readdir(path.join(storagePath, 'generations'));
+      expect(generationEntries.filter((entry) => entry.startsWith('.staging-'))).toEqual([]);
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it('updates the analysis checkpoint when diagnostic-profile analysis fails after parsing', async () => {
     const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
     try {
@@ -1205,7 +1240,7 @@ describe('runFullAnalysis snapshot persistence', () => {
       await runFullAnalysis(repoDir, { embeddings: true }, { onProgress: vi.fn() });
 
       expect(saveMetaMock).toHaveBeenCalledWith(
-        path.join(repoDir, '.ontoindex'),
+        expect.stringContaining(path.join(repoDir, '.ontoindex', 'generations', '.staging-')),
         expect.objectContaining({
           model_hash: 'test-embedding-hash',
           stats: expect.objectContaining({

@@ -83,6 +83,11 @@ def _make_env(tmp_cache_dir: Path) -> OntoIndexDockerEnvironment:
     env._ontoindex_ready = False
     env.index_time = 0.0
     env.eval_server_port = 4848
+    env.graph_index_id = None
+    env.indexed_head = None
+    env.graph_manifest_digest = None
+    env.graph_authority_state = "degraded"
+    env.graph_authority_reason = "not verified"
     return env
 
 
@@ -185,3 +190,141 @@ class TestIndexRepositoryCycleGuard:
             f"ontoindex analyze ran {len(analyze_calls)} time(s); expected 1.  "
             "The cycle may have recursed more than once."
         )
+
+
+class TestStructuralArtifactAccess:
+    def setup_method(self):
+        self._tmp = Path(tempfile.mkdtemp())
+        self.env = _make_env(self._tmp)
+
+    def teardown_method(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_index_repository_records_provenance_for_fresh_index(self):
+        self.env.execute = MagicMock(side_effect=_fake_execute)
+        with patch.object(OntoIndexDockerEnvironment, "_save_cache"):
+            self.env._index_repository()
+
+        assert self.env.indexed_head == "abc1234"
+        assert self.env.graph_index_id == "eval-cache:" + self.env._make_cache_key(
+            {"repo": "testrepo", "commit": "abc1234"}
+        )
+
+    def test_frozen_paths_status_reads_git_status_in_testbed(self):
+        def execute(cmd_dict):
+            command = cmd_dict["command"]
+            if "git ls-files" in command:
+                return {"output": command.rsplit(" -- ", 1)[-1], "returncode": 0}
+            if "app/main.cc" in command:
+                return {"output": " M app/main.cc\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        self.env.execute = MagicMock(side_effect=execute)
+
+        result = self.env.frozen_paths_status(["app/main.cc", "src/lib.cc"])
+
+        assert result == {"status": "success", "modified": ["app/main.cc"]}
+        commands = [call.args[0]["command"] for call in self.env.execute.call_args_list]
+        assert all(command.startswith("cd /testbed && git ") for command in commands)
+
+    def test_frozen_paths_status_degrades_for_untracked_baseline_path(self):
+        self.env.execute = MagicMock(return_value={"output": "", "returncode": 1})
+
+        result = self.env.frozen_paths_status(["missing.txt"])
+
+        assert result["status"] == "error"
+        assert result["modified"] == []
+        assert "missing.txt" in result["error"]
+
+    def test_structural_tool_calls_generic_eval_server_endpoint(self):
+        self.env._ontoindex_ready = True
+        self.env.execute = MagicMock(
+            return_value={
+                "output": '{"status":"success","summary":{"total_violations":0}}',
+                "returncode": 0,
+            }
+        )
+
+        result = self.env.run_structural_tool(
+            "boundary_violations",
+            {"id": "layers", "tool": "boundary_violations", "rules_file": "rules.json"},
+        )
+
+        assert result["status"] == "success"
+        command = self.env.execute.call_args.args[0]["command"]
+        assert "/tool/boundary_violations" in command
+        assert '"rules_file": "rules.json"' in command
+        assert '"id"' not in command
+
+    def test_refresh_graph_for_oracles_records_verified_generation(self):
+        manifest = {
+            "version": 1,
+            "sourceDigest": "source-1",
+            "sourceEntryCount": 2,
+            "scopeDigest": "scope-1",
+            "pipelineProfile": "full",
+            "analyzerContractVersion": "ontoindex-source-manifest-v1",
+            "coverage": "complete",
+            "manifestDigest": "manifest-1",
+        }
+        meta = {
+            "generationId": "generation-2",
+            "lastCommit": "abc1234",
+            "capabilities": {"symbols": True, "impact": "full", "processes": True},
+            "sourceManifest": {key: value for key, value in manifest.items() if key != "manifestDigest"},
+        }
+        self.env._compute_source_manifest = MagicMock(side_effect=[manifest, manifest])
+        self.env._stop_eval_server = MagicMock()
+        self.env._read_active_meta = MagicMock(return_value=meta)
+        self.env._read_active_generation_id = MagicMock(return_value="generation-2")
+        self.env._start_eval_server = MagicMock(return_value=True)
+        self.env.execute = MagicMock(return_value={"output": "Indexed", "returncode": 0})
+
+        result = self.env.refresh_graph_for_oracles()
+
+        assert result == {
+            "graph_index_id": "generation-2",
+            "indexed_head": "abc1234",
+            "manifest_digest": "manifest-1",
+            "authority_state": "authoritative",
+            "authority_reason": "post-edit source manifest matches active graph generation",
+        }
+
+    def test_refresh_graph_for_oracles_degrades_when_active_pointer_mismatches_meta(self):
+        manifest = {
+            "version": 1,
+            "sourceDigest": "source-1",
+            "sourceEntryCount": 2,
+            "scopeDigest": "scope-1",
+            "pipelineProfile": "full",
+            "analyzerContractVersion": "ontoindex-source-manifest-v1",
+            "coverage": "complete",
+            "manifestDigest": "manifest-1",
+        }
+        self.env._compute_source_manifest = MagicMock(side_effect=[manifest, manifest])
+        self.env._stop_eval_server = MagicMock()
+        self.env._read_active_meta = MagicMock(return_value={
+            "generationId": "generation-2",
+            "lastCommit": "abc1234",
+            "capabilities": {"symbols": True, "impact": "full", "processes": True},
+            "sourceManifest": {key: value for key, value in manifest.items() if key != "manifestDigest"},
+        })
+        self.env._read_active_generation_id = MagicMock(return_value="generation-1")
+        self.env._start_eval_server = MagicMock(return_value=True)
+        self.env.execute = MagicMock(return_value={"output": "Indexed", "returncode": 0})
+
+        result = self.env.refresh_graph_for_oracles()
+
+        assert result["authority_state"] == "degraded"
+        assert "ERR_GRAPH_PUBLICATION_MISMATCH" in result["authority_reason"]
+
+    def test_refresh_graph_for_oracles_degrades_when_analysis_fails(self):
+        self.env._compute_source_manifest = MagicMock(return_value={"sourceDigest": "source-1"})
+        self.env._stop_eval_server = MagicMock()
+        self.env._start_eval_server = MagicMock(return_value=True)
+        self.env.execute = MagicMock(return_value={"output": "failed", "returncode": 1})
+
+        result = self.env.refresh_graph_for_oracles()
+
+        assert result["authority_state"] == "degraded"
+        assert "ERR_GRAPH_ANALYZE_FAILED" in result["authority_reason"]

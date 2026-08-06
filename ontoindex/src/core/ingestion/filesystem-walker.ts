@@ -29,6 +29,7 @@ export interface ScannedFile {
 
 export interface WalkRepositoryOptions {
   onSkippedLargeFile?: (file: ScannedFile) => void;
+  onUnreadableFile?: (file: ScannedFile, error: unknown) => void;
   includePaths?: string[];
 }
 
@@ -46,6 +47,41 @@ const toPosixPath = (value: string): string => value.replace(/\\/g, '/');
 
 /** Bytes read from the head of an extensionless file to inspect its shebang. */
 const SHEBANG_PROBE_BYTES = 256;
+
+async function findNestedGitRoots(
+  repoPath: string,
+  ignoreFilter: Awaited<ReturnType<typeof createIgnoreFilter>>,
+): Promise<Set<string>> {
+  const roots = new Set<string>();
+  const markerIgnore = {
+    ignored(p: Parameters<typeof ignoreFilter.ignored>[0]): boolean {
+      const relative = toPosixPath(p.relative());
+      if (p.name === '.git' && relative !== '.git') return false;
+      return ignoreFilter.ignored(p);
+    },
+    childrenIgnored(p: Parameters<typeof ignoreFilter.childrenIgnored>[0]): boolean {
+      if (p.name === '.git') return true;
+      return ignoreFilter.childrenIgnored(p);
+    },
+  };
+  for await (const entry of globStream('**/.git', {
+    cwd: repoPath,
+    dot: true,
+    nodir: false,
+    ignore: markerIgnore,
+  })) {
+    const parent = path.posix.dirname(toPosixPath(String(entry)));
+    if (parent !== '.') roots.add(parent);
+  }
+  return roots;
+}
+
+function isNestedGitPath(relativePath: string, roots: ReadonlySet<string>): boolean {
+  for (const root of roots) {
+    if (relativePath === root || relativePath.startsWith(`${root}/`)) return true;
+  }
+  return false;
+}
 
 /**
  * Bounded first-line detection for extensionless scripts. Reads at most
@@ -147,6 +183,17 @@ export const walkRepositoryPaths = async (
   options?: WalkRepositoryOptions,
 ): Promise<ScannedFile[]> => {
   const ignoreFilter = await createIgnoreFilter(repoPath);
+  const nestedGitRoots = await findNestedGitRoots(repoPath, ignoreFilter);
+  const scanIgnore = {
+    ignored(p: Parameters<typeof ignoreFilter.ignored>[0]): boolean {
+      const relative = toPosixPath(p.relative());
+      return isNestedGitPath(relative, nestedGitRoots) || ignoreFilter.ignored(p);
+    },
+    childrenIgnored(p: Parameters<typeof ignoreFilter.childrenIgnored>[0]): boolean {
+      const relative = toPosixPath(p.relative());
+      return isNestedGitPath(relative, nestedGitRoots) || ignoreFilter.childrenIgnored(p);
+    },
+  };
   const maxFileSizeBytes = getScanMaxFileSizeBytes();
   const includePaths = await normalizeRepositoryIncludePaths(repoPath, options?.includePaths);
   const includeGlobs = includePaths.length > 0 ? includePaths.map(includePathToGlob) : ['**/*'];
@@ -198,6 +245,12 @@ export const walkRepositoryPaths = async (
         entries.push(result.value);
         onProgress?.(processed, processed, result.value.path);
       } else {
+        if (result.status === 'rejected') {
+          options?.onUnreadableFile?.(
+            { path: currentBatch[i].replace(/\\/g, '/'), size: 0, degraded: true },
+            result.reason,
+          );
+        }
         onProgress?.(processed, processed, currentBatch[i]);
       }
     }
@@ -207,7 +260,7 @@ export const walkRepositoryPaths = async (
     cwd: repoPath,
     nodir: true,
     dot: true,
-    ignore: ignoreFilter,
+    ignore: scanIgnore,
   })) {
     batch.push(String(entry).replace(/\\/g, '/'));
     if (batch.length >= READ_CONCURRENCY) {

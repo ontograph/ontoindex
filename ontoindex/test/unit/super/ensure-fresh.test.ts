@@ -34,6 +34,14 @@ vi.mock('../../../src/core/runtime/runtime-health.js', () => ({
   readRuntimeHealth: vi.fn(),
 }));
 
+vi.mock('../../../src/core/analysis/analysis-coordinator.js', () => ({
+  submitAnalysisJob: vi.fn(),
+}));
+
+vi.mock('../../../src/mcp/shared/target-context.js', () => ({
+  resolveTargetContext: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks).
 // ---------------------------------------------------------------------------
@@ -44,12 +52,16 @@ import { readFileSync } from 'fs';
 import { gnEnsureFresh } from '../../../src/mcp/super/ensure-fresh.js';
 import { readRuntimeHealth } from '../../../src/core/runtime/runtime-health.js';
 import { loadMeta } from '../../../src/storage/repo-manager.js';
+import { submitAnalysisJob } from '../../../src/core/analysis/analysis-coordinator.js';
+import { resolveTargetContext } from '../../../src/mcp/shared/target-context.js';
 
 const mockExecFile = vi.mocked(execFile);
 const mockSpawn = vi.mocked(spawn);
 const mockReadFileSync = vi.mocked(readFileSync);
 const mockReadRuntimeHealth = vi.mocked(readRuntimeHealth);
 const mockLoadMeta = vi.mocked(loadMeta);
+const mockSubmitAnalysisJob = vi.mocked(submitAnalysisJob);
+const mockResolveTargetContext = vi.mocked(resolveTargetContext);
 
 let savedEnv: Record<string, string | undefined> = {};
 
@@ -209,6 +221,53 @@ describe('gnEnsureFresh', () => {
     setupSpawnExit();
     mockReadRuntimeHealth.mockResolvedValue(makeRuntimeHealth());
     mockLoadMeta.mockResolvedValue(makeMeta() as any);
+    mockSubmitAnalysisJob.mockResolvedValue({
+      reused: false,
+      job: {
+        version: 1,
+        id: 'job-1',
+        status: 'queued',
+        repoPath: REPO_PATH,
+        targetHead: CURRENT_COMMIT,
+        optionsDigest: 'options-digest',
+        command: process.execPath,
+        args: ['analyze'],
+        logPath: `${REPO_PATH}/.ontoindex/analysis-jobs/job-1.log`,
+        createdAt: '2026-08-05T00:00:00.000Z',
+      },
+    });
+    mockResolveTargetContext.mockResolvedValue({
+      version: 1,
+      status: 'ok',
+      repoKey: REPO_ID,
+      repoLabel: REPO_ID,
+      repoPath: REPO_PATH,
+      targetRef: 'HEAD',
+      targetHead: CURRENT_COMMIT,
+      currentHead: CURRENT_COMMIT,
+      indexedHead: CURRENT_COMMIT,
+      dirtyWorktree: true,
+      dirtyFileCount: 1,
+      dirtyWorkspace: {
+        state: 'dirty-file',
+        changedFiles: ['src/edit.ts'],
+        untrackedFiles: [],
+        deletedFiles: [],
+        graphCoveredFiles: [],
+        unknownGraphCoverageFiles: ['src/edit.ts'],
+        graphCoveredCount: 0,
+        unknownGraphCoverageCount: 1,
+      },
+      changedSinceIndex: true,
+      snapshotMode: 'worktree',
+      qualityMode: 'fast',
+      scopeConfidence: 'medium',
+      embeddings: { status: 'available', count: 12 },
+      lsp: { status: 'unknown' },
+      sidecar: { status: 'unknown' },
+      policy: { status: 'unknown' },
+      warnings: [],
+    } as any);
   });
 
   afterEach(() => {
@@ -242,6 +301,24 @@ describe('gnEnsureFresh', () => {
     expect(report.warnings).toHaveLength(0);
     // No stale recommendation
     expect(report.recommendations.some((r) => r.includes('stale'))).toBe(false);
+  });
+
+  it('uses canonical dirty-worktree freshness without changing commit staleness', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT, statusOutput: ' M src/edit.ts\n' });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+
+    const envelope = await gnEnsureFresh(REPO_ID, { legacyResponse: false });
+
+    expect(envelope.freshness).toMatchObject({
+      status: 'degraded',
+      reason: 'dirty-worktree-overlay',
+      isStale: false,
+      dirtyFileCount: 1,
+    });
+    expect(envelope.results).not.toHaveProperty('preCheck');
+    expect(envelope.results).not.toHaveProperty('isStale');
+    expect(envelope.results).not.toHaveProperty('dirtyFileCount');
+    expect(envelope.results).not.toHaveProperty('scopeConfidence');
   });
 
   it('resolves MCP backend repo ids case-insensitively and reads HEAD from the registry path', async () => {
@@ -327,29 +404,25 @@ describe('gnEnsureFresh', () => {
     expect(mockSpawn).not.toHaveBeenCalled();
   });
 
-  // ---- Test 3: Stale with autoAnalyze: true → spawn called ----------------
-  it('spawns ontoindex analyze when stale and autoAnalyze: true', async () => {
+  // ---- Test 3: Stale with autoAnalyze: true → durable job submitted --------
+  it('submits ontoindex analyze when stale and autoAnalyze: true', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT });
     // First readFileSync call: pre-check registry; second: post-check registry
-    mockReadFileSync
-      .mockReturnValueOnce(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any)
-      .mockReturnValueOnce(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
 
     const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
 
-    expect(mockSpawn).toHaveBeenCalledTimes(1);
-    const analyzeCall = mockSpawn.mock.calls[0];
-    expect(analyzeCall[0]).toBe(process.execPath);
-    expect(analyzeCall[1]).toContain('analyze');
-    expect(analyzeCall[2]).toMatchObject({ cwd: REPO_PATH });
-    // --embeddings NOT included (withEmbeddings not set)
-    expect(analyzeCall[1]).not.toContain('--embeddings');
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledWith(
+      expect.objectContaining({ repoPath: REPO_PATH, targetHead: CURRENT_COMMIT }),
+    );
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('analyze');
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).not.toContain('--embeddings');
 
     expect(report.actionsTaken).toHaveLength(1);
-    expect(report.actionsTaken[0]).toContain('analyze');
-    // postCheck should be populated
-    expect(report.postCheck).toBeDefined();
-    expect(report.postCheck!.isStale).toBe(false);
+    expect(report.actionsTaken[0]).toContain('job-1');
+    expect(report.analysisJob?.id).toBe('job-1');
+    expect(report.analysisSubmission).toEqual({ status: 'queued', jobId: 'job-1' });
+    expect(report.postCheck).toBeUndefined();
   });
 
   it('does not autoAnalyze when runtime health is untrusted', async () => {
@@ -359,7 +432,7 @@ describe('gnEnsureFresh', () => {
 
     const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
 
-    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
     expect(report.runtimeHealth?.freshnessState).toBe('untrusted');
     expect(report.recommendations.some((item) => item.includes('repair manually'))).toBe(true);
     expect(report.actionsTaken).toHaveLength(0);
@@ -376,28 +449,37 @@ describe('gnEnsureFresh', () => {
         pid: 123,
       },
     });
-    mockReadFileSync
-      .mockReturnValueOnce(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any)
-      .mockReturnValueOnce(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
 
     const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
 
-    expect(mockSpawn).toHaveBeenCalledTimes(1);
-    expect(mockSpawn.mock.calls[0][1]).toContain('analyze');
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('analyze');
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('--force');
     expect(report.actionsTaken).toHaveLength(1);
+  });
+
+  it('forces managed recovery after a failed partial run', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadRuntimeHealth.mockResolvedValue(makeRuntimeHealth('failed-after-partial-run'));
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('--force');
+    expect(report.analysisSubmission).toEqual({ status: 'queued', jobId: 'job-1' });
   });
 
   // ---- Test 4: withEmbeddings: true adds --embeddings to analyze args ------
   it('adds --embeddings to analyze args when withEmbeddings: true', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT });
-    mockReadFileSync
-      .mockReturnValueOnce(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any)
-      .mockReturnValueOnce(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
 
     await gnEnsureFresh(REPO_ID, { autoAnalyze: true, withEmbeddings: true });
 
-    expect(mockSpawn).toHaveBeenCalledTimes(1);
-    expect(mockSpawn.mock.calls[0][1]).toContain('--embeddings');
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('--embeddings');
   });
 
   // ---- Test 5: embeddingsCount surfaced from registry ---------------------
@@ -490,31 +572,67 @@ describe('gnEnsureFresh', () => {
     expect(report.actionsTaken).toHaveLength(0);
   });
 
+  it('reports autoAnalyze as blocked when the repo is not registered', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify([{ name: 'other-repo', path: '/other', lastCommit: 'aaa', stats: {} }]) as any,
+    );
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(report.analysisSubmission).toEqual({
+      status: 'blocked',
+      reasonCode: 'REPO_NOT_REGISTERED',
+      message: 'Repository is not registered; analysis cannot be submitted.',
+    });
+  });
+
   // ---- Bonus Test 8: analyze failure → warning, no crash ------------------
   it('records a warning when autoAnalyze process fails', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT });
-    setupSpawnExit(1);
+    mockSubmitAnalysisJob.mockRejectedValue(new Error('spawn failed'));
     mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
 
     const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
 
-    expect(report.warnings.some((w) => w.includes('analyze failed'))).toBe(true);
+    expect(report.warnings.some((w) => w.includes('submission failed'))).toBe(true);
+    expect(report.analysisSubmission).toEqual({
+      status: 'failed',
+      errorCode: 'ANALYZE_JOB_SUBMISSION_FAILED',
+      message: 'spawn failed',
+    });
     expect(report.actionsTaken).toHaveLength(0);
+  });
+
+  it('returns an error envelope when requested job submission fails', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockSubmitAnalysisJob.mockRejectedValue(
+      Object.assign(new Error('directory read'), { code: 'EISDIR' }),
+    );
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+
+    const envelope = await gnEnsureFresh(REPO_ID, { autoAnalyze: true, legacyResponse: false });
+
+    expect(envelope.status).toBe('error');
+    expect(envelope.results.analysisSubmission).toEqual({
+      status: 'failed',
+      errorCode: 'ANALYZE_JOB_SUBMISSION_FAILED',
+      causeCode: 'EISDIR',
+      message: 'directory read',
+    });
   });
 
   // ---- Test 9: killMcpForLock:true is advisory only → no process kill ----
   it('does not kill MCP processes when killMcpForLock:true', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT });
-    mockReadFileSync
-      .mockReturnValueOnce(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any)
-      .mockReturnValueOnce(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
 
     const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true, killMcpForLock: true });
 
     expect(mockExecFile.mock.calls.some((call) => call[0] === 'kill')).toBe(false);
     expect(mockExecFile.mock.calls.some((call) => call[0] === 'pgrep')).toBe(false);
     // analyze ran
-    expect(report.actionsTaken.some((a) => a.includes('analyze'))).toBe(true);
+    expect(report.actionsTaken.some((a) => a.includes('job-1'))).toBe(true);
     expect(report.warnings.some((w) => w.includes('advisory only'))).toBe(true);
     expect(report.recommendations.some((r) => r.includes('Stop only the MCP process'))).toBe(true);
   });

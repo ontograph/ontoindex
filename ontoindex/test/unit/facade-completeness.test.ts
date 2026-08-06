@@ -46,6 +46,7 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
       stats: { files: 10, nodes: 50, edges: 100, communities: 3, processes: 5 },
     },
   ]),
+  resolveActiveIndexGeneration: vi.fn().mockResolvedValue(null),
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
 }));
 

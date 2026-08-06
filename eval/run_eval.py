@@ -36,6 +36,9 @@ from rich.live import Live
 from rich.table import Table
 
 from utils.errors import is_debug_enabled, log_safe_exception
+from structural_oracles import (
+    evaluate_oracles,
+)
 
 # Load .env file from eval/ directory
 _env_file = Path(__file__).parent / ".env"
@@ -183,6 +186,40 @@ def _extract_submission(env, info: dict, run_id: str) -> str:
         return info.get("submission", "")
 
 
+def _graph_provenance(env: Any) -> dict:
+    """
+    Record which graph snapshot the oracles were evaluated against.
+
+    Structural results are only comparable across runs when the index identity is
+    known, so unavailable provenance is reported explicitly rather than omitted.
+    """
+    provenance = {
+        "graph_index_id": None,
+        "indexed_head": None,
+        "manifest_digest": None,
+        "authority_state": "degraded",
+        "authority_reason": "graph authority unavailable",
+    }
+    if env is None:
+        return provenance
+    getter = getattr(env, "graph_provenance", None)
+    if callable(getter):
+        value = getter()
+        if isinstance(value, dict):
+            return {**provenance, **value}
+    for attr, key in (
+        ("graph_index_id", "graph_index_id"),
+        ("indexed_head", "indexed_head"),
+        ("graph_manifest_digest", "manifest_digest"),
+        ("graph_authority_state", "authority_state"),
+        ("graph_authority_reason", "authority_reason"),
+    ):
+        value = getattr(env, attr, None)
+        if isinstance(value, str) and value:
+            provenance[key] = value
+    return provenance
+
+
 def _record_failure(run_id: str, instance_id: str, result: dict, error: Exception):
     sanitized = log_safe_exception(
         logger,
@@ -228,6 +265,11 @@ def process_instance(
     agent = None
     env = None
 
+    # Structural oracles are declared on the task. The environment owns artifact
+    # access because the agent edits `/testbed` inside Docker, not the harness
+    # host checkout.
+    oracles = instance.get("structural_oracles") or []
+
     try:
         model = _build_model(config)
         env = _build_environment(config, instance)
@@ -249,6 +291,36 @@ def process_instance(
         _record_failure(run_id, instance_id, result, e)
 
     finally:
+        if oracles:
+            frozen_runner = getattr(env, "frozen_paths_status", None)
+            tool_runner = getattr(env, "run_structural_tool", None)
+            graph_oracles = [oracle for oracle in oracles if oracle.get("tool")]
+            provenance = _graph_provenance(env)
+            if graph_oracles:
+                refresh = getattr(env, "refresh_graph_for_oracles", None)
+                if callable(refresh):
+                    provenance = refresh()
+                else:
+                    provenance["authority_reason"] = "ERR_GRAPH_REFRESH_UNAVAILABLE"
+
+            if provenance.get("authority_state") != "authoritative":
+                reason = provenance.get("authority_reason") or "graph authority not established"
+
+                def degraded_tool_runner(_tool: str, _oracle: dict) -> dict:
+                    return {"status": "error", "error": reason}
+
+                effective_tool_runner = degraded_tool_runner
+            else:
+                effective_tool_runner = tool_runner if callable(tool_runner) else None
+            result["structural_oracles"] = evaluate_oracles(
+                oracles,
+                repo_root=Path("."),
+                frozen_runner=frozen_runner if callable(frozen_runner) else None,
+                tool_runner=effective_tool_runner,
+            )
+            for oracle_result in result["structural_oracles"].get("results", []):
+                oracle_result["graph_provenance"] = provenance
+            result["graph_provenance"] = provenance
         if agent:
             agent.save(
                 instance_dir / f"{instance_id}.traj.json",

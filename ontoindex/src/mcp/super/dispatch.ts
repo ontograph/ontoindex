@@ -21,6 +21,7 @@ import type { CanDeleteParams } from './can-delete.js';
 import type { PreCommitAuditParams } from './pre-commit-audit.js';
 import type { SafeRefactorParams } from './safe-refactor.js';
 import type { EnsureFreshParams } from './ensure-fresh.js';
+import type { AnalyzeJobParams } from './analyze-job.js';
 import type { QualityModeParams } from './quality-mode.js';
 import type { DiffImpactParams, ReviewDiffParams } from './diff-impact.js';
 import type { DiagnoseParams } from './diagnose.js';
@@ -130,6 +131,11 @@ export async function dispatchSuper(
     case 'gn_ensure_fresh': {
       const { gnEnsureFresh } = await import('./ensure-fresh.js');
       return gnEnsureFresh(repoId, params as unknown as EnsureFreshParams);
+    }
+
+    case 'gn_analyze_job': {
+      const { gnAnalyzeJob } = await import('./analyze-job.js');
+      return gnAnalyzeJob(repoId, params as unknown as AnalyzeJobParams);
     }
 
     case 'gn_quality_mode': {

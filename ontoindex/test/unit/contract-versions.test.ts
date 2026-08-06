@@ -33,13 +33,16 @@ describe('Contract Versions', () => {
       expect(fs.mkdir).toHaveBeenCalledWith(storagePath, { recursive: true });
 
       const metaPath = path.join(storagePath, 'meta.json');
-      const writeFileCall = vi.mocked(fs.writeFile).mock.calls.find((call) => call[0] === metaPath);
+      const writeFileCall = vi
+        .mocked(fs.writeFile)
+        .mock.calls.find((call) => String(call[0]).startsWith(`${metaPath}.`));
 
       expect(writeFileCall).toBeDefined();
       const writtenContent = JSON.parse(writeFileCall![1] as string);
 
       expect(writtenContent.contract).toEqual(CURRENT_CONTRACT);
       expect(writtenContent.repoPath).toBe('.');
+      expect(fs.rename).toHaveBeenCalledWith(writeFileCall![0], metaPath);
     });
   });
 });

@@ -327,6 +327,7 @@ describe('tool-registry — MCP startup profiles (ADR 0027)', () => {
       expect(coreNames).toContain(name);
     }
     expect(coreSuperNames).toEqual([
+      'gn_analyze_job',
       'gn_diagnose',
       'gn_ensure_fresh',
       'gn_help',

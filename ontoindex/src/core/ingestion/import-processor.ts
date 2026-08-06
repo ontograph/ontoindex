@@ -147,7 +147,13 @@ function applyImportResult(
 ): void {
   if (!result) return;
 
-  if (result.kind === 'package' && packageMap) {
+  if (result.kind === 'scope') {
+    // Candidate-only scope: make declarations visible to resolution without
+    // claiming that every candidate file is directly imported.
+    if (!importMap.has(filePath)) importMap.set(filePath, new Set());
+    const importedFiles = importMap.get(filePath)!;
+    for (const resolvedFile of result.files) importedFiles.add(resolvedFile);
+  } else if (result.kind === 'package' && packageMap) {
     // Store directory suffix in PackageMap (skip ImportMap expansion)
     for (const resolvedFile of result.files) {
       addImportGraphEdge(filePath, resolvedFile);

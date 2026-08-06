@@ -12,6 +12,7 @@ import os from 'os';
 import { getInferredRepoName } from './git.js';
 import { CURRENT_CONTRACT } from '../core/contract/versions.js';
 import type { RelationshipDistributions } from '../core/graph/fact-provenance.js';
+import type { IndexSourceManifest } from '../core/indexing/source-manifest.js';
 
 export interface DegradedFileEntry {
   filePath: string;
@@ -50,6 +51,8 @@ export interface RepoMeta {
   repoPath: string;
   lastCommit: string;
   indexedAt: string;
+  generationId?: string;
+  sourceManifest?: IndexSourceManifest;
   indexMode?: 'full' | 'symbols-only';
   pipelineProfile?: 'full' | 'symbols' | 'huge-repo-symbols';
   capabilities?: {
@@ -106,7 +109,17 @@ export interface RegistryEntry {
   stats?: RepoMeta['stats'];
 }
 
+export interface IndexGenerationPaths {
+  generationId: string;
+  generationPath: string;
+  lbugPath: string;
+  metaPath: string;
+  snapshotPath: string;
+}
+
 const ONTOINDEX_DIR = '.ontoindex';
+const GENERATIONS_DIR = 'generations';
+const CURRENT_GENERATION_LINK = 'current';
 const REGISTRY_LOCK_TIMEOUT_MS = 10_000;
 const REGISTRY_LOCK_STALE_MS = 2 * 60_000;
 const REGISTRY_LOCK_RETRY_MS = 50;
@@ -172,6 +185,142 @@ export const getStoragePaths = (repoPath: string) => {
   };
 };
 
+function generationPaths(
+  storagePath: string,
+  generationId: string,
+  generationPath: string,
+): IndexGenerationPaths {
+  return {
+    generationId,
+    generationPath,
+    lbugPath: path.join(generationPath, 'lbug'),
+    metaPath: path.join(generationPath, 'meta.json'),
+    snapshotPath: path.join(generationPath, 'snapshot.json'),
+  };
+}
+
+function safeGenerationId(generationId: string): string {
+  const safe = generationId.replace(/[^A-Za-z0-9._-]/g, '-');
+  if (!safe || safe === '.' || safe === '..') throw new Error('Invalid index generation id');
+  return safe;
+}
+
+export const createIndexGeneration = async (
+  storagePath: string,
+  generationId: string,
+): Promise<IndexGenerationPaths> => {
+  const safeId = safeGenerationId(generationId);
+  const generationsPath = path.join(storagePath, GENERATIONS_DIR);
+  await fs.mkdir(generationsPath, { recursive: true });
+  await migrateLegacyGeneration(storagePath);
+  const stagingPath = path.join(
+    generationsPath,
+    `.staging-${safeId}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
+  await fs.mkdir(stagingPath, { recursive: false });
+  return generationPaths(storagePath, safeId, stagingPath);
+};
+
+export const discardIndexGeneration = async (generation: IndexGenerationPaths): Promise<void> => {
+  await fs.rm(generation.generationPath, { recursive: true, force: true });
+};
+
+async function replaceWithSymlink(target: string, linkPath: string): Promise<void> {
+  const tmpPath = `${linkPath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.symlink(target, tmpPath);
+  try {
+    await fs.rename(tmpPath, linkPath);
+  } catch (err) {
+    await fs.rm(tmpPath, { force: true });
+    throw err;
+  }
+}
+
+async function ensureGenerationAliases(storagePath: string): Promise<void> {
+  for (const filename of ['lbug', 'lbug.wal', 'lbug.lock', 'meta.json', 'snapshot.json']) {
+    const linkPath = path.join(storagePath, filename);
+    await replaceWithSymlink(path.join(CURRENT_GENERATION_LINK, filename), linkPath);
+  }
+}
+
+async function migrateLegacyGeneration(storagePath: string): Promise<void> {
+  const currentPath = path.join(storagePath, CURRENT_GENERATION_LINK);
+  if (
+    await fs
+      .lstat(currentPath)
+      .then(() => true)
+      .catch(() => false)
+  )
+    return;
+
+  const publishedFiles = ['lbug', 'lbug.wal', 'lbug.lock', 'meta.json', 'snapshot.json'];
+  const existingFiles: string[] = [];
+  for (const filename of publishedFiles) {
+    const filePath = path.join(storagePath, filename);
+    if (
+      await fs
+        .lstat(filePath)
+        .then((stat) => stat.isFile())
+        .catch(() => false)
+    ) {
+      existingFiles.push(filename);
+    }
+  }
+  if (existingFiles.length === 0) return;
+
+  const generationsPath = path.join(storagePath, GENERATIONS_DIR);
+  const generationId = `legacy-${Date.now()}-${process.pid}`;
+  const generationPath = path.join(generationsPath, generationId);
+  await fs.mkdir(generationPath, { recursive: false });
+  try {
+    for (const filename of existingFiles) {
+      await fs.copyFile(path.join(storagePath, filename), path.join(generationPath, filename));
+    }
+    await fs.symlink(path.join(GENERATIONS_DIR, generationId), currentPath);
+    await ensureGenerationAliases(storagePath);
+  } catch (err) {
+    await fs.rm(generationPath, { recursive: true, force: true });
+    throw err;
+  }
+}
+
+export const activateIndexGeneration = async (
+  storagePath: string,
+  generation: IndexGenerationPaths,
+): Promise<IndexGenerationPaths> => {
+  const generationsPath = path.join(storagePath, GENERATIONS_DIR);
+  const finalPath = path.join(generationsPath, generation.generationId);
+  await fs.rename(generation.generationPath, finalPath);
+
+  const currentPath = path.join(storagePath, CURRENT_GENERATION_LINK);
+  const hadCurrentGeneration = await fs
+    .lstat(currentPath)
+    .then(() => true)
+    .catch(() => false);
+  if (!hadCurrentGeneration) await ensureGenerationAliases(storagePath);
+  const currentTmpPath = `${currentPath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.symlink(path.join(GENERATIONS_DIR, generation.generationId), currentTmpPath);
+  try {
+    await fs.rename(currentTmpPath, currentPath);
+  } catch (err) {
+    await fs.rm(currentTmpPath, { force: true });
+    throw err;
+  }
+  return generationPaths(storagePath, generation.generationId, finalPath);
+};
+
+export const resolveActiveIndexGeneration = async (
+  storagePath: string,
+): Promise<IndexGenerationPaths | null> => {
+  try {
+    const generationPath = await fs.realpath(path.join(storagePath, CURRENT_GENERATION_LINK));
+    const generationId = path.basename(generationPath);
+    return generationPaths(storagePath, generationId, generationPath);
+  } catch {
+    return null;
+  }
+};
+
 /**
  * Check whether a KuzuDB index exists in the given storage path.
  * Non-destructive — safe to call from status commands.
@@ -230,7 +379,8 @@ export const cleanupOldKuzuFiles = async (
  */
 export const loadMeta = async (storagePath: string): Promise<RepoMeta | null> => {
   try {
-    const metaPath = path.join(storagePath, 'meta.json');
+    const activeGeneration = await resolveActiveIndexGeneration(storagePath);
+    const metaPath = activeGeneration?.metaPath ?? path.join(storagePath, 'meta.json');
     const raw = await fs.readFile(metaPath, 'utf-8');
     return JSON.parse(raw) as RepoMeta;
   } catch {
@@ -244,11 +394,18 @@ export const loadMeta = async (storagePath: string): Promise<RepoMeta | null> =>
 export const saveMeta = async (storagePath: string, meta: RepoMeta): Promise<void> => {
   await fs.mkdir(storagePath, { recursive: true });
   const metaPath = path.join(storagePath, 'meta.json');
+  const tmpPath = `${metaPath}.${process.pid}.${Date.now()}.tmp`;
   // Persist repoPath as '.' — meta.json lives inside the repo's .ontoindex/,
   // so the absolute path is non-portable and leaks the build host's layout.
   // Inject CURRENT_CONTRACT so loaders can detect schema drift.
   const persisted = { ...meta, repoPath: '.', contract: CURRENT_CONTRACT };
-  await fs.writeFile(metaPath, JSON.stringify(persisted, null, 2), 'utf-8');
+  await fs.writeFile(tmpPath, JSON.stringify(persisted, null, 2), 'utf-8');
+  try {
+    await fs.rename(tmpPath, metaPath);
+  } catch (err) {
+    await fs.rm(tmpPath, { force: true });
+    throw err;
+  }
 };
 
 /**
@@ -269,12 +426,21 @@ export const hasIndex = async (repoPath: string): Promise<boolean> => {
  */
 export const loadRepo = async (repoPath: string): Promise<IndexedRepo | null> => {
   const paths = getStoragePaths(repoPath);
-  const meta = await loadMeta(paths.storagePath);
+  const activeGeneration = await resolveActiveIndexGeneration(paths.storagePath);
+  const boundPaths = activeGeneration
+    ? { ...paths, lbugPath: activeGeneration.lbugPath, metaPath: activeGeneration.metaPath }
+    : paths;
+  const meta = activeGeneration
+    ? await fs
+        .readFile(activeGeneration.metaPath, 'utf-8')
+        .then((raw) => JSON.parse(raw) as RepoMeta)
+        .catch(() => null)
+    : await loadMeta(paths.storagePath);
   if (!meta) return null;
 
   return {
     repoPath: path.resolve(repoPath),
-    ...paths,
+    ...boundPaths,
     meta,
   };
 };

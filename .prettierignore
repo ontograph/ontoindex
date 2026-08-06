@@ -1,5 +1,6 @@
 dist/
 coverage/
+**/.venv/
 ontoindex/vendor/
 ontoindex/test/fixtures/
 ontoindex-web/playwright-report/

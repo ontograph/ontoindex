@@ -7,10 +7,7 @@ import type {
   AuditSessionSnapshot,
   AuditSnapshotMode,
 } from './audit-session.js';
-import {
-  evaluateFreshnessGatePolicy,
-  type AuditFreshnessPolicyInput,
-} from '../../mcp/shared/freshness-policy.js';
+import { evaluateFreshnessGatePolicy, type AuditFreshnessPolicyInput } from './freshness-policy.js';
 import {
   buildFindingDedupeProjection,
   getFindingEstimatedLoc,

@@ -36,6 +36,7 @@ import { getProvider } from '../languages/index.js';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../../tree-sitter/parser-loader.js';
 import { getTreeSitterBufferSize } from '../constants.js';
 import { BindingAccumulator } from '../binding-accumulator.js';
+import { canPublishCallEdge } from './global-call-authority.js';
 
 const buildCaptureMap = (match: Parser.QueryMatch): Record<string, any> => {
   const map: Record<string, any> = {};
@@ -128,6 +129,7 @@ const toResolveResult = (def: SymbolDefinition, tier: string): ResolveResult => 
   nodeId: def.nodeId,
   confidence: TIER_CONFIDENCE[tier as keyof typeof TIER_CONFIDENCE] || 0.5,
   reason: tier,
+  filePath: def.filePath,
   returnType: def.returnType,
 });
 
@@ -412,6 +414,18 @@ const emitResolvedCallEdges = (
   ctx: ResolutionContext,
   heritageMap?: HeritageMap,
 ): void => {
+  if (
+    !canPublishCallEdge(
+      effectiveCall.callForm,
+      resolved.reason,
+      Boolean(effectiveCall.receiverName || effectiveCall.receiverTypeName),
+      effectiveCall.filePath,
+      resolved.filePath,
+      process.env,
+      ctx.importMap.get(effectiveCall.filePath),
+    )
+  )
+    return;
   const relId = generateId(
     'CALLS',
     `${effectiveCall.sourceId}:${effectiveCall.calledName}->${resolved.nodeId}`,

@@ -185,6 +185,7 @@ export interface ResolveResult {
   nodeId: string;
   confidence: number;
   reason: string;
+  filePath?: string;
   returnType?: string;
 }
 

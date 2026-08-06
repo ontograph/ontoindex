@@ -14,6 +14,7 @@ import { typeConfig as phpConfig } from '../type-extractors/php.js';
 import { phpExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { phpImportConfig } from '../import-resolvers/configs/php.js';
+import { PHP_SYMBOL_IMPORT_PREFIX } from '../import-resolvers/php.js';
 import { extractPhpNamedBindings } from '../named-bindings/php.js';
 import { PHP_QUERIES } from '../tree-sitter-queries.js';
 import { findDescendant, extractStringContent, type SyntaxNode } from '../utils/ast-helpers.js';
@@ -236,6 +237,15 @@ function isPhpRouteFile(filePath: string): boolean {
   );
 }
 
+function preprocessPhpImportPath(cleaned: string, importNode: SyntaxNode): string {
+  const useType = importNode.childForFieldName?.('type')?.text;
+  const isSymbolImport =
+    useType === 'function' ||
+    useType === 'const' ||
+    /^use\s+(?:function|const)\b/.test(importNode.text);
+  return isSymbolImport ? `${PHP_SYMBOL_IMPORT_PREFIX}${cleaned}` : cleaned;
+}
+
 export const phpProvider = defineLanguage({
   id: SupportedLanguages.PHP,
   extensions: ['.php', '.phtml', '.php3', '.php4', '.php5', '.php8'],
@@ -243,6 +253,7 @@ export const phpProvider = defineLanguage({
   typeConfig: phpConfig,
   exportChecker: phpExportChecker,
   importResolver: createImportResolver(phpImportConfig),
+  importPathPreprocessor: preprocessPhpImportPath,
   namedBindingExtractor: extractPhpNamedBindings,
   callExtractor: createCallExtractor(phpCallConfig),
   fieldExtractor: createFieldExtractor(phpFieldConfig),

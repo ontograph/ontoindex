@@ -7,10 +7,13 @@ import path from 'node:path';
 import { exportBootstrapCommand, exportBootstrapHydrateCommand } from '../../src/cli/export.js';
 import {
   RegistryNameCollisionError,
+  activateIndexGeneration,
+  createIndexGeneration,
   getStoragePaths,
   listRegisteredRepos,
   loadMeta,
   registerRepo,
+  resolveActiveIndexGeneration,
   saveMeta,
 } from '../../src/storage/repo-manager.js';
 import { createTempDir, type TestDBHandle } from '../helpers/test-db.js';
@@ -171,10 +174,15 @@ describe('bootstrap export and hydrate', () => {
     await exportBootstrapHydrateCommand(artifactPath, { repo: restoreHandle.dbPath });
 
     const restoredPaths = getStoragePaths(restoreHandle.dbPath);
+    const activeGeneration = await resolveActiveIndexGeneration(restoredPaths.storagePath);
+    expect(activeGeneration).not.toBeNull();
+    expect((await fs.lstat(restoredPaths.lbugPath)).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(restoredPaths.metaPath)).isSymbolicLink()).toBe(true);
     await expect(fs.readFile(restoredPaths.lbugPath)).resolves.toEqual(originalLbug);
     await expect(loadMeta(restoredPaths.storagePath)).resolves.toMatchObject({
       lastCommit: 'abc123def456',
       indexedAt: '2026-06-30T00:00:00.000Z',
+      generationId: activeGeneration?.generationId,
     });
     await expect(
       fs.readFile(path.join(restoredPaths.storagePath, 'snapshot.json'), 'utf8'),
@@ -219,6 +227,10 @@ describe('bootstrap export and hydrate', () => {
     await exportBootstrapCommand({ repo: repoHandle.dbPath, out: artifactPath });
     await exportBootstrapHydrateCommand(artifactPath, { repo: restoreHandle.dbPath, force: true });
 
+    const activeGeneration = await resolveActiveIndexGeneration(restoredPaths.storagePath);
+    expect(activeGeneration?.generationId).toMatch(/^bootstrap-/);
+    expect((await fs.lstat(restoredPaths.lbugPath)).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(restoredPaths.metaPath)).isSymbolicLink()).toBe(true);
     await expect(fs.readFile(restoredPaths.lbugPath)).resolves.toEqual(originalLbug);
     await expect(
       fs.readFile(path.join(restoredPaths.storagePath, 'snapshot.json'), 'utf8'),
@@ -226,6 +238,71 @@ describe('bootstrap export and hydrate', () => {
     await expect(
       fs.readFile(path.join(restoredPaths.storagePath, 'bootstrap-source.json'), 'utf8'),
     ).resolves.toContain('"sourceIndexedCommit": "abc123def456"');
+  });
+
+  it('keeps the prior generation active when bootstrap activation fails', async () => {
+    const restoredPaths = getStoragePaths(restoreHandle.dbPath);
+    const prior = await createIndexGeneration(restoredPaths.storagePath, 'prior-generation');
+    await fs.writeFile(prior.lbugPath, Buffer.from('prior lbug', 'utf8'));
+    await saveMeta(prior.generationPath, {
+      repoPath: '.',
+      lastCommit: 'prior-commit',
+      indexedAt: '2026-01-01T00:00:00.000Z',
+      generationId: prior.generationId,
+      stats: { files: 1, nodes: 1, edges: 1, embeddings: 0 },
+    });
+    await activateIndexGeneration(restoredPaths.storagePath, prior);
+    await exportBootstrapCommand({ repo: repoHandle.dbPath, out: artifactPath });
+
+    const rename = fs.rename.bind(fs);
+    const renameSpy = vi.spyOn(fs, 'rename').mockImplementation(async (oldPath, newPath) => {
+      if (path.resolve(String(newPath)) === path.join(restoredPaths.storagePath, 'current')) {
+        throw Object.assign(new Error('activation blocked'), { code: 'EACCES' });
+      }
+      return rename(oldPath, newPath);
+    });
+
+    try {
+      await expect(
+        exportBootstrapHydrateCommand(artifactPath, {
+          repo: restoreHandle.dbPath,
+          force: true,
+        }),
+      ).rejects.toThrow('activation blocked');
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    await expect(resolveActiveIndexGeneration(restoredPaths.storagePath)).resolves.toMatchObject({
+      generationId: 'prior-generation',
+    });
+    await expect(fs.readFile(restoredPaths.lbugPath, 'utf8')).resolves.toBe('prior lbug');
+    await expect(loadMeta(restoredPaths.storagePath)).resolves.toMatchObject({
+      lastCommit: 'prior-commit',
+      generationId: 'prior-generation',
+    });
+  });
+
+  it('keeps the activated generation when post-activation bookkeeping fails', async () => {
+    initGitRepo(restoreHandle.dbPath);
+    await exportBootstrapCommand({ repo: repoHandle.dbPath, out: artifactPath });
+    await fs.mkdir(path.join(restoreHandle.dbPath, '.gitignore'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await expect(
+        exportBootstrapHydrateCommand(artifactPath, { repo: restoreHandle.dbPath }),
+      ).resolves.toBeUndefined();
+      expect(warnSpy.mock.calls.flat().join('\n')).toContain('.gitignore was not updated');
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    const restoredPaths = getStoragePaths(restoreHandle.dbPath);
+    await expect(resolveActiveIndexGeneration(restoredPaths.storagePath)).resolves.toMatchObject({
+      generationId: expect.stringMatching(/^bootstrap-/),
+    });
+    await expect(fs.readFile(restoredPaths.lbugPath)).resolves.toEqual(originalLbug);
   });
 
   it('preserves bare relative repo paths for bootstrap export', async () => {

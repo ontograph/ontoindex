@@ -1456,12 +1456,12 @@ describe('PHP cross-file binding propagation', () => {
     expect(getNodesByLabel(result, 'Method')).toContain('run');
   });
 
-  it('emits IMPORTS edge from Main.php to UserFactory.php', () => {
+  it('does not guess an IMPORTS edge from Main.php to a function container', () => {
     const imports = getRelationships(result, 'IMPORTS');
     const edge = imports.find(
       (e) => e.sourceFilePath.includes('Main') && e.targetFilePath.includes('UserFactory'),
     );
-    expect(edge).toBeDefined();
+    expect(edge).toBeUndefined();
   });
 
   it('resolves $u->save() in run() to User#save via cross-file return type propagation', () => {
@@ -1663,6 +1663,13 @@ describe('PHP overload dispatch', () => {
       (c) => c.target === 'format_text_padded' && c.sourceFilePath?.includes('app'),
     );
     expect(paddedCall).toBeDefined();
+  });
+
+  it('does not publish guessed IMPORTS edges for namespace-scoped function imports', () => {
+    const imports = getRelationships(result, 'IMPORTS').filter((edge) =>
+      edge.sourceFilePath?.includes('app'),
+    );
+    expect(imports).toEqual([]);
   });
 
   it('populates parameterTypes for format_text_padded (conditional)', () => {

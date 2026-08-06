@@ -271,6 +271,7 @@ export function mountAnalyzeRoutes(
             }
 
             const child = fork(workerPath, [], {
+              detached: process.platform !== 'win32',
               execArgv: [...tsxHookArgs, '--max-old-space-size=8192'],
               stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
             });
@@ -336,6 +337,7 @@ export function mountAnalyzeRoutes(
               const j = jobManager.getJob(job.id);
               if (workerCompleted) return;
               if (!j || j.status === 'complete' || j.status === 'failed') return;
+              if (j.progress.phase === 'cancelling') return;
 
               // Worker crashed — attempt retry if under the limit
               if (j.retryCount < MAX_WORKER_RETRIES) {
@@ -371,6 +373,7 @@ export function mountAnalyzeRoutes(
             // Register child for cancellation + timeout tracking
             jobManager.registerChild(job.id, child, {
               onTerminalExit: releaseAnalyzeLock,
+              processGroup: process.platform !== 'win32',
             });
 
             // Send start command to child
@@ -509,6 +512,6 @@ export function mountAnalyzeRoutes(
       return;
     }
     jobManager.cancelJob(req.params.jobId, 'Cancelled by user');
-    res.json({ id: job.id, status: 'failed', error: 'Cancelled by user' });
+    res.json({ id: job.id, status: job.status, error: 'Cancelled by user' });
   });
 }

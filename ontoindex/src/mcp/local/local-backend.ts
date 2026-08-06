@@ -10,7 +10,6 @@ import path from 'path';
 import fs from 'fs/promises';
 import { RepoHandle, BackendPort } from 'ontoindex-shared';
 import { recordToolCall } from './tool-telemetry.js';
-import { guardResponseSize } from './response-guard.js';
 import {
   initLbug,
   closeLbug,
@@ -22,7 +21,11 @@ export { isWriteQuery } from '../../core/lbug/pool-adapter.js';
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
 // git utilities available if needed
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
-import { listRegisteredRepos, type RegistryEntry } from '../../storage/repo-manager.js';
+import {
+  listRegisteredRepos,
+  resolveActiveIndexGeneration,
+  type RegistryEntry,
+} from '../../storage/repo-manager.js';
 import {
   appendIndexCapabilityWarnings,
   loadIndexCapabilityWarnings,
@@ -1424,7 +1427,8 @@ export class LocalBackend implements BackendPort {
       freshIds.add(id);
 
       const storagePath = entry.storagePath;
-      const lbugPath = path.join(storagePath, 'lbug');
+      const activeGeneration = await resolveActiveIndexGeneration(storagePath);
+      const lbugPath = activeGeneration?.lbugPath ?? path.join(storagePath, 'lbug');
 
       // MCP startup must be read-only. Warn about stale Kuzu indexes here, but
       // leave deletion/pruning to explicit maintenance commands.
@@ -1690,9 +1694,7 @@ export class LocalBackend implements BackendPort {
     let result: unknown;
     try {
       const rawResult = await this._callToolImpl(method, params);
-      const json = JSON.stringify(rawResult ?? '');
-      const guardedJson = guardResponseSize(json);
-      result = guardedJson === json ? rawResult : JSON.parse(guardedJson);
+      result = rawResult;
       return result;
     } catch (err) {
       ok = false;
@@ -2043,9 +2045,19 @@ export class LocalBackend implements BackendPort {
     options: LocalEnrichmentConsumptionOptions = {},
   ): Promise<T> {
     if (!isObjectResponse(result)) return result;
+    const metadata = await this.readLocalEnrichmentMetadata(repo, options);
+    const enrichment =
+      options.consumeFacts === true
+        ? metadata
+        : {
+            used: false,
+            status: metadata.status,
+            ...(metadata.status === 'unavailable' ? { reason: metadata.reason } : {}),
+            ...(metadata.status === 'error' ? { reason: metadata.error } : {}),
+          };
     return {
       ...result,
-      enrichment: await this.readLocalEnrichmentMetadata(repo, options),
+      enrichment,
     } as T;
   }
 

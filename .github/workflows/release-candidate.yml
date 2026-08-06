@@ -14,10 +14,10 @@ on:
     inputs:
       bump:
         description: >-
-          Cycle policy. 'auto' (default) continues the active rc cycle on
-          this branch if there is one, otherwise bumps patch from latest.
-          Choose 'patch' / 'minor' / 'major' to explicitly start or reset
-          an rc cycle.
+          Cycle policy. 'auto' (default) continues the active rc base on this
+          branch if there is one, otherwise bumps patch from latest. Choose
+          'patch' / 'minor' / 'major' to explicitly select a new base; the rc
+          counter always advances when that base already exists.
         required: false
         default: 'auto'
         type: choice
@@ -27,7 +27,7 @@ on:
           - minor
           - major
       force:
-        description: 'Publish even when HEAD already has an rc marker'
+        description: 'Publish another rc even when HEAD already has a completed rc'
         required: false
         default: 'false'
         type: choice
@@ -46,12 +46,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # ── Skip when HEAD already has an rc marker (retry / duplicate dispatch) ──
-  # The marker is a lightweight tag `rc/<HEAD_SHA>` pushed *before* `npm
-  # publish`, so a failed publish leaves the marker in place and the guard
-  # refuses to re-publish. Recovery path after a partial failure:
-  #   git push --delete origin rc/<HEAD_SHA> v<RC_VERSION>
-  # then redispatch with force=true.
+  # ── Skip only after the release has passed post-publish verification ──
+  # `rc-pending/<HEAD_SHA>/v<VERSION>` reserves an in-flight release and makes
+  # retries resume it. `rc-complete/<HEAD_SHA>/v<VERSION>` is written only after
+  # npm, the rc dist-tag, the GitHub prerelease, and its tarball are verified.
   guard:
     name: Check if release candidate should run
     runs-on: ubuntu-latest
@@ -85,9 +83,9 @@ jobs:
             exit 0
           fi
 
-          # An explicit cycle reset on dispatch (bump != auto) also bypasses
-          # the dedup guard — the maintainer is deliberately asking for a
-          # new rc from the same commit.
+          # An explicit base selection on dispatch (bump != auto) also bypasses
+          # the dedup guard — the maintainer is deliberately asking for a new
+          # rc from the same commit.
           if [ "$EVENT_NAME" = "workflow_dispatch" ] \
              && [ -n "${BUMP_INPUT:-}" ] \
              && [ "${BUMP_INPUT:-auto}" != "auto" ]; then
@@ -96,13 +94,12 @@ jobs:
             exit 0
           fi
 
-          # Dedup: is there already an rc/<HEAD_SHA> marker pointing at HEAD?
-          MARKER="rc/${HEAD_SHA}"
-          if git rev-parse "refs/tags/$MARKER" >/dev/null 2>&1; then
-            echo "HEAD already has marker $MARKER — skipping."
+          COMPLETE_PATTERN="refs/tags/rc-complete/${HEAD_SHA}/v*"
+          if git for-each-ref --format='%(refname)' "$COMPLETE_PATTERN" | grep -q .; then
+            echo "HEAD already has a verified release candidate — skipping."
             echo "should_run=false" >> "$GITHUB_OUTPUT"
           else
-            echo "No marker on HEAD — proceeding."
+            echo "No verified release candidate on HEAD — proceeding or resuming."
             echo "should_run=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -126,7 +123,10 @@ jobs:
       contents: write # push rc tag + marker
       id-token: write # npm provenance
     outputs:
-      vtag: ${{ steps.reltag.outputs.vtag }}
+      vtag: ${{ steps.version.outputs.vtag }}
+      complete_tag: ${{ steps.version.outputs.complete_tag }}
+      pending_tag: ${{ steps.version.outputs.pending_tag }}
+      release_sha: ${{ steps.release.outputs.release_sha }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -140,14 +140,6 @@ jobs:
           cache: npm
           cache-dependency-path: ontoindex/package-lock.json
 
-      - name: Build ontoindex-shared
-        run: npm install && npm run build
-        working-directory: ontoindex-shared
-
-      - name: Install ontoindex dependencies
-        run: npm ci
-        working-directory: ontoindex
-
       - name: Resolve rc version
         id: version
         shell: bash
@@ -156,8 +148,10 @@ jobs:
           BUMP_INPUT: ${{ inputs.bump }}
           EVENT_NAME: ${{ github.event_name }}
           PKG_NAME: ontoindex
+          HEAD_SHA: ${{ needs.guard.outputs.head_sha }}
         run: |
           set -euo pipefail
+          git fetch --force --tags origin
 
           # 1. Current published `latest` — the floor for any new rc base.
           #    Only E404 ("never published") falls back to package.json; any
@@ -177,10 +171,7 @@ jobs:
             fi
           fi
           rm -f "$NPM_STDERR_LATEST"
-          CURRENT_LATEST_CLEAN="${CURRENT_LATEST%%-*}"
-
-          # 2. Full version list — needed for the counter and for active-cycle
-          #    inference. Same E404-only fallback.
+          # 2. Full version list. Same E404-only fallback.
           NPM_STDERR_VERSIONS="$(mktemp)"
           if VERSIONS_JSON="$(npm view "$PKG_NAME" versions --json 2>"$NPM_STDERR_VERSIONS")"; then
             :
@@ -197,97 +188,65 @@ jobs:
           fi
           rm -f "$NPM_STDERR_VERSIONS"
 
-          # 3. Base selection.
-          #    - workflow_dispatch + bump ∈ {patch,minor,major} → explicit cycle
-          #      reset from latest.
-          #    - Everything else (push, or dispatch with bump=auto) → continue
-          #      the highest active rc base > latest if one exists; else
-          #      default to patch from latest.
-          if [ "$EVENT_NAME" = "workflow_dispatch" ] \
-             && [ -n "${BUMP_INPUT:-}" ] \
-             && [ "${BUMP_INPUT:-auto}" != "auto" ]; then
-            BASE="$(npx --yes -p semver@7 semver -i "$BUMP_INPUT" "$CURRENT_LATEST_CLEAN")"
-            echo "Explicit bump=$BUMP_INPUT → BASE=$BASE"
-          else
-            cat > /tmp/active_base.mjs <<'NODESCRIPT'
-          const latest = process.env.LATEST;
-          let v;
-          try { v = JSON.parse(process.env.VERSIONS_JSON); } catch { v = []; }
-          if (!Array.isArray(v)) v = [v];
-          const parse = s => s.split(".").map(n => parseInt(n, 10));
-          const gt = (a, b) => {
-            const [A, B] = [parse(a), parse(b)];
-            for (let i = 0; i < 3; i++) if (A[i] !== B[i]) return A[i] > B[i];
-            return false;
-          };
-          const bases = new Set();
-          for (const s of v) {
-            const m = /^(\d+\.\d+\.\d+)-rc\.\d+$/.exec(s);
-            if (m && gt(m[1], latest)) bases.add(m[1]);
-          }
-          if (!bases.size) { process.stdout.write(""); process.exit(0); }
-          const sorted = [...bases].sort((a, b) => gt(a, b) ? 1 : -1);
-          process.stdout.write(sorted[sorted.length - 1]);
-          NODESCRIPT
-            ACTIVE_BASE="$(LATEST="$CURRENT_LATEST_CLEAN" VERSIONS_JSON="$VERSIONS_JSON" node /tmp/active_base.mjs)"
-            if [ -n "$ACTIVE_BASE" ]; then
-              BASE="$ACTIVE_BASE"
-              echo "Continuing active rc cycle → BASE=$BASE"
-            else
-              BASE="$(npx --yes -p semver@7 semver -i patch "$CURRENT_LATEST_CLEAN")"
-              echo "No active rc cycle → patch bump from latest → BASE=$BASE"
-            fi
-          fi
+          GIT_TAGS="$(git tag --list)"
+          LATEST_VERSION="$CURRENT_LATEST" \
+          PUBLISHED_VERSIONS_JSON="$VERSIONS_JSON" \
+          GIT_TAGS="$GIT_TAGS" \
+          BUMP_INPUT="${BUMP_INPUT:-auto}" \
+          EVENT_NAME="$EVENT_NAME" \
+          HEAD_SHA="$HEAD_SHA" \
+            node scripts/resolve-rc-version.mjs | tee -a "$GITHUB_OUTPUT"
 
-          # 4. Counter: 1 + max existing N for `${BASE}-rc.*`, else 1.
-          cat > /tmp/next_rc.mjs <<'NODESCRIPT'
-          const base = process.env.BASE;
-          const prefix = base + "-rc.";
-          let v;
-          try { v = JSON.parse(process.env.VERSIONS_JSON); } catch { v = []; }
-          if (!Array.isArray(v)) v = [v];
-          const ns = v
-            .filter(s => typeof s === "string" && s.startsWith(prefix))
-            .map(s => parseInt(s.slice(prefix.length), 10))
-            .filter(n => Number.isInteger(n) && n >= 0);
-          process.stdout.write(String(ns.length ? Math.max(...ns) + 1 : 1));
-          NODESCRIPT
-          NEXT_N="$(BASE="$BASE" VERSIONS_JSON="$VERSIONS_JSON" node /tmp/next_rc.mjs)"
-          RC_VERSION="${BASE}-rc.${NEXT_N}"
-          echo "Computed rc: $RC_VERSION"
-
-          # 5. Defensive: if the exact version already exists on the registry
-          #    (e.g., race with another run), abort before re-publishing.
-          #    Same E404-only pattern used above — a transient network
-          #    failure must fail loudly, not pretend the version is missing.
-          NPM_STDERR_EXISTS="$(mktemp)"
-          if npm view "$PKG_NAME@$RC_VERSION" version 2>"$NPM_STDERR_EXISTS" >/dev/null; then
-            rm -f "$NPM_STDERR_EXISTS"
-            echo "::error::Version $RC_VERSION already exists on npm — aborting."
-            exit 1
-          else
-            if grep -qiE 'E404|not found' "$NPM_STDERR_EXISTS"; then
-              rm -f "$NPM_STDERR_EXISTS"
-              # Version doesn't exist — safe to proceed.
-            else
-              echo "::error::npm registry unreachable for existence check:" >&2
-              cat "$NPM_STDERR_EXISTS" >&2
-              rm -f "$NPM_STDERR_EXISTS"
-              exit 1
-            fi
-          fi
-
-          echo "base=$BASE"             >> "$GITHUB_OUTPUT"
-          echo "rc_n=$NEXT_N"           >> "$GITHUB_OUTPUT"
-          echo "rc_version=$RC_VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Apply rc version in-CI
+      - name: Prepare or resume release commit
+        id: release
         shell: bash
         working-directory: ontoindex
+        env:
+          RC_VERSION: ${{ steps.version.outputs.rc_version }}
+          VTAG: ${{ steps.version.outputs.vtag }}
+          PENDING_TAG: ${{ steps.version.outputs.pending_tag }}
+          RESUME: ${{ steps.version.outputs.resume }}
         run: |
           set -euo pipefail
-          npm version "${{ steps.version.outputs.rc_version }}" \
-            --no-git-tag-version --allow-same-version
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          if [ "$RESUME" = "true" ]; then
+            git checkout --detach "refs/tags/$PENDING_TAG^{}"
+            RELEASE_SHA="$(git rev-parse HEAD)"
+            PKG_VERSION="$(node -p "require('./package.json').version")"
+            [ "$PKG_VERSION" = "$RC_VERSION" ] || {
+              echo "::error::Pending release tree has package version $PKG_VERSION, expected $RC_VERSION"
+              exit 1
+            }
+          else
+            if git rev-parse "refs/tags/$VTAG" >/dev/null 2>&1; then
+              echo "::error::Tag $VTAG already exists without a pending marker for this commit."
+              exit 1
+            fi
+            npm version "$RC_VERSION" --no-git-tag-version --allow-same-version
+            git add package.json package-lock.json 2>/dev/null || git add package.json
+            git commit -m "release: $VTAG" --allow-empty
+            RELEASE_SHA="$(git rev-parse HEAD)"
+            git tag "$PENDING_TAG" "$RELEASE_SHA"
+            git push origin "refs/tags/$PENDING_TAG"
+          fi
+
+          if git rev-parse "refs/tags/$VTAG" >/dev/null 2>&1; then
+            [ "$(git rev-list -n 1 "$VTAG")" = "$RELEASE_SHA" ] || {
+              echo "::error::$VTAG points to a different release commit."
+              exit 1
+            }
+          fi
+          echo "release_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Build ontoindex-shared
+        run: npm install && npm run build
+        working-directory: ontoindex-shared
+
+      - name: Install ontoindex dependencies
+        run: npm ci
+        working-directory: ontoindex
 
       - name: Build ontoindex
         run: npm run build
@@ -297,64 +256,61 @@ jobs:
         run: npm publish --dry-run --tag rc
         working-directory: ontoindex
 
-      # ── Acquire the "rc lock" BEFORE publishing (fixes idempotency) ─────
-      # We create two tags and push them atomically:
-      #   v<RC_VERSION>      → annotated tag on a detached release commit
-      #                        whose tree contains the rewritten package.json
-      #                        (so the tag's source matches the npm tarball)
-      #   rc/<HEAD_SHA>      → lightweight tag on HEAD; the guard's dedup key
-      # If this push fails, nothing is published — safe.
-      # If this push succeeds but npm publish fails, the marker stays on
-      # the remote and blocks retries until an operator manually cleans up.
-      - name: Create and push rc tags
-        id: reltag
+      - name: Publish to npm if needed
         shell: bash
         working-directory: ontoindex
         env:
           RC_VERSION: ${{ steps.version.outputs.rc_version }}
-          HEAD_SHA: ${{ needs.guard.outputs.head_sha }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          VTAG="v${RC_VERSION}"
-          MARKER="rc/${HEAD_SHA}"
-          git config user.name  'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          NPM_STDERR="$(mktemp)"
+          if PUBLISHED="$(npm view "ontoindex@$RC_VERSION" version 2>"$NPM_STDERR")"; then
+            rm -f "$NPM_STDERR"
+            [ "$PUBLISHED" = "$RC_VERSION" ] || exit 1
+            npm dist-tag add "ontoindex@$RC_VERSION" rc
+            echo "npm already contains $RC_VERSION; repaired rc dist-tag."
+          else
+            if grep -qiE 'E404|not found' "$NPM_STDERR"; then
+              rm -f "$NPM_STDERR"
+              npm publish --provenance --access public --tag rc
+            else
+              echo "::error::npm registry unreachable for publication reconciliation:" >&2
+              cat "$NPM_STDERR" >&2
+              rm -f "$NPM_STDERR"
+              exit 1
+            fi
+          fi
 
-          # Detached release commit with the version bump — keeps `master`
-          # pristine but gives the v-tag a tree that matches the published
-          # package contents exactly (fixes release-integrity gap).
-          git add package.json package-lock.json 2>/dev/null || git add package.json
-          git commit -m "release: ${VTAG}" --allow-empty
-          RELEASE_SHA="$(git rev-parse HEAD)"
-          echo "Detached release commit: $RELEASE_SHA"
-
-          # Annotated release tag on the release commit.
-          git tag -a "$VTAG" "$RELEASE_SHA" -m "$VTAG"
-          # Lightweight marker on the user-visible HEAD for the guard.
-          git tag "$MARKER" "$HEAD_SHA"
-
-          # Atomic push of both refs. If either would clobber an existing
-          # remote ref, the push fails and we stop before npm publish.
-          git push --atomic origin "refs/tags/$VTAG" "refs/tags/$MARKER"
-
-          echo "vtag=$VTAG"     >> "$GITHUB_OUTPUT"
-          echo "marker=$MARKER" >> "$GITHUB_OUTPUT"
-          echo "release_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
-
-      - name: Publish to npm (rc dist-tag)
-        run: npm publish --provenance --access public --tag rc
+      - name: Pack GitHub release asset
+        run: npm pack --pack-destination ..
         working-directory: ontoindex
+
+      - name: Publish release tag if needed
+        shell: bash
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VTAG: ${{ steps.version.outputs.vtag }}
+          RELEASE_SHA: ${{ steps.release.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/$VTAG" >/dev/null 2>&1; then
+            git fetch --force origin "refs/tags/$VTAG:refs/tags/$VTAG"
+            [ "$(git rev-list -n 1 "$VTAG")" = "$RELEASE_SHA" ] || exit 1
+          else
+            git tag -a "$VTAG" "$RELEASE_SHA" -m "$VTAG"
+            git push origin "refs/tags/$VTAG"
+          fi
 
       - name: Create GitHub prerelease
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v2
         with:
-          tag_name: ${{ steps.reltag.outputs.vtag }}
-          name: Release Candidate ${{ steps.reltag.outputs.vtag }}
+          tag_name: ${{ steps.version.outputs.vtag }}
+          name: Release Candidate ${{ steps.version.outputs.vtag }}
           prerelease: true
           make_latest: 'false'
           generate_release_notes: true
+          files: ontoindex-*.tgz
+          fail_on_unmatched_files: true
           body: |
             Automated release candidate build from `master`.
 
@@ -362,10 +318,20 @@ jobs:
             **Version:** `${{ steps.version.outputs.rc_version }}`
             **Target base:** `${{ steps.version.outputs.base }}` (rc #${{ steps.version.outputs.rc_n }})
             **Source commit (master):** ${{ needs.guard.outputs.head_sha }}
-            **Release commit (versioned tree):** ${{ steps.reltag.outputs.release_sha }}
+            **Release commit (versioned tree):** ${{ steps.release.outputs.release_sha }}
 
             Release candidates are pre-stable builds intended for early testing.
             Stable releases remain on the `latest` dist-tag.
+
+      - name: Verify public release state
+        run: node scripts/verify-release-state.mjs
+        working-directory: ontoindex
+        env:
+          NPM_PACKAGE_NAME: ontoindex
+          RELEASE_VERSION: ${{ steps.version.outputs.rc_version }}
+          NPM_DIST_TAG: rc
+          RELEASE_TAG: ${{ steps.version.outputs.vtag }}
+          GITHUB_TOKEN: ${{ github.token }}
 
   # ── Build & push RC Docker images ────────────────────────────────────
   # Calls docker.yml as a reusable workflow so that the build, signing, and
@@ -386,3 +352,28 @@ jobs:
       attestations: write
     with:
       tag: ${{ needs.publish.outputs.vtag }}
+
+  finalize:
+    name: Mark verified release candidate complete
+    needs: [guard, publish, docker]
+    if: needs.guard.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Mark release complete
+        shell: bash
+        env:
+          COMPLETE_TAG: ${{ needs.publish.outputs.complete_tag }}
+          PENDING_TAG: ${{ needs.publish.outputs.pending_tag }}
+          RELEASE_SHA: ${{ needs.publish.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+          git tag "$COMPLETE_TAG" "$RELEASE_SHA"
+          git push --atomic origin "refs/tags/$COMPLETE_TAG" ":refs/tags/$PENDING_TAG"

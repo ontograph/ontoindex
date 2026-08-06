@@ -4,7 +4,7 @@ import {
   evaluateFreshnessGatePolicy,
   freshnessGateErrorMessage,
   type AuditFreshnessPolicyInput,
-} from '../../mcp/shared/freshness-policy.js';
+} from './freshness-policy.js';
 
 export type AuditDispatchRedactionMode = 'none' | 'paths' | 'snippets' | 'sensitive';
 

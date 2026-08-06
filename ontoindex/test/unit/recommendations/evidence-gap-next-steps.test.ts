@@ -8,18 +8,23 @@ import { validateOrganicRecommendation } from '../../../src/core/recommendations
 import { getCallableToolNames } from '../../../src/mcp/shared/tool-registry.js';
 
 describe('evidence gap next steps', () => {
-  it('maps ADR 0028 evidence gaps to public callable tools or explicit non-tool actions', () => {
-    const result = recommendEvidenceGapNextSteps([
-      'stale_index',
-      'tool_contract_drift',
-      'docs_only_code_behavior_claim',
-      'edit_risk_without_impact_evidence',
-      'audit_finding_without_replay_evidence',
-      'runtime_diagnostic_support',
-      'unknown_evidence_class',
-    ]);
+  const callableToolNames = getCallableToolNames({ includeFacades: true });
 
-    const callableToolNames = new Set(getCallableToolNames({ includeFacades: true }));
+  it('maps ADR 0028 evidence gaps to public callable tools or explicit non-tool actions', () => {
+    const result = recommendEvidenceGapNextSteps(
+      [
+        'stale_index',
+        'tool_contract_drift',
+        'docs_only_code_behavior_claim',
+        'edit_risk_without_impact_evidence',
+        'audit_finding_without_replay_evidence',
+        'runtime_diagnostic_support',
+        'unknown_evidence_class',
+      ],
+      { callableToolNames },
+    );
+
+    const callableToolNameSet = new Set(callableToolNames);
     const allowedNonToolActions = new Set<string>(EVIDENCE_GAP_NON_TOOL_ACTION_NAMES);
 
     expect(result.issues).toEqual([]);
@@ -35,7 +40,7 @@ describe('evidence gap next steps', () => {
       'mark_advisory_degraded',
       'classify_or_downgrade_evidence',
     ]);
-    expect(result.nextTools.every((tool) => callableToolNames.has(tool))).toBe(true);
+    expect(result.nextTools.every((tool) => callableToolNameSet.has(tool))).toBe(true);
     expect(result.nonToolActions.every((action) => allowedNonToolActions.has(action))).toBe(true);
   });
 
@@ -60,7 +65,6 @@ describe('evidence gap next steps', () => {
   });
 
   it('feeds deterministic next steps into organic validation without admitting invalid tools', () => {
-    const callableToolNames = getCallableToolNames({ includeFacades: true });
     const result = recommendEvidenceGapNextSteps(
       ['stale_index', 'tool_contract_drift', 'runtime_diagnostic_support'],
       {
@@ -130,13 +134,16 @@ describe('evidence gap next steps', () => {
   });
 
   it('dedupes duplicate next steps while preserving stable first-seen order', () => {
-    const result = recommendEvidenceGapNextSteps([
-      'edit_risk_without_impact_evidence',
-      'stale_index',
-      'edit_risk_without_impact_evidence',
-      'tool_contract_drift',
-      'stale_index',
-    ]);
+    const result = recommendEvidenceGapNextSteps(
+      [
+        'edit_risk_without_impact_evidence',
+        'stale_index',
+        'edit_risk_without_impact_evidence',
+        'tool_contract_drift',
+        'stale_index',
+      ],
+      { callableToolNames },
+    );
 
     expect(result.nextSteps.map((step) => `${step.kind}:${step.name}`)).toEqual([
       'tool:gn_safe_edit_check',

@@ -31,13 +31,21 @@ export function parseTarEntries(output) {
   return output.split(/\r?\n/).map((entry) => entry.replaceAll('\\', '/'));
 }
 
-async function fetchWithRetry(url, options, fetchImpl, sleepImpl, label, retry404 = false) {
-  for (let attempt = 1; attempt <= MAX_METADATA_ATTEMPTS; attempt++) {
+export async function fetchWithRetry(
+  url,
+  options,
+  fetchImpl,
+  sleepImpl = (delay) => new Promise((resolve) => setTimeout(resolve, delay)),
+  label,
+  retry404 = false,
+  maxAttempts = MAX_METADATA_ATTEMPTS,
+) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let response;
     try {
       response = await fetchImpl(url, options);
     } catch (error) {
-      if (attempt === MAX_METADATA_ATTEMPTS) {
+      if (attempt === maxAttempts) {
         throw new Error(`${label} failed after ${attempt} attempts: ${error.message}`);
       }
       await sleepImpl(retryDelay(undefined, attempt));
@@ -47,7 +55,7 @@ async function fetchWithRetry(url, options, fetchImpl, sleepImpl, label, retry40
     if (response.ok) return response;
 
     const retryable = retryableResponse(response, retry404);
-    if (!retryable || attempt === MAX_METADATA_ATTEMPTS) {
+    if (!retryable || attempt === maxAttempts) {
       throw new Error(
         `${label} failed: ${response.status}${retryable ? ` after ${attempt} attempts` : ''}`,
       );
@@ -60,6 +68,8 @@ export async function verifyReleaseAsset({
   repository,
   tag,
   token,
+  expectedPrerelease,
+  metadataAttempts = MAX_METADATA_ATTEMPTS,
   fetchImpl = fetch,
   sleepImpl = (delay) => new Promise((resolve) => setTimeout(resolve, delay)),
 }) {
@@ -81,6 +91,7 @@ export async function verifyReleaseAsset({
     sleepImpl,
     'GitHub release lookup',
     true,
+    metadataAttempts,
   );
   let release;
   try {
@@ -90,6 +101,11 @@ export async function verifyReleaseAsset({
   }
   if (!release || typeof release !== 'object' || Array.isArray(release)) {
     throw new Error('GitHub release JSON must be an object');
+  }
+  if (expectedPrerelease !== undefined && release.prerelease !== expectedPrerelease) {
+    throw new Error(
+      `GitHub release prerelease=${String(release.prerelease)}; expected ${expectedPrerelease}`,
+    );
   }
   if (!Array.isArray(release.assets)) throw new Error('GitHub release assets are missing');
   const assets = release.assets.filter(

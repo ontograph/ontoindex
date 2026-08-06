@@ -35,6 +35,7 @@ import {
 import { realStdoutWrite } from './core/lbug-adapter.js';
 import type { LocalBackend } from './local/local-backend.js';
 import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
+import { pageMcpResponse } from './shared/response-pages.js';
 
 const GRAPH_BACKED_SUPER_TOOLS = new Set<SuperTool>([
   'gn_explore',
@@ -388,7 +389,7 @@ export function createMCPServer(backend: LocalBackend, options: { full?: boolean
     tools: activeTools.map((tool) => ({
       name: tool.name,
       description: tool.description,
-      inputSchema: relaxSchemaForClient(tool.inputSchema),
+      inputSchema: relaxSchemaForClient(withResponseCursor(tool.inputSchema)),
     })),
   }));
 
@@ -409,6 +410,17 @@ export function createMCPServer(backend: LocalBackend, options: { full?: boolean
     let repoIdentity: RepoIdentity | null = null;
 
     try {
+      const responseCursor =
+        typeof typedArgs.response_cursor === 'string' ? typedArgs.response_cursor : undefined;
+      if (responseCursor) {
+        const page = await pageMcpResponse({
+          tool: name,
+          args: typedArgs,
+          cursor: responseCursor,
+        });
+        return { content: [{ type: 'text', text: page.text }] };
+      }
+
       let result: unknown;
       if (!options.full && SUPER_NAMES.has(name as SuperTool)) {
         if (isRepoOptionalSuperToolName(name)) {
@@ -436,8 +448,9 @@ export function createMCPServer(backend: LocalBackend, options: { full?: boolean
       }
       const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
       const hint = getNextStepHint(name, typedArgs);
+      const page = await pageMcpResponse({ tool: name, args: typedArgs, text: resultText + hint });
       return {
-        content: [{ type: 'text', text: resultText + hint }],
+        content: [{ type: 'text', text: page.text }],
       };
     } catch (error) {
       const scopedRepoIdentity = repoIdentity ?? readRepoIdentity(error);
@@ -534,6 +547,21 @@ Follow these steps:
   });
 
   return server;
+}
+
+function withResponseCursor(schema: any): any {
+  if (!schema || schema.type !== 'object') return schema;
+  return {
+    ...schema,
+    properties: {
+      ...(schema.properties ?? {}),
+      response_cursor: {
+        type: 'string',
+        description:
+          'Opaque continuation cursor returned by a truncated response. Repeat the same tool request with this value to read the next immutable UTF-8 JSON-text page.',
+      },
+    },
+  };
 }
 
 /**

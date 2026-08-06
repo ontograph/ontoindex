@@ -16,6 +16,7 @@ import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn().mockResolvedValue([]),
+  resolveActiveIndexGeneration: vi.fn().mockResolvedValue(null),
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
 }));
 

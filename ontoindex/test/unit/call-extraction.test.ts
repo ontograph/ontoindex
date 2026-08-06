@@ -370,6 +370,40 @@ describe('generic call extraction', () => {
       expect(result).not.toBeNull();
       expect(result!.calledName).toBe('do_stuff');
     });
+
+    it('preserves the type receiver for associated function calls', () => {
+      parser.setLanguage(Rust);
+      const captures = extractCallCaptures(
+        parser,
+        'fn main() { let dog = Dog::new(); }',
+        SupportedLanguages.Rust,
+      );
+      const match = captures.find((c) => c.calledName === 'new');
+      expect(match).toBeDefined();
+
+      expect(extractor.extract(match!.callNode, match!.nameNode!)).toMatchObject({
+        calledName: 'new',
+        callForm: 'member',
+        receiverName: 'Dog',
+        typeAsReceiverHeuristic: true,
+      });
+    });
+
+    it('keeps lowercase module-qualified calls on the free-call path', () => {
+      parser.setLanguage(Rust);
+      const captures = extractCallCaptures(
+        parser,
+        'fn main() { helpers::format(); }',
+        SupportedLanguages.Rust,
+      );
+      const match = captures.find((c) => c.calledName === 'format');
+      expect(match).toBeDefined();
+
+      expect(extractor.extract(match!.callNode, match!.nameNode!)).toMatchObject({
+        calledName: 'format',
+        callForm: 'free',
+      });
+    });
   });
 
   describe('C++', () => {
@@ -507,8 +541,9 @@ describe('typeAsReceiverHeuristic config', () => {
     expect(kotlinCallConfig.typeAsReceiverHeuristic).toBe(true);
   });
 
-  it('C# config sets typeAsReceiverHeuristic', () => {
+  it('C# and Rust configs set typeAsReceiverHeuristic', () => {
     expect(csharpCallConfig.typeAsReceiverHeuristic).toBe(true);
+    expect(rustCallConfig.typeAsReceiverHeuristic).toBe(true);
   });
 
   it('other configs do not set typeAsReceiverHeuristic', () => {
@@ -517,7 +552,6 @@ describe('typeAsReceiverHeuristic config', () => {
     expect(pythonCallConfig.typeAsReceiverHeuristic).toBeFalsy();
     expect(rubyCallConfig.typeAsReceiverHeuristic).toBeFalsy();
     expect(goCallConfig.typeAsReceiverHeuristic).toBeFalsy();
-    expect(rustCallConfig.typeAsReceiverHeuristic).toBeFalsy();
     expect(cCallConfig.typeAsReceiverHeuristic).toBeFalsy();
     expect(cppCallConfig.typeAsReceiverHeuristic).toBeFalsy();
     expect(phpCallConfig.typeAsReceiverHeuristic).toBeFalsy();

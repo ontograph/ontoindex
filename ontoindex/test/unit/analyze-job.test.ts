@@ -176,6 +176,23 @@ describe('JobManager', () => {
     expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps process-group cancellation nonterminal until the child exits', async () => {
+    const job = manager.createJob({ repoUrl: 'https://github.com/user/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+    const child = new EventEmitter() as ChildProcess;
+    child.kill = vi.fn(() => true) as any;
+
+    manager.registerChild(job.id, child, { processGroup: true, killGraceMs: 60_000 });
+    expect(manager.cancelJob(job.id, 'Cancelled by user')).toBe(true);
+    expect(manager.getJob(job.id)).toMatchObject({
+      status: 'analyzing',
+      progress: { phase: 'cancelling' },
+    });
+
+    child.emit('exit', null, 'SIGTERM');
+    await vi.waitFor(() => expect(manager.getJob(job.id)?.status).toBe('failed'));
+  });
+
   it('escalates cancelled child processes after the kill grace period', () => {
     vi.useFakeTimers();
     try {

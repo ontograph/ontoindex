@@ -7,7 +7,7 @@ import {
   evaluateFreshnessGatePolicy,
   projectStatusForFreshnessGate,
   type AuditFreshnessPolicyInput,
-} from '../../mcp/shared/freshness-policy.js';
+} from './freshness-policy.js';
 import type {
   AuditClaimDsl,
   AuditEvidenceSource,

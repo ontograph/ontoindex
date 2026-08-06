@@ -15,14 +15,62 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildReviewDiffArgs,
+  canUseAuthoritativeGraph,
   parseReviewNumstat,
   formatReviewDiffText,
+  reviewDiffEnvelopeState,
 } from '../../src/cli/review.js';
 import {
   formatScopedPathOmissionWarning,
   scopeChangedPathsByPrefixes,
 } from '../../src/core/review/diff-review.js';
 import type { DiffReviewResult } from '../../src/core/review/review-types.js';
+import type { TargetContext } from '../../src/mcp/shared/target-context.js';
+import type { CapabilityResponseFreshness } from '../../src/mcp/shared/response-envelope.js';
+
+describe('review diff graph authority', () => {
+  const context = (overrides: Partial<TargetContext>): TargetContext =>
+    ({
+      status: 'ok',
+      repoPath: '/repo',
+      graphAuthority: { state: 'authoritative', reason: 'manifest-match' },
+      ...overrides,
+    }) as TargetContext;
+
+  it('requires an authoritative graph for the same resolved repository', () => {
+    expect(canUseAuthoritativeGraph(context({}), '/repo')).toBe(true);
+    expect(canUseAuthoritativeGraph(context({ status: 'no-index' }), '/repo')).toBe(false);
+    expect(
+      canUseAuthoritativeGraph(
+        context({ graphAuthority: { state: 'review', reason: 'manifest-missing' } }),
+        '/repo',
+      ),
+    ).toBe(false);
+    expect(canUseAuthoritativeGraph(context({ repoPath: '/other' }), '/repo')).toBe(false);
+  });
+
+  it('reports only capabilities that actually ran and degrades unknown freshness', () => {
+    const unknown = {
+      status: 'unknown',
+      actionable: false,
+      reason: 'no-index',
+    } as CapabilityResponseFreshness;
+    expect(reviewDiffEnvelopeState(unknown, [], false)).toEqual({
+      status: 'degraded',
+      capabilitiesUsed: ['git-diff'],
+    });
+
+    const fresh = {
+      status: 'fresh',
+      actionable: true,
+      reason: 'manifest-match',
+    } as CapabilityResponseFreshness;
+    expect(reviewDiffEnvelopeState(fresh, [], true)).toEqual({
+      status: 'ok',
+      capabilitiesUsed: ['git-diff', 'graph-review', 'blast-radius'],
+    });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // buildReviewDiffArgs
@@ -44,6 +92,7 @@ describe('buildReviewDiffArgs', () => {
   it('uses explicit --range verbatim', () => {
     const result = buildReviewDiffArgs({ range: 'main...feature' });
     expect(result.resolvedRange).toBe('main...feature');
+    expect(result.targetRef).toBe('feature');
     expect(result.nameOnly).toEqual(['diff', 'main...feature', '--name-only']);
     expect(result.numstat).toEqual(['diff', 'main...feature', '--numstat']);
   });
@@ -51,12 +100,14 @@ describe('buildReviewDiffArgs', () => {
   it('builds range from --base alone (HEAD default)', () => {
     const result = buildReviewDiffArgs({ base: 'main' });
     expect(result.resolvedRange).toBe('main..HEAD');
+    expect(result.targetRef).toBe('HEAD');
     expect(result.nameOnly).toEqual(['diff', 'main..HEAD', '--name-only']);
   });
 
   it('builds range from --base and --head', () => {
     const result = buildReviewDiffArgs({ base: 'main', head: 'feature' });
     expect(result.resolvedRange).toBe('main..feature');
+    expect(result.targetRef).toBe('feature');
     expect(result.nameOnly).toEqual(['diff', 'main..feature', '--name-only']);
   });
 

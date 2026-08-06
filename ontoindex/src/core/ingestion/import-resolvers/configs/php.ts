@@ -9,7 +9,7 @@ import { resolvePhpImportInternal } from '../php.js';
 
 /** PHP PSR-4 resolution strategy via composer.json autoload mappings. */
 export const phpPsr4Strategy: ImportResolverStrategy = (rawImportPath, _filePath, ctx) => {
-  const resolved = resolvePhpImportInternal(
+  return resolvePhpImportInternal(
     rawImportPath,
     ctx.configs.composerConfig,
     ctx.allFilePaths,
@@ -17,7 +17,6 @@ export const phpPsr4Strategy: ImportResolverStrategy = (rawImportPath, _filePath
     ctx.allFileList,
     ctx.index,
   );
-  return resolved ? { kind: 'files', files: [resolved] } : null;
 };
 
 export const phpImportConfig: ImportResolutionConfig = {

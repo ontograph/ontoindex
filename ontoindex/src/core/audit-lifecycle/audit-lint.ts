@@ -5,10 +5,7 @@ import type {
   VerificationKind,
 } from './audit-types.js';
 import type { AuditBundle } from './audit-session.js';
-import {
-  evaluateFreshnessGatePolicy,
-  type AuditFreshnessPolicyInput,
-} from '../../mcp/shared/freshness-policy.js';
+import { evaluateFreshnessGatePolicy, type AuditFreshnessPolicyInput } from './freshness-policy.js';
 
 export type AuditLintSeverity = 'error' | 'warning';
 export type AuditLintExitRecommendation = 'zero' | 'nonzero';

@@ -118,6 +118,41 @@ describe('filesystem-walker', () => {
       expect(paths.every((p) => !p.includes('.git/'))).toBe(true);
     });
 
+    it('skips nested Git worktrees marked by a .git file', async () => {
+      const nestedRoot = path.join(tmpDir, 'release-worktree');
+      await fs.mkdir(path.join(nestedRoot, 'src'), { recursive: true });
+      await fs.writeFile(path.join(nestedRoot, '.git'), 'gitdir: /tmp/worktrees/release\n');
+      await fs.writeFile(
+        path.join(nestedRoot, 'src', 'nested.ts'),
+        'export const nested = true;\n',
+      );
+
+      try {
+        const files = await walkRepositoryPaths(tmpDir);
+        expect(files.every((file) => !file.path.startsWith('release-worktree/'))).toBe(true);
+      } finally {
+        await fs.rm(nestedRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('skips nested repositories marked by a .git directory', async () => {
+      const nestedRoot = path.join(tmpDir, 'embedded-repo');
+      await fs.mkdir(path.join(nestedRoot, '.git'), { recursive: true });
+      await fs.mkdir(path.join(nestedRoot, 'src'), { recursive: true });
+      await fs.writeFile(path.join(nestedRoot, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+      await fs.writeFile(
+        path.join(nestedRoot, 'src', 'nested.ts'),
+        'export const nested = true;\n',
+      );
+
+      try {
+        const files = await walkRepositoryPaths(tmpDir);
+        expect(files.every((file) => !file.path.startsWith('embedded-repo/'))).toBe(true);
+      } finally {
+        await fs.rm(nestedRoot, { recursive: true, force: true });
+      }
+    });
+
     it('discovers docs in dot-directories while skipping operational dot-directories', async () => {
       const dotDocsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-dotdocs-'));
       await fs.mkdir(path.join(dotDocsDir, '.memory-bank'), { recursive: true });

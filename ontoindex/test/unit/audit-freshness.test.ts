@@ -7,7 +7,7 @@ import {
   computeAuditFreshness,
   projectAuditStatusForFreshness,
 } from '../../src/core/audit-lifecycle/freshness.js';
-import { evaluateFreshnessGatePolicy } from '../../src/mcp/shared/freshness-policy.js';
+import { evaluateFreshnessGatePolicy } from '../../src/core/audit-lifecycle/freshness-policy.js';
 import { resolveTargetHead } from '../../src/core/audit-lifecycle/target-head.js';
 
 let tmpDir: string | undefined;

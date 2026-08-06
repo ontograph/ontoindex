@@ -1,4 +1,3 @@
-import { getCallableToolNames } from '../../mcp/shared/tool-registry.js';
 import {
   DEFAULT_ORGANIC_NON_TOOL_ACTION_NAMES,
   ORGANIC_RECOMMENDATION_CONFIDENCE_LEVELS,
@@ -253,9 +252,7 @@ function normalizeNextSteps(
   options: OrganicRecommendationGateOptions,
   errors: OrganicRecommendationValidationError[],
 ): { nextTools: string[]; nonToolActions: string[] } {
-  const callableToolNames = new Set(
-    options.callableToolNames ?? getCallableToolNames({ includeFacades: true }),
-  );
+  const callableToolNames = new Set(options.callableToolNames ?? []);
   const nonToolActionNames = new Set(
     options.nonToolActionNames ?? DEFAULT_ORGANIC_NON_TOOL_ACTION_NAMES,
   );

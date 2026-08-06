@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import fs from 'node:fs/promises';
 
 // ---------------------------------------------------------------------------
 // Mocks — must be declared before the module under test is imported.
@@ -23,6 +24,15 @@ vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
 
 vi.mock('../../../src/mcp/shared/target-context.js', () => ({
   resolveTargetContext: vi.fn(),
+}));
+
+vi.mock('../../../src/storage/git.js', () => ({
+  resolveBranchComparisonBase: vi.fn(() => ({
+    ref: 'main',
+    commit: 'base123',
+    range: 'main...HEAD',
+    source: 'main',
+  })),
 }));
 
 // ---------------------------------------------------------------------------
@@ -44,11 +54,16 @@ const mockResolveTargetContext = vi.mocked(resolveTargetContext);
 
 const REPO_ID = 'test-repo';
 
-/** Make execFileSync return a given diff output. The first call is for
- * git rev-parse --show-toplevel (repoRoot), the second for git diff. */
-function setupGitDiff(diffOutput: string, reviewerOutput = '', patchOutput = '') {
+/** Make execFileSync return a given diff output. */
+function setupGitDiff(
+  diffOutput: string,
+  reviewerOutput = '',
+  patchOutput = '',
+  untrackedOutput = '',
+) {
   mockExecFileSync.mockImplementation((_cmd: string, args: string[]) => {
     if (args.includes('--show-toplevel')) return '/repo\n';
+    if (args.includes('--others') && args.includes('--exclude-standard')) return untrackedOutput;
     if (args.includes('--name-only')) return diffOutput;
     if (args.includes('--unified=0')) return patchOutput;
     if (args.includes('--format=%aN')) return reviewerOutput;
@@ -111,6 +126,13 @@ describe('gnPreCommitAudit', () => {
       targetHead: 'abc123',
       currentHead: 'abc123',
       indexedHead: 'abc123',
+      graphAuthority: {
+        state: 'authoritative',
+        reason: 'current source manifest matches indexed generation',
+        generationId: 'graph-index-1',
+        manifestDigest: 'manifest-1',
+        coverage: 'complete',
+      },
       dirtyWorktree: false,
       changedSinceIndex: false,
       snapshotMode: 'committed-head',
@@ -131,6 +153,13 @@ describe('gnPreCommitAudit', () => {
     const report = await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
 
     expect(report.version).toBe(1);
+    expect(mockResolveTargetContext).toHaveBeenCalledWith({
+      repo: REPO_ID,
+      verifyGraphAuthority: true,
+      requiredGraphCapabilities: ['symbols', 'impact', 'processes'],
+    });
+    const diffCall = mockExecFileSync.mock.calls.find((call) => call[1].includes('--name-only'));
+    expect(diffCall?.[2]).toMatchObject({ cwd: '/repo' });
     expect(report.verdict).toBe('READY');
     expect(report.changedFiles).toHaveLength(1);
     expect(report.changedFiles[0].path).toBe('src/foo.ts');
@@ -143,6 +172,9 @@ describe('gnPreCommitAudit', () => {
     expect(report.capabilitiesMissing).toEqual([]);
     expect(report.preCommitChecklist.find((c) => c.check === 'staged diff non-empty')!.passed).toBe(
       true,
+    );
+    expect(report.preCommitChecklist.find((c) => c.check === 'staged diff non-empty')!.state).toBe(
+      'PASS',
     );
     expect(report.preCommitChecklist.find((c) => c.check === 'no HIGH-risk symbols')!.passed).toBe(
       true,
@@ -262,7 +294,159 @@ describe('gnPreCommitAudit', () => {
     expect(report.reasoning).toContain('No staged changes');
     expect(mockExecute).not.toHaveBeenCalled();
     expect(report.preCommitChecklist.find((c) => c.check === 'staged diff non-empty')!.passed).toBe(
+      true,
+    );
+    expect(report.preCommitChecklist.find((c) => c.check === 'staged diff non-empty')!.state).toBe(
+      'SKIPPED',
+    );
+  });
+
+  it('does not execute git when the explicit repository cannot be resolved', async () => {
+    mockResolveTargetContext.mockResolvedValue({
+      version: 1,
+      status: 'not-found',
+      targetRef: 'HEAD',
+      dirtyWorktree: null,
+      changedSinceIndex: null,
+      snapshotMode: 'unknown',
+      qualityMode: 'balanced',
+      embeddings: { status: 'unknown' },
+      lsp: { status: 'unknown' },
+      sidecar: { status: 'unknown' },
+      policy: { status: 'unknown' },
+      action: 'Repository "missing" is not indexed.',
+      warnings: [],
+    });
+
+    const report = await gnPreCommitAudit('missing', { scope: 'staged' });
+
+    expect(report.verdict).toBe('DO-NOT-COMMIT');
+    expect(report.reasoning).toContain('could not be resolved');
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+    expect(report.preCommitChecklist).toContainEqual(
+      expect.objectContaining({ check: 'repository resolved', state: 'FAIL' }),
+    );
+  });
+
+  it('uses the requested repository path when process cwd points at another repository', async () => {
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/repo-a');
+    mockResolveTargetContext.mockResolvedValue({
+      version: 1,
+      status: 'ok',
+      repoKey: REPO_ID,
+      repoPath: '/repo-b',
+      branch: 'main',
+      targetRef: 'HEAD',
+      targetHead: 'abc123',
+      currentHead: 'abc123',
+      indexedHead: 'abc123',
+      graphAuthority: {
+        state: 'authoritative',
+        reason: 'current source manifest matches indexed generation',
+        generationId: 'graph-index-1',
+        manifestDigest: 'manifest-1',
+        coverage: 'complete',
+      },
+      dirtyWorktree: false,
+      changedSinceIndex: false,
+      snapshotMode: 'committed-head',
+      qualityMode: 'balanced',
+      embeddings: { status: 'available' },
+      lsp: { status: 'unknown' },
+      sidecar: { status: 'unknown' },
+      policy: { status: 'unknown' },
+      warnings: [],
+    });
+    setupGitDiff('src/foo.ts\n');
+    setupGraphMocks({ upstreamCount: 3 });
+
+    try {
+      await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
+    } finally {
+      cwdSpy.mockRestore();
+    }
+
+    expect(mockExecFileSync.mock.calls.some((call) => call[1].includes('--show-toplevel'))).toBe(
       false,
+    );
+    expect(
+      mockExecFileSync.mock.calls
+        .filter((call) => call[0] === 'git')
+        .every((call) => (call[2] as { cwd?: string } | undefined)?.cwd === '/repo-b'),
+    ).toBe(true);
+  });
+
+  it('returns READY for an authoritative dirty source snapshot', async () => {
+    mockResolveTargetContext.mockResolvedValue({
+      version: 1,
+      status: 'ok',
+      repoKey: 'test-repo',
+      repoPath: '/repo',
+      branch: 'main',
+      targetRef: 'HEAD',
+      targetHead: 'abc123',
+      currentHead: 'abc123',
+      indexedHead: 'abc123',
+      graphAuthority: {
+        state: 'authoritative',
+        reason: 'current source manifest matches indexed generation',
+        generationId: 'graph-index-1',
+        manifestDigest: 'manifest-1',
+        coverage: 'complete',
+      },
+      dirtyWorktree: true,
+      dirtyFileCount: 1,
+      changedSinceIndex: true,
+      snapshotMode: 'dirty-worktree-overlay',
+      qualityMode: 'balanced',
+      embeddings: { status: 'available' },
+      lsp: { status: 'unknown' },
+      sidecar: { status: 'unknown' },
+      policy: { status: 'unknown' },
+      warnings: [],
+    });
+    setupGitDiff('src/foo.ts\n');
+    setupGraphMocks({ upstreamCount: 3 });
+
+    const report = await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
+
+    expect(report.verdict).toBe('READY');
+    expect(report.freshness).toMatchObject({ status: 'fresh', actionable: true });
+    expect(report.capabilitiesMissing).not.toContain('clean-worktree');
+    expect(report.warnings).toContain('Audit target context includes a dirty worktree overlay.');
+  });
+
+  it('returns REVIEW for a legacy dirty index without manifest authority', async () => {
+    mockResolveTargetContext.mockResolvedValue({
+      version: 1,
+      status: 'ok',
+      repoKey: 'test-repo',
+      repoPath: '/repo',
+      branch: 'main',
+      targetRef: 'HEAD',
+      targetHead: 'abc123',
+      currentHead: 'abc123',
+      indexedHead: 'abc123',
+      dirtyWorktree: true,
+      dirtyFileCount: 1,
+      changedSinceIndex: true,
+      snapshotMode: 'dirty-worktree-overlay',
+      qualityMode: 'balanced',
+      embeddings: { status: 'available' },
+      lsp: { status: 'unknown' },
+      sidecar: { status: 'unknown' },
+      policy: { status: 'unknown' },
+      warnings: [],
+    });
+    setupGitDiff('src/foo.ts\n');
+    setupGraphMocks({ upstreamCount: 3 });
+
+    const report = await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
+
+    expect(report.verdict).toBe('REVIEW');
+    expect(report.freshness).toMatchObject({ status: 'degraded', actionable: false });
+    expect(report.preCommitChecklist).toContainEqual(
+      expect.objectContaining({ check: 'graph authority established', state: 'DEGRADED' }),
     );
   });
 
@@ -282,6 +466,73 @@ describe('gnPreCommitAudit', () => {
       expect.arrayContaining([
         expect.stringContaining('Omitted 1 changed file outside includePaths (src): docs/note.md'),
       ]),
+    );
+  });
+
+  it.each(['all', 'unstaged'] as const)('includes untracked files for %s scope', async (scope) => {
+    setupGitDiff('src/tracked.ts\n', '', '', 'src/untracked.ts\n');
+    setupGraphMocks({ upstreamCount: 3 });
+
+    const report = await gnPreCommitAudit(REPO_ID, { scope });
+
+    expect(report.changedFiles.map((file) => file.path)).toEqual([
+      'src/tracked.ts',
+      'src/untracked.ts',
+    ]);
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      'git',
+      ['ls-files', '--others', '--exclude-standard'],
+      expect.objectContaining({ cwd: '/repo' }),
+    );
+  });
+
+  it('keeps staged scope limited to the index', async () => {
+    setupGitDiff('src/staged.ts\n', '', '', 'src/untracked.ts\n');
+    setupGraphMocks({ upstreamCount: 3 });
+
+    const report = await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
+
+    expect(report.changedFiles.map((file) => file.path)).toEqual(['src/staged.ts']);
+    expect(
+      mockExecFileSync.mock.calls.some(
+        (call) => call[1].includes('--others') && call[1].includes('--exclude-standard'),
+      ),
+    ).toBe(false);
+  });
+
+  it('applies includePaths after merging tracked and untracked files', async () => {
+    setupGitDiff('docs/tracked.md\n', '', '', 'src/untracked.ts\n');
+    setupGraphMocks({ upstreamCount: 3 });
+
+    const report = await gnPreCommitAudit(REPO_ID, {
+      scope: 'all',
+      includePaths: ['src'],
+    });
+
+    expect(report.changedFiles.map((file) => file.path)).toEqual(['src/untracked.ts']);
+    expect(report.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          'Omitted 1 changed file outside includePaths (src): docs/tracked.md',
+        ),
+      ]),
+    );
+  });
+
+  it('blocks commit when untracked-file enumeration fails', async () => {
+    mockExecFileSync.mockImplementation((_cmd: string, args: string[]) => {
+      if (args.includes('--name-only')) return 'src/tracked.ts\n';
+      if (args.includes('--others')) throw new Error('untracked scan unavailable');
+      return '';
+    });
+
+    const report = await gnPreCommitAudit(REPO_ID, { scope: 'all' });
+
+    expect(report.verdict).toBe('DO-NOT-COMMIT');
+    expect(report.reasoning).toContain('changed-path scan failed');
+    expect(report.warnings).toContain('git changed-path scan failed: untracked scan unavailable');
+    expect(report.preCommitChecklist).toContainEqual(
+      expect.objectContaining({ check: 'git diff reachable', state: 'FAIL' }),
     );
   });
 
@@ -305,6 +556,9 @@ describe('gnPreCommitAudit', () => {
     expect(report.preCommitChecklist.find((c) => c.check === 'staged diff non-empty')?.detail).toBe(
       'no in-scope changes',
     );
+    expect(report.preCommitChecklist.find((c) => c.check === 'staged diff non-empty')?.state).toBe(
+      'SKIPPED',
+    );
   });
 
   // ---- Test 5: scope 'branch' uses main...HEAD git diff args -------------
@@ -319,6 +573,11 @@ describe('gnPreCommitAudit', () => {
     expect(diffCall).toBeDefined();
     expect(diffCall![1]).toContain('main...HEAD');
     expect(diffCall![1]).not.toContain('--cached');
+    expect(
+      mockExecFileSync.mock.calls.some(
+        (call) => call[1].includes('--others') && call[1].includes('--exclude-standard'),
+      ),
+    ).toBe(false);
   });
 
   // ---- Test 6: git diff failure blocks commit ----------------------------
@@ -333,7 +592,7 @@ describe('gnPreCommitAudit', () => {
 
     expect(report.verdict).toBe('DO-NOT-COMMIT');
     expect(report.changedFiles).toHaveLength(0);
-    expect(report.warnings.some((w) => w.includes('git diff failed'))).toBe(true);
+    expect(report.warnings.some((w) => w.includes('git changed-path scan failed'))).toBe(true);
     expect(report.preCommitChecklist.find((c) => c.check === 'git diff reachable')!.passed).toBe(
       false,
     );
@@ -367,7 +626,7 @@ describe('gnPreCommitAudit', () => {
     const report = await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
 
     expect(report.verdict).toBe('DO-NOT-COMMIT');
-    expect(report.warnings.some((w) => w.includes('git diff failed'))).toBe(true);
+    expect(report.warnings.some((w) => w.includes('git changed-path scan failed'))).toBe(true);
     expect(report.preCommitChecklist.find((c) => c.check === 'git diff reachable')!.passed).toBe(
       false,
     );
@@ -508,7 +767,7 @@ describe('gnPreCommitAudit', () => {
     expect(report.graphSections.hunkCoverageAvailable).toBe(false);
   });
 
-  it('surfaces degraded freshness state additively without changing verdict compatibility', async () => {
+  it('returns REVIEW when required graph evidence is not authoritative', async () => {
     mockResolveTargetContext.mockResolvedValue({
       version: 1,
       status: 'ok',
@@ -519,6 +778,13 @@ describe('gnPreCommitAudit', () => {
       targetHead: 'def456',
       currentHead: 'def456',
       indexedHead: 'abc123',
+      graphAuthority: {
+        state: 'review',
+        reason: 'current source manifest does not match indexed manifest',
+        generationId: 'graph-index-1',
+        manifestDigest: 'manifest-1',
+        coverage: 'complete',
+      },
       dirtyWorktree: true,
       changedSinceIndex: true,
       snapshotMode: 'dirty-worktree-overlay',
@@ -534,10 +800,47 @@ describe('gnPreCommitAudit', () => {
 
     const report = await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
 
-    expect(report.verdict).toBe('READY');
+    expect(report.verdict).toBe('REVIEW');
     expect(report.status).toBe('degraded');
     expect(report.freshness.status).toBe('stale');
     expect(report.capabilitiesMissing).toContain('fresh-index');
     expect(report.warnings.some((warning) => warning.includes('Audit freshness stale'))).toBe(true);
+    expect(
+      report.preCommitChecklist.find((c) => c.check === 'graph authority established')?.state,
+    ).toBe('DEGRADED');
+  });
+
+  it('skips only an absent boundary-rules file', async () => {
+    setupGitDiff('src/foo.ts\n');
+    setupGraphMocks({ upstreamCount: 3 });
+
+    const report = await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
+
+    expect(report.verdict).toBe('READY');
+    expect(report.preCommitChecklist.find((c) => c.check === 'boundary rules')).toMatchObject({
+      state: 'SKIPPED',
+      passed: true,
+    });
+  });
+
+  it('blocks commit when the boundary-rules file cannot be read', async () => {
+    setupGitDiff('src/foo.ts\n');
+    setupGraphMocks({ upstreamCount: 3 });
+    const readFile = vi
+      .spyOn(fs, 'readFile')
+      .mockRejectedValueOnce(Object.assign(new Error('permission denied'), { code: 'EACCES' }));
+
+    try {
+      const report = await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
+
+      expect(report.verdict).toBe('DO-NOT-COMMIT');
+      expect(report.preCommitChecklist.find((c) => c.check === 'boundary rules')).toMatchObject({
+        state: 'FAIL',
+        passed: false,
+      });
+      expect(report.reasoning).toContain('could not be read');
+    } finally {
+      readFile.mockRestore();
+    }
   });
 });

@@ -34,6 +34,20 @@ console = Console()
 app = typer.Typer(rich_markup_mode="rich", add_completion=False)
 
 
+def _load_swebench_report(run_dir: Path) -> dict | None:
+    """Merge canonical SWE-bench per-instance `report.json` artifacts."""
+    reports = sorted((run_dir / "swebench_eval" / "logs" / "run_evaluation").glob("**/report.json"))
+    merged: dict[str, Any] = {}
+    for report_path in reports:
+        try:
+            loaded = json.loads(report_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(loaded, dict):
+            merged.update({key: value for key, value in loaded.items() if isinstance(value, dict)})
+    return merged or None
+
+
 def load_run_results(results_dir: Path) -> dict[str, dict]:
     """
     Load all run results from the results directory.
@@ -58,6 +72,10 @@ def load_run_results(results_dir: Path) -> dict[str, dict]:
         preds_path = run_dir / "preds.json"
         if preds_path.exists():
             run_data["preds"] = json.loads(preds_path.read_text())
+
+        swebench_report = _load_swebench_report(run_dir)
+        if swebench_report is not None:
+            run_data["swebench_report"] = swebench_report
 
         # Load individual trajectories for detailed metrics
         run_data["trajectories"] = {}
@@ -96,7 +114,147 @@ def parse_run_id(run_id: str) -> tuple[str, str]:
     return run_id, "unknown"
 
 
-def compute_metrics(run_data: dict) -> dict:
+def _test_ratio(status: dict, key: str) -> float | None:
+    """Success ratio for one SWE-bench test group, or None when absent."""
+    group = status.get(key)
+    if not isinstance(group, dict):
+        return None
+    success = len(group.get("success", []) or [])
+    failure = len(group.get("failure", []) or [])
+    total = success + failure
+    if total == 0:
+        return None
+    return success / total
+
+
+def classify_outcomes(preds: dict, swebench_report: dict | None) -> dict:
+    """
+    Split the single "has a patch" count into distinct outcomes.
+
+    `n_with_patch` alone cannot distinguish an agent that produced nothing from
+    one that produced a patch breaking the suite, yet those are very different
+    failures.
+
+    Consumes the SWE-bench report map produced by `run_swebench_evaluation`,
+    keyed by instance id, with per-instance `resolved`,
+    `patch_successfully_applied`, and optional `tests_status` containing
+    FAIL_TO_PASS / PASS_TO_PASS success and failure lists. Without a report every
+    patched instance is `unverified`; absence of grading is not evidence of
+    failure.
+    """
+    report = swebench_report or {}
+
+    outcomes = {
+        "no_patch": 0,
+        "broken_patch": 0,
+        "partial_pass": 0,
+        "resolved": 0,
+        "unverified": 0,
+    }
+    progress_points = 0.0
+
+    for instance_id, pred in preds.items():
+        if not (pred.get("model_patch") or "").strip():
+            outcomes["no_patch"] += 1
+            continue
+
+        entry = report.get(instance_id)
+        if not isinstance(entry, dict):
+            outcomes["unverified"] += 1
+            continue
+
+        if entry.get("resolved") is True:
+            outcomes["resolved"] += 1
+            progress_points += 1.0
+            continue
+
+        # A patch that never applied is broken regardless of test detail.
+        if entry.get("patch_successfully_applied") is False:
+            outcomes["broken_patch"] += 1
+            continue
+
+        status = entry.get("tests_status")
+        if isinstance(status, dict):
+            f2p = _test_ratio(status, "FAIL_TO_PASS")
+            p2p = _test_ratio(status, "PASS_TO_PASS")
+            # SWE-bench PARTIAL: some target tests fixed without regressions.
+            if f2p is not None and 0 < f2p < 1 and (p2p is None or p2p == 1):
+                outcomes["partial_pass"] += 1
+                progress_points += f2p
+            else:
+                outcomes["broken_patch"] += 1
+        else:
+            outcomes["broken_patch"] += 1
+
+    n = max(len(preds), 1)
+    outcomes["resolve_rate"] = outcomes["resolved"] / n
+    graded = outcomes["resolved"] + outcomes["partial_pass"] + outcomes["broken_patch"]
+    outcomes["fix_rate"] = progress_points / graded if graded else 0.0
+    return outcomes
+
+
+def summarize_structural(summary: dict, swebench_report: dict | None = None) -> dict:
+    """
+    Report the functional-pass-structural-fail rate.
+
+    This is the figure that distinguishes "the tests pass" from "the change was
+    made correctly". With no oracles declared it reports `not_measured`, because
+    zero observed violations out of zero checks is not a clean result.
+
+    Functional success comes from the SWE-bench report, not from the run summary,
+    because the runner records agent execution rather than test grading. Without
+    a report the rate is unmeasurable and is reported as such.
+    """
+    results = summary.get("results", []) or []
+    report = swebench_report or {}
+    graded = 0
+    functional_pass_structural_fail = 0
+    degraded = 0
+
+    for entry in results:
+        oracles = entry.get("structural_oracles") or {}
+        overall = oracles.get("overall")
+        if overall in (None, "NOT-MEASURED"):
+            continue
+        graded += 1
+        if overall == "DEGRADED":
+            degraded += 1
+            continue
+        graded_entry = report.get(entry.get("instance_id"))
+        tests_ok = isinstance(graded_entry, dict) and graded_entry.get("resolved") is True
+        if tests_ok and overall == "FAIL":
+            functional_pass_structural_fail += 1
+
+    if graded == 0:
+        return {
+            "measured": False,
+            "note": "no structural oracles declared",
+            "graded": 0,
+            "functional_pass_structural_fail": 0,
+            "functional_pass_structural_fail_rate": None,
+            "degraded": 0,
+        }
+
+    if not report:
+        return {
+            "measured": False,
+            "note": "structural oracles ran but no SWE-bench grading available",
+            "graded": graded,
+            "functional_pass_structural_fail": 0,
+            "functional_pass_structural_fail_rate": None,
+            "degraded": degraded,
+        }
+
+    return {
+        "measured": True,
+        "graded": graded,
+        "functional_pass_structural_fail": functional_pass_structural_fail,
+        "functional_pass_structural_fail_rate": functional_pass_structural_fail / graded,
+        "degraded": degraded,
+    }
+
+
+def compute_metrics(run_data: dict, swebench_report: dict | None = None) -> dict:
     """Compute evaluation metrics for a single run."""
     preds = run_data.get("preds", {})
     summary = run_data.get("summary", {})
@@ -139,6 +297,10 @@ def compute_metrics(run_data: dict) -> dict:
     total_cost = sum(costs)
     total_calls = sum(api_calls)
 
+    report = swebench_report if swebench_report is not None else run_data.get("swebench_report")
+    outcomes = classify_outcomes(preds, report)
+    structural = summarize_structural(summary, report)
+
     return {
         "n_instances": n_instances,
         "n_with_patch": n_with_patch,
@@ -152,6 +314,11 @@ def compute_metrics(run_data: dict) -> dict:
         "total_augment_hits": sum(gn_augment_hits),
         "total_augment_calls": sum(gn_augment_calls),
         "augment_hit_rate": sum(gn_augment_hits) / max(sum(gn_augment_calls), 1) if gn_augment_calls else 0,
+        "outcomes": outcomes,
+        "structural": structural,
+        "cost_per_resolved": (
+            total_cost / outcomes["resolved"] if outcomes["resolved"] else None
+        ),
     }
 
 
@@ -172,24 +339,22 @@ def run_swebench_evaluation(results_dir: Path, run_id: str, subset: str = "lite"
     }
 
     try:
-        eval_output = results_dir / run_id / "swebench_eval"
+        eval_output = (results_dir / run_id / "swebench_eval").resolve()
+        eval_output.mkdir(parents=True, exist_ok=True)
         cmd = [
             sys.executable, "-m", "swebench.harness.run_evaluation",
             "--dataset_name", dataset_mapping.get(subset, subset),
-            "--predictions_path", str(preds_path),
+            "--predictions_path", str(preds_path.resolve()),
             "--max_workers", "4",
             "--run_id", run_id,
-            "--output_dir", str(eval_output),
+            "--report_dir", str(eval_output),
         ]
 
         logger.info(f"Running SWE-bench evaluation for {run_id}...")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=eval_output)
 
         if result.returncode == 0:
-            # Parse evaluation results
-            report_path = eval_output / run_id / "results.json"
-            if report_path.exists():
-                return json.loads(report_path.read_text())
+            return _load_swebench_report(results_dir / run_id)
 
         logger.error(f"SWE-bench eval failed: {result.stderr[:500]}")
         return None
@@ -226,16 +391,15 @@ def summary(
     all_metrics = {}
     for run_id, run_data in runs.items():
         model, mode = parse_run_id(run_id)
-        metrics = compute_metrics(run_data)
-        metrics["model"] = model
-        metrics["mode"] = mode
-
-        # Optionally run SWE-bench evaluation
+        eval_result = run_data.get("swebench_report")
         if swebench_eval:
             eval_result = run_swebench_evaluation(results_path, run_id, subset)
-            if eval_result:
-                metrics["resolved"] = eval_result.get("resolved", 0)
-                metrics["resolve_rate"] = eval_result.get("resolved", 0) / max(metrics["n_instances"], 1)
+
+        metrics = compute_metrics(run_data, eval_result)
+        metrics["model"] = model
+        metrics["mode"] = mode
+        metrics["resolved"] = metrics["outcomes"]["resolved"]
+        metrics["resolve_rate"] = metrics["outcomes"]["resolve_rate"]
 
         all_metrics[run_id] = metrics
 
@@ -404,15 +568,17 @@ def _print_table(all_metrics: dict):
     table.add_column("Mode")
     table.add_column("N", justify="right")
     table.add_column("Patched", justify="right")
-    table.add_column("Rate", justify="right")
+    table.add_column("Patch", justify="right")
+    table.add_column("Resolve", justify="right")
+    table.add_column("Fix", justify="right")
+    table.add_column("F→S Fail", justify="right")
     table.add_column("Cost", justify="right")
     table.add_column("Calls", justify="right")
     table.add_column("GN Tools", justify="right")
 
     for run_id, m in sorted(all_metrics.items()):
-        resolved_str = ""
-        if "resolve_rate" in m:
-            resolved_str = f" ({m['resolve_rate']:.0%})"
+        structural_rate = m["structural"].get("functional_pass_structural_fail_rate")
+        structural_str = f"{structural_rate:.0%}" if structural_rate is not None else "n/m"
 
         table.add_row(
             run_id,
@@ -420,7 +586,10 @@ def _print_table(all_metrics: dict):
             m["mode"],
             str(m["n_instances"]),
             str(m["n_with_patch"]),
-            f"{m['patch_rate']:.0%}{resolved_str}",
+            f"{m['patch_rate']:.0%}",
+            f"{m['outcomes']['resolve_rate']:.0%}",
+            f"{m['outcomes']['fix_rate']:.0%}",
+            structural_str,
             f"${m['total_cost']:.2f}",
             str(m["total_api_calls"]),
             str(m["total_gn_tool_calls"]) if m["total_gn_tool_calls"] > 0 else "-",
@@ -431,20 +600,31 @@ def _print_table(all_metrics: dict):
 
 def _print_markdown(all_metrics: dict):
     """Print markdown table."""
-    print("| Run | Model | Mode | N | Patched | Rate | Cost | Calls | GN Tools |")
-    print("|-----|-------|------|---|---------|------|------|-------|----------|")
+    print("| Run | Model | Mode | N | Patched | Patch | Resolve | Fix | F→S Fail | Cost | Calls | GN Tools |")
+    print("|-----|-------|------|---|---------|-------|---------|-----|----------|------|-------|----------|")
     for run_id, m in sorted(all_metrics.items()):
         gn = str(m["total_gn_tool_calls"]) if m["total_gn_tool_calls"] > 0 else "-"
-        print(f"| {run_id} | {m['model']} | {m['mode']} | {m['n_instances']} | {m['n_with_patch']} | {m['patch_rate']:.0%} | ${m['total_cost']:.2f} | {m['total_api_calls']} | {gn} |")
+        structural_rate = m["structural"].get("functional_pass_structural_fail_rate")
+        structural = f"{structural_rate:.0%}" if structural_rate is not None else "not measured"
+        print(
+            f"| {run_id} | {m['model']} | {m['mode']} | {m['n_instances']} | "
+            f"{m['n_with_patch']} | {m['patch_rate']:.0%} | "
+            f"{m['outcomes']['resolve_rate']:.0%} | {m['outcomes']['fix_rate']:.0%} | "
+            f"{structural} | ${m['total_cost']:.2f} | {m['total_api_calls']} | {gn} |"
+        )
 
 
 def _print_csv(all_metrics: dict):
     """Print CSV output."""
-    print("run_id,model,mode,n_instances,n_with_patch,patch_rate,total_cost,avg_cost,total_api_calls,avg_api_calls,total_gn_tool_calls,total_augment_hits,augment_hit_rate")
+    print("run_id,model,mode,n_instances,n_with_patch,patch_rate,resolve_rate,fix_rate,functional_pass_structural_fail_rate,total_cost,avg_cost,total_api_calls,avg_api_calls,total_gn_tool_calls,total_augment_hits,augment_hit_rate")
     for run_id, m in sorted(all_metrics.items()):
+        structural_rate = m["structural"].get("functional_pass_structural_fail_rate")
+        structural = "" if structural_rate is None else f"{structural_rate:.4f}"
         print(
             f"{run_id},{m['model']},{m['mode']},{m['n_instances']},{m['n_with_patch']},"
-            f"{m['patch_rate']:.4f},{m['total_cost']:.4f},{m['avg_cost']:.4f},"
+            f"{m['patch_rate']:.4f},{m['outcomes']['resolve_rate']:.4f},"
+            f"{m['outcomes']['fix_rate']:.4f},{structural},"
+            f"{m['total_cost']:.4f},{m['avg_cost']:.4f},"
             f"{m['total_api_calls']},{m['avg_api_calls']:.1f},{m['total_gn_tool_calls']},"
             f"{m['total_augment_hits']},{m['augment_hit_rate']:.4f}"
         )

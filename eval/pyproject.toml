@@ -34,7 +34,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["agents", "environments", "analysis", "bridge", "utils"]
-extra-files = ["run_eval.py", "tool_registry.py", "constants.py"]
+extra-files = ["run_eval.py", "structural_oracles.py", "tool_registry.py", "constants.py"]
 
 [tool.ruff]
 line-length = 120

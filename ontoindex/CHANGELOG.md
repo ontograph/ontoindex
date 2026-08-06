@@ -4,6 +4,36 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.1.5] - 2026-08-06
+
+### Added
+
+- Added source-manifest and immutable-generation authority metadata so graph-backed review surfaces can distinguish current, stale, degraded, and uncovered evidence.
+- Added structural conformance evaluation support, including frozen-path and dependency-boundary oracles with explicit degraded outcomes when evidence is unavailable.
+- Added bounded MCP response pagination with continuation cursors for responses that exceed the transport-safe byte budget.
+- Added broader PHP import resolution and Rust associated-call extraction coverage.
+
+### Changed
+
+- Moved `gn_ensure_fresh` analysis refreshes onto durable asynchronous jobs that can be observed with `gn_analyze_job` instead of blocking the MCP request lifecycle.
+- Made pre-commit and diff review results fail closed or require review when graph authority cannot be established for the current source manifest.
+- Improved release-candidate version resolution, resumable publication markers, public release-state verification, and release artifact checks.
+
+### Fixed
+
+- Prevented analysis-job submission from synchronously walking dirty worktree paths, avoiding `EISDIR` failures from untracked embedded repositories and related path races.
+- Preserved structured MCP output across response-size boundaries instead of returning truncated or invalid JSON.
+- Improved dirty-worktree source-only impact fallback and reduced false cross-language call resolution.
+
+## [2.1.4] - 2026-07-26
+
+### Fixed
+
+- Fixed MCP shutdown on `SIGINT` and `SIGTERM` so cleanup completes with a numeric exit code instead of throwing before LadybugDB resources are released.
+- Batched dead-code candidate verification queries, cutting the full local audit runtime from about 17 seconds to 8 seconds on the OntoIndex repository.
+- Made dead-code reachability totals count the same symbol kinds as `totalSymbols`.
+- Added confidence-aware cycle detection: reports now expose the weakest edge confidence and can exclude name-only global call-resolution edges with `min_confidence`.
+
 ## [2.1.3] - 2026-07-26
 
 ### Added

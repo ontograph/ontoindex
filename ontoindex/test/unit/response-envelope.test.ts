@@ -4,6 +4,7 @@ import {
   createGlobalTargetContext,
   createCapabilityResponseEnvelope,
   createEnvelopeFromLegacy,
+  deriveEnvelopeFreshness,
   mergeRuntimeHealthFreshness,
   wrapRepoScopeIdentity,
   type CapabilityResponseFreshness,
@@ -186,5 +187,154 @@ describe('response envelope repo identity', () => {
     });
 
     expect(envelope.recoverable).toEqual(recoverable);
+  });
+
+  it('keeps an authoritative dirty source snapshot actionable', () => {
+    const freshness = deriveEnvelopeFreshness({
+      version: 1,
+      status: 'ok',
+      repoKey: 'fixture',
+      repoPath: '/repo/fixture',
+      targetRef: 'HEAD',
+      targetHead: 'abc123',
+      currentHead: 'abc123',
+      indexedHead: 'abc123',
+      graphAuthority: {
+        state: 'authoritative',
+        reason: 'current source manifest matches indexed generation',
+        generationId: 'generation-1',
+        manifestDigest: 'manifest-1',
+        coverage: 'complete',
+      },
+      dirtyWorktree: true,
+      dirtyFileCount: 1,
+      changedSinceIndex: true,
+      snapshotMode: 'dirty-worktree-overlay',
+      qualityMode: 'balanced',
+      embeddings: { status: 'unknown' },
+      lsp: { status: 'unknown' },
+      sidecar: { status: 'unknown' },
+      policy: { status: 'unknown' },
+      warnings: [],
+    });
+
+    expect(freshness).toMatchObject({
+      status: 'fresh',
+      actionable: true,
+      reason: 'current source manifest matches indexed generation',
+      graphAuthorityState: 'authoritative',
+      graphGenerationId: 'generation-1',
+      graphManifestDigest: 'manifest-1',
+      dirtyFileCount: 1,
+      snapshotMode: 'dirty-worktree-overlay',
+    });
+  });
+
+  it('does not promote an authoritative current checkout for a different target ref', () => {
+    const freshness = deriveEnvelopeFreshness({
+      version: 1,
+      status: 'ok',
+      repoKey: 'fixture',
+      repoPath: '/repo/fixture',
+      targetRef: 'HEAD~1',
+      targetHead: 'historical-commit',
+      currentHead: 'current-commit',
+      indexedHead: 'current-commit',
+      graphAuthority: {
+        state: 'authoritative',
+        reason: 'current source manifest matches indexed generation',
+        generationId: 'generation-1',
+        manifestDigest: 'manifest-1',
+        coverage: 'complete',
+      },
+      dirtyWorktree: false,
+      dirtyFileCount: 0,
+      changedSinceIndex: false,
+      snapshotMode: 'diff-ref',
+      qualityMode: 'balanced',
+      embeddings: { status: 'unknown' },
+      lsp: { status: 'unknown' },
+      sidecar: { status: 'unknown' },
+      policy: { status: 'unknown' },
+      warnings: [],
+    });
+
+    expect(freshness).toMatchObject({
+      status: 'stale',
+      actionable: false,
+      reason: 'graph authority describes current checkout, not requested target ref',
+      graphAuthorityState: 'authoritative',
+    });
+  });
+
+  it('does not promote authority when target commit identity is unavailable', () => {
+    const freshness = deriveEnvelopeFreshness({
+      version: 1,
+      status: 'ok',
+      repoKey: 'fixture',
+      repoPath: '/repo/fixture',
+      targetRef: 'HEAD',
+      graphAuthority: {
+        state: 'authoritative',
+        reason: 'current source manifest matches indexed generation',
+        coverage: 'complete',
+      },
+      dirtyWorktree: false,
+      changedSinceIndex: null,
+      snapshotMode: 'unknown',
+      qualityMode: 'balanced',
+      embeddings: { status: 'unknown' },
+      lsp: { status: 'unknown' },
+      sidecar: { status: 'unknown' },
+      policy: { status: 'unknown' },
+      warnings: [],
+    });
+
+    expect(freshness).toMatchObject({
+      status: 'degraded',
+      actionable: false,
+      reason: 'target commit unavailable for graph authority',
+    });
+  });
+
+  it.each([
+    ['legacy dirty index', undefined, 'degraded'],
+    [
+      'post-index source change',
+      {
+        state: 'review' as const,
+        reason: 'current source manifest does not match indexed manifest',
+        generationId: 'generation-1',
+        manifestDigest: 'manifest-1',
+        coverage: 'complete' as const,
+      },
+      'stale',
+    ],
+  ] as const)('keeps %s non-actionable', (_label, graphAuthority, expectedStatus) => {
+    const freshness = deriveEnvelopeFreshness({
+      version: 1,
+      status: 'ok',
+      repoKey: 'fixture',
+      repoPath: '/repo/fixture',
+      targetRef: 'HEAD',
+      targetHead: 'abc123',
+      currentHead: 'abc123',
+      indexedHead: 'abc123',
+      ...(graphAuthority ? { graphAuthority } : {}),
+      dirtyWorktree: true,
+      dirtyFileCount: 1,
+      changedSinceIndex: true,
+      snapshotMode: 'dirty-worktree-overlay',
+      qualityMode: 'balanced',
+      embeddings: { status: 'unknown' },
+      lsp: { status: 'unknown' },
+      sidecar: { status: 'unknown' },
+      policy: { status: 'unknown' },
+      warnings: [],
+    });
+
+    expect(freshness.status).toBe(expectedStatus);
+    expect(freshness.actionable).toBe(false);
+    expect(freshness.dirtyFileCount).toBe(1);
   });
 });

@@ -1,4 +1,4 @@
-export const RESPONSE_GUARD_MAX_BYTES = 512 * 1024;
+export const RESPONSE_GUARD_MAX_BYTES = 48 * 1024;
 export const RESPONSE_GUARD_RETRY_HINT = 'Reduce limit or add filters';
 
 export function guardResponseSize(payload: string): string {

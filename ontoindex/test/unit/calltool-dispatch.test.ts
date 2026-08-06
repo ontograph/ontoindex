@@ -39,6 +39,7 @@ vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn().mockResolvedValue([]),
+  resolveActiveIndexGeneration: vi.fn().mockResolvedValue(null),
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
 }));
 
@@ -256,7 +257,7 @@ describe('LocalBackend.callTool', () => {
     expect(result[0].name).toBe('test-project');
   });
 
-  it('preserves responseBudget metadata when dispatch guards an oversized response', async () => {
+  it('preserves complete typed results before MCP response paging', async () => {
     (listRegisteredRepos as any).mockResolvedValue(
       Array.from({ length: 6000 }, (_, i) => ({
         ...MOCK_REPO_ENTRY,
@@ -268,14 +269,8 @@ describe('LocalBackend.callTool', () => {
 
     const result = await backend.callTool('list_repos', {});
 
-    expect(result).toMatchObject({
-      truncated: true,
-      responseBudget: {
-        mode: 'guarded-preview',
-        truncated: true,
-        retryHint: 'Reduce limit or add filters',
-      },
-    });
+    expect(result).toHaveLength(6000);
+    expect(result.at(-1)).toMatchObject({ name: 'repo-5999' });
   });
 
   it('throws for unknown tool name', async () => {

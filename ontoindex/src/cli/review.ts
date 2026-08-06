@@ -55,6 +55,31 @@ export interface ReviewDiffArgs {
   nameOnly: string[];
   numstat: string[];
   resolvedRange: string;
+  targetRef: string;
+}
+
+export function canUseAuthoritativeGraph(
+  targetContext: Pick<TargetContext, 'status' | 'repoPath' | 'graphAuthority'>,
+  repoRoot: string,
+): boolean {
+  return (
+    targetContext.status === 'ok' &&
+    targetContext.repoPath !== undefined &&
+    path.resolve(targetContext.repoPath) === path.resolve(repoRoot) &&
+    targetContext.graphAuthority?.state === 'authoritative'
+  );
+}
+
+export function reviewDiffEnvelopeState(
+  freshness: CapabilityResponseFreshness,
+  warnings: readonly string[],
+  graphReviewUsed: boolean,
+): { status: 'ok' | 'degraded'; capabilitiesUsed: string[] } {
+  const freshnessAcceptable = freshness.status === 'fresh' || freshness.status === 'not-applicable';
+  return {
+    status: freshnessAcceptable && warnings.length === 0 ? 'ok' : 'degraded',
+    capabilitiesUsed: graphReviewUsed ? ['git-diff', 'graph-review', 'blast-radius'] : ['git-diff'],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -67,10 +92,18 @@ export interface ReviewDiffArgs {
  */
 export function buildReviewDiffArgs(opts: ReviewDiffOptions): ReviewDiffArgs {
   if (opts.range) {
+    const tripleDot = opts.range.lastIndexOf('...');
+    const doubleDot = opts.range.lastIndexOf('..');
+    const separatorIndex = tripleDot >= 0 ? tripleDot : doubleDot;
+    const separatorLength = tripleDot >= 0 ? 3 : 2;
     return {
       nameOnly: ['diff', opts.range, '--name-only'],
       numstat: ['diff', opts.range, '--numstat'],
       resolvedRange: opts.range,
+      targetRef:
+        separatorIndex >= 0
+          ? opts.range.slice(separatorIndex + separatorLength).trim() || 'HEAD'
+          : 'HEAD',
     };
   }
   if (opts.base) {
@@ -80,6 +113,7 @@ export function buildReviewDiffArgs(opts: ReviewDiffOptions): ReviewDiffArgs {
       nameOnly: ['diff', range, '--name-only'],
       numstat: ['diff', range, '--numstat'],
       resolvedRange: range,
+      targetRef: head,
     };
   }
   // --staged or default
@@ -87,6 +121,7 @@ export function buildReviewDiffArgs(opts: ReviewDiffOptions): ReviewDiffArgs {
     nameOnly: ['diff', '--cached', '--name-only'],
     numstat: ['diff', '--cached', '--numstat'],
     resolvedRange: '--cached',
+    targetRef: 'HEAD',
   };
 }
 
@@ -191,19 +226,18 @@ function emitOutput(
   targetContext: TargetContext,
   freshness: CapabilityResponseFreshness,
   warnings: string[],
+  graphReviewUsed: boolean,
 ): void {
   const allWarnings = [...new Set([...result.warnings, ...warnings])];
+  const outputState = reviewDiffEnvelopeState(freshness, allWarnings, graphReviewUsed);
 
   if (json) {
     const envelope = createCapabilityResponseEnvelope({
       tool: 'review_diff',
       version: REVIEW_DIFF_VERSION,
-      status:
-        freshness.status === 'stale' || freshness.status === 'degraded' || allWarnings.length > 0
-          ? 'degraded'
-          : 'ok',
+      status: outputState.status,
       targetContext,
-      capabilitiesUsed: ['git-diff', 'graph-review', 'blast-radius'],
+      capabilitiesUsed: outputState.capabilitiesUsed,
       freshness,
       results: {
         resolvedRange,
@@ -231,19 +265,38 @@ function emitOutput(
 // ---------------------------------------------------------------------------
 
 export async function reviewDiffCommand(opts: ReviewDiffOptions): Promise<void> {
-  // Resolve git root
+  const { nameOnly, numstat, resolvedRange, targetRef } = buildReviewDiffArgs(opts);
+
+  // Resolve the requested repository before running any Git command. Without an
+  // explicit selector, preserve the local file-list fallback for unindexed repos.
   let repoRoot: string;
-  try {
-    repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: GIT_TIMEOUT_MS,
-    }).trim();
-  } catch {
-    repoRoot = getGitRoot(process.cwd()) ?? process.cwd();
+  let targetContext: TargetContext;
+  if (opts.repo?.trim()) {
+    targetContext = await resolveTargetContext({ repo: opts.repo, targetRef });
+    if (targetContext.status !== 'ok' || !targetContext.repoPath) {
+      console.error(
+        `error: ${targetContext.action ?? `repository "${opts.repo}" could not be resolved`}`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    repoRoot = targetContext.repoPath;
+  } else {
+    try {
+      repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: GIT_TIMEOUT_MS,
+      }).trim();
+    } catch {
+      repoRoot = getGitRoot(process.cwd()) ?? process.cwd();
+    }
+    targetContext = await resolveTargetContext({ repo: repoRoot, targetRef });
+    if (targetContext.status === 'ok' && targetContext.repoPath) {
+      repoRoot = targetContext.repoPath;
+    }
   }
 
-  const { nameOnly, numstat, resolvedRange } = buildReviewDiffArgs(opts);
   const warnings: string[] = [];
 
   // ---- 1. Git diff: changed paths ------------------------------------------
@@ -273,21 +326,31 @@ export async function reviewDiffCommand(opts: ReviewDiffOptions): Promise<void> 
     return;
   }
 
-  // ---- 2. Target context for provenance envelope ---------------------------
-  const targetContext = await resolveTargetContext({ repo: opts.repo ?? repoRoot });
-  const freshness = deriveEnvelopeFreshness(targetContext);
-
-  // ---- 3. Empty diff — fast path -------------------------------------------
+  // ---- 2. Empty diff — fast path -------------------------------------------
   if (changedPaths.length === 0) {
     emitOutput(
       opts.json,
       resolvedRange,
       { reviewedFiles: [], totalSymbolsChanged: 0, highRiskSymbols: [], warnings: [] },
       targetContext,
-      freshness,
+      deriveEnvelopeFreshness(targetContext),
       warnings,
+      false,
     );
     return;
+  }
+
+  // ---- 3. Require source-manifest authority before consuming graph evidence -
+  targetContext = await resolveTargetContext({
+    repo: targetContext.repoKey ?? repoRoot,
+    targetRef,
+    verifyGraphAuthority: true,
+    requiredGraphCapabilities: ['symbols', 'impact', 'processes'],
+  });
+  const freshness = deriveEnvelopeFreshness(targetContext);
+  const graphAuthoritative = canUseAuthoritativeGraph(targetContext, repoRoot);
+  if (!graphAuthoritative) {
+    warnings.push('authoritative graph unavailable; showing file list only');
   }
 
   // ---- 4. Line count stats --------------------------------------------------
@@ -306,16 +369,33 @@ export async function reviewDiffCommand(opts: ReviewDiffOptions): Promise<void> 
   }
 
   // ---- 5. Graph-aware symbol review (needs an indexed repo) ----------------
-  const { storagePath, lbugPath } = getStoragePaths(repoRoot);
-  const meta = await loadMeta(storagePath);
-
   let reviewResult: DiffReviewResult;
+  let graphReviewUsed = false;
 
-  if (meta) {
-    const repoId = path.basename(repoRoot).toLowerCase();
+  if (graphAuthoritative) {
+    const { storagePath, lbugPath } = getStoragePaths(repoRoot);
+    const meta = await loadMeta(storagePath);
+    if (!meta) {
+      warnings.push(
+        'no OntoIndex index found; symbol analysis unavailable — run `ontoindex analyze` first',
+      );
+      reviewResult = fileListFallback(changedPaths, numstatMap, warnings);
+      emitOutput(
+        opts.json,
+        resolvedRange,
+        reviewResult,
+        targetContext,
+        freshness,
+        warnings,
+        graphReviewUsed,
+      );
+      return;
+    }
+    const repoId = targetContext.repoKey ?? path.basename(repoRoot).toLowerCase();
     try {
       await initLbug(repoId, lbugPath);
       const graphResult = await buildDiffReview(repoId, changedPaths, numstatMap);
+      graphReviewUsed = true;
       warnings.push(...graphResult.warnings);
       reviewResult = { ...graphResult, warnings };
     } catch (err) {
@@ -324,7 +404,6 @@ export async function reviewDiffCommand(opts: ReviewDiffOptions): Promise<void> 
       );
       reviewResult = fileListFallback(changedPaths, numstatMap, warnings);
     } finally {
-      const repoId = path.basename(repoRoot).toLowerCase();
       try {
         await closeLbug(repoId);
       } catch {
@@ -332,13 +411,18 @@ export async function reviewDiffCommand(opts: ReviewDiffOptions): Promise<void> 
       }
     }
   } else {
-    warnings.push(
-      'no OntoIndex index found; symbol analysis unavailable — run `ontoindex analyze` first',
-    );
     reviewResult = fileListFallback(changedPaths, numstatMap, warnings);
   }
 
-  emitOutput(opts.json, resolvedRange, reviewResult, targetContext, freshness, warnings);
+  emitOutput(
+    opts.json,
+    resolvedRange,
+    reviewResult,
+    targetContext,
+    freshness,
+    warnings,
+    graphReviewUsed,
+  );
 }
 
 function fileListFallback(

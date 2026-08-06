@@ -391,7 +391,7 @@
     {
       "name": "gn_ensure_fresh",
       "kind": "super",
-      "description": "Index lifecycle helper: reports whether the OntoIndex index is stale (indexed commit ≠ current HEAD), surfaces embeddings status, and optionally re-runs `ontoindex analyze` using the current CLI process when autoAnalyze: true is passed.\n\nThis is a READ-ONLY super-function by default (autoAnalyze defaults to false).",
+      "description": "Index lifecycle helper: reports whether the OntoIndex index is stale (indexed commit ≠ current HEAD), surfaces embeddings status, and optionally submits a durable `ontoindex analyze` job when autoAnalyze: true is passed.\n\nThis is a READ-ONLY super-function by default (autoAnalyze defaults to false).",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -406,13 +406,18 @@
           },
           "autoAnalyze": {
             "type": "boolean",
-            "description": "Automatically run ontoindex analyze when the index is stale. Default: false.",
+            "description": "Submit a durable ontoindex analyze job when refresh is required. Default: false.",
             "default": false
           },
           "killMcpForLock": {
             "type": "boolean",
             "description": "Advisory only: report lock-release guidance before analyzing. OntoIndex will not terminate MCP processes. Default: false.",
             "default": false
+          },
+          "legacyResponse": {
+            "type": "boolean",
+            "description": "Return the legacy pre-envelope response shape. Default: true. Set false to opt into the capability-aware response envelope.",
+            "default": true
           }
         },
         "required": []
@@ -428,6 +433,42 @@
       "permissionProfile": "read_only",
       "auditAuthority": false,
       "advisoryOnly": false
+    },
+    {
+      "name": "gn_analyze_job",
+      "kind": "super",
+      "description": "Observe or cancel a durable repository analysis job previously returned by gn_ensure_fresh(autoAnalyze=true).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "Repository name or path. Omit if only one repo is indexed."
+          },
+          "jobId": {
+            "type": "string",
+            "description": "Analysis job ID returned by gn_ensure_fresh."
+          },
+          "action": {
+            "type": "string",
+            "enum": ["status", "cancel"],
+            "description": "Job operation. Default: status.",
+            "default": "status"
+          }
+        },
+        "required": ["jobId"]
+      },
+      "contractStatus": "stable",
+      "structuredOutput": true,
+      "modes": ["general", "audit", "refactor", "query-projects"],
+      "category": "lifecycle",
+      "intent": "Observe or cancel a durable repository analysis job",
+      "whenToUse": "After gn_ensure_fresh starts or reuses an asynchronous analysis job",
+      "workflowIntents": ["lifecycle", "setup"],
+      "producesEvidenceClasses": ["graph_evidence"],
+      "permissionProfile": "runtime_admin",
+      "auditAuthority": false,
+      "advisoryOnly": true
     },
     {
       "name": "gn_quality_mode",

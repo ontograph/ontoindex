@@ -20,10 +20,18 @@ import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 // empty stub satisfies the type requirement without loading tree-sitter.
 // ---------------------------------------------------------------------------
 
-function makeNode(overrides: Partial<{ childCount: number; child: (i: number) => any }> = {}): any {
+function makeNode(
+  overrides: Partial<{
+    childCount: number;
+    child: (i: number) => any;
+    childForFieldName: (name: string) => any;
+  }> = {},
+): any {
   return {
+    text: '',
     childCount: overrides.childCount ?? 0,
     child: overrides.child ?? (() => null),
+    childForFieldName: overrides.childForFieldName ?? (() => null),
   };
 }
 
@@ -147,6 +155,19 @@ describe('preprocessImportPath', () => {
       expect(
         preprocessImportPath('"App\\\\Models\\\\User"', node, getProvider(SupportedLanguages.PHP)),
       ).toBe('App\\\\Models\\\\User');
+    });
+
+    it('marks PHP function imports for namespace-scoped resolution', () => {
+      const node = makeNode({
+        childForFieldName: (name) => (name === 'type' ? { text: 'function' } : null),
+      });
+      expect(
+        preprocessImportPath(
+          '"App\\\\Utils\\\\formatName"',
+          node,
+          getProvider(SupportedLanguages.PHP),
+        ),
+      ).toBe('ontoindex-php-symbol:App\\\\Utils\\\\formatName');
     });
   });
 });
