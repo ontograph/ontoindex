@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -63,17 +64,13 @@ setTimeout(() => {}, 30000);
 
   it('refuses to reuse an active job for a different target snapshot', async () => {
     const repoPath = await makeRepo();
-    await runGit(repoPath, ['init']);
-    const runnerPath = path.join(repoPath, 'runner.mjs');
-    await fs.writeFile(runnerPath, 'setTimeout(() => {}, 30000);');
-    process.env.ONTOINDEX_ANALYSIS_JOB_RUNNER_PATH = runnerPath;
-    const first = await submitAnalysisJob({
-      repoPath,
-      targetHead: 'head-a',
-      command: process.execPath,
-      args: [],
-      options: {},
-    });
+    await writeJobFixture(
+      makeJob(repoPath, {
+        status: 'queued',
+        runnerPid: undefined,
+        optionsDigest: requestDigest(process.execPath, [], {}),
+      }),
+    );
 
     await expect(
       submitAnalysisJob({
@@ -84,25 +81,18 @@ setTimeout(() => {}, 30000);
         options: {},
       }),
     ).rejects.toThrow('different analysis request');
-    const processRecord = await waitFor(
-      async () => (await getAnalysisJob(repoPath, first.job.id))?.runnerPid,
-    );
-    if (processRecord) await terminateProcess(processRecord);
   });
 
   it('refuses to reuse an active job for a different command', async () => {
     const repoPath = await makeRepo();
-    await runGit(repoPath, ['init']);
-    const runnerPath = path.join(repoPath, 'runner.mjs');
-    await fs.writeFile(runnerPath, 'setTimeout(() => {}, 30000);');
-    process.env.ONTOINDEX_ANALYSIS_JOB_RUNNER_PATH = runnerPath;
-    const first = await submitAnalysisJob({
-      repoPath,
-      targetHead: 'head-a',
-      command: process.execPath,
-      args: ['first'],
-      options: {},
-    });
+    await writeJobFixture(
+      makeJob(repoPath, {
+        status: 'queued',
+        runnerPid: undefined,
+        targetHead: 'head-a',
+        optionsDigest: requestDigest(process.execPath, ['first'], {}),
+      }),
+    );
 
     await expect(
       submitAnalysisJob({
@@ -113,10 +103,6 @@ setTimeout(() => {}, 30000);
         options: {},
       }),
     ).rejects.toThrow('different analysis request');
-    const processRecord = await waitFor(
-      async () => (await getAnalysisJob(repoPath, first.job.id))?.runnerPid,
-    );
-    if (processRecord) await terminateProcess(processRecord);
   });
 
   it('removes expired terminal job records and logs', async () => {
@@ -402,6 +388,10 @@ async function terminateProcess(pid: number): Promise<void> {
   if (!(await waitFor(async () => (isAlive(pid) ? undefined : true), 100, 50))) {
     throw new Error(`Process ${pid} did not exit during test cleanup`);
   }
+}
+
+function requestDigest(command: string, args: string[], options: Record<string, unknown>): string {
+  return createHash('sha256').update(JSON.stringify({ args, command, options })).digest('hex');
 }
 
 function makeJob(repoPath: string, overrides: Partial<AnalysisJobRecord>): AnalysisJobRecord {
