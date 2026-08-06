@@ -14,7 +14,11 @@ const tempDirs: string[] = [];
 
 afterEach(async () => {
   delete process.env.ONTOINDEX_ANALYSIS_JOB_RUNNER_PATH;
-  await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+  await Promise.all(
+    tempDirs
+      .splice(0)
+      .map((dir) => fs.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })),
+  );
 });
 
 describe('analysis coordinator', () => {

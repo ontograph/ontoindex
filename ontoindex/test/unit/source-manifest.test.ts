@@ -59,7 +59,11 @@ describe('source manifest', () => {
 
     await fs.chmod(sourcePath, 0o755);
     const executableChanged = await computeSourceManifest(repo);
-    expect(executableChanged.sourceDigest).not.toBe(contentChanged.sourceDigest);
+    if (process.platform === 'win32') {
+      expect(executableChanged.sourceDigest).toBe(contentChanged.sourceDigest);
+    } else {
+      expect(executableChanged.sourceDigest).not.toBe(contentChanged.sourceDigest);
+    }
 
     await fs.writeFile(path.join(repo, 'src', 'new.ts'), 'export const added = true;\n');
     const untrackedAdded = await computeSourceManifest(repo);

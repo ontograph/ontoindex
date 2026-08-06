@@ -74,7 +74,7 @@ describe('reviewDiffCommand repository binding', () => {
         targetContext: { repoPath?: string };
         results: { reviewedFiles: Array<{ path: string }> };
       };
-      expect(output.targetContext.repoPath).toBe(path.resolve(targetRepo.dbPath));
+      expect(output.targetContext.repoPath).toBe(await fs.realpath(targetRepo.dbPath));
       expect(output.results.reviewedFiles.map((file) => file.path)).toEqual(['src/target.ts']);
     } finally {
       logSpy.mockRestore();

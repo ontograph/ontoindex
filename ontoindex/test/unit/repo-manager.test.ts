@@ -4,7 +4,7 @@
  * Tests: getStoragePath, getStoragePaths, readRegistry, registerRepo, unregisterRepo
  * Covers hardening fixes #29 (API key file permissions) and #30 (case-insensitive paths on Windows)
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'path';
 import os from 'os';
 import fs from 'fs/promises';
@@ -78,7 +78,24 @@ describe('index generations', () => {
       await fs.writeFile(second.lbugPath, 'second');
       await fs.writeFile(second.metaPath, '{}');
       await fs.writeFile(second.snapshotPath, '{}');
-      await activateIndexGeneration(storagePath, second);
+      const rename = fs.rename.bind(fs);
+      let replacementBlocked = false;
+      const renameSpy = vi.spyOn(fs, 'rename').mockImplementation(async (oldPath, newPath) => {
+        if (
+          !replacementBlocked &&
+          path.resolve(String(newPath)) === path.join(storagePath, 'current') &&
+          String(oldPath).endsWith('.tmp')
+        ) {
+          replacementBlocked = true;
+          throw Object.assign(new Error('replace blocked'), { code: 'EPERM' });
+        }
+        return rename(oldPath, newPath);
+      });
+      try {
+        await activateIndexGeneration(storagePath, second);
+      } finally {
+        renameSpy.mockRestore();
+      }
 
       expect(await fs.readFile(path.join(storagePath, 'lbug'), 'utf8')).toBe('second');
       expect(await fs.readFile(activeFirst.lbugPath, 'utf8')).toBe('first');
@@ -129,8 +146,8 @@ describe('index generations', () => {
 
       const repo = await loadRepo(repoPath);
 
-      expect(repo?.lbugPath).toBe(active.lbugPath);
-      expect(repo?.metaPath).toBe(active.metaPath);
+      expect(await fs.realpath(repo!.lbugPath)).toBe(await fs.realpath(active.lbugPath));
+      expect(await fs.realpath(repo!.metaPath)).toBe(await fs.realpath(active.metaPath));
       expect(repo?.meta.generationId).toBe(active.generationId);
     } finally {
       await temp.cleanup();

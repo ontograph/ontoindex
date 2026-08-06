@@ -231,8 +231,26 @@ async function replaceWithSymlink(target: string, linkPath: string): Promise<voi
   try {
     await fs.rename(tmpPath, linkPath);
   } catch (err) {
-    await fs.rm(tmpPath, { force: true });
-    throw err;
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'EPERM') {
+      await fs.rm(tmpPath, { force: true });
+      throw err;
+    }
+
+    const backupPath = `${linkPath}.${process.pid}.${Date.now()}.bak`;
+    try {
+      await fs.rename(linkPath, backupPath);
+      try {
+        await fs.rename(tmpPath, linkPath);
+      } catch (replaceError) {
+        await fs.rename(backupPath, linkPath);
+        throw replaceError;
+      }
+      await fs.rm(backupPath, { force: true });
+    } catch (fallbackError) {
+      await fs.rm(tmpPath, { force: true });
+      throw fallbackError;
+    }
   }
 }
 
@@ -298,14 +316,7 @@ export const activateIndexGeneration = async (
     .then(() => true)
     .catch(() => false);
   if (!hadCurrentGeneration) await ensureGenerationAliases(storagePath);
-  const currentTmpPath = `${currentPath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.symlink(path.join(GENERATIONS_DIR, generation.generationId), currentTmpPath);
-  try {
-    await fs.rename(currentTmpPath, currentPath);
-  } catch (err) {
-    await fs.rm(currentTmpPath, { force: true });
-    throw err;
-  }
+  await replaceWithSymlink(path.join(GENERATIONS_DIR, generation.generationId), currentPath);
   return generationPaths(storagePath, generation.generationId, finalPath);
 };
 
