@@ -803,9 +803,7 @@ function auditChainFailure(
   };
 }
 
-function isAuditChainError(
-  error: unknown,
-): error is Error & {
+function isAuditChainError(error: unknown): error is Error & {
   code: 'ERR_AUDIT_CHAIN_BROKEN';
   firstBrokenSequence?: number;
   reason: string;
