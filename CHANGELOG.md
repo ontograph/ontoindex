@@ -4,6 +4,22 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Added tamper-evident integrity envelopes to the persisted audit event store: each event carries a monotonic `sequence`, a `previousChecksum` link, and a SHA-256 `checksum` over versioned canonical JSON, so interior mutation, insertion, and reordering are detected at the first affected sequence.
+- Added `ontoindex audit integrity` for read-only operator verification, plus an archive-and-reset path gated behind both `--reset-broken` and `--acknowledge-data-loss` that preserves the original store bytes.
+
+### Changed
+
+- Trust-sensitive audit dispatch now fails closed unless the retained event chain verifies completely. Broken and unverified-legacy chains are refused at both the direct and manager dispatch entry points; read-only diff, replay, and export remain available with an explicit integrity status.
+- Schema-v1 audit event stores are now read-only. They report `LEGACY_UNVERIFIED` and refuse appends and direct saves rather than being migrated in place, because rewriting unverified events would sign history the chain never covered. The corrective path is an acknowledged archive-and-reset followed by re-ingest.
+
+### Fixed
+
+- Fixed a trust bypass where changing only `schemaVersion` to `1` suppressed verification of a tampered schema-v2 store and allowed it to dispatch. Verification authority now comes from the surviving integrity envelopes, not the caller-controlled version field.
+- Fixed a laundering path where stripping every integrity envelope and declaring schema v1 let one ordinary append re-sign tampered history into a dispatchable state.
+- Fixed acknowledged archive-and-reset refusing `LEGACY_UNVERIFIED` stores, which left operators with no safe recovery route.
+
 ## [2.1.5] - 2026-08-06
 
 ### Added

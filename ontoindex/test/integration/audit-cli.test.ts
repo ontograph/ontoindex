@@ -1,10 +1,22 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { auditIngestCommand, auditLintCommand, auditVerifyCommand } from '../../src/cli/audit.js';
+import {
+  auditIngestCommand,
+  auditIntegrityCommand,
+  auditLintCommand,
+  auditVerifyCommand,
+} from '../../src/cli/audit.js';
 import { formatAuditVerifySarif } from '../../src/cli/ci-export.js';
 import { LocalAuditEventStore } from '../../src/core/audit-lifecycle/index.js';
 import { expectSchemaMatch, loadJsonFixture } from '../helpers/json-schema.js';
@@ -132,6 +144,234 @@ describe('audit lifecycle CLI', () => {
     );
     expect(xml).toContain('src/app.ts (run) [claim]');
     expect(process.exitCode).toBe(1);
+  });
+
+  it('reports an absent audit store as valid without creating files', async () => {
+    const repo = initRepo();
+
+    await auditIntegrityCommand({ repo, json: true });
+
+    expect(JSON.parse(String(mockLog.mock.calls.at(-1)?.[0]))).toEqual({
+      status: 'VALID',
+      exists: false,
+    });
+    expect(existsSync(path.join(repo, '.ontoindex'))).toBe(false);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('requires both reset acknowledgements and never mutates on a partial reset request', async () => {
+    const repo = initRepo();
+    const store = new LocalAuditEventStore(repo);
+    await store.createSession({
+      id: 'session-reset-guard',
+      targetRepo: 'fixture',
+      targetHead: '0'.repeat(40),
+      sourceHash: 'sha256:report',
+      graphIndexId: 'idx:test',
+      verifierVersion: '0.1.0',
+      sidecarStateHash: 'sidecar:ok',
+      sourcePath: 'audit.md',
+    });
+    const before = readFileSync(store.eventStorePath);
+
+    await auditIntegrityCommand({ repo, json: true, resetBroken: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(readFileSync(store.eventStorePath)).toEqual(before);
+    expect(readdirSync(path.join(repo, '.ontoindex', 'audit'))).not.toContain('recovery');
+  });
+
+  it('reports VALID for an existing healthy schema-v2 store', async () => {
+    const repo = initRepo();
+    const store = new LocalAuditEventStore(repo);
+    await store.createSession({
+      id: 'session-valid',
+      targetRepo: 'fixture',
+      targetHead: '0'.repeat(40),
+      sourceHash: 'sha256:report',
+      graphIndexId: 'idx:test',
+      verifierVersion: '0.1.0',
+      sidecarStateHash: 'sidecar:ok',
+      sourcePath: 'audit.md',
+    });
+
+    await auditIntegrityCommand({ repo, json: true });
+
+    expect(JSON.parse(String(mockLog.mock.calls.at(-1)?.[0]))).toMatchObject({
+      status: 'VALID',
+      exists: true,
+    });
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('reports LEGACY_UNVERIFIED for a schema-v1 store through the CLI', async () => {
+    const repo = initRepo();
+    const store = new LocalAuditEventStore(repo);
+    mkdirSync(path.dirname(store.eventStorePath), { recursive: true });
+    writeFileSync(
+      store.eventStorePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        events: [
+          {
+            id: 'legacy-1',
+            type: 'AuditIngested',
+            occurredAt: '2026-05-17T00:00:00.000Z',
+            sessionId: 'session-legacy',
+            session: {
+              id: 'session-legacy',
+              targetRepo: 'fixture',
+              targetHead: '0'.repeat(40),
+              sourceHash: 'sha256:report',
+              graphIndexId: 'idx:test',
+              verifierVersion: '0.1.0',
+              sidecarStateHash: 'sidecar:ok',
+              createdAt: '2026-05-17T00:00:00.000Z',
+              metadata: {},
+            },
+          },
+        ],
+      }),
+    );
+
+    await auditIntegrityCommand({ repo, json: true });
+
+    expect(JSON.parse(String(mockLog.mock.calls.at(-1)?.[0]))).toMatchObject({
+      status: 'LEGACY_UNVERIFIED',
+      exists: true,
+    });
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('archives an unverified legacy store through an acknowledged reset', async () => {
+    const repo = initRepo();
+    const store = new LocalAuditEventStore(repo);
+    mkdirSync(path.dirname(store.eventStorePath), { recursive: true });
+    writeFileSync(
+      store.eventStorePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        events: [
+          {
+            id: 'legacy-1',
+            type: 'AuditIngested',
+            occurredAt: '2026-05-17T00:00:00.000Z',
+            sessionId: 'session-legacy',
+            session: {
+              id: 'session-legacy',
+              targetRepo: 'fixture',
+              targetHead: '0'.repeat(40),
+              sourceHash: 'sha256:report',
+              graphIndexId: 'idx:test',
+              verifierVersion: '0.1.0',
+              sidecarStateHash: 'sidecar:ok',
+              createdAt: '2026-05-17T00:00:00.000Z',
+              metadata: {},
+            },
+          },
+        ],
+      }),
+    );
+    const original = readFileSync(store.eventStorePath);
+
+    await auditIntegrityCommand({
+      repo,
+      json: true,
+      resetBroken: true,
+      acknowledgeDataLoss: true,
+    });
+
+    const report = JSON.parse(String(mockLog.mock.calls.at(-1)?.[0]));
+    expect(report).toMatchObject({ status: 'LEGACY_UNVERIFIED', exists: true });
+    expect(readFileSync(String(report.archivePath))).toEqual(original);
+    expect((await store.load()).events).toEqual([]);
+  });
+
+  it('reports broken stores and resets them only after archiving exact bytes', async () => {
+    const repo = initRepo();
+    const store = new LocalAuditEventStore(repo);
+    await store.createSession({
+      id: 'session-broken',
+      targetRepo: 'fixture',
+      targetHead: '0'.repeat(40),
+      sourceHash: 'sha256:report',
+      graphIndexId: 'idx:test',
+      verifierVersion: '0.1.0',
+      sidecarStateHash: 'sidecar:ok',
+      sourcePath: 'audit.md',
+    });
+    const broken = JSON.parse(readFileSync(store.eventStorePath, 'utf8')) as {
+      events: Array<{ checksum: string }>;
+    };
+    broken.events[0].checksum = 'broken';
+    writeFileSync(store.eventStorePath, JSON.stringify(broken));
+    const originalBytes = readFileSync(store.eventStorePath);
+
+    await auditIntegrityCommand({ repo, json: true });
+    const inspection = JSON.parse(String(mockLog.mock.calls.at(-1)?.[0]));
+    expect(process.exitCode).toBe(1);
+    expect(inspection).toMatchObject({
+      status: 'BROKEN',
+      exists: true,
+      firstBrokenSequence: 0,
+      reason: 'checksum-mismatch',
+    });
+
+    process.exitCode = undefined;
+    await auditIntegrityCommand({
+      repo,
+      json: true,
+      resetBroken: true,
+      acknowledgeDataLoss: true,
+    });
+    const recovery = JSON.parse(String(mockLog.mock.calls.at(-1)?.[0]));
+    expect(process.exitCode).toBeUndefined();
+    expect(recovery).toMatchObject({
+      status: 'BROKEN',
+      archiveSha256: expect.any(String),
+      archiveBytes: originalBytes.length,
+      message: expect.stringContaining('re-ingest'),
+    });
+    expect(readFileSync(recovery.archivePath)).toEqual(originalBytes);
+    expect(JSON.parse(readFileSync(store.eventStorePath, 'utf8'))).toMatchObject({
+      schemaVersion: 2,
+      events: [],
+      integrity: { status: 'VALID' },
+    });
+    expect(JSON.parse(readFileSync(store.projectionPath, 'utf8'))).toMatchObject({
+      schemaVersion: 1,
+      sessions: [],
+      findings: [],
+      bundles: [],
+      lintRuns: [],
+      scopeGuardEvaluations: [],
+    });
+  });
+
+  it('classifies malformed JSON and can reset it with exact-byte archival', async () => {
+    const repo = initRepo();
+    const store = new LocalAuditEventStore(repo);
+    mkdirSync(path.dirname(store.eventStorePath), { recursive: true });
+    const malformedBytes = Buffer.from('{"schemaVersion":', 'utf8');
+    writeFileSync(store.eventStorePath, malformedBytes);
+
+    await auditIntegrityCommand({ repo, json: true });
+    expect(process.exitCode).toBe(1);
+    expect(JSON.parse(String(mockLog.mock.calls.at(-1)?.[0]))).toMatchObject({
+      status: 'MALFORMED',
+      exists: true,
+    });
+
+    process.exitCode = undefined;
+    await auditIntegrityCommand({
+      repo,
+      json: true,
+      resetBroken: true,
+      acknowledgeDataLoss: true,
+    });
+    const recovery = JSON.parse(String(mockLog.mock.calls.at(-1)?.[0]));
+    expect(process.exitCode).toBeUndefined();
+    expect(readFileSync(recovery.archivePath)).toEqual(malformedBytes);
   });
 });
 

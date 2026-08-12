@@ -17,7 +17,14 @@ import {
   type StaleAuditSessionLockResult,
 } from '../../core/audit-lifecycle/index.js';
 import { execFileText } from '../../core/process/exec-file.js';
-import { gnAuditDedupe, gnDispatchPrompt, gnScopeGuard } from './audit-advanced.js';
+import {
+  auditChainError,
+  gnAuditDedupe,
+  gnDispatchPrompt,
+  gnScopeGuard,
+  integrityWarnings,
+  isDispatchableIntegrity,
+} from './audit-advanced.js';
 import { runAuditBundle } from './audit-bundle.js';
 import { resolveAuditRepoHandle, runAuditIngest } from './audit-ingest.js';
 import { runAuditVerify } from './audit-verify.js';
@@ -202,9 +209,10 @@ export async function gnAuditDiff(
   params: AuditDiffParams,
 ): Promise<Record<string, unknown>> {
   const repo = await resolveAuditRepoHandle(repoId, params.repo);
-  const projection = buildAuditProjection(
-    (await new LocalAuditEventStore(repo.repoPath).load()).events,
-  );
+  const loaded = await loadStateReport(repo.repoPath);
+  if (loaded.ok === false) return loaded.report;
+  const { state } = loaded;
+  const projection = buildAuditProjection(state.events);
   const sessionA = requireProjectedSession(projection.sessions, params.sessionA);
   const sessionB = requireProjectedSession(projection.sessions, params.sessionB);
   const diff = buildAuditSessionDiff(
@@ -232,7 +240,8 @@ export async function gnAuditDiff(
         diff.statusChanged.length > maxEntries ||
         diff.unchanged.length > maxEntries,
     },
-    warnings: [],
+    integrity: state.integrity,
+    warnings: integrityWarnings(state.integrity),
     skipReasons: [],
   };
 }
@@ -243,9 +252,10 @@ export async function gnAuditReplay(
 ): Promise<Record<string, unknown>> {
   const repo = await resolveAuditRepoHandle(repoId, params.repo);
   const sessionId = requiredSession(params);
-  const projection = buildAuditProjection(
-    (await new LocalAuditEventStore(repo.repoPath).load()).events,
-  );
+  const loaded = await loadStateReport(repo.repoPath);
+  if (loaded.ok === false) return loaded.report;
+  const { state } = loaded;
+  const projection = buildAuditProjection(state.events);
   const session = requireProjectedSession(projection.sessions, sessionId);
   const targetHead = params.targetHead ?? (await currentGitHead(repo.repoPath));
   const plan = buildAuditReplayPlan(
@@ -266,7 +276,8 @@ export async function gnAuditReplay(
       total: plan.findings.length,
       truncated: plan.findings.length > maxFindings,
     },
-    warnings: [],
+    integrity: state.integrity,
+    warnings: integrityWarnings(state.integrity),
     skipReasons: [],
   };
 }
@@ -277,9 +288,10 @@ export async function gnAuditExport(
 ): Promise<Record<string, unknown>> {
   const repo = await resolveAuditRepoHandle(repoId, params.repo);
   const sessionId = requiredSession(params);
-  const projection = buildAuditProjection(
-    (await new LocalAuditEventStore(repo.repoPath).load()).events,
-  );
+  const loaded = await loadStateReport(repo.repoPath);
+  if (loaded.ok === false) return loaded.report;
+  const { state } = loaded;
+  const projection = buildAuditProjection(state.events);
   const session = requireProjectedSession(projection.sessions, sessionId);
   const maxFindings = clamp(params.maxFindings, 500);
   const findings = projection.findings
@@ -287,6 +299,7 @@ export async function gnAuditExport(
     .slice(0, maxFindings);
   const json = {
     session,
+    integrity: state.integrity,
     findings,
     bundles: projection.bundles.filter((bundle) => bundle.sessionId === sessionId),
     lintRuns: projection.lintRuns.filter((run) => run.sessionId === sessionId),
@@ -312,7 +325,8 @@ export async function gnAuditExport(
         findings.length <
         projection.findings.filter((finding) => finding.sessionId === sessionId).length,
     },
-    warnings: [],
+    integrity: state.integrity,
+    warnings: integrityWarnings(state.integrity),
     skipReasons: [],
   };
 }
@@ -477,12 +491,44 @@ export async function gnAuditSessionDispatch(
 ): Promise<Record<string, unknown>> {
   const repo = await resolveAuditRepoHandle(repoId, params.repo);
   const sessionId = requiredSession(params);
-  const lockValidation = await validateManagerSession(repo.repoPath, sessionId);
+  let lockValidation: Awaited<ReturnType<typeof validateManagerSession>>;
+  try {
+    lockValidation = await validateManagerSession(repo.repoPath, sessionId);
+  } catch (error) {
+    if (isAuditChainError(error)) {
+      return auditChainFailureReport('audit-session-dispatch', sessionId, error);
+    }
+    throw error;
+  }
   if (lockValidation.ok === false) {
     return managerRefusal('audit-session-dispatch', sessionId, lockValidation);
   }
 
-  const managerState = await loadManagerState(repo.repoPath, sessionId);
+  let managerState: Awaited<ReturnType<typeof loadManagerState>>;
+  try {
+    managerState = await loadManagerState(repo.repoPath, sessionId);
+  } catch (error) {
+    if (isAuditChainError(error)) {
+      return auditChainFailureReport('audit-session-dispatch', sessionId, error);
+    }
+    throw error;
+  }
+  const chainFailure = auditChainFailure(managerState.state.integrity);
+  if (chainFailure !== undefined) {
+    return {
+      version: 1,
+      action: 'audit-session-dispatch',
+      ok: false,
+      code: 'ERR_AUDIT_CHAIN_BROKEN',
+      firstBrokenSequence: chainFailure.firstBrokenSequence,
+      reason: chainFailure.reason,
+      sessionId,
+      integrity: managerState.state.integrity,
+      warnings: [],
+      skipReasons: ['audit-chain-broken'],
+    };
+  }
+  const integrity = managerState.state.integrity;
   const bundle = selectPersistedBundle(managerState.projection.bundles, sessionId, params.bundleId);
   if (bundle === undefined) {
     return managerError(
@@ -509,7 +555,8 @@ export async function gnAuditSessionDispatch(
       bundleId: bundle.id,
       blockedFindings,
       duplicateOnlyChildren,
-      warnings: [],
+      integrity,
+      warnings: integrityWarnings(integrity),
       skipReasons: duplicateOnlyChildren
         ? ['duplicate-only-children']
         : blockedFindings.map((finding) => finding.reason),
@@ -531,7 +578,8 @@ export async function gnAuditSessionDispatch(
     bundleId: bundle.id,
     lockValidation,
     dispatch,
-    warnings: collectWarnings(dispatch),
+    integrity,
+    warnings: [...integrityWarnings(integrity), ...collectWarnings(dispatch)],
     skipReasons: [],
   };
 }
@@ -704,10 +752,84 @@ async function validateManagerSession(
 }
 
 async function loadManagerState(repoPath: string, sessionId: string) {
-  const state = await new LocalAuditEventStore(repoPath).load();
+  let state: Awaited<ReturnType<LocalAuditEventStore['load']>>;
+  try {
+    state = await new LocalAuditEventStore(repoPath).load();
+  } catch (error) {
+    throw auditChainError('audit event store load/parse failed', error);
+  }
   const projection = buildAuditProjection(state.events);
   requireProjectedSession(projection.sessions, sessionId);
   return { state, projection };
+}
+
+async function loadStateReport(
+  repoPath: string,
+): Promise<
+  | { ok: true; state: Awaited<ReturnType<LocalAuditEventStore['load']>> }
+  | { ok: false; report: Record<string, unknown> }
+> {
+  try {
+    return { ok: true, state: await new LocalAuditEventStore(repoPath).load() };
+  } catch (error) {
+    const failure = auditChainError('audit event store load/parse failed', error);
+    return {
+      ok: false,
+      report: {
+        version: 1,
+        ok: false,
+        code: failure.code,
+        reason: failure.reason,
+        integrity: { status: 'BROKEN', reason: failure.reason },
+        warnings: [],
+        skipReasons: ['audit-chain-broken'],
+      },
+    };
+  }
+}
+
+function auditChainFailure(
+  integrity: Awaited<ReturnType<LocalAuditEventStore['load']>>['integrity'],
+): { firstBrokenSequence?: number; reason: string } | undefined {
+  if (integrity === undefined) return { reason: 'missing-integrity-envelope' };
+  if (isDispatchableIntegrity(integrity)) return undefined;
+  return {
+    firstBrokenSequence: integrity.firstBrokenSequence,
+    reason:
+      integrity.reason ??
+      (integrity.status === 'LEGACY_UNVERIFIED'
+        ? 'legacy-unverified-chain'
+        : 'unknown-integrity-failure'),
+  };
+}
+
+function isAuditChainError(
+  error: unknown,
+): error is Error & {
+  code: 'ERR_AUDIT_CHAIN_BROKEN';
+  firstBrokenSequence?: number;
+  reason: string;
+} {
+  return error instanceof Error && 'code' in error && error.code === 'ERR_AUDIT_CHAIN_BROKEN';
+}
+
+function auditChainFailureReport(
+  action: string,
+  sessionId: string,
+  error: Error & { code: 'ERR_AUDIT_CHAIN_BROKEN'; firstBrokenSequence?: number; reason: string },
+): Record<string, unknown> {
+  return {
+    version: 1,
+    action,
+    ok: false,
+    code: error.code,
+    firstBrokenSequence: error.firstBrokenSequence,
+    reason: error.reason,
+    sessionId,
+    integrity: { status: 'BROKEN', reason: error.reason },
+    warnings: [],
+    skipReasons: ['audit-chain-broken'],
+  };
 }
 
 interface RepeatedFindingTombstoneMatch {
@@ -1010,6 +1132,7 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
 
 function renderAuditExportMarkdown(input: {
   session: { id: string; targetRepo: string; targetHead: string };
+  integrity?: { status: string; firstBrokenSequence?: number; reason?: string };
   findings: Array<{ id: string; status: string; title: string }>;
   bundles: Array<{ id: string; findingIds: string[] }>;
 }): string {
@@ -1024,6 +1147,13 @@ function renderAuditExportMarkdown(input: {
     `- Repo: ${input.session.targetRepo}`,
     `- Target HEAD: ${input.session.targetHead}`,
     `- Session: ${input.session.id}`,
+    '',
+    'Integrity:',
+    `- Status: ${input.integrity?.status ?? 'UNKNOWN'}`,
+    ...(input.integrity?.firstBrokenSequence !== undefined
+      ? [`- First broken sequence: ${input.integrity.firstBrokenSequence}`]
+      : []),
+    ...(input.integrity?.reason !== undefined ? [`- Reason: ${input.integrity.reason}`] : []),
     '',
     'Findings:',
     ...Array.from(counts.entries())

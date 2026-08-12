@@ -261,6 +261,7 @@ OpenCode example:
 | Check blast radius     | `ontoindex impact validateUser --include-tests --depth 2` | `ontoindex impact validateUser --include-tests --depth 2` |
 | Review current diff    | `ontoindex review diff`                                   | `ontoindex review diff`                                   |
 | Audit before commit    | `ontoindex detect-changes`                                | `ontoindex detect-changes`                                |
+| Verify audit chain     | `ontoindex audit integrity --json`                        | `ontoindex audit integrity --json`                        |
 | Rebuild from scratch   | `ontoindex analyze --force`                               | `ontoindex analyze --force`                               |
 
 Core MCP surfaces include:

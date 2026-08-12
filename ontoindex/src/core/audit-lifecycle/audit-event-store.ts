@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 import { buildAuditProjection } from './audit-projection.js';
@@ -20,7 +21,10 @@ import {
   type AuditSessionInput,
 } from './audit-session.js';
 
-export const AUDIT_EVENT_STORE_SCHEMA_VERSION = 1;
+export const AUDIT_EVENT_STORE_SCHEMA_VERSION = 2;
+export const AUDIT_EVENT_STORE_LEGACY_SCHEMA_VERSION = 1;
+export const AUDIT_EVENT_INTEGRITY_VERSION = 2;
+export const AUDIT_EVENT_STORE_GENESIS_PREVIOUS_CHECKSUM = 'GENESIS';
 export const AUDIT_EVENT_STORE_RELATIVE_PATH = path.join(
   '.ontoindex',
   'audit',
@@ -108,8 +112,39 @@ export type AuditEvent =
   | AuditLintedEvent;
 
 export interface AuditEventStoreState {
-  schemaVersion: typeof AUDIT_EVENT_STORE_SCHEMA_VERSION;
+  schemaVersion: 1 | typeof AUDIT_EVENT_STORE_SCHEMA_VERSION;
   events: AuditEvent[];
+  integrity?: AuditEventStoreIntegrity;
+  legacyPrefixLength?: number;
+  migratedAt?: string;
+}
+
+export type AuditEventStoreIntegrityStatus =
+  | 'VALID'
+  | 'BROKEN'
+  | 'LEGACY_UNVERIFIED'
+  | 'VALID_WITH_LEGACY_PREFIX';
+
+export interface AuditEventStoreIntegrity {
+  status: AuditEventStoreIntegrityStatus;
+  firstBrokenSequence?: number;
+  reason?: string;
+}
+
+export interface AuditEventStoreRawInspection {
+  exists: boolean;
+  bytes: Buffer | null;
+  sha256: string | null;
+  parsed: unknown;
+  parseError: string | null;
+}
+
+export interface AuditEventStoreRecoveryResult {
+  archivePath: string;
+  archiveSha256: string;
+  archiveBytes: number;
+  statePath: string;
+  projectionPath: string;
 }
 
 export interface AuditEventInput {
@@ -145,10 +180,13 @@ export class LocalAuditEventStore {
   async appendEvent(event: AuditEvent, options: AuditStoreUpdateOptions = {}): Promise<AuditEvent> {
     return withAuditStoreUpdateLock(this.eventStorePath, options, async () => {
       const state = await this.load();
+      assertWritableChain(state);
       assertUniqueEventId(state.events, event.id);
       const nextEvent = normalizeAuditEvent(event);
-      state.events.push(nextEvent);
-      await saveAuditEventStoreState(this.eventStorePath, state);
+      await saveAuditEventStoreState(this.eventStorePath, {
+        ...state,
+        events: [...state.events, nextEvent],
+      });
       await rebuildAuditProjectionFile(this.eventStorePath, this.projectionPath);
       return nextEvent;
     });
@@ -223,7 +261,33 @@ export async function saveAuditEventStoreState(
   stateFilePath: string,
   state: AuditEventStoreState,
 ): Promise<void> {
-  await atomicWriteJson(stateFilePath, normalizeAuditEventStoreState(state));
+  const current = await inspectAuditEventStoreRaw(stateFilePath);
+  if (current.exists && current.parsed === null) {
+    throw new Error('cannot save over malformed audit event store');
+  }
+  if (current.parsed !== null) {
+    const currentState = normalizeAuditEventStoreState(current.parsed, false);
+    if (currentState.integrity?.status === 'BROKEN') {
+      throw new Error(
+        `cannot save audit event store with broken on-disk chain at sequence ${currentState.integrity.firstBrokenSequence ?? 'unknown'}`,
+      );
+    }
+    assertWritableChain(currentState);
+  }
+  assertWritableChain(state);
+  const normalized = normalizeAuditEventStoreState(state, true);
+  await atomicWriteJson(stateFilePath, serializeAuditEventStoreState(normalized));
+}
+
+// Unverifiable history is read-only. Migrating it in place would re-sign events
+// the chain never covered, so a legacy store must be archived and re-ingested
+// rather than blessed by an ordinary append.
+function assertWritableChain(state: AuditEventStoreState): void {
+  if (state.integrity?.status === 'LEGACY_UNVERIFIED') {
+    throw new Error(
+      'cannot write to an unverified legacy audit event store; archive it with `ontoindex audit integrity --reset-broken --acknowledge-data-loss` and re-ingest',
+    );
+  }
 }
 
 export async function rebuildAuditProjectionFile(
@@ -239,7 +303,86 @@ export function createEmptyAuditEventStoreState(): AuditEventStoreState {
   return {
     schemaVersion: AUDIT_EVENT_STORE_SCHEMA_VERSION,
     events: [],
+    integrity: { status: 'VALID' },
   };
+}
+
+export async function inspectAuditEventStoreRaw(
+  stateFilePath: string,
+): Promise<AuditEventStoreRawInspection> {
+  let bytes: Buffer;
+  try {
+    bytes = await fs.readFile(stateFilePath);
+  } catch (error) {
+    if (isNodeError(error) && error.code === 'ENOENT') {
+      return { exists: false, bytes: null, sha256: null, parsed: null, parseError: null };
+    }
+    throw error;
+  }
+  const sha256 = digest(bytes);
+  try {
+    return {
+      exists: true,
+      bytes,
+      sha256,
+      parsed: JSON.parse(bytes.toString('utf8')),
+      parseError: null,
+    };
+  } catch (error) {
+    return {
+      exists: true,
+      bytes,
+      sha256,
+      parsed: null,
+      parseError: (error as Error).message,
+    };
+  }
+}
+
+export async function recoverAuditEventStore(
+  stateFilePath: string,
+  projectionPath: string,
+  options: AuditStoreUpdateOptions = {},
+): Promise<AuditEventStoreRecoveryResult> {
+  return withAuditStoreUpdateLock(stateFilePath, options, async () => {
+    const raw = await inspectAuditEventStoreRaw(stateFilePath);
+    if (!raw.exists || raw.bytes === null || raw.sha256 === null) {
+      throw new Error('cannot recover missing audit event store');
+    }
+    if (raw.parsed !== null) {
+      let integrity: AuditEventStoreIntegrity | undefined;
+      try {
+        integrity = normalizeAuditEventStoreState(raw.parsed, false).integrity;
+      } catch {
+        integrity = undefined;
+      }
+      // Healthy stores stay protected; BROKEN and LEGACY_UNVERIFIED are exactly
+      // the states an operator must be able to archive and re-ingest.
+      if (
+        integrity !== undefined &&
+        integrity.status !== 'BROKEN' &&
+        integrity.status !== 'LEGACY_UNVERIFIED'
+      ) {
+        throw new Error(`cannot recover audit event store with ${integrity.status} integrity`);
+      }
+    }
+    const archivePath = path.join(
+      path.dirname(stateFilePath),
+      'recovery',
+      `audit-event-store-${Date.now()}-${raw.sha256.slice(0, 12)}.json`,
+    );
+    await fs.mkdir(path.dirname(archivePath), { recursive: true });
+    await fs.writeFile(archivePath, raw.bytes);
+    await atomicWriteJson(stateFilePath, createEmptyAuditEventStoreState());
+    await atomicWriteJson(projectionPath, buildAuditProjection([]));
+    return {
+      archivePath,
+      archiveSha256: raw.sha256,
+      archiveBytes: raw.bytes.length,
+      statePath: stateFilePath,
+      projectionPath,
+    };
+  });
 }
 
 export function getAuditEventStorePath(repoRoot: string): string {
@@ -250,10 +393,16 @@ export function getAuditProjectionPath(repoRoot: string): string {
   return path.join(repoRoot, AUDIT_PROJECTION_RELATIVE_PATH);
 }
 
-function normalizeAuditEventStoreState(value: unknown): AuditEventStoreState {
+function normalizeAuditEventStoreState(
+  value: unknown,
+  migrate: boolean = true,
+): AuditEventStoreState {
   const record = requireObject(value, 'audit event store');
   const schemaVersion = requireNumber(record.schemaVersion, 'schemaVersion');
-  if (schemaVersion !== AUDIT_EVENT_STORE_SCHEMA_VERSION) {
+  if (
+    schemaVersion !== AUDIT_EVENT_STORE_SCHEMA_VERSION &&
+    schemaVersion !== AUDIT_EVENT_STORE_LEGACY_SCHEMA_VERSION
+  ) {
     throw new Error(`unsupported audit event store schemaVersion: ${schemaVersion}`);
   }
   const events = requireArray(record.events, 'events').map((event) => normalizeAuditEvent(event));
@@ -264,7 +413,170 @@ function normalizeAuditEventStoreState(value: unknown): AuditEventStoreState {
     }
     seen.add(event.id);
   }
-  return { schemaVersion: AUDIT_EVENT_STORE_SCHEMA_VERSION, events };
+  const rawRecords = requireArray(record.events, 'events');
+  // schemaVersion is caller-controlled and outside the checksum, so it cannot
+  // authorize skipping verification. Any surviving integrity envelope is proof
+  // the store was written as v2 and must still verify as v2.
+  const carriesIntegrityEnvelope = rawRecords.some(
+    (event) =>
+      typeof event === 'object' &&
+      event !== null &&
+      ('checksum' in event || 'sequence' in event || 'previousChecksum' in event),
+  );
+  if (schemaVersion === AUDIT_EVENT_STORE_LEGACY_SCHEMA_VERSION && !carriesIntegrityEnvelope) {
+    return {
+      schemaVersion: AUDIT_EVENT_STORE_LEGACY_SCHEMA_VERSION,
+      events,
+      integrity: { status: 'LEGACY_UNVERIFIED' },
+    };
+  }
+  const rawEvents = rawRecords;
+  // Non-empty schema-v2 stores must carry complete integrity envelopes. Missing
+  // fields are BROKEN, never silently treated as valid and re-signed on save.
+  const integrity = verifyIntegrity(rawEvents, events, record.legacyPrefixLength);
+  const state: AuditEventStoreState = {
+    schemaVersion: AUDIT_EVENT_STORE_SCHEMA_VERSION,
+    events,
+    integrity,
+    ...(typeof record.legacyPrefixLength === 'number'
+      ? { legacyPrefixLength: requireNumber(record.legacyPrefixLength, 'legacyPrefixLength') }
+      : {}),
+    ...(typeof record.migratedAt === 'string' ? { migratedAt: record.migratedAt } : {}),
+  };
+  void migrate;
+  return state;
+}
+
+function serializeAuditEventStoreState(state: AuditEventStoreState): Record<string, unknown> {
+  const normalizedEvents = state.events.map((event) => normalizeAuditEvent(event));
+  const entries = buildIntegrityEntries(normalizedEvents, state.legacyPrefixLength ?? 0);
+  return {
+    schemaVersion: AUDIT_EVENT_STORE_SCHEMA_VERSION,
+    ...(state.legacyPrefixLength !== undefined
+      ? { legacyPrefixLength: state.legacyPrefixLength }
+      : {}),
+    ...(state.migratedAt !== undefined ? { migratedAt: state.migratedAt } : {}),
+    events: entries,
+  };
+}
+
+function verifyIntegrity(
+  rawEvents: unknown[],
+  normalizedEvents: AuditEvent[],
+  legacyPrefixLengthValue: unknown,
+): AuditEventStoreIntegrity {
+  const records = rawEvents.map((event) => requireObject(event, 'event'));
+  let legacyPrefixLength = 0;
+  if (legacyPrefixLengthValue !== undefined) {
+    try {
+      legacyPrefixLength = requireNumber(legacyPrefixLengthValue, 'legacyPrefixLength');
+    } catch {
+      return { status: 'BROKEN', firstBrokenSequence: 0, reason: 'invalid-legacy-prefix-length' };
+    }
+    if (legacyPrefixLength < 0 || legacyPrefixLength > records.length) {
+      return { status: 'BROKEN', firstBrokenSequence: 0, reason: 'invalid-legacy-prefix-length' };
+    }
+  }
+  let previousChecksum = AUDIT_EVENT_STORE_GENESIS_PREVIOUS_CHECKSUM;
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (
+      record.sequence === undefined ||
+      record.checksum === undefined ||
+      record.previousChecksum === undefined
+    ) {
+      return {
+        status: 'BROKEN',
+        firstBrokenSequence: index,
+        reason: 'missing-integrity-envelope',
+      };
+    }
+    let sequence: number;
+    let checksum: string;
+    let previous: string;
+    try {
+      sequence = requireNumber(record.sequence, `events[${index}].sequence`);
+      checksum = requireRecordString(record, 'checksum', `events[${index}].checksum`);
+      previous = requireRecordString(
+        record,
+        'previousChecksum',
+        `events[${index}].previousChecksum`,
+      );
+    } catch {
+      return {
+        status: 'BROKEN',
+        firstBrokenSequence: index,
+        reason: 'invalid-integrity-envelope',
+      };
+    }
+    if (sequence !== index || previous !== previousChecksum) {
+      return { status: 'BROKEN', firstBrokenSequence: index, reason: 'sequence-or-link-mismatch' };
+    }
+    const expected = checksumFor(normalizedEvents[index], sequence, previous, legacyPrefixLength);
+    if (checksum !== expected) {
+      return { status: 'BROKEN', firstBrokenSequence: index, reason: 'checksum-mismatch' };
+    }
+    previousChecksum = checksum;
+  }
+  if (records.length === 0) return { status: 'VALID' };
+  return legacyPrefixLength > 0 ? { status: 'VALID_WITH_LEGACY_PREFIX' } : { status: 'VALID' };
+}
+
+function buildIntegrityEntries(
+  events: AuditEvent[],
+  legacyPrefixLength: number,
+): Array<Record<string, unknown>> {
+  let previousChecksum = AUDIT_EVENT_STORE_GENESIS_PREVIOUS_CHECKSUM;
+  return events.map((event, sequence) => {
+    const entry = {
+      ...event,
+      sequence,
+      previousChecksum,
+      checksum: checksumFor(event, sequence, previousChecksum, legacyPrefixLength),
+    };
+    previousChecksum = entry.checksum;
+    return entry;
+  });
+}
+
+function checksumFor(
+  event: AuditEvent,
+  sequence: number,
+  previousChecksum: string,
+  legacyPrefixLength: number,
+): string {
+  return digest(
+    Buffer.from(
+      canonicalJson({
+        ...event,
+        integrityVersion: AUDIT_EVENT_INTEGRITY_VERSION,
+        legacyPrefixLength,
+        sequence,
+        previousChecksum,
+      }),
+      'utf8',
+    ),
+  );
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null) return 'null';
+  if (typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error('unsupported non-finite value in canonical JSON');
+    return JSON.stringify(value);
+  }
+  if (typeof value !== 'object') throw new Error('unsupported value in canonical JSON');
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(',')}}`;
+}
+
+function digest(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
 function normalizeAuditEvent(value: AuditEvent | unknown): AuditEvent {
