@@ -11,8 +11,14 @@ import {
   type GitPorcelainWorkspaceSummary,
 } from '../../core/audit-lifecycle/freshness.js';
 import { loadIgnoreRules, shouldIgnorePath } from '../../config/ignore-service.js';
-import { readRegistry, type RegistryEntry } from '../../storage/repo-manager.js';
-import { loadMeta, resolveActiveIndexGeneration } from '../../storage/repo-manager.js';
+import {
+  loadMeta,
+  readActiveGenerationMeta,
+  readRegistry,
+  resolveActiveIndexGeneration,
+  type ActiveGenerationMetaPair,
+  type RegistryEntry,
+} from '../../storage/repo-manager.js';
 import {
   computeSourceManifest,
   manifestsMatch,
@@ -63,6 +69,7 @@ export interface TargetContextLspReadiness extends TargetContextReadiness {
 
 export interface TargetContextEmbeddingsReadiness extends TargetContextReadiness {
   count?: number;
+  modelHash?: string;
 }
 
 export interface TargetContextSidecarReadiness extends TargetContextReadiness {
@@ -145,6 +152,7 @@ export interface ResolveTargetContextDeps {
   loadMeta?: typeof loadMeta;
   computeSourceManifest?: typeof computeSourceManifest;
   resolveActiveIndexGeneration?: typeof resolveActiveIndexGeneration;
+  readActiveGenerationMeta?: typeof readActiveGenerationMeta;
 }
 
 export async function resolveTargetContext(
@@ -291,21 +299,45 @@ export async function resolveTargetContext(
   const workspaceSummary = summarizeGitPorcelainStatus(statusOutput);
   const dirtyWorktree = workspaceSummary !== null ? workspaceSummary.dirtyFileCount > 0 : null;
   const dirtyFileCount = workspaceSummary?.dirtyFileCount ?? null;
-  const indexedHead = entry.lastCommit || undefined;
+  const generationMeta = await readGenerationMetaPair(entry.storagePath, deps);
+  const activeMeta = generationMeta.meta;
+  const activeGeneration = generationMeta.activeGeneration;
+  const trustedIndexMeta = generationMeta.authority !== 'untrusted';
+  if (generationMeta.authority === 'untrusted') {
+    warnings.push(generationMetadataWarning(generationMeta, entry.lastCommit));
+  }
+  const indexedHead =
+    (trustedIndexMeta ? activeMeta?.lastCommit : undefined) || entry.lastCommit || undefined;
+  if (
+    trustedIndexMeta &&
+    activeMeta?.lastCommit &&
+    entry.lastCommit &&
+    activeMeta.lastCommit !== entry.lastCommit
+  ) {
+    warnings.push(
+      `Registry commit ${entry.lastCommit} lags trusted index metadata ${activeMeta.lastCommit}; using trusted metadata as indexed-head authority.`,
+    );
+  }
   const graphAuthority = options.verifyGraphAuthority
-    ? await resolveGraphAuthority(
-        repoPath,
-        await (deps.loadMeta ?? loadMeta)(entry.storagePath),
-        deps.computeSourceManifest ?? computeSourceManifest,
-        (
-          await (deps.resolveActiveIndexGeneration ?? resolveActiveIndexGeneration)(
-            entry.storagePath,
-          )
-        )?.generationId,
-        options.requiredGraphCapabilities ?? [],
-        targetHead,
-        currentHead,
-      )
+    ? generationMeta.authority === 'untrusted'
+      ? {
+          state: 'degraded' as const,
+          reason:
+            generationMeta.reason === 'active-generation-metadata-mismatch'
+              ? 'active graph generation does not match metadata generation'
+              : 'active generation metadata authority is untrusted',
+          ...(activeGeneration ? { generationId: activeGeneration.generationId } : {}),
+          coverage: 'unknown' as const,
+        }
+      : await resolveGraphAuthority(
+          repoPath,
+          activeMeta,
+          deps.computeSourceManifest ?? computeSourceManifest,
+          activeGeneration?.generationId,
+          options.requiredGraphCapabilities ?? [],
+          targetHead,
+          currentHead,
+        )
     : undefined;
   const headChangedSinceIndex = !!currentHead && !!indexedHead && currentHead !== indexedHead;
   const changedSinceIndex =
@@ -366,12 +398,55 @@ export async function resolveTargetContext(
     scopeConfidence: confidence.value,
     scopeConfidenceReason: confidence.reason,
     ...(confidence.repairCommand ? { repairCommand: confidence.repairCommand } : {}),
-    embeddings: resolveEmbeddingsReadiness(entry, options.readiness?.embeddingsCount),
+    embeddings: resolveEmbeddingsReadiness(
+      entry,
+      options.readiness?.embeddingsCount,
+      trustedIndexMeta ? activeMeta?.model_hash : undefined,
+    ),
     lsp: resolveLspReadiness(options.readiness?.lspAvailable),
     sidecar: await resolveSidecarReadiness(entry, options.checkSidecar === true, deps, warnings),
     policy: { status: 'unknown', reason: 'policy-profile-probe-not-configured' },
     warnings,
   };
+}
+
+async function readGenerationMetaPair(
+  storagePath: string,
+  deps: ResolveTargetContextDeps,
+): Promise<ActiveGenerationMetaPair> {
+  if (deps.readActiveGenerationMeta) return deps.readActiveGenerationMeta(storagePath);
+  if (!deps.loadMeta && !deps.resolveActiveIndexGeneration) {
+    return readActiveGenerationMeta(storagePath);
+  }
+
+  const meta = await (deps.loadMeta ?? loadMeta)(storagePath);
+  const activeGeneration = await (
+    deps.resolveActiveIndexGeneration ?? resolveActiveIndexGeneration
+  )(storagePath);
+  if (activeGeneration && meta?.generationId === activeGeneration.generationId) {
+    return { activeGeneration, meta, authority: 'active-generation' };
+  }
+  if (!activeGeneration && meta && meta.generationId === undefined) {
+    return { activeGeneration: null, meta, authority: 'legacy-root' };
+  }
+  return {
+    activeGeneration,
+    meta: null,
+    authority: 'untrusted',
+    reason:
+      !activeGeneration && meta?.generationId
+        ? 'generation-tagged-root-metadata-without-active-generation'
+        : meta
+          ? 'active-generation-metadata-mismatch'
+          : 'active-generation-metadata-unavailable',
+  };
+}
+
+function generationMetadataWarning(pair: ActiveGenerationMetaPair, registryCommit: string): string {
+  const fallback = registryCommit
+    ? `using registry commit ${registryCommit} as a conservative indexed-head fallback`
+    : 'no trusted indexed-head fallback is available';
+  return `Active generation metadata authority is untrusted (${pair.reason ?? 'unknown reason'}); ${fallback}. Generation metadata is excluded from commit and graph claims.`;
 }
 
 async function resolveGraphAuthority(
@@ -883,12 +958,29 @@ function buildAmbiguousRepoAction(
 function resolveEmbeddingsReadiness(
   entry: RegistryEntry,
   overrideCount: number | undefined,
+  modelHash: string | undefined,
 ): TargetContextEmbeddingsReadiness {
   const count = overrideCount ?? entry.stats?.embeddings;
-  if (count === undefined) return { status: 'unknown', reason: 'embedding-stats-unavailable' };
+  const normalizedModelHash = modelHash?.trim() || undefined;
+  if (count === undefined) {
+    return {
+      status: 'unknown',
+      reason: 'embedding-stats-unavailable',
+      ...(normalizedModelHash ? { modelHash: normalizedModelHash } : {}),
+    };
+  }
   return count > 0
-    ? { status: 'available', count }
-    : { status: 'unavailable', count, reason: 'embeddings-not-populated' };
+    ? {
+        status: 'available',
+        count,
+        ...(normalizedModelHash ? { modelHash: normalizedModelHash } : {}),
+      }
+    : {
+        status: 'unavailable',
+        count,
+        reason: 'embeddings-not-populated',
+        ...(normalizedModelHash ? { modelHash: normalizedModelHash } : {}),
+      };
 }
 
 function resolveLspReadiness(

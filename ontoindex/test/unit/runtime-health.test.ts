@@ -327,4 +327,42 @@ describe('deriveRuntimeHealth', () => {
       await fs.rm(repoPath, { recursive: true, force: true });
     }
   });
+
+  it('does not load on-disk metadata when meta is explicitly null', async () => {
+    const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-health-explicit-null-'));
+    try {
+      await fs.writeFile(
+        path.join(storagePath, 'meta.json'),
+        JSON.stringify({
+          repoPath: '.',
+          lastCommit: 'disk-only-commit',
+          indexedAt: '2026-08-18T00:00:00.000Z',
+          degradedFileAggregates: {
+            sampledDegradedCount: 1,
+            groups: [
+              {
+                cause: 'disk metadata sentinel',
+                phase: 'test',
+                language: 'typescript',
+                count: 1,
+              },
+            ],
+            omittedGroupCount: 0,
+          },
+        } satisfies RepoMeta),
+      );
+
+      const health = await readRuntimeHealth(process.cwd(), {
+        repoLabel: 'explicit-null-fixture',
+        storagePath,
+        meta: null,
+      });
+
+      expect(health.indexedCommit).toBeNull();
+      expect(health.degradedFileAggregates).toBeUndefined();
+      expect(health.freshnessState).toBe('untrusted');
+    } finally {
+      await fs.rm(storagePath, { recursive: true, force: true });
+    }
+  });
 });

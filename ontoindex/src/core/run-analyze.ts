@@ -38,6 +38,7 @@ import {
   createIndexGeneration,
   discardIndexGeneration,
   activateIndexGeneration,
+  publishIndexGenerationTransaction,
   type IndexGenerationPaths,
 } from '../storage/repo-manager.js';
 import type { DegradedFileGroupCount } from '../storage/repo-manager.js';
@@ -72,8 +73,20 @@ import { EMBEDDING_TEXT_VERSION } from './embeddings/embedding-pipeline.js';
 import {
   computeSourceManifest,
   manifestsMatch,
+  sourceManifestDigest,
   sourceInputsMatch,
 } from './indexing/source-manifest.js';
+import {
+  assertValidManagedAnalysisContext,
+  writeAnalysisPublicationReceipt,
+  type ManagedAnalysisContext,
+} from './analysis/analysis-publication-receipt.js';
+import {
+  beginManagedAnalysisPublication,
+  claimManagedAnalysisAnalyzer,
+  commitManagedAnalysisPublication,
+} from './analysis/analysis-coordinator.js';
+import { execFileText } from './process/exec-file.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -120,6 +133,8 @@ export interface AnalyzeOptions {
   profile?: PipelineProfile;
   /** Optional repository-relative roots to scan before ignore filtering. */
   includePaths?: string[];
+  /** Publication identity supplied only by the managed analysis runner. */
+  managedAnalysis?: ManagedAnalysisContext;
 }
 
 export type EmbeddingLifecycleMode = 'off' | 'preserve' | 'refresh';
@@ -161,6 +176,40 @@ export function resolveEmbeddingLifecycleMode(
 
 /** Threshold: auto-skip embeddings for repos with more nodes than this */
 const EMBEDDING_NODE_LIMIT = 50_000;
+const MANAGED_GIT_STATUS_TIMEOUT_MS = 5_000;
+const MANAGED_GIT_STATUS_MAX_BUFFER = 1024 * 1024;
+
+async function verifyManagedAnalysisSource(
+  repoPath: string,
+  context: ManagedAnalysisContext,
+  boundary: 'before analysis' | 'before publication',
+): Promise<string> {
+  const currentCommit = getCurrentCommit(repoPath);
+  if (currentCommit !== context.targetHead) {
+    throw new Error(
+      `Managed analysis target HEAD does not match the current repository HEAD ${boundary}.`,
+    );
+  }
+
+  let status: string;
+  try {
+    status = await execFileText('git', ['status', '--porcelain=v1', '--untracked-files=all'], {
+      cwd: repoPath,
+      timeoutMs: MANAGED_GIT_STATUS_TIMEOUT_MS,
+      maxBuffer: MANAGED_GIT_STATUS_MAX_BUFFER,
+    });
+  } catch (error) {
+    throw new Error(
+      `Managed analysis could not verify a clean Git worktree ${boundary}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (status.trim().length > 0) {
+    throw new Error(`Managed analysis requires a clean Git worktree ${boundary}.`);
+  }
+  return currentCommit;
+}
 
 interface GraphDiffSnapshot {
   lastCommit: string;
@@ -800,7 +849,40 @@ export async function runFullAnalysis(
 
   const { storagePath, lbugPath: activeLbugPath } = getStoragePaths(repoPath);
   const repoHasGit = hasGitDir(repoPath);
-  if (repoHasGit) {
+  let currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
+  if (options.managedAnalysis) {
+    assertValidManagedAnalysisContext(options.managedAnalysis);
+    if (options.force !== true) {
+      gcTelemetry?.stop();
+      throw new Error('Managed analysis requires force=true.');
+    }
+    if (!repoHasGit) {
+      gcTelemetry?.stop();
+      throw new Error('Managed analysis requires a Git worktree with a readable HEAD.');
+    }
+    if (
+      options.managedAnalysis.requestedCapabilities.embeddings &&
+      options.embeddings !== true &&
+      options.annNeighbors !== true
+    ) {
+      gcTelemetry?.stop();
+      throw new Error(
+        'Managed analysis requested embeddings, but no embedding analysis option was enabled.',
+      );
+    }
+    try {
+      await claimManagedAnalysisAnalyzer(repoPath, options.managedAnalysis);
+      currentCommit = await verifyManagedAnalysisSource(
+        repoPath,
+        options.managedAnalysis,
+        'before analysis',
+      );
+    } catch (error) {
+      gcTelemetry?.stop();
+      throw error;
+    }
+  }
+  if (repoHasGit && !options.managedAnalysis) {
     await addToGitignore(repoPath);
   }
   const includePaths = await normalizeRepositoryIncludePaths(repoPath, options.includePaths);
@@ -809,6 +891,16 @@ export async function runFullAnalysis(
     includePaths,
     pipelineProfile: requestedProfile,
   });
+  if (
+    options.managedAnalysis &&
+    sourceManifestDigest(inputManifest).toLowerCase() !==
+      options.managedAnalysis.sourceManifestDigest.toLowerCase()
+  ) {
+    gcTelemetry?.stop();
+    throw new Error(
+      'Managed analysis source manifest does not match the submission-time manifest digest.',
+    );
+  }
   const embeddingLifecycleMode = resolveEmbeddingLifecycleMode(options);
   const embeddingsEnabledForRun = embeddingLifecycleMode !== 'off';
   const annNeighborBuildRequested = options.annNeighbors === true;
@@ -819,7 +911,6 @@ export async function runFullAnalysis(
     log('Migrating from KuzuDB to LadybugDB — rebuilding index...');
   }
 
-  const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
   const existingMeta = await loadMeta(storagePath);
   let embeddingVectorIndexDigest = existingMeta?.embeddingVectorIndexDigest;
 
@@ -973,10 +1064,9 @@ export async function runFullAnalysis(
   });
   const lbugStart = Date.now();
 
-  const generationId = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`;
   let stagedGeneration: IndexGenerationPaths | null = await createIndexGeneration(
     storagePath,
-    generationId,
+    `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`,
   );
   const generationStoragePath = stagedGeneration.generationPath;
   const lbugPath = stagedGeneration.lbugPath;
@@ -1201,6 +1291,14 @@ export async function runFullAnalysis(
     } catch {
       /* table may not exist if embeddings never ran */
     }
+    if (
+      options.managedAnalysis?.requestedCapabilities.embeddings === true &&
+      (embeddingSkipped || embeddingCount <= 0)
+    ) {
+      throw new Error(
+        'Managed analysis requested embeddings, but no embeddings were successfully published.',
+      );
+    }
 
     const indexedAt = new Date().toISOString();
     if (annNeighborBuildRequested) {
@@ -1259,6 +1357,20 @@ export async function runFullAnalysis(
             processes: pipelineResult.processResult !== undefined,
           },
         };
+    if (options.managedAnalysis) {
+      const publishedGraphCapabilities = pipelineCapabilityMetadata.capabilities;
+      const missingGraphCapability =
+        options.managedAnalysis.requestedCapabilities.graphCapabilities.find((capability) => {
+          if (capability === 'symbols') return publishedGraphCapabilities.symbols !== true;
+          if (capability === 'impact') return publishedGraphCapabilities.impact !== 'full';
+          return publishedGraphCapabilities.processes !== true;
+        });
+      if (missingGraphCapability) {
+        throw new Error(
+          `Managed analysis requested graph capability "${missingGraphCapability}", but it was not successfully published.`,
+        );
+      }
+    }
     const embeddingLifecycle: EmbeddingLifecycleSummary = !embeddingsEnabledForRun
       ? {
           mode: embeddingLifecycleMode,
@@ -1306,16 +1418,26 @@ export async function runFullAnalysis(
       pipelineProfile: requestedProfile,
       degradedPaths: [...degradedFiles.keys()],
     });
+    const finalManifestDigest = sourceManifestDigest(finalManifest);
     if (!sourceInputsMatch(inputManifest, finalManifest)) {
       throw new Error(
         'Source inputs changed during analysis; refusing to publish graph generation.',
+      );
+    }
+    if (
+      options.managedAnalysis &&
+      finalManifestDigest.toLowerCase() !==
+        options.managedAnalysis.sourceManifestDigest.toLowerCase()
+    ) {
+      throw new Error(
+        'Managed analysis final source manifest does not match the submission-time manifest digest.',
       );
     }
     const meta = {
       repoPath,
       lastCommit: currentCommit,
       indexedAt,
-      generationId,
+      generationId: stagedGeneration.generationId,
       sourceManifest: finalManifest,
       stats: {
         files: pipelineResult.totalFileCount,
@@ -1380,10 +1502,39 @@ export async function runFullAnalysis(
       currentCommit,
     );
     await saveMeta(generationStoragePath, meta);
-
-    await closeLbug();
-    await activateIndexGeneration(storagePath, stagedGeneration);
-    stagedGeneration = null;
+    if (options.managedAnalysis) {
+      const managedContext = options.managedAnalysis as ManagedAnalysisContext;
+      await beginManagedAnalysisPublication(repoPath, managedContext);
+      await verifyManagedAnalysisSource(repoPath, managedContext, 'before publication');
+      await writeAnalysisPublicationReceipt(generationStoragePath, {
+        version: 1,
+        jobId: managedContext.jobId,
+        repoPath: path.resolve(repoPath),
+        targetHead: managedContext.targetHead,
+        optionsDigest: managedContext.optionsDigest,
+        sourceIdentity: managedContext.sourceIdentity,
+        sourceManifestDigest: finalManifestDigest,
+        generationId: stagedGeneration.generationId,
+        requestedCapabilities: managedContext.requestedCapabilities,
+        analyzerContractVersion: finalManifest.analyzerContractVersion,
+        publishedAt: new Date().toISOString(),
+      });
+      await closeLbug();
+      const publishedGeneration = stagedGeneration;
+      await publishIndexGenerationTransaction(storagePath, publishedGeneration, (activation) =>
+        commitManagedAnalysisPublication(
+          repoPath,
+          managedContext,
+          activation.activeGeneration.generationId,
+          finalManifestDigest,
+        ),
+      );
+      stagedGeneration = null;
+    } else {
+      await closeLbug();
+      await activateIndexGeneration(storagePath, stagedGeneration);
+      stagedGeneration = null;
+    }
 
     // Forward the --name alias after the complete generation is active.
     const projectName = await registerRepo(repoPath, meta, {

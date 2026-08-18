@@ -24,6 +24,8 @@ vi.mock('fs', () => ({
 
 vi.mock('../../../src/storage/repo-manager.js', () => ({
   loadMeta: vi.fn(),
+  readActiveGenerationMeta: vi.fn(),
+  resolveActiveIndexGeneration: vi.fn(),
 }));
 
 vi.mock('os', () => ({
@@ -36,6 +38,11 @@ vi.mock('../../../src/core/runtime/runtime-health.js', () => ({
 
 vi.mock('../../../src/core/analysis/analysis-coordinator.js', () => ({
   submitAnalysisJob: vi.fn(),
+}));
+
+vi.mock('../../../src/core/indexing/source-manifest.js', () => ({
+  computeSourceManifest: vi.fn(),
+  sourceManifestDigest: vi.fn(),
 }));
 
 vi.mock('../../../src/mcp/shared/target-context.js', () => ({
@@ -51,8 +58,16 @@ import { execFile, spawn } from 'child_process';
 import { readFileSync } from 'fs';
 import { gnEnsureFresh } from '../../../src/mcp/super/ensure-fresh.js';
 import { readRuntimeHealth } from '../../../src/core/runtime/runtime-health.js';
-import { loadMeta } from '../../../src/storage/repo-manager.js';
+import {
+  loadMeta,
+  readActiveGenerationMeta,
+  resolveActiveIndexGeneration,
+} from '../../../src/storage/repo-manager.js';
 import { submitAnalysisJob } from '../../../src/core/analysis/analysis-coordinator.js';
+import {
+  computeSourceManifest,
+  sourceManifestDigest,
+} from '../../../src/core/indexing/source-manifest.js';
 import { resolveTargetContext } from '../../../src/mcp/shared/target-context.js';
 
 const mockExecFile = vi.mocked(execFile);
@@ -60,7 +75,11 @@ const mockSpawn = vi.mocked(spawn);
 const mockReadFileSync = vi.mocked(readFileSync);
 const mockReadRuntimeHealth = vi.mocked(readRuntimeHealth);
 const mockLoadMeta = vi.mocked(loadMeta);
+const mockReadActiveGenerationMeta = vi.mocked(readActiveGenerationMeta);
+const mockResolveActiveIndexGeneration = vi.mocked(resolveActiveIndexGeneration);
 const mockSubmitAnalysisJob = vi.mocked(submitAnalysisJob);
+const mockComputeSourceManifest = vi.mocked(computeSourceManifest);
+const mockSourceManifestDigest = vi.mocked(sourceManifestDigest);
 const mockResolveTargetContext = vi.mocked(resolveTargetContext);
 
 let savedEnv: Record<string, string | undefined> = {};
@@ -74,6 +93,7 @@ const REPO_PATH = path.resolve('/home/testuser/_wrk/test-repo');
 const CURRENT_COMMIT = 'abc123def456abc123def456abc123def456abc1';
 const INDEXED_COMMIT = 'abc123def456abc123def456abc123def456abc1'; // same = fresh
 const EMBEDDING_MODEL_HASH = 'hash-a';
+const SOURCE_MANIFEST_DIGEST = 'd'.repeat(64);
 
 const STALE_INDEXED_COMMIT = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
 
@@ -157,6 +177,7 @@ function makeMeta(
     repoPath: REPO_PATH,
     lastCommit: options.lastCommit ?? INDEXED_COMMIT,
     indexedAt: '2026-06-17T00:00:00.000Z',
+    generationId: 'generation-1',
     model_hash: options.modelHash ?? EMBEDDING_MODEL_HASH,
     stats: {
       embeddings: options.embeddings ?? 12,
@@ -221,6 +242,33 @@ describe('gnEnsureFresh', () => {
     setupSpawnExit();
     mockReadRuntimeHealth.mockResolvedValue(makeRuntimeHealth());
     mockLoadMeta.mockResolvedValue(makeMeta() as any);
+    mockResolveActiveIndexGeneration.mockResolvedValue({
+      generationId: 'generation-1',
+      generationPath: `${REPO_PATH}/.ontoindex/generations/generation-1`,
+    } as any);
+    mockReadActiveGenerationMeta.mockImplementation(async (storagePath) => {
+      const activeGeneration = await mockResolveActiveIndexGeneration(storagePath);
+      const meta = await mockLoadMeta(storagePath);
+
+      if (activeGeneration && meta?.generationId === activeGeneration.generationId) {
+        return { activeGeneration, meta, authority: 'active-generation' };
+      }
+      if (!activeGeneration && meta && meta.generationId === undefined) {
+        return { activeGeneration: null, meta, authority: 'legacy-root' };
+      }
+      return {
+        activeGeneration,
+        meta: null,
+        authority: 'untrusted',
+        reason: activeGeneration
+          ? meta
+            ? 'active-generation-metadata-mismatch'
+            : 'active-generation-metadata-unavailable'
+          : meta?.generationId
+            ? 'generation-tagged-root-metadata-without-active-generation'
+            : 'legacy-root-metadata-unavailable',
+      };
+    });
     mockSubmitAnalysisJob.mockResolvedValue({
       reused: false,
       job: {
@@ -236,6 +284,19 @@ describe('gnEnsureFresh', () => {
         createdAt: '2026-08-05T00:00:00.000Z',
       },
     });
+    mockComputeSourceManifest.mockResolvedValue({
+      version: 1,
+      head: CURRENT_COMMIT,
+      sourceDigest: 'source-digest',
+      sourceEntryCount: 1,
+      includePaths: [],
+      scopeDigest: 'scope-digest',
+      ignorePolicyDigest: 'ignore-digest',
+      pipelineProfile: 'full',
+      analyzerContractVersion: 'ontoindex-source-manifest-v1',
+      coverage: 'complete',
+    });
+    mockSourceManifestDigest.mockReturnValue(SOURCE_MANIFEST_DIGEST);
     mockResolveTargetContext.mockResolvedValue({
       version: 1,
       status: 'ok',
@@ -391,7 +452,8 @@ describe('gnEnsureFresh', () => {
   // ---- Test 2: Stale without autoAnalyze → recommendations, no actions ----
   it('populates recommendations but takes no actions when stale and autoAnalyze is false', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT });
-    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
 
     const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: false });
 
@@ -408,13 +470,31 @@ describe('gnEnsureFresh', () => {
   it('submits ontoindex analyze when stale and autoAnalyze: true', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT });
     // First readFileSync call: pre-check registry; second: post-check registry
-    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
 
     const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
 
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
     expect(mockSubmitAnalysisJob).toHaveBeenCalledWith(
-      expect.objectContaining({ repoPath: REPO_PATH, targetHead: CURRENT_COMMIT }),
+      expect.objectContaining({
+        repoPath: REPO_PATH,
+        targetHead: CURRENT_COMMIT,
+        sourceIdentity: `commit:${CURRENT_COMMIT}`,
+        requestedCapabilities: {
+          version: 1,
+          graph: true,
+          graphCapabilities: ['symbols'],
+          embeddings: false,
+          embeddingModelHash: null,
+        },
+        sourceManifestDigest: SOURCE_MANIFEST_DIGEST,
+      }),
     );
+    expect(mockComputeSourceManifest).toHaveBeenCalledWith(REPO_PATH, {
+      includePaths: [],
+      pipelineProfile: 'full',
+    });
     expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('analyze');
     expect(mockSubmitAnalysisJob.mock.calls[0][0].args).not.toContain('--embeddings');
 
@@ -475,11 +555,173 @@ describe('gnEnsureFresh', () => {
   it('adds --embeddings to analyze args when withEmbeddings: true', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT });
     mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
 
     await gnEnsureFresh(REPO_ID, { autoAnalyze: true, withEmbeddings: true });
 
     expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
     expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toContain('--embeddings');
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].requestedCapabilities).toEqual({
+      version: 1,
+      graph: true,
+      graphCapabilities: ['symbols'],
+      embeddings: true,
+      embeddingModelHash: EMBEDDING_MODEL_HASH,
+    });
+  });
+
+  it('normalizes requested graph capabilities before submission', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+
+    await gnEnsureFresh(REPO_ID, {
+      autoAnalyze: true,
+      requiredGraphCapabilities: ['symbols', 'impact', 'symbols', 'processes'],
+    });
+
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].requestedCapabilities.graphCapabilities).toEqual([
+      'impact',
+      'processes',
+      'symbols',
+    ]);
+  });
+
+  it.each([{ capabilities: [] }, { capabilities: ['unknown'] }])(
+    'rejects invalid required graph capabilities ($capabilities)',
+    async ({ capabilities }) => {
+      await expect(
+        gnEnsureFresh(REPO_ID, { requiredGraphCapabilities: capabilities as any }),
+      ).rejects.toThrow(/requiredGraphCapabilities/);
+      expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+    },
+  );
+
+  it('blocks managed embedding analysis without a model identity', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    delete process.env.ONTOINDEX_EMBEDDING_MODEL_HASH;
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true, withEmbeddings: true });
+
+    expect(report.analysisSubmission).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'EMBEDDING_MODEL_IDENTITY_UNAVAILABLE',
+    });
+    expect(mockComputeSourceManifest).not.toHaveBeenCalled();
+    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+  });
+
+  it('queues forced embeddings repair when HEAD is fresh but requested embeddings are missing', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(
+      makeRegistry({ lastCommit: CURRENT_COMMIT, embeddings: 0 }) as any,
+    );
+    mockLoadMeta.mockResolvedValue(makeMeta({ embeddings: 0 }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, {
+      autoAnalyze: true,
+      withEmbeddings: true,
+    });
+
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
+    expect(mockSubmitAnalysisJob.mock.calls[0][0]).toMatchObject({
+      sourceIdentity: `commit:${CURRENT_COMMIT}`,
+      requestedCapabilities: { graph: true, embeddings: true },
+    });
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toEqual(
+      expect.arrayContaining(['analyze', '--force', '--embeddings']),
+    );
+    expect(report.analysisSubmission).toEqual({ status: 'queued', jobId: 'job-1' });
+    expect(report.actionsTaken[0]).toContain('analyze --force --embeddings');
+  });
+
+  it('does not submit analysis when HEAD and requested embeddings are already satisfied', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(
+      makeRegistry({ lastCommit: CURRENT_COMMIT, embeddings: 12 }) as any,
+    );
+    mockLoadMeta.mockResolvedValue(makeMeta({ embeddings: 12 }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, {
+      autoAnalyze: true,
+      withEmbeddings: true,
+    });
+
+    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+    expect(mockComputeSourceManifest).not.toHaveBeenCalled();
+    expect(report.analysisSubmission).toEqual({ status: 'not-needed' });
+    expect(report.actionsTaken).toHaveLength(0);
+  });
+
+  it('blocks analysis when the worktree is dirty', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT, statusOutput: ' M src/edit.ts\n' });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+    expect(report.analysisSubmission).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'WORKTREE_DIRTY',
+    });
+  });
+
+  it('blocks analysis when worktree status is unavailable', async () => {
+    mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: any, callback: any) => {
+      if (args.includes('HEAD') && args.includes('rev-parse')) {
+        callback(null, CURRENT_COMMIT + '\n', '');
+        return {} as any;
+      }
+      if (args.includes('status') && args.includes('--porcelain')) {
+        callback(new Error('status unavailable'), '', '');
+        return {} as any;
+      }
+      callback(null, '', '');
+      return {} as any;
+    });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+    expect(report.analysisSubmission).toMatchObject({
+      status: 'blocked',
+      reasonCode: 'WORKTREE_STATUS_UNAVAILABLE',
+    });
+  });
+
+  it.each(['', 'not-a-commit'])(
+    'blocks analysis when HEAD is unavailable or malformed (%s)',
+    async (head) => {
+      setupExecFile({ currentCommit: head });
+      mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+      mockReadRuntimeHealth.mockResolvedValue(makeRuntimeHealth('failed-after-partial-run'));
+
+      const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+      expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+      expect(report.analysisSubmission).toMatchObject({
+        status: 'blocked',
+        reasonCode: 'HEAD_UNAVAILABLE',
+      });
+    },
+  );
+
+  it('accepts a valid 64-character git HEAD for clean analysis submission', async () => {
+    const sha256Head = 'a'.repeat(64);
+    setupExecFile({ currentCommit: sha256Head });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetHead: sha256Head,
+        sourceIdentity: `commit:${sha256Head}`,
+      }),
+    );
+    expect(report.analysisSubmission).toEqual({ status: 'queued', jobId: 'job-1' });
   });
 
   // ---- Test 5: embeddingsCount surfaced from registry ---------------------
@@ -592,6 +834,7 @@ describe('gnEnsureFresh', () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT });
     mockSubmitAnalysisJob.mockRejectedValue(new Error('spawn failed'));
     mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
 
     const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
 
@@ -610,6 +853,7 @@ describe('gnEnsureFresh', () => {
       Object.assign(new Error('directory read'), { code: 'EISDIR' }),
     );
     mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
 
     const envelope = await gnEnsureFresh(REPO_ID, { autoAnalyze: true, legacyResponse: false });
 
@@ -622,10 +866,87 @@ describe('gnEnsureFresh', () => {
     });
   });
 
+  it('maps coordinator lock conflicts to a degraded blocked envelope', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockSubmitAnalysisJob.mockRejectedValue(
+      Object.assign(new Error('another managed analysis owns the lock'), { code: 'LOCK_CONFLICT' }),
+    );
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+
+    const envelope = await gnEnsureFresh(REPO_ID, { autoAnalyze: true, legacyResponse: false });
+
+    expect(envelope.status).toBe('degraded');
+    expect(envelope.results.analysisSubmission).toEqual({
+      status: 'blocked',
+      reasonCode: 'LOCK_CONFLICT',
+      message: 'another managed analysis owns the lock',
+    });
+    expect(envelope.warnings.join('\n')).not.toMatch(/delete.*lock/i);
+  });
+
+  it('maps active managed job conflicts to the existing job ID', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockSubmitAnalysisJob.mockRejectedValue(
+      Object.assign(new Error('an incompatible managed analysis is already active'), {
+        code: 'ACTIVE_JOB_CONFLICT',
+        activeJobId: 'job-active',
+      }),
+    );
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+
+    const envelope = await gnEnsureFresh(REPO_ID, { autoAnalyze: true, legacyResponse: false });
+
+    expect(envelope.status).toBe('degraded');
+    expect(envelope.results.analysisSubmission).toEqual({
+      status: 'blocked',
+      reasonCode: 'ACTIVE_JOB_CONFLICT',
+      message: 'an incompatible managed analysis is already active',
+      jobId: 'job-active',
+    });
+  });
+
+  it('reports an exact coordinator reuse as reused', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    mockSubmitAnalysisJob.mockResolvedValue({
+      reused: true,
+      job: {
+        version: 1,
+        id: 'job-reused',
+        status: 'running',
+        repoPath: REPO_PATH,
+        targetHead: CURRENT_COMMIT,
+        sourceIdentity: `commit:${CURRENT_COMMIT}`,
+        requestedCapabilities: {
+          version: 1,
+          graph: true,
+          graphCapabilities: ['symbols'],
+          embeddings: false,
+          embeddingModelHash: null,
+        },
+        optionsDigest: 'options-digest',
+        sourceManifestDigest: SOURCE_MANIFEST_DIGEST,
+        command: process.execPath,
+        args: ['analyze'],
+        logPath: `${REPO_PATH}/.ontoindex/analysis-jobs/job-reused.log`,
+        createdAt: '2026-08-05T00:00:00.000Z',
+      },
+    } as any);
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(report.analysisSubmission).toEqual({ status: 'reused', jobId: 'job-reused' });
+    expect(report.actionsTaken[0]).toContain('Reused analysis job job-reused');
+  });
+
   // ---- Test 9: killMcpForLock:true is advisory only → no process kill ----
   it('does not kill MCP processes when killMcpForLock:true', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT });
     mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
 
     const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true, killMcpForLock: true });
 
