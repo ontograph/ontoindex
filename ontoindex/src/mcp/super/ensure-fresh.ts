@@ -84,6 +84,15 @@ export interface EnsureFreshReport {
   headCommit?: string;
   isStale?: boolean;
   dirtyFileCount?: number | null;
+  /**
+   * Bounded split of `dirtyFileCount`. Tracked edits sit on top of an indexed
+   * commit; untracked source files are absent from the graph entirely. Optional
+   * and additive: consumers that only read `dirtyFileCount` are unaffected.
+   */
+  dirtyWorktreeBreakdown?: {
+    trackedChangedCount: number | null;
+    untrackedCount: number | null;
+  };
   scopeConfidence?: ScopeConfidence;
   runtimeHealth?: RuntimeHealthSnapshot;
   actionsTaken: string[];
@@ -269,7 +278,19 @@ function currentCliCommand(): { command: string; argsPrefix: string[]; displayPr
   return { command: 'ontoindex', argsPrefix: [], displayPrefix: 'ontoindex' };
 }
 
-async function countDirtyFiles(repoRoot: string): Promise<number | null> {
+/**
+ * Bounded worktree breakdown. Tracked edits are already represented in the graph
+ * at their indexed commit, while untracked source files are unknown to it, so
+ * agents need the two counts separately to calibrate rather than blanket-
+ * discount every `dirty` report.
+ */
+interface DirtyWorktreeSummary {
+  dirtyFileCount: number | null;
+  trackedChangedCount: number | null;
+  untrackedCount: number | null;
+}
+
+async function summarizeDirtyWorktree(repoRoot: string): Promise<DirtyWorktreeSummary> {
   try {
     const output = (
       await execFileText('git', ['status', '--porcelain'], {
@@ -278,10 +299,18 @@ async function countDirtyFiles(repoRoot: string): Promise<number | null> {
         maxBuffer: GIT_PROBE_MAX_BUFFER,
       })
     ).trim();
-    if (output.length === 0) return 0;
-    return output.split('\n').filter(Boolean).length;
+    if (output.length === 0) {
+      return { dirtyFileCount: 0, trackedChangedCount: 0, untrackedCount: 0 };
+    }
+    const lines = output.split('\n').filter(Boolean);
+    const untrackedCount = lines.filter((line) => line.startsWith('??')).length;
+    return {
+      dirtyFileCount: lines.length,
+      trackedChangedCount: lines.length - untrackedCount,
+      untrackedCount,
+    };
   } catch {
-    return null;
+    return { dirtyFileCount: null, trackedChangedCount: null, untrackedCount: null };
   }
 }
 
@@ -381,6 +410,50 @@ function resolveEmbeddingsStatus(input: {
 // Main function
 // ---------------------------------------------------------------------------
 
+/**
+ * Short-lived cache for read-only freshness probes.
+ *
+ * Freshness is the single most-called OntoIndex surface, and repeated probes
+ * within one agent turn re-derive an answer that cannot have changed. Only
+ * read-only calls are cached: any `autoAnalyze` request submits work and must
+ * always execute. The TTL is deliberately short to bound how long a verdict can
+ * lag a concurrent edit; set ONTOINDEX_FRESHNESS_CACHE_MS=0 to disable.
+ */
+const DEFAULT_FRESHNESS_CACHE_MS = 3_000;
+
+interface FreshnessCacheEntry {
+  expiresAt: number;
+  report: EnsureFreshReport;
+}
+
+const freshnessCache = new Map<string, FreshnessCacheEntry>();
+
+function freshnessCacheTtlMs(): number {
+  const raw = process.env.ONTOINDEX_FRESHNESS_CACHE_MS;
+  if (raw == null || raw.trim() === '') return DEFAULT_FRESHNESS_CACHE_MS;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return DEFAULT_FRESHNESS_CACHE_MS;
+  return Math.floor(value);
+}
+
+/** Test seam: drop every cached freshness verdict. */
+export function resetFreshnessCache(): void {
+  freshnessCache.clear();
+}
+
+function freshnessCacheKey(
+  repoId: string,
+  params: EnsureFreshParams,
+  requiredGraphCapabilities: readonly GraphAuthorityCapability[],
+): string {
+  return JSON.stringify([
+    repoId,
+    params.repo ?? null,
+    params.withEmbeddings === true,
+    requiredGraphCapabilities,
+  ]);
+}
+
 export function gnEnsureFresh(
   repoId: string,
   params: EnsureFreshParams & { legacyResponse: false },
@@ -396,10 +469,33 @@ export async function gnEnsureFresh(
   const requiredGraphCapabilities = normalizeRequiredGraphCapabilities(
     params.requiredGraphCapabilities,
   );
-  const report = await buildEnsureFreshReport(repoId, {
-    ...params,
-    requiredGraphCapabilities,
-  });
+  const cacheable = params.autoAnalyze !== true;
+  const ttlMs = freshnessCacheTtlMs();
+  const cacheKey = freshnessCacheKey(repoId, params, requiredGraphCapabilities);
+  let report: EnsureFreshReport | undefined;
+
+  if (cacheable && ttlMs > 0) {
+    const cached = freshnessCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      report = structuredClone(cached.report);
+    } else if (cached) {
+      freshnessCache.delete(cacheKey);
+    }
+  }
+
+  if (report === undefined) {
+    report = await buildEnsureFreshReport(repoId, {
+      ...params,
+      requiredGraphCapabilities,
+    });
+    if (cacheable && ttlMs > 0) {
+      freshnessCache.set(cacheKey, {
+        expiresAt: Date.now() + ttlMs,
+        report: structuredClone(report),
+      });
+    }
+  }
+
   if (params.legacyResponse !== false) return report;
   const targetContext = await resolveTargetContext({
     repo: params.repo ?? repoId,
@@ -552,13 +648,23 @@ async function buildEnsureFreshReport(
     warnings.push('git rev-parse HEAD returned a malformed commit identity.');
   }
   const isStale = currentCommit !== '' && indexedCommit !== '' && currentCommit !== indexedCommit;
-  const dirtyFileCount = await countDirtyFiles(repoRoot);
+  const dirtyWorktree = await summarizeDirtyWorktree(repoRoot);
+  const dirtyFileCount = dirtyWorktree.dirtyFileCount;
+  const dirtyWorktreeBreakdown = {
+    trackedChangedCount: dirtyWorktree.trackedChangedCount,
+    untrackedCount: dirtyWorktree.untrackedCount,
+  };
   const scopeConfidence = deriveScopeConfidence({
     selectorProvided: selectorResolved,
     cwdFallbackUsed: cwdFallbackUsed || selector === undefined,
     dirtyFileCount,
     isStale,
   });
+  if ((dirtyWorktree.untrackedCount ?? 0) > 0) {
+    warnings.push(
+      `${dirtyWorktree.untrackedCount} untracked file${dirtyWorktree.untrackedCount === 1 ? ' is' : 's are'} absent from the graph entirely; ${dirtyWorktree.trackedChangedCount} tracked change${dirtyWorktree.trackedChangedCount === 1 ? ' is' : 's are'} indexed at the indexed commit.`,
+    );
+  }
 
   // ---- 4. Build preCheck --------------------------------------------------
   const preCheck = { indexedCommit, currentCommit, isStale };
@@ -643,9 +749,14 @@ async function buildEnsureFreshReport(
     analysisSubmission = {
       status: 'blocked',
       reasonCode: 'WORKTREE_DIRTY',
-      message: `The worktree contains ${dirtyFileCount} changed file${dirtyFileCount === 1 ? '' : 's'}; analysis cannot be submitted safely.`,
+      message: `The worktree contains ${dirtyFileCount} changed file${dirtyFileCount === 1 ? '' : 's'}; analysis cannot be submitted safely. Managed analysis reads working-tree files but publishes under the commit source identity "commit:${currentCommit}", so indexing a dirty tree would label uncommitted content with a commit it does not match.`,
     };
-    recommendations.push('Commit or remove worktree changes before retrying autoAnalyze.');
+    recommendations.push(
+      `Commit or stash the ${dirtyFileCount} changed file${dirtyFileCount === 1 ? '' : 's'}, then retry gn_ensure_fresh({autoAnalyze: true}).`,
+    );
+    recommendations.push(
+      'To keep working without refreshing, treat the graph as commit-scoped to the indexed commit and verify uncommitted changes directly from source.',
+    );
   } else if (
     params.autoAnalyze &&
     params.withEmbeddings === true &&
@@ -684,6 +795,7 @@ async function buildEnsureFreshReport(
       headCommit: currentCommit,
       isStale,
       dirtyFileCount,
+      dirtyWorktreeBreakdown,
       scopeConfidence,
       runtimeHealth,
       actionsTaken,
@@ -808,6 +920,7 @@ async function buildEnsureFreshReport(
     headCommit: currentCommit,
     isStale,
     dirtyFileCount,
+    dirtyWorktreeBreakdown,
     scopeConfidence,
     runtimeHealth,
     actionsTaken,

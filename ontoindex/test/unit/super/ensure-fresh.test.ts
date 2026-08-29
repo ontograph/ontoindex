@@ -56,7 +56,7 @@ vi.mock('../../../src/mcp/shared/target-context.js', () => ({
 import { EventEmitter } from 'events';
 import { execFile, spawn } from 'child_process';
 import { readFileSync } from 'fs';
-import { gnEnsureFresh } from '../../../src/mcp/super/ensure-fresh.js';
+import { gnEnsureFresh, resetFreshnessCache } from '../../../src/mcp/super/ensure-fresh.js';
 import { readRuntimeHealth } from '../../../src/core/runtime/runtime-health.js';
 import {
   loadMeta,
@@ -231,6 +231,7 @@ function setupSpawnExit(code: number = 0) {
 describe('gnEnsureFresh', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetFreshnessCache();
     savedEnv = {};
     for (const key of Object.keys(process.env)) {
       if (key.startsWith('ONTOINDEX_')) {
@@ -972,5 +973,96 @@ describe('gnEnsureFresh', () => {
     expect(
       report.recommendations.some((r) => r.includes('no effect without autoAnalyze: true')),
     ).toBe(true);
+  });
+
+  // ---- Dirty-worktree breakdown ----
+  it('splits the dirty worktree into tracked and untracked counts', async () => {
+    setupExecFile({
+      currentCommit: CURRENT_COMMIT,
+      statusOutput: ' M src/edit.ts\n?? src/new-file.rs\n?? src/other.ts\n',
+    });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, {});
+
+    expect(report.dirtyFileCount).toBe(3);
+    expect(report.dirtyWorktreeBreakdown).toEqual({
+      trackedChangedCount: 1,
+      untrackedCount: 2,
+    });
+    expect(report.warnings.some((w) => w.includes('absent from the graph entirely'))).toBe(true);
+  });
+
+  it('agrees in number when exactly one file of each kind is present', async () => {
+    setupExecFile({
+      currentCommit: CURRENT_COMMIT,
+      statusOutput: ' M src/edit.ts\n?? src/new-file.rs\n',
+    });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, {});
+
+    const warning = report.warnings.find((w) => w.includes('absent from the graph entirely'));
+    expect(warning).toBe(
+      '1 untracked file is absent from the graph entirely; 1 tracked change is indexed at the indexed commit.',
+    );
+  });
+
+  it('reports a clean worktree with zeroed breakdown and no untracked warning', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, {});
+
+    expect(report.dirtyWorktreeBreakdown).toEqual({
+      trackedChangedCount: 0,
+      untrackedCount: 0,
+    });
+    expect(report.warnings.some((w) => w.includes('absent from the graph entirely'))).toBe(false);
+  });
+
+  it('explains why a dirty worktree blocks managed analysis', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT, statusOutput: ' M src/edit.ts\n' });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(report.analysisSubmission).toMatchObject({ reasonCode: 'WORKTREE_DIRTY' });
+    const message = (report.analysisSubmission as { message: string }).message;
+    expect(message).toContain(`commit:${CURRENT_COMMIT}`);
+    expect(report.recommendations.some((r) => r.includes('Commit or stash'))).toBe(true);
+  });
+
+  // ---- Read-only freshness caching ----
+  it('serves repeated read-only probes from cache and re-probes after reset', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+
+    const first = await gnEnsureFresh(REPO_ID, {});
+    const revParseCalls = () =>
+      mockExecFile.mock.calls.filter((call) => (call[1] as string[]).includes('rev-parse')).length;
+    const afterFirst = revParseCalls();
+    const second = await gnEnsureFresh(REPO_ID, {});
+
+    expect(second).toEqual(first);
+    expect(revParseCalls()).toBe(afterFirst);
+
+    resetFreshnessCache();
+    await gnEnsureFresh(REPO_ID, {});
+    expect(revParseCalls()).toBeGreaterThan(afterFirst);
+  });
+
+  it('never serves an autoAnalyze request from cache', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT, statusOutput: ' M src/edit.ts\n' });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+
+    await gnEnsureFresh(REPO_ID, {});
+    const revParseCalls = () =>
+      mockExecFile.mock.calls.filter((call) => (call[1] as string[]).includes('rev-parse')).length;
+    const afterReadOnly = revParseCalls();
+
+    await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(revParseCalls()).toBeGreaterThan(afterReadOnly);
   });
 });

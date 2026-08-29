@@ -1,7 +1,7 @@
 # OntoIndex 2.2.0
 
-OntoIndex 2.2.0 strengthens two trust boundaries: audit-history integrity and
-managed analysis publication.
+OntoIndex 2.2.0 strengthens audit-history integrity, managed analysis publication,
+and the read-only diagnostics used to decide when those workflows are safe.
 
 ## Highlights
 
@@ -21,6 +21,11 @@ managed analysis publication.
 - Generation activation, publication commit, and rollback are one serialized
   transaction. Failed commits restore the previous generation or remove the
   first-generation pointer without deleting diagnostic output.
+- Read-only freshness probes use a short bounded cache, report tracked versus
+  untracked worktree changes, and never cache managed analysis requests.
+- Diagnostics no longer advertise managed refresh while the worktree is dirty,
+  and unknown symbols return `CAUTION` instead of treating missing graph evidence
+  as proof of edit safety.
 
 ## Recovery Contract
 
@@ -40,5 +45,6 @@ unchanged only after `REFRESHED`.
 ## Distribution
 
 This release is distributed as the installable GitHub asset
-`ontoindex-2.2.0.tgz` under tag `github-release/2.2.0`. It is intentionally not
-published to the public npm registry and does not create 2.2.0 container tags.
+`ontoindex-2.2.0.tgz` under the GitHub-only tag `github-release/2.2.0-r1`. It is
+intentionally not published to the public npm registry and does not create 2.2.0
+container tags.

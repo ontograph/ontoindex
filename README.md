@@ -149,8 +149,8 @@ Use this when you want an immutable GitHub release asset.
 
 | Platform           | Command                                                                                                                                       |
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Linux/macOS        | `npm install -g https://github.com/ontograph/ontoindex/releases/download/github-release%2F2.2.0/ontoindex-2.2.0.tgz && ontoindex --version`   |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/github-release%2F2.2.0/ontoindex-2.2.0.tgz; ontoindex --version` |
+| Linux/macOS        | `npm install -g https://github.com/ontograph/ontoindex/releases/download/github-release%2F2.2.0-r1/ontoindex-2.2.0.tgz && ontoindex --version`   |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/github-release%2F2.2.0-r1/ontoindex-2.2.0.tgz; ontoindex --version` |
 
 ## First Run
 
@@ -372,8 +372,8 @@ Images:
 
 | Image                                   | Purpose                                             |
 | --------------------------------------- | --------------------------------------------------- |
-| `ghcr.io/ontograph/ontoindex:2.1.4`     | Latest published CLI, MCP server, and backend image |
-| `ghcr.io/ontograph/ontoindex-web:2.1.4` | Latest published web UI image                       |
+| `ghcr.io/ontograph/ontoindex:2.2.0`     | Latest published CLI, MCP server, and backend image |
+| `ghcr.io/ontograph/ontoindex-web:2.2.0` | Latest published web UI image                       |
 
 ## Comparison With Related Tools
 

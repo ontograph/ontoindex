@@ -711,9 +711,9 @@ describe('gnSafeEditCheck', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Additional: symbol not found returns safe report with warning
+  // Additional: symbol not found must not yield the most permissive verdict
   // -------------------------------------------------------------------------
-  it('returns SAFE with warning when symbol is not found in index', async () => {
+  it('returns CAUTION with warning when symbol is not found in index', async () => {
     // resolveSymbol returns empty
     mockExecuteParameterized.mockResolvedValueOnce([]); // canonical lookup → 0 rows
     mockFindTestFiles.mockResolvedValue({ coveringTests: [], likelihoodOfCoverage: 'NONE' });
@@ -721,10 +721,26 @@ describe('gnSafeEditCheck', () => {
 
     const report = await gnSafeEditCheck(REPO_ID, { symbol: 'unknownSymbol' });
 
-    expect(report.verdict).toBe('SAFE');
+    expect(report.verdict).toBe('CAUTION');
     expect(report.warnings).toContain('symbol not found in index');
     expect(report.symbol.nodeId).toBe('');
     expect(report.rawCounts).toBeUndefined();
+    expect(report.preChecks).toContainEqual(
+      expect.objectContaining({ check: 'symbol_in_index', passed: false }),
+    );
+  });
+
+  it('does not report a delete-intent unknown symbol as SAFE', async () => {
+    mockExecuteParameterized.mockResolvedValueOnce([]);
+    mockFindTestFiles.mockResolvedValue({ coveringTests: [], likelihoodOfCoverage: 'NONE' });
+    mockGetClient.mockResolvedValue(null);
+
+    const report = await gnSafeEditCheck(REPO_ID, {
+      symbol: 'definitely_not_a_real_symbol',
+      intent: 'delete',
+    });
+
+    expect(report.verdict).not.toBe('SAFE');
   });
 
   // -------------------------------------------------------------------------

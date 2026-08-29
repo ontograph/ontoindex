@@ -23,6 +23,9 @@ All notable changes to OntoIndex will be documented in this file.
 
 ### Fixed
 
+- Clarified stale-index recovery guidance so diagnostics no longer recommend managed analysis while the worktree is dirty or its status is unknown.
+- Added bounded read-only freshness caching and tracked/untracked worktree breakdowns without caching mutating analysis requests.
+- Made unknown symbols return `CAUTION` instead of `SAFE` when no graph evidence is available.
 - Fixed a trust bypass where changing only `schemaVersion` to `1` suppressed verification of a tampered schema-v2 store and allowed it to dispatch. Verification authority now comes from the surviving integrity envelopes, not the caller-controlled version field.
 - Fixed a laundering path where stripping every integrity envelope and declaring schema v1 let one ordinary append re-sign tampered history into a dispatchable state.
 - Fixed acknowledged archive-and-reset refusing `LEGACY_UNVERIFIED` stores, which left operators with no safe recovery route.
