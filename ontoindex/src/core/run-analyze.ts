@@ -174,8 +174,19 @@ export function resolveEmbeddingLifecycleMode(
   return options?.force ? 'refresh' : 'preserve';
 }
 
-/** Threshold: auto-skip embeddings for repos with more nodes than this */
-const EMBEDDING_NODE_LIMIT = 50_000;
+/**
+ * Threshold: auto-skip embeddings for repos with more nodes than this.
+ * Override with ONTOINDEX_EMBEDDING_NODE_LIMIT for large first-party repos
+ * that would otherwise never populate embeddings, leaving semantic search
+ * permanently empty. A non-positive value disables the cap.
+ */
+const DEFAULT_EMBEDDING_NODE_LIMIT = 50_000;
+
+function embeddingNodeLimit(): number {
+  const configured = Number.parseInt(process.env.ONTOINDEX_EMBEDDING_NODE_LIMIT ?? '', 10);
+  if (!Number.isFinite(configured)) return DEFAULT_EMBEDDING_NODE_LIMIT;
+  return configured <= 0 ? Number.POSITIVE_INFINITY : configured;
+}
 const MANAGED_GIT_STATUS_TIMEOUT_MS = 5_000;
 const MANAGED_GIT_STATUS_MAX_BUFFER = 1024 * 1024;
 
@@ -1208,11 +1219,13 @@ export async function runFullAnalysis(
     if (embeddingsEnabledForRun) {
       const embeddableNodeCount = await countEmbeddableGraphNodes();
       const embeddingLimitCount = embeddableNodeCount ?? stats.nodes;
-      if (embeddingLimitCount <= EMBEDDING_NODE_LIMIT) {
+      const nodeLimit = embeddingNodeLimit();
+      if (embeddingLimitCount <= nodeLimit) {
         embeddingSkipped = false;
       } else {
         log(
-          `Skipping embeddings for ${embeddingLimitCount} embeddable nodes (limit ${EMBEDDING_NODE_LIMIT}).`,
+          `Skipping embeddings for ${embeddingLimitCount} embeddable nodes (limit ${nodeLimit}). ` +
+            `Set ONTOINDEX_EMBEDDING_NODE_LIMIT to raise or disable this cap.`,
         );
       }
     }
