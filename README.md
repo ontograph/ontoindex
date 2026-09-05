@@ -87,6 +87,12 @@ iwr -useb https://raw.githubusercontent.com/ontograph/ontoindex/master/scripts/i
 ontoindex --version
 ```
 
+Both installers run `ontoindex setup` after a validated install, so MCP client
+configuration, agent guidance, and skills are in place without a second command.
+Setup is idempotent, and a setup failure does not fail the install. Set
+`ONTOINDEX_SKIP_SETUP=1` to install without it. Restart your editor or agent
+client afterwards so it loads the OntoIndex MCP server.
+
 Windows note:
 
 - OntoIndex no longer supports Node.js 20 in the current release line because `commander@15`
@@ -136,6 +142,7 @@ Installer configuration:
 | Force user prefix              | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`    | `.\scripts\install-ontoindex-latest.ps1 -ForceUserPrefix`                              |
 | Require FTS/vector cache prefetch | `ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1` |
 | Skip FTS/vector cache prefetch    | `ONTOINDEX_SKIP_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh`    | `$env:ONTOINDEX_SKIP_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1`    |
+| Skip `ontoindex setup` after install | `ONTOINDEX_SKIP_SETUP=1 ./scripts/install-ontoindex-latest.sh`              | `$env:ONTOINDEX_SKIP_SETUP='1'; .\scripts\install-ontoindex-latest.ps1`                |
 
 ### Install with npm
 
@@ -218,6 +225,13 @@ normalization or call the tool as `name="inspect"` with `namespace="mcp__ontoind
 ## MCP Setup
 
 `ontoindex setup` configures supported MCP clients automatically. Manual examples are useful for debugging or for clients that do not support automatic setup.
+
+Alongside MCP configuration, `ontoindex setup` installs the OntoIndex skills for
+the clients it detects: `~/.claude/skills/`, `~/.cursor/skills/`,
+`~/.agents/skills/` for Codex, `~/.config/opencode/skill/` for OpenCode, and
+`~/.ontocode/skills/` for Ontocode. Rerun `ontoindex setup` after upgrading so
+those copies match the installed tool contract; a client that keeps stale skill
+files will call tool names that no longer exist.
 
 | Client         | Linux/macOS                                   | Windows PowerShell                            |
 | -------------- | --------------------------------------------- | --------------------------------------------- |

@@ -18,24 +18,29 @@ description: "Use when the user wants to review a pull request, understand what 
 
 ```
 1. gh pr diff <number>                                    → Get the raw diff
-2. ontoindex_detect_changes({scope: "compare", base_ref: "main"})  → Map diff to affected flows
-3. For each changed symbol:
-   ontoindex_impact({target: "<symbol>", direction: "upstream"})    → Blast radius per change
-4. ontoindex_context({name: "<key symbol>"})               → Understand callers/callees
-5. READ ontoindex://repo/{name}/processes                   → Check affected execution flows
+2. gn_ensure_fresh({repo})                                → Check freshness first
+3. gn_review_diff({repo}) / gn_verify_diff({repo, scope: "all"})  → Map diff to affected flows
+4. For each changed symbol:
+   impact({action: "symbol", repo, target: "<symbol>", direction: "upstream"})  → Blast radius
+5. inspect({action: "context", repo, target: "<key symbol>"})  → Understand callers/callees
 6. Summarize findings with risk assessment
 ```
 
-> If "Index is stale" → run `npx ontoindex analyze` in terminal before reviewing.
+> If freshness reports stale, refresh with `ontoindex analyze` under the
+> single-owner rules in `ontoindex-cli` before reviewing.
+
+Uncommitted or unindexed PR code is not in the graph. Verify those changes
+against the diff or current source.
 
 ## Checklist
 
 ```
 - [ ] Fetch PR diff (gh pr diff or git diff base...head)
-- [ ] ontoindex_detect_changes to map changes to affected execution flows
-- [ ] ontoindex_impact on each non-trivial changed symbol
-- [ ] Review d=1 items (WILL BREAK) — are callers updated?
-- [ ] ontoindex_context on key changed symbols to understand full picture
+- [ ] gn_ensure_fresh({repo}) and record freshness
+- [ ] gn_verify_diff to map changes to affected execution flows
+- [ ] impact({action: "symbol"}) on each non-trivial changed symbol
+- [ ] Review d=1 items — are callers updated for the actual behavior change?
+- [ ] inspect({action: "context"}) on key changed symbols
 - [ ] Check if affected processes have test coverage
 - [ ] Assess overall risk level
 - [ ] Write review summary with findings
@@ -63,22 +68,23 @@ description: "Use when the user wants to review a pull request, understand what 
 
 ## Tools
 
-**ontoindex_detect_changes** — map PR diff to affected execution flows:
+**gn_verify_diff** — map PR diff to affected execution flows (`gn_review_diff`
+and `gn_diff_impact` give review-shaped variants):
 
 ```
-ontoindex_detect_changes({scope: "compare", base_ref: "main"})
+gn_verify_diff({repo: "<repo>", scope: "all"})
 
 → Changed: 8 symbols in 4 files
 → Affected processes: CheckoutFlow, RefundFlow, WebhookHandler
 → Risk: MEDIUM
 ```
 
-**ontoindex_impact** — blast radius per changed symbol:
+**impact** — blast radius per changed symbol:
 
 ```
-ontoindex_impact({target: "validatePayment", direction: "upstream"})
+impact({action: "symbol", repo: "<repo>", target: "validatePayment", direction: "upstream"})
 
-→ d=1 (WILL BREAK):
+→ d=1 (INSPECT EACH):
   - processCheckout (src/checkout.ts:42) [CALLS, 100%]
   - webhookHandler (src/webhooks.ts:15) [CALLS, 100%]
 
@@ -86,20 +92,20 @@ ontoindex_impact({target: "validatePayment", direction: "upstream"})
   - checkoutRouter (src/routes/checkout.ts:22) [CALLS, 95%]
 ```
 
-**ontoindex_impact with tests** — check test coverage:
+**gn_test_gap / gn_test_suggestions** — check test coverage for the change:
 
 ```
-ontoindex_impact({target: "validatePayment", direction: "upstream", includeTests: true})
+gn_test_gap({repo: "<repo>"})
 
 → Tests that cover this symbol:
   - validatePayment.test.ts [direct]
   - checkout.integration.test.ts [via processCheckout]
 ```
 
-**ontoindex_context** — understand a changed symbol's role:
+**inspect** — understand a changed symbol's role:
 
 ```
-ontoindex_context({name: "validatePayment"})
+inspect({action: "context", repo: "<repo>", target: "validatePayment"})
 
 → Incoming calls: processCheckout, webhookHandler
 → Outgoing calls: verifyCard, fetchRates
@@ -112,20 +118,20 @@ ontoindex_context({name: "validatePayment"})
 1. gh pr diff 42 > /tmp/pr42.diff
    → 4 files changed: payments.ts, checkout.ts, types.ts, utils.ts
 
-2. ontoindex_detect_changes({scope: "compare", base_ref: "main"})
+2. gn_verify_diff({repo: "my-app", scope: "all"})
    → Changed symbols: validatePayment, PaymentInput, formatAmount
    → Affected processes: CheckoutFlow, RefundFlow
    → Risk: MEDIUM
 
-3. ontoindex_impact({target: "validatePayment", direction: "upstream"})
-   → d=1: processCheckout, webhookHandler (WILL BREAK)
+3. impact({action: "symbol", repo: "my-app", target: "validatePayment", direction: "upstream"})
+   → d=1: processCheckout, webhookHandler (inspect both)
    → webhookHandler is NOT in the PR diff — potential breakage!
 
-4. ontoindex_impact({target: "PaymentInput", direction: "upstream"})
+4. impact({action: "symbol", repo: "my-app", target: "PaymentInput", direction: "upstream"})
    → d=1: validatePayment (in PR), createPayment (NOT in PR)
    → createPayment uses the old PaymentInput shape — breaking change!
 
-5. ontoindex_context({name: "formatAmount"})
+5. inspect({action: "context", repo: "my-app", target: "formatAmount"})
    → Called by 12 functions — but change is backwards-compatible (added optional param)
 
 6. Review summary:

@@ -4,6 +4,28 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `ontoindex setup` now installs skills into `~/.ontocode/skills/` for Ontocode, which previously
+  received MCP configuration, agent guidance, and hooks but never had its skill copies refreshed.
+- The Linux/macOS and Windows installers now run `ontoindex setup` after a validated install, so
+  skills and MCP client configuration are in place without a second manual command. Setup failures
+  are reported as warnings and do not fail the install. Set `ONTOINDEX_SKIP_SETUP=1` to opt out.
+
+### Fixed
+
+- Corrected the OntoIndex skills to use callable tool names. They documented `ontoindex_query`,
+  `ontoindex_context`, `ontoindex_impact`, `ontoindex_rename`, and `ontoindex_detect_changes`,
+  none of which exist in the 2.x MCP surface. They now use the `search`, `inspect`, `impact`, and
+  `refactor` facades and the `gn_*` tools, verified against `gn_tool_contract`.
+- Replaced the "WILL BREAK" label on direct dependents in impact and PR-review guidance. Dependency
+  distance is review priority, not proof of breakage, and the previous wording caused agents to
+  report unverified regressions.
+- Added explicit missing-tool handling to the skills so an agent reports an unavailable OntoIndex
+  tool instead of presenting grep results as graph-backed evidence.
+- Documented that the `ontoindex` facade dispatcher is advertised but not callable in the default
+  `public-full` startup profile.
+
 ## [2.1.5] - 2026-08-06
 
 ### Added

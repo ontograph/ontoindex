@@ -7,15 +7,50 @@ description: "Use when the user asks about OntoIndex itself — available tools,
 
 Quick reference for all OntoIndex MCP tools, resources, and the knowledge graph schema.
 
+Verified against OntoIndex 2.2.0 on 2026-09-05 by calling the running MCP
+server (`gn_tool_contract`).
+
 ## Always Start Here
 
 For any task involving code understanding, debugging, impact analysis, or refactoring:
 
-1. **Read `ontoindex://repo/{name}/context`** — codebase overview + check index freshness
+1. **Check freshness** with `gn_ensure_fresh({repo})` before any graph-backed claim.
 2. **Match your task to a skill below** and **read that skill file**
 3. **Follow the skill's workflow and checklist**
 
-> If step 1 warns the index is stale, run `npx ontoindex analyze` in the terminal first.
+If OntoIndex is required but no OntoIndex tool is callable, stop and report the
+missing tool. Do not silently fall back to grep-only inspection and present the
+result as graph-backed evidence. Repair with `ontoindex mcp-doctor` and
+`ontoindex setup`, then confirm the tools are callable.
+
+> If freshness reports stale, refresh with `ontoindex analyze`. See
+> `ontoindex-cli` for the single-owner lock and job rules.
+
+## Tool Naming
+
+Two callable surfaces exist. Both are served by the same MCP server.
+
+- Facade tools take an `action`: `search`, `inspect`, `impact`, `refactor`,
+  `audit`, `docs`, `discover`, `manage`.
+- Compatibility tools are the 54 `gn_*` tools, such as `gn_explore`,
+  `gn_ensure_fresh`, `gn_verify_diff`, and `gn_safe_edit_check`.
+
+The `ontoindex` dispatcher tool is advertised by the registry but is **not**
+callable in the default `public-full` startup profile; calling it returns
+`Unknown tool method: ontoindex`. Use a facade or `gn_*` tool instead.
+
+Verified callable examples:
+
+```
+search({action: "semantic", repo: "<repo>", query: "concept"})
+inspect({action: "context", repo: "<repo>", target: "symbolName"})
+impact({action: "symbol", repo: "<repo>", target: "symbolName", direction: "upstream"})
+gn_ensure_fresh({repo: "<repo>"})
+```
+
+Older `ontoindex_query`, `ontoindex_context`, `ontoindex_impact`,
+`ontoindex_rename`, and `ontoindex_detect_changes` names are **not** callable in
+2.2.0. Use the facade or `gn_*` equivalents below.
 
 ## Skills
 
@@ -30,19 +65,26 @@ For any task involving code understanding, debugging, impact analysis, or refact
 
 ## Tools Reference
 
-| Tool             | What it gives you                                                        |
-| ---------------- | ------------------------------------------------------------------------ |
-| `query`          | Process-grouped code intelligence — execution flows related to a concept |
-| `context`        | 360-degree symbol view — categorized refs, processes it participates in  |
-| `impact`         | Symbol blast radius — what breaks at depth 1/2/3 with confidence         |
-| `detect_changes` | Git-diff impact — what do your current changes affect                    |
-| `rename`         | Multi-file coordinated rename with confidence-tagged edits               |
-| `cypher`         | Raw graph queries (read `ontoindex://repo/{name}/schema` first)           |
-| `list_repos`     | Discover indexed repos                                                   |
+| Intent                  | Callable tool                                     |
+| ----------------------- | ------------------------------------------------- |
+| Find execution flows    | `search({action: "semantic"})` or `gn_explore`     |
+| Symbol callers/callees  | `inspect({action: "context"})` or `gn_find_related`|
+| Blast radius            | `impact({action: "symbol"})`                       |
+| Pre-edit safety check   | `gn_safe_edit_check`                               |
+| Diff/commit verification| `gn_verify_diff`, `gn_diff_impact`                 |
+| Coordinated rename      | `refactor({action: "rename"})`, `gn_safe_refactor` |
+| Index freshness         | `gn_ensure_fresh`, `gn_analyze_job`                |
+| Deletion safety         | `gn_can_delete`                                    |
+| Discover the surface    | `gn_help`, `gn_tool_contract`                      |
+
+Confirm the exact surface for an installed version with `gn_tool_contract`;
+it reports advertised versus callable names and any drift.
 
 ## Resources Reference
 
-Lightweight reads (~100-500 tokens) for navigation:
+Lightweight reads (~100-500 tokens) for navigation. `mcp-doctor` may report the
+resource bridge as "not exposed"; when it is unavailable, use the tools above
+instead of assuming the resource read failed for another reason.
 
 | Resource                                       | Content                                   |
 | ---------------------------------------------- | ----------------------------------------- |

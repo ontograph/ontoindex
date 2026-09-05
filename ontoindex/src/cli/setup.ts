@@ -869,6 +869,28 @@ async function installCodexSkills(result: SetupResult): Promise<void> {
   }
 }
 
+/**
+ * Install global Ontocode skills to ~/.ontocode/skills/
+ *
+ * Ontocode already receives MCP configuration, agent guidance, and hooks during
+ * setup. Without this step its skill copies are never refreshed, so agents keep
+ * reading stale tool names after an upgrade.
+ */
+async function installOntocodeSkills(result: SetupResult): Promise<void> {
+  const ontocodeDir = path.join(os.homedir(), '.ontocode');
+  if (!(await dirExists(ontocodeDir))) return;
+
+  const skillsDir = path.join(ontocodeDir, 'skills');
+  try {
+    const installed = await installSkillsTo(skillsDir);
+    if (installed.length > 0) {
+      result.configured.push(`Ontocode skills (${installed.length} skills → ~/.ontocode/skills/)`);
+    }
+  } catch (err: unknown) {
+    result.errors.push(`Ontocode skills: ${caughtMessage(err)}`);
+  }
+}
+
 // ─── Main command ──────────────────────────────────────────────────
 
 export const setupCommand = async () => {
@@ -931,6 +953,7 @@ export const setupCommand = async () => {
   await installCodexSkills(result);
   await installCodexHooks(result);
 
+  await installOntocodeSkills(result);
   await installOntocodeHooks(result);
 
   // Print results

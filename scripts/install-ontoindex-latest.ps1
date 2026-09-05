@@ -566,12 +566,34 @@ try {
   throw
 }
 
+$skipSetup = $env:ONTOINDEX_SKIP_SETUP -eq "1"
+if ($skipSetup) {
+  Write-Host "Skipping skill and MCP setup: ONTOINDEX_SKIP_SETUP=1"
+} else {
+  Write-Host "Running 'ontoindex setup' to install skills and configure MCP clients"
+  try {
+    & $binPath setup
+    if ($LASTEXITCODE -ne 0) {
+      throw "ontoindex setup exited with code $LASTEXITCODE"
+    }
+  } catch {
+    Write-Warning "'ontoindex setup' failed; the install itself is complete."
+    Write-Warning "Rerun 'ontoindex setup' manually to install skills and configure MCP clients."
+  }
+}
+
 Write-Host "Note: this installer uses npm to resolve third-party runtime packages."
 Write-Host "A non-fatal npm warning about deprecated transitive packages can appear while upstream packages catch up."
 Write-Host "For air-gapped installs, use a separately prepared npm cache or internal registry mirror."
 Write-Host ""
-Write-Host "Next step: run 'ontoindex setup' after installation to configure MCP clients and agent guidance."
+if ($skipSetup) {
+  Write-Host "Next step: run 'ontoindex setup' to configure MCP clients, skills, and agent guidance."
+} else {
+  Write-Host "Skills and MCP client configuration were installed by 'ontoindex setup'."
+  Write-Host "Restart your editor or agent client so it loads the OntoIndex MCP server."
+}
 Write-Host "The setup command is idempotent and will not duplicate existing OntoIndex settings."
+Write-Host "Set ONTOINDEX_SKIP_SETUP=1 to install without running setup."
 
 if (($env:Path -split ';') -notcontains $NpmPrefix -and (Test-Path (Join-Path $NpmPrefix "ontoindex.cmd"))) {
   Write-Host ""
