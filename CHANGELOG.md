@@ -4,6 +4,46 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-09-05
+
+### Fixed
+
+- Made managed analysis of dirty worktrees publish under a `worktree:<source-manifest-digest>` identity instead of incorrectly claiming the indexed bytes matched `commit:<HEAD>`.
+- Allowed `gn_ensure_fresh({ autoAnalyze: true })` to refresh uncommitted source safely while preserving exact source identity through job submission, runner context, publication receipts, and `gn_analyze_job` recovery validation.
+- Treated dirty working-tree content as refreshable work even when the indexed commit already matches the current HEAD.
+
+## [2.2.0] - 2026-08-18
+
+### Added
+
+- Added tamper-evident integrity envelopes to the persisted audit event store: each event carries a monotonic `sequence`, a `previousChecksum` link, and a SHA-256 `checksum` over versioned canonical JSON, so interior mutation, insertion, and reordering are detected at the first affected sequence.
+- Added `ontoindex audit integrity` for read-only operator verification, plus an archive-and-reset path gated behind both `--reset-broken` and `--acknowledge-data-loss` that preserves the original store bytes.
+- Added job-bound managed-analysis publication receipts covering repository identity, target HEAD, source manifest, requested capabilities, generation identity, analyzer contract, and publication time.
+- Added capability-aware terminal recovery results to `gn_analyze_job`: `REFRESH_RUNNING`, `REFRESHED`, `FAILED`, and `FRESHNESS_UNCONFIRMED`.
+
+### Changed
+
+- Trust-sensitive audit dispatch now fails closed unless the retained event chain verifies completely. Broken and unverified-legacy chains are refused at both the direct and manager dispatch entry points; read-only diff, replay, and export remain available with an explicit integrity status.
+- Schema-v1 audit event stores are now read-only. They report `LEGACY_UNVERIFIED` and refuse appends and direct saves rather than being migrated in place, because rewriting unverified events would sign history the chain never covered. The corrective path is an acknowledged archive-and-reset followed by re-ingest.
+- Split managed freshness recovery responsibilities: `gn_ensure_fresh` owns prerequisite classification and exact job submission or reuse, while `gn_analyze_job` owns receipt validation and the final capability-aware post-check.
+- Made managed job reuse identity include the target commit, source snapshot, requested graph and embedding capabilities, and analysis options.
+- Serialized generation activation, publication commit, and rollback under one owner-checked generation-pointer lock.
+
+### Fixed
+
+- Clarified stale-index recovery guidance so diagnostics no longer recommend managed analysis while the worktree is dirty or its status is unknown.
+- Added bounded read-only freshness caching and tracked/untracked worktree breakdowns without caching mutating analysis requests.
+- Made unknown symbols return `CAUTION` instead of `SAFE` when no graph evidence is available.
+- Fixed a trust bypass where changing only `schemaVersion` to `1` suppressed verification of a tampered schema-v2 store and allowed it to dispatch. Verification authority now comes from the surviving integrity envelopes, not the caller-controlled version field.
+- Fixed a laundering path where stripping every integrity envelope and declaring schema v1 let one ordinary append re-sign tampered history into a dispatchable state.
+- Fixed acknowledged archive-and-reset refusing `LEGACY_UNVERIFIED` stores, which left operators with no safe recovery route.
+- Prevented exit code zero or a copied active generation ID from being treated as proof that a managed job published the requested graph.
+- Made missing required embeddings actionable even when the indexed commit already matches HEAD.
+- Prevented same-HEAD job reuse when the source manifest or requested capabilities differ.
+- Made active-job conflicts, analyzer-lock conflicts, and pre-job submission failures return structured outcomes without asking clients to delete analyzer locks.
+- Made generation publication transactional: failed coordinator commits restore the exact previous generation, first-generation failures remove the active pointer, concurrent activation is fenced, and failed generations remain available for diagnostics.
+- Surfaced owner-lock cleanup failures and rejected rollback through substituted generation symlinks.
+
 ## [2.1.5] - 2026-08-06
 
 ### Added
@@ -82,27 +122,33 @@ All notable changes to OntoIndex will be documented in this file.
 ## [2.0.8] - 2026-07-07
 
 ### Fixed
+
 - Repaired `ontoindex setup` TOML MCP upserts so rerunning setup replaces the full
   `[mcp_servers.ontoindex]` block instead of leaving duplicate `args` keys behind in
   Codex-compatible `config.toml` files.
 
 ### Changed
+
 - Updated public install examples and release metadata for the `2.0.8` release.
 
 ## [2.0.7] - 2026-07-07
 
 ### Added
+
 - Added MCP client call-shape troubleshooting so Ontocode-style users can distinguish client-router `unsupported call: mcp__ontoindex__...` failures from OntoIndex server or index issues.
 
 ### Changed
+
 - Generated MCP function ADR pages now include the canonical Ontocode-style `namespace="mcp__ontoindex", name="<tool>"` call identity and flattened-name troubleshooting guidance.
 
 ## [2.0.6] - 2026-07-04
 
 ### Added
+
 - Setup CLI now configures native PreToolUse and PostToolUse integration hooks across Codex and Ontocode (in addition to Claude Code) for automatic index augmentation and freshness checks.
 
 ### Changed
+
 - Filtered `minimum`, `maximum`, and `default` boundaries out of the MCP tools JSON schema broadcast, mitigating hallucination issues with strict LLM clients like Gemini without compromising server-side validation.
 
 ## [2.0.5] - 2026-07-04

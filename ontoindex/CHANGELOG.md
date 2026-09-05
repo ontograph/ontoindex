@@ -4,6 +4,31 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-08-18
+
+### Added
+
+- Added tamper-evident audit event chains and the read-only `ontoindex audit integrity` verification command, with an explicitly acknowledged archive-and-reset recovery path.
+- Added job-bound managed-analysis publication receipts covering repository identity, target HEAD, source manifest, requested capabilities, generation identity, analyzer contract, and publication time.
+- Added capability-aware terminal recovery results to `gn_analyze_job`: `REFRESH_RUNNING`, `REFRESHED`, `FAILED`, and `FRESHNESS_UNCONFIRMED`.
+
+### Changed
+
+- Split managed freshness recovery responsibilities: `gn_ensure_fresh` owns prerequisite classification and exact job submission or reuse, while `gn_analyze_job` owns receipt validation and the final capability-aware post-check.
+- Made managed job reuse identity include the target commit, source snapshot, requested graph and embedding capabilities, and analysis options.
+- Serialized generation activation, publication commit, and rollback under one owner-checked generation-pointer lock.
+- Made legacy audit stores read-only and made trust-sensitive dispatch fail closed unless the complete retained integrity chain verifies.
+
+### Fixed
+
+- Prevented exit code zero or a copied active generation ID from being treated as proof that a managed job published the requested graph.
+- Made missing required embeddings actionable even when the indexed commit already matches HEAD.
+- Prevented same-HEAD job reuse when the source manifest or requested capabilities differ.
+- Made active-job conflicts, analyzer-lock conflicts, and pre-job submission failures return structured outcomes without asking clients to delete analyzer locks.
+- Made generation publication transactional: failed coordinator commits restore the exact previous generation, first-generation failures remove the active pointer, concurrent activation is fenced, and failed generations remain available for diagnostics.
+- Surfaced owner-lock cleanup failures and rejected rollback through substituted generation symlinks.
+- Closed audit-store downgrade and laundering paths that could otherwise hide or re-sign tampered history.
+
 ## [2.1.5] - 2026-08-06
 
 ### Added

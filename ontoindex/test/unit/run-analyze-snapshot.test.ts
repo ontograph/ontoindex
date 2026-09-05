@@ -13,6 +13,24 @@ const { embeddingPipelineMocks } = vi.hoisted(() => ({
   },
 }));
 
+const { execFileTextMock } = vi.hoisted(() => ({
+  execFileTextMock: vi.fn().mockResolvedValue(''),
+}));
+
+const { repoManagerGenerationMockState } = vi.hoisted(() => ({
+  repoManagerGenerationMockState: {
+    canonicalGenerationId: null as string | null,
+  },
+}));
+
+const { managedAnalysisCoordinatorMocks } = vi.hoisted(() => ({
+  managedAnalysisCoordinatorMocks: {
+    claimManagedAnalysisAnalyzer: vi.fn().mockResolvedValue({}),
+    beginManagedAnalysisPublication: vi.fn().mockResolvedValue({}),
+    commitManagedAnalysisPublication: vi.fn().mockResolvedValue({}),
+  },
+}));
+
 vi.mock('../../src/core/ingestion/pipeline.js', () => ({
   runPipelineFromRepo: vi.fn(),
 }));
@@ -38,6 +56,15 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...(actual as any),
+    createIndexGeneration: vi.fn(async (...args: unknown[]) => {
+      const stagedGeneration = await (actual as any).createIndexGeneration(...args);
+      return repoManagerGenerationMockState.canonicalGenerationId
+        ? {
+            ...stagedGeneration,
+            generationId: repoManagerGenerationMockState.canonicalGenerationId,
+          }
+        : stagedGeneration;
+    }),
     loadMeta: vi.fn().mockResolvedValue(null),
     saveMeta: vi.fn().mockResolvedValue(undefined),
     registerRepo: vi.fn().mockResolvedValue('snapshot-test'),
@@ -65,6 +92,12 @@ vi.mock('../../src/core/search/bm25-index.js', () => ({
 
 vi.mock('../../src/core/embeddings/embedding-pipeline.js', () => embeddingPipelineMocks);
 
+vi.mock('../../src/core/process/exec-file.js', () => ({
+  execFileText: execFileTextMock,
+}));
+
+vi.mock('../../src/core/analysis/analysis-coordinator.js', () => managedAnalysisCoordinatorMocks);
+
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import {
@@ -79,7 +112,21 @@ import {
   loadSidecarStoreState,
   MARKDOWN_DOCUMENT_ANALYZER_ID,
 } from '../../src/core/ingestion/enrichment/index.js';
-import { loadMeta, saveMeta } from '../../src/storage/repo-manager.js';
+import { addToGitignore, loadMeta, saveMeta } from '../../src/storage/repo-manager.js';
+import { getCurrentCommit } from '../../src/storage/git.js';
+import {
+  readAnalysisPublicationReceipt,
+  type ManagedAnalysisContext,
+} from '../../src/core/analysis/analysis-publication-receipt.js';
+import {
+  computeSourceManifest,
+  sourceManifestDigest,
+} from '../../src/core/indexing/source-manifest.js';
+import {
+  beginManagedAnalysisPublication,
+  claimManagedAnalysisAnalyzer,
+  commitManagedAnalysisPublication,
+} from '../../src/core/analysis/analysis-coordinator.js';
 
 const runPipelineMock = runPipelineFromRepo as unknown as ReturnType<typeof vi.fn>;
 const createFTSIndexMock = createFTSIndex as unknown as ReturnType<typeof vi.fn>;
@@ -94,14 +141,421 @@ const fetchExistingEmbeddingHashesMock = fetchExistingEmbeddingHashes as unknown
 >;
 const loadMetaMock = loadMeta as unknown as ReturnType<typeof vi.fn>;
 const saveMetaMock = saveMeta as unknown as ReturnType<typeof vi.fn>;
+const getCurrentCommitMock = getCurrentCommit as unknown as ReturnType<typeof vi.fn>;
+const addToGitignoreMock = addToGitignore as unknown as ReturnType<typeof vi.fn>;
+const claimManagedAnalysisAnalyzerMock = claimManagedAnalysisAnalyzer as unknown as ReturnType<
+  typeof vi.fn
+>;
+const beginManagedAnalysisPublicationMock =
+  beginManagedAnalysisPublication as unknown as ReturnType<typeof vi.fn>;
+const commitManagedAnalysisPublicationMock =
+  commitManagedAnalysisPublication as unknown as ReturnType<typeof vi.fn>;
+
+const MANAGED_TARGET_HEAD = 'a'.repeat(40);
+const MANAGED_OPTIONS_DIGEST = 'b'.repeat(64);
+const MANAGED_SOURCE_IDENTITY = `commit:${MANAGED_TARGET_HEAD}`;
+
+async function managedAnalysisContext(
+  repoDir: string,
+  jobId: string,
+  embeddings = false,
+): Promise<ManagedAnalysisContext> {
+  const manifest = await computeSourceManifest(repoDir, {
+    includePaths: [],
+    pipelineProfile: 'full',
+  });
+  return {
+    jobId,
+    targetHead: MANAGED_TARGET_HEAD,
+    optionsDigest: MANAGED_OPTIONS_DIGEST,
+    sourceIdentity: MANAGED_SOURCE_IDENTITY,
+    sourceManifestDigest: sourceManifestDigest(manifest),
+    requestedCapabilities: {
+      version: 1,
+      graph: true,
+      graphCapabilities: ['symbols'],
+      embeddings,
+      embeddingModelHash: embeddings ? 'managed-test-model' : null,
+    },
+  };
+}
 
 describe('runFullAnalysis snapshot persistence', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    repoManagerGenerationMockState.canonicalGenerationId = null;
     embeddingPipelineMocks.runEmbeddingPipeline.mockResolvedValue(undefined);
     embeddingPipelineMocks.batchInsertEmbeddings.mockResolvedValue(undefined);
     loadMetaMock.mockResolvedValue(null);
     getLbugStatsMock.mockResolvedValue({ nodes: 3, edges: 2 });
+    getCurrentCommitMock.mockReturnValue('abc123');
+    execFileTextMock.mockResolvedValue('');
+    claimManagedAnalysisAnalyzerMock.mockResolvedValue({});
+    beginManagedAnalysisPublicationMock.mockResolvedValue({});
+    commitManagedAnalysisPublicationMock.mockResolvedValue({});
+  });
+
+  it('requires force=true for managed analysis', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-'));
+    try {
+      getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
+
+      await expect(
+        runFullAnalysis(
+          repoDir,
+          {
+            managedAnalysis: await managedAnalysisContext(repoDir, 'managed-job-force'),
+          },
+          { onProgress: vi.fn() },
+        ),
+      ).rejects.toThrow('Managed analysis requires force=true.');
+      expect(runPipelineMock).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses managed publication when the current HEAD differs from the target', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-'));
+    try {
+      getCurrentCommitMock.mockReturnValue('c'.repeat(40));
+
+      await expect(
+        runFullAnalysis(
+          repoDir,
+          {
+            force: true,
+            managedAnalysis: await managedAnalysisContext(repoDir, 'managed-job-head'),
+          },
+          { onProgress: vi.fn() },
+        ),
+      ).rejects.toThrow(
+        'Managed analysis target HEAD does not match the current repository HEAD before analysis.',
+      );
+      expect(runPipelineMock).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a dirty managed worktree before analysis starts', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-'));
+    try {
+      getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
+      execFileTextMock.mockResolvedValueOnce(' M source.ts\n');
+
+      await expect(
+        runFullAnalysis(
+          repoDir,
+          {
+            force: true,
+            managedAnalysis: await managedAnalysisContext(repoDir, 'managed-job-dirty-input'),
+          },
+          { onProgress: vi.fn() },
+        ),
+      ).rejects.toThrow('Managed analysis requires a clean Git worktree before analysis.');
+      expect(runPipelineMock).not.toHaveBeenCalled();
+      expect(addToGitignoreMock).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses managed publication when the worktree becomes dirty during analysis', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-'));
+    try {
+      getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
+      execFileTextMock.mockResolvedValueOnce('').mockResolvedValueOnce('?? generated-source.ts\n');
+      runPipelineMock.mockResolvedValue({
+        graph: createKnowledgeGraph(),
+        repoPath: repoDir,
+        totalFileCount: 0,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockResolvedValue([]);
+
+      await expect(
+        runFullAnalysis(
+          repoDir,
+          {
+            force: true,
+            managedAnalysis: await managedAnalysisContext(repoDir, 'managed-job-dirty-publication'),
+          },
+          { onProgress: vi.fn() },
+        ),
+      ).rejects.toThrow('Managed analysis requires a clean Git worktree before publication.');
+      expect(runPipelineMock).toHaveBeenCalledTimes(1);
+      expect(execFileTextMock).toHaveBeenCalledTimes(2);
+      await expect(
+        readAnalysisPublicationReceipt(
+          path.join(repoDir, '.ontoindex', 'current'),
+          'managed-job-dirty-publication',
+        ),
+      ).resolves.toBeNull();
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses managed publication when HEAD changes during analysis', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-'));
+    try {
+      getCurrentCommitMock
+        .mockReturnValueOnce(MANAGED_TARGET_HEAD)
+        .mockReturnValueOnce(MANAGED_TARGET_HEAD)
+        .mockReturnValueOnce(MANAGED_TARGET_HEAD)
+        .mockReturnValueOnce('c'.repeat(40));
+      runPipelineMock.mockResolvedValue({
+        graph: createKnowledgeGraph(),
+        repoPath: repoDir,
+        totalFileCount: 0,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockResolvedValue([]);
+
+      await expect(
+        runFullAnalysis(
+          repoDir,
+          {
+            force: true,
+            managedAnalysis: await managedAnalysisContext(repoDir, 'managed-job-head-publication'),
+          },
+          { onProgress: vi.fn() },
+        ),
+      ).rejects.toThrow(
+        'Managed analysis target HEAD does not match the current repository HEAD before publication.',
+      );
+      expect(runPipelineMock).toHaveBeenCalledTimes(1);
+      expect(execFileTextMock).toHaveBeenCalledTimes(1);
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('requires an enabled embedding path when managed analysis requests embeddings', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-'));
+    try {
+      getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
+
+      await expect(
+        runFullAnalysis(
+          repoDir,
+          {
+            force: true,
+            managedAnalysis: await managedAnalysisContext(
+              repoDir,
+              'managed-job-embeddings-disabled',
+              true,
+            ),
+          },
+          { onProgress: vi.fn() },
+        ),
+      ).rejects.toThrow(
+        'Managed analysis requested embeddings, but no embedding analysis option was enabled.',
+      );
+      expect(runPipelineMock).not.toHaveBeenCalled();
+      expect(execFileTextMock).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses managed publication when required embeddings are absent', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-'));
+    try {
+      getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
+      runPipelineMock.mockResolvedValue({
+        graph: createKnowledgeGraph(),
+        repoPath: repoDir,
+        totalFileCount: 0,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockResolvedValue([]);
+
+      await expect(
+        runFullAnalysis(
+          repoDir,
+          {
+            force: true,
+            embeddings: true,
+            managedAnalysis: await managedAnalysisContext(
+              repoDir,
+              'managed-job-embeddings-absent',
+              true,
+            ),
+          },
+          { onProgress: vi.fn() },
+        ),
+      ).rejects.toThrow(
+        'Managed analysis requested embeddings, but no embeddings were successfully published.',
+      );
+      expect(embeddingPipelineMocks.runEmbeddingPipeline).toHaveBeenCalledTimes(1);
+      expect(execFileTextMock).toHaveBeenCalledTimes(1);
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('publishes a managed receipt through the active generation', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-'));
+    try {
+      getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
+      runPipelineMock.mockResolvedValue({
+        graph: createKnowledgeGraph(),
+        repoPath: repoDir,
+        totalFileCount: 0,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockResolvedValue([]);
+      repoManagerGenerationMockState.canonicalGenerationId = 'canonical-staged-generation';
+
+      await runFullAnalysis(
+        repoDir,
+        {
+          force: true,
+          managedAnalysis: await managedAnalysisContext(repoDir, 'managed-job-published'),
+        },
+        { onProgress: vi.fn() },
+      );
+
+      const receipt = await readAnalysisPublicationReceipt(
+        path.join(repoDir, '.ontoindex', 'current'),
+        'managed-job-published',
+      );
+      expect(receipt).toMatchObject({
+        version: 1,
+        jobId: 'managed-job-published',
+        repoPath: repoDir,
+        targetHead: MANAGED_TARGET_HEAD,
+        optionsDigest: MANAGED_OPTIONS_DIGEST,
+        sourceIdentity: MANAGED_SOURCE_IDENTITY,
+        requestedCapabilities: {
+          version: 1,
+          graph: true,
+          graphCapabilities: ['symbols'],
+          embeddings: false,
+          embeddingModelHash: null,
+        },
+        analyzerContractVersion: 'ontoindex-source-manifest-v1',
+      });
+      expect(receipt?.generationId).toBe('canonical-staged-generation');
+      await expect(fs.readlink(path.join(repoDir, '.ontoindex', 'current'))).resolves.toBe(
+        path.join('generations', 'canonical-staged-generation'),
+      );
+      expect(receipt?.sourceManifestDigest).toMatch(/^[0-9a-f]{64}$/);
+      expect(Number.isFinite(Date.parse(receipt?.publishedAt ?? ''))).toBe(true);
+      expect(claimManagedAnalysisAnalyzerMock).toHaveBeenCalledWith(
+        repoDir,
+        expect.objectContaining({ jobId: 'managed-job-published' }),
+      );
+      expect(beginManagedAnalysisPublicationMock).toHaveBeenCalledWith(
+        repoDir,
+        expect.objectContaining({ jobId: 'managed-job-published' }),
+      );
+      expect(commitManagedAnalysisPublicationMock).toHaveBeenCalledWith(
+        repoDir,
+        expect.objectContaining({ jobId: 'managed-job-published' }),
+        'canonical-staged-generation',
+        expect.stringMatching(/^[0-9a-f]{64}$/),
+      );
+      expect(execFileTextMock).toHaveBeenCalledTimes(2);
+      expect(execFileTextMock).toHaveBeenCalledWith(
+        'git',
+        ['status', '--porcelain=v1', '--untracked-files=all'],
+        expect.objectContaining({ cwd: repoDir }),
+      );
+      expect(addToGitignoreMock).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not publish or activate when managed publication ownership is fenced', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-'));
+    try {
+      getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
+      runPipelineMock.mockResolvedValue({
+        graph: createKnowledgeGraph(),
+        repoPath: repoDir,
+        totalFileCount: 0,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockResolvedValue([]);
+      beginManagedAnalysisPublicationMock.mockRejectedValueOnce(
+        new Error('Managed analysis attempt was fenced.'),
+      );
+
+      await expect(
+        runFullAnalysis(
+          repoDir,
+          {
+            force: true,
+            managedAnalysis: await managedAnalysisContext(repoDir, 'managed-job-fenced'),
+          },
+          { onProgress: vi.fn() },
+        ),
+      ).rejects.toThrow('Managed analysis attempt was fenced.');
+      expect(commitManagedAnalysisPublicationMock).not.toHaveBeenCalled();
+
+      await expect(
+        readAnalysisPublicationReceipt(
+          path.join(repoDir, '.ontoindex', 'current'),
+          'managed-job-fenced',
+        ),
+      ).resolves.toBeNull();
+      await expect(fs.lstat(path.join(repoDir, '.ontoindex', 'current'))).rejects.toThrow();
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rolls back activation when managed publication commit is fenced', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-'));
+    try {
+      getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
+      runPipelineMock.mockResolvedValue({
+        graph: createKnowledgeGraph(),
+        repoPath: repoDir,
+        totalFileCount: 0,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockResolvedValue([]);
+      repoManagerGenerationMockState.canonicalGenerationId = 'failed-publication-generation';
+      commitManagedAnalysisPublicationMock.mockRejectedValueOnce(
+        new Error('Managed analysis publication commit was fenced.'),
+      );
+
+      await expect(
+        runFullAnalysis(
+          repoDir,
+          {
+            force: true,
+            managedAnalysis: await managedAnalysisContext(repoDir, 'managed-job-commit-fenced'),
+          },
+          { onProgress: vi.fn() },
+        ),
+      ).rejects.toThrow('Managed analysis publication commit was fenced.');
+
+      await expect(fs.lstat(path.join(repoDir, '.ontoindex', 'current'))).rejects.toThrow();
+      await expect(fs.lstat(path.join(repoDir, '.ontoindex', 'lbug'))).rejects.toThrow();
+      await expect(
+        fs.lstat(path.join(repoDir, '.ontoindex', 'generations', 'failed-publication-generation')),
+      ).resolves.toBeDefined();
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
   });
 
   it('writes snapshot.json for graph_diff after a successful analyze', async () => {

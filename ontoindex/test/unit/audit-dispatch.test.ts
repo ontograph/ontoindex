@@ -17,6 +17,7 @@ import type {
   AuditSession,
 } from '../../src/core/audit-lifecycle/audit-session.js';
 import { gnAuditSessionDispatch } from '../../src/mcp/super/audit-session-tools.js';
+import { gnDispatchPrompt } from '../../src/mcp/super/audit-advanced.js';
 import {
   buildTestGapReport,
   gnTestGap,
@@ -280,6 +281,98 @@ describe('manager audit dispatch wrapper', () => {
     expect(result.duplicateOnlyChildren).toBe(true);
   });
 
+  it('refuses dispatch when the event chain is broken, including persist=false', async () => {
+    const store = await seedDispatchBundle(repo);
+    await createAuditSessionLockFromStore({
+      repoRoot: repo,
+      sessionId: 'session-1',
+      graphHash: 'sha256:sidecar',
+      ontoindexVersion: '1.0.0',
+      store,
+    });
+    const statePath = store.eventStorePath;
+    const state = JSON.parse(await fs.readFile(statePath, 'utf8')) as Record<string, unknown>;
+    const events = state.events as Array<Record<string, unknown>>;
+    events[0].checksum = 'tampered';
+    await fs.writeFile(statePath, JSON.stringify({ ...state, events }));
+
+    await expect(
+      gnDispatchPrompt(repo, { session: 'session-1', bundleId: 'bundle-1', persist: false }),
+    ).rejects.toMatchObject({
+      code: 'ERR_AUDIT_CHAIN_BROKEN',
+      firstBrokenSequence: 0,
+      reason: 'checksum-mismatch',
+    });
+
+    const result = await gnAuditSessionDispatch(repo, {
+      session: 'session-1',
+      bundleId: 'bundle-1',
+      persist: false,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'ERR_AUDIT_CHAIN_BROKEN',
+      firstBrokenSequence: 0,
+      reason: 'checksum-mismatch',
+    });
+  });
+
+  it('refuses dispatch for an unverifiable legacy chain', async () => {
+    const store = await seedDispatchBundle(repo);
+    await createAuditSessionLockFromStore({
+      repoRoot: repo,
+      sessionId: 'session-1',
+      graphHash: 'sha256:sidecar',
+      ontoindexVersion: '1.0.0',
+      store,
+    });
+    const state = JSON.parse(await fs.readFile(store.eventStorePath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    const events = (state.events as Array<Record<string, unknown>>).map(
+      ({ sequence, checksum, previousChecksum, ...event }) => event,
+    );
+    await fs.writeFile(store.eventStorePath, JSON.stringify({ schemaVersion: 1, events }));
+    await expect(
+      gnDispatchPrompt(repo, { session: 'session-1', bundleId: 'bundle-1', persist: false }),
+    ).rejects.toMatchObject({ code: 'ERR_AUDIT_CHAIN_BROKEN' });
+
+    const managerResult = await gnAuditSessionDispatch(repo, {
+      session: 'session-1',
+      bundleId: 'bundle-1',
+      persist: false,
+    });
+    expect(managerResult).toMatchObject({
+      ok: false,
+      code: 'ERR_AUDIT_CHAIN_BROKEN',
+      reason: 'legacy-unverified-chain',
+    });
+  });
+
+  it('refuses a tampered chain downgraded to schema v1', async () => {
+    const store = await seedDispatchBundle(repo);
+    await createAuditSessionLockFromStore({
+      repoRoot: repo,
+      sessionId: 'session-1',
+      graphHash: 'sha256:sidecar',
+      ontoindexVersion: '1.0.0',
+      store,
+    });
+    const raw = JSON.parse(await fs.readFile(store.eventStorePath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    const events = raw.events as Array<Record<string, unknown>>;
+    events[0].sessionId = 'tampered-session';
+    await fs.writeFile(store.eventStorePath, JSON.stringify({ ...raw, schemaVersion: 1, events }));
+
+    await expect(store.load()).resolves.toMatchObject({ integrity: { status: 'BROKEN' } });
+    await expect(
+      gnDispatchPrompt(repo, { session: 'session-1', bundleId: 'bundle-1', persist: false }),
+    ).rejects.toMatchObject({ code: 'ERR_AUDIT_CHAIN_BROKEN' });
+  });
+
   it('reports unexpected files, symbols, impacts, and missing tests in gn_verify_diff', async () => {
     const result = await gnVerifyDiff(repo, {
       repo,
@@ -406,6 +499,78 @@ describe('manager audit dispatch wrapper', () => {
     expect(result.testGap).toMatchObject({ status: 'FAIL' });
   });
 });
+
+async function seedDispatchBundle(repo: string): Promise<LocalAuditEventStore> {
+  const store = new LocalAuditEventStore(repo);
+  const targetHead = execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: repo,
+    encoding: 'utf8',
+  }).trim();
+  await store.createSession(
+    {
+      id: 'session-1',
+      targetRepo: 'repo-a',
+      targetHead,
+      sourceHash: 'sha256:source',
+      graphIndexId: 'index-1',
+      verifierVersion: 'verifier-1',
+      sidecarStateHash: 'sha256:sidecar',
+      createdAt: '2026-05-17T00:00:00.000Z',
+    },
+    { id: 'evt-session-dispatch' },
+  );
+  await store.createFindingCandidate(
+    {
+      id: 'finding-a',
+      sessionId: 'session-1',
+      title: 'Dispatch finding',
+      fingerprint: 'fp-dispatch',
+      status: 'OPEN',
+      metadata: {
+        files: ['src/app.ts'],
+        symbols: ['run'],
+        tests: ['test/app.test.ts'],
+        writeSet: ['src/app.ts'],
+      },
+    },
+    { id: 'evt-candidate-dispatch' },
+  );
+  await store.appendEvent({
+    id: 'evt-verify-dispatch',
+    type: 'FindingVerified',
+    occurredAt: '2026-05-17T00:00:02.000Z',
+    sessionId: 'session-1',
+    findingId: 'finding-a',
+    verification: {
+      verifiedAt: '2026-05-17T00:00:02.000Z',
+      status: 'OPEN',
+      evidence: [sessionEvidence(targetHead)],
+      reasonCodes: ['fresh-positive-evidence'],
+      verifierVersion: 'verifier-1',
+    },
+  });
+  await store.appendEvent({
+    id: 'evt-bundle-dispatch',
+    type: 'FindingBundled',
+    occurredAt: '2026-05-17T00:00:03.000Z',
+    sessionId: 'session-1',
+    bundleId: 'bundle-1',
+    bundle: {
+      id: 'bundle-1',
+      sessionId: 'session-1',
+      findingIds: ['finding-a'],
+      status: 'CREATED',
+      createdAt: '2026-05-17T00:00:03.000Z',
+      metadata: {
+        files: ['src/app.ts'],
+        symbols: ['run'],
+        tests: ['test/app.test.ts'],
+        writeSet: ['src/app.ts'],
+      },
+    },
+  });
+  return store;
+}
 
 function bundle(
   id: string,

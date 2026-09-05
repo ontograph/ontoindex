@@ -18,9 +18,13 @@ import {
   listRegisteredRepos,
   RegistryNameCollisionError,
   activateIndexGeneration,
+  activateIndexGenerationTransaction,
   createIndexGeneration,
   loadRepo,
+  readActiveGenerationMeta,
+  publishIndexGenerationTransaction,
   resolveActiveIndexGeneration,
+  rollbackIndexGenerationActivation,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
 import { parseRepoNameFromUrl, getInferredRepoName } from '../../src/storage/git.js';
@@ -61,6 +65,15 @@ describe('getStoragePaths', () => {
 });
 
 describe('index generations', () => {
+  async function writeGenerationFiles(
+    generation: Awaited<ReturnType<typeof createIndexGeneration>>,
+    content: string,
+  ): Promise<void> {
+    await fs.writeFile(generation.lbugPath, content);
+    await fs.writeFile(generation.metaPath, '{}');
+    await fs.writeFile(generation.snapshotPath, '{}');
+  }
+
   it('atomically changes the active generation while old files remain immutable', async () => {
     const temp = await createTempDir('ontoindex-generations-');
     const storagePath = path.join(temp.dbPath, '.ontoindex');
@@ -125,6 +138,196 @@ describe('index generations', () => {
     }
   });
 
+  it('restores the exact previous active generation after a fenced rollback', async () => {
+    const temp = await createTempDir('ontoindex-generation-rollback-');
+    const storagePath = path.join(temp.dbPath, '.ontoindex');
+    try {
+      const first = await createIndexGeneration(storagePath, 'generation-1');
+      await writeGenerationFiles(first, 'first');
+      await activateIndexGeneration(storagePath, first);
+
+      const second = await createIndexGeneration(storagePath, 'generation-2');
+      await writeGenerationFiles(second, 'second');
+      const activation = await activateIndexGenerationTransaction(storagePath, second);
+
+      await rollbackIndexGenerationActivation(
+        storagePath,
+        activation.activeGeneration.generationId,
+        activation.previousGeneration,
+      );
+
+      expect((await resolveActiveIndexGeneration(storagePath))?.generationId).toBe('generation-1');
+      expect(await fs.readFile(path.join(storagePath, 'lbug'), 'utf8')).toBe('first');
+      await expect(fs.readFile(activation.activeGeneration.lbugPath, 'utf8')).resolves.toBe(
+        'second',
+      );
+    } finally {
+      await temp.cleanup();
+    }
+  });
+
+  it('removes the active pointer when rolling back the first generation', async () => {
+    const temp = await createTempDir('ontoindex-generation-rollback-empty-');
+    const storagePath = path.join(temp.dbPath, '.ontoindex');
+    try {
+      const first = await createIndexGeneration(storagePath, 'generation-1');
+      await writeGenerationFiles(first, 'first');
+      const activation = await activateIndexGenerationTransaction(storagePath, first);
+
+      await rollbackIndexGenerationActivation(
+        storagePath,
+        activation.activeGeneration.generationId,
+        activation.previousGeneration,
+      );
+
+      await expect(resolveActiveIndexGeneration(storagePath)).resolves.toBeNull();
+      await expect(fs.lstat(path.join(storagePath, 'current'))).rejects.toThrow();
+      await expect(fs.lstat(path.join(storagePath, 'lbug'))).rejects.toThrow();
+      await expect(fs.readFile(activation.activeGeneration.lbugPath, 'utf8')).resolves.toBe(
+        'first',
+      );
+    } finally {
+      await temp.cleanup();
+    }
+  });
+
+  it('refuses rollback after another generation becomes active', async () => {
+    const temp = await createTempDir('ontoindex-generation-rollback-race-');
+    const storagePath = path.join(temp.dbPath, '.ontoindex');
+    try {
+      const first = await createIndexGeneration(storagePath, 'generation-1');
+      await writeGenerationFiles(first, 'first');
+      await activateIndexGeneration(storagePath, first);
+
+      const second = await createIndexGeneration(storagePath, 'generation-2');
+      await writeGenerationFiles(second, 'second');
+      const activation = await activateIndexGenerationTransaction(storagePath, second);
+
+      const third = await createIndexGeneration(storagePath, 'generation-3');
+      await writeGenerationFiles(third, 'third');
+      await activateIndexGeneration(storagePath, third);
+
+      await expect(
+        rollbackIndexGenerationActivation(
+          storagePath,
+          activation.activeGeneration.generationId,
+          activation.previousGeneration,
+        ),
+      ).rejects.toThrow('Refusing index generation rollback');
+      expect((await resolveActiveIndexGeneration(storagePath))?.generationId).toBe('generation-3');
+      expect(await fs.readFile(path.join(storagePath, 'lbug'), 'utf8')).toBe('third');
+    } finally {
+      await temp.cleanup();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses rollback when the previous generation was replaced by a symlink',
+    async () => {
+      const temp = await createTempDir('ontoindex-generation-rollback-symlink-');
+      const storagePath = path.join(temp.dbPath, '.ontoindex');
+      const externalPath = path.join(temp.dbPath, 'external-generation');
+      try {
+        const first = await createIndexGeneration(storagePath, 'generation-1');
+        await writeGenerationFiles(first, 'first');
+        await activateIndexGeneration(storagePath, first);
+
+        const second = await createIndexGeneration(storagePath, 'generation-2');
+        await writeGenerationFiles(second, 'second');
+        const activation = await activateIndexGenerationTransaction(storagePath, second);
+
+        await fs.mkdir(externalPath, { recursive: true });
+        await fs.rm(activation.previousGeneration!.generationPath, {
+          recursive: true,
+          force: true,
+        });
+        await fs.symlink(externalPath, activation.previousGeneration!.generationPath, 'dir');
+
+        await expect(
+          rollbackIndexGenerationActivation(
+            storagePath,
+            activation.activeGeneration.generationId,
+            activation.previousGeneration,
+          ),
+        ).rejects.toThrow('must not be a symbolic link');
+        expect((await resolveActiveIndexGeneration(storagePath))?.generationId).toBe(
+          'generation-2',
+        );
+      } finally {
+        await temp.cleanup();
+      }
+    },
+  );
+
+  it('serializes another activation until a publication commit finishes', async () => {
+    const temp = await createTempDir('ontoindex-generation-publication-lock-');
+    const storagePath = path.join(temp.dbPath, '.ontoindex');
+    try {
+      const first = await createIndexGeneration(storagePath, 'generation-1');
+      await writeGenerationFiles(first, 'first');
+      const second = await createIndexGeneration(storagePath, 'generation-2');
+      await writeGenerationFiles(second, 'second');
+
+      let releaseCommit!: () => void;
+      const commitGate = new Promise<void>((resolve) => {
+        releaseCommit = resolve;
+      });
+      let commitStarted!: () => void;
+      const commitStart = new Promise<void>((resolve) => {
+        commitStarted = resolve;
+      });
+      const publication = publishIndexGenerationTransaction(storagePath, first, async () => {
+        commitStarted();
+        await commitGate;
+      });
+      await commitStart;
+
+      let secondActivated = false;
+      const secondActivation = activateIndexGeneration(storagePath, second).then(() => {
+        secondActivated = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 75));
+
+      expect(secondActivated).toBe(false);
+      expect((await resolveActiveIndexGeneration(storagePath))?.generationId).toBe('generation-1');
+
+      releaseCommit();
+      await publication;
+      await secondActivation;
+      expect((await resolveActiveIndexGeneration(storagePath))?.generationId).toBe('generation-2');
+    } finally {
+      await temp.cleanup();
+    }
+  });
+
+  it('surfaces failure to remove the owned generation pointer lock', async () => {
+    const temp = await createTempDir('ontoindex-generation-lock-release-');
+    const storagePath = path.join(temp.dbPath, '.ontoindex');
+    const lockPath = path.join(storagePath, 'current.mutation.lock');
+    try {
+      const generation = await createIndexGeneration(storagePath, 'generation-1');
+      await writeGenerationFiles(generation, 'first');
+      const unlink = fs.unlink.bind(fs);
+      const unlinkSpy = vi.spyOn(fs, 'unlink').mockImplementation(async (target) => {
+        if (path.resolve(String(target)) === path.resolve(lockPath)) {
+          throw Object.assign(new Error('unlink blocked'), { code: 'EPERM' });
+        }
+        return unlink(target);
+      });
+
+      try {
+        await expect(
+          publishIndexGenerationTransaction(storagePath, generation, async () => undefined),
+        ).rejects.toThrow('Failed to release owned lock');
+      } finally {
+        unlinkSpy.mockRestore();
+      }
+      await fs.unlink(lockPath);
+    } finally {
+      await temp.cleanup();
+    }
+  });
+
   it('binds loaded repository metadata and graph paths to one active generation', async () => {
     const temp = await createTempDir('ontoindex-load-generation-');
     const repoPath = temp.dbPath;
@@ -152,6 +355,53 @@ describe('index generations', () => {
     } finally {
       await temp.cleanup();
     }
+  });
+
+  it('retries when a generation activates while reading legacy metadata', async () => {
+    const storagePath = '/tmp/ontoindex-generation-activation';
+    const generation = {
+      generationId: 'generation-1',
+      generationPath: path.join(storagePath, 'generations', 'generation-1'),
+      lbugPath: path.join(storagePath, 'generations', 'generation-1', 'lbug'),
+      metaPath: path.join(storagePath, 'generations', 'generation-1', 'meta.json'),
+      snapshotPath: path.join(storagePath, 'generations', 'generation-1', 'snapshot.json'),
+    };
+    const generationMeta: RepoMeta = {
+      repoPath: '.',
+      lastCommit: 'abc123',
+      indexedAt: '2026-08-18T00:00:00.000Z',
+      generationId: generation.generationId,
+    };
+    const resolveActiveGeneration = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(generation)
+      .mockResolvedValueOnce(generation)
+      .mockResolvedValueOnce(generation);
+    const readMetaFile = vi
+      .fn()
+      .mockResolvedValueOnce({
+        repoPath: '.',
+        lastCommit: 'legacy',
+        indexedAt: '2026-08-17T00:00:00.000Z',
+      })
+      .mockResolvedValueOnce(generationMeta);
+
+    const result = await readActiveGenerationMeta(storagePath, {
+      resolveActiveGeneration,
+      readMetaFile,
+    });
+
+    expect(resolveActiveGeneration).toHaveBeenCalledTimes(4);
+    expect(readMetaFile).toHaveBeenNthCalledWith(1, path.join(storagePath, 'meta.json'));
+    expect(readMetaFile).toHaveBeenNthCalledWith(2, generation.metaPath);
+    expect(result).toEqual({
+      activeGeneration: generation,
+      meta: generationMeta,
+      authority: 'active-generation',
+    });
+    expect(result.activeGeneration?.generationId).toBe('generation-1');
+    expect(result.meta?.generationId).toBe(result.activeGeneration?.generationId);
   });
 });
 

@@ -93,6 +93,14 @@ interface PoolEntry {
   waiters: PoolWaiter[];
   lastUsed: number;
   dbPath: string;
+  /**
+   * Identity of the database file this entry was opened against. `dbPath` is a
+   * stable path (`.ontoindex/current/lbug` is a symlink into a generation
+   * directory), so `ontoindex analyze` can swap the underlying file without
+   * changing the key. Cached handles would then read a replaced file and fail
+   * with "Corrupted wal file" until the process restarted.
+   */
+  dbIdentity: string | null;
   /** Set to true when the pool entry is closed — checkin will close orphaned connections */
   closed: boolean;
   /** Set while explicit close waits for active checkouts to finish */
@@ -508,6 +516,22 @@ function readBoundedIntEnv(name: string, fallback: number, min: number, max: num
 }
 
 /**
+ * Resolve the identity of the database file behind `dbPath`. The path is stable
+ * across reindexes, so identity is taken from the resolved real path plus
+ * inode/size/mtime. Returns null when the file cannot be inspected, in which
+ * case the caller keeps the existing handle rather than churning the pool.
+ */
+async function readDbIdentity(dbPath: string): Promise<string | null> {
+  try {
+    const realPath = await fs.realpath(dbPath);
+    const stat = await fs.stat(realPath);
+    return `${realPath}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Initialize (or reuse) a Database + connection pool for a specific repo.
  * Retries on lock errors (e.g., when `ontoindex analyze` is running).
  *
@@ -517,8 +541,15 @@ function readBoundedIntEnv(name: string, fallback: number, min: number, max: num
 export const initLbug = async (repoId: string, dbPath: string): Promise<void> => {
   const existing = pool.get(repoId);
   if (existing) {
-    existing.lastUsed = Date.now();
-    return;
+    const identity = await readDbIdentity(dbPath);
+    if (identity !== null && existing.dbIdentity !== null && identity !== existing.dbIdentity) {
+      // `ontoindex analyze` published a new generation behind the same path.
+      // Drop the stale handle so the next query opens the current database.
+      closeOne(repoId);
+    } else {
+      existing.lastUsed = Date.now();
+      return;
+    }
   }
 
   // Deduplicate concurrent init calls for the same repoId —
@@ -672,6 +703,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     waiters: [],
     lastUsed: Date.now(),
     dbPath,
+    dbIdentity: await readDbIdentity(dbPath),
     closed: false,
     closing: false,
   });
@@ -737,6 +769,7 @@ export async function initLbugWithDb(
     waiters: [],
     lastUsed: Date.now(),
     dbPath,
+    dbIdentity: await readDbIdentity(dbPath),
     closed: false,
     closing: false,
   });

@@ -272,6 +272,15 @@ auditProgram
   .option('--no-persist', 'Do not write bundle events')
   .action(createLazyAction(() => import('./audit.js'), 'auditBundleCommand'));
 
+auditProgram
+  .command('integrity')
+  .description('Inspect or recover the audit event store integrity chain')
+  .option('--repo <path>', 'Repository path (defaults to current git root)')
+  .option('--json', 'Emit JSON')
+  .option('--reset-broken', 'Archive and replace a broken or malformed store')
+  .option('--acknowledge-data-loss', 'Acknowledge that reset discards the active event history')
+  .action(createLazyAction(() => import('./audit.js'), 'auditIntegrityCommand'));
+
 program
   .command('augment <pattern>')
   .description('Augment a search pattern with knowledge graph context (used by hooks)')

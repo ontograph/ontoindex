@@ -18,16 +18,27 @@ import {
   type AnalysisJobRecord,
 } from '../../core/analysis/analysis-coordinator.js';
 import {
+  ANALYSIS_REQUESTED_CAPABILITIES_VERSION,
+  commitSourceIdentity,
+  worktreeSourceIdentity,
+  type AnalysisRequestedCapabilities,
+} from '../../core/analysis/analysis-publication-receipt.js';
+import {
+  computeSourceManifest,
+  sourceManifestDigest,
+} from '../../core/indexing/source-manifest.js';
+import {
   readRuntimeHealth,
   type RuntimeHealthSnapshot,
 } from '../../core/runtime/runtime-health.js';
-import { loadMeta, type RepoMeta } from '../../storage/repo-manager.js';
-import type { ScopeConfidence } from '../shared/target-context.js';
+import { readActiveGenerationMeta, type RepoMeta } from '../../storage/repo-manager.js';
+import type { GraphAuthorityCapability, ScopeConfidence } from '../shared/target-context.js';
 import { resolveTargetContext } from '../shared/target-context.js';
 import { createEnvelopeFromLegacy } from '../shared/response-envelope.js';
 
 const GIT_PROBE_TIMEOUT_MS = 5_000;
 const GIT_PROBE_MAX_BUFFER = 1024 * 1024;
+const GIT_HEAD = /^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -36,6 +47,7 @@ const GIT_PROBE_MAX_BUFFER = 1024 * 1024;
 export interface EnsureFreshParams {
   repo?: string;
   withEmbeddings?: boolean; // default: false
+  requiredGraphCapabilities?: readonly GraphAuthorityCapability[]; // default: ['symbols']
   autoAnalyze?: boolean; // default: false (require explicit confirm)
   killMcpForLock?: boolean; // deprecated; advisory only for safety
   legacyResponse?: boolean; // default: true
@@ -46,7 +58,7 @@ export type EmbeddingDriftStatus = 'ok' | 'missing' | 'metadata-unavailable' | '
 export type AnalysisSubmission =
   | { status: 'not-requested' }
   | { status: 'not-needed' }
-  | { status: 'blocked'; reasonCode: string; message: string }
+  | { status: 'blocked'; reasonCode: string; message: string; jobId?: string }
   | { status: 'queued'; jobId: string }
   | { status: 'reused'; jobId: string }
   | {
@@ -65,6 +77,8 @@ export interface EnsureFreshReport {
     status: EmbeddingDriftStatus;
     reason?: string;
     repairCommand?: string;
+    expectedModelHash?: string;
+    actualModelHash?: string;
   };
   repoLabel?: string;
   repoPath?: string;
@@ -72,6 +86,15 @@ export interface EnsureFreshReport {
   headCommit?: string;
   isStale?: boolean;
   dirtyFileCount?: number | null;
+  /**
+   * Bounded split of `dirtyFileCount`. Tracked edits sit on top of an indexed
+   * commit; untracked source files are absent from the graph entirely. Optional
+   * and additive: consumers that only read `dirtyFileCount` are unaffected.
+   */
+  dirtyWorktreeBreakdown?: {
+    trackedChangedCount: number | null;
+    untrackedCount: number | null;
+  };
   scopeConfidence?: ScopeConfidence;
   runtimeHealth?: RuntimeHealthSnapshot;
   actionsTaken: string[];
@@ -82,6 +105,28 @@ export interface EnsureFreshReport {
   recommendations: string[];
 }
 
+const GRAPH_CAPABILITY_ORDER: readonly GraphAuthorityCapability[] = [
+  'impact',
+  'processes',
+  'symbols',
+];
+
+function normalizeRequiredGraphCapabilities(
+  capabilities: readonly GraphAuthorityCapability[] | undefined,
+): GraphAuthorityCapability[] {
+  const requested = capabilities ?? ['symbols'];
+  const normalized = [...new Set(requested)].sort() as GraphAuthorityCapability[];
+  if (
+    normalized.length === 0 ||
+    requested.some((capability) => !GRAPH_CAPABILITY_ORDER.includes(capability))
+  ) {
+    throw new Error(
+      'requiredGraphCapabilities must be a non-empty array containing only symbols, impact, or processes.',
+    );
+  }
+  return normalized;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -90,6 +135,7 @@ interface RegistryEntry {
   name?: string;
   path?: string;
   lastCommit?: string;
+  indexedAt?: string;
   stats?: {
     embeddings?: number;
   };
@@ -234,7 +280,19 @@ function currentCliCommand(): { command: string; argsPrefix: string[]; displayPr
   return { command: 'ontoindex', argsPrefix: [], displayPrefix: 'ontoindex' };
 }
 
-async function countDirtyFiles(repoRoot: string): Promise<number | null> {
+/**
+ * Bounded worktree breakdown. Tracked edits are already represented in the graph
+ * at their indexed commit, while untracked source files are unknown to it, so
+ * agents need the two counts separately to calibrate rather than blanket-
+ * discount every `dirty` report.
+ */
+interface DirtyWorktreeSummary {
+  dirtyFileCount: number | null;
+  trackedChangedCount: number | null;
+  untrackedCount: number | null;
+}
+
+async function summarizeDirtyWorktree(repoRoot: string): Promise<DirtyWorktreeSummary> {
   try {
     const output = (
       await execFileText('git', ['status', '--porcelain'], {
@@ -243,10 +301,18 @@ async function countDirtyFiles(repoRoot: string): Promise<number | null> {
         maxBuffer: GIT_PROBE_MAX_BUFFER,
       })
     ).trim();
-    if (output.length === 0) return 0;
-    return output.split('\n').filter(Boolean).length;
+    if (output.length === 0) {
+      return { dirtyFileCount: 0, trackedChangedCount: 0, untrackedCount: 0 };
+    }
+    const lines = output.split('\n').filter(Boolean);
+    const untrackedCount = lines.filter((line) => line.startsWith('??')).length;
+    return {
+      dirtyFileCount: lines.length,
+      trackedChangedCount: lines.length - untrackedCount,
+      untrackedCount,
+    };
   } catch {
-    return null;
+    return { dirtyFileCount: null, trackedChangedCount: null, untrackedCount: null };
   }
 }
 
@@ -272,25 +338,29 @@ function resolveEmbeddingsStatus(input: {
   const count = input.repoMeta?.stats?.embeddings ?? 0;
   const metadataHash = input.repoMeta?.model_hash?.trim() || undefined;
   const currentHash = input.currentEmbeddingModelHash?.trim() || undefined;
-  const required = input.withEmbeddings === true && count === 0;
+  const requested = input.withEmbeddings === true;
+  const requestedRepairCommand = `ontoindex analyze${input.isStale ? '' : ' --force'} --embeddings`;
 
   if (!input.repoMeta) {
     return {
       count,
-      required,
+      required: requested,
       status: 'metadata-unavailable',
       reason: 'repo meta.json is unavailable',
-      repairCommand: 'ontoindex analyze',
+      repairCommand: requested ? requestedRepairCommand : 'ontoindex analyze',
+      ...(currentHash ? { expectedModelHash: currentHash } : {}),
     };
   }
 
   if (count === 0) {
     return {
       count,
-      required,
+      required: requested,
       status: 'missing',
       reason: 'embeddings are not populated in repo metadata',
-      repairCommand: `ontoindex analyze${input.isStale ? '' : ' --force'} --embeddings`,
+      repairCommand: requestedRepairCommand,
+      ...(currentHash ? { expectedModelHash: currentHash } : {}),
+      ...(metadataHash ? { actualModelHash: metadataHash } : {}),
     };
   }
 
@@ -298,42 +368,93 @@ function resolveEmbeddingsStatus(input: {
     if (metadataHash && !currentHash) {
       return {
         count,
-        required,
+        required: false,
         status: 'ok',
         reason: 'runtime embedding model hash is not set; drift check skipped',
+        actualModelHash: metadataHash,
       };
     }
     return {
       count,
-      required,
+      required: requested,
       status: 'metadata-unavailable',
       reason: !metadataHash
         ? 'embedding fingerprint is missing from repo metadata'
         : 'ONTOINDEX_EMBEDDING_MODEL_HASH is not set',
       repairCommand: 'ontoindex analyze --force --embeddings',
+      ...(currentHash ? { expectedModelHash: currentHash } : {}),
+      ...(metadataHash ? { actualModelHash: metadataHash } : {}),
     };
   }
 
   if (metadataHash !== currentHash) {
     return {
       count,
-      required,
+      required: requested,
       status: 'drifted',
       reason: `embedding model hash mismatch: meta.json has "${metadataHash}" but the current environment has "${currentHash}"`,
       repairCommand: 'ontoindex analyze --force --embeddings',
+      expectedModelHash: currentHash,
+      actualModelHash: metadataHash,
     };
   }
 
   return {
     count,
-    required,
+    required: false,
     status: 'ok',
+    expectedModelHash: currentHash,
+    actualModelHash: metadataHash,
   };
 }
 
 // ---------------------------------------------------------------------------
 // Main function
 // ---------------------------------------------------------------------------
+
+/**
+ * Short-lived cache for read-only freshness probes.
+ *
+ * Freshness is the single most-called OntoIndex surface, and repeated probes
+ * within one agent turn re-derive an answer that cannot have changed. Only
+ * read-only calls are cached: any `autoAnalyze` request submits work and must
+ * always execute. The TTL is deliberately short to bound how long a verdict can
+ * lag a concurrent edit; set ONTOINDEX_FRESHNESS_CACHE_MS=0 to disable.
+ */
+const DEFAULT_FRESHNESS_CACHE_MS = 3_000;
+
+interface FreshnessCacheEntry {
+  expiresAt: number;
+  report: EnsureFreshReport;
+}
+
+const freshnessCache = new Map<string, FreshnessCacheEntry>();
+
+function freshnessCacheTtlMs(): number {
+  const raw = process.env.ONTOINDEX_FRESHNESS_CACHE_MS;
+  if (raw == null || raw.trim() === '') return DEFAULT_FRESHNESS_CACHE_MS;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return DEFAULT_FRESHNESS_CACHE_MS;
+  return Math.floor(value);
+}
+
+/** Test seam: drop every cached freshness verdict. */
+export function resetFreshnessCache(): void {
+  freshnessCache.clear();
+}
+
+function freshnessCacheKey(
+  repoId: string,
+  params: EnsureFreshParams,
+  requiredGraphCapabilities: readonly GraphAuthorityCapability[],
+): string {
+  return JSON.stringify([
+    repoId,
+    params.repo ?? null,
+    params.withEmbeddings === true,
+    requiredGraphCapabilities,
+  ]);
+}
 
 export function gnEnsureFresh(
   repoId: string,
@@ -347,12 +468,41 @@ export async function gnEnsureFresh(
   repoId: string,
   params: EnsureFreshParams,
 ): Promise<EnsureFreshReport | ReturnType<typeof createEnvelopeFromLegacy<EnsureFreshReport>>> {
-  const report = await buildEnsureFreshReport(repoId, params);
+  const requiredGraphCapabilities = normalizeRequiredGraphCapabilities(
+    params.requiredGraphCapabilities,
+  );
+  const cacheable = params.autoAnalyze !== true;
+  const ttlMs = freshnessCacheTtlMs();
+  const cacheKey = freshnessCacheKey(repoId, params, requiredGraphCapabilities);
+  let report: EnsureFreshReport | undefined;
+
+  if (cacheable && ttlMs > 0) {
+    const cached = freshnessCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      report = structuredClone(cached.report);
+    } else if (cached) {
+      freshnessCache.delete(cacheKey);
+    }
+  }
+
+  if (report === undefined) {
+    report = await buildEnsureFreshReport(repoId, {
+      ...params,
+      requiredGraphCapabilities,
+    });
+    if (cacheable && ttlMs > 0) {
+      freshnessCache.set(cacheKey, {
+        expiresAt: Date.now() + ttlMs,
+        report: structuredClone(report),
+      });
+    }
+  }
+
   if (params.legacyResponse !== false) return report;
   const targetContext = await resolveTargetContext({
     repo: params.repo ?? repoId,
     verifyGraphAuthority: true,
-    requiredGraphCapabilities: ['symbols'],
+    requiredGraphCapabilities,
   });
   return createEnvelopeFromLegacy({
     legacy: report,
@@ -388,6 +538,9 @@ async function buildEnsureFreshReport(
   repoId: string,
   params: EnsureFreshParams,
 ): Promise<EnsureFreshReport> {
+  const requiredGraphCapabilities = normalizeRequiredGraphCapabilities(
+    params.requiredGraphCapabilities,
+  );
   const warnings: string[] = [];
   const recommendations: string[] = [];
   const actionsTaken: string[] = [];
@@ -454,7 +607,9 @@ async function buildEnsureFreshReport(
   }
 
   // ---- 3. Get current HEAD commit from the indexed repo path --------------
-  const repoMeta = await loadMeta(join(repoRoot, '.ontoindex'));
+  const repoStoragePath = join(repoRoot, '.ontoindex');
+  const generationMeta = await readActiveGenerationMeta(repoStoragePath);
+  const repoMeta = generationMeta.meta;
   let currentCommit = '';
   try {
     currentCommit = (
@@ -468,22 +623,84 @@ async function buildEnsureFreshReport(
     warnings.push('git rev-parse HEAD failed: ' + String(err));
   }
 
-  const indexedCommit: string = entry.lastCommit ?? '';
+  const registryIndexedCommit: string = entry.lastCommit ?? '';
+  const trustedMetadataIndexedCommit =
+    generationMeta.authority !== 'untrusted' ? (repoMeta?.lastCommit ?? '') : '';
+  const indexedCommit = trustedMetadataIndexedCommit || registryIndexedCommit;
+  if (generationMeta.authority === 'untrusted') {
+    warnings.push(
+      `Active generation metadata authority is untrusted (${generationMeta.reason ?? 'unknown reason'}); ${
+        registryIndexedCommit
+          ? `using registry commit ${registryIndexedCommit} as a conservative indexed-commit fallback`
+          : 'no trusted indexed-commit fallback is available'
+      }. Generation metadata is excluded from commit, embeddings, and runtime claims.`,
+    );
+  }
+  if (
+    trustedMetadataIndexedCommit &&
+    registryIndexedCommit &&
+    trustedMetadataIndexedCommit !== registryIndexedCommit
+  ) {
+    warnings.push(
+      `The registry indexed commit ${registryIndexedCommit} lags trusted index metadata ${trustedMetadataIndexedCommit}; using trusted metadata as local freshness authority.`,
+    );
+  }
+  const currentHeadAvailable = GIT_HEAD.test(currentCommit);
+  if (currentCommit && !currentHeadAvailable) {
+    warnings.push('git rev-parse HEAD returned a malformed commit identity.');
+  }
   const isStale = currentCommit !== '' && indexedCommit !== '' && currentCommit !== indexedCommit;
-  const dirtyFileCount = await countDirtyFiles(repoRoot);
+  const dirtyWorktree = await summarizeDirtyWorktree(repoRoot);
+  const dirtyFileCount = dirtyWorktree.dirtyFileCount;
+  const dirtyWorktreeBreakdown = {
+    trackedChangedCount: dirtyWorktree.trackedChangedCount,
+    untrackedCount: dirtyWorktree.untrackedCount,
+  };
   const scopeConfidence = deriveScopeConfidence({
     selectorProvided: selectorResolved,
     cwdFallbackUsed: cwdFallbackUsed || selector === undefined,
     dirtyFileCount,
     isStale,
   });
+  if ((dirtyWorktree.untrackedCount ?? 0) > 0) {
+    warnings.push(
+      `${dirtyWorktree.untrackedCount} untracked file${dirtyWorktree.untrackedCount === 1 ? ' is' : 's are'} absent from the graph entirely; ${dirtyWorktree.trackedChangedCount} tracked change${dirtyWorktree.trackedChangedCount === 1 ? ' is' : 's are'} indexed at the indexed commit.`,
+    );
+  }
 
   // ---- 4. Build preCheck --------------------------------------------------
   const preCheck = { indexedCommit, currentCommit, isStale };
-  const runtimeHealth = await readRuntimeHealth(repoRoot, {
+  const runtimeFallbackMeta: RepoMeta | null =
+    repoMeta ??
+    (registryIndexedCommit
+      ? {
+          repoPath: repoRoot,
+          lastCommit: registryIndexedCommit,
+          indexedAt: entry.indexedAt ?? '',
+        }
+      : null);
+  let runtimeHealth = await readRuntimeHealth(repoRoot, {
     repoLabel: entry.name ?? selector ?? repoRoot,
-    meta: repoMeta,
+    meta: runtimeFallbackMeta,
   });
+  if (
+    generationMeta.authority === 'untrusted' &&
+    runtimeHealth.freshnessState !== 'failed-after-partial-run'
+  ) {
+    runtimeHealth = {
+      ...runtimeHealth,
+      indexedCommit: registryIndexedCommit || null,
+      freshnessState: 'untrusted',
+      degradedReason: 'active generation metadata authority is untrusted',
+      repairCommand: 'ontoindex analyze --force',
+      repairAction: {
+        tool: 'ontoindex',
+        command: 'analyze',
+        args: ['--force'],
+        reason: 'rebuild untrusted generation metadata through managed analysis',
+      },
+    };
+  }
 
   // ---- 5. Embeddings status -----------------------------------------------
   const embeddingsStatus = resolveEmbeddingsStatus({
@@ -492,6 +709,16 @@ async function buildEnsureFreshReport(
     isStale,
     withEmbeddings: params.withEmbeddings,
   });
+  const embeddingsRepairRequired = embeddingsStatus.required && embeddingsStatus.status !== 'ok';
+  const refreshWorkNeeded =
+    isStale ||
+    // Uncommitted edits are absent from a commit-scoped graph, so a dirty tree
+    // is refreshable work even when HEAD already matches the indexed commit.
+    (dirtyFileCount !== null && dirtyFileCount > 0) ||
+    (!currentHeadAvailable && indexedCommit !== '') ||
+    embeddingsRepairRequired ||
+    runtimeHealth.analyzeLock.state === 'stale' ||
+    runtimeHealth.freshnessState === 'failed-after-partial-run';
 
   // ---- 6. Recommendations (always populated) ------------------------------
   if (isStale) {
@@ -509,7 +736,32 @@ async function buildEnsureFreshReport(
     );
   }
 
-  if (
+  if (params.autoAnalyze && !currentHeadAvailable) {
+    analysisSubmission = {
+      status: 'blocked',
+      reasonCode: 'HEAD_UNAVAILABLE',
+      message: 'A valid 40- or 64-character git HEAD is unavailable; analysis cannot be submitted.',
+    };
+    recommendations.push('Restore a valid git HEAD before retrying autoAnalyze.');
+  } else if (params.autoAnalyze && dirtyFileCount === null) {
+    analysisSubmission = {
+      status: 'blocked',
+      reasonCode: 'WORKTREE_STATUS_UNAVAILABLE',
+      message: 'Worktree status is unavailable; analysis cannot be submitted safely.',
+    };
+    recommendations.push('Confirm the repository worktree is clean before retrying autoAnalyze.');
+  } else if (
+    params.autoAnalyze &&
+    params.withEmbeddings === true &&
+    !process.env.ONTOINDEX_EMBEDDING_MODEL_HASH?.trim()
+  ) {
+    analysisSubmission = {
+      status: 'blocked',
+      reasonCode: 'EMBEDDING_MODEL_IDENTITY_UNAVAILABLE',
+      message:
+        'ONTOINDEX_EMBEDDING_MODEL_HASH must be set to a non-empty model identity before requesting managed embedding analysis.',
+    };
+  } else if (
     params.autoAnalyze &&
     runtimeHealth.freshnessState === 'untrusted' &&
     runtimeHealth.analyzeLock.state !== 'stale'
@@ -536,6 +788,7 @@ async function buildEnsureFreshReport(
       headCommit: currentCommit,
       isStale,
       dirtyFileCount,
+      dirtyWorktreeBreakdown,
       scopeConfidence,
       runtimeHealth,
       actionsTaken,
@@ -545,15 +798,10 @@ async function buildEnsureFreshReport(
     };
   }
 
-  // ---- 7. Auto-analyze (only when explicitly requested AND stale) ---------
+  // ---- 7. Auto-analyze (only when explicitly requested and work is needed) -
   let analysisJob: AnalysisJobRecord | undefined;
 
-  if (
-    params.autoAnalyze &&
-    (isStale ||
-      runtimeHealth.analyzeLock.state === 'stale' ||
-      runtimeHealth.freshnessState === 'failed-after-partial-run')
-  ) {
+  if (params.autoAnalyze && refreshWorkNeeded && analysisSubmission.status === 'not-needed') {
     // Note: this CAN block on DuckDB write-lock if MCP processes are running.
     if (params.killMcpForLock) {
       warnings.push(
@@ -569,13 +817,45 @@ async function buildEnsureFreshReport(
     const forceRecovery =
       runtimeHealth.analyzeLock.state === 'stale' ||
       runtimeHealth.freshnessState === 'failed-after-partial-run';
-    if (forceRecovery) args.push('--force');
+    const forceEmbeddingsRepair = !isStale && embeddingsRepairRequired;
+    const forceAnalyze = forceRecovery || forceEmbeddingsRepair;
+    if (forceAnalyze) args.push('--force');
     if (params.withEmbeddings) args.push('--embeddings');
 
     try {
+      const requestedCapabilities: AnalysisRequestedCapabilities = {
+        version: ANALYSIS_REQUESTED_CAPABILITIES_VERSION,
+        graph: true,
+        graphCapabilities: requiredGraphCapabilities,
+        embeddings: params.withEmbeddings === true,
+        embeddingModelHash:
+          params.withEmbeddings === true
+            ? process.env.ONTOINDEX_EMBEDDING_MODEL_HASH!.trim()
+            : null,
+      };
+      const manifest = await computeSourceManifest(repoRoot, {
+        includePaths: [],
+        pipelineProfile: 'full',
+      });
+      const manifestDigest = sourceManifestDigest(manifest);
+      // A dirty tree is analyzed as-is, but it must not be published under a
+      // commit identity whose content it does not match. Identify those runs by
+      // the manifest digest that hashed the exact analyzed bytes.
+      const analyzingDirtyWorktree = dirtyFileCount > 0;
+      const sourceIdentity = analyzingDirtyWorktree
+        ? worktreeSourceIdentity(manifestDigest)
+        : commitSourceIdentity(currentCommit);
+      if (analyzingDirtyWorktree) {
+        warnings.push(
+          `Analyzing ${dirtyFileCount} uncommitted change${dirtyFileCount === 1 ? '' : 's'}; results publish under working-tree identity "${sourceIdentity}" rather than commit ${currentCommit}.`,
+        );
+      }
       const submitted = await submitAnalysisJob({
         repoPath: repoRoot,
         targetHead: currentCommit,
+        sourceIdentity,
+        requestedCapabilities,
+        sourceManifestDigest: manifestDigest,
         command: cli.command,
         args,
         options: { withEmbeddings: params.withEmbeddings === true },
@@ -586,7 +866,7 @@ async function buildEnsureFreshReport(
         jobId: analysisJob.id,
       };
       actionsTaken.push(
-        `${submitted.reused ? 'Reused' : 'Started'} analysis job ${analysisJob.id}: ${cli.displayPrefix} analyze${forceRecovery ? ' --force' : ''}${params.withEmbeddings ? ' --embeddings' : ''}`,
+        `${submitted.reused ? 'Reused' : 'Started'} analysis job ${analysisJob.id}: ${cli.displayPrefix} analyze${forceAnalyze ? ' --force' : ''}${params.withEmbeddings ? ' --embeddings' : ''}`,
       );
       recommendations.push(
         `Poll gn_analyze_job with jobId "${analysisJob.id}" for terminal status, exit code, generation ID, and log path.`,
@@ -597,16 +877,34 @@ async function buildEnsureFreshReport(
         err && typeof err === 'object' && 'code' in err && typeof err.code === 'string'
           ? err.code
           : undefined;
-      analysisSubmission = {
-        status: 'failed',
-        errorCode: 'ANALYZE_JOB_SUBMISSION_FAILED',
-        ...(causeCode ? { causeCode } : {}),
-        message,
-      };
-      warnings.push('analyze job submission failed: ' + message);
-      recommendations.push(
-        'Inspect any active analysis job under .ontoindex/analysis-jobs before retrying autoAnalyze.',
-      );
+      if (causeCode === 'LOCK_CONFLICT' || causeCode === 'ACTIVE_JOB_CONFLICT') {
+        const activeJobId =
+          causeCode === 'ACTIVE_JOB_CONFLICT' &&
+          err &&
+          typeof err === 'object' &&
+          'activeJobId' in err &&
+          typeof err.activeJobId === 'string'
+            ? err.activeJobId
+            : undefined;
+        analysisSubmission = {
+          status: 'blocked',
+          reasonCode: causeCode,
+          message,
+          ...(activeJobId ? { jobId: activeJobId } : {}),
+        };
+        warnings.push('analyze job submission blocked: ' + message);
+      } else {
+        analysisSubmission = {
+          status: 'failed',
+          errorCode: 'ANALYZE_JOB_SUBMISSION_FAILED',
+          ...(causeCode ? { causeCode } : {}),
+          message,
+        };
+        warnings.push('analyze job submission failed: ' + message);
+        recommendations.push(
+          'Inspect any active analysis job under .ontoindex/analysis-jobs before retrying autoAnalyze.',
+        );
+      }
     }
   }
 
@@ -628,6 +926,7 @@ async function buildEnsureFreshReport(
     headCommit: currentCommit,
     isStale,
     dirtyFileCount,
+    dirtyWorktreeBreakdown,
     scopeConfidence,
     runtimeHealth,
     actionsTaken,

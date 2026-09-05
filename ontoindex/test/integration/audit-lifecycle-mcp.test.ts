@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -249,6 +249,44 @@ describe('audit lifecycle MCP integration', () => {
         expect.objectContaining({ findingId: 'finding-a', currentStatus: 'NEEDS-REVERIFY' }),
       ]),
     );
+  });
+
+  it('returns integrity metadata while preserving readable BROKEN-chain reports', async () => {
+    const repo = initRepo();
+    const sessionId = 'session-integrity';
+    const store = new LocalAuditEventStore(repo);
+    await store.createSession(
+      {
+        id: sessionId,
+        targetRepo: path.basename(repo),
+        targetHead: head(repo),
+        sourceHash: 'sha256:integrity',
+        graphIndexId: 'graph-1',
+        verifierVersion: 'verifier-1',
+        sidecarStateHash: 'graph-hash-1',
+        createdAt: '2026-05-17T00:00:00.000Z',
+      },
+      { id: 'evt-session-integrity' },
+    );
+    const state = JSON.parse(readFileSync(store.eventStorePath, 'utf8')) as Record<string, unknown>;
+    const events = state.events as Array<Record<string, unknown>>;
+    events[0].checksum = 'tampered';
+    writeFileSync(store.eventStorePath, JSON.stringify({ ...state, events }));
+
+    for (const [name, params] of [
+      ['gn_audit_replay', { repo, session: sessionId }],
+      ['gn_audit_export', { repo, session: sessionId, format: 'both' }],
+    ] as const) {
+      const report = (await dispatchSuper(name, params, repo)) as Record<string, any>;
+      expect(report.integrity).toMatchObject({ status: 'BROKEN', firstBrokenSequence: 0 });
+      expect(report.ok).not.toBe(false);
+      if (name === 'gn_audit_export') {
+        expect(report.markdown).toContain('Integrity:');
+        expect(report.markdown).toContain('- Status: BROKEN');
+        expect(report.markdown).toContain('- First broken sequence: 0');
+        expect(report.markdown).toContain('- Reason: checksum-mismatch');
+      }
+    }
   });
 
   it('runs scope guard and required test checks during manager review', async () => {

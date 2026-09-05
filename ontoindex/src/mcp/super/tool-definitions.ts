@@ -26,7 +26,7 @@ interface ToolDefinition {
         type: string | string[];
         description?: string;
         enum?: string[];
-        items?: { type: string };
+        items?: { type: string; enum?: string[] };
         default?: unknown;
         minimum?: number;
         maximum?: number;
@@ -381,6 +381,13 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           description: 'Also check and populate embeddings. Default: false.',
           default: false,
         },
+        requiredGraphCapabilities: {
+          type: 'array',
+          items: { type: 'string', enum: ['symbols', 'impact', 'processes'] },
+          description:
+            'Required graph capabilities for freshness and managed analysis. Values are deduplicated and normalized; default: ["symbols"].',
+          default: ['symbols'],
+        },
         autoAnalyze: {
           type: 'boolean',
           description:
@@ -401,7 +408,7 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
   {
     name: 'gn_analyze_job',
     description:
-      'Observe or cancel a durable repository analysis job previously returned by gn_ensure_fresh(autoAnalyze=true).',
+      'Observe or cancel a durable repository analysis job previously returned by gn_ensure_fresh(autoAnalyze=true). Successful recovery requires exact commit source identity, a matching publication receipt, and a clean committed-HEAD post-check.',
     inputSchema: {
       type: 'object',
       properties: {

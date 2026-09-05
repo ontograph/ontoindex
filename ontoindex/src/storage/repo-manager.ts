@@ -117,9 +117,30 @@ export interface IndexGenerationPaths {
   snapshotPath: string;
 }
 
+export type ActiveGenerationMetaAuthority = 'active-generation' | 'legacy-root' | 'untrusted';
+
+export interface ActiveGenerationMetaPair {
+  activeGeneration: IndexGenerationPaths | null;
+  meta: RepoMeta | null;
+  authority: ActiveGenerationMetaAuthority;
+  reason?:
+    | 'active-generation-metadata-unavailable'
+    | 'active-generation-metadata-mismatch'
+    | 'active-generation-changed-during-read'
+    | 'generation-tagged-root-metadata-without-active-generation'
+    | 'legacy-root-metadata-unavailable';
+}
+
+export interface ActiveGenerationMetaReadDeps {
+  resolveActiveGeneration?: typeof resolveActiveIndexGeneration;
+  readMetaFile?: (metaPath: string) => Promise<RepoMeta | null>;
+}
+
 const ONTOINDEX_DIR = '.ontoindex';
 const GENERATIONS_DIR = 'generations';
 const CURRENT_GENERATION_LINK = 'current';
+const GENERATION_POINTER_LOCK = 'current.mutation.lock';
+const GENERATION_POINTER_LOCK_TIMEOUT_MS = 10_000;
 const REGISTRY_LOCK_TIMEOUT_MS = 10_000;
 const REGISTRY_LOCK_STALE_MS = 2 * 60_000;
 const REGISTRY_LOCK_RETRY_MS = 50;
@@ -225,6 +246,15 @@ export const discardIndexGeneration = async (generation: IndexGenerationPaths): 
   await fs.rm(generation.generationPath, { recursive: true, force: true });
 };
 
+export interface IndexGenerationActivation {
+  activeGeneration: IndexGenerationPaths;
+  previousGeneration: IndexGenerationPaths | null;
+}
+
+export interface IndexGenerationPublication<T> extends IndexGenerationActivation {
+  result: T;
+}
+
 async function replaceWithSymlink(target: string, linkPath: string): Promise<void> {
   const tmpPath = `${linkPath}.${process.pid}.${Date.now()}.tmp`;
   await fs.symlink(target, tmpPath);
@@ -302,12 +332,66 @@ async function migrateLegacyGeneration(storagePath: string): Promise<void> {
   }
 }
 
-export const activateIndexGeneration = async (
+async function withGenerationPointerLock<T>(
+  storagePath: string,
+  callback: () => Promise<T>,
+): Promise<T> {
+  await fs.mkdir(storagePath, { recursive: true });
+  const lockPath = path.join(storagePath, GENERATION_POINTER_LOCK);
+  const release = await acquireExclusiveFile(lockPath, GENERATION_POINTER_LOCK_TIMEOUT_MS);
+  if (!release) throw new Error(`Timed out acquiring index generation pointer lock: ${lockPath}`);
+  let result: T | undefined;
+  let callbackError: unknown;
+  try {
+    result = await callback();
+  } catch (err) {
+    callbackError = err;
+  }
+
+  let releaseError: unknown;
+  try {
+    await release();
+  } catch (err) {
+    releaseError = err;
+  }
+
+  if (callbackError !== undefined && releaseError !== undefined) {
+    throw new AggregateError(
+      [callbackError, releaseError],
+      'Index generation pointer mutation failed and its lock could not be released.',
+    );
+  }
+  if (callbackError !== undefined) throw callbackError;
+  if (releaseError !== undefined) throw releaseError;
+  return result as T;
+}
+
+function requirePublishedGeneration(
   storagePath: string,
   generation: IndexGenerationPaths,
-): Promise<IndexGenerationPaths> => {
+): IndexGenerationPaths {
+  const generationId = safeGenerationId(generation.generationId);
+  if (generationId !== generation.generationId) {
+    throw new Error('Index generation id is not canonical');
+  }
+  const generationPath = path.join(storagePath, GENERATIONS_DIR, generationId);
+  if (path.resolve(generation.generationPath) !== path.resolve(generationPath)) {
+    throw new Error('Index generation path is outside the repository generations directory');
+  }
+  return generationPaths(storagePath, generationId, generationPath);
+}
+
+async function activateIndexGenerationLocked(
+  storagePath: string,
+  generation: IndexGenerationPaths,
+): Promise<IndexGenerationActivation> {
+  const generationId = safeGenerationId(generation.generationId);
+  if (generationId !== generation.generationId) {
+    throw new Error('Index generation id is not canonical');
+  }
+  const previousGeneration = await resolveActiveIndexGeneration(storagePath);
   const generationsPath = path.join(storagePath, GENERATIONS_DIR);
-  const finalPath = path.join(generationsPath, generation.generationId);
+  const finalPath = path.join(generationsPath, generationId);
   await fs.rename(generation.generationPath, finalPath);
 
   const currentPath = path.join(storagePath, CURRENT_GENERATION_LINK);
@@ -316,9 +400,113 @@ export const activateIndexGeneration = async (
     .then(() => true)
     .catch(() => false);
   if (!hadCurrentGeneration) await ensureGenerationAliases(storagePath);
-  await replaceWithSymlink(path.join(GENERATIONS_DIR, generation.generationId), currentPath);
-  return generationPaths(storagePath, generation.generationId, finalPath);
-};
+  await replaceWithSymlink(path.join(GENERATIONS_DIR, generationId), currentPath);
+  return {
+    activeGeneration: generationPaths(storagePath, generationId, finalPath),
+    previousGeneration,
+  };
+}
+
+export const activateIndexGenerationTransaction = async (
+  storagePath: string,
+  generation: IndexGenerationPaths,
+): Promise<IndexGenerationActivation> =>
+  withGenerationPointerLock(storagePath, () =>
+    activateIndexGenerationLocked(storagePath, generation),
+  );
+
+export const activateIndexGeneration = async (
+  storagePath: string,
+  generation: IndexGenerationPaths,
+): Promise<IndexGenerationPaths> =>
+  (await activateIndexGenerationTransaction(storagePath, generation)).activeGeneration;
+
+async function removeGenerationAliases(storagePath: string): Promise<void> {
+  for (const filename of ['lbug', 'lbug.wal', 'lbug.lock', 'meta.json', 'snapshot.json']) {
+    const linkPath = path.join(storagePath, filename);
+    try {
+      if ((await fs.readlink(linkPath)) === path.join(CURRENT_GENERATION_LINK, filename)) {
+        await fs.unlink(linkPath);
+      }
+    } catch {}
+  }
+}
+
+async function rollbackIndexGenerationActivationLocked(
+  storagePath: string,
+  expectedActiveGenerationId: string,
+  previousGeneration: IndexGenerationPaths | null,
+): Promise<void> {
+  const expectedId = safeGenerationId(expectedActiveGenerationId);
+  if (expectedId !== expectedActiveGenerationId) {
+    throw new Error('Expected active index generation id is not canonical');
+  }
+  const currentGeneration = await resolveActiveIndexGeneration(storagePath);
+  if (currentGeneration?.generationId !== expectedId) {
+    throw new Error(
+      `Refusing index generation rollback: expected ${expectedId} to remain active, found ${currentGeneration?.generationId ?? 'none'}`,
+    );
+  }
+
+  const currentPath = path.join(storagePath, CURRENT_GENERATION_LINK);
+  if (previousGeneration) {
+    const previous = requirePublishedGeneration(storagePath, previousGeneration);
+    const stat = await fs.lstat(previous.generationPath);
+    if (stat.isSymbolicLink()) {
+      throw new Error('Previous index generation must not be a symbolic link');
+    }
+    if (!stat.isDirectory()) throw new Error('Previous index generation is not a directory');
+    const generationsPath = await fs.realpath(path.join(storagePath, GENERATIONS_DIR));
+    const previousPath = await fs.realpath(previous.generationPath);
+    if (previousPath !== path.join(generationsPath, previous.generationId)) {
+      throw new Error('Previous index generation resolves outside the generations directory');
+    }
+    await replaceWithSymlink(path.join(GENERATIONS_DIR, previous.generationId), currentPath);
+    return;
+  }
+
+  await fs.unlink(currentPath);
+  await removeGenerationAliases(storagePath);
+}
+
+export const rollbackIndexGenerationActivation = async (
+  storagePath: string,
+  expectedActiveGenerationId: string,
+  previousGeneration: IndexGenerationPaths | null,
+): Promise<void> =>
+  withGenerationPointerLock(storagePath, () =>
+    rollbackIndexGenerationActivationLocked(
+      storagePath,
+      expectedActiveGenerationId,
+      previousGeneration,
+    ),
+  );
+
+export const publishIndexGenerationTransaction = async <T>(
+  storagePath: string,
+  generation: IndexGenerationPaths,
+  commit: (activation: IndexGenerationActivation) => Promise<T>,
+): Promise<IndexGenerationPublication<T>> =>
+  withGenerationPointerLock(storagePath, async () => {
+    const activation = await activateIndexGenerationLocked(storagePath, generation);
+    try {
+      return { ...activation, result: await commit(activation) };
+    } catch (commitError) {
+      try {
+        await rollbackIndexGenerationActivationLocked(
+          storagePath,
+          activation.activeGeneration.generationId,
+          activation.previousGeneration,
+        );
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [commitError, rollbackError],
+          'Index generation publication commit failed and the active generation could not be rolled back.',
+        );
+      }
+      throw commitError;
+    }
+  });
 
 export const resolveActiveIndexGeneration = async (
   storagePath: string,
@@ -330,6 +518,102 @@ export const resolveActiveIndexGeneration = async (
   } catch {
     return null;
   }
+};
+
+async function readMetaFile(metaPath: string): Promise<RepoMeta | null> {
+  try {
+    return JSON.parse(await fs.readFile(metaPath, 'utf-8')) as RepoMeta;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the active generation pointer and its metadata as one bounded stable
+ * authority pair. A concurrent activation is retried once; metadata is only
+ * returned when it identifies the exact generation that remains active after
+ * the read. Without an active generation, only generationless legacy root
+ * metadata is trusted.
+ */
+export const readActiveGenerationMeta = async (
+  storagePath: string,
+  deps: ActiveGenerationMetaReadDeps = {},
+): Promise<ActiveGenerationMetaPair> => {
+  const resolveActive = deps.resolveActiveGeneration ?? resolveActiveIndexGeneration;
+  const readMeta = deps.readMetaFile ?? readMetaFile;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const generationBeforeRead = await resolveActive(storagePath);
+    if (!generationBeforeRead) {
+      const legacyMeta = await readMeta(path.join(storagePath, 'meta.json'));
+      const generationAfterRead = await resolveActive(storagePath);
+      if (generationAfterRead) {
+        if (attempt === 0) continue;
+        return {
+          activeGeneration: generationAfterRead,
+          meta: null,
+          authority: 'untrusted',
+          reason: 'active-generation-changed-during-read',
+        };
+      }
+      if (legacyMeta && legacyMeta.generationId === undefined) {
+        return {
+          activeGeneration: null,
+          meta: legacyMeta,
+          authority: 'legacy-root',
+        };
+      }
+      return {
+        activeGeneration: null,
+        meta: null,
+        authority: 'untrusted',
+        reason: legacyMeta
+          ? 'generation-tagged-root-metadata-without-active-generation'
+          : 'legacy-root-metadata-unavailable',
+      };
+    }
+
+    const meta = await readMeta(generationBeforeRead.metaPath);
+    const generationAfterRead = await resolveActive(storagePath);
+    const pointerStable = generationAfterRead?.generationId === generationBeforeRead.generationId;
+    if (!pointerStable) {
+      if (attempt === 0) continue;
+      return {
+        activeGeneration: generationAfterRead,
+        meta: null,
+        authority: 'untrusted',
+        reason: 'active-generation-changed-during-read',
+      };
+    }
+    if (!meta) {
+      return {
+        activeGeneration: generationAfterRead,
+        meta: null,
+        authority: 'untrusted',
+        reason: 'active-generation-metadata-unavailable',
+      };
+    }
+    if (meta.generationId !== generationAfterRead.generationId) {
+      return {
+        activeGeneration: generationAfterRead,
+        meta: null,
+        authority: 'untrusted',
+        reason: 'active-generation-metadata-mismatch',
+      };
+    }
+    return {
+      activeGeneration: generationAfterRead,
+      meta,
+      authority: 'active-generation',
+    };
+  }
+
+  return {
+    activeGeneration: null,
+    meta: null,
+    authority: 'untrusted',
+    reason: 'active-generation-changed-during-read',
+  };
 };
 
 /**
@@ -584,8 +868,11 @@ async function acquireExclusiveFile(
       let released = false;
       return async () => {
         if (released) return;
+        const removed = await removeRegistryLockIfOwner(lockPath, process.pid, token);
+        if (!removed) {
+          throw new Error(`Failed to release owned lock: ${lockPath}`);
+        }
         released = true;
-        await removeRegistryLockIfOwner(lockPath, process.pid, token);
       };
     } catch (err: unknown) {
       if (errorCode(err) !== 'EEXIST') throw err;

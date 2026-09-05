@@ -153,6 +153,25 @@ describe('filesystem-walker', () => {
       }
     });
 
+    it('still scans a crate whose .git directory is a stray empty leftover', async () => {
+      const crateRoot = path.join(tmpDir, 'core-crate');
+      await fs.mkdir(path.join(crateRoot, '.git'), { recursive: true });
+      await fs.mkdir(path.join(crateRoot, 'src'), { recursive: true });
+      await fs.writeFile(
+        path.join(crateRoot, 'src', 'lib.ts'),
+        'export const stillIndexed = true;\n',
+      );
+
+      try {
+        const files = await walkRepositoryPaths(tmpDir);
+        const paths = files.map((file) => file.path.replace(/\\/g, '/'));
+        expect(paths).toContain('core-crate/src/lib.ts');
+        expect(paths.every((p) => !p.includes('/.git/'))).toBe(true);
+      } finally {
+        await fs.rm(crateRoot, { recursive: true, force: true });
+      }
+    });
+
     it('discovers docs in dot-directories while skipping operational dot-directories', async () => {
       const dotDocsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-dotdocs-'));
       await fs.mkdir(path.join(dotDocsDir, '.memory-bank'), { recursive: true });
