@@ -7,6 +7,8 @@ vi.mock('../../../src/core/analysis/analysis-coordinator.js', () => ({
 }));
 vi.mock('../../../src/core/analysis/analysis-publication-receipt.js', () => ({
   readAnalysisPublicationReceipt: vi.fn(),
+  isValidSourceIdentity: (value: unknown, targetHead: string, digest: string) =>
+    value === `commit:${targetHead}` || value === `worktree:${digest}`,
 }));
 vi.mock('../../../src/storage/repo-manager.js', () => ({
   resolveActiveIndexGeneration: vi.fn(),

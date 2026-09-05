@@ -21,6 +21,33 @@ const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const GIT_HEAD = /^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/;
 const SHA256_DIGEST = /^[0-9a-fA-F]{64}$/;
 
+/**
+ * Analysis source identity has two legal forms. `commit:<head>` means the
+ * analyzed bytes matched a clean checkout of that commit. `worktree:<digest>`
+ * means the analyzed bytes were the working tree, identified by the source
+ * manifest digest that hashed those exact file contents. A dirty tree must
+ * never be published under a commit identity it does not match.
+ */
+export function commitSourceIdentity(targetHead: string): string {
+  return `commit:${targetHead}`;
+}
+
+export function worktreeSourceIdentity(sourceManifestDigest: string): string {
+  return `worktree:${sourceManifestDigest}`;
+}
+
+export function isValidSourceIdentity(
+  value: unknown,
+  targetHead: string,
+  sourceManifestDigest: string,
+): value is string {
+  if (typeof value !== 'string') return false;
+  if (value === commitSourceIdentity(targetHead)) return true;
+  return SHA256_DIGEST.test(sourceManifestDigest)
+    ? value === worktreeSourceIdentity(sourceManifestDigest)
+    : false;
+}
+
 /** Version 1 of the capabilities requested by a managed analysis job. */
 export type AnalysisGraphCapability = 'symbols' | 'impact' | 'processes';
 export type AnalysisRequestedCapabilities = {
@@ -98,8 +125,8 @@ export function assertValidManagedAnalysisContext(
   requireSafeIdentifier(context.jobId, 'managed analysis job id');
   requireGitHead(context.targetHead, 'managed analysis target HEAD');
   requireSha256(context.optionsDigest, 'managed analysis options digest');
-  requireSourceIdentity(context.sourceIdentity, context.targetHead);
   requireSha256(context.sourceManifestDigest, 'managed analysis source manifest digest');
+  requireSourceIdentity(context.sourceIdentity, context.targetHead, context.sourceManifestDigest);
   requireRequestedCapabilities(context.requestedCapabilities);
 }
 
@@ -172,17 +199,18 @@ function requireAnalysisPublicationReceipt(value: unknown): AnalysisPublicationR
   }
 
   const targetHead = requireGitHead(value.targetHead, 'analysis receipt target HEAD');
+  const sourceManifestDigest = requireSha256(
+    value.sourceManifestDigest,
+    'analysis receipt source manifest digest',
+  );
   return {
     version: ANALYSIS_PUBLICATION_RECEIPT_VERSION,
     jobId: requireSafeIdentifier(value.jobId, 'analysis receipt job id'),
     repoPath,
     targetHead,
     optionsDigest: requireSha256(value.optionsDigest, 'analysis receipt options digest'),
-    sourceIdentity: requireSourceIdentity(value.sourceIdentity, targetHead),
-    sourceManifestDigest: requireSha256(
-      value.sourceManifestDigest,
-      'analysis receipt source manifest digest',
-    ),
+    sourceIdentity: requireSourceIdentity(value.sourceIdentity, targetHead, sourceManifestDigest),
+    sourceManifestDigest,
     generationId: requireSafeIdentifier(value.generationId, 'analysis receipt generation id'),
     requestedCapabilities: requireRequestedCapabilities(value.requestedCapabilities),
     analyzerContractVersion: SOURCE_MANIFEST_CONTRACT,
@@ -250,8 +278,12 @@ function requireSha256(value: unknown, fieldName: string): string {
   return value;
 }
 
-function requireSourceIdentity(value: unknown, targetHead: string): string {
-  if (value !== `commit:${targetHead}`) {
+function requireSourceIdentity(
+  value: unknown,
+  targetHead: string,
+  sourceManifestDigest: string,
+): string {
+  if (!isValidSourceIdentity(value, targetHead, sourceManifestDigest)) {
     throw new Error('Managed analysis source identity is malformed.');
   }
   return value;

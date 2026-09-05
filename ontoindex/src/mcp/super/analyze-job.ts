@@ -6,6 +6,7 @@ import {
   type AnalysisJobRecord,
 } from '../../core/analysis/analysis-coordinator.js';
 import {
+  isValidSourceIdentity,
   readAnalysisPublicationReceipt,
   type AnalysisPublicationReceipt,
 } from '../../core/analysis/analysis-publication-receipt.js';
@@ -59,11 +60,11 @@ async function observeRecovery(
   job: AnalysisJobRecord,
   resolvedRepoPath: string,
 ): Promise<AnalysisRecovery> {
-  if (job.sourceIdentity !== `commit:${job.targetHead}`) {
+  if (!isValidSourceIdentity(job.sourceIdentity, job.targetHead, job.sourceManifestDigest)) {
     return terminalUnconfirmed(
       job,
       'JOB_SOURCE_IDENTITY_MISMATCH',
-      'The analysis job record does not identify the exact clean commit requested for analysis.',
+      'The analysis job record does not identify the exact commit or working-tree source requested for analysis.',
     );
   }
   if (!hasRequestedCapabilities(job.requestedCapabilities)) {

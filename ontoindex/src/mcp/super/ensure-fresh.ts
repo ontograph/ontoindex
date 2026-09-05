@@ -19,6 +19,8 @@ import {
 } from '../../core/analysis/analysis-coordinator.js';
 import {
   ANALYSIS_REQUESTED_CAPABILITIES_VERSION,
+  commitSourceIdentity,
+  worktreeSourceIdentity,
   type AnalysisRequestedCapabilities,
 } from '../../core/analysis/analysis-publication-receipt.js';
 import {
@@ -710,6 +712,9 @@ async function buildEnsureFreshReport(
   const embeddingsRepairRequired = embeddingsStatus.required && embeddingsStatus.status !== 'ok';
   const refreshWorkNeeded =
     isStale ||
+    // Uncommitted edits are absent from a commit-scoped graph, so a dirty tree
+    // is refreshable work even when HEAD already matches the indexed commit.
+    (dirtyFileCount !== null && dirtyFileCount > 0) ||
     (!currentHeadAvailable && indexedCommit !== '') ||
     embeddingsRepairRequired ||
     runtimeHealth.analyzeLock.state === 'stale' ||
@@ -745,18 +750,6 @@ async function buildEnsureFreshReport(
       message: 'Worktree status is unavailable; analysis cannot be submitted safely.',
     };
     recommendations.push('Confirm the repository worktree is clean before retrying autoAnalyze.');
-  } else if (params.autoAnalyze && dirtyFileCount > 0) {
-    analysisSubmission = {
-      status: 'blocked',
-      reasonCode: 'WORKTREE_DIRTY',
-      message: `The worktree contains ${dirtyFileCount} changed file${dirtyFileCount === 1 ? '' : 's'}; analysis cannot be submitted safely. Managed analysis reads working-tree files but publishes under the commit source identity "commit:${currentCommit}", so indexing a dirty tree would label uncommitted content with a commit it does not match.`,
-    };
-    recommendations.push(
-      `Commit or stash the ${dirtyFileCount} changed file${dirtyFileCount === 1 ? '' : 's'}, then retry gn_ensure_fresh({autoAnalyze: true}).`,
-    );
-    recommendations.push(
-      'To keep working without refreshing, treat the graph as commit-scoped to the indexed commit and verify uncommitted changes directly from source.',
-    );
   } else if (
     params.autoAnalyze &&
     params.withEmbeddings === true &&
@@ -844,12 +837,25 @@ async function buildEnsureFreshReport(
         includePaths: [],
         pipelineProfile: 'full',
       });
+      const manifestDigest = sourceManifestDigest(manifest);
+      // A dirty tree is analyzed as-is, but it must not be published under a
+      // commit identity whose content it does not match. Identify those runs by
+      // the manifest digest that hashed the exact analyzed bytes.
+      const analyzingDirtyWorktree = dirtyFileCount > 0;
+      const sourceIdentity = analyzingDirtyWorktree
+        ? worktreeSourceIdentity(manifestDigest)
+        : commitSourceIdentity(currentCommit);
+      if (analyzingDirtyWorktree) {
+        warnings.push(
+          `Analyzing ${dirtyFileCount} uncommitted change${dirtyFileCount === 1 ? '' : 's'}; results publish under working-tree identity "${sourceIdentity}" rather than commit ${currentCommit}.`,
+        );
+      }
       const submitted = await submitAnalysisJob({
         repoPath: repoRoot,
         targetHead: currentCommit,
-        sourceIdentity: `commit:${currentCommit}`,
+        sourceIdentity,
         requestedCapabilities,
-        sourceManifestDigest: sourceManifestDigest(manifest),
+        sourceManifestDigest: manifestDigest,
         command: cli.command,
         args,
         options: { withEmbeddings: params.withEmbeddings === true },

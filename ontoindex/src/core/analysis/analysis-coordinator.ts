@@ -9,6 +9,7 @@ import { readAnalyzeLock } from '../runtime/runtime-health.js';
 import {
   ANALYSIS_REQUESTED_CAPABILITIES_VERSION,
   assertValidManagedAnalysisContext,
+  isValidSourceIdentity,
   type AnalysisRequestedCapabilities,
   type ManagedAnalysisContext,
 } from './analysis-publication-receipt.js';
@@ -172,8 +173,8 @@ export async function submitAnalysisJob(
   };
   validateRequestedCapabilities(requestedCapabilities);
   validateTargetHead(input.targetHead);
-  validateSourceIdentity(input.sourceIdentity, input.targetHead);
   validateSha256(input.sourceManifestDigest, 'Analysis source manifest digest');
+  validateSourceIdentity(input.sourceIdentity, input.targetHead, input.sourceManifestDigest);
 
   const optionsDigest = digest(
     stableJson({
@@ -1184,9 +1185,12 @@ function validateTargetHead(targetHead: unknown): asserts targetHead is string {
 function validateSourceIdentity(
   sourceIdentity: unknown,
   targetHead: string,
+  sourceManifestDigest: string,
 ): asserts sourceIdentity is string {
-  if (typeof sourceIdentity !== 'string' || sourceIdentity !== `commit:${targetHead}`) {
-    throw new Error('Analysis source identity must match the requested target HEAD.');
+  if (!isValidSourceIdentity(sourceIdentity, targetHead, sourceManifestDigest)) {
+    throw new Error(
+      'Analysis source identity must match the requested target HEAD or the analyzed source manifest.',
+    );
   }
 }
 

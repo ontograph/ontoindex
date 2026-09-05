@@ -655,17 +655,28 @@ describe('gnEnsureFresh', () => {
     expect(report.actionsTaken).toHaveLength(0);
   });
 
-  it('blocks analysis when the worktree is dirty', async () => {
+  it('submits analysis for a dirty worktree under working-tree source identity', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT, statusOutput: ' M src/edit.ts\n' });
     mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
 
     const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
 
-    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
-    expect(report.analysisSubmission).toMatchObject({
-      status: 'blocked',
-      reasonCode: 'WORKTREE_DIRTY',
-    });
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
+    const submission = mockSubmitAnalysisJob.mock.calls[0][0];
+    expect(submission.sourceIdentity).toBe(`worktree:${submission.sourceManifestDigest}`);
+    expect(submission.targetHead).toBe(CURRENT_COMMIT);
+    expect(report.analysisSubmission).not.toMatchObject({ status: 'blocked' });
+  });
+
+  it('keeps commit source identity when the worktree is clean', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+
+    await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].sourceIdentity).toBe(`commit:${CURRENT_COMMIT}`);
   });
 
   it('blocks analysis when worktree status is unavailable', async () => {
@@ -1021,16 +1032,17 @@ describe('gnEnsureFresh', () => {
     expect(report.warnings.some((w) => w.includes('absent from the graph entirely'))).toBe(false);
   });
 
-  it('explains why a dirty worktree blocks managed analysis', async () => {
+  it('warns that dirty analysis is not published under the commit identity', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT, statusOutput: ' M src/edit.ts\n' });
     mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
 
     const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
 
-    expect(report.analysisSubmission).toMatchObject({ reasonCode: 'WORKTREE_DIRTY' });
-    const message = (report.analysisSubmission as { message: string }).message;
-    expect(message).toContain(`commit:${CURRENT_COMMIT}`);
-    expect(report.recommendations.some((r) => r.includes('Commit or stash'))).toBe(true);
+    expect(
+      report.warnings.some(
+        (w) => w.includes('working-tree identity') && w.includes('uncommitted change'),
+      ),
+    ).toBe(true);
   });
 
   // ---- Read-only freshness caching ----

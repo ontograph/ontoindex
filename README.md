@@ -9,7 +9,7 @@ The default path is local: install, analyze, setup, connect MCP, serve, and gene
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- Current GitHub release: `2.2.0`
+- Current GitHub release: `2.2.1`
 - Source repository: [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - Security policy: [SECURITY.md](SECURITY.md)
 - Enterprise contact: [erasyuk@gmail.com](mailto:erasyuk@gmail.com)
@@ -131,7 +131,7 @@ Installer configuration:
 | Purpose                           | Linux/macOS                                                                              | Windows PowerShell                                                                      |
 | --------------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | Use another release repository    | `ONTOINDEX_GITHUB_REPO=owner/repo ./scripts/install-ontoindex-latest.sh`                 | `$env:ONTOINDEX_GITHUB_REPO='owner/repo'; .\scripts\install-ontoindex-latest.ps1`       |
-| Use a local downloaded tarball    | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-2.2.0.tgz" ./scripts/install-ontoindex-latest.sh` | —                                                                                       |
+| Use a local downloaded tarball    | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-2.2.1.tgz" ./scripts/install-ontoindex-latest.sh` | —                                                                                       |
 | Use a user npm prefix             | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`              | `$env:ONTOINDEX_NPM_PREFIX="$env:APPDATA\npm"; .\scripts\install-ontoindex-latest.ps1`  |
 | Force user prefix                 | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`              | `.\scripts\install-ontoindex-latest.ps1 -ForceUserPrefix`                               |
 | Require FTS/vector cache prefetch | `ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh`           | `$env:ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1` |
@@ -139,7 +139,7 @@ Installer configuration:
 
 ### npm Registry Status
 
-OntoIndex 2.2.0 is distributed as a GitHub release tarball. It is not published
+OntoIndex 2.2.1 is distributed as a GitHub release tarball. It is not published
 to the public npm registry; install it with the GitHub installer or immutable
 tarball URL below.
 
@@ -149,8 +149,8 @@ Use this when you want an immutable GitHub release asset.
 
 | Platform           | Command                                                                                                                                       |
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Linux/macOS        | `npm install -g https://github.com/ontograph/ontoindex/releases/download/github-release%2F2.2.0-r1/ontoindex-2.2.0.tgz && ontoindex --version`   |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/github-release%2F2.2.0-r1/ontoindex-2.2.0.tgz; ontoindex --version` |
+| Linux/macOS        | `npm install -g https://github.com/ontograph/ontoindex/releases/download/github-release%2F2.2.1/ontoindex-2.2.1.tgz && ontoindex --version`   |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/github-release%2F2.2.1/ontoindex-2.2.1.tgz; ontoindex --version` |
 
 ## First Run
 

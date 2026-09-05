@@ -4,6 +4,14 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-09-05
+
+### Fixed
+
+- Made managed analysis of dirty worktrees publish under a `worktree:<source-manifest-digest>` identity instead of incorrectly claiming the indexed bytes matched `commit:<HEAD>`.
+- Allowed `gn_ensure_fresh({ autoAnalyze: true })` to refresh uncommitted source safely while preserving exact source identity through job submission, runner context, publication receipts, and `gn_analyze_job` recovery validation.
+- Treated dirty working-tree content as refreshable work even when the indexed commit already matches the current HEAD.
+
 ## [2.2.0] - 2026-08-18
 
 ### Added

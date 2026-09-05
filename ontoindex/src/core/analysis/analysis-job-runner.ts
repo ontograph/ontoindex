@@ -9,6 +9,7 @@ import {
 } from './analysis-coordinator.js';
 import {
   assertValidManagedAnalysisContext,
+  isValidSourceIdentity,
   MANAGED_ANALYSIS_ENV,
   type ManagedAnalysisContext,
 } from './analysis-publication-receipt.js';
@@ -200,8 +201,8 @@ function managedAnalysisEnvironment(job: AnalysisJobRecord): NodeJS.ProcessEnv {
 }
 
 function requireJobSourceIdentity(job: AnalysisJobRecord): string {
-  if (job.sourceIdentity !== `commit:${job.targetHead}`) {
-    throw new Error('Managed analysis job does not contain a valid clean source identity.');
+  if (!isValidSourceIdentity(job.sourceIdentity, job.targetHead, job.sourceManifestDigest)) {
+    throw new Error('Managed analysis job does not contain a valid source identity.');
   }
   return job.sourceIdentity;
 }
