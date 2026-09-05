@@ -17,32 +17,45 @@ description: "Use when the user wants to know what will break if they change som
 ## Workflow
 
 ```
-1. ontoindex_impact({target: "X", direction: "upstream"})  → What depends on this
-2. READ ontoindex://repo/{name}/processes                   → Check affected execution flows
-3. ontoindex_detect_changes()                               → Map current git changes to affected flows
-4. Assess risk and report to user
+1. gn_ensure_fresh({repo})                                       → Confirm freshness first
+2. impact({action: "symbol", repo, target: "X", direction: "upstream"})  → What depends on this
+3. gn_safe_edit_check({repo, symbol: "X"})                       → Pre-edit safety gate
+4. gn_verify_diff({repo, scope: "all"})                          → Map current changes to affected flows
+5. Assess risk and report to user
 ```
 
-> If "Index is stale" → run `npx ontoindex analyze` in terminal.
+> If freshness reports stale, refresh with `ontoindex analyze` under the
+> single-owner lock rules in `ontoindex-cli`.
+
+If no OntoIndex tool is callable, report the missing tool and stop the
+impact-gated edit. Reading source alone does not satisfy this gate.
 
 ## Checklist
 
 ```
-- [ ] ontoindex_impact({target, direction: "upstream"}) to find dependents
-- [ ] Review d=1 items first (these WILL BREAK)
+- [ ] gn_ensure_fresh({repo}) and record the freshness state
+- [ ] impact({action: "symbol", target, direction: "upstream"}) to find dependents
+- [ ] Review d=1 items first (highest review priority)
 - [ ] Check high-confidence (>0.8) dependencies
-- [ ] READ processes to check affected execution flows
-- [ ] ontoindex_detect_changes() for pre-commit check
+- [ ] gn_verify_diff for the pre-commit check
 - [ ] Assess risk level and report to user
 ```
 
 ## Understanding Output
 
-| Depth | Risk Level       | Meaning                  |
-| ----- | ---------------- | ------------------------ |
-| d=1   | **WILL BREAK**   | Direct callers/importers |
-| d=2   | LIKELY AFFECTED  | Indirect dependencies    |
-| d=3   | MAY NEED TESTING | Transitive effects       |
+Depth measures dependency distance, not certainty of breakage. A direct
+dependent breaks only if the change alters behavior it relies on. Report
+dependents as review scope and confirm actual breakage by reading the call site
+or running its tests.
+
+| Depth | Review priority | Meaning                                      |
+| ----- | --------------- | -------------------------------------------- |
+| d=1   | HIGHEST         | Direct callers/importers; inspect every one   |
+| d=2   | LIKELY AFFECTED | Indirect dependencies                         |
+| d=3   | MAY NEED TESTING| Transitive effects                            |
+
+A dirty worktree lowers scope confidence: uncommitted edits are not in the
+graph. Verify those against current source or the diff.
 
 ## Risk Assessment
 
@@ -55,17 +68,18 @@ description: "Use when the user wants to know what will break if they change som
 
 ## Tools
 
-**ontoindex_impact** — the primary tool for symbol blast radius:
+**impact** — the primary tool for symbol blast radius:
 
 ```
-ontoindex_impact({
+impact({
+  action: "symbol",
+  repo: "<repo>",
   target: "validateUser",
   direction: "upstream",
-  minConfidence: 0.8,
-  maxDepth: 3
+  depth: 3
 })
 
-→ d=1 (WILL BREAK):
+→ d=1 (INSPECT EACH):
   - loginHandler (src/auth/login.ts:42) [CALLS, 100%]
   - apiMiddleware (src/api/middleware.ts:15) [CALLS, 100%]
 
@@ -73,25 +87,26 @@ ontoindex_impact({
   - authRouter (src/routes/auth.ts:22) [CALLS, 95%]
 ```
 
-**ontoindex_detect_changes** — git-diff based impact analysis:
+**gn_verify_diff** — git-diff based impact analysis:
 
 ```
-ontoindex_detect_changes({scope: "staged"})
+gn_verify_diff({repo: "<repo>", scope: "all"})
 
 → Changed: 5 symbols in 3 files
 → Affected: LoginFlow, TokenRefresh, APIMiddlewarePipeline
 → Risk: MEDIUM
 ```
 
-## Example: "What breaks if I change validateUser?"
+## Example: "What is affected if I change validateUser?"
 
 ```
-1. ontoindex_impact({target: "validateUser", direction: "upstream"})
-   → d=1: loginHandler, apiMiddleware (WILL BREAK)
-   → d=2: authRouter, sessionManager (LIKELY AFFECTED)
+1. gn_ensure_fresh({repo: "my-app"})
+   → fresh, clean worktree
 
-2. READ ontoindex://repo/my-app/processes
-   → LoginFlow and TokenRefresh touch validateUser
+2. impact({action: "symbol", repo: "my-app", target: "validateUser", direction: "upstream"})
+   → d=1: loginHandler, apiMiddleware (inspect both)
+   → d=2: authRouter, sessionManager (likely affected)
 
 3. Risk: 2 direct callers, 2 processes = MEDIUM
+   Report the blast radius and warn before editing on HIGH or CRITICAL.
 ```

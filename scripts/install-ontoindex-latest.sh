@@ -380,13 +380,40 @@ fi
 log "Installed OntoIndex:"
 validate_install "${install_prefix}" "${bin_path}"
 
+run_setup() {
+  local bin="${1}"
+
+  if [ "${ONTOINDEX_SKIP_SETUP:-0}" = "1" ]; then
+    log "Skipping skill and MCP setup: ONTOINDEX_SKIP_SETUP=1"
+    echo "Run 'ontoindex setup' later to configure MCP clients, skills, and agent guidance."
+    return 0
+  fi
+
+  log "Running 'ontoindex setup' to install skills and configure MCP clients"
+  if "${bin}" setup; then
+    return 0
+  fi
+
+  echo "warning: 'ontoindex setup' failed; the install itself is complete." >&2
+  echo "warning: rerun 'ontoindex setup' manually to install skills and configure MCP clients." >&2
+  return 0
+}
+
+run_setup "${bin_path}"
+
 log "Install complete."
 echo "Note: this installer uses npm to resolve third-party runtime packages."
 echo "A non-fatal npm warning about deprecated transitive packages can appear while upstream packages catch up."
 echo "For air-gapped installs, use a separately prepared npm cache or internal registry mirror."
 echo ""
-echo "Next step: run 'ontoindex setup' after installation to configure MCP clients and agent guidance."
+if [ "${ONTOINDEX_SKIP_SETUP:-0}" = "1" ]; then
+  echo "Next step: run 'ontoindex setup' to configure MCP clients, skills, and agent guidance."
+else
+  echo "Skills and MCP client configuration were installed by 'ontoindex setup'."
+  echo "Restart your editor or agent client so it loads the OntoIndex MCP server."
+fi
 echo "The setup command is idempotent and will not duplicate existing OntoIndex settings."
+echo "Set ONTOINDEX_SKIP_SETUP=1 to install without running setup."
 if [ "${install_prefix}" = "${USER_PREFIX}" ] && ! printf '%s' ":${PATH}:" | grep -Fq ":${USER_PREFIX}/bin:"; then
   echo "Add ${USER_PREFIX}/bin to PATH to use ontoindex in new shells."
 fi

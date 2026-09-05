@@ -1,11 +1,12 @@
 ---
 name: ontoindex-debugging
-description: Trace bugs through call chains using knowledge graph
+description: "Use when the user is debugging a bug, tracing an error, or asking why something fails. Examples: \"Why is X failing?\", \"Where does this error come from?\", \"Trace this bug\""
 ---
 
 # Debugging with OntoIndex
 
 ## When to Use
+
 - "Why is this function failing?"
 - "Trace where this error comes from"
 - "Who calls this method?"
@@ -15,71 +16,74 @@ description: Trace bugs through call chains using knowledge graph
 ## Workflow
 
 ```
-1. ontoindex_query({query: "<error or symptom>"})            → Find related execution flows
-2. ontoindex_context({name: "<suspect>"})                    → See callers/callees/processes
-3. READ ontoindex://repo/{name}/process/{name}                → Trace execution flow
-4. ontoindex_cypher({query: "MATCH path..."})                 → Custom traces if needed
+1. gn_ensure_fresh({repo})                                   → Check freshness first
+2. search({action: "semantic", repo, query: "<symptom>"})    → Find related execution flows
+3. inspect({action: "context", repo, target: "<suspect>"})   → See callers/callees/processes
+4. gn_diagnose({repo}) / gn_error_topology({repo})           → Failure-path evidence
+5. Read source files to confirm the root cause
 ```
 
-> If "Index is stale" → run `npx ontoindex analyze` in terminal.
+> If freshness reports stale, refresh with `ontoindex analyze` under the
+> single-owner rules in `ontoindex-cli`.
+
+A dirty worktree is not represented in the graph. Confirm any suspect code
+against current source before concluding a root cause. If OntoIndex is required
+but not callable, report the missing tool instead of substituting grep.
 
 ## Checklist
 
 ```
 - [ ] Understand the symptom (error message, unexpected behavior)
-- [ ] ontoindex_query for error text or related code
+- [ ] gn_ensure_fresh({repo}) and record freshness
+- [ ] search({action: "semantic"}) for error text or related code
 - [ ] Identify the suspect function from returned processes
-- [ ] ontoindex_context to see callers and callees
-- [ ] Trace execution flow via process resource if applicable
-- [ ] ontoindex_cypher for custom call chain traces if needed
+- [ ] inspect({action: "context"}) to see callers and callees
 - [ ] Read source files to confirm root cause
 ```
 
 ## Debugging Patterns
 
-| Symptom | OntoIndex Approach |
-|---------|-------------------|
-| Error message | `ontoindex_query` for error text → `context` on throw sites |
-| Wrong return value | `context` on the function → trace callees for data flow |
-| Intermittent failure | `context` → look for external calls, async deps |
-| Performance issue | `context` → find symbols with many callers (hot paths) |
-| Recent regression | `detect_changes` to see what your changes affect |
+| Symptom              | OntoIndex Approach                                          |
+| -------------------- | ---------------------------------------------------------- |
+| Error message        | `search` for error text → `inspect` on throw sites          |
+| Wrong return value   | `inspect` on the function → trace callees for data flow     |
+| Intermittent failure | `inspect` → look for external calls, async deps             |
+| Performance issue    | `inspect` → find symbols with many callers (hot paths)      |
+| Recent regression    | `gn_verify_diff` to see what your changes affect            |
 
 ## Tools
 
-**ontoindex_query** — find code related to error:
+**search** — find code related to error:
+
 ```
-ontoindex_query({query: "payment validation error"})
+search({action: "semantic", repo: "<repo>", query: "payment validation error"})
 → Processes: CheckoutFlow, ErrorHandling
 → Symbols: validatePayment, handlePaymentError, PaymentException
 ```
 
-**ontoindex_context** — full context for a suspect:
+**inspect** — full context for a suspect:
+
 ```
-ontoindex_context({name: "validatePayment"})
+inspect({action: "context", repo: "<repo>", target: "validatePayment"})
 → Incoming calls: processCheckout, webhookHandler
 → Outgoing calls: verifyCard, fetchRates (external API!)
 → Processes: CheckoutFlow (step 3/7)
 ```
 
-**ontoindex_cypher** — custom call chain traces:
-```cypher
-MATCH path = (a)-[:CodeRelation {type: 'CALLS'}*1..2]->(b:Function {name: "validatePayment"})
-RETURN [n IN nodes(path) | n.name] AS chain
-```
+**gn_graph_walk / gn_trace_boundary** — custom call chain and boundary traces
+when `search` and `inspect` do not isolate the path.
 
 ## Example: "Payment endpoint returns 500 intermittently"
 
 ```
-1. ontoindex_query({query: "payment error handling"})
+1. search({action: "semantic", repo: "my-app", query: "payment error handling"})
    → Processes: CheckoutFlow, ErrorHandling
    → Symbols: validatePayment, handlePaymentError
 
-2. ontoindex_context({name: "validatePayment"})
+2. inspect({action: "context", repo: "my-app", target: "validatePayment"})
    → Outgoing calls: verifyCard, fetchRates (external API!)
 
-3. READ ontoindex://repo/my-app/process/CheckoutFlow
-   → Step 3: validatePayment → calls fetchRates (external)
+3. Read the fetchRates source to confirm the timeout behavior
 
 4. Root cause: fetchRates calls external API without proper timeout
 ```

@@ -132,4 +132,34 @@ describe('setupCommand skills integration', () => {
 
     expect(sectionMatches).toHaveLength(1);
   });
+
+  it('installs skills into ~/.ontocode/skills when Ontocode is present', async () => {
+    await fs.mkdir(path.join(tempHome, '.ontocode'), { recursive: true });
+
+    await setupCommand();
+
+    const ontocodeSkill = await fs.readFile(
+      path.join(tempHome, '.ontocode', 'skills', 'ontoindex-cli', 'SKILL.md'),
+      'utf-8',
+    );
+    expect(ontocodeSkill.startsWith('---')).toBe(true);
+    expect(ontocodeSkill).toContain('OntoIndex CLI Commands');
+  });
+
+  it('does not create ~/.ontocode/skills when Ontocode is absent', async () => {
+    const isolatedHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-setup-no-ontocode-'));
+    const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
+    process.env.HOME = isolatedHome;
+    process.env.USERPROFILE = isolatedHome;
+
+    try {
+      await setupCommand();
+      await expect(fs.access(path.join(isolatedHome, '.ontocode', 'skills'))).rejects.toThrow();
+    } finally {
+      process.env.HOME = previousHome;
+      process.env.USERPROFILE = previousUserProfile;
+      await fs.rm(isolatedHome, { recursive: true, force: true });
+    }
+  });
 });

@@ -10,9 +10,9 @@ Canonical agent instructions: **[AGENTS.md](../AGENTS.md)** (OntoIndex MCP rules
 
 ## Non-negotiables (always apply)
 
-- NEVER edit a function/class/method without running `ontoindex_impact` first.
-- NEVER rename symbols with find-and-replace — use `ontoindex_rename`.
-- NEVER commit without running `ontoindex_detect_changes()`.
+- NEVER edit a function/class/method without running `impact({action: "symbol", ...})` first.
+- NEVER rename symbols with find-and-replace — use `refactor({action: "rename", ...})`.
+- NEVER commit without running `gn_verify_diff({repo, scope: "all"})`.
 - NEVER ignore HIGH/CRITICAL risk warnings from impact analysis.
 - NEVER run `npx ontoindex analyze` without `--embeddings` if `.ontoindex/meta.json` shows stored embeddings.
 
