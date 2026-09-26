@@ -4,6 +4,8 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-09-26
+
 ### Added
 
 - Added `waitForFreshMs` to `gn_ensure_fresh` so a caller can wait, within a bounded budget, for the running or submitted refresh to publish; the outcome is reported in `freshWait`.
