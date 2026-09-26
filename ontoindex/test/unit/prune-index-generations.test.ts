@@ -23,7 +23,8 @@ describe('pruneIndexGenerations', () => {
     await makeGeneration('gen-3', 30);
     await makeGeneration('gen-4', 20);
     await makeGeneration('gen-active', 60); // oldest mtime, but active
-    await fs.mkdir(path.join(generations(), '.staging-gen-5-1-2-x'));
+    // Owned by this (live) process: must survive.
+    await fs.mkdir(path.join(generations(), `.staging-gen-5-${process.pid}-2-x`));
     await fs.symlink(path.join('generations', 'gen-active'), path.join(storagePath, 'current'));
   });
 
@@ -36,7 +37,7 @@ describe('pruneIndexGenerations', () => {
 
     expect(result.removed.sort()).toEqual(['gen-1', 'gen-2']);
     expect((await fs.readdir(generations())).sort()).toEqual([
-      '.staging-gen-5-1-2-x',
+      `.staging-gen-5-${process.pid}-2-x`,
       'gen-3',
       'gen-4',
       'gen-active',
@@ -60,5 +61,19 @@ describe('pruneIndexGenerations', () => {
     expect(result.removed).toEqual(['gen-1']);
     expect(result.deferred).toEqual(['gen-2']);
     expect(await fs.readdir(generations())).toContain('gen-2');
+  });
+
+  it('removes staging directories left by a dead analyzer after the grace period', async () => {
+    const dead = '.staging-gen-6-2147483646-3-y';
+    await fs.mkdir(path.join(generations(), dead));
+    const old = new Date(Date.now() - 60 * 60_000);
+    await fs.utimes(path.join(generations(), dead), old, old);
+
+    const deferred = await pruneIndexGenerations(storagePath, 10, 2 * 60 * 60_000);
+    expect(deferred.removed).toEqual([]);
+
+    const result = await pruneIndexGenerations(storagePath, 10, 0);
+    expect(result.removed).toEqual([dead]);
+    expect(await fs.readdir(generations())).toContain(`.staging-gen-5-${process.pid}-2-x`);
   });
 });

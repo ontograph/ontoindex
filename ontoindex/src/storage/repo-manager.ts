@@ -535,6 +535,22 @@ export interface PruneIndexGenerationsResult {
   deferred: string[];
 }
 
+/** PID of the analyzer that created a `.staging-<id>-<pid>-<ms>-<rand>` directory. */
+const stagingOwnerPid = (name: string): number | null => {
+  const parts = name.split('-');
+  const pid = Number(parts[parts.length - 3]);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+};
+
+const isProcessRunning = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+};
+
 /**
  * Delete published generations beyond the newest `keepPrevious` ones behind the
  * active generation. Runs under the generation pointer lock so it never races an
@@ -561,7 +577,23 @@ export const pruneIndexGenerations = async (
     }
     const published: { name: string; mtimeMs: number }[] = [];
     for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith('.staging-')) {
+        // An analyzer that crashed natively never discards its staging copy.
+        // Remove it once its owner is gone and it is older than the grace period.
+        const owner = stagingOwnerPid(entry.name);
+        if (owner === null || owner === process.pid || isProcessRunning(owner)) continue;
+        try {
+          const stat = await fs.stat(path.join(generationsPath, entry.name));
+          if (now - stat.mtimeMs < graceMs) continue;
+          await fs.rm(path.join(generationsPath, entry.name), { recursive: true, force: true });
+          result.removed.push(entry.name);
+        } catch {
+          result.failed.push(entry.name);
+        }
+        continue;
+      }
+      if (entry.name.startsWith('.')) continue;
       try {
         const stat = await fs.stat(path.join(generationsPath, entry.name));
         published.push({ name: entry.name, mtimeMs: stat.mtimeMs });
