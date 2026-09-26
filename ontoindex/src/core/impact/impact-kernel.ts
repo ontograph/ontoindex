@@ -1,4 +1,4 @@
-import { executeParameterized, executeQuery } from '../lbug/pool-adapter.js';
+import { executeParameterized } from '../lbug/pool-adapter.js';
 import { classifyGraphFactProvenance, type GraphFactProvenance } from '../graph/fact-provenance.js';
 
 export type ImpactKernelDirection = 'upstream' | 'downstream';
@@ -67,6 +67,8 @@ export interface ImpactKernelResult {
   impacted: ImpactKernelNode[];
   byDepth: Record<number, ImpactKernelNode[]>;
   partial: boolean;
+  /** A depth query errored, so impacted nodes beyond that depth were never read. */
+  traversalFailed: boolean;
   warnings: string[];
 }
 
@@ -301,6 +303,7 @@ export async function runImpactKernel(
   const impacted: ImpactKernelNode[] = [];
   const warnings: string[] = [];
   let traversalComplete = true;
+  let traversalFailed = false;
 
   throwIfAborted(opts.signal);
   const expansion =
@@ -325,14 +328,16 @@ export async function runImpactKernel(
       frontier = frontier.slice(0, MAX_IMPACT_FRONTIER_IDS);
     }
 
-    const idList = frontier.map((id) => `'${id.replace(/'/g, "''")}'`).join(', ');
     const query =
       opts.direction === 'upstream'
-        ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence LIMIT ${MAX_IMPACT_RESULTS_PER_DEPTH}`
-        : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN [${idList}] AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence LIMIT ${MAX_IMPACT_RESULTS_PER_DEPTH}`;
+        ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence LIMIT ${MAX_IMPACT_RESULTS_PER_DEPTH}`
+        : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence LIMIT ${MAX_IMPACT_RESULTS_PER_DEPTH}`;
 
     try {
-      const related = (await executeQuery(repo.id, query)) as ImpactRelatedRow[];
+      // Node ids are bound as a parameter: they are data, never Cypher text.
+      const related = (await executeParameterized(repo.id, query, {
+        frontierIds: frontier,
+      })) as ImpactRelatedRow[];
       throwIfAborted(opts.signal);
       if (related.length >= MAX_IMPACT_RESULTS_PER_DEPTH) {
         traversalComplete = false;
@@ -384,6 +389,7 @@ export async function runImpactKernel(
     } catch (err) {
       if (isImpactAbortError(err)) throw err;
       traversalComplete = false;
+      traversalFailed = true;
       warnings.push(`depth traversal failed: ${err instanceof Error ? err.message : String(err)}`);
       break;
     }
@@ -426,6 +432,7 @@ export async function runImpactKernel(
     impacted,
     byDepth,
     partial,
+    traversalFailed,
     warnings,
   };
 }

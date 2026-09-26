@@ -22,7 +22,12 @@ export interface QueryLogEntry {
   ts: number;
   repoId: string;
   query: string;
+  /** Process-symbol ids (historical field; empty when only definitions matched). */
   resultIds: string[];
+  /** Ids of emitted `definitions` entries, which carry most semantic-search hits. */
+  definitionIds?: string[];
+  /** Count of every emitted process symbol and definition, before id caps. */
+  resultCount?: number;
   resultScores?: number[];
   phases?: Record<string, number>;
   ftsUsed?: boolean;
@@ -103,6 +108,8 @@ export async function appendQueryLog(
   data: {
     query: string;
     resultIds: string[];
+    definitionIds?: string[];
+    resultCount?: number;
     resultScores?: number[];
     phases?: Record<string, number>;
     ftsUsed?: boolean;
@@ -126,6 +133,11 @@ export async function appendQueryLog(
       query:
         data.query.length > MAX_QUERY_CHARS ? data.query.slice(0, MAX_QUERY_CHARS) : data.query,
       resultIds: (data.resultIds ?? []).slice(0, MAX_RESULT_IDS),
+      definitionIds: data.definitionIds ? data.definitionIds.slice(0, MAX_RESULT_IDS) : undefined,
+      resultCount:
+        data.resultCount !== undefined && Number.isFinite(data.resultCount)
+          ? Math.max(0, Math.floor(data.resultCount))
+          : undefined,
       resultScores: data.resultScores ? data.resultScores.slice(0, MAX_RESULT_IDS) : undefined,
       phases: data.phases,
       ftsUsed: data.ftsUsed,

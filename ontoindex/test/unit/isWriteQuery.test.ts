@@ -23,10 +23,33 @@ describe('isWriteQuery regex tests', () => {
     'MATCH (n) RETURN n',
     'MATCH (n) WHERE n.content CONTAINS ":CREATE" RETURN n',
     'MATCH (n:SomethingWithSET) RETURN n',
+    // Keywords that appear only inside string literals, identifiers, or comments.
+    "MATCH (n) WHERE n.id IN ['File:docs/install.md'] RETURN n",
+    "MATCH (n) WHERE n.id = 'Section:x.md:Protocol (local stream-drop only)' RETURN n",
+    'MATCH (n) WHERE n.name = "set up the environment" RETURN n',
+    "MATCH (n) WHERE n.id = 'it''s a drop-in load helper' RETURN n",
+    "MATCH (n) WHERE n.id = 'escaped \\' delete' RETURN n",
+    'MATCH (n) RETURN n.`create` AS c',
+    'MATCH (n) // delete everything later\nRETURN n',
+    'MATCH (n) /* SET n.x = 1 */ RETURN n',
+  ];
+
+  const writeQueriesNextToLiterals = [
+    "MATCH (n) WHERE n.id = 'File:docs/install.md' DETACH DELETE n",
+    "MATCH (n) WHERE n.name = 'x' SET n.name = 'y'",
+    "CREATE (n:Node {id: 'read-only'})",
+    "MATCH (n) WHERE n.id = 'it''s' DELETE n",
+    "MATCH (n) WHERE n.id = 'a\\\\' DELETE n",
   ];
 
   it('adapter isWriteQuery should detect real write queries', () => {
     for (const q of writeQueries) {
+      expect(isWriteQueryAdapter(q), `adapter should detect write for: ${q}`).toBe(true);
+    }
+  });
+
+  it('adapter isWriteQuery still detects writes next to string literals', () => {
+    for (const q of writeQueriesNextToLiterals) {
       expect(isWriteQueryAdapter(q), `adapter should detect write for: ${q}`).toBe(true);
     }
   });

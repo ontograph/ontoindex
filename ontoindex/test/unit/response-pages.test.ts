@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   pageMcpResponse,
+  readResponseCursor,
   serializedMcpToolResultBytes,
   type ResponsePageEnvelope,
 } from '../../src/mcp/shared/response-pages.js';
@@ -23,6 +24,19 @@ afterEach(async () => {
 });
 
 describe('pageMcpResponse', () => {
+  it('treats placeholder cursor values as a first-page request', () => {
+    for (const value of ['', '  ', 'null', 'NULL', 'undefined', 'none', undefined, null, 0]) {
+      expect(readResponseCursor({ response_cursor: value }), String(value)).toBeUndefined();
+    }
+    expect(readResponseCursor({})).toBeUndefined();
+  });
+
+  it('keeps real and malformed cursors so the pager can validate them', () => {
+    const real = `gn-result-v1:1b4e28ba-2fa1-11d2-883f-0016d3cca427:0:${'a'.repeat(64)}`;
+    expect(readResponseCursor({ response_cursor: real })).toBe(real);
+    expect(readResponseCursor({ response_cursor: 'not-a-cursor' })).toBe('not-a-cursor');
+  });
+
   it('returns responses that already fit without paging', async () => {
     const result = await pageMcpResponse({ tool: 'gn_test', args: {}, text: 'small' });
 

@@ -338,6 +338,7 @@ function logQueryExit(args: {
   query: string;
   result: unknown;
   resultIds: string[];
+  definitionIds?: string[];
   phases?: Record<string, number>;
   ftsUsed?: boolean;
   cacheStatus?: 'hit' | 'miss' | 'stale' | 'expired';
@@ -359,12 +360,18 @@ function logQueryExit(args: {
   if (args.resultIds.length > MAX_RESULT_IDS) {
     reasons.push('result-ids-capped');
   }
+  const definitionIds = args.definitionIds ?? [];
+  if (definitionIds.length > MAX_RESULT_IDS) {
+    reasons.push('definition-ids-capped');
+  }
   if (responseBytes !== undefined && responseBytes > RESPONSE_GUARD_MAX_BYTES) {
     reasons.push('response-bytes-exceeds-guard');
   }
   appendQueryLog(args.repoId, {
     query: args.query,
     resultIds: args.resultIds.slice(0, MAX_RESULT_IDS),
+    definitionIds: definitionIds.slice(0, MAX_RESULT_IDS),
+    resultCount: args.resultIds.length + definitionIds.length,
     phases: args.phases,
     ftsUsed: args.ftsUsed,
     cacheStatus: args.cacheStatus ?? 'disabled',
@@ -2416,6 +2423,10 @@ export async function query(
     query: searchQuery,
     result,
     resultIds: dedupedSymbols.map((s) => String(s.id)),
+    // File-level DefinitionEntry rows carry no id; their file path identifies them.
+    definitionIds: result.definitions.map((definition) =>
+      'id' in definition ? definition.id : `File:${definition.filePath}`,
+    ),
     phases: timing,
     ftsUsed,
     cacheStatus: params.structured_output === true ? (cacheStatus ?? 'miss') : undefined,

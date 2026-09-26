@@ -100,8 +100,9 @@ function downstreamImpactRows(n: number): any[] {
  *  1. resolveSymbol (fuzzy lookup — name match) — sequential before graph probes
  *  2+. non-kernel probes and optional class-seed expansion
  *
- * Kernel-backed impact uses executeQuery; executeParameterized is matched by
- * query shape so bounded concurrency and class seed expansion stay deterministic.
+ * Kernel-backed impact traversal also runs through executeParameterized (frontier
+ * ids bound as $frontierIds); every call is matched by query shape so bounded
+ * concurrency and class seed expansion stay deterministic.
  *
  * findTestFiles is mocked separately (uses its own vi.mock).
  * lspBridge.getClient is mocked separately.
@@ -146,6 +147,8 @@ function setupMocks({
   lspRenameResult?: { supported: boolean; placeholder?: string };
 } = {}): void {
   mockExecuteParameterized.mockImplementation(async (_repoId: string, query: string) => {
+    if (query.includes('MATCH (caller)-[r:CodeRelation]->(n)')) return upstreamRows;
+    if (query.includes('MATCH (n)-[r:CodeRelation]->(callee)')) return downstreamRows;
     if (query.includes('WHERE s.id = $id') || query.includes('WHERE s.name = $name')) {
       return resolveRows;
     }
@@ -161,11 +164,7 @@ function setupMocks({
     return [];
   });
 
-  mockExecuteQuery.mockImplementation(async (_repoId: string, query: string) => {
-    if (query.includes('MATCH (caller)-[r:CodeRelation]->(n)')) return upstreamRows;
-    if (query.includes('MATCH (n)-[r:CodeRelation]->(callee)')) return downstreamRows;
-    return [];
-  });
+  mockExecuteQuery.mockResolvedValue([]);
 
   mockFindTestFiles.mockResolvedValue(testCoverage);
   mockGetClient.mockResolvedValue(

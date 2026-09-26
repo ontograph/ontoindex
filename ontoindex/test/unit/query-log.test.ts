@@ -76,6 +76,22 @@ describe('appendQueryLog', () => {
     expect(entry.resultIds[9]).toBe('n9');
   });
 
+  it('records definition ids and result count separately from process symbols', async () => {
+    const definitionIds = Array.from({ length: 12 }, (_, i) => `Function:src/a.ts:f${i}`);
+    await appendQueryLog('test-repo', {
+      query: 'q',
+      resultIds: [],
+      definitionIds,
+      resultCount: 12,
+    });
+    const files = readDir(tmp);
+    const entry = JSON.parse(readFileSync(join(tmp, files[0]), 'utf-8').trim()) as QueryLogEntry;
+    expect(entry.resultIds).toEqual([]);
+    expect(entry.definitionIds).toHaveLength(10);
+    expect(entry.definitionIds?.[0]).toBe('Function:src/a.ts:f0');
+    expect(entry.resultCount).toBe(12);
+  });
+
   it('does not write when ONTOINDEX_QUERY_LOG=0', async () => {
     process.env.ONTOINDEX_QUERY_LOG = '0';
     await appendQueryLog('test-repo', { query: 'q', resultIds: ['a'] });

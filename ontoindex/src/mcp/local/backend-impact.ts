@@ -135,7 +135,8 @@ interface ImpactSuccessResult extends ImpactBaseResult {
     type: string;
     filePath: unknown;
   };
-  risk: Exclude<ImpactRisk, 'UNKNOWN'>;
+  /** UNKNOWN only when graph traversal failed, so the blast radius was not measured. */
+  risk: ImpactRisk;
   partial?: true;
   warnings?: string[];
   summary: {
@@ -719,7 +720,9 @@ export async function runImpactBFS(
   const processCount = affectedProcesses.length;
   const moduleCount = affectedModules.length;
   let risk: ImpactSuccessResult['risk'] = 'LOW';
-  if (directCount >= 30 || processCount >= 5 || moduleCount >= 5 || impacted.length >= 200) {
+  if (kernel.traversalFailed) {
+    risk = 'UNKNOWN';
+  } else if (directCount >= 30 || processCount >= 5 || moduleCount >= 5 || impacted.length >= 200) {
     risk = 'CRITICAL';
   } else if (directCount >= 15 || processCount >= 3 || moduleCount >= 3 || impacted.length >= 100) {
     risk = 'HIGH';

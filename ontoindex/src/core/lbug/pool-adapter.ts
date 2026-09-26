@@ -1210,7 +1210,60 @@ export const isLbugDbPathReady = (dbPath: string): boolean => dbCache.has(dbPath
 export const CYPHER_WRITE_RE =
   /(?<!:)\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH|FOREACH|INSTALL|LOAD)\b/i;
 
-/** Check if a Cypher query contains write operations */
+/**
+ * Replace string literals, backtick-quoted identifiers, and comments with
+ * blanks so the write regex only sees Cypher keywords. Node ids such as
+ * `File:docs/install.md` or `Section:x.md:(local stream-drop only)` are data,
+ * not clauses. An unterminated literal or comment consumes the rest of the
+ * query, so nothing after it is inspected as code — the database itself is
+ * opened read-only and rejects any write that reaches it.
+ */
+export function stripCypherLiterals(query: string): string {
+  let out = '';
+  let i = 0;
+  while (i < query.length) {
+    const ch = query[i];
+    const next = query[i + 1];
+    if (ch === '/' && next === '/') {
+      const end = query.indexOf('\n', i + 2);
+      i = end === -1 ? query.length : end;
+      out += ' ';
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      const end = query.indexOf('*/', i + 2);
+      i = end === -1 ? query.length : end + 2;
+      out += ' ';
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      i++;
+      while (i < query.length) {
+        if (ch !== '`' && query[i] === '\\') {
+          i += 2;
+          continue;
+        }
+        if (query[i] === ch) {
+          // Doubled quote is an escaped quote inside the literal.
+          if (query[i + 1] === ch) {
+            i += 2;
+            continue;
+          }
+          i++;
+          break;
+        }
+        i++;
+      }
+      out += ' ';
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+/** Check if a Cypher query contains write operations outside literals and comments. */
 export function isWriteQuery(query: string): boolean {
-  return CYPHER_WRITE_RE.test(query);
+  return CYPHER_WRITE_RE.test(stripCypherLiterals(query));
 }

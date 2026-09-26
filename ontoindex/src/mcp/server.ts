@@ -35,7 +35,7 @@ import {
 import { realStdoutWrite } from './core/lbug-adapter.js';
 import type { LocalBackend } from './local/local-backend.js';
 import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
-import { pageMcpResponse } from './shared/response-pages.js';
+import { pageMcpResponse, readResponseCursor } from './shared/response-pages.js';
 
 const GRAPH_BACKED_SUPER_TOOLS = new Set<SuperTool>([
   'gn_explore',
@@ -410,8 +410,7 @@ export function createMCPServer(backend: LocalBackend, options: { full?: boolean
     let repoIdentity: RepoIdentity | null = null;
 
     try {
-      const responseCursor =
-        typeof typedArgs.response_cursor === 'string' ? typedArgs.response_cursor : undefined;
+      const responseCursor = readResponseCursor(typedArgs);
       if (responseCursor) {
         const page = await pageMcpResponse({
           tool: name,
@@ -558,7 +557,7 @@ function withResponseCursor(schema: any): any {
       response_cursor: {
         type: 'string',
         description:
-          'Opaque continuation cursor returned by a truncated response. Repeat the same tool request with this value to read the next immutable UTF-8 JSON-text page.',
+          'Omit unless a previous response returned responsePage.nextCursor. Pass that exact value, with the same other arguments, to read the next immutable UTF-8 JSON-text page.',
       },
     },
   };

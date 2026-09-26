@@ -13,10 +13,11 @@ describe('Impact MENTIONS Escalation', () => {
   it('ignores low-confidence MENTIONS edges when building the next frontier', async () => {
     const mockRepo = { id: 'test-repo' } as any;
 
-    // Simulate executeQuery returning a mix of edges
-    // The first call gets the related nodes for depth 1
-    const mockExecuteQuery = vi.mocked(poolAdapter.executeQuery);
-    mockExecuteQuery.mockResolvedValueOnce([
+    // Depth traversal binds frontier ids as a parameter, so it runs through
+    // executeParameterized. The first call returns the depth-1 related nodes.
+    const mockExecuteParameterized = vi.mocked(poolAdapter.executeParameterized);
+    mockExecuteParameterized.mockReset();
+    mockExecuteParameterized.mockResolvedValueOnce([
       {
         id: 'func:safe',
         name: 'safeFunc',
@@ -44,9 +45,6 @@ describe('Impact MENTIONS Escalation', () => {
     ]);
 
     // Return empty for subsequent depth queries
-    mockExecuteQuery.mockResolvedValue([]);
-
-    const mockExecuteParameterized = vi.mocked(poolAdapter.executeParameterized);
     mockExecuteParameterized.mockResolvedValue([]);
 
     const sym = {
@@ -74,8 +72,9 @@ describe('Impact MENTIONS Escalation', () => {
     const mockRepo = { id: 'test-repo' } as any;
     const controller = new AbortController();
 
-    const mockExecuteQuery = vi.mocked(poolAdapter.executeQuery);
-    mockExecuteQuery.mockImplementationOnce(async () => {
+    const mockExecuteParameterized = vi.mocked(poolAdapter.executeParameterized);
+    mockExecuteParameterized.mockReset();
+    mockExecuteParameterized.mockImplementationOnce(async () => {
       controller.abort('timeout');
       return [
         {
@@ -88,8 +87,6 @@ describe('Impact MENTIONS Escalation', () => {
         },
       ];
     });
-
-    const mockExecuteParameterized = vi.mocked(poolAdapter.executeParameterized);
     mockExecuteParameterized.mockResolvedValue([]);
 
     await expect(
@@ -112,5 +109,48 @@ describe('Impact MENTIONS Escalation', () => {
         },
       ),
     ).rejects.toThrow('Impact analysis aborted: timeout');
+  });
+
+  it('binds frontier ids as a parameter instead of splicing them into Cypher', async () => {
+    const mockExecuteParameterized = vi.mocked(poolAdapter.executeParameterized);
+    mockExecuteParameterized.mockReset();
+    mockExecuteParameterized.mockResolvedValue([]);
+    const hostileId = "File:docs/install.md'] DETACH DELETE n //";
+
+    await runImpactBFS(
+      { id: 'test-repo' } as any,
+      { id: hostileId, name: 'install.md', type: 'File', filePath: 'docs/install.md' },
+      'File',
+      'upstream',
+      { maxDepth: 1, relationTypes: ['CALLS'], minConfidence: 0, includeTests: false },
+    );
+
+    const traversal = mockExecuteParameterized.mock.calls.find(([, cypher]) =>
+      String(cypher).includes('$frontierIds'),
+    );
+    expect(traversal).toBeDefined();
+    expect(String(traversal?.[1])).not.toContain(hostileId);
+    expect(traversal?.[2]).toEqual({ frontierIds: [hostileId] });
+  });
+
+  it('reports UNKNOWN risk when a depth query fails instead of LOW', async () => {
+    const mockExecuteParameterized = vi.mocked(poolAdapter.executeParameterized);
+    mockExecuteParameterized.mockReset();
+    mockExecuteParameterized.mockRejectedValueOnce(new Error('query failed'));
+    mockExecuteParameterized.mockResolvedValue([]);
+
+    const result = (await runImpactBFS(
+      { id: 'test-repo' } as any,
+      { id: 'target:symbol', name: 'targetSymbol', type: 'Function', filePath: 'src/target.ts' },
+      'Function',
+      'upstream',
+      { maxDepth: 2, relationTypes: ['CALLS'], minConfidence: 0, includeTests: false },
+    )) as any;
+
+    expect(result.risk).toBe('UNKNOWN');
+    expect(result.partial).toBe(true);
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([expect.stringContaining('depth traversal failed')]),
+    );
   });
 });

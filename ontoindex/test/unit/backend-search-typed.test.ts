@@ -1328,6 +1328,39 @@ describe('backend-search typed input', () => {
       expect(entry.responseBytes).toBeGreaterThanOrEqual(0);
     });
 
+    it('logs definition ids and a full result count, not only process symbols', async () => {
+      const exactSymbol = symbolRow();
+      mockExecuteParameterized.mockImplementation(async (_repoId, statement) => {
+        const sql = String(statement);
+        if (sql.includes('WHERE n.id = $symbolQuery OR n.name = $symbolQuery')) {
+          return [
+            {
+              id: exactSymbol.nodeId,
+              name: exactSymbol.name,
+              type: exactSymbol.type,
+              filePath: exactSymbol.filePath,
+              startLine: exactSymbol.startLine,
+              endLine: exactSymbol.endLine,
+            },
+          ];
+        }
+        return [];
+      });
+
+      const result = (await query(
+        { id: 'repo-1', repoPath: '/repo', lastCommit: 'abc123' } as any,
+        { typedQuery: { lines: [{ type: 'symbol', query: 'CacheStore', lineNumber: 1 }] } },
+      )) as any;
+
+      const [, entry] = mockAppendQueryLog.mock.calls[0];
+      const definitionIds = (result.definitions ?? []).map(
+        (d: { id?: string; filePath: string }) => d.id ?? `File:${d.filePath}`,
+      );
+      expect(definitionIds.length).toBeGreaterThan(0);
+      expect(entry.definitionIds).toEqual(definitionIds.slice(0, 10));
+      expect(entry.resultCount).toBe(entry.resultIds.length + definitionIds.length);
+    });
+
     it('logs typed retrieval mode and miss cache status for structured misses', async () => {
       const lookupSpy = vi.spyOn(SemanticRetrievalCache.prototype, 'lookup').mockResolvedValue({
         status: 'miss',

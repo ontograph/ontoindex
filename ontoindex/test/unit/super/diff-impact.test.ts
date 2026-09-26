@@ -156,6 +156,19 @@ function setupGraphMocks(
   } = options;
 
   mockExecute.mockImplementation(async (_repoId: string, cypher: string, _params: any) => {
+    // Impact-kernel depth traversal binds frontier ids as $frontierIds.
+    // Return `upstreamCount` mock caller rows so rawCounts.direct equals upstreamCount.
+    if (cypher.includes('MATCH (caller)-[r:CodeRelation]->(n)')) {
+      return Array.from({ length: upstreamCount }, (_, i) => ({
+        sourceId: 'node-id',
+        id: `caller-${i}`,
+        name: `callerFn${i}`,
+        type: 'Function',
+        filePath: 'src/other.ts',
+        relType: 'CALLS',
+        confidence: 0.9,
+      }));
+    }
     if (cypher.includes("type: 'DEFINES'")) return symbolRows;
     // Heuristic downstream count (still a cheap direct probe in the shared builder)
     if (cypher.includes('count(*)') && cypher.includes('callee')) {
@@ -168,23 +181,7 @@ function setupGraphMocks(
     }
     return [];
   });
-
-  // executeQuery is used by the impact kernel for the upstream traversal (depth=1).
-  // Return `upstreamCount` mock caller rows so rawCounts.direct equals upstreamCount.
-  mockExecuteQuery.mockImplementation(async (_repoId: string, cypher: string) => {
-    if (cypher.includes('MATCH (caller)-[r:CodeRelation]->(n)')) {
-      return Array.from({ length: upstreamCount }, (_, i) => ({
-        sourceId: 'node-id',
-        id: `caller-${i}`,
-        name: `callerFn${i}`,
-        type: 'Function',
-        filePath: 'src/other.ts',
-        relType: 'CALLS',
-        confidence: 0.9,
-      }));
-    }
-    return [];
-  });
+  mockExecuteQuery.mockResolvedValue([]);
 }
 
 // ---------------------------------------------------------------------------

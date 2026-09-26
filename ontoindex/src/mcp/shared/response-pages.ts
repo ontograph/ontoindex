@@ -87,6 +87,23 @@ export async function pageMcpResponse(input: {
   };
 }
 
+/** Placeholder values models send when they have no cursor to continue from. */
+const ABSENT_CURSOR_VALUES = new Set(['', 'null', 'undefined', 'none']);
+
+/**
+ * Return the continuation cursor from tool arguments, or undefined when the
+ * caller did not really supply one. Placeholders such as `"null"` mean "first
+ * page"; any other string, including a malformed cursor, is returned so the
+ * pager can reject it explicitly.
+ */
+export function readResponseCursor(args: Record<string, unknown>): string | undefined {
+  const value = args.response_cursor;
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (ABSENT_CURSOR_VALUES.has(trimmed.toLowerCase())) return undefined;
+  return trimmed;
+}
+
 function buildPage(
   stored: StoredResponsePage,
   offset: number,
