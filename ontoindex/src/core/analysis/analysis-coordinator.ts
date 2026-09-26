@@ -10,6 +10,7 @@ import {
   ANALYSIS_REQUESTED_CAPABILITIES_VERSION,
   assertValidManagedAnalysisContext,
   isValidSourceIdentity,
+  worktreeSourceIdentity,
   type AnalysisRequestedCapabilities,
   type ManagedAnalysisContext,
 } from './analysis-publication-receipt.js';
@@ -46,6 +47,8 @@ export interface AnalysisJobRecord {
   signal?: NodeJS.Signals | null;
   generationId?: string;
   publicationState?: AnalysisJobPublicationState;
+  /** Digest requested at submission when a working-tree job was rebound at start. */
+  submittedSourceManifestDigest?: string;
   error?: string;
 }
 
@@ -315,6 +318,21 @@ export async function getAnalysisJob(
   }
 }
 
+/**
+ * Return the job currently holding the repository's active marker, if its
+ * owner is still live. Read-only apart from the existing dead-runner reaping
+ * done by getAnalysisJob; used by callers that want to join an in-flight
+ * refresh started by another process.
+ */
+export async function getActiveAnalysisJob(repoPath: string): Promise<AnalysisJobRecord | null> {
+  const resolvedRepoPath = path.resolve(repoPath);
+  const marker = await fs.readFile(activePath(resolvedRepoPath), 'utf8').catch(() => null);
+  const id = marker?.trim();
+  if (!id || !/^[0-9a-f-]+$/i.test(id)) return null;
+  const job = await getAnalysisJob(resolvedRepoPath, id);
+  return job && !isTerminal(job.status) ? job : null;
+}
+
 export async function claimAnalysisJobRunner(jobFile: string): Promise<AnalysisJobRecord | null> {
   const supplied = await readJobFile(jobFile).catch(() => null);
   if (!supplied) return null;
@@ -381,6 +399,48 @@ export async function claimManagedAnalysisAnalyzer(
     };
     await writeJob(claimed);
     return claimed;
+  });
+}
+
+/**
+ * Rebind a running working-tree job to the sources it actually analyzes.
+ *
+ * A `worktree:<digest>` job names the exact bytes it indexes. When the live tree
+ * changes between submission and the analyzer's snapshot, analyzing the new
+ * bytes under the new digest is correct; failing would only force a resubmit
+ * that races the same edits again. Commit-identity jobs are never rebound.
+ * Callers that joined the job under the old digest see a different digest on
+ * completion and submit one follow-up.
+ */
+export async function rebindManagedAnalysisSource(
+  repoPath: string,
+  context: ManagedAnalysisContext,
+  sourceManifestDigest: string,
+): Promise<ManagedAnalysisContext> {
+  assertValidManagedAnalysisContext(context);
+  validateSha256(sourceManifestDigest, 'Analysis rebound source manifest digest');
+  if (context.sourceIdentity !== worktreeSourceIdentity(context.sourceManifestDigest)) {
+    throw fencedAttempt('Only working-tree analysis jobs can be rebound to new sources.');
+  }
+  const resolvedRepoPath = path.resolve(repoPath);
+  return withActiveMutationLock(resolvedRepoPath, async () => {
+    const job = await requireManagedAnalysisJobLocked(resolvedRepoPath, context);
+    await requireCurrentAnalyzerOwner(job);
+    if (job.publicationState) {
+      throw fencedAttempt('Managed analysis sources cannot be rebound after publication began.');
+    }
+    const rebound: ManagedAnalysisContext = {
+      ...context,
+      sourceIdentity: worktreeSourceIdentity(sourceManifestDigest),
+      sourceManifestDigest,
+    };
+    await writeJob({
+      ...job,
+      sourceIdentity: rebound.sourceIdentity,
+      sourceManifestDigest: rebound.sourceManifestDigest,
+      submittedSourceManifestDigest: job.submittedSourceManifestDigest ?? job.sourceManifestDigest,
+    });
+    return rebound;
   });
 }
 

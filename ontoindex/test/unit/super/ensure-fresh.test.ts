@@ -34,15 +34,21 @@ vi.mock('os', () => ({
 
 vi.mock('../../../src/core/runtime/runtime-health.js', () => ({
   readRuntimeHealth: vi.fn(),
+  readAnalyzeLock: vi.fn(async () => ({ path: '', present: false, state: 'absent' })),
 }));
 
 vi.mock('../../../src/core/analysis/analysis-coordinator.js', () => ({
   submitAnalysisJob: vi.fn(),
+  getAnalysisJob: vi.fn(),
+  getActiveAnalysisJob: vi.fn(async () => null),
 }));
 
-vi.mock('../../../src/core/indexing/source-manifest.js', () => ({
+vi.mock('../../../src/core/indexing/source-manifest.js', async (importOriginal) => ({
   computeSourceManifest: vi.fn(),
   sourceManifestDigest: vi.fn(),
+  manifestsMatch: (
+    await importOriginal<typeof import('../../../src/core/indexing/source-manifest.js')>()
+  ).manifestsMatch,
 }));
 
 vi.mock('../../../src/mcp/shared/target-context.js', () => ({
@@ -63,7 +69,10 @@ import {
   readActiveGenerationMeta,
   resolveActiveIndexGeneration,
 } from '../../../src/storage/repo-manager.js';
-import { submitAnalysisJob } from '../../../src/core/analysis/analysis-coordinator.js';
+import {
+  getAnalysisJob,
+  submitAnalysisJob,
+} from '../../../src/core/analysis/analysis-coordinator.js';
 import {
   computeSourceManifest,
   sourceManifestDigest,
@@ -668,6 +677,58 @@ describe('gnEnsureFresh', () => {
     expect(report.analysisSubmission).not.toMatchObject({ status: 'blocked' });
   });
 
+  it('does not resubmit when the published generation already matches the dirty tree', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT, statusOutput: ' M src/edit.ts\n' });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    const liveManifest = await mockComputeSourceManifest(REPO_PATH);
+    mockLoadMeta.mockResolvedValue({
+      ...makeMeta({ lastCommit: CURRENT_COMMIT }),
+      sourceManifest: liveManifest,
+    } as any);
+    mockComputeSourceManifest.mockClear();
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+    expect(report.dirtyWorktreeIndexed).toBe(true);
+    expect(report.analysisSubmission).toEqual({ status: 'not-needed' });
+  });
+
+  it('treats a matching degraded-coverage manifest as already indexed', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT, statusOutput: ' M src/edit.ts\n' });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    const degraded = {
+      ...(await mockComputeSourceManifest(REPO_PATH)),
+      coverage: 'degraded',
+      degradedInputsDigest: 'skipped-large-files',
+    };
+    mockComputeSourceManifest.mockResolvedValue(degraded as any);
+    mockLoadMeta.mockResolvedValue({
+      ...makeMeta({ lastCommit: CURRENT_COMMIT }),
+      sourceManifest: degraded,
+    } as any);
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+    expect(report.dirtyWorktreeIndexed).toBe(true);
+  });
+
+  it('resubmits when the dirty tree differs from the published generation', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT, statusOutput: ' M src/edit.ts\n' });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    const liveManifest = await mockComputeSourceManifest(REPO_PATH);
+    mockLoadMeta.mockResolvedValue({
+      ...makeMeta({ lastCommit: CURRENT_COMMIT }),
+      sourceManifest: { ...liveManifest, sourceDigest: 'older-edit-digest' },
+    } as any);
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
+
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
+    expect(report.dirtyWorktreeIndexed).toBeUndefined();
+  });
+
   it('keeps commit source identity when the worktree is clean', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT });
     mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
@@ -1076,5 +1137,26 @@ describe('gnEnsureFresh', () => {
     await gnEnsureFresh(REPO_ID, { autoAnalyze: true });
 
     expect(revParseCalls()).toBeGreaterThan(afterReadOnly);
+  });
+
+  it('waits for the submitted job and reports the fresh post-publication verdict', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue(makeRegistry({ lastCommit: CURRENT_COMMIT }) as any);
+    mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
+    const { job: submitted } = await mockSubmitAnalysisJob({} as any);
+    mockSubmitAnalysisJob.mockClear();
+    const job = { ...submitted, sourceManifestDigest: SOURCE_MANIFEST_DIGEST };
+    vi.mocked(getAnalysisJob).mockImplementation(async () => {
+      // The job publishes the new generation before reporting completion.
+      mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: CURRENT_COMMIT }) as any);
+      return { ...job, status: 'complete' } as any;
+    });
+
+    const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true, waitForFreshMs: 5_000 });
+
+    expect(mockSubmitAnalysisJob).toHaveBeenCalledTimes(1);
+    expect(report.freshWait).toMatchObject({ outcome: 'published', jobId: 'job-1' });
+    expect(report.isStale).toBe(false);
+    expect(report.analysisJob?.status).toBe('complete');
   });
 });

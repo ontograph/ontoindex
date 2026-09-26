@@ -268,7 +268,13 @@ let db: lbug.Database | null = null;
 let conn: lbug.Connection | null = null;
 let currentDbPath: string | null = null;
 let ftsLoaded = false;
+let ftsUnavailable = false;
 let vectorExtensionLoaded = false;
+let vectorExtensionUnavailable = false;
+
+/** Network extension installs run only when explicitly enabled. */
+export const lbugExtensionInstallAllowed = (): boolean =>
+  process.env.ONTOINDEX_ALLOW_EXTENSION_INSTALL === '1';
 
 /**
  * In-process cache of FTS indexes that have been ensured against the current
@@ -524,7 +530,9 @@ const resetLbugSessionState = (clearEnsuredIndexes = false): void => {
   db = null;
   currentDbPath = null;
   ftsLoaded = false;
+  ftsUnavailable = false;
   vectorExtensionLoaded = false;
+  vectorExtensionUnavailable = false;
   if (clearEnsuredIndexes) ensuredFTSIndexes.clear();
 };
 
@@ -1751,7 +1759,7 @@ const getEmbeddingTableName = (): string => EMBEDDING_TABLE_NAME;
  * Safe to call multiple times — tracks loaded state via module-level ftsLoaded.
  */
 export const loadFTSExtension = async (): Promise<void> => {
-  if (ftsLoaded) return;
+  if (ftsLoaded || ftsUnavailable) return;
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
@@ -1768,7 +1776,7 @@ export const loadFTSExtension = async (): Promise<void> => {
     } catch (err) {
       if (err instanceof LbugQueryTimeoutError) throw err;
       console.error(
-        'OntoIndex: cached FTS extension load failed, falling back to LadybugDB extension install:',
+        'OntoIndex: cached FTS extension load failed, trying the local LadybugDB extension:',
         getOptionalThrownMessage(err) || localFtsPath,
       );
     }
@@ -1780,7 +1788,22 @@ export const loadFTSExtension = async (): Promise<void> => {
     ftsLoaded = true;
   } catch (err) {
     if (err instanceof LbugQueryTimeoutError) throw err;
-    // Fall back to install + load (requires network)
+    if (!lbugExtensionInstallAllowed()) {
+      ftsUnavailable = true;
+      const hint =
+        localFtsPath ||
+        path.join(
+          defaultLbugExtensionsCacheDir() ?? defaultLbugExtensionsBaseDir(),
+          'libfts.lbug_extension',
+        );
+      console.error(
+        'OntoIndex: FTS extension unavailable; network installation is disabled.',
+        `Hint: download libfts.lbug_extension to ${hint}, set ONTOINDEX_LADYBUG_EXTENSION_DIR, or set ONTOINDEX_ALLOW_EXTENSION_INSTALL=1.`,
+      );
+      return;
+    }
+
+    // Fall back to install + load only when explicitly enabled (requires network)
     try {
       await withLbugNativeTimeout(conn.query('INSTALL fts'), 'INSTALL fts');
       await withLbugNativeTimeout(conn.query('LOAD EXTENSION fts'), 'LOAD EXTENSION fts retry');
@@ -1794,6 +1817,7 @@ export const loadFTSExtension = async (): Promise<void> => {
       ) {
         ftsLoaded = true;
       } else {
+        ftsUnavailable = true;
         const hint =
           localFtsPath ||
           path.join(
@@ -1814,7 +1838,7 @@ export const loadFTSExtension = async (): Promise<void> => {
  * Safe to call multiple times -- tracks loaded state via module-level vectorExtensionLoaded.
  */
 export const loadVectorExtension = async (): Promise<void> => {
-  if (vectorExtensionLoaded) return;
+  if (vectorExtensionLoaded || vectorExtensionUnavailable) return;
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
@@ -1831,9 +1855,33 @@ export const loadVectorExtension = async (): Promise<void> => {
     } catch (err) {
       if (err instanceof LbugQueryTimeoutError) throw err;
       console.error(
-        'OntoIndex: cached VECTOR extension load failed, falling back to LadybugDB extension install:',
+        'OntoIndex: cached VECTOR extension load failed, trying the local LadybugDB extension:',
         getOptionalThrownMessage(err) || localVectorPath,
       );
+    }
+  }
+
+  const vectorHint = (): string =>
+    localVectorPath ||
+    path.join(
+      defaultLbugExtensionsCacheDir() ?? defaultLbugExtensionsBaseDir(),
+      'libvector.lbug_extension',
+    );
+
+  try {
+    // Try the already-installed extension first (no network required).
+    await withLbugNativeTimeout(conn.query('LOAD EXTENSION VECTOR'), 'LOAD EXTENSION VECTOR');
+    vectorExtensionLoaded = true;
+    return;
+  } catch (err) {
+    if (err instanceof LbugQueryTimeoutError) throw err;
+    if (!lbugExtensionInstallAllowed()) {
+      vectorExtensionUnavailable = true;
+      console.error(
+        'OntoIndex: VECTOR extension unavailable; network installation is disabled.',
+        `Hint: download libvector.lbug_extension to ${vectorHint()}, set ONTOINDEX_LADYBUG_EXTENSION_DIR, or set ONTOINDEX_ALLOW_EXTENSION_INSTALL=1.`,
+      );
+      return;
     }
   }
 
@@ -1851,20 +1899,18 @@ export const loadVectorExtension = async (): Promise<void> => {
     ) {
       vectorExtensionLoaded = true;
     } else {
-      const hint =
-        localVectorPath ||
-        path.join(
-          defaultLbugExtensionsCacheDir() ?? defaultLbugExtensionsBaseDir(),
-          'libvector.lbug_extension',
-        );
+      vectorExtensionUnavailable = true;
       console.error(
         'OntoIndex: VECTOR extension load failed:',
         msg,
-        `Hint: download libvector.lbug_extension to ${hint} or set ONTOINDEX_LADYBUG_EXTENSION_DIR.`,
+        `Hint: download libvector.lbug_extension to ${vectorHint()} or set ONTOINDEX_LADYBUG_EXTENSION_DIR.`,
       );
     }
   }
 };
+/** True once the FTS extension is loaded on the core connection. */
+export const isFTSExtensionLoaded = (): boolean => ftsLoaded;
+
 /**
  * Create a full-text search index on a table
  * @param tableName - The node table name (e.g., 'File', 'CodeSymbol')
@@ -1883,6 +1929,11 @@ export const createFTSIndex = async (
   }
 
   await loadFTSExtension();
+  if (!ftsLoaded) {
+    throw new Error(
+      `FTS extension unavailable; cannot create full-text index ${tableName}:${indexName}.`,
+    );
+  }
 
   const propList = properties.map((p) => `'${p}'`).join(', ');
   const query = `CALL CREATE_FTS_INDEX('${tableName}', '${indexName}', [${propList}], stemmer := '${stemmer}')`;

@@ -8,6 +8,7 @@ import {
 import {
   isValidSourceIdentity,
   readAnalysisPublicationReceipt,
+  worktreeSourceIdentity,
   type AnalysisPublicationReceipt,
 } from '../../core/analysis/analysis-publication-receipt.js';
 import { resolveActiveIndexGeneration } from '../../storage/repo-manager.js';
@@ -32,6 +33,13 @@ export interface AnalysisRecovery {
   message: string;
   receipt?: AnalysisPublicationReceipt;
   postCheck?: EnsureFreshReport;
+  /**
+   * Indexed coverage of the verified generation. `degraded` means some inputs
+   * (for example oversized files) were skipped deterministically; re-running
+   * analysis cannot change that, and graph evidence for those files stays
+   * degraded.
+   */
+  coverage?: 'complete' | 'degraded';
 }
 
 export async function gnAnalyzeJob(repoId: string, params: AnalyzeJobParams): Promise<unknown> {
@@ -276,13 +284,19 @@ async function observeRecovery(
     );
   }
 
+  const coverage =
+    terminalTargetContext.graphAuthority?.coverage === 'degraded' ? 'degraded' : 'complete';
   return {
     disposition: 'REFRESHED',
-    reasonCode: 'PUBLICATION_VERIFIED',
+    reasonCode:
+      coverage === 'degraded' ? 'PUBLICATION_VERIFIED_DEGRADED_COVERAGE' : 'PUBLICATION_VERIFIED',
     message:
-      'The publication receipt and current index postconditions prove that the requested refresh succeeded.',
+      coverage === 'degraded'
+        ? 'The publication receipt and current index postconditions prove that the requested refresh succeeded; some inputs were skipped deterministically, so graph evidence for them stays degraded.'
+        : 'The publication receipt and current index postconditions prove that the requested refresh succeeded.',
     receipt,
     postCheck: terminalPostCheck,
+    coverage,
   };
 }
 
@@ -371,7 +385,11 @@ function validatePostCheck(
       'The current checkout and indexed commit do not both match the job target.',
     );
   }
-  if (postCheck.dirtyFileCount !== 0) {
+  // A working-tree job is identified by the digest of the exact analyzed
+  // bytes, so a dirty tree is expected; the source-manifest match below proves
+  // the current files are the ones that were indexed.
+  const worktreeJob = job.sourceIdentity === worktreeSourceIdentity(job.sourceManifestDigest);
+  if (!worktreeJob && postCheck.dirtyFileCount !== 0) {
     return mismatch(
       'POSTCHECK_WORKTREE_UNCONFIRMED',
       'The final freshness post-check did not prove a clean worktree.',
@@ -390,29 +408,49 @@ function validatePostCheck(
       'The authoritative target context does not match the job target and repository.',
     );
   }
-  if (targetContext.dirtyWorktree !== false) {
-    return mismatch(
-      'TARGET_CONTEXT_WORKTREE_UNCONFIRMED',
-      'The authoritative target context did not prove a clean worktree.',
-    );
+  if (worktreeJob) {
+    if (
+      targetContext.snapshotMode !== 'committed-head' &&
+      targetContext.snapshotMode !== 'dirty-worktree-overlay'
+    ) {
+      return mismatch(
+        'TARGET_CONTEXT_SNAPSHOT_MISMATCH',
+        'The authoritative target context is not a snapshot of the current checkout.',
+      );
+    }
+  } else {
+    if (targetContext.dirtyWorktree !== false) {
+      return mismatch(
+        'TARGET_CONTEXT_WORKTREE_UNCONFIRMED',
+        'The authoritative target context did not prove a clean worktree.',
+      );
+    }
+    if (targetContext.snapshotMode !== 'committed-head') {
+      return mismatch(
+        'TARGET_CONTEXT_SNAPSHOT_MISMATCH',
+        'The authoritative target context is not a committed-HEAD snapshot.',
+      );
+    }
+    if (targetContext.changedSinceIndex !== false) {
+      return mismatch(
+        'TARGET_CONTEXT_INDEX_DRIFT',
+        'The authoritative target context reports changes since the published index.',
+      );
+    }
   }
-  if (targetContext.snapshotMode !== 'committed-head') {
-    return mismatch(
-      'TARGET_CONTEXT_SNAPSHOT_MISMATCH',
-      'The authoritative target context is not a committed-HEAD snapshot.',
-    );
-  }
-  if (targetContext.changedSinceIndex !== false) {
-    return mismatch(
-      'TARGET_CONTEXT_INDEX_DRIFT',
-      'The authoritative target context reports changes since the published index.',
-    );
-  }
+  const authority = targetContext.graphAuthority;
+  // Deterministic degraded coverage (skipped oversized or unreadable inputs)
+  // cannot be repaired by another refresh; accept it only when the current
+  // source manifest still matches the indexed one.
+  const authorityState =
+    authority?.state === 'authoritative' ||
+    (authority?.state === 'degraded' && authority.coverage === 'degraded');
   if (
-    targetContext.graphAuthority?.state !== 'authoritative' ||
-    targetContext.graphAuthority.generationId !== receipt.generationId ||
-    targetContext.graphAuthority.manifestDigest?.toLowerCase() !==
-      receipt.sourceManifestDigest.toLowerCase()
+    !authority ||
+    !authorityState ||
+    authority.sourceMatches !== true ||
+    authority.generationId !== receipt.generationId ||
+    authority.manifestDigest?.toLowerCase() !== receipt.sourceManifestDigest.toLowerCase()
   ) {
     return mismatch(
       'GRAPH_AUTHORITY_UNCONFIRMED',

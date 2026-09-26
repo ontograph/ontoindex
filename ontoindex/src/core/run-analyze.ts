@@ -27,6 +27,8 @@ import {
   fetchExistingEmbeddingHashes,
   type ExistingEmbeddingHashEntry,
   createFTSIndex,
+  isFTSExtensionLoaded,
+  loadFTSExtension,
 } from './lbug/lbug-adapter.js';
 import {
   getStoragePaths,
@@ -39,6 +41,7 @@ import {
   discardIndexGeneration,
   activateIndexGeneration,
   publishIndexGenerationTransaction,
+  pruneIndexGenerations,
   type IndexGenerationPaths,
 } from '../storage/repo-manager.js';
 import type { DegradedFileGroupCount } from '../storage/repo-manager.js';
@@ -77,6 +80,13 @@ import {
   sourceInputsMatch,
 } from './indexing/source-manifest.js';
 import {
+  createSourceSnapshot,
+  resolveSourceSnapshotMode,
+  SourceSnapshotUnavailableError,
+  type SourceSnapshot,
+} from './indexing/source-snapshot.js';
+import {
+  worktreeSourceIdentity,
   assertValidManagedAnalysisContext,
   writeAnalysisPublicationReceipt,
   type ManagedAnalysisContext,
@@ -85,6 +95,7 @@ import {
   beginManagedAnalysisPublication,
   claimManagedAnalysisAnalyzer,
   commitManagedAnalysisPublication,
+  rebindManagedAnalysisSource,
 } from './analysis/analysis-coordinator.js';
 import { execFileText } from './process/exec-file.js';
 
@@ -194,12 +205,24 @@ async function verifyManagedAnalysisSource(
   repoPath: string,
   context: ManagedAnalysisContext,
   boundary: 'before analysis' | 'before publication',
+  frozenSourceVerified = false,
 ): Promise<string> {
   const currentCommit = getCurrentCommit(repoPath);
   if (currentCommit !== context.targetHead) {
     throw new Error(
       `Managed analysis target HEAD does not match the current repository HEAD ${boundary}.`,
     );
+  }
+  // Working-tree jobs are identified by the digest of the exact analyzed
+  // bytes, which the manifest checks enforce; a dirty tree is expected.
+  if (context.sourceIdentity === worktreeSourceIdentity(context.sourceManifestDigest)) {
+    return currentCommit;
+  }
+  // The analyzed bytes came from a frozen snapshot whose manifest matched the
+  // submission digest, so live-tree edits made during analysis cannot have
+  // leaked into this generation; they are picked up by the next refresh.
+  if (frozenSourceVerified) {
+    return currentCommit;
   }
 
   let status: string;
@@ -829,6 +852,28 @@ export async function runFullAnalysis(
   callbacks: AnalyzeCallbacks,
   dependencies: RunFullAnalysisDependencies = {},
 ): Promise<AnalyzeResult> {
+  // The frozen source snapshot (if any) is removed on every exit path.
+  const snapshotHolder: { current: SourceSnapshot | null } = { current: null };
+  try {
+    return await runFullAnalysisWithSnapshot(
+      repoPath,
+      options,
+      callbacks,
+      dependencies,
+      snapshotHolder,
+    );
+  } finally {
+    await snapshotHolder.current?.dispose().catch(() => {});
+  }
+}
+
+async function runFullAnalysisWithSnapshot(
+  repoPath: string,
+  options: AnalyzeOptions,
+  callbacks: AnalyzeCallbacks,
+  dependencies: RunFullAnalysisDependencies,
+  snapshotHolder: { current: SourceSnapshot | null },
+): Promise<AnalyzeResult> {
   const log = (msg: string) => callbacks.onLog?.(msg);
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
@@ -898,12 +943,24 @@ export async function runFullAnalysis(
   }
   const includePaths = await normalizeRepositoryIncludePaths(repoPath, options.includePaths);
   const requestedProfile = requestedPipelineProfile(options.profile);
-  const inputManifest = await computeSourceManifest(repoPath, {
+  let inputManifest = await computeSourceManifest(repoPath, {
     includePaths,
     pipelineProfile: requestedProfile,
   });
+  const snapshotMode = resolveSourceSnapshotMode();
+  const snapshotRequested =
+    currentCommit !== '' &&
+    (snapshotMode === 'always' || (snapshotMode === 'auto' && !!options.managedAnalysis));
+  // Working-tree jobs that will analyze a frozen snapshot may be rebound to the
+  // snapshot's exact bytes below; commit jobs and live-tree runs must match.
+  const rebindableWorktreeJob =
+    snapshotRequested &&
+    !!options.managedAnalysis &&
+    options.managedAnalysis.sourceIdentity ===
+      worktreeSourceIdentity(options.managedAnalysis.sourceManifestDigest);
   if (
     options.managedAnalysis &&
+    !rebindableWorktreeJob &&
     sourceManifestDigest(inputManifest).toLowerCase() !==
       options.managedAnalysis.sourceManifestDigest.toLowerCase()
   ) {
@@ -982,6 +1039,87 @@ export async function runFullAnalysis(
     );
   }
 
+  // ── Freeze sources ─────────────────────────────────────────────────
+  // Analyze a private copy so edits made while analysis runs cannot
+  // invalidate the result. Publication, registration, and git metadata keep
+  // using the live repository path.
+  let sourceSnapshot: SourceSnapshot | null = null;
+  if (snapshotRequested) {
+    try {
+      progress('snapshot', 0, 'Freezing source snapshot...');
+      sourceSnapshot = await createSourceSnapshot(repoPath, storagePath, {
+        includePaths,
+        pipelineProfile: requestedProfile,
+        head: currentCommit,
+      });
+      log(
+        `  Frozen ${sourceSnapshot.fileCount.toLocaleString()} source files (${Math.ceil(
+          sourceSnapshot.bytes / 1024 / 1024,
+        )} MB) for analysis`,
+      );
+      inputManifest = sourceSnapshot.manifest;
+    } catch (error) {
+      if (!(error instanceof SourceSnapshotUnavailableError)) {
+        partialCheckpoint?.markFailed(error);
+        gcTelemetry?.stop();
+        throw error;
+      }
+      log(`  Source snapshot unavailable (${error.message}); analyzing the live tree`);
+    }
+    if (
+      sourceSnapshot &&
+      options.managedAnalysis &&
+      sourceManifestDigest(inputManifest).toLowerCase() !==
+        options.managedAnalysis.sourceManifestDigest.toLowerCase()
+    ) {
+      if (rebindableWorktreeJob) {
+        // Sources changed after submission: index the frozen bytes under their
+        // own working-tree identity instead of failing the job.
+        const reboundDigest = sourceManifestDigest(inputManifest);
+        options = {
+          ...options,
+          managedAnalysis: await rebindManagedAnalysisSource(
+            repoPath,
+            options.managedAnalysis,
+            reboundDigest,
+          ),
+        };
+        log(
+          `  Sources changed since submission; analyzing the frozen snapshot as ${worktreeSourceIdentity(
+            reboundDigest,
+          )}`,
+        );
+      }
+    }
+    if (
+      sourceSnapshot &&
+      options.managedAnalysis &&
+      sourceManifestDigest(inputManifest).toLowerCase() !==
+        options.managedAnalysis.sourceManifestDigest.toLowerCase()
+    ) {
+      await sourceSnapshot.dispose().catch(() => {});
+      partialCheckpoint?.markFailed(new Error('source changed before snapshot'));
+      gcTelemetry?.stop();
+      throw new Error(
+        'Managed analysis source changed between submission and snapshot; resubmit to analyze the current sources.',
+      );
+    }
+  }
+  if (
+    !sourceSnapshot &&
+    options.managedAnalysis &&
+    sourceManifestDigest(inputManifest).toLowerCase() !==
+      options.managedAnalysis.sourceManifestDigest.toLowerCase()
+  ) {
+    // No frozen copy to rebind to: the live tree differs from the submission.
+    gcTelemetry?.stop();
+    throw new Error(
+      'Managed analysis source manifest does not match the submission-time manifest digest.',
+    );
+  }
+  snapshotHolder.current = sourceSnapshot;
+  const analysisRoot = sourceSnapshot?.root ?? repoPath;
+
   // ── Cache embeddings from existing index before rebuild ────────────
   let cachedEmbeddingNodeIds = new Set<string>();
   let cachedEmbeddings: CachedEmbedding[] = [];
@@ -1048,9 +1186,12 @@ export async function runFullAnalysis(
     if (includePaths.length > 0) {
       pipelineOptions.includePaths = includePaths;
     }
+    if (analysisRoot !== repoPath) {
+      pipelineOptions.metadataRepoPath = repoPath;
+    }
 
     pipelineResult = await runAnalysisPipeline(
-      repoPath,
+      analysisRoot,
       (p) => {
         const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
         const scaled = Math.round(p.percent * 0.6);
@@ -1131,6 +1272,15 @@ export async function runFullAnalysis(
     const ftsStart = Date.now();
     const nodeCountsByLabel = countGraphNodesByLabel(pipelineResult.graph);
     const createEmptyFTSIndexes = process.env.ONTOINDEX_CREATE_EMPTY_FTS_INDEXES === '1';
+    // A missing FTS extension must not fail the whole analysis: publish the
+    // graph without full-text indexes (search falls back) and say so.
+    await loadFTSExtension();
+    const ftsAvailable = isFTSExtensionLoaded();
+    if (!ftsAvailable) {
+      log(
+        '  FTS extension unavailable; skipping full-text indexes (keyword search is degraded). Install libfts.lbug_extension or set ONTOINDEX_ALLOW_EXTENSION_INSTALL=1, then re-run analyze --force.',
+      );
+    }
     for (const { table, indexName, properties } of FTS_INDEXES) {
       const rowCount = nodeCountsByLabel.get(table) ?? 0;
       const selectedProperties = selectAnalyzeFTSProperties(
@@ -1138,7 +1288,7 @@ export async function runFullAnalysis(
         properties,
         pipelineResult.graph,
       );
-      if (rowCount === 0 && !createEmptyFTSIndexes) {
+      if (!ftsAvailable || (rowCount === 0 && !createEmptyFTSIndexes)) {
         emitTelemetry({
           event: 'fts-index-skip',
           phaseName: 'fts',
@@ -1146,7 +1296,7 @@ export async function runFullAnalysis(
           indexName,
           properties: selectedProperties,
           rowCount,
-          reason: 'empty-table',
+          reason: ftsAvailable ? 'empty-table' : 'fts-extension-unavailable',
           graphNodes: pipelineResult.graph.nodeCount,
           graphRelationships: pipelineResult.graph.relationshipCount,
         });
@@ -1426,11 +1576,17 @@ export async function runFullAnalysis(
       graphRelationships: pipelineResult.graph.relationshipCount,
       relationshipDistributions,
     });
-    const finalManifest = await computeSourceManifest(repoPath, {
+    // With a snapshot this re-hashes the frozen copy, so concurrent edits to
+    // the live tree cannot fail the check; without one it guards the live tree.
+    const recomputedManifest = await computeSourceManifest(analysisRoot, {
       includePaths,
       pipelineProfile: requestedProfile,
       degradedPaths: [...degradedFiles.keys()],
     });
+    const finalManifest =
+      analysisRoot === repoPath
+        ? recomputedManifest
+        : { ...recomputedManifest, head: currentCommit };
     const finalManifestDigest = sourceManifestDigest(finalManifest);
     if (!sourceInputsMatch(inputManifest, finalManifest)) {
       throw new Error(
@@ -1518,7 +1674,12 @@ export async function runFullAnalysis(
     if (options.managedAnalysis) {
       const managedContext = options.managedAnalysis as ManagedAnalysisContext;
       await beginManagedAnalysisPublication(repoPath, managedContext);
-      await verifyManagedAnalysisSource(repoPath, managedContext, 'before publication');
+      await verifyManagedAnalysisSource(
+        repoPath,
+        managedContext,
+        'before publication',
+        analysisRoot !== repoPath,
+      );
       await writeAnalysisPublicationReceipt(generationStoragePath, {
         version: 1,
         jobId: managedContext.jobId,
@@ -1547,6 +1708,23 @@ export async function runFullAnalysis(
       await closeLbug();
       await activateIndexGeneration(storagePath, stagedGeneration);
       stagedGeneration = null;
+    }
+
+    // Bound disk growth: every publish adds a full generation directory.
+    try {
+      const pruned = await pruneIndexGenerations(storagePath);
+      if (pruned.removed.length > 0) {
+        log(`  Removed ${pruned.removed.length} old index generation(s)`);
+      }
+      if (pruned.failed.length > 0) {
+        log(
+          `  Could not remove ${pruned.failed.length} old index generation(s); will retry on the next analyze`,
+        );
+      }
+    } catch (error) {
+      log(
+        `  Skipped old generation cleanup: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
 
     // Forward the --name alias after the complete generation is active.
@@ -1588,24 +1766,30 @@ export async function runFullAnalysis(
       aggregatedClusterCount = Array.from(groups.values()).filter((count) => count >= 5).length;
     }
 
-    try {
-      await generateAIContextFiles(
-        repoPath,
-        storagePath,
-        projectName,
-        {
-          files: pipelineResult.totalFileCount,
-          nodes: stats.nodes,
-          edges: stats.edges,
-          communities: pipelineResult.communityResult?.stats.totalCommunities,
-          clusters: aggregatedClusterCount,
-          processes: pipelineResult.processResult?.stats.totalProcesses,
-        },
-        undefined,
-        { skipAgentsMd: options.skipAgentsMd, noStats: options.noStats },
-      );
-    } catch {
-      // Best-effort — don't fail the entire analysis for context file issues
+    // Managed (background) refreshes must not write into the analyzed repo:
+    // AGENTS.md, CLAUDE.md and skill files are indexed sources, so rewriting
+    // them (stats change every run) dirties the tree and makes the next
+    // freshness check resubmit forever. Interactive `analyze` still writes them.
+    if (!options.managedAnalysis) {
+      try {
+        await generateAIContextFiles(
+          repoPath,
+          storagePath,
+          projectName,
+          {
+            files: pipelineResult.totalFileCount,
+            nodes: stats.nodes,
+            edges: stats.edges,
+            communities: pipelineResult.communityResult?.stats.totalCommunities,
+            clusters: aggregatedClusterCount,
+            processes: pipelineResult.processResult?.stats.totalProcesses,
+          },
+          undefined,
+          { skipAgentsMd: options.skipAgentsMd, noStats: options.noStats },
+        );
+      } catch {
+        // Best-effort — don't fail the entire analysis for context file issues
+      }
     }
 
     // ── Close LadybugDB ──────────────────────────────────────────────

@@ -163,9 +163,47 @@ Observe a returned job ID with `gn_analyze_job`. Its recovery disposition is
 generation, and a final freshness check using the original capability
 requirements. Exit code zero or job completion alone is not success proof.
 
+Jobs on a dirty worktree publish under a `worktree:<digest>` identity and report
+`REFRESHED` when the current files still hash to that digest. If some inputs
+were skipped deterministically (for example files over the size cap), the result
+is `REFRESHED` with `coverage: "degraded"`; evidence for those files stays
+degraded and another refresh cannot change it.
+
 Analysis locks are analyzer-owned. MCP clients and agents must never remove
 `.ontoindex/analyze.lock`; retry the triggering graph operation unchanged only
 after the terminal result is `REFRESHED`.
+
+### Refresh While Serving
+
+A reindex never blocks readers. MCP reads keep using the last published
+generation while `ontoindex analyze` runs; only a repository with no published
+index at all waits for the first analysis. When a new generation is published,
+queued queries move to it and queries already running finish on the previous
+generation, whose database closes once they drain.
+
+Only one analysis runs per repository. Concurrent `gn_ensure_fresh` calls join
+the running job instead of starting another one. To wait for the fresh result,
+pass `waitForFreshMs`; the call returns when the job publishes, fails, or the
+budget runs out, and reports the outcome in `freshWait`.
+
+A working-tree job whose files change between submission and start analyzes a
+frozen snapshot of the new files and publishes under their digest instead of
+failing. Callers that joined the job see the new digest and submit one
+follow-up only if their files differ.
+
+| Setting                             | Default | Effect                                                                                                                                                                                                |
+| ----------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `waitForFreshMs` (tool parameter)   | `0`     | Wait up to this many milliseconds for a running or submitted refresh; capped by `ONTOINDEX_FRESH_WAIT_MAX_MS`.                                                                                        |
+| `ONTOINDEX_FRESH_WAIT_MAX_MS`       | `55000` | Upper bound for `waitForFreshMs`, kept below client tool timeouts.                                                                                                                                    |
+| `ONTOINDEX_ANALYZE_SNAPSHOT`        | `auto`  | `auto` analyzes a frozen copy of the selected sources for managed jobs, `1` always, `0` never. Edits made during analysis do not fail the job; the next refresh picks them up.                        |
+| `ONTOINDEX_ANALYZE_SNAPSHOT_MAX_MB` | `2048`  | Largest snapshot copy; bigger trees analyze the live tree.                                                                                                                                            |
+| `ONTOINDEX_KEEP_GENERATIONS`        | `2`     | Previous generations kept after each publish; older ones are deleted.                                                                                                                                 |
+| `ONTOINDEX_GENERATION_GRACE_MS` | `600000` | A replaced generation is kept at least this long so open readers can finish before it is deleted. |
+| `ONTOINDEX_ALLOW_EXTENSION_INSTALL` | unset   | Set to `1` to let LadybugDB download missing FTS or VECTOR extensions. Otherwise OntoIndex loads only local extensions; without FTS, analysis publishes without full-text indexes and logs a warning. |
+
+A dirty worktree whose exact bytes are already published (a working-tree
+analysis) is reported with `dirtyWorktreeIndexed: true` and does not trigger
+another analysis.
 
 When MCP starts from a tool checkout, it uses `ONTOINDEX_MCP_PROJECT_CWD` (set by `setup`) as the target-project hint, and startup checks this against the selected repo target.
 If the selected repo target does not match that project scope, startup fails loudly unless override is enabled.

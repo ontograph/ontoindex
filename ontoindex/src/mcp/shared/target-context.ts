@@ -56,6 +56,8 @@ export interface TargetContextGraphAuthority {
   generationId?: string;
   manifestDigest?: string;
   coverage?: 'complete' | 'degraded' | 'unknown';
+  /** True when a freshly computed source manifest matched the indexed manifest. */
+  sourceMatches?: boolean;
 }
 
 export interface TargetContextReadiness {
@@ -537,6 +539,7 @@ async function resolveGraphAuthority(
         generationId: meta.generationId ?? meta.indexedAt,
         manifestDigest,
         coverage: meta.sourceManifest.coverage,
+        sourceMatches: true,
       };
     }
     return {
@@ -545,6 +548,7 @@ async function resolveGraphAuthority(
       generationId: meta.generationId ?? meta.indexedAt,
       manifestDigest,
       coverage: 'complete',
+      sourceMatches: true,
     };
   } catch (err) {
     return {

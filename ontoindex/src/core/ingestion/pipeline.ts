@@ -156,6 +156,13 @@ export interface PipelineOptions {
   };
   /** Optional policy-gated placeholder for future precision analysis. */
   optionalPrecisionAnalyzer?: OptionalPrecisionAnalyzerOptions;
+  /**
+   * Live repository root when `repoPath` is a frozen source snapshot. Phases
+   * that need repository metadata absent from the snapshot (git history,
+   * `.ontoindex` sidecar state) read from here; file contents always come from
+   * `repoPath`. Defaults to `repoPath`.
+   */
+  metadataRepoPath?: string;
 }
 
 export type PipelineProfile = 'full' | 'symbols' | 'huge-repo-symbols';

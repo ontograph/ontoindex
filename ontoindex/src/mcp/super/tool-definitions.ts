@@ -394,6 +394,12 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
             'Submit a durable ontoindex analyze job when refresh is required. Default: false.',
           default: false,
         },
+        waitForFreshMs: {
+          type: 'number',
+          description:
+            'Bounded wait in milliseconds for the single in-flight refresh (started by this or any other caller) to publish, then re-check freshness. Parallel callers join the same job instead of starting another. Capped by ONTOINDEX_FRESH_WAIT_MAX_MS (default 55000). On timeout the stale verdict and job id are returned; reads keep using the published index. Default: 0.',
+          default: 0,
+        },
         killMcpForLock: {
           type: 'boolean',
           description:

@@ -28,6 +28,11 @@ const { managedAnalysisCoordinatorMocks } = vi.hoisted(() => ({
     claimManagedAnalysisAnalyzer: vi.fn().mockResolvedValue({}),
     beginManagedAnalysisPublication: vi.fn().mockResolvedValue({}),
     commitManagedAnalysisPublication: vi.fn().mockResolvedValue({}),
+    rebindManagedAnalysisSource: vi.fn(async (_repo: string, context: any, digest: string) => ({
+      ...context,
+      sourceIdentity: `worktree:${digest}`,
+      sourceManifestDigest: digest,
+    })),
   },
 }));
 
@@ -42,6 +47,8 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   executeQuery: vi.fn().mockResolvedValue([]),
   executeWithReusedStatement: vi.fn(),
   createFTSIndex: vi.fn().mockResolvedValue(undefined),
+  loadFTSExtension: vi.fn().mockResolvedValue(undefined),
+  isFTSExtensionLoaded: vi.fn(() => true),
   closeLbug: vi.fn().mockResolvedValue(undefined),
   fetchExistingEmbeddingHashes: vi
     .fn()
@@ -100,8 +107,10 @@ vi.mock('../../src/core/analysis/analysis-coordinator.js', () => managedAnalysis
 
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
+import { generateAIContextFiles } from '../../src/cli/ai-context.js';
 import {
   createFTSIndex,
+  isFTSExtensionLoaded,
   executeQuery,
   executeWithReusedStatement,
   getLbugStats,
@@ -130,6 +139,7 @@ import {
 
 const runPipelineMock = runPipelineFromRepo as unknown as ReturnType<typeof vi.fn>;
 const createFTSIndexMock = createFTSIndex as unknown as ReturnType<typeof vi.fn>;
+const isFTSExtensionLoadedMock = isFTSExtensionLoaded as unknown as ReturnType<typeof vi.fn>;
 const executeQueryMock = executeQuery as unknown as ReturnType<typeof vi.fn>;
 const executeWithReusedStatementMock = executeWithReusedStatement as unknown as ReturnType<
   typeof vi.fn
@@ -261,8 +271,10 @@ describe('runFullAnalysis snapshot persistence', () => {
     }
   });
 
-  it('refuses managed publication when the worktree becomes dirty during analysis', async () => {
+  it('refuses managed publication when the worktree becomes dirty during a live-tree analysis', async () => {
     const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-'));
+    const savedSnapshotMode = process.env.ONTOINDEX_ANALYZE_SNAPSHOT;
+    process.env.ONTOINDEX_ANALYZE_SNAPSHOT = '0';
     try {
       getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
       execFileTextMock.mockResolvedValueOnce('').mockResolvedValueOnce('?? generated-source.ts\n');
@@ -295,18 +307,17 @@ describe('runFullAnalysis snapshot persistence', () => {
         ),
       ).resolves.toBeNull();
     } finally {
+      if (savedSnapshotMode === undefined) delete process.env.ONTOINDEX_ANALYZE_SNAPSHOT;
+      else process.env.ONTOINDEX_ANALYZE_SNAPSHOT = savedSnapshotMode;
       await fs.rm(repoDir, { recursive: true, force: true });
     }
   });
 
-  it('refuses managed publication when HEAD changes during analysis', async () => {
+  it('publishes a snapshot-backed managed job when the live tree becomes dirty during analysis', async () => {
     const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-'));
     try {
-      getCurrentCommitMock
-        .mockReturnValueOnce(MANAGED_TARGET_HEAD)
-        .mockReturnValueOnce(MANAGED_TARGET_HEAD)
-        .mockReturnValueOnce(MANAGED_TARGET_HEAD)
-        .mockReturnValueOnce('c'.repeat(40));
+      getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
+      execFileTextMock.mockResolvedValueOnce('').mockResolvedValue('?? generated-source.ts\n');
       runPipelineMock.mockResolvedValue({
         graph: createKnowledgeGraph(),
         repoPath: repoDir,
@@ -314,6 +325,48 @@ describe('runFullAnalysis snapshot persistence', () => {
         communityResult: undefined,
         processResult: undefined,
         usedWorkerPool: false,
+      });
+      executeQueryMock.mockResolvedValue([]);
+
+      await runFullAnalysis(
+        repoDir,
+        {
+          force: true,
+          managedAnalysis: await managedAnalysisContext(repoDir, 'managed-job-snapshot-dirty'),
+        },
+        { onProgress: vi.fn() },
+      );
+
+      // Only the pre-analysis clean check consults the live tree.
+      expect(execFileTextMock).toHaveBeenCalledTimes(1);
+      // Background refreshes must not rewrite indexed files such as AGENTS.md.
+      expect(generateAIContextFiles).not.toHaveBeenCalled();
+      await expect(
+        readAnalysisPublicationReceipt(
+          path.join(repoDir, '.ontoindex', 'current'),
+          'managed-job-snapshot-dirty',
+        ),
+      ).resolves.toMatchObject({ jobId: 'managed-job-snapshot-dirty' });
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses managed publication when HEAD changes during analysis', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-'));
+    try {
+      getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
+      runPipelineMock.mockImplementation(async () => {
+        // A commit lands while the pipeline runs.
+        getCurrentCommitMock.mockReturnValue('c'.repeat(40));
+        return {
+          graph: createKnowledgeGraph(),
+          repoPath: repoDir,
+          totalFileCount: 0,
+          communityResult: undefined,
+          processResult: undefined,
+          usedWorkerPool: false,
+        };
       });
       executeQueryMock.mockResolvedValue([]);
 
@@ -466,7 +519,9 @@ describe('runFullAnalysis snapshot persistence', () => {
         'canonical-staged-generation',
         expect.stringMatching(/^[0-9a-f]{64}$/),
       );
-      expect(execFileTextMock).toHaveBeenCalledTimes(2);
+      // The frozen snapshot matched the submission digest, so publication does
+      // not re-check the live tree.
+      expect(execFileTextMock).toHaveBeenCalledTimes(1);
       expect(execFileTextMock).toHaveBeenCalledWith(
         'git',
         ['status', '--porcelain=v1', '--untracked-files=all'],
@@ -655,6 +710,38 @@ describe('runFullAnalysis snapshot persistence', () => {
         fs.stat(path.join(repoDir, '.ontoindex', 'analysis-checkpoint.json')),
       ).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('publishes without full-text indexes when the FTS extension is unavailable', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
+    isFTSExtensionLoadedMock.mockReturnValue(false);
+    try {
+      const graph = createKnowledgeGraph();
+      graph.addNode({
+        id: 'func:login',
+        label: 'Function',
+        properties: { name: 'login', filePath: 'src/auth.ts' } as any,
+      });
+      runPipelineMock.mockResolvedValue({
+        graph,
+        repoPath: repoDir,
+        totalFileCount: 1,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockResolvedValue([]);
+      createFTSIndexMock.mockRejectedValue(new Error('FTS extension unavailable'));
+
+      const result = await runFullAnalysis(repoDir, {}, { onProgress: vi.fn() });
+
+      expect(result.repoPath).toBe(repoDir);
+      expect(createFTSIndexMock).not.toHaveBeenCalled();
+    } finally {
+      isFTSExtensionLoadedMock.mockReturnValue(true);
+      createFTSIndexMock.mockResolvedValue(undefined);
       await fs.rm(repoDir, { recursive: true, force: true });
     }
   });
@@ -1498,6 +1585,218 @@ describe('runFullAnalysis snapshot persistence', () => {
       const generationEntries = await fs.readdir(path.join(storagePath, 'generations'));
       expect(generationEntries.filter((entry) => entry.startsWith('.staging-'))).toEqual([]);
     } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('publishes a frozen snapshot when sources change during analysis', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-frozen-'));
+    const saved = process.env.ONTOINDEX_ANALYZE_SNAPSHOT;
+    process.env.ONTOINDEX_ANALYZE_SNAPSHOT = '1';
+    try {
+      const sourcePath = path.join(repoDir, 'source.ts');
+      await fs.writeFile(sourcePath, 'export const value = 1;\n');
+      const liveBefore = await computeSourceManifest(repoDir, { pipelineProfile: 'full' });
+      let analyzedRoot = '';
+      let analyzedContent = '';
+      let metadataRoot: string | undefined;
+
+      runPipelineMock.mockImplementation(
+        async (root: string, _progress: unknown, pipelineOptions: PipelineOptions) => {
+          analyzedRoot = root;
+          metadataRoot = pipelineOptions.metadataRepoPath;
+          // Concurrent edits to the live tree while the pipeline runs.
+          await fs.writeFile(sourcePath, 'export const value = 2;\n');
+          await fs.writeFile(path.join(repoDir, 'added.ts'), 'export const added = 1;\n');
+          analyzedContent = await fs.readFile(path.join(root, 'source.ts'), 'utf8');
+          return {
+            graph: createKnowledgeGraph(),
+            repoPath: root,
+            totalFileCount: 1,
+            communityResult: undefined,
+            processResult: undefined,
+            usedWorkerPool: false,
+          };
+        },
+      );
+      executeQueryMock.mockResolvedValue([]);
+
+      await runFullAnalysis(repoDir, {}, { onProgress: vi.fn() });
+
+      expect(analyzedRoot).not.toBe(repoDir);
+      expect(analyzedRoot.startsWith(path.join(repoDir, '.ontoindex', 'source-snapshots'))).toBe(
+        true,
+      );
+      expect(metadataRoot).toBe(repoDir);
+      expect(analyzedContent).toBe('export const value = 1;\n');
+      const savedMeta = saveMetaMock.mock.calls.at(-1)?.[1];
+      expect(savedMeta.repoPath).toBe(repoDir);
+      expect(sourceManifestDigest(savedMeta.sourceManifest)).toBe(sourceManifestDigest(liveBefore));
+      // The snapshot is removed once analysis completes.
+      await expect(fs.stat(analyzedRoot)).rejects.toThrow();
+    } finally {
+      if (saved === undefined) delete process.env.ONTOINDEX_ANALYZE_SNAPSHOT;
+      else process.env.ONTOINDEX_ANALYZE_SNAPSHOT = saved;
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('publishes a managed working-tree job despite a dirty tree and concurrent edits', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-dirty-'));
+    try {
+      const sourcePath = path.join(repoDir, 'source.ts');
+      await fs.writeFile(sourcePath, 'export const value = 1;\n');
+      getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
+      // git status reports a dirty tree; working-tree jobs must not consult it.
+      execFileTextMock.mockResolvedValue(' M source.ts\n');
+      const base = await managedAnalysisContext(repoDir, 'managed-job-worktree');
+      const context = {
+        ...base,
+        sourceIdentity: `worktree:${base.sourceManifestDigest}`,
+      };
+      let analyzedRoot = '';
+      runPipelineMock.mockImplementation(async (root: string) => {
+        analyzedRoot = root;
+        await fs.writeFile(sourcePath, 'export const value = 2;\n');
+        await fs.rm(path.join(repoDir, 'source.ts'));
+        return {
+          graph: createKnowledgeGraph(),
+          repoPath: root,
+          totalFileCount: 1,
+          communityResult: undefined,
+          processResult: undefined,
+          usedWorkerPool: false,
+        };
+      });
+      executeQueryMock.mockResolvedValue([]);
+
+      await runFullAnalysis(
+        repoDir,
+        { force: true, managedAnalysis: context },
+        { onProgress: vi.fn() },
+      );
+
+      expect(analyzedRoot).not.toBe(repoDir);
+      expect(execFileTextMock).not.toHaveBeenCalledWith(
+        'git',
+        expect.arrayContaining(['status']),
+        expect.anything(),
+      );
+      const receipt = await readAnalysisPublicationReceipt(
+        path.join(repoDir, '.ontoindex', 'current'),
+        'managed-job-worktree',
+      );
+      expect(receipt).toMatchObject({
+        sourceIdentity: context.sourceIdentity,
+        sourceManifestDigest: context.sourceManifestDigest,
+      });
+      expect(commitManagedAnalysisPublicationMock).toHaveBeenCalledWith(
+        repoDir,
+        expect.objectContaining({ jobId: 'managed-job-worktree' }),
+        expect.any(String),
+        context.sourceManifestDigest,
+      );
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rebinds a working-tree job to the snapshot when sources changed after submission', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-race-'));
+    try {
+      await fs.writeFile(path.join(repoDir, 'source.ts'), 'export const value = 1;\n');
+      getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
+      const base = await managedAnalysisContext(repoDir, 'managed-job-race');
+      await fs.writeFile(path.join(repoDir, 'source.ts'), 'export const value = 3;\n');
+      const liveDigest = sourceManifestDigest(
+        await computeSourceManifest(repoDir, { includePaths: [], pipelineProfile: 'full' }),
+      );
+      runPipelineMock.mockResolvedValue({
+        graph: createKnowledgeGraph(),
+        repoPath: repoDir,
+        totalFileCount: 1,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      executeQueryMock.mockResolvedValue([]);
+      execFileTextMock.mockResolvedValue(' M source.ts\n');
+
+      await runFullAnalysis(
+        repoDir,
+        {
+          force: true,
+          managedAnalysis: { ...base, sourceIdentity: `worktree:${base.sourceManifestDigest}` },
+        },
+        { onProgress: vi.fn() },
+      );
+
+      expect(managedAnalysisCoordinatorMocks.rebindManagedAnalysisSource).toHaveBeenCalledWith(
+        repoDir,
+        expect.objectContaining({ jobId: 'managed-job-race' }),
+        liveDigest,
+      );
+      expect(commitManagedAnalysisPublicationMock).toHaveBeenCalledWith(
+        repoDir,
+        expect.objectContaining({ sourceIdentity: `worktree:${liveDigest}` }),
+        expect.any(String),
+        liveDigest,
+      );
+      const receipt = await readAnalysisPublicationReceipt(
+        path.join(repoDir, '.ontoindex', 'current'),
+        'managed-job-race',
+      );
+      expect(receipt).toMatchObject({
+        sourceIdentity: `worktree:${liveDigest}`,
+        sourceManifestDigest: liveDigest,
+      });
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a commit-identity job whose sources changed after submission', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-race-'));
+    try {
+      await fs.writeFile(path.join(repoDir, 'source.ts'), 'export const value = 1;\n');
+      getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
+      const base = await managedAnalysisContext(repoDir, 'managed-job-commit-race');
+      await fs.writeFile(path.join(repoDir, 'source.ts'), 'export const value = 3;\n');
+
+      await expect(
+        runFullAnalysis(repoDir, { force: true, managedAnalysis: base }, { onProgress: vi.fn() }),
+      ).rejects.toThrow('source manifest does not match the submission-time manifest digest');
+      expect(managedAnalysisCoordinatorMocks.rebindManagedAnalysisSource).not.toHaveBeenCalled();
+      expect(runPipelineMock).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a drifted working-tree job when snapshots are disabled', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-race-'));
+    const saved = process.env.ONTOINDEX_ANALYZE_SNAPSHOT;
+    process.env.ONTOINDEX_ANALYZE_SNAPSHOT = '0';
+    try {
+      await fs.writeFile(path.join(repoDir, 'source.ts'), 'export const value = 1;\n');
+      getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
+      const base = await managedAnalysisContext(repoDir, 'managed-job-live-race');
+      await fs.writeFile(path.join(repoDir, 'source.ts'), 'export const value = 3;\n');
+
+      await expect(
+        runFullAnalysis(
+          repoDir,
+          {
+            force: true,
+            managedAnalysis: { ...base, sourceIdentity: `worktree:${base.sourceManifestDigest}` },
+          },
+          { onProgress: vi.fn() },
+        ),
+      ).rejects.toThrow('source manifest does not match the submission-time manifest digest');
+      expect(runPipelineMock).not.toHaveBeenCalled();
+    } finally {
+      if (saved === undefined) delete process.env.ONTOINDEX_ANALYZE_SNAPSHOT;
+      else process.env.ONTOINDEX_ANALYZE_SNAPSHOT = saved;
       await fs.rm(repoDir, { recursive: true, force: true });
     }
   });

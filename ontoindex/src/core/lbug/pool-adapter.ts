@@ -83,6 +83,14 @@ interface PoolWaiter {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/** Thrown to queued callers when their pool entry was retired for a newer generation. */
+class PoolRetiredError extends Error {
+  constructor(repoId: string) {
+    super(`LadybugDB pool retired for repo "${repoId}" after a new index generation`);
+    this.name = 'PoolRetiredError';
+  }
+}
+
 interface PoolEntry {
   db: lbug.Database;
   /** Available connections ready for checkout */
@@ -105,6 +113,10 @@ interface PoolEntry {
   closed: boolean;
   /** Set while explicit close waits for active checkouts to finish */
   closing: boolean;
+  /** Set when a newer generation replaced this entry; queued callers move to the new entry. */
+  retired?: boolean;
+  /** Shared Database record this entry holds a reference on. */
+  shared: SharedDB;
 }
 
 const pool = new Map<string, PoolEntry>();
@@ -184,6 +196,10 @@ interface SharedDB {
   vectorLoaded: boolean;
   /** When true, closeOne skips db.close() — the Database is owned externally. */
   external?: boolean;
+  /** Closed pool entries whose checked-out connections are still in flight. */
+  draining?: Set<PoolEntry>;
+  /** Set when the last reference is gone but in-flight queries still use the Database. */
+  closePending?: boolean;
 }
 const dbCache = new Map<string, SharedDB>();
 
@@ -286,7 +302,11 @@ function closeOne(repoId: string): void {
 
   for (const waiter of entry.waiters.splice(0)) {
     clearTimeout(waiter.timer);
-    waiter.reject(new Error(`LadybugDB pool closed for repo "${repoId}"`));
+    waiter.reject(
+      entry.retired
+        ? new PoolRetiredError(repoId)
+        : new Error(`LadybugDB pool closed for repo "${repoId}"`),
+    );
   }
 
   // Close available connections — fire-and-forget with .catch() to prevent
@@ -301,20 +321,25 @@ function closeOne(repoId: string): void {
   // Checked-out connections can't be closed here — they're in-flight.
   // The checkin() function detects entry.closed and closes them on return.
 
-  // Only close the Database when no other repoIds reference it.
+  // Only close the Database when no other repoIds reference it and no
+  // checked-out connection is still running a query on it; closing a native
+  // Database under an in-flight query can fail the query or crash the process.
   // External databases (injected via initLbugWithDb) are never closed here;
   // the core adapter owns their lifecycle. Once no pool entries reference one,
   // remove it from this cache so injected DB objects do not stay pinned.
-  const shared = dbCache.get(entry.dbPath);
-  if (shared) {
-    shared.refCount--;
-    if (shared.refCount === 0) {
-      if (shared.external) {
-        dbCache.delete(entry.dbPath);
-      } else {
-        shared.db.close().catch(() => {});
-        dbCache.delete(entry.dbPath);
-      }
+  const shared = entry.shared;
+  // A retired entry's Database belongs to a replaced generation: detach it so
+  // the next init opens the newly published file behind the same path.
+  if (entry.retired && dbCache.get(entry.dbPath) === shared) dbCache.delete(entry.dbPath);
+  if (entry.checkedOut > 0) {
+    (shared.draining ??= new Set()).add(entry);
+  }
+  shared.refCount = Math.max(0, shared.refCount - 1);
+  if (shared.refCount === 0) {
+    if (dbCache.get(entry.dbPath) === shared) dbCache.delete(entry.dbPath);
+    if (!shared.external) {
+      shared.closePending = true;
+      closeSharedDbIfDrained(shared);
     }
   }
 
@@ -329,6 +354,26 @@ function closeOne(repoId: string): void {
       // Isolate listener failures — teardown must complete.
     }
   }
+}
+
+function closeSharedDbIfDrained(shared: SharedDB): void {
+  if (!shared.closePending || shared.refCount > 0 || (shared.draining?.size ?? 0) > 0) return;
+  shared.closePending = false;
+  shared.db.close().catch(() => {});
+}
+
+/** Account for a connection returned to a closed entry; close its Database once drained. */
+function releaseClosedEntryConnection(entry: PoolEntry, conn: lbug.Connection): void {
+  entry.checkedOut = Math.max(0, entry.checkedOut - 1);
+  const drained = entry.checkedOut === 0;
+  void conn
+    .close()
+    .catch(() => {})
+    .finally(() => {
+      if (!drained) return;
+      entry.shared.draining?.delete(entry);
+      closeSharedDbIfDrained(entry.shared);
+    });
 }
 
 function releaseSharedDbAfterFailedInit(dbPath: string, shared: SharedDB): void {
@@ -474,16 +519,40 @@ async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): 
     }
     if (!shared.vectorLoaded) {
       try {
-        await withTimeout(conn.query('INSTALL VECTOR'), QUERY_TIMEOUT_MS, 'INSTALL VECTOR');
-        await withTimeout(
-          conn.query('LOAD EXTENSION VECTOR'),
-          QUERY_TIMEOUT_MS,
-          'LOAD EXTENSION VECTOR',
-        );
-        shared.vectorLoaded = true;
+        const localVectorPath = await resolveLocalLbugExtensionPath('vector');
+        if (localVectorPath) {
+          try {
+            const loadQuery = `LOAD EXTENSION '${localVectorPath.replace(/'/g, "\\'")}'`;
+            await withTimeout(conn.query(loadQuery), QUERY_TIMEOUT_MS, loadQuery);
+            shared.vectorLoaded = true;
+          } catch (err) {
+            if (err instanceof QueryTimeoutError) throw err;
+          }
+        }
+        if (!shared.vectorLoaded) {
+          try {
+            await withTimeout(
+              conn.query('LOAD EXTENSION VECTOR'),
+              QUERY_TIMEOUT_MS,
+              'LOAD EXTENSION VECTOR',
+            );
+            shared.vectorLoaded = true;
+          } catch (err) {
+            if (err instanceof QueryTimeoutError) throw err;
+            // Network install stalls offline hosts; run it only when explicitly enabled.
+            if (process.env.ONTOINDEX_ALLOW_EXTENSION_INSTALL !== '1') throw err;
+            await withTimeout(conn.query('INSTALL VECTOR'), QUERY_TIMEOUT_MS, 'INSTALL VECTOR');
+            await withTimeout(
+              conn.query('LOAD EXTENSION VECTOR'),
+              QUERY_TIMEOUT_MS,
+              'LOAD EXTENSION VECTOR',
+            );
+            shared.vectorLoaded = true;
+          }
+        }
       } catch (err) {
         if (err instanceof QueryTimeoutError) throw err;
-        // VECTOR extension may not be available
+        // VECTOR extension may not be available; vector search degrades gracefully.
       }
     }
   } finally {
@@ -544,7 +613,10 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
     const identity = await readDbIdentity(dbPath);
     if (identity !== null && existing.dbIdentity !== null && identity !== existing.dbIdentity) {
       // `ontoindex analyze` published a new generation behind the same path.
-      // Drop the stale handle so the next query opens the current database.
+      // Retire the stale handle: in-flight queries finish on the old generation
+      // (its Database closes once they drain), queued callers are re-routed to
+      // the new entry once it is registered.
+      existing.retired = true;
       closeOne(repoId);
     } else {
       existing.lastUsed = Date.now();
@@ -706,6 +778,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     dbIdentity: await readDbIdentity(dbPath),
     closed: false,
     closing: false,
+    shared,
   });
   ensureIdleTimer();
 }
@@ -772,6 +845,7 @@ export async function initLbugWithDb(
     dbIdentity: await readDbIdentity(dbPath),
     closed: false,
     closing: false,
+    shared,
   });
   ensureIdleTimer();
 }
@@ -829,9 +903,8 @@ function checkout(entry: PoolEntry): Promise<lbug.Connection> {
  */
 function checkin(entry: PoolEntry, conn: lbug.Connection): void {
   if (entry.closed || entry.closing) {
-    entry.checkedOut = Math.max(0, entry.checkedOut - 1);
     // Pool entry was deleted during checkout — close the orphaned connection
-    conn.close().catch(() => {});
+    releaseClosedEntryConnection(entry, conn);
     return;
   }
   if (entry.waiters.length > 0) {
@@ -847,10 +920,14 @@ function checkin(entry: PoolEntry, conn: lbug.Connection): void {
 
 function retireConnection(entry: PoolEntry, conn: lbug.Connection): void {
   connStmtCaches.delete(conn);
+  if (entry.closed) {
+    releaseClosedEntryConnection(entry, conn);
+    return;
+  }
   entry.checkedOut = Math.max(0, entry.checkedOut - 1);
   conn.close().catch(() => {});
 
-  if (entry.closed || entry.closing) return;
+  if (entry.closing) return;
 
   while (entry.waiters.length > 0) {
     const totalConns = entry.available.length + entry.checkedOut;
@@ -970,22 +1047,47 @@ function cachePreparedStatement(
   stmtMap.set(cypher, stmt);
 }
 
+/**
+ * Resolve the live pool entry for a repo. While a generation swap is
+ * re-initializing the entry, wait for that init instead of failing.
+ */
+async function resolveEntry(repoId: string): Promise<PoolEntry> {
+  const entry = pool.get(repoId);
+  if (entry) return entry;
+  const pending = initPromises.get(repoId);
+  if (pending) {
+    await pending;
+    const reopened = pool.get(repoId);
+    if (reopened) return reopened;
+  }
+  throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
+}
+
+/**
+ * Check out a connection. If the entry is retired for a newer generation while
+ * the caller is queued, retry once against the replacement entry.
+ */
+async function checkoutLive(repoId: string): Promise<{ entry: PoolEntry; conn: lbug.Connection }> {
+  let entry = await resolveEntry(repoId);
+  try {
+    return { entry, conn: await checkout(entry) };
+  } catch (err) {
+    if (!(err instanceof PoolRetiredError)) throw err;
+    entry = await resolveEntry(repoId);
+    return { entry, conn: await checkout(entry) };
+  }
+}
+
 export const executeQuery = async <TRow extends object = LbugQueryRow>(
   repoId: string,
   cypher: string,
 ): Promise<LbugQueryResult<TRow>> => {
-  const entry = pool.get(repoId);
-  if (!entry) {
-    throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
-  }
-
   if (isWriteQuery(cypher)) {
     throw new Error('Write operations are not allowed. The pool adapter is read-only.');
   }
 
+  const { entry, conn } = await checkoutLive(repoId);
   entry.lastUsed = Date.now();
-
-  const conn = await checkout(entry);
   activeQueryCount++;
   let retire = false;
   let retireAfter: Promise<unknown> | null = null;
@@ -1021,14 +1123,8 @@ export const executeParameterized = async <TRow extends object = LbugQueryRow>(
   cypher: string,
   params: LbugQueryParams,
 ): Promise<LbugQueryResult<TRow>> => {
-  const entry = pool.get(repoId);
-  if (!entry) {
-    throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
-  }
-
+  const { entry, conn } = await checkoutLive(repoId);
   entry.lastUsed = Date.now();
-
-  const conn = await checkout(entry);
   activeQueryCount++;
   let retire = false;
   let retireAfter: Promise<unknown> | null = null;

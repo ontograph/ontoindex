@@ -9,6 +9,7 @@ vi.mock('../../../src/core/analysis/analysis-publication-receipt.js', () => ({
   readAnalysisPublicationReceipt: vi.fn(),
   isValidSourceIdentity: (value: unknown, targetHead: string, digest: string) =>
     value === `commit:${targetHead}` || value === `worktree:${digest}`,
+  worktreeSourceIdentity: (digest: string) => `worktree:${digest}`,
 }));
 vi.mock('../../../src/storage/repo-manager.js', () => ({
   resolveActiveIndexGeneration: vi.fn(),
@@ -131,6 +132,7 @@ function makeTargetContext(overrides: Record<string, unknown> = {}) {
       generationId,
       manifestDigest,
       coverage: 'complete',
+      sourceMatches: true,
     },
     dirtyWorktree: false,
     changedSinceIndex: false,
@@ -536,5 +538,90 @@ describe('gnAnalyzeJob', () => {
     });
     expect(ensureFresh).toHaveBeenCalledTimes(3);
     expect(targetContext).toHaveBeenCalledTimes(2);
+  });
+
+  describe('working-tree jobs', () => {
+    const worktreeIdentity = `worktree:${manifestDigest}`;
+    const dirtyContext = (authority: Record<string, unknown> = {}) =>
+      makeTargetContext({
+        dirtyWorktree: true,
+        changedSinceIndex: true,
+        snapshotMode: 'dirty-worktree-overlay',
+        graphAuthority: {
+          state: 'authoritative',
+          reason: 'verified',
+          generationId,
+          manifestDigest,
+          coverage: 'complete',
+          sourceMatches: true,
+          ...authority,
+        },
+      });
+
+    beforeEach(() => {
+      getJob.mockResolvedValue(makeJob({ sourceIdentity: worktreeIdentity }));
+      readReceipt.mockResolvedValue(makeReceipt({ sourceIdentity: worktreeIdentity }) as any);
+      ensureFresh.mockResolvedValue(makeFreshness({ dirtyFileCount: 3 }) as any);
+    });
+
+    it('reports refreshed on a dirty tree when the current files match the receipt', async () => {
+      targetContext.mockResolvedValue(dirtyContext() as any);
+
+      const result = (await gnAnalyzeJob('repo', { repo: repoPath, jobId })) as any;
+
+      expect(result.recovery).toMatchObject({
+        disposition: 'REFRESHED',
+        reasonCode: 'PUBLICATION_VERIFIED',
+        coverage: 'complete',
+      });
+    });
+
+    it('reports refreshed with degraded coverage when skipped inputs are unchanged', async () => {
+      targetContext.mockResolvedValue(
+        dirtyContext({
+          state: 'degraded',
+          coverage: 'degraded',
+          reason: 'indexed coverage is degraded',
+        }) as any,
+      );
+
+      const result = (await gnAnalyzeJob('repo', { repo: repoPath, jobId })) as any;
+
+      expect(result.recovery).toMatchObject({
+        disposition: 'REFRESHED',
+        reasonCode: 'PUBLICATION_VERIFIED_DEGRADED_COVERAGE',
+        coverage: 'degraded',
+      });
+    });
+
+    it('stays unconfirmed when files changed after the job published', async () => {
+      targetContext.mockResolvedValue(
+        dirtyContext({
+          state: 'review',
+          reason: 'current source manifest does not match indexed manifest',
+          sourceMatches: undefined,
+        }) as any,
+      );
+
+      const result = (await gnAnalyzeJob('repo', { repo: repoPath, jobId })) as any;
+
+      expect(result.recovery).toMatchObject({
+        disposition: 'FRESHNESS_UNCONFIRMED',
+        reasonCode: 'GRAPH_AUTHORITY_UNCONFIRMED',
+      });
+    });
+
+    it('keeps requiring a clean tree for commit-identity jobs', async () => {
+      getJob.mockResolvedValue(makeJob());
+      readReceipt.mockResolvedValue(makeReceipt() as any);
+      targetContext.mockResolvedValue(dirtyContext() as any);
+
+      const result = (await gnAnalyzeJob('repo', { repo: repoPath, jobId })) as any;
+
+      expect(result.recovery).toMatchObject({
+        disposition: 'FRESHNESS_UNCONFIRMED',
+        reasonCode: 'POSTCHECK_WORKTREE_UNCONFIRMED',
+      });
+    });
   });
 });

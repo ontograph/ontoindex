@@ -8,6 +8,7 @@ import {
   cancelAnalysisJob,
   completeAnalysisJob,
   getAnalysisJob,
+  rebindManagedAnalysisSource,
   submitAnalysisJob as submitAnalysisJobCore,
 } from '../../src/core/analysis/analysis-coordinator.js';
 import type {
@@ -97,6 +98,67 @@ setTimeout(() => {}, 30000);
       sourceIdentity: SOURCE_IDENTITY,
     });
     if (running?.runnerPid) await terminateProcess(running.runnerPid);
+  });
+
+  it('rebinds a running working-tree job to new sources and records the submitted digest', async () => {
+    const repoPath = await makeRepo();
+    const submitted = 'f'.repeat(64);
+    const rebound = '1'.repeat(64);
+    const job = makeJob(repoPath, {
+      runnerPid: process.pid,
+      analyzerPid: process.pid,
+      sourceIdentity: `worktree:${submitted}`,
+      sourceManifestDigest: submitted,
+    });
+    await writeJobFixture(job);
+    const context = {
+      jobId: job.id,
+      targetHead: job.targetHead,
+      optionsDigest: job.optionsDigest,
+      sourceIdentity: job.sourceIdentity,
+      sourceManifestDigest: submitted,
+      requestedCapabilities: job.requestedCapabilities,
+    };
+
+    const next = await rebindManagedAnalysisSource(repoPath, context, rebound);
+
+    expect(next).toMatchObject({
+      sourceIdentity: `worktree:${rebound}`,
+      sourceManifestDigest: rebound,
+    });
+    expect(await getAnalysisJob(repoPath, job.id)).toMatchObject({
+      sourceIdentity: `worktree:${rebound}`,
+      sourceManifestDigest: rebound,
+      submittedSourceManifestDigest: submitted,
+    });
+    // The old context is fenced once the job moved to the new sources.
+    await expect(rebindManagedAnalysisSource(repoPath, context, rebound)).rejects.toThrow(
+      'no longer matches',
+    );
+  });
+
+  it('never rebinds a commit-identity job', async () => {
+    const repoPath = await makeRepo();
+    const job = makeJob(repoPath, { runnerPid: process.pid, analyzerPid: process.pid });
+    await writeJobFixture(job);
+
+    await expect(
+      rebindManagedAnalysisSource(
+        repoPath,
+        {
+          jobId: job.id,
+          targetHead: job.targetHead,
+          optionsDigest: job.optionsDigest,
+          sourceIdentity: job.sourceIdentity,
+          sourceManifestDigest: job.sourceManifestDigest,
+          requestedCapabilities: job.requestedCapabilities,
+        },
+        '1'.repeat(64),
+      ),
+    ).rejects.toThrow('Only working-tree analysis jobs');
+    expect(await getAnalysisJob(repoPath, job.id)).toMatchObject({
+      sourceIdentity: SOURCE_IDENTITY,
+    });
   });
 
   it('does not reuse an active job when source identity is unknown', async () => {

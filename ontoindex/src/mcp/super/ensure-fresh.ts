@@ -14,6 +14,8 @@ import path, { join } from 'path';
 import { homedir } from 'os';
 import { execFileText } from '../../core/process/exec-file.js';
 import {
+  getActiveAnalysisJob,
+  getAnalysisJob,
   submitAnalysisJob,
   type AnalysisJobRecord,
 } from '../../core/analysis/analysis-coordinator.js';
@@ -25,9 +27,11 @@ import {
 } from '../../core/analysis/analysis-publication-receipt.js';
 import {
   computeSourceManifest,
+  manifestsMatch,
   sourceManifestDigest,
 } from '../../core/indexing/source-manifest.js';
 import {
+  readAnalyzeLock,
   readRuntimeHealth,
   type RuntimeHealthSnapshot,
 } from '../../core/runtime/runtime-health.js';
@@ -35,6 +39,7 @@ import { readActiveGenerationMeta, type RepoMeta } from '../../storage/repo-mana
 import type { GraphAuthorityCapability, ScopeConfidence } from '../shared/target-context.js';
 import { resolveTargetContext } from '../shared/target-context.js';
 import { createEnvelopeFromLegacy } from '../shared/response-envelope.js';
+import { waitForFreshness, type FreshnessWaitSummary } from './fresh-wait.js';
 
 const GIT_PROBE_TIMEOUT_MS = 5_000;
 const GIT_PROBE_MAX_BUFFER = 1024 * 1024;
@@ -49,6 +54,12 @@ export interface EnsureFreshParams {
   withEmbeddings?: boolean; // default: false
   requiredGraphCapabilities?: readonly GraphAuthorityCapability[]; // default: ['symbols']
   autoAnalyze?: boolean; // default: false (require explicit confirm)
+  /**
+   * Bounded wait (ms) for a running or newly submitted refresh to publish.
+   * Joins the single in-flight analysis instead of starting another one.
+   * Capped by ONTOINDEX_FRESH_WAIT_MAX_MS (default 55s). Default: 0 (no wait).
+   */
+  waitForFreshMs?: number;
   killMcpForLock?: boolean; // deprecated; advisory only for safety
   legacyResponse?: boolean; // default: true
 }
@@ -96,11 +107,19 @@ export interface EnsureFreshReport {
     untrackedCount: number | null;
   };
   scopeConfidence?: ScopeConfidence;
+  /**
+   * True when the tree is dirty but the published generation was built from
+   * exactly the current working-tree bytes (a working-tree analysis), so the
+   * uncommitted edits are already in the graph and no refresh is needed.
+   */
+  dirtyWorktreeIndexed?: boolean;
   runtimeHealth?: RuntimeHealthSnapshot;
   actionsTaken: string[];
   analysisSubmission: AnalysisSubmission;
   analysisJob?: AnalysisJobRecord;
   postCheck?: { indexedCommit: string; currentCommit: string; isStale: boolean };
+  /** Present when waitForFreshMs was requested. */
+  freshWait?: FreshnessWaitSummary;
   warnings: string[];
   recommendations: string[];
 }
@@ -471,7 +490,8 @@ export async function gnEnsureFresh(
   const requiredGraphCapabilities = normalizeRequiredGraphCapabilities(
     params.requiredGraphCapabilities,
   );
-  const cacheable = params.autoAnalyze !== true;
+  const waitRequested = typeof params.waitForFreshMs === 'number' && params.waitForFreshMs > 0;
+  const cacheable = params.autoAnalyze !== true && !waitRequested;
   const ttlMs = freshnessCacheTtlMs();
   const cacheKey = freshnessCacheKey(repoId, params, requiredGraphCapabilities);
   let report: EnsureFreshReport | undefined;
@@ -496,6 +516,31 @@ export async function gnEnsureFresh(
         report: structuredClone(report),
       });
     }
+  }
+
+  if (waitRequested) {
+    const waited = await waitForFreshness(report, params.waitForFreshMs!, {
+      evaluate: (submit) =>
+        buildEnsureFreshReport(repoId, {
+          ...params,
+          autoAnalyze: submit,
+          requiredGraphCapabilities,
+        }),
+      getJob: getAnalysisJob,
+      getActiveJob: getActiveAnalysisJob,
+      readLock: (storagePath) => readAnalyzeLock(storagePath, []),
+      currentManifestDigest: async (repoPath) =>
+        sourceManifestDigest(
+          await computeSourceManifest(repoPath, { includePaths: [], pipelineProfile: 'full' }),
+        ),
+      autoAnalyze: params.autoAnalyze === true,
+    });
+    report = { ...waited.report, freshWait: waited.wait };
+    if (waited.wait.outcome === 'timeout' || waited.wait.outcome === 'max-rounds') {
+      report.warnings = [...report.warnings, waited.wait.message];
+    }
+    // Cached verdicts may predate the publication we just waited for.
+    freshnessCache.clear();
   }
 
   if (params.legacyResponse !== false) return report;
@@ -662,7 +707,41 @@ async function buildEnsureFreshReport(
     dirtyFileCount,
     isStale,
   });
-  if ((dirtyWorktree.untrackedCount ?? 0) > 0) {
+  // A working-tree analysis publishes the exact dirty bytes. When the live
+  // tree still hashes to that manifest, the edits are already indexed and a
+  // resubmission would only re-hash the tree and return "already up to date".
+  let dirtyWorktreeIndexed = false;
+  const publishedManifest =
+    generationMeta.authority !== 'untrusted' ? repoMeta?.sourceManifest : undefined;
+  if (
+    !isStale &&
+    dirtyFileCount !== null &&
+    dirtyFileCount > 0 &&
+    // `degraded` coverage (oversized or unreadable files skipped) is still
+    // deterministic: manifestsMatch compares the degraded-input digest too.
+    publishedManifest !== undefined &&
+    publishedManifest.coverage !== 'unknown'
+  ) {
+    try {
+      const liveManifest = await computeSourceManifest(repoRoot, {
+        includePaths: publishedManifest.includePaths,
+        pipelineProfile: publishedManifest.pipelineProfile,
+      });
+      dirtyWorktreeIndexed = manifestsMatch(publishedManifest, {
+        ...liveManifest,
+        head: publishedManifest.head,
+      });
+    } catch (err) {
+      warnings.push(
+        'could not compare the working tree with the published manifest: ' + String(err),
+      );
+    }
+  }
+  if (dirtyWorktreeIndexed) {
+    warnings.push(
+      `${dirtyFileCount} uncommitted change${dirtyFileCount === 1 ? ' is' : 's are'} already indexed: the published generation matches the current working tree.`,
+    );
+  } else if ((dirtyWorktree.untrackedCount ?? 0) > 0) {
     warnings.push(
       `${dirtyWorktree.untrackedCount} untracked file${dirtyWorktree.untrackedCount === 1 ? ' is' : 's are'} absent from the graph entirely; ${dirtyWorktree.trackedChangedCount} tracked change${dirtyWorktree.trackedChangedCount === 1 ? ' is' : 's are'} indexed at the indexed commit.`,
     );
@@ -714,7 +793,7 @@ async function buildEnsureFreshReport(
     isStale ||
     // Uncommitted edits are absent from a commit-scoped graph, so a dirty tree
     // is refreshable work even when HEAD already matches the indexed commit.
-    (dirtyFileCount !== null && dirtyFileCount > 0) ||
+    (dirtyFileCount !== null && dirtyFileCount > 0 && !dirtyWorktreeIndexed) ||
     (!currentHeadAvailable && indexedCommit !== '') ||
     embeddingsRepairRequired ||
     runtimeHealth.analyzeLock.state === 'stale' ||
@@ -790,6 +869,7 @@ async function buildEnsureFreshReport(
       dirtyFileCount,
       dirtyWorktreeBreakdown,
       scopeConfidence,
+      ...(dirtyWorktreeIndexed ? { dirtyWorktreeIndexed } : {}),
       runtimeHealth,
       actionsTaken,
       analysisSubmission,
@@ -928,6 +1008,7 @@ async function buildEnsureFreshReport(
     dirtyFileCount,
     dirtyWorktreeBreakdown,
     scopeConfidence,
+    ...(dirtyWorktreeIndexed ? { dirtyWorktreeIndexed } : {}),
     runtimeHealth,
     actionsTaken,
     analysisSubmission,

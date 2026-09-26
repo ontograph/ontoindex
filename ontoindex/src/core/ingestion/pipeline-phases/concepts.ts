@@ -56,7 +56,7 @@ export const conceptsPhase: PipelinePhase = {
     });
 
     // 1. Load enrichment facts from sidecar store
-    const storagePath = path.join(ctx.repoPath, '.ontoindex');
+    const storagePath = path.join(ctx.options?.metadataRepoPath ?? ctx.repoPath, '.ontoindex');
     const storePath = getSidecarStorePath(storagePath);
     const store = new LocalSidecarStore(storePath);
     const state = await store.load();

@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import syncFs from 'node:fs';
 import path from 'path';
 import { RepoHandle } from 'ontoindex-shared';
+import { readAnalyzeLock } from '../../core/runtime/runtime-health.js';
 
 interface EnsureRepoInitializedOptions {
   repoId: string;
@@ -16,24 +17,21 @@ interface EnsureRepoInitializedOptions {
   now?: () => number;
 }
 
-async function readAnalyzeLock(storagePath: string): Promise<string | null> {
-  const lockPath = path.join(storagePath, 'analyze.lock');
-  try {
-    const raw = await fs.readFile(lockPath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    if (typeof parsed.pid === 'number' && !isProcessAlive(parsed.pid)) return null;
-    const pid = typeof parsed.pid === 'number' ? ` PID ${parsed.pid}` : '';
-    const startedAt = typeof parsed.startedAt === 'string' ? ` since ${parsed.startedAt}` : '';
-    return `${lockPath}${pid}${startedAt}`;
-  } catch {
-    return null;
-  }
+/**
+ * Describe an analyze lock held by a live owner. Uses the identity-aware
+ * runtime probe so a PID reused by an unrelated process is treated as stale.
+ */
+async function describeActiveAnalyzeLock(storagePath: string): Promise<string | null> {
+  const lock = await readAnalyzeLock(storagePath, []);
+  if (lock.state !== 'active' && lock.state !== 'unknown') return null;
+  const pid = lock.pid !== undefined ? ` PID ${lock.pid}` : '';
+  const startedAt = lock.startedAt ? ` since ${lock.startedAt}` : '';
+  return `${lock.path}${pid}${startedAt}`;
 }
 
-function isProcessAlive(pid: number): boolean {
+async function hasPublishedIndex(lbugPath: string): Promise<boolean> {
   try {
-    process.kill(pid, 0);
-    return true;
+    return (await fs.stat(lbugPath)).isFile();
   } catch {
     return false;
   }
@@ -56,12 +54,17 @@ async function assertIndexCanOpenReadOnly(
   handle: RepoHandle,
   isLbugDbPathReady?: (dbPath: string) => boolean,
 ): Promise<void> {
-  const lock = await readAnalyzeLock(handle.storagePath);
-  if (lock) {
-    throw new Error(
-      `OntoIndex index for "${handle.name}" is currently being rebuilt (${lock}). ` +
-        'Wait for analyze to finish before using MCP tools.',
-    );
+  // Analyze stages a new generation and publishes it with an atomic pointer
+  // swap, so the currently published generation stays readable while a rebuild
+  // runs. Only block when nothing has been published yet.
+  if (!(await hasPublishedIndex(handle.lbugPath))) {
+    const lock = await describeActiveAnalyzeLock(handle.storagePath);
+    if (lock) {
+      throw new Error(
+        `OntoIndex index for "${handle.name}" is being built for the first time (${lock}). ` +
+          'Wait for analyze to finish before using MCP tools.',
+      );
+    }
   }
 
   const sidecar = isLbugDbPathReady?.(handle.lbugPath)

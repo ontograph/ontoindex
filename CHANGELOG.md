@@ -4,6 +4,30 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Added `waitForFreshMs` to `gn_ensure_fresh` so a caller can wait, within a bounded budget, for the running or submitted refresh to publish; the outcome is reported in `freshWait`.
+- Added frozen source snapshots for managed analysis (`ONTOINDEX_ANALYZE_SNAPSHOT`, `ONTOINDEX_ANALYZE_SNAPSHOT_MAX_MB`) so edits made during analysis no longer fail the job.
+- Added retention of old index generations after each publish (`ONTOINDEX_KEEP_GENERATIONS`, default 2 previous generations; replaced generations are kept for `ONTOINDEX_GENERATION_GRACE_MS`, default 10 minutes).
+- Added `dirtyWorktreeIndexed` to `gn_ensure_fresh` reports when the published generation already matches the dirty working tree.
+
+### Changed
+
+- MCP reads keep serving the last published generation while an analysis runs; only repositories without any published index wait.
+- LadybugDB FTS and VECTOR extensions install over the network only when `ONTOINDEX_ALLOW_EXTENSION_INSTALL=1`; unavailable extensions are cached as unavailable for the session.
+
+### Fixed
+
+- Fixed managed jobs submitted for dirty worktrees failing with "Managed analysis requires a clean Git worktree before analysis".
+- Fixed snapshot-backed managed jobs failing at publication when the live tree was edited during analysis.
+- Fixed queued queries failing with "pool closed" when a new generation was published, and stopped closing the previous generation's database under queries still running on it.
+- Fixed analysis failing outright when the FTS extension is unavailable; it now publishes without full-text indexes and logs a warning.
+- Fixed repeated resubmission of analysis for a dirty tree that was already indexed.
+- Fixed audit event JSON serialization of `undefined` values and ambiguous repository alias resolution in audit ingest.
+- Fixed `gn_analyze_job` never reporting `REFRESHED` for working-tree jobs; it now verifies that the current files match the published digest, and reports deterministic degraded coverage as `REFRESHED` with `coverage: "degraded"`.
+- Fixed working-tree jobs failing when files changed between submission and start; the job now analyzes a frozen snapshot of the new files under their own digest.
+- Fixed background refreshes rewriting `AGENTS.md`, `CLAUDE.md`, and generated skill files, which dirtied the tree and caused endless resubmission.
+
 ## [2.2.1] - 2026-09-05
 
 ### Fixed

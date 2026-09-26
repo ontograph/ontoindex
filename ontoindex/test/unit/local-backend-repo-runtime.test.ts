@@ -1,10 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { RepoHandle } from 'ontoindex-shared';
 
-import { resolveRepoFromHandles } from '../../src/mcp/local/local-backend-repo-runtime.js';
+import {
+  ensureRepoInitialized,
+  resolveRepoFromHandles,
+} from '../../src/mcp/local/local-backend-repo-runtime.js';
 
 function makeRepo(id: string, name: string, repoPath: string): RepoHandle {
   const resolvedRepoPath = path.resolve(repoPath);
@@ -133,6 +136,93 @@ describe('resolveRepoFromHandles', () => {
       });
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('ensureRepoInitialized during a rebuild', () => {
+  async function setup(options: {
+    published: boolean;
+    lockPid: number;
+    processStartIdentity?: string;
+  }) {
+    const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-rebuild-'));
+    const storagePath = path.join(repoPath, '.ontoindex');
+    await fs.mkdir(storagePath);
+    const lbugPath = path.join(storagePath, 'lbug');
+    if (options.published) await fs.writeFile(lbugPath, 'db');
+    await fs.writeFile(
+      path.join(storagePath, 'analyze.lock'),
+      JSON.stringify({
+        pid: options.lockPid,
+        startedAt: '2026-09-26T00:00:00.000Z',
+        ...(options.processStartIdentity
+          ? { processStartIdentity: options.processStartIdentity }
+          : {}),
+      }),
+    );
+    const handle: RepoHandle = { ...makeRepo('repo', 'repo', repoPath), storagePath, lbugPath };
+    const initLbug = vi.fn(async () => undefined);
+    const run = () =>
+      ensureRepoInitialized({
+        repoId: 'repo',
+        handle,
+        initializedRepos: new Set(),
+        reinitPromises: new Map(),
+        lastStalenessCheck: new Map(),
+        isLbugReady: () => false,
+        initLbug,
+        closeLbug: vi.fn(async () => undefined),
+      });
+    return { repoPath, initLbug, run };
+  }
+
+  it('opens the published generation while analyze holds the lock', async () => {
+    const { repoPath, initLbug, run } = await setup({ published: true, lockPid: process.pid });
+    try {
+      await expect(run()).resolves.toBeUndefined();
+      expect(initLbug).toHaveBeenCalledOnce();
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks only the first build when no generation is published yet', async () => {
+    const { repoPath, initLbug, run } = await setup({ published: false, lockPid: process.pid });
+    try {
+      await expect(run()).rejects.toThrow(/being built for the first time/);
+      expect(initLbug).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores a lock whose owner process is gone', async () => {
+    // PID 2^22+ is above the Linux pid_max default and never running.
+    const { repoPath, initLbug, run } = await setup({
+      published: false,
+      lockPid: 4_194_304 + 7,
+    });
+    try {
+      await expect(run()).resolves.toBeUndefined();
+      expect(initLbug).toHaveBeenCalledOnce();
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === 'linux')('ignores a lock whose PID was reused', async () => {
+    // A live PID whose start identity differs from the one recorded by analyze.
+    const { repoPath, initLbug, run } = await setup({
+      published: false,
+      lockPid: process.pid,
+      processStartIdentity: 'not-the-recorded-start-time',
+    });
+    try {
+      await expect(run()).resolves.toBeUndefined();
+      expect(initLbug).toHaveBeenCalledOnce();
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
     }
   });
 });

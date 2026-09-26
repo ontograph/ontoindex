@@ -51,7 +51,9 @@ export const gitMiningPhase: PipelinePhase = {
   name: 'gitMining',
   deps: ['scan', 'parse'],
   async execute(ctx, deps) {
-    const { repoPath, graph, onProgress } = ctx;
+    const { graph, onProgress } = ctx;
+    // Git history lives in the live repository, not in a source snapshot.
+    const repoPath = ctx.options?.metadataRepoPath ?? ctx.repoPath;
     const scanResult = getPhaseOutput<ScanOutput>(deps, 'scan');
 
     onProgress({

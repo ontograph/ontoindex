@@ -252,7 +252,7 @@ const REPO_READINESS_NOTES: string[] = [
   'Run gn_ensure_fresh({repo: "<repo>"}) before retrieval-heavy operations if the repo was recently edited.',
   'If docs sidecar is missing, stale, or partial, run `ontoindex docs refresh` or `ontoindex analyze --markdown-sidecar` before relying on docs evidence.',
   'If embeddings are missing or stale, re-index with: ontoindex analyze --embeddings',
-  'If the worktree is dirty, commit or stash changes before running ontoindex analyze to avoid partial-graph results.',
+  'A dirty worktree is analyzed as-is under a working-tree identity; reads keep serving the published index during analysis. Pass waitForFreshMs to gn_ensure_fresh to wait for the refresh.',
   'If LSP or sidecar features are absent, verify language server configuration and re-run ontoindex analyze.',
 ];
 

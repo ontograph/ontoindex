@@ -508,6 +508,89 @@ export const publishIndexGenerationTransaction = async <T>(
     }
   });
 
+/** Previous generations kept after a publish so readers of older handles can finish. */
+export const DEFAULT_KEEP_PREVIOUS_GENERATIONS = 2;
+
+export const resolveKeepPreviousGenerations = (): number => {
+  const raw = process.env.ONTOINDEX_KEEP_GENERATIONS?.trim();
+  if (!raw) return DEFAULT_KEEP_PREVIOUS_GENERATIONS;
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= 0 ? value : DEFAULT_KEEP_PREVIOUS_GENERATIONS;
+};
+
+/** A replaced generation stays on disk at least this long so open readers can finish. */
+export const DEFAULT_GENERATION_GRACE_MS = 10 * 60 * 1000;
+
+export const resolveGenerationGraceMs = (): number => {
+  const raw = process.env.ONTOINDEX_GENERATION_GRACE_MS?.trim();
+  if (!raw) return DEFAULT_GENERATION_GRACE_MS;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_GENERATION_GRACE_MS;
+};
+
+export interface PruneIndexGenerationsResult {
+  removed: string[];
+  failed: string[];
+  /** Beyond the keep count but replaced too recently; retried on a later publish. */
+  deferred: string[];
+}
+
+/**
+ * Delete published generations beyond the newest `keepPrevious` ones behind the
+ * active generation. Runs under the generation pointer lock so it never races an
+ * activation or rollback; `.staging-*` directories (in-flight analyses) and the
+ * active generation are never touched. Removal failures (for example a file
+ * still open on Windows) are reported and retried on the next publish.
+ */
+export const pruneIndexGenerations = async (
+  storagePath: string,
+  keepPrevious: number = resolveKeepPreviousGenerations(),
+  graceMs: number = resolveGenerationGraceMs(),
+  now: number = Date.now(),
+): Promise<PruneIndexGenerationsResult> =>
+  withGenerationPointerLock(storagePath, async () => {
+    const result: PruneIndexGenerationsResult = { removed: [], failed: [], deferred: [] };
+    const active = await resolveActiveIndexGeneration(storagePath);
+    if (!active) return result;
+    const generationsPath = path.join(storagePath, GENERATIONS_DIR);
+    let entries: import('fs').Dirent[];
+    try {
+      entries = await fs.readdir(generationsPath, { withFileTypes: true });
+    } catch {
+      return result;
+    }
+    const published: { name: string; mtimeMs: number }[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      try {
+        const stat = await fs.stat(path.join(generationsPath, entry.name));
+        published.push({ name: entry.name, mtimeMs: stat.mtimeMs });
+      } catch {}
+    }
+    published.sort((left, right) => right.mtimeMs - left.mtimeMs);
+    // A generation stopped being served roughly when the next newer one was
+    // published; the active generation's own mtime bounds the newest one.
+    const replacedAt = new Map<string, number>();
+    for (let index = 1; index < published.length; index++) {
+      replacedAt.set(published[index].name, published[index - 1].mtimeMs);
+    }
+    const candidates = published.filter(({ name }) => name !== active.generationId);
+    for (const { name } of candidates.slice(Math.max(0, keepPrevious))) {
+      const replaced = replacedAt.get(name) ?? now;
+      if (now - replaced < graceMs) {
+        result.deferred.push(name);
+        continue;
+      }
+      try {
+        await fs.rm(path.join(generationsPath, name), { recursive: true, force: true });
+        result.removed.push(name);
+      } catch {
+        result.failed.push(name);
+      }
+    }
+    return result;
+  });
+
 export const resolveActiveIndexGeneration = async (
   storagePath: string,
 ): Promise<IndexGenerationPaths | null> => {
