@@ -67,13 +67,23 @@ export async function resolveAuditRepoHandle(
   }
 
   const repos = await listRegisteredRepos();
-  const repo = repos.find(
+  const targetLower = target.trim().toLowerCase();
+  const exactMatches = repos.filter(
     (entry) =>
-      entry.name === repoId ||
-      entry.path === repoId ||
-      entry.name === requestedRepo ||
-      entry.path === requestedRepo,
+      entry.name.toLowerCase() === targetLower || path.resolve(entry.path) === path.resolve(target),
   );
+  if (exactMatches.length > 1) {
+    throw new Error(`Repository is ambiguous: ${target}`);
+  }
+  const repo =
+    exactMatches[0] ??
+    (() => {
+      const fuzzyMatches = repos.filter((entry) => entry.name.toLowerCase().includes(targetLower));
+      if (fuzzyMatches.length > 1) {
+        throw new Error(`Repository is ambiguous: ${target}`);
+      }
+      return fuzzyMatches[0];
+    })();
   if (!repo) throw new Error(`Repository not found: ${target}`);
   return { id: repo.name, repoPath: repo.path };
 }
