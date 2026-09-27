@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMcpDoctorReport, formatMcpDoctorText } from '../../src/cli/mcp-doctor.js';
 import type { McpDoctorReport } from '../../src/cli/mcp-doctor.js';
@@ -92,11 +92,31 @@ const baseDiagnose: DiagnoseReport = {
   warnings: [],
 };
 
-beforeEach(() => {
+// probeSetupHealth inspects agent config directories under the home directory.
+// Point HOME at an empty directory so the developer's own setup cannot change
+// verdicts; tests that exercise setup health override HOME again themselves.
+let isolatedHome: string;
+let savedHome: string | undefined;
+let savedUserProfile: string | undefined;
+
+beforeEach(async () => {
+  savedHome = process.env.HOME;
+  savedUserProfile = process.env.USERPROFILE;
+  isolatedHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-mcp-doctor-isolated-home-'));
+  process.env.HOME = isolatedHome;
+  process.env.USERPROFILE = isolatedHome;
   localBackendMock.ctor.mockReset();
   localBackendMock.init.mockReset().mockResolvedValue(true);
   localBackendMock.callTool.mockReset();
   localBackendMock.dispose.mockReset().mockResolvedValue(undefined);
+});
+
+afterEach(async () => {
+  if (savedHome === undefined) delete process.env.HOME;
+  else process.env.HOME = savedHome;
+  if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = savedUserProfile;
+  await fs.rm(isolatedHome, { recursive: true, force: true });
 });
 
 describe('mcp-doctor', () => {
