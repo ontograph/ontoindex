@@ -3,6 +3,7 @@ import syncFs from 'node:fs';
 import path from 'path';
 import { RepoHandle } from 'ontoindex-shared';
 import { readAnalyzeLock } from '../../core/runtime/runtime-health.js';
+import { resolveActiveIndexGeneration } from '../../storage/repo-manager.js';
 
 interface EnsureRepoInitializedOptions {
   repoId: string;
@@ -250,6 +251,11 @@ export async function ensureRepoInitialized(options: EnsureRepoInitializedOption
 
     const reinit = (async () => {
       try {
+        // The handle stores the generation-specific database path resolved at
+        // startup. Analyze publishes each index as a new generation and prunes
+        // old ones, so re-resolve the active generation before reopening.
+        const active = await resolveActiveIndexGeneration(handle.storagePath);
+        if (active) handle.lbugPath = active.lbugPath;
         await assertIndexCanOpenReadOnly(handle, isLbugDbPathReady);
         // Keep the handle's identity in step with the generation being opened, so
         // responses do not label fresh graph data with the startup commit.
@@ -268,6 +274,10 @@ export async function ensureRepoInitialized(options: EnsureRepoInitializedOption
   }
 
   try {
+    // A handle created before a later analyze can point at a generation that
+    // has since been pruned; always open the currently published one.
+    const active = await resolveActiveIndexGeneration(handle.storagePath);
+    if (active) handle.lbugPath = active.lbugPath;
     await assertIndexCanOpenReadOnly(handle, isLbugDbPathReady);
     await initLbug(repoId, handle.lbugPath);
     initializedRepos.add(repoId);

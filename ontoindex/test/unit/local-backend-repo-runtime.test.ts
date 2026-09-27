@@ -172,6 +172,44 @@ describe('ensureRepoInitialized during a rebuild', () => {
     }
   });
 
+  it('reopens the active generation after the startup generation was pruned', async () => {
+    const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-regen-'));
+    const storagePath = path.join(repoPath, '.ontoindex');
+    const generations = path.join(storagePath, 'generations');
+    await fs.mkdir(path.join(generations, 'gen-new'), { recursive: true });
+    await fs.writeFile(path.join(generations, 'gen-new', 'lbug'), 'db');
+    await fs.symlink('generations/gen-new', path.join(storagePath, 'current'));
+    await fs.writeFile(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify({ indexedAt: '2026-09-27T07:16:00.000Z', lastCommit: 'fff000' }),
+    );
+    // The handle still points at a generation that analyze has since removed.
+    const staleLbugPath = path.join(generations, 'gen-old', 'lbug');
+    const handle: RepoHandle = {
+      ...makeRepo('repo', 'repo', repoPath),
+      storagePath,
+      lbugPath: staleLbugPath,
+    };
+    const initLbug = vi.fn(async () => undefined);
+    try {
+      await ensureRepoInitialized({
+        repoId: 'repo',
+        handle,
+        initializedRepos: new Set(['repo']),
+        reinitPromises: new Map(),
+        lastStalenessCheck: new Map(),
+        isLbugReady: () => true,
+        initLbug,
+        closeLbug: vi.fn(async () => undefined),
+      });
+      const activeLbug = path.join(await fs.realpath(generations), 'gen-new', 'lbug');
+      expect(initLbug).toHaveBeenCalledWith('repo', activeLbug);
+      expect(handle.lbugPath).toBe(activeLbug);
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
+  });
+
   async function setup(options: {
     published: boolean;
     lockPid: number;
