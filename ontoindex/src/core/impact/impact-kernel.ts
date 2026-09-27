@@ -226,6 +226,21 @@ function graphSnapshot(repo: ImpactKernelRepoHandle): ImpactKernelGraphSnapshot 
   };
 }
 
+/**
+ * Cypher predicate matching `r.type` against a set of relation types.
+ *
+ * Written as an OR chain on purpose: LadybugDB 0.17.1 returns wrong rows for
+ * `r.type IN [...]` when the other end of the edge is an unlabeled node of
+ * mixed labels — it drops some matches and repeats others. On this repository
+ * 12 of 400 functions lost callers under `IN`, while the OR form matched a
+ * per-type `=` baseline for all of them. Types come from VALID_RELATION_TYPES,
+ * so quoting them inline is safe.
+ */
+export function buildRelationTypePredicate(relationTypes: readonly string[]): string {
+  const clauses = [...new Set(relationTypes)].map((t) => `r.type = '${t}'`);
+  return clauses.length === 1 ? clauses[0] : `(${clauses.join(' OR ')})`;
+}
+
 function buildRiskReasons(total: number, direct: number, partial: boolean): string[] {
   const reasons: string[] = [];
   if (direct >= 30) reasons.push(`direct_count>=30:${direct}`);
@@ -314,7 +329,7 @@ export async function runImpactKernel(
 
   const visited = new Set<string>(expansion.seedIds);
   let frontier = [...expansion.seedIds];
-  const relTypeFilter = relationTypes.map((t) => `'${t}'`).join(', ');
+  const relTypeFilter = buildRelationTypePredicate(relationTypes);
   const confidenceFilter = minConfidence > 0 ? ` AND r.confidence >= ${minConfidence}` : '';
 
   for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
@@ -330,8 +345,8 @@ export async function runImpactKernel(
 
     const query =
       opts.direction === 'upstream'
-        ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence LIMIT ${MAX_IMPACT_RESULTS_PER_DEPTH}`
-        : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence LIMIT ${MAX_IMPACT_RESULTS_PER_DEPTH}`;
+        ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND ${relTypeFilter}${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence LIMIT ${MAX_IMPACT_RESULTS_PER_DEPTH}`
+        : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND ${relTypeFilter}${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence LIMIT ${MAX_IMPACT_RESULTS_PER_DEPTH}`;
 
     try {
       // Node ids are bound as a parameter: they are data, never Cypher text.
