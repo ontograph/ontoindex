@@ -1,4 +1,5 @@
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { isTestFilePath } from '../../core/impact/impact-kernel.js';
 
 interface SymbolResolutionRepoHandle {
   id: string;
@@ -295,6 +296,18 @@ export async function resolveSymbolCandidates(
 
   if (scored.length >= 2 && scored[0].score >= 0.95 && scored[0].score - scored[1].score > 0.09) {
     return { kind: 'ok', symbol: scored[0], resolvedLabel: scored[0].type };
+  }
+
+  // A name shared by one production symbol and only test-file helpers (for
+  // example a local stub with the same name inside a test) is not a real
+  // ambiguity: callers asking by bare name mean the production symbol. Real
+  // ties between production symbols stay ambiguous, and callers can still
+  // reach a test symbol with target_uid or file_path.
+  if (!hints.file_path && !hints.kind) {
+    const production = scored.filter((s) => !isTestFilePath(s.filePath || ''));
+    if (production.length === 1) {
+      return { kind: 'ok', symbol: production[0], resolvedLabel: production[0].type };
+    }
   }
 
   return { kind: 'ambiguous', candidates: scored };
