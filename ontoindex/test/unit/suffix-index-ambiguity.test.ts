@@ -219,4 +219,29 @@ describe('resolveImportPath — no proximity for Java or TypeScript', () => {
     const result = resolve('src/services/auth.ts', './user', SupportedLanguages.TypeScript, ctx);
     expect(result).toBe('src/services/user.ts');
   });
+
+  it('TypeScript: NodeNext `.js` specifier resolves to the `.ts` source', () => {
+    const ctx = makeCtx([
+      'src/core/lbug/pool-adapter.ts',
+      'src/ui/panel.tsx',
+      'src/esm/worker.mts',
+      'src/mcp/local/backend-query.ts',
+    ]);
+    const from = 'src/mcp/local/backend-query.ts';
+    const ts = SupportedLanguages.TypeScript;
+
+    expect(resolve(from, '../../core/lbug/pool-adapter.js', ts, ctx)).toBe(
+      'src/core/lbug/pool-adapter.ts',
+    );
+    expect(resolve(from, '../../ui/panel.js', ts, ctx)).toBe('src/ui/panel.tsx');
+    expect(resolve(from, '../../esm/worker.mjs', ts, ctx)).toBe('src/esm/worker.mts');
+    expect(resolve(from, '../../core/lbug/missing.js', ts, ctx)).toBeNull();
+  });
+
+  it('TypeScript: a real `.js` file wins over the `.ts` swap', () => {
+    const ctx = makeCtx(['src/lib/legacy.js', 'src/lib/legacy.ts', 'src/app.ts']);
+    expect(resolve('src/app.ts', './lib/legacy.js', SupportedLanguages.TypeScript, ctx)).toBe(
+      'src/lib/legacy.js',
+    );
+  });
 });

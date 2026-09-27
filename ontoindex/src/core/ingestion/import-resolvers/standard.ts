@@ -15,6 +15,29 @@ import type { TsconfigPaths } from '../language-config.js';
  *  100K entries ≈ 15MB — covers the most common import patterns. */
 const RESOLVE_CACHE_CAP = 100_000;
 
+/** TypeScript emit-extension specifiers and the source extensions they map back to. */
+const TS_SOURCE_EXTENSION_SWAPS: ReadonlyArray<[string, readonly string[]]> = [
+  ['.js', ['.ts', '.tsx']],
+  ['.jsx', ['.tsx']],
+  ['.mjs', ['.mts']],
+  ['.cjs', ['.cts']],
+];
+
+/**
+ * NodeNext/ESM TypeScript imports name the emitted file (`./foo.js`) while the
+ * repository only contains the source (`./foo.ts`). Return the source paths that
+ * such a specifier refers to, in TypeScript's lookup order.
+ */
+const tsSourceCandidates = (path: string): string[] => {
+  for (const [emitted, sources] of TS_SOURCE_EXTENSION_SWAPS) {
+    if (path.endsWith(emitted)) {
+      const stem = path.slice(0, -emitted.length);
+      return sources.map((source) => stem + source);
+    }
+  }
+  return [];
+};
+
 /**
  * Resolve an import path to a file path in the repository.
  *
@@ -53,12 +76,32 @@ export const resolveImportPath = (
     return result;
   };
 
+  const isTsOrJs =
+    language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript;
+
+  /** Exact path first; for TS/JS fall back to the source a `.js` specifier names. */
+  const resolveFromRoot = (path: string): string | null => {
+    const resolved = tryResolveWithExtensions(path, allFiles);
+    if (resolved || !isTsOrJs) return resolved;
+    for (const candidate of tsSourceCandidates(path)) {
+      if (allFiles.has(candidate)) return candidate;
+    }
+    return null;
+  };
+
+  const resolveBySuffix = (pathParts: string[]): string | null => {
+    const resolved = suffixResolve(pathParts, normalizedFileList, allFileList, index);
+    if (resolved || !isTsOrJs || pathParts.length === 0) return resolved;
+    const head = pathParts.slice(0, -1);
+    for (const candidate of tsSourceCandidates(pathParts[pathParts.length - 1])) {
+      const swapped = suffixResolve([...head, candidate], normalizedFileList, allFileList, index);
+      if (swapped) return swapped;
+    }
+    return null;
+  };
+
   // ---- TypeScript/JavaScript: rewrite path aliases ----
-  if (
-    (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) &&
-    tsconfigPaths &&
-    !importPath.startsWith('.')
-  ) {
+  if (isTsOrJs && tsconfigPaths && !importPath.startsWith('.')) {
     for (const [aliasPrefix, targetPrefix] of tsconfigPaths.aliases) {
       if (importPath.startsWith(aliasPrefix)) {
         const remainder = importPath.slice(aliasPrefix.length);
@@ -69,12 +112,12 @@ export const resolveImportPath = (
             : tsconfigPaths.baseUrl + '/' + targetPrefix + remainder;
 
         // Try direct resolution from repo root
-        const resolved = tryResolveWithExtensions(rewritten, allFiles);
+        const resolved = resolveFromRoot(rewritten);
         if (resolved) return cache(resolved);
 
         // Try suffix matching as fallback
         const parts = rewritten.split('/').filter(Boolean);
-        const suffixResult = suffixResolve(parts, normalizedFileList, allFileList, index);
+        const suffixResult = resolveBySuffix(parts);
         if (suffixResult) return cache(suffixResult);
       }
     }
@@ -127,8 +170,7 @@ export const resolveImportPath = (
   const basePath = currentDir.join('/');
 
   if (importPath.startsWith('.')) {
-    const resolved = tryResolveWithExtensions(basePath, allFiles);
-    return cache(resolved);
+    return cache(resolveFromRoot(basePath));
   }
 
   // ---- Generic package/absolute import resolution (suffix matching) ----
