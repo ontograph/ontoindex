@@ -712,7 +712,7 @@ async function resolveFileSymbolRecords(
     `
     MATCH (n) WHERE n.filePath ENDS WITH $filePath
       AND n.name IS NOT NULL
-    RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
+    RETURN n.id AS id, n.name AS name, label(n) AS type,
            n.filePath AS filePath
     LIMIT $limit
     `,

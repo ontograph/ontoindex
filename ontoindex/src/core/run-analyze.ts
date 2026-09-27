@@ -742,7 +742,7 @@ async function buildGraphDiffSnapshotFromDb(
   await streamQuery(
     `
       MATCH (a)-[r:CodeRelation]->(b)
-      WHERE r.type IN ['CALLS', 'IMPORTS']
+      WHERE (r.type = 'CALLS' OR r.type = 'IMPORTS')
       RETURN a.id AS sourceId, b.id AS targetId
     `,
     (row) => {

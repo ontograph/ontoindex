@@ -47,7 +47,7 @@ function commitFile(repoPath: string, relPath: string, content: string, commitDa
 
 /**
  * The backend issues two kinds of queries:
- *   - symbol-load: `MATCH (n) WHERE (labels(n)[0] = 'Function' ...`
+ *   - symbol-load: `MATCH (n) WHERE (label(n) = 'Function' ...`
  *   - file-load:   `MATCH (f:File) WHERE f.id IS NOT NULL ...`
  *   - BFS frontier: `MATCH (src)-[r:CodeRelation]->(tgt)`
  *

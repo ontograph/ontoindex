@@ -1,4 +1,5 @@
 import { executeParameterized } from '../lbug/pool-adapter.js';
+import { relationTypePredicate } from '../lbug/relation-type-predicate.js';
 import { classifyGraphFactProvenance, type GraphFactProvenance } from '../graph/fact-provenance.js';
 
 export type ImpactKernelDirection = 'upstream' | 'downstream';
@@ -227,18 +228,12 @@ function graphSnapshot(repo: ImpactKernelRepoHandle): ImpactKernelGraphSnapshot 
 }
 
 /**
- * Cypher predicate matching `r.type` against a set of relation types.
- *
- * Written as an OR chain on purpose: LadybugDB 0.17.1 returns wrong rows for
- * `r.type IN [...]` when the other end of the edge is an unlabeled node of
- * mixed labels — it drops some matches and repeats others. On this repository
- * 12 of 400 functions lost callers under `IN`, while the OR form matched a
- * per-type `=` baseline for all of them. Types come from VALID_RELATION_TYPES,
- * so quoting them inline is safe.
+ * Cypher predicate matching `r.type` against a set of relation types, as an
+ * OR chain of `=` comparisons. See relation-type-predicate.ts for the
+ * LadybugDB `IN` defect this avoids. Types come from VALID_RELATION_TYPES.
  */
 export function buildRelationTypePredicate(relationTypes: readonly string[]): string {
-  const clauses = [...new Set(relationTypes)].map((t) => `r.type = '${t}'`);
-  return clauses.length === 1 ? clauses[0] : `(${clauses.join(' OR ')})`;
+  return relationTypePredicate('r', relationTypes);
 }
 
 function buildRiskReasons(total: number, direct: number, partial: boolean): string[] {
@@ -271,7 +266,7 @@ async function expandClassSeeds(
         `
         MATCH (n)-[hm:CodeRelation]->(c:Constructor)
         WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
-        RETURN c.id AS id, c.name AS name, labels(c)[0] AS type, c.filePath AS filePath
+        RETURN c.id AS id, c.name AS name, label(c) AS type, c.filePath AS filePath
         LIMIT 100
       `,
         { symId },
@@ -281,7 +276,7 @@ async function expandClassSeeds(
         `
         MATCH (f:File)-[rel:CodeRelation]->(n)
         WHERE n.id = $symId AND rel.type = 'DEFINES'
-        RETURN f.id AS id, f.name AS name, labels(f)[0] AS type, f.filePath AS filePath
+        RETURN f.id AS id, f.name AS name, label(f) AS type, f.filePath AS filePath
         LIMIT 100
       `,
         { symId },
@@ -345,8 +340,8 @@ export async function runImpactKernel(
 
     const query =
       opts.direction === 'upstream'
-        ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND ${relTypeFilter}${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence LIMIT ${MAX_IMPACT_RESULTS_PER_DEPTH}`
-        : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND ${relTypeFilter}${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence LIMIT ${MAX_IMPACT_RESULTS_PER_DEPTH}`;
+        ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND ${relTypeFilter}${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, label(caller) AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence LIMIT ${MAX_IMPACT_RESULTS_PER_DEPTH}`
+        : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND ${relTypeFilter}${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, label(callee) AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence LIMIT ${MAX_IMPACT_RESULTS_PER_DEPTH}`;
 
     try {
       // Node ids are bound as a parameter: they are data, never Cypher text.

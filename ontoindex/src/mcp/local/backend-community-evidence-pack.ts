@@ -80,7 +80,7 @@ export async function runCommunityEvidencePack(
       MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
       WHERE c.id = $communityId OR c.label = $communityId OR c.heuristicLabel = $communityId
       OPTIONAL MATCH (doc:File)-[r:CodeRelation {type: 'MENTIONS'}]->(n)
-      RETURN n.id AS uid, n.name AS name, labels(n)[0] AS kind, n.filePath AS filePath, count(r) AS citationCount
+      RETURN n.id AS uid, n.name AS name, label(n) AS kind, n.filePath AS filePath, count(r) AS citationCount
       ORDER BY citationCount DESC, n.filePath ASC, n.name ASC, n.id ASC
       LIMIT $rowLimit
     `,

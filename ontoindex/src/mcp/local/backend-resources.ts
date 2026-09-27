@@ -245,7 +245,7 @@ export async function queryClusterDetail(
     `
     MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
     WHERE c.label = $clusterName OR c.heuristicLabel = $clusterName
-    RETURN DISTINCT n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+    RETURN DISTINCT n.name AS name, label(n) AS type, n.filePath AS filePath
     LIMIT 30
   `,
     { clusterName: name },
@@ -286,7 +286,7 @@ export async function queryProcessDetail(
     repo.id,
     `
     MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p {id: $procId})
-    RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, r.step AS step
+    RETURN n.name AS name, label(n) AS type, n.filePath AS filePath, r.step AS step
     ORDER BY r.step
     LIMIT ${MAX_PROCESS_DETAIL_STEPS}
   `,

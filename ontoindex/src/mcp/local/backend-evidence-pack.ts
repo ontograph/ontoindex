@@ -182,7 +182,7 @@ async function resolveSymbol(
       `
         MATCH (n)
         WHERE n.name = $name
-        RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath,
+        RETURN n.name AS name, label(n) AS type, n.filePath AS filePath,
                n.startLine AS startLine, n.endLine AS endLine
         LIMIT 1
       `,

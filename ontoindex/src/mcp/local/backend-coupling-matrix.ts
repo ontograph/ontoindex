@@ -130,7 +130,7 @@ export async function runCouplingMatrix(
         repo.id,
         `
         MATCH (src)-[r:CodeRelation]->(dst)
-        WHERE r.type IN ['CALLS', 'IMPORTS']
+        WHERE (r.type = 'CALLS' OR r.type = 'IMPORTS')
         OPTIONAL MATCH (src)-[:CodeRelation {type: 'MEMBER_OF'}]->(srcComm:Community)
         OPTIONAL MATCH (dst)-[:CodeRelation {type: 'MEMBER_OF'}]->(dstComm:Community)
         RETURN

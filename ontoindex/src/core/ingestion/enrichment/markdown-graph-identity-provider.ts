@@ -150,7 +150,7 @@ export class LbugGraphIdentityProvider implements GraphIdentityProvider {
       params.filePathHint = query.filePathHint;
     }
     if (query.kindHint !== undefined) {
-      predicates.push('labels(n)[0] = $kindHint');
+      predicates.push('label(n) = $kindHint');
       params.kindHint = query.kindHint;
     }
     const rows = await this.query(
@@ -158,7 +158,7 @@ export class LbugGraphIdentityProvider implements GraphIdentityProvider {
       `
       MATCH (n)
       WHERE ${predicates.join(' AND ')}
-      RETURN n.id AS id, n.name AS name, labels(n)[0] AS label, n.filePath AS filePath,
+      RETURN n.id AS id, n.name AS name, label(n) AS label, n.filePath AS filePath,
         n.startLine AS startLine, n.endLine AS endLine
       LIMIT $limit
       `,

@@ -74,8 +74,10 @@ function rowValue(row: QueryRow, key: string, index: number): unknown {
 }
 
 /**
- * Patch the `type` field on candidates whose `labels(n)[0]` projection
- * came back empty — a known LadybugDB behaviour for several node types.
+ * Patch the `type` field on candidates whose label projection came back
+ * empty. Queries used to project `labels(n)[0]`, which is always '' on
+ * LadybugDB (`labels()` returns a STRING, indexed from 1); they now use
+ * `label(n)`. This stays as a fallback for rows built elsewhere.
  */
 export async function enrichCandidateLabels(
   repo: SymbolResolutionRepoHandle,
@@ -195,7 +197,7 @@ export async function resolveSymbolCandidates(
   hints: ResolutionHints,
 ): Promise<SymbolResolutionOutcome> {
   const { uid, name, include_content } = query;
-  const selectClause = `n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`;
+  const selectClause = `n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`;
 
   if (uid) {
     const rows = await executeParameterized(

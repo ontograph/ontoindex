@@ -190,7 +190,7 @@ export async function computeGraphPathWithDiagnostics(
         rows = await executeParameterized(
           repoId,
           `MATCH (n {id: $nodeId})-[r:CodeRelation]->(m)
-           WHERE r.type IN ['IMPORTS', 'CALLS', 'REFERENCES', 'CO_CHANGED_WITH']
+           WHERE (r.type = 'IMPORTS' OR r.type = 'CALLS' OR r.type = 'REFERENCES' OR r.type = 'CO_CHANGED_WITH')
            RETURN m.id AS toId, r.type AS edgeType
            LIMIT 50`,
           { nodeId },

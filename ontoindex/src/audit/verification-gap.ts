@@ -145,7 +145,7 @@ function buildVerificationGapGraphQuery(): string {
        OR test.filePath STARTS WITH 'test/'
        OR test.filePath STARTS WITH 'tests/'
        OR test.filePath CONTAINS '/__tests__/')
-      AND r.type IN ['VERIFIES', 'CALLS', 'IMPORTS']
+      AND (r.type = 'VERIFIES' OR r.type = 'CALLS' OR r.type = 'IMPORTS')
       AND target.filePath = $src
     RETURN count(target) as hits
   `;

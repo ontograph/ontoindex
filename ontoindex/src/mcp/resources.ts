@@ -983,7 +983,7 @@ example_queries:
   find_community_members: |
     MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
     WHERE c.heuristicLabel = "Auth"
-    RETURN s.name, labels(s)[0] AS type
+    RETURN s.name, label(s) AS type
   
   trace_process: |
     MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)

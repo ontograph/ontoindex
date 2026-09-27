@@ -82,7 +82,7 @@ async function fetchCurrentEdges(repoId: string): Promise<CurrentEdge[]> {
     repoId,
     `
       MATCH (a)-[r:CodeRelation]->(b)
-      WHERE r.type IN ['CALLS', 'IMPORTS']
+      WHERE (r.type = 'CALLS' OR r.type = 'IMPORTS')
       OPTIONAL MATCH (a)-[:CodeRelation {type: 'MEMBER_OF'}]->(ca:Community)
       OPTIONAL MATCH (b)-[:CodeRelation {type: 'MEMBER_OF'}]->(cb:Community)
       RETURN a.id AS sourceId, b.id AS targetId, r.type AS relType,

@@ -538,7 +538,7 @@ export async function runImpactBFS(
           OPTIONAL MATCH (ep {id: p.entryPointId})
           RETURN p.id AS pId, p.heuristicLabel AS name, p.processType AS processType,
                  p.entryPointId AS entryPointId, hits, minStep, p.stepCount AS stepCount,
-                 ep.name AS epName, labels(ep)[0] AS epType, ep.filePath AS epFilePath
+                 ep.name AS epName, label(ep) AS epType, ep.filePath AS epFilePath
         `,
           { ids },
         ).catch(() => [])) as ProcessImpactRow[];
@@ -785,7 +785,7 @@ export async function impactByUid(
     rows = (await executeParameterized(
       repo.id,
       `MATCH (n) WHERE n.id = $uid
-       RETURN n.id AS id, n.name AS name, n.filePath AS filePath, labels(n)[0] AS type
+       RETURN n.id AS id, n.name AS name, n.filePath AS filePath, label(n) AS type
        LIMIT 1`,
       { uid },
     )) as ImpactSymbolRow[];

@@ -95,7 +95,7 @@ export async function auditRequirementsTrace(
              (n.startLine <= $line AND n.endLine >= $line) OR
              (n.startLine = $line + 1)
            )
-           AND (labels(n)[0] IN ['Function', 'Method', 'Class', 'Struct', 'Interface'] OR labels(n)[0] = '')
+           AND label(n) IN ['Function', 'Method', 'Class', 'Struct', 'Interface']
            RETURN count(n) as hits`,
           { file: relFile, line: hit.line },
         );

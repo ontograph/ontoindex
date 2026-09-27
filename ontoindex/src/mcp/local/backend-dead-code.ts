@@ -16,6 +16,7 @@ import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { relationTypePredicate } from '../../core/lbug/relation-type-predicate.js';
 import { getActiveModelPacks } from '../../analysis-packs/execution.js';
 import { commitsByFile } from './backend-git-history.js';
 import {
@@ -364,7 +365,7 @@ async function bfsForward(
 ): Promise<Set<string>> {
   const visited = new Set<string>(seeds);
   let frontier = Array.from(seeds);
-  const relFilter = FORWARD_EDGE_TYPES.map((t) => `'${t}'`).join(', ');
+  const relFilter = relationTypePredicate('r', FORWARD_EDGE_TYPES);
 
   for (let depth = 0; depth < maxIterations && frontier.length > 0; depth++) {
     const idList = frontier.map((id) => `'${id.replace(/'/g, "''")}'`).join(', ');
@@ -377,7 +378,7 @@ async function bfsForward(
         `
           MATCH (src)-[r:CodeRelation]->(tgt)
           WHERE src.id IN [${idList}]
-            AND r.type IN [${relFilter}]
+            AND ${relFilter}
             AND tgt.id IS NOT NULL
           RETURN tgt.id AS id
         `,
@@ -474,7 +475,7 @@ async function fetchIncomingCallerIdsBySymbol(
   chunkSize = 500,
 ): Promise<Map<string, string[]>> {
   const bySymbol = new Map<string, string[]>();
-  const relFilter = FORWARD_EDGE_TYPES.map((t) => `'${t}'`).join(', ');
+  const relFilter = relationTypePredicate('r', FORWARD_EDGE_TYPES);
 
   for (let start = 0; start < symIds.length; start += chunkSize) {
     const chunk = symIds.slice(start, start + chunkSize);
@@ -488,7 +489,7 @@ async function fetchIncomingCallerIdsBySymbol(
         `
           MATCH (caller)-[r:CodeRelation]->(n)
           WHERE n.id IN [${idList}]
-            AND r.type IN [${relFilter}]
+            AND ${relFilter}
           RETURN n.id AS symId, caller.id AS callerId
         `,
         {},

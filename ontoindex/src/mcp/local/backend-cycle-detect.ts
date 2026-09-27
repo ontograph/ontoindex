@@ -1,6 +1,7 @@
 import { minimatch } from 'minimatch';
 import { tarjanSccs } from 'ontoindex-shared';
 import { executeParameterized, isLbugReady } from '../../core/lbug/pool-adapter.js';
+import { relationTypeParamPredicate } from '../../core/lbug/relation-type-predicate.js';
 import { DiagnosticFinding } from 'ontoindex-shared';
 
 type RepoHandle = { readonly id: string; readonly name: string };
@@ -282,11 +283,12 @@ export async function runCycleDetect(
   }
 
   try {
+    const edgeTypeFilter = relationTypeParamPredicate('r', edgeTypes, 'edgeType');
     const rows = (await executeParameterized(
       repo.id,
       `
       MATCH (source)-[r:CodeRelation]->(target)
-      WHERE r.type IN $edgeTypes
+      WHERE ${edgeTypeFilter.predicate}
         AND (r.confidence IS NULL OR r.confidence >= $minConfidence)
       RETURN
         source.id AS sourceId,
@@ -299,7 +301,7 @@ export async function runCycleDetect(
         r.confidence AS confidence
       LIMIT ${MAX_CYCLE_EDGE_ROWS}
       `,
-      { edgeTypes, minConfidence },
+      { ...edgeTypeFilter.params, minConfidence },
     )) as CycleEdgeRow[];
     const warnings =
       rows.length >= MAX_CYCLE_EDGE_ROWS

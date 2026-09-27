@@ -122,7 +122,7 @@ export async function getFilesWithExports(): Promise<FileWithExports[]> {
     `
     MATCH (f:File)-[:CodeRelation {type: 'DEFINES'}]->(n)
     WHERE n.isExported = true
-    RETURN f.filePath AS filePath, n.name AS name, labels(n)[0] AS type
+    RETURN f.filePath AS filePath, n.name AS name, label(n) AS type
     ORDER BY f.filePath
     LIMIT ${MAX_WIKI_EXPORT_ROWS}
   `,
@@ -292,7 +292,7 @@ export async function getProcessesForFiles(filePaths: string[], limit = 5): Prom
       REPO_ID,
       `
       MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process {id: '${procId.replace(/'/g, "''")}'})
-      RETURN s.name AS name, s.filePath AS filePath, labels(s)[0] AS type, r.step AS step
+      RETURN s.name AS name, s.filePath AS filePath, label(s) AS type, r.step AS step
       ORDER BY r.step
       LIMIT ${MAX_WIKI_PROCESS_STEPS}
     `,
@@ -341,7 +341,7 @@ export async function getAllProcesses(limit = 20): Promise<ProcessInfo[]> {
       REPO_ID,
       `
       MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process {id: '${procId.replace(/'/g, "''")}'})
-      RETURN s.name AS name, s.filePath AS filePath, labels(s)[0] AS type, r.step AS step
+      RETURN s.name AS name, s.filePath AS filePath, label(s) AS type, r.step AS step
       ORDER BY r.step
       LIMIT ${MAX_WIKI_PROCESS_STEPS}
     `,

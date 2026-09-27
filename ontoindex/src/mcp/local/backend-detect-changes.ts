@@ -233,7 +233,7 @@ export async function detectChanges(
       MATCH (n) WHERE n.filePath ENDS WITH $filePath
         AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
         AND (${overlapConditions})
-      RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
+      RETURN n.id AS id, n.name AS name, label(n) AS type,
              n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
       LIMIT ${Math.max(1, MAX_CHANGED_SYMBOLS - changedSymbols.length)}
     `;

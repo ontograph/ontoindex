@@ -1,6 +1,7 @@
 import type { GraphNode, GraphRelationship } from 'ontoindex-shared';
 import { NODE_TABLES } from 'ontoindex-shared';
 import type { LbugProjectionRow } from '../lbug/lbug-adapter.js';
+import { relationTypePredicate } from '../lbug/relation-type-predicate.js';
 
 export const SUMMARY_NODE_TABLES = ['Folder', 'File', 'Community', 'Process', 'Module'] as const;
 export const SUMMARY_REL_TYPES = ['CONTAINS', 'IMPORTS'] as const;
@@ -132,7 +133,7 @@ export function mapExportableGraphRelationshipRow(row: GraphRelationshipRow): Gr
 export function getExportableGraphRelationshipQuery(summary: boolean): string {
   if (!summary) return GRAPH_RELATIONSHIP_QUERY;
   const summaryLabelList = SUMMARY_NODE_TABLES.map((t) => `'${t}'`).join(', ');
-  return `MATCH (a)-[r:CodeRelation]->(b) WHERE r.type IN [${SUMMARY_REL_TYPES.map((t) => `'${t}'`).join(', ')}] AND a.label IN [${summaryLabelList}] AND b.label IN [${summaryLabelList}] RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`;
+  return `MATCH (a)-[r:CodeRelation]->(b) WHERE ${relationTypePredicate('r', SUMMARY_REL_TYPES)} AND a.label IN [${summaryLabelList}] AND b.label IN [${summaryLabelList}] RETURN a.id AS sourceId, b.id AS targetId, r.type AS type, r.confidence AS confidence, r.reason AS reason, r.step AS step`;
 }
 
 function rowCountValue(row: GraphCountRow | undefined): number {
@@ -191,7 +192,7 @@ export async function estimateExportableGraphRecordCount(
   }
 
   const relQuery = summary
-    ? `MATCH (a)-[r:CodeRelation]->(b) WHERE r.type IN [${SUMMARY_REL_TYPES.map((t) => `'${t}'`).join(', ')}] AND a.label IN [${SUMMARY_NODE_TABLES.map((t) => `'${t}'`).join(', ')}] AND b.label IN [${SUMMARY_NODE_TABLES.map((t) => `'${t}'`).join(', ')}] RETURN count(r) AS count`
+    ? `MATCH (a)-[r:CodeRelation]->(b) WHERE ${relationTypePredicate('r', SUMMARY_REL_TYPES)} AND a.label IN [${SUMMARY_NODE_TABLES.map((t) => `'${t}'`).join(', ')}] AND b.label IN [${SUMMARY_NODE_TABLES.map((t) => `'${t}'`).join(', ')}] RETURN count(r) AS count`
     : `MATCH ()-[r:CodeRelation]->() RETURN count(r) AS count`;
   const relRows = await runQuery<GraphCountRow>(relQuery);
   total += rowCountValue(relRows[0]);

@@ -18,6 +18,7 @@
  * at depth=4 with a different edge-type set.
  */
 import { executeParameterized } from '../lbug/pool-adapter.js';
+import { relationTypeParamPredicate } from '../lbug/relation-type-predicate.js';
 import type { EnrichedSymbolRow } from './symbol-merge.js';
 
 export type GraphEdgeType = 'CALLS' | 'IMPORTS' | 'REFERENCES';
@@ -198,6 +199,7 @@ export async function graphTraversalRankWithDiagnostics(
   let queriesUsed = 0;
 
   let frontier: string[] = seedIds;
+  const edgeTypeFilter = relationTypeParamPredicate('r', edgeTypes, 'edgeType');
 
   for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
     const nextFrontier: string[] = [];
@@ -227,11 +229,11 @@ export async function graphTraversalRankWithDiagnostics(
         rows = await executeParameterized(
           repoId,
           `MATCH (n {id: $nodeId})-[r:CodeRelation]->(m)
-           WHERE r.type IN $edgeTypes
+           WHERE ${edgeTypeFilter.predicate}
            RETURN m.id AS toId, m.name AS name, m.type AS nodeType,
                   m.filePath AS filePath, m.startLine AS startLine, r.type AS edgeType
            LIMIT 50`,
-          { nodeId, edgeTypes },
+          { nodeId, ...edgeTypeFilter.params },
         );
         queriesUsed++;
       } catch {

@@ -612,7 +612,7 @@ async function loadSymbolNodesByIds(
     `
       MATCH (n)
       WHERE n.id IN $nodeIds
-      RETURN n.id AS nodeId, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+      RETURN n.id AS nodeId, n.name AS name, label(n) AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
     `,
     { nodeIds: [...nodeIds] },
   );
@@ -1289,7 +1289,7 @@ async function exactSymbolLookup(
     `
       MATCH (n)
       WHERE n.id = $symbolQuery OR n.name = $symbolQuery
-      RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+      RETURN n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
       LIMIT ${Math.max(1, Math.min(limit, 20))}
     `,
     { symbolQuery },
@@ -1310,7 +1310,7 @@ async function exactFileLookup(
     `
       MATCH (n:File)
       WHERE n.filePath = $fileQuery OR n.name = $fileName OR n.filePath ENDS WITH $suffix
-      RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine,
+      RETURN n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine,
              CASE
                WHEN n.filePath = $fileQuery THEN 0
                WHEN n.name = $fileName THEN 1
@@ -2000,7 +2000,7 @@ export async function query(
         repo.id,
         `
         MATCH (m)-[r:CodeRelation]->(n {id: $nodeId})
-        WHERE r.type IN ['CALLS', 'IMPORTS']
+        WHERE (r.type = 'CALLS' OR r.type = 'IMPORTS')
         RETURN m.name AS caller, r.type AS type, m.filePath AS callerPath
         LIMIT 1
       `,

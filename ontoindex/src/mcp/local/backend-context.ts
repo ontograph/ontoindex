@@ -119,8 +119,8 @@ async function expandClassLikeIncomingRefs(
         MATCH (n)-[hm:CodeRelation]->(ctor:Constructor)
         WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
         MATCH (caller)-[r:CodeRelation]->(ctor)
-        WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'ACCESSES']
-        RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+        WHERE (r.type = 'CALLS' OR r.type = 'IMPORTS' OR r.type = 'EXTENDS' OR r.type = 'IMPLEMENTS' OR r.type = 'ACCESSES')
+        RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, label(caller) AS kind
         LIMIT 30
       `,
         { symId },
@@ -131,8 +131,8 @@ async function expandClassLikeIncomingRefs(
         MATCH (f:File)-[rel:CodeRelation]->(n)
         WHERE n.id = $symId AND rel.type = 'DEFINES'
         MATCH (caller)-[r:CodeRelation]->(f)
-        WHERE r.type IN ['CALLS', 'IMPORTS']
-        RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+        WHERE (r.type = 'CALLS' OR r.type = 'IMPORTS')
+        RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, label(caller) AS kind
         LIMIT 30
       `,
         { symId },
@@ -249,8 +249,8 @@ export async function context(
     repo.id,
     `
     MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
-    WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
-    RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+    WHERE (r.type = 'CALLS' OR r.type = 'IMPORTS' OR r.type = 'EXTENDS' OR r.type = 'IMPLEMENTS' OR r.type = 'HAS_METHOD' OR r.type = 'HAS_PROPERTY' OR r.type = 'METHOD_OVERRIDES' OR r.type = 'OVERRIDES' OR r.type = 'METHOD_IMPLEMENTS' OR r.type = 'ACCESSES')
+    RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, label(caller) AS kind
     LIMIT 30
   `,
     { symId },
@@ -269,8 +269,8 @@ export async function context(
     repo.id,
     `
     MATCH (n {id: $symId})-[r:CodeRelation]->(target)
-    WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
-    RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
+    WHERE (r.type = 'CALLS' OR r.type = 'IMPORTS' OR r.type = 'EXTENDS' OR r.type = 'IMPLEMENTS' OR r.type = 'HAS_METHOD' OR r.type = 'HAS_PROPERTY' OR r.type = 'METHOD_OVERRIDES' OR r.type = 'OVERRIDES' OR r.type = 'METHOD_IMPLEMENTS' OR r.type = 'ACCESSES')
+    RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, label(target) AS kind
     LIMIT 30
   `,
     { symId },

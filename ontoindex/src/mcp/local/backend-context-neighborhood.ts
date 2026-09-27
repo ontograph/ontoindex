@@ -219,9 +219,9 @@ async function graphNeighborhood(
       WHERE seed.id = $seed OR seed.name = $seed
       UNWIND relationships(path) AS rel
       WITH DISTINCT startNode(rel) AS source, endNode(rel) AS target, rel
-      RETURN source.id AS sourceId, source.name AS sourceName, labels(source)[0] AS sourceKind,
+      RETURN source.id AS sourceId, source.name AS sourceName, label(source) AS sourceKind,
              source.filePath AS sourceFilePath, target.id AS targetId, target.name AS targetName,
-             labels(target)[0] AS targetKind, target.filePath AS targetFilePath, rel.type AS type
+             label(target) AS targetKind, target.filePath AS targetFilePath, rel.type AS type
       LIMIT $limit
       `,
       { seed, limit },

@@ -170,7 +170,7 @@ async function resolveRepomapFocusRows(repo: RepoHandle, item: string): Promise<
     `
     MATCH (n)
     WHERE n.filePath = $item
-    RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath,
+    RETURN n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath,
            n.startLine AS startLine, n.endLine AS endLine, n.content AS content, n.description AS description
     LIMIT ${FILE_FOCUS_FETCH_LIMIT}
   `,
@@ -188,7 +188,7 @@ async function resolveRepomapFocusRows(repo: RepoHandle, item: string): Promise<
     `
     MATCH (n)
     WHERE n.id = $item OR n.name = $item
-    RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath,
+    RETURN n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath,
            n.startLine AS startLine, n.endLine AS endLine, n.content AS content, n.description AS description
     LIMIT ${SYMBOL_FOCUS_FETCH_LIMIT}
   `,
@@ -301,7 +301,7 @@ export async function runRepomap(repo: RepoHandle, params: RepomapParams): Promi
     repo.id,
     `
     MATCH (s)-[r:CodeRelation]->(t)
-    WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS']
+    WHERE (r.type = 'CALLS' OR r.type = 'IMPORTS' OR r.type = 'EXTENDS' OR r.type = 'IMPLEMENTS')
       AND (s.id IN $seedIds OR t.id IN $seedIds)
     RETURN s.id AS sourceId, t.id AS targetId, r.type AS type
     LIMIT 2000
@@ -326,7 +326,7 @@ export async function runRepomap(repo: RepoHandle, params: RepomapParams): Promi
     `
     MATCH (n)
     WHERE n.id IN $nodeIds
-    RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath,
+    RETURN n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath,
            n.startLine AS startLine, n.endLine AS endLine, n.content AS content, n.description AS description
   `,
     { nodeIds: rankedNodeIds.slice(0, META_FETCH_LIMIT) },

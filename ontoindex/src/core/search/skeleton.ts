@@ -28,9 +28,9 @@ export async function getFileSkeleton(
     const query = `
       MATCH (n)
       WHERE n.filePath = $filePath 
-        AND labels(n)[0] IN ['Function', 'Method', 'Class', 'Interface']
+        AND label(n) IN ['Function', 'Method', 'Class', 'Interface']
         AND (n.isExported = true OR n.isExported IS NULL)
-      RETURN n.name AS name, labels(n)[0] AS type, n.startLine AS startLine, n.endLine AS endLine
+      RETURN n.name AS name, label(n) AS type, n.startLine AS startLine, n.endLine AS endLine
       ORDER BY n.startLine ASC
     `;
 

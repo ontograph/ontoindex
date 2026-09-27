@@ -3,6 +3,7 @@ import path from 'path';
 import { minimatch } from 'minimatch';
 import { normalizeLimit } from './tool-utils.js';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { relationTypeParamPredicate } from '../../core/lbug/relation-type-predicate.js';
 import { AnalysisResult, DiagnosticFinding } from 'ontoindex-shared';
 
 type RepoHandle = { readonly id: string; readonly name: string; readonly repoPath: string };
@@ -146,11 +147,12 @@ export async function runBoundaryViolations(
   try {
     const rules = await loadRules(repo, params);
     const edgeTypes = Array.from(new Set(rules.flatMap((rule) => rule.forbidden_edge_types)));
+    const edgeTypeFilter = relationTypeParamPredicate('r', edgeTypes, 'edgeType');
     const rows = (await executeParameterized(
       repo.id,
       `
       MATCH (src)-[r:CodeRelation]->(dst)
-      WHERE r.type IN $edgeTypes AND src.filePath IS NOT NULL AND dst.filePath IS NOT NULL
+      WHERE ${edgeTypeFilter.predicate} AND src.filePath IS NOT NULL AND dst.filePath IS NOT NULL
       RETURN
         src.id AS sourceId,
         src.name AS sourceName,
@@ -160,7 +162,7 @@ export async function runBoundaryViolations(
         dst.filePath AS targetFilePath,
         r.type AS edgeType
       `,
-      { edgeTypes },
+      edgeTypeFilter.params,
     )) as BoundaryEdgeRow[];
 
     const matchedViolations: BoundaryEdgeRow[] = [];

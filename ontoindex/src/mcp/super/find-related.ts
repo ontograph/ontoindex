@@ -128,7 +128,7 @@ async function resolveSymbol(
       const rows: QueryRow[] = await executeParameterized(
         repoId,
         `MATCH (s) WHERE s.id = $id
-         RETURN s.id AS nodeId, s.name AS name, s.filePath AS filePath, labels(s)[0] AS kind
+         RETURN s.id AS nodeId, s.name AS name, s.filePath AS filePath, label(s) AS kind
          LIMIT 1`,
         { id: symbol },
       );
@@ -151,7 +151,7 @@ async function resolveSymbol(
       repoId,
       `MATCH (s) WHERE s.name = $name
        OPTIONAL MATCH (caller)-[r:CodeRelation]->(s) WHERE r.type = 'CALLS'
-       RETURN s.id AS nodeId, s.name AS name, s.filePath AS filePath, labels(s)[0] AS kind,
+       RETURN s.id AS nodeId, s.name AS name, s.filePath AS filePath, label(s) AS kind,
               COUNT(caller) AS callerCount
        ORDER BY callerCount DESC
        LIMIT 5`,
@@ -189,7 +189,7 @@ async function fetchCloseMatches(
            toLower(s.id) CONTAINS $needle OR
            toLower(s.id) ENDS WITH $needle
          )
-       RETURN s.id AS nodeId, s.name AS name, s.filePath AS filePath, labels(s)[0] AS kind
+       RETURN s.id AS nodeId, s.name AS name, s.filePath AS filePath, label(s) AS kind
        ORDER BY
          CASE
            WHEN toLower(s.id) = $needle THEN 0
@@ -236,7 +236,7 @@ async function fetchCallers(
     const rows: QueryRow[] = await executeParameterized(
       repoId,
       `MATCH (caller)-[r:CodeRelation]->(target {id: $id})
-       WHERE r.type IN ['CALLS', 'REFERENCES']
+       WHERE (r.type = 'CALLS' OR r.type = 'REFERENCES')
        RETURN caller.id AS nodeId, caller.name AS name, caller.filePath AS filePath, r.type AS relKind
        LIMIT $max`,
       { id: nodeId, max },
@@ -261,7 +261,7 @@ async function fetchCallees(
     const rows: QueryRow[] = await executeParameterized(
       repoId,
       `MATCH (target {id: $id})-[r:CodeRelation]->(callee)
-       WHERE r.type IN ['CALLS', 'REFERENCES', 'IMPORTS']
+       WHERE (r.type = 'CALLS' OR r.type = 'REFERENCES' OR r.type = 'IMPORTS')
        RETURN callee.id AS nodeId, callee.name AS name, callee.filePath AS filePath, r.type AS relKind
        LIMIT $max`,
       { id: nodeId, max },

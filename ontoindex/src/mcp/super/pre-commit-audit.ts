@@ -711,7 +711,7 @@ export async function gnPreCommitAudit(
         const upRows = (await executeParameterized(
           repoId,
           `MATCH (caller)-[r:CodeRelation]->(target {id: $id})
-           WHERE r.type IN ['CALLS', 'REFERENCES']
+           WHERE (r.type = 'CALLS' OR r.type = 'REFERENCES')
            RETURN count(*) AS count`,
           { id: symbolId },
         )) as CountRow[];
@@ -731,7 +731,7 @@ export async function gnPreCommitAudit(
         const downRows = (await executeParameterized(
           repoId,
           `MATCH (target {id: $id})-[r:CodeRelation]->(callee)
-           WHERE r.type IN ['CALLS', 'REFERENCES', 'IMPORTS']
+           WHERE (r.type = 'CALLS' OR r.type = 'REFERENCES' OR r.type = 'IMPORTS')
            RETURN count(*) AS count`,
           { id: symbolId },
         )) as CountRow[];

@@ -244,11 +244,12 @@ describe('Test 5 — edge type filter', () => {
     expect(ids).toContain('nImported');
     expect(ids).not.toContain('nCalled');
 
-    // Verify the edgeTypes param was passed correctly to the DB call.
+    // Edge types are bound as equality parameters, never `r.type IN $list`
+    // (LadybugDB returns wrong rows for IN; see relation-type-predicate.ts).
     expect(mockExecuteParameterized).toHaveBeenCalledWith(
       'repo1',
-      expect.stringContaining('edgeTypes'),
-      expect.objectContaining({ edgeTypes: ['IMPORTS'] }),
+      expect.stringContaining('r.type = $edgeType0'),
+      expect.objectContaining({ edgeType0: 'IMPORTS' }),
     );
   });
 });

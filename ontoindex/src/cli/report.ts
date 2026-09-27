@@ -376,8 +376,8 @@ export async function buildHubReport(repoId: string, topN: number): Promise<HubR
       `MATCH (s)
        WHERE s.id IS NOT NULL AND s.name IS NOT NULL
          AND NOT s:File AND NOT s:Process AND NOT s:Community
-       OPTIONAL MATCH (s)-[out:CodeRelation]->(x) WHERE out.type IN ['CALLS', 'REFERENCES']
-       OPTIONAL MATCH (caller)-[inc:CodeRelation]->(s) WHERE inc.type IN ['CALLS', 'REFERENCES']
+       OPTIONAL MATCH (s)-[out:CodeRelation]->(x) WHERE (out.type = 'CALLS' OR out.type = 'REFERENCES')
+       OPTIONAL MATCH (caller)-[inc:CodeRelation]->(s) WHERE (inc.type = 'CALLS' OR inc.type = 'REFERENCES')
        WITH s, count(DISTINCT out) + count(DISTINCT inc) AS degree
        WHERE degree > 0
        RETURN s.id AS id, s.name AS name, s.type AS stype,
@@ -483,7 +483,7 @@ export async function buildSurprisingConnectionsReport(
     edgeRows = (await executeParameterized(
       repoId,
       `MATCH (src)-[r:CodeRelation]->(tgt)
-       WHERE r.type IN ['CALLS', 'REFERENCES', 'IMPORTS']
+       WHERE (r.type = 'CALLS' OR r.type = 'REFERENCES' OR r.type = 'IMPORTS')
          AND src.id IS NOT NULL AND tgt.id IS NOT NULL
          AND src.name IS NOT NULL AND tgt.name IS NOT NULL
          AND NOT src:File AND NOT tgt:File
@@ -514,7 +514,7 @@ export async function buildSurprisingConnectionsReport(
       edgeRows = (await executeParameterized(
         repoId,
         `MATCH (src)-[r:CodeRelation]->(tgt)
-         WHERE r.type IN ['CALLS', 'REFERENCES', 'IMPORTS']
+         WHERE (r.type = 'CALLS' OR r.type = 'REFERENCES' OR r.type = 'IMPORTS')
            AND src.id IS NOT NULL AND tgt.id IS NOT NULL
            AND src.name IS NOT NULL AND tgt.name IS NOT NULL
            AND NOT src:File AND NOT tgt:File
