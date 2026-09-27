@@ -94,6 +94,41 @@ describe('analyze with a frozen source snapshot', () => {
         { onProgress: () => {} },
         { analyzeRuntime: editingRuntime() },
       ),
-    ).rejects.toThrow('Source inputs changed during analysis');
+    ).rejects.toThrow(/Source inputs changed during analysis.*ONTOINDEX_ANALYZE_SNAPSHOT=always/);
+  });
+
+  it('snapshots an interactive auto run on a dirty worktree and publishes despite edits', async () => {
+    delete process.env.ONTOINDEX_ANALYZE_SNAPSHOT;
+    // Another session already has uncommitted work in the checkout.
+    await fs.writeFile(path.join(repo, 'src', 'wip.ts'), 'export const wip = 1;\n');
+    const logs: string[] = [];
+
+    await runFullAnalysis(
+      repo,
+      { skipAgentsMd: true, noStats: true },
+      { onProgress: () => {}, onLog: (line: string) => logs.push(line) },
+      { analyzeRuntime: editingRuntime() },
+    );
+
+    expect(logs.join('\n')).toMatch(/Frozen 3 source files/);
+    const meta = await loadMeta(path.join(repo, '.ontoindex'));
+    expect(meta?.sourceManifest?.sourceEntryCount).toBe(3);
+  });
+
+  it('keeps analyzing the live tree for an interactive auto run on a clean worktree', async () => {
+    delete process.env.ONTOINDEX_ANALYZE_SNAPSHOT;
+    const logs: string[] = [];
+
+    await runFullAnalysis(
+      repo,
+      { skipAgentsMd: true, noStats: true },
+      { onProgress: () => {}, onLog: (line: string) => logs.push(line) },
+    );
+
+    expect(logs.join('\n')).not.toMatch(/Frozen \d+ source files/);
+    const snapshots = await fs
+      .readdir(path.join(repo, '.ontoindex', 'source-snapshots'))
+      .catch(() => []);
+    expect(snapshots).toEqual([]);
   });
 });

@@ -11,6 +11,7 @@ import {
   createSourceSnapshot,
   reapStaleSourceSnapshots,
   resolveSourceSnapshotMode,
+  shouldSnapshotSources,
   SOURCE_SNAPSHOTS_DIR,
   SourceSnapshotUnavailableError,
 } from '../../src/core/indexing/source-snapshot.js';
@@ -144,5 +145,35 @@ describe('resolveSourceSnapshotMode', () => {
     expect(resolveSourceSnapshotMode('0')).toBe('never');
     expect(resolveSourceSnapshotMode('never')).toBe('never');
     expect(resolveSourceSnapshotMode('auto')).toBe('auto');
+  });
+});
+
+describe('shouldSnapshotSources', () => {
+  const base = { hasCommit: true, managed: false } as const;
+
+  it('snapshots interactive auto runs only on a dirty worktree', () => {
+    expect(shouldSnapshotSources({ ...base, mode: 'auto', worktreeDirty: true })).toBe(true);
+    expect(shouldSnapshotSources({ ...base, mode: 'auto', worktreeDirty: false })).toBe(false);
+    // git status failed or timed out: keep the live-tree default.
+    expect(shouldSnapshotSources({ ...base, mode: 'auto' })).toBe(false);
+  });
+
+  it('keeps managed, always, and never behavior', () => {
+    expect(shouldSnapshotSources({ ...base, mode: 'auto', managed: true })).toBe(true);
+    expect(shouldSnapshotSources({ ...base, mode: 'always', worktreeDirty: false })).toBe(true);
+    expect(
+      shouldSnapshotSources({ ...base, mode: 'never', managed: true, worktreeDirty: true }),
+    ).toBe(false);
+  });
+
+  it('never snapshots without a Git HEAD', () => {
+    expect(
+      shouldSnapshotSources({
+        mode: 'always',
+        hasCommit: false,
+        managed: true,
+        worktreeDirty: true,
+      }),
+    ).toBe(false);
   });
 });

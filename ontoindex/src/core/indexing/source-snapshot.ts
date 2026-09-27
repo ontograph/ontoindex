@@ -39,7 +39,7 @@ export type SourceSnapshotMode = 'auto' | 'always' | 'never';
 /**
  * `ONTOINDEX_ANALYZE_SNAPSHOT`: `1`/`always` snapshots every analysis,
  * `0`/`never` disables snapshots, anything else (`auto`) snapshots managed
- * analysis jobs only.
+ * analysis jobs and interactive runs on a dirty Git worktree.
  */
 export function resolveSourceSnapshotMode(
   raw = process.env.ONTOINDEX_ANALYZE_SNAPSHOT,
@@ -48,6 +48,31 @@ export function resolveSourceSnapshotMode(
   if (value === '1' || value === 'true' || value === 'always') return 'always';
   if (value === '0' || value === 'false' || value === 'never') return 'never';
   return 'auto';
+}
+
+export interface SourceSnapshotDecisionInput {
+  mode: SourceSnapshotMode;
+  /** A readable Git HEAD exists; snapshots are labeled with it. */
+  hasCommit: boolean;
+  managed: boolean;
+  /**
+   * Interactive `auto` runs only: whether the worktree has uncommitted or
+   * untracked changes. `undefined` means the probe was skipped or failed.
+   */
+  worktreeDirty?: boolean;
+}
+
+/**
+ * Whether to analyze a frozen snapshot. In `auto` mode, managed jobs always
+ * snapshot; interactive runs snapshot when the worktree is dirty, because
+ * that is when concurrent edits (another session, an editor) can change the
+ * sources under analysis and abort publication. A clean interactive run keeps
+ * analyzing the live tree to avoid the copy.
+ */
+export function shouldSnapshotSources(input: SourceSnapshotDecisionInput): boolean {
+  if (!input.hasCommit || input.mode === 'never') return false;
+  if (input.mode === 'always' || input.managed) return true;
+  return input.worktreeDirty === true;
 }
 
 function maxSnapshotBytes(): number {

@@ -82,6 +82,7 @@ import {
 import {
   createSourceSnapshot,
   resolveSourceSnapshotMode,
+  shouldSnapshotSources,
   SourceSnapshotUnavailableError,
   type SourceSnapshot,
 } from './indexing/source-snapshot.js';
@@ -200,6 +201,27 @@ function embeddingNodeLimit(): number {
 }
 const MANAGED_GIT_STATUS_TIMEOUT_MS = 5_000;
 const MANAGED_GIT_STATUS_MAX_BUFFER = 1024 * 1024;
+
+/**
+ * Whether the Git worktree has uncommitted or untracked changes. Returns
+ * undefined when git status fails or times out, so callers keep their default.
+ */
+async function isGitWorktreeDirty(repoPath: string): Promise<boolean | undefined> {
+  try {
+    const status = await execFileText(
+      'git',
+      ['status', '--porcelain=v1', '--untracked-files=all', '--', '.', ':(exclude).ontoindex'],
+      {
+        cwd: repoPath,
+        timeoutMs: MANAGED_GIT_STATUS_TIMEOUT_MS,
+        maxBuffer: MANAGED_GIT_STATUS_MAX_BUFFER,
+      },
+    );
+    return status.trim().length > 0;
+  } catch {
+    return undefined;
+  }
+}
 
 async function verifyManagedAnalysisSource(
   repoPath: string,
@@ -938,6 +960,13 @@ async function runFullAnalysisWithSnapshot(
       throw error;
     }
   }
+  const snapshotMode = resolveSourceSnapshotMode();
+  // Probe before this run writes .gitignore or .ontoindex/, so its own
+  // bookkeeping does not make a clean checkout look dirty.
+  const worktreeDirty =
+    snapshotMode === 'auto' && !options.managedAnalysis && currentCommit !== ''
+      ? await isGitWorktreeDirty(repoPath)
+      : undefined;
   if (repoHasGit && !options.managedAnalysis) {
     await addToGitignore(repoPath);
   }
@@ -947,10 +976,12 @@ async function runFullAnalysisWithSnapshot(
     includePaths,
     pipelineProfile: requestedProfile,
   });
-  const snapshotMode = resolveSourceSnapshotMode();
-  const snapshotRequested =
-    currentCommit !== '' &&
-    (snapshotMode === 'always' || (snapshotMode === 'auto' && !!options.managedAnalysis));
+  const snapshotRequested = shouldSnapshotSources({
+    mode: snapshotMode,
+    hasCommit: currentCommit !== '',
+    managed: !!options.managedAnalysis,
+    worktreeDirty,
+  });
   // Working-tree jobs that will analyze a frozen snapshot may be rebound to the
   // snapshot's exact bytes below; commit jobs and live-tree runs must match.
   const rebindableWorktreeJob =
@@ -1590,7 +1621,10 @@ async function runFullAnalysisWithSnapshot(
     const finalManifestDigest = sourceManifestDigest(finalManifest);
     if (!sourceInputsMatch(inputManifest, finalManifest)) {
       throw new Error(
-        'Source inputs changed during analysis; refusing to publish graph generation.',
+        'Source inputs changed during analysis; refusing to publish graph generation.' +
+          (analysisRoot === repoPath
+            ? ' Another process edited the working tree. Re-run with ONTOINDEX_ANALYZE_SNAPSHOT=always to analyze a frozen copy of the sources.'
+            : ''),
       );
     }
     if (
