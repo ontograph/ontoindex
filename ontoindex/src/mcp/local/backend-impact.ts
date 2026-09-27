@@ -720,7 +720,7 @@ export async function runImpactBFS(
   const processCount = affectedProcesses.length;
   const moduleCount = affectedModules.length;
   let risk: ImpactSuccessResult['risk'] = 'LOW';
-  if (kernel.traversalFailed) {
+  if (kernel.traversalFailed || kernel.unknownReason) {
     risk = 'UNKNOWN';
   } else if (directCount >= 30 || processCount >= 5 || moduleCount >= 5 || impacted.length >= 200) {
     risk = 'CRITICAL';

@@ -61,6 +61,21 @@ export interface ImpactKernelRawCounts {
   byDepth: Record<number, number>;
   seedUids: string[];
   riskReasons: string[];
+  /** How a container target (class, struct, impl, ...) was expanded into seeds. */
+  seedExpansion?: ImpactKernelSeedExpansion;
+}
+
+export interface ImpactKernelSeedExpansion {
+  /** Target kind used for expansion: the graph label, or the id prefix when the label is empty. */
+  kind: string;
+  /** Container nodes whose HAS_METHOD members were read (target plus related impl/type nodes). */
+  ownerUids: string[];
+  /** HAS_METHOD members found on the owners (bounded by the member query limit). */
+  ownedMethods: number;
+  /** Members added as traversal seeds. */
+  seededMembers: number;
+  /** Members that exist but were not traversed (not seeded by kind, or over the seed cap). */
+  unseededMembers: number;
 }
 
 export interface ImpactKernelResult {
@@ -70,6 +85,12 @@ export interface ImpactKernelResult {
   partial: boolean;
   /** A depth query errored, so impacted nodes beyond that depth were never read. */
   traversalFailed: boolean;
+  /**
+   * Set when the traversal found nothing but the target owns method members
+   * that were never traversed, so 0 impacted nodes does not show the edit is
+   * safe. Callers should report risk UNKNOWN.
+   */
+  unknownReason?: string;
   warnings: string[];
 }
 
@@ -164,6 +185,13 @@ export const MAX_IMPACT_DEPTH = 32;
 export const MAX_IMPACT_FRONTIER_IDS = 500;
 export const MAX_IMPACT_RESULTS_PER_DEPTH = 1000;
 export const MENTIONS_MIN_CONFIDENCE = 0.5;
+/** Upper bound on HAS_METHOD members added as seeds for one container target. */
+export const MAX_CONTAINER_MEMBER_SEEDS = 200;
+const CONTAINER_MEMBER_QUERY_LIMIT = 1000;
+const CLASS_KINDS = new Set(['Class', 'Interface']);
+/** Kinds whose callers attach to member methods (Rust impl blocks, C++/Rust structs, traits). */
+const MEMBER_SEEDED_KINDS = new Set(['Struct', 'Enum', 'Trait', 'Impl', 'Union']);
+const KNOWN_ID_PREFIX_KINDS = new Set([...CLASS_KINDS, ...MEMBER_SEEDED_KINDS]);
 
 export function confidenceForRelType(relType: string | undefined): number {
   return IMPACT_RELATION_CONFIDENCE[relType ?? ''] ?? 0.5;
@@ -248,53 +276,168 @@ function buildRiskReasons(total: number, direct: number, partial: boolean): stri
   return reasons;
 }
 
-async function expandClassSeeds(
+/** Target kind from its label, or from the `Kind:` id prefix when the label is empty. */
+export function resolveImpactTargetKind(symType: string, symId: string): string {
+  if (symType) return symType;
+  const prefix = symId.slice(0, Math.max(0, symId.indexOf(':')));
+  return KNOWN_ID_PREFIX_KINDS.has(prefix) ? prefix : '';
+}
+
+function idSuffixName(symId: string): string {
+  return symId.slice(symId.lastIndexOf(':') + 1);
+}
+
+function idFilePath(symId: string): string {
+  const first = symId.indexOf(':');
+  const last = symId.lastIndexOf(':');
+  return first >= 0 && last > first ? symId.slice(first + 1, last) : '';
+}
+
+interface SeedExpansionOutcome {
+  seedIds: string[];
+  warnings: string[];
+  partial: boolean;
+  expansion?: ImpactKernelSeedExpansion;
+}
+
+/**
+ * Related container ids whose members belong to the same type. Rust stores
+ * inherent methods under `Impl:<file>:<Name>` and trait-impl methods under
+ * `Struct:<file>:<Name>`, with no edge between the two nodes. Same-file ids
+ * are built directly; impl blocks in other files are added only when the type
+ * name is unique in the graph, because name matches across crates are ambiguous.
+ */
+async function relatedContainerOwners(
   repo: ImpactKernelRepoHandle,
   symId: string,
-  symType: string,
+  kind: string,
+  name: string,
+  filePath: string,
+  warnings: string[],
+): Promise<string[]> {
+  if (!name || !filePath) return [];
+  if (kind === 'Impl') return [`Struct:${filePath}:${name}`, `Enum:${filePath}:${name}`];
+  if (kind !== 'Struct' && kind !== 'Enum' && kind !== 'Union') return [];
+
+  const owners = [`Impl:${filePath}:${name}`];
+  const [typeRows, implRows] = await Promise.all([
+    executeParameterized(
+      repo.id,
+      `MATCH (t) WHERE t.name = $name AND (label(t) = 'Struct' OR label(t) = 'Enum' OR label(t) = 'Trait' OR label(t) = 'Union') RETURN t.id AS id LIMIT 50`,
+      { name },
+    ),
+    executeParameterized(
+      repo.id,
+      `MATCH (i:Impl) WHERE i.name = $name RETURN i.id AS id LIMIT 50`,
+      { name },
+    ),
+  ]);
+  const implIds = (implRows as QueryRow[])
+    .map((row) => rowStringOr(row, 'id', 0))
+    .filter((id) => id && !owners.includes(id));
+  if (implIds.length === 0) return owners;
+  if (typeRows.length <= 1) return [...owners, ...implIds];
+  warnings.push(
+    `${implIds.length} impl block(s) named ${name} in other files were not expanded: ${typeRows.length} types share that name (target ${symId})`,
+  );
+  return owners;
+}
+
+async function expandContainerSeeds(
+  repo: ImpactKernelRepoHandle,
+  sym: ImpactKernelSymbol,
+  symId: string,
+  kind: string,
   signal?: AbortSignal,
-): Promise<{ seedIds: string[]; warnings: string[] }> {
+): Promise<SeedExpansionOutcome> {
   const seedIds = [symId];
   const warnings: string[] = [];
-  if (symType !== 'Class' && symType !== 'Interface') return { seedIds, warnings };
+  const isClass = CLASS_KINDS.has(kind);
+  if (!isClass && !MEMBER_SEEDED_KINDS.has(kind)) return { seedIds, warnings, partial: false };
+
+  const name = typeof sym.name === 'string' && sym.name ? sym.name : idSuffixName(symId);
+  const filePath =
+    typeof sym.filePath === 'string' && sym.filePath ? sym.filePath : idFilePath(symId);
+  let partial = false;
 
   try {
     throwIfAborted(signal);
-    const [ctorRows, fileRows] = await Promise.all([
+    const ownerUids = [
+      symId,
+      ...(isClass ? [] : await relatedContainerOwners(repo, symId, kind, name, filePath, warnings)),
+    ];
+    throwIfAborted(signal);
+    const [memberRows, fileRows] = await Promise.all([
       executeParameterized(
         repo.id,
         `
-        MATCH (n)-[hm:CodeRelation]->(c:Constructor)
-        WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
-        RETURN c.id AS id, c.name AS name, label(c) AS type, c.filePath AS filePath
-        LIMIT 100
+        MATCH (n)-[hm:CodeRelation]->(m)
+        WHERE n.id IN $ownerIds AND hm.type = 'HAS_METHOD'
+        RETURN DISTINCT m.id AS id, label(m) AS type
+        LIMIT ${CONTAINER_MEMBER_QUERY_LIMIT}
       `,
-        { symId },
+        { ownerIds: ownerUids },
       ),
-      executeParameterized(
-        repo.id,
-        `
+      isClass
+        ? executeParameterized(
+            repo.id,
+            `
         MATCH (f:File)-[rel:CodeRelation]->(n)
         WHERE n.id = $symId AND rel.type = 'DEFINES'
-        RETURN f.id AS id, f.name AS name, label(f) AS type, f.filePath AS filePath
+        RETURN f.id AS id
         LIMIT 100
       `,
-        { symId },
-      ),
+            { symId },
+          )
+        : Promise.resolve([]),
     ]);
     throwIfAborted(signal);
-    for (const row of [...(ctorRows as ImpactSymbolRow[]), ...(fileRows as ImpactSymbolRow[])]) {
+
+    const members = (memberRows as QueryRow[])
+      .map((row) => ({ id: rowStringOr(row, 'id', 0), type: rowStringOr(row, 'type', 1) }))
+      .filter((m) => m.id && m.id !== symId);
+    // Classes keep their established expansion: constructors plus the defining file.
+    // Other methods of a class are reached through their own callers, not the class node.
+    const eligible = isClass ? members.filter((m) => m.type === 'Constructor') : members;
+    const limit = isClass ? 100 : MAX_CONTAINER_MEMBER_SEEDS;
+    const chosen = eligible.slice(0, limit);
+    if (eligible.length > limit) {
+      partial = true;
+      warnings.push(
+        `Impact seed expansion capped at ${limit} of ${eligible.length} members of ${kind} ${name}`,
+      );
+    }
+    for (const m of chosen) if (!seedIds.includes(m.id)) seedIds.push(m.id);
+    for (const row of fileRows as QueryRow[]) {
       const id = rowStringOr(row, 'id', 0);
       if (id && !seedIds.includes(id)) seedIds.push(id);
     }
+    if (members.length >= CONTAINER_MEMBER_QUERY_LIMIT) {
+      partial = true;
+      warnings.push(
+        `Impact member lookup for ${kind} ${name} stopped at ${CONTAINER_MEMBER_QUERY_LIMIT} members`,
+      );
+    }
+
+    return {
+      seedIds,
+      warnings,
+      partial,
+      expansion: {
+        kind,
+        ownerUids,
+        ownedMethods: members.length,
+        seededMembers: chosen.length,
+        unseededMembers: members.length - chosen.length,
+      },
+    };
   } catch (err) {
     if (isImpactAbortError(err)) throw err;
     warnings.push(
-      `class seed expansion failed: ${err instanceof Error ? err.message : String(err)}`,
+      `${isClass ? 'class' : 'container'} seed expansion failed: ${err instanceof Error ? err.message : String(err)}`,
     );
+    return { seedIds, warnings, partial: true };
   }
-
-  return { seedIds, warnings };
 }
 
 export async function runImpactKernel(
@@ -316,11 +459,13 @@ export async function runImpactKernel(
   let traversalFailed = false;
 
   throwIfAborted(opts.signal);
-  const expansion =
+  const targetKind = resolveImpactTargetKind(symType, symId);
+  const expansion: SeedExpansionOutcome =
     opts.classSeedExpansion === false
-      ? { seedIds: [symId], warnings: [] }
-      : await expandClassSeeds(repo, symId, symType, opts.signal);
+      ? { seedIds: [symId], warnings: [], partial: false }
+      : await expandContainerSeeds(repo, sym, symId, targetKind, opts.signal);
   warnings.push(...expansion.warnings);
+  if (expansion.partial) traversalComplete = false;
 
   const visited = new Set<string>(expansion.seedIds);
   let frontier = [...expansion.seedIds];
@@ -418,6 +563,20 @@ export async function runImpactKernel(
   }
   const direct = countByDepth[1] ?? 0;
   const partial = !traversalComplete;
+  const riskReasons = buildRiskReasons(impacted.length, direct, partial);
+  let unknownReason: string | undefined;
+  if (impacted.length === 0 && !traversalFailed) {
+    const unseeded = expansion.expansion?.unseededMembers ?? 0;
+    if (unseeded > 0) {
+      unknownReason = `container_members_not_traversed:${unseeded}`;
+      warnings.push(
+        `0 impacted nodes, but ${targetKind} ${String(sym.name ?? symId)} owns ${unseeded} method(s) that were not traversed; run impact on those methods before treating this edit as safe`,
+      );
+    } else {
+      riskReasons.push('no_impacted_nodes');
+    }
+  }
+  if (unknownReason) riskReasons.push(unknownReason);
 
   return {
     rawCounts: {
@@ -437,12 +596,14 @@ export async function runImpactKernel(
       direct,
       byDepth: countByDepth,
       seedUids: expansion.seedIds,
-      riskReasons: buildRiskReasons(impacted.length, direct, partial),
+      riskReasons,
+      ...(expansion.expansion ? { seedExpansion: expansion.expansion } : {}),
     },
     impacted,
     byDepth,
     partial,
     traversalFailed,
+    ...(unknownReason ? { unknownReason } : {}),
     warnings,
   };
 }
