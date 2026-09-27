@@ -34,6 +34,8 @@ import {
 } from './shared/tool-registry.js';
 import { realStdoutWrite } from './core/lbug-adapter.js';
 import type { LocalBackend } from './local/local-backend.js';
+import { lastPoolActivity, openPoolCount } from '../core/lbug/pool-adapter.js';
+import { readIdleExitMs, startIdleExitTimer } from './idle-exit.js';
 import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
 import { pageMcpResponse, readResponseCursor } from './shared/response-pages.js';
 
@@ -584,6 +586,7 @@ export async function startMCPServer(
   });
   const transport = new CompatibleStdioServerTransport(process.stdin, _safeStdout);
   await server.connect(transport);
+  const idleExitMs = readIdleExitMs();
 
   // Graceful shutdown helper
   let shuttingDown = false;
@@ -618,6 +621,42 @@ export async function startMCPServer(
       `OntoIndex MCP unhandledRejection: ${formatUnhandledRejectionReason(reason)}\n`,
     );
   });
+
+  if (idleExitMs !== null) {
+    // Count requests at the transport so tool handlers stay untouched.
+    const pendingRequestIds = new Set<string | number>();
+    let lastRequestAt = Date.now();
+    const onMessage = transport.onmessage;
+    transport.onmessage = (message) => {
+      if ('method' in message && 'id' in message) {
+        pendingRequestIds.add(message.id);
+        lastRequestAt = Date.now();
+      }
+      onMessage?.(message);
+    };
+    const send = transport.send.bind(transport);
+    transport.send = async (message, options) => {
+      if (!('method' in message) && 'id' in message) {
+        pendingRequestIds.delete(message.id);
+        lastRequestAt = Date.now();
+      }
+      return send(message, options);
+    };
+    startIdleExitTimer(
+      {
+        lastActivity: () => Math.max(lastRequestAt, lastPoolActivity()),
+        inFlight: () => pendingRequestIds.size,
+        openPools: openPoolCount,
+      },
+      idleExitMs,
+      () => {
+        process.stderr.write(
+          `OntoIndex MCP: idle for ${idleExitMs} ms with no open repository; exiting (ONTOINDEX_MCP_IDLE_EXIT_MS).\n`,
+        );
+        void shutdown(0);
+      },
+    );
+  }
 
   // Handle stdio errors — stdin close means the parent process is gone
   process.stdin.on('end', shutdown);

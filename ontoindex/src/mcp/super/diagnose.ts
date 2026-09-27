@@ -40,6 +40,8 @@ import { createEmptyEvidenceReadClassCounts } from '../../core/runtime/evidence-
 import type { EvidenceReadClass } from '../../core/runtime/evidence-read-ledger.js';
 import { getStoragePaths } from '../../storage/repo-manager.js';
 import { getLbugRuntimeDiagnostics } from '../../core/lbug/lbug-adapter.js';
+import { openPoolCount, readOnlyBufferManagerBytes } from '../../core/lbug/pool-adapter.js';
+import { readIdleExitMs } from '../idle-exit.js';
 
 const WHICH_TIMEOUT_MS = 2_000;
 const WHICH_MAX_BUFFER = 64 * 1024;
@@ -200,8 +202,44 @@ export interface DiagnoseReport {
     };
   };
   envVars: Record<string, string | undefined>;
+  /** Memory held by this server process; see buildProcessMemory. */
+  processMemory?: ProcessMemoryReport;
   recommendations: Array<{ severity: 'INFO' | 'WARN' | 'ERROR'; detail: string; fix: string }>;
   warnings: string[];
+}
+
+export interface ProcessMemoryReport {
+  rssMB: number;
+  heapUsedMB: number;
+  heapTotalMB: number;
+  externalMB: number;
+  /** rss - heapTotal: native allocations (LadybugDB buffer pool, parsers, allocator). */
+  nativeMB: number;
+  /** Repositories with an open LadybugDB connection pool. */
+  openRepositoryPools: number;
+  /** ONTOINDEX_LBUG_BUFFER_POOL_MB in effect; 0 means the LadybugDB default. */
+  bufferPoolMB: number;
+  /** ONTOINDEX_MCP_IDLE_EXIT_MS in effect, or null when idle exit is off. */
+  idleExitMs: number | null;
+}
+
+const MB = 1024 * 1024;
+
+export function buildProcessMemory(
+  usage: NodeJS.MemoryUsage = process.memoryUsage(),
+  env: NodeJS.ProcessEnv = process.env,
+  openPools: number = openPoolCount(),
+): ProcessMemoryReport {
+  return {
+    rssMB: Math.round(usage.rss / MB),
+    heapUsedMB: Math.round(usage.heapUsed / MB),
+    heapTotalMB: Math.round(usage.heapTotal / MB),
+    externalMB: Math.round(usage.external / MB),
+    nativeMB: Math.round(Math.max(0, usage.rss - usage.heapTotal) / MB),
+    openRepositoryPools: openPools,
+    bufferPoolMB: Math.round(readOnlyBufferManagerBytes(env) / MB),
+    idleExitMs: readIdleExitMs(env),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1015,6 +1053,16 @@ export async function gnDiagnose(
     recommendations,
   });
 
+  // ---- 9b. Process memory ---------------------------------------------------
+  const processMemory = buildProcessMemory();
+  if (processMemory.nativeMB >= 400 && processMemory.openRepositoryPools === 0) {
+    recommendations.push({
+      severity: 'INFO',
+      detail: `This MCP server holds ${processMemory.nativeMB} MB of native memory with no open repository pool; LadybugDB does not return it to the OS until the process exits.`,
+      fix: 'Set ONTOINDEX_MCP_IDLE_EXIT_MS=600000 if your MCP client restarts exited stdio servers; otherwise restart the server. ONTOINDEX_LBUG_BUFFER_POOL_MB lowers peak memory only.',
+    });
+  }
+
   // ---- 10. Assemble report --------------------------------------------------
   const report: DiagnoseReport = {
     version: 1,
@@ -1039,6 +1087,7 @@ export async function gnDiagnose(
     degradedContext,
     misconfiguration,
     envVars,
+    processMemory,
     recommendations,
     warnings,
   };

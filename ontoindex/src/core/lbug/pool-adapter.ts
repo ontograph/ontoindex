@@ -210,6 +210,33 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 /** Max connections per repo (caps concurrent queries per repo) */
 const MAX_CONNS_PER_REPO = readBoundedIntEnv('ONTOINDEX_LBUG_POOL_SIZE', 2, 1, 16);
 
+/**
+ * Buffer pool size for read-only MCP opens, from ONTOINDEX_LBUG_BUFFER_POOL_MB.
+ * Unset or 0 keeps the LadybugDB default. A bounded pool lowers peak RSS
+ * (codex graph, impact + semantic search + gn_explore: 852 MB default vs
+ * 553 MB at 64) but not the memory kept after the pool closes (503 vs 533 MB),
+ * and it made semantic search about 2x slower. Only an exit returns that
+ * memory; see ONTOINDEX_MCP_IDLE_EXIT_MS.
+ */
+export function readOnlyBufferManagerBytes(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.ONTOINDEX_LBUG_BUFFER_POOL_MB;
+  if (!raw) return 0;
+  const mb = Number.parseInt(raw, 10);
+  if (!Number.isFinite(mb) || mb <= 0) return 0;
+  return Math.max(16, Math.min(mb, 65_536)) * 1024 * 1024;
+}
+
+/** Number of repositories with an open connection pool. */
+export function openPoolCount(): number {
+  return pool.size;
+}
+
+/** Epoch ms of the most recent query checkout across all pools, or 0 if none yet. */
+let lastPoolActivityAt = 0;
+export function lastPoolActivity(): number {
+  return lastPoolActivityAt;
+}
+
 let idleTimer: ReturnType<typeof setInterval> | null = null;
 
 type PreparedStmt = Awaited<ReturnType<lbug.Connection['prepare']>>;
@@ -668,7 +695,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
       try {
         const db = new lbug.Database(
           dbPath,
-          0, // bufferManagerSize (default)
+          readOnlyBufferManagerBytes(),
           false, // enableCompression (default)
           true, // readOnly
         );
@@ -704,7 +731,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
         const RecoveryDatabase = lbug.Database as unknown as RecoveryDatabaseConstructor;
         const db = new RecoveryDatabase(
           dbPath,
-          0, // bufferManagerSize
+          readOnlyBufferManagerBytes(),
           false, // enableCompression
           true, // readOnly
           0, // maxDBSize
@@ -1068,6 +1095,7 @@ async function resolveEntry(repoId: string): Promise<PoolEntry> {
  * the caller is queued, retry once against the replacement entry.
  */
 async function checkoutLive(repoId: string): Promise<{ entry: PoolEntry; conn: lbug.Connection }> {
+  lastPoolActivityAt = Date.now();
   let entry = await resolveEntry(repoId);
   try {
     return { entry, conn: await checkout(entry) };
