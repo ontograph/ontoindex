@@ -46,6 +46,57 @@ export const getDefinitionNodeFromCaptures = (
   return null;
 };
 
+/** Capture keys for plain value declarations that other definition patterns can overlap. */
+const VARIABLE_DEFINITION_CAPTURE_KEYS = [
+  'definition.const',
+  'definition.static',
+  'definition.variable',
+] as const;
+
+const isVariableOnlyCapture = (captureNames: readonly string[]): boolean =>
+  captureNames.some((name) =>
+    (VARIABLE_DEFINITION_CAPTURE_KEYS as readonly string[]).includes(name),
+  ) &&
+  !captureNames.some(
+    (name) =>
+      name.startsWith('definition.') &&
+      !(VARIABLE_DEFINITION_CAPTURE_KEYS as readonly string[]).includes(name),
+  );
+
+/**
+ * Start offsets of name identifiers captured by a non-variable definition
+ * pattern (function, class, …) in `matches`.
+ *
+ * `export const f = () => …` matches both a `@definition.function` and a
+ * `@definition.const` pattern, and each has an `export_statement` and a bare
+ * `lexical_declaration` variant, so the definition nodes differ while the
+ * `@name` identifier is shared. Keying on the name node lets callers drop the
+ * redundant Const/Static/Variable symbol regardless of match order.
+ */
+export const collectNonVariableDefinitionNameStarts = (
+  matches: readonly Parser.QueryMatch[],
+): Set<number> => {
+  const starts = new Set<number>();
+  for (const match of matches) {
+    const names = match.captures.map((capture) => capture.name);
+    if (isVariableOnlyCapture(names)) continue;
+    if (!names.some((name) => name.startsWith('definition.'))) continue;
+    const nameCapture = match.captures.find((capture) => capture.name === 'name');
+    if (nameCapture) starts.add(nameCapture.node.startIndex);
+  }
+  return starts;
+};
+
+/** True when a Const/Static/Variable capture names a declaration already defined as something richer. */
+export const isShadowedVariableDefinition = (
+  nodeLabel: string,
+  nameNode: SyntaxNode | undefined,
+  nonVariableNameStarts: ReadonlySet<number>,
+): boolean =>
+  (nodeLabel === 'Const' || nodeLabel === 'Static' || nodeLabel === 'Variable') &&
+  nameNode !== undefined &&
+  nonVariableNameStarts.has(nameNode.startIndex);
+
 /**
  * Node types that represent function/method definitions across languages.
  * Used by parent-walk in call-processor, parse-worker, and type-env to detect

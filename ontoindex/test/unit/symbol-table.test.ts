@@ -48,6 +48,14 @@ describe('SymbolTable', () => {
       expect(table.lookupExactAll('src/a.ts', 'foo')).toHaveLength(2);
     });
 
+    it('registers a repeated nodeId only once so it cannot look ambiguous', () => {
+      const first = table.add('src/a.ts', 'foo', 'Function:src/a.ts:foo', 'Function');
+      const again = table.add('src/a.ts', 'foo', 'Function:src/a.ts:foo', 'Function');
+      expect(again).toBe(first);
+      expect(table.lookupExactAll('src/a.ts', 'foo')).toHaveLength(1);
+      expect(table.lookupCallableByName('foo')).toHaveLength(1);
+    });
+
     it('normal operation: add returns the constructed SymbolDefinition', () => {
       const def = table.add('src/index.ts', 'main', 'func:main', 'Function');
       expect(def.nodeId).toBe('func:main');
