@@ -197,12 +197,26 @@ export function buildAvailableRepoLabels(repos: ReadonlyMap<string, RepoHandle>)
   );
 }
 
-async function readIndexedAt(storagePath: string): Promise<string | null> {
+interface PublishedIndexIdentity {
+  indexedAt: string;
+  lastCommit?: string;
+}
+
+/** Read the identity of the currently published index generation from meta.json. */
+async function readPublishedIndexIdentity(
+  storagePath: string,
+): Promise<PublishedIndexIdentity | null> {
   try {
     const metaPath = path.join(storagePath, 'meta.json');
     const metaRaw = await fs.readFile(metaPath, 'utf-8');
     const meta = JSON.parse(metaRaw);
-    return typeof meta.indexedAt === 'string' && meta.indexedAt.length > 0 ? meta.indexedAt : null;
+    if (typeof meta.indexedAt !== 'string' || meta.indexedAt.length === 0) return null;
+    return {
+      indexedAt: meta.indexedAt,
+      ...(typeof meta.lastCommit === 'string' && meta.lastCommit.length > 0
+        ? { lastCommit: meta.lastCommit }
+        : {}),
+    };
   } catch {
     return null;
   }
@@ -231,13 +245,16 @@ export async function ensureRepoInitialized(options: EnsureRepoInitializedOption
     if (nowMs - lastCheck < 5000) return;
 
     lastStalenessCheck.set(repoId, nowMs);
-    const indexedAt = await readIndexedAt(handle.storagePath);
-    if (!indexedAt || indexedAt === handle.indexedAt) return;
+    const published = await readPublishedIndexIdentity(handle.storagePath);
+    if (!published || published.indexedAt === handle.indexedAt) return;
 
     const reinit = (async () => {
       try {
         await assertIndexCanOpenReadOnly(handle, isLbugDbPathReady);
-        handle.indexedAt = indexedAt;
+        // Keep the handle's identity in step with the generation being opened, so
+        // responses do not label fresh graph data with the startup commit.
+        handle.indexedAt = published.indexedAt;
+        if (published.lastCommit) handle.lastCommit = published.lastCommit;
         await closeLbug(repoId);
         initializedRepos.delete(repoId);
         await initLbug(repoId, handle.lbugPath);
