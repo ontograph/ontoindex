@@ -157,6 +157,7 @@ export interface WatchCommandDependencies {
 }
 
 const EMBEDDING_ENV_PATTERN = /(?:^|_)(?:EMBEDDING|EMBEDDINGS)(?:_|$)/i;
+const WATCH_DEBOUNCE_MS = 750;
 
 function childEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return Object.fromEntries(
@@ -242,6 +243,7 @@ export async function createWatchCommand(
   const ignoreFilter = await deps.createIgnoreFilter(repoPath);
   const watcher = deps.createWatcher({
     root: repoPath,
+    debounceMs: WATCH_DEBOUNCE_MS,
     isLockHeld: () => deps.isLockHeld(repoPath),
     refresh,
     shouldIgnore: (relPath) =>
@@ -263,6 +265,13 @@ export async function createWatchCommand(
 
   try {
     const plan = await deps.planDirtyOverlay(repoPath);
+    const dirtyCount = new Set([...plan.includePaths, ...plan.tombstones]).size;
+    const startupState = plan.tooMany
+      ? 'tree is dirty; overlay skipped because the source-file limit was exceeded'
+      : dirtyCount === 0
+        ? 'tree is clean'
+        : `${dirtyCount} dirty source file(s), building overlay`;
+    deps.log(`Watching ${repoPath} (debounce ${WATCH_DEBOUNCE_MS} ms); ${startupState}`);
     if (!plan.tooMany && (plan.includePaths.length > 0 || plan.tombstones.length > 0)) {
       if (await deps.isLockHeld(repoPath)) {
         deps.log('Skipping refresh because analyze.lock is held.');
@@ -271,6 +280,7 @@ export async function createWatchCommand(
       }
     }
   } catch (error) {
+    deps.log(`Watching ${repoPath} (debounce ${WATCH_DEBOUNCE_MS} ms); dirty state unknown`);
     deps.error(
       `Initial watch overlay planning failed: ${error instanceof Error ? error.message : String(error)}`,
     );

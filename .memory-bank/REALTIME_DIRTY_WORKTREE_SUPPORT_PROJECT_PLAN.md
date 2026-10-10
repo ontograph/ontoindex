@@ -536,6 +536,115 @@ tasks:
       - The child cannot be spawned without editing run-analyze.ts or analyze.ts.
       - Write set must grow.
     known_blockers: []
+
+  RT-14:
+    title: When a fixture repo uses NodeNext .js import specifiers, the real analyze pipeline produces the exact IMPORTS and CALLS edges between its files, so a regression in the .js-to-.ts mapping fails a test
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: low
+    owner_files:
+      - ontoindex/test/integration/js-specifier-edges.test.ts
+    allowed_write_set:
+      - ontoindex/test/integration/js-specifier-edges.test.ts
+    non_goals:
+      - Editing production code.
+      - Checking edge counts of this repo.
+    required_validation:
+      - cd ontoindex && npx vitest run test/integration/js-specifier-edges.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - test/integration/js-specifier-edges.test.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - A fixture with a.ts, b.ts (import './a.js'), c.ts (import './a'), d.ts (import './sub/index.js' where only sub/index.ts exists) and e.ts (alias-free .mjs specifier to f.mts) yields IMPORTS b->a, c->a, d->sub/index, e->f and CALLS from each caller to the callee.
+      - A file importing './missing.js' with no .ts or .js file yields no edge.
+      - The test runs the real pipeline (not mocks) and finishes in under 30 s.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - The real pipeline cannot be run from a test without editing production code.
+    known_blockers: []
+
+  RT-15:
+    title: When ontoindex watch starts it prints one line naming the watched root, the debounce, and whether the tree is clean or dirty, and when idle it stays silent
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: low
+    owner_files:
+      - ontoindex/src/cli/watch.ts
+      - ontoindex/test/unit/watch-command.test.ts
+    allowed_write_set:
+      - ontoindex/src/cli/watch.ts
+      - ontoindex/test/unit/watch-command.test.ts
+    non_goals:
+      - Changing refresh, lock, or spawn behavior.
+      - Editing index.ts.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/watch-command.test.ts test/unit/watch.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/cli/watch.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - Startup logs exactly one line containing the root path and debounce milliseconds.
+      - A clean tree logs a clean-tree note, a dirty tree logs the dirty file count before the first build.
+      - No periodic output while idle.
+      - The existing watch tests still pass.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - The change needs a file outside the write set.
+    known_blockers: []
+
+  RT-16:
+    title: When the overlay is built for 1, 10, 25 and 50 dirty files on this repo, a benchmark script records wall time per size so later performance claims are backed by numbers
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: low
+    owner_files:
+      - ontoindex/scripts/overlay-benchmark.mjs
+    allowed_write_set:
+      - ontoindex/scripts/overlay-benchmark.mjs
+    non_goals:
+      - Changing any production code or adding a CI job.
+    required_validation:
+      - cd ontoindex && npm run build && node scripts/overlay-benchmark.mjs
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - scripts/overlay-benchmark.mjs
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - The script copies N tracked source files into a temp git clone with a one-line edit, runs the built CLI analyze --dirty-overlay once warm, and prints wall time and node and edge counts per N as JSON.
+      - It prints a summary table and exits nonzero if any build fails.
+      - Results for 1, 10, 25 and 50 files are reported in the closeout with the machine and commit.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - The script needs network access or the repo's live .ontoindex.
+    known_blockers: []
 ```
 
 ## Required Traceability
@@ -553,6 +662,9 @@ tasks:
 | RT-REQ-9 | A rebuilt overlay is picked up by a running server | implementation | RT-11 | rebuild-then-query test |
 | RT-REQ-10 | Impact flags dirty rows instead of trusting stale ids | implementation | RT-12 | impact-kernel-dirty tests |
 | RT-REQ-11 | A watch command keeps the overlay current | implementation | RT-13 | watch-command tests |
+| RT-REQ-12 | A regression in .js-to-.ts mapping fails a real-pipeline test | implementation | RT-14 | js-specifier-edges integration test |
+| RT-REQ-13 | The watcher says what it is doing at startup | implementation | RT-15 | watch-command tests |
+| RT-REQ-14 | Overlay performance is measured, not assumed | proof-only | RT-16 | benchmark output |
 
 ## Decisions And Non-Goals
 
@@ -562,6 +674,9 @@ tasks:
 - Vector search lags on edited files until a full `analyze --embeddings`.
 
 - 2026-10-10 review findings: (1) the import resolver never maps .js to .ts, so most cross-file edges are missing for NodeNext TypeScript (2157 of 2163 relative imports in this repo end in .js; impact on runImpactKernel showed 0 callers); (2) the overlay pool handle is cached by id while the overlay directory is deleted and recreated on rebuild; (3) dirty-overlay-build.test.ts flaked 1 of 10 on an 8 TB mmap. Cherry-picked: RT-10, RT-9, RT-11 (single-flight probe plus handle invalidation), RT-12 (flag, do not drop), RT-13. Dropped A3 (lazy auto-spawn from read tools): the watcher already exists and a read tool spawning processes is a surprising side effect.
+
+- 2026-10-10 CI review: PR 83 is based on the PR 82 branch, so ci.yml (branches: [master]) never ran against RT-1..RT-13; only benchmark and the broken check job run. Reproduced locally instead: prettier, eslint (0 errors), tsc, web tsc -b, unit tests. The check job fails on every PR in its history because ontoindex-check.yml lacks `permissions: pull-requests: write` (Comment PR gets `Resource not accessible by integration`); fixing it is a repo-permission change left to the owner. Merging 82 and retargeting 83 is also left to the owner.
+- Chosen next: RT-14 (permanent regression test for the highest-risk change), RT-15 (watcher startup line), RT-16 (measure before tuning). Rejected: throwaway master PR (duplicates the diff), continue-on-error for the comment step (hides a signal), watcher status reporting in doctor (touches shared status code), .git/index-mtime snapshot cache (premature without RT-16 numbers).
 
 ## Closeout
 
@@ -589,5 +704,12 @@ RT-1 (2026-10-10), implemented locally in PR 83 without sub-agent role receipts,
 - RT-12: impact traversal keeps dirty rows, flags them dirty, does not expand through them, and marks the result partial with one warning. No dirty set means identical output.
 - RT-13: `ontoindex watch [path]` registered; spawns a child `analyze --dirty-overlay` per debounced burst, honors analyze.lock, strips embedding env from the child.
 - Side effect to note: `analyze --force` without --embeddings drops the semantic index; embeddings are rebuilt separately.
+- Statuses stay OPEN: no authenticated role receipts exist.
+
+2026-10-10 verification phase (3 sub-agents: gpt-6.1-sol on RT-14 and RT-16, gpt-6-luna on RT-15). Parent re-ran: tsc clean, prettier clean, 20 tests in the touched suites, and the benchmark.
+- Local CI reproduction on commit 61f0b6c: prettier (root) clean; eslint 0 errors (4622 pre-existing warnings); tsc (ontoindex) clean; tsc -b (ontoindex-web) clean; unit suite with the CI coverage flags: 7018 pass, 4 pre-existing mcp-doctor failures; coverage 70.2% statements, 59.5% branches, 78.2% functions, 72.7% lines against CI floors 26/23/28/27. Windows and macOS jobs were not reproduced locally.
+- RT-14: js-specifier-edges integration test runs the real pipeline and asserts exact edges (b->a, c->a, d->sub/index, e->f, no edge for a missing target). It fails on c1767b5 (only c->a resolves) and passes 5/5 on the fixed tree.
+- RT-15: `ontoindex watch` prints one startup line, e.g. `Watching <root> (debounce 750 ms); tree is clean`, and nothing while idle.
+- RT-16: overlay-benchmark.mjs measured `analyze --dirty-overlay` (Ryzen 9 9950X, commit 61f0b6c, baseline full analyze about 38-39 s). Warm medians: 1 file 0.86 s, 10 files 2.3-2.4 s, 25 files 1.2 s, 50 files 1.4 s. Timing does NOT grow with file count because the benchmark picks files in sorted path order, so the 10-file set contains heavier files than the 25- and 50-file sets; the numbers show cost is dominated by which files are dirty, not how many, and an overlay build is 15-40x cheaper than a full analyze. They are not a scaling law. Warm medians come from 2 runs on a shared host.
 - Statuses stay OPEN: no authenticated role receipts exist.
 

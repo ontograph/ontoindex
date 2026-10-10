@@ -166,4 +166,67 @@ describe('watch command', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('watch [options] [path]');
   });
+
+  it('logs one clean-tree startup line with the watched root and debounce', async () => {
+    const harness = makeHarness();
+    const command = await harness.start();
+
+    expect(harness.log).toHaveBeenCalledTimes(1);
+    expect(harness.log).toHaveBeenCalledWith('Watching /repo (debounce 750 ms); tree is clean');
+    command.stop();
+  });
+
+  it('logs the dirty source count before starting the initial overlay build', async () => {
+    const harness = makeHarness({ initiallyDirty: true });
+    const command = await harness.start();
+
+    expect(harness.log).toHaveBeenNthCalledWith(
+      1,
+      'Watching /repo (debounce 750 ms); 1 dirty source file(s), building overlay',
+    );
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    command.stop();
+  });
+
+  it('logs unknown dirty state and still starts the watcher when planning rejects', async () => {
+    const harness = makeHarness();
+    harness.planDirtyOverlay.mockRejectedValueOnce(new Error('git unavailable'));
+    const command = await harness.start();
+
+    expect(harness.log).toHaveBeenCalledWith(
+      'Watching /repo (debounce 750 ms); dirty state unknown',
+    );
+    expect(harness.error).toHaveBeenCalledWith(
+      'Initial watch overlay planning failed: git unavailable',
+    );
+    expect(harness.spawn).not.toHaveBeenCalled();
+    command.stop();
+  });
+
+  it('reports an over-limit dirty tree instead of treating omitted paths as clean', async () => {
+    const harness = makeHarness();
+    harness.planDirtyOverlay.mockResolvedValueOnce({
+      includePaths: [],
+      tombstones: [],
+      tooMany: true,
+      skipped: [],
+    });
+    const command = await harness.start();
+
+    expect(harness.log).toHaveBeenCalledWith(
+      'Watching /repo (debounce 750 ms); tree is dirty; overlay skipped because the source-file limit was exceeded',
+    );
+    expect(harness.spawn).not.toHaveBeenCalled();
+    command.stop();
+  });
+
+  it('does not log again while idle', async () => {
+    vi.useFakeTimers();
+    const harness = makeHarness();
+    const command = await harness.start();
+    await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+
+    expect(harness.log).toHaveBeenCalledTimes(1);
+    command.stop();
+  });
 });
