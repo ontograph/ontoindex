@@ -106,7 +106,14 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
         current.ino !== rootStat.ino ||
         current.birthtimeNs !== rootStat.birthtimeNs
       ) {
-        throw new Error(`Watched root was replaced: ${opts.root}`);
+        // The root was replaced but a directory exists again. The old native watch may be
+        // attached to the deleted directory, so adopt the new one and re-arm. Only a root
+        // that is gone (statSync throws) stops the watcher.
+        rootStat = current;
+        if (!opts.watchImpl) {
+          watcher?.close();
+          openWatcher();
+        }
       }
       return true;
     } catch (error) {

@@ -98,11 +98,10 @@ describe('real fs.watch editor save patterns', () => {
     },
   );
 
-  it('coalesces 20 writes within 100 ms and reads the final content', async () => {
+  it('coalesces a burst of 20 writes into one refresh that reads the final content', async () => {
+    // No wall-clock bound on the writes themselves: that measures the machine, not the watcher.
     await expectOneRefresh(() => {
-      const started = performance.now();
       for (let i = 0; i < 20; i++) fs.writeFileSync(file, `burst-${i}`);
-      expect(performance.now() - started).toBeLessThan(100);
     }, 'burst-19');
   });
 
