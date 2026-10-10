@@ -1223,3 +1223,11 @@ Fix: the adapter now closes every native result. `getAllWithTimeout` closes in a
 Windows: the CI probe PR #86 (commit `58e06d9`, before the adapter fix) failed 11 of 12 `overlay-generations` tests. Every failure was a native LadybugDB error, `IO exception: Cannot read from file ... Error 33: another process has locked a portion of the file`, raised when the reader opened a freshly published generation. It was not a Node `fs` error, and tests that never read bytes failed too. Working hypothesis, unproven: the builder's writer was still alive because of unclosed native results, so it held its byte-range lock when the reader opened the file. The adapter fix should remove that. Re-probe PR #87 (commit `a1182c8`, since closed) passed the Windows, macOS and Ubuntu test jobs, so `overlay-generations` is green on Windows after the fix. That is one CI run, not a stability measurement. The cause is still a hypothesis, and the three win32 test skips from earlier work have not been re-evaluated.
 
 RT-28 re-run on overlay generations: base analyze 55,414 ms. Edit-to-answer: append 4,735 ms, rename 4,675 ms, new file 4,825 ms, delete 522 ms, atomic save 3,948 ms. Context and impact reported `source: overlay`, risk UNKNOWN.
+
+## Evidence note: result-close follow-up (RT-29 to RT-31)
+
+- RT-29: `pool-adapter.ts`, the MCP reader path, now closes native results too, including after a timeout once the pending native call settles. This was an audit-driven change and was not linked to a failing test. Verified by unit and integration pool tests (95 tests across 10 files, Linux).
+- RT-30: `test/unit/lbug-result-close.test.ts` covers the adapter's close paths, including a rejected `getAll()`. The agent reported that a no-op `closeQueryResults` makes it fail.
+- RT-31: `test/integration/overlay-cross-process.test.ts` has a separate CLI process publish gen2 while a reader holds gen1, then checks gen1's sha256 is unchanged. It is skipped on win32.
+- Open, not fixed: unclosed results remain in `src/core/group/bridge-db.ts` (lines 171, 191, 200). They are outside the overlay path.
+- None of this is verified on Windows or macOS until CI runs.

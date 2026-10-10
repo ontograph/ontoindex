@@ -445,18 +445,14 @@ async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): 
         if (localFtsPath) {
           try {
             const loadQuery = `LOAD EXTENSION '${localFtsPath.replace(/'/g, "\\'")}'`;
-            await withTimeout(conn.query(loadQuery), QUERY_TIMEOUT_MS, loadQuery);
+            await runStatement(conn, loadQuery);
             shared.ftsLoaded = true;
           } catch (err) {
             if (err instanceof QueryTimeoutError) throw err;
           }
         }
         if (!shared.ftsLoaded) {
-          await withTimeout(
-            conn.query('LOAD EXTENSION fts'),
-            QUERY_TIMEOUT_MS,
-            'LOAD EXTENSION fts',
-          );
+          await runStatement(conn, 'LOAD EXTENSION fts');
           shared.ftsLoaded = true;
         }
       } catch (err) {
@@ -466,12 +462,8 @@ async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): 
     }
     if (!shared.vectorLoaded) {
       try {
-        await withTimeout(conn.query('INSTALL VECTOR'), QUERY_TIMEOUT_MS, 'INSTALL VECTOR');
-        await withTimeout(
-          conn.query('LOAD EXTENSION VECTOR'),
-          QUERY_TIMEOUT_MS,
-          'LOAD EXTENSION VECTOR',
-        );
+        await runStatement(conn, 'INSTALL VECTOR');
+        await runStatement(conn, 'LOAD EXTENSION VECTOR');
         shared.vectorLoaded = true;
       } catch (err) {
         if (err instanceof QueryTimeoutError) throw err;
@@ -874,6 +866,27 @@ function withTimeout<T>(
   });
 }
 
+function closeQueryResults(queryResult: lbug.QueryResult | lbug.QueryResult[]): void {
+  for (const result of Array.isArray(queryResult) ? queryResult : [queryResult]) {
+    try {
+      result.close();
+    } catch {
+      // Closing is best-effort housekeeping.
+    }
+  }
+}
+
+async function runStatement(conn: lbug.Connection, statement: string): Promise<void> {
+  const pending = conn.query(statement).then((result) => {
+    try {
+      return;
+    } finally {
+      closeQueryResults(result);
+    }
+  });
+  await withTimeout(pending, QUERY_TIMEOUT_MS, statement);
+}
+
 async function getAllWithTimeout(
   result: lbug.QueryResult,
   label: string,
@@ -956,8 +969,9 @@ export const executeQuery = async <TRow extends object = LbugQueryRow>(
   activeQueryCount++;
   let retire = false;
   let retireAfter: Promise<unknown> | null = null;
+  let queryResults: lbug.QueryResult | lbug.QueryResult[] | undefined;
   try {
-    const queryPromise = conn.query(cypher);
+    const queryPromise = conn.query(cypher).then((results) => (queryResults = results));
     const queryResult = await withTimeout(queryPromise, QUERY_TIMEOUT_MS, 'Query', () => {
       retireAfter = queryPromise;
     });
@@ -971,6 +985,15 @@ export const executeQuery = async <TRow extends object = LbugQueryRow>(
     throw err;
   } finally {
     activeQueryCount--;
+    if (retireAfter) {
+      retireAfter = retireAfter
+        .catch(() => {})
+        .finally(() => {
+          if (queryResults) closeQueryResults(queryResults);
+        });
+    } else if (queryResults) {
+      closeQueryResults(queryResults);
+    }
     if (retire) {
       retireWhenSettled(entry, conn, retireAfter);
     } else {
@@ -999,6 +1022,7 @@ export const executeParameterized = async <TRow extends object = LbugQueryRow>(
   activeQueryCount++;
   let retire = false;
   let retireAfter: Promise<unknown> | null = null;
+  let queryResults: lbug.QueryResult | lbug.QueryResult[] | undefined;
   try {
     let stmtMap = connStmtCaches.get(conn);
     if (!stmtMap) {
@@ -1020,7 +1044,9 @@ export const executeParameterized = async <TRow extends object = LbugQueryRow>(
     }
     let queryResult: lbug.QueryResult | lbug.QueryResult[];
     try {
-      const executePromise = conn.execute(stmt, toLbugParams(params));
+      const executePromise = conn
+        .execute(stmt, toLbugParams(params))
+        .then((results) => (queryResults = results));
       queryResult = await withTimeout(executePromise, QUERY_TIMEOUT_MS, 'Execute', () => {
         retireAfter = executePromise;
       });
@@ -1038,6 +1064,15 @@ export const executeParameterized = async <TRow extends object = LbugQueryRow>(
     throw err;
   } finally {
     activeQueryCount--;
+    if (retireAfter) {
+      retireAfter = retireAfter
+        .catch(() => {})
+        .finally(() => {
+          if (queryResults) closeQueryResults(queryResults);
+        });
+    } else if (queryResults) {
+      closeQueryResults(queryResults);
+    }
     if (retire) {
       retireWhenSettled(entry, conn, retireAfter);
     } else {
