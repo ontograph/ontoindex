@@ -1231,3 +1231,5 @@ RT-28 re-run on overlay generations: base analyze 55,414 ms. Edit-to-answer: app
 - RT-31: `test/integration/overlay-cross-process.test.ts` has a separate CLI process publish gen2 while a reader holds gen1, then checks gen1's sha256 is unchanged. It is skipped on win32.
 - `src/core/group/bridge-db.ts` now closes its schema, query and execute results. Closing waits for a timed-out `getAll()` to settle. Group unit tests pass (321 across 22 files). No new test was added for this path.
 - None of this is verified on Windows or macOS until CI runs.
+
+CI probe PR #88 (commit 0e4f4c4, since closed): Ubuntu, macOS and Windows test jobs, lint, format, typecheck and benchmark passed. Only `check` failed, the known bug fixed by PR #84. The Windows test skips from earlier rounds are unchanged.
