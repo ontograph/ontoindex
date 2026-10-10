@@ -134,7 +134,9 @@ async function fetchMissingLadybugExtensions() {
     pins,
   });
   if (!result.ok) {
-    console.log(`[build] LadybugDB extensions not fetched (${result.missing.join(', ')}); continuing.`);
+    console.log(
+      `[build] LadybugDB extensions not fetched (${result.missing.join(', ')}); continuing.`,
+    );
   }
 }
 

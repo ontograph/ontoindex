@@ -65,7 +65,12 @@ describe('ensureLadybugExtensions', () => {
   });
 
   it('does not fetch when no pins exist for the platform', async () => {
-    const r = await ensureLadybugExtensions({ ...base, dir: mk(), platformDir: 'zz', fetchImpl: fetchOk });
+    const r = await ensureLadybugExtensions({
+      ...base,
+      dir: mk(),
+      platformDir: 'zz',
+      fetchImpl: fetchOk,
+    });
     expect(r.ok).toBe(false);
   });
 });

@@ -5,7 +5,8 @@ import path from 'node:path';
 export const EXTENSION_BASE_URL = 'https://extension.ladybugdb.com';
 export const EXTENSION_NAMES = ['fts', 'vector'];
 
-const sha256File = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const sha256File = (file) =>
+  crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
 /**
  * Ensure libfts/libvector exist in `dir`, downloading any missing file and
@@ -24,7 +25,9 @@ export async function ensureLadybugExtensions({
 }) {
   const expected = pins?.[version]?.[platformDir];
   if (!expected) {
-    log(`[build] no pinned LadybugDB extension checksums for ${version}/${platformDir}; not fetching.`);
+    log(
+      `[build] no pinned LadybugDB extension checksums for ${version}/${platformDir}; not fetching.`,
+    );
     return { ok: false, missing: [...EXTENSION_NAMES] };
   }
   fs.mkdirSync(dir, { recursive: true });

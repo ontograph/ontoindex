@@ -26,7 +26,11 @@ const setup = (env: Partial<Record<(typeof KEYS)[number], string>>) => {
     vi.fn(async (_url: string, init: { body: string }) => {
       const input = JSON.parse(init.body).input as string[];
       inputs.push(input);
-      return { ok: true, status: 200, json: async () => ({ data: input.map(() => ({ embedding: [0, 1] })) }) };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: input.map(() => ({ embedding: [0, 1] })) }),
+      };
     }),
   );
   return inputs;

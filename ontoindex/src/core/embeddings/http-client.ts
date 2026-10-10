@@ -196,13 +196,15 @@ export const httpEmbed = async (texts: string[]): Promise<Float32Array[]> => {
 
     const batchResults = await Promise.all(
       batches.map(({ batch, batchIndex }) =>
-        limit(() => httpEmbedBatch(
+        limit(() =>
+          httpEmbedBatch(
             url,
             config.documentPrefix ? batch.map((t) => config.documentPrefix + t) : batch,
             config.model,
             config.apiKey,
             batchIndex,
-          )),
+          ),
+        ),
       ),
     );
 
