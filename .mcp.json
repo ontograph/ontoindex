@@ -3,15 +3,15 @@
     "ontoindex": {
       "type": "stdio",
       "command": "/usr/bin/node",
-      "args": ["/opt/d1/_wrk/ontoindex/ontoindex/dist/cli/index.js", "mcp"],
-      "cwd": "/opt/d1/_wrk/ontoindex",
+      "args": ["/opt/demodb/_workfolder/OntoIndex/ontoindex/dist/cli/index.js", "mcp"],
+      "cwd": "/opt/demodb/_workfolder/OntoIndex",
       "env": {
         "NODE_ENV": "production",
         "ONTOINDEX_MCP_AUTO_ANALYZE": "0",
         "ONTOINDEX_LBUG_POOL_SIZE": "1",
         "ONTOINDEX_MAX_WORKERS": "7",
         "ONTOINDEX_MCP_STARTUP_TIMEOUT_MS": "10000",
-        "ONTOINDEX_MCP_REPO": "/opt/d1/_wrk/ontoindex",
+        "ONTOINDEX_MCP_REPO": "/opt/demodb/_workfolder/OntoIndex",
         "NODE_OPTIONS": "--max-old-space-size=1536"
       }
     },
