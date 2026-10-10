@@ -12,6 +12,7 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ensureLadybugExtensions } from './ladybug-extensions.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -115,6 +116,28 @@ function resolveLadybugExtensionSourceDir() {
   return null;
 }
 
+async function fetchMissingLadybugExtensions() {
+  if (process.env.ONTOINDEX_SKIP_EXT_FETCH === '1') return;
+  const platformDir = currentLbugExtensionPlatformDir();
+  if (!platformDir) return;
+  const pins = JSON.parse(
+    fs.readFileSync(path.join(__dirname, 'ladybug-extension-pins.json'), 'utf-8'),
+  );
+  const dir =
+    process.env.ONTOINDEX_LADYBUG_EXTENSION_DIR ||
+    process.env.ONTOINDEX_LADYBUG_EXTENSIONS_CACHE ||
+    path.join(defaultLbugExtensionsBaseDir(), LADYBUG_EXTENSIONS_VERSION, platformDir);
+  const result = await ensureLadybugExtensions({
+    dir,
+    version: LADYBUG_EXTENSIONS_VERSION,
+    platformDir,
+    pins,
+  });
+  if (!result.ok) {
+    console.log(`[build] LadybugDB extensions not fetched (${result.missing.join(', ')}); continuing.`);
+  }
+}
+
 function copyBundledLadybugExtensions() {
   const source = resolveLadybugExtensionSourceDir();
   if (!source) {
@@ -136,6 +159,7 @@ function copyBundledLadybugExtensions() {
 }
 
 walk(DIST, ['.js', '.d.ts'], rewriteFile);
+await fetchMissingLadybugExtensions();
 copyBundledLadybugExtensions();
 
 // ── 5. Make CLI entry executable ────────────────────────────────────

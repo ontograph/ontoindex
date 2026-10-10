@@ -1,0 +1,8 @@
+{
+  "v0.17.0": {
+    "linux_amd64": {
+      "fts": "327230badf037615f21fc52c347f0cb9d4b55b62a7e295bdd577379aacd842f4",
+      "vector": "681015fe4bed16dea89f34d643e07e0058096af552c014bd6142e5294a360959"
+    }
+  }
+}

@@ -220,6 +220,8 @@ export ONTOINDEX_EMBEDDING_URL=http://your-server:8080/v1
 export ONTOINDEX_EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
 export ONTOINDEX_EMBEDDING_DIMS=1024          # optional, default 384
 export ONTOINDEX_EMBEDDING_API_KEY=your-key   # optional, default: "unused"
+export ONTOINDEX_EMBEDDING_DOCUMENT_PREFIX="search_document: "  # optional, e.g. nomic-embed
+export ONTOINDEX_EMBEDDING_QUERY_PREFIX="search_query: "        # optional
 ontoindex analyze . --embeddings
 ```
 

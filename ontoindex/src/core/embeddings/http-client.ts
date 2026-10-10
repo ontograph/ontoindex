@@ -21,6 +21,8 @@ interface HttpConfig {
   model: string;
   apiKey: string;
   dimensions?: number;
+  documentPrefix: string;
+  queryPrefix: string;
 }
 
 /**
@@ -48,6 +50,8 @@ const readConfig = (): HttpConfig | null => {
     model,
     apiKey: process.env.ONTOINDEX_EMBEDDING_API_KEY ?? 'unused',
     dimensions,
+    documentPrefix: process.env.ONTOINDEX_EMBEDDING_DOCUMENT_PREFIX ?? '',
+    queryPrefix: process.env.ONTOINDEX_EMBEDDING_QUERY_PREFIX ?? '',
   };
 };
 
@@ -192,7 +196,13 @@ export const httpEmbed = async (texts: string[]): Promise<Float32Array[]> => {
 
     const batchResults = await Promise.all(
       batches.map(({ batch, batchIndex }) =>
-        limit(() => httpEmbedBatch(url, batch, config.model, config.apiKey, batchIndex)),
+        limit(() => httpEmbedBatch(
+            url,
+            config.documentPrefix ? batch.map((t) => config.documentPrefix + t) : batch,
+            config.model,
+            config.apiKey,
+            batchIndex,
+          )),
       ),
     );
 
@@ -242,7 +252,7 @@ export const httpEmbedQuery = async (text: string): Promise<number[]> => {
   if (!config) throw new Error('HTTP embedding not configured');
 
   const url = `${config.baseUrl}/embeddings`;
-  const items = await httpEmbedBatch(url, [text], config.model, config.apiKey);
+  const items = await httpEmbedBatch(url, [config.queryPrefix + text], config.model, config.apiKey);
   if (!items.length) {
     throw new Error(`Embedding endpoint returned empty response (${safeUrl(url)})`);
   }
