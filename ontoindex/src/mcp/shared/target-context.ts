@@ -88,7 +88,12 @@ export interface TargetContextDirtyWorkspace {
   unstagedSourceFileCount: number | null;
   untrackedSourceFileCount: number | null;
   unknownGraphCoverageCount: number | null;
+  /** Repo-relative dirty/untracked paths (capped); these are not reflected in the graph. */
+  dirtyPaths?: string[];
+  dirtyPathsTruncated?: boolean;
 }
+
+export const MAX_DIRTY_PATHS = 50;
 
 export interface TargetContext {
   version: 1;
@@ -711,6 +716,7 @@ function resolveDirtyWorkspace(input: {
     state = 'unknown';
   }
 
+  const allDirtyPaths = [...new Set(input.summary.dirtyFiles.map((f) => f.path))];
   return {
     state,
     fileCount: dirtyFileCount,
@@ -719,6 +725,12 @@ function resolveDirtyWorkspace(input: {
     unstagedSourceFileCount,
     untrackedSourceFileCount,
     unknownGraphCoverageCount,
+    ...(allDirtyPaths.length > 0
+      ? {
+          dirtyPaths: allDirtyPaths.slice(0, MAX_DIRTY_PATHS),
+          ...(allDirtyPaths.length > MAX_DIRTY_PATHS ? { dirtyPathsTruncated: true } : {}),
+        }
+      : {}),
   };
 }
 

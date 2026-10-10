@@ -153,6 +153,45 @@ describe('resolveTargetContext', () => {
     expect(context.scopeConfidence).toBe('medium');
   });
 
+  it('lists dirty and untracked paths in dirtyWorkspace.dirtyPaths', async () => {
+    const { resolveTargetContext } = await loadActualResolver();
+    const context = await resolveTargetContext(
+      { repo: REPO_ID },
+      {
+        readRegistry: async () => [registryEntry],
+        execGit: execGitFor(CURRENT_COMMIT, ' M src/a.ts\n?? src/b.ts\n'),
+      },
+    );
+    expect(context.dirtyWorkspace?.dirtyPaths).toEqual(['src/a.ts', 'src/b.ts']);
+    expect(context.dirtyWorkspace?.dirtyPathsTruncated).toBeUndefined();
+  });
+
+  it('caps dirtyPaths and flags truncation', async () => {
+    const { resolveTargetContext } = await loadActualResolver();
+    const status = Array.from({ length: 60 }, (_, i) => ` M src/f${i}.ts`).join('\n') + '\n';
+    const context = await resolveTargetContext(
+      { repo: REPO_ID },
+      {
+        readRegistry: async () => [registryEntry],
+        execGit: execGitFor(CURRENT_COMMIT, status),
+      },
+    );
+    expect(context.dirtyWorkspace?.dirtyPaths).toHaveLength(50);
+    expect(context.dirtyWorkspace?.dirtyPathsTruncated).toBe(true);
+  });
+
+  it('omits dirtyPaths for a clean worktree', async () => {
+    const { resolveTargetContext } = await loadActualResolver();
+    const context = await resolveTargetContext(
+      { repo: REPO_ID },
+      {
+        readRegistry: async () => [registryEntry],
+        execGit: execGitFor(CURRENT_COMMIT, ''),
+      },
+    );
+    expect(context.dirtyWorkspace?.dirtyPaths).toBeUndefined();
+  });
+
   it('verifies an exactly indexed dirty source snapshot as authoritative', async () => {
     const { resolveTargetContext } = await loadActualResolver();
     const context = await resolveTargetContext(

@@ -5,6 +5,7 @@ import {
   createCapabilityResponseEnvelope,
   createEnvelopeFromLegacy,
   deriveEnvelopeFreshness,
+  findDirtyResultPaths,
   mergeRuntimeHealthFreshness,
   wrapRepoScopeIdentity,
   type CapabilityResponseFreshness,
@@ -336,5 +337,55 @@ describe('response envelope repo identity', () => {
     expect(freshness.status).toBe(expectedStatus);
     expect(freshness.actionable).toBe(false);
     expect(freshness.dirtyFileCount).toBe(1);
+  });
+});
+
+describe('dirty result paths', () => {
+  it('finds dirty paths nested in results and ignores clean ones', () => {
+    const results = {
+      definitions: [{ filePath: 'src/a.ts' }, { filePath: 'src/clean.ts' }],
+      nested: { items: [{ path: 'src\\b.ts' }], note: 'src/c.ts' },
+    };
+    expect(findDirtyResultPaths(results, ['src/a.ts', 'src/b.ts', 'src/c.ts'])).toEqual([
+      'src/a.ts',
+      'src/b.ts',
+    ]);
+  });
+
+  it('returns nothing when there are no dirty paths', () => {
+    expect(findDirtyResultPaths({ filePath: 'src/a.ts' }, [])).toEqual([]);
+  });
+
+  it('adds freshness.dirtyResultPaths only when results touch dirty files', () => {
+    const base = createGlobalTargetContext('fixture');
+    const targetContext = {
+      ...base,
+      dirtyWorkspace: {
+        state: 'dirty-file' as const,
+        fileCount: 1,
+        sourceFileCount: 1,
+        stagedSourceFileCount: 0,
+        unstagedSourceFileCount: 1,
+        untrackedSourceFileCount: 0,
+        unknownGraphCoverageCount: 0,
+        dirtyPaths: ['src/a.ts'],
+      },
+    };
+    const freshness: CapabilityResponseFreshness = {
+      status: 'fresh',
+      actionable: true,
+      reason: 'ok',
+    };
+    const make = (results: Record<string, unknown>) =>
+      createCapabilityResponseEnvelope({
+        tool: 't',
+        version: 1,
+        status: 'ok',
+        targetContext: targetContext as never,
+        freshness,
+        results,
+      });
+    expect(make({ filePath: 'src/a.ts' }).freshness.dirtyResultPaths).toEqual(['src/a.ts']);
+    expect(make({ filePath: 'src/other.ts' }).freshness.dirtyResultPaths).toBeUndefined();
   });
 });

@@ -10,4 +10,4 @@ status: active
 
 Projection only, not dispatch authority. Each linked plan's `manager_loop` block is authoritative.
 
-None.
+- [Real-time dirty-worktree support](REALTIME_DIRTY_WORKTREE_SUPPORT_PROJECT_PLAN.md) - in-progress; next RT-2.

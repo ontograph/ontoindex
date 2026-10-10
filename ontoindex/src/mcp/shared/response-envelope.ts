@@ -34,6 +34,8 @@ export interface CapabilityResponseFreshness {
   isStale?: boolean;
   dirtyFileCount?: number | null;
   dirtyWorkspace?: TargetContextDirtyWorkspace;
+  /** Dirty paths that also appear in `results`; the graph is stale for these files. */
+  dirtyResultPaths?: string[];
   scopeConfidence?: ScopeConfidence;
   runtimeHealthState?: RuntimeHealthSnapshot['freshnessState'];
   runtimeDegradedReason?: string | null;
@@ -330,6 +332,37 @@ export function collectCapabilityDiagnostics(
   };
 }
 
+const RESULT_PATH_KEYS = new Set(['filePath', 'path', 'file']);
+const MAX_RESULT_SCAN_NODES = 5000;
+
+/** Dirty paths that appear as filePath/path/file values anywhere in `results` (bounded scan). */
+export function findDirtyResultPaths(results: unknown, dirtyPaths: readonly string[]): string[] {
+  if (dirtyPaths.length === 0) return [];
+  const dirty = new Set(dirtyPaths.map((p) => p.replace(/\\/g, '/')));
+  const hits = new Set<string>();
+  const stack: unknown[] = [results];
+  let visited = 0;
+  while (stack.length > 0 && visited < MAX_RESULT_SCAN_NODES) {
+    const node = stack.pop();
+    visited++;
+    if (Array.isArray(node)) {
+      stack.push(...node);
+    } else if (node !== null && typeof node === 'object') {
+      for (const [key, value] of Object.entries(node)) {
+        if (typeof value === 'string') {
+          if (RESULT_PATH_KEYS.has(key)) {
+            const normalized = value.replace(/\\/g, '/');
+            if (dirty.has(normalized)) hits.add(normalized);
+          }
+        } else if (value !== null && typeof value === 'object') {
+          stack.push(value);
+        }
+      }
+    }
+  }
+  return [...hits].sort();
+}
+
 export function createCapabilityResponseEnvelope<TResult, TEvidence = unknown>(input: {
   tool: string;
   version: number | string;
@@ -365,7 +398,11 @@ export function createCapabilityResponseEnvelope<TResult, TEvidence = unknown>(i
     targetContext: input.targetContext,
     capabilitiesUsed: unique(input.capabilitiesUsed ?? []),
     capabilitiesMissing: unique(input.capabilitiesMissing ?? []),
-    freshness: mergeRuntimeHealthFreshness(input.freshness, input.runtimeHealth),
+    freshness: withDirtyResultPaths(
+      mergeRuntimeHealthFreshness(input.freshness, input.runtimeHealth),
+      input.targetContext,
+      input.results,
+    ),
     ...(recoverable ? { recoverable } : {}),
     results: input.results,
     evidence: [...(input.evidence ?? [])],
@@ -373,6 +410,17 @@ export function createCapabilityResponseEnvelope<TResult, TEvidence = unknown>(i
     limits: input.limits ?? defaultLimits(),
     nextTools: unique(input.nextTools ?? []),
   };
+}
+
+function withDirtyResultPaths(
+  freshness: CapabilityResponseFreshness,
+  targetContext: EnvelopeTargetContext,
+  results: unknown,
+): CapabilityResponseFreshness {
+  const dirtyPaths =
+    'dirtyWorkspace' in targetContext ? (targetContext.dirtyWorkspace?.dirtyPaths ?? []) : [];
+  const dirtyResultPaths = findDirtyResultPaths(results, dirtyPaths);
+  return dirtyResultPaths.length > 0 ? { ...freshness, dirtyResultPaths } : freshness;
 }
 
 export function createEnvelopeFromLegacy<TLegacy extends object, TEvidence = unknown>(
