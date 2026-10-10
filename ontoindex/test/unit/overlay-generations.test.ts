@@ -107,7 +107,7 @@ describe('immutable overlay generations (real LadybugDB)', () => {
     expect(first).toBe(overlayDbPath(repo.storagePath));
     expect(await queryOverlay(repo, cypher)).toEqual([{ name: 'gen1' }]);
     expect(pool.isLbugReady(overlayRepoId(repo.id))).toBe(true);
-    const gen1Dir = path.dirname(first!);
+    const bytes = await fs.readFile(first!);
     await expect(getOverlaySnapshot(repo)).resolves.toMatchObject({ usable: true });
 
     await build('gen2');
@@ -116,9 +116,7 @@ describe('immutable overlay generations (real LadybugDB)', () => {
     expect(await pool.executeParameterized(overlayRepoId(repo.id), cypher, {})).toEqual([
       { name: 'gen1' },
     ]);
-    // Bytes are not compared: the live reader may checkpoint its own open file.
-    await expect(fs.stat(first!)).resolves.toBeTruthy();
-    expect(path.dirname(first!)).toBe(gen1Dir);
+    expect(await fs.readFile(first!)).toEqual(bytes);
     expect(await resolveOverlayDbPath(repo.storagePath)).not.toBe(first);
     const close = vi.spyOn(pool, 'closeLbug');
     expect(await Promise.all(Array.from({ length: 10 }, () => queryOverlay(repo, cypher)))).toEqual(
@@ -132,10 +130,11 @@ describe('immutable overlay generations (real LadybugDB)', () => {
     await queryOverlay(repo, cypher);
     const published = await current();
     const dbPath = (await resolveOverlayDbPath(repo.storagePath))!;
+    const bytes = await fs.readFile(dbPath);
     const before = await fs.readdir(overlay);
     await expect(build('failed', true)).rejects.toThrow('injected generation load failure');
     expect(await current()).toBe(published);
-    await expect(fs.stat(dbPath)).resolves.toBeTruthy();
+    expect(await fs.readFile(dbPath)).toEqual(bytes);
     expect(await fs.readdir(overlay)).toEqual(before);
     expect(await queryOverlay(repo, cypher)).toEqual([{ name: 'gen1' }]);
   });

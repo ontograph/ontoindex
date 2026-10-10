@@ -1212,6 +1212,14 @@ RT-1 (2026-10-10), implemented locally in PR 83 without sub-agent role receipts,
 2026-10-10 pre-merge audit (RT-27, done in the main session): the branch carried an edit to the tracked, shared `.mcp.json` that replaced three upstream paths with this machine's `/opt/d1/_wrk/ontoindex`. That fixed this checkout and would break it for every other contributor (the file also lists other developers' absolute paths). Reverted to master's version; local MCP wiring for this machine lives in `~/.ontocode/config.toml`, which is not part of the repo. No TODO, FIXME, or debugger statements were added; added console.log calls are CLI user output (overlay summary, watch lines, benchmark usage). No machine paths appear in shipped source or scripts.
 
 
-## Evidence note: RT-25 immutability assertion (honest scope)
+## Evidence note: RT-25 immutability root cause and fix
 
-Byte-for-byte equality of a published generation file was dropped from the tests. Over repeated runs the in-process native store grew its own open file (about 2.1 MB to 3.1 MB). The cause was not isolated with strace, and the adapter was outside the write set. The tests now assert that `CURRENT` is unchanged, the file still exists, and a live reader keeps working. A separate builder process, as in `ontoindex watch`, is not covered by that in-process check. There is no Windows evidence for RT-25. The `overlay-generations` suite passed 25 of 25 runs on Linux after the pruning test used future mtimes.
+Published generation files grew in-process (about 2.1 MB to 3.1 MB) because `lbug-adapter.ts` left native query results unclosed. The builder's writer lifetime was extended, so its final checkpoint ran later, on garbage collection, and wrote into the published file. Evidence (agent strace on Linux): 479 write and truncate calls on gen1 during forced GC. Closing builder results removed the growth.
+
+A separate-process builder, as `ontoindex watch` uses, left gen N byte-identical (same sha256 before the build, after it and after the reader closed). The reader issued no writes.
+
+Fix: the adapter now closes every native result. `getAllWithTimeout` closes in a `finally`, and a `runStatement` helper handles statements whose rows are discarded. Strict byte equality is restored in `overlay-generations` and `dirty-overlay-build`; both passed 12 of 12 repeat runs on Linux.
+
+Windows: the CI probe PR #86 (commit `58e06d9`, before the adapter fix) failed 11 of 12 `overlay-generations` tests. Every failure was a native LadybugDB error, `IO exception: Cannot read from file ... Error 33: another process has locked a portion of the file`, raised when the reader opened a freshly published generation. It was not a Node `fs` error, and tests that never read bytes failed too. Working hypothesis, unproven: the builder's writer was still alive because of unclosed native results, so it held its byte-range lock when the reader opened the file. The adapter fix should remove that. It has not been verified on Windows; re-probe before claiming it.
+
+RT-28 re-run on overlay generations: base analyze 55,414 ms. Edit-to-answer: append 4,735 ms, rename 4,675 ms, new file 4,825 ms, delete 522 ms, atomic save 3,948 ms. Context and impact reported `source: overlay`, risk UNKNOWN.

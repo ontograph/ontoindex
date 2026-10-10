@@ -468,12 +468,37 @@ async function withLbugNativeTimeout<T>(
   }
 }
 
+/** Release native query results; unclosed results defer the writer's final checkpoint. */
+function closeQueryResults(queryResult: lbug.QueryResult | lbug.QueryResult[]): void {
+  for (const r of Array.isArray(queryResult) ? queryResult : [queryResult]) {
+    try {
+      r.close();
+    } catch {
+      // Closing is best-effort housekeeping.
+    }
+  }
+}
+
+/** Run a statement whose rows are not needed, then release the native result. */
+async function runStatement(
+  connection: lbug.Connection,
+  statement: string,
+  label: string,
+): Promise<void> {
+  closeQueryResults(await withLbugNativeTimeout(connection.query(statement), label));
+}
+
 async function getAllWithTimeout<TRow extends LbugProjectionRow = LbugProjectionRow>(
   result: lbug.QueryResult,
   label: string,
   timeoutMs = GET_ALL_TIMEOUT_MS,
 ): Promise<LbugProjectionRows<TRow>> {
-  const rows = await withLbugNativeTimeout(result.getAll(), `${label} getAll`, timeoutMs);
+  let rows;
+  try {
+    rows = await withLbugNativeTimeout(result.getAll(), `${label} getAll`, timeoutMs);
+  } finally {
+    closeQueryResults(result);
+  }
   return rows as LbugProjectionRows<TRow>;
 }
 
@@ -635,7 +660,7 @@ const doInitLbug = async (dbPath: string, opts?: { maxDBSize?: number }) => {
 
   for (const schemaQuery of SCHEMA_QUERIES) {
     try {
-      await withLbugNativeTimeout(conn.query(schemaQuery), 'initLbug schema query');
+      await runStatement(conn, schemaQuery, 'initLbug schema query');
     } catch (err) {
       if (err instanceof LbugQueryTimeoutError) throw err;
       // Only ignore "already exists" errors - log everything else
@@ -732,7 +757,7 @@ export const loadGraphToLbug = async (
     const copyQuery = getCopyQuery(table, normalizedPath);
 
     try {
-      await withLbugNativeTimeout(conn.query(copyQuery), `COPY ${table}`);
+      await runStatement(conn, copyQuery, `COPY ${table}`);
     } catch (err) {
       if (err instanceof LbugQueryTimeoutError) throw err;
       try {
@@ -740,7 +765,7 @@ export const loadGraphToLbug = async (
           'auto_detect=false)',
           'auto_detect=false, IGNORE_ERRORS=true)',
         );
-        await withLbugNativeTimeout(conn.query(retryQuery), `COPY ${table} retry`);
+        await runStatement(conn, retryQuery, `COPY ${table} retry`);
       } catch (retryErr) {
         const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
         throw new Error(`COPY failed for ${table}: ${retryMsg.slice(0, 200)}`);
@@ -840,7 +865,7 @@ export const loadGraphToLbug = async (
       }
 
       try {
-        await withLbugNativeTimeout(conn.query(copyQuery), `COPY relationships ${pairKey}`);
+        await runStatement(conn, copyQuery, `COPY relationships ${pairKey}`);
       } catch (err) {
         if (err instanceof LbugQueryTimeoutError) throw err;
         try {
@@ -848,10 +873,7 @@ export const loadGraphToLbug = async (
             'auto_detect=false)',
             'auto_detect=false, IGNORE_ERRORS=true)',
           );
-          await withLbugNativeTimeout(
-            conn.query(retryQuery),
-            `COPY relationships ${pairKey} retry`,
-          );
+          await runStatement(conn, retryQuery, `COPY relationships ${pairKey} retry`);
         } catch (retryErr) {
           const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
           warnings.push(`${fromLabel}->${toLabel} (${rows} edges): ${retryMsg.slice(0, 80)}`);
@@ -996,12 +1018,13 @@ const fallbackRelationshipInserts = async (
 
       const esc = (s: string) =>
         s.replace(/'/g, "''").replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
-      await withLbugNativeTimeout(
-        conn.query(`
+      await runStatement(
+        conn,
+        `
           MATCH (a:${escapeLabel(fromLabel)} {id: '${esc(fromId)}' }),
                 (b:${escapeLabel(toLabel)} {id: '${esc(toId)}' })
           CREATE (a)-[:${REL_TABLE_NAME} {type: '${esc(relType)}', confidence: ${confidence}, reason: '${esc(reason)}', step: ${step}}]->(b)
-        `),
+        `,
         'fallbackRelationshipInserts query',
       );
     } catch {
@@ -1157,7 +1180,7 @@ const insertNodeToLbug = async (
       const tempDb = new lbug.Database(targetDbPath);
       const tempConn = new lbug.Connection(tempDb);
       try {
-        await withLbugNativeTimeout(tempConn.query(query), 'insertNodeToLbug temp query');
+        await runStatement(tempConn, query, 'insertNodeToLbug temp query');
         return true;
       } finally {
         try {
@@ -1169,7 +1192,7 @@ const insertNodeToLbug = async (
       }
     } else if (conn) {
       // Use existing persistent connection (when called from analyze)
-      await withLbugNativeTimeout(conn.query(query), 'insertNodeToLbug query');
+      await runStatement(conn, query, 'insertNodeToLbug query');
       return true;
     }
 
@@ -1300,9 +1323,11 @@ export const executeWithReusedStatement = async (
     }
     try {
       for (const params of subBatch) {
-        await withLbugNativeTimeout(
-          conn.execute(stmt, toLbugParams(params)),
-          'executeWithReusedStatement execute',
+        closeQueryResults(
+          await withLbugNativeTimeout(
+            conn.execute(stmt, toLbugParams(params)),
+            'executeWithReusedStatement execute',
+          ),
         );
       }
     } catch (e) {
@@ -1702,10 +1727,9 @@ export const deleteNodesForFile = async (
 
         if (count > 0) {
           // Delete nodes (and implicitly their relationships via DETACH)
-          await withLbugNativeTimeout(
-            targetConn!.query(
-              `MATCH (n:${tn}) WHERE n.filePath = '${escapedPath}' DETACH DELETE n`,
-            ),
+          await runStatement(
+            targetConn!,
+            `MATCH (n:${tn}) WHERE n.filePath = '${escapedPath}' DETACH DELETE n`,
             `deleteNodesForFile delete ${tableName}`,
           );
           deletedNodes += count;
@@ -1717,10 +1741,9 @@ export const deleteNodesForFile = async (
 
     // Also delete any embeddings for nodes in this file
     try {
-      await withLbugNativeTimeout(
-        targetConn!.query(
-          `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE e.nodeId STARTS WITH '${escapedPath}' DELETE e`,
-        ),
+      await runStatement(
+        targetConn!,
+        `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE e.nodeId STARTS WITH '${escapedPath}' DELETE e`,
         'deleteNodesForFile embeddings',
       );
     } catch {
@@ -1762,8 +1785,9 @@ export const loadFTSExtension = async (): Promise<void> => {
   const localFtsPath = await resolveLocalLbugExtensionPath('fts');
   if (localFtsPath) {
     try {
-      await withLbugNativeTimeout(
-        conn.query(`LOAD EXTENSION '${quoteLbugString(localFtsPath)}'`),
+      await runStatement(
+        conn,
+        `LOAD EXTENSION '${quoteLbugString(localFtsPath)}'`,
         `LOAD EXTENSION ${localFtsPath}`,
       );
       ftsLoaded = true;
@@ -1779,14 +1803,14 @@ export const loadFTSExtension = async (): Promise<void> => {
 
   try {
     // Try loading locally first (no network required)
-    await withLbugNativeTimeout(conn.query('LOAD EXTENSION fts'), 'LOAD EXTENSION fts');
+    await runStatement(conn, 'LOAD EXTENSION fts', 'LOAD EXTENSION fts');
     ftsLoaded = true;
   } catch (err) {
     if (err instanceof LbugQueryTimeoutError) throw err;
     // Fall back to install + load (requires network)
     try {
-      await withLbugNativeTimeout(conn.query('INSTALL fts'), 'INSTALL fts');
-      await withLbugNativeTimeout(conn.query('LOAD EXTENSION fts'), 'LOAD EXTENSION fts retry');
+      await runStatement(conn, 'INSTALL fts', 'INSTALL fts');
+      await runStatement(conn, 'LOAD EXTENSION fts', 'LOAD EXTENSION fts retry');
       ftsLoaded = true;
     } catch (err: unknown) {
       const msg = getOptionalThrownMessage(err) || '';
@@ -1825,8 +1849,9 @@ export const loadVectorExtension = async (): Promise<void> => {
   const localVectorPath = await resolveLocalLbugExtensionPath('vector');
   if (localVectorPath) {
     try {
-      await withLbugNativeTimeout(
-        conn.query(`LOAD EXTENSION '${quoteLbugString(localVectorPath)}'`),
+      await runStatement(
+        conn,
+        `LOAD EXTENSION '${quoteLbugString(localVectorPath)}'`,
         `LOAD EXTENSION ${localVectorPath}`,
       );
       vectorExtensionLoaded = true;
@@ -1841,8 +1866,8 @@ export const loadVectorExtension = async (): Promise<void> => {
   }
 
   try {
-    await withLbugNativeTimeout(conn.query('INSTALL VECTOR'), 'INSTALL VECTOR');
-    await withLbugNativeTimeout(conn.query('LOAD EXTENSION VECTOR'), 'LOAD EXTENSION VECTOR');
+    await runStatement(conn, 'INSTALL VECTOR', 'INSTALL VECTOR');
+    await runStatement(conn, 'LOAD EXTENSION VECTOR', 'LOAD EXTENSION VECTOR');
     vectorExtensionLoaded = true;
   } catch (err: unknown) {
     if (err instanceof LbugQueryTimeoutError) throw err;
@@ -1891,7 +1916,7 @@ export const createFTSIndex = async (
   const query = `CALL CREATE_FTS_INDEX('${tableName}', '${indexName}', [${propList}], stemmer := '${stemmer}')`;
 
   try {
-    await withLbugNativeTimeout(conn.query(query), `CREATE_FTS_INDEX ${tableName}:${indexName}`);
+    await runStatement(conn, query, `CREATE_FTS_INDEX ${tableName}:${indexName}`);
   } catch (e: unknown) {
     if (!getThrownMessage(e)?.includes('already exists')) {
       throw e;
@@ -1991,8 +2016,9 @@ export const dropFTSIndex = async (tableName: string, indexName: string): Promis
   }
 
   try {
-    await withLbugNativeTimeout(
-      conn.query(`CALL DROP_FTS_INDEX('${tableName}', '${indexName}')`),
+    await runStatement(
+      conn,
+      `CALL DROP_FTS_INDEX('${tableName}', '${indexName}')`,
       `DROP_FTS_INDEX ${tableName}:${indexName}`,
     );
   } catch (err) {

@@ -153,6 +153,7 @@ describe('disposable dirty overlay build', () => {
         expect(overlayDbPath).not.toBeNull();
         expect((await fs.stat(overlayDbPath!)).isFile()).toBe(true);
         const overlayCurrent = await fs.readFile(path.join(overlayPath, 'CURRENT'));
+        const overlayBefore = await fs.readFile(overlayDbPath!);
         // Verify the immutable publication read-only, without writable catalog
         // initialization or deferred native checkpoints changing its bytes.
         const overlayDb = new lbug.Database(overlayDbPath!, 0, true, true, 2 ** 32);
@@ -204,8 +205,7 @@ describe('disposable dirty overlay build', () => {
         ).rejects.toThrow('injected overlay load failure');
         expect(failedAfterCopy).toBe(true);
         expect(await fs.readFile(path.join(overlayPath, 'CURRENT'))).toEqual(overlayCurrent);
-        // Byte equality is not asserted: the in-process native store may rewrite its own header.
-        await expect(fs.stat(overlayDbPath!)).resolves.toBeTruthy();
+        expect(await fs.readFile(overlayDbPath!)).toEqual(overlayBefore);
         expect((await fs.readdir(overlayPath)).sort()).toEqual(
           [path.basename(path.dirname(overlayDbPath!)), 'CURRENT'].sort(),
         );
