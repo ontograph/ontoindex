@@ -1233,3 +1233,10 @@ RT-28 re-run on overlay generations: base analyze 55,414 ms. Edit-to-answer: app
 - None of this is verified on Windows or macOS until CI runs.
 
 CI probe PR #88 (commit 0e4f4c4, since closed): Ubuntu, macOS and Windows test jobs, lint, format, typecheck and benchmark passed. Only `check` failed, the known bug fixed by PR #84. The Windows test skips from earlier rounds are unchanged.
+
+## Evidence note: Windows skip removal attempt (RT-32 to RT-34)
+
+- RT-33: `test/unit/group/bridge-db-close.test.ts` covers `bridge-db.ts` result closing. The agent reported a mutation check (no-op `closeResults`) failed both tests.
+- RT-32 (analysis): the failing rename in `dirty-overlay-build.test.ts` is `repo-manager.ts` staging dir to `generations/baseline`, before any activation. Native results now close first. A swallowed Connection or Database close error is the one remaining plausible open handle. The analysis could not prove Windows safety.
+- Change under test: the win32 skip on that test is removed. The win32 skip on `overlay-cross-process.test.ts` is also removed, but its in-flight byte hash is guarded to non-Windows, because Windows forbids reading a store file with an open native handle (RT-34 analysis).
+- Not decided: if the probe fails on Windows, restore the skip with the failure text as the reason. Production close errors still propagate silently (`lbug-adapter.ts` swallows Connection and Database close failures); making publication-required closes fail loudly is a possible follow-up, not done.

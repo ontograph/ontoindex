@@ -74,70 +74,67 @@ describe('cross-process overlay generation immutability', () => {
     vi.restoreAllMocks();
   });
 
-  // LadybugDB's open-generation behavior is only supported by this regression on POSIX.
-  it.skipIf(process.platform === 'win32')(
-    'preserves gen1 bytes while another process publishes gen2',
-    async () => {
-      const Database = lbug.Database;
-      vi.spyOn(lbug, 'Database').mockImplementation(function (
-        dbPath?: string,
-        bufferSize?: number,
-        compression?: boolean,
-        readOnly?: boolean,
-        maxDBSize?: number,
-      ) {
-        return new Database(dbPath, bufferSize, compression, readOnly, maxDBSize ?? 2 ** 32);
-      });
+  it('preserves gen1 bytes while another process publishes gen2', async () => {
+    const Database = lbug.Database;
+    vi.spyOn(lbug, 'Database').mockImplementation(function (
+      dbPath?: string,
+      bufferSize?: number,
+      compression?: boolean,
+      readOnly?: boolean,
+      maxDBSize?: number,
+    ) {
+      return new Database(dbPath, bufferSize, compression, readOnly, maxDBSize ?? 2 ** 32);
+    });
 
-      root = await fs.mkdtemp(path.join(os.tmpdir(), 'overlay-cross-process-'));
-      repo = { id: root, repoPath: root, storagePath: path.join(root, '.ontoindex') };
-      for (const args of [
-        ['init', '-q'],
-        ['config', 'user.name', 'test'],
-        ['config', 'user.email', 'test@example.com'],
-      ]) {
-        expect(spawnSync('git', args, { cwd: root, encoding: 'utf8' }).status).toBe(0);
-      }
-      await fs.writeFile(path.join(root, 'source.ts'), 'export function baseline() {}\n');
-      for (const args of [
-        ['add', 'source.ts'],
-        ['commit', '-qm', 'baseline'],
-      ]) {
-        expect(spawnSync('git', args, { cwd: root, encoding: 'utf8' }).status).toBe(0);
-      }
-      await fs.writeFile(path.join(root, 'source.ts'), 'export function gen1() {}\n');
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'overlay-cross-process-'));
+    repo = { id: root, repoPath: root, storagePath: path.join(root, '.ontoindex') };
+    for (const args of [
+      ['init', '-q'],
+      ['config', 'user.name', 'test'],
+      ['config', 'user.email', 'test@example.com'],
+    ]) {
+      expect(spawnSync('git', args, { cwd: root, encoding: 'utf8' }).status).toBe(0);
+    }
+    await fs.writeFile(path.join(root, 'source.ts'), 'export function baseline() {}\n');
+    for (const args of [
+      ['add', 'source.ts'],
+      ['commit', '-qm', 'baseline'],
+    ]) {
+      expect(spawnSync('git', args, { cwd: root, encoding: 'utf8' }).status).toBe(0);
+    }
+    await fs.writeFile(path.join(root, 'source.ts'), 'export function gen1() {}\n');
 
-      await buildFirstGeneration();
-      const firstPath = await resolveOverlayDbPath(repo.storagePath);
-      expect(firstPath).not.toBeNull();
-      const firstCurrent = await fs.readFile(
-        path.join(repo.storagePath, 'overlay', 'CURRENT'),
-        'utf8',
-      );
-      const hashFirst = async () =>
-        createHash('sha256')
-          .update(await fs.readFile(firstPath!))
-          .digest('hex');
-      const originalHash = await hashFirst();
+    await buildFirstGeneration();
+    const firstPath = await resolveOverlayDbPath(repo.storagePath);
+    expect(firstPath).not.toBeNull();
+    const firstCurrent = await fs.readFile(
+      path.join(repo.storagePath, 'overlay', 'CURRENT'),
+      'utf8',
+    );
+    const hashFirst = async () =>
+      createHash('sha256')
+        .update(await fs.readFile(firstPath!))
+        .digest('hex');
+    const originalHash = await hashFirst();
 
-      await expect(queryOverlay(repo, cypher)).resolves.toEqual([{ name: 'gen1' }]);
-      await fs.writeFile(path.join(root, 'source.ts'), 'export function gen2() {}\n');
-      await runChildAnalyze();
+    await expect(queryOverlay(repo, cypher)).resolves.toEqual([{ name: 'gen1' }]);
+    await fs.writeFile(path.join(root, 'source.ts'), 'export function gen2() {}\n');
+    await runChildAnalyze();
 
-      const secondPath = await resolveOverlayDbPath(repo.storagePath);
-      const secondCurrent = await fs.readFile(
-        path.join(repo.storagePath, 'overlay', 'CURRENT'),
-        'utf8',
-      );
-      expect(secondCurrent).not.toBe(firstCurrent);
-      expect(secondPath).not.toBe(firstPath);
-      expect(await pool.executeParameterized(overlayRepoId(repo.id), cypher, {})).toEqual([
-        { name: 'gen1' },
-      ]);
-      expect(await hashFirst()).toBe(originalHash);
+    const secondPath = await resolveOverlayDbPath(repo.storagePath);
+    const secondCurrent = await fs.readFile(
+      path.join(repo.storagePath, 'overlay', 'CURRENT'),
+      'utf8',
+    );
+    expect(secondCurrent).not.toBe(firstCurrent);
+    expect(secondPath).not.toBe(firstPath);
+    expect(await pool.executeParameterized(overlayRepoId(repo.id), cypher, {})).toEqual([
+      { name: 'gen1' },
+    ]);
+    // Windows forbids reading a store file while its native handle is open.
+    if (process.platform !== 'win32') expect(await hashFirst()).toBe(originalHash);
 
-      await pool.closeLbug(overlayRepoId(repo.id));
-      expect(await hashFirst()).toBe(originalHash);
-    },
-  );
+    await pool.closeLbug(overlayRepoId(repo.id));
+    expect(await hashFirst()).toBe(originalHash);
+  });
 });
