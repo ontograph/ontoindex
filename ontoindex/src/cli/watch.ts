@@ -191,9 +191,23 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
           // Recursive fs.watch can miss immediate root replacement; its parent observes it.
           parentWatcher = fs.watch(path.dirname(root), (eventType, filename) => {
             if (!stopped && (filename == null || filename.toString() === path.basename(root))) {
-              // Inodes and birthtimes can be reused on immediate delete/recreate.
               if (eventType === 'rename' && filename != null) {
-                fail(new Error(`Watched root was removed or replaced: ${root}`));
+                // A rename of the root's name is ambiguous. On macOS FSEvents replays the
+                // root's own creation right after arming; on Linux an immediate delete and
+                // recreate reuses the inode and birthtime. Either way the answer is the same:
+                // if the root is gone, stop; otherwise watch the directory that exists now.
+                try {
+                  rootStat = fs.statSync(root, { bigint: true });
+                } catch (error) {
+                  fail(error);
+                  return;
+                }
+                try {
+                  watcher?.close();
+                  openWatcher();
+                } catch (error) {
+                  fail(error);
+                }
                 return;
               }
               checkRoot();

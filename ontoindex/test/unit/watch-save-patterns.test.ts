@@ -142,24 +142,32 @@ describe('real fs.watch editor save patterns', () => {
     }, 'final-19');
   });
 
-  it.each([0, SETTLE_MS])(
-    'logs and stops cleanly when root is deleted and recreated after %i ms',
-    async (gap) => {
-      fs.rmSync(root, { recursive: true });
-      if (gap) await delay(gap);
-      fs.mkdirSync(root);
-      fs.writeFileSync(file, 'recreated');
-      await delay(SETTLE_MS);
-      expect(logs).toEqual([expect.stringContaining('Watcher stopped:')]);
-      expect(refreshes).toEqual([]);
+  it('keeps watching the recreated directory when the root is deleted and recreated at once', async () => {
+    fs.rmSync(root, { recursive: true });
+    fs.mkdirSync(root);
+    fs.writeFileSync(file, 'recreated');
+    await delay(SETTLE_MS);
+    // The directory exists again, so the watcher stays alive and does not log a stop.
+    expect(logs).toEqual([]);
 
-      // Root replacement is terminal, not automatic recovery: stop/start are safe no-ops.
-      watcher.stop();
-      watcher.start();
-      fs.writeFileSync(file, 'after stop');
-      await delay(SETTLE_MS);
-      expect(refreshes).toEqual([]);
-      expect(logs).toHaveLength(1);
-    },
-  );
+    const before = refreshes.length;
+    fs.writeFileSync(file, 'after recreate');
+    await delay(SETTLE_MS);
+    const observed = refreshes.slice(before);
+    expect(observed.length).toBeGreaterThanOrEqual(1);
+    expect(observed.at(-1)?.content).toBe('after recreate');
+  });
+
+  it('logs and stops when the root is deleted and not recreated', async () => {
+    fs.rmSync(root, { recursive: true });
+    await delay(SETTLE_MS);
+    expect(logs).toEqual([expect.stringContaining('Watcher stopped:')]);
+    expect(refreshes).toEqual([]);
+
+    // Stopping is terminal: stop/start are safe no-ops.
+    watcher.stop();
+    watcher.start();
+    await delay(SETTLE_MS);
+    expect(logs).toHaveLength(1);
+  });
 });
