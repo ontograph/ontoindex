@@ -1,10 +1,11 @@
 import { resolveSymbolCandidates } from './backend-symbol-resolution.js';
 import { extractFunction } from './backend-extract-function.js';
-import { moveSymbol } from './backend-move-symbol.js';
+import { guardMutationRange, moveSymbol } from './backend-move-symbol.js';
 
 interface MutationRepoHandle {
   id: string;
   repoPath: string;
+  storagePath?: string;
 }
 
 interface ResolvedSymbolInfo {
@@ -20,16 +21,11 @@ interface ResolvedSymbolInfo {
 type SymbolInfoResult = ResolvedSymbolInfo | { error: 'not found' };
 
 type UpdateSymbolBodyResult =
-  | { success: true; dry_run: true; uid: string }
+  | { success: true; dry_run: true; uid: string; warnings?: string[] }
   | { success: true; uid: string; filePath: string; startLine: number; endLine: number };
 
-type ExtractFunctionResult =
-  | { success: true; dry_run: true; uid: string; new_name: string; preview: string }
-  | { success: true; uid: string; new_name: string; filePath: string; insertedAt: number };
-
-type MoveSymbolResult =
-  | { success: true; dry_run: true; uid: string; from: string; to: string }
-  | { success: true; uid: string; from: string; to: string; movedLines: number };
+type ExtractFunctionResult = Awaited<ReturnType<typeof extractFunction>>;
+type MoveSymbolResult = Awaited<ReturnType<typeof moveSymbol>>;
 
 /**
  * Sandbox tool — stage/apply mutations inside a write transaction.
@@ -71,10 +67,10 @@ export async function sandbox(
  * pattern as sandbox(). Future wiring inherits the safety contract.
  */
 export async function replaceSymbol(
-  _repo: MutationRepoHandle,
+  repo: MutationRepoHandle,
   params: { uid?: string; new_body?: string; dry_run?: boolean; confirm?: boolean },
   confirmWrites: boolean,
-): Promise<{ success: true; dry_run: boolean; uid?: string }> {
+): Promise<{ success: true; dry_run: boolean; uid?: string; warnings?: string[] }> {
   const dryRun = params?.dry_run === true;
   if (!dryRun) {
     if (params?.confirm !== true) {
@@ -88,7 +84,14 @@ export async function replaceSymbol(
       );
     }
   }
-  return { success: true, dry_run: dryRun, uid: params?.uid };
+  let warnings: string[] | undefined;
+  if (params?.uid && repo.repoPath && repo.storagePath) {
+    const outcome = await resolveSymbolCandidates(repo, { uid: params.uid }, {});
+    if (outcome.kind === 'ok') {
+      warnings = await guardMutationRange(repo, outcome.symbol, dryRun);
+    }
+  }
+  return { success: true, dry_run: dryRun, uid: params?.uid, ...(warnings ? { warnings } : {}) };
 }
 
 export async function getSymbolInfo(
@@ -117,7 +120,14 @@ export async function updateSymbolBody(
   await ensureInitialized(repo.id);
 
   if (params.dry_run !== false) {
-    return { success: true, dry_run: true, uid: params.uid };
+    let warnings: string[] | undefined;
+    if (repo.repoPath && repo.storagePath) {
+      const outcome = await resolveSymbolCandidates(repo, { uid: params.uid }, {});
+      if (outcome.kind === 'ok') {
+        warnings = await guardMutationRange(repo, outcome.symbol, true);
+      }
+    }
+    return { success: true, dry_run: true, uid: params.uid, ...(warnings ? { warnings } : {}) };
   }
 
   if (!confirmWrites) {
@@ -138,6 +148,7 @@ export async function updateSymbolBody(
   }
 
   const { filePath, startLine, endLine } = outcome.symbol;
+  await guardMutationRange(repo, outcome.symbol, false);
   const fs = await import('fs/promises');
   const source = await fs.readFile(filePath, 'utf-8');
   const lines = source.split('\n');

@@ -59,6 +59,8 @@ const IGNORED_EXTENSIONS = new Set([
 function isIgnoredByDefault(relPath: string): boolean {
   const normalized = relPath.replaceAll('\\', '/');
   if (normalized.split('/').some((part) => IGNORED_DIRECTORIES.has(part))) return true;
+  const basename = path.posix.basename(normalized);
+  if (basename.endsWith('~') || basename === '4913') return true;
   return IGNORED_EXTENSIONS.has(path.posix.extname(normalized).toLowerCase());
 }
 
@@ -70,15 +72,70 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
   const debounceMs = opts.debounceMs ?? 750;
   const log = opts.log ?? (() => {});
   let watcher: fs.FSWatcher | undefined;
+  let parentWatcher: fs.FSWatcher | undefined;
   let timer: NodeJS.Timeout | undefined;
   let stopped = false;
   let running = false;
   let followUp = false;
+  let rootStat: fs.BigIntStats | undefined;
+
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+    followUp = false;
+    watcher?.close();
+    watcher = undefined;
+    parentWatcher?.close();
+    parentWatcher = undefined;
+  };
+
+  const fail = (error: unknown) => {
+    if (stopped) return;
+    stop();
+    log(`Watcher stopped: ${error instanceof Error ? error.message : String(error)}`);
+  };
+
+  const checkRoot = (): boolean => {
+    if (!rootStat) return true;
+    try {
+      const current = fs.statSync(opts.root, { bigint: true });
+      if (
+        current.dev !== rootStat.dev ||
+        current.ino !== rootStat.ino ||
+        current.birthtimeNs !== rootStat.birthtimeNs
+      ) {
+        throw new Error(`Watched root was replaced: ${opts.root}`);
+      }
+      return true;
+    } catch (error) {
+      fail(error);
+      return false;
+    }
+  };
+
+  const openWatcher = () => {
+    watcher = watch(opts.root, { recursive: true }, onChange);
+    watcher.on?.('error', fail);
+  };
 
   const schedule = () => {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = undefined;
+      if (!checkRoot()) return;
+      if (!opts.watchImpl) {
+        // Node's recursive Linux watcher can retain the old inode after an editor save.
+        // Re-arm before refreshing so later saves are observed without polling.
+        try {
+          watcher?.close();
+          openWatcher();
+        } catch (error) {
+          fail(error);
+          return;
+        }
+      }
       void runRefresh();
     }, debounceMs);
   };
@@ -119,6 +176,7 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
   const onChange = (_eventType: string, filename: string | Buffer | null) => {
     if (stopped) return;
     const relPath = filename == null ? '' : filename.toString();
+    if (relPath === '' && !checkRoot()) return;
     if (isIgnoredByDefault(relPath) || opts.shouldIgnore?.(relPath)) return;
     schedule();
   };
@@ -126,17 +184,30 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
   return {
     start() {
       if (watcher || stopped) return;
-      watcher = watch(opts.root, { recursive: true }, onChange);
+      try {
+        if (!opts.watchImpl) {
+          const root = path.resolve(opts.root);
+          rootStat = fs.statSync(root, { bigint: true });
+          // Recursive fs.watch can miss immediate root replacement; its parent observes it.
+          parentWatcher = fs.watch(path.dirname(root), (eventType, filename) => {
+            if (!stopped && (filename == null || filename.toString() === path.basename(root))) {
+              // Inodes and birthtimes can be reused on immediate delete/recreate.
+              if (eventType === 'rename' && filename != null) {
+                fail(new Error(`Watched root was removed or replaced: ${root}`));
+                return;
+              }
+              checkRoot();
+            }
+          });
+          parentWatcher.on('error', fail);
+        }
+        openWatcher();
+      } catch (error) {
+        stop();
+        throw error;
+      }
     },
-    stop() {
-      if (stopped) return;
-      stopped = true;
-      if (timer) clearTimeout(timer);
-      timer = undefined;
-      followUp = false;
-      watcher?.close();
-      watcher = undefined;
-    },
+    stop,
   };
 }
 

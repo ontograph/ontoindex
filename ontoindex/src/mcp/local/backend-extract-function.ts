@@ -1,10 +1,12 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { resolveSymbolCandidates } from './backend-symbol-resolution.js';
+import { guardMutationRange } from './backend-move-symbol.js';
 
 interface ExtractFunctionRepoHandle {
   id: string;
   repoPath: string;
+  storagePath?: string;
 }
 
 interface ExtractFunctionDryRunResult {
@@ -14,6 +16,7 @@ interface ExtractFunctionDryRunResult {
   new_name: string;
   preview: string;
   filePath?: undefined;
+  warnings?: string[];
 }
 
 interface ExtractFunctionApplyResult {
@@ -47,6 +50,7 @@ export async function extractFunction(
 
   const { name, filePath, startLine, endLine } = outcome.symbol;
   const targetFile = params.target_file ?? filePath;
+  const warnings = await guardMutationRange(repo, outcome.symbol, dry_run);
 
   if (dry_run) {
     return {
@@ -55,6 +59,7 @@ export async function extractFunction(
       uid,
       new_name,
       preview: `Would extract ${name} as ${new_name} to ${targetFile}`,
+      ...(warnings ? { warnings } : {}),
     };
   }
 

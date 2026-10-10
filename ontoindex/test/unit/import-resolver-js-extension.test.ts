@@ -134,3 +134,20 @@ describe('tryResolveWithExtensions opt-in compatibility', () => {
     },
   );
 });
+
+describe('tryResolveWithExtensions directory index fallback', () => {
+  it.each([
+    ['src/dir.js', ['src/dir/index.ts'], 'src/dir/index.ts'],
+    ['src/dir.js', ['src/dir.ts', 'src/dir/index.ts'], 'src/dir.ts'],
+    ['src/dir.mjs', ['src/dir/index.mts'], 'src/dir/index.mts'],
+    ['src/dir.jsx', ['src/dir/index.tsx'], 'src/dir/index.tsx'],
+  ] as const)('%s with %j resolves to %s', (path, files, expected) => {
+    expect(tryResolveWithExtensions(path, new Set(files), { mapJsToTs: true })).toBe(expected);
+  });
+
+  it('does not use directory index fallback when disabled or missing', () => {
+    const files = new Set(['src/dir/index.ts']);
+    expect(tryResolveWithExtensions('src/dir.js', files, { mapJsToTs: false })).toBeNull();
+    expect(tryResolveWithExtensions('src/missing.js', files, { mapJsToTs: true })).toBeNull();
+  });
+});

@@ -1,10 +1,12 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { resolveSymbolCandidates } from './backend-symbol-resolution.js';
+import { getOverlaySnapshot, isDirtyPath } from './backend-overlay.js';
 
 interface MoveSymbolRepoHandle {
   id: string;
   repoPath: string;
+  storagePath?: string;
 }
 
 interface MoveSymbolDryRunResult {
@@ -13,6 +15,7 @@ interface MoveSymbolDryRunResult {
   uid: string;
   from: string;
   to: string;
+  warnings?: string[];
 }
 
 interface MoveSymbolApplyResult {
@@ -24,6 +27,27 @@ interface MoveSymbolApplyResult {
 }
 
 type MoveSymbolResult = MoveSymbolDryRunResult | MoveSymbolApplyResult;
+
+/** Never apply base-graph line ranges to live, dirty source files. */
+export async function guardMutationRange(
+  repo: MoveSymbolRepoHandle,
+  symbol: { filePath: string; source?: 'overlay' },
+  dryRun: boolean,
+): Promise<string[] | undefined> {
+  if (!repo.repoPath || !repo.storagePath || symbol.source === 'overlay') return undefined;
+  const snapshot = await getOverlaySnapshot({
+    id: repo.id,
+    repoPath: repo.repoPath,
+    storagePath: repo.storagePath,
+  });
+  const filePath = path.isAbsolute(symbol.filePath)
+    ? path.relative(repo.repoPath, symbol.filePath)
+    : symbol.filePath;
+  if (!isDirtyPath(snapshot, filePath)) return undefined;
+  const warning = `Dirty file ${symbol.filePath}: the symbol line range may be stale. Commit/stash changes or run ontoindex analyze and retry.`;
+  if (!dryRun) throw new Error(warning);
+  return [warning];
+}
 
 function isEnoentError(error: unknown): error is { code: 'ENOENT' } {
   return (
@@ -52,6 +76,7 @@ export async function moveSymbol(
   }
 
   const { filePath, startLine, endLine } = outcome.symbol;
+  const warnings = await guardMutationRange(repo, outcome.symbol, dry_run);
 
   if (dry_run) {
     return {
@@ -60,6 +85,7 @@ export async function moveSymbol(
       uid,
       from: filePath,
       to: target_file,
+      ...(warnings ? { warnings } : {}),
     };
   }
 

@@ -80,6 +80,10 @@ export function tryResolveWithExtensions(
       const candidate = stem + sourceExtension;
       if (allFiles.has(candidate)) return candidate;
     }
+    for (const sourceExtension of sourceExtensions) {
+      const candidate = `${stem}/index${sourceExtension}`;
+      if (allFiles.has(candidate)) return candidate;
+    }
   }
   return null;
 }

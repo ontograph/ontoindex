@@ -645,6 +645,201 @@ tasks:
     stop_conditions:
       - The script needs network access or the repo's live .ontoindex.
     known_blockers: []
+
+  RT-17:
+    title: When a TS or JS file imports ./dir.js and only dir/index.ts exists, the resolver links the import to dir/index.ts, and a real a.js or dir.ts still wins
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: low
+    owner_files:
+      - ontoindex/src/core/ingestion/import-resolvers/utils.ts
+      - ontoindex/test/unit/import-resolver-js-extension.test.ts
+    allowed_write_set:
+      - ontoindex/src/core/ingestion/import-resolvers/utils.ts
+      - ontoindex/test/unit/import-resolver-js-extension.test.ts
+    non_goals:
+      - Changing the opt-in rule: still only the relative TS/JS branch of standard.ts.
+      - Editing standard.ts.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/import-resolver-js-extension.test.ts test/integration/js-specifier-edges.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/core/ingestion/import-resolvers/utils.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - ./dir.js resolves to dir/index.ts when neither dir.js nor dir.ts exists (found on a scratch repo: before, u1.ts had no IMPORTS edge).
+      - ./dir.js still resolves to dir.ts when both dir.ts and dir/index.ts exist.
+      - ./dir.mjs resolves to dir/index.mts and ./dir.jsx to dir/index.tsx; aliases and other languages are still not remapped.
+      - All 66 existing resolver tests pass unchanged.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - The fix needs standard.ts or another file.
+    known_blockers: []
+
+  RT-18:
+    title: When an editor saves by writing a temp file and renaming it over the original, by delete-then-create, or by in-place truncate, the watcher triggers exactly one overlay refresh per save and the new content is queryable
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: medium
+    owner_files:
+      - ontoindex/src/cli/watch.ts
+      - ontoindex/test/unit/watch-save-patterns.test.ts
+    allowed_write_set:
+      - ontoindex/src/cli/watch.ts
+      - ontoindex/test/unit/watch-save-patterns.test.ts
+    non_goals:
+      - Adding a dependency.
+      - Changing refresh, lock, or spawn behavior beyond what the save patterns need.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/watch-save-patterns.test.ts test/unit/watch.test.ts test/unit/watch-command.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/cli/watch.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - A test with real files in a temp git repo and the real createDebouncedWatcher (no watchImpl mock) performs each save pattern and observes exactly one refresh after the debounce.
+      - A backup-suffix file (a.ts~, .a.ts.swp, a.ts.tmp) never triggers a refresh by itself, but the rename onto a.ts does.
+      - A watcher whose root is deleted and recreated does not crash the process; the failure is logged.
+      - Existing watch tests still pass.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - Node fs.watch cannot deliver the rename event on this platform (report which pattern and why).
+      - The fix needs a file outside the write set.
+    known_blockers: []
+
+  RT-19:
+    title: When dirty paths, overlay snapshots, the watcher ignore filter, and the planner receive backslash or mixed-separator paths as Windows produces them, they behave identically to forward-slash paths
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: low
+    owner_files:
+      - ontoindex/test/unit/windows-path-handling.test.ts
+    allowed_write_set:
+      - ontoindex/test/unit/windows-path-handling.test.ts
+    non_goals:
+      - Editing production code (report defects instead).
+      - Running on Windows.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/windows-path-handling.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - test/unit/windows-path-handling.test.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - Tests feed backslash and mixed-separator paths through isDirtyPath, findDirtyResultPaths, the watcher ignore function, and the planDirtyOverlay porcelain parser (use forward-slash porcelain output, since git emits those on Windows too).
+      - Each case asserts the same result as the forward-slash form; a case that exposes a real defect is reported with the failing input (do not fix production code in this task).
+      - No test depends on the host OS.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - Testing requires exporting a private function from production code.
+    known_blockers: []
+
+  RT-20:
+    title: A reader of the docs can find what --dirty-overlay, ontoindex watch, freshness.dirtyResultPaths, and source overlay mean, when to use them, and their limits
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: documentation
+    validation_tier: unit-fast
+    impact_risk: low
+    owner_files:
+      - .memory-bank/knowledge-hub/dirty-worktree.md
+    allowed_write_set:
+      - .memory-bank/knowledge-hub/dirty-worktree.md
+    non_goals:
+      - Editing code or README.
+      - Claiming behavior that was not verified.
+    required_validation:
+      - npx prettier --check .memory-bank/knowledge-hub/dirty-worktree.md
+    validation_workspace:
+      root: .
+      inputs:
+        - .memory-bank/knowledge-hub/dirty-worktree.md
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - The page states: how to build an overlay, how to run watch, the 50-file limit, that the overlay has symbols only (no edges, no embeddings), that impact on an overlay symbol returns UNKNOWN, what dirtyWorkspace.dirtyPaths and freshness.dirtyResultPaths contain, and that the overlay is treated as stale once a dirty file is saved after the build.
+      - Every command and field name on the page was checked against the code (cite the file for each).
+      - It lists measured build times from the benchmark with the caveat that they are not a scaling law.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - A claimed behavior cannot be confirmed in the code.
+    known_blockers: []
+
+  RT-21:
+    title: When move_symbol, extract_function, or a symbol mutation targets a symbol in a file with uncommitted changes and its line range did not come from a usable overlay, a real write is refused before any file is touched and a dry run carries a stale-lines warning
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: high
+    owner_files:
+      - ontoindex/src/mcp/local/backend-move-symbol.ts
+      - ontoindex/src/mcp/local/backend-extract-function.ts
+      - ontoindex/src/mcp/local/backend-symbol-mutations.ts
+      - ontoindex/test/unit/mutation-dirty-guard.test.ts
+    allowed_write_set:
+      - ontoindex/src/mcp/local/backend-move-symbol.ts
+      - ontoindex/src/mcp/local/backend-extract-function.ts
+      - ontoindex/src/mcp/local/backend-symbol-mutations.ts
+      - ontoindex/test/unit/mutation-dirty-guard.test.ts
+    non_goals:
+      - Changing the resolver or overlay code.
+      - Blocking mutations on clean files.
+      - Enabling writes on the MCP server.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/mutation-dirty-guard.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/mcp/local/backend-move-symbol.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - A reproduction on a temp copy shows the defect first - a dirty file whose lines shifted makes the real write cut the wrong lines.
+      - With the same setup after the fix, the real write throws before any file changes and the file content is byte-identical.
+      - A dry run on that file returns success with a warning naming the dirty file.
+      - Clean files and overlay-sourced symbols behave as before.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - The guard needs a file outside the write set.
+      - The dirty probe cannot be called from the mutation modules without changing the resolver.
+    known_blockers: []
 ```
 
 ## Required Traceability
@@ -665,6 +860,11 @@ tasks:
 | RT-REQ-12 | A regression in .js-to-.ts mapping fails a real-pipeline test | implementation | RT-14 | js-specifier-edges integration test |
 | RT-REQ-13 | The watcher says what it is doing at startup | implementation | RT-15 | watch-command tests |
 | RT-REQ-14 | Overlay performance is measured, not assumed | proof-only | RT-16 | benchmark output |
+| RT-REQ-15 | ./dir.js resolves to dir/index.ts | implementation | RT-17 | resolver unit and integration tests |
+| RT-REQ-16 | The watcher survives real editor save patterns | implementation | RT-18 | real-file watcher tests |
+| RT-REQ-17 | Windows-style paths behave like POSIX paths | proof-only | RT-19 | host-independent path tests |
+| RT-REQ-18 | The feature is documented and discoverable | implementation | RT-20 | doc claims checked against code |
+| RT-REQ-19 | Mutation tools never apply graph line numbers to a file that changed since indexing | implementation | RT-21 | mutation-dirty-guard tests |
 
 ## Decisions And Non-Goals
 
@@ -677,6 +877,10 @@ tasks:
 
 - 2026-10-10 CI review: PR 83 is based on the PR 82 branch, so ci.yml (branches: [master]) never ran against RT-1..RT-13; only benchmark and the broken check job run. Reproduced locally instead: prettier, eslint (0 errors), tsc, web tsc -b, unit tests. The check job fails on every PR in its history because ontoindex-check.yml lacks `permissions: pull-requests: write` (Comment PR gets `Resource not accessible by integration`); fixing it is a repo-permission change left to the owner. Merging 82 and retargeting 83 is also left to the owner.
 - Chosen next: RT-14 (permanent regression test for the highest-risk change), RT-15 (watcher startup line), RT-16 (measure before tuning). Rejected: throwaway master PR (duplicates the diff), continue-on-error for the comment step (hides a signal), watcher status reporting in doctor (touches shared status code), .git/index-mtime snapshot cache (premature without RT-16 numbers).
+
+- 2026-10-10 scratch-repo verification (edit + rename + untracked + dir-index import): overlay serves edited, renamed, and untracked symbols with source overlay; impact is UNKNOWN. Found one resolver gap (./dir.js to dir/index.ts) -> RT-17. Chosen: RT-17, RT-18, RT-19, RT-20. Rejected: git-diff-based impact for overlay targets (hot-path cost), recursive-watch fallback for old Linux (not testable here), waiting for Windows/macOS CI (blocked on the owner merging PR 82).
+
+- 2026-10-10 mutation check: the resolver returned startLine 1 for a symbol that sits on line 5 of a dirty file (three comment lines added above it); move_symbol slices those graph lines from the live file, and its dry run reported success with no warning. Existing behavior, not caused by the RT work, but now preventable with the dirty-path machinery -> RT-21. The real write failed closed in my check only because the server had writes disabled.
 
 ## Closeout
 
@@ -711,5 +915,13 @@ RT-1 (2026-10-10), implemented locally in PR 83 without sub-agent role receipts,
 - RT-14: js-specifier-edges integration test runs the real pipeline and asserts exact edges (b->a, c->a, d->sub/index, e->f, no edge for a missing target). It fails on c1767b5 (only c->a resolves) and passes 5/5 on the fixed tree.
 - RT-15: `ontoindex watch` prints one startup line, e.g. `Watching <root> (debounce 750 ms); tree is clean`, and nothing while idle.
 - RT-16: overlay-benchmark.mjs measured `analyze --dirty-overlay` (Ryzen 9 9950X, commit 61f0b6c, baseline full analyze about 38-39 s). Warm medians: 1 file 0.86 s, 10 files 2.3-2.4 s, 25 files 1.2 s, 50 files 1.4 s. Timing does NOT grow with file count because the benchmark picks files in sorted path order, so the 10-file set contains heavier files than the 25- and 50-file sets; the numbers show cost is dominated by which files are dirty, not how many, and an overlay build is 15-40x cheaper than a full analyze. They are not a scaling law. Warm medians come from 2 runs on a shared host.
+- Statuses stay OPEN: no authenticated role receipts exist.
+
+2026-10-10 robustness phase (5 sub-agents: gpt-6-luna on RT-17 and RT-19, gpt-6.1-sol on RT-18, RT-20 and RT-21). Parent re-ran: tsc clean, prettier clean, watcher suites 10/10 runs green.
+- RT-17: `./dir.js` now resolves to `dir/index.ts` (real file > dir.ts > dir/index.ts); 72 resolver tests, 205 with integration; verified end to end on a scratch repo (u1.ts -> dir/index.ts).
+- RT-18: real `fs.watch` with real file operations: in-place write, temp+rename, delete+create, vim backup rename, 20-write burst, nested create each yield exactly 1 refresh; backup/swap/4913-only yields 0. Defects found and fixed in watch.ts: backup suffix `~` and Vim `4913` were not ignored; stale-inode watch after a rename was not re-armed (re-armed after each debounce); watcher errors and root replacement are now logged and stop cleanly (restart needs a new watcher). The new suite failed 9 of 15 runs before the final fix, 0 of 15 after. Linux/Node 24 only; re-arming rescans the tree and large-tree cost is unmeasured.
+- RT-19: 8 host-independent Windows-path tests pass plus 1 documented expected failure: tryResolveWithExtensions called directly with a backslash path does not normalize it. Not a live defect: filesystem-walker.ts normalizes to forward slashes before the resolver runs. Real windows-latest CI has still not run on this work.
+- RT-20: .memory-bank/knowledge-hub/dirty-worktree.md. Parent review found one claim to correct: it says mutation tools may use the overlay; see RT-21.
+- RT-21: reproduced a real defect (mocked stale range, committed temp repo): the graph keeps index-time line ranges, so on a file with uncommitted edits move_symbol cut the three added comment lines instead of the function. The pre-existing code had this for any dirty file; writes are additionally gated by confirm:true and a server flag. Fix: a shared guard refuses a real write before touching any file when the symbol's file is dirty and its range did not come from a usable overlay; dry runs succeed with a warning. 35 tests. The reproduction used a mocked resolver range rather than a full index.
 - Statuses stay OPEN: no authenticated role receipts exist.
 
