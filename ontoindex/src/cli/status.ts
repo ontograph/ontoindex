@@ -25,6 +25,7 @@ export { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js'
 import { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js';
 import { gnDiagnose } from '../mcp/super/diagnose.js';
 import type { AuditFreshnessReport, DiagnoseReport } from '../mcp/super/diagnose.js';
+import { getOverlaySnapshot } from '../mcp/local/backend-overlay.js';
 
 export const formatNativeGraphWriterStatus = (runtime: GraphWriterRuntime = {}): string => {
   const status = getNativeGraphWriterStatus(runtime);
@@ -107,6 +108,7 @@ export const statusCommand = async (options?: { repo?: string }) => {
   const repoRoot = getGitRoot(cwd) ?? cwd;
   const needsUpdateReason = await readNeedsUpdateReason(repoRoot);
   const { storagePath } = getStoragePaths(repoRoot);
+  await printOverlayStatus(repoRoot, storagePath);
   if (!repo) {
     // Check if there's a stale KuzuDB index that needs migration
     if (await hasKuzuIndex(storagePath)) {
@@ -160,6 +162,29 @@ export const statusCommand = async (options?: { repo?: string }) => {
   console.log(nativeGraphWriterStatus);
   await printDiagnosticsSummary(repoRoot, storagePath);
 };
+
+async function printOverlayStatus(repoPath: string, storagePath: string): Promise<void> {
+  try {
+    const snapshot = await getOverlaySnapshot({ id: repoPath, repoPath, storagePath });
+    if (snapshot.dirtyPaths.size === 0) return;
+
+    if (snapshot.usable) {
+      const deleted = snapshot.tombstones.size > 0 ? `, ${snapshot.tombstones.size} deleted` : '';
+      console.log(`Overlay: usable, ${snapshot.overlayPaths.size} file(s)${deleted}`);
+    } else if (
+      snapshot.reason?.startsWith('no overlay built') ||
+      snapshot.reason?.startsWith('no valid overlay CURRENT generation')
+    ) {
+      console.log(
+        `Overlay: none (${snapshot.dirtyPaths.size} dirty file(s)); run ontoindex analyze --dirty-overlay`,
+      );
+    } else {
+      console.log(`Overlay: stale (${snapshot.reason ?? 'unknown reason'})`);
+    }
+  } catch {
+    // Overlay status is advisory; it must never prevent the regular status output.
+  }
+}
 
 async function readNeedsUpdateReason(repoRoot: string): Promise<string | null> {
   try {

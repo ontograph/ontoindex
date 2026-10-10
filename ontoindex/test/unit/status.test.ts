@@ -242,6 +242,10 @@ describe('status command behavior', () => {
     gnDiagnose: ReturnType<typeof vi.fn>;
   };
 
+  let overlayMocks: {
+    getOverlaySnapshot: ReturnType<typeof vi.fn>;
+  };
+
   const importStatus = async () => import('../../src/cli/status.js');
 
   beforeEach(() => {
@@ -319,7 +323,18 @@ describe('status command behavior', () => {
       gnDiagnose: vi.fn().mockResolvedValue(makeDiagnoseReport()),
     };
 
+    overlayMocks = {
+      getOverlaySnapshot: vi.fn().mockResolvedValue({
+        usable: false,
+        reason: 'no dirty files',
+        dirtyPaths: new Set(),
+        overlayPaths: new Set(),
+        tombstones: new Set(),
+      }),
+    };
+
     vi.doMock('../../src/storage/repo-manager.js', () => repoManagerMocks);
+    vi.doMock('../../src/mcp/local/backend-overlay.js', () => overlayMocks);
     vi.doMock('../../src/storage/git.js', () => gitMocks);
     vi.doMock('../../src/native/graph-writer.js', () => nativeMocks);
     vi.doMock('node:fs/promises', () => fsMocks);
@@ -766,5 +781,118 @@ describe('status command behavior', () => {
         'MCP resources: not exposed',
       ]),
     );
+  });
+
+  it('prints no overlay line when there are no dirty files', async () => {
+    const { statusCommand } = await importStatus();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const repoPath = '/tmp/indexed-repo';
+    gitMocks.isGitRepo.mockReturnValue(true);
+    gitMocks.getGitRoot.mockReturnValue(repoPath);
+    repoManagerMocks.findRepo.mockResolvedValue(
+      makeRepo(repoPath, {
+        indexedAt: '2026-05-27T00:00:00.000Z',
+        lastCommit: 'abc123def456',
+      }),
+    );
+
+    await statusCommand({ repo: repoPath });
+
+    expect(overlayMocks.getOverlaySnapshot).toHaveBeenCalledWith({
+      id: repoPath,
+      repoPath,
+      storagePath: `${repoPath}/.ontoindex`,
+    });
+    expect(
+      logSpy.mock.calls.map(([line]) => String(line)).filter((line) => line.startsWith('Overlay:')),
+    ).toEqual([]);
+  });
+
+  it('prints neutral guidance when dirty files have no overlay', async () => {
+    const { statusCommand } = await importStatus();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const repoPath = '/tmp/indexed-repo';
+    gitMocks.isGitRepo.mockReturnValue(true);
+    gitMocks.getGitRoot.mockReturnValue(repoPath);
+    repoManagerMocks.findRepo.mockResolvedValue(null);
+    overlayMocks.getOverlaySnapshot.mockResolvedValue({
+      usable: false,
+      reason: 'no valid overlay CURRENT generation (run: ontoindex analyze --dirty-overlay)',
+      dirtyPaths: new Set(['src/a.ts', 'src/b.ts']),
+      overlayPaths: new Set(['src/a.ts']),
+      tombstones: new Set(['src/b.ts']),
+    });
+
+    await statusCommand({ repo: repoPath });
+
+    expect(logSpy.mock.calls.map(([line]) => String(line))).toContain(
+      'Overlay: none (2 dirty file(s)); run ontoindex analyze --dirty-overlay',
+    );
+  });
+
+  it('prints usable overlay file and deletion counts', async () => {
+    const { statusCommand } = await importStatus();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const repoPath = '/tmp/indexed-repo';
+    gitMocks.isGitRepo.mockReturnValue(true);
+    gitMocks.getGitRoot.mockReturnValue(repoPath);
+    repoManagerMocks.findRepo.mockResolvedValue(
+      makeRepo(repoPath, {
+        indexedAt: '2026-05-27T00:00:00.000Z',
+        lastCommit: 'abc123def456',
+      }),
+    );
+    overlayMocks.getOverlaySnapshot.mockResolvedValue({
+      usable: true,
+      reason: null,
+      dirtyPaths: new Set(['src/a.ts', 'src/b.ts', 'src/deleted.ts']),
+      overlayPaths: new Set(['src/a.ts', 'src/b.ts']),
+      tombstones: new Set(['src/deleted.ts']),
+    });
+
+    await statusCommand({ repo: repoPath });
+
+    expect(logSpy.mock.calls.map(([line]) => String(line))).toContain(
+      'Overlay: usable, 2 file(s), 1 deleted',
+    );
+  });
+
+  it('prints snapshot staleness reasons unchanged', async () => {
+    const { statusCommand } = await importStatus();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const repoPath = '/tmp/indexed-repo';
+    gitMocks.isGitRepo.mockReturnValue(true);
+    gitMocks.getGitRoot.mockReturnValue(repoPath);
+    repoManagerMocks.findRepo.mockResolvedValue(null);
+    overlayMocks.getOverlaySnapshot.mockResolvedValue({
+      usable: false,
+      reason: 'overlay is older than src/a.ts',
+      dirtyPaths: new Set(['src/a.ts']),
+      overlayPaths: new Set(['src/a.ts']),
+      tombstones: new Set(),
+    });
+
+    await statusCommand({ repo: repoPath });
+
+    expect(logSpy.mock.calls.map(([line]) => String(line))).toContain(
+      'Overlay: stale (overlay is older than src/a.ts)',
+    );
+  });
+
+  it('does not throw or print overlay status when snapshot lookup fails', async () => {
+    const { statusCommand } = await importStatus();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const repoPath = '/tmp/unindexed-repo';
+    gitMocks.isGitRepo.mockReturnValue(true);
+    gitMocks.getGitRoot.mockReturnValue(repoPath);
+    repoManagerMocks.findRepo.mockResolvedValue(null);
+    overlayMocks.getOverlaySnapshot.mockRejectedValue(new Error('snapshot unavailable'));
+
+    await expect(statusCommand({ repo: repoPath })).resolves.toBeUndefined();
+
+    expect(logSpy.mock.calls.map(([line]) => String(line))).not.toContain(
+      'Overlay: stale (snapshot unavailable)',
+    );
+    expect(logSpy.mock.calls.map(([line]) => String(line))).toContain('Repository not indexed.');
   });
 });
