@@ -794,7 +794,7 @@ async function runDirtyOverlayAnalysis(
             { profile: 'symbols', includePaths },
             dependencies.analyzeRuntime,
           );
-    await initLbug(overlayDbPath);
+    await initLbug(overlayDbPath, { maxDBSize: 2 ** 32 });
     await loadGraphToLbug(pipelineResult.graph, repoPath, overlayPath, (message) => {
       callbacks.onProgress('lbug', 80, message);
     });

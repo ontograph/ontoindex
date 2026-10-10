@@ -44,6 +44,7 @@ interface ImpactedNode {
   filePath: string;
   relationType: string | undefined;
   confidence: number;
+  dirty?: true;
 }
 
 interface AffectedProcess {
@@ -257,12 +258,14 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
   const minConfidence = params.minConfidence ?? 0;
 
   let outcome: Awaited<ReturnType<typeof resolveSymbolCandidates>> | undefined;
+  let dirtyPaths: ReadonlySet<string> | undefined;
   if (repo.repoPath && repo.storagePath) {
     const snapshot = await getOverlaySnapshot({
       id: repo.id,
       repoPath: repo.repoPath,
       storagePath: repo.storagePath,
     }).catch(() => undefined);
+    dirtyPaths = snapshot?.dirtyPaths;
     if (snapshot?.usable) {
       // Dirty-file source fallback returns early, so try the overlay first.
       outcome = await resolveSymbolCandidates(
@@ -360,6 +363,7 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
     relationTypes,
     includeTests,
     minConfidence,
+    dirtyPaths,
     signal: params.signal,
   });
 }
@@ -527,6 +531,7 @@ export async function runImpactBFS(
     relationTypes: string[];
     includeTests: boolean;
     minConfidence: number;
+    dirtyPaths?: ReadonlySet<string>;
     signal?: AbortSignal;
   },
 ): Promise<ImpactSuccessResult> {
@@ -545,6 +550,7 @@ export async function runImpactBFS(
       relationTypes: opts.relationTypes,
       includeTests: opts.includeTests,
       minConfidence: opts.minConfidence,
+      dirtyPaths: opts.dirtyPaths,
       signal: opts.signal,
     },
   );

@@ -53,10 +53,33 @@ const EXTENSIONS = [
  * Try to match a path (with extensions) against the known file set.
  * Returns the matched file path or null.
  */
-export function tryResolveWithExtensions(basePath: string, allFiles: Set<string>): string | null {
+export function tryResolveWithExtensions(
+  basePath: string,
+  allFiles: Set<string>,
+  opts?: { mapJsToTs?: boolean },
+): string | null {
   for (const ext of EXTENSIONS) {
     const candidate = basePath + ext;
     if (allFiles.has(candidate)) return candidate;
+  }
+  // NodeNext imports name emitted JS files; prefer existing paths before source counterparts.
+  if (opts?.mapJsToTs) {
+    const extension = basePath.slice(basePath.lastIndexOf('.'));
+    const sourceExtensions =
+      extension === '.js'
+        ? ['.ts', '.tsx']
+        : extension === '.jsx'
+          ? ['.tsx', '.ts']
+          : extension === '.mjs'
+            ? ['.mts']
+            : extension === '.cjs'
+              ? ['.cts']
+              : [];
+    const stem = basePath.slice(0, -extension.length);
+    for (const sourceExtension of sourceExtensions) {
+      const candidate = stem + sourceExtension;
+      if (allFiles.has(candidate)) return candidate;
+    }
   }
   return null;
 }

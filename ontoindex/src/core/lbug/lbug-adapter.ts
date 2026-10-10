@@ -544,8 +544,8 @@ const closeActiveLbugHandles = async (clearEnsuredIndexes = false): Promise<void
 
 const normalizeCopyPath = (filePath: string): string => filePath.replace(/\\/g, '/');
 
-export const initLbug = async (dbPath: string) => {
-  return runWithSessionLock(() => ensureLbugInitialized(dbPath));
+export const initLbug = async (dbPath: string, opts?: { maxDBSize?: number }) => {
+  return runWithSessionLock(() => ensureLbugInitialized(dbPath, opts));
 };
 
 /**
@@ -583,15 +583,15 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
   throw lastError;
 };
 
-const ensureLbugInitialized = async (dbPath: string) => {
+const ensureLbugInitialized = async (dbPath: string, opts?: { maxDBSize?: number }) => {
   if (conn && currentDbPath === dbPath) {
     return { db, conn };
   }
-  await doInitLbug(dbPath);
+  await doInitLbug(dbPath, opts);
   return { db, conn };
 };
 
-const doInitLbug = async (dbPath: string) => {
+const doInitLbug = async (dbPath: string, opts?: { maxDBSize?: number }) => {
   // Different database requested — close the old one first
   if (conn || db) {
     await closeActiveLbugHandles();
@@ -627,7 +627,10 @@ const doInitLbug = async (dbPath: string) => {
   const parentDir = path.dirname(dbPath);
   await fs.mkdir(parentDir, { recursive: true });
 
-  db = new lbug.Database(dbPath);
+  db =
+    opts?.maxDBSize === undefined
+      ? new lbug.Database(dbPath)
+      : new lbug.Database(dbPath, undefined, undefined, undefined, opts.maxDBSize);
   conn = new lbug.Connection(db);
 
   for (const schemaQuery of SCHEMA_QUERIES) {

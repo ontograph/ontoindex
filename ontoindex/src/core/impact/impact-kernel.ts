@@ -29,6 +29,7 @@ export interface ImpactKernelNode {
   relationType: string | undefined;
   confidence: number;
   provenance?: GraphFactProvenance;
+  dirty?: true;
 }
 
 export interface ImpactKernelGraphSnapshot {
@@ -78,6 +79,7 @@ export interface RunImpactKernelOptions {
   minConfidence?: number;
   countScope?: ImpactKernelCountScope;
   classSeedExpansion?: boolean;
+  dirtyPaths?: ReadonlySet<string>;
   signal?: AbortSignal;
 }
 
@@ -300,6 +302,7 @@ export async function runImpactKernel(
   const symType = typeof sym.type === 'string' ? sym.type : '';
   const impacted: ImpactKernelNode[] = [];
   const warnings: string[] = [];
+  const encounteredDirtyPaths = new Set<string>();
   let traversalComplete = true;
 
   throwIfAborted(opts.signal);
@@ -361,7 +364,13 @@ export async function runImpactKernel(
 
         if (!visited.has(relId)) {
           visited.add(relId);
-          nextFrontier.push(relId);
+          const dirty = opts.dirtyPaths?.has(filePath.replace(/\\/g, '/')) ?? false;
+          if (dirty) {
+            encounteredDirtyPaths.add(filePath.replace(/\\/g, '/'));
+            traversalComplete = false;
+          } else {
+            nextFrontier.push(relId);
+          }
           const effectiveConfidence =
             typeof storedConfidence === 'number' && storedConfidence > 0
               ? storedConfidence
@@ -378,6 +387,7 @@ export async function runImpactKernel(
               relationType,
               confidence: effectiveConfidence,
             }),
+            ...(dirty ? { dirty: true as const } : {}),
           });
         }
       }
@@ -389,6 +399,12 @@ export async function runImpactKernel(
     }
 
     frontier = nextFrontier;
+  }
+
+  if (encounteredDirtyPaths.size > 0) {
+    warnings.push(
+      `Impact traversal stopped at dirty paths with stale graph IDs: ${[...encounteredDirtyPaths].sort().join(', ')}`,
+    );
   }
 
   const byDepth: Record<number, ImpactKernelNode[]> = {};

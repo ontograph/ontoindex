@@ -331,6 +331,211 @@ tasks:
     stop_conditions:
       - The hook needs a file outside the write set.
     known_blockers: []
+
+  RT-9:
+    title: When the overlay is built, initLbug opens its store with a bounded maxDBSize so the 8 TB default mmap cannot fail, and dirty-overlay-build.test.ts passes 30 of 30 consecutive runs
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: medium
+    owner_files:
+      - ontoindex/src/core/lbug/lbug-adapter.ts
+      - ontoindex/src/core/run-analyze.ts
+    allowed_write_set:
+      - ontoindex/src/core/lbug/lbug-adapter.ts
+      - ontoindex/src/core/run-analyze.ts
+    non_goals:
+      - Changing the default size for the active-generation build.
+      - Editing pool-adapter.ts.
+    required_validation:
+      - cd ontoindex && for i in $(seq 1 30); do npx vitest run test/unit/dirty-overlay-build.test.ts || exit 1; done
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/core/lbug/lbug-adapter.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - initLbug accepts an optional maxDBSize; the default call path is unchanged and passes no new argument.
+      - The overlay build passes a bounded power-of-two size; a database created that way is readable by the pool adapter.
+      - dirty-overlay-build.test.ts passes 30 of 30 consecutive runs (it failed 1 of 10 before).
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - lbug rejects the bounded size or cannot reopen the store.
+      - Write set must grow.
+    known_blockers: []
+
+  RT-10:
+    title: When a relative import ends in .js, .jsx, .mjs or .cjs and only the matching .ts, .tsx, .mts or .cts file exists, the import resolver links it to that file so IMPORTS and cross-file CALLS edges exist
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: high
+    owner_files:
+      - ontoindex/src/core/ingestion/import-resolvers/utils.ts
+      - ontoindex/src/core/ingestion/import-resolvers/standard.ts
+      - ontoindex/test/unit/import-resolver-js-extension.test.ts
+    allowed_write_set:
+      - ontoindex/src/core/ingestion/import-resolvers/utils.ts
+      - ontoindex/src/core/ingestion/import-resolvers/standard.ts
+      - ontoindex/test/unit/import-resolver-js-extension.test.ts
+    non_goals:
+      - Changing non-relative (package or alias) resolution: the .js-to-.ts fallback is opt-in per call and only standard.ts relative-import branch passes it.
+      - Changing other languages' resolvers.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/import-resolver-js-extension.test.ts
+      - cd ontoindex && npx vitest run test/unit --reporter=dot -t resolver
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/core/ingestion/import-resolvers/utils.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - A fixture with import './a.js' where only a.ts exists yields an IMPORTS edge and a CALLS edge to the imported function (before: none; extensionless './a' already worked).
+      - If a real a.js exists it still wins over a.ts.
+      - Resolution adds only Set lookups, no extra IO; the existing resolver tests pass unchanged.
+      - Re-analyzing this repo raises tsToTs IMPORTS well above 294 and gives runImpactKernel callers.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - Behavior change breaks an existing resolver test and the test cannot be explained by the fix.
+      - Write set must grow.
+    known_blockers: []
+
+  RT-11:
+    title: When the overlay store is rebuilt while the MCP server is running, the next overlay read opens the new store and never reads the deleted one, and concurrent calls share one dirty-file probe
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: high
+    owner_files:
+      - ontoindex/src/mcp/local/backend-overlay.ts
+      - ontoindex/test/unit/backend-overlay.test.ts
+    allowed_write_set:
+      - ontoindex/src/mcp/local/backend-overlay.ts
+      - ontoindex/test/unit/backend-overlay.test.ts
+    non_goals:
+      - Auto-spawning rebuilds from read tools (opt-in watcher only).
+      - Editing pool-adapter.ts.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/backend-overlay.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/mcp/local/backend-overlay.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - A test builds an overlay, queries it through the real pool, rebuilds it with different symbols, queries again and sees the new symbols (the pool handle is closed and reopened when the store file identity changes).
+      - Ten concurrent getOverlaySnapshot calls run one git probe (single-flight), and the cache TTL behavior is unchanged.
+      - Overlay read failures still degrade to base-only.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - Closing the overlay handle requires editing pool-adapter.ts.
+      - Write set must grow.
+    known_blockers: []
+
+  RT-12:
+    title: When an upstream or downstream traversal from a clean target reaches a dirty file, that row is returned flagged dirty, is not expanded further, and the result is marked partial with a warning
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: high
+    owner_files:
+      - ontoindex/src/core/impact/impact-kernel.ts
+      - ontoindex/src/mcp/local/backend-impact.ts
+      - ontoindex/test/unit/impact-kernel-dirty.test.ts
+    allowed_write_set:
+      - ontoindex/src/core/impact/impact-kernel.ts
+      - ontoindex/src/mcp/local/backend-impact.ts
+      - ontoindex/test/unit/impact-kernel-dirty.test.ts
+    non_goals:
+      - Dropping dirty rows (that would understate risk).
+      - Changing the shape of results for callers that pass no dirty set.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/impact-kernel-dirty.test.ts
+      - cd ontoindex && npx vitest run $(find test/unit -maxdepth 1 -name '*.test.ts' | grep -E 'impact|safe-edit' | sort)
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/core/impact/impact-kernel.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - A row whose filePath is in the dirty set is kept (never silently dropped), carries dirty true, and its id is not added to the next frontier.
+      - traversalComplete is false and a warning names the dirty path.
+      - With no dirty set supplied, results are byte-identical to today (existing impact tests unchanged).
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - Existing impact-kernel tests need to change.
+      - Write set must grow.
+    known_blockers: []
+
+  RT-13:
+    title: When ontoindex watch is run, saving source files triggers one debounced child analyze --dirty-overlay and is skipped while analyze.lock is held
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: medium
+    owner_files:
+      - ontoindex/src/cli/watch.ts
+      - ontoindex/src/cli/index.ts
+      - ontoindex/test/unit/watch-command.test.ts
+    allowed_write_set:
+      - ontoindex/src/cli/watch.ts
+      - ontoindex/src/cli/index.ts
+      - ontoindex/test/unit/watch-command.test.ts
+    non_goals:
+      - Embeddings from the watcher.
+      - A new npm dependency.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/watch-command.test.ts test/unit/watch.test.ts
+      - cd ontoindex && npx vitest run test/unit/cli-index-help.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/cli/watch.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - The command is registered and listed in ontoindex --help.
+      - A burst of saves spawns exactly one child overlay build; a save during an active build schedules at most one follow-up.
+      - A held analyze.lock skips the refresh with a log line; a failing child is logged and the watcher keeps running; Ctrl-C stops the watcher and kills any child.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - The child cannot be spawned without editing run-analyze.ts or analyze.ts.
+      - Write set must grow.
+    known_blockers: []
 ```
 
 ## Required Traceability
@@ -343,6 +548,11 @@ tasks:
 | RT-REQ-4 | Queries serve dirty paths from the overlay | proof-only | RT-5 | read-path spike |
 | RT-REQ-5 | Embeddings are not refreshed for the overlay | non-goal | RT-2 | documented limit |
 | RT-REQ-6 | Queries, symbol lookup, context and impact serve dirty paths from the overlay without claiming zero impact | implementation | RT-6, RT-7, RT-8 | overlay merge, resolution and context/impact tests |
+| RT-REQ-7 | The overlay build does not flake on the default 8 TB mmap | implementation | RT-9 | 30 consecutive passing runs |
+| RT-REQ-8 | NodeNext .js imports resolve to .ts so the graph has real cross-file edges | implementation | RT-10 | resolver fixture and re-analysis |
+| RT-REQ-9 | A rebuilt overlay is picked up by a running server | implementation | RT-11 | rebuild-then-query test |
+| RT-REQ-10 | Impact flags dirty rows instead of trusting stale ids | implementation | RT-12 | impact-kernel-dirty tests |
+| RT-REQ-11 | A watch command keeps the overlay current | implementation | RT-13 | watch-command tests |
 
 ## Decisions And Non-Goals
 
@@ -350,6 +560,8 @@ tasks:
 - Chosen design: overlay generation. The bounded pipeline writes to `<storage>/overlay` and is never activated; the base stays intact and the overlay is disposable.
 - Rejected: in-place graph patching (writer-lock and lost cross-file edges), per-state snapshots (minutes per state), per-file parse cache with full relink (large refactor; revisit later).
 - Vector search lags on edited files until a full `analyze --embeddings`.
+
+- 2026-10-10 review findings: (1) the import resolver never maps .js to .ts, so most cross-file edges are missing for NodeNext TypeScript (2157 of 2163 relative imports in this repo end in .js; impact on runImpactKernel showed 0 callers); (2) the overlay pool handle is cached by id while the overlay directory is deleted and recreated on rebuild; (3) dirty-overlay-build.test.ts flaked 1 of 10 on an 8 TB mmap. Cherry-picked: RT-10, RT-9, RT-11 (single-flight probe plus handle invalidation), RT-12 (flag, do not drop), RT-13. Dropped A3 (lazy auto-spawn from read tools): the watcher already exists and a read tool spawning processes is a surprising side effect.
 
 ## Closeout
 
@@ -369,4 +581,13 @@ RT-1 (2026-10-10), implemented locally in PR 83 without sub-agent role receipts,
 - RT-8 (gpt-6.1-sol): context and impact pass those fields; overlay targets get source overlay, impact returns risk UNKNOWN with graphImpactAvailable false.
 - Live end-to-end check on a scratch repo (real built CLI): a symbol that exists only in a dirty file is found by query, context, and impact with source overlay; impact says UNKNOWN; a clean symbol is unchanged (LOW); after touching the dirty file the overlay is treated as stale and results fall back to base only.
 - Known gaps: impact-kernel.ts:344-364 does not filter dirty paths, so stale dirty IDs can still enter the BFS from a clean target (not changed). Callers backend-move-symbol, backend-extract-function, backend-symbol-mutations still omit storagePath, so mutations stay base-only (intended: do not edit from an overlay). Overlay has no embeddings. The watcher is not registered or wired to the overlay build. Statuses stay OPEN: no authenticated role receipts.
+
+2026-10-10 hardening phase (5 sub-agents: gpt-6.1-sol on RT-10/11/12, gpt-6-luna on RT-9/13). Parent verified: tsc clean, prettier clean on every touched file, 7018 unit tests pass with the same 4 pre-existing mcp-doctor failures, overlay-build test 30/30 runs (was 1 failure in 10).
+- RT-10: the import resolver now maps ./a.js to a.ts (opt-in per call, TS/JS relative imports only). Measured on this repo after `analyze --force`: ts-to-ts IMPORTS edges 294 -> 3578; cross-file CALLS 1419 -> 4239; `runImpactKernel` callers 0 -> 4 (diff-review, write-through-verification, safe-edit-check, backend-impact). This was a pre-existing indexer bug that made every impact/context answer about NodeNext TypeScript under-report callers.
+- RT-9: initLbug takes an optional maxDBSize; only the overlay build passes 4 GiB (2**32; note 1<<32 is 0 in JS). Default path unchanged. A bounded store is readable by the pool adapter.
+- RT-11: overlay pool handle is invalidated when the store file identity changes or disappears; failed snapshot computations are not cached; concurrent probes are single-flight.
+- RT-12: impact traversal keeps dirty rows, flags them dirty, does not expand through them, and marks the result partial with one warning. No dirty set means identical output.
+- RT-13: `ontoindex watch [path]` registered; spawns a child `analyze --dirty-overlay` per debounced burst, honors analyze.lock, strips embedding env from the child.
+- Side effect to note: `analyze --force` without --embeddings drops the semantic index; embeddings are rebuilt separately.
+- Statuses stay OPEN: no authenticated role receipts exist.
 

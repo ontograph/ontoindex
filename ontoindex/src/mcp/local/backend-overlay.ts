@@ -9,7 +9,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { planDirtyOverlay, type DirtyOverlayPlan } from '../../core/analyze-delta.js';
-import { executeParameterized, initLbug } from '../../core/lbug/pool-adapter.js';
+import { closeLbug, executeParameterized, initLbug } from '../../core/lbug/pool-adapter.js';
 
 export interface OverlayRepo {
   id: string;
@@ -40,18 +40,15 @@ const EMPTY: OverlaySnapshot = {
 
 const SNAPSHOT_TTL_MS = 2_000;
 const snapshotCache = new Map<string, { at: number; value: Promise<OverlaySnapshot> }>();
+const overlayFileIdentities = new Map<string, string>();
+const overlayQueries = new Map<string, Promise<unknown>>();
 
 export const overlayRepoId = (repoId: string): string => `${repoId}::overlay`;
 export const overlayDbPath = (storagePath: string): string =>
   path.join(storagePath, 'overlay', 'lbug');
 
 async function computeSnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> {
-  let plan: DirtyOverlayPlan;
-  try {
-    plan = await planDirtyOverlay(repo.repoPath);
-  } catch (err) {
-    return { ...EMPTY, reason: `dirty planning failed: ${(err as Error).message}` };
-  }
+  const plan: DirtyOverlayPlan = await planDirtyOverlay(repo.repoPath);
   const overlayPaths = new Set(plan.includePaths);
   const tombstones = new Set(plan.tombstones);
   const dirtyPaths = new Set([...overlayPaths, ...tombstones]);
@@ -88,7 +85,11 @@ export function getOverlaySnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> 
   const hit = snapshotCache.get(repo.id);
   const now = Date.now();
   if (hit && now - hit.at < SNAPSHOT_TTL_MS) return hit.value;
-  const value = computeSnapshot(repo);
+  const value = computeSnapshot(repo).catch((err: unknown) => {
+    // A late failure must not evict a newer probe started after reset/expiry.
+    if (snapshotCache.get(repo.id)?.value === value) snapshotCache.delete(repo.id);
+    return { ...EMPTY, reason: `dirty planning failed: ${(err as Error).message}` };
+  });
   snapshotCache.set(repo.id, { at: now, value });
   return value;
 }
@@ -113,6 +114,33 @@ export async function queryOverlay<TRow extends object = Record<string, unknown>
   params: Record<string, unknown> = {},
 ): Promise<TRow[]> {
   const id = overlayRepoId(repo.id);
-  await initLbug(id, overlayDbPath(repo.storagePath));
-  return (await executeParameterized(id, cypher, params)) as TRow[];
+  // Serialize this overlay's reads so replacement cannot close a handle between
+  // another read's init and execution. Different repositories remain independent.
+  const query = (overlayQueries.get(id) ?? Promise.resolve())
+    .catch(() => {})
+    .then(async () => {
+      const dbPath = overlayDbPath(repo.storagePath);
+      let identity: string;
+      try {
+        const { dev, ino, mtimeMs, size } = await fs.stat(dbPath);
+        identity = `${dev}:${ino}:${mtimeMs}:${size}`;
+      } catch (err) {
+        await closeLbug(id);
+        overlayFileIdentities.delete(id);
+        throw err;
+      }
+      if (overlayFileIdentities.get(id) !== identity) {
+        await closeLbug(id);
+        overlayFileIdentities.delete(id);
+      }
+      await initLbug(id, dbPath);
+      overlayFileIdentities.set(id, identity);
+      return (await executeParameterized(id, cypher, params)) as TRow[];
+    });
+  overlayQueries.set(id, query);
+  try {
+    return await query;
+  } finally {
+    if (overlayQueries.get(id) === query) overlayQueries.delete(id);
+  }
 }

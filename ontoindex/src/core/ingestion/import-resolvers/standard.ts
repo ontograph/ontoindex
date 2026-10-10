@@ -127,7 +127,10 @@ export const resolveImportPath = (
   const basePath = currentDir.join('/');
 
   if (importPath.startsWith('.')) {
-    const resolved = tryResolveWithExtensions(basePath, allFiles);
+    const resolved = tryResolveWithExtensions(basePath, allFiles, {
+      mapJsToTs:
+        language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript,
+    });
     return cache(resolved);
   }
 

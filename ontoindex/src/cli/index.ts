@@ -128,6 +128,11 @@ program
   .action(createLazyAction(() => import('./debug-bisect.js'), 'debugBisectCommand'));
 
 program
+  .command('watch [path]')
+  .description('Keep the dirty-file overlay refreshed as repository files change')
+  .action(createLazyAction(() => import('./watch.js'), 'watchCommand'));
+
+program
   .command('index [path...]')
   .description(
     'Register an existing .ontoindex/ folder into the global registry (no re-analysis needed)',
