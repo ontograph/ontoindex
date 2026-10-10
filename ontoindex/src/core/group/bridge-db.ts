@@ -164,11 +164,39 @@ async function withCallTimeout<T>(p: Promise<T>, label: string, ms: number): Pro
   ]);
 }
 
+function closeResults(queryResult: lbug.QueryResult | lbug.QueryResult[]): void {
+  for (const r of Array.isArray(queryResult) ? queryResult : [queryResult]) {
+    try {
+      r.close();
+    } catch {
+      // Best-effort: releasing a native result must not fail the query.
+    }
+  }
+}
+
+/** Materialize rows, then release the native result unless a timed-out getAll() may still use it. */
+async function materialize(
+  queryResult: lbug.QueryResult | lbug.QueryResult[],
+  label: string,
+): Promise<unknown[]> {
+  const result = unwrapQueryResult(queryResult);
+  const pending = result.getAll();
+  try {
+    return await withCallTimeout(pending, label, BRIDGE_MATERIALIZATION_TIMEOUT_MS);
+  } finally {
+    // Close only once the native call has settled, so a timeout never races a live getAll().
+    void pending.then(
+      () => closeResults(queryResult),
+      () => closeResults(queryResult),
+    );
+  }
+}
+
 export async function ensureBridgeSchema(handle: BridgeHandle): Promise<void> {
   const conn = handle._conn as lbug.Connection;
   for (const q of BRIDGE_SCHEMA_QUERIES) {
     try {
-      await conn.query(q);
+      closeResults(await conn.query(q));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes(LBUG_ALREADY_EXISTS_MSG)) throw err;
@@ -189,21 +217,11 @@ export async function queryBridge<T>(
       throw new Error(`Bridge query prepare failed: ${errMsg}`);
     }
     const queryResult = await conn.execute(stmt, params);
-    const result = unwrapQueryResult(queryResult);
-    const rows = await withCallTimeout(
-      result.getAll(),
-      'queryBridge/execute',
-      BRIDGE_MATERIALIZATION_TIMEOUT_MS,
-    );
+    const rows = await materialize(queryResult, 'queryBridge/execute');
     return capBridgeRows(rows as T[], 'queryBridge/execute');
   }
   const queryResult = await conn.query(cypher);
-  const result = unwrapQueryResult(queryResult);
-  const rows = await withCallTimeout(
-    result.getAll(),
-    'queryBridge/query',
-    BRIDGE_MATERIALIZATION_TIMEOUT_MS,
-  );
+  const rows = await materialize(queryResult, 'queryBridge/query');
   return capBridgeRows(rows as T[], 'queryBridge/query');
 }
 

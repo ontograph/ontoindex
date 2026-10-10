@@ -1229,5 +1229,5 @@ RT-28 re-run on overlay generations: base analyze 55,414 ms. Edit-to-answer: app
 - RT-29: `pool-adapter.ts`, the MCP reader path, now closes native results too, including after a timeout once the pending native call settles. This was an audit-driven change and was not linked to a failing test. Verified by unit and integration pool tests (95 tests across 10 files, Linux).
 - RT-30: `test/unit/lbug-result-close.test.ts` covers the adapter's close paths, including a rejected `getAll()`. The agent reported that a no-op `closeQueryResults` makes it fail.
 - RT-31: `test/integration/overlay-cross-process.test.ts` has a separate CLI process publish gen2 while a reader holds gen1, then checks gen1's sha256 is unchanged. It is skipped on win32.
-- Open, not fixed: unclosed results remain in `src/core/group/bridge-db.ts` (lines 171, 191, 200). They are outside the overlay path.
+- `src/core/group/bridge-db.ts` now closes its schema, query and execute results. Closing waits for a timed-out `getAll()` to settle. Group unit tests pass (321 across 22 files). No new test was added for this path.
 - None of this is verified on Windows or macOS until CI runs.
