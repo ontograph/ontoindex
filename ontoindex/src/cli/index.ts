@@ -70,6 +70,10 @@ program
     '--experimental-file-delta',
     'Experimental: try a bounded symbols-only refresh from changed files, otherwise fall back to full analyze',
   )
+  .option(
+    '--dirty-overlay',
+    'Build a disposable graph of uncommitted source files under .ontoindex/overlay without changing the active index',
+  )
   .option('--markdown-sidecar', 'Queue opt-in Markdown RAG sidecar enrichment after indexing')
   .option(
     '--name <alias>',

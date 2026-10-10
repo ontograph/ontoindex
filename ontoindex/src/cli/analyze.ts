@@ -29,6 +29,7 @@ import {
 } from './analyze-large-repo-safe.js';
 import {
   planExperimentalFileDeltaRefresh,
+  planDirtyOverlay,
   type ExperimentalFileDeltaPlan,
 } from '../core/analyze-delta.js';
 import {
@@ -363,6 +364,8 @@ interface AnalyzeOptions {
   markdownSidecar?: boolean;
   /** Experimental: bounded symbols-only refresh from changed files. */
   experimentalFileDelta?: boolean;
+  /** Build a disposable dirty-source graph without changing the active index. */
+  dirtyOverlay?: boolean;
   /** Preview file scope without writing .ontoindex. */
   dryRun?: boolean;
   /** Explain why one file would be included or skipped. */
@@ -528,9 +531,28 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     return;
   }
 
+  let overlayPaths: string[] | undefined;
+  if (options?.dirtyOverlay) {
+    try {
+      const plan = await planDirtyOverlay(repoPath);
+      if (plan.tooMany) {
+        throw new Error('Dirty overlay is limited to 50 source files; refusing a full scan.');
+      }
+      overlayPaths = plan.includePaths;
+      includePaths = overlayPaths;
+    } catch (err) {
+      console.error(
+        `  Dirty overlay planning failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   let experimentalFileDeltaPlan: ExperimentalFileDeltaPlan | null = null;
   const experimentalFileDeltaEligible =
     options?.experimentalFileDelta === true &&
+    !options?.dirtyOverlay &&
     !includePaths &&
     options?.embeddings !== true &&
     options?.annNeighbors !== true &&
@@ -542,7 +564,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     if (experimentalFileDeltaPlan.safeToBound) {
       includePaths = experimentalFileDeltaPlan.boundedIncludePaths;
     }
-  } else if (options?.experimentalFileDelta) {
+  } else if (options?.experimentalFileDelta && !options?.dirtyOverlay) {
     console.log(
       '  Experimental file-delta refresh is disabled for this run; falling back to full analyze.\n',
     );
@@ -659,6 +681,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         noStats: experimentalFileDeltaPlan?.safeToBound ? true : options?.noStats,
         skipNativeClose: process.env.ONTOINDEX_ANALYZE_NATIVE_CLOSE !== '1',
         registryName: options?.name,
+        ...(options?.dirtyOverlay ? { dirtyOverlay: true, overlayPaths } : {}),
       },
       {
         onProgress: (_phase, percent, message) => {
@@ -667,6 +690,21 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         onLog: barLog,
       },
     );
+
+    if (options?.dirtyOverlay) {
+      clearInterval(elapsedTimer);
+      process.removeListener('SIGINT', sigintHandler);
+      console.log = origLog;
+      console.warn = origWarn;
+      console.error = origError;
+      bar.stop();
+      console.log(
+        `\n  Dirty overlay built: ${result.stats.files ?? 0} file(s), ${result.stats.nodes ?? 0} nodes, ${result.stats.edges ?? 0} edges`,
+      );
+      console.log(`  ${path.join(getStoragePaths(repoPath).storagePath, 'overlay')}`);
+      console.log('  Active index unchanged; embeddings and skill generation skipped.\n');
+      return;
+    }
 
     console.log(`  ${formatEmbeddingLifecycle(result.embeddingLifecycle)}`);
 

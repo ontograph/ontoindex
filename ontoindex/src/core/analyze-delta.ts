@@ -273,3 +273,134 @@ export async function planExperimentalFileDeltaRefresh(
     report,
   };
 }
+
+export interface DirtyOverlayPlan {
+  includePaths: string[];
+  tombstones: string[];
+  tooMany: boolean;
+  skipped: string[];
+}
+
+function decodePorcelainPath(value: string): string {
+  if (!value.startsWith('"')) return value;
+
+  const bytes: number[] = [];
+  for (let index = 1; index < value.length; index += 1) {
+    const char = value[index]!;
+    if (char === '"') break;
+    if (char !== '\\') {
+      bytes.push(...Buffer.from(char));
+      continue;
+    }
+
+    const escaped = value[++index];
+    const namedEscapes: Record<string, number> = {
+      a: 0x07,
+      b: 0x08,
+      t: 0x09,
+      n: 0x0a,
+      v: 0x0b,
+      f: 0x0c,
+      r: 0x0d,
+      '\\': 0x5c,
+      '"': 0x22,
+    };
+    if (escaped && escaped in namedEscapes) {
+      bytes.push(namedEscapes[escaped]!);
+    } else if (escaped && /[0-7]/.test(escaped)) {
+      let octal = escaped;
+      while (octal.length < 3 && /[0-7]/.test(value[index + 1] ?? '')) {
+        octal += value[++index];
+      }
+      bytes.push(Number.parseInt(octal, 8));
+    } else if (escaped) {
+      bytes.push(...Buffer.from(escaped));
+    }
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+function parseDirtyOverlayStatus(output: string): Array<{ status: string; paths: string[] }> {
+  const entries: Array<{ status: string; paths: string[] }> = [];
+  for (const line of output.split('\n')) {
+    if (!line || line.length < 4) continue;
+    const status = line.slice(0, 2);
+    const rawPath = line.slice(3);
+    let renameSeparator = -1;
+    let quoted = false;
+    let escaped = false;
+    for (let index = 0; index < rawPath.length - 3; index += 1) {
+      const char = rawPath[index]!;
+      if (escaped) {
+        escaped = false;
+      } else if (quoted && char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        quoted = !quoted;
+      } else if (!quoted && rawPath.startsWith(' -> ', index)) {
+        renameSeparator = index;
+        break;
+      }
+    }
+
+    const paths =
+      renameSeparator < 0
+        ? [decodePorcelainPath(rawPath)]
+        : [
+            decodePorcelainPath(rawPath.slice(0, renameSeparator)),
+            decodePorcelainPath(rawPath.slice(renameSeparator + 4)),
+          ];
+    entries.push({ status, paths });
+  }
+  return entries;
+}
+
+export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPlan> {
+  const includePaths = new Set<string>();
+  const tombstones = new Set<string>();
+  const skipped = new Set<string>();
+
+  const statusOutput = await execFileText(
+    'git',
+    ['status', '--porcelain=v1', '--untracked-files=all'],
+    { cwd: repoPath, timeoutMs: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER },
+  );
+
+  for (const { status, paths } of parseDirtyOverlayStatus(statusOutput)) {
+    const [oldPath, newPath] = paths;
+    if (!oldPath) continue;
+
+    if (paths.length > 1) {
+      if (isSourceFilePath(oldPath)) tombstones.add(oldPath);
+      else skipped.add(oldPath);
+      if (newPath && isSourceFilePath(newPath)) includePaths.add(newPath);
+      else if (newPath) skipped.add(newPath);
+      continue;
+    }
+
+    if (!isSourceFilePath(oldPath)) {
+      skipped.add(oldPath);
+    } else if (status.includes('D')) {
+      tombstones.add(oldPath);
+    } else if (
+      status.includes('M') ||
+      status.includes('A') ||
+      status.includes('?') ||
+      status.includes('T') ||
+      status.includes('U')
+    ) {
+      includePaths.add(oldPath);
+    } else {
+      skipped.add(oldPath);
+    }
+  }
+
+  const sourcePathCount = new Set([...includePaths, ...tombstones]).size;
+  const tooMany = sourcePathCount > MAX_CHANGED_FILES_FOR_BOUNDED_REFRESH;
+  return {
+    includePaths: tooMany ? [] : [...includePaths].sort(),
+    tombstones: [...tombstones].sort(),
+    tooMany,
+    skipped: [...skipped].sort(),
+  };
+}

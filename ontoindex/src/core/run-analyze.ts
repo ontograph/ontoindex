@@ -23,6 +23,7 @@ import {
   streamQuery,
   executeWithReusedStatement,
   closeLbug,
+  closeLbugForPath,
   loadCachedEmbeddings,
   fetchExistingEmbeddingHashes,
   type ExistingEmbeddingHashEntry,
@@ -55,6 +56,7 @@ import {
 } from './embeddings/ann-neighbor.js';
 import { persistAnnNeighborEdges } from './embeddings/ann-neighbor-store.js';
 import type { KnowledgeGraph } from './graph/types.js';
+import { createKnowledgeGraph } from './graph/graph.js';
 import {
   summarizeRelationshipDistributions,
   type RelationshipDistributions,
@@ -120,15 +122,15 @@ export interface AnalyzeOptions {
   profile?: PipelineProfile;
   /** Optional repository-relative roots to scan before ignore filtering. */
   includePaths?: string[];
+  /** Build a disposable graph without publishing an index generation. */
+  dirtyOverlay?: boolean;
+  /** Repository-relative dirty source files; at most 50, never directory roots. */
+  overlayPaths?: string[];
 }
 
 export type EmbeddingLifecycleMode = 'off' | 'preserve' | 'refresh';
 export type EmbeddingLifecycleState =
-  | 'available'
-  | 'preserved'
-  | 'refreshed'
-  | 'skipped'
-  | 'absent';
+  'available' | 'preserved' | 'refreshed' | 'skipped' | 'absent';
 
 export interface EmbeddingLifecycleSummary {
   mode: EmbeddingLifecycleMode;
@@ -752,6 +754,67 @@ export async function runAnalysisPipeline(
 // Main orchestrator
 // ---------------------------------------------------------------------------
 
+async function runDirtyOverlayAnalysis(
+  repoPath: string,
+  overlayPaths: string[],
+  callbacks: AnalyzeCallbacks,
+  dependencies: RunFullAnalysisDependencies,
+): Promise<AnalyzeResult> {
+  if (overlayPaths.length > 50) {
+    throw new Error('Dirty overlay is limited to 50 source files; refusing a full scan.');
+  }
+  const includePaths = await normalizeRepositoryIncludePaths(repoPath, overlayPaths);
+  for (const filePath of includePaths) {
+    if (!(await fs.lstat(path.join(repoPath, filePath))).isFile()) {
+      throw new Error(
+        `Dirty overlay paths must be source files, not directories or symlinks: ${filePath}`,
+      );
+    }
+  }
+
+  const { storagePath } = getStoragePaths(repoPath);
+  const overlayPath = path.join(storagePath, 'overlay');
+  const overlayDbPath = path.join(overlayPath, 'lbug');
+  // This directory is disposable. Remove the link itself if it is a symlink,
+  // never follow it into an active generation or another owner's directory.
+  await fs.rm(overlayPath, { recursive: true, force: true });
+  try {
+    await fs.mkdir(overlayPath, { recursive: true });
+    const pipelineResult: PipelineResult =
+      includePaths.length === 0
+        ? { graph: createKnowledgeGraph(), repoPath, totalFileCount: 0, usedWorkerPool: false }
+        : await runAnalysisPipeline(
+            repoPath,
+            (p) =>
+              callbacks.onProgress(
+                p.phase,
+                Math.round(p.percent * 0.6),
+                PHASE_LABELS[p.phase] || p.phase,
+              ),
+            { profile: 'symbols', includePaths },
+            dependencies.analyzeRuntime,
+          );
+    await initLbug(overlayDbPath);
+    await loadGraphToLbug(pipelineResult.graph, repoPath, overlayPath, (message) => {
+      callbacks.onProgress('lbug', 80, message);
+    });
+    const stats = await getLbugStats();
+    await closeLbugForPath(overlayDbPath);
+    callbacks.onProgress('done', 100, 'Dirty overlay built; active index unchanged');
+    return {
+      repoName: path.basename(repoPath),
+      repoPath,
+      stats: { ...stats, files: pipelineResult.totalFileCount, embeddings: 0 },
+      embeddingLifecycle: { mode: 'off', state: 'absent' },
+      pipelineResult,
+    };
+  } catch (err) {
+    await closeLbugForPath(overlayDbPath).catch(() => {});
+    await fs.rm(overlayPath, { recursive: true, force: true });
+    throw err;
+  }
+}
+
 /**
  * Run the full OntoIndex analysis pipeline.
  *
@@ -769,6 +832,10 @@ export async function runFullAnalysis(
   callbacks: AnalyzeCallbacks,
   dependencies: RunFullAnalysisDependencies = {},
 ): Promise<AnalyzeResult> {
+  // Keep overlay builds outside every active-index lifecycle operation below.
+  if (options.dirtyOverlay === true) {
+    return runDirtyOverlayAnalysis(repoPath, options.overlayPaths ?? [], callbacks, dependencies);
+  }
   const log = (msg: string) => callbacks.onLog?.(msg);
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
