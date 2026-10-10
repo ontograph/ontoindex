@@ -4,8 +4,11 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveSymbolCandidates } from '../../src/mcp/local/backend-symbol-resolution.js';
-import { resetOverlaySnapshotCache } from '../../src/mcp/local/backend-overlay.js';
-import { moveSymbol } from '../../src/mcp/local/backend-move-symbol.js';
+import {
+  getOverlaySnapshot,
+  resetOverlaySnapshotCache,
+} from '../../src/mcp/local/backend-overlay.js';
+import { guardMutationRange, moveSymbol } from '../../src/mcp/local/backend-move-symbol.js';
 import { extractFunction } from '../../src/mcp/local/backend-extract-function.js';
 import {
   extractFunctionByUid,
@@ -144,7 +147,7 @@ describe('mutation dirty guard', () => {
       const targetBefore = await fs.readFile(target);
       const write = vi.spyOn(fs, 'writeFile');
       await expect(mutate(operation)).rejects.toThrow(
-        /Dirty file .*src\/a\.ts:.*Commit\/stash.*ontoindex analyze.*retry/,
+        /Dirty file .*src[\\/]a\.ts:.*Commit\/stash.*ontoindex analyze.*retry/,
       );
       expect(write).not.toHaveBeenCalled();
       expect(await fs.readFile(source)).toEqual(sourceBefore);
@@ -159,11 +162,41 @@ describe('mutation dirty guard', () => {
     expect(result).toMatchObject({
       success: true,
       dry_run: true,
-      warnings: [expect.stringMatching(/src\/a\.ts:.*line range may be stale/)],
+      warnings: [expect.stringMatching(/src[\\/]a\.ts:.*line range may be stale/)],
     });
     expect(await fs.readFile(source, 'utf8')).toBe(prefix + original);
     expect(await fs.readFile(target, 'utf8')).toBe('// target\n');
   });
+
+  it.each(['host-native absolute path', 'backslash-relative path'])(
+    'detects a dirty file with a %s',
+    async (pathKind) => {
+      const filePath =
+        pathKind === 'host-native absolute path'
+          ? path.join(repo.repoPath, 'src', 'a.ts')
+          : 'src\\a.ts';
+      const snapshot = {
+        usable: false,
+        reason: 'test snapshot',
+        dirtyPaths: new Set(['src/a.ts']),
+        overlayPaths: new Set<string>(),
+        tombstones: new Set<string>(),
+      };
+      vi.spyOn(
+        await import('../../src/mcp/local/backend-overlay.js'),
+        'getOverlaySnapshot',
+      ).mockResolvedValue(snapshot);
+
+      await expect(guardMutationRange(repo, { filePath }, false)).rejects.toThrow(
+        /Dirty file .*src[\\/]a\.ts:.*line range may be stale/,
+      );
+      expect(getOverlaySnapshot).toHaveBeenCalledWith({
+        id: repo.id,
+        repoPath: repo.repoPath,
+        storagePath: repo.storagePath,
+      });
+    },
+  );
 
   it.each(operations)(
     'preserves clean %s dry-run results without a warnings field',

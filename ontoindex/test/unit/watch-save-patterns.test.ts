@@ -7,8 +7,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDebouncedWatcher } from '../../src/cli/watch.js';
 
 const DEBOUNCE_MS = 150;
-// Allow delayed native notifications without shortening the debounce under test.
-const SETTLE_MS = DEBOUNCE_MS + 450;
+const IS_DARWIN = process.platform === 'darwin';
+// FSEvents can take longer to deliver/coalesce notifications than inotify.
+const SETTLE_MS = DEBOUNCE_MS + (IS_DARWIN ? 2000 : 450);
+const WATCHER_WARMUP_MS = IS_DARWIN ? 300 : 0;
 
 describe('real fs.watch editor save patterns', () => {
   let parent: string;
@@ -19,10 +21,11 @@ describe('real fs.watch editor save patterns', () => {
   let refreshes: { content: string; at: number }[];
   let logs: string[];
 
-  beforeEach(() => {
-    parent = fs.mkdtempSync(path.join(os.tmpdir(), 'ontoindex-watch-save-'));
+  beforeEach(async () => {
+    parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ontoindex-watch-save-')));
     root = path.join(parent, 'root');
     fs.mkdirSync(root);
+    root = fs.realpathSync(root);
     file = path.join(root, 'a.ts');
     observedFile = file;
     fs.writeFileSync(file, 'initial');
@@ -38,6 +41,7 @@ describe('real fs.watch editor save patterns', () => {
       log: (message) => logs.push(message),
     });
     watcher.start();
+    if (WATCHER_WARMUP_MS) await delay(WATCHER_WARMUP_MS);
   });
 
   afterEach(() => {
@@ -48,6 +52,7 @@ describe('real fs.watch editor save patterns', () => {
   async function expectOneRefresh(save: () => void, content: string) {
     const count = refreshes.length;
     const started = performance.now();
+    if (WATCHER_WARMUP_MS) await delay(WATCHER_WARMUP_MS);
     save();
     await delay(SETTLE_MS);
     const observed = refreshes.slice(count);
@@ -115,6 +120,7 @@ describe('real fs.watch editor save patterns', () => {
       await delay(SETTLE_MS);
       expect(refreshes).toEqual([]);
       await expectOneRefresh(() => fs.writeFileSync(file, 'source save'), 'source save');
+      expect(refreshes).toHaveLength(1);
     },
   );
 

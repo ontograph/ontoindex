@@ -840,6 +840,116 @@ tasks:
       - The guard needs a file outside the write set.
       - The dirty probe cannot be called from the mutation modules without changing the resolver.
     known_blockers: []
+
+  RT-22:
+    title: When mutation-dirty-guard tests assert error and warning text containing a file path, they match both separators, and pass on Linux and on a Windows path form
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: low
+    owner_files:
+      - ontoindex/test/unit/mutation-dirty-guard.test.ts
+    allowed_write_set:
+      - ontoindex/test/unit/mutation-dirty-guard.test.ts
+    non_goals:
+      - Editing production code.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/mutation-dirty-guard.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - test/unit/mutation-dirty-guard.test.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - The four failing assertions (regexes with src\\/a\\.ts) match a message containing C:\\Users\\...\\src\\a.ts and one containing src/a.ts.
+      - A direct unit test calls the production message builder (or guardMutationRange with a Windows-style absolute symbol.filePath and a repo path) and asserts the guard still detects the dirty file when the path is absolute with backslashes.
+      - Passes on Linux; the fix to the production relative-path logic, if one is needed, is reported rather than made.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - guardMutationRange mis-detects dirty files for Windows absolute paths (report it).
+    known_blockers: []
+
+  RT-23:
+    title: When the overlay build and overlay pool tests run on Windows, every LadybugDB handle on a store is closed before the test deletes, renames, or rebuilds that store
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: medium
+    owner_files:
+      - ontoindex/test/unit/dirty-overlay-build.test.ts
+      - ontoindex/test/unit/backend-overlay.test.ts
+    allowed_write_set:
+      - ontoindex/test/unit/dirty-overlay-build.test.ts
+      - ontoindex/test/unit/backend-overlay.test.ts
+    non_goals:
+      - Editing production code (report instead).
+      - Changing the overlay design.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/dirty-overlay-build.test.ts test/unit/backend-overlay.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - test/unit/dirty-overlay-build.test.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - Read the Windows CI log in /tmp/win.clean: EPERM on rename of .ontoindex/generations/.staging-baseline-... in dirty-overlay-build.test.ts line 70 (activateIndexGeneration while a handle may still be open), and 'Cannot read from file ... locked a portion of the file' reading a rebuilt overlay in backend-overlay.test.ts.
+      - For each, classify as test ordering (handle still open) or a production defect (overlay pool or builder keeps a handle). Test-ordering causes are fixed in the test; production causes are reported with the exact lines.
+      - On Linux the tests still pass 20 of 20 runs.
+      - Where a close really cannot be guaranteed on Windows, the test is skipped with it.skipIf(process.platform === 'win32') plus a comment naming the lock and a plan reference, never silently.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - The cause is a production handle leak (report it with file and line).
+    known_blockers: []
+
+  RT-24:
+    title: When the real fs.watch save-pattern tests run on macOS, each is either proven to pass there or explicitly skipped on darwin with the reason recorded, because the failure could not be reproduced locally
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: low
+    owner_files:
+      - ontoindex/test/unit/watch-save-patterns.test.ts
+    allowed_write_set:
+      - ontoindex/test/unit/watch-save-patterns.test.ts
+    non_goals:
+      - Editing watch.ts without a reproduced cause.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/watch-save-patterns.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - test/unit/watch-save-patterns.test.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - Read the macOS CI log in /tmp/mac.clean: all 10 real-fs.watch tests observed 0 refreshes, including an in-place write.
+      - Use fs.realpathSync on the temp root before creating the watcher and the files (macOS temp dirs live under a symlinked /var and /tmp), and widen SETTLE_MS on darwin; if that is not enough to explain it the test is skipped on darwin with a comment naming the observed symptom.
+      - No production change in this task. Production watcher behavior on macOS stays unverified and is recorded as such.
+      - On Linux the file still passes 15 of 15 runs.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - The cause appears to be in watch.ts itself rather than the test setup (report it).
+    known_blockers: []
 ```
 
 ## Required Traceability
@@ -865,6 +975,9 @@ tasks:
 | RT-REQ-17 | Windows-style paths behave like POSIX paths | proof-only | RT-19 | host-independent path tests |
 | RT-REQ-18 | The feature is documented and discoverable | implementation | RT-20 | doc claims checked against code |
 | RT-REQ-19 | Mutation tools never apply graph line numbers to a file that changed since indexing | implementation | RT-21 | mutation-dirty-guard tests |
+| RT-REQ-20 | Windows test assertions are separator-agnostic | implementation | RT-22 | mutation-dirty-guard tests |
+| RT-REQ-21 | Overlay tests release file handles before deleting or renaming on Windows | implementation | RT-23 | overlay tests |
+| RT-REQ-22 | macOS watcher tests pass or are skipped with a recorded reason | implementation | RT-24 | watch-save-patterns tests |
 
 ## Decisions And Non-Goals
 
@@ -881,6 +994,8 @@ tasks:
 - 2026-10-10 scratch-repo verification (edit + rename + untracked + dir-index import): overlay serves edited, renamed, and untracked symbols with source overlay; impact is UNKNOWN. Found one resolver gap (./dir.js to dir/index.ts) -> RT-17. Chosen: RT-17, RT-18, RT-19, RT-20. Rejected: git-diff-based impact for overlay targets (hot-path cost), recursive-watch fallback for old Linux (not testable here), waiting for Windows/macOS CI (blocked on the owner merging PR 82).
 
 - 2026-10-10 mutation check: the resolver returned startLine 1 for a symbol that sits on line 5 of a dirty file (three comment lines added above it); move_symbol slices those graph lines from the live file, and its dry run reported success with no warning. Existing behavior, not caused by the RT work, but now preventable with the dirty-path machinery -> RT-21. The real write failed closed in my check only because the server had writes disabled.
+
+- 2026-10-10 first cross-platform CI (draft PR 85, full stack on master): Linux jobs pass; macOS fails 10 watcher tests; Windows fails 7 tests across 3 files (separator-sensitive assertions, file locks on rename and reopen). Local Linux runs could not show any of these. Fixes limited to tests where the cause is understood (RT-22, RT-23); the macOS cause is unreproduced, so RT-24 either fixes the test setup (realpath, settle time) or skips on darwin and records production behavior there as unverified.
 
 ## Closeout
 
@@ -924,4 +1039,9 @@ RT-1 (2026-10-10), implemented locally in PR 83 without sub-agent role receipts,
 - RT-20: .memory-bank/knowledge-hub/dirty-worktree.md. Parent review found one claim to correct: it says mutation tools may use the overlay; see RT-21.
 - RT-21: reproduced a real defect (mocked stale range, committed temp repo): the graph keeps index-time line ranges, so on a file with uncommitted edits move_symbol cut the three added comment lines instead of the function. The pre-existing code had this for any dirty file; writes are additionally gated by confirm:true and a server flag. Fix: a shared guard refuses a real write before touching any file when the symbol's file is dirty and its range did not come from a usable overlay; dry runs succeed with a warning. 35 tests. The reproduction used a mocked resolver range rather than a full index.
 - Statuses stay OPEN: no authenticated role receipts exist.
+
+2026-10-10 cross-platform fixes (3 sub-agents: gpt-6-luna on RT-22 and RT-24, gpt-6.1-sol on RT-23). Parent ran the four touched test files 5 times on Linux (63/63 each), tsc clean, whole-repo prettier clean. NONE of these fixes has been run on Windows or macOS; the draft PR 85 rerun is the only evidence.
+- RT-22: mutation-dirty-guard assertions now match both path separators (Windows CI failure: absolute backslash path in the message). Two guard cases added (host-native absolute path, backslash-relative path). The agent did not run its own tests (another validation was active), so the parent ran them.
+- RT-23: the Windows file-lock failures were NOT fixed, only isolated. Three tests are skipped on win32 with a comment naming RT-23: the overlay-build rename (EPERM on generations/.staging-baseline) and two backend-overlay lifecycle tests (reading a rebuilt or deleted overlay while a pooled reader is open). The agent classified all three as production lifecycle issues, unproven: run-analyze.ts:784 removes the overlay directory without telling MCP readers; backend-overlay.ts:125-138 closes a reader only after it sees the file disappear, which is too late for Windows to allow the delete; closeActiveLbugHandles (lbug-adapter.ts:531-542) swallows close failures. On Windows a running MCP server plus `ontoindex watch` rebuilding the overlay can therefore fail. This is a real open risk, not covered by any passing test there.
+- RT-24: macOS watcher tests now use realpath'd temp roots, a 2 s settle on darwin, a 300 ms warm-up, and each "artifact alone" test also performs a real save so it can no longer pass vacuously. No darwin skip. Unverified until macOS CI runs; if it still fails the next step is skipIf(darwin) and a production investigation.
 
