@@ -216,6 +216,121 @@ tasks:
       - Merging needs changes to more than one tool family.
     known_blockers:
       - Needs the overlay store from RT-2.
+
+  RT-6:
+    title: When the overlay snapshot is usable, query results drop base symbols from dirty paths and include matching overlay symbols marked source overlay
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: [RT-2]
+    type: code
+    validation_tier: unit-fast
+    impact_risk: high
+    owner_files:
+      - ontoindex/src/mcp/local/backend-search.ts
+      - ontoindex/test/unit/overlay-query-merge.test.ts
+    allowed_write_set:
+      - ontoindex/src/mcp/local/backend-search.ts
+      - ontoindex/test/unit/overlay-query-merge.test.ts
+    non_goals:
+      - Editing backend-overlay.ts or any file outside this write set.
+      - Treating overlay symbols as proof of zero callers or zero impact.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/overlay-query-merge.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/mcp/local/backend-overlay.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - A dirty path's stale base symbol is absent and the overlay symbol is present with source overlay.
+      - With an unusable snapshot, results are byte-identical to today.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - The hook needs a file outside the write set.
+    known_blockers: []
+
+  RT-7:
+    title: When the overlay snapshot is usable, symbol resolution for context and impact finds overlay symbols for dirty paths and never returns a stale base symbol for them
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: [RT-2]
+    type: code
+    validation_tier: unit-fast
+    impact_risk: high
+    owner_files:
+      - ontoindex/src/mcp/local/backend-symbol-resolution.ts
+      - ontoindex/test/unit/overlay-symbol-resolution.test.ts
+    allowed_write_set:
+      - ontoindex/src/mcp/local/backend-symbol-resolution.ts
+      - ontoindex/test/unit/overlay-symbol-resolution.test.ts
+    non_goals:
+      - Editing backend-overlay.ts or any file outside this write set.
+      - Treating overlay symbols as proof of zero callers or zero impact.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/overlay-symbol-resolution.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/mcp/local/backend-overlay.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - Resolving a name defined only in a dirty file returns the overlay symbol, not not_found.
+      - A symbol deleted from a dirty file resolves to not_found, not the stale base symbol.
+      - With an unusable snapshot, behavior is unchanged.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - The hook needs a file outside the write set.
+    known_blockers: []
+
+  RT-8:
+    title: When a context or impact target resolves from the overlay, the response is marked source overlay and impact reports risk UNKNOWN with graphImpactAvailable false
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: [RT-7]
+    type: code
+    validation_tier: unit-fast
+    impact_risk: high
+    owner_files:
+      - ontoindex/src/mcp/local/backend-context.ts
+      - ontoindex/src/mcp/local/backend-impact.ts
+      - ontoindex/test/unit/overlay-context-impact.test.ts
+    allowed_write_set:
+      - ontoindex/src/mcp/local/backend-context.ts
+      - ontoindex/src/mcp/local/backend-impact.ts
+      - ontoindex/test/unit/overlay-context-impact.test.ts
+    non_goals:
+      - Editing backend-overlay.ts or any file outside this write set.
+      - Treating overlay symbols as proof of zero callers or zero impact.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/overlay-context-impact.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/mcp/local/backend-overlay.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - Impact for an overlay target returns risk UNKNOWN, never LOW or zero callers.
+      - Context for an overlay target carries source overlay and no base process membership.
+      - Non-overlay targets are unchanged.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - The hook needs a file outside the write set.
+    known_blockers: []
 ```
 
 ## Required Traceability
@@ -227,6 +342,7 @@ tasks:
 | RT-REQ-3 | A debounced watcher keeps the overlay current | implementation | RT-4 | watch tests |
 | RT-REQ-4 | Queries serve dirty paths from the overlay | proof-only | RT-5 | read-path spike |
 | RT-REQ-5 | Embeddings are not refreshed for the overlay | non-goal | RT-2 | documented limit |
+| RT-REQ-6 | Queries, symbol lookup, context and impact serve dirty paths from the overlay without claiming zero impact | implementation | RT-6, RT-7, RT-8 | overlay merge, resolution and context/impact tests |
 
 ## Decisions And Non-Goals
 
@@ -246,4 +362,11 @@ RT-1 (2026-10-10), implemented locally in PR 83 without sub-agent role receipts,
 - RT-5 (gpt-6.1-sol): read-only spike, report in RT5_READ_PATH_SPIKE_REPORT.md. No single merge point exists; minimum is query merge in backend-search.ts, shared symbol resolution, context gating, impact pre-BFS. Overlay is symbols-only so impact must report UNKNOWN, not zero. A second read-only handle is feasible through the MCP pool, not the writer singleton.
 - Note: the agents were told the "4 sub-agents" rule does not apply to leaf workers; the first Luna dispatch stopped on it and was re-dispatched.
 - Statuses left OPEN: no authenticated role receipts exist (dispatch was not through the manager loop).
+
+2026-10-10 query-path phase. I wrote backend-overlay.ts (snapshot, isDirtyPath, queryOverlay on a distinct pool id, 2s TTL cache; usable only when the overlay is newer than every dirty file) and its test; sub-agents did the hooks. Parent verified: tsc clean, prettier clean on touched files, 6930 unit tests pass with the same 4 pre-existing mcp-doctor failures.
+- RT-6 (gpt-6.1-sol): backend-search.ts drops dirty base candidates and merges overlay symbols before ranking; bypasses the structured cache when usable.
+- RT-7 (gpt-6-luna): shared resolver merges overlay candidates, drops dirty base candidates, tags source overlay. Activates only when the repo handle carries repoPath and storagePath.
+- RT-8 (gpt-6.1-sol): context and impact pass those fields; overlay targets get source overlay, impact returns risk UNKNOWN with graphImpactAvailable false.
+- Live end-to-end check on a scratch repo (real built CLI): a symbol that exists only in a dirty file is found by query, context, and impact with source overlay; impact says UNKNOWN; a clean symbol is unchanged (LOW); after touching the dirty file the overlay is treated as stale and results fall back to base only.
+- Known gaps: impact-kernel.ts:344-364 does not filter dirty paths, so stale dirty IDs can still enter the BFS from a clean target (not changed). Callers backend-move-symbol, backend-extract-function, backend-symbol-mutations still omit storagePath, so mutations stay base-only (intended: do not edit from an overlay). Overlay has no embeddings. The watcher is not registered or wired to the overlay build. Statuses stay OPEN: no authenticated role receipts.
 

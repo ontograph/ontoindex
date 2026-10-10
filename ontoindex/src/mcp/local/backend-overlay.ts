@@ -1,0 +1,118 @@
+/**
+ * Read-only access to the disposable dirty-file overlay built by
+ * `ontoindex analyze --dirty-overlay` (<storagePath>/overlay/lbug).
+ *
+ * The overlay holds symbols only (no edges to the base graph), so callers must
+ * treat anything served from it as identity/location data, never as proof of
+ * "no callers" or "zero impact".
+ */
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { planDirtyOverlay, type DirtyOverlayPlan } from '../../core/analyze-delta.js';
+import { executeParameterized, initLbug } from '../../core/lbug/pool-adapter.js';
+
+export interface OverlayRepo {
+  id: string;
+  repoPath: string;
+  storagePath: string;
+}
+
+export interface OverlaySnapshot {
+  /** True only when an overlay exists and is newer than every dirty source file. */
+  usable: boolean;
+  /** Why the overlay is not usable (for diagnostics); null when usable. */
+  reason: string | null;
+  /** Repo-relative paths that are dirty (modified/added/untracked/deleted); base symbols for these are stale. */
+  dirtyPaths: ReadonlySet<string>;
+  /** Dirty paths that still exist and are covered by the overlay. */
+  overlayPaths: ReadonlySet<string>;
+  /** Deleted or renamed-away paths: base symbols must be suppressed, overlay has none. */
+  tombstones: ReadonlySet<string>;
+}
+
+const EMPTY: OverlaySnapshot = {
+  usable: false,
+  reason: 'no dirty files',
+  dirtyPaths: new Set(),
+  overlayPaths: new Set(),
+  tombstones: new Set(),
+};
+
+const SNAPSHOT_TTL_MS = 2_000;
+const snapshotCache = new Map<string, { at: number; value: Promise<OverlaySnapshot> }>();
+
+export const overlayRepoId = (repoId: string): string => `${repoId}::overlay`;
+export const overlayDbPath = (storagePath: string): string =>
+  path.join(storagePath, 'overlay', 'lbug');
+
+async function computeSnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> {
+  let plan: DirtyOverlayPlan;
+  try {
+    plan = await planDirtyOverlay(repo.repoPath);
+  } catch (err) {
+    return { ...EMPTY, reason: `dirty planning failed: ${(err as Error).message}` };
+  }
+  const overlayPaths = new Set(plan.includePaths);
+  const tombstones = new Set(plan.tombstones);
+  const dirtyPaths = new Set([...overlayPaths, ...tombstones]);
+  if (dirtyPaths.size === 0) return EMPTY;
+  const base = { dirtyPaths, overlayPaths, tombstones };
+  if (plan.tooMany) {
+    return { ...base, usable: false, reason: 'more than 50 dirty source files' };
+  }
+
+  let builtAt: number;
+  try {
+    builtAt = (await fs.stat(overlayDbPath(repo.storagePath))).mtimeMs;
+  } catch {
+    return {
+      ...base,
+      usable: false,
+      reason: 'no overlay built (run: ontoindex analyze --dirty-overlay)',
+    };
+  }
+  for (const rel of overlayPaths) {
+    try {
+      if ((await fs.stat(path.join(repo.repoPath, rel))).mtimeMs > builtAt) {
+        return { ...base, usable: false, reason: `overlay is older than ${rel}` };
+      }
+    } catch {
+      return { ...base, usable: false, reason: `cannot stat ${rel}` };
+    }
+  }
+  return { ...base, usable: true, reason: null };
+}
+
+/** Cached for a short TTL so one tool call (and bursts of calls) share one git probe. */
+export function getOverlaySnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> {
+  const hit = snapshotCache.get(repo.id);
+  const now = Date.now();
+  if (hit && now - hit.at < SNAPSHOT_TTL_MS) return hit.value;
+  const value = computeSnapshot(repo);
+  snapshotCache.set(repo.id, { at: now, value });
+  return value;
+}
+
+export function resetOverlaySnapshotCache(): void {
+  snapshotCache.clear();
+}
+
+/** True when `filePath` (repo-relative, any separator) is dirty in this snapshot. */
+export function isDirtyPath(
+  snapshot: OverlaySnapshot,
+  filePath: string | null | undefined,
+): boolean {
+  if (!filePath) return false;
+  return snapshot.dirtyPaths.has(filePath.replace(/\\/g, '/'));
+}
+
+/** Query the overlay store read-only through the MCP pool under a distinct pool id. */
+export async function queryOverlay<TRow extends object = Record<string, unknown>>(
+  repo: OverlayRepo,
+  cypher: string,
+  params: Record<string, unknown> = {},
+): Promise<TRow[]> {
+  const id = overlayRepoId(repo.id);
+  await initLbug(id, overlayDbPath(repo.storagePath));
+  return (await executeParameterized(id, cypher, params)) as TRow[];
+}

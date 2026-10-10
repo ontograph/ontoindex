@@ -19,11 +19,13 @@ import {
   type ImpactKernelRawCounts,
 } from '../../core/impact/impact-kernel.js';
 import { resolveSymbolCandidates, toSymbolIdentity } from './backend-symbol-resolution.js';
+import { getOverlaySnapshot } from './backend-overlay.js';
 
 interface ImpactRepoHandle {
   id: string;
   name: string;
   repoPath?: string;
+  storagePath?: string;
 }
 
 export { IMPACT_RELATION_CONFIDENCE, VALID_RELATION_TYPES, isTestFilePath };
@@ -149,10 +151,25 @@ interface ImpactSuccessResult extends ImpactBaseResult {
   rawCounts?: ImpactKernelRawCounts;
 }
 
+interface ImpactOverlayResult extends ImpactBaseResult {
+  target: ImpactBaseResult['target'] & {
+    startLine: number;
+    endLine: number;
+    source: 'overlay';
+  };
+  source: 'overlay';
+  risk: 'UNKNOWN';
+  graphImpactAvailable: false;
+  message: string;
+  impacted: [];
+  byDepth: Record<number, never[]>;
+}
+
 type ImpactResult =
   | ImpactErrorResult
   | ImpactAmbiguousResult
   | ImpactSourceOnlyResult
+  | ImpactOverlayResult
   | ImpactSuccessResult;
 
 function logQueryError(context: string, err: unknown): void {
@@ -239,17 +256,36 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
   const includeTests = params.includeTests ?? false;
   const minConfidence = params.minConfidence ?? 0;
 
-  const sourceFallback = await resolveSourceOnly(repo, params);
-  if (sourceFallback?.kind === 'found') return sourceOnlyImpact(sourceFallback, direction);
-  if (sourceFallback?.kind === 'unavailable') {
-    return unknownImpact(
-      params,
-      sourceFallback.reason,
-      `Current source could not resolve '${target}' in '${params.file_path}'.`,
-    );
+  let outcome: Awaited<ReturnType<typeof resolveSymbolCandidates>> | undefined;
+  if (repo.repoPath && repo.storagePath) {
+    const snapshot = await getOverlaySnapshot({
+      id: repo.id,
+      repoPath: repo.repoPath,
+      storagePath: repo.storagePath,
+    }).catch(() => undefined);
+    if (snapshot?.usable) {
+      // Dirty-file source fallback returns early, so try the overlay first.
+      outcome = await resolveSymbolCandidates(
+        repo,
+        { uid: params.target_uid ?? params.nodeId, name: target },
+        { file_path: params.file_path, kind: params.kind },
+      );
+    }
   }
 
-  const outcome = await resolveSymbolCandidates(
+  if (outcome?.kind !== 'ok' || outcome.symbol.source !== 'overlay') {
+    const sourceFallback = await resolveSourceOnly(repo, params);
+    if (sourceFallback?.kind === 'found') return sourceOnlyImpact(sourceFallback, direction);
+    if (sourceFallback?.kind === 'unavailable') {
+      return unknownImpact(
+        params,
+        sourceFallback.reason,
+        `Current source could not resolve '${target}' in '${params.file_path}'.`,
+      );
+    }
+  }
+
+  outcome ??= await resolveSymbolCandidates(
     repo,
     { uid: params.target_uid ?? params.nodeId, name: target },
     { file_path: params.file_path, kind: params.kind },
@@ -285,6 +321,7 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
         filePath: c.filePath,
         line: c.startLine,
         score: Number(c.score.toFixed(2)),
+        ...(c.source ? { source: c.source } : {}),
         suggestedNextCalls: retryCalls(repo.name, c.id, c.name),
       })),
     };
@@ -298,6 +335,26 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
   const symType = outcome.resolvedLabel || outcome.symbol.type || '';
 
   throwIfAborted(params.signal);
+  if (outcome.symbol.source === 'overlay') {
+    return {
+      target: {
+        ...sym,
+        type: symType,
+        startLine: outcome.symbol.startLine,
+        endLine: outcome.symbol.endLine,
+        source: 'overlay',
+      },
+      direction,
+      source: 'overlay',
+      risk: 'UNKNOWN',
+      graphImpactAvailable: false,
+      impactedCount: 0,
+      impacted: [],
+      byDepth: {},
+      message:
+        'Graph impact is unavailable for uncommitted symbols: the overlay contains symbols only. Empty results do not mean zero callers or zero impact.',
+    };
+  }
   return runImpactBFS(repo, sym, symType, direction, {
     maxDepth,
     relationTypes,

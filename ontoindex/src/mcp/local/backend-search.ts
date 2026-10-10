@@ -49,6 +49,8 @@ import type {
   TypedQueryRequest,
 } from '../../core/search/typed-query-document.js';
 import { RepoHandle } from './tool-params.js';
+import { getOverlaySnapshot, isDirtyPath, queryOverlay } from './backend-overlay.js';
+import type { OverlaySnapshot } from './backend-overlay.js';
 
 type SearchRepoHandle = RepoHandle;
 
@@ -110,6 +112,7 @@ interface SymbolEntry {
   ceScore?: number;
   citations?: CitationEntry[];
   passiveFacts?: GraphPathEdge[];
+  source?: 'overlay';
 }
 
 interface ProcessSymbolEntry extends SymbolEntry {
@@ -138,6 +141,7 @@ interface ProcessBucket {
 type LspReferences = Awaited<ReturnType<typeof lspBridge.resolveSymbol>>;
 
 interface MutableEnrichedSymbolRow extends EnrichedSymbolRow {
+  source?: 'overlay';
   ceScore?: number;
   fileSha?: string | null;
   lspRefs?: LspReferences;
@@ -175,8 +179,7 @@ interface TypedBackendSearchParams extends BackendSearchOptions {
 export type BackendSearchParams = PlainBackendSearchParams | TypedBackendSearchParams;
 
 export type BackendSearchInput =
-  | { mode: 'plain'; query: string }
-  | { mode: 'typed'; document: TypedQueryRequest };
+  { mode: 'plain'; query: string } | { mode: 'typed'; document: TypedQueryRequest };
 
 type MergedSymbolEntry = [
   string,
@@ -198,7 +201,7 @@ export interface RetrievalCandidate {
   filePath?: string;
   startLine?: number;
   endLine?: number;
-  source: SearchableTypedQueryLineType;
+  source: SearchableTypedQueryLineType | 'overlay';
   rawScore?: number;
   evidence: RetrievalEvidenceReference[];
   freshness: QueryFreshnessStatus;
@@ -777,10 +780,11 @@ function inferRetrievalCandidateKind(row: EnrichedSymbolRow): RetrievalCandidate
 }
 
 function preferredRetrievalSource(
-  current: SearchableTypedQueryLineType,
+  current: RetrievalCandidate['source'],
   next: SearchableTypedQueryLineType,
-): SearchableTypedQueryLineType {
-  const priority: Record<SearchableTypedQueryLineType, number> = {
+): RetrievalCandidate['source'] {
+  const priority: Record<RetrievalCandidate['source'], number> = {
+    overlay: 6,
     symbol: 5,
     file: 5,
     graph: 4,
@@ -901,6 +905,7 @@ function buildStructuredCandidates(
       candidateMap?.get(key) ?? fallbackRetrievalCandidate(item.data, searchQuery, freshness);
     candidates.push({
       ...base,
+      ...(item.data.source === 'overlay' ? { source: 'overlay' as const } : {}),
       rawScore: item.score,
       freshness,
       evidence: [...base.evidence],
@@ -1329,15 +1334,13 @@ function prependLockedResults(
   const unlocked = merged.filter(([key]) => !lockedKeys.has(key));
   const prefixScoreBase = (unlocked[0]?.[1].score ?? 0) + lockedResults.length + 1;
 
-  const lockedEntries = lockedResults.map(
-    (row, index): MergedSymbolEntry => [
-      row.nodeId || row.filePath,
-      {
-        score: prefixScoreBase - index * 0.000001,
-        data: row,
-      },
-    ],
-  );
+  const lockedEntries = lockedResults.map((row, index): MergedSymbolEntry => [
+    row.nodeId || row.filePath,
+    {
+      score: prefixScoreBase - index * 0.000001,
+      data: row,
+    },
+  ]);
 
   return [...lockedEntries, ...unlocked];
 }
@@ -1641,6 +1644,15 @@ export async function query(
   const timer = new PhaseTimer();
   const wallStart = performance.now();
   const searchLimit = processLimit * maxSymbolsPerProcess;
+  let overlaySnapshot: OverlaySnapshot | undefined;
+  let overlayWarning: string | undefined;
+  try {
+    overlaySnapshot = await getOverlaySnapshot(repo);
+  } catch (err) {
+    overlayWarning = `Overlay unavailable; using base results: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  // HEAD-keyed cached results cannot describe an overlay generation.
+  const bypassStructuredCache = overlaySnapshot?.usable === true || !!overlayWarning;
 
   // ONTOINDEX_INTENT_ENSEMBLE=1 activates per-intent weighted-RRF (v13 P1 W1b-step-1).
   // Default OFF — existing v12 RRF code path runs unchanged for all production users.
@@ -1690,7 +1702,7 @@ export async function query(
   const vectorBackendDiagnostics =
     params.retrieval_diagnostics === true ? await buildVectorBackendDiagnostics(repo) : undefined;
 
-  if (params.structured_output === true) {
+  if (params.structured_output === true && !bypassStructuredCache) {
     const cacheLookup = await cache.lookup(cacheKey, repo.lastCommit);
     cacheStatus = cacheLookup.status;
     cacheAgeMs = cacheLookup.ageMs;
@@ -1833,6 +1845,56 @@ export async function query(
     }
   }
 
+  let overlayApplied = false;
+  if (overlayWarning) typedWarnings.push(overlayWarning);
+  if (overlaySnapshot?.usable) {
+    try {
+      const terms = [...new Set(searchQuery.toLowerCase().split(/\s+/).filter(Boolean))];
+      const overlayRows =
+        overlaySnapshot.overlayPaths.size === 0
+          ? []
+          : await queryOverlay<LookupRow>(
+              repo,
+              `MATCH (n)
+             WHERE n.filePath IN $paths
+               AND (${terms.map((_, i) => `(lower(n.name) CONTAINS $term${i} OR lower(n.filePath) CONTAINS $term${i})`).join(' OR ')})
+             RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
+                    n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+             ORDER BY n.filePath, n.id
+             LIMIT $limit`,
+              {
+                paths: [...overlaySnapshot.overlayPaths],
+                limit: searchLimit,
+                ...Object.fromEntries(terms.map((term, i) => [`term${i}`, term])),
+              },
+            );
+      const overlayResults: MutableEnrichedSymbolRow[] = overlayRows.map((row) => ({
+        ...toEnrichedSymbolRow(row),
+        source: 'overlay',
+      }));
+      const keepBase = (row: EnrichedSymbolRow) => !isDirtyPath(overlaySnapshot!, row.filePath);
+      // Commit the replacement only after every overlay read succeeds.
+      const cleanBm25 = bm25Results.filter(keepBase);
+      const cleanSemantic = semanticResults.filter(keepBase);
+      const cleanGraph = graphResults.filter(keepBase);
+      const cleanLocked = lockedResults.filter(keepBase);
+      bm25Results = [...cleanBm25, ...overlayResults];
+      semanticResults = cleanSemantic;
+      graphResults = cleanGraph;
+      lockedResults = cleanLocked;
+      if (typedCandidateMap) {
+        for (const [key, candidate] of typedCandidateMap) {
+          if (isDirtyPath(overlaySnapshot, candidate.filePath)) typedCandidateMap.delete(key);
+        }
+      }
+      overlayApplied = true;
+    } catch (err) {
+      typedWarnings.push(
+        `Overlay unavailable; using base results: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   // --- CE leg (W1b-step-3) ---
   // Gate: ONTOINDEX_INTENT_ENSEMBLE=1 AND intent==nl-conceptual AND confidence>=0.7
   // AND semanticResults.length >= MIN_VEC_POOL_SIZE (G2 thin-pool mitigation).
@@ -1924,6 +1986,21 @@ export async function query(
 
   for (const [, item] of mergedReordered) {
     const sym = item.data;
+    if (sym.source === 'overlay') {
+      // Overlay symbols have no edges. Never attach base content or graph proof,
+      // even when an unchanged symbol id exists in both stores.
+      definitions.push({
+        id: sym.nodeId || sym.filePath,
+        name: sym.name,
+        type: sym.type,
+        filePath: sym.filePath,
+        startLine: sym.startLine,
+        endLine: sym.endLine,
+        source: 'overlay',
+        ...(includeExplanations ? { explanation: buildSearchExplanation(item, queryIntent) } : {}),
+      });
+      continue;
+    }
     if (!sym.nodeId) {
       definitions.push({
         name: sym.name,
@@ -2199,7 +2276,10 @@ export async function query(
           [
             ...dedupedSymbols.map((s) => s.filePath),
             ...definitions.map((entry) => entry.filePath),
-          ].filter(Boolean),
+          ].filter(
+            (filePath) =>
+              Boolean(filePath) && (!overlayApplied || !isDirtyPath(overlaySnapshot!, filePath)),
+          ),
         ),
       ).slice(0, 5);
       await Promise.all(
@@ -2367,6 +2447,7 @@ export async function query(
 
   if (
     structuredRetrieval &&
+    !bypassStructuredCache &&
     cacheableFreshnessStatus(structuredRetrieval.capabilityState.freshness.status)
   ) {
     try {

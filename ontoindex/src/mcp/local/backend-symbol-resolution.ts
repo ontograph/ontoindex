@@ -1,7 +1,15 @@
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import {
+  getOverlaySnapshot,
+  isDirtyPath,
+  queryOverlay,
+  type OverlaySnapshot,
+} from './backend-overlay.js';
 
 interface SymbolResolutionRepoHandle {
   id: string;
+  repoPath?: string;
+  storagePath?: string;
 }
 
 interface CandidateWithType {
@@ -36,6 +44,7 @@ interface ResolvedSymbol {
   startLine: number;
   endLine: number;
   content?: string;
+  source?: 'overlay';
 }
 
 interface AmbiguousSymbol extends ResolvedSymbol {
@@ -169,6 +178,32 @@ function parseSymbolRow(r: QueryRow, include_content?: boolean): ResolvedSymbol 
   };
 }
 
+/** Return overlay rows only when the snapshot and its lookup are both usable. */
+async function readOverlayRows(
+  repo: SymbolResolutionRepoHandle,
+  cypher: string,
+  params: Record<string, unknown>,
+): Promise<{ snapshot: OverlaySnapshot; rows: QueryRow[] } | undefined> {
+  if (!repo.repoPath || !repo.storagePath) return undefined;
+  try {
+    const snapshot = await getOverlaySnapshot({
+      id: repo.id,
+      repoPath: repo.repoPath,
+      storagePath: repo.storagePath,
+    });
+    if (!snapshot.usable) return undefined;
+    const rows = await queryOverlay(
+      { id: repo.id, repoPath: repo.repoPath, storagePath: repo.storagePath },
+      cypher,
+      params,
+    );
+    return { snapshot, rows: rows as QueryRow[] };
+  } catch {
+    // Overlay state is advisory; preserve the original base-only behavior.
+    return undefined;
+  }
+}
+
 export function toSymbolIdentity(symbol: ResolvedSymbol): SymbolIdentity {
   return {
     nodeId: symbol.id,
@@ -197,13 +232,25 @@ export async function resolveSymbolCandidates(
   const selectClause = `n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`;
 
   if (uid) {
-    const rows = await executeParameterized(
-      repo.id,
-      `MATCH (n {id: $uid}) RETURN ${selectClause} LIMIT 1`,
-      { uid },
-    );
-    if (rows.length === 0) return { kind: 'not_found' };
-    const symbol = parseSymbolRow(rows[0], include_content);
+    const cypher = `MATCH (n {id: $uid}) RETURN ${selectClause} LIMIT 1`;
+    const params = { uid };
+    const rows = await executeParameterized(repo.id, cypher, params);
+    const overlay = await readOverlayRows(repo, cypher, params);
+    const candidates = (rows as QueryRow[])
+      .filter(
+        (row) => !overlay || !isDirtyPath(overlay.snapshot, rowValue(row, 'filePath', 3) as string),
+      )
+      .map((row) => parseSymbolRow(row, include_content));
+    if (overlay) {
+      candidates.push(
+        ...overlay.rows.map((row) => ({
+          ...parseSymbolRow(row, include_content),
+          source: 'overlay' as const,
+        })),
+      );
+    }
+    if (candidates.length === 0) return { kind: 'not_found' };
+    const symbol = candidates[0];
     await enrichCandidateLabels(repo, [symbol]);
     return { kind: 'ok', symbol, resolvedLabel: symbol.type };
   }
@@ -226,16 +273,22 @@ export async function resolveSymbolCandidates(
     whereClause = `WHERE n.name = $symName`;
   }
 
-  const rows = await executeParameterized(
-    repo.id,
-    `MATCH (n) ${whereClause} RETURN ${selectClause} LIMIT 20`,
-    queryParams,
+  const cypher = `MATCH (n) ${whereClause} RETURN ${selectClause} LIMIT 20`;
+  const rows = await executeParameterized(repo.id, cypher, queryParams);
+  const overlay = await readOverlayRows(repo, cypher, queryParams);
+  const baseRows = (rows as QueryRow[]).filter(
+    (row) => !overlay || !isDirtyPath(overlay.snapshot, rowValue(row, 'filePath', 3) as string),
   );
+  const queryRows = [...baseRows, ...(overlay?.rows ?? [])];
+  const normalized: ResolvedSymbol[] = [
+    ...baseRows.map((r) => parseSymbolRow(r, include_content)),
+    ...(overlay?.rows ?? []).map((r) => ({
+      ...parseSymbolRow(r, include_content),
+      source: 'overlay' as const,
+    })),
+  ];
 
-  if (rows.length === 0) return { kind: 'not_found' };
-
-  const queryRows = rows as QueryRow[];
-  const normalized: ResolvedSymbol[] = queryRows.map((r) => parseSymbolRow(r, include_content));
+  if (normalized.length === 0) return { kind: 'not_found' };
 
   await enrichCandidateLabels(repo, normalized);
 

@@ -8,6 +8,8 @@ const MAX_CONTEXT_PROCESS_ROWS = (() => {
 
 interface ContextRepoHandle {
   id: string;
+  repoPath?: string;
+  storagePath?: string;
 }
 
 type QueryRow = Record<string, unknown> | readonly unknown[];
@@ -68,6 +70,7 @@ function categorizeRows(rows: ContextRelationshipRow[]): Record<string, unknown[
       name: rowValue(row, 'name', 2),
       filePath: rowValue(row, 'filePath', 3),
       kind: rowValue(row, 'kind', 4),
+      ...(rowValue(row, 'source', 5) === 'overlay' ? { source: 'overlay' } : {}),
     };
     if (!categories[relType]) categories[relType] = [];
     categories[relType].push(entry);
@@ -233,6 +236,7 @@ export async function context(
         filePath: c.filePath,
         line: c.startLine,
         score: Number(c.score.toFixed(2)),
+        ...(c.source ? { source: c.source } : {}),
         suggestedNextCalls: retryCalls(repo.id, c.id, c.name),
       })),
       contextCompleteness: contextCompleteness(false, ['ambiguous-symbol']),
@@ -243,6 +247,37 @@ export async function context(
   const sym = outcome.symbol;
   const resolvedLabel = outcome.resolvedLabel;
   const symId = sym.id;
+
+  if (sym.source === 'overlay') {
+    return {
+      status: 'found',
+      source: 'overlay',
+      graphImpactAvailable: false,
+      symbol: {
+        ...toSymbolIdentity(sym),
+        uid: sym.id,
+        name: sym.name,
+        kind: sym.type,
+        filePath: sym.filePath,
+        startLine: sym.startLine,
+        endLine: sym.endLine,
+        source: 'overlay',
+        ...(include_content && sym.content ? { content: sym.content } : {}),
+      },
+      warnings: [
+        'Relationships are unavailable for uncommitted symbols: the overlay contains symbols only, not callers, callees, or process membership.',
+      ],
+      contextCompleteness: contextCompleteness(Boolean(include_content && sym.content), [
+        'relationships-unavailable-for-uncommitted-symbols',
+        ...(include_content ? [] : ['source-not-requested']),
+        ...(include_content && !sym.content ? ['source-unavailable'] : []),
+      ]),
+      incoming: {},
+      outgoing: {},
+      processes: [],
+      concepts: [],
+    };
+  }
 
   // Categorized incoming refs
   const incomingRows = (await executeParameterized(
