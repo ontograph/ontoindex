@@ -553,18 +553,24 @@ const resetLbugSessionState = (clearEnsuredIndexes = false): void => {
   if (clearEnsuredIndexes) ensuredFTSIndexes.clear();
 };
 
-const closeActiveLbugHandles = async (clearEnsuredIndexes = false): Promise<void> => {
+const closeActiveLbugHandles = async (
+  clearEnsuredIndexes = false,
+  strict = false,
+): Promise<void> => {
+  let firstError: unknown;
   try {
     if (conn) await conn.close();
-  } catch {
-    /* best-effort */
+  } catch (err) {
+    firstError = err;
   }
   try {
     if (db) await db.close();
-  } catch {
-    /* best-effort */
+  } catch (err) {
+    firstError ??= err;
   }
+  // Session state is always reset so a failed close cannot leave a half-open session.
   resetLbugSessionState(clearEnsuredIndexes);
+  if (strict && firstError) throw firstError;
 };
 
 const normalizeCopyPath = (filePath: string): string => filePath.replace(/\\/g, '/');
@@ -1658,8 +1664,12 @@ export const fetchExistingEmbeddingHashes = async (
   }
 };
 
-export const closeLbug = async (): Promise<void> => {
-  await closeActiveLbugHandles(true);
+/**
+ * Close the active handles. With `strict`, a failed native close is rethrown after the
+ * session state is reset, for callers that must not publish while a handle may be open.
+ */
+export const closeLbug = async (opts?: { strict?: boolean }): Promise<void> => {
+  await closeActiveLbugHandles(true, opts?.strict === true);
 };
 
 export const closeLbugForPath = async (dbPath: string): Promise<void> => {

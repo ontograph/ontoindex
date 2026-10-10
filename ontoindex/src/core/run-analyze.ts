@@ -1492,7 +1492,8 @@ export async function runFullAnalysis(
     );
     await saveMeta(generationStoragePath, meta);
 
-    await closeLbug();
+    // Strict: never rename a generation into place while a native handle may still be open.
+    await closeLbug({ strict: true });
     await activateIndexGeneration(storagePath, stagedGeneration);
     stagedGeneration = null;
 
