@@ -179,7 +179,8 @@ interface TypedBackendSearchParams extends BackendSearchOptions {
 export type BackendSearchParams = PlainBackendSearchParams | TypedBackendSearchParams;
 
 export type BackendSearchInput =
-  { mode: 'plain'; query: string } | { mode: 'typed'; document: TypedQueryRequest };
+  | { mode: 'plain'; query: string }
+  | { mode: 'typed'; document: TypedQueryRequest };
 
 type MergedSymbolEntry = [
   string,
@@ -1334,13 +1335,15 @@ function prependLockedResults(
   const unlocked = merged.filter(([key]) => !lockedKeys.has(key));
   const prefixScoreBase = (unlocked[0]?.[1].score ?? 0) + lockedResults.length + 1;
 
-  const lockedEntries = lockedResults.map((row, index): MergedSymbolEntry => [
-    row.nodeId || row.filePath,
-    {
-      score: prefixScoreBase - index * 0.000001,
-      data: row,
-    },
-  ]);
+  const lockedEntries = lockedResults.map(
+    (row, index): MergedSymbolEntry => [
+      row.nodeId || row.filePath,
+      {
+        score: prefixScoreBase - index * 0.000001,
+        data: row,
+      },
+    ],
+  );
 
   return [...lockedEntries, ...unlocked];
 }

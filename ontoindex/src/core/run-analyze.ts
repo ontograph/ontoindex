@@ -130,7 +130,11 @@ export interface AnalyzeOptions {
 
 export type EmbeddingLifecycleMode = 'off' | 'preserve' | 'refresh';
 export type EmbeddingLifecycleState =
-  'available' | 'preserved' | 'refreshed' | 'skipped' | 'absent';
+  | 'available'
+  | 'preserved'
+  | 'refreshed'
+  | 'skipped'
+  | 'absent';
 
 export interface EmbeddingLifecycleSummary {
   mode: EmbeddingLifecycleMode;
