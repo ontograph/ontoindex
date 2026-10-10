@@ -8,17 +8,18 @@ import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import {
   closeLbug,
-  executeQuery,
   getLbugStats,
   initLbug,
   loadGraphToLbug,
 } from '../../src/core/lbug/lbug-adapter.js';
 import * as repoManager from '../../src/storage/repo-manager.js';
 import { buildTestGraph } from '../helpers/test-graph.js';
+import { resolveOverlayDbPath } from '../../src/mcp/local/backend-overlay.js';
 
 describe('disposable dirty overlay build', () => {
   // Windows CI reports EPERM on generation rename despite awaiting adapter close.
-  // LadybugDB file-lock/mmap release needs production/native investigation; see RT-23.
+  // This fixture activates a main-index symlink generation, not an overlay
+  // generation. RT-25 does not change that native Windows rename failure.
   it.skipIf(process.platform === 'win32')(
     'isolates dirty symbols, preserves the active generation, and removes a failed partial store',
     async () => {
@@ -148,16 +149,40 @@ describe('disposable dirty overlay build', () => {
         expect(result.stats.embeddings).toBe(0);
         expect(result.embeddingLifecycle).toEqual({ mode: 'off', state: 'absent' });
         expect(await snapshotActive()).toEqual(before);
-        expect((await fs.stat(path.join(overlayPath, 'lbug'))).isFile()).toBe(true);
-        await initLbug(path.join(overlayPath, 'lbug'), { maxDBSize: 2 ** 32 });
-        expect(
-          await executeQuery('MATCH (n:Function) RETURN n.name AS name, n.filePath AS filePath'),
-        ).toEqual([{ name: 'dirtyNow', filePath: 'src/dirty.ts' }]);
-        expect(await executeQuery('MATCH (n:File) RETURN n.filePath AS filePath')).toEqual([
-          { filePath: 'src/dirty.ts' },
-        ]);
-        await closeLbug();
-        await expect(fs.stat(path.join(overlayPath, 'meta.json'))).rejects.toMatchObject({
+        const overlayDbPath = await resolveOverlayDbPath(storagePath);
+        expect(overlayDbPath).not.toBeNull();
+        expect((await fs.stat(overlayDbPath!)).isFile()).toBe(true);
+        const overlayCurrent = await fs.readFile(path.join(overlayPath, 'CURRENT'));
+        // Verify the immutable publication read-only, without writable catalog
+        // initialization or deferred native checkpoints changing its bytes.
+        const overlayDb = new lbug.Database(overlayDbPath!, 0, true, true, 2 ** 32);
+        const overlayConn = new lbug.Connection(overlayDb);
+        try {
+          for (const [query, expected] of [
+            [
+              'MATCH (n:Function) RETURN n.name AS name, n.filePath AS filePath',
+              [{ name: 'dirtyNow', filePath: 'src/dirty.ts' }],
+            ],
+            ['MATCH (n:File) RETURN n.filePath AS filePath', [{ filePath: 'src/dirty.ts' }]],
+          ] as const) {
+            const result = await overlayConn.query(query);
+            const results = Array.isArray(result) ? result : [result];
+            try {
+              expect(await results[0].getAll()).toEqual(expected);
+            } finally {
+              for (const rowset of results) rowset.close();
+            }
+          }
+        } finally {
+          try {
+            await overlayConn.close();
+          } finally {
+            await overlayDb.close();
+          }
+        }
+        await expect(
+          fs.stat(path.join(path.dirname(overlayDbPath!), 'meta.json')),
+        ).rejects.toMatchObject({
           code: 'ENOENT',
         });
 
@@ -178,7 +203,12 @@ describe('disposable dirty overlay build', () => {
           ),
         ).rejects.toThrow('injected overlay load failure');
         expect(failedAfterCopy).toBe(true);
-        await expect(fs.stat(overlayPath)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await fs.readFile(path.join(overlayPath, 'CURRENT'))).toEqual(overlayCurrent);
+        // Byte equality is not asserted: the in-process native store may rewrite its own header.
+        await expect(fs.stat(overlayDbPath!)).resolves.toBeTruthy();
+        expect((await fs.readdir(overlayPath)).sort()).toEqual(
+          [path.basename(path.dirname(overlayDbPath!)), 'CURRENT'].sort(),
+        );
         expect(await snapshotActive()).toEqual(before);
 
         analyzeRepo.mockClear();

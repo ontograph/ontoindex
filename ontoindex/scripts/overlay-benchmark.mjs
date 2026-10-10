@@ -196,7 +196,17 @@ async function main() {
           const measured = await analyze(opts.cli, clone, env, true, controller.signal);
           if (measured.files !== size)
             throw new Error(`Expected ${size} overlay files, CLI reported ${measured.files}`);
-          runs.push({ ...measured, overlayBytes: await directoryBytes(overlayDir) });
+          const { resolveOverlayDbPath } = await import(
+            pathToFileURL(path.resolve(path.dirname(opts.cli), '../mcp/local/backend-overlay.js'))
+              .href
+          );
+          const overlayDbPath = await resolveOverlayDbPath(path.dirname(overlayDir));
+          if (!overlayDbPath) throw new Error('CLI did not publish an overlay CURRENT generation');
+          runs.push({
+            ...measured,
+            overlayDbPath,
+            overlayBytes: await directoryBytes(path.dirname(overlayDbPath)),
+          });
         }
         const warm = runs
           .slice(1)

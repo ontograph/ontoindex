@@ -778,12 +778,16 @@ async function runDirtyOverlayAnalysis(
 
   const { storagePath } = getStoragePaths(repoPath);
   const overlayPath = path.join(storagePath, 'overlay');
-  const overlayDbPath = path.join(overlayPath, 'lbug');
-  // This directory is disposable. Remove the link itself if it is a symlink,
-  // never follow it into an active generation or another owner's directory.
-  await fs.rm(overlayPath, { recursive: true, force: true });
+  await fs.mkdir(overlayPath, { recursive: true });
+  if (!(await fs.lstat(overlayPath)).isDirectory()) {
+    throw new Error('Dirty overlay directory must not be a symlink.');
+  }
+  const generationId = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  const generationPath = path.join(overlayPath, generationId);
+  const overlayDbPath = path.join(generationPath, 'lbug');
+  const currentTempPath = path.join(overlayPath, `.CURRENT-${generationId}.tmp`);
+  await fs.mkdir(generationPath);
   try {
-    await fs.mkdir(overlayPath, { recursive: true });
     const pipelineResult: PipelineResult =
       includePaths.length === 0
         ? { graph: createKnowledgeGraph(), repoPath, totalFileCount: 0, usedWorkerPool: false }
@@ -799,12 +803,47 @@ async function runDirtyOverlayAnalysis(
             dependencies.analyzeRuntime,
           );
     await initLbug(overlayDbPath, { maxDBSize: 2 ** 32 });
-    await loadGraphToLbug(pipelineResult.graph, repoPath, overlayPath, (message) => {
+    await loadGraphToLbug(pipelineResult.graph, repoPath, generationPath, (message) => {
       callbacks.onProgress('lbug', 80, message);
     });
     const stats = await getLbugStats();
     await closeLbugForPath(overlayDbPath);
     callbacks.onProgress('done', 100, 'Dirty overlay built; active index unchanged');
+    await fs.writeFile(currentTempPath, `${generationId}\n`);
+    await fs.rename(currentTempPath, path.join(overlayPath, 'CURRENT'));
+
+    // Published stores are immutable. A Windows reader may retain a file lock,
+    // so pruning is only housekeeping, never a condition of build success.
+    let pruneFailed = false;
+    try {
+      const generations = [];
+      for (const entry of await fs.readdir(overlayPath, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !/^\d+-\d+-[a-z0-9]+$/.test(entry.name)) continue;
+        const dir = path.join(overlayPath, entry.name);
+        generations.push({ name: entry.name, dir, mtime: (await fs.stat(dir)).mtimeMs });
+      }
+      generations.sort((a, b) =>
+        a.name === generationId ? -1 : b.name === generationId ? 1 : b.mtime - a.mtime,
+      );
+      for (const generation of generations.slice(3)) {
+        await fs.rm(generation.dir, { recursive: true, force: true }).catch(() => {
+          pruneFailed = true;
+        });
+      }
+      // Legacy single-file overlays are never opened by generation readers.
+      await fs.rm(path.join(overlayPath, 'lbug'), { recursive: true, force: true }).catch(() => {
+        pruneFailed = true;
+      });
+    } catch {
+      pruneFailed = true;
+    }
+    if (pruneFailed) {
+      try {
+        callbacks.onLog?.('Dirty overlay published; some old generations could not be pruned.');
+      } catch {
+        // A logging callback must not turn housekeeping into a failed build.
+      }
+    }
     return {
       repoName: path.basename(repoPath),
       repoPath,
@@ -814,7 +853,8 @@ async function runDirtyOverlayAnalysis(
     };
   } catch (err) {
     await closeLbugForPath(overlayDbPath).catch(() => {});
-    await fs.rm(overlayPath, { recursive: true, force: true });
+    await fs.rm(currentTempPath, { force: true }).catch(() => {});
+    await fs.rm(generationPath, { recursive: true, force: true }).catch(() => {});
     throw err;
   }
 }

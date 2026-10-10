@@ -1,12 +1,13 @@
 /**
  * Read-only access to the disposable dirty-file overlay built by
- * `ontoindex analyze --dirty-overlay` (<storagePath>/overlay/lbug).
+ * `ontoindex analyze --dirty-overlay` (<storagePath>/overlay/<CURRENT>/lbug).
  *
  * The overlay holds symbols only (no edges to the base graph), so callers must
  * treat anything served from it as identity/location data, never as proof of
  * "no callers" or "zero impact".
  */
 import fs from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { planDirtyOverlay, type DirtyOverlayPlan } from '../../core/analyze-delta.js';
 import { closeLbug, executeParameterized, initLbug } from '../../core/lbug/pool-adapter.js';
@@ -44,8 +45,41 @@ const overlayFileIdentities = new Map<string, string>();
 const overlayQueries = new Map<string, Promise<unknown>>();
 
 export const overlayRepoId = (repoId: string): string => `${repoId}::overlay`;
-export const overlayDbPath = (storagePath: string): string =>
-  path.join(storagePath, 'overlay', 'lbug');
+
+function validGeneration(value: string): string | null {
+  const id = value.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) ? id : null;
+}
+
+/** Synchronous path helper retained for callers; use the resolver to check availability. */
+export const overlayDbPath = (storagePath: string): string => {
+  try {
+    const generation = validGeneration(
+      readFileSync(path.join(storagePath, 'overlay', 'CURRENT'), 'utf8'),
+    );
+    if (generation) return path.join(storagePath, 'overlay', generation, 'lbug');
+  } catch {
+    // Preserve the legacy helper's return type, not legacy reader behavior.
+  }
+  return path.join(storagePath, 'overlay', 'lbug');
+};
+
+/** Missing, malformed or incomplete publication means no overlay, including legacy stores. */
+export async function resolveOverlayDbPath(storagePath: string): Promise<string | null> {
+  try {
+    const overlayPath = path.join(storagePath, 'overlay');
+    const generation = validGeneration(
+      await fs.readFile(path.join(overlayPath, 'CURRENT'), 'utf8'),
+    );
+    if (!generation) return null;
+    const generationPath = path.join(overlayPath, generation);
+    if (!(await fs.lstat(generationPath)).isDirectory()) return null;
+    const dbPath = path.join(generationPath, 'lbug');
+    return (await fs.lstat(dbPath)).isFile() ? dbPath : null;
+  } catch {
+    return null;
+  }
+}
 
 async function computeSnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> {
   const plan: DirtyOverlayPlan = await planDirtyOverlay(repo.repoPath);
@@ -60,12 +94,14 @@ async function computeSnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> {
 
   let builtAt: number;
   try {
-    builtAt = (await fs.stat(overlayDbPath(repo.storagePath))).mtimeMs;
+    const dbPath = await resolveOverlayDbPath(repo.storagePath);
+    if (!dbPath) throw new Error('no published overlay');
+    builtAt = (await fs.stat(dbPath)).mtimeMs;
   } catch {
     return {
       ...base,
       usable: false,
-      reason: 'no overlay built (run: ontoindex analyze --dirty-overlay)',
+      reason: 'no valid overlay CURRENT generation (run: ontoindex analyze --dirty-overlay)',
     };
   }
   for (const rel of overlayPaths) {
@@ -119,19 +155,22 @@ export async function queryOverlay<TRow extends object = Record<string, unknown>
   const query = (overlayQueries.get(id) ?? Promise.resolve())
     .catch(() => {})
     .then(async () => {
-      const dbPath = overlayDbPath(repo.storagePath);
+      const dbPath = await resolveOverlayDbPath(repo.storagePath);
       let identity: string;
       try {
+        if (!dbPath) throw new Error('no published overlay');
         const { dev, ino, mtimeMs, size } = await fs.stat(dbPath);
-        identity = `${dev}:${ino}:${mtimeMs}:${size}`;
-      } catch (err) {
+        identity = `${dbPath}:${dev}:${ino}:${mtimeMs}:${size}`;
+      } catch {
         await closeLbug(id);
         overlayFileIdentities.delete(id);
-        throw err;
+        snapshotCache.delete(repo.id);
+        return [];
       }
       if (overlayFileIdentities.get(id) !== identity) {
         await closeLbug(id);
         overlayFileIdentities.delete(id);
+        snapshotCache.delete(repo.id);
       }
       await initLbug(id, dbPath);
       overlayFileIdentities.set(id, identity);

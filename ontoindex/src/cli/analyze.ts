@@ -39,6 +39,7 @@ import {
 } from '../core/indexing/file-scope-preview.js';
 import type { PipelineProfile } from '../core/ingestion/pipeline.js';
 import type { EmbeddingLifecycleSummary } from '../core/run-analyze.js';
+import { resolveOverlayDbPath } from '../mcp/local/backend-overlay.js';
 
 const HEAP_MB = 8192;
 const HEAP_FLAG = `--max-old-space-size=${HEAP_MB}`;
@@ -701,7 +702,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       console.log(
         `\n  Dirty overlay built: ${result.stats.files ?? 0} file(s), ${result.stats.nodes ?? 0} nodes, ${result.stats.edges ?? 0} edges`,
       );
-      console.log(`  ${path.join(getStoragePaths(repoPath).storagePath, 'overlay')}`);
+      console.log(`  ${await resolveOverlayDbPath(getStoragePaths(repoPath).storagePath)}`);
       console.log('  Active index unchanged; embeddings and skill generation skipped.\n');
       return;
     }

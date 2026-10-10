@@ -27,6 +27,11 @@ describe('backend-overlay snapshot', () => {
   let repo: string;
   let storage: string;
   const handle = () => ({ id: 'r', repoPath: repo, storagePath: storage });
+  const publishFixture = () => {
+    fs.mkdirSync(path.join(storage, 'overlay', 'fixture'), { recursive: true });
+    fs.writeFileSync(path.join(storage, 'overlay', 'CURRENT'), 'fixture\n');
+    fs.writeFileSync(overlayDbPath(storage), 'x');
+  };
 
   beforeEach(() => {
     resetOverlaySnapshotCache();
@@ -62,8 +67,7 @@ describe('backend-overlay snapshot', () => {
   it('is usable when the overlay is newer than every dirty file, and tombstones deletions', async () => {
     fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
     fs.rmSync(path.join(repo, 'src/gone.ts'));
-    fs.mkdirSync(path.dirname(overlayDbPath(storage)), { recursive: true });
-    fs.writeFileSync(overlayDbPath(storage), 'x');
+    publishFixture();
     const future = new Date(Date.now() + 5_000);
     fs.utimesSync(overlayDbPath(storage), future, future);
     const s = await getOverlaySnapshot(handle());
@@ -74,8 +78,7 @@ describe('backend-overlay snapshot', () => {
 
   it('becomes unusable when a dirty file is saved after the overlay was built', async () => {
     fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
-    fs.mkdirSync(path.dirname(overlayDbPath(storage)), { recursive: true });
-    fs.writeFileSync(overlayDbPath(storage), 'x');
+    publishFixture();
     const past = new Date(Date.now() - 60_000);
     fs.utimesSync(overlayDbPath(storage), past, past);
     const s = await getOverlaySnapshot(handle());
@@ -179,7 +182,8 @@ describe('backend-overlay real pool lifecycle', () => {
 
   // Only a Function table is needed to exercise the real read-only MCP pool.
   async function buildOverlay(name: string): Promise<void> {
-    const dbPath = overlayDbPath(repo.storagePath);
+    const overlayPath = path.join(repo.storagePath, 'overlay');
+    const dbPath = path.join(overlayPath, name, 'lbug');
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     // Keep repeated fixture builds from reserving the native default 8-TiB mmap.
     const db = new lbug.Database(dbPath, 64 * 1024 * 1024, false, false, 256 * 1024 * 1024);
@@ -199,6 +203,9 @@ describe('backend-overlay real pool lifecycle', () => {
         await db.close();
       }
     }
+    const temp = path.join(overlayPath, 'CURRENT.tmp');
+    fs.writeFileSync(temp, `${name}\n`);
+    fs.renameSync(temp, path.join(overlayPath, 'CURRENT'));
   }
 
   beforeEach(() => {
@@ -211,42 +218,33 @@ describe('backend-overlay real pool lifecycle', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  // Windows cannot delete/rebuild a store locked by a live LadybugDB MCP reader.
-  // Closing it here would mask the production rebuild lifecycle defect; see RT-23.
-  it.skipIf(process.platform === 'win32')(
-    'reopens a rebuilt overlay at the same path and reads only new symbols',
-    async () => {
-      await buildOverlay('beforeRebuild');
-      const close = vi.spyOn(pool, 'closeLbug');
-      await expect(queryOverlay(repo, cypher)).resolves.toEqual([{ name: 'beforeRebuild' }]);
-      close.mockClear();
-      // Match analyze --dirty-overlay: remove the directory without closing the
-      // MCP reader, then build a new store at the exact same path.
-      fs.rmSync(path.dirname(overlayDbPath(repo.storagePath)), { recursive: true });
-      await buildOverlay('afterRebuild');
-      const reads = await Promise.all(Array.from({ length: 10 }, () => queryOverlay(repo, cypher)));
-      expect(reads).toEqual(Array.from({ length: 10 }, () => [{ name: 'afterRebuild' }]));
-      expect(close).toHaveBeenCalledExactlyOnceWith(overlayRepoId(repo.id));
-      close.mockClear();
-      await expect(queryOverlay(repo, cypher)).resolves.toEqual([{ name: 'afterRebuild' }]);
-      expect(close).not.toHaveBeenCalled();
-    },
-  );
+  it('reopens a newly published generation and reads only new symbols', async () => {
+    await buildOverlay('beforeRebuild');
+    const close = vi.spyOn(pool, 'closeLbug');
+    await expect(queryOverlay(repo, cypher)).resolves.toEqual([{ name: 'beforeRebuild' }]);
+    close.mockClear();
+    const oldPath = overlayDbPath(repo.storagePath);
+    await buildOverlay('afterRebuild');
+    expect(fs.existsSync(oldPath)).toBe(true);
+    const reads = await Promise.all(Array.from({ length: 10 }, () => queryOverlay(repo, cypher)));
+    expect(reads).toEqual(Array.from({ length: 10 }, () => [{ name: 'afterRebuild' }]));
+    expect(close).toHaveBeenCalledExactlyOnceWith(overlayRepoId(repo.id));
+    close.mockClear();
+    await expect(queryOverlay(repo, cypher)).resolves.toEqual([{ name: 'afterRebuild' }]);
+    expect(close).not.toHaveBeenCalled();
+  });
 
-  // Windows cannot delete a store with a live LadybugDB file lock/mmap; see RT-23.
-  // Keep the live-reader deletion regression on platforms that permit unlinking.
-  it.skipIf(process.platform === 'win32')(
-    'closes a deleted overlay, rejects the read, and can read a later rebuild',
-    async () => {
-      await buildOverlay('beforeDelete');
-      await queryOverlay(repo, cypher);
-      expect(pool.isLbugReady(overlayRepoId(repo.id))).toBe(true);
-      fs.rmSync(path.dirname(overlayDbPath(repo.storagePath)), { recursive: true });
-      await expect(queryOverlay(repo, cypher)).rejects.toMatchObject({ code: 'ENOENT' });
-      expect(pool.isLbugReady(overlayRepoId(repo.id))).toBe(false);
-      expect(fs.existsSync(overlayDbPath(repo.storagePath))).toBe(false);
-      await buildOverlay('afterDelete');
-      await expect(queryOverlay(repo, cypher)).resolves.toEqual([{ name: 'afterDelete' }]);
-    },
-  );
+  it('closes an unpublished overlay, returns no rows, and can read a later rebuild', async () => {
+    await buildOverlay('beforeDelete');
+    await queryOverlay(repo, cypher);
+    expect(pool.isLbugReady(overlayRepoId(repo.id))).toBe(true);
+    // Removing only CURRENT is valid even while Windows holds the store open.
+    const oldPath = overlayDbPath(repo.storagePath);
+    fs.rmSync(path.join(repo.storagePath, 'overlay', 'CURRENT'));
+    await expect(queryOverlay(repo, cypher)).resolves.toEqual([]);
+    expect(pool.isLbugReady(overlayRepoId(repo.id))).toBe(false);
+    expect(fs.existsSync(oldPath)).toBe(true);
+    await buildOverlay('afterDelete');
+    await expect(queryOverlay(repo, cypher)).resolves.toEqual([{ name: 'afterDelete' }]);
+  });
 });
