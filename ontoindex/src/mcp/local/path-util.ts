@@ -10,7 +10,7 @@ import path from 'path';
  * @throws Error if the path escapes the repository or contains invalid characters.
  */
 export function canonicalize(repoPath: string, input: string): string {
-  if (!input) {
+  if (typeof input !== 'string' || !input) {
     throw new Error('Path cannot be empty');
   }
 
@@ -45,13 +45,19 @@ export function canonicalize(repoPath: string, input: string): string {
  * Callers must operate on the returned path, not the original input.
  */
 export async function resolveContainedRealPath(repoPath: string, input: string): Promise<string> {
-  if (!input || input.includes('\0'))
+  if (typeof input !== 'string' || !input || input.includes('\0'))
     throw new Error('Path cannot be empty or contain invalid characters');
   const absoluteRepoPath = path.resolve(repoPath);
-  const lexicalPath = path.isAbsolute(input)
-    ? path.resolve(input)
-    : canonicalize(absoluteRepoPath, input);
   const realRepoPath = await fs.realpath(absoluteRepoPath);
+  let lexicalPath: string;
+  try {
+    lexicalPath = canonicalize(absoluteRepoPath, input);
+  } catch (err) {
+    // A configured root may itself be a symlink. Accept its real spelling too,
+    // but reject outside paths before any filesystem lookup of user input.
+    if (!path.isAbsolute(input)) throw err;
+    lexicalPath = canonicalize(realRepoPath, input);
+  }
   let cursor = lexicalPath;
   const missing: string[] = [];
   while (true) {

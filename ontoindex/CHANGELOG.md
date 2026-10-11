@@ -4,6 +4,12 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.4] - 2026-10-11
+
+### Fixed
+
+- Reject non-string path inputs and outside absolute paths before filesystem lookup while preserving symlinked repository roots.
+
 ## [2.2.3] - 2026-10-11
 
 ### Fixed

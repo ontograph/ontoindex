@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,12 +17,40 @@ describe('resolveContainedRealPath', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
   it('rejects a file symlink that points outside the repository', async () => {
     await fs.symlink(path.join(tmpDir, 'outside.ts'), path.join(repoDir, 'link.ts'));
     await expect(resolveContainedRealPath(repoDir, 'link.ts')).rejects.toThrow(/escapes/);
+  });
+
+  it('rejects non-string runtime input before filesystem access', async () => {
+    const realpath = vi.spyOn(fs, 'realpath');
+    await expect(
+      resolveContainedRealPath(repoDir, ['src/inside.ts'] as unknown as string),
+    ).rejects.toThrow();
+    expect(realpath).not.toHaveBeenCalled();
+  });
+
+  it('rejects outside absolute paths before probing them', async () => {
+    const realpath = vi.spyOn(fs, 'realpath');
+    const lstat = vi.spyOn(fs, 'lstat');
+    await expect(
+      resolveContainedRealPath(repoDir, path.join(tmpDir, 'outside.ts')),
+    ).rejects.toThrow(/escapes/);
+    expect(realpath).toHaveBeenCalledTimes(1);
+    expect(realpath).toHaveBeenCalledWith(repoDir);
+    expect(lstat).not.toHaveBeenCalled();
+  });
+
+  it('accepts the real spelling of a symlinked repository root', async () => {
+    const aliasRoot = path.join(tmpDir, 'repo-alias');
+    await fs.symlink(repoDir, aliasRoot, 'junction');
+    await expect(
+      resolveContainedRealPath(aliasRoot, path.join(repoDir, 'src/inside.ts')),
+    ).resolves.toBe(path.join(repoDir, 'src/inside.ts'));
   });
 
   it('rejects a path through a directory symlink that points outside', async () => {
