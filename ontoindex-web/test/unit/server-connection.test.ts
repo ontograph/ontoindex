@@ -4,6 +4,7 @@ import {
   clearBackendAuthToken,
   fetchMcpDiagnostics,
   fetchGraph,
+  fetchRepoInfo,
   fetchRepos,
   getBackendAuthToken,
   normalizeServerUrl,
@@ -571,6 +572,55 @@ describe('connectToServer', () => {
 });
 
 describe('response shape validation', () => {
+  it.each([
+    { repoPath: '/repos/current' },
+    { path: '/repos/legacy' },
+    { path: '/repos/legacy', repoPath: '/repos/current' },
+  ])('normalizes supported repository detail paths: %j', async (paths) => {
+    const data = { name: 'my-repo', indexedAt: '2024-01-01', stats: { nodes: 2 }, ...paths };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(data))));
+
+    await expect(fetchRepoInfo()).resolves.toEqual({
+      ...data,
+      path: paths.path ?? paths.repoPath,
+      repoPath: paths.repoPath ?? paths.path,
+    });
+  });
+
+  it.each([
+    {},
+    { repoPath: 42 },
+    { path: 42, repoPath: '/repos/current' },
+    { path: '/repos/legacy', repoPath: 42 },
+    { repoPath: '/repos/current', name: 42 },
+    { repoPath: '/repos/current', indexedAt: null },
+  ])('rejects malformed repository details: %j', async (fields) => {
+    const data = { name: 'my-repo', indexedAt: '2024-01-01', ...fields };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(data))));
+
+    await expect(fetchRepoInfo()).rejects.toMatchObject({
+      name: 'BackendError',
+      message: 'Unexpected server response shape',
+    });
+  });
+
+  it('connects using the current repository detail response', async () => {
+    const info = { name: 'my-repo', repoPath: '/repos/current', indexedAt: '2024-01-01' };
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify(info)))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ nodes: [], relationships: [] }))),
+    );
+
+    await expect(connectToServer('http://localhost:4747')).resolves.toMatchObject({
+      repoInfo: { ...info, path: info.repoPath },
+      nodes: [],
+      relationships: [],
+    });
+  });
+
   it('parses MCP diagnostics responses and strips unsafe fields', async () => {
     setBackendUrl('http://localhost:4747');
     vi.stubGlobal(

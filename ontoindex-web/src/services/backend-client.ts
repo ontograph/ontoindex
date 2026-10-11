@@ -805,10 +805,17 @@ export const fetchRepoInfo = async (
   const response = await fetchWithTimeout(url, {}, timeout);
   await assertOk(response);
   const data: unknown = await response.json();
-  if (!isBackendRepo(data)) {
+  const normalized = isObjectRecord(data) ? { ...data, path: data.path ?? data.repoPath } : data;
+  if (
+    !isBackendRepo(normalized) ||
+    typeof normalized.name !== 'string' ||
+    typeof normalized.path !== 'string' ||
+    typeof normalized.indexedAt !== 'string' ||
+    (normalized.repoPath !== undefined && typeof normalized.repoPath !== 'string')
+  ) {
     throw new BackendError('Unexpected server response shape', response.status, 'server');
   }
-  return { ...data, repoPath: data.repoPath ?? data.path };
+  return { ...normalized, repoPath: normalized.repoPath ?? normalized.path };
 };
 
 /** Fetch the graph (nodes + relationships). Content stripped by default. */
