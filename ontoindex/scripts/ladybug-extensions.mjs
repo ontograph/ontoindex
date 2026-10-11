@@ -8,6 +8,21 @@ export const EXTENSION_NAMES = ['fts', 'vector'];
 const sha256File = (file) =>
   crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
+/** Verify a complete cache before bundling, including when fetching is disabled. */
+export function verifyLadybugExtensions({ dir, version, platformDir, pins }) {
+  const expected = pins?.[version]?.[platformDir];
+  for (const name of EXTENSION_NAMES) {
+    const want = expected?.[name];
+    if (typeof want !== 'string' || !/^[0-9a-f]{64}$/.test(want)) {
+      throw new Error(`Missing pinned LadybugDB ${name} checksum for ${version}/${platformDir}`);
+    }
+    const file = path.join(dir, `lib${name}.lbug_extension`);
+    if (sha256File(file) !== want) {
+      throw new Error(`LadybugDB extension checksum mismatch: ${file}`);
+    }
+  }
+}
+
 /**
  * Ensure libfts/libvector exist in `dir`, downloading any missing file and
  * verifying it against the pinned sha256 before it is moved into place.

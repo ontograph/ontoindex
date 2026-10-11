@@ -2,19 +2,65 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 // @ts-expect-error plain ESM build helper without type declarations
-import { ensureLadybugExtensions } from '../../scripts/ladybug-extensions.mjs';
+import {
+  ensureLadybugExtensions,
+  verifyLadybugExtensions,
+} from '../../scripts/ladybug-extensions.mjs';
 
 const sha = (b: Buffer) => crypto.createHash('sha256').update(b).digest('hex');
 const body = { fts: Buffer.from('fts-bytes'), vector: Buffer.from('vector-bytes') };
 const pins = { v1: { p: { fts: sha(body.fts), vector: sha(body.vector) } } };
-const mk = () => fs.mkdtempSync(path.join(os.tmpdir(), 'lbext-'));
+const tempDirs: string[] = [];
+const mk = () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lbext-'));
+  tempDirs.push(dir);
+  return dir;
+};
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
 const base = { version: 'v1', platformDir: 'p', pins, log: () => {}, retries: 2 };
 const fetchOk = async (url: string) => {
   const name = url.includes('/fts/') ? 'fts' : 'vector';
   return new Response(body[name as 'fts']);
 };
+
+describe('verifyLadybugExtensions', () => {
+  const cache = () => {
+    const dir = mk();
+    for (const name of ['fts', 'vector'] as const) {
+      fs.writeFileSync(path.join(dir, `lib${name}.lbug_extension`), body[name]);
+    }
+    return dir;
+  };
+
+  it('verifies a valid cache offline without changing its bytes', () => {
+    const dir = cache();
+    expect(() => verifyLadybugExtensions({ ...base, dir })).not.toThrow();
+    for (const name of ['fts', 'vector'] as const) {
+      expect(fs.readFileSync(path.join(dir, `lib${name}.lbug_extension`))).toEqual(body[name]);
+    }
+  });
+
+  it.each(['fts', 'vector'])('rejects a corrupt %s extension', (name) => {
+    const dir = cache();
+    fs.writeFileSync(path.join(dir, `lib${name}.lbug_extension`), 'tampered');
+    expect(() => verifyLadybugExtensions({ ...base, dir })).toThrow('checksum mismatch');
+  });
+
+  it.each([
+    { version: 'unknown' },
+    { platformDir: 'unknown' },
+    { pins: { v1: { p: { fts: pins.v1.p.fts } } } },
+    { pins: { v1: { p: { fts: pins.v1.p.fts, vector: 'invalid' } } } },
+  ])('rejects missing or invalid pins: %j', (override) => {
+    expect(() => verifyLadybugExtensions({ ...base, ...override, dir: cache() })).toThrow(
+      'Missing pinned LadybugDB',
+    );
+  });
+});
 
 describe('ensureLadybugExtensions', () => {
   it('downloads missing files and verifies checksums', async () => {

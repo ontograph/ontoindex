@@ -4,6 +4,24 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Added `ontoindex watch` and `analyze --dirty-overlay` to refresh symbols from dirty source files without rebuilding the base graph.
+- Added overlay-aware search, symbol resolution, context, and status reporting. Overlay impact reports unknown risk because relationship evidence and embeddings remain in the base index.
+- Added optional document and query prefixes for remote embedding models.
+
+### Fixed
+
+- Closed native query results before publishing immutable index generations, preventing file growth and native file locks after publication.
+- Resolved NodeNext JavaScript import specifiers to TypeScript source files.
+- Guarded source mutations against dirty base-index ranges.
+- Isolated MCP doctor verdict tests from host setup and stabilized watcher shutdown assertions.
+
+### Changed
+
+- Verified checksum-pinned native extensions before bundling, including offline builds.
+- Published the same packed artifact to npm and GitHub, and added cross-process overlay validation to the platform test matrix.
+
 ## [2.1.5] - 2026-08-06
 
 ### Added

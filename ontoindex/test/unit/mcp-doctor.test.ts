@@ -114,6 +114,7 @@ describe('mcp-doctor', () => {
     const report = await createMcpDoctorReport(
       { repo: 'fixture', projectCwd: '/repo/fixture', symbol: 'main' },
       {
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
         diagnose: async () => ({
           ...baseDiagnose,
           targetContext: {
@@ -167,6 +168,7 @@ describe('mcp-doctor', () => {
     const report = await createMcpDoctorReport(
       { repo: 'fixture', projectCwd: '/repo/fixture' },
       {
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
         diagnose: async () => baseDiagnose,
         processLiveness: async (repo, projectCwd, repairCommand) => {
           expect(repo).toBe('fixture');
@@ -201,6 +203,7 @@ describe('mcp-doctor', () => {
     const report = await createMcpDoctorReport(
       { repo: 'fixture', projectCwd: '/repo/fixture' },
       {
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
         diagnose: async () => ({
           ...baseDiagnose,
           responseBudgetHealth: {
@@ -223,6 +226,7 @@ describe('mcp-doctor', () => {
     const report = await createMcpDoctorReport(
       { projectCwd: '/repo/fixture' },
       {
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
         diagnose: async () => baseDiagnose,
         processLiveness: async (_repo, projectCwd, repairCommand) => ({
           status: 'missing',
@@ -244,6 +248,7 @@ describe('mcp-doctor', () => {
     const mismatchReport = await createMcpDoctorReport(
       { repo: 'fixture', projectCwd: '/repo/fixture' },
       {
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
         diagnose: async () => baseDiagnose,
         processLiveness: async (_repo, _projectCwd, repairCommand) => ({
           status: 'mismatch',
@@ -265,6 +270,7 @@ describe('mcp-doctor', () => {
     const unavailableReport = await createMcpDoctorReport(
       { repo: 'fixture', projectCwd: '/repo/fixture' },
       {
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
         diagnose: async () => baseDiagnose,
         processLiveness: async (_repo, _projectCwd, repairCommand) => ({
           status: 'unavailable',
@@ -284,6 +290,7 @@ describe('mcp-doctor', () => {
     const report = await createMcpDoctorReport(
       { repo: 'fixture', projectCwd: '/repo/fixture' },
       {
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
         diagnose: async () => ({
           ...baseDiagnose,
           degradedContext: {
@@ -309,6 +316,7 @@ describe('mcp-doctor', () => {
     const report = await createMcpDoctorReport(
       { repo: 'fixture', projectCwd: '/repo/fixture' },
       {
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
         diagnose: async () => ({
           ...baseDiagnose,
           degradedContext: {
@@ -349,6 +357,7 @@ describe('mcp-doctor', () => {
     const report = await createMcpDoctorReport(
       { repo: 'fixture', projectCwd: '/repo/fixture' },
       {
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
         diagnose: async () => ({
           ...baseDiagnose,
           support: {
@@ -404,6 +413,7 @@ describe('mcp-doctor', () => {
     const report = await createMcpDoctorReport(
       { repo: 'fixture', projectCwd: '/repo/fixture', symbol: 'main' },
       {
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
         diagnose: async () => ({
           ...baseDiagnose,
           targetContext: {
@@ -443,6 +453,7 @@ describe('mcp-doctor', () => {
     const report = await createMcpDoctorReport(
       { repo: 'ontoindex' },
       {
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
         diagnose: async () => ({
           ...baseDiagnose,
           degradedContext: {
@@ -472,6 +483,7 @@ describe('mcp-doctor', () => {
     const report = await createMcpDoctorReport(
       { repo: 'fixture' },
       {
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
         diagnose: async () => ({
           ...baseDiagnose,
           misconfiguration: {
@@ -492,12 +504,9 @@ describe('mcp-doctor', () => {
   it('flags stale hardcoded repo paths in setup files as MISCONFIGURED', async () => {
     const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-mcp-doctor-home-'));
     const tempRepo = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-mcp-doctor-repo-'));
-    const originalHome = process.env.HOME;
-    const originalUserProfile = process.env.USERPROFILE;
-
     try {
-      process.env.HOME = tempHome;
-      process.env.USERPROFILE = tempHome;
+      vi.stubEnv('HOME', tempHome);
+      vi.stubEnv('USERPROFILE', tempHome);
 
       await fs.mkdir(path.join(tempHome, '.claude', 'skills'), { recursive: true });
       await fs.mkdir(path.join(tempHome, '.agents', 'skills'), { recursive: true });
@@ -541,8 +550,7 @@ describe('mcp-doctor', () => {
       expect(formatMcpDoctorText(report)).toContain('agent-a9b3bc4e05bbb89c1');
       expect(formatMcpDoctorText(report)).toContain('Setup repair: ontoindex setup');
     } finally {
-      process.env.HOME = originalHome;
-      process.env.USERPROFILE = originalUserProfile;
+      vi.unstubAllEnvs();
       await fs.rm(tempHome, { recursive: true, force: true });
       await fs.rm(tempRepo, { recursive: true, force: true });
     }
@@ -551,12 +559,9 @@ describe('mcp-doctor', () => {
   it('flags missing generated skill directories as DEGRADED', async () => {
     const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-mcp-doctor-home-'));
     const tempRepo = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-mcp-doctor-repo-'));
-    const originalHome = process.env.HOME;
-    const originalUserProfile = process.env.USERPROFILE;
-
     try {
-      process.env.HOME = tempHome;
-      process.env.USERPROFILE = tempHome;
+      vi.stubEnv('HOME', tempHome);
+      vi.stubEnv('USERPROFILE', tempHome);
 
       await fs.mkdir(path.join(tempHome, '.claude'), { recursive: true });
       await fs.mkdir(path.join(tempHome, '.agents', 'skills'), { recursive: true });
@@ -589,8 +594,7 @@ describe('mcp-doctor', () => {
       );
       expect(formatMcpDoctorText(report)).toContain('Setup repair: ontoindex setup');
     } finally {
-      process.env.HOME = originalHome;
-      process.env.USERPROFILE = originalUserProfile;
+      vi.unstubAllEnvs();
       await fs.rm(tempHome, { recursive: true, force: true });
       await fs.rm(tempRepo, { recursive: true, force: true });
     }
@@ -600,6 +604,7 @@ describe('mcp-doctor', () => {
     const report: McpDoctorReport = await createMcpDoctorReport(
       { repo: 'fixture', projectCwd: '/repo/fixture', symbol: 'main' },
       {
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
         diagnose: async () => baseDiagnose,
         smokeSymbol: async () => {},
         processLiveness: async (_repo, _projectCwd, repairCommand) => ({

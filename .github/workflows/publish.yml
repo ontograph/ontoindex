@@ -111,13 +111,24 @@ jobs:
         run: npm run build
         working-directory: ontoindex
 
-      - name: Dry-run publish
-        run: npm publish --dry-run
-        working-directory: ontoindex
-
       - name: Pack GitHub release asset
         run: npm pack --pack-destination ..
         working-directory: ontoindex
+
+      - name: Dry-run publish packed artifact
+        run: npm publish "../ontoindex-$(node -p "require('./package.json').version").tgz" --dry-run
+        working-directory: ontoindex
+
+      - name: Smoke-test installed release artifact
+        shell: bash
+        working-directory: ontoindex
+        run: |
+          set -euo pipefail
+          SMOKE_DIR="$(mktemp -d)"
+          trap 'rm -rf "$SMOKE_DIR"' EXIT
+          npm install --prefix "$SMOKE_DIR" --omit=dev --no-audit --no-fund "../ontoindex-$(node -p "require('./package.json').version").tgz"
+          "$SMOKE_DIR/node_modules/.bin/ontoindex" --version
+          "$SMOKE_DIR/node_modules/.bin/ontoindex" watch --help
 
       - name: Extract release notes from CHANGELOG
         id: changelog
@@ -148,7 +159,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        run: npm publish "../ontoindex-$(node -p "require('./package.json').version").tgz" --provenance --access public
         working-directory: ontoindex
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

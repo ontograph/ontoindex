@@ -252,9 +252,24 @@ jobs:
         run: npm run build
         working-directory: ontoindex
 
-      - name: Dry-run publish
-        run: npm publish --dry-run --tag rc
+      - name: Pack release artifact once
+        run: npm pack --pack-destination ..
         working-directory: ontoindex
+
+      - name: Dry-run publish packed artifact
+        run: npm publish "../ontoindex-$(node -p "require('./package.json').version").tgz" --dry-run --tag rc
+        working-directory: ontoindex
+
+      - name: Smoke-test installed release artifact
+        shell: bash
+        working-directory: ontoindex
+        run: |
+          set -euo pipefail
+          SMOKE_DIR="$(mktemp -d)"
+          trap 'rm -rf "$SMOKE_DIR"' EXIT
+          npm install --prefix "$SMOKE_DIR" --omit=dev --no-audit --no-fund "../ontoindex-$(node -p "require('./package.json').version").tgz"
+          "$SMOKE_DIR/node_modules/.bin/ontoindex" --version
+          "$SMOKE_DIR/node_modules/.bin/ontoindex" watch --help
 
       - name: Publish to npm if needed
         shell: bash
@@ -268,12 +283,18 @@ jobs:
           if PUBLISHED="$(npm view "ontoindex@$RC_VERSION" version 2>"$NPM_STDERR")"; then
             rm -f "$NPM_STDERR"
             [ "$PUBLISHED" = "$RC_VERSION" ] || exit 1
+            EXPECTED_INTEGRITY="$(node --input-type=module -e 'import fs from "node:fs"; import crypto from "node:crypto"; console.log("sha512-" + crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64"))' "../ontoindex-$RC_VERSION.tgz")"
+            PUBLISHED_INTEGRITY="$(npm view "ontoindex@$RC_VERSION" dist.integrity)"
+            [ "$PUBLISHED_INTEGRITY" = "$EXPECTED_INTEGRITY" ] || {
+              echo "::error::Published npm artifact differs from the prepared tarball."
+              exit 1
+            }
             npm dist-tag add "ontoindex@$RC_VERSION" rc
             echo "npm already contains $RC_VERSION; repaired rc dist-tag."
           else
             if grep -qiE 'E404|not found' "$NPM_STDERR"; then
               rm -f "$NPM_STDERR"
-              npm publish --provenance --access public --tag rc
+              npm publish "../ontoindex-$RC_VERSION.tgz" --provenance --access public --tag rc
             else
               echo "::error::npm registry unreachable for publication reconciliation:" >&2
               cat "$NPM_STDERR" >&2
@@ -281,10 +302,6 @@ jobs:
               exit 1
             fi
           fi
-
-      - name: Pack GitHub release asset
-        run: npm pack --pack-destination ..
-        working-directory: ontoindex
 
       - name: Publish release tag if needed
         shell: bash

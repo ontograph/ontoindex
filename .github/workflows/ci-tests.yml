@@ -88,3 +88,6 @@ jobs:
       - name: Run ontoindex unit tests
         run: npm run test:unit
         working-directory: ontoindex
+      - name: Verify cross-process overlay generations
+        run: npx vitest run test/integration/overlay-cross-process.test.ts
+        working-directory: ontoindex

@@ -12,7 +12,7 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureLadybugExtensions } from './ladybug-extensions.mjs';
+import { ensureLadybugExtensions, verifyLadybugExtensions } from './ladybug-extensions.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -154,6 +154,12 @@ function copyBundledLadybugExtensions() {
     source.platformDir,
   );
   fs.mkdirSync(destDir, { recursive: true });
+  verifyLadybugExtensions({
+    dir: source.dir,
+    version: LADYBUG_EXTENSIONS_VERSION,
+    platformDir: source.platformDir,
+    pins: JSON.parse(fs.readFileSync(path.join(__dirname, 'ladybug-extension-pins.json'), 'utf-8')),
+  });
   for (const file of ['libfts.lbug_extension', 'libvector.lbug_extension']) {
     fs.copyFileSync(path.join(source.dir, file), path.join(destDir, file));
   }

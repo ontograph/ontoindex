@@ -25,7 +25,9 @@ describe('release-candidate workflow', () => {
     const prepare = workflow.indexOf('- name: Prepare or resume release commit');
     const install = workflow.indexOf('- name: Install ontoindex dependencies');
     const reserve = workflow.indexOf('git push origin "refs/tags/$PENDING_TAG"');
-    const publish = workflow.indexOf('npm publish --provenance --access public --tag rc');
+    const publish = workflow.indexOf(
+      'npm publish "../ontoindex-$RC_VERSION.tgz" --provenance --access public --tag rc',
+    );
     const release = workflow.indexOf('- name: Create GitHub prerelease');
     const verify = workflow.indexOf('- name: Verify public release state');
     const docker = workflow.indexOf('docker:\n    name: Build & Push RC Docker images');
@@ -35,6 +37,7 @@ describe('release-candidate workflow', () => {
     const complete = workflow.indexOf('- name: Mark release complete', finalize);
 
     expect(reserve).toBeGreaterThan(-1);
+    expect(publish).toBeGreaterThan(-1);
     expect(prepare).toBeLessThan(install);
     expect(reserve).toBeLessThan(publish);
     expect(publish).toBeLessThan(release);
@@ -51,6 +54,19 @@ describe('release-candidate workflow', () => {
   it('does not treat npm transport failures as unpublished versions', () => {
     expect(workflow).toContain('npm registry unreachable for publication reconciliation');
     expect(workflow).toContain("grep -qiE 'E404|not found'");
+  });
+
+  it('smoke-tests one packed artifact before publishing and verifies RC resume integrity', () => {
+    for (const source of [workflow, stableWorkflow]) {
+      expect(source.match(/run: npm pack --pack-destination \..*/g)).toHaveLength(1);
+      const smoke = source.indexOf('- name: Smoke-test installed release artifact');
+      const publish = source.indexOf('npm publish "../ontoindex-', smoke);
+      expect(smoke).toBeGreaterThan(-1);
+      expect(publish).toBeGreaterThan(smoke);
+      expect(source).toContain('"$SMOKE_DIR/node_modules/.bin/ontoindex" watch --help');
+    }
+    expect(workflow).toContain('npm view "ontoindex@$RC_VERSION" dist.integrity');
+    expect(workflow).toContain('[ "$PUBLISHED_INTEGRITY" = "$EXPECTED_INTEGRITY" ]');
   });
 
   it('prevents the stable tag workflow from republishing prereleases', () => {

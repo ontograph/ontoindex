@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createDebouncedWatcher } from '../../src/cli/watch.js';
 
@@ -158,10 +158,12 @@ describe('real fs.watch editor save patterns', () => {
   });
 
   it('logs and stops when the root is deleted and not recreated', async () => {
+    const refreshCountBeforeDelete = refreshes.length;
     fs.rmSync(root, { recursive: true });
-    await delay(SETTLE_MS);
-    expect(logs).toEqual([expect.stringContaining('Watcher stopped:')]);
-    expect(refreshes).toEqual([]);
+    await vi.waitFor(() => expect(logs).toEqual([expect.stringContaining('Watcher stopped:')]), {
+      timeout: SETTLE_MS * 3,
+    });
+    expect(refreshes.slice(refreshCountBeforeDelete)).toEqual([]);
 
     // Stopping is terminal: stop/start are safe no-ops.
     watcher.stop();

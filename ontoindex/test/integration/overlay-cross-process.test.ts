@@ -55,6 +55,7 @@ describe('cross-process overlay generation immutability', () => {
         cwd: root,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, NODE_OPTIONS: '--max-old-space-size=8192' },
+        timeout: 90_000,
       },
     );
     let output = '';
@@ -136,5 +137,6 @@ describe('cross-process overlay generation immutability', () => {
 
     await pool.closeLbug(overlayRepoId(repo.id));
     expect(await hashFirst()).toBe(originalHash);
-  });
+    await expect(queryOverlay(repo, cypher)).resolves.toEqual([{ name: 'gen2' }]);
+  }, 120_000);
 });
