@@ -29,6 +29,17 @@ describe('gnGraphWalk', () => {
     expect(result.state.maxExpansionPerStep).toBe(5);
   });
 
+  it('assigns independent identities to walks with the same seed', async () => {
+    mockExecute.mockResolvedValue([{ n: { id: 'seed-id' } }]);
+
+    const [first, second] = await Promise.all([
+      gnGraphWalk('repo1', { action: 'start', seedSymbol: 'seed-id' }),
+      gnGraphWalk('repo1', { action: 'start', seedSymbol: 'seed-id' }),
+    ]);
+
+    expect(first.state.id).not.toBe(second.state.id);
+  });
+
   it('steps through a walk', async () => {
     mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
     const startResult = await gnGraphWalk('repo1', { action: 'start', seedSymbol: 'seed-id' });
@@ -76,6 +87,66 @@ describe('gnGraphWalk', () => {
       status: 'error',
       code: 'WALK_NOT_FOUND',
     });
+  });
+
+  it('does not expose a walk to another repository', async () => {
+    mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
+    const startResult = await gnGraphWalk('repo1', { action: 'start', seedSymbol: 'seed-id' });
+
+    const result = await gnGraphWalk('repo2', { action: 'status', walkId: startResult.state.id });
+
+    expect(result).toMatchObject({ ok: false, code: 'WALK_NOT_FOUND' });
+  });
+
+  it('keeps progress intact when an expansion query fails', async () => {
+    mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
+    const startResult = await gnGraphWalk('repo1', { action: 'start', seedSymbol: 'seed-id' });
+    mockExecute.mockRejectedValueOnce(new Error('temporary query failure'));
+
+    await expect(
+      gnGraphWalk('repo1', { action: 'step', walkId: startResult.state.id }),
+    ).rejects.toThrow('temporary query failure');
+    const unchanged = await gnGraphWalk('repo1', {
+      action: 'status',
+      walkId: startResult.state.id,
+    });
+    expect(unchanged.state).toMatchObject({ frontier: ['seed-id'], visited: [], stepsTaken: 0 });
+
+    mockExecute.mockResolvedValueOnce([{ tid: 'target1', tname: 'target1', rel: 'CALLS' }]);
+    const retried = await gnGraphWalk('repo1', { action: 'step', walkId: startResult.state.id });
+    expect(retried.state).toMatchObject({
+      frontier: ['target1'],
+      visited: ['seed-id'],
+      stepsTaken: 1,
+    });
+  });
+
+  it('serializes concurrent steps for one walk', async () => {
+    mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
+    const startResult = await gnGraphWalk('repo1', {
+      action: 'start',
+      seedSymbol: 'seed-id',
+      maxSteps: 1,
+    });
+
+    let resolveExpansion!: (rows: unknown[]) => void;
+    const expansion = new Promise<unknown[]>((resolve) => {
+      resolveExpansion = resolve;
+    });
+    mockExecute.mockReturnValueOnce(expansion as ReturnType<typeof executeParameterized>);
+
+    const firstStep = gnGraphWalk('repo1', { action: 'step', walkId: startResult.state.id });
+    const secondStep = gnGraphWalk('repo1', { action: 'step', walkId: startResult.state.id });
+    await Promise.resolve();
+    expect(mockExecute).toHaveBeenCalledTimes(2);
+
+    resolveExpansion([{ tid: 'target1', tname: 'target1', rel: 'CALLS' }]);
+    const [first, second] = await Promise.all([firstStep, secondStep]);
+
+    expect(first.state.stepsTaken).toBe(1);
+    expect(second.state.stepsTaken).toBe(1);
+    expect(second.message).toBe('Max steps reached');
+    expect(mockExecute).toHaveBeenCalledTimes(2);
   });
 
   it('caps max steps and expansion limits on start', async () => {

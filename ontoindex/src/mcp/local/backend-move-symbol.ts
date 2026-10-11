@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { resolveSymbolCandidates } from './backend-symbol-resolution.js';
 import { getOverlaySnapshot, isDirtyPath } from './backend-overlay.js';
+import { resolveContainedRealPath } from './path-util.js';
 
 interface MoveSymbolRepoHandle {
   id: string;
@@ -93,16 +94,10 @@ export async function moveSymbol(
     throw new Error('Explicit confirmation required (set confirm: true)');
   }
 
-  const assertSafePath = (p: string): string => {
-    const full = path.resolve(repo.repoPath, p);
-    if (!full.startsWith(repo.repoPath + path.sep) && full !== repo.repoPath) {
-      throw new Error(`Path traversal blocked: ${p}`);
-    }
-    return full;
-  };
-
-  const sourceAbsolute = assertSafePath(filePath);
-  const targetAbsolute = assertSafePath(target_file);
+  const [sourceAbsolute, targetAbsolute] = await Promise.all([
+    resolveContainedRealPath(repo.repoPath, filePath),
+    resolveContainedRealPath(repo.repoPath, target_file),
+  ]);
 
   // Read source, remove symbol lines (startLine..endLine inclusive, 1-indexed)
   const source = await fs.readFile(sourceAbsolute, 'utf-8');

@@ -73,13 +73,13 @@ function parseAuditBody(raw: string): AuditFinding[] {
  * so the tool can't be coerced into reading arbitrary filesystem
  * locations outside the indexed repo.
  */
-function resolveAuditPath(repoPath: string, rawPath: string): string {
-  const abs = resolveContainedRepoPath(repoPath, rawPath);
+async function resolveAuditPath(repoPath: string, rawPath: string): Promise<string> {
+  const abs = await resolveContainedRepoPath(repoPath, rawPath);
   if (!abs) throw new Error('audit_file must resolve inside the indexed repo root.');
   return abs;
 }
 
-function resolveFindingFile(repoPath: string, filePath: string): string | null {
+async function resolveFindingFile(repoPath: string, filePath: string): Promise<string | null> {
   return resolveContainedRepoPath(repoPath, filePath);
 }
 
@@ -149,7 +149,7 @@ export async function runAuditRerun(
 
   let auditAbs: string;
   try {
-    auditAbs = resolveAuditPath(repo.repoPath, params.audit_file);
+    auditAbs = await resolveAuditPath(repo.repoPath, params.audit_file);
   } catch (err: unknown) {
     return {
       status: 'error',
@@ -193,7 +193,7 @@ export async function runAuditRerun(
       invalidEntries.push(f);
       continue;
     }
-    const abs = resolveFindingFile(repo.repoPath, f.file);
+    const abs = await resolveFindingFile(repo.repoPath, f.file);
     if (!abs) {
       invalidEntries.push(f);
       continue;

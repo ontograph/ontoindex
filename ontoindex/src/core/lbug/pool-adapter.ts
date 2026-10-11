@@ -531,26 +531,23 @@ async function readDbIdentity(dbPath: string): Promise<string | null> {
  * awaits the first's in-progress init rather than starting a redundant one.
  */
 export const initLbug = async (repoId: string, dbPath: string): Promise<void> => {
-  const existing = pool.get(repoId);
-  if (existing) {
-    const identity = await readDbIdentity(dbPath);
-    if (identity !== null && existing.dbIdentity !== null && identity !== existing.dbIdentity) {
-      // `ontoindex analyze` published a new generation behind the same path.
-      // Drop the stale handle so the next query opens the current database.
-      closeOne(repoId);
-    } else {
-      existing.lastUsed = Date.now();
-      return;
-    }
-  }
-
-  // Deduplicate concurrent init calls for the same repoId —
-  // prevents double-init race when multiple parallel tool calls
-  // trigger initialization for the same repo simultaneously.
   const pending = initPromises.get(repoId);
   if (pending) return pending;
 
-  const promise = doInitLbug(repoId, dbPath);
+  const promise = (async () => {
+    const existing = pool.get(repoId);
+    if (existing) {
+      const identity = await readDbIdentity(dbPath);
+      if (identity !== null && existing.dbIdentity !== null && identity !== existing.dbIdentity) {
+        // Drain the old generation before opening its replacement.
+        await closeOneWhenIdle(repoId);
+      } else {
+        existing.lastUsed = Date.now();
+        return;
+      }
+    }
+    await doInitLbug(repoId, dbPath);
+  })();
   initPromises.set(repoId, promise);
   try {
     await promise;
@@ -820,7 +817,7 @@ function checkout(entry: PoolEntry): Promise<lbug.Connection> {
  * instead of putting it back in the available array (avoids race conditions).
  */
 function checkin(entry: PoolEntry, conn: lbug.Connection): void {
-  if (entry.closed || entry.closing) {
+  if (entry.closed) {
     entry.checkedOut = Math.max(0, entry.checkedOut - 1);
     // Pool entry was deleted during checkout — close the orphaned connection
     conn.close().catch(() => {});

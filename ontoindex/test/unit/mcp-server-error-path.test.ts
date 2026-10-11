@@ -67,6 +67,41 @@ afterEach(() => {
 });
 
 describe('MCP server tool-call errors', () => {
+  it('bounds large multibyte scoped errors and preserves identity', async () => {
+    const { handler } = await createHarness({ dispatchError: '\u{1f600}\n"'.repeat(50000) });
+    const response = await handler({
+      params: { name: 'gn_explore', arguments: { repo: 'fixture' } },
+    });
+    expect(response.isError).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(response), 'utf8')).toBeLessThanOrEqual(48 * 1024);
+    expect(readErrorPayload(response.content[0].text)).toMatchObject({
+      repoLabel: 'fixture',
+      repoPath: '/repo/fixture',
+    });
+    expect(response.content[0].text).toContain('[truncated]');
+    expect(response.content[0].text).not.toContain('\uFFFD');
+  });
+
+  it('bounds large global errors even when request arguments are huge', async () => {
+    const { handler } = await createHarness({ callToolError: 'x'.repeat(200000) });
+    const response = await handler({
+      params: { name: 'list_repos', arguments: { unused: 'x'.repeat(200000) } },
+    });
+    expect(response.isError).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(response), 'utf8')).toBeLessThanOrEqual(48 * 1024);
+    expect(response.content[0].text).toContain('[truncated]');
+  });
+
+  it('returns bounded errors when response paging itself fails', async () => {
+    const { handler } = await createHarness();
+    const response = await handler({
+      params: { name: 'list_repos', arguments: { response_cursor: 'invalid' } },
+    });
+    expect(response.isError).toBe(true);
+    expect(response.content[0].text).toContain('Invalid response cursor.');
+    expect(Buffer.byteLength(JSON.stringify(response), 'utf8')).toBeLessThanOrEqual(48 * 1024);
+  });
+
   it('includes repo identity when a repo-scoped super tool throws after resolution', async () => {
     const { handler, backend } = await createHarness({ dispatchError: 'dispatch failed' });
 

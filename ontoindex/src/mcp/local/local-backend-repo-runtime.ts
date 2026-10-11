@@ -242,12 +242,15 @@ export async function ensureRepoInitialized(options: EnsureRepoInitializedOption
     const reinit = (async () => {
       try {
         await assertIndexCanOpenReadOnly({ ...handle, lbugPath }, isLbugDbPathReady);
-        handle.lbugPath = lbugPath;
-        if (indexedAt) handle.indexedAt = indexedAt;
         await closeLbug(repoId);
         initializedRepos.delete(repoId);
-        await initLbug(repoId, handle.lbugPath);
+        await initLbug(repoId, lbugPath);
+        handle.lbugPath = lbugPath;
+        if (indexedAt) handle.indexedAt = indexedAt;
         initializedRepos.add(repoId);
+      } catch (err) {
+        lastStalenessCheck.delete(repoId);
+        throw err;
       } finally {
         reinitPromises.delete(repoId);
       }
@@ -257,8 +260,15 @@ export async function ensureRepoInitialized(options: EnsureRepoInitializedOption
   }
 
   try {
-    await assertIndexCanOpenReadOnly(handle, isLbugDbPathReady);
-    await initLbug(repoId, handle.lbugPath);
+    const [indexedAt, activeLbugPath] = await Promise.all([
+      readIndexedAt(handle.storagePath),
+      resolveActiveLbugPath(handle.storagePath),
+    ]);
+    const lbugPath = activeLbugPath ?? handle.lbugPath;
+    await assertIndexCanOpenReadOnly({ ...handle, lbugPath }, isLbugDbPathReady);
+    await initLbug(repoId, lbugPath);
+    handle.lbugPath = lbugPath;
+    if (indexedAt) handle.indexedAt = indexedAt;
     initializedRepos.add(repoId);
   } catch (err: unknown) {
     initializedRepos.delete(repoId);

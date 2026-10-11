@@ -119,8 +119,32 @@ function buildPage(
   return best;
 }
 
-export function serializedMcpToolResultBytes(text: string): number {
-  return Buffer.byteLength(JSON.stringify({ content: [{ type: 'text', text }] }), 'utf8');
+export function serializedMcpToolResultBytes(text: string, isError = false): number {
+  return Buffer.byteLength(
+    JSON.stringify({ content: [{ type: 'text', text }], ...(isError ? { isError: true } : {}) }),
+    'utf8',
+  );
+}
+
+/** Bound error text without storing requests or depending on the paging filesystem. */
+export function boundMcpErrorText(format: (message: string) => string, message: string): string {
+  const text = format(message);
+  if (serializedMcpToolResultBytes(text, true) <= MCP_RESPONSE_MAX_BYTES) return text;
+  let low = 0;
+  let high = Math.min(message.length, MCP_RESPONSE_MAX_BYTES);
+  let best = 'Error: tool response exceeded the byte limit.';
+  while (low <= high) {
+    const length = Math.floor((low + high) / 2);
+    const end = length > 0 && /[\uD800-\uDBFF]/.test(message[length - 1]) ? length - 1 : length;
+    const candidate = format(message.slice(0, end) + '… [truncated]');
+    if (serializedMcpToolResultBytes(candidate, true) <= MCP_RESPONSE_MAX_BYTES) {
+      best = candidate;
+      low = length + 1;
+    } else {
+      high = length - 1;
+    }
+  }
+  return best;
 }
 
 function utf8Boundary(source: Buffer, offset: number, requestedEnd: number): number {

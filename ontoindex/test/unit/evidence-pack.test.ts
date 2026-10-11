@@ -97,6 +97,17 @@ describe('evidence_pack', () => {
     expect(result.unresolved_count).toBe(1);
   });
 
+  it('does not resolve a file symlink that points outside the repo', async () => {
+    const outside = path.join(path.dirname(tmpDir), 'gn-evpack-outside.ts');
+    await fs.writeFile(outside, 'secret\n', 'utf8');
+    await fs.symlink(outside, path.join(tmpDir, 'outside-link.ts'));
+    const repo: any = { id: 'not-initialized', name: 't', repoPath: tmpDir };
+    const result = await runEvidencePack(repo, { targets: ['outside-link.ts'] });
+    expect(result.resolved_count).toBe(0);
+    expect(result.unresolved_count).toBe(1);
+    await fs.rm(outside, { force: true });
+  });
+
   it('handles mix of resolved + unresolved', async () => {
     const repo: any = { id: 'not-initialized', name: 't', repoPath: tmpDir };
     const result = await runEvidencePack(repo, {

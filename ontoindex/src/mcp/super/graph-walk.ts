@@ -1,5 +1,5 @@
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
-import { generateId } from '../../lib/utils.js';
+import { randomUUID } from 'node:crypto';
 
 type GraphWalkAction = 'start' | 'step' | 'status';
 type GraphWalkPolicy = 'follow-calls' | 'follow-imports' | 'expand-outward';
@@ -63,6 +63,7 @@ const VALID_POLICIES = new Set<GraphWalkPolicy>([
 ]);
 
 const activeWalks = new Map<string, GraphWalkState>();
+const pendingSteps = new Map<string, Promise<void>>();
 
 export async function gnGraphWalk(repoId: string, params: GraphWalkParams): Promise<any> {
   pruneActiveWalks();
@@ -84,7 +85,7 @@ export async function gnGraphWalk(repoId: string, params: GraphWalkParams): Prom
       return graphWalkError(action, 'SEED_NOT_FOUND', `Seed symbol not found: ${seedSymbol}`);
     }
 
-    const id = generateId('Walk', seedSymbol);
+    const id = randomUUID();
     const state: GraphWalkState = {
       id,
       repoId,
@@ -117,7 +118,7 @@ export async function gnGraphWalk(repoId: string, params: GraphWalkParams): Prom
   if (action === 'status') {
     if (!walkId)
       return graphWalkError(action, 'WALK_ID_REQUIRED', 'status action requires a walkId');
-    const state = activeWalks.get(walkId);
+    const state = getWalk(repoId, walkId);
     if (!state) return graphWalkError(action, 'WALK_NOT_FOUND', `Walk ${walkId} not found`);
     state.updatedAt = new Date().toISOString();
     return { version: 1, ok: true, state, warnings, limits: graphWalkLimits() };
@@ -125,111 +126,136 @@ export async function gnGraphWalk(repoId: string, params: GraphWalkParams): Prom
 
   if (action === 'step') {
     if (!walkId) return graphWalkError(action, 'WALK_ID_REQUIRED', 'step action requires a walkId');
-    const state = activeWalks.get(walkId);
+    const state = getWalk(repoId, walkId);
     if (!state) return graphWalkError(action, 'WALK_NOT_FOUND', `Walk ${walkId} not found`);
-    if (state.status !== 'active') {
-      state.updatedAt = new Date().toISOString();
-      return {
-        version: 1,
-        ok: true,
-        message: 'Walk is no longer active',
-        state,
-        warnings,
-        limits: graphWalkLimits(),
-      };
-    }
+    return serializeStep(walkId, () => stepWalk(repoId, state, warnings));
+  }
 
-    if (state.stepsTaken >= state.maxSteps) {
-      state.status = 'completed';
-      state.updatedAt = new Date().toISOString();
-      return {
-        version: 1,
-        ok: true,
-        message: 'Max steps reached',
-        state,
-        warnings,
-        limits: graphWalkLimits(),
-      };
-    }
+  return graphWalkError('status', 'INVALID_PARAMS', `Unknown action: ${String(action)}`);
+}
 
-    if (state.frontier.length === 0) {
-      state.status = 'completed';
-      state.updatedAt = new Date().toISOString();
-      return {
-        version: 1,
-        ok: true,
-        message: 'Frontier exhausted',
-        state,
-        warnings,
-        limits: graphWalkLimits(),
-      };
-    }
+function getWalk(repoId: string, walkId: string): GraphWalkState | undefined {
+  const state = activeWalks.get(walkId);
+  return state?.repoId === repoId ? state : undefined;
+}
 
-    // Process one node from frontier
-    const currentNode = state.frontier.shift()!;
-    state.visited.push(currentNode);
+function serializeStep<T>(walkId: string, operation: () => Promise<T>): Promise<T> {
+  const previous = pendingSteps.get(walkId) ?? Promise.resolve();
+  const result = previous.then(operation);
+  const settled = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  pendingSteps.set(walkId, settled);
+  void settled.then(() => {
+    if (pendingSteps.get(walkId) === settled) pendingSteps.delete(walkId);
+  });
+  return result;
+}
 
-    // Expand based on policy
-    let cypher = '';
-    if (state.navigationPolicy === 'follow-calls') {
-      cypher = `MATCH (n {id: $id})-[:CodeRelation {type: 'CALLS'}]->(target) RETURN target.id as tid, target.name as tname, 'CALLS' as rel LIMIT ${state.maxExpansionPerStep}`;
-    } else if (state.navigationPolicy === 'follow-imports') {
-      cypher = `MATCH (n {id: $id})-[:CodeRelation {type: 'IMPORTS'}]->(target) RETURN target.id as tid, target.name as tname, 'IMPORTS' as rel LIMIT ${state.maxExpansionPerStep}`;
-    } else {
-      cypher = `MATCH (n {id: $id})-[r:CodeRelation]->(target) RETURN target.id as tid, target.name as tname, r.type as rel LIMIT ${state.maxExpansionPerStep}`;
-    }
-
-    const rows = await executeParameterized(repoId, cypher, { id: currentNode });
-
-    const newDiscoveries: any[] = [];
-    let truncatedDiscoveries = 0;
-    for (const row of rows) {
-      const tid = (row as any).tid ?? (row as any)[0];
-      const tname = (row as any).tname ?? (row as any)[1];
-      const rel = (row as any).rel ?? (row as any)[2];
-
-      if (tid && !state.visited.includes(tid) && !state.frontier.includes(tid)) {
-        if (state.frontier.length >= state.maxFrontier) {
-          truncatedDiscoveries++;
-          continue;
-        }
-        state.frontier.push(tid);
-        newDiscoveries.push({ from: currentNode, to: tid, toName: tname, rel });
-      }
-    }
-
-    state.discoveryPath.push({
-      step: state.stepsTaken,
-      node: currentNode,
-      discovered: newDiscoveries,
-    });
-    state.stepsTaken++;
+async function stepWalk(repoId: string, state: GraphWalkState, warnings: string[]): Promise<any> {
+  if (state.status !== 'active') {
     state.updatedAt = new Date().toISOString();
-
-    if (state.frontier.length === 0) {
-      state.status = 'completed';
-    }
-
-    const stepWarnings = [...warnings];
-    if (truncatedDiscoveries > 0) {
-      stepWarnings.push(
-        `Dropped ${truncatedDiscoveries} discoveries because maxFrontier=${state.maxFrontier} was reached.`,
-      );
-    }
-
     return {
       version: 1,
       ok: true,
-      message: `Step ${state.stepsTaken} completed. Discovered ${newDiscoveries.length} new nodes.`,
-      newDiscoveries,
-      truncatedDiscoveries,
+      message: 'Walk is no longer active',
       state,
-      warnings: stepWarnings,
+      warnings,
       limits: graphWalkLimits(),
     };
   }
 
-  return graphWalkError('status', 'INVALID_PARAMS', `Unknown action: ${String(action)}`);
+  if (state.stepsTaken >= state.maxSteps) {
+    state.status = 'completed';
+    state.updatedAt = new Date().toISOString();
+    return {
+      version: 1,
+      ok: true,
+      message: 'Max steps reached',
+      state,
+      warnings,
+      limits: graphWalkLimits(),
+    };
+  }
+
+  if (state.frontier.length === 0) {
+    state.status = 'completed';
+    state.updatedAt = new Date().toISOString();
+    return {
+      version: 1,
+      ok: true,
+      message: 'Frontier exhausted',
+      state,
+      warnings,
+      limits: graphWalkLimits(),
+    };
+  }
+
+  // Expand the next node before committing progress so query failures are retryable.
+  const currentNode = state.frontier[0]!;
+
+  // Expand based on policy
+  let cypher = '';
+  if (state.navigationPolicy === 'follow-calls') {
+    cypher = `MATCH (n {id: $id})-[:CodeRelation {type: 'CALLS'}]->(target) RETURN target.id as tid, target.name as tname, 'CALLS' as rel LIMIT ${state.maxExpansionPerStep}`;
+  } else if (state.navigationPolicy === 'follow-imports') {
+    cypher = `MATCH (n {id: $id})-[:CodeRelation {type: 'IMPORTS'}]->(target) RETURN target.id as tid, target.name as tname, 'IMPORTS' as rel LIMIT ${state.maxExpansionPerStep}`;
+  } else {
+    cypher = `MATCH (n {id: $id})-[r:CodeRelation]->(target) RETURN target.id as tid, target.name as tname, r.type as rel LIMIT ${state.maxExpansionPerStep}`;
+  }
+
+  const rows = await executeParameterized(repoId, cypher, { id: currentNode });
+
+  state.frontier.shift();
+  state.visited.push(currentNode);
+
+  const newDiscoveries: any[] = [];
+  let truncatedDiscoveries = 0;
+  for (const row of rows) {
+    const tid = (row as any).tid ?? (row as any)[0];
+    const tname = (row as any).tname ?? (row as any)[1];
+    const rel = (row as any).rel ?? (row as any)[2];
+
+    if (tid && !state.visited.includes(tid) && !state.frontier.includes(tid)) {
+      if (state.frontier.length >= state.maxFrontier) {
+        truncatedDiscoveries++;
+        continue;
+      }
+      state.frontier.push(tid);
+      newDiscoveries.push({ from: currentNode, to: tid, toName: tname, rel });
+    }
+  }
+
+  state.discoveryPath.push({
+    step: state.stepsTaken,
+    node: currentNode,
+    discovered: newDiscoveries,
+  });
+  state.stepsTaken++;
+  state.updatedAt = new Date().toISOString();
+
+  if (state.frontier.length === 0) {
+    state.status = 'completed';
+  }
+
+  const stepWarnings = [...warnings];
+  if (truncatedDiscoveries > 0) {
+    stepWarnings.push(
+      `Dropped ${truncatedDiscoveries} discoveries because maxFrontier=${state.maxFrontier} was reached.`,
+    );
+  }
+
+  return {
+    version: 1,
+    ok: true,
+    message: `Step ${state.stepsTaken} completed. Discovered ${newDiscoveries.length} new nodes.`,
+    newDiscoveries,
+    truncatedDiscoveries,
+    state,
+    warnings: stepWarnings,
+    limits: graphWalkLimits(),
+  };
 }
 
 async function resolveSeedSymbol(
@@ -390,22 +416,24 @@ function registerWalkState(id: string, state: GraphWalkState): void {
 
 function pruneActiveWalks(nowMs = Date.now()): void {
   for (const [id, state] of activeWalks) {
-    if (nowMs - Date.parse(state.updatedAt) > WALK_TTL_MS) {
+    if (!pendingSteps.has(id) && nowMs - Date.parse(state.updatedAt) > WALK_TTL_MS) {
       activeWalks.delete(id);
     }
   }
 
   if (activeWalks.size <= MAX_ACTIVE_WALKS) return;
 
-  const candidates = [...activeWalks.entries()].sort(([, a], [, b]) => {
-    if (a.status !== b.status) {
-      if (a.status === 'completed') return -1;
-      if (b.status === 'completed') return 1;
-    }
-    return Date.parse(a.updatedAt) - Date.parse(b.updatedAt);
-  });
+  const candidates = [...activeWalks.entries()]
+    .filter(([id]) => !pendingSteps.has(id))
+    .sort(([, a], [, b]) => {
+      if (a.status !== b.status) {
+        if (a.status === 'completed') return -1;
+        if (b.status === 'completed') return 1;
+      }
+      return Date.parse(a.updatedAt) - Date.parse(b.updatedAt);
+    });
 
-  for (const [id] of candidates.slice(0, activeWalks.size - MAX_ACTIVE_WALKS)) {
+  for (const [id] of candidates.slice(0, Math.max(0, activeWalks.size - MAX_ACTIVE_WALKS))) {
     activeWalks.delete(id);
   }
 }

@@ -268,6 +268,24 @@ describe('mutation dirty guard', () => {
     await expect(fs.stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('rejects an outside symlink target before changing the source', async () => {
+    const outside = path.join(path.dirname(repo.repoPath), 'mutation-outside-target.ts');
+    await fs.writeFile(outside, 'outside\n');
+    await fs.symlink(outside, path.join(repo.repoPath, 'src', 'escape.ts'));
+    resolve('move');
+    const before = await fs.readFile(source);
+    await expect(
+      moveSymbol(repo, {
+        uid,
+        target_file: 'src/escape.ts',
+        dry_run: false,
+        confirm: true,
+      }),
+    ).rejects.toThrow(/escapes repository/);
+    expect(await fs.readFile(source)).toEqual(before);
+    await fs.rm(outside, { force: true });
+  });
+
   it('keeps compatibility for a handle without storagePath', async () => {
     await fs.writeFile(source, prefix + original);
     const { storagePath: _storagePath, ...legacyRepo } = repo;

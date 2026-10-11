@@ -35,7 +35,7 @@ import {
 import { realStdoutWrite } from './core/lbug-adapter.js';
 import type { LocalBackend } from './local/local-backend.js';
 import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
-import { pageMcpResponse } from './shared/response-pages.js';
+import { boundMcpErrorText, pageMcpResponse } from './shared/response-pages.js';
 
 const GRAPH_BACKED_SUPER_TOOLS = new Set<SuperTool>([
   'gn_explore',
@@ -84,13 +84,16 @@ function readRepoIdentity(value: unknown): RepoIdentity | null {
 
 function formatToolCallErrorMessage(error: unknown, repo?: RepoIdentity | null): string {
   const message = error instanceof Error ? error.message : String(error);
-  if (!repo) {
-    return `Error: ${message}`;
-  }
-  return JSON.stringify(
-    { error: message, repoLabel: repo.repoLabel, repoPath: repo.repoPath },
-    null,
-    2,
+  return boundMcpErrorText(
+    (boundedMessage) =>
+      repo
+        ? JSON.stringify(
+            { error: boundedMessage, repoLabel: repo.repoLabel, repoPath: repo.repoPath },
+            null,
+            2,
+          )
+        : `Error: ${boundedMessage}`,
+    message,
   );
 }
 

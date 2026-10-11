@@ -79,6 +79,10 @@ async function readIfFile(abs: string): Promise<string | null> {
   }
 }
 
+async function repoRelativePath(repoPath: string, abs: string): Promise<string> {
+  return path.relative(await fs.realpath(repoPath), abs);
+}
+
 function sliceSnippet(
   lines: string[],
   startLine: number,
@@ -109,14 +113,14 @@ async function resolveLine(
 ): Promise<EvidenceEntry | null> {
   const parsed = parseLineSuffix(target);
   if (!parsed) return null;
-  const abs = resolveContainedRepoPath(repo.repoPath, parsed.path);
+  const abs = await resolveContainedRepoPath(repo.repoPath, parsed.path);
   if (!abs) return null;
   const content = await readIfFile(abs);
   if (content === null) return null;
   const lines = content.split('\n');
   if (parsed.line > lines.length) return null;
 
-  const rel = path.relative(repo.repoPath, abs);
+  const rel = await repoRelativePath(repo.repoPath, abs);
   const entry: EvidenceEntry = {
     target,
     kind: 'line',
@@ -144,12 +148,12 @@ async function resolveFile(
   contextLines: number,
   includeSnippet: boolean,
 ): Promise<EvidenceEntry | null> {
-  const abs = resolveContainedRepoPath(repo.repoPath, target);
+  const abs = await resolveContainedRepoPath(repo.repoPath, target);
   if (!abs) return null;
   const content = await readIfFile(abs);
   if (content === null) return null;
   const lines = content.split('\n');
-  const rel = path.relative(repo.repoPath, abs);
+  const rel = await repoRelativePath(repo.repoPath, abs);
 
   const entry: EvidenceEntry = {
     target,
@@ -201,7 +205,7 @@ async function resolveSymbol(
     return null;
   }
 
-  const abs = resolveContainedRepoPath(repo.repoPath, filePath);
+  const abs = await resolveContainedRepoPath(repo.repoPath, filePath);
   if (!abs) {
     return {
       target,
@@ -214,7 +218,7 @@ async function resolveSymbol(
     };
   }
   const content = await readIfFile(abs);
-  const rel = path.relative(repo.repoPath, abs);
+  const rel = await repoRelativePath(repo.repoPath, abs);
   const entry: EvidenceEntry = {
     target,
     kind: 'symbol',

@@ -11,6 +11,8 @@ describe('SessionStore', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(fs.realpath).mockImplementation(async (value) => String(value));
+    vi.mocked(fs.lstat).mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }));
     store = new FileSessionStore(repoPath, sessionId);
   });
 
@@ -67,5 +69,23 @@ describe('SessionStore', () => {
 
   it('throws on invalid session ID', () => {
     expect(() => new FileSessionStore(repoPath, 'invalid/session')).toThrow(/Invalid session ID/);
+  });
+
+  it('resolves the repo-contained session path before creating or writing', async () => {
+    vi.mocked(fs.realpath).mockImplementation(async (value) => String(value));
+    vi.mocked(fs.lstat).mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }));
+    vi.mocked(fs.readFile).mockRejectedValue(
+      Object.assign(new Error('missing'), { code: 'ENOENT' }),
+    );
+    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+
+    await store.set('key', 'value');
+
+    expect(fs.mkdir).toHaveBeenCalledWith('/mock/repo/.ontoindex/sessions', { recursive: true });
+    expect(fs.writeFile).toHaveBeenCalledWith(
+      '/mock/repo/.ontoindex/sessions/test-session.json',
+      expect.any(String),
+      'utf-8',
+    );
   });
 });

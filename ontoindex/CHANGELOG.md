@@ -4,6 +4,15 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.3] - 2026-10-11
+
+### Fixed
+
+- Enforced real-path containment for MCP file operations and session storage while preserving repository-relative evidence paths.
+- Drained active database queries before replacing index generations and preserved pool capacity after close timeouts.
+- Serialized graph-walk steps, isolated walks by repository, and preserved retry state after query failures.
+- Validated pagination limits and bounded serialized MCP error responses.
+
 ## [2.2.2] - 2026-10-11
 
 ### Fixed
