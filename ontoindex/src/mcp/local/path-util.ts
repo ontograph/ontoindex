@@ -45,13 +45,17 @@ export function canonicalize(repoPath: string, input: string): string {
  * Callers must operate on the returned path, not the original input.
  */
 export async function resolveContainedRealPath(repoPath: string, input: string): Promise<string> {
-  if (!input || input.includes('\0'))
+  if (typeof input !== 'string' || !input || input.includes('\0'))
     throw new Error('Path cannot be empty or contain invalid characters');
   const absoluteRepoPath = path.resolve(repoPath);
-  const lexicalPath = path.isAbsolute(input)
-    ? path.resolve(input)
-    : canonicalize(absoluteRepoPath, input);
   const realRepoPath = await fs.realpath(absoluteRepoPath);
+  const lexicalPath = path.resolve(absoluteRepoPath, input);
+  // Check lexical containment before touching the filesystem so an outside
+  // path is never probed. The real root covers absolute paths spelled through it.
+  const within = (root: string) => lexicalPath === root || lexicalPath.startsWith(root + path.sep);
+  if (!within(absoluteRepoPath) && !within(realRepoPath)) {
+    throw new Error('Path escapes repository: ' + input);
+  }
   let cursor = lexicalPath;
   const missing: string[] = [];
   while (true) {

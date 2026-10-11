@@ -59,6 +59,18 @@ describe('resolveContainedRealPath', () => {
     await expect(resolveContainedRealPath(repoDir, '../outside.ts')).rejects.toThrow(/escapes/);
   });
 
+  it('rejects an absolute path outside the repository before resolving it', async () => {
+    await expect(
+      resolveContainedRealPath(repoDir, path.join(tmpDir, 'outside.ts')),
+    ).rejects.toThrow(/escapes/);
+  });
+
+  it('rejects non-string input such as a repeated query parameter', async () => {
+    await expect(
+      resolveContainedRealPath(repoDir, ['src/inside.ts'] as unknown as string),
+    ).rejects.toThrow(/invalid/);
+  });
+
   it('resolves a missing file inside the repository so callers can report not found', async () => {
     await expect(resolveContainedRealPath(repoDir, 'src/missing.ts')).resolves.toBe(
       path.join(repoDir, 'src', 'missing.ts'),

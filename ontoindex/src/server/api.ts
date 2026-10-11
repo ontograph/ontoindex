@@ -1650,8 +1650,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
-      const filePath = req.query.path as string;
-      if (!filePath) {
+      const filePath = req.query.path;
+      if (typeof filePath !== 'string' || !filePath) {
         res.status(400).json({ error: 'Missing path' });
         return;
       }
