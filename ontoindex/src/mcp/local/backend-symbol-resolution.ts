@@ -197,7 +197,15 @@ async function readOverlayRows(
       cypher,
       params,
     );
-    return { snapshot, rows: rows as QueryRow[] };
+    return {
+      snapshot,
+      rows: (rows as QueryRow[]).filter((row) => {
+        const filePath = rowValue(row, 'filePath', 3);
+        return (
+          typeof filePath === 'string' && snapshot.overlayPaths.has(filePath.replace(/\\/g, '/'))
+        );
+      }),
+    };
   } catch {
     // Overlay state is advisory; preserve the original base-only behavior.
     return undefined;

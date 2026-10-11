@@ -17,7 +17,11 @@ vi.mock('../../src/mcp/local/backend-overlay.js', () => overlay);
 import { resolveSymbolCandidates } from '../../src/mcp/local/backend-symbol-resolution.js';
 
 const repo = { id: 'repo', repoPath: '/repo', storagePath: '/store' };
-const usable = { usable: true, dirtyPaths: new Set(['src/dirty.ts']) };
+const usable = {
+  usable: true,
+  dirtyPaths: new Set(['src/dirty.ts']),
+  overlayPaths: new Set(['src/dirty.ts']),
+};
 const unusable = { usable: false, dirtyPaths: new Set(['src/dirty.ts']) };
 
 function row(id: string, filePath: string, name = 'lookup') {
@@ -81,6 +85,24 @@ describe('symbol resolution with a dirty overlay', () => {
         { id: 'overlay-id', source: 'overlay' },
       ]);
     }
+  });
+
+  it('ignores overlay symbols from a reverted file while another file remains dirty', async () => {
+    pool.executeParameterized.mockResolvedValue([row('base-id', 'src/clean.ts')]);
+    overlay.queryOverlay.mockResolvedValue([row('phantom-id', 'src/clean.ts')]);
+
+    const result = await resolveSymbolCandidates(repo, { name: 'lookup' }, {});
+
+    expect(result).toMatchObject({ kind: 'ok', symbol: { id: 'base-id' } });
+  });
+
+  it('preserves base candidates when the overlay disappears after the snapshot', async () => {
+    pool.executeParameterized.mockResolvedValue([row('base-id', 'src/dirty.ts')]);
+    overlay.queryOverlay.mockRejectedValueOnce(new Error('no published overlay'));
+
+    const result = await resolveSymbolCandidates(repo, { name: 'lookup' }, {});
+
+    expect(result).toMatchObject({ kind: 'ok', symbol: { id: 'base-id' } });
   });
 
   it('preserves base-only behavior for an unusable snapshot', async () => {

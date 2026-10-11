@@ -234,14 +234,14 @@ describe('backend-overlay real pool lifecycle', () => {
     expect(close).not.toHaveBeenCalled();
   });
 
-  it('closes an unpublished overlay, returns no rows, and can read a later rebuild', async () => {
+  it('closes an unpublished overlay, rejects the read, and can read a later rebuild', async () => {
     await buildOverlay('beforeDelete');
     await queryOverlay(repo, cypher);
     expect(pool.isLbugReady(overlayRepoId(repo.id))).toBe(true);
     // Removing only CURRENT is valid even while Windows holds the store open.
     const oldPath = overlayDbPath(repo.storagePath);
     fs.rmSync(path.join(repo.storagePath, 'overlay', 'CURRENT'));
-    await expect(queryOverlay(repo, cypher)).resolves.toEqual([]);
+    await expect(queryOverlay(repo, cypher)).rejects.toThrow('no published overlay');
     expect(pool.isLbugReady(overlayRepoId(repo.id))).toBe(false);
     expect(fs.existsSync(oldPath)).toBe(true);
     await buildOverlay('afterDelete');

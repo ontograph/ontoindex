@@ -161,11 +161,11 @@ export async function queryOverlay<TRow extends object = Record<string, unknown>
         if (!dbPath) throw new Error('no published overlay');
         const { dev, ino, mtimeMs, size } = await fs.stat(dbPath);
         identity = `${dbPath}:${dev}:${ino}:${mtimeMs}:${size}`;
-      } catch {
+      } catch (error) {
         await closeLbug(id);
         overlayFileIdentities.delete(id);
         snapshotCache.delete(repo.id);
-        return [];
+        throw error;
       }
       if (overlayFileIdentities.get(id) !== identity) {
         await closeLbug(id);
