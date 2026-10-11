@@ -977,7 +977,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       `[server] backend init timed out during startup; continuing with lazy refresh: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
-  const { cleanup: cleanupMcp, getDiagnostics } = mountMCPEndpoints(app, backend);
+  const { cleanup: cleanupMcp, getDiagnostics } = mountMCPEndpoints(app, backend, { host, port });
 
   const globalDir = getGlobalDir();
   const jobManager = new JobManager(globalDir);
@@ -1660,6 +1660,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       let fullPath: string;
       try {
         fullPath = await resolveContainedRealPath(entry.path, filePath);
+        if (path.relative(await fs.realpath(entry.path), fullPath).split(path.sep)[0] === '.git') {
+          res.status(403).json({ error: 'Git metadata access denied' });
+          return;
+        }
       } catch (err: unknown) {
         if (errorCodeIs(err, 'ENOENT')) throw err;
         res.status(403).json({ error: 'Path traversal denied' });
@@ -1917,6 +1921,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Global error handler — catch anything the route handlers miss
   app.use(
     (err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+      const parserError = err as { type?: string; status?: number; statusCode?: number } | null;
+      const status = parserError?.status ?? parserError?.statusCode;
+      if (parserError?.type === 'entity.too.large') {
+        res.status(413).json({ error: 'Request body too large' });
+        return;
+      }
+      if (parserError?.type && status && status >= 400 && status < 500) {
+        res.status(status).json({ error: 'Invalid request body' });
+        return;
+      }
       console.error('Unhandled error:', err);
       res.status(500).json({ error: 'Internal server error' });
     },

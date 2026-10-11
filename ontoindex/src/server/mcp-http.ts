@@ -89,7 +89,11 @@ async function closeTransportQuietly(transport: StreamableHTTPServerTransport): 
   } catch {}
 }
 
-export function mountMCPEndpoints(app: Express, backend: LocalBackend): MCPEndpointHandle {
+export function mountMCPEndpoints(
+  app: Express,
+  backend: LocalBackend,
+  bind?: { host: string; port: number },
+): MCPEndpointHandle {
   const sessions = new Map<string, MCPSession>();
   const closingSessions = new Map<StreamableHTTPServerTransport, Promise<void>>();
   const closedSessions = new WeakMap<StreamableHTTPServerTransport, Promise<void>>();
@@ -198,6 +202,15 @@ export function mountMCPEndpoints(app: Express, backend: LocalBackend): MCPEndpo
       });
       try {
         transport = new StreamableHTTPServerTransport({
+          ...(bind && ['localhost', '127.0.0.1', '::1'].includes(bind.host)
+            ? {
+                enableDnsRebindingProtection: true,
+                allowedHosts: ['localhost', '127.0.0.1', '[::1]'].flatMap((host) => [
+                  host,
+                  `${host}:${bind.port || (req.socket.localPort ?? 0)}`,
+                ]),
+              }
+            : {}),
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: async (id) => {
             // The SDK initialize predicate also accepts notification envelopes.

@@ -98,7 +98,7 @@ export async function runAuditLint(
           bundlesById,
         );
 
-  if (params.persist !== false && sessionId) {
+  if ((params.persist === undefined || params.persist === true) && sessionId) {
     await new LocalAuditEventStore(repoPath).appendEvent({
       id: `evt-lint-${sessionId}-${Date.now()}`,
       type: 'AuditLinted',

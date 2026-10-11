@@ -544,9 +544,8 @@ async function buildEnsureFreshReport(
   const warnings: string[] = [];
   const recommendations: string[] = [];
   const actionsTaken: string[] = [];
-  let analysisSubmission: AnalysisSubmission = params.autoAnalyze
-    ? { status: 'not-needed' }
-    : { status: 'not-requested' };
+  let analysisSubmission: AnalysisSubmission =
+    params.autoAnalyze === true ? { status: 'not-needed' } : { status: 'not-requested' };
 
   // ---- 1. Read registry ---------------------------------------------------
   const registryPath = join(homedir(), '.ontoindex', 'registry.json');
@@ -559,7 +558,7 @@ async function buildEnsureFreshReport(
       warnings,
       recommendations,
       {},
-      params.autoAnalyze
+      params.autoAnalyze === true
         ? {
             status: 'blocked',
             reasonCode: 'REGISTRY_UNAVAILABLE',
@@ -586,7 +585,7 @@ async function buildEnsureFreshReport(
         dirtyFileCount: null,
         scopeConfidence: selector ? 'low' : 'unknown',
       },
-      params.autoAnalyze
+      params.autoAnalyze === true
         ? {
             status: 'blocked',
             reasonCode: 'REPO_NOT_REGISTERED',
@@ -736,14 +735,14 @@ async function buildEnsureFreshReport(
     );
   }
 
-  if (params.autoAnalyze && !currentHeadAvailable) {
+  if (params.autoAnalyze === true && !currentHeadAvailable) {
     analysisSubmission = {
       status: 'blocked',
       reasonCode: 'HEAD_UNAVAILABLE',
       message: 'A valid 40- or 64-character git HEAD is unavailable; analysis cannot be submitted.',
     };
     recommendations.push('Restore a valid git HEAD before retrying autoAnalyze.');
-  } else if (params.autoAnalyze && dirtyFileCount === null) {
+  } else if (params.autoAnalyze === true && dirtyFileCount === null) {
     analysisSubmission = {
       status: 'blocked',
       reasonCode: 'WORKTREE_STATUS_UNAVAILABLE',
@@ -751,7 +750,7 @@ async function buildEnsureFreshReport(
     };
     recommendations.push('Confirm the repository worktree is clean before retrying autoAnalyze.');
   } else if (
-    params.autoAnalyze &&
+    params.autoAnalyze === true &&
     params.withEmbeddings === true &&
     !process.env.ONTOINDEX_EMBEDDING_MODEL_HASH?.trim()
   ) {
@@ -762,7 +761,7 @@ async function buildEnsureFreshReport(
         'ONTOINDEX_EMBEDDING_MODEL_HASH must be set to a non-empty model identity before requesting managed embedding analysis.',
     };
   } else if (
-    params.autoAnalyze &&
+    params.autoAnalyze === true &&
     runtimeHealth.freshnessState === 'untrusted' &&
     runtimeHealth.analyzeLock.state !== 'stale'
   ) {
@@ -801,9 +800,13 @@ async function buildEnsureFreshReport(
   // ---- 7. Auto-analyze (only when explicitly requested and work is needed) -
   let analysisJob: AnalysisJobRecord | undefined;
 
-  if (params.autoAnalyze && refreshWorkNeeded && analysisSubmission.status === 'not-needed') {
+  if (
+    params.autoAnalyze === true &&
+    refreshWorkNeeded &&
+    analysisSubmission.status === 'not-needed'
+  ) {
     // Note: this CAN block on DuckDB write-lock if MCP processes are running.
-    if (params.killMcpForLock) {
+    if (params.killMcpForLock === true) {
       warnings.push(
         'killMcpForLock is advisory only; OntoIndex will not terminate MCP processes automatically.',
       );
@@ -909,7 +912,7 @@ async function buildEnsureFreshReport(
   }
 
   // ---- 8. killMcpForLock without autoAnalyze note -------------------------
-  if (params.killMcpForLock && !params.autoAnalyze) {
+  if (params.killMcpForLock === true && params.autoAnalyze !== true) {
     recommendations.push(
       'killMcpForLock: true has no effect without autoAnalyze: true and is advisory only. Stop MCP manually before running analyze.',
     );

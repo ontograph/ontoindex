@@ -1,4 +1,5 @@
 import { execFileText } from '../process/exec-file.js';
+import { resolveCommitRef } from '../../storage/git.js';
 
 const GIT_TIMEOUT_MS = 5_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
@@ -25,9 +26,7 @@ export async function resolveTargetHead(
   const gitRoot = (
     await execFileText('git', ['rev-parse', '--show-toplevel'], gitOptions(repoPath))
   ).trim();
-  const commit = (
-    await execFileText('git', ['rev-parse', '--verify', `${ref}^{commit}`], gitOptions(gitRoot))
-  ).trim();
+  const commit = await resolveCommitRef(gitRoot, ref);
   const shortCommit = (
     await execFileText('git', ['rev-parse', '--short=12', commit], gitOptions(gitRoot))
   ).trim();

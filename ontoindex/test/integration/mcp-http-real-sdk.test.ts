@@ -1,4 +1,5 @@
 import express from 'express';
+import http from 'node:http';
 import type { Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -43,7 +44,10 @@ async function fixture() {
   const { mountMCPEndpoints } = await import('../../src/server/mcp-http.js');
   const app = express();
   app.use(express.json());
-  const handle = mountMCPEndpoints(app, { listRepos: async () => [] } as any);
+  const handle = mountMCPEndpoints(app, { listRepos: async () => [] } as any, {
+    host: '127.0.0.1',
+    port: 0,
+  });
   const errors: unknown[] = [];
   const errorSpy = vi.spyOn(console, 'error').mockImplementation((...args) => {
     errors.push(args);
@@ -64,6 +68,28 @@ async function fixture() {
   return {
     handle,
     errors,
+    // fetch() overrides the Host header, so DNS-rebinding checks need node:http.
+    requestWithHost: (body: unknown, host: string) =>
+      new Promise<number>((resolve, reject) => {
+        const req = http.request(
+          url,
+          {
+            method: 'POST',
+            headers: {
+              host,
+              accept: 'application/json, text/event-stream',
+              'content-type': 'application/json',
+            },
+            timeout: 5000,
+          },
+          (res) => {
+            res.resume();
+            res.on('end', () => resolve(res.statusCode ?? 0));
+          },
+        );
+        req.on('error', reject);
+        req.end(JSON.stringify(body));
+      }),
     request: (body: unknown, headers: Record<string, string> = {}) =>
       fetch(url, {
         method: 'POST',
@@ -100,6 +126,15 @@ afterEach(() => {
 });
 
 describe('MCP HTTP with the installed SDK', () => {
+  it('rejects a rebinding host while accepting loopback hosts', async () => {
+    const f = await fixture();
+    try {
+      expect(await f.requestWithHost(initialize, 'attacker.example')).toBe(403);
+      expect(await f.requestWithHost(initialize, 'localhost')).toBe(200);
+    } finally {
+      await f.close();
+    }
+  });
   it('preserves a legitimate session across invalid initialization requests', async () => {
     const f = await fixture();
     try {

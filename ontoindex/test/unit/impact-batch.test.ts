@@ -18,6 +18,18 @@ function makeRepo(): any {
 }
 
 describe('impact_batch', () => {
+  it('forwards the documented confidence default and preserves zero', async () => {
+    await runImpactBatch(makeRepo(), { targets: ['x'] });
+    expect(impactMock).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ minConfidence: 0.7 }),
+    );
+    await runImpactBatch(makeRepo(), { targets: ['x'], minConfidence: 0 });
+    expect(impactMock).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ minConfidence: 0 }),
+    );
+  });
   beforeEach(() => {
     impactMock.mockReset();
   });

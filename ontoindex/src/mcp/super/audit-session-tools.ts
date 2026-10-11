@@ -336,7 +336,7 @@ export async function gnAuditSessionStart(
   params: AuditSessionStartParams,
 ): Promise<Record<string, unknown>> {
   const repo = await resolveAuditRepoHandle(repoId, params.repo);
-  const persisted = params.persist !== false;
+  const persisted = params.persist === undefined || params.persist === true;
   const ingest = await runAuditIngest(repo.repoPath, {
     sourcePath: params.sourcePath,
     sourceText: params.pastedText,
@@ -393,7 +393,7 @@ export async function gnAuditSessionVerify(
     repoPath: repo.repoPath,
     sessionId,
     findingId: params.findingId,
-    persist: params.persist !== false,
+    persist: params.persist === undefined || params.persist === true,
   });
   applyTombstoneMatchesToVerifyReport(verify, tombstoneMatches);
   return {

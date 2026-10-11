@@ -105,6 +105,22 @@ repos:
     );
   });
 
+  it('preserves semantic search options across group routing', async () => {
+    const options = {
+      task_context: 'fix login',
+      max_symbols: 3,
+      include_content: true,
+      exclude_paths: ['vendor/'],
+      include_paths: ['src/'],
+      include_skeleton: false,
+      include_explanations: true,
+      retrieval_policy: 'graph-only',
+      consume_enrichment_facts: true,
+    };
+    await new LocalBackend().callTool('query', { repo: '@g1', query: 'login', ...options });
+    expect(groupSpyQuery).toHaveBeenCalledWith(expect.objectContaining(options));
+  });
+
   it('routes impact to groupImpact with resolved repo member path', async () => {
     const backend = new LocalBackend();
     const out = await backend.callTool('impact', {

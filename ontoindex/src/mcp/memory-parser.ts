@@ -9,6 +9,7 @@
 import fs from 'fs/promises';
 import type { Dirent } from 'fs';
 import path from 'path';
+import { resolveContainedRealPath } from './local/path-util.js';
 
 /** Required front matter fields per ADR 0021 § Advisory project memories. */
 export const REQUIRED_MEMORY_FIELDS = [
@@ -201,7 +202,18 @@ export function resolveMemoryPath(
   };
 }
 
-async function readResolvedMemoryFile(resolved: ResolvedMemoryPath): Promise<LoadedMemory | null> {
+async function readResolvedMemoryFile(
+  repoPath: string,
+  resolved: ResolvedMemoryPath,
+): Promise<LoadedMemory | null> {
+  try {
+    resolved = {
+      ...resolved,
+      filePath: await resolveContainedRealPath(repoPath, resolved.filePath),
+    };
+  } catch {
+    return null;
+  }
   let stat;
   try {
     stat = await fs.stat(resolved.filePath);
@@ -432,7 +444,7 @@ export async function loadMemories(repoPath: string): Promise<ParsedMemory[]> {
       continue;
     }
 
-    const loaded = await readResolvedMemoryFile(resolved);
+    const loaded = await readResolvedMemoryFile(repoPath, resolved);
     if (loaded) {
       memories.push(loaded.memory);
     }
@@ -456,5 +468,5 @@ export async function loadMemory(
     };
   }
 
-  return readResolvedMemoryFile(resolved);
+  return readResolvedMemoryFile(repoPath, resolved);
 }

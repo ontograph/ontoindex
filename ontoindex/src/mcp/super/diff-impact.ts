@@ -58,7 +58,7 @@ import {
   summarizeEvidenceDiagnostics,
 } from '../../core/runtime/evidence-diagnostics.js';
 import type { EvidenceDiagnosticQualityKind } from '../../core/runtime/evidence-diagnostics.js';
-import { resolveBranchComparisonBase } from '../../storage/git.js';
+import { resolveBranchComparisonBase, resolveCommitRange } from '../../storage/git.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -853,9 +853,9 @@ export async function gnDiffImpact(
 
   if (commitRange) {
     // explicit range always wins
-    nameOnlyArgs = ['diff', commitRange, '--name-only'];
-    numstatArgs = ['diff', commitRange, '--numstat'];
-    resolvedRange = commitRange;
+    resolvedRange = await resolveCommitRange(repoRoot, commitRange);
+    nameOnlyArgs = ['diff', resolvedRange, '--name-only'];
+    numstatArgs = ['diff', resolvedRange, '--numstat'];
   } else if (scope === 'branch') {
     const branchRange = resolveBranchComparisonBase(repoRoot).range;
     nameOnlyArgs = ['diff', branchRange, '--name-only'];
@@ -1449,9 +1449,9 @@ export async function gnReviewDiff(
   let resolvedRange: string;
 
   if (commitRange) {
-    nameOnlyArgs = ['diff', commitRange, '--name-only'];
-    numstatArgs = ['diff', commitRange, '--numstat'];
-    resolvedRange = commitRange;
+    resolvedRange = await resolveCommitRange(repoRoot, commitRange);
+    nameOnlyArgs = ['diff', resolvedRange, '--name-only'];
+    numstatArgs = ['diff', resolvedRange, '--numstat'];
   } else if (scope === 'branch') {
     const branchRange = resolveBranchComparisonBase(repoRoot).range;
     nameOnlyArgs = ['diff', branchRange, '--name-only'];

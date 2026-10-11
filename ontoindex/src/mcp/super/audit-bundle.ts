@@ -37,7 +37,7 @@ export async function runAuditBundle(
   });
   const emittedBundles = projection.bundles.slice(0, maxBundles);
 
-  if (params.persist !== false) {
+  if (params.persist === undefined || params.persist === true) {
     for (const bundle of emittedBundles) {
       await store.appendEvent({
         id: `evt-bundle-${bundle.id}-${Date.now()}`,

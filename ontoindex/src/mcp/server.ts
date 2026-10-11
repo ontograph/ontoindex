@@ -380,7 +380,18 @@ export function createMCPServer(backend: LocalBackend, options: { full?: boolean
           {
             uri,
             mimeType: resource?.mimeType ?? 'text/plain',
-            text: content,
+            text: boundMcpErrorText(
+              (text) => text,
+              content,
+              MCP_RESPONSE_MAX_BYTES,
+              (text) =>
+                Buffer.byteLength(
+                  JSON.stringify({
+                    contents: [{ uri, mimeType: resource?.mimeType ?? 'text/plain', text }],
+                  }),
+                  'utf8',
+                ),
+            ),
           },
         ],
       };

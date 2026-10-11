@@ -50,7 +50,7 @@ export async function runAuditIngest(
     graphIndexId: params.graphIndexId,
   });
 
-  if (params.persist !== false) {
+  if (params.persist === undefined || params.persist === true) {
     await persistIngest(repoPath, result);
   }
 

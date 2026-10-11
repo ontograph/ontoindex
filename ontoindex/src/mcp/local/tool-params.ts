@@ -170,7 +170,7 @@ export const RenameByUidSchema = BaseRepoSchema.extend({
 export interface RenameByUidParams extends z.input<typeof RenameByUidSchema> {}
 
 export const ImpactSchema = BaseRepoSchema.extend({
-  target: z.string(),
+  target: z.string().optional(),
   target_uid: z.string().optional(),
   nodeId: z.string().optional(),
   direction: z.enum(['upstream', 'downstream']).default('upstream'),
@@ -188,7 +188,13 @@ export const ImpactSchema = BaseRepoSchema.extend({
   consume_enrichment_facts: z.boolean().default(false),
   allow_low_confidence: z.boolean().default(false),
   allow_safety_critical_enrichment: z.boolean().default(false),
-});
+}).refine(
+  (params) => [params.target, params.target_uid, params.nodeId].some((value) => value?.trim()),
+  {
+    path: ['target'],
+    message: 'Provide a non-empty target, target_uid, or nodeId',
+  },
+);
 
 export interface ImpactParams extends z.input<typeof ImpactSchema> {}
 

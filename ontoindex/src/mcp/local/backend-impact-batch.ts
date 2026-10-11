@@ -192,7 +192,7 @@ export async function runImpactBatch(
         maxDepth,
         relationTypes: params?.relationTypes,
         includeTests: params?.includeTests,
-        minConfidence: params?.minConfidence,
+        minConfidence: params?.minConfidence ?? 0.7,
       });
       return { target, result };
     });

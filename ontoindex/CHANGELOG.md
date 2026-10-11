@@ -4,6 +4,23 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.8] - 2026-10-12
+
+### Security
+
+- Resolved caller-supplied git revisions and ranges to commit IDs before invoking git, so values such as `--output=<path>` can no longer be parsed as git options in `gn_verify_diff`, `gn_test_gap`, `gn_diff_impact`, `gn_review_diff`, `detect_changes`, and audit-lifecycle git lookups.
+- Resolved memory files through real-path containment, so symlinks in `.ontoindex/memories/` can no longer expose files outside the repository.
+- Enabled MCP HTTP DNS-rebinding protection when the server binds to a loopback host, and denied `.git/` paths in `/api/file`.
+
+### Fixed
+
+- Validated `gn_*` super-tool arguments against their advertised schemas, and required exact `true` for `autoAnalyze`, `killMcpForLock`, and `force`; audit `persist` accepts only omitted or `true`.
+- Accepted `impact` calls that identify the symbol only by `target_uid` or `nodeId`.
+- Bounded successful resource responses to the MCP response budget with a visible truncation marker.
+- Forwarded search options to every member of `@group` searches and reported options that cannot apply.
+- Applied the documented `impact_batch` default `minConfidence` of 0.7.
+- Returned 413 for oversized HTTP request bodies and 400 for malformed JSON instead of 500.
+
 ## [2.2.7] - 2026-10-12
 
 ### Fixed

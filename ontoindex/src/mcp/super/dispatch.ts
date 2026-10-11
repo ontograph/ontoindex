@@ -13,6 +13,7 @@
  */
 
 import type { SuperTool } from './names.js';
+import { ONTOINDEX_SUPER_TOOLS } from './tool-definitions.js';
 import type { ExploreParams } from './explore.js';
 import type { ExplainModuleParams } from './explain-module.js';
 import type { FindRelatedParams } from './find-related.js';
@@ -79,6 +80,35 @@ import {
 
 export { SUPER_NAMES, type SuperTool } from './names.js';
 
+/** Validate advertised arguments without injecting defaults or stripping extras. */
+export function validateSuperParams(name: SuperTool, params: Record<string, unknown>): void {
+  const schema = ONTOINDEX_SUPER_TOOLS.find((tool) => tool.name === name)?.inputSchema;
+  if (!schema) throw new Error(`Unknown super tool: ${name}`);
+  const issues: string[] = [];
+  for (const key of schema.required) {
+    if (!Object.hasOwn(params, key)) issues.push(`${key}: Required`);
+  }
+  for (const [key, property] of Object.entries(schema.properties)) {
+    if (!Object.hasOwn(params, key)) continue;
+    const value = params[key];
+    const types = Array.isArray(property.type) ? property.type : [property.type];
+    const validType = types.some((type) => {
+      if (type === 'null') return value === null;
+      if (type === 'array') return Array.isArray(value);
+      if (type === 'object')
+        return value !== null && typeof value === 'object' && !Array.isArray(value);
+      if (type === 'integer') return typeof value === 'number' && Number.isInteger(value);
+      if (type === 'number') return typeof value === 'number' && Number.isFinite(value);
+      return typeof value === type;
+    });
+    if (!validType) issues.push(`${key}: expected ${types.join(' or ')}`);
+    else if (property.enum && !property.enum.includes(value as string))
+      issues.push(`${key}: expected one of ${property.enum.join(', ')}`);
+  }
+  if (issues.length)
+    throw new Error(`Invalid arguments for ${name}: ${issues.slice(0, 3).join('; ')}`);
+}
+
 /**
  * Dispatch an incoming MCP tool call to the appropriate super-function.
  *
@@ -93,6 +123,7 @@ export async function dispatchSuper(
   repoId: string,
   backend?: RefactorBackend,
 ): Promise<unknown> {
+  validateSuperParams(name, params);
   switch (name) {
     case 'gn_explore': {
       const { gnExplore } = await import('./explore.js');

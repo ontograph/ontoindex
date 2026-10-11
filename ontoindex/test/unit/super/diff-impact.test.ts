@@ -25,6 +25,7 @@ vi.mock('../../../src/mcp/shared/target-context.js', () => ({
 }));
 
 vi.mock('../../../src/storage/git.js', () => ({
+  resolveCommitRange: vi.fn(async (_repo: string, ref: string) => ref),
   resolveBranchComparisonBase: vi.fn(() => ({
     ref: 'main',
     commit: 'base123',

@@ -110,6 +110,26 @@ describe('prompt registration', () => {
 });
 
 describe('resource response MIME types', () => {
+  it('bounds successful resource envelopes with escaped unicode content', async () => {
+    const read = vi.spyOn(resources, 'readResource').mockResolvedValue('😀\"\\\n'.repeat(15000));
+    const handlers = vi.spyOn(Server.prototype, 'setRequestHandler');
+    try {
+      createMCPServer(createMockBackend());
+      const handler = handlers.mock.calls.find(
+        ([schema]) => schema === ReadResourceRequestSchema,
+      )?.[1];
+      const response = await (handler as any)({
+        params: { uri: 'ontoindex://repo/test/memory/large' },
+      });
+      expect(Buffer.byteLength(JSON.stringify(response))).toBeLessThanOrEqual(
+        MCP_RESPONSE_MAX_BYTES,
+      );
+      expect(response.contents[0].text).toContain('[truncated]');
+    } finally {
+      handlers.mockRestore();
+      read.mockRestore();
+    }
+  });
   const advertisedResources = [
     ...resources.getResourceDefinitions(),
     ...resources.getResourceTemplates().map((entry) => ({

@@ -131,9 +131,10 @@ export function boundMcpErrorText(
   format: (message: string) => string,
   message: string,
   maxBytes = MCP_RESPONSE_MAX_BYTES,
+  serializedBytes: (text: string) => number = (text) => serializedMcpToolResultBytes(text, true),
 ): string {
   const text = format(message);
-  if (serializedMcpToolResultBytes(text, true) <= maxBytes) return text;
+  if (serializedBytes(text) <= maxBytes) return text;
   let low = 0;
   let high = Math.min(message.length, maxBytes);
   let best = 'Error: tool response exceeded the byte limit.';
@@ -141,7 +142,7 @@ export function boundMcpErrorText(
     const length = Math.floor((low + high) / 2);
     const end = length > 0 && /[\uD800-\uDBFF]/.test(message[length - 1]) ? length - 1 : length;
     const candidate = format(message.slice(0, end) + '… [truncated]');
-    if (serializedMcpToolResultBytes(candidate, true) <= maxBytes) {
+    if (serializedBytes(candidate) <= maxBytes) {
       best = candidate;
       low = length + 1;
     } else {

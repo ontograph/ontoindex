@@ -20,6 +20,8 @@ import {
 } from '../../src/mcp/resources.js';
 import {
   CANONICAL_MEMORY_FRESHNESS,
+  loadMemory,
+  loadMemories,
   MAX_MEMORY_FILE_SIZE_BYTES,
   normalizeMemoryName,
   parseMemoryFrontMatter,
@@ -727,6 +729,33 @@ describe('readResource', () => {
     expect(result).toContain('Welcome to the project.');
 
     await fs.rm(repoDir, { recursive: true, force: true });
+  });
+
+  it('does not read memories whose real target escapes the repository', async () => {
+    const repoDir = await createMemoryRepo('gn-memory-symlink-');
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-memory-outside-'));
+    try {
+      await fs.writeFile(path.join(outside, 'secret.md'), 'outside secret');
+      await fs.symlink(
+        path.join(outside, 'secret.md'),
+        path.join(repoDir, '.ontoindex/memories/escape.md'),
+      );
+      await fs.writeFile(
+        path.join(repoDir, '.ontoindex/memories/internal.md'),
+        makeMemoryContent([], ['inside memory']),
+      );
+      expect(await loadMemory(repoDir, 'escape')).toBeNull();
+      expect((await loadMemory(repoDir, 'internal'))?.content).toContain('inside memory');
+      expect((await loadMemories(repoDir)).map((memory) => memory.fileName)).toEqual([
+        'internal.md',
+      ]);
+      await fs.rm(path.join(repoDir, '.ontoindex/memories'), { recursive: true });
+      await fs.symlink(outside, path.join(repoDir, '.ontoindex/memories'));
+      expect(await loadMemories(repoDir)).toEqual([]);
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+      await fs.rm(outside, { recursive: true, force: true });
+    }
   });
 
   it('memory resource reports invalid front matter clearly', async () => {

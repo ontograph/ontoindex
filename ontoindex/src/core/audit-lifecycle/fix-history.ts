@@ -1,4 +1,5 @@
 import { execFileText } from '../process/exec-file.js';
+import { resolveCommitRef } from '../../storage/git.js';
 
 const GIT_TIMEOUT_MS = 5_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
@@ -21,6 +22,7 @@ export interface FindFixHistoryOptions {
 export async function findFixHistoryCandidates(
   options: FindFixHistoryOptions,
 ): Promise<FixHistoryCandidate[]> {
+  const targetHead = await resolveCommitRef(options.repoPath, options.targetHead);
   const patterns = options.patterns.map((pattern) => pattern.trim()).filter(Boolean);
   if (patterns.length === 0) return [];
 
@@ -31,7 +33,7 @@ export async function findFixHistoryCandidates(
       '--format=%H%x00%s',
       `-G${pattern}`,
       `-${String(options.limit ?? 20)}`,
-      options.targetHead,
+      targetHead,
       '--',
       options.path,
     ]);

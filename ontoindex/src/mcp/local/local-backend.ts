@@ -1197,6 +1197,7 @@ export class LocalBackend implements BackendPort {
         const impactParams = params as ImpactParams;
         return this.impact(repo, {
           ...impactParams,
+          target: impactParams.target ?? '',
           direction: impactParams.direction === 'downstream' ? 'downstream' : 'upstream',
         });
       },
@@ -2445,7 +2446,15 @@ export class LocalBackend implements BackendPort {
       return svc.groupImpact(impactArgs);
     }
     if (method === 'query') {
+      const {
+        repo: _repo,
+        name: _name,
+        subgroup: _subgroup,
+        subgroupExact: _exact,
+        ...queryOptions
+      } = params;
       const queryArgs: Record<string, unknown> = {
+        ...queryOptions,
         name: groupName,
         query: params.query,
       };

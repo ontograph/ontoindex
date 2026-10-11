@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { execFileText } from '../process/exec-file.js';
+import { resolveCommitRef } from '../../storage/git.js';
 import {
   evaluateFreshnessGatePolicy,
   projectStatusForFreshnessGate,
@@ -77,7 +78,10 @@ interface RelocatedSymbol {
 export async function verifyFindingFreshEvidence(
   options: VerifyFindingOptions,
 ): Promise<VerifyFindingResult> {
-  const finding = options.finding;
+  const finding = {
+    ...options.finding,
+    targetHead: await resolveCommitRef(options.repoPath, options.finding.targetHead),
+  };
   const verifiedAt = (options.now ?? new Date()).toISOString();
   const graphIndexId = options.graphIndexId ?? finding.graphIndexId;
   const snapshotMode = options.snapshotMode ?? 'committed-head';

@@ -1,5 +1,5 @@
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
-import { parseDiffHunks, type FileDiff } from '../../storage/git.js';
+import { parseDiffHunks, resolveCommitRange, type FileDiff } from '../../storage/git.js';
 import { execFile } from 'child_process';
 import type { ChangedFileSymbol } from '../../core/review/review-types.js';
 
@@ -150,7 +150,11 @@ export async function detectChanges(
       break;
     case 'compare':
       if (!params.base_ref) return { error: 'base_ref is required for "compare" scope' };
-      diffArgs = ['diff', params.base_ref, '-U0'];
+      try {
+        diffArgs = ['diff', await resolveCommitRange(repo.repoPath, params.base_ref), '-U0'];
+      } catch (error) {
+        return { error: error instanceof Error ? error.message : String(error) };
+      }
       break;
     case 'unstaged':
     default:

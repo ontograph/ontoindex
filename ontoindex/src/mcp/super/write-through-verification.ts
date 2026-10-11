@@ -14,6 +14,7 @@ import {
   type ImpactKernelRepoHandle,
 } from '../../core/impact/impact-kernel.js';
 import { execFileText } from '../../core/process/exec-file.js';
+import { resolveCommitRange } from '../../storage/git.js';
 import { detectChanges } from '../local/backend-detect-changes.js';
 import { semanticSearch } from '../local/backend-query.js';
 import { resolveSymbolCandidates } from '../local/backend-symbol-resolution.js';
@@ -459,6 +460,7 @@ export async function collectVerificationDiff(
 ): Promise<VerificationDiffReport> {
   const warnings: string[] = [];
   const { scope, baseRef } = resolveDiffScope(params.scope, params.diffRef ?? params.baseRef);
+  if (scope === 'compare') await resolveCommitRange(repo.repoPath, baseRef ?? 'HEAD');
   const changedFiles =
     params.changedFiles !== undefined
       ? normalizeStrings(params.changedFiles)
@@ -592,13 +594,15 @@ async function listChangedFiles(
   scope: DiffScope,
   baseRef?: string,
 ): Promise<string[]> {
+  const resolvedRef =
+    scope === 'compare' ? await resolveCommitRange(repoPath, baseRef ?? 'HEAD') : undefined;
   const args =
     scope === 'staged'
       ? ['-C', repoPath, 'diff', '--cached', '--name-only']
       : scope === 'all'
         ? ['-C', repoPath, 'diff', 'HEAD', '--name-only']
         : scope === 'compare'
-          ? ['-C', repoPath, 'diff', baseRef ?? 'HEAD', '--name-only']
+          ? ['-C', repoPath, 'diff', resolvedRef!, '--name-only']
           : ['-C', repoPath, 'diff', '--name-only'];
   const output = await execFileText('git', args, {
     timeoutMs: GIT_TIMEOUT_MS,

@@ -4,6 +4,11 @@ import { TOOL_SCHEMAS } from '../../src/mcp/local/tool-params.js';
 import { INTERNAL_TOOL_HANDLERS } from '../../src/mcp/tools.js';
 
 describe('internal tool argument validation', () => {
+  it('requires a non-empty impact selector', async () => {
+    await expect(new LocalBackend().callTool('impact', {})).rejects.toThrow(
+      'Invalid arguments for impact: target:',
+    );
+  });
   it.each([
     ['query', { query: 'auth', limit: '10' }, 'limit'],
     ['replace_symbol', { uid: 'Function:foo', confirm: 'yes' }, 'confirm'],
@@ -19,6 +24,7 @@ describe('internal tool argument validation', () => {
 
   it.each([
     ['impact', { target: 'x' }],
+    ['impact', { target_uid: 'Function:x' }],
     ['impact_batch', { targets: ['x'] }],
   ])('accepts omitted direction for %s without injecting defaults', async (tool, params) => {
     const backend = new LocalBackend();

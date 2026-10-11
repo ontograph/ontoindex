@@ -1,6 +1,33 @@
 import { execFileSync, execSync } from 'child_process';
 import { statSync } from 'fs';
 import path from 'path';
+import { execFileText } from '../core/process/exec-file.js';
+
+/** Resolve untrusted revisions before passing them to Git commands. */
+export async function resolveCommitRef(repoPath: string, ref: string): Promise<string> {
+  const invalid = () => new Error(`Invalid git revision: ${ref}`);
+  if (!ref || ref.includes('\0') || ref.startsWith('-')) throw invalid();
+  try {
+    const commit = (
+      await execFileText('git', ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`], {
+        cwd: repoPath,
+      })
+    ).trim();
+    if (!/^[a-f0-9]{40,64}$/.test(commit)) throw invalid();
+    return commit;
+  } catch {
+    throw invalid();
+  }
+}
+
+export async function resolveCommitRange(repoPath: string, range: string): Promise<string> {
+  const parts = range.split(/(\.{2,3})/);
+  if (parts.length === 1) return resolveCommitRef(repoPath, range);
+  if (parts.length !== 3) throw new Error(`Invalid git revision: ${range}`);
+  const left = await resolveCommitRef(repoPath, parts[0] || 'HEAD');
+  const right = await resolveCommitRef(repoPath, parts[2] || 'HEAD');
+  return `${left}${parts[1]}${right}`;
+}
 
 // Git utilities for repository detection, commit tracking, and diff analysis
 const GIT_SYNC_TIMEOUT_MS = 5000;

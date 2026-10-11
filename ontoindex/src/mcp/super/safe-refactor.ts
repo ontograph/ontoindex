@@ -472,7 +472,7 @@ export async function gnSafeRefactor(
       'Explicit confirmation required to apply (set confirm: true with dryRun: false).',
     );
   }
-  const force = params.force ?? false;
+  const force = params.force === true;
   const requestedSymbol = params.symbol ?? params.target ?? '';
   if (!params.symbol && params.target) {
     warnings.push('`target` is a deprecated alias for `symbol`; use `symbol` in new calls.');

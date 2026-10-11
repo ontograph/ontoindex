@@ -4,6 +4,7 @@
  */
 
 import fsp from 'node:fs/promises';
+import type { QueryParams } from '../../mcp/local/tool-params.js';
 import path from 'node:path';
 import { checkStaleness } from '../git-staleness.js';
 import { loadGroupConfig } from './config-parser.js';
@@ -53,17 +54,7 @@ export interface GroupToolPort {
     },
     options?: { signal?: AbortSignal },
   ): Promise<unknown>;
-  query(
-    repo: GroupRepoHandle,
-    params: {
-      query: string;
-      task_context?: string;
-      goal?: string;
-      limit?: number;
-      max_symbols?: number;
-      include_content?: boolean;
-    },
-  ): Promise<unknown>;
+  query(repo: GroupRepoHandle, params: QueryParams): Promise<unknown>;
   impactByUid(
     repoId: string,
     uid: string,
@@ -425,6 +416,20 @@ export class GroupService {
     const servicePrefix = normalizeServicePrefix(params.service);
 
     const limit = typeof params.limit === 'number' && params.limit > 0 ? params.limit : 5;
+    const {
+      name: _name,
+      repo: _repo,
+      subgroup: _subgroup,
+      subgroupExact: _exact,
+      service: _service,
+      ...queryOptions
+    } = params;
+    const warnings: string[] = [];
+    if (params.typed_query === true || params.typedQuery !== undefined) {
+      warnings.push('Option typed_query is not supported for @group search');
+      delete queryOptions.typedQuery;
+      delete queryOptions.typed_query;
+    }
     const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
     const subgroupExact = params.subgroupExact === true;
     const groupDir = getGroupDir(getDefaultOntoIndexDir(), name);
@@ -446,10 +451,11 @@ export class GroupService {
         try {
           const repoObj = await this.port.resolveRepo(registryName);
           const queryResult = (await this.port.query(repoObj, {
+            ...queryOptions,
             query: queryText,
             limit,
-            max_symbols: 10,
-            include_content: false,
+            max_symbols: (params.max_symbols as number | undefined) ?? 10,
+            include_content: (params.include_content as boolean | undefined) ?? false,
           })) as {
             processes?: Array<Record<string, unknown>>;
             process_symbols?: Array<Record<string, unknown>>;
@@ -478,6 +484,7 @@ export class GroupService {
       query: queryText,
       results: topN,
       per_repo: perRepo.map((r) => ({ repo: r.repo, count: r.processes.length })),
+      ...(warnings.length > 0 ? { warnings } : {}),
     };
   }
 

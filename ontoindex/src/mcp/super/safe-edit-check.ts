@@ -717,7 +717,7 @@ export async function gnSafeEditCheck(
 ): Promise<EditCheckReport | CapabilityResponseEnvelope<Record<string, unknown>>> {
   const warnings: string[] = [];
   const intent = params.intent ?? 'general';
-  const force = params.force ?? false;
+  const force = params.force === true;
   const targetContext = await resolveTargetContext({
     repo: repoId,
     checkSidecar: params.docsEvidence === true,

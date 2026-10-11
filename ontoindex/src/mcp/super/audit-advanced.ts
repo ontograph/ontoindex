@@ -127,7 +127,7 @@ export async function gnDispatchPrompt(
     allowRuntimeOnlyFindings: true,
   });
 
-  if (params.persist !== false) {
+  if (params.persist === undefined || params.persist === true) {
     await new LocalAuditEventStore(repo.repoPath).appendEvent({
       id: `evt-dispatch-${selected.id}-${Date.now()}`,
       type: 'BundleDispatched',
@@ -187,7 +187,7 @@ export async function gnAuditTombstoneCreate(
     evidence,
   };
 
-  if (params.persist !== false) {
+  if (params.persist === undefined || params.persist === true) {
     await new LocalAuditEventStore(repo.repoPath).appendEvent({
       id: `evt-tombstone-${params.findingId}-${Date.now()}`,
       type: 'FindingTombstoned',
@@ -228,7 +228,7 @@ export async function gnScopeGuard(
     requiredTests: params.requiredTests,
   });
 
-  if (params.persist !== false) {
+  if (params.persist === undefined || params.persist === true) {
     await new LocalAuditEventStore(repo.repoPath).appendEvent({
       id: `evt-scope-guard-${bundle.id}-${Date.now()}`,
       type: 'ScopeGuardEvaluated',

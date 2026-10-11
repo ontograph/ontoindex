@@ -61,7 +61,7 @@ export async function runAuditVerify(
     );
   }
 
-  if (params.persist !== false && sessionId) {
+  if ((params.persist === undefined || params.persist === true) && sessionId) {
     await persistVerifyResults(repoPath, sessionId, results);
   }
 

@@ -315,6 +315,50 @@ describe('GroupService', () => {
   });
 
   describe('groupQuery', () => {
+    it('forwards member query options and retains omitted defaults', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      vi.stubEnv('ONTOINDEX_HOME', tmpDir);
+      try {
+        const port = makePort();
+        const svc = new GroupService(port);
+        const options = {
+          max_symbols: 3,
+          include_content: true,
+          exclude_paths: ['vendor/'],
+          include_paths: ['src/'],
+          task_context: 'fix login',
+          goal: 'auth',
+          include_explanations: true,
+          include_skeleton: false,
+          retrieval_diagnostics: true,
+          structured_output: true,
+          consume_enrichment_facts: true,
+        };
+        await svc.groupQuery({ name: 'test-group', query: 'login', ...options });
+        expect(port.query).toHaveBeenCalledTimes(2);
+        for (const call of vi.mocked(port.query).mock.calls) {
+          expect(call[1]).toEqual(expect.objectContaining(options));
+          expect(call[1]).not.toHaveProperty('name');
+        }
+        vi.mocked(port.query).mockClear();
+        await svc.groupQuery({ name: 'test-group', query: 'login' });
+        expect(port.query).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ max_symbols: 10, include_content: false }),
+        );
+        const result = await svc.groupQuery({
+          name: 'test-group',
+          query: 'login',
+          typed_query: true,
+        });
+        expect(result).toHaveProperty('warnings', [
+          'Option typed_query is not supported for @group search',
+        ]);
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
     it('test_groupQuery_returns_error_when_params_missing', async () => {
       const svc = new GroupService(makePort());
       const result = (await svc.groupQuery({})) as { error: string };

@@ -94,4 +94,26 @@ it('/api/grep skips indexed files replaced by external symlinks and allows inter
   expect(await response.json()).toEqual({
     results: [{ filePath: 'link.txt', line: 1, text: 'needle internal' }],
   });
+  await fs.mkdir(path.join(repo, '.git'));
+  await fs.writeFile(path.join(repo, '.git/config'), 'private git config');
+  await fs.symlink(path.join(repo, '.git/config'), path.join(repo, 'config-alias'));
+  for (const file of ['.git/config', 'config-alias']) {
+    const denied = await fetch(`http://127.0.0.1:${address.port}/api/file?repo=repo&path=${file}`, {
+      headers: { Authorization: 'Bearer grep-test-token' },
+    });
+    expect(denied.status).toBe(403);
+  }
+  const oversized = await fetch(`http://127.0.0.1:${address.port}/api/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: 'x'.repeat(11 * 1024 * 1024) }),
+  });
+  expect(oversized.status).toBe(413);
+  expect(await oversized.json()).toEqual({ error: 'Request body too large' });
+  const malformed = await fetch(`http://127.0.0.1:${address.port}/api/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{',
+  });
+  expect(malformed.status).toBe(400);
 });
