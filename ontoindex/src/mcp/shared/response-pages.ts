@@ -46,6 +46,7 @@ export async function pageMcpResponse(input: {
   tool: string;
   args: Record<string, unknown>;
   text?: string;
+  identityText?: string;
   cursor?: string;
   maxBytes?: number;
 }): Promise<{ text: string; paged: boolean }> {
@@ -76,7 +77,7 @@ export async function pageMcpResponse(input: {
     resultHash: digest(text),
     createdAt: now,
     expiresAt: now + PAGE_TTL_MS,
-    identity: extractIdentity(text),
+    identity: extractIdentity(input.identityText ?? text),
     text,
   };
   await writeStored(stored);

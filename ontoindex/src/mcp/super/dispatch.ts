@@ -19,7 +19,7 @@ import type { FindRelatedParams } from './find-related.js';
 import type { SafeEditCheckParams } from './safe-edit-check.js';
 import type { CanDeleteParams } from './can-delete.js';
 import type { PreCommitAuditParams } from './pre-commit-audit.js';
-import type { SafeRefactorParams } from './safe-refactor.js';
+import type { SafeRefactorParams, RefactorBackend } from './safe-refactor.js';
 import type { EnsureFreshParams } from './ensure-fresh.js';
 import type { AnalyzeJobParams } from './analyze-job.js';
 import type { QualityModeParams } from './quality-mode.js';
@@ -91,6 +91,7 @@ export async function dispatchSuper(
   name: SuperTool,
   params: Record<string, unknown>,
   repoId: string,
+  backend?: RefactorBackend,
 ): Promise<unknown> {
   switch (name) {
     case 'gn_explore': {
@@ -125,7 +126,7 @@ export async function dispatchSuper(
 
     case 'gn_safe_refactor': {
       const { gnSafeRefactor } = await import('./safe-refactor.js');
-      return gnSafeRefactor(repoId, params as unknown as SafeRefactorParams);
+      return gnSafeRefactor(repoId, params as unknown as SafeRefactorParams, backend);
     }
 
     case 'gn_ensure_fresh': {

@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import syncFs from 'node:fs';
 import path from 'path';
 import { RepoHandle } from 'ontoindex-shared';
+import { resolveActiveIndexGeneration } from '../../storage/repo-manager.js';
 
 interface EnsureRepoInitializedOptions {
   repoId: string;
@@ -13,6 +14,7 @@ interface EnsureRepoInitializedOptions {
   isLbugDbPathReady?: (dbPath: string) => boolean;
   initLbug: (repoId: string, lbugPath: string) => Promise<void>;
   closeLbug: (repoId: string) => Promise<void>;
+  resolveActiveLbugPath?: (storagePath: string) => Promise<string | null>;
   now?: () => number;
 }
 
@@ -216,6 +218,8 @@ export async function ensureRepoInitialized(options: EnsureRepoInitializedOption
     isLbugDbPathReady,
     initLbug,
     closeLbug,
+    resolveActiveLbugPath = async (storagePath) =>
+      (await resolveActiveIndexGeneration(storagePath))?.lbugPath ?? null,
     now = Date.now,
   } = options;
 
@@ -228,13 +232,18 @@ export async function ensureRepoInitialized(options: EnsureRepoInitializedOption
     if (nowMs - lastCheck < 5000) return;
 
     lastStalenessCheck.set(repoId, nowMs);
-    const indexedAt = await readIndexedAt(handle.storagePath);
-    if (!indexedAt || indexedAt === handle.indexedAt) return;
+    const [indexedAt, activeLbugPath] = await Promise.all([
+      readIndexedAt(handle.storagePath),
+      resolveActiveLbugPath(handle.storagePath),
+    ]);
+    const lbugPath = activeLbugPath ?? handle.lbugPath;
+    if ((!indexedAt || indexedAt === handle.indexedAt) && lbugPath === handle.lbugPath) return;
 
     const reinit = (async () => {
       try {
-        await assertIndexCanOpenReadOnly(handle, isLbugDbPathReady);
-        handle.indexedAt = indexedAt;
+        await assertIndexCanOpenReadOnly({ ...handle, lbugPath }, isLbugDbPathReady);
+        handle.lbugPath = lbugPath;
+        if (indexedAt) handle.indexedAt = indexedAt;
         await closeLbug(repoId);
         initializedRepos.delete(repoId);
         await initLbug(repoId, handle.lbugPath);

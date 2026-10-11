@@ -134,6 +134,24 @@ function normalizeFacadeArgs(
   const normalized = { ...args };
   const target = typeof normalized.target === 'string' ? normalized.target : undefined;
 
+  if (tool === 'manage' && action === 'session') {
+    const operation = normalized.operation;
+    if (operation !== 'get' && operation !== 'set' && operation !== 'list') {
+      throw new Error('manage(action: "session") requires operation: "get" | "set" | "list".');
+    }
+    normalized.action = operation;
+    delete normalized.operation;
+  }
+
+  if (tool === 'refactor' && action === 'sandbox') {
+    const operation = normalized.operation ?? 'stage';
+    if (operation !== 'stage' && operation !== 'apply') {
+      throw new Error('refactor(action: "sandbox") requires operation: "stage" | "apply".');
+    }
+    normalized.action = operation;
+    delete normalized.operation;
+  }
+
   if (
     tool === 'search' &&
     action === 'semantic' &&

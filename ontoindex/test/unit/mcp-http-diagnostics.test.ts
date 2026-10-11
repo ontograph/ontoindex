@@ -90,7 +90,10 @@ function makeMockBackend(): any {
   return {};
 }
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+});
 
 // ─── boundedIncrement — counter cap ──────────────────────────────────────────
 
@@ -131,6 +134,56 @@ describe('getDiagnostics — initial state', () => {
     expect(snap.totalCapEvictions).toBe(0);
     expect(snap.capturedAt).toBeGreaterThan(0);
 
+    await cleanup();
+  });
+});
+
+// ─── Concurrent initialization cap ──────────────────────────────────────────
+
+describe('concurrent initialization cap', () => {
+  it('counts pending initializations and releases reservations after completion', async () => {
+    vi.stubEnv('ONTOINDEX_HTTP_MCP_MAX_SESSIONS', '1');
+    vi.resetModules();
+
+    const { mountMCPEndpoints: mountWithCap } = await import('../../src/server/mcp-http.js');
+    const { createMCPServer: createMockServer } = await import('../../src/mcp/server.js');
+    let releaseConnect!: () => void;
+    const connectGate = new Promise<void>((resolve) => {
+      releaseConnect = resolve;
+    });
+    vi.mocked(createMockServer).mockImplementation(
+      () =>
+        ({
+          connect: vi.fn(() => connectGate),
+          close: vi.fn().mockResolvedValue(undefined),
+        }) as any,
+    );
+
+    const app = makeMockApp();
+    const { cleanup, getDiagnostics } = mountWithCap(app as any, makeMockBackend());
+    const pending = Array.from({ length: 8 }, () =>
+      app.trigger({ method: 'POST', headers: {}, body: {} }),
+    );
+
+    // Let all requests reach connect(), which remains blocked until released.
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(getDiagnostics().activeSessionCount).toBe(0);
+    releaseConnect();
+    const responses = await Promise.all(pending);
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+
+    expect(getDiagnostics().activeSessionCount).toBe(1);
+    expect(
+      responses.filter((response) => response.status.mock.calls.some(([status]) => status === 503)),
+    ).toHaveLength(7);
+
+    // Closing the active session leaves no capacity except a leaked reservation
+    // would block, so a fresh initialization proves the reservation was released.
+    await cleanup();
+    await app.trigger({ method: 'POST', headers: {}, body: {} });
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(getDiagnostics().activeSessionCount).toBe(1);
+    expect(getDiagnostics().totalSessionsCreated).toBe(2);
     await cleanup();
   });
 });

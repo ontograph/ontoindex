@@ -1,3 +1,4 @@
+import fs from 'fs/promises';
 import path from 'path';
 
 /**
@@ -34,4 +35,27 @@ export function canonicalize(repoPath: string, input: string): string {
   }
 
   return absoluteInputPath;
+}
+
+/**
+ * Resolve a repository path through the filesystem and require the real target
+ * to stay inside the real repository root. A lexical check alone lets a symlink
+ * inside the repository point at a file outside it.
+ *
+ * Callers must operate on the returned path, not the original input.
+ */
+export async function resolveContainedRealPath(repoPath: string, input: string): Promise<string> {
+  const lexicalPath = canonicalize(repoPath, input);
+  const realRepoPath = await fs.realpath(path.resolve(repoPath));
+  let realPath: string;
+  try {
+    realPath = await fs.realpath(lexicalPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
+    realPath = path.join(await fs.realpath(path.dirname(lexicalPath)), path.basename(lexicalPath));
+  }
+  if (realPath !== realRepoPath && !realPath.startsWith(realRepoPath + path.sep)) {
+    throw new Error('Path escapes repository: ' + input);
+  }
+  return realPath;
 }

@@ -14,8 +14,6 @@
  *       Callers MUST explicitly pass dryRun: false to apply changes.
  */
 
-import fs from 'fs/promises';
-
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { resolveSymbolCandidates } from '../local/backend-symbol-resolution.js';
 import { renameSymbol } from '../local/backend-rename.js';
@@ -48,6 +46,11 @@ export interface SafeRefactorParams {
   dryRun?: boolean; // default: true (MUST default to true — plan §8 rule #10)
   force?: boolean;
   preChecks?: boolean; // default: true
+}
+
+export interface RefactorBackend {
+  repoPath: string;
+  callTool(method: string, params: unknown): Promise<unknown>;
 }
 
 export interface RefactorReport {
@@ -109,6 +112,8 @@ interface RenameResult {
   error?: unknown;
   total_edits?: unknown;
   changes?: unknown;
+  applied_files?: unknown;
+  failed_files?: unknown;
 }
 
 interface ChangedSymbol {
@@ -270,9 +275,10 @@ async function dispatchDryRun(
   resolved: ResolvedSymbol,
   params: SafeRefactorParams,
   warnings: string[],
+  repoPath = process.cwd(),
 ): Promise<{ affectedFiles: string[]; diffSummary: string; estimatedLinesChanged: number }> {
   const { intent } = params;
-  const repoHandle = { id: repoId, repoPath: process.cwd() };
+  const repoHandle = { id: repoId, repoPath };
 
   if (intent === 'rename') {
     const newName = params.params.newName;
@@ -285,6 +291,7 @@ async function dispatchDryRun(
       repoHandle,
       { symbol_name: resolved.name, new_name: newName, dry_run: true },
       lookupSymbol,
+      { confirmWrites: false },
     )) as RenameResult;
     const affectedFiles = renameAffectedFiles(result);
     return {
@@ -377,67 +384,67 @@ async function dispatchApply(
   resolved: ResolvedSymbol,
   params: SafeRefactorParams,
   warnings: string[],
+  backend: RefactorBackend,
 ): Promise<string[]> {
   const { intent } = params;
-  const repoHandle = { id: repoId, repoPath: process.cwd() };
 
   if (intent === 'rename') {
     const newName = params.params.newName!;
-    const lookupSymbol = await makeLookupSymbol(repoId);
-    const result = (await renameSymbol(
-      repoHandle,
-      { symbol_name: resolved.name, new_name: newName, dry_run: false },
-      lookupSymbol,
-    )) as RenameResult;
+    const result = (await backend.callTool('rename', {
+      repo: repoId,
+      symbol_uid: resolved.nodeId,
+      new_name: newName,
+      dry_run: false,
+      confirm: true,
+    })) as RenameResult;
     if (result.error) {
       warnings.push(`rename apply error: ${result.error}`);
       return [];
     }
-    return renameAffectedFiles(result);
+    if (Array.isArray(result.failed_files) && result.failed_files.length > 0) {
+      warnings.push(
+        `rename apply failed for ${result.failed_files.length} file(s): ${result.failed_files
+          .map((failure) => (failure as { file_path?: unknown }).file_path)
+          .join(', ')}`,
+      );
+    }
+    return Array.isArray(result.applied_files) ? (result.applied_files as string[]) : [];
   }
 
   if (intent === 'modify-body') {
-    const newBody = params.params.newBody!;
-    const outcome = await resolveSymbolCandidates(
-      { id: repoId },
-      { uid: resolved.nodeId, include_content: false },
-      {},
-    );
-    if (outcome.kind !== 'ok') {
-      warnings.push(`modify-body apply: could not resolve symbol uid ${resolved.nodeId}`);
-      return [];
-    }
-    const { filePath, startLine, endLine } = outcome.symbol;
-    const source = await fs.readFile(filePath, 'utf-8');
-    const lines = source.split('\n');
-    const before = lines.slice(0, startLine - 1);
-    const after = lines.slice(endLine);
-    const newSource = [...before, newBody, ...after].join('\n');
-    await fs.writeFile(filePath, newSource, 'utf-8');
-    return [filePath];
+    const result = (await backend.callTool('update_symbol_body', {
+      repo: repoId,
+      uid: resolved.nodeId,
+      new_body: params.params.newBody,
+      dry_run: false,
+      confirm: true,
+    })) as { success?: boolean; filePath?: string };
+    return result.success && result.filePath ? [result.filePath] : [];
   }
 
   if (intent === 'extract') {
     const newName = params.params.newName!;
-    const result = await extractFunction(repoHandle, {
+    const result = (await backend.callTool('extract_function', {
+      repo: repoId,
       uid: resolved.nodeId,
       new_name: newName,
       target_file: params.params.targetFile,
       dry_run: false,
       confirm: true,
-    });
-    return result.filePath ? [result.filePath] : [];
+    })) as { success?: boolean; filePath?: string };
+    return result.success && result.filePath ? [result.filePath] : [];
   }
 
   if (intent === 'move') {
     const targetFile = params.params.targetFile!;
-    const result = await moveSymbol(repoHandle, {
+    const result = (await backend.callTool('move_symbol', {
+      repo: repoId,
       uid: resolved.nodeId,
       target_file: targetFile,
       dry_run: false,
       confirm: true,
-    });
-    return [result.from, result.to].filter(Boolean);
+    })) as { success?: boolean; from?: string; to?: string };
+    return result.success ? [result.from, result.to].filter((p): p is string => Boolean(p)) : [];
   }
 
   return [];
@@ -450,10 +457,14 @@ async function dispatchApply(
 export async function gnSafeRefactor(
   repoId: string,
   params: SafeRefactorParams,
+  backend?: RefactorBackend,
 ): Promise<RefactorReport> {
   const warnings: string[] = [];
   // WRITE super-functions MUST default to dryRun: true (plan §8 rule #10)
   const dryRun = params.dryRun !== false;
+  if (!dryRun && !backend) {
+    throw new Error('Refactor apply requires an authorized backend.');
+  }
   const force = params.force ?? false;
   const requestedSymbol = params.symbol ?? params.target ?? '';
   if (!params.symbol && params.target) {
@@ -541,7 +552,7 @@ export async function gnSafeRefactor(
   }
 
   // --- 4. Dry-run preview ---------------------------------------------------
-  const preview = await dispatchDryRun(repoId, resolved, params, warnings);
+  const preview = await dispatchDryRun(repoId, resolved, params, warnings, backend?.repoPath);
 
   // --- 5. Return preview-only when dryRun (default) -------------------------
   if (dryRun) {
@@ -557,7 +568,7 @@ export async function gnSafeRefactor(
   }
 
   // --- 6. Apply -------------------------------------------------------------
-  const appliedFiles = await dispatchApply(repoId, resolved, params, warnings);
+  const appliedFiles = await dispatchApply(repoId, resolved, params, warnings, backend!);
 
   // --- 7. Post-write verify (plan §8 rule #11) ------------------------------
   let postCheckSummary: RefactorReport['postCheckSummary'] | undefined;
@@ -565,7 +576,7 @@ export async function gnSafeRefactor(
 
   try {
     const detectResult = await detectChanges(
-      { id: repoId, repoPath: process.cwd() },
+      { id: repoId, repoPath: backend!.repoPath },
       { scope: 'unstaged' },
     );
 
@@ -594,7 +605,7 @@ export async function gnSafeRefactor(
     symbol: resolved,
     ...(preCheckReport !== undefined ? { preCheckReport } : {}),
     preview,
-    applied: true,
+    applied: appliedFiles.length > 0,
     ...(postCheckSummary !== undefined ? { postCheckSummary } : {}),
     ...(rollbackInstructions !== undefined ? { rollbackInstructions } : {}),
     warnings,

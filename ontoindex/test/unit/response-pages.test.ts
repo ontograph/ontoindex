@@ -29,6 +29,65 @@ describe('pageMcpResponse', () => {
     expect(result).toEqual({ text: 'small', paged: false });
   });
 
+  it('preserves JSON identity on every page when display text includes a next-step hint', async () => {
+    const identity = {
+      repoLabel: 'fixture',
+      repoPath: '/repo/fixture',
+      graphGenerationId: 'generation-1',
+      graphManifestDigest: 'digest-1',
+    };
+    const identityText = JSON.stringify({
+      repoLabel: identity.repoLabel,
+      repoPath: identity.repoPath,
+      freshness: {
+        graphGenerationId: identity.graphGenerationId,
+        graphManifestDigest: identity.graphManifestDigest,
+      },
+      data: 'x'.repeat(5000),
+    });
+    const text = identityText + '\n\n---\n**Next:** Inspect the graph.';
+    const args = { repo: 'fixture' };
+    let result = await pageMcpResponse({
+      tool: 'gn_test',
+      args,
+      text,
+      identityText,
+      maxBytes: 1024,
+    });
+    let reconstructed = '';
+
+    while (true) {
+      expect(result.paged).toBe(true);
+      expect(serializedMcpToolResultBytes(result.text)).toBeLessThanOrEqual(1024);
+      const page = JSON.parse(result.text) as ResponsePageEnvelope;
+      expect(page.responsePage.identity).toEqual(identity);
+      reconstructed += page.chunk;
+      const cursor = page.responsePage.nextCursor;
+      if (!cursor) break;
+      result = await pageMcpResponse({ tool: 'gn_test', args, cursor, maxBytes: 1024 });
+    }
+
+    expect(reconstructed).toBe(text);
+  });
+
+  it('extracts identity from display text when no separate identity text is supplied', async () => {
+    const result = await pageMcpResponse({
+      tool: 'gn_test',
+      args: {},
+      text: JSON.stringify({
+        repoLabel: 'fixture',
+        repoPath: '/repo/fixture',
+        data: 'x'.repeat(5000),
+      }),
+      maxBytes: 1024,
+    });
+
+    expect((JSON.parse(result.text) as ResponsePageEnvelope).responsePage.identity).toEqual({
+      repoLabel: 'fixture',
+      repoPath: '/repo/fixture',
+    });
+  });
+
   it('reconstructs multibyte text exactly while keeping every page within the byte limit', async () => {
     const maxBytes = 1024;
     const text = 'alpha-\u{1f600}-\u7d42\n'.repeat(4000);

@@ -1,10 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { RepoHandle } from 'ontoindex-shared';
 
-import { resolveRepoFromHandles } from '../../src/mcp/local/local-backend-repo-runtime.js';
+import {
+  ensureRepoInitialized,
+  resolveRepoFromHandles,
+} from '../../src/mcp/local/local-backend-repo-runtime.js';
 
 function makeRepo(id: string, name: string, repoPath: string): RepoHandle {
   const resolvedRepoPath = path.resolve(repoPath);
@@ -133,6 +136,79 @@ describe('resolveRepoFromHandles', () => {
       });
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('ensureRepoInitialized', () => {
+  it.each([
+    {
+      label: 'unchanged timestamp',
+      indexedAt: '2026-06-13T00:00:00.000Z',
+      activePath: '/gen/B/lbug',
+      reopens: true,
+    },
+    {
+      label: 'changed timestamp',
+      indexedAt: '2026-06-14T00:00:00.000Z',
+      activePath: '/gen/B/lbug',
+      reopens: true,
+    },
+    {
+      label: 'legacy layout with unchanged timestamp',
+      indexedAt: '2026-06-13T00:00:00.000Z',
+      activePath: null,
+      reopens: false,
+    },
+    {
+      label: 'legacy layout with changed timestamp',
+      indexedAt: '2026-06-14T00:00:00.000Z',
+      activePath: null,
+      reopens: true,
+    },
+    { label: 'missing metadata', indexedAt: null, activePath: '/gen/B/lbug', reopens: true },
+  ])('uses the active generation for $label', async ({ indexedAt, activePath, reopens }) => {
+    const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-reinit-'));
+    const handle = makeRepo('repo', 'repo', storagePath);
+    handle.storagePath = storagePath;
+    handle.lbugPath = '/gen/A/lbug';
+    const originalIndexedAt = handle.indexedAt;
+    const calls: string[] = [];
+    const closeLbug = vi.fn(async () => {
+      calls.push('close');
+    });
+    const initLbug = vi.fn(async () => {
+      calls.push('init');
+    });
+    const initializedRepos = new Set([handle.id]);
+    const reinitPromises = new Map<string, Promise<void>>();
+    const resolveActiveLbugPath = vi.fn(async () => activePath);
+
+    try {
+      if (indexedAt)
+        await fs.writeFile(path.join(storagePath, 'meta.json'), JSON.stringify({ indexedAt }));
+      await ensureRepoInitialized({
+        repoId: handle.id,
+        handle,
+        initializedRepos,
+        reinitPromises,
+        lastStalenessCheck: new Map(),
+        isLbugReady: () => true,
+        initLbug,
+        closeLbug,
+        resolveActiveLbugPath,
+        now: () => 5000,
+      });
+
+      expect(resolveActiveLbugPath).toHaveBeenCalledWith(storagePath);
+      expect(calls).toEqual(reopens ? ['close', 'init'] : []);
+      if (reopens) expect(initLbug).toHaveBeenCalledWith(handle.id, activePath ?? '/gen/A/lbug');
+      expect(handle.lbugPath).toBe(activePath ?? '/gen/A/lbug');
+      expect(handle.indexedAt).toBe(indexedAt ?? originalIndexedAt);
+      expect(initializedRepos.has(handle.id)).toBe(true);
+      expect(reinitPromises.size).toBe(0);
+    } finally {
+      await fs.rm(storagePath, { recursive: true, force: true });
     }
   });
 });

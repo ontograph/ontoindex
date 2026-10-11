@@ -154,6 +154,10 @@ program
   .option('--full', 'Expose all direct internal tools (DEPRECATED — default is public MCP tools)')
   .option('--project <path>', 'Bind MCP startup to an explicit target project path')
   .option('-r, --repo <repo>', 'Only expose one indexed repo by name or absolute path')
+  .option(
+    '--confirm-writes',
+    'Allow confirmed write tools (rename, replace_symbol) to modify files',
+  )
   .action(createLazyAction(() => import('./mcp.js'), 'mcpCommand'));
 
 program

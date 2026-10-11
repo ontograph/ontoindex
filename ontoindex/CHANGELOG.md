@@ -4,6 +4,14 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-10-11
+
+### Fixed
+
+- Required explicit write authorization for rename operations and reported partial apply failures.
+- Resolved symlinks before checking containment for repository file operations.
+- Improved MCP transport compatibility, HTTP diagnostics, graph-walk initialization, facade mapping, and response pagination.
+
 ### Added
 
 - Added `ontoindex watch` and `analyze --dirty-overlay` to refresh symbols from dirty source files without rebuilding the base graph.

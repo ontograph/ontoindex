@@ -635,8 +635,14 @@ Each edit is tagged with confidence:
         file_path: { type: 'string', description: 'File path to disambiguate common names' },
         dry_run: {
           type: 'boolean',
-          description: 'Preview edits without modifying files (default: true)',
+          description:
+            'Preview edits without modifying files (default: true). Applying requires confirm: true and a server started with --confirm-writes.',
           default: true,
+        },
+        confirm: {
+          type: 'boolean',
+          description: 'Required for write (dry_run: false)',
+          default: false,
         },
         repo: {
           type: 'string',

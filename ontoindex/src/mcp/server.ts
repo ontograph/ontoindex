@@ -41,6 +41,7 @@ const GRAPH_BACKED_SUPER_TOOLS = new Set<SuperTool>([
   'gn_explore',
   'gn_explain_module',
   'gn_find_related',
+  'gn_graph_walk',
   'gn_safe_edit_check',
   'gn_can_delete',
   'gn_pre_commit_audit',
@@ -284,9 +285,12 @@ async function dispatchLazySuper(
   name: SuperTool,
   params: Record<string, unknown>,
   repoId: string,
+  backend?: import('./super/safe-refactor.js').RefactorBackend,
 ): Promise<unknown> {
   const { dispatchSuper } = await import('./super/dispatch.js');
-  return dispatchSuper(name, params, repoId);
+  return backend
+    ? dispatchSuper(name, params, repoId, backend)
+    : dispatchSuper(name, params, repoId);
 }
 
 /**
@@ -435,7 +439,17 @@ export function createMCPServer(backend: LocalBackend, options: { full?: boolean
             await backend.ensureRepoInitialized(repo.id);
           }
           result = attachRepoScopeIdentity(
-            await dispatchLazySuper(name as SuperTool, typedArgs, repo.id),
+            await dispatchLazySuper(
+              name as SuperTool,
+              typedArgs,
+              repo.id,
+              name === 'gn_safe_refactor'
+                ? {
+                    repoPath: repo.repoPath,
+                    callTool: backend.callTool.bind(backend),
+                  }
+                : undefined,
+            ),
             repo,
           );
         }
@@ -448,7 +462,12 @@ export function createMCPServer(backend: LocalBackend, options: { full?: boolean
       }
       const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
       const hint = getNextStepHint(name, typedArgs);
-      const page = await pageMcpResponse({ tool: name, args: typedArgs, text: resultText + hint });
+      const page = await pageMcpResponse({
+        tool: name,
+        args: typedArgs,
+        text: resultText + hint,
+        identityText: resultText,
+      });
       return {
         content: [{ type: 'text', text: page.text }],
       };

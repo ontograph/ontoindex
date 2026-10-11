@@ -92,6 +92,14 @@ const REPO_ID = 'test-repo';
 const SYMBOL_NAME = 'parseToken';
 const NODE_ID = 'Function:src/auth/token.ts:parseToken';
 
+const refactorBackend = {
+  repoPath: '/repo/fixture',
+  callTool: vi.fn(async (method: string, params: unknown) => {
+    if (method !== 'rename') throw new Error(`Unexpected tool: ${method}`);
+    return mockRenameSymbol({ id: REPO_ID, repoPath: '/repo/fixture' }, params);
+  }),
+};
+
 function resolvedRow(
   nodeId = NODE_ID,
   name = SYMBOL_NAME,
@@ -181,6 +189,10 @@ describe('gnSafeRefactor', () => {
     // Restore default implementations that resetAllMocks clears.
     mockGetClient.mockResolvedValue(null);
     mockFindTestFiles.mockResolvedValue({ coveringTests: [], likelihoodOfCoverage: 'NONE' });
+    refactorBackend.callTool.mockImplementation(async (method: string, params: unknown) => {
+      if (method !== 'rename') throw new Error(`Unexpected tool: ${method}`);
+      return mockRenameSymbol({ id: REPO_ID, repoPath: refactorBackend.repoPath }, params);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -234,16 +246,21 @@ describe('gnSafeRefactor', () => {
       total_edits: 2,
       changes: [{ file_path: 'src/auth/token.ts', edits: [] }],
       applied: true,
+      applied_files: ['src/auth/token.ts'],
     });
     mockDetectNoUnexpected();
 
-    const report = await gnSafeRefactor(REPO_ID, {
-      intent: 'rename',
-      symbol: SYMBOL_NAME,
-      params: { newName: 'verifyToken' },
-      dryRun: false,
-      force: true,
-    });
+    const report = await gnSafeRefactor(
+      REPO_ID,
+      {
+        intent: 'rename',
+        symbol: SYMBOL_NAME,
+        params: { newName: 'verifyToken' },
+        dryRun: false,
+        force: true,
+      },
+      refactorBackend,
+    );
 
     expect(report.applied).toBe(true);
     // With force:true the BLOCKED guard is bypassed; gnSafeEditCheck returns DANGEROUS instead.
@@ -360,6 +377,7 @@ describe('gnSafeRefactor', () => {
       total_edits: 1,
       changes: [{ file_path: 'src/auth/token.ts', edits: [] }],
       applied: true,
+      applied_files: ['src/auth/token.ts'],
     });
     // detect_changes returns an unexpected extra symbol
     mockDetectChanges.mockResolvedValueOnce({
@@ -383,12 +401,16 @@ describe('gnSafeRefactor', () => {
       affected_processes: [],
     });
 
-    const report = await gnSafeRefactor(REPO_ID, {
-      intent: 'rename',
-      symbol: SYMBOL_NAME,
-      params: { newName: 'verifyToken' },
-      dryRun: false,
-    });
+    const report = await gnSafeRefactor(
+      REPO_ID,
+      {
+        intent: 'rename',
+        symbol: SYMBOL_NAME,
+        params: { newName: 'verifyToken' },
+        dryRun: false,
+      },
+      refactorBackend,
+    );
 
     expect(report.applied).toBe(true);
     expect(report.warnings.some((w) => w.includes('unexpected scope'))).toBe(true);
@@ -421,19 +443,78 @@ describe('gnSafeRefactor', () => {
       total_edits: 1,
       changes: [{ file_path: 'src/auth/token.ts', edits: [] }],
       applied: true,
+      applied_files: ['src/auth/token.ts'],
     });
     mockDetectNoUnexpected();
 
-    const report = await gnSafeRefactor(REPO_ID, {
-      intent: 'rename',
-      symbol: SYMBOL_NAME,
-      params: { newName: 'verifyToken' },
-      dryRun: false,
-    });
+    const report = await gnSafeRefactor(
+      REPO_ID,
+      {
+        intent: 'rename',
+        symbol: SYMBOL_NAME,
+        params: { newName: 'verifyToken' },
+        dryRun: false,
+      },
+      refactorBackend,
+    );
 
     expect(report.applied).toBe(true);
     expect(report.rollbackInstructions).toBeUndefined();
     expect(report.postCheckSummary!.unexpected).toHaveLength(0);
     expect(report.version).toBe(1);
+    expect(refactorBackend.callTool).toHaveBeenCalledWith('rename', {
+      repo: REPO_ID,
+      symbol_uid: NODE_ID,
+      new_name: 'verifyToken',
+      dry_run: false,
+      confirm: true,
+    });
+  });
+
+  it('rejects apply without an authorized backend before any primitive runs', async () => {
+    await expect(
+      gnSafeRefactor(REPO_ID, {
+        intent: 'rename',
+        symbol: SYMBOL_NAME,
+        params: { newName: 'verifyToken' },
+        dryRun: false,
+        preChecks: false,
+      }),
+    ).rejects.toThrow('Refactor apply requires an authorized backend.');
+
+    expect(mockExecuteParameterized).not.toHaveBeenCalled();
+    expect(mockRenameSymbol).not.toHaveBeenCalled();
+    expect(mockDetectChanges).not.toHaveBeenCalled();
+  });
+
+  it('reports applied:false when the backend writes no files despite a nonempty preview', async () => {
+    mockResolve();
+    mockRenameSymbol.mockResolvedValueOnce({
+      changes: [{ file_path: 'src/auth/token.ts', edits: [] }],
+      total_edits: 1,
+      applied: false,
+    });
+    mockRenameSymbol.mockResolvedValueOnce({
+      changes: [{ file_path: 'src/auth/token.ts', edits: [] }],
+      applied: true,
+      applied_files: [],
+    });
+    mockDetectNoUnexpected();
+
+    const report = await gnSafeRefactor(
+      REPO_ID,
+      {
+        intent: 'rename',
+        symbol: SYMBOL_NAME,
+        params: { newName: 'verifyToken' },
+        dryRun: false,
+        preChecks: false,
+      },
+      refactorBackend,
+    );
+
+    expect(report.preview.affectedFiles).toEqual(['src/auth/token.ts']);
+    expect(report.applied).toBe(false);
+    expect(refactorBackend.callTool).toHaveBeenCalledTimes(1);
   });
 });

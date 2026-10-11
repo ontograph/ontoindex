@@ -102,7 +102,7 @@ function selectProjectCandidate<T extends { path: string }>(
 }
 
 export const mcpCommand = async (
-  options: { full?: boolean; repo?: string; project?: string } = {},
+  options: { full?: boolean; repo?: string; project?: string; confirmWrites?: boolean } = {},
 ) => {
   process.on('uncaughtException', (err) => {
     console.error(`OntoIndex MCP: uncaught exception — ${err.message}`);
@@ -128,6 +128,7 @@ export const mcpCommand = async (
   const backend = new LocalBackend({
     repoFilter,
     preferredProjectPath: targetProjectPath,
+    ...(options.confirmWrites === true && { confirmWrites: true }),
   });
   try {
     await initBackendWithTimeout(backend);

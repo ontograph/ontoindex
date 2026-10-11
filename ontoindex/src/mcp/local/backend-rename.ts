@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
-import path from 'path';
 import { execFile, type ExecFileException } from 'child_process';
+import { resolveContainedRealPath } from './path-util.js';
 
 interface RenameRepoHandle {
   repoPath: string;
@@ -12,6 +12,16 @@ interface RenameSymbolParams {
   new_name: string;
   file_path?: string;
   dry_run?: boolean;
+  confirm?: boolean;
+}
+
+/**
+ * Write authorization for applying a rename. Applying requires an explicit
+ * per-call confirmation and a caller with writes enabled, matching the
+ * replace_symbol gate.
+ */
+export interface RenameWriteAuthorization {
+  confirmWrites: boolean;
 }
 
 interface RenameLookupRef {
@@ -67,8 +77,13 @@ interface RenameChange {
   edits: RenameEdit[];
 }
 
+interface RenameApplyFailure {
+  file_path: string;
+  error: string;
+}
+
 interface RenameSuccessResult {
-  status: 'success';
+  status: 'success' | 'partial' | 'failed';
   old_name: string;
   new_name: string;
   files_affected: number;
@@ -77,6 +92,8 @@ interface RenameSuccessResult {
   text_search_edits: number;
   changes: RenameChange[];
   applied: boolean;
+  applied_files?: string[];
+  failed_files?: RenameApplyFailure[];
   warnings?: string[];
 }
 
@@ -132,6 +149,7 @@ export async function renameSymbol(
   repo: RenameRepoHandle,
   params: RenameSymbolParams,
   lookupSymbol: RenameLookupSymbolFn,
+  authorization: RenameWriteAuthorization,
 ): Promise<RenameSymbolResult> {
   const { new_name, file_path } = params;
   const dry_run = params.dry_run ?? true;
@@ -140,13 +158,21 @@ export async function renameSymbol(
     return { error: 'Either symbol_name or symbol_uid is required.' };
   }
 
-  const assertSafePath = (filePath: string): string => {
-    const full = path.resolve(repo.repoPath, filePath);
-    if (!full.startsWith(repo.repoPath + path.sep) && full !== repo.repoPath) {
-      throw new Error(`Path traversal blocked: ${filePath}`);
+  if (!dry_run) {
+    if (params.confirm !== true) {
+      throw new Error(
+        'Explicit confirmation required: call rename with { dry_run: false, confirm: true } to proceed.',
+      );
     }
-    return full;
-  };
+    if (!authorization.confirmWrites) {
+      throw new Error(
+        'Write operations are disabled on this backend — restart with --confirm-writes to enable.',
+      );
+    }
+  }
+
+  const assertSafePath = (filePath: string): Promise<string> =>
+    resolveContainedRealPath(repo.repoPath, filePath);
 
   const lookupResult = await lookupSymbol(params.symbol_name, params.symbol_uid, file_path);
 
@@ -181,7 +207,7 @@ export async function renameSymbol(
 
   if (sym.filePath && sym.startLine) {
     try {
-      const content = await fs.readFile(assertSafePath(sym.filePath), 'utf-8');
+      const content = await fs.readFile(await assertSafePath(sym.filePath), 'utf-8');
       const lines = content.split('\n');
       const lineIdx = sym.startLine - 1;
       if (lineIdx >= 0 && lineIdx < lines.length && lines[lineIdx].includes(oldName)) {
@@ -211,7 +237,7 @@ export async function renameSymbol(
   for (const ref of allIncoming) {
     if (!ref.filePath) continue;
     try {
-      const content = await fs.readFile(assertSafePath(ref.filePath), 'utf-8');
+      const content = await fs.readFile(await assertSafePath(ref.filePath), 'utf-8');
       const lines = content.split('\n');
       for (let i = 0; i < lines.length; i++) {
         if (lines[i].includes(oldName)) {
@@ -268,7 +294,7 @@ export async function renameSymbol(
       if (graphFiles.has(normalizedFile)) continue;
 
       try {
-        const fullPath = assertSafePath(normalizedFile);
+        const fullPath = await assertSafePath(normalizedFile);
         const stat = await fs.stat(fullPath);
         if (stat.size > MAX_TEXT_SEARCH_FILE_BYTES) continue;
         const content = await fs.readFile(fullPath, 'utf-8');
@@ -300,22 +326,32 @@ export async function renameSymbol(
   const allChanges = Array.from(changes.values());
   const totalEdits = allChanges.reduce((sum, c) => sum + c.edits.length, 0);
 
+  const appliedFiles: string[] = [];
+  const failedFiles: RenameApplyFailure[] = [];
   if (!dry_run) {
     for (const change of allChanges) {
       try {
-        const fullPath = assertSafePath(change.file_path);
+        const fullPath = await assertSafePath(change.file_path);
         let content = await fs.readFile(fullPath, 'utf-8');
         const regex = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
         content = content.replace(regex, new_name);
         await fs.writeFile(fullPath, content, 'utf-8');
+        appliedFiles.push(change.file_path);
       } catch (e) {
         logQueryError('rename:apply-edit', e);
+        failedFiles.push({
+          file_path: change.file_path,
+          error: e instanceof Error ? e.message : String(e),
+        });
       }
     }
   }
 
+  const status: RenameSuccessResult['status'] =
+    failedFiles.length === 0 ? 'success' : appliedFiles.length > 0 ? 'partial' : 'failed';
+
   return {
-    status: 'success',
+    status,
     old_name: oldName,
     new_name,
     files_affected: allChanges.length,
@@ -323,7 +359,9 @@ export async function renameSymbol(
     graph_edits: graphEdits,
     text_search_edits: astSearchEdits,
     changes: allChanges,
-    applied: !dry_run,
+    applied: appliedFiles.length > 0,
+    ...(!dry_run && { applied_files: appliedFiles }),
+    ...(failedFiles.length > 0 && { failed_files: failedFiles }),
     ...(warnings.length > 0 && { warnings }),
   };
 }

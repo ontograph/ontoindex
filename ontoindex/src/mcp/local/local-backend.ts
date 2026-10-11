@@ -2261,6 +2261,7 @@ export class LocalBackend implements BackendPort {
       new_name: string;
       file_path?: string;
       dry_run?: boolean;
+      confirm?: boolean;
     },
   ): Promise<RenameResult> {
     if (params.file_path) canonicalize(repo.repoPath, params.file_path);
@@ -2274,6 +2275,7 @@ export class LocalBackend implements BackendPort {
           uid,
           file_path: filePath,
         }) as Promise<RenameLookupResult>,
+      { confirmWrites: this.confirmWrites },
     );
   }
 
@@ -2293,9 +2295,15 @@ export class LocalBackend implements BackendPort {
     await this.ensureInitialized(repo.id);
     return renameSymbol(
       repo,
-      { symbol_uid: params.uid, new_name: params.new_name, dry_run: params.dry_run },
+      {
+        symbol_uid: params.uid,
+        new_name: params.new_name,
+        dry_run: params.dry_run,
+        confirm: params.confirm,
+      },
       (name, uid, filePath) =>
         this.context(repo, { name, uid, file_path: filePath }) as Promise<RenameLookupResult>,
+      { confirmWrites: this.confirmWrites },
     );
   }
 

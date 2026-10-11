@@ -90,6 +90,7 @@ async function closeTransportQuietly(transport: StreamableHTTPServerTransport): 
 export function mountMCPEndpoints(app: Express, backend: LocalBackend): MCPEndpointHandle {
   const sessions = new Map<string, MCPSession>();
   const closingSessions = new Set<string>();
+  let pendingInitializations = 0;
 
   // Global diagnostics counters
   let totalSessionsCreated = 0;
@@ -154,16 +155,35 @@ export function mountMCPEndpoints(app: Express, backend: LocalBackend): MCPEndpo
       });
     } else if (req.method === 'POST') {
       // No session ID — new client initializing
-      if (sessions.size >= MAX_HTTP_MCP_SESSIONS) {
+      if (sessions.size + pendingInitializations >= MAX_HTTP_MCP_SESSIONS) {
+        if (sessions.size === 0) {
+          res.status(503).json({
+            jsonrpc: '2.0',
+            error: { code: -32000, message: 'MCP session limit reached. Retry later.' },
+            id: null,
+          });
+          return;
+        }
         totalCapEvictions++;
-        await evictOldestSession();
+        // closeSession removes the established session from the active map
+        // synchronously before its first await, freeing one slot for this init.
+        const eviction = evictOldestSession();
+        pendingInitializations++;
+        try {
+          await eviction;
+        } catch {}
+      } else {
+        // Reserve capacity synchronously before connecting or handling a request.
+        pendingInitializations++;
       }
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-      });
-      const server = createMCPServer(backend);
+      let transport: StreamableHTTPServerTransport | undefined;
+      let server: Server | undefined;
       let registered = false;
       try {
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+        });
+        server = createMCPServer(backend);
         await server.connect(transport);
         await transport.handleRequest(req, res, req.body);
 
@@ -179,19 +199,21 @@ export function mountMCPEndpoints(app: Express, backend: LocalBackend): MCPEndpo
             errorCount: 0,
           });
           totalSessionsCreated++;
+          const registeredTransport = transport;
           transport.onclose = () => {
-            const id = transport.sessionId;
+            const id = registeredTransport.sessionId;
             if (!id) return;
             const session = sessions.get(id);
             if (session) void closeSession(id, session);
           };
         }
       } finally {
+        pendingInitializations--;
         if (!registered) {
           try {
-            await Promise.resolve(server.close());
+            await Promise.resolve(server?.close());
           } catch {}
-          await closeTransportQuietly(transport);
+          if (transport) await closeTransportQuietly(transport);
         }
       }
     } else {

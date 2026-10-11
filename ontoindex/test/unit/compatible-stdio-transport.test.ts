@@ -64,6 +64,48 @@ describe('CompatibleStdioServerTransport', () => {
     });
   });
 
+  it('continues after a malformed newline message in the same chunk', async () => {
+    await transport.start();
+    const onError = vi.fn();
+    const onMessage = vi.fn();
+    transport.onerror = onError;
+    transport.onmessage = onMessage;
+
+    stdin.write('{malformed}\n{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(onMessage).toHaveBeenCalledWith({ jsonrpc: '2.0', id: 1, method: 'ping' });
+  });
+
+  it('continues after a malformed Content-Length body in the same chunk', async () => {
+    await transport.start();
+    const onError = vi.fn();
+    const onMessage = vi.fn();
+    transport.onerror = onError;
+    transport.onmessage = onMessage;
+    const validBody = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
+    stdin.write(
+      `Content-Length: 1\r\n\r\nxContent-Length: ${Buffer.byteLength(validBody, 'utf8')}\r\n\r\n${validBody}`,
+    );
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(onMessage).toHaveBeenCalledWith({ jsonrpc: '2.0', id: 1, method: 'ping' });
+  });
+
+  it('detects newline framing after leading ASCII whitespace', async () => {
+    await transport.start();
+    const onMessage = vi.fn();
+    transport.onmessage = onMessage;
+
+    stdin.write(' {"jsonrpc":"2.0","id":1,"method":"ping"}\n');
+
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(onMessage).toHaveBeenCalledWith({ jsonrpc: '2.0', id: 1, method: 'ping' });
+  });
+
   it('responds with Content-Length framing after Content-Length input', async () => {
     await transport.start();
     const body = JSON.stringify({

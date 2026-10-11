@@ -87,12 +87,27 @@ export class CompatibleStdioServerTransport implements Transport {
       return null;
     }
 
-    const firstByte = this._readBuffer[0];
+    let firstSignificantByte = 0;
+    while (
+      firstSignificantByte < this._readBuffer.length &&
+      (this._readBuffer[firstSignificantByte] === 0x20 ||
+        this._readBuffer[firstSignificantByte] === 0x09 ||
+        this._readBuffer[firstSignificantByte] === 0x0a ||
+        this._readBuffer[firstSignificantByte] === 0x0d)
+    ) {
+      firstSignificantByte++;
+    }
+
+    if (firstSignificantByte === this._readBuffer.length) {
+      return null;
+    }
+
+    const firstByte = this._readBuffer[firstSignificantByte];
     if (firstByte === 0x7b || firstByte === 0x5b) {
       return 'newline';
     }
 
-    if (looksLikeContentLength(this._readBuffer)) {
+    if (looksLikeContentLength(this._readBuffer.subarray(firstSignificantByte))) {
       return 'content-length';
     }
 
@@ -186,15 +201,27 @@ export class CompatibleStdioServerTransport implements Transport {
 
   private processReadBuffer() {
     while (true) {
+      const bufferBeforeRead = this._readBuffer;
+      let message: JSONRPCMessage | null;
       try {
-        const message = this.readMessage();
-        if (message === null) {
-          break;
+        message = this.readMessage();
+      } catch (error) {
+        this.onerror?.(error as Error);
+        if (!this._readBuffer || this._readBuffer === bufferBeforeRead) {
+          return;
         }
+        continue;
+      }
+
+      if (message === null) {
+        break;
+      }
+
+      try {
         this.onmessage?.(message);
       } catch (error) {
         this.onerror?.(error as Error);
-        break;
+        return;
       }
     }
   }

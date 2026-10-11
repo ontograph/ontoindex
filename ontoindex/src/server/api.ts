@@ -54,6 +54,7 @@ import type { SemanticSearchResult } from '../core/embeddings/types.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at server startup — crashes on unsupported Node ABI versions (#89)
 import { LocalBackend } from '../mcp/local/local-backend.js';
+import { resolveContainedRealPath } from '../mcp/local/path-util.js';
 import { mountMCPEndpoints, type MCPDiagnosticsSnapshot } from './mcp-http.js';
 import {
   type EvidenceReadSummary,
@@ -1652,10 +1653,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      // Prevent path traversal — resolve and verify the path stays within the repo root
-      const repoRoot = path.resolve(entry.path);
-      const fullPath = path.resolve(repoRoot, filePath);
-      if (!fullPath.startsWith(repoRoot + path.sep) && fullPath !== repoRoot) {
+      // Prevent path traversal — resolve symlinks and verify the real target stays in the repo
+      let fullPath: string;
+      try {
+        fullPath = await resolveContainedRealPath(entry.path, filePath);
+      } catch (err: unknown) {
+        if (errorCodeIs(err, 'ENOENT')) throw err;
         res.status(403).json({ error: 'Path traversal denied' });
         return;
       }

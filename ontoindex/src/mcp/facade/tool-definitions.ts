@@ -411,6 +411,11 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
           enum: ['rename', 'replace', 'sandbox'],
           description: 'The refactoring action to perform.',
         },
+        operation: {
+          type: 'string',
+          enum: ['stage', 'apply'],
+          description: 'For action "sandbox", use "stage" (default) or "apply".',
+        },
         repo: repoProperty,
         target: {
           type: 'string',
@@ -431,6 +436,11 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
           type: 'string',
           enum: ['session', 'route_map'],
           description: 'The management action to perform.',
+        },
+        operation: {
+          type: 'string',
+          enum: ['get', 'set', 'list'],
+          description: 'Required for action "session": use "get", "set", or "list".',
         },
       },
       required: ['action'],
