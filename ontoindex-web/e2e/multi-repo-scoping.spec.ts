@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, backendFetch } from './fixtures';
 
 /**
  * E2E tests for multi-repo scoping and URL persistence.
@@ -20,18 +20,16 @@ let firstRepoName: string;
 test.beforeAll(async () => {
   if (process.env.E2E) {
     // Still need to fetch the repo name for assertions
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/repos`);
-      const repos = await res.json();
-      firstRepoName = repos[0]?.name ?? '';
-    } catch {
-      firstRepoName = '';
-    }
+    const res = await backendFetch(`${BACKEND_URL}/api/repos`);
+    const repos = await res.json();
+    if (!Array.isArray(repos) || !repos.length)
+      throw new Error('No indexed repositories available');
+    firstRepoName = repos[0].name;
     return;
   }
   try {
     const [backendRes, frontendRes] = await Promise.allSettled([
-      fetch(`${BACKEND_URL}/api/repos`),
+      backendFetch(`${BACKEND_URL}/api/repos`),
       fetch(FRONTEND_URL),
     ]);
     if (
@@ -113,7 +111,9 @@ test.describe('Multi-Repo Scoping', () => {
     });
 
     // Fetch expected node count from backend
-    const res = await fetch(`${BACKEND_URL}/api/repo?repo=${encodeURIComponent(firstRepoName)}`);
+    const res = await backendFetch(
+      `${BACKEND_URL}/api/repo?repo=${encodeURIComponent(firstRepoName)}`,
+    );
     const repoInfo = await res.json();
     const expectedNodes = repoInfo.stats?.nodes;
 

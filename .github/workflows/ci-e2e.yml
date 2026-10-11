@@ -50,12 +50,28 @@ jobs:
             exit 1
           fi
 
+      - name: Configure ephemeral backend authentication
+        run: |
+          token=$(node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('hex'))")
+          echo "::add-mask::$token"
+          echo "ONTOINDEX_HTTP_TOKEN=$token" >> "$GITHUB_ENV"
+
       - name: Start backend server
         run: node dist/cli/index.js serve &
         working-directory: ontoindex
 
       - name: Wait for backend readiness
-        run: npx wait-on http://localhost:4747/api/repos --timeout 30000
+        run: |
+          npx wait-on http-get://localhost:4747/api/info --timeout 30000
+          node --input-type=module -e '
+            const response = await fetch("http://localhost:4747/api/repos", {
+              headers: { Authorization: `Bearer ${process.env.ONTOINDEX_HTTP_TOKEN}` },
+              signal: AbortSignal.timeout(30000),
+            });
+            if (!response.ok) throw new Error(`Repository readiness returned HTTP ${response.status}`);
+            const repos = await response.json();
+            if (!Array.isArray(repos) || !repos.length) throw new Error("No indexed repositories available");
+          '
         working-directory: ontoindex-web
 
       - name: Start Vite dev server

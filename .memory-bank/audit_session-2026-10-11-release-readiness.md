@@ -107,5 +107,33 @@ Candidate: `chore/release-readiness`; overlay corrections committed in `632ace1`
 
 Authenticated real-time task statuses remain unchanged.
 
+## Authenticated browser validation correction
+
+- Candidate `f58693b` passed Linux, macOS, Windows, coverage, lint, formatting,
+  and type checks. Run `38117325691` failed browser readiness: the server started,
+  but the workflow probed protected `/api/repos` without bearer authentication.
+  Browser tests did not execute.
+- Four independent reviewers compared authenticated readiness, public-only
+  readiness, and disabling authentication. The selected correction keeps
+  production authentication unchanged: CI creates one masked ephemeral token,
+  probes public GET readiness, and checks authenticated nonempty repositories.
+  A shared fixture seeds frontend session storage; backend-only requests use
+  scoped bearer headers, reject redirects, and fail on unauthorized responses.
+- Final focused validation: two files / 35 tests passed; web typechecking and
+  scoped ESLint passed. Playwright discovered 28 tests across five files;
+  discovery is not browser execution evidence. New regressions cover missing
+  credentials, unauthorized responses, origin scoping, and redirect refusal.
+- OntoIndex refreshed to `f58693b`; token-owner impact was LOW. The precommit
+  unstaged scan reported six files, three symbols, no affected flows, LOW risk.
+  Untracked fixture files require direct source review and staged verification.
+- Prior-segment installed-tarball smoke at `f58693b` reported successful MCP
+  inspection of `releaseSmokeSymbol` in an isolated fixture (two nodes, one edge).
+  Package version: `2.1.5`; SHA256:
+  `286b1525dac55b576f91b2784fc28ffabb56782030245cd3d6189bb63b00c0d8`.
+  This evidence predates the browser-harness correction and version selection.
+- Remaining gates: corrected-candidate browser CI, KaTeX/Mermaid advisory
+  resolution or explicit risk acceptance, version/channel selection, final
+  versioned artifact validation, and explicit merge/publication approval.
+
 Knowledge handoff: none; existing build and manager rules already require
 validation for final inputs and distinguish prior CI from candidate evidence.

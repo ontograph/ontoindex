@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, backendFetch } from './fixtures';
 
 /**
  * E2E tests for the onboarding and analysis user flows.
@@ -254,7 +254,7 @@ test.describe('Flow 4: Repo dropdown in exploring view', () => {
   test.beforeAll(async () => {
     if (process.env.E2E) return;
     try {
-      const res = await fetch(`${BACKEND_URL}/api/repos`);
+      const res = await backendFetch(`${BACKEND_URL}/api/repos`);
       if (!res.ok) {
         test.skip(true, SKIP_MSG);
         return;

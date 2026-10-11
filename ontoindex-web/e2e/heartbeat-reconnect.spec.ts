@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, backendFetch } from './fixtures';
 
 /**
  * E2E tests for heartbeat disconnect/reconnect behavior.
@@ -19,7 +19,7 @@ test.beforeAll(async () => {
   if (process.env.E2E) return;
   try {
     const [backendRes, frontendRes] = await Promise.allSettled([
-      fetch(`${BACKEND_URL}/api/repos`),
+      backendFetch(`${BACKEND_URL}/api/repos`),
       fetch(FRONTEND_URL),
     ]);
     if (

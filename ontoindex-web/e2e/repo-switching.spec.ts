@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, backendFetch } from './fixtures';
 
 /**
  * E2E tests for the repo-switching and false-404 fixes.
@@ -14,18 +14,16 @@ let firstRepoName: string;
 
 test.beforeAll(async () => {
   if (process.env.E2E) {
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/repos`);
-      const repos = await res.json();
-      firstRepoName = repos[0]?.name ?? '';
-    } catch {
-      firstRepoName = '';
-    }
+    const res = await backendFetch(`${BACKEND_URL}/api/repos`);
+    const repos = await res.json();
+    if (!Array.isArray(repos) || !repos.length)
+      throw new Error('No indexed repositories available');
+    firstRepoName = repos[0].name;
     return;
   }
   try {
     const [backendRes, frontendRes] = await Promise.allSettled([
-      fetch(`${BACKEND_URL}/api/repos`),
+      backendFetch(`${BACKEND_URL}/api/repos`),
       fetch(FRONTEND_URL),
     ]);
     if (
