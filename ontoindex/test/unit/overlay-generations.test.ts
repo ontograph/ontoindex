@@ -187,7 +187,7 @@ describe('immutable overlay generations (real LadybugDB)', () => {
   });
 
   it.each(['', '../outside', '/absolute', 'one/two', '..', 'gen\nother', 'missing-generation'])(
-    'treats invalid or missing CURRENT target %j as no overlay without throwing',
+    'rejects queries for invalid or missing CURRENT target %j and closes stale handles',
     async (value) => {
       await build('gen1');
       await queryOverlay(repo, cypher);
@@ -197,7 +197,7 @@ describe('immutable overlay generations (real LadybugDB)', () => {
         usable: false,
         reason: expect.stringContaining('CURRENT'),
       });
-      await expect(queryOverlay(repo, cypher)).resolves.toEqual([]);
+      await expect(queryOverlay(repo, cypher)).rejects.toThrow('no published overlay');
       expect(pool.isLbugReady(overlayRepoId(repo.id))).toBe(false);
     },
   );
@@ -207,11 +207,11 @@ describe('immutable overlay generations (real LadybugDB)', () => {
     await fs.writeFile(path.join(overlay, 'lbug'), 'legacy');
     await expect(resolveOverlayDbPath(repo.storagePath)).resolves.toBeNull();
     await expect(getOverlaySnapshot(repo)).resolves.toMatchObject({ usable: false });
-    await expect(queryOverlay(repo, cypher)).resolves.toEqual([]);
+    await expect(queryOverlay(repo, cypher)).rejects.toThrow('no published overlay');
     await fs.mkdir(path.join(overlay, 'CURRENT'));
     resetOverlaySnapshotCache();
     await expect(getOverlaySnapshot(repo)).resolves.toMatchObject({ usable: false });
-    await expect(queryOverlay(repo, cypher)).resolves.toEqual([]);
+    await expect(queryOverlay(repo, cypher)).rejects.toThrow('no published overlay');
     await fs.rmdir(path.join(overlay, 'CURRENT'));
     await build('modern');
     await expect(fs.stat(path.join(overlay, 'lbug'))).rejects.toMatchObject({ code: 'ENOENT' });

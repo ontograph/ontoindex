@@ -85,8 +85,17 @@ Candidate: `chore/release-readiness`; overlay corrections committed in `632ace1`
 
 - Review the entire integration branch, which includes the real-time overlay
   implementation stack in addition to release hardening.
-- Obtain passing CI on the final corrected candidate; existing green CI does
-  does not cover `632ace1` or the watcher corrections.
+- Obtain passing CI on the final corrected candidate. Run `38116462283` for
+  `4744f4d` failed: Express 5 rejected the redundant unnamed wildcard route;
+  eight overlay generation assertions expected the superseded empty-result contract.
+  The HTTP handler is removed and the assertions now require fail-closed rejection.
+  A real Express/CORS startup regression checks allowed and denied PNA preflight
+  and protected API authentication. Independent review informed cleanup and
+  denied-origin coverage. Final focused validation passed 4 files / 36 tests
+  in 19.02 seconds; TypeScript passed; lint had zero errors and eight warnings.
+  Formatting and `git diff --check` passed. OntoIndex at `4744f4d` reported LOW
+  impact for `createServer`; change detection returned no symbols for these hunks,
+  so direct source/diff inspection supplies changed-scope evidence.
 - Reconcile package version `2.1.5` with latest GitHub release tag
   `github-release/2.2.1` and registry state before selecting a release version.
 - Resolve production dependency-security findings and obtain final watcher CI.

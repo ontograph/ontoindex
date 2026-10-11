@@ -944,13 +944,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   );
   app.use(express.json({ limit: '10mb' }));
 
-  // Handle PNA preflight: Chromium sends Access-Control-Request-Private-Network
-  // on OPTIONS requests and expects the allow header in the response.
-  // The header is set before CORS so it survives cors-owned preflight responses.
-  app.options('*', (_req, res, next) => {
-    next();
-  });
-
   app.use('/api', (req, res, next) => {
     if (isPublicApiRoute(req.method, req.originalUrl)) {
       next();
