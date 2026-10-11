@@ -61,6 +61,10 @@ export async function resolveContainedRealPath(repoPath: string, input: string):
   let cursor = lexicalPath;
   const missing: string[] = [];
   while (true) {
+    // The walk never leaves the repository root, which always resolves.
+    if (cursor !== realRepoPath && !cursor.startsWith(realRepoPath + path.sep)) {
+      throw new Error('Path escapes repository: ' + input);
+    }
     try {
       cursor = await fs.realpath(cursor);
       break;
