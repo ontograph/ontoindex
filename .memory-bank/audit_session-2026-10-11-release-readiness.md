@@ -216,3 +216,25 @@ validation for final inputs and distinguish prior CI from candidate evidence.
 
 Knowledge handoff: none; existing validation rules already require exact-input
 evidence and distinguish harness failures from product failures.
+
+## Windows-path fixture metadata correction
+
+- Documentation HEAD `df9c9dc` failed Chromium in run `38123902041`;
+  Linux, macOS, Windows, coverage and quality checks passed.
+- The failing trace requested the full graph (32 MB); its retry remained at
+  downloading. The Windows-path mock omitted node counts, disabling the
+  client's greater-than-5000-node summary selection.
+- Compared preserving live metadata, increasing timeouts and an isolated graph
+  fixture. Preserving metadata restores normal routing without masking backend
+  failures or removing live graph coverage. Independent review found no blocker.
+- The test fetches successful live metadata and overrides only name and paths.
+  Empty-name basename fallback, readiness and URL assertions remain unchanged.
+- Native focused validation passed all five repo-switching Chromium tests in
+  22 seconds; the Windows-path test passed in 3.3 seconds. Prettier, test
+  discovery and diff checks passed. No production source changed.
+- OntoIndex was commit-current at `df9c9dc`; connection impact was MEDIUM.
+  Change detection returned no changes despite the source diff; exact source
+  review is authoritative for the test edit.
+- Four bounded Luna/Sol reviews were collected. Version/channel, advisory
+  disposition, exact-candidate full CI and merge/publication approval remain
+  release gates. No release was published.

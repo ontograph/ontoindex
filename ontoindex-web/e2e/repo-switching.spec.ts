@@ -158,18 +158,22 @@ test.describe('Windows path normalization', () => {
     const repoName = firstRepoName || 'test-repo';
     const windowsPath = `C:\\Users\\LENOVO\\.ontoindex\\repos\\${repoName}`;
 
-    // Mock /api/repo to return a Windows backslash path while keeping name correct
-    await page.route(/\/api\/repo(?!s)(\?.*)?$/, (route) =>
-      route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({
+    // Preserve graph-size metadata so the live backend still uses summary mode.
+    await page.route(/\/api\/repo(?!s)(\?.*)?$/, async (route) => {
+      const response = await route.fetch();
+      expect(response.ok()).toBeTruthy();
+      const repoInfo = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...repoInfo,
           // Empty name exercises basename fallback without violating the API contract.
           name: '',
-          indexedAt: '2024-01-01T00:00:00Z',
+          path: windowsPath,
           repoPath: windowsPath,
-        }),
-      }),
-    );
+        },
+      });
+    });
 
     await page.goto(`/?server=${encodeURIComponent(BACKEND_URL)}`);
 
