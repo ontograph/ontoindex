@@ -510,8 +510,14 @@ await fs.writeFile(process.argv[2], JSON.stringify({
       requestedCapabilities: GRAPH_AND_EMBEDDINGS,
       sourceIdentity: SOURCE_IDENTITY,
     });
-    await waitFor(async () => ((await exists(receivedPath)) ? true : undefined));
-    const received = JSON.parse(await fs.readFile(receivedPath, 'utf8')) as Record<string, string>;
+    // The analyzer may still be writing; wait until the file parses completely.
+    const received = (await waitFor(async () => {
+      try {
+        return JSON.parse(await fs.readFile(receivedPath, 'utf8')) as Record<string, string>;
+      } catch {
+        return undefined;
+      }
+    })) as Record<string, string>;
 
     expect(received).toEqual({
       inherited: 'preserved',

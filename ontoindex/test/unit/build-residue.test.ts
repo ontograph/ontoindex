@@ -78,9 +78,9 @@ describe('build_residue_audit', () => {
     expect(result.findings.every((finding) => !finding.file.includes('\\'))).toBe(true);
 
     const findingsText = result.findings.map((f) => f.file).join('\n');
-    expect(findingsText).not.toContain(path.join('docs', 'notes.md'));
-    expect(findingsText).not.toContain(path.join('tmp', 'scratch.txt'));
-    expect(findingsText).not.toContain(path.join('test', 'unit', 'sample.test.ts'));
+    expect(findingsText).not.toContain('docs/notes.md');
+    expect(findingsText).not.toContain('tmp/scratch.txt');
+    expect(findingsText).not.toContain('test/unit/sample.test.ts');
     expect(findingsText).not.toContain('package-lock.json');
   });
 
@@ -104,7 +104,7 @@ describe('build_residue_audit', () => {
       forbidden_domains: ['debugger;'],
     });
     expect(result.status).toBe('success');
-    expect(result.findings.some((f) => f.file === path.join('dist', 'bundle.js'))).toBe(true);
+    expect(result.findings.some((f) => f.file === 'dist/bundle.js')).toBe(true);
   });
 
   it('includes test files when the caller explicitly supplies domains', async () => {
@@ -113,9 +113,7 @@ describe('build_residue_audit', () => {
       forbidden_domains: ['TODO:'],
     });
     expect(result.status).toBe('success');
-    expect(
-      result.findings.some((f) => f.file === path.join('test', 'unit', 'sample.test.ts')),
-    ).toBe(true);
+    expect(result.findings.some((f) => f.file === 'test/unit/sample.test.ts')).toBe(true);
   });
 
   it('is case-insensitive', async () => {

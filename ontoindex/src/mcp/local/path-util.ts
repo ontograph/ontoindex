@@ -52,8 +52,12 @@ export async function resolveContainedRealPath(repoPath: string, input: string):
   const lexicalPath = path.resolve(absoluteRepoPath, input);
   // Check lexical containment before touching the filesystem so an outside
   // path is never probed. The real root covers absolute paths spelled through it.
-  const within = (root: string) => lexicalPath === root || lexicalPath.startsWith(root + path.sep);
-  if (!within(absoluteRepoPath) && !within(realRepoPath)) {
+  if (
+    lexicalPath !== absoluteRepoPath &&
+    !lexicalPath.startsWith(absoluteRepoPath + path.sep) &&
+    lexicalPath !== realRepoPath &&
+    !lexicalPath.startsWith(realRepoPath + path.sep)
+  ) {
     throw new Error('Path escapes repository: ' + input);
   }
   let cursor = lexicalPath;
