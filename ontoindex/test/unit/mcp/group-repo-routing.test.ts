@@ -157,8 +157,9 @@ repos:
 
   it('rejects empty service without calling group tools', async () => {
     const backend = new LocalBackend();
-    const out = await backend.callTool('query', { repo: '@g1', query: 'x', service: '' });
-    expect(out).toEqual({ error: 'service must not be an empty string' });
+    await expect(
+      backend.callTool('query', { repo: '@g1', query: 'x', service: '' }),
+    ).rejects.toThrow('Invalid arguments for query: service:');
     expect(groupSpyQuery).not.toHaveBeenCalled();
   });
 
@@ -223,7 +224,11 @@ repos:
     it.each([
       {
         method: 'impact',
-        params: { repo: '@myproduct', target: 'UserService.login', service: 'app/backend' },
+        params: {
+          repo: '@myproduct',
+          target: 'UserService.login',
+          service: 'app/backend',
+        },
         spy: () => groupSpyImpact,
       },
       {

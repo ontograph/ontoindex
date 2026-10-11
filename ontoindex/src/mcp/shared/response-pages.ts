@@ -127,17 +127,21 @@ export function serializedMcpToolResultBytes(text: string, isError = false): num
 }
 
 /** Bound error text without storing requests or depending on the paging filesystem. */
-export function boundMcpErrorText(format: (message: string) => string, message: string): string {
+export function boundMcpErrorText(
+  format: (message: string) => string,
+  message: string,
+  maxBytes = MCP_RESPONSE_MAX_BYTES,
+): string {
   const text = format(message);
-  if (serializedMcpToolResultBytes(text, true) <= MCP_RESPONSE_MAX_BYTES) return text;
+  if (serializedMcpToolResultBytes(text, true) <= maxBytes) return text;
   let low = 0;
-  let high = Math.min(message.length, MCP_RESPONSE_MAX_BYTES);
+  let high = Math.min(message.length, maxBytes);
   let best = 'Error: tool response exceeded the byte limit.';
   while (low <= high) {
     const length = Math.floor((low + high) / 2);
     const end = length > 0 && /[\uD800-\uDBFF]/.test(message[length - 1]) ? length - 1 : length;
     const candidate = format(message.slice(0, end) + '… [truncated]');
-    if (serializedMcpToolResultBytes(candidate, true) <= MCP_RESPONSE_MAX_BYTES) {
+    if (serializedMcpToolResultBytes(candidate, true) <= maxBytes) {
       best = candidate;
       low = length + 1;
     } else {

@@ -217,7 +217,7 @@ export async function extractFunction(
     };
   }
 
-  if (!params.confirm) {
+  if (params.confirm !== true) {
     throw new Error('Explicit confirmation required (set confirm: true)');
   }
 

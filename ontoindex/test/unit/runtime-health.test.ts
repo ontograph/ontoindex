@@ -71,17 +71,18 @@ describe('commitless runtime health', () => {
     expect(health.degradedReason).toMatch(/symbols|capabilit/);
   });
 
-  it.each(['edit', 'add', 'delete', 'mode'] as const)(
-    'detects selected source %s',
-    async (change) => {
-      const filename = path.join(repoPath, 'src/main.py');
-      if (change === 'edit') await fs.appendFile(filename, '\nchanged = True\n');
-      if (change === 'add') await fs.writeFile(path.join(repoPath, 'src/new.py'), 'new = True\n');
-      if (change === 'delete') await fs.unlink(filename);
-      if (change === 'mode') await fs.chmod(filename, 0o755);
-      expect((await readHealth()).freshnessState).toBe('stale');
-    },
-  );
+  it.each(
+    (process.platform === 'win32'
+      ? ['edit', 'add', 'delete']
+      : ['edit', 'add', 'delete', 'mode']) as const,
+  )('detects selected source %s', async (change) => {
+    const filename = path.join(repoPath, 'src/main.py');
+    if (change === 'edit') await fs.appendFile(filename, '\nchanged = True\n');
+    if (change === 'add') await fs.writeFile(path.join(repoPath, 'src/new.py'), 'new = True\n');
+    if (change === 'delete') await fs.unlink(filename);
+    if (change === 'mode') await fs.chmod(filename, 0o755);
+    expect((await readHealth()).freshnessState).toBe('stale');
+  });
 
   it('ignores changes outside the saved scope and ignored inputs', async () => {
     await fs.writeFile(path.join(repoPath, 'outside.py'), 'outside = True\n');

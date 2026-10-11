@@ -79,6 +79,9 @@ describe('docs CLI', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(repoManager.resolveActiveLbugPath).mockImplementation(
+      async (storagePath: string) => `${storagePath}/lbug`,
+    );
     vi.mocked(git.isGitRepo).mockReturnValue(true);
     vi.mocked(git.getGitRoot).mockReturnValue('/test/repo');
     vi.mocked(git.getCurrentCommit).mockReturnValue('abc1234');

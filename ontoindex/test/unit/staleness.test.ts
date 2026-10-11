@@ -53,15 +53,17 @@ describe('checkStaleness', () => {
     expect(result.hint).toContain('behind HEAD');
   });
 
-  it('fails open when git command fails (e.g., invalid path)', async () => {
+  it('reports when git command fails (e.g., invalid path)', async () => {
     const result = await checkStaleness('/nonexistent/path', 'abc123');
     expect(result.isStale).toBe(false);
     expect(result.commitsBehind).toBe(0);
+    expect(result.hint).toContain('Unable to verify index freshness');
   });
 
   it('fails open with invalid commit hash', async () => {
     const result = await checkStaleness(process.cwd(), 'not-a-real-commit-hash');
     expect(result.isStale).toBe(false);
     expect(result.commitsBehind).toBe(0);
+    expect(result.hint).toContain('Unable to verify index freshness');
   });
 });

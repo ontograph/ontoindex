@@ -75,6 +75,11 @@ SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). W
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Natural language or keyword search query' },
+        typed_query: {
+          type: 'boolean',
+          description: 'Carry a typed-query document through the semantic facade.',
+          default: false,
+        },
         task_context: {
           type: 'string',
           description: 'What you are working on (e.g., "adding OAuth support"). Helps ranking.',
@@ -261,6 +266,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           type: 'string',
           description: 'Direct symbol UID from prior tool results (zero-ambiguity lookup)',
         },
+        nodeId: { type: 'string', description: 'Alias of uid.' },
         file_path: { type: 'string', description: 'File path to disambiguate common names' },
         kind: {
           type: 'string',
@@ -277,6 +283,21 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           enum: [...RETRIEVAL_POLICY_NAMES],
           description:
             'Named retrieval expansion policy. Defaults to graph-only behavior unless explicitly set.',
+        },
+        include_passive_related_facts: {
+          type: 'boolean',
+          description: 'Include passive related facts when enrichment consumption is enabled.',
+          default: false,
+        },
+        include_markdown_context: {
+          type: 'boolean',
+          description: 'Include Markdown context when passive related facts are enabled.',
+          default: false,
+        },
+        include_markdown_ppr: {
+          type: 'boolean',
+          description: 'Include bounded Markdown document ranking metadata.',
+          default: false,
         },
         neighborhood_mode: {
           type: 'string',
@@ -1470,7 +1491,7 @@ Current surface is the confirmation gate only — the write path is wired but de
           description: 'Required for action="apply". Must be true to proceed.',
         },
         payload: {
-          type: 'object',
+          type: ['object', 'array', 'string', 'number', 'boolean', 'null'],
           description: 'Caller-defined mutation payload (opaque to the gate).',
         },
         repo: { type: 'string', description: 'Repository name or path.' },

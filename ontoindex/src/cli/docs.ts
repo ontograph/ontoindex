@@ -60,7 +60,7 @@ import {
 import type { RouteDataAuditRecord } from '../core/ingestion/enrichment/route-data-audit.js';
 import type { MarkdownDocResolutionRecord } from '../core/ingestion/enrichment/markdown-doc-resolver.js';
 import { getCurrentCommit, getGitRoot, isGitRepo } from '../storage/git.js';
-import { findRepo, getStoragePaths } from '../storage/repo-manager.js';
+import { findRepo, getStoragePaths, resolveActiveLbugPath } from '../storage/repo-manager.js';
 
 function resolveRepoPath(options: { repo?: string }): string | null {
   if (options.repo) {
@@ -455,7 +455,7 @@ async function collectCodeRouteCandidates(
   repoPath: string,
   warnings: string[],
 ): Promise<NormalizedRouteCandidate[]> {
-  const { lbugPath } = getStoragePaths(repoPath);
+  const lbugPath = await resolveActiveLbugPath(getStoragePaths(repoPath).storagePath);
   const repoId = repoPath;
   try {
     await initLbug(repoId, lbugPath);

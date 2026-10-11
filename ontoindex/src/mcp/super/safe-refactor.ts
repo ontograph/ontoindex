@@ -44,6 +44,8 @@ export interface SafeRefactorParams {
     targetFile?: string;
   };
   dryRun?: boolean; // default: true (MUST default to true — plan §8 rule #10)
+  /** Required (exactly true) together with dryRun: false to apply changes. */
+  confirm?: boolean;
   force?: boolean;
   preChecks?: boolean; // default: true
 }
@@ -395,7 +397,7 @@ async function dispatchApply(
       symbol_uid: resolved.nodeId,
       new_name: newName,
       dry_run: false,
-      confirm: true,
+      confirm: params.confirm,
     })) as RenameResult;
     if (result.error) {
       warnings.push(`rename apply error: ${result.error}`);
@@ -417,7 +419,7 @@ async function dispatchApply(
       uid: resolved.nodeId,
       new_body: params.params.newBody,
       dry_run: false,
-      confirm: true,
+      confirm: params.confirm,
     })) as { success?: boolean; filePath?: string };
     return result.success && result.filePath ? [result.filePath] : [];
   }
@@ -430,7 +432,7 @@ async function dispatchApply(
       new_name: newName,
       target_file: params.params.targetFile,
       dry_run: false,
-      confirm: true,
+      confirm: params.confirm,
     })) as { success?: boolean; filePath?: string };
     return result.success && result.filePath ? [result.filePath] : [];
   }
@@ -442,7 +444,7 @@ async function dispatchApply(
       uid: resolved.nodeId,
       target_file: targetFile,
       dry_run: false,
-      confirm: true,
+      confirm: params.confirm,
     })) as { success?: boolean; from?: string; to?: string };
     return result.success ? [result.from, result.to].filter((p): p is string => Boolean(p)) : [];
   }
@@ -464,6 +466,11 @@ export async function gnSafeRefactor(
   const dryRun = params.dryRun !== false;
   if (!dryRun && !backend) {
     throw new Error('Refactor apply requires an authorized backend.');
+  }
+  if (!dryRun && params.confirm !== true) {
+    throw new Error(
+      'Explicit confirmation required to apply (set confirm: true with dryRun: false).',
+    );
   }
   const force = params.force ?? false;
   const requestedSymbol = params.symbol ?? params.target ?? '';

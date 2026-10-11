@@ -57,7 +57,10 @@ describe('MCP Security Matrix: Path Traversal Rejection', () => {
         // Add other required params if necessary
         if (tool.inputSchema.required) {
           for (const req of tool.inputSchema.required) {
-            if (!params[req]) params[req] = 'mock-value';
+            if (!params[req]) {
+              params[req] =
+                props[req]?.enum?.[0] ?? (req === 'direction' ? 'upstream' : 'mock-value');
+            }
           }
         }
 

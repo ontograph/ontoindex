@@ -13,6 +13,7 @@
  */
 import fs from 'fs/promises';
 import path from 'path';
+import { normalizeRepoRelativePath } from './backend-repo-paths.js';
 // Local RepoHandle alias — see backend-route.ts note.
 type RepoHandle = { readonly name: string; readonly repoPath: string };
 
@@ -197,7 +198,7 @@ async function scanWithConcurrency(
       } catch {
         continue;
       }
-      const rel = path.relative(rootDir, abs);
+      const rel = normalizeRepoRelativePath(rootDir, abs);
       const remaining = Math.max(0, MAX_FINDINGS - findings.length);
       const hits = scanContent(content, rules, rel, Math.min(MAX_FINDINGS_PER_FILE, remaining));
       if (hits.length > 0) findings.push(...hits);

@@ -316,7 +316,7 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
   {
     name: 'gn_safe_refactor',
     description:
-      'Dispatcher for refactor operations (rename, modify-body, extract, move). Rename is preview-only: review its candidate edits, edit files directly, then verify. Other supported operations use symbol resolution, pre-edit safety checks, dry-run previews, optional apply, and post-write verification guidance (gn_verify_diff / gn_test_gap).\n\nDefaults to dryRun: true — pass dryRun: false to apply supported operations; rename apply is unavailable.',
+      'Dispatcher for refactor operations (rename, modify-body, extract, move). Rename is preview-only: review its candidate edits, edit files directly, then verify. Other supported operations use symbol resolution, pre-edit safety checks, dry-run previews, optional apply, and post-write verification guidance (gn_verify_diff / gn_test_gap).\n\nDefaults to dryRun: true — pass dryRun: false and confirm: true to apply supported operations; rename apply is unavailable.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -349,6 +349,12 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           description:
             'Preview changes without applying. Default: true. Pass false to apply changes.',
           default: true,
+        },
+        confirm: {
+          type: 'boolean',
+          description:
+            'Required (true) together with dryRun: false to apply changes. Ignored for dry runs. Default: false.',
+          default: false,
         },
         force: {
           type: 'boolean',

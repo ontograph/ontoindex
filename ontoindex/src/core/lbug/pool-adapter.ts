@@ -1148,5 +1148,40 @@ export const CYPHER_WRITE_RE =
 
 /** Check if a Cypher query contains write operations */
 export function isWriteQuery(query: string): boolean {
-  return CYPHER_WRITE_RE.test(query);
+  const code: string[] = [];
+  let start = 0;
+  for (let i = 0; i < query.length; i++) {
+    const quote = query[i];
+    const lineComment = quote === '/' && query[i + 1] === '/';
+    const blockComment = quote === '/' && query[i + 1] === '*';
+    if (quote !== "'" && quote !== '"' && quote !== '`' && !lineComment && !blockComment) {
+      continue;
+    }
+    code.push(query.slice(start, i), ' ');
+    if (lineComment) {
+      while (i < query.length && query[i] !== '\n' && query[i] !== '\r') i++;
+    } else if (blockComment) {
+      const end = query.indexOf('*/', i + 2);
+      if (end === -1) return true;
+      i = end + 1;
+    } else {
+      let closed = false;
+      while (++i < query.length) {
+        if (query[i] === '\\' && quote !== '`') {
+          i++;
+        } else if (query[i] === quote) {
+          if (quote === '`' && query[i + 1] === '`') {
+            i++;
+            continue;
+          }
+          closed = true;
+          break;
+        }
+      }
+      if (!closed) return true;
+    }
+    start = i + 1;
+  }
+  code.push(query.slice(start));
+  return CYPHER_WRITE_RE.test(code.join(''));
 }

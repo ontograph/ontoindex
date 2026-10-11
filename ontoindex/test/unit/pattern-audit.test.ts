@@ -64,7 +64,8 @@ describe('pattern_audit', () => {
     expect(patterns.has('eval-call')).toBe(true);
     // Every finding must belong to hit.ts — excluded dirs must not leak.
     for (const f of result.findings) {
-      expect(f.file).toBe(path.join('src', 'hit.ts'));
+      expect(f.file).toBe('src/hit.ts');
+      expect(f.file).not.toContain('\\');
       expect(f.line).toBeGreaterThan(0);
       expect(f.snippet.length).toBeGreaterThan(0);
     }

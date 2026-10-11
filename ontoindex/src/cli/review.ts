@@ -11,7 +11,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import type { Command } from 'commander';
 import { getGitRoot } from '../storage/git.js';
-import { getStoragePaths, loadMeta } from '../storage/repo-manager.js';
+import { getStoragePaths, loadMeta, resolveActiveLbugPath } from '../storage/repo-manager.js';
 import { initLbug, closeLbug } from '../core/lbug/pool-adapter.js';
 import {
   buildDiffReview,
@@ -373,7 +373,8 @@ export async function reviewDiffCommand(opts: ReviewDiffOptions): Promise<void> 
   let graphReviewUsed = false;
 
   if (graphAuthoritative) {
-    const { storagePath, lbugPath } = getStoragePaths(repoRoot);
+    const { storagePath } = getStoragePaths(repoRoot);
+    const lbugPath = await resolveActiveLbugPath(storagePath);
     const meta = await loadMeta(storagePath);
     if (!meta) {
       warnings.push(

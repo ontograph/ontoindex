@@ -43,7 +43,8 @@ describe('evidence_pack', () => {
     expect(result.resolved_count).toBe(1);
     const hit = result.evidence[0];
     expect(hit.kind).toBe('line');
-    expect(hit.file).toBe(path.join('src', 'auth.ts'));
+    expect(hit.file).toBe('src/auth.ts');
+    expect(hit.file).not.toContain('\\');
     // Line 2 with 1 line of context => lines 1..3.
     expect(hit.start_line).toBe(1);
     expect(hit.end_line).toBe(3);

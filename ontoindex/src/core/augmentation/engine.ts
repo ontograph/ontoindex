@@ -15,7 +15,7 @@
  */
 
 import path from 'path';
-import { listRegisteredRepos } from '../../storage/repo-manager.js';
+import { listRegisteredRepos, resolveActiveLbugPath } from '../../storage/repo-manager.js';
 import type { LbugQueryRow } from '../lbug/pool-adapter.js';
 
 type SymbolMatchRow = LbugQueryRow & {
@@ -104,7 +104,7 @@ async function findRepoForCwd(cwd: string): Promise<{
     return {
       name: bestMatch.name,
       storagePath: bestMatch.storagePath,
-      lbugPath: path.join(bestMatch.storagePath, 'lbug'),
+      lbugPath: await resolveActiveLbugPath(bestMatch.storagePath),
     };
   } catch {
     return null;

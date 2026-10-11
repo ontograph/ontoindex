@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { spawn } from 'node:child_process';
 import {
   createAxelEnrichmentQueueRequest,
   createAxelRunnerExecutor,
@@ -15,6 +16,17 @@ const requestInput = {
 } as const;
 
 describe('Axel runner executor', () => {
+  it('reports asynchronous ENOENT as executor failure', async () => {
+    const executor = createAxelRunnerExecutor({
+      command: '/definitely-missing-ontoindex-axel',
+      stdoutMode: { kind: 'jsonl' },
+      platform: 'win32',
+      spawn: (command, args, options) => spawn(command, [...args], options),
+    });
+    await expect(executor(createQueuedRequest(), { heartbeat: async () => true })).rejects.toThrow(
+      /Axel sidecar launch rejected: spawn-failed: .*ENOENT/,
+    );
+  });
   it('launches an Axel request through injected spawn and returns running', async () => {
     const calls: string[] = [];
     const request = createQueuedRequest();

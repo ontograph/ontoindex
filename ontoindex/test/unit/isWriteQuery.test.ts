@@ -13,6 +13,11 @@ describe('isWriteQuery regex tests', () => {
     'ALTER TABLE Something',
     'COPY TO something',
     'DETACH DELETE n',
+    "MATCH (n) WHERE n.x = 'a' SET n.y = 1",
+    'match (n) set n.x = 1',
+    '/*x*/CREATE (n)',
+    '// SET\nDELETE n',
+    'MATCH (n) RETURN "SET", n /* CREATE */ DELETE n',
   ];
 
   const readQueries = [
@@ -23,6 +28,16 @@ describe('isWriteQuery regex tests', () => {
     'MATCH (n) RETURN n',
     'MATCH (n) WHERE n.content CONTAINS ":CREATE" RETURN n',
     'MATCH (n:SomethingWithSET) RETURN n',
+    "MATCH (n) WHERE n.name = 'SET' RETURN n LIMIT 1",
+    'MATCH (n) WHERE n.name = "CREATE DELETE" RETURN n',
+    String.raw`MATCH (n) WHERE n.name = 'it\'s SET' RETURN n`,
+    String.raw`MATCH (n) WHERE n.name = "a\" CREATE" RETURN n`,
+    'MATCH (`SET`) RETURN `SET`.`CREATE`',
+    'MATCH (`SET``DELETE`) RETURN 1',
+    'MATCH (n) // CREATE SET DELETE\nRETURN n',
+    'MATCH (n) // CREATE SET DELETE\rRETURN n',
+    'MATCH (n) /* SET CREATE DELETE */ RETURN n',
+    "MATCH (n) WHERE n.name = '// SET /* DELETE */' RETURN n",
   ];
 
   it('adapter isWriteQuery should detect real write queries', () => {
@@ -47,5 +62,16 @@ describe('isWriteQuery regex tests', () => {
     for (const q of readQueries) {
       expect(isWriteQueryBackend(q), `backend false-positive on: ${q}`).toBe(false);
     }
+  });
+
+  it.each([
+    "MATCH (n) RETURN 'unterminated",
+    'MATCH (n) RETURN "unterminated',
+    'MATCH (n) RETURN `unterminated',
+    "MATCH (n) RETURN 'trailing\\",
+    'MATCH (n) /* unterminated',
+  ])('fails closed for an unterminated token: %s', (query) => {
+    expect(isWriteQueryAdapter(query)).toBe(true);
+    expect(isWriteQueryBackend(query)).toBe(true);
   });
 });

@@ -31,12 +31,8 @@ type MoveSymbolResult = Awaited<ReturnType<typeof moveSymbol>>;
 /**
  * Sandbox tool — stage/apply mutations inside a write transaction.
  *
- * Current surface is the confirmation gate only: `apply` requires
- * `confirm: true` (same shape as replace_symbol) so an accidental
- * `callTool('sandbox', { action: 'apply' })` can never mutate. `stage`
- * is idempotent and gate-free. The actual write path is deferred —
- * this method ships the gate now so future mutation wiring inherits
- * the safety contract instead of bolting it on later.
+ * Staging is idempotent and gate-free. Applying staged edits is unavailable
+ * until this server has a real write path.
  */
 export async function sandbox(
   _repo: MutationRepoHandle,
@@ -46,6 +42,11 @@ export async function sandbox(
   if (action === 'apply' && params?.confirm !== true) {
     throw new Error(
       'Explicit confirmation required: call sandbox with { action: "apply", confirm: true } to proceed.',
+    );
+  }
+  if (action === 'apply') {
+    throw new Error(
+      'Sandbox apply is unavailable: staged edits are not applied by this server. Edit files directly, then verify.',
     );
   }
   return { success: true, action, payload: params?.payload };
@@ -135,7 +136,7 @@ export async function updateSymbolBody(
     throw new Error('Write operations are disabled (start server with --confirm-writes)');
   }
 
-  if (!params.confirm) {
+  if (params.confirm !== true) {
     throw new Error('Explicit confirmation required (set confirm: true)');
   }
 
@@ -160,7 +161,13 @@ export async function updateSymbolBody(
   const newSource = [...before, params.new_body, ...after].join('\n');
   await fs.writeFile(sourcePath, newSource, 'utf-8');
 
-  return { success: true, uid: params.uid, filePath, startLine, endLine };
+  return {
+    success: true,
+    uid: params.uid,
+    filePath: filePath.replaceAll('\\', '/'),
+    startLine,
+    endLine,
+  };
 }
 
 export async function extractFunctionByUid(

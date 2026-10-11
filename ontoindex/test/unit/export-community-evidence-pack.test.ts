@@ -3,7 +3,11 @@ import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { exportCommunityEvidencePackCommand } from '../../src/cli/export.js';
 import { runCommunityEvidencePack } from '../../src/mcp/local/backend-community-evidence-pack.js';
-import { loadMeta, getStoragePaths } from '../../src/storage/repo-manager.js';
+import {
+  loadMeta,
+  getStoragePaths,
+  resolveActiveLbugPath,
+} from '../../src/storage/repo-manager.js';
 
 vi.mock('node:fs');
 vi.mock('node:child_process');
@@ -23,6 +27,7 @@ describe('exportCommunityEvidencePackCommand', () => {
       lbugPath: 'test-lbug',
     } as any);
     vi.mocked(loadMeta).mockResolvedValue({ indexedAt: '2023-01-01' } as any);
+    vi.mocked(resolveActiveLbugPath).mockResolvedValue('test-lbug');
   });
 
   it('successfully exports a community evidence pack', async () => {

@@ -38,7 +38,7 @@ import { RESPONSE_GUARD_MAX_BYTES } from '../local/response-guard.js';
 import { getResourceContractSummaries } from '../resources.js';
 import { createEmptyEvidenceReadClassCounts } from '../../core/runtime/evidence-read-ledger.js';
 import type { EvidenceReadClass } from '../../core/runtime/evidence-read-ledger.js';
-import { getStoragePaths } from '../../storage/repo-manager.js';
+import { getStoragePaths, resolveActiveLbugPath } from '../../storage/repo-manager.js';
 import { getLbugRuntimeDiagnostics } from '../../core/lbug/lbug-adapter.js';
 
 const WHICH_TIMEOUT_MS = 2_000;
@@ -208,10 +208,10 @@ export interface DiagnoseReport {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/** Probe whether a binary is on PATH via `which`. Returns true if found. */
+/** Probe whether a binary is on PATH via `which`/`where`. Returns true if found. */
 async function probeWhich(binaryName: string): Promise<boolean> {
   try {
-    await execFileText('which', [binaryName], {
+    await execFileText(process.platform === 'win32' ? 'where' : 'which', [binaryName], {
       timeoutMs: WHICH_TIMEOUT_MS,
       maxBuffer: WHICH_MAX_BUFFER,
     });
@@ -388,7 +388,7 @@ async function readOptionalFileStat(filePath: string): Promise<{
 async function buildSupportDiagnostics(
   repoPath: string,
 ): Promise<NonNullable<DiagnoseReport['support']>> {
-  const { lbugPath } = getStoragePaths(repoPath);
+  const lbugPath = await resolveActiveLbugPath(getStoragePaths(repoPath).storagePath);
   const [storeStat, walStat, lockStat, runtime] = await Promise.all([
     readOptionalFileStat(lbugPath),
     readOptionalFileStat(`${lbugPath}.wal`),

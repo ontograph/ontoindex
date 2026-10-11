@@ -39,6 +39,8 @@ export const QuerySchema = BaseRepoSchema.extend({
   limit: z.number().min(1).max(100).default(5),
   max_symbols: z.number().min(1).max(200).default(10),
   include_content: z.boolean().default(false),
+  include_skeleton: z.boolean().optional(),
+  service: z.string().min(1).optional(),
   include_explanations: z.boolean().default(false),
   include_paths: z.array(z.string().min(1)).default([]),
   exclude_paths: z.array(z.string().min(1)).default([]),
@@ -59,6 +61,7 @@ export const CypherSchema = BaseRepoSchema.extend({
 export interface CypherParams extends z.input<typeof CypherSchema> {}
 
 export const ContextSchema = BaseRepoSchema.extend({
+  service: z.string().min(1).optional(),
   name: z.string().optional(),
   uid: z.string().optional(),
   nodeId: z.string().optional(),
@@ -152,6 +155,7 @@ export const RenameSchema = BaseRepoSchema.extend({
   new_name: z.string(),
   file_path: z.string().optional(),
   dry_run: z.boolean().default(true),
+  confirm: z.boolean().default(false),
 });
 
 export interface RenameParams extends z.input<typeof RenameSchema> {}
@@ -169,7 +173,7 @@ export const ImpactSchema = BaseRepoSchema.extend({
   target: z.string(),
   target_uid: z.string().optional(),
   nodeId: z.string().optional(),
-  direction: z.enum(['upstream', 'downstream']),
+  direction: z.enum(['upstream', 'downstream']).default('upstream'),
   file_path: z.string().optional(),
   kind: z.string().optional(),
   maxDepth: z.number().min(1).max(32).default(3),
@@ -190,11 +194,11 @@ export interface ImpactParams extends z.input<typeof ImpactSchema> {}
 
 export const ImpactBatchSchema = BaseRepoSchema.extend({
   targets: z.array(z.string()),
-  direction: z.enum(['upstream', 'downstream']),
-  maxDepth: z.number().min(1).max(32).default(3),
+  direction: z.enum(['upstream', 'downstream']).default('upstream'),
+  maxDepth: z.number().default(3),
   relationTypes: z.array(z.string()).optional(),
   includeTests: z.boolean().default(false),
-  minConfidence: z.number().min(0).max(1).default(0.7),
+  minConfidence: z.number().default(0.7),
 });
 
 export interface ImpactBatchParams extends z.input<typeof ImpactBatchSchema> {}

@@ -20,7 +20,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import type { Command } from 'commander';
 import { getGitRoot } from '../storage/git.js';
-import { getStoragePaths, loadMeta } from '../storage/repo-manager.js';
+import { getStoragePaths, loadMeta, resolveActiveLbugPath } from '../storage/repo-manager.js';
 import { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js';
 import { initLbug, closeLbug } from '../core/lbug/pool-adapter.js';
 import { executeParameterized } from '../core/lbug/pool-adapter.js';
@@ -659,7 +659,8 @@ export async function reportHubsCommand(opts: ReportHubsOptions): Promise<void> 
   const topN = Math.max(1, Math.min(200, parseInt(opts.top ?? '20', 10) || 20));
   const { repoRoot, repoId } = await resolveRepoId(opts.repo);
 
-  const { storagePath, lbugPath } = getStoragePaths(repoRoot);
+  const { storagePath } = getStoragePaths(repoRoot);
+  const lbugPath = await resolveActiveLbugPath(storagePath);
   const meta = await loadMeta(storagePath);
 
   if (!meta) {
@@ -711,7 +712,8 @@ export async function reportSurprisingConnectionsCommand(
   const topN = Math.max(1, Math.min(200, parseInt(opts.top ?? '20', 10) || 20));
   const { repoRoot, repoId } = await resolveRepoId(opts.repo);
 
-  const { storagePath, lbugPath } = getStoragePaths(repoRoot);
+  const { storagePath } = getStoragePaths(repoRoot);
+  const lbugPath = await resolveActiveLbugPath(storagePath);
   const meta = await loadMeta(storagePath);
 
   if (!meta) {

@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import {
   buildSidecarCommand,
   launchSidecarProcess,
@@ -6,7 +8,44 @@ import {
 } from '../../src/core/ingestion/enrichment/index.js';
 
 describe('sidecar process launcher', () => {
-  it('constructs a nice-wrapped command on POSIX', () => {
+  it('handles asynchronous ENOENT without an unhandled child error', async () => {
+    const result = await launchSidecarProcess({
+      command: '/definitely-missing-ontoindex-sidecar',
+      workerCount: 1,
+      cpuPercent: 10,
+      platform: 'win32',
+      spawn: (command, args, options) => spawn(command, [...args], options),
+    });
+    expect(result).toMatchObject({ status: 'rejected', reason: 'spawn-failed' });
+    expect(result).toHaveProperty('error', expect.stringContaining('ENOENT'));
+  });
+
+  it('confirms a real successful spawn', async () => {
+    const result = await launchSidecarProcess({
+      command: process.execPath,
+      args: ['-e', ''],
+      workerCount: 1,
+      cpuPercent: 10,
+      platform: 'win32',
+      spawn: (command, args, options) => spawn(command, [...args], options),
+    });
+    expect(result).toMatchObject({ status: 'started', started: true });
+  });
+
+  it('retains only the bounded stderr tail in a spawn failure', async () => {
+    const child = Object.assign(new EventEmitter(), { stderr: new EventEmitter() });
+    const pending = launchSidecarProcess({
+      command: 'node',
+      workerCount: 1,
+      cpuPercent: 10,
+      spawn: () => child,
+    });
+    child.stderr.emit('data', Buffer.from('discarded-prefix' + 'x'.repeat(4096)));
+    child.emit('error', new Error('spawn failed'));
+    const result = await pending;
+    expect(result).toHaveProperty('error', 'spawn failed\n' + 'x'.repeat(4096));
+  });
+  it('constructs a nice-wrapped command on POSIX', async () => {
     const command = buildSidecarCommand({
       command: 'node',
       args: ['sidecar.js', '--once'],
@@ -20,7 +59,7 @@ describe('sidecar process launcher', () => {
     });
   });
 
-  it('constructs an optional cpulimit wrapper outside nice when available', () => {
+  it('constructs an optional cpulimit wrapper outside nice when available', async () => {
     const command = buildSidecarCommand({
       command: 'node',
       args: ['sidecar.js'],
@@ -35,9 +74,9 @@ describe('sidecar process launcher', () => {
     });
   });
 
-  it('rejects worker counts over the one-worker contract', () => {
+  it('rejects worker counts over the one-worker contract', async () => {
     const calls: string[] = [];
-    const result = launchSidecarProcess({
+    const result = await launchSidecarProcess({
       command: 'node',
       args: ['sidecar.js'],
       workerCount: 2,
@@ -57,9 +96,9 @@ describe('sidecar process launcher', () => {
     expect(calls).toEqual([]);
   });
 
-  it('rejects CPU percentages over the 10 percent contract', () => {
+  it('rejects CPU percentages over the 10 percent contract', async () => {
     const calls: string[] = [];
-    const result = launchSidecarProcess({
+    const result = await launchSidecarProcess({
       command: 'node',
       args: ['sidecar.js'],
       workerCount: 1,
@@ -79,8 +118,8 @@ describe('sidecar process launcher', () => {
     expect(calls).toEqual([]);
   });
 
-  it('returns a structured spawn failure without throwing', () => {
-    const result = launchSidecarProcess({
+  it('returns a structured spawn failure without throwing', async () => {
+    const result = await launchSidecarProcess({
       command: 'node',
       args: ['sidecar.js'],
       workerCount: 1,
@@ -102,9 +141,9 @@ describe('sidecar process launcher', () => {
     });
   });
 
-  it('starts exactly one injected spawn call and returns pid', () => {
+  it('starts exactly one injected spawn call and returns pid', async () => {
     const calls: string[] = [];
-    const result = launchSidecarProcess({
+    const result = await launchSidecarProcess({
       command: 'node',
       args: ['sidecar.js'],
       workerCount: 1,

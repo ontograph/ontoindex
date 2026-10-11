@@ -21,6 +21,7 @@ import {
   listRegisteredRepos,
   getStoragePath,
   getGlobalDir,
+  resolveActiveLbugPath,
   type RegistryEntry,
 } from '../storage/repo-manager.js';
 import {
@@ -938,6 +939,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // avoid crashing into Express's default error handler (which returned 500).
   app.use(
     cors({
+      exposedHeaders: ['Mcp-Session-Id'],
       origin: (origin, callback) => {
         callback(null, isAllowedOrigin(origin));
       },
@@ -1276,6 +1278,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       try {
         // Close this repo's open LadybugDB handle before deleting files
         try {
+          await closeLbugForPath(await resolveActiveLbugPath(entry.storagePath));
           await closeLbugForPath(path.join(entry.storagePath, 'lbug'));
         } catch {}
         await backend.closeRepoConnections(entry.name, entry.path);
@@ -1323,7 +1326,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
-      const lbugPath = path.join(entry.storagePath, 'lbug');
+      const lbugPath = await resolveActiveLbugPath(entry.storagePath);
       const includeContent = req.query.includeContent === 'true';
       const stream = req.query.stream === 'true';
       const summary = req.query.summary === 'true';
@@ -1451,7 +1454,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         }
 
         try {
-          const lbugPath = path.join(entry.storagePath, 'lbug');
+          const lbugPath = await resolveActiveLbugPath(entry.storagePath);
           const result = await withLbugDb(lbugPath, () => executeQuery(cypher));
           return { status: 200, body: { result } };
         } finally {
@@ -1480,7 +1483,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
-      const lbugPath = path.join(entry.storagePath, 'lbug');
+      const lbugPath = await resolveActiveLbugPath(entry.storagePath);
 
       const releaseRead = acquireReadAccess(getStoragePath(entry.path), res);
       if (!releaseRead) return;
@@ -1753,7 +1756,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const repoRoot = path.resolve(entry.path);
 
       // Get file paths from the graph (lightweight — no content loaded)
-      const lbugPath = path.join(entry.storagePath, 'lbug');
+      const lbugPath = await resolveActiveLbugPath(entry.storagePath);
       const releaseRead = acquireReadAccess(getStoragePath(entry.path), res);
       if (!releaseRead) return;
       const abortController = new AbortController();

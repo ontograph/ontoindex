@@ -1,4 +1,5 @@
 import fs from 'fs/promises';
+import path from 'path';
 import { execFile, type ExecFileException } from 'child_process';
 import { resolveContainedRealPath } from './path-util.js';
 
@@ -117,6 +118,37 @@ const RENAME_RG_MAX_BUFFER = 16 * 1024 * 1024;
 const MAX_TEXT_SEARCH_FILES = 200;
 const MAX_TEXT_SEARCH_EDITS = 1000;
 const MAX_TEXT_SEARCH_FILE_BYTES = 1024 * 1024;
+const TEXT_SEARCH_EXTENSIONS = 'ts,tsx,js,jsx,py,go,rs,java,c,h,cpp,cc,cxx,hpp,hxx,hh,cs,php,swift';
+
+async function findTextSearchFiles(repoPath: string, name: string): Promise<string[]> {
+  const extensions = new Set(TEXT_SEARCH_EXTENSIONS.split(',').map((ext) => `.${ext}`));
+  const regex = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+  const files: string[] = [];
+  async function walk(directory: string): Promise<void> {
+    const entries = await fs.readdir(path.join(repoPath, directory), { withFileTypes: true });
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const entry of entries) {
+      if (files.length > MAX_TEXT_SEARCH_FILES) return;
+      if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.isSymbolicLink())
+        continue;
+      const relative = directory ? `${directory}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await walk(relative);
+      } else if (entry.isFile() && extensions.has(path.extname(entry.name))) {
+        try {
+          const fullPath = await resolveContainedRealPath(repoPath, relative);
+          if ((await fs.stat(fullPath)).size > MAX_TEXT_SEARCH_FILE_BYTES) continue;
+          const content = await fs.readFile(fullPath, 'utf8');
+          if (!content.includes('\0') && regex.test(content)) files.push(relative);
+        } catch (error) {
+          logQueryError('rename:text-search-read', error);
+        }
+      }
+    }
+  }
+  await walk('');
+  return files;
+}
 
 function execFileCapture(cmd: string, args: string[], cwd: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -277,17 +309,24 @@ export async function renameSymbol(
     const rgArgs = [
       '-l',
       '--type-add',
-      'code:*.{ts,tsx,js,jsx,py,go,rs,java,c,h,cpp,cc,cxx,hpp,hxx,hh,cs,php,swift}',
+      `code:*.{${TEXT_SEARCH_EXTENSIONS}}`,
       '-t',
       'code',
       `\\b${oldName}\\b`,
       '.',
     ];
-    const output = await execFileCapture('rg', rgArgs, repo.repoPath);
-    const files = output
-      .trim()
-      .split('\n')
-      .filter((f) => f.length > 0);
+    let files: string[];
+    try {
+      const output = await execFileCapture('rg', rgArgs, repo.repoPath);
+      files = output
+        .trim()
+        .split('\n')
+        .filter((f) => f.length > 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      files = await findTextSearchFiles(repo.repoPath, oldName);
+      warnings.push('ripgrep unavailable; used built-in text search');
+    }
     if (files.length > MAX_TEXT_SEARCH_FILES) {
       warnings.push(`Text-search rename fallback capped at ${MAX_TEXT_SEARCH_FILES} files`);
     }

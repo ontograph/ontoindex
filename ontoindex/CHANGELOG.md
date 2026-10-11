@@ -4,6 +4,20 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.7] - 2026-10-12
+
+### Fixed
+
+- Read the active index generation everywhere instead of a stale root database copy, kept root compatibility aliases repaired on every publish, and rolled back the pointer if alias repair fails. A dangling generation pointer no longer lets alias repair overwrite the only legacy index copy.
+- Validated internal tool arguments against their schemas before dispatch, reconciled schema drift with advertised tool inputs, and defaulted omitted impact `direction` to `upstream`.
+- Required `confirm` to be exactly `true` for symbol mutations and for `gn_safe_refactor` apply. Sandbox apply now reports that it is unavailable.
+- Made the rename text-search fallback work without the `rg` binary by falling back to a bounded built-in search.
+- Built the vendored `tree-sitter` runtime during install when no native binary is present, so packed installs start the MCP server.
+- Masked string literals and comments before detecting Cypher write keywords.
+- Gave same-name repositories collision-free path-digest IDs.
+- Exposed `Mcp-Session-Id` to browser CORS clients and bounded resource error responses, including the echoed URI.
+- Reported mutation result paths with forward slashes on Windows and made Windows-specific tests portable.
+
 ## [2.2.6] - 2026-10-11
 
 ### Fixed

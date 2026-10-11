@@ -7,6 +7,7 @@
  */
 
 import path from 'path';
+import { createHash } from 'node:crypto';
 import fs from 'fs/promises';
 import { RepoHandle, BackendPort } from 'ontoindex-shared';
 import { recordToolCall } from './tool-telemetry.js';
@@ -118,6 +119,7 @@ import {
   repoResolutionEnvironmentFromProcess,
 } from '../shared/repo-resolution-errors.js';
 import { attachRepoScopeIdentity } from '../shared/response-envelope.js';
+import { TOOL_SCHEMAS } from './tool-params.js';
 import type {
   AnalysisCatalogParams,
   ApiImpactParams,
@@ -1191,7 +1193,13 @@ export class LocalBackend implements BackendPort {
         return formatCypherAsMarkdown(await queryCypher(repo, params as CypherParams));
       },
       context: (repo, params) => this.context(repo, params as ContextParams),
-      impact: (repo, params) => this.impact(repo, params as ImpactParams),
+      impact: (repo, params) => {
+        const impactParams = params as ImpactParams;
+        return this.impact(repo, {
+          ...impactParams,
+          direction: impactParams.direction === 'downstream' ? 'downstream' : 'upstream',
+        });
+      },
       gn_diagnose: async (repo, params) => {
         const { gnDiagnose } = await import('../super/diagnose.js');
         return gnDiagnose(repo.id, params as any);
@@ -1496,31 +1504,34 @@ export class LocalBackend implements BackendPort {
     repoPath: string,
     repos: Map<string, RepoHandle>,
   ): string {
-    const base = name.toLowerCase();
-    for (const [id, handle] of repos) {
-      if (id === base && handle.repoPath !== path.resolve(repoPath)) {
-        const hash = Buffer.from(repoPath).toString('base64url').slice(0, 6);
-        return `${base}-${hash}`;
-      }
-    }
-    return base;
+    return this.uniqueRepoId(name, repoPath, repos);
   }
 
-  /**
-   * Generate a stable repo ID from name + path.
-   * If names collide, append a hash of the path.
-   */
-  private repoId(name: string, repoPath: string): string {
+  /** Generate a stable repo ID, extending the path digest only on collisions. */
+  private uniqueRepoId(name: string, repoPath: string, repos: Map<string, RepoHandle>): string {
     const base = name.toLowerCase();
-    // Check for name collision with a different path
-    for (const [id, handle] of this.repos) {
-      if (id === base && handle.repoPath !== path.resolve(repoPath)) {
-        // Collision — use path hash
-        const hash = Buffer.from(repoPath).toString('base64url').slice(0, 6);
-        return `${base}-${hash}`;
+    const resolvedPath = path.resolve(repoPath);
+
+    for (const [id, handle] of repos) {
+      if (handle.name.toLowerCase() === base && path.resolve(handle.repoPath) === resolvedPath) {
+        return id;
       }
     }
-    return base;
+    if (!repos.has(base)) return base;
+
+    const digest = createHash('sha256').update(resolvedPath).digest('hex');
+    for (let length = 8; length <= digest.length; length += 2) {
+      const candidate = `${base}-${digest.slice(0, length)}`;
+      if (!repos.has(candidate)) return candidate;
+    }
+    let suffix = 2;
+    while (repos.has(`${base}-${digest}-${suffix}`)) suffix += 1;
+    return `${base}-${digest}-${suffix}`;
+  }
+
+  /** Generate a stable repo ID from name + path. */
+  private repoId(name: string, repoPath: string): string {
+    return this.uniqueRepoId(name, repoPath, this.repos);
   }
 
   private matchesRepoFilter(entry: RegistryEntry): boolean {
@@ -1733,6 +1744,18 @@ export class LocalBackend implements BackendPort {
       );
     }
     const normalized = this.normalizeToolParams(params);
+
+    const schema = TOOL_SCHEMAS[method];
+    if (schema) {
+      const validation = schema.loose().safeParse(normalized);
+      if (!validation.success) {
+        const issues = validation.error.issues
+          .slice(0, 3)
+          .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+          .join('; ');
+        throw new Error(`Invalid arguments for ${method}: ${issues}`);
+      }
+    }
 
     if (isRepoAgnosticToolName(method)) {
       return this.globalToolHandlers[method](normalized);

@@ -60,8 +60,9 @@ describe('sandbox tool confirmation gating', () => {
     );
   });
 
-  it('allows "apply" action with confirm: true', async () => {
-    const result = await backend.callTool('sandbox', { action: 'apply', confirm: true });
-    expect(result.success).toBe(true);
+  it('rejects "apply" action with confirm: true because no write path exists', async () => {
+    await expect(backend.callTool('sandbox', { action: 'apply', confirm: true })).rejects.toThrow(
+      'Sandbox apply is unavailable: staged edits are not applied by this server. Edit files directly, then verify.',
+    );
   });
 });

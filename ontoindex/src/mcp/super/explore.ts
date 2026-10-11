@@ -316,7 +316,7 @@ async function fetchClusterKeyFiles(repoId: string, clusterName: string): Promis
   }
 }
 
-import { listRegisteredRepos } from '../../storage/repo-manager.js';
+import { listRegisteredRepos, resolveActiveIndexGeneration } from '../../storage/repo-manager.js';
 
 // ---------------------------------------------------------------------------
 // Main export.
@@ -353,7 +353,11 @@ export async function gnExplore(
   }
   const canonicalRepoId = repo.name.toLowerCase();
   const resolvedRepo = { ...repo, id: canonicalRepoId, repoPath: repo.path };
-  await initLbug(canonicalRepoId, path.join(repo.storagePath, 'lbug'));
+  const activeGeneration = await resolveActiveIndexGeneration(repo.storagePath);
+  await initLbug(
+    canonicalRepoId,
+    activeGeneration?.lbugPath ?? path.join(repo.storagePath, 'lbug'),
+  );
 
   // --- 1. Classify intent -------------------------------------------------
   const classification: IntentClassification = classifyIntent(params.query);

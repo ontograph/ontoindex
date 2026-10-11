@@ -15,7 +15,7 @@ const unsortedFileScope = [
 ] as const;
 
 describe('Axel launch contract edge cases', () => {
-  it('includes only explicitly allowlisted env keys without leaking process.env', () => {
+  it('includes only explicitly allowlisted env keys without leaking process.env', async () => {
     const priorPath = process.env.PATH;
     process.env.AXEL_SECRET_FROM_PROCESS = 'must-not-leak';
 
@@ -41,7 +41,7 @@ describe('Axel launch contract edge cases', () => {
     delete process.env.AXEL_SECRET_FROM_PROCESS;
   });
 
-  it('uses deterministic file scope ordering by file path', () => {
+  it('uses deterministic file scope ordering by file path', async () => {
     const contract = createAxelLaunchContract({
       command: 'node',
       args: ['axel.js'],
@@ -60,7 +60,7 @@ describe('Axel launch contract edge cases', () => {
     ]);
   });
 
-  it('requires an explicit output mode and rejects file/stdout ambiguity', () => {
+  it('requires an explicit output mode and rejects file/stdout ambiguity', async () => {
     expect(() =>
       createAxelLaunchContract({
         command: 'node',
@@ -101,7 +101,7 @@ describe('Axel launch contract edge cases', () => {
     ).toEqual({ mode: 'stdout', format: 'jsonl' });
   });
 
-  it('represents timeout, cancel, and failure policy without spawning', () => {
+  it('represents timeout, cancel, and failure policy without spawning', async () => {
     const spawn = vi.fn<SidecarSpawnFunction>();
 
     const contract = createAxelLaunchContract({
@@ -126,7 +126,7 @@ describe('Axel launch contract edge cases', () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it('adapts to launchSidecarProcess with injected spawn and strict worker/cpu limits', () => {
+  it('adapts to launchSidecarProcess with injected spawn and strict worker/cpu limits', async () => {
     const calls: string[] = [];
     const spawn = recordSpawn(calls, 4321);
     const contract = createAxelLaunchContract({
@@ -150,7 +150,7 @@ describe('Axel launch contract edge cases', () => {
     expect(launchOptions.spawn).toBe(spawn);
     expect(launchOptions.spawnOptions?.env).toEqual({ AXEL_ALLOWED_TOKEN: 'token-value' });
 
-    const result = launchSidecarProcess(launchOptions);
+    const result = await launchSidecarProcess(launchOptions);
 
     expect(result).toMatchObject({ status: 'started', started: true, pid: 4321 });
     expect(calls[0]).toContain('nice -n 19 node axel.js');

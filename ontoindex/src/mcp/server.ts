@@ -41,7 +41,13 @@ import {
   parseResourceUri,
   readResource,
 } from './resources.js';
-import { boundMcpErrorText, pageMcpResponse } from './shared/response-pages.js';
+import {
+  boundMcpErrorText,
+  MCP_RESPONSE_MAX_BYTES,
+  pageMcpResponse,
+} from './shared/response-pages.js';
+
+const MAX_ERROR_URI_CHARS = 4096;
 
 const GRAPH_BACKED_SUPER_TOOLS = new Set<SuperTool>([
   'gn_explore',
@@ -230,7 +236,7 @@ export function getNextStepHint(
       return `\n\n---\n**Next:** After sync, list_repos(${repoParam ? `{repo: "${repo}"}` : ''}) to verify fresh indexedAt. For a fresh query, use query({q: "<term>", repo: "@<groupName>"}).`;
 
     case 'sandbox':
-      return `\n\n---\n**Next:** Staged a mutation? Rerun sandbox({ action: "apply", confirm: true${repoParam} }) to commit. Ensure the backend is started with --confirm-writes or apply will fail closed.`;
+      return `\n\n---\n**Next:** Sandbox apply is unavailable. Review the staged preview, edit files directly, then verify with gn_verify_diff({ changedFiles: [...], expectedFiles: [...]${repoParam} }).`;
 
     case 'replace_symbol':
       return `\n\n---\n**Next:** Previewed with dry_run? Rerun replace_symbol({ uid: "${args?.uid || '<uid>'}", new_body: "...", dry_run: false, confirm: true${repoParam} }) to write. Then run gn_verify_diff({ expectedSymbols: ["<symbol>"], expectedFiles: ["<file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }) to verify the rewrite didn't regress callers.`;
@@ -379,12 +385,19 @@ export function createMCPServer(backend: LocalBackend, options: { full?: boolean
         ],
       };
     } catch (err: unknown) {
+      // Bound the whole resource envelope: cap the echoed URI and reserve its bytes.
+      const echoedUri = uri.length > MAX_ERROR_URI_CHARS ? uri.slice(0, MAX_ERROR_URI_CHARS) : uri;
+      const reservedBytes = Buffer.byteLength(JSON.stringify(echoedUri), 'utf8') + 64;
       return {
         contents: [
           {
-            uri,
+            uri: echoedUri,
             mimeType: 'text/plain',
-            text: `Error: ${getReadResourceErrorMessage(err)}`,
+            text: boundMcpErrorText(
+              (message) => `Error: ${message}`,
+              String(getReadResourceErrorMessage(err)),
+              MCP_RESPONSE_MAX_BYTES - reservedBytes,
+            ),
           },
         ],
       };

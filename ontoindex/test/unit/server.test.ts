@@ -18,6 +18,10 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { ReadResourceRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { UriTemplate } from '@modelcontextprotocol/sdk/shared/uriTemplate.js';
 import * as resources from '../../src/mcp/resources.js';
+import {
+  MCP_RESPONSE_MAX_BYTES,
+  serializedMcpToolResultBytes,
+} from '../../src/mcp/shared/response-pages.js';
 
 // ─── Mock backend ──────────────────────────────────────────────────
 
@@ -162,6 +166,30 @@ describe('resource response MIME types', () => {
     } finally {
       handlers.mockRestore();
       read.mockRestore();
+    }
+  });
+
+  it('bounds error text for a 200KB unknown resource URI', async () => {
+    const uri = `unknown://${'x'.repeat(200 * 1024)}`;
+    const handlers = vi.spyOn(Server.prototype, 'setRequestHandler');
+    try {
+      createMCPServer(createMockBackend());
+      const handler = handlers.mock.calls.find(
+        ([schema]) => schema === ReadResourceRequestSchema,
+      )?.[1];
+      const response = await (handler as any)({ params: { uri } });
+      const content = response.contents[0];
+      expect(content.mimeType).toBe('text/plain');
+      expect(content.text).toMatch(/^Error:/);
+      expect(content.text).toContain('… [truncated]');
+      expect(serializedMcpToolResultBytes(content.text, true)).toBeLessThanOrEqual(
+        MCP_RESPONSE_MAX_BYTES,
+      );
+      expect(Buffer.byteLength(JSON.stringify(response), 'utf8')).toBeLessThanOrEqual(
+        MCP_RESPONSE_MAX_BYTES,
+      );
+    } finally {
+      handlers.mockRestore();
     }
   });
 });

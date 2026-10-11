@@ -13,6 +13,8 @@ export type SidecarLaunchPlatform = NodeJS.Platform;
 
 export interface SidecarSpawnedProcess {
   pid?: number;
+  on?: (event: string, listener: (...args: any[]) => void) => unknown;
+  stderr?: { on: (event: 'data', listener: (chunk: Buffer | string) => void) => unknown } | null;
 }
 
 export type SidecarSpawnFunction = (
@@ -25,7 +27,7 @@ export interface SidecarSpawnOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   detached?: boolean;
-  stdio?: 'ignore' | 'inherit' | 'pipe';
+  stdio?: 'ignore' | 'inherit' | 'pipe' | ['ignore', 'ignore', 'pipe'];
 }
 
 export interface SidecarCpuLimitOptions {
@@ -69,9 +71,9 @@ export interface SidecarCommandSpec {
   args: readonly string[];
 }
 
-export function launchSidecarProcess(
+export async function launchSidecarProcess(
   options: SidecarProcessLaunchOptions,
-): SidecarProcessLaunchResult {
+): Promise<SidecarProcessLaunchResult> {
   const commandSpec = buildSidecarCommand(options);
   const rejection = validateSidecarLaunchOptions(options);
   if (rejection) {
@@ -88,9 +90,25 @@ export function launchSidecarProcess(
   try {
     const child = options.spawn(commandSpec.command, commandSpec.args, {
       detached: false,
-      stdio: 'ignore',
+      stdio: ['ignore', 'ignore', 'pipe'],
       ...options.spawnOptions,
     });
+    let stderrTail = Buffer.alloc(0);
+    child.stderr?.on('data', (chunk) => {
+      const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      stderrTail = Buffer.concat([stderrTail, data.subarray(-4096)]).subarray(-4096);
+    });
+    if (child.on) {
+      await new Promise<void>((resolve, reject) => {
+        // Keep the error listener attached after spawn so later errors are handled too.
+        child.on!('error', (error: Error) => {
+          reject(
+            new Error(`${error.message}${stderrTail.length ? `\n${stderrTail.toString()}` : ''}`),
+          );
+        });
+        child.on!('spawn', resolve);
+      });
+    }
     return {
       status: 'started',
       started: true,

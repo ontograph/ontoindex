@@ -19,7 +19,7 @@
  */
 import fs from 'fs/promises';
 import path from 'path';
-import { resolveContainedRepoPath } from './backend-repo-paths.js';
+import { normalizeRepoRelativePath, resolveContainedRepoPath } from './backend-repo-paths.js';
 import { AnalysisResult, DiagnosticFinding } from 'ontoindex-shared';
 
 // Local RepoHandle alias — see backend-route.ts note.
@@ -265,8 +265,8 @@ export async function runCrossDocDrift(
     );
 
     const realRepoPath = await fs.realpath(repo.repoPath);
-    const planRel = planAbs.map((abs) => path.relative(realRepoPath, abs));
-    const auditRel = auditAbs.map((abs) => path.relative(realRepoPath, abs));
+    const planRel = planAbs.map((abs) => normalizeRepoRelativePath(realRepoPath, abs));
+    const auditRel = auditAbs.map((abs) => normalizeRepoRelativePath(realRepoPath, abs));
 
     // Collect plan mentions.
     const planMentions = new Map<string, PlanMention[]>();

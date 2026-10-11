@@ -87,6 +87,7 @@ describe('MCP graph-walk initialization', () => {
       symbol: 'parseToken',
       params: { newName: 'verifyToken' },
       dryRun: false,
+      confirm: true,
       preChecks: false,
       repo: 'fixture',
     };

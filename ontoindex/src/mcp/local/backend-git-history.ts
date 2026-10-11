@@ -71,8 +71,9 @@ export async function collectGitCommits(
       `--pretty=format:${COMMIT_SEPARATOR}%H|%at|%an`,
       '--name-only',
     ]);
-  } catch {
-    return { commits: [], warnings: [] };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { commits: [], warnings: [`git log failed: ${message.slice(0, 200)}`] };
   }
 
   const warnings: string[] = [];

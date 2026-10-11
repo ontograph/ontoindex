@@ -3,7 +3,11 @@ import fs from 'node:fs';
 import type { PathLike } from 'node:fs';
 import path from 'node:path';
 import { exportGraphHtmlCommand } from '../../src/cli/export.js';
-import { getStoragePaths, loadMeta } from '../../src/storage/repo-manager.js';
+import {
+  getStoragePaths,
+  loadMeta,
+  resolveActiveLbugPath,
+} from '../../src/storage/repo-manager.js';
 import { buildExportableGraph } from '../../src/core/graph/exportable-graph.js';
 import { generateHTMLViewer } from '../../src/core/wiki/html-viewer.js';
 
@@ -32,6 +36,9 @@ describe('exportGraphHtmlCommand', () => {
       indexedAt: '2026-06-13T00:00:00.000Z',
       lastCommit: 'abc1234',
     } as any);
+    vi.mocked(resolveActiveLbugPath).mockResolvedValue(
+      path.join(repoRoot, '.ontoindex', 'lbug.db'),
+    );
     vi.mocked(buildExportableGraph).mockResolvedValue({
       nodes: [],
       relationships: [],

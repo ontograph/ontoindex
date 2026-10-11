@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { FileSessionStore } from '../../src/core/memory/session-store.js';
 import fs from 'fs/promises';
+import path from 'node:path';
 
 vi.mock('fs/promises');
 
@@ -81,9 +82,10 @@ describe('SessionStore', () => {
 
     await store.set('key', 'value');
 
-    expect(fs.mkdir).toHaveBeenCalledWith('/mock/repo/.ontoindex/sessions', { recursive: true });
+    const sessionsPath = path.resolve(repoPath, '.ontoindex', 'sessions');
+    expect(fs.mkdir).toHaveBeenCalledWith(sessionsPath, { recursive: true });
     expect(fs.writeFile).toHaveBeenCalledWith(
-      '/mock/repo/.ontoindex/sessions/test-session.json',
+      path.join(sessionsPath, 'test-session.json'),
       expect.any(String),
       'utf-8',
     );

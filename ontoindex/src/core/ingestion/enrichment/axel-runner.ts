@@ -49,7 +49,7 @@ export async function launchAxelForQueuedRequest(
     analyzerVersion: request.analyzerVersion,
     fileScope: options.fileScope,
   });
-  const result = launchSidecarProcess(toSidecarProcessLaunchOptions(contract, options));
+  const result = await launchSidecarProcess(toSidecarProcessLaunchOptions(contract, options));
 
   if (result.status === 'rejected') {
     throw new Error(

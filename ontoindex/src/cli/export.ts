@@ -34,6 +34,7 @@ import {
   loadMeta,
   registerRepo,
   saveMeta,
+  resolveActiveLbugPath,
   type IndexGenerationPaths,
 } from '../storage/repo-manager.js';
 import { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js';
@@ -1097,7 +1098,8 @@ export async function exportReviewBundleCommand(opts: ExportReviewBundleOptions)
   const freshness = deriveEnvelopeFreshness(targetContext);
 
   // ---- 3. Load graph metadata for provenance ------------------------------
-  const { storagePath, lbugPath } = getStoragePaths(repoRoot);
+  const { storagePath } = getStoragePaths(repoRoot);
+  const lbugPath = await resolveActiveLbugPath(storagePath);
   const meta = await loadMeta(storagePath);
   const indexedAt = meta?.indexedAt ?? null;
   if (meta) {
@@ -1749,7 +1751,8 @@ export async function exportCommunityEvidencePackCommand(opts: {
 
   const repoRoot = await resolveRepoRoot(opts.repo);
 
-  const { storagePath, lbugPath } = getStoragePaths(repoRoot);
+  const { storagePath } = getStoragePaths(repoRoot);
+  const lbugPath = await resolveActiveLbugPath(storagePath);
   const meta = await loadMeta(storagePath);
 
   if (!meta) {
@@ -1786,7 +1789,8 @@ export async function exportCommunityEvidencePackCommand(opts: {
 
 export async function exportGraphHtmlCommand(opts: ExportGraphHtmlOptions): Promise<void> {
   const repoRoot = await resolveRepoRoot(opts.repo);
-  const { storagePath, lbugPath } = getStoragePaths(repoRoot);
+  const { storagePath } = getStoragePaths(repoRoot);
+  const lbugPath = await resolveActiveLbugPath(storagePath);
   const meta = await loadMeta(storagePath);
 
   if (!meta) {
@@ -1832,7 +1836,8 @@ export async function exportGraphHtmlCommand(opts: ExportGraphHtmlOptions): Prom
 
 export async function exportBootstrapCommand(opts: ExportBootstrapOptions): Promise<void> {
   const repoRoot = await resolveRepoRoot(opts.repo);
-  const { storagePath, lbugPath } = getStoragePaths(repoRoot);
+  const { storagePath } = getStoragePaths(repoRoot);
+  const lbugPath = await resolveActiveLbugPath(storagePath);
   const meta = await loadMeta(storagePath);
 
   if (!meta) {
@@ -1896,7 +1901,8 @@ export async function exportBootstrapHydrateCommand(
     throw new Error('--allow-duplicate-name is no longer supported. Use --name <unique-alias>.');
   }
   const repoRoot = await resolveRepoRoot(opts.repo);
-  const { storagePath, lbugPath } = getStoragePaths(repoRoot);
+  const { storagePath } = getStoragePaths(repoRoot);
+  const lbugPath = await resolveActiveLbugPath(storagePath);
   const existingMeta = await loadMeta(storagePath);
   if ((existingMeta || fs.existsSync(lbugPath)) && !opts.force) {
     console.error(

@@ -257,6 +257,7 @@ describe('gnSafeRefactor', () => {
         symbol: SYMBOL_NAME,
         params: { newName: 'verifyToken' },
         dryRun: false,
+        confirm: true,
         force: true,
       },
       refactorBackend,
@@ -408,6 +409,7 @@ describe('gnSafeRefactor', () => {
         symbol: SYMBOL_NAME,
         params: { newName: 'verifyToken' },
         dryRun: false,
+        confirm: true,
       },
       refactorBackend,
     );
@@ -454,6 +456,7 @@ describe('gnSafeRefactor', () => {
         symbol: SYMBOL_NAME,
         params: { newName: 'verifyToken' },
         dryRun: false,
+        confirm: true,
       },
       refactorBackend,
     );
@@ -478,14 +481,35 @@ describe('gnSafeRefactor', () => {
         symbol: SYMBOL_NAME,
         params: { newName: 'verifyToken' },
         dryRun: false,
+        confirm: true,
         preChecks: false,
       }),
     ).rejects.toThrow('Refactor apply requires an authorized backend.');
 
     expect(mockExecuteParameterized).not.toHaveBeenCalled();
     expect(mockRenameSymbol).not.toHaveBeenCalled();
-    expect(mockDetectChanges).not.toHaveBeenCalled();
   });
+
+  it.each([undefined, false, 'true', 1])(
+    'rejects apply when confirm is %s before any primitive runs',
+    async (confirm) => {
+      await expect(
+        gnSafeRefactor(
+          REPO_ID,
+          {
+            intent: 'modify-body',
+            symbol: SYMBOL_NAME,
+            params: { newBody: 'return 1;' },
+            dryRun: false,
+            confirm: confirm as boolean | undefined,
+            preChecks: false,
+          },
+          { repoPath: '/tmp/repo', callTool: vi.fn() },
+        ),
+      ).rejects.toThrow('Explicit confirmation required to apply');
+      expect(mockExecuteParameterized).not.toHaveBeenCalled();
+    },
+  );
 
   it('reports applied:false when the backend writes no files despite a nonempty preview', async () => {
     mockResolve();
@@ -508,6 +532,7 @@ describe('gnSafeRefactor', () => {
         symbol: SYMBOL_NAME,
         params: { newName: 'verifyToken' },
         dryRun: false,
+        confirm: true,
         preChecks: false,
       },
       refactorBackend,

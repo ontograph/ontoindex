@@ -1,7 +1,7 @@
 import express from 'express';
-import path from 'path';
 import { JobManager } from './analyze-job.js';
 import { executeQuery, executeWithReusedStatement, withLbugDb } from '../core/lbug/lbug-adapter.js';
+import { resolveActiveLbugPath } from '../storage/repo-manager.js';
 
 interface RepoWriteLock {
   repoPath: string;
@@ -96,7 +96,7 @@ export function mountEmbedRoutes(
       // Run embedding pipeline asynchronously
       (async () => {
         try {
-          const lbugPath = path.join(entry.storagePath, 'lbug');
+          const lbugPath = await resolveActiveLbugPath(entry.storagePath);
           const executeScopedQuery = (cypher: string) =>
             withLbugDb(lbugPath, () => executeQuery(cypher));
           const executeScopedWithReusedStatement = (

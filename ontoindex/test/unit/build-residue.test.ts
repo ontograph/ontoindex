@@ -71,10 +71,11 @@ describe('build_residue_audit', () => {
     expect(result.build_output_matches).toBeGreaterThanOrEqual(1);
     expect(result.source_matches).toBeGreaterThanOrEqual(1);
 
-    const bundleHit = result.findings.find((f) => f.file === path.join('dist', 'bundle.js'));
+    const bundleHit = result.findings.find((f) => f.file === 'dist/bundle.js');
     expect(bundleHit).toBeDefined();
     expect(bundleHit!.is_build_output).toBe(true);
     expect(bundleHit!.domain).toBe('debugger;');
+    expect(result.findings.every((finding) => !finding.file.includes('\\'))).toBe(true);
 
     const findingsText = result.findings.map((f) => f.file).join('\n');
     expect(findingsText).not.toContain(path.join('docs', 'notes.md'));

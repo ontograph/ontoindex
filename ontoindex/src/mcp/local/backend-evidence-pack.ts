@@ -17,9 +17,8 @@
  * that tries to climb outside the root is reported as unresolved.
  */
 import fs from 'fs/promises';
-import path from 'path';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
-import { resolveContainedRepoPath } from './backend-repo-paths.js';
+import { normalizeRepoRelativePath, resolveContainedRepoPath } from './backend-repo-paths.js';
 // Local RepoHandle alias — see backend-route.ts note.
 type RepoHandle = { readonly id: string; readonly name: string; readonly repoPath: string };
 
@@ -95,7 +94,7 @@ async function readIfFile(abs: string): Promise<string | null> {
 }
 
 async function repoRelativePath(repoPath: string, abs: string): Promise<string> {
-  return path.relative(await fs.realpath(repoPath), abs);
+  return normalizeRepoRelativePath(await fs.realpath(repoPath), abs);
 }
 
 function sliceSnippet(

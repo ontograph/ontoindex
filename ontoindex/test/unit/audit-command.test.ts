@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const repoManagerMocks = vi.hoisted(() => ({
+  resolveActiveLbugPath: vi.fn((storagePath: string) => `${storagePath}/lbug`),
   getStoragePaths: vi.fn((repoPath: string) => ({
     storagePath: `${repoPath}/.ontoindex`,
     lbugPath: `${repoPath}/.ontoindex/lbug`,

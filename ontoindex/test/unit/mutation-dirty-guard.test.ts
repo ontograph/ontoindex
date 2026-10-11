@@ -53,8 +53,8 @@ describe('mutation dirty guard', () => {
     });
   }
 
-  function mutate(operation: Operation, dry_run = false) {
-    const params = { uid, dry_run, confirm: true };
+  function mutate(operation: Operation, dry_run = false, confirm: unknown = true) {
+    const params = { uid, dry_run, confirm: confirm as boolean };
     switch (operation) {
       case 'move':
         return moveSymbolByUid(repo, { ...params, target_file: 'src/target.ts' }, true, initialize);
@@ -238,6 +238,25 @@ describe('mutation dirty guard', () => {
     expect(result).not.toHaveProperty('warnings');
     await expectContents(operation);
   });
+
+  it.each(['false', 'true', 1])(
+    'rejects non-boolean confirmation %j before a %s write',
+    async (confirm) => {
+      for (const operation of ['update', 'extract', 'move'] as const) {
+        resolve(operation);
+        const sourceBefore = await fs.readFile(source);
+        const targetBefore = await fs.readFile(target);
+        const write = vi.spyOn(fs, 'writeFile');
+        await expect(mutate(operation, false, confirm)).rejects.toThrow(
+          'Explicit confirmation required (set confirm: true)',
+        );
+        expect(write).not.toHaveBeenCalled();
+        expect(await fs.readFile(source)).toEqual(sourceBefore);
+        expect(await fs.readFile(target)).toEqual(targetBefore);
+        write.mockRestore();
+      }
+    },
+  );
 
   it.each(operations)('allows %s with a current overlay range', async (operation) => {
     await fs.writeFile(source, prefix + original);

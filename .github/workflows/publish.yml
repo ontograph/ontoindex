@@ -127,6 +127,7 @@ jobs:
           SMOKE_DIR="$(mktemp -d)"
           trap 'rm -rf "$SMOKE_DIR"' EXIT
           npm install --prefix "$SMOKE_DIR" --omit=dev --no-audit --no-fund "../ontoindex-$(node -p "require('./package.json').version").tgz"
+          (cd "$SMOKE_DIR/node_modules/ontoindex" && node -e "require('tree-sitter')")
           "$SMOKE_DIR/node_modules/.bin/ontoindex" --version
           "$SMOKE_DIR/node_modules/.bin/ontoindex" watch --help
 

@@ -24,6 +24,7 @@ import {
   readActiveGenerationMeta,
   publishIndexGenerationTransaction,
   resolveActiveIndexGeneration,
+  resolveActiveLbugPath,
   rollbackIndexGenerationActivation,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
@@ -74,6 +75,22 @@ describe('index generations', () => {
     await fs.writeFile(generation.snapshotPath, '{}');
   }
 
+  it('resolves the active generation lbug path and falls back to the legacy root path', async () => {
+    const temp = await createTempDir('ontoindex-active-lbug-path-');
+    const storagePath = path.join(temp.dbPath, '.ontoindex');
+    try {
+      expect(await resolveActiveLbugPath(storagePath)).toBe(path.join(storagePath, 'lbug'));
+      const generation = await createIndexGeneration(storagePath, 'active-lbug');
+      await writeGenerationFiles(generation, '');
+      await activateIndexGeneration(storagePath, generation);
+      expect(await resolveActiveLbugPath(storagePath)).toBe(
+        (await resolveActiveIndexGeneration(storagePath))?.lbugPath,
+      );
+    } finally {
+      await fs.rm(temp.dbPath, { recursive: true, force: true });
+    }
+  });
+
   it('atomically changes the active generation while old files remain immutable', async () => {
     const temp = await createTempDir('ontoindex-generations-');
     const storagePath = path.join(temp.dbPath, '.ontoindex');
@@ -118,6 +135,83 @@ describe('index generations', () => {
     }
   });
 
+  it('repairs stale regular root aliases when publishing over an active generation', async () => {
+    const temp = await createTempDir('ontoindex-stale-generation-aliases-');
+    const storagePath = path.join(temp.dbPath, '.ontoindex');
+    const filenames = ['lbug', 'lbug.wal', 'lbug.lock', 'meta.json', 'snapshot.json'];
+    try {
+      const first = await createIndexGeneration(storagePath, 'generation-1');
+      for (const filename of filenames) {
+        await fs.writeFile(path.join(first.generationPath, filename), `first-${filename}`);
+      }
+      const activeFirst = await activateIndexGeneration(storagePath, first);
+      for (const filename of filenames) {
+        const aliasPath = path.join(storagePath, filename);
+        await fs.unlink(aliasPath);
+        await fs.writeFile(aliasPath, `stale-${filename}`);
+        expect((await fs.lstat(aliasPath)).isFile()).toBe(true);
+      }
+
+      const second = await createIndexGeneration(storagePath, 'generation-2');
+      for (const filename of filenames) {
+        await fs.writeFile(path.join(second.generationPath, filename), `second-${filename}`);
+      }
+      const activeSecond = await activateIndexGeneration(storagePath, second);
+
+      for (const filename of filenames) {
+        const aliasPath = path.join(storagePath, filename);
+        expect((await fs.lstat(aliasPath)).isSymbolicLink()).toBe(true);
+        expect(await fs.readlink(aliasPath)).toBe(path.join('current', filename));
+        expect(await fs.realpath(aliasPath)).toBe(
+          await fs.realpath(path.join(activeSecond.generationPath, filename)),
+        );
+        expect(await fs.readFile(aliasPath, 'utf8')).toBe(`second-${filename}`);
+        expect(await fs.readFile(path.join(activeFirst.generationPath, filename), 'utf8')).toBe(
+          `first-${filename}`,
+        );
+      }
+    } finally {
+      await temp.cleanup();
+    }
+  });
+
+  it('restores the previous generation when alias repair fails during publication', async () => {
+    const temp = await createTempDir('ontoindex-alias-repair-failure-');
+    const storagePath = path.join(temp.dbPath, '.ontoindex');
+    try {
+      const first = await createIndexGeneration(storagePath, 'generation-1');
+      await fs.writeFile(first.lbugPath, 'first');
+      await activateIndexGeneration(storagePath, first);
+      // A stale regular file forces a repair; make that repair fail.
+      await fs.unlink(path.join(storagePath, 'lbug'));
+      await fs.writeFile(path.join(storagePath, 'lbug'), 'stale');
+
+      const second = await createIndexGeneration(storagePath, 'generation-2');
+      await fs.writeFile(second.lbugPath, 'second');
+      const rename = fs.rename.bind(fs);
+      const renameSpy = vi.spyOn(fs, 'rename').mockImplementation(async (oldPath, newPath) => {
+        if (path.resolve(String(newPath)) === path.join(storagePath, 'lbug')) {
+          throw Object.assign(new Error('alias blocked'), { code: 'EACCES' });
+        }
+        return rename(oldPath, newPath);
+      });
+      const commit = vi.fn(async () => 'committed');
+      try {
+        await expect(
+          publishIndexGenerationTransaction(storagePath, second, commit),
+        ).rejects.toThrow('alias blocked');
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      expect(commit).not.toHaveBeenCalled();
+      expect((await resolveActiveIndexGeneration(storagePath))?.generationId).toBe('generation-1');
+      expect(await fs.readFile(second.lbugPath, 'utf8')).toBe('second');
+    } finally {
+      await temp.cleanup();
+    }
+  });
+
   it('copies a legacy index into an immutable generation before publication', async () => {
     const temp = await createTempDir('ontoindex-legacy-generation-');
     const storagePath = path.join(temp.dbPath, '.ontoindex');
@@ -132,6 +226,26 @@ describe('index generations', () => {
       expect(legacy?.generationId).toMatch(/^legacy-/);
       expect(await fs.readFile(legacy!.lbugPath, 'utf8')).toBe('legacy');
       expect(await fs.readFile(path.join(storagePath, 'lbug'), 'utf8')).toBe('legacy');
+      await fs.rm(staged.generationPath, { recursive: true, force: true });
+    } finally {
+      await temp.cleanup();
+    }
+  });
+
+  it('preserves legacy root files when the current pointer is dangling', async () => {
+    const temp = await createTempDir('ontoindex-dangling-current-');
+    const storagePath = path.join(temp.dbPath, '.ontoindex');
+    try {
+      await fs.mkdir(storagePath, { recursive: true });
+      await fs.writeFile(path.join(storagePath, 'lbug'), 'only-copy');
+      await fs.symlink(path.join('generations', 'missing'), path.join(storagePath, 'current'));
+
+      const staged = await createIndexGeneration(storagePath, 'generation-new');
+      const legacy = await resolveActiveIndexGeneration(storagePath);
+
+      expect(legacy?.generationId).toMatch(/^legacy-/);
+      expect(await fs.readFile(legacy!.lbugPath, 'utf8')).toBe('only-copy');
+      expect(await fs.readFile(path.join(storagePath, 'lbug'), 'utf8')).toBe('only-copy');
       await fs.rm(staged.generationPath, { recursive: true, force: true });
     } finally {
       await temp.cleanup();

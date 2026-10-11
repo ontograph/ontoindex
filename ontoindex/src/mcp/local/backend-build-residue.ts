@@ -17,6 +17,7 @@
  */
 import fs from 'fs/promises';
 import path from 'path';
+import { normalizeRepoRelativePath } from './backend-repo-paths.js';
 // Local RepoHandle alias — see backend-route.ts note.
 type RepoHandle = { readonly name: string; readonly repoPath: string };
 
@@ -139,7 +140,7 @@ async function collectTargets(rootDir: string, useDefaultDomains: boolean): Prom
         if (!SCAN_EXTENSIONS.has(ext)) continue;
         results.push({
           abs: full,
-          rel: path.relative(rootDir, full),
+          rel: normalizeRepoRelativePath(rootDir, full),
           isBuildOutput: inBuild,
         });
       }

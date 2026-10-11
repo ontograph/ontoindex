@@ -4,6 +4,27 @@ import os from 'os';
 import path from 'path';
 import { renameSymbol } from '../../src/mcp/local/backend-rename.js';
 
+const ripgrep = vi.hoisted(() => ({ missing: false, noMatches: false }));
+vi.mock('child_process', async (importOriginal) => {
+  const original = await importOriginal<typeof import('child_process')>();
+  return {
+    ...original,
+    execFile: (...args: Parameters<typeof original.execFile>) => {
+      if (ripgrep.noMatches && args[0] === 'rg') {
+        const callback = args[args.length - 1] as Function;
+        callback(Object.assign(new Error('no matches'), { code: 1 }), '', '');
+        return;
+      }
+      if (ripgrep.missing && args[0] === 'rg') {
+        const callback = args[args.length - 1] as Function;
+        callback(Object.assign(new Error('spawn rg ENOENT'), { code: 'ENOENT' }), '', '');
+        return;
+      }
+      return original.execFile(...args);
+    },
+  };
+});
+
 describe('renameSymbol text-search fallback bounds', () => {
   let tmpDir: string;
 
@@ -12,6 +33,8 @@ describe('renameSymbol text-search fallback bounds', () => {
   });
 
   afterEach(async () => {
+    ripgrep.missing = false;
+    ripgrep.noMatches = false;
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
@@ -45,6 +68,7 @@ describe('renameSymbol text-search fallback bounds', () => {
   });
 
   it('treats no ripgrep matches as an empty fallback result', async () => {
+    ripgrep.noMatches = true;
     await fs.mkdir(path.join(tmpDir, 'src'));
     await fs.writeFile(path.join(tmpDir, 'src', 'def.ts'), 'export const oldName = 1;\n', 'utf8');
 
@@ -63,25 +87,31 @@ describe('renameSymbol text-search fallback bounds', () => {
     expect(result.warnings).toBeUndefined();
   });
 
-  it('caps fallback edits and skips oversized files', async () => {
-    await fs.writeFile(path.join(tmpDir, 'def.ts'), 'export const oldName = 1;\n');
-    await fs.writeFile(path.join(tmpDir, 'refs.ts'), 'console.log(oldName);\n'.repeat(1005));
-    await fs.writeFile(path.join(tmpDir, 'large.ts'), `oldName\n${' '.repeat(1024 * 1024)}`);
+  it.each([false, true])(
+    'caps fallback edits and skips oversized files (rg missing: %s)',
+    async (missing) => {
+      ripgrep.missing = missing;
+      await fs.writeFile(path.join(tmpDir, 'def.ts'), 'export const oldName = 1;\n');
+      await fs.writeFile(path.join(tmpDir, 'refs.ts'), 'console.log(oldName);\n'.repeat(1005));
+      await fs.writeFile(path.join(tmpDir, 'large.ts'), `oldName\n${' '.repeat(1024 * 1024)}`);
 
-    const result = await renameSymbol(
-      { repoPath: tmpDir },
-      { symbol_name: 'oldName', new_name: 'newName' },
-      async () => ({
-        symbol: { name: 'oldName', filePath: 'def.ts', startLine: 1 },
-        incoming: {},
-      }),
-      { confirmWrites: false },
-    );
+      const result = await renameSymbol(
+        { repoPath: tmpDir },
+        { symbol_name: 'oldName', new_name: 'newName' },
+        async () => ({
+          symbol: { name: 'oldName', filePath: 'def.ts', startLine: 1 },
+          incoming: {},
+        }),
+        { confirmWrites: false },
+      );
 
-    expect(result).toMatchObject({ applied: false, text_search_edits: 1000 });
-    expect(result.changes.map((change) => change.file_path)).not.toContain('large.ts');
-    expect(result.total_edits).toBe(1001);
-  });
+      expect(result).toMatchObject({ applied: false, text_search_edits: 1000 });
+      expect(result.changes.map((change) => change.file_path)).not.toContain('large.ts');
+      expect(result.total_edits).toBe(1001);
+      if (missing)
+        expect(result.warnings).toContain('ripgrep unavailable; used built-in text search');
+    },
+  );
 });
 
 describe('renameSymbol apply safety', () => {

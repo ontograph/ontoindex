@@ -9,7 +9,7 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { getGitRoot, isGitRepo, getCurrentCommit } from '../storage/git.js';
-import { getStoragePaths, loadMeta } from '../storage/repo-manager.js';
+import { getStoragePaths, loadMeta, resolveActiveLbugPath } from '../storage/repo-manager.js';
 import { initLbug, closeLbug } from '../core/lbug/pool-adapter.js';
 import { runAuditReport, formatAuditReport } from '../mcp/local/backend-audit-report.js';
 import {
@@ -104,7 +104,8 @@ export const auditCommand = async (options: AuditCommandOptions = {}) => {
     return;
   }
 
-  const { storagePath, lbugPath } = getStoragePaths(gitRoot);
+  const { storagePath } = getStoragePaths(gitRoot);
+  const lbugPath = await resolveActiveLbugPath(storagePath);
   const meta = await loadMeta(storagePath);
   if (!meta) {
     console.error('  Error: No OntoIndex index found. Run `ontoindex analyze` first.\n');

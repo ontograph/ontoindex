@@ -35,7 +35,12 @@ export async function checkStaleness(repoPath: string, lastCommit: string): Prom
     }
 
     return { isStale: false, commitsBehind: 0 };
-  } catch {
-    return { isStale: false, commitsBehind: 0 };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      isStale: false,
+      commitsBehind: 0,
+      hint: `Unable to verify index freshness: ${message.slice(0, 200)}`,
+    };
   }
 }

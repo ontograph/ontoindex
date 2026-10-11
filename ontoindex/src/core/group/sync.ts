@@ -2,7 +2,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 import { initLbug, closeLbug, executeParameterized } from '../lbug/pool-adapter.js';
-import { readRegistry, type RegistryEntry } from '../../storage/repo-manager.js';
+import {
+  readRegistry,
+  resolveActiveLbugPath,
+  type RegistryEntry,
+} from '../../storage/repo-manager.js';
 import type { GroupConfig, RepoHandle, RepoSnapshot, StoredContract, CrossLink } from './types.js';
 import { HttpRouteExtractor } from './extractors/http-route-extractor.js';
 import { GrpcExtractor } from './extractors/grpc-extractor.js';
@@ -351,7 +355,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
         }
 
         const poolId = handle.id;
-        const lbugPath = path.join(handle.storagePath, 'lbug');
+        const lbugPath = await resolveActiveLbugPath(handle.storagePath);
         try {
           const boundaries = await detectServiceBoundaries(handle.repoPath);
 

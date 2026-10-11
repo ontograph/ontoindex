@@ -32,6 +32,7 @@ vi.mock('../../../src/mcp/local/backend-search.js', () => ({
 }));
 
 vi.mock('../../../src/storage/repo-manager.js', () => ({
+  resolveActiveIndexGeneration: vi.fn(),
   listRegisteredRepos: vi.fn().mockResolvedValue([
     {
       name: 'test-repo',
@@ -52,7 +53,10 @@ import { getFileSkeleton } from '../../../src/core/search/skeleton.js';
 import { computeGraphPath } from '../../../src/core/search/graph-path.js';
 import { executeParameterized, initLbug } from '../../../src/core/lbug/pool-adapter.js';
 import { query as backendQuery } from '../../../src/mcp/local/backend-search.js';
-import { listRegisteredRepos } from '../../../src/storage/repo-manager.js';
+import {
+  listRegisteredRepos,
+  resolveActiveIndexGeneration,
+} from '../../../src/storage/repo-manager.js';
 import { gnExplore } from '../../../src/mcp/super/explore.js';
 
 // Typed mock handles.
@@ -63,6 +67,9 @@ const mockInitLbug = initLbug as unknown as ReturnType<typeof vi.fn>;
 const mockExecuteParameterized = executeParameterized as unknown as ReturnType<typeof vi.fn>;
 const mockBackendQuery = backendQuery as unknown as ReturnType<typeof vi.fn>;
 const mockListRegisteredRepos = listRegisteredRepos as unknown as ReturnType<typeof vi.fn>;
+const mockResolveActiveIndexGeneration = resolveActiveIndexGeneration as unknown as ReturnType<
+  typeof vi.fn
+>;
 
 // ---------------------------------------------------------------------------
 // Fixtures.
@@ -100,6 +107,7 @@ beforeEach(() => {
   // Defaults that keep tests green unless a specific test overrides.
   mockClassifyIntent.mockReturnValue(defaultClassification());
   mockBackendQuery.mockResolvedValue(makeDefaultQueryResult());
+  mockResolveActiveIndexGeneration.mockResolvedValue(null);
   mockListRegisteredRepos.mockResolvedValue([
     {
       name: 'test-repo',
@@ -123,6 +131,22 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('gn_explore', () => {
+  it('initializes the active generation database instead of a stale root alias', async () => {
+    const generationPath = '/tmp/test-repo/.ontoindex/generations/generation-2';
+    mockResolveActiveIndexGeneration.mockResolvedValue({
+      generationId: 'generation-2',
+      generationPath,
+      lbugPath: `${generationPath}/lbug`,
+      metaPath: `${generationPath}/meta.json`,
+      snapshotPath: `${generationPath}/snapshot.json`,
+    });
+
+    await gnExplore('test-repo', { query: 'auth flow', format: 'files' });
+
+    expect(mockResolveActiveIndexGeneration).toHaveBeenCalledWith('/tmp/test-repo/.ontoindex');
+    expect(mockInitLbug).toHaveBeenCalledWith('test-repo', `${generationPath}/lbug`);
+  });
+
   it('env vars are restored after success', async () => {
     const prevEnsemble = process.env.ONTOINDEX_INTENT_ENSEMBLE;
     const prevCitations = process.env.ONTOINDEX_CITATIONS;

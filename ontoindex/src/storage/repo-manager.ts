@@ -287,19 +287,30 @@ async function replaceWithSymlink(target: string, linkPath: string): Promise<voi
 async function ensureGenerationAliases(storagePath: string): Promise<void> {
   for (const filename of ['lbug', 'lbug.wal', 'lbug.lock', 'meta.json', 'snapshot.json']) {
     const linkPath = path.join(storagePath, filename);
-    await replaceWithSymlink(path.join(CURRENT_GENERATION_LINK, filename), linkPath);
+    const target = path.join(CURRENT_GENERATION_LINK, filename);
+    if ((await fs.readlink(linkPath).catch(() => null)) === target) continue;
+    await replaceWithSymlink(target, linkPath);
   }
 }
 
 async function migrateLegacyGeneration(storagePath: string): Promise<void> {
   const currentPath = path.join(storagePath, CURRENT_GENERATION_LINK);
-  if (
-    await fs
-      .lstat(currentPath)
-      .then(() => true)
-      .catch(() => false)
-  )
-    return;
+  const currentExists = await fs
+    .lstat(currentPath)
+    .then(() => true)
+    .catch(() => false);
+  if (currentExists) {
+    // A resolvable pointer means migration already happened.
+    if (
+      await fs
+        .stat(currentPath)
+        .then(() => true)
+        .catch(() => false)
+    )
+      return;
+    // A dangling pointer must not let alias repair overwrite the only legacy root copies.
+    await fs.unlink(currentPath);
+  }
 
   const publishedFiles = ['lbug', 'lbug.wal', 'lbug.lock', 'meta.json', 'snapshot.json'];
   const existingFiles: string[] = [];
@@ -398,12 +409,29 @@ async function activateIndexGenerationLocked(
   await fs.rename(generation.generationPath, finalPath);
 
   const currentPath = path.join(storagePath, CURRENT_GENERATION_LINK);
-  const hadCurrentGeneration = await fs
-    .lstat(currentPath)
-    .then(() => true)
-    .catch(() => false);
-  if (!hadCurrentGeneration) await ensureGenerationAliases(storagePath);
   await replaceWithSymlink(path.join(GENERATIONS_DIR, generationId), currentPath);
+  try {
+    await ensureGenerationAliases(storagePath);
+  } catch (aliasError) {
+    // Never leave a new generation active without its aliases: restore the previous pointer.
+    try {
+      if (previousGeneration) {
+        await replaceWithSymlink(
+          path.join(GENERATIONS_DIR, previousGeneration.generationId),
+          currentPath,
+        );
+      } else {
+        await fs.unlink(currentPath);
+      }
+      await fs.rename(finalPath, generation.generationPath);
+    } catch (restoreError) {
+      throw new AggregateError(
+        [aliasError, restoreError],
+        'Index generation alias repair failed and the previous generation could not be restored.',
+      );
+    }
+    throw aliasError;
+  }
   return {
     activeGeneration: generationPaths(storagePath, generationId, finalPath),
     previousGeneration,
@@ -522,6 +550,9 @@ export const resolveActiveIndexGeneration = async (
     return null;
   }
 };
+
+export const resolveActiveLbugPath = async (storagePath: string): Promise<string> =>
+  (await resolveActiveIndexGeneration(storagePath))?.lbugPath ?? path.join(storagePath, 'lbug');
 
 async function readMetaFile(metaPath: string): Promise<RepoMeta | null> {
   try {
