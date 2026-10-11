@@ -1,0 +1,3 @@
+# Generated native build outputs contain machine-specific paths.
+**/build/
+**/node_modules/
