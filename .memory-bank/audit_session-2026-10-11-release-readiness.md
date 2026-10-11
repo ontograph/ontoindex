@@ -57,6 +57,13 @@ Candidate: `chore/release-readiness`; overlay corrections committed in `632ace1`
   3 files, 9 symbols, zero affected flows. Uncommitted source is checked directly.
 - Four additional read-only reviewers on the required two models checked watcher
   recovery, candidate lockfiles, distribution identity and artifact smoke coverage.
+- Targeted CLI lockfile updates within existing manifest ranges clear the
+  production-only audit: zero affected packages. Installed updated dependencies
+  without lifecycle scripts; focused MCP/server validation passed 6 files,
+  33 tests, followed by TypeScript checking. Independent metadata review confirmed
+  SDK compatibility with its allowed Hono adapter range and supported Node engines.
+  Full CLI audit still reports five development-only affected packages; web
+  findings remain unresolved. Audit zero does not prove absence of vulnerabilities.
 - Existing installed-artifact workflow checks cover version/help, not MCP symbol
   queries. The existing Kimi smoke harness can target the installed CLI, but its
   MCP-only mode deliberately exits 2; acceptance must check recorded preflight
