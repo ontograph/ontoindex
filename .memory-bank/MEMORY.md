@@ -12,4 +12,4 @@ Active-only project router. Keep at or below 100 lines. Closed plans live under
 
 ## Active Plans
 
-- [Real-time dirty-worktree support](REALTIME_DIRTY_WORKTREE_SUPPORT_PROJECT_PLAN.md) - in-progress; next RT-2.
+- [Real-time dirty-worktree support](REALTIME_DIRTY_WORKTREE_SUPPORT_PROJECT_PLAN.md) - in-progress; selected RT-1.

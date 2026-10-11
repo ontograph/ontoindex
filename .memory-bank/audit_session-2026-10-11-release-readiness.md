@@ -238,3 +238,60 @@ evidence and distinguish harness failures from product failures.
 - Four bounded Luna/Sol reviews were collected. Version/channel, advisory
   disposition, exact-candidate full CI and merge/publication approval remain
   release gates. No release was published.
+
+## Final candidate CI and release-gate review
+
+- Candidate `5bf2cd87d75d23a21ac409a48d98079ca08b3534` passed full CI
+  run `38125542187`, including Chromium, Linux, macOS, Windows, coverage,
+  formatting, lint, both typechecks and CI Gate. PR checks also passed CodeQL,
+  performance benchmark and OntoIndex Check. Failed-log inspection returned no
+  failures. This evidence applies to that exact commit.
+- Four bounded Luna/Sol reviewers confirmed remaining version/channel,
+  advisory and documentation gates. No baseline correction, incompatible
+  dependency override, feature removal or risk acceptance was authorized.
+- The package remains 2.1.5, Release Please records 1.9.8, and the latest
+  stable GitHub release is `github-release/2.2.1`. Reconcile the approved
+  baseline before updating versions, changelog sections and installation docs.
+- The active plan selects RT-1; memory projections now match that selection.
+  Task statuses remain unchanged because implementation prose does not replace
+  required authenticated closeout evidence.
+- The single `ontoindex analyze --skip-agents-md` refresh attempt exited 1
+  with `double free or corruption (out)`. Status reports an orphaned analyze
+  lock and indexed commit `df9c9dc`. OntoIndex stale/degraded: native refresh
+  failed; source inspection is authority. No forced refresh or lock removal
+  was attempted. Native refresh reliability needs diagnosis before release.
+- Merge, tag and publication remain unperformed. Final affected-artifact
+  verification is required after any source or version correction.
+
+## Isolated native-crash diagnosis
+
+- Collected four read-only Luna/Sol reviews of parser ownership, analysis
+  lifecycle, database lifetime and validation coverage. None established the
+  original abort's faulting component. PageRank's final log is not crash attribution.
+- Source confirms timeout teardown can close native handles before pending work
+  settles (`lbug-adapter.ts:423–502`). Publication also strictly closes native
+  handles despite the CLI's default `skipNativeClose` option
+  (`run-analyze.ts:1496`). These are investigation leads, not proven crash causes.
+- Compared speculative lifetime repair, isolated native diagnostics and timeout/
+  close suppression. Second review rejected suppression as masking failures and
+  deferred speculative repair until causal evidence exists. Selected diagnostics
+  preserve the working index and require no production source changes.
+- Pipeline-only GDB diagnosis completed normally on an archive of candidate
+  `5bf2cd8`, producing 38,351 nodes and 62,176 relationships. Git history and DB
+  work were excluded. The first harness failed because workers inherited
+  `--input-type=module`; the corrected invocation removed that flag.
+- Full CLI analysis under GDB completed normally in an isolated clone with a
+  separate `ONTOINDEX_HOME`: 50.3 seconds, 38,350 nodes and 61,910 edges.
+- Non-debugger forced rebuild passed in the same isolated clone: exit 0,
+  51.5 seconds. Analysis using a copy of the original stale index also passed:
+  exit 0, 51.3 seconds. Neither passing run clears an intermittent native abort.
+- Diagnostic logs remain in `/tmp/ontoindex-native-diagnostic.7vqYLl/`:
+  `gdb-pipeline-corrected.log`, `gdb-full-analyze.log`, `rebuild.log` and
+  `copied-index.log`. The working index, original stale lock and global registry
+  were not modified. No diagnostic child remains running.
+- OntoIndex stale/degraded: the working index remains at `df9c9dc` after the
+  failed refresh; source inspection is authority. No production fix, tag,
+  merge or publication was performed. Root-cause diagnosis remains open.
+
+Knowledge handoff: none; existing diagnosis rules already distinguish passing
+isolated checks from demonstrated root-cause resolution.
