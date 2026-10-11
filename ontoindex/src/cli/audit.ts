@@ -12,7 +12,15 @@ import { getGitRoot, isGitRepo, getCurrentCommit } from '../storage/git.js';
 import { getStoragePaths, loadMeta } from '../storage/repo-manager.js';
 import { initLbug, closeLbug } from '../core/lbug/pool-adapter.js';
 import { runAuditReport, formatAuditReport } from '../mcp/local/backend-audit-report.js';
-import { ingestAuditFindings, type AuditLintFinding } from '../core/audit-lifecycle/index.js';
+import {
+  getAuditEventStorePath,
+  inspectAuditEventStoreRaw,
+  ingestAuditFindings,
+  loadAuditEventStoreState,
+  recoverAuditEventStore,
+  getAuditProjectionPath,
+  type AuditLintFinding,
+} from '../core/audit-lifecycle/index.js';
 import { runAuditIngest } from '../mcp/super/audit-ingest.js';
 import { loadLifecycleFindings, runAuditVerify } from '../mcp/super/audit-verify.js';
 import { loadAuditBundles, runAuditLint } from '../mcp/super/audit-lint.js';
@@ -51,6 +59,13 @@ interface AuditLifecycleCommandOptions {
   maxIssues?: string | number;
   maxBundles?: string | number;
   persist?: boolean;
+}
+
+interface AuditIntegrityCommandOptions {
+  repo?: string;
+  json?: boolean;
+  resetBroken?: boolean;
+  acknowledgeDataLoss?: boolean;
 }
 
 function caughtMessage(err: unknown): unknown {
@@ -254,6 +269,117 @@ export const auditBundleCommand = async (options: AuditLifecycleCommandOptions =
   );
 };
 
+export const auditIntegrityCommand = async (options: AuditIntegrityCommandOptions = {}) => {
+  const repoPath = resolveLifecycleRepoPath(options);
+  const resetRequested = options.resetBroken === true;
+  const acknowledged = options.acknowledgeDataLoss === true;
+  const raw = await inspectAuditEventStoreRaw(getAuditEventStorePath(repoPath));
+
+  if (!raw.exists) {
+    const error =
+      resetRequested !== acknowledged
+        ? 'Both --reset-broken and --acknowledge-data-loss are required for reset.'
+        : resetRequested
+          ? 'Audit event store is absent; refusing reset and creating nothing.'
+          : undefined;
+    emitAuditIntegrity(
+      { status: 'VALID', exists: false, ...(error ? { error } : {}) },
+      options.json,
+    );
+    if (error) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  let status:
+    | { status: 'MALFORMED'; reason: string }
+    | {
+        status: 'VALID' | 'VALID_WITH_LEGACY_PREFIX' | 'LEGACY_UNVERIFIED' | 'BROKEN';
+        firstBrokenSequence?: number;
+        reason?: string;
+      };
+  if (raw.parseError) {
+    status = { status: 'MALFORMED', reason: raw.parseError };
+  } else {
+    try {
+      const state = await loadAuditEventStoreState(getAuditEventStorePath(repoPath));
+      status = {
+        status: state.integrity?.status ?? 'BROKEN',
+        ...(state.integrity?.firstBrokenSequence !== undefined
+          ? { firstBrokenSequence: state.integrity.firstBrokenSequence }
+          : {}),
+        ...(state.integrity?.reason !== undefined ? { reason: state.integrity.reason } : {}),
+      };
+    } catch (error: unknown) {
+      status = { status: 'MALFORMED', reason: String(caughtMessage(error) ?? error) };
+    }
+  }
+
+  if (resetRequested !== acknowledged) {
+    emitAuditIntegrity(
+      {
+        ...status,
+        exists: true,
+        error: 'Both --reset-broken and --acknowledge-data-loss are required for reset.',
+      },
+      options.json,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  if (!resetRequested) {
+    emitAuditIntegrity({ ...status, exists: true }, options.json);
+    if (status.status === 'BROKEN' || status.status === 'MALFORMED') process.exitCode = 1;
+    return;
+  }
+
+  if (
+    status.status !== 'BROKEN' &&
+    status.status !== 'MALFORMED' &&
+    status.status !== 'LEGACY_UNVERIFIED'
+  ) {
+    emitAuditIntegrity(
+      {
+        ...status,
+        exists: true,
+        error: `Reset is only accepted for BROKEN, MALFORMED, or LEGACY_UNVERIFIED stores; observed ${status.status}.`,
+      },
+      options.json,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    const recovery = await recoverAuditEventStore(
+      getAuditEventStorePath(repoPath),
+      getAuditProjectionPath(repoPath),
+    );
+    emitAuditIntegrity(
+      {
+        ...status,
+        exists: true,
+        archivePath: recovery.archivePath,
+        archiveSha256: recovery.archiveSha256,
+        archiveBytes: recovery.archiveBytes,
+        statePath: recovery.statePath,
+        projectionPath: recovery.projectionPath,
+        message:
+          'Store history was archived and reset; re-ingest audit events. The archive was retained.',
+      },
+      options.json,
+    );
+  } catch (error: unknown) {
+    emitAuditIntegrity(
+      { ...status, exists: true, error: caughtMessage(error) ?? 'Audit event store reset failed.' },
+      options.json,
+    );
+    process.exitCode = 1;
+  }
+};
+
 function resolveLifecycleRepoPath(options: AuditLifecycleCommandOptions): string {
   if (options.repo) return path.resolve(options.repo);
   const gitRoot = getGitRoot(process.cwd());
@@ -261,6 +387,23 @@ function resolveLifecycleRepoPath(options: AuditLifecycleCommandOptions): string
     throw new Error('Not inside a git repository and no --repo specified.');
   }
   return gitRoot;
+}
+
+function emitAuditIntegrity(payload: Record<string, unknown>, json = false): void {
+  if (json) {
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+  const status = String(payload.status);
+  const exists = payload.exists === true;
+  console.log(`Audit event store: ${status} (${exists ? 'present' : 'absent'})`);
+  if (payload.firstBrokenSequence !== undefined || payload.reason !== undefined) {
+    console.log(
+      `Integrity failure: sequence ${payload.firstBrokenSequence ?? 'unknown'}; ${payload.reason ?? 'unknown reason'}`,
+    );
+  }
+  if (typeof payload.message === 'string') console.log(payload.message);
+  if (typeof payload.error === 'string') console.error(payload.error);
 }
 
 async function emitLifecycleReport(

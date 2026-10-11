@@ -150,6 +150,23 @@ Your AI agent gets these tools automatically:
 
 > With one indexed repo, the `repo` param is optional. With multiple, specify which: `query({query: "auth", repo: "my-app"})`.
 
+### Managed Freshness Recovery
+
+`gn_ensure_fresh` is the prerequisite and managed-submission surface. With
+`autoAnalyze: true`, it returns a structured submission status and either
+queues or reuses work only when repository, target commit, source manifest,
+requested graph or embedding capabilities, and analysis options match.
+
+Observe a returned job ID with `gn_analyze_job`. Its recovery disposition is
+`REFRESH_RUNNING`, `REFRESHED`, `FAILED`, or `FRESHNESS_UNCONFIRMED`.
+`REFRESHED` requires a job-bound publication receipt, the matching active
+generation, and a final freshness check using the original capability
+requirements. Exit code zero or job completion alone is not success proof.
+
+Analysis locks are analyzer-owned. MCP clients and agents must never remove
+`.ontoindex/analyze.lock`; retry the triggering graph operation unchanged only
+after the terminal result is `REFRESHED`.
+
 When MCP starts from a tool checkout, it uses `ONTOINDEX_MCP_PROJECT_CWD` (set by `setup`) as the target-project hint, and startup checks this against the selected repo target.
 If the selected repo target does not match that project scope, startup fails loudly unless override is enabled.
 For external helper checkouts (for example, `cwd=/opt/demodb/_workfolder/OntoIndex` while the target repo is `/opt/demodb/_workfolder/ontocode`), set setup and config against the target repo path:

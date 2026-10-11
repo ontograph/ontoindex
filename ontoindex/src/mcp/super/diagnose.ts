@@ -567,10 +567,23 @@ export async function gnDiagnose(
         };
 
         if (freshReport.preCheck.isStale) {
+          // autoAnalyze is refused while the worktree is dirty, because the
+          // analyzer reads working-tree files but publishes under a commit
+          // source identity. Recommending it here regardless of worktree state
+          // advertises a repair that its own precondition guarantees will fail.
+          const dirtyFileCount = freshReport.dirtyFileCount;
+          // `null` (git probe failed) and `undefined` (field absent) are both
+          // unproven-clean, and autoAnalyze refuses each of them.
+          const worktreeStateUnknown = dirtyFileCount === null || dirtyFileCount === undefined;
+          const worktreeBlocksAutoAnalyze = worktreeStateUnknown || dirtyFileCount > 0;
           recommendations.push({
             severity: 'WARN',
             detail: `Index is stale (indexed ${freshReport.preCheck.indexedCommit} vs current ${freshReport.preCheck.currentCommit})`,
-            fix: 'gn_ensure_fresh({autoAnalyze: true})',
+            fix: worktreeBlocksAutoAnalyze
+              ? worktreeStateUnknown
+                ? 'Worktree status is unavailable, so gn_ensure_fresh({autoAnalyze: true}) will be refused. Restore git status, then refresh.'
+                : `Commit or stash the ${dirtyFileCount} changed file${dirtyFileCount === 1 ? '' : 's'} first; gn_ensure_fresh({autoAnalyze: true}) is refused while the worktree is dirty.`
+              : 'gn_ensure_fresh({autoAnalyze: true})',
           });
         }
       }

@@ -5,6 +5,8 @@ import {
   evaluateAuditScopeGuard,
   generateAuditDispatchPrompt,
   LocalAuditEventStore,
+  type AuditEventStoreIntegrity,
+  type AuditEventStoreState,
   type AuditImplementationBundle,
   type AuditSessionBundle,
   type AuditSessionEvidence,
@@ -104,6 +106,7 @@ export async function gnDispatchPrompt(
 ): Promise<Record<string, unknown>> {
   const repo = await resolveAuditRepoHandle(repoId, params.repo);
   const { sessionId, projection, state } = await loadAuditProjection(repo.repoPath, params);
+  assertAuditChainUsableForDispatch(state);
   const session = requireSession(projection.sessions, sessionId);
   const bundles = loadImplementationBundles(state.events, projection, sessionId, params.strategy);
   const selected = selectBundle(bundles, params.bundleId);
@@ -154,7 +157,8 @@ export async function gnDispatchPrompt(
       promptChars: result.prompt.length,
       truncated: result.prompt.length > maxPromptChars,
     },
-    warnings: [],
+    integrity: state.integrity,
+    warnings: integrityWarnings(state.integrity),
     skipReasons: [],
   };
 }
@@ -288,8 +292,68 @@ async function loadAuditProjection(
 ) {
   const sessionId = params.sessionId ?? params.session;
   if (!sessionId) throw new Error('session is required');
-  const state = await new LocalAuditEventStore(repoPath).load();
+  let state: AuditEventStoreState;
+  try {
+    state = await new LocalAuditEventStore(repoPath).load();
+  } catch (error) {
+    throw auditChainError('audit event store load/parse failed', error);
+  }
   return { sessionId, state, projection: buildAuditProjection(state.events) };
+}
+
+function assertAuditChainUsableForDispatch(state: AuditEventStoreState): void {
+  if (!isDispatchableIntegrity(state.integrity)) {
+    throw auditChainError('audit event chain is not trustworthy', state.integrity);
+  }
+}
+
+// Dispatch is a trust decision: only a fully verified chain qualifies. Legacy
+// history is never migrated in place, so no partially-trusted state is
+// dispatchable.
+export function isDispatchableIntegrity(integrity: AuditEventStoreIntegrity | undefined): boolean {
+  return integrity?.status === 'VALID';
+}
+
+export function auditChainError(
+  message: string,
+  detail: unknown,
+): Error & {
+  code: 'ERR_AUDIT_CHAIN_BROKEN';
+  firstBrokenSequence?: number;
+  reason: string;
+} {
+  const error = new Error(message) as Error & {
+    code: 'ERR_AUDIT_CHAIN_BROKEN';
+    firstBrokenSequence?: number;
+    reason: string;
+  };
+  error.code = 'ERR_AUDIT_CHAIN_BROKEN';
+  if (isIntegrity(detail)) {
+    error.firstBrokenSequence = detail.firstBrokenSequence;
+    error.reason = detail.reason ?? 'unknown-integrity-failure';
+  } else {
+    error.reason = detail instanceof Error ? detail.message : 'audit-event-store-load-failure';
+  }
+  return error;
+}
+
+export function integrityWarnings(integrity: AuditEventStoreIntegrity | undefined): string[] {
+  if (integrity?.status === 'LEGACY_UNVERIFIED') {
+    return ['Audit event chain uses a legacy unverified prefix.'];
+  }
+  if (integrity?.status === 'VALID_WITH_LEGACY_PREFIX') {
+    return ['Audit event chain has a valid suffix with a legacy unverified prefix.'];
+  }
+  return [];
+}
+
+function isIntegrity(value: unknown): value is AuditEventStoreIntegrity {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'status' in value &&
+    typeof value.status === 'string'
+  );
 }
 
 function requireSession(

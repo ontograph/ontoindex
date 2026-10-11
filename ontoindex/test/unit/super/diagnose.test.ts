@@ -127,9 +127,10 @@ function makeFreshReport(
     embeddingsStatus?: 'ok' | 'missing' | 'metadata-unavailable' | 'drifted';
     repairCommand?: string;
     reason?: string;
+    dirtyFileCount?: number | null;
   } = {},
 ) {
-  const { isStale = false, embeddingsCount = 0 } = options;
+  const { isStale = false, embeddingsCount = 0, dirtyFileCount = 0 } = options;
   const embeddingsStatus = options.embeddingsStatus ?? (embeddingsCount > 0 ? 'ok' : 'missing');
   const repairCommand =
     options.repairCommand ??
@@ -142,6 +143,7 @@ function makeFreshReport(
   return {
     version: 1 as const,
     preCheck: { indexedCommit, currentCommit: CURRENT_COMMIT, isStale },
+    dirtyFileCount,
     embeddingsStatus: {
       count: embeddingsCount,
       required: false,
@@ -305,7 +307,7 @@ describe('gnDiagnose', () => {
 
   // ---- Test 2: Stale index → WARN recommendation generated ------------------
   it('emits a WARN recommendation when the index is stale', async () => {
-    mockGnEnsureFresh.mockResolvedValue(makeFreshReport({ isStale: true }));
+    mockGnEnsureFresh.mockResolvedValue(makeFreshReport({ isStale: true, dirtyFileCount: 0 }));
 
     const report = await gnDiagnose(REPO_ID, {
       checkLsp: false,
@@ -321,6 +323,37 @@ describe('gnDiagnose', () => {
     expect(warnRec).toBeDefined();
     expect(warnRec!.detail).toMatch(/stale/i);
     expect(warnRec!.fix).toBe('gn_ensure_fresh({autoAnalyze: true})');
+  });
+
+  it('does not recommend autoAnalyze while the worktree is dirty', async () => {
+    mockGnEnsureFresh.mockResolvedValue(makeFreshReport({ isStale: true, dirtyFileCount: 266 }));
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: false,
+      checkIndexFreshness: true,
+    });
+
+    const warnRec = report.recommendations.find((r) => r.severity === 'WARN');
+    expect(warnRec).toBeDefined();
+    // The refused repair must not be advertised as the fix.
+    expect(warnRec!.fix).not.toBe('gn_ensure_fresh({autoAnalyze: true})');
+    expect(warnRec!.fix).toContain('266 changed files');
+    expect(warnRec!.fix).toMatch(/commit or stash/i);
+  });
+
+  it('flags unknown worktree status instead of recommending autoAnalyze', async () => {
+    mockGnEnsureFresh.mockResolvedValue(makeFreshReport({ isStale: true, dirtyFileCount: null }));
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: false,
+      checkIndexFreshness: true,
+    });
+
+    const warnRec = report.recommendations.find((r) => r.severity === 'WARN');
+    expect(warnRec!.fix).not.toBe('gn_ensure_fresh({autoAnalyze: true})');
+    expect(warnRec!.fix).toMatch(/worktree status is unavailable/i);
   });
 
   // ---- Test 3: LSP probe handles ENOENT gracefully --------------------------

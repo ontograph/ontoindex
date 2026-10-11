@@ -126,6 +126,80 @@ describe('resolveTargetContext', () => {
     expect(context.dirtyWorkspace?.state).toBe('stale-index');
   });
 
+  it('uses active generation metadata when the registry commit lags', async () => {
+    const { resolveTargetContext } = await loadActualResolver();
+    const registryCommit = 'def456abc123def456abc123def456abc123def4';
+
+    const context = await resolveTargetContext(
+      { repo: REPO_ID, verifyGraphAuthority: true },
+      {
+        readRegistry: async () => [{ ...registryEntry, lastCommit: registryCommit }],
+        execGit: execGitFor(CURRENT_COMMIT),
+        loadMeta: async () => ({
+          repoPath: '.',
+          lastCommit: CURRENT_COMMIT,
+          indexedAt: 'graph-index-1',
+          generationId: 'generation-1',
+          model_hash: 'sha256:model-a',
+          sourceManifest: manifest,
+        }),
+        resolveActiveIndexGeneration: async () => ({
+          generationId: 'generation-1',
+          generationPath: '/repo/test-repo/.ontoindex/generations/generation-1',
+          lbugPath: '/repo/test-repo/.ontoindex/generations/generation-1/lbug',
+          metaPath: '/repo/test-repo/.ontoindex/generations/generation-1/meta.json',
+          snapshotPath: '/repo/test-repo/.ontoindex/generations/generation-1/snapshot.json',
+        }),
+        computeSourceManifest: async () => manifest,
+      },
+    );
+
+    expect(context.indexedHead).toBe(CURRENT_COMMIT);
+    expect(context.changedSinceIndex).toBe(false);
+    expect(context.embeddings.modelHash).toBe('sha256:model-a');
+    expect(context.graphAuthority).toMatchObject({ state: 'authoritative' });
+    expect(context.warnings).toContain(
+      `Registry commit ${registryCommit} lags trusted index metadata ${CURRENT_COMMIT}; using trusted metadata as indexed-head authority.`,
+    );
+  });
+
+  it('keeps registry commit authority when metadata does not match the active generation', async () => {
+    const { resolveTargetContext } = await loadActualResolver();
+    const registryCommit = 'def456abc123def456abc123def456abc123def4';
+
+    const context = await resolveTargetContext(
+      { repo: REPO_ID, verifyGraphAuthority: true },
+      {
+        readRegistry: async () => [{ ...registryEntry, lastCommit: registryCommit }],
+        execGit: execGitFor(CURRENT_COMMIT),
+        loadMeta: async () => ({
+          repoPath: '.',
+          lastCommit: CURRENT_COMMIT,
+          indexedAt: 'graph-index-1',
+          generationId: 'generation-meta',
+          model_hash: 'sha256:untrusted-model',
+          sourceManifest: manifest,
+        }),
+        resolveActiveIndexGeneration: async () => ({
+          generationId: 'generation-active',
+          generationPath: '/repo/test-repo/.ontoindex/generations/generation-active',
+          lbugPath: '/repo/test-repo/.ontoindex/generations/generation-active/lbug',
+          metaPath: '/repo/test-repo/.ontoindex/generations/generation-active/meta.json',
+          snapshotPath: '/repo/test-repo/.ontoindex/generations/generation-active/snapshot.json',
+        }),
+      },
+    );
+
+    expect(context.indexedHead).toBe(registryCommit);
+    expect(context.changedSinceIndex).toBe(true);
+    expect(context.graphAuthority).toMatchObject({
+      state: 'degraded',
+      reason: 'active graph generation does not match metadata generation',
+    });
+    expect(context.warnings.join('\n')).not.toContain('indexed-head authority');
+    expect(context.embeddings).not.toHaveProperty('modelHash');
+  });
+
   it('marks dirty worktree as dirty overlay snapshot', async () => {
     const { resolveTargetContext } = await loadActualResolver();
 

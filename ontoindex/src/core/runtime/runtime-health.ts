@@ -100,7 +100,9 @@ export async function readRuntimeHealth(
   const storagePath = options.storagePath ?? getStoragePaths(repoPath).storagePath;
   const repoLabel = options.repoLabel ?? path.basename(repoPath);
   const warnings: string[] = [];
-  const meta = options.meta ?? (await loadMeta(storagePath));
+  const meta = Object.hasOwn(options, 'meta')
+    ? (options.meta ?? null)
+    : await loadMeta(storagePath);
   const currentCommit = normalizeCommit(getCurrentCommit(repoPath));
   const dirtyWorktree = await readDirtyWorktree(repoPath, warnings);
   const analyzeLock = await readAnalyzeLock(storagePath, warnings);

@@ -40,6 +40,7 @@ import {
 import type { PipelineProfile } from '../core/ingestion/pipeline.js';
 import type { EmbeddingLifecycleSummary } from '../core/run-analyze.js';
 import { resolveOverlayDbPath } from '../mcp/local/backend-overlay.js';
+import { parseManagedAnalysisContextFromEnv } from '../core/analysis/analysis-publication-receipt.js';
 
 const HEAP_MB = 8192;
 const HEAP_FLAG = `--max-old-space-size=${HEAP_MB}`;
@@ -450,6 +451,7 @@ function formatFileScopeExplanation(
 }
 
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
+  const managedAnalysis = parseManagedAnalysisContextFromEnv();
   if (ensureHeap()) return;
   if (options?.allowDuplicateName) {
     throw new Error('--allow-duplicate-name is no longer supported. Use --name <unique-alias>.');
@@ -671,7 +673,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       {
         // Pipeline re-index — OR'd with --skills because skill generation
         // needs a fresh pipelineResult.
-        force: options?.force || options?.skills || experimentalFileDeltaPlan?.forceFullAnalyze,
+        force:
+          managedAnalysis !== undefined ||
+          options?.force ||
+          options?.skills ||
+          experimentalFileDeltaPlan?.forceFullAnalyze,
         embeddings: options?.embeddings,
         annNeighbors: options?.annNeighbors,
         skipGit: options?.skipGit,
@@ -683,6 +689,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         skipNativeClose: process.env.ONTOINDEX_ANALYZE_NATIVE_CLOSE !== '1',
         registryName: options?.name,
         ...(options?.dirtyOverlay ? { dirtyOverlay: true, overlayPaths } : {}),
+        ...(managedAnalysis ? { managedAnalysis } : {}),
       },
       {
         onProgress: (_phase, percent, message) => {

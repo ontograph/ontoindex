@@ -9,7 +9,7 @@ The default path is local: install, analyze, setup, connect MCP, serve, and gene
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
 [![GitHub](https://img.shields.io/badge/GitHub-ontograph%2Fontoindex-181717?logo=github)](https://github.com/ontograph/ontoindex)
 
-- Current release: `2.1.4`
+- Current GitHub release: `2.2.1`
 - Source repository: [github.com/ontograph/ontoindex](https://github.com/ontograph/ontoindex)
 - Security policy: [SECURITY.md](SECURITY.md)
 - Enterprise contact: [erasyuk@gmail.com](mailto:erasyuk@gmail.com)
@@ -128,32 +128,29 @@ if (Test-Path "$env:APPDATA\npm\ontoindex.ps1") { Remove-Item "$env:APPDATA\npm\
 
 Installer configuration:
 
-| Purpose                        | Linux/macOS                                                                    | Windows PowerShell                                                                     |
-| ------------------------------ | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
-| Use another release repository | `ONTOINDEX_GITHUB_REPO=owner/repo ./scripts/install-ontoindex-latest.sh`       | `$env:ONTOINDEX_GITHUB_REPO='owner/repo'; .\scripts\install-ontoindex-latest.ps1`      |
-| Use a local downloaded tarball | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-2.1.4.tgz" ./scripts/install-ontoindex-latest.sh` | — |
-| Use a user npm prefix          | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`    | `$env:ONTOINDEX_NPM_PREFIX="$env:APPDATA\npm"; .\scripts\install-ontoindex-latest.ps1` |
-| Force user prefix              | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`    | `.\scripts\install-ontoindex-latest.ps1 -ForceUserPrefix`                              |
-| Require FTS/vector cache prefetch | `ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh` | `$env:ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1` |
-| Skip FTS/vector cache prefetch    | `ONTOINDEX_SKIP_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh`    | `$env:ONTOINDEX_SKIP_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1`    |
+| Purpose                           | Linux/macOS                                                                              | Windows PowerShell                                                                      |
+| --------------------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Use another release repository    | `ONTOINDEX_GITHUB_REPO=owner/repo ./scripts/install-ontoindex-latest.sh`                 | `$env:ONTOINDEX_GITHUB_REPO='owner/repo'; .\scripts\install-ontoindex-latest.ps1`       |
+| Use a local downloaded tarball    | `ONTOINDEX_LOCAL_ASSET="$PWD/ontoindex-2.2.1.tgz" ./scripts/install-ontoindex-latest.sh` | —                                                                                       |
+| Use a user npm prefix             | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`              | `$env:ONTOINDEX_NPM_PREFIX="$env:APPDATA\npm"; .\scripts\install-ontoindex-latest.ps1`  |
+| Force user prefix                 | `ONTOINDEX_NPM_PREFIX="$HOME/.local" ./scripts/install-ontoindex-latest.sh`              | `.\scripts\install-ontoindex-latest.ps1 -ForceUserPrefix`                               |
+| Require FTS/vector cache prefetch | `ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh`           | `$env:ONTOINDEX_REQUIRE_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1` |
+| Skip FTS/vector cache prefetch    | `ONTOINDEX_SKIP_LADYBUG_EXTENSIONS=1 ./scripts/install-ontoindex-latest.sh`              | `$env:ONTOINDEX_SKIP_LADYBUG_EXTENSIONS='1'; .\scripts\install-ontoindex-latest.ps1`    |
 
-### Install with npm
+### npm Registry Status
 
-Use this path when npm publication is available in your environment.
-
-| Platform           | Command                                                    |
-| ------------------ | ---------------------------------------------------------- |
-| Linux/macOS        | `npm install -g ontoindex@2.1.4 && ontoindex --version`   |
-| Windows PowerShell | `npm.cmd install -g ontoindex@2.1.4; ontoindex --version` |
+OntoIndex 2.2.1 is distributed as a GitHub release tarball. It is not published
+to the public npm registry; install it with the GitHub installer or immutable
+tarball URL below.
 
 ### Install from a Release Tarball URL
 
 Use this when you want an immutable GitHub release asset.
 
-| Platform           | Command                                                                                                                         |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| Linux/macOS        | `npm install -g https://github.com/ontograph/ontoindex/releases/download/v2.1.4/ontoindex-2.1.4.tgz && ontoindex --version`   |
-| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/v2.1.4/ontoindex-2.1.4.tgz; ontoindex --version` |
+| Platform           | Command                                                                                                                                       |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Linux/macOS        | `npm install -g https://github.com/ontograph/ontoindex/releases/download/github-release%2F2.2.1/ontoindex-2.2.1.tgz && ontoindex --version`   |
+| Windows PowerShell | `npm.cmd install -g https://github.com/ontograph/ontoindex/releases/download/github-release%2F2.2.1/ontoindex-2.2.1.tgz; ontoindex --version` |
 
 ## First Run
 
@@ -252,6 +249,25 @@ OpenCode example:
 }
 ```
 
+### Managed Freshness Recovery
+
+Use `gn_ensure_fresh` as the prerequisite and submission surface. It reports
+freshness and capability requirements, then returns an `analysisSubmission`
+status of `not-requested`, `not-needed`, `blocked`, `queued`, `reused`, or
+`failed`. Submission and reuse are bound to the repository, target commit,
+source manifest, requested capabilities, and analysis options.
+
+When a job ID is returned, observe it with `gn_analyze_job`. A running job
+returns `REFRESH_RUNNING`. Terminal success is reported as `REFRESHED` only
+after OntoIndex validates the job-bound publication receipt, confirms that the
+receipt generation is active, and repeats the original capability-aware
+freshness check. Execution failure returns `FAILED`; missing publication or
+postcondition proof returns `FRESHNESS_UNCONFIRMED`.
+
+Clients must not delete `.ontoindex/analyze.lock`. The analyzer owns lock
+acquisition, dead-owner reclamation, and owner-safe release. Retry the original
+graph request unchanged only after `REFRESHED`.
+
 ## Common Agent Workflows
 
 | Goal                   | Linux/macOS                                               | Windows PowerShell                                        |
@@ -261,6 +277,7 @@ OpenCode example:
 | Check blast radius     | `ontoindex impact validateUser --include-tests --depth 2` | `ontoindex impact validateUser --include-tests --depth 2` |
 | Review current diff    | `ontoindex review diff`                                   | `ontoindex review diff`                                   |
 | Audit before commit    | `ontoindex detect-changes`                                | `ontoindex detect-changes`                                |
+| Verify audit chain     | `ontoindex audit integrity --json`                        | `ontoindex audit integrity --json`                        |
 | Rebuild from scratch   | `ontoindex analyze --force`                               | `ontoindex analyze --force`                               |
 
 Core MCP surfaces include:
@@ -353,10 +370,10 @@ The browser-only mode can inspect uploaded ZIPs in memory. For larger repositori
 
 Images:
 
-| Image                                    | Purpose                                        |
-| ---------------------------------------- | ---------------------------------------------- |
-| `ghcr.io/ontograph/ontoindex:2.1.4`     | CLI, MCP server, and `ontoindex serve` backend |
-| `ghcr.io/ontograph/ontoindex-web:2.1.4` | Web UI                                         |
+| Image                                   | Purpose                                             |
+| --------------------------------------- | --------------------------------------------------- |
+| `ghcr.io/ontograph/ontoindex:2.2.0`     | Latest published CLI, MCP server, and backend image |
+| `ghcr.io/ontograph/ontoindex-web:2.2.0` | Latest published web UI image                       |
 
 ## Comparison With Related Tools
 

@@ -742,8 +742,13 @@ export async function gnSafeEditCheck(
     const report: EditCheckReport = {
       version: 1,
       symbol: { nodeId: '', name: params.symbol, filePath: '', kind: '' },
-      verdict: 'SAFE',
-      reasoning: 'Symbol not found in index — no graph risk assessed.',
+      // An unresolved symbol means no graph evidence was available, which is an
+      // absence of proof rather than proof of safety. Report CAUTION so a failed
+      // precheck cannot yield the most permissive verdict, matching gn_can_delete
+      // and impact's UNKNOWN handling for the same condition.
+      verdict: 'CAUTION',
+      reasoning:
+        'Symbol not found in index — no graph risk assessed. Absence of graph evidence is not evidence of edit safety; the index may be stale or the symbol may be new.',
       blastRadius: {
         upstreamCount: 0,
         upstreamFiles: [],
@@ -757,7 +762,8 @@ export async function gnSafeEditCheck(
         {
           check: 'symbol_in_index',
           passed: false,
-          detail: 'Symbol not found in graph index.',
+          detail:
+            'Symbol not found in graph index. Verify the symbol name and index freshness before editing.',
         },
       ],
       warnings,

@@ -48,11 +48,29 @@ const toPosixPath = (value: string): string => value.replace(/\\/g, '/');
 /** Bytes read from the head of an extensionless file to inspect its shebang. */
 const SHEBANG_PROBE_BYTES = 256;
 
+/**
+ * A `.git` marker only bounds a nested repository when it is a real one: a
+ * worktree/submodule `.git` file, or a `.git` directory that holds `HEAD`.
+ * Empty or partial `.git` directories are stray leftovers, and excluding their
+ * parent would silently drop a first-party source tree from the index.
+ */
+async function isNestedGitMarker(markerPath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(markerPath);
+    if (!stat.isDirectory()) return true;
+    await fs.stat(path.join(markerPath, 'HEAD'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function findNestedGitRoots(
   repoPath: string,
   ignoreFilter: Awaited<ReturnType<typeof createIgnoreFilter>>,
 ): Promise<Set<string>> {
   const roots = new Set<string>();
+  const ignoredMarkers: string[] = [];
   const markerIgnore = {
     ignored(p: Parameters<typeof ignoreFilter.ignored>[0]): boolean {
       const relative = toPosixPath(p.relative());
@@ -70,8 +88,21 @@ async function findNestedGitRoots(
     nodir: false,
     ignore: markerIgnore,
   })) {
-    const parent = path.posix.dirname(toPosixPath(String(entry)));
-    if (parent !== '.') roots.add(parent);
+    const relativeMarker = toPosixPath(String(entry));
+    const parent = path.posix.dirname(relativeMarker);
+    if (parent === '.') continue;
+    if (await isNestedGitMarker(path.join(repoPath, relativeMarker))) {
+      roots.add(parent);
+    } else {
+      ignoredMarkers.push(parent);
+    }
+  }
+  if (ignoredMarkers.length > 0 && isVerboseIngestionEnabled()) {
+    console.log(
+      `[scan] Ignored ${ignoredMarkers.length} stray .git marker(s) without HEAD: ${ignoredMarkers
+        .slice(0, 10)
+        .join(', ')}`,
+    );
   }
   return roots;
 }
