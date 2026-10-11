@@ -182,3 +182,37 @@ validation for final inputs and distinguish prior CI from candidate evidence.
   do not replace coordinator runtime evidence. Corrected-candidate CI, final
   artifact validation, advisory disposition, version/channel selection and
   explicit merge/publication approval remain gates.
+
+## Corrected candidate validation
+
+- Candidate `80009cb9811b7c2d696c5bff91b45c9bc8d3fc75` passed CI run
+  `38123010377`: Linux, macOS, Windows, coverage, Chromium, formatting,
+  lint and both typechecks. Benchmark, OntoIndex Check and CodeQL passed;
+  the failed-log query returned no failures.
+- Four additional bounded reviews on gpt-6-luna and gpt-6.1-sol found no
+  projection or regression-test blocker and confirmed the release gates.
+- Fresh installed `ontoindex@2.1.5` passed version/help and public MCP
+  inspection against the repository index and an isolated TypeScript fixture.
+  The installed CLI indexed the fixture with two nodes and one edge; MCP
+  returned `found` for `releaseSmokeSymbol`. Tarball SHA256:
+  `c7df58572ad7c0fd7470d5f4f52d70a09fa3b9a0d09d36ea62cf18adafc4ed1a`.
+  Owned staging directories were removed and absence verified.
+- The first isolated harness attempt omitted `ONTOINDEX_HOME` from the SDK
+  child environment and failed repository discovery. Explicit environment
+  inheritance corrected the harness; no product change was required.
+- Fresh production audits reported zero CLI findings and two low web findings
+  via KaTeX/Mermaid (`GHSA-238p-pmpm-9mq7`). Mermaid 12.1.0 still declares
+  KaTeX `^0.16.47`, excluding patched 0.18.2; a Mermaid upgrade alone does not
+  establish remediation. No incompatible override or downgrade was applied.
+- The public npm registry returned E404 for `ontoindex`. The RC workflow
+  handles E404 by using package version 2.1.5 as its floor; latest GitHub
+  release is `github-release/2.2.1`, while Release Please records 1.9.8.
+  Release version and channel require reconciliation before publication.
+- Remaining gates: version/channel selection, advisory remediation or explicit
+  risk acceptance, affected artifact revalidation after source/version changes,
+  and explicit merge/publication approval. Master merge can publish npm RC,
+  GitHub prerelease and GHCR images automatically. No merge, tag, version bump
+  or publication was performed.
+
+Knowledge handoff: none; existing validation rules already require exact-input
+evidence and distinguish harness failures from product failures.
