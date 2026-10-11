@@ -26,16 +26,49 @@ vi.mock('../../src/mcp/server.js', () => ({
   })),
 }));
 
-vi.mock('@modelcontextprotocol/sdk/server/streamableHttp.js', () => {
+vi.mock('@modelcontextprotocol/sdk/server/streamableHttp.js', async () => {
+  const { JSONRPCMessageSchema, isInitializeRequest } =
+    await import('@modelcontextprotocol/sdk/types.js');
   return {
-    StreamableHTTPServerTransport: vi.fn().mockImplementation(function () {
+    StreamableHTTPServerTransport: vi.fn().mockImplementation(function (options) {
       const t: any = {
         sessionId: undefined as string | undefined,
         onclose: undefined as (() => void) | undefined,
-        handleRequest: vi.fn().mockImplementation(async () => {
-          // Assign sessionId on first call — mirrors real SDK behavior
+        handleRequest: vi.fn().mockImplementation(async (req, res, body) => {
           if (!t.sessionId) {
+            const accept = req.headers.accept ?? '';
+            if (
+              !accept.includes('application/json') ||
+              !accept.includes('text/event-stream') ||
+              !req.headers['content-type']?.includes('application/json')
+            ) {
+              res.status(406).json({});
+              return;
+            }
+            let messages;
+            try {
+              messages = (Array.isArray(body) ? body : [body]).map((message) =>
+                JSONRPCMessageSchema.parse(message),
+              );
+            } catch {
+              res.status(400).json({});
+              return;
+            }
+            if (messages.length !== 1 || !isInitializeRequest(messages[0])) {
+              res.status(400).json({});
+              return;
+            }
             t.sessionId = `sess-${Math.random().toString(36).slice(2)}`;
+            try {
+              await options.onsessioninitialized?.(t.sessionId);
+            } catch (error) {
+              res.status(400).json({
+                jsonrpc: '2.0',
+                error: { code: -32700, message: String(error) },
+                id: null,
+              });
+              return;
+            }
           }
         }),
         close: vi.fn().mockResolvedValue(undefined),
@@ -55,36 +88,365 @@ vi.mock('@modelcontextprotocol/sdk/server/index.js', () => ({
  * Minimal Express mock that records the /api/mcp handler and exposes a
  * `trigger` helper for firing requests.
  *
- * Uses `await Promise.resolve()` loops to flush chained microtasks without
- * relying on setImmediate (which is faked by vi.useFakeTimers).
+ * Awaits the endpoint promise so initialization and finalizers finish.
  */
 function makeMockApp() {
-  let mcpHandler: ((req: any, res: any) => void) | undefined;
+  let mcpHandler: ((req: any, res: any) => Promise<void>) | undefined;
 
   const app = {
-    all: vi.fn((_path: string, handler: (req: any, res: any) => void) => {
+    all: vi.fn((_path: string, handler: (req: any, res: any) => Promise<void>) => {
       mcpHandler = handler;
     }),
     trigger: async (
       req: Partial<{ method: string; headers: Record<string, string>; body: unknown }>,
+      response: { destroyed?: boolean } = {},
     ) => {
       if (!mcpHandler) throw new Error('mountMCPEndpoints not called yet');
       const res: any = {
         headersSent: false,
-        status: vi.fn().mockReturnThis(),
-        json: vi.fn().mockReturnThis(),
+        destroyed: false,
+        statusCode: 200,
+        status: vi.fn(function (this: any, code: number) {
+          this.statusCode = code;
+          return this;
+        }),
+        json: vi.fn(function (this: any) {
+          if (this.headersSent) throw new Error('ERR_HTTP_HEADERS_SENT');
+          this.headersSent = true;
+          return this;
+        }),
+        ...response,
       };
-      mcpHandler({ method: 'POST', headers: {}, body: {}, ...req }, res);
-      // New-session setup awaits both connect() and handleRequest(); existing
-      // sessions only await handleRequest(). Keep the flush cheap so cap tests
-      // don't spend most of their time in Promise churn.
-      const flushCount = req.headers?.['mcp-session-id'] ? 2 : 5;
-      for (let i = 0; i < flushCount; i++) await Promise.resolve();
+      await mcpHandler(
+        {
+          method: 'POST',
+          ...req,
+          headers: {
+            accept: 'application/json, text/event-stream',
+            'content-type': 'application/json',
+            ...req.headers,
+          },
+          body: req.body === undefined ? initializeRequest : req.body,
+        },
+        res,
+      );
+      expect(res.json.mock.calls.length).toBeLessThanOrEqual(1);
       return res;
     },
   };
   return app;
 }
+
+const initializeRequest = {
+  jsonrpc: '2.0',
+  id: 1,
+  method: 'initialize',
+  params: {
+    protocolVersion: '2025-03-26',
+    capabilities: {},
+    clientInfo: { name: 'test', version: '1' },
+  },
+};
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+describe('validated admission and terminal cleanup', () => {
+  it('closes admitted sessions when handling returns an SDK error response', async () => {
+    const { createMCPServer } = await import('../../src/mcp/server.js');
+    let transport: any;
+    vi.mocked(createMCPServer).mockImplementationOnce(
+      () =>
+        ({
+          connect: vi.fn((candidate) => {
+            transport = candidate;
+            const handle = candidate.handleRequest.getMockImplementation();
+            candidate.handleRequest.mockImplementation(async (...args: any[]) => {
+              await handle(...args);
+              args[1].status(400).json({});
+            });
+            return Promise.resolve();
+          }),
+          close: vi.fn().mockResolvedValue(undefined),
+        }) as any,
+    );
+    const app = makeMockApp();
+    const { cleanup, getDiagnostics } = mountMCPEndpoints(app as any, makeMockBackend());
+    await app.trigger({});
+    expect(getDiagnostics().activeSessionCount).toBe(0);
+    expect(transport.close).toHaveBeenCalled();
+    await app.trigger({});
+    expect(getDiagnostics().activeSessionCount).toBe(1);
+    await cleanup();
+  });
+
+  it('closes a blocked handler before draining initialization', async () => {
+    const { createMCPServer } = await import('../../src/mcp/server.js');
+    const handling = deferred();
+    const release = deferred();
+    const delivered = vi.fn();
+    vi.mocked(createMCPServer).mockImplementationOnce(
+      () =>
+        ({
+          connect: vi.fn((transport) => {
+            const handle = transport.handleRequest.getMockImplementation();
+            transport.handleRequest.mockImplementation(async (...args: any[]) => {
+              await handle(...args);
+              handling.resolve();
+              await release.promise;
+              delivered();
+            });
+            transport.close.mockImplementation(() => {
+              release.resolve();
+              return Promise.resolve();
+            });
+            return Promise.resolve();
+          }),
+          close: vi.fn().mockResolvedValue(undefined),
+        }) as any,
+    );
+    const app = makeMockApp();
+    const { cleanup, getDiagnostics } = mountMCPEndpoints(app as any, makeMockBackend());
+    const request = app.trigger({});
+    await handling.promise;
+    await cleanup();
+    await request;
+    expect(delivered).toHaveBeenCalledOnce();
+    expect(getDiagnostics().activeSessionCount).toBe(0);
+  });
+
+  it('finishes initialization started before cleanup without an SDK parse error', async () => {
+    const { createMCPServer } = await import('../../src/mcp/server.js');
+    const handling = deferred();
+    const release = deferred();
+    vi.mocked(createMCPServer).mockImplementationOnce(
+      () =>
+        ({
+          connect: vi.fn((transport) => {
+            const handle = transport.handleRequest.getMockImplementation();
+            transport.handleRequest.mockImplementation(async (...args: any[]) => {
+              handling.resolve();
+              await release.promise;
+              await handle(...args);
+            });
+            transport.close.mockImplementation(() => {
+              release.resolve();
+              return Promise.resolve();
+            });
+            return Promise.resolve();
+          }),
+          close: vi.fn().mockResolvedValue(undefined),
+        }) as any,
+    );
+    const app = makeMockApp();
+    const { cleanup, getDiagnostics } = mountMCPEndpoints(app as any, makeMockBackend());
+    const request = app.trigger({});
+    await handling.promise;
+    const shutdown = cleanup();
+    const response = await request;
+    await shutdown;
+    expect(response.statusCode).toBe(200);
+    expect(response.json).not.toHaveBeenCalled();
+    expect(getDiagnostics().totalSessionsCreated).toBe(1);
+    expect(getDiagnostics().activeSessionCount).toBe(0);
+    expect((await app.trigger({})).statusCode).toBe(503);
+  });
+
+  it('keeps a live session when a disconnected initialization reaches admission', async () => {
+    vi.stubEnv('ONTOINDEX_HTTP_MCP_MAX_SESSIONS', '1');
+    vi.resetModules();
+    const { mountMCPEndpoints: mount } = await import('../../src/server/mcp-http.js');
+    const app = makeMockApp();
+    const { cleanup, getDiagnostics } = mount(app as any, makeMockBackend());
+    await app.trigger({});
+    const original = getDiagnostics().activeSessions[0]!.sessionId;
+    await app.trigger({}, { destroyed: true });
+    expect(getDiagnostics().activeSessions[0]!.sessionId).toBe(original);
+    expect(getDiagnostics().totalSessionsCreated).toBe(1);
+    expect(getDiagnostics().totalCapEvictions).toBe(0);
+    await cleanup();
+  });
+
+  it('releases reservations and closes resources after connect or handle rejection', async () => {
+    vi.stubEnv('ONTOINDEX_HTTP_MCP_MAX_SESSIONS', '1');
+    vi.resetModules();
+    const { mountMCPEndpoints: mount } = await import('../../src/server/mcp-http.js');
+    const { createMCPServer } = await import('../../src/mcp/server.js');
+    const app = makeMockApp();
+    const { cleanup, getDiagnostics } = mount(app as any, makeMockBackend());
+    for (const failure of ['connect', 'handle']) {
+      const close = vi.fn().mockResolvedValue(undefined);
+      let transport: any;
+      vi.mocked(createMCPServer).mockImplementationOnce(
+        () =>
+          ({
+            connect: vi.fn((candidate) => {
+              transport = candidate;
+              if (failure === 'connect') return Promise.reject(new Error('connect failed'));
+              candidate.handleRequest.mockRejectedValueOnce(new Error('handle failed'));
+              return Promise.resolve();
+            }),
+            close,
+          }) as any,
+      );
+      expect((await app.trigger({})).status).toHaveBeenCalledWith(500);
+      expect(close).toHaveBeenCalledOnce();
+      expect(transport.close).toHaveBeenCalled();
+      expect(getDiagnostics().activeSessionCount).toBe(0);
+    }
+    await app.trigger({});
+    expect(getDiagnostics().activeSessionCount).toBe(1);
+    await cleanup();
+  });
+
+  it('holds the active cap while two valid admissions await separate evictions', async () => {
+    vi.stubEnv('ONTOINDEX_HTTP_MCP_MAX_SESSIONS', '2');
+    vi.resetModules();
+    const { mountMCPEndpoints: mount } = await import('../../src/server/mcp-http.js');
+    const { createMCPServer } = await import('../../src/mcp/server.js');
+    const first = deferred();
+    const second = deferred();
+    const firstClosing = deferred();
+    const secondClosing = deferred();
+    for (const [gate, started] of [
+      [first, firstClosing],
+      [second, secondClosing],
+    ]) {
+      vi.mocked(createMCPServer).mockImplementationOnce(
+        () =>
+          ({
+            connect: vi.fn().mockResolvedValue(undefined),
+            close: vi.fn(() => {
+              started.resolve();
+              return gate.promise;
+            }),
+          }) as any,
+      );
+    }
+    const app = makeMockApp();
+    const { cleanup, getDiagnostics } = mount(app as any, makeMockBackend());
+    await app.trigger({});
+    await app.trigger({});
+    const candidate1 = app.trigger({});
+    await firstClosing.promise;
+    expect(getDiagnostics().activeSessionCount).toBe(2);
+    const candidate2 = app.trigger({});
+    await secondClosing.promise;
+    expect(getDiagnostics().activeSessionCount).toBe(2);
+    expect((await app.trigger({})).status).toHaveBeenCalledWith(503);
+    expect(getDiagnostics().totalCapEvictions).toBe(2);
+    first.resolve();
+    second.resolve();
+    await Promise.all([candidate1, candidate2]);
+    expect(getDiagnostics().activeSessionCount).toBe(2);
+    await cleanup();
+  });
+
+  it('leaves an established cap-one session intact for rejected requests and replaces it for a singleton initialize batch', async () => {
+    vi.stubEnv('ONTOINDEX_HTTP_MCP_MAX_SESSIONS', '1');
+    vi.resetModules();
+    const { mountMCPEndpoints: mount } = await import('../../src/server/mcp-http.js');
+    const app = makeMockApp();
+    const { cleanup, getDiagnostics } = mount(app as any, makeMockBackend());
+    await app.trigger({});
+    const original = getDiagnostics().activeSessions[0]!.sessionId;
+    for (const req of [
+      { body: {} },
+      { body: { jsonrpc: '2.0', method: 'initialize', params: initializeRequest.params } },
+      { body: { jsonrpc: '1.0', id: 1, method: 'initialize' } },
+      { body: { jsonrpc: '2.0', id: 1, method: 'ping' } },
+      { body: { jsonrpc: '2.0', method: 'notifications/initialized' } },
+      { body: [initializeRequest, { jsonrpc: '2.0', id: 2, method: 'ping' }] },
+      { headers: { accept: 'application/json' } },
+      { headers: { 'content-type': 'text/plain' } },
+    ]) {
+      await app.trigger(req);
+      expect(getDiagnostics().activeSessions[0]!.sessionId).toBe(original);
+      expect(getDiagnostics().totalCapEvictions).toBe(0);
+      expect(getDiagnostics().totalSessionsCreated).toBe(1);
+    }
+    await app.trigger({ body: [initializeRequest] });
+    expect(getDiagnostics().activeSessionCount).toBe(1);
+    expect(getDiagnostics().activeSessions[0]!.sessionId).not.toBe(original);
+    expect(getDiagnostics().totalCapEvictions).toBe(1);
+    await cleanup();
+  });
+
+  it('drains blocked initialization and its final close and returns the same cleanup promise', async () => {
+    const { createMCPServer } = await import('../../src/mcp/server.js');
+    const connected = deferred();
+    const connect = deferred();
+    const closing = deferred();
+    const close = deferred();
+    vi.mocked(createMCPServer).mockImplementationOnce(
+      () =>
+        ({
+          connect: vi.fn(() => {
+            connected.resolve();
+            return connect.promise;
+          }),
+          close: vi.fn(() => {
+            closing.resolve();
+            return close.promise;
+          }),
+        }) as any,
+    );
+    const app = makeMockApp();
+    const { cleanup, getDiagnostics } = mountMCPEndpoints(app as any, makeMockBackend());
+    const request = app.trigger({});
+    await connected.promise;
+    let complete = false;
+    const shutdown = cleanup();
+    expect(cleanup()).toBe(shutdown);
+    void shutdown.then(() => {
+      complete = true;
+    });
+    connect.resolve();
+    await closing.promise;
+    expect(complete).toBe(false);
+    expect(getDiagnostics().activeSessionCount).toBe(0);
+    close.resolve();
+    await Promise.all([request, shutdown]);
+    expect((await app.trigger({})).status).toHaveBeenCalledWith(503);
+  });
+
+  it('awaits an already-started session close', async () => {
+    const { createMCPServer } = await import('../../src/mcp/server.js');
+    const closing = deferred();
+    const close = deferred();
+    vi.mocked(createMCPServer).mockImplementationOnce(
+      () =>
+        ({
+          connect: vi.fn().mockResolvedValue(undefined),
+          close: vi.fn(() => {
+            closing.resolve();
+            return close.promise;
+          }),
+        }) as any,
+    );
+    const app = makeMockApp();
+    const { cleanup } = mountMCPEndpoints(app as any, makeMockBackend());
+    await app.trigger({});
+    const { StreamableHTTPServerTransport } =
+      await import('@modelcontextprotocol/sdk/server/streamableHttp.js');
+    (StreamableHTTPServerTransport as any).mock.results.at(-1).value.onclose();
+    await closing.promise;
+    let complete = false;
+    const shutdown = cleanup();
+    void shutdown.then(() => {
+      complete = true;
+    });
+    await Promise.resolve();
+    expect(complete).toBe(false);
+    close.resolve();
+    await shutdown;
+  });
+});
 
 function makeMockBackend(): any {
   return {};
@@ -162,29 +524,32 @@ describe('concurrent initialization cap', () => {
     const app = makeMockApp();
     const { cleanup, getDiagnostics } = mountWithCap(app as any, makeMockBackend());
     const pending = Array.from({ length: 8 }, () =>
-      app.trigger({ method: 'POST', headers: {}, body: {} }),
+      app.trigger({ method: 'POST', headers: {}, body: initializeRequest }),
     );
 
-    // Let all requests reach connect(), which remains blocked until released.
-    for (let i = 0; i < 20; i++) await Promise.resolve();
     expect(getDiagnostics().activeSessionCount).toBe(0);
     releaseConnect();
     const responses = await Promise.all(pending);
-    for (let i = 0; i < 20; i++) await Promise.resolve();
 
     expect(getDiagnostics().activeSessionCount).toBe(1);
     expect(
       responses.filter((response) => response.status.mock.calls.some(([status]) => status === 503)),
     ).toHaveLength(7);
 
-    // Closing the active session leaves no capacity except a leaked reservation
-    // would block, so a fresh initialization proves the reservation was released.
+    // Terminal cleanup refuses later initialization.
     await cleanup();
-    await app.trigger({ method: 'POST', headers: {}, body: {} });
-    for (let i = 0; i < 20; i++) await Promise.resolve();
-    expect(getDiagnostics().activeSessionCount).toBe(1);
-    expect(getDiagnostics().totalSessionsCreated).toBe(2);
+    const response = await app.trigger({ method: 'POST', headers: {}, body: initializeRequest });
+    expect(response.status).toHaveBeenCalledWith(503);
+    expect(getDiagnostics().activeSessionCount).toBe(0);
+    expect(getDiagnostics().totalSessionsCreated).toBe(1);
     await cleanup();
+    vi.mocked(createMockServer).mockImplementation(
+      () =>
+        ({
+          connect: vi.fn().mockResolvedValue(undefined),
+          close: vi.fn().mockResolvedValue(undefined),
+        }) as any,
+    );
   });
 });
 
@@ -198,7 +563,7 @@ describe('TTL eviction', () => {
     const { cleanup, getDiagnostics } = mountMCPEndpoints(app as any, makeMockBackend());
 
     // Create one session (trigger flushes microtasks via Promise.resolve loops)
-    await app.trigger({ method: 'POST', headers: {}, body: {} });
+    await app.trigger({ method: 'POST', headers: {}, body: initializeRequest });
 
     expect(getDiagnostics().totalSessionsCreated).toBe(1);
     expect(getDiagnostics().activeSessionCount).toBe(1);
@@ -224,7 +589,7 @@ describe('session reset on close', () => {
     const app = makeMockApp();
     const { cleanup, getDiagnostics } = mountMCPEndpoints(app as any, makeMockBackend());
 
-    await app.trigger({ method: 'POST', headers: {}, body: {} });
+    await app.trigger({ method: 'POST', headers: {}, body: initializeRequest });
     expect(getDiagnostics().activeSessionCount).toBe(1);
 
     // Retrieve the transport mock instance and fire its onclose
@@ -248,7 +613,7 @@ describe('session reset on close', () => {
     const app = makeMockApp();
     const { cleanup, getDiagnostics } = mountMCPEndpoints(app as any, makeMockBackend());
 
-    await app.trigger({ method: 'POST', headers: {}, body: {} });
+    await app.trigger({ method: 'POST', headers: {}, body: initializeRequest });
     const sessionId = getDiagnostics().activeSessions[0]?.sessionId;
     expect(sessionId).toBeDefined();
 
@@ -267,7 +632,7 @@ describe('session reset on close', () => {
     const app = makeMockApp();
     const { cleanup, getDiagnostics } = mountMCPEndpoints(app as any, makeMockBackend());
 
-    await app.trigger({ method: 'POST', headers: {}, body: {} });
+    await app.trigger({ method: 'POST', headers: {}, body: initializeRequest });
     const sessionId = getDiagnostics().activeSessions[0]?.sessionId;
     expect(sessionId).toBeDefined();
 
@@ -286,7 +651,7 @@ describe('session reset on close', () => {
     const app = makeMockApp();
     const { cleanup, getDiagnostics } = mountMCPEndpoints(app as any, makeMockBackend());
 
-    await app.trigger({ method: 'POST', headers: {}, body: {} });
+    await app.trigger({ method: 'POST', headers: {}, body: initializeRequest });
     const sessionId = getDiagnostics().activeSessions[0]?.sessionId;
     expect(sessionId).toBeDefined();
 
@@ -337,7 +702,7 @@ describe('MCPDiagnosticsSnapshot shape', () => {
     const app = makeMockApp();
     const { cleanup, getDiagnostics } = mountMCPEndpoints(app as any, makeMockBackend());
 
-    await app.trigger({ method: 'POST', headers: {}, body: {} });
+    await app.trigger({ method: 'POST', headers: {}, body: initializeRequest });
     const after = Date.now();
 
     const snap = getDiagnostics();
@@ -361,10 +726,10 @@ describe('MCPDiagnosticsSnapshot shape', () => {
     const app = makeMockApp();
     const { cleanup, getDiagnostics } = mountMCPEndpoints(app as any, makeMockBackend());
 
-    await app.trigger({ method: 'POST', headers: {}, body: {} });
+    await app.trigger({ method: 'POST', headers: {}, body: initializeRequest });
     expect(getDiagnostics().totalSessionsCreated).toBe(1);
 
-    await app.trigger({ method: 'POST', headers: {}, body: {} });
+    await app.trigger({ method: 'POST', headers: {}, body: initializeRequest });
     expect(getDiagnostics().totalSessionsCreated).toBe(2);
 
     await cleanup();

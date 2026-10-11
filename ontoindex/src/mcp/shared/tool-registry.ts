@@ -297,7 +297,7 @@ const TOOL_METADATA_LIST: ToolContractMetadata[] = [
     kind: 'super',
     modes: WRITE_AGENT_MODES,
     category: 'refactor',
-    intent: 'Apply rename/extract/move/modify safely',
+    intent: 'Preview renames; apply extract/move/modify safely',
     whenToUse: 'Any refactor (single dispatcher for 6 atomic tools; defaults to dryRun:true)',
     contractStatus: 'stable',
     visibility: 'public',

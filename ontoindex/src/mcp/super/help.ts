@@ -183,7 +183,8 @@ export interface HelpParams {
 const MODE_DESCRIPTIONS: Record<AgentMode, string> = {
   general: 'General exploration, editing, docs, and session setup',
   audit: 'Audit lifecycle: ingest findings, verify, dedupe, bundle, dispatch, and worker review',
-  refactor: 'Safe refactor operations: rename, extract, move, and modify with impact analysis',
+  refactor:
+    'Refactor guidance: review-only rename candidates and safe extract, move, and modify operations with impact analysis',
   'query-projects':
     'Read-only discovery: explore repos and groups, query symbols, inspect context and impact — no edits or write operations',
 };
@@ -197,7 +198,7 @@ const MODE_WORKFLOWS: Record<AgentMode, string[]> = {
     '2. Inspect symbols with inspect({action: "context"})',
     '3. Check blast radius with impact({action: "symbol"})',
     '4. Use audit({action: "report"}) for review or docs({action: "trace"}) for docs-backed questions',
-    '5. Refactor with refactor({action: "rename"}) when the edit is safe to make',
+    '5. Preview rename candidates with refactor({action: "rename", dry_run: true}), then edit files directly and verify',
     '6. Pre-edit safety: gn_safe_edit_check({symbol: "..."})',
     '7. Apply edit: gn_safe_refactor({intent, symbol, params})',
     '8. Pre-commit: gn_pre_commit_audit({scope: "staged"})',
@@ -228,7 +229,7 @@ const MODE_WORKFLOWS: Record<AgentMode, string[]> = {
     '4. Check the blast radius with impact({action: "symbol"})',
     '5. Understand the file with gn_explain_module({filePath: "..."})',
     '6. Pre-edit safety: gn_safe_edit_check({symbol: "..."})',
-    '7. Apply edit: refactor({action: "rename"})',
+    '7. Preview a rename with refactor({action: "rename", dry_run: true}), review candidates, edit files directly, then verify',
     '8. Compatibility escape hatch: gn_safe_refactor({intent, symbol, params})',
     '9. Pre-commit: gn_pre_commit_audit({scope: "staged"})',
     '10. Self-help: gn_diagnose({}) when troubleshooting',
@@ -357,7 +358,7 @@ export function gnHelp(
         '2. Inspect symbols with inspect({action: "context"})',
         '3. Check blast radius with impact({action: "symbol"})',
         '4. Use audit({action: "report"}) for review or docs({action: "trace"}) for docs-backed questions',
-        '5. Refactor with refactor({action: "rename"}) when the edit is safe to make',
+        '5. Preview rename candidates with refactor({action: "rename", dry_run: true}), then edit files directly and verify',
         '6. Pre-edit safety: gn_safe_edit_check({symbol: "..."})',
         '7. Apply edit: gn_safe_refactor({intent, symbol, params})',
         '8. Pre-commit: gn_pre_commit_audit({scope: "staged"})',
@@ -420,7 +421,7 @@ export function gnHelp(
         'No runtime dependency or migration to Codebase-Memory-style storage is required.',
       ],
       recommendedChanges: [
-        'Prefer discover({action: "tools"}) as the first stop, then search({action: "semantic"}), inspect({action: "context"}), impact({action: "symbol"}), audit({action: "report"}), refactor({action: "rename"}), and docs({action: "readiness"}).',
+        'Prefer discover({action: "tools"}) as the first stop, then search({action: "semantic"}), inspect({action: "context"}), impact({action: "symbol"}), audit({action: "report"}), preview rename candidates with refactor({action: "rename", dry_run: true}), and docs({action: "readiness"}).',
         'Prefer gn_docs for requirement trace, API drift, docs context, and docs readiness questions; use includeMemories only for advisory context/readiness.',
         'Keep Markdown enrichment opt-ins explicit on search/inspect to avoid surprising response growth.',
       ],

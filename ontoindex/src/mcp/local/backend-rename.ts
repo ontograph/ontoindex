@@ -190,6 +190,13 @@ export async function renameSymbol(
     return { error: 'New name is the same as the current name.' };
   }
 
+  if (!dry_run) {
+    return {
+      error:
+        'Rename apply is unavailable: graph and text-search candidates do not provide a precise semantic rename edit plan. Use dry_run: true to review candidates.',
+    };
+  }
+
   const changes = new Map<string, RenameChange>();
 
   const addEdit = (
@@ -326,32 +333,8 @@ export async function renameSymbol(
   const allChanges = Array.from(changes.values());
   const totalEdits = allChanges.reduce((sum, c) => sum + c.edits.length, 0);
 
-  const appliedFiles: string[] = [];
-  const failedFiles: RenameApplyFailure[] = [];
-  if (!dry_run) {
-    for (const change of allChanges) {
-      try {
-        const fullPath = await assertSafePath(change.file_path);
-        let content = await fs.readFile(fullPath, 'utf-8');
-        const regex = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
-        content = content.replace(regex, new_name);
-        await fs.writeFile(fullPath, content, 'utf-8');
-        appliedFiles.push(change.file_path);
-      } catch (e) {
-        logQueryError('rename:apply-edit', e);
-        failedFiles.push({
-          file_path: change.file_path,
-          error: e instanceof Error ? e.message : String(e),
-        });
-      }
-    }
-  }
-
-  const status: RenameSuccessResult['status'] =
-    failedFiles.length === 0 ? 'success' : appliedFiles.length > 0 ? 'partial' : 'failed';
-
   return {
-    status,
+    status: 'success',
     old_name: oldName,
     new_name,
     files_affected: allChanges.length,
@@ -359,9 +342,7 @@ export async function renameSymbol(
     graph_edits: graphEdits,
     text_search_edits: astSearchEdits,
     changes: allChanges,
-    applied: appliedFiles.length > 0,
-    ...(!dry_run && { applied_files: appliedFiles }),
-    ...(failedFiles.length > 0 && { failed_files: failedFiles }),
+    applied: false,
     ...(warnings.length > 0 && { warnings }),
   };
 }

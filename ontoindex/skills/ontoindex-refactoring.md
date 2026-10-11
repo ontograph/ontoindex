@@ -31,7 +31,7 @@ description: "Use when the user wants to rename, extract, split, move, or restru
 ```
 - [ ] ontoindex_rename({symbol_name: "oldName", new_name: "newName", dry_run: true}) — preview all edits
 - [ ] Review graph edits (high confidence) and ast_search edits (review carefully)
-- [ ] If satisfied: ontoindex_rename({..., dry_run: false}) — apply edits
+- [ ] Apply the reviewed edits directly in the files (rename apply is unavailable; dry_run: false returns an error)
 - [ ] ontoindex_detect_changes() — verify only expected files changed
 - [ ] Run tests for affected processes
 ```
@@ -112,8 +112,8 @@ RETURN caller.name, caller.filePath ORDER BY caller.filePath
 
 2. Review ast_search edits (config.json: dynamic reference!)
 
-3. ontoindex_rename({symbol_name: "validateUser", new_name: "authenticateUser", dry_run: false})
-   → Applied 12 edits across 8 files
+3. Apply the reviewed edits directly in the 8 files
+   (rename is preview-only; dry_run: false returns an error)
 
 4. ontoindex_detect_changes({scope: "all"})
    → Affected: LoginFlow, TokenRefresh

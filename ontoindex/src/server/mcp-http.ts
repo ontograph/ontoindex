@@ -12,6 +12,7 @@
 import type { Express, Request, Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { isJSONRPCRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createMCPServer } from '../mcp/server.js';
 import type { LocalBackend } from '../mcp/local/local-backend.js';
 import { randomUUID } from 'crypto';
@@ -62,6 +63,7 @@ interface MCPSession {
   createdAt: number;
   requestCount: number;
   errorCount: number;
+  initializing?: boolean;
 }
 
 type ClosableTransport = StreamableHTTPServerTransport & {
@@ -89,31 +91,43 @@ async function closeTransportQuietly(transport: StreamableHTTPServerTransport): 
 
 export function mountMCPEndpoints(app: Express, backend: LocalBackend): MCPEndpointHandle {
   const sessions = new Map<string, MCPSession>();
-  const closingSessions = new Set<string>();
-  let pendingInitializations = 0;
+  const closingSessions = new Map<StreamableHTTPServerTransport, Promise<void>>();
+  const closedSessions = new WeakMap<StreamableHTTPServerTransport, Promise<void>>();
+  const pendingInitializations = new Map<StreamableHTTPServerTransport, Promise<void>>();
+  let stopped = false;
+  let cleanupPromise: Promise<void> | undefined;
 
   // Global diagnostics counters
   let totalSessionsCreated = 0;
   let totalEvictions = 0;
   let totalCapEvictions = 0;
 
-  const closeSession = async (id: string, session: MCPSession): Promise<void> => {
-    if (closingSessions.has(id)) return;
-    closingSessions.add(id);
-    sessions.delete(id);
+  const closeSession = (id: string, session: MCPSession): Promise<void> => {
+    const existing = closedSessions.get(session.transport);
+    if (existing) return existing;
+    if (sessions.get(id) === session) sessions.delete(id);
     session.transport.onclose = undefined;
-    try {
-      await Promise.resolve(session.server.close());
-    } catch {}
-    await closeTransportQuietly(session.transport);
-    closingSessions.delete(id);
+    const closing = Promise.resolve()
+      .then(async () => {
+        // Closing the transport first releases streams that may keep handling pending.
+        await closeTransportQuietly(session.transport);
+        try {
+          await session.server.close();
+        } catch {}
+      })
+      .finally(() => {
+        closingSessions.delete(session.transport);
+      });
+    closingSessions.set(session.transport, closing);
+    closedSessions.set(session.transport, closing);
+    return closing;
   };
 
   const evictOldestSession = async (): Promise<void> => {
     let oldestId: string | null = null;
     let oldestActivity = Infinity;
     for (const [id, session] of sessions) {
-      if (session.lastActivity < oldestActivity) {
+      if (!session.initializing && session.lastActivity < oldestActivity) {
         oldestId = id;
         oldestActivity = session.lastActivity;
       }
@@ -138,6 +152,21 @@ export function mountMCPEndpoints(app: Express, backend: LocalBackend): MCPEndpo
   }
 
   const handleMcpRequest = async (req: Request, res: Response) => {
+    const unavailable = () => {
+      if (!res.headersSent)
+        res.status(503).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32000,
+            message: 'MCP session limit reached or server shutting down. Retry later.',
+          },
+          id: null,
+        });
+    };
+    if (stopped) {
+      unavailable();
+      return;
+    }
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
     if (sessionId && sessions.has(sessionId)) {
@@ -155,65 +184,84 @@ export function mountMCPEndpoints(app: Express, backend: LocalBackend): MCPEndpo
       });
     } else if (req.method === 'POST') {
       // No session ID — new client initializing
-      if (sessions.size + pendingInitializations >= MAX_HTTP_MCP_SESSIONS) {
-        if (sessions.size === 0) {
-          res.status(503).json({
-            jsonrpc: '2.0',
-            error: { code: -32000, message: 'MCP session limit reached. Retry later.' },
-            id: null,
-          });
-          return;
-        }
-        totalCapEvictions++;
-        // closeSession removes the established session from the active map
-        // synchronously before its first await, freeing one slot for this init.
-        const eviction = evictOldestSession();
-        pendingInitializations++;
-        try {
-          await eviction;
-        } catch {}
-      } else {
-        // Reserve capacity synchronously before connecting or handling a request.
-        pendingInitializations++;
+      if (pendingInitializations.size >= MAX_HTTP_MCP_SESSIONS) {
+        unavailable();
+        return;
       }
       let transport: StreamableHTTPServerTransport | undefined;
       let server: Server | undefined;
-      let registered = false;
+      let session: MCPSession | undefined;
+      let eviction: Promise<void> | undefined;
+      let finish!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
       try {
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: async (id) => {
+            // The SDK initialize predicate also accepts notification envelopes.
+            // Admission requires a request, while the SDK owns the remaining validation.
+            const message = Array.isArray(req.body) ? req.body[0] : req.body;
+            if (!isJSONRPCRequest(message)) {
+              throw new Error('Initialization requires a JSON-RPC request.');
+            }
+            if (res.destroyed) throw new Error('Client disconnected before initialization.');
+            if (sessions.size >= MAX_HTTP_MCP_SESSIONS) {
+              if (![...sessions.values()].some((entry) => !entry.initializing)) {
+                throw new Error('MCP session limit reached. Retry later.');
+              }
+              totalCapEvictions++;
+              eviction = evictOldestSession();
+            }
+            const now = Date.now();
+            session = {
+              server: server!,
+              transport: transport!,
+              lastActivity: now,
+              createdAt: now,
+              requestCount: 0,
+              errorCount: 0,
+              initializing: true,
+            };
+            sessions.set(id, session);
+            totalSessionsCreated++;
+            transport!.onclose = () => {
+              void closeSession(id, session!);
+            };
+          },
         });
+        pendingInitializations.set(transport, pending);
         server = createMCPServer(backend);
         await server.connect(transport);
-        await transport.handleRequest(req, res, req.body);
-
-        if (transport.sessionId) {
-          registered = true;
-          const now = Date.now();
-          sessions.set(transport.sessionId, {
-            server,
-            transport,
-            lastActivity: now,
-            createdAt: now,
-            requestCount: 0,
-            errorCount: 0,
-          });
-          totalSessionsCreated++;
-          const registeredTransport = transport;
-          transport.onclose = () => {
-            const id = registeredTransport.sessionId;
-            if (!id) return;
-            const session = sessions.get(id);
-            if (session) void closeSession(id, session);
-          };
+        if (stopped) {
+          unavailable();
+          return;
         }
+        await transport.handleRequest(req, res, req.body);
+        await eviction;
+        if (session) {
+          if (stopped || res.statusCode >= 400 || res.destroyed)
+            await closeSession(transport.sessionId!, session);
+          else session.initializing = false;
+        }
+      } catch (err) {
+        if (session) await closeSession(transport!.sessionId!, session);
+        throw err;
       } finally {
-        pendingInitializations--;
-        if (!registered) {
-          try {
-            await Promise.resolve(server?.close());
-          } catch {}
-          if (transport) await closeTransportQuietly(transport);
+        try {
+          if (!session || stopped) {
+            if (session) await closeSession(transport!.sessionId!, session);
+            else {
+              if (transport) await closeTransportQuietly(transport);
+              try {
+                await server?.close();
+              } catch {}
+            }
+          }
+        } finally {
+          if (transport) pendingInitializations.delete(transport);
+          finish();
         }
       }
     } else {
@@ -227,7 +275,7 @@ export function mountMCPEndpoints(app: Express, backend: LocalBackend): MCPEndpo
 
   app.all('/api/mcp', (req: Request, res: Response) => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
-    void handleMcpRequest(req, res).catch((err: unknown) => {
+    return handleMcpRequest(req, res).catch((err: unknown) => {
       console.error('MCP HTTP request failed:', err);
       if (sessionId) {
         const session = sessions.get(sessionId);
@@ -242,10 +290,21 @@ export function mountMCPEndpoints(app: Express, backend: LocalBackend): MCPEndpo
     });
   });
 
-  const cleanup = async () => {
+  const cleanup = () => {
+    if (cleanupPromise) return cleanupPromise;
+    stopped = true;
     clearInterval(cleanupTimer);
     const closers = [...sessions].map(([id, session]) => closeSession(id, session));
-    await Promise.allSettled(closers);
+    const pending = [...pendingInitializations];
+    cleanupPromise = (async () => {
+      await Promise.allSettled(pending.map(([transport]) => closeTransportQuietly(transport)));
+      await Promise.allSettled([
+        ...closers,
+        ...closingSessions.values(),
+        ...pending.map(([, done]) => done),
+      ]);
+    })();
+    return cleanupPromise;
   };
 
   const getDiagnostics = (): MCPDiagnosticsSnapshot => ({

@@ -569,7 +569,7 @@ describe('SERENA-REV2: mode parameter', () => {
     const report = gnHelp({ mode: 'refactor' });
     const wf = report.recommendedWorkflow.join('\n');
     expect(wf).toContain('discover({action: "tools"})');
-    expect(wf).toContain('refactor({action: "rename"})');
+    expect(wf).toContain('refactor({action: "rename", dry_run: true})');
   });
 
   it('mode=refactor: recommendedWorkflow does not include audit-session steps', () => {

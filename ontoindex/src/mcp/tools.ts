@@ -614,8 +614,8 @@ OUTPUT: ranked findings with file, line, pattern type, enclosing symbol callerCo
   },
   {
     name: 'rename',
-    description: `Multi-file coordinated rename using the knowledge graph + text search.
-Finds all references via graph (high confidence) and regex text search (lower confidence). Preview by default.
+    description: `Preview rename candidates across files using the knowledge graph + text search. Rename apply is unavailable; use dry_run: true to review candidates, then edit files directly.
+Finds references via graph (high confidence) and regex text search (lower confidence).
 
 WHEN TO USE: Renaming a function, class, method, or variable across the codebase. Safer than find-and-replace.
 AFTER THIS: Run gn_verify_diff() and gn_test_gap() to verify no unexpected side effects.
@@ -1590,7 +1590,7 @@ GATE: Requires --confirm-writes on the backend.`,
   },
   {
     name: 'rename_symbol',
-    description: `Rename a symbol across the entire codebase using its graph UID.
+    description: `Preview rename candidates across the codebase using the symbol's graph UID. Rename apply is unavailable; use dry_run: true to review candidates, then edit files directly.
 
 WHEN TO USE: After get_symbol_info to get the UID, when you need zero-ambiguity rename.
 Safer than rename() for common names (e.g., "init", "run") where string matching is ambiguous.
@@ -1614,7 +1614,7 @@ AFTER THIS: Run gn_verify_diff() and gn_test_gap() to verify no unexpected side 
   },
   {
     name: 'extract_function',
-    description: `Extract a function or method into a named helper using its graph UID.
+    description: `Extract a supported top-level JavaScript/TypeScript named function into a named helper using its graph UID. The original function remains as a delegating wrapper. target_file must resolve to the source file; cross-file extraction is unsupported.
 
 WHEN TO USE: To split a long function into smaller helpers without breaking call sites.
 GATE: requires --confirm-writes server flag and confirm:true param.
@@ -1626,7 +1626,8 @@ AFTER THIS: Run gn_verify_diff() and gn_test_gap() to verify no unexpected side 
         new_name: { type: 'string', description: 'Name for the extracted helper.' },
         target_file: {
           type: 'string',
-          description: 'Optional file path to place the helper. Defaults to the same file.',
+          description:
+            'Must resolve to the source file; cross-file extraction is unsupported. Defaults to the same file.',
         },
         dry_run: { type: 'boolean', description: 'Preview only (default: true).', default: true },
         confirm: {

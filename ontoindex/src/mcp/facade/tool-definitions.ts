@@ -402,7 +402,8 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'refactor',
-    description: 'Perform safe refactoring: rename symbols, replace bodies, or stage in sandbox.',
+    description:
+      'Preview rename candidates, replace bodies, or stage edits in a sandbox. Rename apply is unavailable; review candidates, edit files directly, then verify.',
     inputSchema: {
       type: 'object',
       properties: {

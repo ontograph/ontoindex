@@ -36,7 +36,7 @@ For any task involving code understanding, debugging, impact analysis, or refact
 | `context`        | 360-degree symbol view — categorized refs, processes it participates in  |
 | `impact`         | Symbol blast radius — what breaks at depth 1/2/3 with confidence         |
 | `detect_changes` | Git-diff impact — what do your current changes affect                    |
-| `rename`         | Multi-file coordinated rename with confidence-tagged edits               |
+| `rename`         | Preview-only multi-file rename candidates with confidence tags           |
 | `cypher`         | Raw graph queries (read `ontoindex://repo/{name}/schema` first)           |
 | `list_repos`     | Discover indexed repos                                                   |
 

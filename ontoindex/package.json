@@ -1,6 +1,6 @@
 {
   "name": "ontoindex",
-  "version": "2.2.5",
+  "version": "2.2.6",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "AGPL-3.0-or-later",
@@ -57,7 +57,7 @@
   },
   "dependencies": {
     "@ladybugdb/core": "^0.17.1",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@scarf/scarf": "^1.4.0",
     "cli-progress": "^3.12.0",
     "commander": "^15.0.0",

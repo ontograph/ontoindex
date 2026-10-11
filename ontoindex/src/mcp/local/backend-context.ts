@@ -5,6 +5,8 @@ const MAX_CONTEXT_PROCESS_ROWS = (() => {
   const raw = Number.parseInt(process.env.ONTOINDEX_CONTEXT_PROCESS_LIMIT ?? '', 10);
   return Number.isFinite(raw) && raw > 0 ? Math.min(raw, 1_000) : 50;
 })();
+const MAX_CONTEXT_RELATIONSHIP_ROWS = 30;
+const MAX_CONTEXT_CONCEPT_ROWS = 10;
 
 interface ContextRepoHandle {
   id: string;
@@ -25,10 +27,11 @@ function contextCompleteness(
   sourceIncluded: boolean,
   missingReasons: string[],
   suggestedNextCalls?: string[],
+  truncated = false,
 ): Record<string, unknown> {
   return {
     sourceIncluded,
-    truncated: false,
+    truncated,
     missingReasons,
     ...(suggestedNextCalls && suggestedNextCalls.length > 0 ? { suggestedNextCalls } : {}),
   };
@@ -83,7 +86,7 @@ async function resolveClassLike(
   symId: string,
   resolvedLabel: string | undefined,
   sym: ResolvedContextSymbol,
-): Promise<boolean> {
+): Promise<{ isClassLike: boolean; queryFailed: boolean }> {
   const symRawType = sym.type || symbolTupleValue(sym, 2) || '';
   let isClassLike = resolvedLabel === 'Class' || resolvedLabel === 'Interface';
   if (!isClassLike && symRawType === '') {
@@ -100,74 +103,82 @@ async function resolveClassLike(
       );
       isClassLike = typeCheck.length > 0;
     } catch {
-      /* not a Class/Interface node */
+      return { isClassLike: false, queryFailed: true };
     }
   } else if (!isClassLike) {
     isClassLike = symRawType === 'Class' || symRawType === 'Interface';
   }
-  return isClassLike;
+  return { isClassLike, queryFailed: false };
 }
 
 async function expandClassLikeIncomingRefs(
   repoId: string,
   symId: string,
   incomingRows: ContextRelationshipRow[],
-): Promise<void> {
-  try {
-    // Run both incoming-ref queries in parallel — they are independent.
-    const [ctorIncoming, fileIncoming] = await Promise.all([
-      executeParameterized(
-        repoId,
-        `
+): Promise<{ truncated: boolean; missingReasons: string[] }> {
+  // Each independent query keeps its successful sibling if the other fails.
+  const results = await Promise.allSettled([
+    executeParameterized(
+      repoId,
+      `
         MATCH (n)-[hm:CodeRelation]->(ctor:Constructor)
         WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
         MATCH (caller)-[r:CodeRelation]->(ctor)
         WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'ACCESSES']
         RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
-        LIMIT 30
+        LIMIT ${MAX_CONTEXT_RELATIONSHIP_ROWS + 1}
       `,
-        { symId },
-      ),
-      executeParameterized(
-        repoId,
-        `
+      { symId },
+    ),
+    executeParameterized(
+      repoId,
+      `
         MATCH (f:File)-[rel:CodeRelation]->(n)
         WHERE n.id = $symId AND rel.type = 'DEFINES'
         MATCH (caller)-[r:CodeRelation]->(f)
         WHERE r.type IN ['CALLS', 'IMPORTS']
         RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
-        LIMIT 30
+        LIMIT ${MAX_CONTEXT_RELATIONSHIP_ROWS + 1}
       `,
-        { symId },
-      ),
-    ]);
+      { symId },
+    ),
+  ]);
 
-    // Deduplicate by (relType, uid) — a caller can have multiple relation
-    // types to the same target (e.g. both IMPORTS and CALLS), and each
-    // must be preserved so every category appears in the output.
-    const extraIncomingRows = [
-      ...(ctorIncoming as ContextRelationshipRow[]),
-      ...(fileIncoming as ContextRelationshipRow[]),
-    ];
-    const seenKeys = new Set(
-      incomingRows.map((row) => `${rowValue(row, 'relType', 0)}:${rowValue(row, 'uid', 1)}`),
-    );
-    for (const row of extraIncomingRows) {
-      const key = `${rowValue(row, 'relType', 0)}:${rowValue(row, 'uid', 1)}`;
-      if (!seenKeys.has(key)) {
-        seenKeys.add(key);
-        incomingRows.push(row);
-      }
+  // Deduplicate by (relType, uid) — a caller can have multiple relation
+  // types to the same target (e.g. both IMPORTS and CALLS), and each
+  // must be preserved so every category appears in the output.
+  const extraIncomingRows: ContextRelationshipRow[] = [];
+  const missingReasons: string[] = [];
+  let truncated = false;
+  for (const [index, result] of results.entries()) {
+    if (result.status === 'rejected') {
+      logContextQueryError(
+        `context:class-incoming-${index === 0 ? 'constructor' : 'file'}`,
+        result.reason,
+      );
+      missingReasons.push(`class-incoming-${index === 0 ? 'constructor' : 'file'}-query-failed`);
+    } else {
+      truncated ||= result.value.length > MAX_CONTEXT_RELATIONSHIP_ROWS;
+      extraIncomingRows.push(...result.value.slice(0, MAX_CONTEXT_RELATIONSHIP_ROWS));
     }
-  } catch (e) {
-    logContextQueryError('context:class-incoming-expansion', e);
   }
+  const seenKeys = new Set(
+    incomingRows.map((row) => `${rowValue(row, 'relType', 0)}:${rowValue(row, 'uid', 1)}`),
+  );
+  for (const row of extraIncomingRows) {
+    const key = `${rowValue(row, 'relType', 0)}:${rowValue(row, 'uid', 1)}`;
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      incomingRows.push(row);
+    }
+  }
+  return { truncated, missingReasons };
 }
 
 async function fetchMethodMetadata(
   repoId: string,
   symId: string,
-): Promise<Record<string, unknown> | undefined> {
+): Promise<{ metadata?: Record<string, unknown>; queryFailed: boolean }> {
   try {
     const metaRows = (await executeParameterized(
       repoId,
@@ -183,7 +194,7 @@ async function fetchMethodMetadata(
     `,
       { symId },
     )) as MethodMetadataRow[];
-    if (metaRows.length === 0) return undefined;
+    if (metaRows.length === 0) return { queryFailed: false };
 
     const row = metaRows[0];
     const meta: Record<string, unknown> = {};
@@ -191,10 +202,9 @@ async function fetchMethodMetadata(
     for (const [key, val] of rowEntries(row)) {
       if (val !== null && val !== undefined) meta[key] = val;
     }
-    return Object.keys(meta).length > 0 ? meta : undefined;
+    return { metadata: Object.keys(meta).length > 0 ? meta : undefined, queryFailed: false };
   } catch {
-    /* method metadata unavailable — omit silently */
-    return undefined;
+    return { queryFailed: true };
   }
 }
 
@@ -280,36 +290,44 @@ export async function context(
   }
 
   // Categorized incoming refs
-  const incomingRows = (await executeParameterized(
+  const incomingQueryRows = (await executeParameterized(
     repo.id,
     `
     MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
     WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
     RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
-    LIMIT 30
+    LIMIT ${MAX_CONTEXT_RELATIONSHIP_ROWS + 1}
   `,
     { symId },
   )) as ContextRelationshipRow[];
+  let truncated = incomingQueryRows.length > MAX_CONTEXT_RELATIONSHIP_ROWS;
+  const incomingRows = incomingQueryRows.slice(0, MAX_CONTEXT_RELATIONSHIP_ROWS);
+  const missingReasons: string[] = [];
 
   // Fix #480: Class/Interface nodes have no direct CALLS/IMPORTS edges —
   // those point to Constructor and File nodes respectively. Fetch those
   // extra incoming refs and merge them in so context() shows real callers.
-  const isClassLike = await resolveClassLike(repo.id, symId, resolvedLabel, sym);
-  if (isClassLike) {
-    await expandClassLikeIncomingRefs(repo.id, symId, incomingRows);
+  const classLike = await resolveClassLike(repo.id, symId, resolvedLabel, sym);
+  if (classLike.queryFailed) missingReasons.push('class-type-query-failed');
+  if (classLike.isClassLike) {
+    const expansion = await expandClassLikeIncomingRefs(repo.id, symId, incomingRows);
+    truncated ||= expansion.truncated;
+    missingReasons.push(...expansion.missingReasons);
   }
 
   // Categorized outgoing refs
-  const outgoingRows = (await executeParameterized(
+  const outgoingQueryRows = (await executeParameterized(
     repo.id,
     `
     MATCH (n {id: $symId})-[r:CodeRelation]->(target)
     WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
     RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
-    LIMIT 30
+    LIMIT ${MAX_CONTEXT_RELATIONSHIP_ROWS + 1}
   `,
     { symId },
   )) as ContextRelationshipRow[];
+  truncated ||= outgoingQueryRows.length > MAX_CONTEXT_RELATIONSHIP_ROWS;
+  const outgoingRows = outgoingQueryRows.slice(0, MAX_CONTEXT_RELATIONSHIP_ROWS);
 
   // Process participation
   let processRows: ProcessParticipationRow[] = [];
@@ -320,18 +338,22 @@ export async function context(
       MATCH (n {id: $symId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
       RETURN p.id AS pid, p.heuristicLabel AS label, r.step AS step, p.stepCount AS stepCount
       ORDER BY p.stepCount DESC
-      LIMIT ${MAX_CONTEXT_PROCESS_ROWS}
+      LIMIT ${MAX_CONTEXT_PROCESS_ROWS + 1}
     `,
       { symId },
     )) as ProcessParticipationRow[];
+    truncated ||= processRows.length > MAX_CONTEXT_PROCESS_ROWS;
+    processRows = processRows.slice(0, MAX_CONTEXT_PROCESS_ROWS);
   } catch (e) {
     logContextQueryError('context:process-participation', e);
+    missingReasons.push('process-participation-query-failed');
   }
 
   // Method/Function/Constructor enrichment: fetch method-specific properties
-  const symKind = isClassLike ? resolvedLabel || 'Class' : sym.type;
+  const symKind = classLike.isClassLike ? resolvedLabel || 'Class' : sym.type;
   const isMethodLike = symKind === 'Method' || symKind === 'Function' || symKind === 'Constructor';
-  const methodMetadata = isMethodLike ? await fetchMethodMetadata(repo.id, symId) : undefined;
+  const metadataResult = isMethodLike ? await fetchMethodMetadata(repo.id, symId) : undefined;
+  if (metadataResult?.queryFailed) missingReasons.push('method-metadata-query-failed');
 
   // Concepts (B11)
   let concepts: any[] = [];
@@ -341,11 +363,12 @@ export async function context(
       `
       MATCH (n {id: $symId})-[:CodeRelation {type: 'EXPLAINED_BY'}]-(c:Concept)
       RETURN c.id AS id, c.name AS name, c.authority AS authority, c.confidence AS confidence
-      LIMIT 10
+      LIMIT ${MAX_CONTEXT_CONCEPT_ROWS + 1}
     `,
       { symId },
     );
-    concepts = conceptRows.map((row) => ({
+    truncated ||= conceptRows.length > MAX_CONTEXT_CONCEPT_ROWS;
+    concepts = conceptRows.slice(0, MAX_CONTEXT_CONCEPT_ROWS).map((row) => ({
       id: rowValue(row, 'id', 0),
       name: rowValue(row, 'name', 1),
       authority: rowValue(row, 'authority', 2),
@@ -353,6 +376,7 @@ export async function context(
     }));
   } catch (e) {
     logContextQueryError('context:concept-lookup', e);
+    missingReasons.push('concept-lookup-query-failed');
   }
 
   return {
@@ -365,12 +389,18 @@ export async function context(
       startLine: sym.startLine,
       endLine: sym.endLine,
       ...(include_content && sym.content ? { content: sym.content } : {}),
-      ...(methodMetadata ? { methodMetadata } : {}),
+      ...(metadataResult?.metadata ? { methodMetadata: metadataResult.metadata } : {}),
     },
-    contextCompleteness: contextCompleteness(Boolean(include_content && sym.content), [
-      ...(include_content ? [] : ['source-not-requested']),
-      ...(include_content && !sym.content ? ['source-unavailable'] : []),
-    ]),
+    contextCompleteness: contextCompleteness(
+      Boolean(include_content && sym.content),
+      [
+        ...(include_content ? [] : ['source-not-requested']),
+        ...(include_content && !sym.content ? ['source-unavailable'] : []),
+        ...missingReasons,
+      ],
+      undefined,
+      truncated,
+    ),
     incoming: categorizeRows(incomingRows),
     outgoing: categorizeRows(outgoingRows),
     processes: processRows.map((row) => ({

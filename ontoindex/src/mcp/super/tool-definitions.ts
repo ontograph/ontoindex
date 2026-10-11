@@ -316,7 +316,7 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
   {
     name: 'gn_safe_refactor',
     description:
-      'Single WRITE dispatcher for atomic refactor operations (rename, modify-body, extract, move). Wraps each operation with symbol resolution, pre-edit safety check (via gn_safe_edit_check), dry-run preview, optional apply, and post-write verification guidance (gn_verify_diff / gn_test_gap).\n\nDefaults to dryRun: true — pass dryRun: false to actually apply changes.',
+      'Dispatcher for refactor operations (rename, modify-body, extract, move). Rename is preview-only: review its candidate edits, edit files directly, then verify. Other supported operations use symbol resolution, pre-edit safety checks, dry-run previews, optional apply, and post-write verification guidance (gn_verify_diff / gn_test_gap).\n\nDefaults to dryRun: true — pass dryRun: false to apply supported operations; rename apply is unavailable.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -342,7 +342,7 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
         params: {
           type: 'object',
           description:
-            'Operation-specific parameters: newName (rename/extract), newBody (modify-body), sourceLineRange (extract), targetFile (move/extract).',
+            'Operation-specific parameters: newName (rename/extract), newBody (modify-body), sourceLineRange (extract), targetFile (move or same-file extract; cross-file extraction is unsupported).',
         },
         dryRun: {
           type: 'boolean',

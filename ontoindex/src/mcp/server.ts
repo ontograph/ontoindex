@@ -13,6 +13,7 @@
 
 import { createRequire } from 'module';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { UriTemplate } from '@modelcontextprotocol/sdk/shared/uriTemplate.js';
 import { CompatibleStdioServerTransport } from './compatible-stdio-transport.js';
 import {
   CallToolRequestSchema,
@@ -34,7 +35,12 @@ import {
 } from './shared/tool-registry.js';
 import { realStdoutWrite } from './core/lbug-adapter.js';
 import type { LocalBackend } from './local/local-backend.js';
-import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
+import {
+  getResourceDefinitions,
+  getResourceTemplates,
+  parseResourceUri,
+  readResource,
+} from './resources.js';
 import { boundMcpErrorText, pageMcpResponse } from './shared/response-pages.js';
 
 const GRAPH_BACKED_SUPER_TOOLS = new Set<SuperTool>([
@@ -146,10 +152,10 @@ export function getNextStepHint(
       return `\n\n---\n**Next:** Start with the highest-risk finding, then use context({name: "<enclosing_symbol>"${repoParam}}) to inspect callers before tightening the type boundary.`;
 
     case 'rename':
-      return `\n\n---\n**Next:** Run gn_verify_diff({ expectedSymbols: ["<renamed_symbol>"], expectedFiles: ["<expected_file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }) to verify no unexpected side effects from the rename.`;
+      return `\n\n---\n**Next:** Review the rename candidate list, edit the affected files directly, then run gn_verify_diff({ expectedSymbols: ["<renamed_symbol>"], expectedFiles: ["<expected_file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }).`;
 
     case 'rename_symbol':
-      return `\n\n---\n**Next:** Run gn_verify_diff({ expectedSymbols: ["<renamed_symbol>"], expectedFiles: ["<expected_file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }) to verify no unexpected side effects from the rename.`;
+      return `\n\n---\n**Next:** Review the rename candidate list, edit the affected files directly, then run gn_verify_diff({ expectedSymbols: ["<renamed_symbol>"], expectedFiles: ["<expected_file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }).`;
 
     case 'cypher':
       return `\n\n---\n**Next:** To explore a result symbol, use context({name: "<name>"${repoParam}}). For schema reference, READ ontoindex://repo/${repoPath}/schema.`;
@@ -230,7 +236,7 @@ export function getNextStepHint(
       return `\n\n---\n**Next:** Previewed with dry_run? Rerun replace_symbol({ uid: "${args?.uid || '<uid>'}", new_body: "...", dry_run: false, confirm: true${repoParam} }) to write. Then run gn_verify_diff({ expectedSymbols: ["<symbol>"], expectedFiles: ["<file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }) to verify the rewrite didn't regress callers.`;
 
     case 'get_symbol_info':
-      return `\n\n---\n**Next:** Use the returned UID with rename_symbol({ uid: "<uid>", new_name: "..."${repoParam} }) for zero-ambiguity rename, or update_symbol_body({ uid: "<uid>", new_body: "..."${repoParam} }) to rewrite the implementation.`;
+      return `\n\n---\n**Next:** Use the returned UID with rename_symbol({ uid: "<uid>", new_name: "...", dry_run: true${repoParam} }) to review zero-ambiguity rename candidates; then edit files directly and verify. Use update_symbol_body({ uid: "<uid>", new_body: "..."${repoParam} }) to rewrite the implementation.`;
 
     case 'update_symbol_body':
       return `\n\n---\n**Next:** Run gn_verify_diff({ expectedSymbols: ["<symbol>"], expectedFiles: ["<file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }) to verify the rewrite didn't regress callers.`;
@@ -349,11 +355,25 @@ export function createMCPServer(backend: LocalBackend, options: { full?: boolean
 
     try {
       const content = await readResource(uri, backend);
+      const parsed = parseResourceUri(uri);
+      let canonicalUri = uri;
+      if (parsed.kind === 'repo') {
+        canonicalUri =
+          `ontoindex://repo/${encodeURIComponent(parsed.repoName)}/${parsed.resourceType}` +
+          (parsed.param === undefined ? '' : `/${encodeURIComponent(parsed.param)}`);
+      } else if (parsed.kind === 'group') {
+        canonicalUri = `ontoindex://group/${encodeURIComponent(parsed.groupName)}/${parsed.resourceType}`;
+      }
+      const resource =
+        getResourceDefinitions().find((entry) => entry.uri === canonicalUri) ??
+        getResourceTemplates().find((entry) =>
+          new UriTemplate(entry.uriTemplate).match(canonicalUri),
+        );
       return {
         contents: [
           {
             uri,
-            mimeType: 'text/yaml',
+            mimeType: resource?.mimeType ?? 'text/plain',
             text: content,
           },
         ],

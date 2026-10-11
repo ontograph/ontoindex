@@ -85,8 +85,9 @@ describe('mutation dirty guard', () => {
       case 'extract':
         expectedSource =
           leading +
-          first.replace('first', 'helper') +
-          '\n\nexport function first() {\n  return helper(...arguments);\n}\n' +
+          first.replace('export function first', 'function helper') +
+          '\n\nexport function first() {\n  return helper.apply(undefined, arguments as unknown as Parameters<typeof helper>);\n}' +
+          '\n' +
           after;
         break;
       case 'update':
@@ -160,12 +161,18 @@ describe('mutation dirty guard', () => {
   it.each(operations)('warns on a dirty %s dry run without writing', async (operation) => {
     await fs.writeFile(source, prefix + original);
     resolve(operation);
-    const result = await mutate(operation, true);
-    expect(result).toMatchObject({
-      success: true,
-      dry_run: true,
-      warnings: [expect.stringMatching(/src[\\/]a\.ts:.*line range may be stale/)],
-    });
+    if (operation === 'extract') {
+      await expect(mutate(operation, true)).rejects.toThrow(
+        'Stale range or unsupported function declaration',
+      );
+    } else {
+      const result = await mutate(operation, true);
+      expect(result).toMatchObject({
+        success: true,
+        dry_run: true,
+        warnings: [expect.stringMatching(/src[\\/]a\.ts:.*line range may be stale/)],
+      });
+    }
     expect(await fs.readFile(source, 'utf8')).toBe(prefix + original);
     expect(await fs.readFile(target, 'utf8')).toBe('// target\n');
   });
@@ -212,7 +219,8 @@ describe('mutation dirty guard', () => {
           dry_run: true,
           uid,
           new_name: 'helper',
-          preview: 'Would extract first as helper to src/a.ts',
+          preview:
+            'function helper() {\n  return 1;\n}\n\nexport function first() {\n  return helper.apply(undefined, arguments as unknown as Parameters<typeof helper>);\n}\n\nexport function second() {\n  return 2;\n}\n',
         },
         update: { success: true, dry_run: true, uid },
         delete: { success: true, dry_run: true, uid },

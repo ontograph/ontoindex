@@ -688,7 +688,7 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push('  - impact: Blast radius analysis (what breaks if you change a symbol)');
   lines.push('  - analysis_catalog: Local pack/suite catalog for CodeQL-style OntoIndex analyses');
   lines.push('  - detect_changes: Git-diff impact analysis (what do your changes affect)');
-  lines.push('  - rename: Multi-file coordinated rename with confidence tags');
+  lines.push('  - rename: Preview-only multi-file rename candidates with confidence tags');
   lines.push('  - cypher: Raw graph queries');
   lines.push(
     '  - list_repos: Discover all indexed repositories (MCP tool; CLI equivalent: `ontoindex list`)',
@@ -1107,7 +1107,7 @@ async function getSetupResource(backend: LocalBackend): Promise<string> {
       '| `context` | 360-degree symbol view — categorized refs, processes it participates in |',
       '| `impact` | Symbol blast radius — what breaks at depth 1/2/3 with confidence |',
       '| `detect_changes` | Git-diff impact — what do your current changes affect |',
-      '| `rename` | Multi-file coordinated rename with confidence-tagged edits |',
+      '| `rename` | Preview-only multi-file rename candidates with confidence tags |',
       '| `cypher` | Raw graph queries |',
       '| `list_repos` | Discover indexed repos (MCP tool; CLI equivalent: `ontoindex list`) |',
       '',

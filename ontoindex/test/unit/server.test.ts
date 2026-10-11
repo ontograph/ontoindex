@@ -14,6 +14,10 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { createMCPServer } from '../../src/mcp/server.js';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { ReadResourceRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { UriTemplate } from '@modelcontextprotocol/sdk/shared/uriTemplate.js';
+import * as resources from '../../src/mcp/resources.js';
 
 // ─── Mock backend ──────────────────────────────────────────────────
 
@@ -98,5 +102,66 @@ describe('prompt registration', () => {
     // Creating the server registers all handlers including prompts
     const server = createMCPServer(backend);
     expect(server).toBeDefined();
+  });
+});
+
+describe('resource response MIME types', () => {
+  const advertisedResources = [
+    ...resources.getResourceDefinitions(),
+    ...resources.getResourceTemplates().map((entry) => ({
+      uri: new UriTemplate(entry.uriTemplate).expand(
+        Object.fromEntries(
+          new UriTemplate(entry.uriTemplate).variableNames.map((name) => [name, 'fixture']),
+        ),
+      ),
+      mimeType: entry.mimeType,
+    })),
+    { uri: 'ontoindex://group/fixture/contracts?type=CALLS', mimeType: 'text/yaml' },
+    { uri: 'ontoindex://group/fixture/status/', mimeType: 'text/yaml' },
+    { uri: 'ontoindex://group/parent/fixture/contracts', mimeType: 'text/yaml' },
+    { uri: 'ontoindex://repo/fixture/context/', mimeType: 'text/yaml' },
+    { uri: 'ontoindex://repo/fixture/memory/folder/file', mimeType: 'text/markdown' },
+    { uri: 'ontoindex://repo/fixture/process/a/b', mimeType: 'text/yaml' },
+  ];
+
+  it.each(advertisedResources)(
+    'reads $uri with advertised $mimeType',
+    async ({ uri, mimeType }) => {
+      expect(() => resources.parseResourceUri(uri)).not.toThrow();
+      const read = vi.spyOn(resources, 'readResource').mockResolvedValue('resource payload');
+      const handlers = vi.spyOn(Server.prototype, 'setRequestHandler');
+      try {
+        createMCPServer(createMockBackend());
+        const handler = handlers.mock.calls.find(
+          ([schema]) => schema === ReadResourceRequestSchema,
+        )?.[1];
+        expect(handler).toBeDefined();
+        const response = await (handler as any)({ params: { uri } });
+        expect(response.contents).toEqual([{ uri, mimeType, text: 'resource payload' }]);
+        expect(read).toHaveBeenCalledWith(uri, expect.anything());
+      } finally {
+        handlers.mockRestore();
+        read.mockRestore();
+      }
+    },
+  );
+
+  it('returns resource errors as plain text', async () => {
+    const read = vi.spyOn(resources, 'readResource').mockRejectedValue(new Error('unavailable'));
+    const handlers = vi.spyOn(Server.prototype, 'setRequestHandler');
+    try {
+      createMCPServer(createMockBackend());
+      const handler = handlers.mock.calls.find(
+        ([schema]) => schema === ReadResourceRequestSchema,
+      )?.[1];
+      const response = await (handler as any)({ params: { uri: 'ontoindex://setup' } });
+      expect(response.contents[0]).toMatchObject({
+        mimeType: 'text/plain',
+        text: 'Error: unavailable',
+      });
+    } finally {
+      handlers.mockRestore();
+      read.mockRestore();
+    }
   });
 });

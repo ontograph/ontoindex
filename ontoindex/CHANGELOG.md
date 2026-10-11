@@ -4,6 +4,17 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.6] - 2026-10-11
+
+### Fixed
+
+- Made rename preview-only: apply now fails closed instead of writing broad text replacements, and tool descriptions, hints, and skills describe the preview workflow.
+- Restricted `extract_function` to validated same-file top-level JavaScript/TypeScript named functions and showed the real resulting source in dry runs.
+- Reported `contextCompleteness.truncated` and query-failure reasons when context results are clipped or partial.
+- Returned resource MIME types from resource declarations instead of always reporting `text/yaml`.
+- Admitted HTTP MCP sessions only after SDK validation, preserved existing sessions on invalid or disconnected initialization, returned 503 during shutdown, and drained pending initialization on cleanup.
+- Raised the minimum `@modelcontextprotocol/sdk` version to 1.30.0, the first release with closed-transport guards.
+
 ## [2.2.2] - 2026-10-11
 
 ### Fixed

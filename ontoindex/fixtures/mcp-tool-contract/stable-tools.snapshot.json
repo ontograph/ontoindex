@@ -326,7 +326,7 @@
     {
       "name": "gn_safe_refactor",
       "kind": "super",
-      "description": "Single WRITE dispatcher for atomic refactor operations (rename, modify-body, extract, move). Wraps each operation with symbol resolution, pre-edit safety check (via gn_safe_edit_check), dry-run preview, optional apply, and post-write verification guidance (gn_verify_diff / gn_test_gap).\n\nDefaults to dryRun: true — pass dryRun: false to actually apply changes.",
+      "description": "Dispatcher for refactor operations (rename, modify-body, extract, move). Rename is preview-only: review its candidate edits, edit files directly, then verify. Other supported operations use symbol resolution, pre-edit safety checks, dry-run previews, optional apply, and post-write verification guidance (gn_verify_diff / gn_test_gap).\n\nDefaults to dryRun: true — pass dryRun: false to apply supported operations; rename apply is unavailable.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -356,7 +356,7 @@
           },
           "params": {
             "type": "object",
-            "description": "Operation-specific parameters: newName (rename/extract), newBody (modify-body), sourceLineRange (extract), targetFile (move/extract)."
+            "description": "Operation-specific parameters: newName (rename/extract), newBody (modify-body), sourceLineRange (extract), targetFile (move or same-file extract; cross-file extraction is unsupported)."
           },
           "dryRun": {
             "type": "boolean",
@@ -380,7 +380,7 @@
       "structuredOutput": false,
       "modes": ["general", "audit", "refactor"],
       "category": "refactor",
-      "intent": "Apply rename/extract/move/modify safely",
+      "intent": "Preview renames; apply extract/move/modify safely",
       "whenToUse": "Any refactor (single dispatcher for 6 atomic tools; defaults to dryRun:true)",
       "workflowIntents": ["edit", "refactor"],
       "producesEvidenceClasses": ["graph_evidence"],
@@ -3953,7 +3953,7 @@
     {
       "name": "refactor",
       "kind": "facade",
-      "description": "Perform safe refactoring: rename symbols, replace bodies, or stage in sandbox.",
+      "description": "Preview rename candidates, replace bodies, or stage edits in a sandbox. Rename apply is unavailable; review candidates, edit files directly, then verify.",
       "inputSchema": {
         "type": "object",
         "properties": {
