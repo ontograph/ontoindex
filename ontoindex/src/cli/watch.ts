@@ -67,6 +67,7 @@ function isIgnoredByDefault(relPath: string): boolean {
 export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
   start(): void;
   stop(): void;
+  requestRefresh(): void;
 } {
   const watch = opts.watchImpl ?? fs.watch;
   const debounceMs = opts.debounceMs ?? 750;
@@ -158,6 +159,7 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
     let lockHeld = false;
     try {
       lockHeld = await opts.isLockHeld();
+      if (stopped) return;
       if (lockHeld) {
         log('Skipping refresh because analyze.lock is held.');
         return;
@@ -168,9 +170,8 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
     } finally {
       running = false;
       if (lockHeld) {
-        if (timer) clearTimeout(timer);
-        timer = undefined;
         followUp = false;
+        if (!stopped && !timer) schedule();
       }
       if (!stopped && followUp) {
         followUp = false;
@@ -229,6 +230,9 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
       }
     },
     stop,
+    requestRefresh() {
+      if (!stopped) void runRefresh();
+    },
   };
 }
 
@@ -365,11 +369,7 @@ export async function createWatchCommand(
         : `${dirtyCount} dirty source file(s), building overlay`;
     deps.log(`Watching ${repoPath} (debounce ${WATCH_DEBOUNCE_MS} ms); ${startupState}`);
     if (!plan.tooMany && (plan.includePaths.length > 0 || plan.tombstones.length > 0)) {
-      if (await deps.isLockHeld(repoPath)) {
-        deps.log('Skipping refresh because analyze.lock is held.');
-      } else {
-        void refresh();
-      }
+      watcher.requestRefresh();
     }
   } catch (error) {
     deps.log(`Watching ${repoPath} (debounce ${WATCH_DEBOUNCE_MS} ms); dirty state unknown`);

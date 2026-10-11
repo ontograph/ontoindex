@@ -1,7 +1,7 @@
 # Release readiness audit
 
 Date: 2026-10-11
-Candidate: `chore/release-readiness`, reviewed HEAD `3f14dbc` plus overlay corrections.
+Candidate: `chore/release-readiness`; overlay corrections committed in `632ace1`.
 
 ## Implemented
 
@@ -42,11 +42,25 @@ Candidate: `chore/release-readiness`, reviewed HEAD `3f14dbc` plus overlay corre
 - Four read-only agents on `gpt-6.1-sol` and `gpt-6-luna` reviewed release
   identity, dependency security, overlay resolution and watcher/runtime behavior.
 - The two overlay defects above have focused corrections and regression tests.
-- `watch.ts` drops a pending refresh when `analyze.lock` is held, with no retry
-  after release. Recovery needs regression proof before release acceptance.
-- Dependency review reported vulnerable production lockfile versions, including
-  `hono`, `ip-address` and `adm-zip`. Its bounded inventory covered 100 open
-  alerts; shipped reachability and the remaining inventory need verification.
+- Watcher lock recovery now retains one delayed retry and routes dirty startup
+  through the same serialized refresh queue. Saves during the startup child
+  retain a follow-up; stopping during a lock check prevents timer resurrection.
+  Focused watcher validation passed: 3 files, 36 tests; TypeScript and
+  `git diff --check` passed. Independent source review found no correctness bug.
+- Fresh lockfile-only audits reported 11 production affected packages in the CLI
+  and 8 in the web workspace. Counts are affected packages, not unique advisories
+  or exploitability proof. CLI findings include `proxy-addr`, `tar`, MCP SDK,
+  `ip-address`, `js-yaml` and `hono`; `adm-zip` is dev-only. Dependency remediation
+  and final installed-artifact reachability remain release gates.
+- Coordinator refreshed OntoIndex to `632ace1`; watcher impact was LOW. The
+  precommit change scan covered only the watcher and its two test files:
+  3 files, 9 symbols, zero affected flows. Uncommitted source is checked directly.
+- Four additional read-only reviewers on the required two models checked watcher
+  recovery, candidate lockfiles, distribution identity and artifact smoke coverage.
+- Existing installed-artifact workflow checks cover version/help, not MCP symbol
+  queries. The existing Kimi smoke harness can target the installed CLI, but its
+  MCP-only mode deliberately exits 2; acceptance must check recorded preflight
+  evidence rather than interpreting that exit as overall success.
 - Compared distribution options: GitHub-only, unified npm/GitHub, and independent
   channels. Prefer GitHub-only to match the latest release, pending maintainer
   confirmation; do not activate npm/container publication implicitly.
@@ -56,12 +70,17 @@ Candidate: `chore/release-readiness`, reviewed HEAD `3f14dbc` plus overlay corre
 - Review the entire integration branch, which includes the real-time overlay
   implementation stack in addition to release hardening.
 - Obtain passing CI on the final corrected candidate; existing green CI does
-  not cover the uncommitted overlay corrections.
+  does not cover `632ace1` or the watcher corrections.
 - Reconcile package version `2.1.5` with latest GitHub release tag
   `github-release/2.2.1` and registry state before selecting a release version.
-- Resolve watcher lock recovery and production dependency-security findings.
+- Resolve production dependency-security findings and obtain final watcher CI.
 - Confirm GitHub-only versus npm/container distribution before version changes.
+  A merge to master can trigger RC npm/container publication; merge approval must
+  explicitly account for that workflow, not assume preparation is publication-free.
 - Validate the final versioned artifact, including actual MCP symbol queries.
 - Obtain explicit merge/publication approval. No release was published by this task.
 
 Authenticated real-time task statuses remain unchanged.
+
+Knowledge handoff: none; existing build and manager rules already require
+validation for final inputs and distinguish prior CI from candidate evidence.

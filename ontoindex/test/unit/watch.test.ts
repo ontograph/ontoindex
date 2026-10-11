@@ -45,15 +45,16 @@ describe('createDebouncedWatcher', () => {
     watcher.stop();
   });
 
-  it('skips and logs a refresh when the lock is held without queuing another', async () => {
+  it('retains a locked refresh and retries after release without another save', async () => {
     vi.useFakeTimers();
     const events = makeWatchHarness();
     const refresh = vi.fn(async () => {});
     const log = vi.fn();
+    let lockHeld = true;
     const watcher = createDebouncedWatcher({
       root: '/repo',
       debounceMs: 100,
-      isLockHeld: () => true,
+      isLockHeld: () => lockHeld,
       refresh,
       log,
       watchImpl: events.watchImpl,
@@ -65,7 +66,57 @@ describe('createDebouncedWatcher', () => {
     await vi.advanceTimersByTimeAsync(500);
     expect(refresh).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith(expect.stringContaining('lock is held'));
+    expect(vi.getTimerCount()).toBe(1);
+    lockHeld = false;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(refresh).toHaveBeenCalledTimes(1);
     watcher.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('cancels a pending locked retry on stop', async () => {
+    vi.useFakeTimers();
+    const events = makeWatchHarness();
+    const refresh = vi.fn(async () => {});
+    const watcher = createDebouncedWatcher({
+      root: '/repo',
+      debounceMs: 100,
+      isLockHeld: () => true,
+      refresh,
+      watchImpl: events.watchImpl,
+    });
+    watcher.start();
+    watcher.requestRefresh();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(1);
+    watcher.stop();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not refresh or rearm when a deferred lock check resolves after stop', async () => {
+    vi.useFakeTimers();
+    const events = makeWatchHarness();
+    let resolveLock!: (held: boolean) => void;
+    const refresh = vi.fn(async () => {});
+    const watcher = createDebouncedWatcher({
+      root: '/repo',
+      debounceMs: 100,
+      isLockHeld: () =>
+        new Promise<boolean>((resolve) => {
+          resolveLock = resolve;
+        }),
+      refresh,
+      watchImpl: events.watchImpl,
+    });
+    watcher.start();
+    watcher.requestRefresh();
+    watcher.stop();
+    resolveLock(false);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it.each(['node_modules/pkg/index.ts', 'dist/output.js', '.git/index'])(

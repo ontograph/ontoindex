@@ -131,6 +131,35 @@ describe('watch command', () => {
     command.stop();
   });
 
+  it('refreshes dirty startup after lock release without another save', async () => {
+    vi.useFakeTimers();
+    const options = { initiallyDirty: true, lockHeld: true };
+    const harness = makeHarness(options);
+    const command = await harness.start();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(harness.spawn).not.toHaveBeenCalled();
+    options.lockHeld = false;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    command.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('retains saves during the startup child as one follow-up', async () => {
+    vi.useFakeTimers();
+    const harness = makeHarness({ initiallyDirty: true });
+    const command = await harness.start();
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    harness.emit('src/one.ts');
+    harness.emit('src/two.ts');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    harness.child.emit('close', 0, null);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.spawn).toHaveBeenCalledTimes(2);
+    command.stop();
+  });
+
   it('logs child failure and keeps watching for later saves', async () => {
     vi.useFakeTimers();
     const harness = makeHarness();
