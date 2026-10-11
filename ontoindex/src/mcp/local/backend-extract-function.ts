@@ -1,5 +1,4 @@
 import fs from 'fs/promises';
-import path from 'path';
 import { resolveSymbolCandidates } from './backend-symbol-resolution.js';
 import { guardMutationRange } from './backend-move-symbol.js';
 import { resolveContainedRealPath } from './path-util.js';
