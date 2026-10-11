@@ -62,8 +62,17 @@ Candidate: `chore/release-readiness`; overlay corrections committed in `632ace1`
   without lifecycle scripts; focused MCP/server validation passed 6 files,
   33 tests, followed by TypeScript checking. Independent metadata review confirmed
   SDK compatibility with its allowed Hono adapter range and supported Node engines.
-  Full CLI audit still reports five development-only affected packages; web
-  findings remain unresolved. Audit zero does not prove absence of vulnerabilities.
+  Full CLI audit still reports five development-only affected packages.
+  Audit zero does not prove absence of vulnerabilities.
+- Targeted web lockfile updates passed all 15 test files / 278 tests and the
+  production build. Production audit now reports two low affected-package entries
+  in the KaTeX/Mermaid chain (`GHSA-238p-pmpm-9mq7`). Mermaid's declared KaTeX
+  range excludes the patched 0.18.2 version. Compared retaining a documented
+  release gate, overriding the incompatible range, and downgrading Mermaid;
+  retain the gate pending explicit risk acceptance or an upstream-compatible fix.
+  Build reports browser externalization and chunk-size warnings; no browser smoke
+  was executed. Audit claims here use coordinator evidence; the reviewer's final
+  zero-production claim refers to the CLI audit, not the web audit.
 - Existing installed-artifact workflow checks cover version/help, not MCP symbol
   queries. The existing Kimi smoke harness can target the installed CLI, but its
   MCP-only mode deliberately exits 2; acceptance must check recorded preflight
