@@ -9,6 +9,53 @@ import {
   resolveRepoFromHandles,
 } from '../../src/mcp/local/local-backend-repo-runtime.js';
 
+describe('generation reopen retry', () => {
+  it.each(['close', 'init'])(
+    'keeps committed metadata after failed %s and retries',
+    async (failure) => {
+      const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-retry-'));
+      const handle = makeRepo('retry', 'retry', storagePath);
+      handle.storagePath = storagePath;
+      handle.lbugPath = '/gen/A/lbug';
+      const originalIndexedAt = handle.indexedAt;
+      const initializedRepos = new Set([handle.id]);
+      const closeLbug = vi.fn(async () => {});
+      const initLbug = vi.fn(async () => {});
+      (failure === 'close' ? closeLbug : initLbug).mockRejectedValueOnce(
+        new Error('temporary failure'),
+      );
+      const options = {
+        repoId: handle.id,
+        handle,
+        initializedRepos,
+        reinitPromises: new Map<string, Promise<void>>(),
+        lastStalenessCheck: new Map<string, number>(),
+        isLbugReady: () => initializedRepos.has(handle.id),
+        closeLbug,
+        initLbug,
+        resolveActiveLbugPath: vi.fn(async () => '/gen/B/lbug'),
+        now: () => 5000,
+      };
+      try {
+        await fs.writeFile(
+          path.join(storagePath, 'meta.json'),
+          JSON.stringify({ indexedAt: 'new' }),
+        );
+        await expect(ensureRepoInitialized(options)).rejects.toThrow('temporary failure');
+        expect(handle.lbugPath).toBe('/gen/A/lbug');
+        expect(handle.indexedAt).toBe(originalIndexedAt);
+        await ensureRepoInitialized(options);
+        expect(initLbug).toHaveBeenLastCalledWith(handle.id, '/gen/B/lbug');
+        expect(handle.lbugPath).toBe('/gen/B/lbug');
+        expect(handle.indexedAt).toBe('new');
+        expect(initializedRepos.has(handle.id)).toBe(true);
+      } finally {
+        await fs.rm(storagePath, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
 function makeRepo(id: string, name: string, repoPath: string): RepoHandle {
   const resolvedRepoPath = path.resolve(repoPath);
   return {

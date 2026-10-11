@@ -1,4 +1,4 @@
-import { PassThrough } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CompatibleStdioServerTransport } from '../../src/mcp/compatible-stdio-transport.js';
 
@@ -18,6 +18,74 @@ describe('CompatibleStdioServerTransport', () => {
     stdin = new PassThrough();
     stdout = new PassThrough();
     transport = new CompatibleStdioServerTransport(stdin, stdout);
+  });
+
+  it('parses coalesced LF and CRLF Content-Length frames in order', async () => {
+    await transport.start();
+    const onMessage = vi.fn();
+    const onError = vi.fn();
+    transport.onmessage = onMessage;
+    transport.onerror = onError;
+    const bodies = [1, 2].map((id) => JSON.stringify({ jsonrpc: '2.0', id, method: 'ping' }));
+    stdin.write(
+      bodies
+        .map((body, index) => {
+          const separator = index === 0 ? '\n\n' : '\r\n\r\n';
+          return `Content-Length: ${Buffer.byteLength(body)}${separator}${body}`;
+        })
+        .join(''),
+    );
+    expect(onMessage.mock.calls.map(([message]) => message.id)).toEqual([1, 2]);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it.each([1, 1024])('waits for write completion with highWaterMark %i', async (highWaterMark) => {
+    let complete!: (error?: Error | null) => void;
+    const output = new Writable({
+      highWaterMark,
+      write(_chunk, _encoding, callback) {
+        complete = callback;
+      },
+    });
+    const sender = new CompatibleStdioServerTransport(stdin, output);
+    await sender.start();
+    const settled = vi.fn();
+    const sending = sender.send({ jsonrpc: '2.0', id: 1, result: {} }).then(settled);
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+    complete();
+    await sending;
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(output.listenerCount('error')).toBe(0);
+    expect(output.listenerCount('drain')).toBe(0);
+    await sender.close();
+  });
+
+  it('rejects asynchronous write callback errors without leaking listeners', async () => {
+    const failure = new Error('write failed');
+    const output = new Writable({
+      write(_chunk, _encoding, callback) {
+        setImmediate(() => callback(failure));
+      },
+    });
+    const sender = new CompatibleStdioServerTransport(stdin, output);
+    await sender.start();
+    await expect(sender.send({ jsonrpc: '2.0', id: 1, result: {} })).rejects.toBe(failure);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(output.listenerCount('error')).toBe(0);
+    expect(output.listenerCount('drain')).toBe(0);
+    await sender.close();
+  });
+
+  it('rejects synchronous write throws without leaking listeners', async () => {
+    const failure = new Error('write threw');
+    vi.spyOn(stdout, 'write').mockImplementation(() => {
+      throw failure;
+    });
+    await transport.start();
+    await expect(transport.send({ jsonrpc: '2.0', id: 1, result: {} })).rejects.toBe(failure);
+    expect(stdout.listenerCount('error')).toBe(0);
+    expect(stdout.listenerCount('drain')).toBe(0);
   });
 
   it('parses Content-Length framed initialize requests', async () => {

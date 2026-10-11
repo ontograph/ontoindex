@@ -57,6 +57,9 @@ type SymbolLookupRow = {
 
 type SymbolLookupField = 'name' | 'type' | 'filePath' | 'startLine' | 'endLine';
 
+const MAX_EVIDENCE_TARGETS = 128;
+const MAX_EVIDENCE_FILE_BYTES = 1024 * 1024;
+
 function symbolRowValue<K extends SymbolLookupField>(
   row: SymbolLookupRow,
   key: K,
@@ -70,13 +73,29 @@ function evidencePackFailureDetail(err: unknown): string {
 }
 
 async function readIfFile(abs: string): Promise<string | null> {
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
   try {
-    const stat = await fs.stat(abs);
+    handle = await fs.open(abs, 'r');
+    const stat = await handle.stat();
     if (!stat.isFile()) return null;
-    return await fs.readFile(abs, 'utf8');
+    const buffer = Buffer.alloc(MAX_EVIDENCE_FILE_BYTES + 1);
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+      if (result.bytesRead === 0) break;
+      bytesRead += result.bytesRead;
+    }
+    if (bytesRead > MAX_EVIDENCE_FILE_BYTES) return null;
+    return buffer.toString('utf8', 0, bytesRead);
   } catch {
     return null;
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
+}
+
+async function repoRelativePath(repoPath: string, abs: string): Promise<string> {
+  return path.relative(await fs.realpath(repoPath), abs);
 }
 
 function sliceSnippet(
@@ -109,14 +128,14 @@ async function resolveLine(
 ): Promise<EvidenceEntry | null> {
   const parsed = parseLineSuffix(target);
   if (!parsed) return null;
-  const abs = resolveContainedRepoPath(repo.repoPath, parsed.path);
+  const abs = await resolveContainedRepoPath(repo.repoPath, parsed.path);
   if (!abs) return null;
   const content = await readIfFile(abs);
   if (content === null) return null;
   const lines = content.split('\n');
   if (parsed.line > lines.length) return null;
 
-  const rel = path.relative(repo.repoPath, abs);
+  const rel = await repoRelativePath(repo.repoPath, abs);
   const entry: EvidenceEntry = {
     target,
     kind: 'line',
@@ -144,12 +163,12 @@ async function resolveFile(
   contextLines: number,
   includeSnippet: boolean,
 ): Promise<EvidenceEntry | null> {
-  const abs = resolveContainedRepoPath(repo.repoPath, target);
+  const abs = await resolveContainedRepoPath(repo.repoPath, target);
   if (!abs) return null;
   const content = await readIfFile(abs);
   if (content === null) return null;
   const lines = content.split('\n');
-  const rel = path.relative(repo.repoPath, abs);
+  const rel = await repoRelativePath(repo.repoPath, abs);
 
   const entry: EvidenceEntry = {
     target,
@@ -201,7 +220,7 @@ async function resolveSymbol(
     return null;
   }
 
-  const abs = resolveContainedRepoPath(repo.repoPath, filePath);
+  const abs = await resolveContainedRepoPath(repo.repoPath, filePath);
   if (!abs) {
     return {
       target,
@@ -214,7 +233,7 @@ async function resolveSymbol(
     };
   }
   const content = await readIfFile(abs);
-  const rel = path.relative(repo.repoPath, abs);
+  const rel = await repoRelativePath(repo.repoPath, abs);
   const entry: EvidenceEntry = {
     target,
     kind: 'symbol',
@@ -240,6 +259,9 @@ export async function runEvidencePack(
 ): Promise<EvidencePackResult> {
   try {
     const rawTargets = Array.isArray(params?.targets) ? params!.targets : [];
+    if (rawTargets.length > MAX_EVIDENCE_TARGETS) {
+      throw new Error(`At most ${MAX_EVIDENCE_TARGETS} evidence targets are allowed.`);
+    }
     const targets = rawTargets
       .filter((t): t is string => typeof t === 'string' && t.length > 0)
       .map((t) => t.trim())
@@ -270,7 +292,7 @@ export async function runEvidencePack(
       }
       unresolved.push({
         target,
-        reason: 'No matching line, file, or symbol found in this repo.',
+        reason: `No matching line, file, or symbol found in this repo, or the file exceeds the ${MAX_EVIDENCE_FILE_BYTES}-byte evidence read limit.`,
       });
     }
 

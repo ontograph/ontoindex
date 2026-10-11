@@ -20,6 +20,7 @@ import {
   formatRuntimeHealthDetailLines,
   formatRuntimeHealthStatusLine,
   readRuntimeHealth,
+  type RuntimeHealthSnapshot,
 } from '../core/runtime/runtime-health.js';
 export { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js';
 import { formatIndexCapabilityWarnings } from '../storage/index-capabilities.js';
@@ -94,8 +95,9 @@ async function resolveRepoStartPath(repoOpt?: string): Promise<string> {
 export const statusCommand = async (options?: { repo?: string }) => {
   const cwd = await resolveRepoStartPath(options?.repo);
   const nativeGraphWriterStatus = formatNativeGraphWriterStatus();
+  const repo = await findRepo(cwd);
 
-  if (!isGitRepo(cwd)) {
+  if (!repo && !isGitRepo(cwd)) {
     const needsUpdateReason = await readNeedsUpdateReason(cwd);
     console.log('Not a git repository.');
     console.log(formatSemanticSearchStatus());
@@ -104,8 +106,7 @@ export const statusCommand = async (options?: { repo?: string }) => {
     return;
   }
 
-  const repo = await findRepo(cwd);
-  const repoRoot = getGitRoot(cwd) ?? cwd;
+  const repoRoot = repo?.repoPath ?? getGitRoot(cwd) ?? cwd;
   const needsUpdateReason = await readNeedsUpdateReason(repoRoot);
   const { storagePath } = getStoragePaths(repoRoot);
   await printOverlayStatus(repoRoot, storagePath);
@@ -160,7 +161,7 @@ export const statusCommand = async (options?: { repo?: string }) => {
   }
   printNeedsUpdateStatus(needsUpdateReason);
   console.log(nativeGraphWriterStatus);
-  await printDiagnosticsSummary(repoRoot, storagePath);
+  await printDiagnosticsSummary(repoRoot, runtimeHealth.freshnessState);
 };
 
 async function printOverlayStatus(repoPath: string, storagePath: string): Promise<void> {
@@ -334,7 +335,10 @@ function formatStoreSize(sizeBytes: number | undefined): string {
   return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-async function printDiagnosticsSummary(repoRoot: string, _storagePath: string) {
+async function printDiagnosticsSummary(
+  repoRoot: string,
+  freshnessState: RuntimeHealthSnapshot['freshnessState'],
+) {
   let diagnose: DiagnoseReport;
   try {
     diagnose = await gnDiagnose(repoRoot, {
@@ -353,7 +357,11 @@ async function printDiagnosticsSummary(repoRoot: string, _storagePath: string) {
   }
 
   console.log('');
-  console.log(`Graph index: ${formatGraphIndexStatus(diagnose.runtimeContextSummary.freshness)}`);
+  const graphStatus =
+    freshnessState === 'clean'
+      ? formatGraphIndexStatus(diagnose.runtimeContextSummary.freshness)
+      : freshnessState;
+  console.log(`Graph index: ${graphStatus}`);
   console.log(
     `Dirty worktree: ${formatDirtyWorktreeStatus(
       diagnose.runtimeContextSummary.dirtyWorktree,

@@ -45,15 +45,36 @@ export function canonicalize(repoPath: string, input: string): string {
  * Callers must operate on the returned path, not the original input.
  */
 export async function resolveContainedRealPath(repoPath: string, input: string): Promise<string> {
-  const lexicalPath = canonicalize(repoPath, input);
-  const realRepoPath = await fs.realpath(path.resolve(repoPath));
-  let realPath: string;
-  try {
-    realPath = await fs.realpath(lexicalPath);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
-    realPath = path.join(await fs.realpath(path.dirname(lexicalPath)), path.basename(lexicalPath));
+  if (!input || input.includes('\0'))
+    throw new Error('Path cannot be empty or contain invalid characters');
+  const absoluteRepoPath = path.resolve(repoPath);
+  const lexicalPath = path.isAbsolute(input)
+    ? path.resolve(input)
+    : canonicalize(absoluteRepoPath, input);
+  const realRepoPath = await fs.realpath(absoluteRepoPath);
+  let cursor = lexicalPath;
+  const missing: string[] = [];
+  while (true) {
+    try {
+      cursor = await fs.realpath(cursor);
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
+      try {
+        await fs.lstat(cursor);
+        // An existing but unresolvable symlink is dangling; never treat it as
+        // a missing path and let a later write follow it.
+        throw new Error('Unable to resolve path: ' + input);
+      } catch (statErr) {
+        if ((statErr as NodeJS.ErrnoException)?.code !== 'ENOENT') throw statErr;
+      }
+      const parent = path.dirname(cursor);
+      if (parent === cursor) throw err;
+      missing.unshift(path.basename(cursor));
+      cursor = parent;
+    }
   }
+  const realPath = path.join(cursor, ...missing);
   if (realPath !== realRepoPath && !realPath.startsWith(realRepoPath + path.sep)) {
     throw new Error('Path escapes repository: ' + input);
   }

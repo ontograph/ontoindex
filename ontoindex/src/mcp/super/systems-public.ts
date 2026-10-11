@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { resolveContainedRealPath } from '../local/path-util.js';
 
 import { extractCppPosixResourceFacts } from '../../core/systems-audit/resource-extractor-cpp.js';
 import { createEnvelopeFromLegacy } from '../shared/response-envelope.js';
@@ -203,13 +204,9 @@ async function resolveRepoInputPath(
 ): Promise<{ absolutePath: string; repoRelativePath: string }> {
   const repoRoot = await resolveRepoRoot(repoId, requestedRepo);
   const repoRootReal = await realpathOrResolved(repoRoot);
-  const candidate = path.isAbsolute(inputPath)
-    ? path.resolve(inputPath)
-    : path.resolve(repoRootReal, inputPath);
-  assertInsideRepo(repoRootReal, candidate, inputPath);
-
-  const candidateReal = await realpathOrResolved(candidate);
-  assertInsideRepo(repoRootReal, candidateReal, inputPath);
+  if (!path.isAbsolute(inputPath))
+    assertInsideRepo(repoRootReal, path.resolve(repoRootReal, inputPath), inputPath);
+  const candidateReal = await resolveContainedRealPath(repoRootReal, inputPath);
 
   return {
     absolutePath: candidateReal,

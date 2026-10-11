@@ -13,6 +13,12 @@ import { registerReportCommands } from './report.js';
 import { registerPrCommands } from './pr.js';
 import { applyLargeRepoSafeAnalyzePreset } from './analyze-large-repo-safe.js';
 
+// A consumer such as head can close stdout before the command finishes printing.
+process.stdout.on('error', (error: NodeJS.ErrnoException) => {
+  if (error.code === 'EPIPE') process.exit(0);
+  throw error;
+});
+
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
 const program = new Command();

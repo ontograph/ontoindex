@@ -104,6 +104,67 @@ describe('pipeline', () => {
     }
   });
 
+  it('keeps Python same-file digest callers in symbols-only mode', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-python-symbols-'));
+    try {
+      await fs.writeFile(
+        path.join(repoDir, 'builder.py'),
+        [
+          'def digest(value):',
+          '    return value',
+          '',
+          'def historical_builder():',
+          '    return digest("a")',
+          '',
+          'def another_builder():',
+          '    return digest("b")',
+          '',
+        ].join('\n'),
+      );
+      await fs.writeFile(
+        path.join(repoDir, 'unrelated.py'),
+        'def digest(value):\n    return value\n',
+      );
+
+      const result = await runPipelineFromRepo(repoDir, () => {}, {
+        profile: 'symbols',
+        includePaths: ['builder.py', 'unrelated.py'],
+        skipWorkers: true,
+      });
+      const calls = [...result.graph.iterRelationships()]
+        .filter((relationship) => relationship.type === 'CALLS')
+        .map((relationship) => {
+          const source = result.graph.getNode(relationship.sourceId);
+          const target = result.graph.getNode(relationship.targetId);
+          return {
+            source: source?.properties.name,
+            sourcePath: source?.properties.filePath,
+            target: target?.properties.name,
+            targetPath: target?.properties.filePath,
+          };
+        });
+      expect(calls).toHaveLength(2);
+      expect(calls).toEqual(
+        expect.arrayContaining([
+          {
+            source: 'historical_builder',
+            sourcePath: 'builder.py',
+            target: 'digest',
+            targetPath: 'builder.py',
+          },
+          {
+            source: 'another_builder',
+            sourcePath: 'builder.py',
+            target: 'digest',
+            targetPath: 'builder.py',
+          },
+        ]),
+      );
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it('merges split C++ header declarations with out-of-class source definitions', async () => {
     const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-cpp-split-'));
     try {

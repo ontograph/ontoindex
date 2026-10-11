@@ -210,6 +210,40 @@ describe('CLI end-to-end', () => {
     expect(combined).toMatch(/Repository|not indexed/i);
   });
 
+  it('status exits quietly when the stdout reader closes early', async () => {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(process.execPath, ['--import', tsxImportUrl, cliEntry, 'status'], {
+        cwd: MINI_REPO,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, ONTOINDEX_HOME: cliHome },
+      });
+      let stderr = '';
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+      // Close before the first write so even a short status output exercises EPIPE.
+      child.stdout.destroy();
+      const timer = setTimeout(() => {
+        child.kill('SIGTERM');
+        reject(new Error('status did not exit after its stdout reader closed'));
+      }, 15_000);
+      child.once('error', (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.once('close', (code) => {
+        clearTimeout(timer);
+        try {
+          expect(code, stderr).toBe(0);
+          expect(stderr).not.toMatch(/EPIPE|Unhandled 'error'/);
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+  }, 20_000);
+
   it('analyze command runs pipeline on mini-repo', () => {
     ensureMiniRepoIndexed();
   }, 120_000);

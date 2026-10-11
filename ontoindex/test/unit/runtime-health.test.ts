@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it } from 'vitest';
 
 import {
   deriveRuntimeHealth,
@@ -14,6 +14,98 @@ import type { RepoMeta } from '../../src/storage/repo-manager.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { computeSourceManifest } from '../../src/core/indexing/source-manifest.js';
+
+describe('commitless runtime health', () => {
+  let repoPath: string;
+  let meta: RepoMeta;
+  const readHealth = () => readRuntimeHealth(repoPath, { meta });
+
+  beforeEach(async () => {
+    repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-health-commitless-'));
+    await fs.mkdir(path.join(repoPath, 'src'));
+    await fs.writeFile(
+      path.join(repoPath, 'src/main.py'),
+      'def digest(value):\n    return value\n',
+    );
+    await fs.writeFile(path.join(repoPath, '.gitignore'), 'ignored.py\n');
+    meta = {
+      repoPath,
+      lastCommit: '',
+      indexedAt: '2026-10-11T00:00:00.000Z',
+      sourceManifest: await computeSourceManifest(repoPath, { includePaths: ['src'] }),
+    };
+  });
+
+  afterEach(async () => {
+    await fs.rm(repoPath, { recursive: true, force: true });
+  });
+
+  it('trusts unchanged non-Git sources', async () => {
+    const health = await readHealth();
+    expect(health.freshnessState).toBe('clean');
+    expect(health.indexedCommit).toBeNull();
+    expect(health.currentCommit).toBeNull();
+    expect(health.dirtyWorktree).toBeNull();
+  });
+
+  it('trusts unchanged sources in an unborn Git repository', async () => {
+    execFileSync('git', ['init', '--quiet'], { cwd: repoPath });
+    const health = await readHealth();
+    expect(health.currentCommit).toBeNull();
+    expect(health.dirtyWorktree).toBe(true);
+    expect(health.freshnessState).toBe('clean');
+  });
+
+  it('uses the saved scope and symbols profile, preserving capability degradation', async () => {
+    meta.sourceManifest = await computeSourceManifest(repoPath, {
+      includePaths: ['src'],
+      pipelineProfile: 'symbols',
+    });
+    meta.indexMode = 'symbols-only';
+    meta.capabilities = { symbols: true, impact: 'degraded', processes: false };
+    await fs.writeFile(path.join(repoPath, 'outside.py'), 'outside = 1\n');
+    const health = await readHealth();
+    expect(health.freshnessState).toBe('degraded');
+    expect(health.degradedReason).toMatch(/symbols|capabilit/);
+  });
+
+  it.each(['edit', 'add', 'delete', 'mode'] as const)(
+    'detects selected source %s',
+    async (change) => {
+      const filename = path.join(repoPath, 'src/main.py');
+      if (change === 'edit') await fs.appendFile(filename, '\nchanged = True\n');
+      if (change === 'add') await fs.writeFile(path.join(repoPath, 'src/new.py'), 'new = True\n');
+      if (change === 'delete') await fs.unlink(filename);
+      if (change === 'mode') await fs.chmod(filename, 0o755);
+      expect((await readHealth()).freshnessState).toBe('stale');
+    },
+  );
+
+  it('ignores changes outside the saved scope and ignored inputs', async () => {
+    await fs.writeFile(path.join(repoPath, 'outside.py'), 'outside = True\n');
+    await fs.writeFile(path.join(repoPath, 'src/ignored.py'), 'ignored = True\n');
+    expect((await readHealth()).freshnessState).toBe('clean');
+  });
+
+  it.each(['missing', 'unsupported', 'malformed'] as const)(
+    'fails closed for a %s manifest',
+    async (kind) => {
+      if (kind === 'missing') delete meta.sourceManifest;
+      if (kind === 'unsupported') Object.assign(meta.sourceManifest!, { version: 999 });
+      if (kind === 'malformed') Object.assign(meta.sourceManifest!, { sourceDigest: 'invalid' });
+      expect((await readHealth()).freshnessState).toBe('untrusted');
+    },
+  );
+
+  it('preserves incomplete source coverage', async () => {
+    meta.sourceManifest!.coverage = 'degraded';
+    const health = await readHealth();
+    expect(health.freshnessState).toBe('degraded');
+    expect(health.degradedReason).toBe('source manifest coverage is incomplete');
+  });
+});
 
 function makeLock(state: RuntimeAnalyzeLockState['state']): RuntimeAnalyzeLockState {
   return {
@@ -93,6 +185,29 @@ describe('deriveRuntimeHealth', () => {
       },
     });
   });
+
+  it.each([
+    ['active', 'absent', 'degraded'],
+    ['stale', 'absent', 'untrusted'],
+    ['unknown', 'absent', 'untrusted'],
+    ['absent', 'failed', 'failed-after-partial-run'],
+    ['absent', 'partial', 'degraded'],
+    ['absent', 'unknown', 'untrusted'],
+  ] as const)(
+    'preserves %s lock / %s checkpoint with a matching commitless manifest',
+    (lock, checkpoint, expected) => {
+      expect(
+        deriveRuntimeHealth({
+          ...base,
+          indexedCommit: null,
+          currentCommit: null,
+          sourceFreshness: { state: 'clean', reason: null },
+          analyzeLock: makeLock(lock),
+          analysisCheckpoint: makeCheckpoint(checkpoint),
+        }).freshnessState,
+      ).toBe(expected);
+    },
+  );
 
   it('classifies a stale indexed commit', () => {
     expect(

@@ -1773,12 +1773,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         ): Promise<Array<{ filePath: string; line: number; text: string }>> => {
           if (abortController.signal.aborted) throw new ClientDisconnectedError();
           const filePath: string = row.filePath || '';
-          const fullPath = path.resolve(repoRoot, filePath);
-
-          // Path traversal guard
-          if (!fullPath.startsWith(repoRoot + path.sep) && fullPath !== repoRoot) return [];
-
+          let fullPath: string;
           try {
+            fullPath = await resolveContainedRealPath(repoRoot, filePath);
             const stat = await fs.stat(fullPath);
             if (stat.size > MAX_GREP_FILE_BYTES) return [];
           } catch {

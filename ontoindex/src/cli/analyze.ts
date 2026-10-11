@@ -398,9 +398,14 @@ export function resolveAnalyzeIncludePaths(
     : undefined;
 }
 
-function formatFileScopePreview(preview: FileScopePreview): string {
+function formatFileScopePreview(preview: FileScopePreview, includePaths?: string[]): string {
   const lines = [
     `  File scope preview for ${preview.repoPath}`,
+    includePaths?.length
+      ? `  Scope: selected include paths: ${includePaths.join(', ')}`
+      : '  Scope: repository',
+    '  Counts cover matching candidates after ignore rules; skipped files are oversized.',
+    ...(includePaths?.length ? ['  Full-root file total is not measured.'] : []),
     '',
     `  Total candidates: ${preview.totalCandidates.toLocaleString()}`,
     `  Included: ${preview.includedCount.toLocaleString()}`,
@@ -524,7 +529,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
   if (options?.dryRun) {
     const preview = await collectFileScopePreview(repoPath, { includePaths });
-    console.log(`${formatFileScopePreview(preview)}\n`);
+    console.log(`${formatFileScopePreview(preview, includePaths)}\n`);
     return;
   }
 

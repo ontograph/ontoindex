@@ -133,7 +133,7 @@ async function resolveInputList(
   const resolved: string[] = [];
   if (Array.isArray(rawList) && rawList.length > 0) {
     for (const raw of rawList) {
-      const abs = resolveContainedRepoPath(repoPath, raw as string);
+      const abs = await resolveContainedRepoPath(repoPath, raw as string);
       if (!abs) continue;
       let stat;
       try {
@@ -152,7 +152,7 @@ async function resolveInputList(
     }
   } else {
     for (const dir of defaultDirs) {
-      const abs = resolveContainedRepoPath(repoPath, dir);
+      const abs = await resolveContainedRepoPath(repoPath, dir);
       if (!abs) continue;
       let stat;
       try {
@@ -264,8 +264,9 @@ export async function runCrossDocDrift(
       '.json',
     );
 
-    const planRel = planAbs.map((abs) => path.relative(repo.repoPath, abs));
-    const auditRel = auditAbs.map((abs) => path.relative(repo.repoPath, abs));
+    const realRepoPath = await fs.realpath(repo.repoPath);
+    const planRel = planAbs.map((abs) => path.relative(realRepoPath, abs));
+    const auditRel = auditAbs.map((abs) => path.relative(realRepoPath, abs));
 
     // Collect plan mentions.
     const planMentions = new Map<string, PlanMention[]>();

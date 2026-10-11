@@ -512,6 +512,33 @@ describe('status command behavior', () => {
     expect(logSpy.mock.calls.map(([line]) => line)).not.toContain('Needs update: marker present');
   });
 
+  it('reports indexed non-git folders through the normal status path', async () => {
+    const { statusCommand } = await importStatus();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const repoPath = '/tmp/indexed-non-git';
+    repoManagerMocks.findRepo.mockResolvedValue({
+      ...makeRepo(repoPath, {
+        indexedAt: '2026-05-27T00:00:00.000Z',
+        lastCommit: '',
+        stats: { embeddings: 12 },
+      }),
+      storagePath: `${repoPath}/.ontoindex`,
+    });
+    fsMocks.readFile.mockRejectedValue(new Error('ENOENT'));
+
+    await statusCommand({ repo: repoPath });
+
+    const output = logSpy.mock.calls.map(([line]) => line);
+    expect(output).toContain(`Repository: ${repoPath}`);
+    expect(output).toContain('Status: ✅ up-to-date');
+    expect(output).toContain('Semantic search: available (12 embeddings recorded)');
+    expect(output).not.toContain('Not a git repository.');
+    expect(runtimeHealthMocks.readRuntimeHealth).toHaveBeenCalledWith(
+      repoPath,
+      expect.objectContaining({ storagePath: `${repoPath}/.ontoindex` }),
+    );
+  });
+
   it('reports a passive needs-update marker as present when the file is plain text', async () => {
     const { statusCommand } = await importStatus();
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -664,64 +691,68 @@ describe('status command behavior', () => {
     );
   });
 
-  it('prints untrusted runtime health before healthy-looking status details', async () => {
-    const { statusCommand } = await importStatus();
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  it.each(['untrusted', 'stale', 'degraded'] as const)(
+    'keeps diagnostics consistent with %s runtime health',
+    async (freshnessState) => {
+      const { statusCommand } = await importStatus();
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    const repoPath = '/tmp/untrusted-repo';
-    gitMocks.isGitRepo.mockReturnValue(true);
-    repoManagerMocks.findRepo.mockResolvedValue(
-      makeRepo(repoPath, {
-        indexedAt: '2026-05-27T00:00:00.000Z',
-        lastCommit: 'abc123def456',
-        stats: { embeddings: 12 },
-      }),
-    );
-    runtimeHealthMocks.readRuntimeHealth.mockResolvedValue({
-      version: 1,
-      repoLabel: 'fixture',
-      repoPath,
-      indexedCommit: 'abc123def456',
-      currentCommit: 'abc123def456',
-      dirtyWorktree: false,
-      freshnessState: 'untrusted',
-      degradedReason: 'analyze.lock is stale',
-      repairCommand: 'remove the stale analyze.lock, then rerun ontoindex analyze --force',
-      hasRuntimeArtifacts: true,
-      analyzeLock: {
-        path: `${repoPath}/.ontoindex/analyze.lock`,
-        present: true,
-        state: 'stale',
-      },
-      analysisCheckpoint: {
-        path: `${repoPath}/.ontoindex/analysis-checkpoint.json`,
-        present: false,
-        state: 'absent',
-      },
-      embeddingCheckpoint: {
-        path: `${repoPath}/.ontoindex/embedding-checkpoint.json`,
-        present: false,
-      },
-      bootstrapSource: {
-        path: `${repoPath}/.ontoindex/bootstrap-source.json`,
-        present: false,
-      },
-      warnings: [],
-    });
+      const repoPath = '/tmp/untrusted-repo';
+      gitMocks.isGitRepo.mockReturnValue(true);
+      repoManagerMocks.findRepo.mockResolvedValue(
+        makeRepo(repoPath, {
+          indexedAt: '2026-05-27T00:00:00.000Z',
+          lastCommit: 'abc123def456',
+          stats: { embeddings: 12 },
+        }),
+      );
+      runtimeHealthMocks.readRuntimeHealth.mockResolvedValue({
+        version: 1,
+        repoLabel: 'fixture',
+        repoPath,
+        indexedCommit: 'abc123def456',
+        currentCommit: 'abc123def456',
+        dirtyWorktree: false,
+        freshnessState,
+        degradedReason: 'analyze.lock is stale',
+        repairCommand: 'remove the stale analyze.lock, then rerun ontoindex analyze --force',
+        hasRuntimeArtifacts: true,
+        analyzeLock: {
+          path: `${repoPath}/.ontoindex/analyze.lock`,
+          present: true,
+          state: 'stale',
+        },
+        analysisCheckpoint: {
+          path: `${repoPath}/.ontoindex/analysis-checkpoint.json`,
+          present: false,
+          state: 'absent',
+        },
+        embeddingCheckpoint: {
+          path: `${repoPath}/.ontoindex/embedding-checkpoint.json`,
+          present: false,
+        },
+        bootstrapSource: {
+          path: `${repoPath}/.ontoindex/bootstrap-source.json`,
+          present: false,
+        },
+        warnings: [],
+      });
 
-    await statusCommand({ repo: repoPath });
+      await statusCommand({ repo: repoPath });
 
-    const lines = logSpy.mock.calls.map(([line]) => String(line));
-    expect(lines.indexOf('Runtime health: untrusted')).toBeLessThan(
-      lines.findIndex((line) => line.startsWith('Status:')),
-    );
-    expect(lines).toEqual(
-      expect.arrayContaining([
-        'Status: ⚠️ untrusted (runtime artifacts need repair)',
-        '  Repair: remove the stale analyze.lock, then rerun ontoindex analyze --force',
-      ]),
-    );
-  });
+      const lines = logSpy.mock.calls.map(([line]) => String(line));
+      expect(lines.indexOf(`Runtime health: ${freshnessState}`)).toBeLessThan(
+        lines.findIndex((line) => line.startsWith('Status:')),
+      );
+      expect(lines).toEqual(
+        expect.arrayContaining([
+          `Graph index: ${freshnessState}`,
+          '  Repair: remove the stale analyze.lock, then rerun ontoindex analyze --force',
+        ]),
+      );
+      expect(lines).not.toContain('Graph index: clean');
+    },
+  );
 
   it('surfaces diagnostics summary and audit freshness in status output', async () => {
     const { statusCommand } = await importStatus();

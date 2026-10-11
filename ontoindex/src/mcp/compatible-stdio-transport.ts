@@ -22,11 +22,11 @@ function serializeContentLengthMessage(message: JSONRPCMessage): string {
 
 function findHeaderEnd(buffer: Buffer): { index: number; separatorLength: number } | null {
   const crlfEnd = buffer.indexOf('\r\n\r\n');
-  if (crlfEnd !== -1) {
+  const lfEnd = buffer.indexOf('\n\n');
+  if (crlfEnd !== -1 && (lfEnd === -1 || crlfEnd < lfEnd)) {
     return { index: crlfEnd, separatorLength: 4 };
   }
 
-  const lfEnd = buffer.indexOf('\n\n');
   if (lfEnd !== -1) {
     return { index: lfEnd, separatorLength: 2 };
   }
@@ -259,14 +259,20 @@ export class CompatibleStdioServerTransport implements Transport {
 
       this._stdout.on('error', onError);
 
-      if (this._stdout.write(payload)) {
-        this._stdout.removeListener('error', onError);
-        resolve();
-      } else {
-        this._stdout.once('drain', () => {
+      try {
+        this._stdout.write(payload, (error?: Error | null) => {
+          if (error) {
+            reject(error);
+            // Writable emits its error after invoking the write callback.
+            queueMicrotask(() => this._stdout.removeListener('error', onError));
+            return;
+          }
           this._stdout.removeListener('error', onError);
           resolve();
         });
+      } catch (error) {
+        this._stdout.removeListener('error', onError);
+        reject(error);
       }
     });
   }

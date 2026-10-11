@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
-import path from 'path';
 import { resolveSymbolCandidates } from './backend-symbol-resolution.js';
 import { guardMutationRange } from './backend-move-symbol.js';
+import { resolveContainedRealPath } from './path-util.js';
 
 interface ExtractFunctionRepoHandle {
   id: string;
@@ -67,15 +67,7 @@ export async function extractFunction(
     throw new Error('Explicit confirmation required (set confirm: true)');
   }
 
-  const assertSafePath = (p: string): string => {
-    const full = path.resolve(repo.repoPath, p);
-    if (!full.startsWith(repo.repoPath + path.sep) && full !== repo.repoPath) {
-      throw new Error(`Path traversal blocked: ${p}`);
-    }
-    return full;
-  };
-
-  const sourceAbsolute = assertSafePath(filePath);
+  const sourceAbsolute = await resolveContainedRealPath(repo.repoPath, filePath);
   const source = await fs.readFile(sourceAbsolute, 'utf-8');
   const lines = source.split('\n');
 

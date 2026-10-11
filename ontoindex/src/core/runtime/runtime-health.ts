@@ -3,7 +3,13 @@ import path from 'node:path';
 
 import { execFileText } from '../process/exec-file.js';
 import { summarizeGitPorcelainStatus } from '../../core/audit-lifecycle/freshness.js';
-import { getCurrentCommit } from '../../storage/git.js';
+import { getCurrentCommit, hasGitDir } from '../../storage/git.js';
+import {
+  computeSourceManifest,
+  sourceInputsMatch,
+  SOURCE_MANIFEST_VERSION,
+  SOURCE_MANIFEST_CONTRACT,
+} from '../indexing/source-manifest.js';
 import {
   getStoragePaths,
   loadMeta,
@@ -93,6 +99,11 @@ export interface ReadRuntimeHealthOptions {
 const GIT_TIMEOUT_MS = 5_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
 
+type SourceFreshness = {
+  state: 'clean' | 'stale' | 'degraded' | 'untrusted';
+  reason: string | null;
+};
+
 export async function readRuntimeHealth(
   repoPath: string,
   options: ReadRuntimeHealthOptions = {},
@@ -103,14 +114,19 @@ export async function readRuntimeHealth(
   const meta = Object.hasOwn(options, 'meta')
     ? (options.meta ?? null)
     : await loadMeta(storagePath);
-  const currentCommit = normalizeCommit(getCurrentCommit(repoPath));
-  const dirtyWorktree = await readDirtyWorktree(repoPath, warnings);
+  const repoHasGit = hasGitDir(repoPath);
+  const currentCommit = repoHasGit ? normalizeCommit(getCurrentCommit(repoPath)) : null;
+  const dirtyWorktree = repoHasGit ? await readDirtyWorktree(repoPath, warnings) : null;
   const analyzeLock = await readAnalyzeLock(storagePath, warnings);
   const analysisCheckpoint = await readAnalysisCheckpoint(storagePath, warnings);
   const embeddingCheckpoint = await readEmbeddingCheckpoint(storagePath, warnings);
   const bootstrapSource = await readBootstrapSource(storagePath, warnings);
   const indexedCommit = normalizeCommit(meta?.lastCommit);
-  const metaReason = resolveMetaDegradedReason(meta);
+  const sourceFreshness =
+    meta && !indexedCommit ? await readSourceFreshness(repoPath, meta, warnings) : undefined;
+  const metaReason =
+    resolveMetaDegradedReason(meta) ??
+    (sourceFreshness?.state === 'degraded' ? sourceFreshness.reason : null);
   const hasRuntimeArtifacts =
     analyzeLock.present ||
     analysisCheckpoint.present ||
@@ -127,6 +143,7 @@ export async function readRuntimeHealth(
     embeddingCheckpoint,
     metaReason,
     hasMeta: Boolean(meta),
+    sourceFreshness,
   });
 
   return {
@@ -161,6 +178,7 @@ export function deriveRuntimeHealth(input: {
   embeddingCheckpoint: RuntimeEmbeddingCheckpointState;
   metaReason: string | null;
   hasMeta: boolean;
+  sourceFreshness?: SourceFreshness;
 }): Pick<
   RuntimeHealthSnapshot,
   'freshnessState' | 'degradedReason' | 'repairCommand' | 'repairAction'
@@ -174,11 +192,15 @@ export function deriveRuntimeHealth(input: {
     repairAction: { tool: 'ontoindex', command, args, reason },
   });
   const dirtyReason =
-    input.dirtyWorktree === true ? 'dirty worktree contains uncommitted changes' : null;
+    input.dirtyWorktree === true && !input.sourceFreshness
+      ? 'dirty worktree contains uncommitted changes'
+      : null;
   const staleReason =
     input.indexedCommit && input.currentCommit && input.indexedCommit !== input.currentCommit
       ? 'current commit does not match indexed commit'
-      : null;
+      : input.sourceFreshness?.state === 'stale'
+        ? input.sourceFreshness.reason
+        : null;
   const lockReason =
     input.analyzeLock.state === 'active'
       ? (input.analyzeLock.reason ?? 'analyze.lock is present and owned by an active process')
@@ -206,13 +228,18 @@ export function deriveRuntimeHealth(input: {
     };
   }
 
-  if (!input.hasMeta || !input.indexedCommit || !input.currentCommit) {
+  if (
+    !input.hasMeta ||
+    ((!input.indexedCommit || !input.currentCommit) &&
+      (!input.sourceFreshness || input.sourceFreshness.state === 'untrusted'))
+  ) {
     return {
       freshnessState: 'untrusted',
       degradedReason:
-        input.hasMeta && !input.indexedCommit
+        input.sourceFreshness?.reason ??
+        (input.hasMeta && !input.indexedCommit
           ? 'meta.json does not contain an indexed commit'
-          : 'runtime health lacks an indexed commit or current commit',
+          : 'runtime health lacks an indexed commit or current commit'),
       ...repair('analyze', ['--force'], 'rebuild untrusted runtime state through the lock owner'),
     };
   }
@@ -299,6 +326,49 @@ export function deriveRuntimeHealth(input: {
     degradedReason: null,
     ...repair('status', [], 'runtime state is healthy; inspect status only'),
   };
+}
+
+async function readSourceFreshness(
+  repoPath: string,
+  meta: RepoMeta,
+  warnings: string[],
+): Promise<SourceFreshness> {
+  const manifest = meta.sourceManifest;
+  if (!manifest) {
+    return { state: 'untrusted', reason: 'commitless index lacks a source manifest' };
+  }
+  if (
+    manifest.version !== SOURCE_MANIFEST_VERSION ||
+    manifest.analyzerContractVersion !== SOURCE_MANIFEST_CONTRACT ||
+    !Array.isArray(manifest.includePaths) ||
+    !manifest.includePaths.every((entry) => typeof entry === 'string') ||
+    !['full', 'symbols', 'huge-repo-symbols'].includes(manifest.pipelineProfile) ||
+    !['complete', 'degraded', 'unknown'].includes(manifest.coverage) ||
+    !Number.isSafeInteger(manifest.sourceEntryCount) ||
+    manifest.sourceEntryCount < 0 ||
+    ![manifest.sourceDigest, manifest.scopeDigest, manifest.ignorePolicyDigest].every(
+      (digest) => typeof digest === 'string' && /^[a-f0-9]{64}$/.test(digest),
+    )
+  ) {
+    return { state: 'untrusted', reason: 'index source manifest is invalid or unsupported' };
+  }
+  try {
+    const current = await computeSourceManifest(repoPath, {
+      includePaths: manifest.includePaths,
+      pipelineProfile: manifest.pipelineProfile,
+    });
+    if (!sourceInputsMatch(manifest, current)) {
+      return { state: 'stale', reason: 'current source manifest does not match indexed manifest' };
+    }
+    if (manifest.coverage !== 'complete' || current.coverage !== 'complete') {
+      return { state: 'degraded', reason: 'source manifest coverage is incomplete' };
+    }
+    return { state: 'clean', reason: null };
+  } catch (error) {
+    const reason = `source manifest unavailable: ${formatError(error)}`;
+    warnings.push(reason);
+    return { state: 'untrusted', reason };
+  }
 }
 
 export function formatRuntimeHealthStatusLine(health: RuntimeHealthSnapshot): string {

@@ -42,8 +42,10 @@ describe('mutation dirty guard', () => {
         id: uid,
         name: 'first',
         type: 'Function',
-        // Body updates currently read filePath directly, unlike move/extract.
-        filePath: operation === 'update' || operation === 'delete' ? source : 'src/a.ts',
+        filePath:
+          operation === 'update' || operation === 'delete'
+            ? path.relative(repo.repoPath, source)
+            : 'src/a.ts',
         startLine: overlay ? 4 : 1,
         endLine: overlay ? 6 : 3,
         ...(overlay ? { source: 'overlay' as const } : {}),
@@ -266,6 +268,111 @@ describe('mutation dirty guard', () => {
     await expect(mutate('move')).rejects.toThrow(/line range may be stale/);
     expect(await fs.readFile(source, 'utf8')).toBe(prefix + original);
     await expect(fs.stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('rejects an outside symlink target before changing the source', async () => {
+    const outside = path.join(path.dirname(repo.repoPath), 'mutation-outside-target.ts');
+    await fs.writeFile(outside, 'outside\n');
+    await fs.symlink(outside, path.join(repo.repoPath, 'src', 'escape.ts'));
+    resolve('move');
+    const before = await fs.readFile(source);
+    await expect(
+      moveSymbol(repo, {
+        uid,
+        target_file: 'src/escape.ts',
+        dry_run: false,
+        confirm: true,
+      }),
+    ).rejects.toThrow(/escapes repository/);
+    expect(await fs.readFile(source)).toEqual(before);
+    await fs.rm(outside, { force: true });
+  });
+
+  it('rejects an outside symlink source before updating it', async () => {
+    const outside = path.join(path.dirname(repo.repoPath), 'mutation-outside-source.ts');
+    await fs.writeFile(outside, original);
+    await fs.rm(source);
+    await fs.symlink(outside, source);
+    resolve('update', true);
+    await expect(mutate('update')).rejects.toThrow(/escapes repository/);
+    expect(await fs.readFile(outside, 'utf8')).toBe(original);
+    await fs.rm(outside, { force: true });
+  });
+
+  it('updates a symbol when the process cwd differs from the repository', async () => {
+    resolve('update');
+    const cwd = process.cwd();
+    try {
+      process.chdir(os.tmpdir());
+      await expect(mutate('update')).resolves.toMatchObject({
+        success: true,
+        filePath: 'src/a.ts',
+      });
+    } finally {
+      process.chdir(cwd);
+    }
+    await expectContents('update');
+  });
+
+  it('leaves source unchanged when the move target cannot be read', async () => {
+    const targetDir = path.join(repo.repoPath, 'src', 'target-dir');
+    await fs.mkdir(targetDir);
+    await fs.rm(target);
+    await fs.symlink(targetDir, target);
+    const before = await fs.readFile(source);
+    await expect(mutate('move')).rejects.toThrow();
+    expect(await fs.readFile(source)).toEqual(before);
+    await fs.rm(target, { force: true });
+  });
+
+  it('leaves source unchanged when the move target parent is missing', async () => {
+    const before = await fs.readFile(source);
+    await expect(
+      moveSymbol(repo, {
+        uid,
+        target_file: 'src/missing/target.ts',
+        dry_run: false,
+        confirm: true,
+      }),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await fs.readFile(source)).toEqual(before);
+  });
+
+  it('restores the target when writing the source fails', async () => {
+    const targetBefore = await fs.readFile(target);
+    const writeFile = fs.writeFile.bind(fs);
+    vi.spyOn(fs, 'writeFile')
+      .mockImplementationOnce((...args) => Reflect.apply(writeFile, undefined, args))
+      .mockRejectedValueOnce(Object.assign(new Error('source write failed'), { code: 'EACCES' }));
+    await expect(mutate('move')).rejects.toThrow('source write failed');
+    expect(await fs.readFile(source, 'utf8')).toBe(original);
+    expect(await fs.readFile(target)).toEqual(targetBefore);
+  });
+
+  it('restores both files after a partial source write', async () => {
+    const targetBefore = await fs.readFile(target);
+    const writeFile = fs.writeFile.bind(fs);
+    vi.spyOn(fs, 'writeFile')
+      .mockImplementationOnce((...args) => Reflect.apply(writeFile, undefined, args))
+      .mockImplementationOnce(async () => {
+        await writeFile(source, 'partial', 'utf8');
+        throw new Error('partial source write');
+      });
+    await expect(mutate('move')).rejects.toThrow('partial source write');
+    expect(await fs.readFile(source, 'utf8')).toBe(original);
+    expect(await fs.readFile(target)).toEqual(targetBefore);
+  });
+
+  it('rejects a move when source and target resolve to the same file', async () => {
+    await expect(
+      moveSymbol(repo, {
+        uid,
+        target_file: 'src/a.ts',
+        dry_run: false,
+        confirm: true,
+      }),
+    ).rejects.toThrow(/same file/);
+    expect(await fs.readFile(source, 'utf8')).toBe(original);
   });
 
   it('keeps compatibility for a handle without storagePath', async () => {

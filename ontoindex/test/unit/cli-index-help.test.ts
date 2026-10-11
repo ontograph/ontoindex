@@ -108,16 +108,22 @@ describe('CLI help surface', () => {
     initTempGitRepo(tmpDir);
     fs.mkdirSync(path.join(tmpDir, 'src'));
     fs.writeFileSync(path.join(tmpDir, 'src/sample.ts'), 'export const sample = 1;\n');
+    fs.writeFileSync(path.join(tmpDir, 'outside.ts'), 'export const outside = 1;\n');
     const originalNodeOptions = process.env.NODE_OPTIONS;
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     process.env.NODE_OPTIONS = `${originalNodeOptions || ''} --max-old-space-size=8192`.trim();
     try {
-      await analyzeCommand(tmpDir, { dryRun: true });
+      await analyzeCommand(tmpDir, { dryRun: true, includePath: ['src'] });
 
       expect(runFullAnalysis).not.toHaveBeenCalled();
       expect(logSpy.mock.calls.flat().join('\n')).toContain('File scope preview');
+      expect(logSpy.mock.calls.flat().join('\n')).toContain('Scope: selected include paths: src');
+      expect(logSpy.mock.calls.flat().join('\n')).toContain('Total candidates: 1');
+      expect(logSpy.mock.calls.flat().join('\n')).toContain(
+        'Full-root file total is not measured.',
+      );
       expect(fs.existsSync(path.join(tmpDir, '.ontoindex'))).toBe(false);
     } finally {
       if (originalNodeOptions === undefined) {

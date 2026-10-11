@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -259,6 +259,17 @@ describe('systems audit MCP MVP modules', () => {
     await expect(
       dispatchSuper('gn_resource_trace', { path: '../outside.cpp' }, repo),
     ).rejects.toThrow(/Path is outside repository: \.\.\/outside\.cpp\. Use a path under /);
+  });
+
+  it('gn_resource_trace rejects a repo symlink that points outside', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ontoindex-resource-trace-'));
+    const repo = join(root, 'repo');
+    await mkdir(repo);
+    await writeFile(join(root, 'outside.cpp'), 'int fd = open(path, O_RDONLY);\n', 'utf8');
+    await symlink(join(root, 'outside.cpp'), join(repo, 'alias.cpp'));
+    await expect(dispatchSuper('gn_resource_trace', { path: 'alias.cpp' }, repo)).rejects.toThrow(
+      /escapes repository/,
+    );
   });
 
   it('gn_resource_trace rejects unresolved repo names instead of joining them to paths', async () => {

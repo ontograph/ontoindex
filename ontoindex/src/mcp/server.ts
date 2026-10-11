@@ -35,7 +35,7 @@ import {
 import { realStdoutWrite } from './core/lbug-adapter.js';
 import type { LocalBackend } from './local/local-backend.js';
 import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
-import { pageMcpResponse } from './shared/response-pages.js';
+import { boundMcpErrorText, pageMcpResponse } from './shared/response-pages.js';
 
 const GRAPH_BACKED_SUPER_TOOLS = new Set<SuperTool>([
   'gn_explore',
@@ -84,13 +84,16 @@ function readRepoIdentity(value: unknown): RepoIdentity | null {
 
 function formatToolCallErrorMessage(error: unknown, repo?: RepoIdentity | null): string {
   const message = error instanceof Error ? error.message : String(error);
-  if (!repo) {
-    return `Error: ${message}`;
-  }
-  return JSON.stringify(
-    { error: message, repoLabel: repo.repoLabel, repoPath: repo.repoPath },
-    null,
-    2,
+  return boundMcpErrorText(
+    (boundedMessage) =>
+      repo
+        ? JSON.stringify(
+            { error: boundedMessage, repoLabel: repo.repoLabel, repoPath: repo.repoPath },
+            null,
+            2,
+          )
+        : `Error: ${boundedMessage}`,
+    message,
   );
 }
 
@@ -527,9 +530,9 @@ export function createMCPServer(backend: LocalBackend, options: { full?: boolean
               text: `Analyze the impact of my current code changes before committing.
 
 Follow these steps:
-1. Run \`detect_changes(${JSON.stringify({ scope, ...(baseRef ? { base_ref: baseRef } : {}) })})\` to find what changed and affected processes
-2. For each changed symbol in critical processes, run \`context({name: "<symbol>"})\` to see its full reference graph
-3. For any high-risk items (many callers or cross-process), run \`impact({target: "<symbol>", direction: "upstream"})\` for blast radius
+1. Run \`impact(${JSON.stringify({ action: 'diff', scope, ...(baseRef ? { base_ref: baseRef } : {}) })})\` to find what changed and affected processes
+2. For each changed symbol in critical processes, run \`inspect({action: "context", name: "<symbol>"})\` to see its full reference graph
+3. For any high-risk items (many callers or cross-process), run \`impact({action: "symbol", target: "<symbol>", direction: "upstream"})\` for blast radius
 4. Summarize: changes, affected processes, risk level, and recommended actions
 
 Present the analysis as a clear risk report.`,

@@ -1,6 +1,7 @@
 import { resolveSymbolCandidates } from './backend-symbol-resolution.js';
 import { extractFunction } from './backend-extract-function.js';
 import { guardMutationRange, moveSymbol } from './backend-move-symbol.js';
+import { resolveContainedRealPath } from './path-util.js';
 
 interface MutationRepoHandle {
   id: string;
@@ -150,13 +151,14 @@ export async function updateSymbolBody(
   const { filePath, startLine, endLine } = outcome.symbol;
   await guardMutationRange(repo, outcome.symbol, false);
   const fs = await import('fs/promises');
-  const source = await fs.readFile(filePath, 'utf-8');
+  const sourcePath = await resolveContainedRealPath(repo.repoPath, filePath);
+  const source = await fs.readFile(sourcePath, 'utf-8');
   const lines = source.split('\n');
   // startLine and endLine are 1-indexed inclusive
   const before = lines.slice(0, startLine - 1);
   const after = lines.slice(endLine);
   const newSource = [...before, params.new_body, ...after].join('\n');
-  await fs.writeFile(filePath, newSource, 'utf-8');
+  await fs.writeFile(sourcePath, newSource, 'utf-8');
 
   return { success: true, uid: params.uid, filePath, startLine, endLine };
 }

@@ -64,15 +64,29 @@ export function shouldExposeCursor(cursor: McpResponseCursor): boolean {
 }
 
 function parseCursor(cursor: string | undefined, fallbackPageSize: number): CursorState {
+  if (!Number.isSafeInteger(fallbackPageSize) || fallbackPageSize <= 0) {
+    throw new Error('Invalid page size.');
+  }
   if (!cursor) {
     return { pageSize: fallbackPageSize, offset: 0 };
   }
-  const match = /^gn-page-v1:(\d+):(\d+)$/.exec(cursor);
-  if (!match) throw new Error(`Invalid cursor: ${cursor}`);
+  const match = cursor.length <= 64 ? /^gn-page-v1:(\d+):(\d+)$/.exec(cursor) : null;
+  if (!match) throw new Error('Invalid cursor.');
   const [, pageSizeText, offsetText] = match;
+  const pageSize = Number(pageSizeText);
+  const offset = Number(offsetText);
+  if (
+    !Number.isSafeInteger(pageSize) ||
+    pageSize <= 0 ||
+    pageSize > fallbackPageSize ||
+    !Number.isSafeInteger(offset) ||
+    offset < 0
+  ) {
+    throw new Error('Invalid cursor.');
+  }
   return {
-    pageSize: Number.parseInt(pageSizeText, 10),
-    offset: Number.parseInt(offsetText, 10),
+    pageSize,
+    offset,
   };
 }
 

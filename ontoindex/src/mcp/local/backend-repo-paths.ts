@@ -1,4 +1,5 @@
 import path from 'path';
+import { resolveContainedRealPath } from './path-util.js';
 
 export function normalizeRepoRelativePath(repoPath: string, filePath: string): string {
   const repoRoot = path.resolve(repoPath);
@@ -12,16 +13,14 @@ export function resolveRepoFilePath(repoPath: string, filePath: string): string 
   return path.isAbsolute(filePath) ? path.resolve(filePath) : path.join(repoPath, filePath);
 }
 
-export function resolveContainedRepoPath(repoPath: string, rawPath: string): string | null {
+export async function resolveContainedRepoPath(
+  repoPath: string,
+  rawPath: string,
+): Promise<string | null> {
   if (!rawPath || typeof rawPath !== 'string') return null;
-  const absolutePath = path.isAbsolute(rawPath) ? rawPath : path.resolve(repoPath, rawPath);
-  const normalizedRepo = path.resolve(repoPath);
-  const normalizedAbsolute = path.resolve(absolutePath);
-  if (
-    normalizedAbsolute !== normalizedRepo &&
-    !normalizedAbsolute.startsWith(normalizedRepo + path.sep)
-  ) {
+  try {
+    return await resolveContainedRealPath(repoPath, rawPath);
+  } catch {
     return null;
   }
-  return normalizedAbsolute;
 }

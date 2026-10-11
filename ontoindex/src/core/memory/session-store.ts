@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { resolveContainedRealPath } from '../../mcp/local/path-util.js';
 
 interface SessionStore {
   get(k: string): Promise<string | null>;
@@ -14,22 +15,29 @@ function getThrownField(value: unknown, field: 'code' | 'message'): unknown {
 }
 
 export class FileSessionStore implements SessionStore {
+  private readonly repoPath: string;
   private readonly filePath: string;
 
   constructor(repoPath: string, sessionId: string) {
     if (!sessionId || sessionId.includes('/') || sessionId.includes('\\')) {
       throw new Error('Invalid session ID');
     }
+    this.repoPath = repoPath;
     this.filePath = path.join(repoPath, '.ontoindex', 'sessions', `${sessionId}.json`);
   }
 
   private async ensureDir(): Promise<void> {
-    await fs.mkdir(path.dirname(this.filePath), { recursive: true });
+    const safePath = await this.resolvePath();
+    await fs.mkdir(path.dirname(safePath), { recursive: true });
+  }
+
+  private resolvePath(): Promise<string> {
+    return resolveContainedRealPath(this.repoPath, this.filePath);
   }
 
   private async load(): Promise<Record<string, string>> {
     try {
-      const content = await fs.readFile(this.filePath, 'utf-8');
+      const content = await fs.readFile(await this.resolvePath(), 'utf-8');
       return JSON.parse(content);
     } catch (e: unknown) {
       if (getThrownField(e, 'code') === 'ENOENT') {
@@ -45,7 +53,7 @@ export class FileSessionStore implements SessionStore {
       throw new Error('Session store exceeds 1 MB cap');
     }
     await this.ensureDir();
-    await fs.writeFile(this.filePath, content, 'utf-8');
+    await fs.writeFile(await this.resolvePath(), content, 'utf-8');
   }
 
   async get(k: string): Promise<string | null> {

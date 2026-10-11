@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { resolveSymbolCandidates } from './backend-symbol-resolution.js';
 import { getOverlaySnapshot, isDirtyPath } from './backend-overlay.js';
+import { resolveContainedRealPath } from './path-util.js';
 
 interface MoveSymbolRepoHandle {
   id: string;
@@ -93,16 +94,13 @@ export async function moveSymbol(
     throw new Error('Explicit confirmation required (set confirm: true)');
   }
 
-  const assertSafePath = (p: string): string => {
-    const full = path.resolve(repo.repoPath, p);
-    if (!full.startsWith(repo.repoPath + path.sep) && full !== repo.repoPath) {
-      throw new Error(`Path traversal blocked: ${p}`);
-    }
-    return full;
-  };
-
-  const sourceAbsolute = assertSafePath(filePath);
-  const targetAbsolute = assertSafePath(target_file);
+  const [sourceAbsolute, targetAbsolute] = await Promise.all([
+    resolveContainedRealPath(repo.repoPath, filePath),
+    resolveContainedRealPath(repo.repoPath, target_file),
+  ]);
+  if (sourceAbsolute === targetAbsolute) {
+    throw new Error('Source and target resolve to the same file');
+  }
 
   // Read source, remove symbol lines (startLine..endLine inclusive, 1-indexed)
   const source = await fs.readFile(sourceAbsolute, 'utf-8');
@@ -112,18 +110,37 @@ export async function moveSymbol(
   const movedLines = endLine - startLine + 1;
 
   const newSourceLines = [...lines.slice(0, startLine - 1), ...lines.slice(endLine)];
-  await fs.writeFile(sourceAbsolute, newSourceLines.join('\n'), 'utf-8');
 
-  // Read target (create if absent), append the symbol
+  // Read both files before writing either, so target read failures leave source intact.
   let targetContent = '';
+  let targetExisted = true;
   try {
     targetContent = await fs.readFile(targetAbsolute, 'utf-8');
   } catch (e: unknown) {
     if (!isEnoentError(e)) throw e;
+    targetExisted = false;
   }
 
   const separator = targetContent.length > 0 && !targetContent.endsWith('\n') ? '\n\n' : '\n';
-  await fs.writeFile(targetAbsolute, targetContent + separator + symbolText + '\n', 'utf-8');
+  const newTarget = targetContent + separator + symbolText + '\n';
+  await fs.writeFile(targetAbsolute, newTarget, 'utf-8');
+  try {
+    await fs.writeFile(sourceAbsolute, newSourceLines.join('\n'), 'utf-8');
+  } catch (sourceError) {
+    try {
+      // A failed write can truncate the source; retain the destination copy
+      // unless the original source has been restored successfully.
+      await fs.writeFile(sourceAbsolute, source, 'utf-8');
+      if (targetExisted) await fs.writeFile(targetAbsolute, targetContent, 'utf-8');
+      else await fs.unlink(targetAbsolute);
+    } catch (rollbackError) {
+      throw new Error(
+        `Failed to update source after writing target, and rollback failed: ${String(rollbackError)}`,
+        { cause: sourceError },
+      );
+    }
+    throw sourceError;
+  }
 
   return {
     success: true,

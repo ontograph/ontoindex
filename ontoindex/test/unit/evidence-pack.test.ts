@@ -76,6 +76,37 @@ describe('evidence_pack', () => {
     expect(result.evidence[0].end_line).toBe(1);
   });
 
+  it('marks oversized files unresolved when snippets are omitted', async () => {
+    const oversized = path.join(tmpDir, 'large.txt');
+    await fs.writeFile(oversized, Buffer.alloc(1024 * 1024 + 1, 97));
+    const repo: any = { id: 'not-initialized', name: 't', repoPath: tmpDir };
+    const result = await runEvidencePack(repo, {
+      targets: ['large.txt'],
+      include_snippet: false,
+    });
+    expect(result.status).toBe('success');
+    expect(result.resolved_count).toBe(0);
+    expect(result.unresolved_count).toBe(1);
+    expect(result.unresolved[0].reason).toContain('1048576-byte evidence read limit');
+  });
+
+  it('marks oversized files unresolved when snippets are requested', async () => {
+    const oversized = path.join(tmpDir, 'large-with-snippet.txt');
+    await fs.writeFile(oversized, Buffer.alloc(1024 * 1024 + 1, 97));
+    const repo: any = { id: 'not-initialized', name: 't', repoPath: tmpDir };
+    const result = await runEvidencePack(repo, { targets: ['large-with-snippet.txt'] });
+    expect(result.resolved_count).toBe(0);
+    expect(result.unresolved_count).toBe(1);
+    expect(result.unresolved[0].reason).toContain('1048576-byte evidence read limit');
+  });
+
+  it('rejects requests exceeding the target limit', async () => {
+    const repo: any = { id: 'not-initialized', name: 't', repoPath: tmpDir };
+    const result = await runEvidencePack(repo, { targets: Array(129).fill('missing.ts') });
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('At most 128 evidence targets');
+  });
+
   it('marks unknown symbols as unresolved', async () => {
     const repo: any = { id: 'not-initialized', name: 't', repoPath: tmpDir };
     const result = await runEvidencePack(repo, {
@@ -95,6 +126,17 @@ describe('evidence_pack', () => {
     expect(result.status).toBe('success');
     expect(result.resolved_count).toBe(0);
     expect(result.unresolved_count).toBe(1);
+  });
+
+  it('does not resolve a file symlink that points outside the repo', async () => {
+    const outside = path.join(path.dirname(tmpDir), 'gn-evpack-outside.ts');
+    await fs.writeFile(outside, 'secret\n', 'utf8');
+    await fs.symlink(outside, path.join(tmpDir, 'outside-link.ts'));
+    const repo: any = { id: 'not-initialized', name: 't', repoPath: tmpDir };
+    const result = await runEvidencePack(repo, { targets: ['outside-link.ts'] });
+    expect(result.resolved_count).toBe(0);
+    expect(result.unresolved_count).toBe(1);
+    await fs.rm(outside, { force: true });
   });
 
   it('handles mix of resolved + unresolved', async () => {
