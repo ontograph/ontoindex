@@ -1,6 +1,7 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { resolveContainedMetadataPath } from '../../mcp/local/path-util.js';
 
 import { LocalAuditEventStore } from './audit-event-store.js';
 import { buildAuditProjection } from './audit-projection.js';
@@ -114,7 +115,7 @@ export function getAuditSessionLockPath(repoRoot: string, sessionId: string): st
   return path.join(
     repoRoot,
     AUDIT_SESSION_LOCKS_RELATIVE_DIR,
-    `${requireNonEmptyString(sessionId, 'sessionId')}.json`,
+    `${requireSafeSessionId(sessionId)}.json`,
   );
 }
 
@@ -131,7 +132,7 @@ export function createAuditSessionLock(input: AuditSessionLockInput): AuditSessi
 
   return {
     schemaVersion: AUDIT_SESSION_LOCK_SCHEMA_VERSION,
-    sessionId: requireNonEmptyString(input.sessionId, 'lock.sessionId'),
+    sessionId: requireSafeSessionId(input.sessionId),
     targetRepo: requireNonEmptyString(input.targetRepo, 'lock.targetRepo'),
     targetHead: requireNonEmptyString(input.targetHead, 'lock.targetHead'),
     graphIndexId: requireNonEmptyString(input.graphIndexId, 'lock.graphIndexId'),
@@ -187,7 +188,11 @@ export async function saveAuditSessionLock(
   lock: AuditSessionLockInput,
 ): Promise<AuditSessionLock> {
   const normalized = createAuditSessionLock(lock);
-  await atomicWriteJson(getAuditSessionLockPath(repoRoot, normalized.sessionId), normalized);
+  const filePath = await resolveContainedMetadataPath(
+    repoRoot,
+    getAuditSessionLockPath(repoRoot, normalized.sessionId),
+  );
+  await atomicWriteJson(repoRoot, filePath, normalized);
   return normalized;
 }
 
@@ -195,7 +200,10 @@ export async function loadAuditSessionLock(
   repoRoot: string,
   sessionId: string,
 ): Promise<AuditSessionLock> {
-  const filePath = getAuditSessionLockPath(repoRoot, sessionId);
+  const filePath = await resolveContainedMetadataPath(
+    repoRoot,
+    getAuditSessionLockPath(repoRoot, sessionId),
+  );
   let parsed: unknown;
   try {
     parsed = JSON.parse(await fs.readFile(filePath, 'utf8'));
@@ -205,7 +213,16 @@ export async function loadAuditSessionLock(
     }
     throw error;
   }
-  return normalizeAuditSessionLock(parsed);
+  const lock = normalizeAuditSessionLock(parsed);
+  if (lock.sessionId !== sessionId)
+    throw new Error('Audit session lock identity does not match the requested session.');
+  return lock;
+}
+
+function requireSafeSessionId(value: string): string {
+  const id = requireNonEmptyString(value, 'sessionId');
+  if (/[\\/\0]/.test(id) || id === '.' || id === '..') throw new Error('Invalid audit session id.');
+  return id;
 }
 
 export function validateAuditSessionLock(
@@ -489,18 +506,31 @@ function requireRecordString(
   return requireNonEmptyString(value, fieldName);
 }
 
-async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
+async function atomicWriteJson(repoRoot: string, filePath: string, value: unknown): Promise<void> {
   const directory = path.dirname(filePath);
   await fs.mkdir(directory, { recursive: true });
   const tempPath = path.join(
     directory,
-    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
+    `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
   );
+  let created = false;
   try {
-    await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    await resolveContainedMetadataPath(repoRoot, tempPath);
+    const handle = await fs.open(tempPath, 'wx');
+    created = true;
+    try {
+      await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    } finally {
+      await handle.close();
+    }
+    await resolveContainedMetadataPath(repoRoot, filePath);
     await fs.rename(tempPath, filePath);
   } catch (error) {
-    await fs.rm(tempPath, { force: true }).catch(() => undefined);
+    if (created) {
+      await resolveContainedMetadataPath(repoRoot, tempPath)
+        .then((safeTemp) => fs.rm(safeTemp, { force: true }))
+        .catch(() => undefined);
+    }
     throw error;
   }
 }

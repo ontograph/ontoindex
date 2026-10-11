@@ -48,5 +48,36 @@ describe('super argument validation', () => {
       }
       expect(() => validateSuperParams(tool.name as SuperTool, params)).not.toThrow();
     });
+    if (
+      tool.inputSchema.required.includes('session') &&
+      Object.hasOwn(tool.inputSchema.properties, 'sessionId')
+    ) {
+      it(`accepts sessionId alias without mutating inputs for ${tool.name}`, () => {
+        const params: Record<string, unknown> = { sessionId: 'sample' };
+        for (const key of tool.inputSchema.required) {
+          if (key !== 'session') params[key] = 'sample';
+        }
+        const original = { ...params };
+        expect(() => validateSuperParams(tool.name as SuperTool, params)).not.toThrow();
+        expect(params).toEqual(original);
+        const { sessionId: _sessionId, ...missing } = params;
+        expect(() => validateSuperParams(tool.name as SuperTool, missing)).toThrow(
+          'session: Required',
+        );
+        expect(() =>
+          validateSuperParams(tool.name as SuperTool, { ...params, sessionId: 1 }),
+        ).toThrow('sessionId: expected string');
+        expect(() =>
+          validateSuperParams(tool.name as SuperTool, { ...params, session: 1 }),
+        ).toThrow('session: expected string');
+        expect(() =>
+          validateSuperParams(tool.name as SuperTool, {
+            ...params,
+            session: 'canonical',
+            sessionId: 1,
+          }),
+        ).toThrow('sessionId: expected string');
+      });
+    }
   }
 });

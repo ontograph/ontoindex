@@ -1,6 +1,18 @@
 import { promises as fs } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { resolveContainedMetadataPath } from '../../mcp/local/path-util.js';
+
+function resolveAuditMetadataPath(filePath: string): Promise<string> {
+  const absolute = path.resolve(filePath);
+  const parts = absolute.split(path.sep);
+  const metadataIndex = parts.indexOf('.ontoindex');
+  const root =
+    metadataIndex >= 0
+      ? parts.slice(0, metadataIndex).join(path.sep) || path.parse(absolute).root
+      : path.dirname(absolute);
+  return resolveContainedMetadataPath(root, absolute);
+}
 
 import { buildAuditProjection } from './audit-projection.js';
 import {
@@ -237,6 +249,7 @@ export class LocalAuditEventStore {
 export async function loadAuditEventStoreState(
   stateFilePath: string,
 ): Promise<AuditEventStoreState> {
+  stateFilePath = await resolveAuditMetadataPath(stateFilePath);
   let raw: string;
   try {
     raw = await fs.readFile(stateFilePath, 'utf8');
@@ -310,6 +323,7 @@ export function createEmptyAuditEventStoreState(): AuditEventStoreState {
 export async function inspectAuditEventStoreRaw(
   stateFilePath: string,
 ): Promise<AuditEventStoreRawInspection> {
+  stateFilePath = await resolveAuditMetadataPath(stateFilePath);
   let bytes: Buffer;
   try {
     bytes = await fs.readFile(stateFilePath);
@@ -344,6 +358,8 @@ export async function recoverAuditEventStore(
   projectionPath: string,
   options: AuditStoreUpdateOptions = {},
 ): Promise<AuditEventStoreRecoveryResult> {
+  stateFilePath = await resolveAuditMetadataPath(stateFilePath);
+  projectionPath = await resolveAuditMetadataPath(projectionPath);
   return withAuditStoreUpdateLock(stateFilePath, options, async () => {
     const raw = await inspectAuditEventStoreRaw(stateFilePath);
     if (!raw.exists || raw.bytes === null || raw.sha256 === null) {
@@ -366,13 +382,15 @@ export async function recoverAuditEventStore(
         throw new Error(`cannot recover audit event store with ${integrity.status} integrity`);
       }
     }
-    const archivePath = path.join(
-      path.dirname(stateFilePath),
-      'recovery',
-      `audit-event-store-${Date.now()}-${raw.sha256.slice(0, 12)}.json`,
+    const archivePath = await resolveAuditMetadataPath(
+      path.join(
+        path.dirname(stateFilePath),
+        'recovery',
+        `audit-event-store-${Date.now()}-${raw.sha256.slice(0, 12)}.json`,
+      ),
     );
     await fs.mkdir(path.dirname(archivePath), { recursive: true });
-    await fs.writeFile(archivePath, raw.bytes);
+    await fs.writeFile(archivePath, raw.bytes, { flag: 'wx' });
     await atomicWriteJson(stateFilePath, createEmptyAuditEventStoreState());
     await atomicWriteJson(projectionPath, buildAuditProjection([]));
     return {
@@ -792,17 +810,28 @@ function normalizeBundle(value: unknown): AuditBundle {
 }
 
 async function atomicWriteJson(filePath: string, value: unknown): Promise<void> {
+  filePath = await resolveAuditMetadataPath(filePath);
   const directory = path.dirname(filePath);
   await fs.mkdir(directory, { recursive: true });
   const tempPath = path.join(
     directory,
     `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`,
   );
+  await resolveAuditMetadataPath(tempPath);
+  let created = false;
   try {
-    await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, {
+      encoding: 'utf8',
+      flag: 'wx',
+    });
+    created = true;
+    await resolveAuditMetadataPath(filePath);
     await fs.rename(tempPath, filePath);
   } catch (error) {
-    await fs.rm(tempPath, { force: true }).catch(() => undefined);
+    if (created)
+      await resolveAuditMetadataPath(tempPath)
+        .then((safePath) => fs.rm(safePath, { force: true }))
+        .catch(() => undefined);
     throw error;
   }
 }
@@ -835,9 +864,12 @@ async function acquireAuditStoreUpdateLock(
   ownerId: string,
   options: Required<Pick<AuditStoreUpdateOptions, 'maxAttempts' | 'retryDelayMs' | 'staleLockMs'>>,
 ): Promise<void> {
+  lockPath = await resolveAuditMetadataPath(lockPath);
+  await resolveAuditMetadataPath(stateFilePath);
   await fs.mkdir(path.dirname(lockPath), { recursive: true });
   for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
     try {
+      await resolveAuditMetadataPath(lockPath);
       await fs.writeFile(
         lockPath,
         `${JSON.stringify({ ownerId, pid: process.pid, stateFilePath, acquiredAt: new Date().toISOString() }, null, 2)}\n`,
@@ -861,6 +893,7 @@ async function removeStaleAuditStoreUpdateLock(
   lockPath: string,
   staleLockMs: number,
 ): Promise<void> {
+  lockPath = await resolveAuditMetadataPath(lockPath);
   const stat = await fs.stat(lockPath).catch((error) => {
     if (isNodeError(error) && error.code === 'ENOENT') {
       return null;
@@ -873,6 +906,7 @@ async function removeStaleAuditStoreUpdateLock(
 }
 
 async function releaseAuditStoreUpdateLock(lockPath: string, ownerId: string): Promise<void> {
+  lockPath = await resolveAuditMetadataPath(lockPath);
   const raw = await fs.readFile(lockPath, 'utf8').catch((error) => {
     if (isNodeError(error) && error.code === 'ENOENT') {
       return null;

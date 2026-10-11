@@ -521,7 +521,14 @@ export const publishIndexGenerationTransaction = async <T>(
   withGenerationPointerLock(storagePath, async () => {
     const activation = await activateIndexGenerationLocked(storagePath, generation);
     try {
-      return { ...activation, result: await commit(activation) };
+      const result = await commit(activation);
+      // Retention is post-commit maintenance; its failure must not roll back publication.
+      await markManagedGenerationLocked(
+        storagePath,
+        activation.activeGeneration.generationPath,
+      ).catch(() => {});
+      await pruneIndexGenerationsLocked(storagePath).catch(() => {});
+      return { ...activation, result };
     } catch (commitError) {
       try {
         await rollbackIndexGenerationActivationLocked(
@@ -553,6 +560,175 @@ export const resolveActiveIndexGeneration = async (
 
 export const resolveActiveLbugPath = async (storagePath: string): Promise<string> =>
   (await resolveActiveIndexGeneration(storagePath))?.lbugPath ?? path.join(storagePath, 'lbug');
+
+export interface IndexGenerationPin {
+  dbPath: string;
+  published?: boolean;
+  release: () => Promise<void>;
+}
+
+const processDefinitelyDead = (pid: number): boolean => {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+};
+
+async function markManagedGenerationLocked(
+  storagePath: string,
+  generationPath: string,
+): Promise<void> {
+  const root = path.join(storagePath, GENERATIONS_DIR);
+  const rootStat = await fs.lstat(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink())
+    throw new Error('Invalid generations directory');
+  let maximum = 0;
+  for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith('.') || !/^[A-Za-z0-9._-]+$/.test(entry.name))
+      continue;
+    const marker = path.join(root, entry.name, '.retention-managed');
+    const stat = await fs.lstat(marker).catch(() => null);
+    if (!stat?.isFile() || stat.isSymbolicLink()) continue;
+    const value = Number(await fs.readFile(marker, 'utf8'));
+    if (Number.isSafeInteger(value) && value > 0) maximum = Math.max(maximum, value);
+  }
+  const next = Math.max(Date.now(), maximum + 1);
+  if (!Number.isSafeInteger(next) || next <= 0)
+    throw new Error('Generation retention sequence exhausted');
+  await fs.writeFile(path.join(generationPath, '.retention-managed'), String(next), { flag: 'wx' });
+}
+
+/** Only generations published after reader pin adoption are eligible for removal. */
+async function pruneIndexGenerationsLocked(storagePath: string): Promise<void> {
+  const root = path.join(storagePath, GENERATIONS_DIR);
+  const rootStat = await fs.lstat(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return;
+  const active = await resolveActiveIndexGeneration(storagePath);
+  if (!active) return;
+  const entries = await fs.readdir(root, { withFileTypes: true });
+  const managed: Array<{ name: string; committedAt: number }> = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    const directory = path.join(root, entry.name);
+    const staging = /^\.staging-.+-(\d+)-(\d+)-[a-z0-9]+$/.exec(entry.name);
+    if (staging) {
+      if (
+        Date.now() - Number(staging[2]) > 24 * 60 * 60 * 1000 &&
+        processDefinitelyDead(Number(staging[1]))
+      ) {
+        await fs.rm(directory, { recursive: true, force: true });
+      }
+      continue;
+    }
+    if (entry.name.startsWith('.') || !/^[A-Za-z0-9._-]+$/.test(entry.name)) continue;
+    const marker = path.join(directory, '.retention-managed');
+    const stat = await fs.lstat(marker).catch(() => null);
+    if (!stat?.isFile() || stat.isSymbolicLink()) continue;
+    const committedAt = Number(await fs.readFile(marker, 'utf8'));
+    if (Number.isSafeInteger(committedAt) && committedAt > 0)
+      managed.push({ name: entry.name, committedAt });
+  }
+  managed.sort((a, b) => b.committedAt - a.committedAt || b.name.localeCompare(a.name));
+  const retained = new Set([
+    active.generationId,
+    ...managed
+      .filter((g) => g.name !== active.generationId)
+      .slice(0, 2)
+      .map((g) => g.name),
+  ]);
+  for (const generation of managed) {
+    if (retained.has(generation.name)) continue;
+    const directory = path.join(root, generation.name);
+    let pinned = false;
+    for (const name of await fs.readdir(directory)) {
+      if (!name.startsWith('.reader-')) continue;
+      const pid = /^\.reader-(\d+)-[a-z0-9]+$/.exec(name);
+      if (!pid || !processDefinitelyDead(Number(pid[1]))) {
+        pinned = true;
+        break;
+      }
+      const pinPath = path.join(directory, name);
+      const stat = await fs.lstat(pinPath);
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        pinned = true;
+        break;
+      }
+      await fs.unlink(pinPath);
+    }
+    if (!pinned) await fs.rm(directory, { recursive: true, force: true });
+  }
+}
+
+/** Select and pin under the publication lock, before opening a native handle. */
+export async function acquireIndexGenerationPin(
+  requestedPath: string,
+): Promise<IndexGenerationPin> {
+  const absolute = path.resolve(requestedPath);
+  const parent = path.dirname(absolute);
+  const storagePath =
+    path.basename(path.dirname(parent)) === GENERATIONS_DIR
+      ? path.dirname(path.dirname(parent))
+      : path.basename(parent) === CURRENT_GENERATION_LINK
+        ? path.dirname(parent)
+        : parent;
+  // Staging databases and arbitrary legacy databases retain their existing lifecycle.
+  if (path.basename(parent).startsWith('.staging-') || path.basename(absolute) !== 'lbug') {
+    return { dbPath: requestedPath, release: async () => {} };
+  }
+  return withGenerationPointerLock(storagePath, async () => {
+    const resolved = await fs.realpath(absolute).catch(async (err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT' && parent === storagePath)
+        return path.join(await fs.realpath(parent), 'lbug');
+      throw err;
+    });
+    const root = await fs
+      .realpath(path.join(storagePath, GENERATIONS_DIR))
+      .catch(() => path.join(storagePath, GENERATIONS_DIR));
+    const rootStat = await fs.lstat(path.join(storagePath, GENERATIONS_DIR)).catch(() => null);
+    if (rootStat?.isSymbolicLink())
+      throw new Error('Generations directory must not be a symbolic link');
+    const generationPath = path.dirname(resolved);
+    const name = path.basename(generationPath);
+    if (path.dirname(generationPath) !== root) {
+      const canonicalStorage = await fs.realpath(storagePath);
+      if (parent !== storagePath || resolved !== path.join(canonicalStorage, 'lbug'))
+        throw new Error('Database generation resolves outside its generations directory');
+      return { dbPath: resolved, release: async () => {} };
+    }
+    const stat = await fs.lstat(generationPath);
+    if (
+      !stat.isDirectory() ||
+      stat.isSymbolicLink() ||
+      name.startsWith('.') ||
+      safeGenerationId(name) !== name
+    )
+      throw new Error('Invalid database generation directory');
+    const databaseStat = await fs.lstat(resolved);
+    if (!databaseStat.isFile() || databaseStat.isSymbolicLink())
+      throw new Error('Published generation database must be a regular file');
+    const pinPath = path.join(
+      generationPath,
+      `.reader-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    await fs.writeFile(pinPath, '', { flag: 'wx', mode: 0o600 });
+    let released = false;
+    return {
+      dbPath: resolved,
+      published: true,
+      release: async () => {
+        if (released) return;
+        await withGenerationPointerLock(storagePath, async () => {
+          await fs.unlink(pinPath);
+          released = true;
+          await pruneIndexGenerationsLocked(storagePath).catch(() => {});
+        });
+      },
+    };
+  });
+}
 
 async function readMetaFile(metaPath: string): Promise<RepoMeta | null> {
   try {

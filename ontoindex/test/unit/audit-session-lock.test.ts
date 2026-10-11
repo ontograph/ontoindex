@@ -13,6 +13,8 @@ import {
   createAuditSessionLockFromStore,
   getAuditSessionLockPath,
   loadAndValidateAuditSessionLock,
+  loadAuditSessionLock,
+  saveAuditSessionLock,
   validateAuditSessionLock,
 } from '../../src/core/audit-lifecycle/session-lock.js';
 
@@ -49,6 +51,40 @@ const evidence = {
 };
 
 describe('audit session lock', () => {
+  it.each(['../escape', 'nested/id', 'nested\\id', '.', '..', 'bad\0id'])(
+    'rejects unsafe session id %s',
+    (sessionId) => {
+      expect(() => getAuditSessionLockPath(tmpDir, sessionId)).toThrow();
+    },
+  );
+  it('rejects a persisted session identity mismatch', async () => {
+    const lock = await saveAuditSessionLock(tmpDir, {
+      sessionId: 'one',
+      targetRepo: 'repo',
+      targetHead: 'head',
+      graphIndexId: 'graph',
+      ontoindexVersion: '1',
+    });
+    await fs.writeFile(
+      getAuditSessionLockPath(tmpDir, 'one'),
+      JSON.stringify({ ...lock, sessionId: 'two' }),
+    );
+    await expect(loadAuditSessionLock(tmpDir, 'one')).rejects.toThrow(/identity/);
+  });
+  it('rejects ancestor symlinks even within the repository', async () => {
+    await fs.mkdir(path.join(tmpDir, 'redirect'));
+    await fs.symlink(path.join(tmpDir, 'redirect'), path.join(tmpDir, '.ontoindex'));
+    await expect(
+      saveAuditSessionLock(tmpDir, {
+        sessionId: 'one',
+        targetRepo: 'repo',
+        targetHead: 'head',
+        graphIndexId: 'graph',
+        ontoindexVersion: '1',
+      }),
+    ).rejects.toThrow();
+    expect(await fs.readdir(path.join(tmpDir, 'redirect'))).toEqual([]);
+  });
   it('creates and persists a lock from the audit event store projection', async () => {
     await seedSessionWithTombstone();
 

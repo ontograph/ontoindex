@@ -15,6 +15,41 @@ afterEach(() => {
 });
 
 describe('audit finding ingest', () => {
+  it('rejects absolute and relative outside sources and escaping symlinks', async () => {
+    const repo = initRepo();
+    for (const sourcePath of [path.join(repo, '..', 'outside.md'), '../outside.md']) {
+      await expect(ingestAuditFindings({ repoPath: repo, sourcePath })).rejects.toThrow(
+        /escapes repository/,
+      );
+    }
+    fs.symlinkSync(os.tmpdir(), path.join(repo, 'outside'));
+    await expect(
+      ingestAuditFindings({ repoPath: repo, sourcePath: 'outside/report.md' }),
+    ).rejects.toThrow(/escapes repository/);
+  });
+  it('resolves relative source symlinks within the repository', async () => {
+    const repo = initRepo();
+    fs.writeFileSync(
+      path.join(repo, 'report.md'),
+      '## Missing guard\n- Evidence: unchecked close\n',
+    );
+    fs.symlinkSync('report.md', path.join(repo, 'alias.md'));
+    expect((await ingestAuditFindings({ repoPath: repo, sourcePath: 'alias.md' })).sourcePath).toBe(
+      path.join(repo, 'report.md'),
+    );
+  });
+  it('keeps sourceText path labels compatible without reading them', async () => {
+    const repo = initRepo();
+    expect(
+      (
+        await ingestAuditFindings({
+          repoPath: repo,
+          sourceText: '## Missing guard',
+          sourcePath: '../label.md',
+        })
+      ).sourcePath,
+    ).toBe('../label.md');
+  });
   it('locks target HEAD, hashes source, and creates candidate-only findings', async () => {
     const repo = initRepo();
     const result = await ingestAuditFindings({
@@ -137,7 +172,7 @@ describe('audit finding ingest', () => {
 });
 
 function initRepo(): string {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-audit-ingest-'));
+  tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gn-audit-ingest-')));
   git(tmpDir, 'init', '--initial-branch=main');
   git(tmpDir, 'config', 'user.name', 'OntoIndex Test');
   git(tmpDir, 'config', 'user.email', 'ontoindex-test@example.com');

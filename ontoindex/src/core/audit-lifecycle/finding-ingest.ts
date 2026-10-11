@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { resolveContainedRealPath } from '../../mcp/local/path-util.js';
 
 import type {
   AuditClaimDsl,
@@ -149,7 +150,8 @@ async function readAuditSource(
   if (!input.sourcePath) {
     throw new Error('sourceText or sourcePath is required for audit ingest');
   }
-  return { text: await fs.readFile(input.sourcePath, 'utf8'), path: input.sourcePath };
+  const sourcePath = await resolveContainedRealPath(input.repoPath, input.sourcePath);
+  return { text: await fs.readFile(sourcePath, 'utf8'), path: sourcePath };
 }
 
 function parseMarkdownCandidates(text: string): RawFindingCandidate[] {

@@ -22,6 +22,36 @@ function deferred() {
   return { promise, resolve };
 }
 
+describe('HTTP quality configuration isolation', () => {
+  it('rejects process-wide quality changes without mutating environment', async () => {
+    const f = await fixture();
+    const before = { ...process.env };
+    try {
+      const initialized = await f.request(initialize);
+      const id = initialized.headers.get('mcp-session-id');
+      await initialized.text();
+      const response = await f.request(
+        {
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: {
+            name: 'gn_quality_mode',
+            arguments: { level: 'thorough' },
+          },
+        },
+        { 'mcp-session-id': id!, 'mcp-protocol-version': '2025-03-26' },
+      );
+      const body = await response.text();
+      expect(body).toContain('unavailable over HTTP');
+      expect(body).toContain('isError');
+      expect(process.env).toEqual(before);
+    } finally {
+      await f.close();
+    }
+  });
+});
+
 async function boundedGate(gate: Promise<void>) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {

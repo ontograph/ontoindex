@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { getStoragePaths } from '../../storage/repo-manager.js';
+import { resolveContainedMetadataPath } from '../../mcp/local/path-util.js';
 import { readAnalyzeLock } from '../runtime/runtime-health.js';
 import {
   ANALYSIS_REQUESTED_CAPABILITIES_VERSION,
@@ -161,6 +162,7 @@ export async function submitAnalysisJob(
   if (!repoStat.isDirectory())
     throw new Error(`Analysis repository is not a directory: ${repoPath}`);
   const dir = jobsDir(repoPath);
+  await resolveContainedMetadataPath(repoPath, dir);
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
   await cleanupExpiredJobs(dir);
 
@@ -300,10 +302,12 @@ export async function getAnalysisJob(
   id: string,
 ): Promise<AnalysisJobRecord | null> {
   try {
+    await resolveContainedMetadataPath(repoPath, jobsDir(repoPath));
+    await readJobFile(jobPath(repoPath, id));
     await cleanupExpiredJobs(jobsDir(repoPath));
-    const job = JSON.parse(await fs.readFile(jobPath(repoPath, id), 'utf8')) as AnalysisJobRecord;
+    const job = await readJobFile(jobPath(repoPath, id));
     if (!isTerminal(job.status) && !(await isActive(job))) {
-      return completeAnalysisJob(jobPath(repoPath, id), {
+      return completeAnalysisJob(jobPath(job.repoPath, job.id), {
         status: 'failed',
         completedAt: new Date().toISOString(),
         error: 'Analysis runner is no longer active.',
@@ -723,7 +727,18 @@ function fencedAttempt(message: string): ManagedAnalysisFencedAttemptError {
 }
 
 async function readJobFile(file: string): Promise<AnalysisJobRecord> {
-  return JSON.parse(await fs.readFile(file, 'utf8')) as AnalysisJobRecord;
+  const expectedRepo = path.resolve(file, '../../..');
+  const safeFile = await resolveContainedMetadataPath(expectedRepo, file);
+  const job = JSON.parse(await fs.readFile(safeFile, 'utf8')) as AnalysisJobRecord;
+  if (
+    typeof job?.id !== 'string' ||
+    typeof job.repoPath !== 'string' ||
+    path.basename(safeFile) !== `${job.id}.json` ||
+    (await fs.realpath(job.repoPath)) !== (await fs.realpath(expectedRepo))
+  ) {
+    throw new Error('Analysis job identity does not match its repository and file.');
+  }
+  return job;
 }
 
 async function readActiveSnapshotLocked(repoPath: string): Promise<ActiveJobSnapshot | null> {
@@ -734,10 +749,7 @@ async function readActiveSnapshotLocked(repoPath: string): Promise<ActiveJobSnap
   if (rawMarker === null) return null;
   const markerId = rawMarker.trim();
   if (!/^[0-9a-f-]+$/i.test(markerId)) return { markerId, job: null };
-  const job = await fs
-    .readFile(jobPath(repoPath, markerId), 'utf8')
-    .then((value) => JSON.parse(value) as AnalysisJobRecord)
-    .catch(() => null);
+  const job = await readJobFile(jobPath(repoPath, markerId)).catch(() => null);
   return { markerId, job };
 }
 
@@ -751,6 +763,10 @@ async function clearActiveLocked(repoPath: string, expectedId: string): Promise<
 }
 
 async function withActiveMutationLock<T>(repoPath: string, callback: () => Promise<T>): Promise<T> {
+  await resolveContainedMetadataPath(repoPath, jobsDir(repoPath));
+  await resolveContainedMetadataPath(repoPath, activePath(repoPath));
+  await resolveContainedMetadataPath(repoPath, `${activeMutationLockPath(repoPath)}.recovery`);
+  await resolveContainedMetadataPath(repoPath, activeMutationLockPath(repoPath));
   const lockPath = activeMutationLockPath(repoPath);
   const token = randomUUID();
   const processStartIdentity = await readProcessStartIdentity(process.pid);
@@ -1025,6 +1041,7 @@ function sameActiveMutationLockOwner(
 }
 
 async function readActiveMutationLock(lockPath: string): Promise<ActiveMutationLockRecord | null> {
+  await resolveContainedMetadataPath(path.resolve(lockPath, '../../..'), lockPath);
   const raw = await fs.readFile(lockPath, 'utf8').catch((error: unknown) => {
     if (isNodeError(error) && error.code === 'ENOENT') return null;
     throw error;
@@ -1102,10 +1119,15 @@ function activeMutationLockPath(repoPath: string): string {
 }
 
 async function writeJob(job: AnalysisJobRecord): Promise<void> {
-  const file = jobPath(job.repoPath, job.id);
+  const file = await resolveContainedMetadataPath(job.repoPath, jobPath(job.repoPath, job.id));
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temp = `${file}.${process.pid}.tmp`;
-  await fs.writeFile(temp, JSON.stringify(job, null, 2), { encoding: 'utf8', mode: 0o600 });
+  const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  await resolveContainedMetadataPath(job.repoPath, temp);
+  await fs.writeFile(temp, JSON.stringify(job, null, 2), {
+    encoding: 'utf8',
+    mode: 0o600,
+    flag: 'wx',
+  });
   await fs.rename(temp, file);
 }
 
@@ -1117,13 +1139,11 @@ async function cleanupExpiredJobs(dir: string): Promise<void> {
       .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
       .map(async (entry) => {
         const file = path.join(dir, entry.name);
-        const job = await fs
-          .readFile(file, 'utf8')
-          .then((value) => JSON.parse(value) as AnalysisJobRecord)
-          .catch(() => null);
+        const job = await readJobFile(file).catch(() => null);
         if (!job || !isTerminal(job.status) || !job.completedAt) return;
         if (now - Date.parse(job.completedAt) <= JOB_TTL_MS) return;
         const log = path.join(dir, `${path.basename(entry.name, '.json')}.log`);
+        await resolveContainedMetadataPath(job.repoPath, log);
         await Promise.all([fs.rm(file, { force: true }), fs.rm(log, { force: true })]);
       }),
   );

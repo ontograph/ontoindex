@@ -18,6 +18,7 @@
 import fs from 'fs/promises';
 import lbug, { type LbugValue } from '@ladybugdb/core';
 import { resolveLocalLbugExtensionPath } from './lbug-adapter.js';
+import { acquireIndexGenerationPin, type IndexGenerationPin } from '../../storage/repo-manager.js';
 
 export type LbugQueryRow = {
   readonly [field: string]: unknown;
@@ -178,6 +179,7 @@ function toLbugParams(params: LbugQueryParams): Record<string, LbugValue> {
  * object to avoid exhausting the buffer manager's mmap budget.
  */
 interface SharedDB {
+  generationPin?: IndexGenerationPin;
   db: lbug.Database;
   refCount: number;
   ftsLoaded: boolean;
@@ -312,7 +314,10 @@ function closeOne(repoId: string): void {
       if (shared.external) {
         dbCache.delete(entry.dbPath);
       } else {
-        shared.db.close().catch(() => {});
+        shared.db
+          .close()
+          .then(() => shared.generationPin?.release())
+          .catch(() => {});
         dbCache.delete(entry.dbPath);
       }
     }
@@ -340,7 +345,10 @@ function releaseSharedDbAfterFailedInit(dbPath: string, shared: SharedDB): void 
     return;
   }
 
-  shared.db.close().catch(() => {});
+  shared.db
+    .close()
+    .then(() => shared.generationPin?.release())
+    .catch(() => {});
   dbCache.delete(dbPath);
 }
 
@@ -562,141 +570,152 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
  * "not initialized" (and throw) or a fully ready pool — never a half-built one.
  */
 async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
-  // Check if database exists
+  const generationPin = await acquireIndexGenerationPin(dbPath);
+  dbPath = generationPin.dbPath;
+  let nativeOwnsPin = false;
   try {
-    await fs.stat(dbPath);
-  } catch {
-    throw new Error(`LadybugDB not found at ${dbPath}. Run: ontoindex analyze`);
-  }
-
-  evictLRU();
-
-  // Reuse an existing native Database if another repoId already opened this path.
-  // This prevents buffer manager exhaustion from multiple mmap regions on the same file.
-  let shared = dbCache.get(dbPath);
-  if (!shared) {
-    // Open in read-only mode — MCP server never writes to the database.
-    // This allows multiple MCP server instances to read concurrently, and
-    // avoids lock conflicts when `ontoindex analyze` is writing.
-    let lastError: Error | null = null;
-    let isLockError = false;
-    for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
-      silenceStdout();
-      try {
-        const db = new lbug.Database(
-          dbPath,
-          0, // bufferManagerSize (default)
-          false, // enableCompression (default)
-          true, // readOnly
-        );
-        restoreStdout();
-        shared = { db, refCount: 0, ftsLoaded: false, vectorLoaded: false };
-        dbCache.set(dbPath, shared);
-        break;
-      } catch (err: unknown) {
-        restoreStdout();
-        lastError = err instanceof Error ? err : new Error(String(err));
-        isLockError =
-          lastError.message.includes('Could not set lock') || lastError.message.includes('lock');
-        if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
-        await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_DELAY_MS * attempt));
-      }
-    }
-
-    // WAL recovery: if the open failed with a non-lock error, attempt to re-open
-    // with throwOnWalReplayFailure=false so LadybugDB silently discards the corrupt
-    // WAL tail and replays up to the last valid checkpoint.  This recovers from
-    // process-kill-mid-write scenarios without losing data past the last checkpoint.
-    //
-    // We only attempt recovery when:
-    //   - The DB file exists (so it's not a "DB not found" case)
-    //   - The error was not a file-lock error (lock errors are handled by the retry loop above)
-    //
-    // LadybugDB Database constructor arg positions:
-    //   (path, bufferManagerSize, enableCompression, readOnly, maxDBSize,
-    //    autoCheckpoint, checkpointThreshold, throwOnWalReplayFailure, enableChecksums)
-    if (!shared && lastError !== null && !isLockError) {
-      silenceStdout();
-      try {
-        const RecoveryDatabase = lbug.Database as unknown as RecoveryDatabaseConstructor;
-        const db = new RecoveryDatabase(
-          dbPath,
-          0, // bufferManagerSize
-          false, // enableCompression
-          true, // readOnly
-          0, // maxDBSize
-          true, // autoCheckpoint
-          -1, // checkpointThreshold
-          false, // throwOnWalReplayFailure — discard corrupt WAL tail instead of throwing
-        );
-        restoreStdout();
-        // WAL was corrupt — warn on stderr (process.stderr.write avoids corrupting MCP stdout).
-        process.stderr.write(
-          '[ontoindex] WARNING: WAL corruption detected on open; discarding corrupt WAL tail. ' +
-            'Data since last checkpoint may be lost. Re-run `ontoindex analyze` if index appears incomplete.\n',
-        );
-        shared = { db, refCount: 0, ftsLoaded: false, vectorLoaded: false };
-        dbCache.set(dbPath, shared);
-      } catch {
-        restoreStdout();
-        // Recovery also failed — the database is unrecoverable.
-        throw new Error(
-          'OntoIndex index unrecoverable due to WAL corruption. ' +
-            'Run `ontoindex clean --force && ontoindex analyze` to rebuild.',
-        );
-      }
-    }
-
-    if (!shared) {
-      throw new Error(
-        `LadybugDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
-          `Retry later. (${lastError?.message || 'unknown error'})`,
-      );
-    }
-  }
-
-  shared.refCount++;
-  const db = shared.db;
-
-  // Pre-create the full pool upfront so createConnection() (which silences
-  // stdout) is never called lazily during active query execution.
-  // Mark preWarmActive so the watchdog timer doesn't interfere.
-  const available: lbug.Connection[] = [];
-  try {
-    preWarmActive = true;
+    // Check if database exists
     try {
-      for (let i = 0; i < MAX_CONNS_PER_REPO; i++) {
-        available.push(createConnection(db));
-      }
-    } finally {
-      preWarmActive = false;
+      await fs.stat(dbPath);
+    } catch {
+      throw new Error(`LadybugDB not found at ${dbPath}. Run: ontoindex analyze`);
     }
 
-    // Load FTS and VECTOR extensions once per shared Database.
-    // Done BEFORE pool registration so no concurrent checkout can grab
-    // the connection while the async load is in progress.
-    await loadExtensionsSilenced(available[0], shared);
+    evictLRU();
+
+    // Reuse an existing native Database if another repoId already opened this path.
+    // This prevents buffer manager exhaustion from multiple mmap regions on the same file.
+    let shared = dbCache.get(dbPath);
+    if (!shared) {
+      // Open in read-only mode — MCP server never writes to the database.
+      // This allows multiple MCP server instances to read concurrently, and
+      // avoids lock conflicts when `ontoindex analyze` is writing.
+      let lastError: Error | null = null;
+      let isLockError = false;
+      for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
+        silenceStdout();
+        try {
+          const db = new lbug.Database(
+            dbPath,
+            0, // bufferManagerSize (default)
+            false, // enableCompression (default)
+            true, // readOnly
+          );
+          restoreStdout();
+          shared = { db, refCount: 0, ftsLoaded: false, vectorLoaded: false, generationPin };
+          nativeOwnsPin = true;
+          dbCache.set(dbPath, shared);
+          break;
+        } catch (err: unknown) {
+          restoreStdout();
+          lastError = err instanceof Error ? err : new Error(String(err));
+          isLockError =
+            lastError.message.includes('Could not set lock') || lastError.message.includes('lock');
+          if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
+          await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_DELAY_MS * attempt));
+        }
+      }
+
+      // WAL recovery: if the open failed with a non-lock error, attempt to re-open
+      // with throwOnWalReplayFailure=false so LadybugDB silently discards the corrupt
+      // WAL tail and replays up to the last valid checkpoint.  This recovers from
+      // process-kill-mid-write scenarios without losing data past the last checkpoint.
+      //
+      // We only attempt recovery when:
+      //   - The DB file exists (so it's not a "DB not found" case)
+      //   - The error was not a file-lock error (lock errors are handled by the retry loop above)
+      //
+      // LadybugDB Database constructor arg positions:
+      //   (path, bufferManagerSize, enableCompression, readOnly, maxDBSize,
+      //    autoCheckpoint, checkpointThreshold, throwOnWalReplayFailure, enableChecksums)
+      if (!shared && lastError !== null && !isLockError) {
+        silenceStdout();
+        try {
+          const RecoveryDatabase = lbug.Database as unknown as RecoveryDatabaseConstructor;
+          const db = new RecoveryDatabase(
+            dbPath,
+            0, // bufferManagerSize
+            false, // enableCompression
+            true, // readOnly
+            0, // maxDBSize
+            true, // autoCheckpoint
+            -1, // checkpointThreshold
+            false, // throwOnWalReplayFailure — discard corrupt WAL tail instead of throwing
+          );
+          restoreStdout();
+          // WAL was corrupt — warn on stderr (process.stderr.write avoids corrupting MCP stdout).
+          process.stderr.write(
+            '[ontoindex] WARNING: WAL corruption detected on open; discarding corrupt WAL tail. ' +
+              'Data since last checkpoint may be lost. Re-run `ontoindex analyze` if index appears incomplete.\n',
+          );
+          shared = { db, refCount: 0, ftsLoaded: false, vectorLoaded: false, generationPin };
+          nativeOwnsPin = true;
+          dbCache.set(dbPath, shared);
+        } catch {
+          restoreStdout();
+          // Recovery also failed — the database is unrecoverable.
+          throw new Error(
+            'OntoIndex index unrecoverable due to WAL corruption. ' +
+              'Run `ontoindex clean --force && ontoindex analyze` to rebuild.',
+          );
+        }
+      }
+
+      if (!shared) {
+        throw new Error(
+          `LadybugDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
+            `Retry later. (${lastError?.message || 'unknown error'})`,
+        );
+      }
+    }
+
+    shared.refCount++;
+    const db = shared.db;
+
+    // Pre-create the full pool upfront so createConnection() (which silences
+    // stdout) is never called lazily during active query execution.
+    // Mark preWarmActive so the watchdog timer doesn't interfere.
+    const available: lbug.Connection[] = [];
+    try {
+      if (shared.generationPin !== generationPin) await generationPin.release();
+      preWarmActive = true;
+      try {
+        for (let i = 0; i < MAX_CONNS_PER_REPO; i++) {
+          available.push(createConnection(db));
+        }
+      } finally {
+        preWarmActive = false;
+      }
+
+      // Load FTS and VECTOR extensions once per shared Database.
+      // Done BEFORE pool registration so no concurrent checkout can grab
+      // the connection while the async load is in progress.
+      await loadExtensionsSilenced(available[0], shared);
+    } catch (err) {
+      closePrewarmedConnections(available);
+      releaseSharedDbAfterFailedInit(dbPath, shared);
+      throw err;
+    }
+
+    // Register pool entry only after all connections are pre-warmed and FTS is
+    // loaded.  Concurrent executeQuery calls see either "not initialized"
+    // (and throw cleanly) or a fully ready pool — never a half-built one.
+    pool.set(repoId, {
+      db,
+      available,
+      checkedOut: 0,
+      waiters: [],
+      lastUsed: Date.now(),
+      dbPath,
+      dbIdentity: await readDbIdentity(dbPath),
+      closed: false,
+      closing: false,
+    });
+    ensureIdleTimer();
   } catch (err) {
-    closePrewarmedConnections(available);
-    releaseSharedDbAfterFailedInit(dbPath, shared);
+    if (!nativeOwnsPin) await generationPin.release().catch(() => {});
     throw err;
   }
-
-  // Register pool entry only after all connections are pre-warmed and FTS is
-  // loaded.  Concurrent executeQuery calls see either "not initialized"
-  // (and throw cleanly) or a fully ready pool — never a half-built one.
-  pool.set(repoId, {
-    db,
-    available,
-    checkedOut: 0,
-    waiters: [],
-    lastUsed: Date.now(),
-    dbPath,
-    dbIdentity: await readDbIdentity(dbPath),
-    closed: false,
-    closing: false,
-  });
-  ensureIdleTimer();
 }
 
 /**

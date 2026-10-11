@@ -24,6 +24,39 @@ const itOnLockFriendlyFs = process.platform === 'win32' ? it.skip : it;
 let tmpDir: string;
 let store: LocalAuditEventStore;
 
+describe('audit metadata symlink containment', () => {
+  it.each([
+    '.ontoindex',
+    '.ontoindex/audit',
+    '.ontoindex/audit/audit-event-store.json',
+    '.ontoindex/audit/.audit-event-store.json.update.lock',
+    '.ontoindex/audit/recovery',
+  ])('rejects redirected %s without touching target', async (relative) => {
+    const target = path.join(tmpDir, 'redirect');
+    await fs.mkdir(target);
+    const link = path.join(tmpDir, relative);
+    await fs.mkdir(path.dirname(link), { recursive: true });
+    await fs.symlink(target, link);
+    if (relative.endsWith('/recovery')) {
+      await fs.writeFile(store.eventStorePath, '{broken');
+      await expect(
+        recoverAuditEventStore(store.eventStorePath, store.projectionPath),
+      ).rejects.toThrow(/symbolic link/);
+    } else if (relative.endsWith('.update.lock')) {
+      await expect(store.createSession(sessionInput)).rejects.toThrow(/symbolic link/);
+    } else {
+      await expect(store.load()).rejects.toThrow(/symbolic link/);
+      await expect(
+        saveAuditEventStoreState(store.eventStorePath, {
+          schemaVersion: AUDIT_EVENT_STORE_SCHEMA_VERSION,
+          events: [],
+        }),
+      ).rejects.toThrow(/symbolic link/);
+    }
+    expect(await fs.readdir(target)).toEqual([]);
+  });
+});
+
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-audit-event-store-'));
   store = new LocalAuditEventStore(tmpDir);

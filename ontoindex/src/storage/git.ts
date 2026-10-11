@@ -8,10 +8,23 @@ export async function resolveCommitRef(repoPath: string, ref: string): Promise<s
   const invalid = () => new Error(`Invalid git revision: ${ref}`);
   if (!ref || ref.includes('\0') || ref.startsWith('-')) throw invalid();
   try {
+    let revision = ref;
+    if (ref.startsWith(':/')) {
+      revision = (
+        await execFileText('git', ['rev-parse', '--verify', '--end-of-options', ref], {
+          cwd: repoPath,
+        })
+      ).trim();
+      if (!/^[a-f0-9]{40,64}$/.test(revision)) throw invalid();
+    }
     const commit = (
-      await execFileText('git', ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`], {
-        cwd: repoPath,
-      })
+      await execFileText(
+        'git',
+        ['rev-parse', '--verify', '--end-of-options', `${revision}^{commit}`],
+        {
+          cwd: repoPath,
+        },
+      )
     ).trim();
     if (!/^[a-f0-9]{40,64}$/.test(commit)) throw invalid();
     return commit;

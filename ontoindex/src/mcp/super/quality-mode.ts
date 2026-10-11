@@ -71,13 +71,14 @@ export function gnQualityMode(params: QualityModeParams): QualityModeReport {
       clearEnv('ONTOINDEX_INTENT_ENSEMBLE');
       clearEnv('ONTOINDEX_CITATIONS');
       clearEnv('ONTOINDEX_LSP_REFERENCES');
-      // ONTOINDEX_VEC_POOL_MIN is not a feature flag; fast mode does not touch it.
+      clearEnv('ONTOINDEX_VEC_POOL_MIN');
       break;
 
     case 'balanced':
       setEnv('ONTOINDEX_INTENT_ENSEMBLE', '1');
       setEnv('ONTOINDEX_CITATIONS', '1');
       clearEnv('ONTOINDEX_LSP_REFERENCES');
+      clearEnv('ONTOINDEX_VEC_POOL_MIN');
       break;
 
     case 'thorough':

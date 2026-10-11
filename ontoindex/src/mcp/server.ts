@@ -312,7 +312,10 @@ async function dispatchLazySuper(
  * Create a configured MCP Server with all handlers registered.
  * Transport-agnostic — caller connects the desired transport.
  */
-export function createMCPServer(backend: LocalBackend, options: { full?: boolean } = {}): Server {
+export function createMCPServer(
+  backend: LocalBackend,
+  options: { full?: boolean; transport?: 'stdio' | 'http' } = {},
+): Server {
   const require = createRequire(import.meta.url);
   const pkgVersion: string = require('../../package.json').version;
   const server = new Server(
@@ -461,6 +464,11 @@ export function createMCPServer(backend: LocalBackend, options: { full?: boolean
     let repoIdentity: RepoIdentity | null = null;
 
     try {
+      if (options.transport === 'http' && name === 'gn_quality_mode') {
+        throw new Error(
+          'gn_quality_mode is unavailable over HTTP because it changes process-wide configuration.',
+        );
+      }
       const responseCursor =
         typeof typedArgs.response_cursor === 'string' ? typedArgs.response_cursor : undefined;
       if (responseCursor) {

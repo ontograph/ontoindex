@@ -29,6 +29,35 @@ describe('Group storage', () => {
     expect(base).toBe(path.join(tmpDir, 'groups'));
   });
 
+  it.each([
+    'groups',
+    'groups/company',
+    'groups/company/group.yaml',
+    'groups/company/contracts.json',
+  ])('rejects redirected %s', async (relative) => {
+    const target = path.join(tmpDir, 'redirect');
+    fs.mkdirSync(target);
+    const link = path.join(tmpDir, relative);
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.symlinkSync(target, link);
+    if (relative.endsWith('contracts.json')) {
+      await expect(readContractRegistry(path.join(tmpDir, 'groups/company'))).rejects.toThrow(
+        /symbolic link/,
+      );
+    } else {
+      await expect(createGroupDir(tmpDir, 'company', true)).rejects.toThrow(/symbolic link/);
+      await expect(listGroups(tmpDir)).rejects.toThrow(/symbolic link/);
+    }
+    expect(fs.readdirSync(target)).toEqual([]);
+  });
+
+  it('creates missing configured home and group directories', async () => {
+    const home = path.join(tmpDir, 'new-home');
+    const group = await createGroupDir(home, 'company');
+    expect(group).toBe(fs.realpathSync(path.join(home, 'groups/company')));
+    expect(await listGroups(home)).toEqual(['company']);
+  });
+
   it('getGroupDir returns correct path for group name', () => {
     const dir = getGroupDir(tmpDir, 'company');
     expect(dir).toBe(path.join(tmpDir, 'groups', 'company'));

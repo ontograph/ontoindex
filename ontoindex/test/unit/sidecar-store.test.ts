@@ -19,6 +19,33 @@ import {
 let tmpDir: string;
 let statePath: string;
 
+describe('sidecar metadata symlink containment', () => {
+  it.each([
+    '.ontoindex',
+    '.ontoindex/sidecar',
+    '.ontoindex/sidecar/state.json',
+    '.ontoindex/sidecar/.state.json.update.lock',
+  ])('rejects redirected %s', async (relative) => {
+    const target = path.join(tmpDir, 'redirect');
+    await fs.mkdir(target);
+    const link = path.join(tmpDir, relative);
+    await fs.mkdir(path.dirname(link), { recursive: true });
+    await fs.symlink(target, link);
+    const file = path.join(tmpDir, '.ontoindex/sidecar/state.json');
+    if (relative.endsWith('.update.lock')) {
+      await expect(new LocalSidecarStore(file).update(() => undefined)).rejects.toThrow(
+        /symbolic link/,
+      );
+    } else {
+      await expect(loadSidecarStoreState(file)).rejects.toThrow(/symbolic link/);
+      await expect(saveSidecarStoreState(file, createEmptySidecarStoreState())).rejects.toThrow(
+        /symbolic link/,
+      );
+    }
+    expect(await fs.readdir(target)).toEqual([]);
+  });
+});
+
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-sidecar-store-'));
   statePath = path.join(tmpDir, 'sidecar-state.json');

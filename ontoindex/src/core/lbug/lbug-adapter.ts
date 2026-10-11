@@ -7,6 +7,7 @@ import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import lbug, { type LbugValue } from '@ladybugdb/core';
+import { acquireIndexGenerationPin, type IndexGenerationPin } from '../../storage/repo-manager.js';
 import { KnowledgeGraph } from '../graph/types.js';
 import {
   NODE_TABLES,
@@ -265,6 +266,7 @@ export const splitRelCsvByLabelPair = async (
 };
 
 let db: lbug.Database | null = null;
+let generationPin: IndexGenerationPin | undefined;
 let conn: lbug.Connection | null = null;
 let currentDbPath: string | null = null;
 const currentDbAliases = new Set<string>();
@@ -423,6 +425,7 @@ class LbugQueryTimeoutError extends Error {
 const retireTimedOutLbugSession = (): void => {
   const timedOutConn = conn;
   const timedOutDb = db;
+  const timedOutPin = generationPin;
   resetLbugSessionState(true);
 
   // Native getAll() cannot be cancelled. Quarantine the handles immediately so
@@ -436,6 +439,7 @@ const retireTimedOutLbugSession = (): void => {
     }
     try {
       if (timedOutDb) await timedOutDb.close();
+      await timedOutPin?.release();
     } catch {
       /* best-effort */
     }
@@ -548,6 +552,7 @@ const runWithSessionLock = async <T>(operation: () => Promise<T>): Promise<T> =>
 const resetLbugSessionState = (clearEnsuredIndexes = false): void => {
   conn = null;
   db = null;
+  generationPin = undefined;
   currentDbPath = null;
   currentDbAliases.clear();
   ftsLoaded = false;
@@ -567,6 +572,7 @@ const closeActiveLbugHandles = async (
   }
   try {
     if (db) await db.close();
+    await generationPin?.release();
   } catch (err) {
     firstError ??= err;
   }
@@ -618,39 +624,57 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
 
 const ensureLbugInitialized = async (dbPath: string, opts?: { maxDBSize?: number }) => {
   const requestedPath = dbPath;
-  const stat = await fs.lstat(dbPath).catch((err: NodeJS.ErrnoException) => {
-    if (err.code !== 'ENOENT') throw err;
-    return null;
-  });
-  if (stat?.isSymbolicLink()) {
-    // Published generations expose a compatibility alias. Resolve it on every
-    // open, before comparing session identity, and never delete the alias.
-    const resolved = await fs.realpath(dbPath);
-    const parent = await fs.realpath(path.dirname(dbPath));
-    const relative = path.relative(parent, resolved);
-    if (
-      relative === '..' ||
-      relative.startsWith(`..${path.sep}`) ||
-      path.isAbsolute(relative) ||
-      !(await fs.stat(resolved)).isFile()
-    ) {
-      throw new Error(`Refusing to open database alias outside its storage directory: ${dbPath}`);
+  const pin = await acquireIndexGenerationPin(dbPath);
+  let pinTransferred = false;
+  dbPath = pin.dbPath;
+  try {
+    const stat = await fs.lstat(dbPath).catch((err: NodeJS.ErrnoException) => {
+      if (err.code !== 'ENOENT') throw err;
+      return null;
+    });
+    if (stat?.isSymbolicLink()) {
+      // Published generations expose a compatibility alias. Resolve it on every
+      // open, before comparing session identity, and never delete the alias.
+      const resolved = await fs.realpath(dbPath);
+      const parent = await fs.realpath(path.dirname(dbPath));
+      const relative = path.relative(parent, resolved);
+      if (
+        relative === '..' ||
+        relative.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(relative) ||
+        !(await fs.stat(resolved)).isFile()
+      ) {
+        throw new Error(`Refusing to open database alias outside its storage directory: ${dbPath}`);
+      }
+      dbPath = resolved;
+    } else if (stat?.isFile()) {
+      // Parent directories may themselves be aliases (for example /tmp).
+      dbPath = await fs.realpath(dbPath);
     }
-    dbPath = resolved;
-  } else if (stat?.isFile()) {
-    // Parent directories may themselves be aliases (for example /tmp).
-    dbPath = await fs.realpath(dbPath);
-  }
-  if (conn && currentDbPath === dbPath) {
+    if (conn && currentDbPath === dbPath) {
+      await pin.release();
+      currentDbAliases.add(requestedPath);
+      return { db, conn };
+    }
+    await doInitLbug(dbPath, opts, pin.published, () => {
+      generationPin = pin;
+      pinTransferred = true;
+    });
     currentDbAliases.add(requestedPath);
     return { db, conn };
+  } catch (err) {
+    // A partially initialized native handle still owns its files until close succeeds.
+    if (!pinTransferred) await pin.release().catch(() => {});
+    throw err;
   }
-  await doInitLbug(dbPath, opts);
-  currentDbAliases.add(requestedPath);
-  return { db, conn };
 };
 
-const doInitLbug = async (dbPath: string, opts?: { maxDBSize?: number }) => {
+const doInitLbug = async (
+  dbPath: string,
+  opts?: { maxDBSize?: number },
+  published = false,
+  onDatabaseOpened?: () => void,
+) => {
   // Different database requested — close the old one first
   if (conn || db) {
     await closeActiveLbugHandles();
@@ -664,6 +688,7 @@ const doInitLbug = async (dbPath: string, opts?: { maxDBSize?: number }) => {
     if (stat.isSymbolicLink()) {
       throw new Error(`Database path changed to a symlink during initialization: ${dbPath}`);
     } else if (stat.isDirectory()) {
+      if (published) throw new Error('Published generation database must remain a regular file');
       // Verify path is within expected storage directory before deleting
       const realPath = await fs.realpath(dbPath);
       const parentDir = path.dirname(dbPath);
@@ -679,6 +704,8 @@ const doInitLbug = async (dbPath: string, opts?: { maxDBSize?: number }) => {
     // If it's a file, assume it's an existing LadybugDB database - LadybugDB will open it
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    if (published)
+      throw new Error('Published generation database disappeared during initialization');
     // Path doesn't exist, which is what LadybugDB wants for a new database
   }
 
@@ -690,6 +717,7 @@ const doInitLbug = async (dbPath: string, opts?: { maxDBSize?: number }) => {
     opts?.maxDBSize === undefined
       ? new lbug.Database(dbPath)
       : new lbug.Database(dbPath, undefined, undefined, undefined, opts.maxDBSize);
+  onDatabaseOpened?.();
   conn = new lbug.Connection(db);
 
   for (const schemaQuery of SCHEMA_QUERIES) {
@@ -1211,17 +1239,26 @@ const insertNodeToLbug = async (
 
     // Use per-query connection if dbPath provided (avoids lock conflicts)
     if (targetDbPath) {
-      const tempDb = new lbug.Database(targetDbPath);
-      const tempConn = new lbug.Connection(tempDb);
+      const pin = await acquireIndexGenerationPin(targetDbPath);
+      let tempDb: lbug.Database;
       try {
+        tempDb = new lbug.Database(pin.dbPath);
+      } catch (err) {
+        await pin.release();
+        throw err;
+      }
+      let tempConn: lbug.Connection | undefined;
+      try {
+        tempConn = new lbug.Connection(tempDb);
         await runStatement(tempConn, query, 'insertNodeToLbug temp query');
         return true;
       } finally {
         try {
-          await tempConn.close();
+          await tempConn?.close();
         } catch {}
         try {
           await tempDb.close();
+          await pin.release();
         } catch {}
       }
     } else if (conn) {
@@ -1726,10 +1763,25 @@ export const deleteNodesForFile = async (
   let tempDb: lbug.Database | null = null;
   let tempConn: lbug.Connection | null = null;
   let targetConn: lbug.Connection | null = conn;
+  let tempPin: IndexGenerationPin | undefined;
 
   if (usePerQuery) {
-    tempDb = new lbug.Database(dbPath);
-    tempConn = new lbug.Connection(tempDb);
+    tempPin = await acquireIndexGenerationPin(dbPath!);
+    try {
+      tempDb = new lbug.Database(tempPin.dbPath);
+    } catch (err) {
+      await tempPin.release();
+      throw err;
+    }
+    try {
+      tempConn = new lbug.Connection(tempDb);
+    } catch (err) {
+      try {
+        await tempDb.close();
+        await tempPin.release();
+      } catch {}
+      throw err;
+    }
     targetConn = tempConn;
   } else if (!conn) {
     throw new Error('LadybugDB not initialized. Provide dbPath or call initLbug first.');
@@ -1799,6 +1851,7 @@ export const deleteNodesForFile = async (
     if (tempDb) {
       try {
         await tempDb.close();
+        await tempPin?.release();
       } catch {}
     }
   }

@@ -1,5 +1,17 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { resolveContainedMetadataPath } from '../../../mcp/local/path-util.js';
+
+function resolveSidecarMetadataPath(filePath: string): Promise<string> {
+  const absolute = path.resolve(filePath);
+  const parts = absolute.split(path.sep);
+  const metadataIndex = parts.indexOf('.ontoindex');
+  const root =
+    metadataIndex >= 0
+      ? parts.slice(0, metadataIndex).join(path.sep) || path.parse(absolute).root
+      : path.dirname(absolute);
+  return resolveContainedMetadataPath(root, absolute);
+}
 
 import type { MarkdownSidecarSnapshotManifest } from './docs-contracts.js';
 import {
@@ -101,6 +113,7 @@ export class LocalSidecarStore {
 }
 
 export async function loadSidecarStoreState(stateFilePath: string): Promise<SidecarStoreState> {
+  stateFilePath = await resolveSidecarMetadataPath(stateFilePath);
   let raw: string;
   try {
     raw = await fs.readFile(stateFilePath, 'utf8');
@@ -125,6 +138,7 @@ export async function saveSidecarStoreState(
   stateFilePath: string,
   state: SidecarStoreState,
 ): Promise<void> {
+  stateFilePath = await resolveSidecarMetadataPath(stateFilePath);
   const normalized = normalizeSidecarStoreState(state);
   const directory = path.dirname(stateFilePath);
   await fs.mkdir(directory, { recursive: true });
@@ -134,12 +148,19 @@ export async function saveSidecarStoreState(
     `.${path.basename(stateFilePath)}.${process.pid}.${Date.now()}.tmp`,
   );
   const serialized = `${JSON.stringify(normalized, null, 2)}\n`;
+  await resolveSidecarMetadataPath(tempPath);
+  let created = false;
 
   try {
-    await fs.writeFile(tempPath, serialized, 'utf8');
+    await fs.writeFile(tempPath, serialized, { encoding: 'utf8', flag: 'wx' });
+    created = true;
+    await resolveSidecarMetadataPath(stateFilePath);
     await fs.rename(tempPath, stateFilePath);
   } catch (error) {
-    await fs.rm(tempPath, { force: true }).catch(() => undefined);
+    if (created)
+      await resolveSidecarMetadataPath(tempPath)
+        .then((safePath) => fs.rm(safePath, { force: true }))
+        .catch(() => undefined);
     throw error;
   }
 }
@@ -224,10 +245,13 @@ async function acquireSidecarStoreUpdateLock(
     Pick<SidecarStoreUpdateOptions, 'maxAttempts' | 'retryDelayMs' | 'staleLockMs'>
   >,
 ): Promise<void> {
+  lockPath = await resolveSidecarMetadataPath(lockPath);
+  await resolveSidecarMetadataPath(stateFilePath);
   await fs.mkdir(path.dirname(lockPath), { recursive: true });
 
   for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
     try {
+      await resolveSidecarMetadataPath(lockPath);
       await fs.writeFile(
         lockPath,
         `${JSON.stringify(createUpdateLockRecord(ownerId, stateFilePath), null, 2)}\n`,
@@ -269,6 +293,7 @@ async function removeStaleSidecarStoreUpdateLock(
   lockPath: string,
   staleLockMs: number,
 ): Promise<void> {
+  lockPath = await resolveSidecarMetadataPath(lockPath);
   const stat = await fs.stat(lockPath).catch((error) => {
     if (isNodeError(error) && error.code === 'ENOENT') return null;
     throw error;
@@ -281,6 +306,7 @@ async function removeStaleSidecarStoreUpdateLock(
 }
 
 async function releaseSidecarStoreUpdateLock(lockPath: string, ownerId: string): Promise<void> {
+  lockPath = await resolveSidecarMetadataPath(lockPath);
   const currentOwnerId = await readSidecarStoreUpdateLockOwner(lockPath);
   if (currentOwnerId === ownerId) {
     await fs.rm(lockPath, { force: true });
@@ -288,6 +314,7 @@ async function releaseSidecarStoreUpdateLock(lockPath: string, ownerId: string):
 }
 
 async function readSidecarStoreUpdateLockOwner(lockPath: string): Promise<string | null> {
+  lockPath = await resolveSidecarMetadataPath(lockPath);
   let raw: string;
   try {
     raw = await fs.readFile(lockPath, 'utf8');

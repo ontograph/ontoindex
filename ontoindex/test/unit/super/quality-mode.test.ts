@@ -26,6 +26,7 @@ beforeEach(() => {
   savedEnv = {} as Record<string, string | undefined>;
   for (const k of WATCHED_KEYS) {
     savedEnv[k] = process.env[k];
+    delete process.env[k];
   }
 });
 
@@ -69,16 +70,22 @@ describe('gnQualityMode — fast', () => {
     expect(report.envVarsCleared).toHaveLength(3);
   });
 
-  it('does not touch ONTOINDEX_VEC_POOL_MIN', () => {
+  it('clears ONTOINDEX_VEC_POOL_MIN', () => {
     process.env['ONTOINDEX_VEC_POOL_MIN'] = '5';
 
     gnQualityMode({ level: 'fast' });
 
-    expect(process.env['ONTOINDEX_VEC_POOL_MIN']).toBe('5');
+    expect(process.env['ONTOINDEX_VEC_POOL_MIN']).toBeUndefined();
   });
 });
 
 describe('gnQualityMode — balanced', () => {
+  it.each(['fast', 'balanced'] as const)('resets thorough vector pool in %s mode', (level) => {
+    gnQualityMode({ level: 'thorough' });
+    const report = gnQualityMode({ level });
+    expect(process.env.ONTOINDEX_VEC_POOL_MIN).toBeUndefined();
+    expect(report.envVarsCleared).toContain('ONTOINDEX_VEC_POOL_MIN');
+  });
   it('sets ONTOINDEX_INTENT_ENSEMBLE=1 and ONTOINDEX_CITATIONS=1, clears LSP', () => {
     process.env['ONTOINDEX_LSP_REFERENCES'] = '1';
 

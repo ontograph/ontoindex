@@ -34,6 +34,34 @@ beforeEach(() => {
 afterEach(() => rmSync(repo, { recursive: true, force: true }));
 
 describe('untrusted git revisions', () => {
+  it('resolves message search before peeling and includes unrelated branches', async () => {
+    const mainHead = git('rev-parse', 'HEAD');
+    git('checkout', '--orphan', 'unrelated');
+    git('commit', '--allow-empty', '-m', 'unique-search-target');
+    const searched = git('rev-parse', 'HEAD');
+    git('commit', '--allow-empty', '-m', 'unique-search-target^{commit}');
+    git('tag', '-a', 'annotated', '-m', 'tag message', searched);
+    git('checkout', 'main');
+    expect(await resolveCommitRef(repo, ':/^unique-search-target\n')).toBe(searched);
+    expect(await resolveCommitRef(repo, ':/unique-search-target')).toBe(
+      git('rev-parse', ':/unique-search-target'),
+    );
+    expect(await resolveCommitRef(repo, 'annotated')).toBe(searched);
+    expect(await resolveCommitRef(repo, 'main')).toBe(mainHead);
+    await expect(resolveCommitRef(repo, ':/^missing-message$')).rejects.toThrow(
+      'Invalid git revision',
+    );
+  });
+
+  it('rejects noncommit objects and option-like revisions', async () => {
+    const blob = git('rev-parse', 'HEAD:file.txt');
+    const tree = git('rev-parse', 'HEAD^{tree}');
+    git('tag', 'blob-tag', blob);
+    for (const ref of [blob, tree, 'blob-tag', 'HEAD:file.txt', '--verify', '-n', 'HEAD\0']) {
+      await expect(resolveCommitRef(repo, ref)).rejects.toThrow('Invalid git revision');
+    }
+  });
+
   it('resolves valid revisions and ranges to commits', async () => {
     const head = git('rev-parse', 'HEAD');
     const previous = git('rev-parse', 'HEAD~1');

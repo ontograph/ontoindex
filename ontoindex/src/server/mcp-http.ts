@@ -245,7 +245,7 @@ export function mountMCPEndpoints(
           },
         });
         pendingInitializations.set(transport, pending);
-        server = createMCPServer(backend);
+        server = createMCPServer(backend, { transport: 'http' });
         await server.connect(transport);
         if (stopped) {
           unavailable();

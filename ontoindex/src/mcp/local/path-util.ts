@@ -90,3 +90,62 @@ export async function resolveContainedRealPath(repoPath: string, input: string):
   }
   return realPath;
 }
+
+/**
+ * Resolve a metadata path while allowing aliases only above the trusted root.
+ * Every existing component at or below the root is inspected with lstat, so a
+ * symlink cannot redirect a metadata read, lock, recovery, or write operation.
+ */
+export async function resolveContainedMetadataPath(root: string, input: string): Promise<string> {
+  if (typeof root !== 'string' || !root || root.includes('\0'))
+    throw new Error('Metadata root cannot be empty or contain invalid characters');
+  if (typeof input !== 'string' || !input || input.includes('\0'))
+    throw new Error('Metadata path cannot be empty or contain invalid characters');
+
+  const lexicalRoot = path.resolve(root);
+  let canonicalRoot = lexicalRoot;
+  const missingRootParts: string[] = [];
+  while (true) {
+    try {
+      canonicalRoot = path.join(await fs.realpath(canonicalRoot), ...missingRootParts);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error;
+      try {
+        await fs.lstat(canonicalRoot);
+        throw new Error(`Unable to resolve metadata root: ${root}`);
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException)?.code !== 'ENOENT') throw statError;
+      }
+      const parent = path.dirname(canonicalRoot);
+      if (parent === canonicalRoot) throw error;
+      missingRootParts.unshift(path.basename(canonicalRoot));
+      canonicalRoot = parent;
+    }
+  }
+
+  let lexicalTarget = path.resolve(lexicalRoot, input);
+  if (lexicalTarget === lexicalRoot || lexicalTarget.startsWith(lexicalRoot + path.sep)) {
+    lexicalTarget = path.join(canonicalRoot, path.relative(lexicalRoot, lexicalTarget));
+  }
+  if (lexicalTarget !== canonicalRoot && !lexicalTarget.startsWith(canonicalRoot + path.sep))
+    throw new Error(`Metadata path escapes trusted root: ${input}`);
+
+  const relative = path.relative(canonicalRoot, lexicalTarget);
+  let cursor = canonicalRoot;
+  const components = relative.split(path.sep).filter(Boolean);
+  for (let index = 0; index < components.length; index++) {
+    const component = components[index];
+    cursor = path.join(cursor, component);
+    try {
+      const stat = await fs.lstat(cursor);
+      if (stat.isSymbolicLink())
+        throw new Error(`Metadata path contains a symbolic link: ${cursor}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error;
+      // Once a component is missing, its descendants cannot exist yet.
+      return path.join(cursor, ...components.slice(index + 1));
+    }
+  }
+  return cursor;
+}

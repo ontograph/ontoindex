@@ -4,6 +4,24 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.9] - 2026-10-12
+
+### Security
+
+- Reject descendant symlinks in metadata stores while accepting repository root aliases.
+- Validate persisted analysis-job and audit-session identity before reading or updating records.
+- Contain audit input files to the requested repository.
+- Reject process-wide quality-mode mutation through shared HTTP MCP sessions.
+
+### Fixed
+
+- Serialize session updates with ownership-checked locks and atomic writes, preserving own-property keys.
+- Pin published database generations while readers use them and retain the current generation and two predecessors.
+- Preserve Git revision-search syntax and the advertised audit session alias.
+- Open new unmanaged databases through canonical repository aliases.
+- Preserve analysis-job root aliases during abandoned-job completion and reread expired records before cleanup.
+- Clear the thorough-mode vector setting when selecting a lower quality mode.
+
 ## [2.2.8] - 2026-10-12
 
 ### Security

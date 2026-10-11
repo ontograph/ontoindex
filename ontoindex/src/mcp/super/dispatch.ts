@@ -86,7 +86,11 @@ export function validateSuperParams(name: SuperTool, params: Record<string, unkn
   if (!schema) throw new Error(`Unknown super tool: ${name}`);
   const issues: string[] = [];
   for (const key of schema.required) {
-    if (!Object.hasOwn(params, key)) issues.push(`${key}: Required`);
+    const hasSessionAlias =
+      key === 'session' &&
+      Object.hasOwn(schema.properties, 'sessionId') &&
+      Object.hasOwn(params, 'sessionId');
+    if (!Object.hasOwn(params, key) && !hasSessionAlias) issues.push(`${key}: Required`);
   }
   for (const [key, property] of Object.entries(schema.properties)) {
     if (!Object.hasOwn(params, key)) continue;

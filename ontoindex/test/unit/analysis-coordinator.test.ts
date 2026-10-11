@@ -51,6 +51,51 @@ afterEach(async () => {
 });
 
 describe('analysis coordinator', () => {
+  it.each(['repository', 'id'])(
+    'refuses cancellation when the persisted %s identity differs',
+    async (field) => {
+      const repoPath = await makeRepo();
+      const otherRepo = await makeRepo();
+      const job = makeJob(repoPath, { status: 'queued' });
+      await writeJobFixture(job);
+      const file = jobFile(job);
+      const poisoned =
+        field === 'repository' ? { ...job, repoPath: otherRepo } : { ...job, id: 'deadbeef' };
+      const raw = JSON.stringify(poisoned);
+      await fs.writeFile(file, raw);
+      const kill = vi.spyOn(process, 'kill');
+      try {
+        expect(await cancelAnalysisJob(repoPath, job.id)).toMatchObject({
+          cancelled: false,
+          refusal: { reasonCode: 'JOB_NOT_FOUND' },
+        });
+        expect(kill.mock.calls.filter(([, signal]) => signal !== 0)).toEqual([]);
+        expect(await fs.readFile(file, 'utf8')).toBe(raw);
+        expect(await fs.readdir(path.join(otherRepo, '.ontoindex'))).toEqual([]);
+      } finally {
+        kill.mockRestore();
+      }
+    },
+  );
+
+  it('refuses analysis metadata directory symlinks', async () => {
+    const repoPath = await makeRepo();
+    const outside = await makeRepo();
+    await fs.rmdir(path.join(repoPath, '.ontoindex'));
+    await fs.symlink(outside, path.join(repoPath, '.ontoindex'));
+    await expect(cancelAnalysisJob(repoPath, 'deadbeef')).rejects.toThrow();
+    expect(await fs.readdir(path.join(outside, '.ontoindex'))).toEqual([]);
+  });
+
+  it('accepts repository root aliases for an owned queued job', async () => {
+    const repoPath = await makeRepo();
+    const aliasParent = await makeRepo();
+    const alias = path.join(aliasParent, 'repo');
+    await fs.symlink(repoPath, alias);
+    const job = makeJob(repoPath, { status: 'queued' });
+    await writeJobFixture(job);
+    expect(await cancelAnalysisJob(alias, job.id)).toMatchObject({ cancelled: true });
+  });
   it('persists and reuses one active job for the same HEAD and options', async () => {
     const repoPath = await makeRepo();
     await runGit(repoPath, ['init']);
@@ -213,6 +258,25 @@ setTimeout(() => {}, 30000);
       error: 'Analysis runner is no longer active.',
     });
   });
+
+  it.each(['alias', 'real'])(
+    'observes abandoned alias-owned jobs through the %s root',
+    async (root) => {
+      const repoPath = await makeRepo();
+      const aliasParent = await makeRepo();
+      const alias = path.join(aliasParent, 'repo');
+      await fs.symlink(repoPath, alias, 'junction');
+      const job = makeJob(alias, { runnerPid: 2_147_483_647 });
+      await writeJobFixture(job);
+      await expect(
+        getAnalysisJob(root === 'alias' ? alias : repoPath, job.id),
+      ).resolves.toMatchObject({
+        status: 'failed',
+        repoPath: alias,
+        error: 'Analysis runner is no longer active.',
+      });
+    },
+  );
 
   it('submits without synchronously reading the source snapshot', async () => {
     const repoPath = await makeRepo();
