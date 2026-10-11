@@ -163,8 +163,9 @@ test.describe('Windows path normalization', () => {
       route.fulfill({
         contentType: 'application/json',
         body: JSON.stringify({
-          // intentionally omit `name` to force path-based extraction
-          path: windowsPath,
+          // Empty name exercises basename fallback without violating the API contract.
+          name: '',
+          indexedAt: '2024-01-01T00:00:00Z',
           repoPath: windowsPath,
         }),
       }),

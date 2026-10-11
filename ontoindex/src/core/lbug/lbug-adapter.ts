@@ -267,6 +267,7 @@ export const splitRelCsvByLabelPair = async (
 let db: lbug.Database | null = null;
 let conn: lbug.Connection | null = null;
 let currentDbPath: string | null = null;
+const currentDbAliases = new Set<string>();
 let ftsLoaded = false;
 let vectorExtensionLoaded = false;
 
@@ -548,6 +549,7 @@ const resetLbugSessionState = (clearEnsuredIndexes = false): void => {
   conn = null;
   db = null;
   currentDbPath = null;
+  currentDbAliases.clear();
   ftsLoaded = false;
   vectorExtensionLoaded = false;
   if (clearEnsuredIndexes) ensuredFTSIndexes.clear();
@@ -615,10 +617,36 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
 };
 
 const ensureLbugInitialized = async (dbPath: string, opts?: { maxDBSize?: number }) => {
+  const requestedPath = dbPath;
+  const stat = await fs.lstat(dbPath).catch((err: NodeJS.ErrnoException) => {
+    if (err.code !== 'ENOENT') throw err;
+    return null;
+  });
+  if (stat?.isSymbolicLink()) {
+    // Published generations expose a compatibility alias. Resolve it on every
+    // open, before comparing session identity, and never delete the alias.
+    const resolved = await fs.realpath(dbPath);
+    const parent = await fs.realpath(path.dirname(dbPath));
+    const relative = path.relative(parent, resolved);
+    if (
+      relative === '..' ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative) ||
+      !(await fs.stat(resolved)).isFile()
+    ) {
+      throw new Error(`Refusing to open database alias outside its storage directory: ${dbPath}`);
+    }
+    dbPath = resolved;
+  } else if (stat?.isFile()) {
+    // Parent directories may themselves be aliases (for example /tmp).
+    dbPath = await fs.realpath(dbPath);
+  }
   if (conn && currentDbPath === dbPath) {
+    currentDbAliases.add(requestedPath);
     return { db, conn };
   }
   await doInitLbug(dbPath, opts);
+  currentDbAliases.add(requestedPath);
   return { db, conn };
 };
 
@@ -634,8 +662,7 @@ const doInitLbug = async (dbPath: string, opts?: { maxDBSize?: number }) => {
   try {
     const stat = await fs.lstat(dbPath);
     if (stat.isSymbolicLink()) {
-      // Never follow symlinks — just remove the link itself
-      await fs.unlink(dbPath);
+      throw new Error(`Database path changed to a symlink during initialization: ${dbPath}`);
     } else if (stat.isDirectory()) {
       // Verify path is within expected storage directory before deleting
       const realPath = await fs.realpath(dbPath);
@@ -650,7 +677,8 @@ const doInitLbug = async (dbPath: string, opts?: { maxDBSize?: number }) => {
       await fs.rm(dbPath, { recursive: true, force: true });
     }
     // If it's a file, assume it's an existing LadybugDB database - LadybugDB will open it
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     // Path doesn't exist, which is what LadybugDB wants for a new database
   }
 
@@ -1674,7 +1702,7 @@ export const closeLbug = async (opts?: { strict?: boolean }): Promise<void> => {
 
 export const closeLbugForPath = async (dbPath: string): Promise<void> => {
   await runWithSessionLock(async () => {
-    if (currentDbPath === dbPath) {
+    if (currentDbPath === dbPath || currentDbAliases.has(dbPath)) {
       await closeActiveLbugHandles(true);
     }
   });

@@ -137,3 +137,21 @@ Authenticated real-time task statuses remain unchanged.
 
 Knowledge handoff: none; existing build and manager rules already require
 validation for final inputs and distinguish prior CI from candidate evidence.
+
+## Database alias release correction
+
+- Shared initialization resolves contained regular-file aliases without deleting
+  them and tracks requested aliases for path-specific closure.
+- Regression coverage verifies stored rows survive alias opening and canonical
+  reopening, and dangling or escaping aliases are rejected without deletion.
+- Final focused validation passed three files / 36 tests: result cleanup,
+  API graph streaming, and overlay generations. TypeScript, Prettier, and diff
+  checks passed; scoped ESLint reported zero errors and eight warnings.
+- Four independent reviewers on gpt-6-luna and gpt-6.1-sol found no concrete
+  blocker. Browser execution and final installed-artifact proof remain pending.
+- OntoIndex was commit-current at 4af8808 but impact stopped at dirty paths;
+  source inspection is authoritative. Change detection reported three files,
+  15 symbols, two affected flows, and medium risk.
+- Version/channel selection, dependency advisory disposition, exact-candidate
+  CI, final artifact verification, and merge/publication approval remain gates.
+  No version bump, merge, tag, or publication was performed.
