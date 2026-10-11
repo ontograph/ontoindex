@@ -49,15 +49,13 @@ export async function resolveContainedRealPath(repoPath: string, input: string):
     throw new Error('Path cannot be empty or contain invalid characters');
   const absoluteRepoPath = path.resolve(repoPath);
   const realRepoPath = await fs.realpath(absoluteRepoPath);
-  const lexicalPath = path.resolve(absoluteRepoPath, input);
-  // Check lexical containment before touching the filesystem so an outside
-  // path is never probed. The real root covers absolute paths spelled through it.
-  if (
-    lexicalPath !== absoluteRepoPath &&
-    !lexicalPath.startsWith(absoluteRepoPath + path.sep) &&
-    lexicalPath !== realRepoPath &&
-    !lexicalPath.startsWith(realRepoPath + path.sep)
-  ) {
+  let lexicalPath = path.resolve(realRepoPath, input);
+  // Absolute paths spelled through a repo-root alias are rebased onto the real root.
+  if (lexicalPath === absoluteRepoPath || lexicalPath.startsWith(absoluteRepoPath + path.sep)) {
+    lexicalPath = path.join(realRepoPath, path.relative(absoluteRepoPath, lexicalPath));
+  }
+  // Check containment before touching the filesystem so an outside path is never probed.
+  if (lexicalPath !== realRepoPath && !lexicalPath.startsWith(realRepoPath + path.sep)) {
     throw new Error('Path escapes repository: ' + input);
   }
   let cursor = lexicalPath;
