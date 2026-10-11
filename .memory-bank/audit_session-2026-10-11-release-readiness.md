@@ -155,3 +155,30 @@ validation for final inputs and distinguish prior CI from candidate evidence.
 - Version/channel selection, dependency advisory disposition, exact-candidate
   CI, final artifact verification, and merge/publication approval remain gates.
   No version bump, merge, tag, or publication was performed.
+
+## Graph export schema correction
+
+- Exact-candidate CI at `6d7d1d6` passed Linux, macOS, Windows, coverage,
+  lint, formatting and typechecks. Chromium passed 27 tests and failed the
+  Windows-path test. Its trace reports a native binder error for `n.startLine`.
+- Concept and SummaryNode lack line/content columns. The shared export query
+  now projects their declared fields, preserving both tables rather than
+  swallowing binder errors or adding unnecessary schema migrations.
+- Compared schema-aware projection, schema migration and skipping failed
+  tables. A second review rejects migration complexity and silent data loss;
+  projection covers both streaming and full exports without changing storage.
+- Native-schema regression exercises every node table with and without content
+  and verifies retained concept/summary rows. Two files / 22 tests passed;
+  TypeScript, scoped ESLint, formatting and diff checks passed.
+- OntoIndex refreshed to `6d7d1d6`; shared-owner impact was HIGH (eight upstream
+  nodes). Precommit scan reports one file / one symbol; the new test additionally
+  requires direct source review because it is untracked in that scan.
+- Installed tarball smoke at `6d7d1d6` passed version/help and an actual MCP
+  `createMCPServer` query against the existing repository index. SHA256:
+  `21f411e65b6d366eafb703b6f40a62a10d2361af081f417a368563d2701619b3`.
+  Disposable staging was removed. This proof predates the export correction
+  and does not establish isolated-fixture or final-version artifact readiness.
+- Four bounded Luna/Sol reviews were harvested and closed; review limitations
+  do not replace coordinator runtime evidence. Corrected-candidate CI, final
+  artifact validation, advisory disposition, version/channel selection and
+  explicit merge/publication approval remain gates.
