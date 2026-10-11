@@ -295,3 +295,27 @@ evidence and distinguish harness failures from product failures.
 
 Knowledge handoff: none; existing diagnosis rules already distinguish passing
 isolated checks from demonstrated root-cause resolution.
+
+## Compatible security dependency remediation
+
+- Four read-only reviewers on gpt-6-luna and gpt-6.1-sol checked CLI, web,
+  root locks and release boundaries. Default-branch alerts were not treated
+  as findings against the candidate without current lock/audit evidence.
+- Compared compatible upstream updates, forced overrides and risk acceptance;
+  a second compatibility review selected upstream updates without force.
+- Initial lock audits reported root 5, native 1, shared 0, CLI 13 and web 7
+  affected packages. Final lock audits report zero for root/native/shared/CLI
+  and two low web findings (KaTeX/Mermaid, GHSA-238p-pmpm-9mq7).
+- Updated Vitest/coverage minimums to 4.1.11. CLI resolution advances
+  Transformers to 4.3.1, Sharp to 0.35.5 and ONNX Runtime Node to 1.30.0
+  through existing accepted ranges. No forced override was added.
+- CLI and web clean installs with scripts disabled passed. Initial CLI tests
+  failed because the disabled Ladybug install hook had not placed its native
+  binary. Running the existing installer copied the available platform binary;
+  the corrected focused run passed 29 tests across three files.
+- Web focused checks passed 160 tests across three files; production web
+  build passed with browser externalization and chunking warnings. These
+  results do not prove live GPU/model inference compatibility.
+- Exact-commit full CI and final package smoke remain outstanding. Version,
+  advisory disposition, native crash and publication approval gates remain.
+  Unrelated `.ontocode/` is preserved; manager-loop task states are unchanged.

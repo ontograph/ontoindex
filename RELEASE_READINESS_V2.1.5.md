@@ -19,6 +19,17 @@ Evidence and limitations are recorded in
 [the release audit](.memory-bank/audit_session-2026-10-11-release-readiness.md).
 CI evidence applies only to the candidate above.
 
+## Dependency Remediation
+
+Compatible dependency updates remove all audited vulnerabilities from the root,
+native, shared and CLI lockfiles. Vitest and coverage now require `^4.1.11`.
+The web lockfile retains two low findings: KaTeX and its Mermaid parent under
+GHSA-238p-pmpm-9mq7. No forced override or advisory acceptance was applied.
+
+Focused validation passed: 29 CLI tests, 160 web tests and the production web
+build. Full exact-commit CI and final package smoke remain required. These checks
+do not establish GPU inference compatibility or resolve the native abort.
+
 ## Remaining Release Gates
 
 1. Approve the version and channel. Package metadata records 2.1.5,
