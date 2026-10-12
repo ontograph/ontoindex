@@ -9,7 +9,7 @@ import { createRequire } from 'node:module';
 import type { LocalBackend } from './local/local-backend.js';
 import { loadAnalysisCatalog } from '../analysis-packs/catalog.js';
 import { buildAnalysisExecutionPlan } from '../analysis-packs/execution.js';
-import { loadMemories, loadMemory, type ParsedMemory } from './memory-parser.js';
+import { loadMemoryCollection, loadMemory, type ParsedMemory } from './memory-parser.js';
 import { readRuntimeHealth } from '../core/runtime/runtime-health.js';
 import {
   recordEvidenceReadSafe,
@@ -1231,13 +1231,23 @@ function renderInvalidMemoryResource(mem: ParsedMemory, content?: string | null)
  */
 async function getMemoriesResource(backend: LocalBackend, repoName?: string): Promise<string> {
   const repo = await backend.resolveRepo(repoName);
-  const memories = await loadMemories(repo.repoPath);
+  const collection = await loadMemoryCollection(repo.repoPath, { includeBody: false });
+  const { memories } = collection;
 
-  const lines: string[] = [ADVISORY_BOUNDARY, ''];
+  const lines: string[] = [
+    ADVISORY_BOUNDARY,
+    '',
+    `truncated: ${collection.truncated}`,
+    `total: ${collection.total === null ? 'null' : collection.total}`,
+    `emitted: ${memories.length}`,
+  ];
+  if (collection.warnings.length > 0) {
+    lines.push('warnings:', ...collection.warnings.map((warning) => `  - ${yamlString(warning)}`));
+  }
 
   if (memories.length === 0) {
     lines.push('memories: []');
-    lines.push('# No advisory memories found in .ontoindex/memories/');
+    if (collection.total === 0) lines.push('# No advisory memories found in .ontoindex/memories/');
     return lines.join('\n');
   }
 
@@ -1306,26 +1316,31 @@ async function getMemoryResource(
 async function getOnboardingResource(backend: LocalBackend, repoName?: string): Promise<string> {
   const repo = await backend.resolveRepo(repoName);
   const header = ADVISORY_MEMORY_HEADER;
-  const memories = await loadMemories(repo.repoPath);
-  if (memories.length === 0) {
-    return [
-      header,
-      ``,
-      ADVISORY_BOUNDARY,
-      ``,
-      `# No advisory memories found in .ontoindex/memories/`,
-    ].join('\n');
+  let loaded = await loadMemory(repo.repoPath, 'onboarding.md');
+  if (!loaded) {
+    const collection = await loadMemoryCollection(repo.repoPath, { includeBody: false });
+    if (collection.truncated || collection.warnings.length > 0) {
+      return [
+        header,
+        '',
+        ADVISORY_BOUNDARY,
+        '',
+        'truncated: true',
+        `error: ${yamlString('Onboarding fallback requires a complete memory collection')}`,
+        'warnings:',
+        ...collection.warnings.map((warning) => `  - ${yamlString(warning)}`),
+      ].join('\n');
+    }
+    const target = collection.memories[0];
+    if (target) loaded = await loadMemory(repo.repoPath, target.fileName);
   }
-
-  const target = memories.find((memory) => memory.fileName === 'onboarding.md') ?? memories[0]!;
-  const loaded = await loadMemory(repo.repoPath, target.fileName);
   if (!loaded) {
     return [
       header,
       ``,
       ADVISORY_BOUNDARY,
       ``,
-      `error: ${yamlString(`Could not read onboarding memory: ${target.fileName}`)}`,
+      `# No advisory memories found in .ontoindex/memories/`,
     ].join('\n');
   }
 

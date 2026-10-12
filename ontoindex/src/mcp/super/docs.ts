@@ -62,7 +62,7 @@ import {
   type McpResponseMode,
 } from '../shared/response-limits.js';
 import type { RouteDataAuditRecord } from '../../core/ingestion/enrichment/route-data-audit.js';
-import { MEMORIES_DIR, loadMemories } from '../memory-parser.js';
+import { MEMORIES_DIR, loadMemoryCollection } from '../memory-parser.js';
 import { getCurrentCommit } from '../../storage/git.js';
 import { listRegisteredRepos } from '../../storage/repo-manager.js';
 import {
@@ -202,10 +202,12 @@ interface DocsAdvisoryMemorySummary {
   boundary: 'advisory-only';
   note: string;
   availability: {
-    status: 'missing' | 'empty' | 'available';
+    status: 'missing' | 'empty' | 'available' | 'partial';
     directory: typeof MEMORIES_DIR;
-    total: number;
+    total: number | null;
   };
+  coverage: { truncated: boolean; emitted: number; countsScope: 'acquired-memories' };
+  warnings: string[];
   validity: {
     valid: number;
     invalid: number;
@@ -1181,18 +1183,16 @@ function createMinimalDocsReport(
 
 async function summarizeAdvisoryMemories(repo: DocsRepoHandle): Promise<DocsAdvisoryMemorySummary> {
   const memoriesDir = path.resolve(repo.repoPath, MEMORIES_DIR);
-  let availability: DocsAdvisoryMemorySummary['availability']['status'] = 'missing';
-  try {
-    await fs.access(memoriesDir);
-    availability = 'empty';
-  } catch {
-    availability = 'missing';
-  }
-
-  const memories = availability === 'missing' ? [] : await loadMemories(repo.repoPath);
-  if (memories.length > 0) {
-    availability = 'available';
-  }
+  const collection = await loadMemoryCollection(repo.repoPath, { includeBody: false });
+  const { memories } = collection;
+  const availability: DocsAdvisoryMemorySummary['availability']['status'] =
+    collection.directoryMissing
+      ? 'missing'
+      : collection.truncated || collection.warnings.length > 0
+        ? 'partial'
+        : memories.length > 0
+          ? 'available'
+          : 'empty';
 
   const validity = memories.reduce(
     (counts, memory) => {
@@ -1232,8 +1232,14 @@ async function summarizeAdvisoryMemories(repo: DocsRepoHandle): Promise<DocsAdvi
     availability: {
       status: availability,
       directory: MEMORIES_DIR,
-      total: memories.length,
+      total: collection.total,
     },
+    coverage: {
+      truncated: collection.truncated,
+      emitted: memories.length,
+      countsScope: 'acquired-memories',
+    },
+    warnings: collection.warnings,
     validity,
     freshness,
   };

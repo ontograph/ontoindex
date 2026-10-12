@@ -304,8 +304,10 @@ async function dispatchLazySuper(
   params: Record<string, unknown>,
   repoId: string,
   backend?: import('./super/safe-refactor.js').RefactorBackend,
+  context?: { repoPath: string },
 ): Promise<unknown> {
   const { dispatchSuper } = await import('./super/dispatch.js');
+  if (context) return dispatchSuper(name, params, repoId, backend, context);
   return backend
     ? dispatchSuper(name, params, repoId, backend)
     : dispatchSuper(name, params, repoId);
@@ -549,6 +551,7 @@ export function createMCPServer(
                       callTool: backend.callTool.bind(backend),
                     }
                   : undefined,
+                name === 'gn_audit_logic' ? { repoPath: repo.repoPath } : undefined,
               ),
               repo,
             );

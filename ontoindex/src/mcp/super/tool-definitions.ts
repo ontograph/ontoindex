@@ -1956,16 +1956,17 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
         },
         resource: {
           type: 'string',
-          description: 'Resource kind to trace, for example fd or signal_mask.',
-          default: 'fd',
+          description:
+            'Exact resource instance identifier supplied in facts. Descriptor numbers alone do not establish identity.',
         },
         start: {
           type: 'string',
-          description: 'Starting symbol, file, or source-side handle label.',
+          description:
+            'Sender process identity supplied in facts. Symbols, files, and handle labels are not resolved.',
         },
         end: {
           type: 'string',
-          description: 'Optional expected destination symbol, file, or receiver label.',
+          description: 'Optional receiver process identity supplied in facts.',
         },
         mechanism: {
           type: 'string',
@@ -1974,7 +1975,26 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
         },
         source: {
           type: 'string',
-          description: 'Optional source text to trace directly.',
+          description:
+            'Optional source text. Source-only requests are unresolved; tracing requires explicit boundary facts.',
+        },
+        kind: {
+          type: 'string',
+          enum: ['SCM_RIGHTS', 'pidfd_getfd', 'fork', 'exec-close-on-exec'],
+          description: 'Legacy mechanism alias. Must agree with mechanism when both are supplied.',
+        },
+        facts: {
+          type: 'array',
+          items: { type: 'object' },
+          description:
+            'Up to 256 explicit boundary facts: kind, mechanism, resourceInstanceId/sourceResourceInstanceId, process and handle identities, flags, closeOnExec, filePath, line. Unknown fields and malformed facts are rejected.',
+        },
+        maxSegments: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100,
+          default: 50,
+          description: 'Maximum emitted matching segments. Truncation is explicit.',
         },
         legacyResponse: legacyResponseProperty,
       },

@@ -95,10 +95,16 @@ function advisoryMemorySection(report: Record<string, unknown>): string[] {
   const availability = readRecord(advisoryMemories.availability);
   const validity = readRecord(advisoryMemories.validity);
   const freshness = readRecord(advisoryMemories.freshness);
+  const coverage = readRecord(advisoryMemories.coverage);
   return [
     'Advisory memories:',
     `- boundary: ${readString(advisoryMemories.note) ?? 'advisory only'}`,
-    `- availability: ${readString(availability?.status) ?? 'unknown'}; total=${readNumber(availability?.total) ?? 0}; dir=${readString(availability?.directory) ?? '.ontoindex/memories'}`,
+    `- availability: ${readString(availability?.status) ?? 'unknown'}; total=${readNumber(availability?.total) ?? 'unknown'}; dir=${readString(availability?.directory) ?? '.ontoindex/memories'}`,
+    ...(coverage
+      ? [
+          `- coverage: emitted=${readNumber(coverage.emitted) ?? 0}; truncated=${coverage.truncated === true}; counts apply to acquired memories`,
+        ]
+      : []),
     `- validity: valid=${readNumber(validity?.valid) ?? 0}; invalid=${readNumber(validity?.invalid) ?? 0}`,
     `- freshness: fresh=${readNumber(freshness?.fresh) ?? 0}; stale-index=${readNumber(freshness?.['stale-index']) ?? 0}; unknown=${readNumber(freshness?.unknown) ?? 0}; invalid=${readNumber(freshness?.invalid) ?? 0}`,
   ];

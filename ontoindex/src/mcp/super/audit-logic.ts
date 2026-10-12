@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { createEnvelopeFromLegacy } from '../shared/response-envelope.js';
 import { resolveTargetContext } from '../shared/target-context.js';
+import { resolveContainedRealPath } from '../local/path-util.js';
 import {
   runSystemsRuleEngine,
   type SystemsRuleCategory,
@@ -11,6 +12,7 @@ import {
 } from '../../core/systems-audit/systems-rule-engine.js';
 
 export interface AuditLogicParams {
+  repo?: string;
   path?: string;
   category?: SystemsRuleCategory;
   categories?: SystemsRuleCategory[];
@@ -23,13 +25,16 @@ export interface AuditLogicParams {
 export async function gnAuditLogic(
   repoId: string,
   params: AuditLogicParams,
+  context?: { repoPath: string },
 ): Promise<SystemsRuleEngineReport | Record<string, unknown>> {
   const warnings: string[] = [];
   let source = params.source;
 
-  if (!source && params.path) {
+  if (source === undefined && params.path) {
+    const repoRoot = await resolveAuditRepoRoot(repoId, params, context);
+    const resolvedPath = await resolveContainedRealPath(repoRoot, params.path);
     try {
-      source = await fs.readFile(resolveInputPath(repoId, params.path), 'utf8');
+      source = await fs.readFile(resolvedPath, 'utf8');
     } catch (error) {
       warnings.push(
         `could not read path: ${error instanceof Error ? error.message : String(error)}`,
@@ -47,6 +52,7 @@ export async function gnAuditLogic(
 
   const report: SystemsRuleEngineReport = {
     ...baseReport,
+    status: warnings.length > 0 ? 'partial' : baseReport.status,
     warnings: [...baseReport.warnings, ...warnings],
     skipReasons:
       source || params.facts?.length
@@ -69,8 +75,16 @@ export async function gnAuditLogic(
   });
 }
 
-function resolveInputPath(repoId: string, inputPath: string): string {
-  if (path.isAbsolute(inputPath)) return inputPath;
-  if (path.isAbsolute(repoId)) return path.join(repoId, inputPath);
-  return inputPath;
+async function resolveAuditRepoRoot(
+  repoId: string,
+  params: AuditLogicParams,
+  context?: { repoPath: string },
+): Promise<string> {
+  if (context?.repoPath) return context.repoPath;
+  const explicitRepo = params.repo ?? repoId;
+  if (path.isAbsolute(explicitRepo)) return explicitRepo;
+  const targetContext = await resolveTargetContext({ repo: explicitRepo });
+  if (!targetContext.repoPath)
+    throw new Error(`Unable to resolve repository root for ${explicitRepo}`);
+  return targetContext.repoPath;
 }

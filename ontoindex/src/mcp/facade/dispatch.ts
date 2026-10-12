@@ -63,7 +63,12 @@ export async function dispatchFacade(
     const repo = await backend.resolveRepo(typeof args.repo === 'string' ? args.repo : undefined);
     const { dispatchSuper } = await import('../super/dispatch.js');
     try {
-      return attachRepoScopeIdentity(await dispatchSuper(superTool, args, repo.id), repo);
+      return attachRepoScopeIdentity(
+        await (superTool === 'gn_audit_logic'
+          ? dispatchSuper(superTool, args, repo.id, undefined, { repoPath: repo.repoPath })
+          : dispatchSuper(superTool, args, repo.id)),
+        repo,
+      );
     } catch (error) {
       throw attachRepoScopeIdentityToError(
         error instanceof Error ? error : new Error(String(error)),

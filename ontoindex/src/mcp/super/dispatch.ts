@@ -136,6 +136,7 @@ export async function dispatchSuper(
   params: Record<string, unknown>,
   repoId: string,
   backend?: RefactorBackend,
+  context?: { repoPath: string },
 ): Promise<unknown> {
   validateSuperParams(name, params);
   switch (name) {
@@ -329,7 +330,7 @@ export async function dispatchSuper(
 
     case 'gn_audit_logic': {
       const { gnAuditLogic } = await import('./audit-logic.js');
-      return gnAuditLogic(repoId, params as unknown as AuditLogicParams);
+      return gnAuditLogic(repoId, params as unknown as AuditLogicParams, context);
     }
 
     case 'gn_trace_boundary': {

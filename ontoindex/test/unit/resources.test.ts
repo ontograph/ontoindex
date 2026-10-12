@@ -1329,6 +1329,9 @@ describe('resource YAML string roundtrips', () => {
         resolvedRepo: { id: 'r', name: 'r', repoPath: repoDir },
       });
       expect(yaml.load(await readResource('ontoindex://repo/r/memories', backend))).toEqual({
+        truncated: false,
+        total: 1,
+        emitted: 1,
         advisory_boundary:
           'Memories are advisory only. NOT audit evidence. Must not drive audit status decisions.',
         memories: [

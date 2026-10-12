@@ -7,7 +7,7 @@
  */
 
 import fs from 'fs/promises';
-import type { Dirent } from 'fs';
+import { constants } from 'fs';
 import path from 'path';
 import { resolveContainedRealPath } from './local/path-util.js';
 
@@ -69,6 +69,17 @@ export interface LoadedMemory {
 
 export const MEMORIES_DIR = '.ontoindex/memories';
 export const MAX_MEMORY_FILE_SIZE_BYTES = 64 * 1024;
+export const MAX_MEMORY_DIRECTORY_ENTRIES = 1024;
+export const MAX_MEMORY_COLLECTION_FILES = 128;
+export const MAX_MEMORY_COLLECTION_BYTES = 1024 * 1024;
+
+export interface MemoryCollection {
+  memories: ParsedMemory[];
+  truncated: boolean;
+  warnings: string[];
+  total: number | null;
+  directoryMissing?: boolean;
+}
 export const CANONICAL_MEMORY_FRESHNESS = ['fresh', 'stale-index', 'unknown'] as const;
 
 const URL_LIKE_NAME = /^[A-Za-z][A-Za-z0-9+.-]*:/;
@@ -205,6 +216,7 @@ export function resolveMemoryPath(
 async function readResolvedMemoryFile(
   repoPath: string,
   resolved: ResolvedMemoryPath,
+  budget?: { remaining: number },
 ): Promise<LoadedMemory | null> {
   try {
     resolved = {
@@ -214,10 +226,13 @@ async function readResolvedMemoryFile(
   } catch {
     return null;
   }
+  let handle;
   let stat;
   try {
-    stat = await fs.stat(resolved.filePath);
+    handle = await fs.open(resolved.filePath, constants.O_RDONLY | constants.O_NONBLOCK);
+    stat = await handle.stat();
   } catch (error: unknown) {
+    await handle?.close();
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') {
       return null;
@@ -234,6 +249,7 @@ async function readResolvedMemoryFile(
   }
 
   if (!stat.isFile()) {
+    await handle.close();
     return {
       content: null,
       memory: buildInvalidMemory(
@@ -249,6 +265,7 @@ async function readResolvedMemoryFile(
   }
 
   if (stat.size > MAX_MEMORY_FILE_SIZE_BYTES) {
+    await handle.close();
     return {
       content: null,
       memory: buildInvalidMemory(
@@ -261,9 +278,37 @@ async function readResolvedMemoryFile(
   }
 
   try {
-    const content = await fs.readFile(resolved.filePath, 'utf8');
+    const limit = Math.min(MAX_MEMORY_FILE_SIZE_BYTES + 1, budget?.remaining ?? Infinity);
+    const buffer = Buffer.alloc(limit);
+    let bytesRead = 0;
+    while (bytesRead < limit) {
+      const read = await handle.read(buffer, bytesRead, limit - bytesRead, null);
+      if (budget) budget.remaining -= read.bytesRead;
+      if (read.bytesRead === 0) break;
+      bytesRead += read.bytesRead;
+    }
+    const budgetExhaustedBeforeEof =
+      bytesRead === limit &&
+      limit <= MAX_MEMORY_FILE_SIZE_BYTES &&
+      (await handle.stat()).size > bytesRead;
+    if (bytesRead > MAX_MEMORY_FILE_SIZE_BYTES || budgetExhaustedBeforeEof) {
+      return {
+        content: null,
+        memory: buildInvalidMemory(
+          resolved.filePath,
+          resolved.fileName,
+          [
+            bytesRead > MAX_MEMORY_FILE_SIZE_BYTES
+              ? `Memory file exceeds ${MAX_MEMORY_FILE_SIZE_BYTES} bytes`
+              : 'Memory collection byte limit reached',
+          ],
+          { invalidFields: ['file'], sizeBytes: bytesRead },
+        ),
+      };
+    }
+    const content = buffer.subarray(0, bytesRead).toString('utf8');
     const memory = parseMemoryFile(resolved.filePath, content);
-    memory.sizeBytes = stat.size;
+    memory.sizeBytes = bytesRead;
     return { content, memory };
   } catch (error: unknown) {
     return {
@@ -275,6 +320,8 @@ async function readResolvedMemoryFile(
         { invalidFields: ['file'], sizeBytes: stat.size },
       ),
     };
+  } finally {
+    await handle.close();
   }
 }
 
@@ -414,42 +461,98 @@ export function parseMemoryFile(filePath: string, content: string): ParsedMemory
  * Load all .md files from .ontoindex/memories/ under the given repo root.
  * Returns an empty array when the directory does not exist.
  */
-export async function loadMemories(repoPath: string): Promise<ParsedMemory[]> {
-  const memoriesDir = path.resolve(repoPath, MEMORIES_DIR);
-  let entries: Dirent<string>[] = [];
+export async function loadMemoryCollection(
+  repoPath: string,
+  options: { includeBody?: boolean } = {},
+): Promise<MemoryCollection> {
+  let memoriesDir: string;
   try {
-    entries = await fs.readdir(memoriesDir, { withFileTypes: true, encoding: 'utf8' });
-  } catch {
-    return [];
+    memoriesDir = await resolveContainedRealPath(repoPath, path.resolve(repoPath, MEMORIES_DIR));
+  } catch (error: unknown) {
+    const directoryMissing = (error as NodeJS.ErrnoException).code === 'ENOENT';
+    return {
+      memories: [],
+      truncated: !directoryMissing,
+      total: directoryMissing ? 0 : null,
+      warnings: directoryMissing ? [] : ['Memory directory containment could not be verified'],
+      ...(directoryMissing ? { directoryMissing: true } : {}),
+    };
   }
-
+  const names: string[] = [];
+  try {
+    const directory = await fs.opendir(memoriesDir);
+    let count = 0;
+    for await (const entry of directory) {
+      if (++count > MAX_MEMORY_DIRECTORY_ENTRIES) {
+        return {
+          memories: [],
+          truncated: true,
+          total: null,
+          warnings: ['Memory directory entry limit exceeded'],
+        };
+      }
+      if (entry.isFile() && entry.name.endsWith('.md')) names.push(entry.name);
+    }
+  } catch (error: unknown) {
+    const directoryMissing = (error as NodeJS.ErrnoException).code === 'ENOENT';
+    return {
+      memories: [],
+      truncated: !directoryMissing,
+      total: directoryMissing ? 0 : null,
+      warnings: directoryMissing ? [] : ['Memory directory could not be read'],
+      ...(directoryMissing ? { directoryMissing: true } : {}),
+    };
+  }
+  const warnings: string[] = [];
+  let truncated = names.length > MAX_MEMORY_COLLECTION_FILES;
+  if (truncated) warnings.push('Memory collection file limit exceeded');
+  const budget = { remaining: MAX_MEMORY_COLLECTION_BYTES };
   const memories: ParsedMemory[] = [];
-  for (const entry of entries
-    .filter((dirent) => dirent.isFile() && dirent.name.endsWith('.md'))
-    .sort((left, right) => left.name.localeCompare(right.name))) {
+  for (const name of names
+    .sort((left, right) => left.localeCompare(right))
+    .slice(0, MAX_MEMORY_COLLECTION_FILES)) {
+    if (budget.remaining === 0) {
+      truncated = true;
+      warnings.push('Memory collection byte limit reached');
+      break;
+    }
     let resolved: ResolvedMemoryPath;
     try {
-      resolved = resolveMemoryPath(repoPath, entry.name, { allowImplicitMarkdown: false });
+      resolved = resolveMemoryPath(repoPath, name, { allowImplicitMarkdown: false });
     } catch (error: unknown) {
       memories.push(
-        buildInvalidMemory(
-          path.resolve(memoriesDir, entry.name),
-          entry.name,
-          [(error as Error).message],
-          {
-            invalidFields: ['file'],
-          },
-        ),
+        buildInvalidMemory(path.resolve(memoriesDir, name), name, [(error as Error).message], {
+          invalidFields: ['file'],
+        }),
       );
       continue;
     }
 
-    const loaded = await readResolvedMemoryFile(repoPath, resolved);
+    const loaded = await readResolvedMemoryFile(repoPath, resolved, budget);
     if (loaded) {
+      if (loaded.memory.validationErrors.includes('Memory collection byte limit reached')) {
+        truncated = true;
+        warnings.push('Memory collection byte limit reached');
+      }
+      if (options.includeBody === false) loaded.memory.body = '';
       memories.push(loaded.memory);
+    } else {
+      truncated = true;
+      warnings.push('Memory file containment or availability could not be verified');
     }
   }
-  return memories;
+  return { memories, truncated, warnings: [...new Set(warnings)], total: names.length };
+}
+
+export async function loadMemories(repoPath: string): Promise<ParsedMemory[]> {
+  const collection = await loadMemoryCollection(repoPath);
+  if (
+    collection.total === null &&
+    collection.warnings.includes('Memory directory containment could not be verified')
+  )
+    return [];
+  if (collection.truncated) throw new Error(collection.warnings.join('; '));
+  return collection.memories;
 }
 
 export async function loadMemory(
