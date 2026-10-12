@@ -110,6 +110,48 @@ describe('prompt registration', () => {
 });
 
 describe('resource response MIME types', () => {
+  it.each(['metadata', 'fallback'])(
+    'bounds the complete resource envelope when %s cannot fit',
+    async (scenario) => {
+      const uri = 'ontoindex://repos';
+      // Mock metadata keeps this regression local to the handler's response accounting.
+      const emptyEnvelopeBytes = Buffer.byteLength(
+        JSON.stringify({ contents: [{ uri, mimeType: '', text: '' }] }),
+        'utf8',
+      );
+      const mimeType =
+        'x'.repeat(
+          MCP_RESPONSE_MAX_BYTES - emptyEnvelopeBytes - (scenario === 'fallback' ? 4 : 0),
+        ) + (scenario === 'metadata' ? '😀\"\\\n' : '');
+      const definitions = vi
+        .spyOn(resources, 'getResourceDefinitions')
+        .mockReturnValue([{ uri, name: 'fixture', description: 'fixture', mimeType }]);
+      const read = vi.spyOn(resources, 'readResource').mockResolvedValue('resource payload');
+      const handlers = vi.spyOn(Server.prototype, 'setRequestHandler');
+      try {
+        createMCPServer(createMockBackend());
+        const handler = handlers.mock.calls.find(
+          ([schema]) => schema === ReadResourceRequestSchema,
+        )?.[1];
+        const response = await (handler as any)({ params: { uri } });
+        expect(response.contents).toEqual([
+          {
+            uri,
+            mimeType: 'text/plain',
+            text: 'Error: Resource response exceeded the byte limit.',
+          },
+        ]);
+        expect(Buffer.byteLength(JSON.stringify(response), 'utf8')).toBeLessThanOrEqual(
+          MCP_RESPONSE_MAX_BYTES,
+        );
+      } finally {
+        handlers.mockRestore();
+        read.mockRestore();
+        definitions.mockRestore();
+      }
+    },
+  );
+
   it('bounds successful resource envelopes with escaped unicode content', async () => {
     const read = vi.spyOn(resources, 'readResource').mockResolvedValue('😀\"\\\n'.repeat(15000));
     const handlers = vi.spyOn(Server.prototype, 'setRequestHandler');

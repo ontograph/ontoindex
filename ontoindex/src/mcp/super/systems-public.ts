@@ -206,7 +206,7 @@ async function resolveRepoInputPath(
   const repoRootReal = await realpathOrResolved(repoRoot);
   if (!path.isAbsolute(inputPath))
     assertInsideRepo(repoRootReal, path.resolve(repoRootReal, inputPath), inputPath);
-  const candidateReal = await resolveContainedRealPath(repoRootReal, inputPath);
+  const candidateReal = await resolveContainedRealPath(repoRoot, inputPath);
 
   return {
     absolutePath: candidateReal,

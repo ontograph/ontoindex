@@ -110,7 +110,6 @@ export function mountMCPEndpoints(
     const existing = closedSessions.get(session.transport);
     if (existing) return existing;
     if (sessions.get(id) === session) sessions.delete(id);
-    session.transport.onclose = undefined;
     const closing = Promise.resolve()
       .then(async () => {
         // Closing the transport first releases streams that may keep handling pending.
@@ -239,7 +238,8 @@ export function mountMCPEndpoints(
             };
             sessions.set(id, session);
             totalSessionsCreated++;
-            transport!.onclose = () => {
+            // The SDK owns transport.onclose to detach and abort protocol handlers.
+            server!.onclose = () => {
               void closeSession(id, session!);
             };
           },

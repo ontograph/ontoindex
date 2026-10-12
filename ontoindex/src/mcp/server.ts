@@ -378,7 +378,7 @@ export function createMCPServer(
         getResourceTemplates().find((entry) =>
           new UriTemplate(entry.uriTemplate).match(canonicalUri),
         );
-      return {
+      const response = {
         contents: [
           {
             uri,
@@ -398,6 +398,10 @@ export function createMCPServer(
           },
         ],
       };
+      if (Buffer.byteLength(JSON.stringify(response), 'utf8') > MCP_RESPONSE_MAX_BYTES) {
+        throw new Error('Resource response exceeded the byte limit.');
+      }
+      return response;
     } catch (err: unknown) {
       // Bound the whole resource envelope: cap the echoed URI and reserve its bytes.
       const echoedUri = uri.length > MAX_ERROR_URI_CHARS ? uri.slice(0, MAX_ERROR_URI_CHARS) : uri;

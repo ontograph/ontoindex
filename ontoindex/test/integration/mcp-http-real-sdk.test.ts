@@ -72,6 +72,13 @@ async function fixture() {
   vi.stubEnv('ONTOINDEX_HTTP_MCP_MAX_SESSIONS', '1');
   vi.resetModules();
   const { mountMCPEndpoints } = await import('../../src/server/mcp-http.js');
+  const { Server: MCPServer } = await import('@modelcontextprotocol/sdk/server/index.js');
+  const protocols: InstanceType<typeof MCPServer>[] = [];
+  const connect = MCPServer.prototype.connect;
+  vi.spyOn(MCPServer.prototype, 'connect').mockImplementation(async function (transport) {
+    protocols.push(this);
+    await connect.call(this, transport);
+  });
   const app = express();
   app.use(express.json());
   const handle = mountMCPEndpoints(app, { listRepos: async () => [] } as any, {
@@ -98,6 +105,13 @@ async function fixture() {
   return {
     handle,
     errors,
+    protocols,
+    deleteSession: (id: string) =>
+      fetch(url, {
+        method: 'DELETE',
+        headers: { 'mcp-session-id': id, 'mcp-protocol-version': '2025-03-26' },
+        signal: AbortSignal.timeout(5000),
+      }),
     // fetch() overrides the Host header, so DNS-rebinding checks need node:http.
     requestWithHost: (body: unknown, host: string) =>
       new Promise<number>((resolve, reject) => {
@@ -156,6 +170,76 @@ afterEach(() => {
 });
 
 describe('MCP HTTP with the installed SDK', () => {
+  it.each(['spontaneous', 'delete', 'eviction', 'cleanup'] as const)(
+    'detaches protocol state and aborts pending handlers on %s closure',
+    async (mode) => {
+      const f = await fixture();
+      let pending: Promise<Response> | undefined;
+      try {
+        const initialized = await f.request(initialize);
+        const id = initialized.headers.get('mcp-session-id')!;
+        await initialized.text();
+        const protocol = f.protocols[0]!;
+        const transport = protocol.transport!;
+        const sdkOnclose = transport.onclose;
+        const onclose = protocol.onclose!;
+        const closed = vi.fn(() => onclose());
+        protocol.onclose = closed;
+        const entered = deferred();
+        const aborted = deferred();
+        const { PingRequestSchema } = await import('@modelcontextprotocol/sdk/types.js');
+        protocol.setRequestHandler(PingRequestSchema, async (_request, extra) => {
+          entered.resolve();
+          await new Promise<void>((resolve) => {
+            extra.signal.addEventListener(
+              'abort',
+              () => {
+                aborted.resolve();
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          return {};
+        });
+        pending = f.request(
+          { jsonrpc: '2.0', id: 9, method: 'ping' },
+          {
+            'mcp-session-id': id,
+            'mcp-protocol-version': '2025-03-26',
+          },
+        );
+        void pending.catch(() => {});
+        await boundedGate(entered.promise);
+        if (mode === 'spontaneous') await transport.close();
+        else if (mode === 'delete') {
+          const deleted = await f.deleteSession(id);
+          expect(deleted.status).toBe(200);
+          await deleted.text();
+        } else if (mode === 'eviction') {
+          const replacement = await f.request(initialize);
+          expect(replacement.status).toBe(200);
+          await replacement.text();
+        } else {
+          const cleanup = f.handle.cleanup();
+          expect(f.handle.cleanup()).toBe(cleanup);
+          await cleanup;
+        }
+        await boundedGate(aborted.promise);
+        expect(protocol.transport).toBeUndefined();
+        expect(transport.onclose).toBe(sdkOnclose);
+        expect(closed).toHaveBeenCalledOnce();
+        expect(f.handle.getDiagnostics().activeSessionCount).toBe(mode === 'eviction' ? 1 : 0);
+        await f.handle.cleanup();
+        expect(closed).toHaveBeenCalledOnce();
+      } finally {
+        await f.close();
+        await Promise.allSettled(pending ? [pending] : []);
+      }
+      expect(f.errors).toEqual([]);
+    },
+  );
+
   it('rejects a rebinding host while accepting loopback hosts', async () => {
     const f = await fixture();
     try {

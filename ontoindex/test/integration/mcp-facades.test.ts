@@ -26,6 +26,15 @@ const { childProcessMocks, diffReviewMocks, targetContextMocks } = vi.hoisted(()
   },
 }));
 
+const { execFileTextMock } = vi.hoisted(() => ({
+  execFileTextMock: vi.fn(),
+}));
+
+vi.mock('../../src/core/process/exec-file.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/core/process/exec-file.js')>();
+  return { ...actual, execFileText: execFileTextMock };
+});
+
 vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
   const actual = await importOriginal();
   return { ...actual, ...lbugMocks };
@@ -36,9 +45,10 @@ vi.mock('child_process', async (importOriginal) => {
   return { ...actual, execFileSync: childProcessMocks.execFileSync };
 });
 
-vi.mock('../../src/core/review/diff-review.js', () => ({
-  buildDiffReview: diffReviewMocks.buildDiffReview,
-}));
+vi.mock('../../src/core/review/diff-review.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/core/review/diff-review.js')>();
+  return { ...actual, buildDiffReview: diffReviewMocks.buildDiffReview };
+});
 
 vi.mock('../../src/mcp/shared/target-context.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/mcp/shared/target-context.js')>();
@@ -84,6 +94,10 @@ import type { LocalBackend } from '../../src/mcp/local/local-backend.js';
 
 describe('MCP Facade Integration (M-1)', () => {
   beforeEach(() => {
+    execFileTextMock.mockReset();
+    execFileTextMock.mockImplementation(async (_command: string, args: string[]) =>
+      args[3] === 'HEAD~1^{commit}' ? 'a'.repeat(40) : 'b'.repeat(40),
+    );
     childProcessMocks.nameOnlyOutput = 'src/alpha.ts\nsrc/beta.ts\n';
     childProcessMocks.numstatOutput = '10\t1\tsrc/alpha.ts\n2\t0\tsrc/beta.ts\n';
     childProcessMocks.execFileSync.mockImplementation((_cmd: string, args: string[]) => {
@@ -450,6 +464,36 @@ describe('MCP Facade Integration (M-1)', () => {
     // Both tools exist independently
     expect(SUPER_NAMES.has('gn_diff_impact' as any)).toBe(true);
     expect(SUPER_NAMES.has('gn_review_diff' as any)).toBe(true);
+  });
+
+  it('gn_review_diff resolves commit ranges before dispatching Git diff', async () => {
+    const resolvedRange = `${'a'.repeat(40)}..${'b'.repeat(40)}`;
+
+    const result = (await superDispatch.dispatchSuper(
+      'gn_review_diff',
+      { commitRange: 'HEAD~1..HEAD' },
+      'fixture',
+    )) as Record<string, any>;
+
+    expect(execFileTextMock).toHaveBeenNthCalledWith(
+      1,
+      'git',
+      ['rev-parse', '--verify', '--end-of-options', 'HEAD~1^{commit}'],
+      expect.objectContaining({ cwd: '/tmp/fixture-repo' }),
+    );
+    expect(execFileTextMock).toHaveBeenNthCalledWith(
+      2,
+      'git',
+      ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}'],
+      expect.objectContaining({ cwd: '/tmp/fixture-repo' }),
+    );
+    expect(result.results.resolvedRange).toBe(resolvedRange);
+    expect(childProcessMocks.execFileSync).toHaveBeenCalledWith(
+      'git',
+      ['diff', resolvedRange, '--name-only'],
+      expect.objectContaining({ cwd: '/tmp/fixture-repo' }),
+    );
+    expect(diffReviewMocks.buildDiffReview).toHaveBeenCalled();
   });
 
   it('gn_review_diff returns bounded evidence diagnostics under results', async () => {

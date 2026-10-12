@@ -20,10 +20,15 @@ import {
 // ─── Mock heavy dependencies ─────────────────────────────────────────────────
 
 vi.mock('../../src/mcp/server.js', () => ({
-  createMCPServer: vi.fn(() => ({
-    connect: vi.fn().mockResolvedValue(undefined),
-    close: vi.fn().mockResolvedValue(undefined),
-  })),
+  createMCPServer: vi.fn(() => {
+    const server: any = {
+      connect: vi.fn(async (transport) => {
+        transport.onclose = () => server.onclose?.();
+      }),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    return server;
+  }),
 }));
 
 vi.mock('@modelcontextprotocol/sdk/server/streamableHttp.js', async () => {
@@ -71,7 +76,7 @@ vi.mock('@modelcontextprotocol/sdk/server/streamableHttp.js', async () => {
             }
           }
         }),
-        close: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn(async () => t.onclose?.()),
       };
       return t;
     }),
@@ -432,9 +437,7 @@ describe('validated admission and terminal cleanup', () => {
     const app = makeMockApp();
     const { cleanup } = mountMCPEndpoints(app as any, makeMockBackend());
     await app.trigger({});
-    const { StreamableHTTPServerTransport } =
-      await import('@modelcontextprotocol/sdk/server/streamableHttp.js');
-    (StreamableHTTPServerTransport as any).mock.results.at(-1).value.onclose();
+    vi.mocked(createMCPServer).mock.results.at(-1)!.value.onclose!();
     await closing.promise;
     let complete = false;
     const shutdown = cleanup();
@@ -543,13 +546,15 @@ describe('concurrent initialization cap', () => {
     expect(getDiagnostics().activeSessionCount).toBe(0);
     expect(getDiagnostics().totalSessionsCreated).toBe(1);
     await cleanup();
-    vi.mocked(createMockServer).mockImplementation(
-      () =>
-        ({
-          connect: vi.fn().mockResolvedValue(undefined),
-          close: vi.fn().mockResolvedValue(undefined),
-        }) as any,
-    );
+    vi.mocked(createMockServer).mockImplementation(() => {
+      const server: any = {
+        connect: vi.fn(async (transport) => {
+          transport.onclose = () => server.onclose?.();
+        }),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+      return server;
+    });
   });
 });
 

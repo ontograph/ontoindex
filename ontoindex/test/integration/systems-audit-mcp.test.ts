@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -259,6 +259,39 @@ describe('systems audit MCP MVP modules', () => {
     await expect(
       dispatchSuper('gn_resource_trace', { path: '../outside.cpp' }, repo),
     ).rejects.toThrow(/Path is outside repository: \.\.\/outside\.cpp\. Use a path under /);
+  });
+
+  it('gn_resource_trace resolves alias, canonical, and relative paths from a repo-root alias', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'ontoindex-resource-trace-'));
+    const repo = join(root, 'repo');
+    const repoAlias = join(root, 'repo-alias');
+    try {
+      await mkdir(repo);
+      await writeFile(
+        join(repo, 'sample.cpp'),
+        'int fd = open(path, O_RDONLY);\nclose(fd);\n',
+        'utf8',
+      );
+      await symlink(repo, repoAlias);
+
+      const canonicalRepo = await realpath(repo);
+      for (const inputPath of [
+        join(repoAlias, 'sample.cpp'),
+        join(canonicalRepo, 'sample.cpp'),
+        'sample.cpp',
+      ]) {
+        const report = (await dispatchSuper(
+          'gn_resource_trace',
+          { path: inputPath },
+          repoAlias,
+        )) as Record<string, unknown>;
+
+        expect(report.filePath).toBe('sample.cpp');
+        expect(report.records).toEqual(expect.arrayContaining([expect.anything()]));
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('gn_resource_trace rejects a repo symlink that points outside', async () => {
