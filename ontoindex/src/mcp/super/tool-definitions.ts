@@ -1867,7 +1867,7 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
   {
     name: 'gn_path_verify',
     description:
-      'Systems-audit shallow path verifier: for a trigger branch, verify required calls/patterns appear and forbidden calls/patterns do not appear in the bounded intra-procedural window.',
+      'Systems-audit advisory C/C++ branch observations: inspect patterns within a selected procedure and trigger consequence. Returns NEEDS-VERIFY because syntax presence does not prove path execution; unsupported or ambiguous scope yields warnings.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1878,20 +1878,26 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
         path: { type: 'string', description: 'Repository-relative source path to read.' },
         sourceText: { type: 'string', description: 'Inline source text to analyze.' },
         source: { type: 'string', description: 'Alias for inline source text.' },
-        symbol: { type: 'string', description: 'Optional symbol under verification.' },
+        symbol: {
+          type: 'string',
+          description:
+            'Optional exact qualified procedure name; ambiguous or missing procedures yield NEEDS-VERIFY.',
+        },
         when: {
           type: 'string',
-          description: 'Trigger condition or branch pattern, e.g. fork() < 0.',
+          description: 'Exact trigger condition expression, e.g. fork() < 0.',
         },
         must: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Patterns that must appear after the trigger.',
+          description:
+            'Patterns to observe in the selected trigger consequence; presence does not prove execution.',
         },
         mustNot: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Patterns that must not appear after the trigger.',
+          description:
+            'Patterns to flag within the selected trigger consequence; observations remain advisory.',
         },
         maxEvidence: {
           type: 'number',

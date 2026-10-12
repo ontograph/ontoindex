@@ -701,12 +701,13 @@ const TOOL_METADATA_LIST: ToolContractMetadata[] = [
     kind: 'super',
     modes: ALL_AGENT_MODES,
     category: 'systems-audit',
-    intent: 'Verify shallow branch/path invariants',
-    whenToUse:
-      'When a finding depends on a specific branch such as fork failure or MSG_CTRUNC handling',
+    intent: 'Observe scoped C/C++ branch patterns for review',
+    whenToUse: 'When reviewing a specific branch; observations require further execution evidence',
     contractStatus: 'stable',
     visibility: 'public',
     structuredOutput: true,
+    advisoryOnly: true,
+    auditAuthority: false,
   },
   {
     name: 'gn_test_suggestions',

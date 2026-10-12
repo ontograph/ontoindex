@@ -175,44 +175,36 @@ export async function queryClusters(
   repo: ResourceRepoHandle,
   limit = 100,
 ): Promise<{ clusters: AggregatedCluster[] }> {
-  try {
-    const rawLimit = Math.max(limit * 5, 200);
-    const clusters = (await executeQuery(
-      repo.id,
-      `
+  const rawLimit = Math.max(limit * 5, 200);
+  const clusters = (await executeQuery(
+    repo.id,
+    `
       MATCH (c:Community)
       RETURN c.id AS id, c.label AS label, c.heuristicLabel AS heuristicLabel, c.cohesion AS cohesion, c.symbolCount AS symbolCount
       ORDER BY c.symbolCount DESC
       LIMIT ${rawLimit}
     `,
-    )) as ClusterQueryRow[];
-    const rawClusters = clusters.map(toClusterRow);
-    return { clusters: aggregateClusters(rawClusters).slice(0, limit) };
-  } catch {
-    return { clusters: [] };
-  }
+  )) as ClusterQueryRow[];
+  const rawClusters = clusters.map(toClusterRow);
+  return { clusters: aggregateClusters(rawClusters).slice(0, limit) };
 }
 
 export async function queryProcesses(
   repo: ResourceRepoHandle,
   limit = 50,
 ): Promise<{ processes: ProcessSummary[] }> {
-  try {
-    const processes = (await executeQuery(
-      repo.id,
-      `
+  const processes = (await executeQuery(
+    repo.id,
+    `
       MATCH (p:Process)
       RETURN p.id AS id, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount
       ORDER BY p.stepCount DESC
       LIMIT ${limit}
     `,
-    )) as ProcessQueryRow[];
-    return {
-      processes: processes.map(toProcessSummary),
-    };
-  } catch {
-    return { processes: [] };
-  }
+  )) as ProcessQueryRow[];
+  return {
+    processes: processes.map(toProcessSummary),
+  };
 }
 
 export async function queryClusterDetail(

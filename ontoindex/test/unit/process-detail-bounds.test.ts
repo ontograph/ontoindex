@@ -131,15 +131,68 @@ describe('process detail bounds', () => {
     ]);
   });
 
-  it('returns empty cluster and process arrays when summary queries throw', async () => {
+  it('returns empty cluster and process arrays when summary queries succeed empty', async () => {
     const { queryClusters, queryProcesses } =
       await import('../../src/mcp/local/backend-resources.js');
 
-    lbugMocks.executeQuery.mockRejectedValueOnce(new Error('cluster query failed'));
+    lbugMocks.executeQuery.mockResolvedValueOnce([]);
     await expect(queryClusters({ id: 'repo' })).resolves.toEqual({ clusters: [] });
 
-    lbugMocks.executeQuery.mockRejectedValueOnce(new Error('process query failed'));
+    lbugMocks.executeQuery.mockResolvedValueOnce([]);
     await expect(queryProcesses({ id: 'repo' })).resolves.toEqual({ processes: [] });
+  });
+
+  it('propagates summary query and row-mapping failures', async () => {
+    const { queryClusters, queryProcesses } =
+      await import('../../src/mcp/local/backend-resources.js');
+    const clusterQueryError = new Error('cluster query failed');
+    const processQueryError = new Error('process query failed');
+    const clusterMappingError = new Error('cluster mapping failed');
+    const processMappingError = new Error('process mapping failed');
+
+    lbugMocks.executeQuery.mockRejectedValueOnce(clusterQueryError);
+    await expect(queryClusters({ id: 'repo' })).rejects.toBe(clusterQueryError);
+
+    lbugMocks.executeQuery.mockRejectedValueOnce(processQueryError);
+    await expect(queryProcesses({ id: 'repo' })).rejects.toBe(processQueryError);
+
+    lbugMocks.executeQuery.mockResolvedValueOnce([
+      {
+        get id() {
+          throw clusterMappingError;
+        },
+      },
+    ]);
+    await expect(queryClusters({ id: 'repo' })).rejects.toBe(clusterMappingError);
+
+    lbugMocks.executeQuery.mockResolvedValueOnce([
+      {
+        get id() {
+          throw processMappingError;
+        },
+      },
+    ]);
+    await expect(queryProcesses({ id: 'repo' })).rejects.toBe(processMappingError);
+  });
+
+  it('rejects overview when a requested summary query fails and skips disabled sections', async () => {
+    const { runOverview } = await import('../../src/mcp/local/backend-overview.js');
+    const repo = { id: 'repo', name: 'repo', repoPath: '/repo', stats: {} } as never;
+    const clusterError = new Error('cluster query failed');
+    const processError = new Error('process query failed');
+
+    lbugMocks.executeQuery.mockRejectedValueOnce(clusterError);
+    await expect(runOverview(repo, {})).rejects.toBe(clusterError);
+    expect(lbugMocks.executeQuery).toHaveBeenCalledTimes(1);
+
+    lbugMocks.executeQuery.mockRejectedValueOnce(processError);
+    await expect(runOverview(repo, { showClusters: false })).rejects.toBe(processError);
+    expect(lbugMocks.executeQuery).toHaveBeenCalledTimes(2);
+
+    await expect(runOverview(repo, { showClusters: false, showProcesses: false })).resolves.toEqual(
+      { repo: 'repo', repoPath: '/repo', stats: {} },
+    );
+    expect(lbugMocks.executeQuery).toHaveBeenCalledTimes(2);
   });
 
   it('returns stable not-found errors for missing cluster and process detail', async () => {

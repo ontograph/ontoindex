@@ -5,6 +5,7 @@
  * All resources use repo-scoped URIs: ontoindex://repo/{name}/context
  */
 
+import { createRequire } from 'node:module';
 import type { LocalBackend } from './local/local-backend.js';
 import { loadAnalysisCatalog } from '../analysis-packs/catalog.js';
 import { buildAnalysisExecutionPlan } from '../analysis-packs/execution.js';
@@ -58,8 +59,16 @@ export interface ResourceContractSummaryEntry {
   contract: ResourceContractSummary;
 }
 
-function errorMessage(err: unknown): unknown {
-  return (err as { message: unknown }).message;
+const yaml = createRequire(import.meta.url)('js-yaml') as typeof import('js-yaml');
+
+function yamlString(value: unknown): string {
+  return yaml.dump(String(value), { forceQuotes: true, quotingType: '"', lineWidth: -1 }).trimEnd();
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err === null || (typeof err !== 'object' && typeof err !== 'function')) return String(err);
+  return 'Unknown error';
 }
 
 function formatSuitability(suitability: ResourceSuitability): string {
@@ -624,10 +633,10 @@ async function getReposResource(backend: LocalBackend): Promise<string> {
 
   const lines: string[] = ['repos:'];
   for (const repo of repos) {
-    lines.push(`  - name: "${repo.name}"`);
-    lines.push(`    path: "${repo.path}"`);
-    lines.push(`    indexed: "${repo.indexedAt}"`);
-    lines.push(`    commit: "${repo.lastCommit?.slice(0, 7) || 'unknown'}"`);
+    lines.push(`  - name: ${yamlString(repo.name)}`);
+    lines.push(`    path: ${yamlString(repo.path)}`);
+    lines.push(`    indexed: ${yamlString(repo.indexedAt)}`);
+    lines.push(`    commit: ${yamlString(repo.lastCommit?.slice(0, 7) || 'unknown')}`);
     if (repo.stats) {
       lines.push(`    files: ${repo.stats.files || 0}`);
       lines.push(`    symbols: ${repo.stats.nodes || 0}`);
@@ -638,7 +647,7 @@ async function getReposResource(backend: LocalBackend): Promise<string> {
   if (repos.length > 1) {
     lines.push('');
     lines.push('# Multiple repos indexed. Use repo parameter in tool calls:');
-    lines.push(`# ontoindex_search({query: "auth", repo: "${repos[0].name}"})`);
+    lines.push(`# ontoindex_search({query: "auth", repo: ${yamlString(repos[0].name)}})`);
   }
 
   return lines.join('\n');
@@ -658,7 +667,7 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   const context = backend.getContext(repoId) || backend.getContext();
 
   if (!context) {
-    return 'error: No codebase loaded. Run: ontoindex analyze';
+    return `error: ${yamlString('No codebase loaded. Run: ontoindex analyze')}`;
   }
 
   // Include current runtime health so callers can distinguish a clean index
@@ -672,7 +681,7 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
       }).catch(() => null)
     : null;
 
-  const lines: string[] = [`project: ${context.projectName}`];
+  const lines: string[] = [`project: ${yamlString(context.projectName)}`];
 
   const freshnessState =
     runtimeHealth?.freshnessState === 'clean' && runtimeHealth.dirtyWorktree === null
@@ -687,13 +696,13 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
       : 'repository path unavailable');
   lines.push('');
   lines.push('runtime_health:');
-  lines.push(`  freshness_state: "${freshnessState}"`);
-  lines.push(`  indexed_commit: "${runtimeHealth?.indexedCommit ?? 'unknown'}"`);
-  lines.push(`  current_commit: "${runtimeHealth?.currentCommit ?? 'unknown'}"`);
+  lines.push(`  freshness_state: ${yamlString(freshnessState)}`);
+  lines.push(`  indexed_commit: ${yamlString(runtimeHealth?.indexedCommit ?? 'unknown')}`);
+  lines.push(`  current_commit: ${yamlString(runtimeHealth?.currentCommit ?? 'unknown')}`);
   lines.push(
     `  dirty_worktree: ${runtimeHealth?.dirtyWorktree === null || !runtimeHealth ? 'unknown' : runtimeHealth.dirtyWorktree}`,
   );
-  lines.push(`  degraded_reason: ${degradedReason ? JSON.stringify(degradedReason) : 'null'}`);
+  lines.push(`  degraded_reason: ${degradedReason ? yamlString(degradedReason) : 'null'}`);
 
   lines.push('');
   lines.push('stats:');
@@ -710,7 +719,7 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push('  - rename: Preview-only multi-file rename candidates with confidence tags');
   lines.push('  - cypher: Raw graph queries');
   lines.push(
-    '  - list_repos: Discover all indexed repositories (MCP tool; CLI equivalent: `ontoindex list`)',
+    `  - list_repos: ${yamlString('Discover all indexed repositories (MCP tool; CLI equivalent: `ontoindex list`)')}`,
   );
 
   if (
@@ -737,19 +746,27 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push('');
   lines.push('resources_available:');
   lines.push('  - ontoindex://repos: All indexed repositories');
-  lines.push(`  - ontoindex://repo/${context.projectName}/clusters: All functional areas`);
-  lines.push(`  - ontoindex://repo/${context.projectName}/processes: All execution flows`);
   lines.push(
-    `  - ontoindex://repo/${context.projectName}/analysis-packs: Local analysis pack manifests`,
+    `  - ${yamlString(`ontoindex://repo/${context.projectName}/clusters`)}: All functional areas`,
   );
   lines.push(
-    `  - ontoindex://repo/${context.projectName}/analysis-suites: Local analysis suite manifests`,
+    `  - ${yamlString(`ontoindex://repo/${context.projectName}/processes`)}: All execution flows`,
   );
   lines.push(
-    `  - ontoindex://repo/${context.projectName}/analysis-plan/{id}: Execution plan for a pack or suite`,
+    `  - ${yamlString(`ontoindex://repo/${context.projectName}/analysis-packs`)}: Local analysis pack manifests`,
   );
-  lines.push(`  - ontoindex://repo/${context.projectName}/cluster/{name}: Module details`);
-  lines.push(`  - ontoindex://repo/${context.projectName}/process/{name}: Process trace`);
+  lines.push(
+    `  - ${yamlString(`ontoindex://repo/${context.projectName}/analysis-suites`)}: Local analysis suite manifests`,
+  );
+  lines.push(
+    `  - ${yamlString(`ontoindex://repo/${context.projectName}/analysis-plan/{id}`)}: Execution plan for a pack or suite`,
+  );
+  lines.push(
+    `  - ${yamlString(`ontoindex://repo/${context.projectName}/cluster/{name}`)}: Module details`,
+  );
+  lines.push(
+    `  - ${yamlString(`ontoindex://repo/${context.projectName}/process/{name}`)}: Process trace`,
+  );
   lines.push(
     '  - ontoindex://group/{name}/contracts: Group contract registry (optional ?type=&repo=&unmatchedOnly=)',
   );
@@ -775,7 +792,7 @@ async function getClustersResource(backend: LocalBackend, repoName?: string): Pr
 
     for (const cluster of toShow) {
       const label = cluster.heuristicLabel || cluster.label || cluster.id;
-      lines.push(`  - name: "${label}"`);
+      lines.push(`  - name: ${yamlString(label)}`);
       lines.push(`    symbols: ${cluster.symbolCount || 0}`);
       if (cluster.cohesion) {
         lines.push(`    cohesion: ${(cluster.cohesion * 100).toFixed(0)}%`);
@@ -790,7 +807,7 @@ async function getClustersResource(backend: LocalBackend, repoName?: string): Pr
 
     return lines.join('\n');
   } catch (err: unknown) {
-    return `error: ${errorMessage(err)}`;
+    return `error: ${yamlString(errorMessage(err))}`;
   }
 }
 
@@ -811,8 +828,8 @@ async function getProcessesResource(backend: LocalBackend, repoName?: string): P
 
     for (const proc of toShow) {
       const label = proc.heuristicLabel || proc.label || proc.id;
-      lines.push(`  - name: "${label}"`);
-      lines.push(`    type: ${proc.processType || 'unknown'}`);
+      lines.push(`  - name: ${yamlString(label)}`);
+      lines.push(`    type: ${yamlString(proc.processType || 'unknown')}`);
       lines.push(`    steps: ${proc.stepCount || 0}`);
     }
 
@@ -824,7 +841,7 @@ async function getProcessesResource(backend: LocalBackend, repoName?: string): P
 
     return lines.join('\n');
   } catch (err: unknown) {
-    return `error: ${errorMessage(err)}`;
+    return `error: ${yamlString(errorMessage(err))}`;
   }
 }
 
@@ -835,7 +852,7 @@ async function getAnalysisPacksResource(backend: LocalBackend, repoName?: string
   if (catalog.packs.length === 0) {
     return [
       'packs: []',
-      `root: "${catalog.rootPath}"`,
+      `root: ${yamlString(catalog.rootPath)}`,
       catalog.errors.length > 0
         ? `manifest_errors: ${catalog.errors.length}`
         : '# No analysis packs discovered.',
@@ -844,24 +861,24 @@ async function getAnalysisPacksResource(backend: LocalBackend, repoName?: string
 
   const lines: string[] = ['packs:'];
   for (const pack of catalog.packs) {
-    lines.push(`  - id: "${pack.id}"`);
-    lines.push(`    name: "${pack.name}"`);
-    lines.push(`    kind: "${pack.kind}"`);
-    lines.push(`    tier: "${pack.tier}"`);
-    lines.push(`    version: "${pack.version}"`);
-    lines.push(`    summary: "${pack.summary}"`);
-    lines.push(`    manifest: "${pack.manifestPath}"`);
+    lines.push(`  - id: ${yamlString(pack.id)}`);
+    lines.push(`    name: ${yamlString(pack.name)}`);
+    lines.push(`    kind: ${yamlString(pack.kind)}`);
+    lines.push(`    tier: ${yamlString(pack.tier)}`);
+    lines.push(`    version: ${yamlString(pack.version)}`);
+    lines.push(`    summary: ${yamlString(pack.summary)}`);
+    lines.push(`    manifest: ${yamlString(pack.manifestPath)}`);
     if (pack.provides.length > 0) {
-      lines.push(`    provides: [${pack.provides.map((item) => `"${item}"`).join(', ')}]`);
+      lines.push(`    provides: [${pack.provides.map((item) => yamlString(item)).join(', ')}]`);
     }
     if (pack.runs.length > 0) {
-      lines.push(`    runs: [${pack.runs.map((run) => `"${run.tool}"`).join(', ')}]`);
+      lines.push(`    runs: [${pack.runs.map((run) => yamlString(run.tool)).join(', ')}]`);
     }
     if (pack.tags.length > 0) {
-      lines.push(`    tags: [${pack.tags.map((item) => `"${item}"`).join(', ')}]`);
+      lines.push(`    tags: [${pack.tags.map((item) => yamlString(item)).join(', ')}]`);
     }
   }
-  lines.push(`root: "${catalog.rootPath}"`);
+  lines.push(`root: ${yamlString(catalog.rootPath)}`);
   if (catalog.errors.length > 0) {
     lines.push(`manifest_errors: ${catalog.errors.length}`);
   }
@@ -878,7 +895,7 @@ async function getAnalysisSuitesResource(
   if (catalog.suites.length === 0) {
     return [
       'suites: []',
-      `root: "${catalog.rootPath}"`,
+      `root: ${yamlString(catalog.rootPath)}`,
       catalog.errors.length > 0
         ? `manifest_errors: ${catalog.errors.length}`
         : '# No analysis suites discovered.',
@@ -887,17 +904,17 @@ async function getAnalysisSuitesResource(
 
   const lines: string[] = ['suites:'];
   for (const suite of catalog.suites) {
-    lines.push(`  - id: "${suite.id}"`);
-    lines.push(`    name: "${suite.name}"`);
-    lines.push(`    tier: "${suite.tier}"`);
-    lines.push(`    summary: "${suite.summary}"`);
-    lines.push(`    manifest: "${suite.manifestPath}"`);
-    lines.push(`    packs: [${suite.packs.map((item) => `"${item}"`).join(', ')}]`);
+    lines.push(`  - id: ${yamlString(suite.id)}`);
+    lines.push(`    name: ${yamlString(suite.name)}`);
+    lines.push(`    tier: ${yamlString(suite.tier)}`);
+    lines.push(`    summary: ${yamlString(suite.summary)}`);
+    lines.push(`    manifest: ${yamlString(suite.manifestPath)}`);
+    lines.push(`    packs: [${suite.packs.map((item) => yamlString(item)).join(', ')}]`);
     if (suite.tags.length > 0) {
-      lines.push(`    tags: [${suite.tags.map((item) => `"${item}"`).join(', ')}]`);
+      lines.push(`    tags: [${suite.tags.map((item) => yamlString(item)).join(', ')}]`);
     }
   }
-  lines.push(`root: "${catalog.rootPath}"`);
+  lines.push(`root: ${yamlString(catalog.rootPath)}`);
   if (catalog.errors.length > 0) {
     lines.push(`manifest_errors: ${catalog.errors.length}`);
   }
@@ -913,30 +930,32 @@ async function getAnalysisPlanResource(
     const repo = await backend.resolveRepo(repoName);
     const plan = await buildAnalysisExecutionPlan(repo.repoPath, targetId);
     const lines: string[] = [
-      `target_id: "${plan.target.id}"`,
-      `target_type: "${plan.target.type}"`,
-      `target_name: "${plan.target.name}"`,
-      `root: "${plan.rootPath}"`,
+      `target_id: ${yamlString(plan.target.id)}`,
+      `target_type: ${yamlString(plan.target.type)}`,
+      `target_name: ${yamlString(plan.target.name)}`,
+      `root: ${yamlString(plan.rootPath)}`,
       'packs:',
     ];
 
     for (const pack of plan.packs) {
-      lines.push(`  - id: "${pack.id}"`);
-      lines.push(`    kind: "${pack.kind}"`);
-      lines.push(`    tier: "${pack.tier}"`);
+      lines.push(`  - id: ${yamlString(pack.id)}`);
+      lines.push(`    kind: ${yamlString(pack.kind)}`);
+      lines.push(`    tier: ${yamlString(pack.tier)}`);
     }
 
     lines.push('steps:');
     for (const step of plan.steps) {
-      lines.push(`  - pack: "${step.packId}"`);
-      lines.push(`    tool: "${step.tool}"`);
-      lines.push(`    params: ${JSON.stringify(step.params)}`);
+      lines.push(`  - pack: ${yamlString(step.packId)}`);
+      lines.push(`    tool: ${yamlString(step.tool)}`);
+      lines.push(
+        `    params: ${yaml.dump(step.params, { flowLevel: 0, forceQuotes: true, quotingType: '"', lineWidth: -1 }).trimEnd()}`,
+      );
     }
 
     lines.push('model_packs:');
     for (const pack of plan.modelPacks) {
-      lines.push(`  - id: "${pack.id}"`);
-      lines.push(`    provides: [${pack.provides.map((item) => `"${item}"`).join(', ')}]`);
+      lines.push(`  - id: ${yamlString(pack.id)}`);
+      lines.push(`    provides: [${pack.provides.map((item) => yamlString(item)).join(', ')}]`);
     }
 
     if (plan.errors.length > 0) {
@@ -945,7 +964,7 @@ async function getAnalysisPlanResource(
 
     return lines.join('\n');
   } catch (err: unknown) {
-    return `error: ${errorMessage(err)}`;
+    return `error: ${yamlString(errorMessage(err))}`;
   }
 }
 
@@ -1024,14 +1043,14 @@ async function getClusterDetailResource(
     const result = await backend.queryClusterDetail(name, repoName);
 
     if (result.error) {
-      return `error: ${result.error}`;
+      return `error: ${yamlString(errorMessage(result.error))}`;
     }
 
     const cluster = result.cluster;
     const members = result.members || [];
 
     const lines: string[] = [
-      `module: "${cluster.heuristicLabel || cluster.label || cluster.id}"`,
+      `module: ${yamlString(cluster.heuristicLabel || cluster.label || cluster.id)}`,
       `symbols: ${cluster.symbolCount || members.length}`,
     ];
 
@@ -1043,9 +1062,9 @@ async function getClusterDetailResource(
       lines.push('');
       lines.push('members:');
       for (const member of members.slice(0, 20)) {
-        lines.push(`  - name: ${member.name}`);
-        lines.push(`    type: ${member.type}`);
-        lines.push(`    file: ${member.filePath}`);
+        lines.push(`  - name: ${yamlString(member.name)}`);
+        lines.push(`    type: ${yamlString(member.type)}`);
+        lines.push(`    file: ${yamlString(member.filePath)}`);
       }
       if (members.length > 20) {
         lines.push(`  # ... and ${members.length - 20} more`);
@@ -1054,7 +1073,7 @@ async function getClusterDetailResource(
 
     return lines.join('\n');
   } catch (err: unknown) {
-    return `error: ${errorMessage(err)}`;
+    return `error: ${yamlString(errorMessage(err))}`;
   }
 }
 
@@ -1070,15 +1089,15 @@ async function getProcessDetailResource(
     const result = await backend.queryProcessDetail(name, repoName);
 
     if (result.error) {
-      return `error: ${result.error}`;
+      return `error: ${yamlString(errorMessage(result.error))}`;
     }
 
     const proc = result.process;
     const steps = result.steps || [];
 
     const lines: string[] = [
-      `name: "${proc.heuristicLabel || proc.label || proc.id}"`,
-      `type: ${proc.processType || 'unknown'}`,
+      `name: ${yamlString(proc.heuristicLabel || proc.label || proc.id)}`,
+      `type: ${yamlString(proc.processType || 'unknown')}`,
       `step_count: ${proc.stepCount || steps.length}`,
     ];
 
@@ -1086,7 +1105,7 @@ async function getProcessDetailResource(
       lines.push('');
       lines.push('trace:');
       for (const step of steps) {
-        lines.push(`  ${step.step}: ${step.name} (${step.filePath})`);
+        lines.push(`  ${step.step}: ${yamlString(`${step.name} (${step.filePath})`)}`);
       }
       if (result.truncated) {
         lines.push(`  # truncated at ${result.stepLimit ?? steps.length} steps`);
@@ -1095,7 +1114,7 @@ async function getProcessDetailResource(
 
     return lines.join('\n');
   } catch (err: unknown) {
-    return `error: ${errorMessage(err)}`;
+    return `error: ${yamlString(errorMessage(err))}`;
   }
 }
 
@@ -1150,17 +1169,17 @@ const ADVISORY_BOUNDARY =
 
 function appendValidMemoryMetadata(lines: string[], indent: string, mem: ParsedMemory): void {
   lines.push(`${indent}source: memory`);
-  lines.push(`${indent}file: "${mem.fileName}"`);
-  lines.push(`${indent}freshness: "${mem.frontMatter.freshness}"`);
-  lines.push(`${indent}source_commit: "${mem.frontMatter.source_commit}"`);
-  lines.push(`${indent}indexed_commit: "${mem.frontMatter.indexed_commit}"`);
+  lines.push(`${indent}file: ${yamlString(mem.fileName)}`);
+  lines.push(`${indent}freshness: ${yamlString(mem.frontMatter.freshness)}`);
+  lines.push(`${indent}source_commit: ${yamlString(mem.frontMatter.source_commit)}`);
+  lines.push(`${indent}indexed_commit: ${yamlString(mem.frontMatter.indexed_commit)}`);
   lines.push(`${indent}not_audit_evidence: ${mem.frontMatter.not_audit_evidence}`);
   lines.push(`${indent}valid: true`);
 }
 
 function appendInvalidMemoryMetadata(lines: string[], indent: string, mem: ParsedMemory): void {
   lines.push(`${indent}source: memory`);
-  lines.push(`${indent}file: "${mem.fileName}"`);
+  lines.push(`${indent}file: ${yamlString(mem.fileName)}`);
   lines.push(`${indent}valid: false`);
   appendMemoryValidation(lines, indent, mem);
 }
@@ -1181,17 +1200,17 @@ function getMemoryValidationReason(mem: ParsedMemory): string | undefined {
 function appendMemoryValidation(lines: string[], indent: string, mem: ParsedMemory): void {
   if (mem.missingFields.length > 0) {
     lines.push(
-      `${indent}missing_fields: [${mem.missingFields.map((field) => `"${field}"`).join(', ')}]`,
+      `${indent}missing_fields: [${mem.missingFields.map((field) => yamlString(field)).join(', ')}]`,
     );
   }
   if (mem.invalidFields.length > 0) {
     lines.push(
-      `${indent}invalid_fields: [${mem.invalidFields.map((field) => `"${field}"`).join(', ')}]`,
+      `${indent}invalid_fields: [${mem.invalidFields.map((field) => yamlString(field)).join(', ')}]`,
     );
   }
   const reason = getMemoryValidationReason(mem);
   if (reason) {
-    lines.push(`${indent}reason: "${reason.replaceAll('"', '\\"')}"`);
+    lines.push(`${indent}reason: ${yamlString(reason)}`);
   }
   if (mem.sizeBytes !== undefined) {
     lines.push(`${indent}size_bytes: ${mem.sizeBytes}`);
@@ -1226,16 +1245,16 @@ async function getMemoriesResource(backend: LocalBackend, repoName?: string): Pr
   for (const mem of memories) {
     if (mem.valid) {
       lines.push(`  - source: memory`);
-      lines.push(`    file: "${mem.fileName}"`);
-      lines.push(`    kind: "${mem.frontMatter.kind}"`);
-      lines.push(`    freshness: "${mem.frontMatter.freshness}"`);
-      lines.push(`    source_commit: "${mem.frontMatter.source_commit}"`);
-      lines.push(`    indexed_commit: "${mem.frontMatter.indexed_commit}"`);
+      lines.push(`    file: ${yamlString(mem.fileName)}`);
+      lines.push(`    kind: ${yamlString(mem.frontMatter.kind)}`);
+      lines.push(`    freshness: ${yamlString(mem.frontMatter.freshness)}`);
+      lines.push(`    source_commit: ${yamlString(mem.frontMatter.source_commit)}`);
+      lines.push(`    indexed_commit: ${yamlString(mem.frontMatter.indexed_commit)}`);
       lines.push(`    not_audit_evidence: ${mem.frontMatter.not_audit_evidence}`);
       lines.push(`    valid: true`);
     } else {
       lines.push(`  - source: memory`);
-      lines.push(`    file: "${mem.fileName}"`);
+      lines.push(`    file: ${yamlString(mem.fileName)}`);
       lines.push(`    valid: false`);
       appendMemoryValidation(lines, '    ', mem);
       lines.push(`    # Invalid advisory memory`);
@@ -1262,7 +1281,7 @@ async function getMemoryResource(
       ``,
       ADVISORY_BOUNDARY,
       ``,
-      `error: Memory file not found: ${fileName}`,
+      `error: ${yamlString(`Memory file not found: ${fileName}`)}`,
     ].join('\n');
   }
 
@@ -1306,7 +1325,7 @@ async function getOnboardingResource(backend: LocalBackend, repoName?: string): 
       ``,
       ADVISORY_BOUNDARY,
       ``,
-      `error: Could not read onboarding memory: ${target.fileName}`,
+      `error: ${yamlString(`Could not read onboarding memory: ${target.fileName}`)}`,
     ].join('\n');
   }
 

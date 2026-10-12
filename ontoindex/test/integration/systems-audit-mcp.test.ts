@@ -161,7 +161,9 @@ describe('systems audit MCP MVP modules', () => {
       },
       'fixture',
     )) as Record<string, any>;
-    expect(pathVerify.status).toBe('PASS');
+    expect(pathVerify.status).toBe('NEEDS-VERIFY');
+    expect(pathVerify.missing).toEqual([]);
+    expect(pathVerify.violations).toEqual([]);
 
     const testSuggestion = (await dispatchSuper(
       'gn_test_suggestions',

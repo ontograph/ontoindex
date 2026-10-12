@@ -2461,7 +2461,7 @@
     {
       "name": "gn_path_verify",
       "kind": "super",
-      "description": "Systems-audit shallow path verifier: for a trigger branch, verify required calls/patterns appear and forbidden calls/patterns do not appear in the bounded intra-procedural window.",
+      "description": "Systems-audit advisory C/C++ branch observations: inspect patterns within a selected procedure and trigger consequence. Returns NEEDS-VERIFY because syntax presence does not prove path execution; unsupported or ambiguous scope yields warnings.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2483,25 +2483,25 @@
           },
           "symbol": {
             "type": "string",
-            "description": "Optional symbol under verification."
+            "description": "Optional exact qualified procedure name; ambiguous or missing procedures yield NEEDS-VERIFY."
           },
           "when": {
             "type": "string",
-            "description": "Trigger condition or branch pattern, e.g. fork() < 0."
+            "description": "Exact trigger condition expression, e.g. fork() < 0."
           },
           "must": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Patterns that must appear after the trigger."
+            "description": "Patterns to observe in the selected trigger consequence; presence does not prove execution."
           },
           "mustNot": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Patterns that must not appear after the trigger."
+            "description": "Patterns to flag within the selected trigger consequence; observations remain advisory."
           },
           "maxEvidence": {
             "type": "number",
@@ -2522,13 +2522,13 @@
       "structuredOutput": true,
       "modes": ["general", "audit", "refactor", "query-projects"],
       "category": "systems-audit",
-      "intent": "Verify shallow branch/path invariants",
-      "whenToUse": "When a finding depends on a specific branch such as fork failure or MSG_CTRUNC handling",
+      "intent": "Observe scoped C/C++ branch patterns for review",
+      "whenToUse": "When reviewing a specific branch; observations require further execution evidence",
       "workflowIntents": ["audit", "diagnose"],
       "producesEvidenceClasses": ["audit_evidence", "graph_evidence"],
       "permissionProfile": "read_only",
-      "auditAuthority": true,
-      "advisoryOnly": false
+      "auditAuthority": false,
+      "advisoryOnly": true
     },
     {
       "name": "gn_test_suggestions",
@@ -2924,8 +2924,26 @@
         },
         "required": [],
         "allOf": [
-          { "anyOf": [{ "required": ["source"] }, { "required": ["sourceName"] }] },
-          { "anyOf": [{ "required": ["sink"] }, { "required": ["sinkName"] }] }
+          {
+            "anyOf": [
+              {
+                "required": ["source"]
+              },
+              {
+                "required": ["sourceName"]
+              }
+            ]
+          },
+          {
+            "anyOf": [
+              {
+                "required": ["sink"]
+              },
+              {
+                "required": ["sinkName"]
+              }
+            ]
+          }
         ]
       },
       "contractStatus": "stable",
@@ -3074,7 +3092,14 @@
           }
         },
         "required": [],
-        "anyOf": [{ "required": ["target"] }, { "required": ["targetCall"] }]
+        "anyOf": [
+          {
+            "required": ["target"]
+          },
+          {
+            "required": ["targetCall"]
+          }
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,

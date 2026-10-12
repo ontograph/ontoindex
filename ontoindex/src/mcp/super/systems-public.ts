@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import type Parser from 'tree-sitter';
+import { getLanguageFromFilename, SupportedLanguages } from 'ontoindex-shared';
 import { resolveContainedRealPath } from '../local/path-util.js';
 
 import { extractCppPosixResourceFacts } from '../../core/systems-audit/resource-extractor-cpp.js';
@@ -80,47 +82,23 @@ export async function gnPathVerify(
   params: PathVerifyParams,
 ): Promise<Record<string, unknown>> {
   const input = await loadSource(repoId, params);
-  const lines = input.source.split('\n');
-  const triggerIndex = lines.findIndex((line) => lineMatches(line, params.when));
+  const scope = await selectPathConsequence(input, params);
   const maxEvidence = clamp(params.maxEvidence, 25);
-  if (triggerIndex < 0) {
-    const report = {
-      version: 1,
-      action: 'path-verify',
-      status: 'NEEDS-VERIFY',
-      symbol: params.symbol,
-      path: input.filePath,
-      when: params.when,
-      missing: [params.when],
-      violations: [],
-      evidence: [],
-      warnings: ['trigger condition not found in bounded source text'],
-      skipReasons: [],
-    };
-    if (params.legacyResponse !== false) {
-      return report;
-    }
-    return wrapSystemsEnvelope(repoId, 'gn_path_verify', params, report, {
-      capabilitiesUsed: ['filesystem-source', 'path-verifier'],
-      nextTools: ['gn_resource_trace', 'gn_trace_boundary'],
-      evidence: [],
-    });
-  }
-
-  const window = lines.slice(triggerIndex, Math.min(lines.length, triggerIndex + 80));
   const must = params.must ?? [];
   const mustNot = params.mustNot ?? [];
-  const missing = must.filter((pattern) => !window.some((line) => lineMatches(line, pattern)));
-  const violations = mustNot.filter((pattern) => window.some((line) => lineMatches(line, pattern)));
-  const evidence = window
-    .map((line, offset) => ({ line: triggerIndex + offset + 1, text: line.trim() }))
-    .filter((item) => item.text.length > 0)
-    .slice(0, maxEvidence);
+  const missing = must.filter(
+    (pattern) => !scope.evidence.some((item) => lineMatches(item.text, pattern)),
+  );
+  if (!scope.selected) missing.unshift(params.when);
+  const violations = mustNot.filter((pattern) =>
+    scope.evidence.some((item) => lineMatches(item.text, pattern)),
+  );
+  const evidence = scope.evidence.slice(0, maxEvidence);
 
   const report = {
     version: 1,
     action: 'path-verify',
-    status: missing.length === 0 && violations.length === 0 ? 'PASS' : 'FAIL',
+    status: 'NEEDS-VERIFY',
     symbol: params.symbol,
     path: input.filePath,
     when: params.when,
@@ -129,8 +107,11 @@ export async function gnPathVerify(
     missing,
     violations,
     evidence,
-    warnings: [],
-    skipReasons: [],
+    warnings: [
+      'Static branch observations are advisory; no execution proof is available.',
+      ...scope.warnings,
+    ],
+    skipReasons: scope.selected ? [] : scope.warnings,
   };
   if (params.legacyResponse !== false) {
     return report;
@@ -140,6 +121,178 @@ export async function gnPathVerify(
     nextTools: ['gn_resource_trace', 'gn_trace_boundary'],
     evidence,
   });
+}
+
+async function selectPathConsequence(
+  input: { source: string; filePath: string },
+  params: PathVerifyParams,
+): Promise<{ selected: boolean; evidence: { line: number; text: string }[]; warnings: string[] }> {
+  const unavailable = (reason: string) => ({ selected: false, evidence: [], warnings: [reason] });
+  if (params.when.includes('\uFFFC'))
+    return unavailable('trigger contains a reserved literal marker');
+  const language =
+    input.filePath === '<source>'
+      ? SupportedLanguages.CPlusPlus
+      : getLanguageFromFilename(input.filePath);
+  if (language !== SupportedLanguages.C && language !== SupportedLanguages.CPlusPlus)
+    return unavailable('unsupported source language: only C/C++ syntax is scoped');
+  if (Buffer.byteLength(input.source, 'utf8') > 256 * 1024)
+    return unavailable('source byte limit exceeded (256 KiB)');
+  try {
+    const { createParserForLanguage } = await import('../../core/tree-sitter/parser-loader.js');
+    const parser = await createParserForLanguage(language, input.filePath);
+    parser.setTimeoutMicros(100_000);
+    const walk = (root: Parser.SyntaxNode, prune = false): Parser.SyntaxNode[] => {
+      const nodes: Parser.SyntaxNode[] = [];
+      const pending = [root];
+      while (pending.length) {
+        const node = pending.pop()!;
+        if (nodes.length >= 5000) throw new Error('AST node limit exceeded (5000)');
+        nodes.push(node);
+        if (
+          !prune ||
+          node === root ||
+          !['lambda_expression', 'function_definition'].includes(node.type)
+        )
+          pending.push(...node.children.slice().reverse());
+      }
+      return nodes;
+    };
+    let tree = parser.parse(input.source);
+    if (!tree) return unavailable('source parsing timed out');
+    let nodes = walk(tree.rootNode);
+    let offset = 0;
+    // slim: preserve the legacy inline if fragment only; general fragments require a procedure.
+    if (
+      !nodes.some((node) => node.type === 'function_definition') &&
+      !params.symbol &&
+      input.filePath === '<source>' &&
+      /^\s*if\s*\(/u.test(input.source)
+    ) {
+      tree = parser.parse(`void __ontoindex_path_verify_fragment() {\n${input.source}\n}`);
+      if (!tree) return unavailable('source parsing timed out');
+      nodes = walk(tree.rootNode);
+      offset = 1;
+    }
+    if (tree.rootNode.hasError) return unavailable('malformed source: AST contains parse errors');
+    const procedureName = (node: Parser.SyntaxNode): string | undefined => {
+      let declarator = node.childForFieldName('declarator');
+      while (
+        declarator &&
+        ![
+          'identifier',
+          'field_identifier',
+          'qualified_identifier',
+          'destructor_name',
+          'operator_name',
+        ].includes(declarator.type)
+      )
+        declarator = declarator.childForFieldName('declarator');
+      if (!declarator) return undefined;
+      const names = [normalizeExpr(declarator.text)];
+      for (let parent = node.parent; parent; parent = parent.parent) {
+        if (parent.type === 'function_definition' || parent.type === 'lambda_expression')
+          return undefined;
+        if (['namespace_definition', 'class_specifier', 'struct_specifier'].includes(parent.type)) {
+          const name = parent.childForFieldName('name');
+          if (!name) return undefined;
+          names.unshift(normalizeExpr(name.text));
+        }
+      }
+      return names.join('::');
+    };
+    const procedures = nodes.filter(
+      (node) =>
+        node.type === 'function_definition' &&
+        procedureName(node) !== undefined &&
+        (!params.symbol || procedureName(node) === normalizeExpr(params.symbol)),
+    );
+    if (procedures.length !== 1)
+      return unavailable(
+        'procedure selection is missing or ambiguous; supply an exact unique symbol',
+      );
+    const body = procedures[0].childForFieldName('body');
+    if (!body) return unavailable('procedure body is unavailable');
+    const executableText = (node: Parser.SyntaxNode): string => {
+      if (/(?:string|char)_literal/u.test(node.type)) return '\uFFFC';
+      if (
+        node.type === 'comment' ||
+        ['lambda_expression', 'function_definition'].includes(node.type)
+      )
+        return '';
+      if (!node.childCount) return node.text;
+      return node.children.map(executableText).filter(Boolean).join(' ');
+    };
+    const conditionText = (value: string): string => {
+      let text = normalizeExpr(value);
+      if (text.startsWith('if(') && text.endsWith(')')) text = text.slice(2);
+      while (text.startsWith('(') && text.endsWith(')')) {
+        let depth = 0;
+        const enclosing = [...text].every((char, index) => {
+          if (char === '(') depth++;
+          if (char === ')') depth--;
+          return depth !== 0 || index === text.length - 1;
+        });
+        if (!enclosing) break;
+        text = text.slice(1, -1);
+      }
+      return text;
+    };
+    const triggers = walk(body, true).filter((node) => {
+      if (node.type !== 'if_statement') return false;
+      const condition = node.childForFieldName('condition');
+      const value = condition?.childForFieldName('value') ?? condition;
+      return value && conditionText(executableText(value)) === conditionText(params.when);
+    });
+    if (triggers.length !== 1)
+      return unavailable('trigger condition not found uniquely in selected procedure');
+    const consequence = triggers[0].childForFieldName('consequence');
+    if (!consequence) return unavailable('trigger consequence is unavailable');
+    const evidence: { line: number; text: string }[] = [];
+    const warnings: string[] = [];
+    const observe = (node: Parser.SyntaxNode): boolean => {
+      if (node.type === 'comment') return true;
+      if (node.type === 'compound_statement') {
+        for (const child of node.namedChildren) if (!observe(child)) return false;
+        return true;
+      }
+      if (
+        ![
+          'expression_statement',
+          'declaration',
+          'return_statement',
+          'throw_statement',
+          'goto_statement',
+          'break_statement',
+          'continue_statement',
+        ].includes(node.type) ||
+        walk(node).some(
+          (child) =>
+            ['lambda_expression', 'conditional_expression', 'function_definition'].includes(
+              child.type,
+            ) || ['&&', '||'].includes(child.type),
+        )
+      ) {
+        warnings.push('unsupported control flow ends straight-line observations');
+        return false;
+      }
+      const text = executableText(node).trim();
+      if (text) evidence.push({ line: node.startPosition.row + 1 - offset, text });
+      return ![
+        'return_statement',
+        'throw_statement',
+        'goto_statement',
+        'break_statement',
+        'continue_statement',
+      ].includes(node.type);
+    };
+    observe(consequence);
+    return { selected: true, evidence, warnings };
+  } catch (error) {
+    return unavailable(
+      `source scope unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 export async function gnTestSuggestions(
@@ -287,6 +440,7 @@ function assertInsideRepo(repoRoot: string, candidate: string, inputPath: string
 }
 
 function lineMatches(line: string, pattern: string): boolean {
+  if (pattern.includes('\uFFFC')) return false;
   const normalizedLine = normalizeExpr(line);
   const normalizedPattern = normalizeExpr(pattern);
   return normalizedLine.includes(normalizedPattern);

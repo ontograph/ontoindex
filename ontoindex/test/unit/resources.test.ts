@@ -16,6 +16,7 @@ vi.mock('../../src/core/runtime/runtime-health.js', () => ({
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import { createRequire } from 'node:module';
 import {
   getResourceDefinitions,
   getResourceTemplates,
@@ -34,6 +35,8 @@ import {
 } from '../../src/mcp/memory-parser.js';
 
 // ─── Minimal mock backend ──────────────────────────────────────────
+
+const yaml = createRequire(import.meta.url)('js-yaml') as typeof import('js-yaml');
 
 function createMockBackend(overrides: Partial<Record<string, any>> = {}): any {
   return {
@@ -1082,6 +1085,305 @@ describe('readResource', () => {
     expect(result).toContain('missing_fields');
 
     await fs.rm(repoDir, { recursive: true, force: true });
+  });
+});
+
+describe('resource YAML string roundtrips', () => {
+  const values = [
+    'ordinary',
+    'true',
+    'null',
+    '2026-01-01',
+    'quotes " and backslash \\',
+    'line one\nforged: true',
+    'label: value # comment',
+    'line\u0085next\u2028next\u2029last',
+  ];
+
+  it.each(values)('preserves repository, graph, and trace strings: %j', async (value) => {
+    const backend = createMockBackend({
+      repos: [{ name: value, path: value, indexedAt: value, lastCommit: 'abcdefghi' }],
+      resolvedRepo: { id: 'r', name: 'r' },
+      context: {
+        projectName: value,
+        stats: { fileCount: 1, functionCount: 2, processCount: 3 },
+      },
+      clusters: { clusters: [{ heuristicLabel: value, symbolCount: 1 }] },
+      processes: { processes: [{ heuristicLabel: value, processType: value, stepCount: 1 }] },
+      clusterDetail: {
+        cluster: { heuristicLabel: value, symbolCount: 1 },
+        members: [{ name: value, type: value, filePath: value }],
+      },
+      processDetail: {
+        process: { heuristicLabel: value, processType: value, stepCount: 1 },
+        steps: [{ step: 1, name: value, filePath: value }],
+      },
+    });
+    const read = async (resource: string) =>
+      yaml.load(
+        await readResource(
+          resource === 'repos' ? 'ontoindex://repos' : `ontoindex://repo/r/${resource}`,
+          backend,
+        ),
+      ) as any;
+
+    expect(await read('repos')).toEqual({
+      repos: [{ name: value, path: value, indexed: value, commit: 'abcdefg' }],
+    });
+    const context = await read('context');
+    expect(context.project).toBe(value);
+    expect(
+      context.resources_available.slice(1, 8).map((entry: object) => Object.keys(entry)),
+    ).toEqual(
+      [
+        'clusters',
+        'processes',
+        'analysis-packs',
+        'analysis-suites',
+        'analysis-plan/{id}',
+        'cluster/{name}',
+        'process/{name}',
+      ].map((suffix) => [`ontoindex://repo/${value}/${suffix}`]),
+    );
+    expect(Object.keys(context)).toEqual([
+      'project',
+      'runtime_health',
+      'stats',
+      'tools_available',
+      're_index',
+      'resources_available',
+    ]);
+    expect(await read('clusters')).toEqual({ modules: [{ name: value, symbols: 1 }] });
+    expect(await read('processes')).toEqual({
+      processes: [{ name: value, type: value, steps: 1 }],
+    });
+    expect(await read('cluster/any')).toEqual({
+      module: value,
+      symbols: 1,
+      members: [{ name: value, type: value, file: value }],
+    });
+    expect(await read('process/any')).toEqual({
+      name: value,
+      type: value,
+      step_count: 1,
+      trace: { 1: `${value} (${value})` },
+    });
+  });
+
+  it.each(values)('preserves errors without creating YAML keys: %j', async (value) => {
+    const backend = createMockBackend({
+      clusterDetail: { error: value },
+      processDetail: { error: value },
+    });
+    for (const [resource, method] of [
+      ['clusters', 'queryClusters'],
+      ['processes', 'queryProcesses'],
+      ['cluster/any', 'queryClusterDetail'],
+      ['process/any', 'queryProcessDetail'],
+    ]) {
+      backend[method] = vi.fn().mockRejectedValue(new Error(value));
+      expect(yaml.load(await readResource(`ontoindex://repo/r/${resource}`, backend))).toEqual({
+        error: value,
+      });
+    }
+    for (const resource of ['cluster/any', 'process/any']) {
+      const detailBackend = createMockBackend({
+        clusterDetail: { error: value },
+        processDetail: { error: value },
+      });
+      expect(
+        yaml.load(await readResource(`ontoindex://repo/r/${resource}`, detailBackend)),
+      ).toEqual({ error: value });
+    }
+  });
+
+  it.each([
+    ['primitive failure', 'primitive failure'],
+    [null, 'null'],
+    [undefined, 'undefined'],
+    [42, '42'],
+    [false, 'false'],
+    [{ stack: 'private stack' }, 'Unknown error'],
+  ])('normalizes thrown errors %j', async (error, expected) => {
+    const backend = createMockBackend();
+    backend.queryClusters.mockRejectedValue(error);
+    expect(yaml.load(await readResource('ontoindex://repo/r/clusters', backend))).toEqual({
+      error: expected,
+    });
+  });
+
+  it('serializes the context setup error as one string', async () => {
+    expect(
+      yaml.load(await readResource('ontoindex://repo/r/context', createMockBackend())),
+    ).toEqual({
+      error: 'No codebase loaded. Run: ontoindex analyze',
+    });
+  });
+
+  it('preserves pack, suite, and plan fields and structured params', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-yaml-catalog-" '));
+    const value = 'quoted " \\ path\nforged: true\u0085line\u2028line\u2029end # comment';
+    const packId = 'pack: quoted " \\ value';
+    const suiteId = 'suite: quoted " \\ value';
+    const params = {
+      query: 'name: value # comment',
+      enabled: true,
+      count: 2,
+      nested: { list: ['null', value] },
+    };
+    try {
+      for (const folder of ['model', 'suite']) {
+        await fs.mkdir(path.join(repoDir, 'ontoindex-packs', folder), { recursive: true });
+      }
+      await fs.writeFile(
+        path.join(repoDir, 'ontoindex-packs/model/pack.yml'),
+        yaml.dump({
+          schema: 1,
+          id: packId,
+          name: value,
+          version: '0.1.0',
+          kind: 'model',
+          tier: 'stable',
+          summary: value,
+          provides: [value, 'null'],
+          tags: [value],
+          runs: [{ tool: value, params }],
+        }),
+      );
+      await fs.writeFile(
+        path.join(repoDir, 'ontoindex-packs/suite/suite.yml'),
+        yaml.dump({
+          schema: 1,
+          id: suiteId,
+          name: value,
+          tier: 'stable',
+          summary: value,
+          packs: [packId],
+          tags: [value],
+        }),
+      );
+      const backend = createMockBackend({
+        resolvedRepo: { id: 'r', name: 'r', repoPath: repoDir },
+      });
+      const read = async (resource: string) =>
+        yaml.load(await readResource(`ontoindex://repo/r/${resource}`, backend));
+      const root = path.join(repoDir, 'ontoindex-packs');
+      expect(await read('analysis-packs')).toEqual({
+        packs: [
+          {
+            id: packId,
+            name: value,
+            kind: 'model',
+            tier: 'stable',
+            version: '0.1.0',
+            summary: value,
+            manifest: 'ontoindex-packs/model/pack.yml',
+            provides: [value, 'null'],
+            runs: [value],
+            tags: [value],
+          },
+        ],
+        root,
+      });
+      expect(await read('analysis-suites')).toEqual({
+        suites: [
+          {
+            id: suiteId,
+            name: value,
+            tier: 'stable',
+            summary: value,
+            manifest: 'ontoindex-packs/suite/suite.yml',
+            packs: [packId],
+            tags: [value],
+          },
+        ],
+        root,
+      });
+      expect(await read(`analysis-plan/${encodeURIComponent(suiteId)}`)).toEqual({
+        target_id: suiteId,
+        target_type: 'suite',
+        target_name: value,
+        root,
+        packs: [{ id: packId, kind: 'model', tier: 'stable' }],
+        steps: [{ pack: packId, tool: value, params }],
+        model_packs: [{ id: packId, provides: [value, 'null'] }],
+      });
+      expect(await read(`analysis-plan/${encodeURIComponent(value)}`)).toEqual({
+        error: `No analysis pack or suite with id "${value}" found.`,
+      });
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves memory metadata and the original Markdown body', async () => {
+    const repoDir = await createMemoryRepo('gn-yaml-memory-');
+    const fileName = 'quoted " memory.md';
+    const body = '# Body\noriginal: "Markdown"\nsecond line\u2028third line';
+    try {
+      await fs.writeFile(
+        path.join(repoDir, '.ontoindex/memories', fileName),
+        makeMemoryContent([], [body]),
+      );
+      const backend = createMockBackend({
+        resolvedRepo: { id: 'r', name: 'r', repoPath: repoDir },
+      });
+      expect(yaml.load(await readResource('ontoindex://repo/r/memories', backend))).toEqual({
+        advisory_boundary:
+          'Memories are advisory only. NOT audit evidence. Must not drive audit status decisions.',
+        memories: [
+          {
+            source: 'memory',
+            file: fileName,
+            kind: 'advisory',
+            freshness: 'fresh',
+            source_commit: 'abc1234',
+            indexed_commit: 'def5678',
+            not_audit_evidence: true,
+            valid: true,
+          },
+        ],
+      });
+      const content = (await loadMemory(repoDir, fileName))!.content!;
+      const resource = await readResource(
+        `ontoindex://repo/r/memory/${encodeURIComponent(fileName)}`,
+        backend,
+      );
+      expect(resource.endsWith(content)).toBe(true);
+      expect((yaml.load(resource.slice(0, -content.length)) as any).memory).toEqual({
+        source: 'memory',
+        file: fileName,
+        freshness: 'fresh',
+        source_commit: 'abc1234',
+        indexed_commit: 'def5678',
+        not_audit_evidence: true,
+        valid: true,
+      });
+      const invalidName = 'invalid\nforged: true " \\ name';
+      const invalidResource = await readResource(
+        `ontoindex://repo/r/memory/${encodeURIComponent(invalidName)}`,
+        backend,
+      );
+      expect(
+        invalidResource.startsWith(
+          '<!-- ADVISORY MEMORY: Not audit evidence. Do not use to drive audit status decisions. -->\n\n',
+        ),
+      ).toBe(true);
+      const invalid = yaml.load(invalidResource.slice(invalidResource.indexOf('-->') + 3)) as any;
+      expect(invalid.file).toBe(invalidName);
+      expect(invalid.reason).toContain('control characters');
+      expect(Object.keys(invalid)).toEqual([
+        'advisory_boundary',
+        'invalid_memory',
+        'source',
+        'file',
+        'valid',
+        'invalid_fields',
+        'reason',
+      ]);
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
   });
 });
 
