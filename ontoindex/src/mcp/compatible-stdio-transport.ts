@@ -35,11 +35,16 @@ function findHeaderEnd(buffer: Buffer): { index: number; separatorLength: number
 }
 
 function looksLikeContentLength(buffer: Buffer): boolean {
-  if (buffer.length < 14) {
+  const header = findHeaderEnd(buffer);
+  if (header === null) {
     return false;
   }
-  const probe = buffer.toString('utf8', 0, Math.min(buffer.length, 32));
-  return /^content-length\s*:/i.test(probe);
+
+  const headerText = buffer
+    .toString('utf8', 0, header.index)
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n');
+  return /(?:^|\n)content-(?:length|type)\s*:/i.test(headerText);
 }
 
 const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10 MB — generous for JSON-RPC

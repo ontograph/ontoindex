@@ -45,7 +45,8 @@ vi.mock('../../../src/core/indexing/source-manifest.js', () => ({
   sourceManifestDigest: vi.fn(),
 }));
 
-vi.mock('../../../src/mcp/shared/target-context.js', () => ({
+vi.mock('../../../src/mcp/shared/target-context.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/mcp/shared/target-context.js')>()),
   resolveTargetContext: vi.fn(),
 }));
 
@@ -64,6 +65,7 @@ import {
   resolveActiveIndexGeneration,
 } from '../../../src/storage/repo-manager.js';
 import { submitAnalysisJob } from '../../../src/core/analysis/analysis-coordinator.js';
+import { createEnvelopeFromLegacy } from '../../../src/mcp/shared/response-envelope.js';
 import {
   computeSourceManifest,
   sourceManifestDigest,
@@ -99,12 +101,7 @@ const STALE_INDEXED_COMMIT = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
 
 function makeRuntimeHealth(
   freshnessState:
-    | 'clean'
-    | 'stale'
-    | 'dirty'
-    | 'degraded'
-    | 'untrusted'
-    | 'failed-after-partial-run' = 'clean',
+    'clean' | 'stale' | 'dirty' | 'degraded' | 'untrusted' | 'failed-after-partial-run' = 'clean',
 ) {
   return {
     version: 1 as const,
@@ -319,6 +316,7 @@ describe('gnEnsureFresh', () => {
         unknownGraphCoverageFiles: ['src/edit.ts'],
         graphCoveredCount: 0,
         unknownGraphCoverageCount: 1,
+        dirtyPaths: ['src/edit.ts'],
       },
       changedSinceIndex: true,
       snapshotMode: 'worktree',
@@ -381,6 +379,16 @@ describe('gnEnsureFresh', () => {
     expect(envelope.results).not.toHaveProperty('isStale');
     expect(envelope.results).not.toHaveProperty('dirtyFileCount');
     expect(envelope.results).not.toHaveProperty('scopeConfidence');
+
+    const targetContext = await mockResolveTargetContext.mock.results[0].value;
+    const dirtyResultEnvelope = createEnvelopeFromLegacy({
+      legacy: { filePath: 'src/edit.ts' },
+      tool: 'gn_ensure_fresh',
+      status: 'success',
+      targetContext,
+      freshness: envelope.freshness,
+    });
+    expect(dirtyResultEnvelope.freshness.dirtyResultPaths).toEqual(['src/edit.ts']);
   });
 
   it('resolves MCP backend repo ids case-insensitively and reads HEAD from the registry path', async () => {

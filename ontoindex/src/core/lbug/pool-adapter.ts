@@ -223,6 +223,34 @@ function newSharedDb(
   };
 }
 
+function isAdmissionClosed(entry: PoolEntry): boolean {
+  const shared = dbCache.get(entry.dbPath);
+  return (
+    entry.closed || entry.closing || !!(shared?.closed || shared?.closing || shared?.closeRequested)
+  );
+}
+
+function rejectPoolWaiters(repoId: string, entry: PoolEntry): void {
+  for (const waiter of entry.waiters.splice(0)) {
+    clearTimeout(waiter.timer);
+    waiter.reject(new Error(`LadybugDB pool is closing for repo "${repoId}"`));
+  }
+}
+
+function fenceSharedPools(shared: SharedDB): void {
+  for (const [repoId, entry] of pool) {
+    if (dbCache.get(entry.dbPath) !== shared) continue;
+    entry.closing = true;
+    rejectPoolWaiters(repoId, entry);
+  }
+}
+
+function requestSharedClose(shared: SharedDB): void {
+  shared.closeRequested = true;
+  shared.closing = true;
+  fenceSharedPools(shared);
+}
+
 function trackConnectionClose(shared: SharedDB, conn: lbug.Connection): Promise<void> {
   shared.pendingConnections.add(conn);
   const pending = shared.connectionCloses.get(conn);
@@ -451,6 +479,9 @@ async function releaseSharedDbAfterFailedInit(
   }
   if (failed.cleanup) return failed.cleanup;
   shared.closing = true;
+  for (const [id, entry] of pool) {
+    if (dbCache.get(entry.dbPath) === shared) rejectPoolWaiters(id, entry);
+  }
   const cleanup = (async () => {
     await closeSharedConnections(
       shared,
@@ -506,17 +537,21 @@ function closeOneWhenIdle(repoId: string): Promise<void> {
   const entry = pool.get(repoId);
   if (!entry) return Promise.resolve();
   entry.closing = true;
-  for (const waiter of entry.waiters.splice(0)) {
-    clearTimeout(waiter.timer);
-    waiter.reject(new Error(`LadybugDB pool is closing for repo "${repoId}"`));
-  }
+  rejectPoolWaiters(repoId, entry);
   const promise = (async () => {
     try {
       await waitForCheckedOutConnections(repoId, entry);
       await closeOne(repoId);
     } catch (err) {
       const current = pool.get(repoId);
-      if (current === entry && !entry.closed) {
+      const shared = dbCache.get(entry.dbPath);
+      if (
+        current === entry &&
+        !entry.closed &&
+        !shared?.closing &&
+        !shared?.closed &&
+        !shared?.closeRequested
+      ) {
         entry.closing = false;
       }
       throw err;
@@ -643,6 +678,21 @@ const LOCK_RETRY_DELAY_MS = 2000;
 
 /** Deduplicates concurrent initLbug calls for the same repoId */
 const initPromises = new Map<string, Promise<void>>();
+/** Pending initialization references and explicit-close routes retained until shared cleanup. */
+const initializingShares = new Map<string, { shared: SharedDB; dbPath: string }>();
+
+function releaseInitializationRoute(repoId: string): void {
+  const state = initializingShares.get(repoId);
+  if (state && (!state.shared.closeRequested || dbCache.get(state.dbPath) !== state.shared)) {
+    initializingShares.delete(repoId);
+  }
+}
+
+function pruneInitializationRoutes(): void {
+  for (const [repoId, state] of initializingShares) {
+    if (dbCache.get(state.dbPath) !== state.shared) initializingShares.delete(repoId);
+  }
+}
 
 function readBoundedIntEnv(name: string, fallback: number, min: number, max: number): number {
   const raw = process.env[name];
@@ -704,6 +754,7 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
     await promise;
   } finally {
     initPromises.delete(repoId);
+    releaseInitializationRoute(repoId);
   }
 };
 
@@ -833,6 +884,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
 
     if (shared.closing || shared.closed) throw new Error('LadybugDB database is closing');
     shared.refCount++;
+    initializingShares.set(repoId, { shared, dbPath });
     const db = shared.db;
 
     // Pre-create the full pool upfront so createConnection() (which silences
@@ -907,6 +959,7 @@ export async function initLbugWithDb(
     await promise;
   } finally {
     initPromises.delete(repoId);
+    releaseInitializationRoute(repoId);
   }
 }
 
@@ -947,6 +1000,7 @@ async function doInitLbugWithDb(
     dbCache.set(dbPath, shared);
   }
   shared.refCount++;
+  initializingShares.set(repoId, { shared, dbPath });
 
   const available: lbug.Connection[] = [];
   try {
@@ -989,7 +1043,7 @@ async function doInitLbugWithDb(
  * If all connections are busy and at cap, queues the caller until one is returned.
  */
 function checkout(entry: PoolEntry): Promise<lbug.Connection> {
-  if (entry.closed || entry.closing) {
+  if (isAdmissionClosed(entry)) {
     return Promise.reject(new Error('LadybugDB pool is closing for this repository'));
   }
 
@@ -1043,6 +1097,11 @@ function checkin(entry: PoolEntry, conn: lbug.Connection): void {
     else void conn.close().catch(() => {});
     return;
   }
+  if (isAdmissionClosed(entry)) {
+    entry.checkedOut--;
+    entry.available.push(conn);
+    return;
+  }
   if (entry.waiters.length > 0) {
     // Hand directly to the next waiter — no intermediate available state
     const waiter = entry.waiters.shift()!;
@@ -1063,13 +1122,16 @@ function retireConnection(entry: PoolEntry, conn: lbug.Connection): void {
   entry.pendingRetirements.add(close);
   void close
     .catch((error) => {
-      if (shared) shared.closing = true;
+      if (shared) {
+        shared.closing = true;
+        fenceSharedPools(shared);
+      }
       realStderrWrite(`LadybugDB retired connection close failed: ${String(error)}\n`);
     })
     .finally(() => entry.pendingRetirements.delete(close));
   entry.checkedOut = Math.max(0, entry.checkedOut - 1);
 
-  if (entry.closed || entry.closing) return;
+  if (isAdmissionClosed(entry)) return;
 
   while (entry.waiters.length > 0) {
     const totalConns = entry.available.length + entry.checkedOut;
@@ -1348,6 +1410,14 @@ export const executeParameterized = async <TRow extends object = LbugQueryRow>(
  */
 export const closeLbug = async (repoId?: string): Promise<void> => {
   if (repoId) {
+    const state = initializingShares.get(repoId);
+    const initializingShare =
+      state && dbCache.get(state.dbPath) === state.shared ? state : undefined;
+    const knownPath =
+      pool.get(repoId)?.dbPath ?? failedInitShares.get(repoId)?.dbPath ?? initializingShare?.dbPath;
+    const knownShared =
+      initializingShare?.shared ?? (knownPath ? dbCache.get(knownPath) : undefined);
+    if (knownShared) requestSharedClose(knownShared);
     const initializing = initPromises.get(repoId);
     if (initializing)
       await withTimeout(
@@ -1355,33 +1425,45 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
         CLOSE_WAIT_TIMEOUT_MS,
         'Pool initialization drain',
       );
+    if (knownShared && dbCache.get(knownPath!) !== knownShared) {
+      pruneInitializationRoutes();
+      return;
+    }
     const failed = failedInitShares.get(repoId);
-    const dbPath = pool.get(repoId)?.dbPath ?? failed?.dbPath;
+    const dbPath = knownShared
+      ? knownPath
+      : (pool.get(repoId)?.dbPath ?? failed?.dbPath ?? knownPath);
     const shared = dbPath ? dbCache.get(dbPath) : undefined;
     if (shared) {
-      shared.closeRequested = true;
-      shared.closing = true;
+      requestSharedClose(shared);
       // Aliases may own a native reference before their pool entry is published.
       await withTimeout(
         Promise.allSettled([...initPromises.values()]),
         CLOSE_WAIT_TIMEOUT_MS,
         'Pool initialization drain',
       );
+      if (dbCache.get(dbPath!) !== shared) {
+        pruneInitializationRoutes();
+        return;
+      }
     }
     const ids = dbPath
       ? [...pool].filter(([, entry]) => entry.dbPath === dbPath).map(([id]) => id)
       : [repoId];
-    for (const id of ids) await closeOneWhenIdle(id);
+    for (const id of ids) {
+      if (shared && (dbCache.get(dbPath!) !== shared || pool.get(id)?.db !== shared.db)) continue;
+      await closeOneWhenIdle(id);
+    }
     for (const [id, state] of [...failedInitShares]) {
-      if (id === repoId || state.dbPath === dbPath)
+      if (shared ? state.shared === shared : id === repoId || state.dbPath === dbPath)
         await closePrewarmedConnections(id, state.dbPath, state.shared, state.connections);
     }
+    pruneInitializationRoutes();
     return;
   }
 
   for (const shared of dbCache.values()) {
-    shared.closeRequested = true;
-    shared.closing = true;
+    requestSharedClose(shared);
   }
   await withTimeout(
     Promise.allSettled([...initPromises.values()]),
@@ -1394,6 +1476,7 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
   for (const [id, state] of [...failedInitShares]) {
     await closePrewarmedConnections(id, state.dbPath, state.shared, state.connections);
   }
+  pruneInitializationRoutes();
 
   if (idleTimer) {
     clearInterval(idleTimer);

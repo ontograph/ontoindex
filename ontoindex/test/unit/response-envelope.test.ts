@@ -14,6 +14,7 @@ import {
   createOutputTruncatedRecoverableState,
   createStaleIndexRecoverableState,
 } from '../../src/mcp/shared/recoverable-runtime-state.js';
+import type { TargetContext } from '../../src/mcp/shared/target-context.js';
 
 describe('response envelope repo identity', () => {
   const repo = {
@@ -337,6 +338,162 @@ describe('response envelope repo identity', () => {
     expect(freshness.status).toBe(expectedStatus);
     expect(freshness.actionable).toBe(false);
     expect(freshness.dirtyFileCount).toBe(1);
+  });
+});
+
+describe('response envelope Git context freshness', () => {
+  const knownContext: TargetContext = {
+    version: 1,
+    status: 'ok',
+    repoKey: 'fixture',
+    repoLabel: 'Fixture',
+    repoPath: '/repo/fixture',
+    targetRef: 'HEAD',
+    targetHead: 'abc123',
+    currentHead: 'abc123',
+    indexedHead: 'abc123',
+    dirtyWorktree: false,
+    dirtyFileCount: 0,
+    changedSinceIndex: false,
+    snapshotMode: 'committed-head',
+    qualityMode: 'balanced',
+    scopeConfidence: 'high',
+    embeddings: { status: 'unknown' },
+    lsp: { status: 'unknown' },
+    sidecar: { status: 'unknown' },
+    policy: { status: 'unknown' },
+    warnings: [],
+  };
+  const unknownCases: [string, Partial<TargetContext>][] = [
+    ['missing current commit', { currentHead: undefined }],
+    ['missing target commit', { targetHead: undefined }],
+    ['missing indexed commit', { indexedHead: undefined }],
+    ['unknown worktree status', { dirtyWorktree: null, dirtyFileCount: null }],
+    ['unknown snapshot mode', { snapshotMode: 'unknown' }],
+  ];
+
+  it.each(unknownCases)('keeps legacy fallback non-actionable with %s', (_label, change) => {
+    const targetContext = { ...knownContext, ...change };
+    const envelope = createEnvelopeFromLegacy({
+      legacy: { version: 1, findings: [] },
+      tool: 'fixture-tool',
+      status: 'ok',
+      targetContext,
+    });
+
+    expect(envelope.freshness).toEqual({
+      status: 'degraded',
+      actionable: false,
+      reason: 'git context unavailable',
+      targetHead: targetContext.targetHead,
+      currentHead: targetContext.currentHead,
+      indexedHead: targetContext.indexedHead,
+      snapshotMode: targetContext.snapshotMode,
+      repoLabel: 'Fixture',
+      repoPath: '/repo/fixture',
+      indexedCommit: targetContext.indexedHead,
+      headCommit: targetContext.currentHead,
+      isStale: false,
+      dirtyFileCount: targetContext.dirtyFileCount,
+      scopeConfidence: 'high',
+    });
+  });
+
+  it.each([
+    ['known clean checkout', {}],
+    [
+      'aligned historical target',
+      {
+        targetRef: 'HEAD~1',
+        targetHead: 'historical',
+        indexedHead: 'historical',
+        snapshotMode: 'diff-ref',
+      },
+    ],
+  ] satisfies [string, Partial<TargetContext>][])('keeps %s actionable', (_label, change) => {
+    expect(deriveEnvelopeFreshness({ ...knownContext, ...change })).toMatchObject({
+      status: 'fresh',
+      actionable: true,
+      reason: 'target context aligned',
+    });
+  });
+
+  it.each([
+    ['unresolved target', { status: 'no-index' }, 'unknown', 'target-context:no-index'],
+    ['stale index', { indexedHead: 'old-commit' }, 'stale', 'indexedHead != targetHead'],
+    ['dirty checkout', { dirtyWorktree: true }, 'degraded', 'dirty-worktree-overlay'],
+  ] satisfies [string, Partial<TargetContext>, string, string][])(
+    'preserves %s precedence with unknown snapshot mode',
+    (_label, change, status, reason) => {
+      expect(
+        deriveEnvelopeFreshness({
+          ...knownContext,
+          ...change,
+          snapshotMode: 'unknown',
+        }),
+      ).toMatchObject({ status, actionable: false, reason });
+    },
+  );
+
+  it.each(unknownCases)('preserves authoritative decisions with %s', (_label, change) => {
+    const targetContext: TargetContext = {
+      ...knownContext,
+      ...change,
+      graphAuthority: {
+        state: 'authoritative',
+        reason: 'current source manifest matches indexed generation',
+        generationId: 'generation-1',
+        manifestDigest: 'manifest-1',
+        coverage: 'complete',
+      },
+    };
+    const currentTargetKnown = Boolean(targetContext.currentHead && targetContext.targetHead);
+
+    expect(deriveEnvelopeFreshness(targetContext)).toMatchObject({
+      status: currentTargetKnown ? 'fresh' : 'degraded',
+      actionable: currentTargetKnown,
+      reason: currentTargetKnown
+        ? 'current source manifest matches indexed generation'
+        : 'target commit unavailable for graph authority',
+      graphAuthorityState: 'authoritative',
+      graphGenerationId: 'generation-1',
+      graphManifestDigest: 'manifest-1',
+    });
+  });
+
+  it.each(['review', 'degraded'] as const)(
+    'keeps %s graph authority non-actionable with unknown Git context',
+    (state) => {
+      expect(
+        deriveEnvelopeFreshness({
+          ...knownContext,
+          indexedHead: undefined,
+          dirtyWorktree: null,
+          snapshotMode: 'unknown',
+          graphAuthority: { state, reason: 'graph authority unavailable' },
+        }),
+      ).toMatchObject({
+        status: state === 'review' ? 'stale' : 'degraded',
+        actionable: false,
+        reason: 'graph authority unavailable',
+        graphAuthorityState: state,
+      });
+    },
+  );
+
+  it('preserves explicit freshness overrides and global context', () => {
+    expect(
+      deriveEnvelopeFreshness(
+        { ...knownContext, dirtyWorktree: null },
+        { status: 'unknown', actionable: false, reason: 'explicit override' },
+      ),
+    ).toMatchObject({ status: 'unknown', actionable: false, reason: 'explicit override' });
+    expect(deriveEnvelopeFreshness(createGlobalTargetContext('global'))).toEqual({
+      status: 'not-applicable',
+      actionable: true,
+      reason: 'global',
+      scopeConfidence: 'unknown',
+    });
   });
 });
 

@@ -39,6 +39,61 @@ describe('CompatibleStdioServerTransport', () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [
+      'Content-Length first with CRLF',
+      'Content-Length: {length}\r\nContent-Type: application/json\r\n\r\n',
+    ],
+    [
+      'Content-Type first with CRLF',
+      'Content-Type: application/json\r\nContent-Length: {length}\r\n\r\n',
+    ],
+    [
+      'Content-Length first with LF',
+      'Content-Length: {length}\nContent-Type: application/json\n\n',
+    ],
+    ['Content-Type first with LF', 'Content-Type: application/json\nContent-Length: {length}\n\n'],
+  ])('parses framed messages with %s', async (_label, headerTemplate) => {
+    await transport.start();
+    const messagePromise = onceMessage(transport);
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' });
+
+    stdin.write(headerTemplate.replace('{length}', String(Buffer.byteLength(body))) + body);
+
+    await expect(messagePromise).resolves.toMatchObject({ id: 1, method: 'ping' });
+  });
+
+  it('waits for a complete Content-Type-first header across byte fragments', async () => {
+    await transport.start();
+    const onError = vi.fn();
+    const onMessage = vi.fn();
+    transport.onerror = onError;
+    transport.onmessage = onMessage;
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' });
+    const frame = `Content-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
+
+    for (const byte of Buffer.from(frame)) {
+      stdin.write(Buffer.from([byte]));
+    }
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect(onMessage).toHaveBeenCalledWith({ jsonrpc: '2.0', id: 1, method: 'ping' });
+  });
+
+  it('reports a missing Content-Length after a complete Content-Type header', async () => {
+    await transport.start();
+    const onError = vi.fn();
+    transport.onerror = onError;
+
+    stdin.write('Content-Type: application/json\r\n\r\n{}');
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0]?.[0]?.message).toBe(
+      'Missing Content-Length header from MCP client',
+    );
+  });
+
   it.each([1, 1024])('waits for write completion with highWaterMark %i', async (highWaterMark) => {
     let complete!: (error?: Error | null) => void;
     const output = new Writable({

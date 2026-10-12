@@ -145,6 +145,13 @@ export function deriveEnvelopeFreshness(
   overrides: Partial<CapabilityResponseFreshness> = {},
 ): CapabilityResponseFreshness {
   const graphAuthority = 'scope' in targetContext ? undefined : targetContext.graphAuthority;
+  const unknownGitContext =
+    !('scope' in targetContext) &&
+    (!targetContext.currentHead ||
+      !targetContext.targetHead ||
+      !targetContext.indexedHead ||
+      targetContext.dirtyWorktree === null ||
+      targetContext.snapshotMode === 'unknown');
   const authorityTargetIdentity =
     'scope' in targetContext
       ? 'current'
@@ -226,9 +233,9 @@ export function deriveEnvelopeFreshness(
                   targetContext.scopeConfidence ?? resolveScopeConfidence(targetContext),
               }
             : {
-                status: 'fresh' as const,
-                actionable: true,
-                reason: 'target context aligned',
+                status: unknownGitContext ? ('degraded' as const) : ('fresh' as const),
+                actionable: !unknownGitContext,
+                reason: unknownGitContext ? 'git context unavailable' : 'target context aligned',
                 targetHead: targetContext.targetHead,
                 currentHead: targetContext.currentHead,
                 indexedHead: targetContext.indexedHead,
