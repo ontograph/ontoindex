@@ -472,7 +472,7 @@ export async function collectVerificationDiff(
     warnings.push(
       'Impacted-symbol and graph-linked test scans were skipped for supplied changedSymbols without graph ids.',
     );
-  } else {
+  } else if (params.changedFiles === undefined || changedFiles.length > 0) {
     const detectResult = await detectChanges(
       repo,
       scope === 'compare' ? { scope, base_ref: baseRef } : { scope },
@@ -484,6 +484,26 @@ export async function collectVerificationDiff(
         ? detectResult.changed_symbols.map(asSymbolRecord).filter(isDefined)
         : [];
       warnings.push(...normalizeStrings(detectResult.warnings));
+      if (params.changedFiles !== undefined) {
+        const selectedPaths = new Set(
+          changedFiles
+            .map((file) => normalizeRepoRelativePath(repo.repoPath, file.replace(/\\/gu, '/')))
+            .filter(isDefined),
+        );
+        symbolRecords = symbolRecords.filter((record) => {
+          if (!record.filePath) {
+            warnings.push(
+              `Changed symbol ${record.name} has no file provenance; retained because changedFiles membership cannot be verified.`,
+            );
+            return true;
+          }
+          const filePath = normalizeRepoRelativePath(
+            repo.repoPath,
+            record.filePath.replace(/\\/gu, '/'),
+          );
+          return filePath !== undefined && selectedPaths.has(filePath);
+        });
+      }
     }
   }
 

@@ -386,6 +386,53 @@ describe('dirty result paths', () => {
         results,
       });
     expect(make({ filePath: 'src/a.ts' }).freshness.dirtyResultPaths).toEqual(['src/a.ts']);
+    const clean = { file: 'src/other.ts' };
+    const dirty = { path: 'src/a.ts', stale: false, label: 'kept' };
+    const results = { nested: [dirty], clean };
+    const marked = make(results);
+    expect(marked.results).toEqual({ nested: [{ ...dirty, stale: true }], clean });
+    expect(marked.results.clean).toBe(clean);
+    expect(dirty.stale).toBe(false);
+    expect(make(clean).results).toBe(clean);
+    const legacy = createEnvelopeFromLegacy({
+      legacy: { nested: [dirty] },
+      tool: 't',
+      status: 'ok',
+      targetContext,
+      freshness,
+    });
+    expect(legacy.results.nested).toEqual([{ ...dirty, stale: true }]);
+    // Repository contexts do not contain the global scope discriminator.
+    const repositoryContext = {
+      ...targetContext,
+      targetHead: 'same',
+      currentHead: 'same',
+      graphAuthority: { state: 'authoritative' },
+    };
+    Reflect.deleteProperty(repositoryContext, 'scope');
+    expect(
+      createCapabilityResponseEnvelope({
+        tool: 't',
+        version: 1,
+        status: 'ok',
+        freshness,
+        results,
+        targetContext: repositoryContext as never,
+      }).results,
+    ).toBe(results);
+    const cycle: Record<string, unknown> = { file: 'src/a.ts' };
+    cycle.self = cycle;
+    const markedCycle = make(cycle).results;
+    expect(markedCycle.stale).toBe(true);
+    expect(markedCycle.self).toBe(markedCycle);
+    expect(cycle.stale).toBeUndefined();
+    const wide = Object.fromEntries(Array.from({ length: 100_000 }, (_, i) => [`k${i}`, i]));
+    expect(make(wide).warnings).toContain(
+      'Dirty result scan truncated at 5000 nodes/edges; additional dirty entries may be unmarked.',
+    );
+    let deep: Record<string, unknown> = { file: 'src/a.ts' };
+    for (let i = 0; i < 10_000; i++) deep = { child: deep };
+    expect(make(deep).warnings).toHaveLength(1);
     expect(make({ filePath: 'src/other.ts' }).freshness.dirtyResultPaths).toBeUndefined();
   });
 });

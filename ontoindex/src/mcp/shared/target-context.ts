@@ -34,6 +34,12 @@ import {
 
 const GIT_TIMEOUT_MS = 5_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
+const completeDirtyPaths = new WeakMap<TargetContextDirtyWorkspace, readonly string[]>();
+
+/** Internal matching paths; the serialized workspace summary remains bounded. */
+export function getDirtyWorkspacePaths(workspace: TargetContextDirtyWorkspace): readonly string[] {
+  return completeDirtyPaths.get(workspace) ?? workspace.dirtyPaths ?? [];
+}
 
 export type TargetContextStatus = 'ok' | 'ambiguous' | 'no-index' | 'not-found';
 export type SnapshotMode = 'committed-head' | 'dirty-worktree-overlay' | 'diff-ref' | 'unknown';
@@ -792,7 +798,7 @@ function resolveDirtyWorkspace(input: {
   }
 
   const allDirtyPaths = [...new Set(input.summary.dirtyFiles.map((f) => f.path))];
-  return {
+  const workspace: TargetContextDirtyWorkspace = {
     state,
     fileCount: dirtyFileCount,
     sourceFileCount,
@@ -807,6 +813,8 @@ function resolveDirtyWorkspace(input: {
         }
       : {}),
   };
+  completeDirtyPaths.set(workspace, Object.freeze(allDirtyPaths));
+  return workspace;
 }
 
 async function resolveScopedWorkspaceSummary(

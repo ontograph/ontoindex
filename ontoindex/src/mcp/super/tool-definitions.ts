@@ -1711,7 +1711,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
         changedFiles: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Optional changed files override.',
+          description:
+            'Optional changed files override; restricts automatic changed-symbol and impact seeds to these exact files. Empty skips automatic detection; changedSymbols remains authoritative.',
         },
         changedSymbols: {
           type: 'array',
@@ -1752,7 +1753,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
         changedFiles: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Optional changed files override.',
+          description:
+            'Optional changed files override; restricts automatic changed-symbol and impact seeds to these exact files. Empty skips automatic detection; changedSymbols remains authoritative.',
         },
         changedSymbols: {
           type: 'array',
@@ -1808,7 +1810,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
         changedFiles: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Changed files from the implementation diff.',
+          description:
+            'Changed files from the implementation diff; restricts automatic changed-symbol and impact seeds to these exact files. Empty skips automatic detection; changedSymbols remains authoritative.',
         },
         changedSymbols: {
           type: 'array',

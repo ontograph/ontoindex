@@ -241,7 +241,7 @@ describe('resolveTargetContext', () => {
   });
 
   it('caps dirtyPaths and flags truncation', async () => {
-    const { resolveTargetContext } = await loadActualResolver();
+    const { resolveTargetContext, getDirtyWorkspacePaths } = await loadActualResolver();
     const status = Array.from({ length: 60 }, (_, i) => ` M src/f${i}.ts`).join('\n') + '\n';
     const context = await resolveTargetContext(
       { repo: REPO_ID },
@@ -252,7 +252,40 @@ describe('resolveTargetContext', () => {
     );
     expect(context.dirtyWorkspace?.dirtyPaths).toHaveLength(50);
     expect(context.dirtyWorkspace?.dirtyPathsTruncated).toBe(true);
+    expect(getDirtyWorkspacePaths(context.dirtyWorkspace!)).toHaveLength(60);
+    expect(JSON.stringify(context.dirtyWorkspace)).not.toContain('src/f59.ts');
+    const { createCapabilityResponseEnvelope, deriveEnvelopeFreshness } =
+      await import('../../src/mcp/shared/response-envelope.js');
+    const envelope = createCapabilityResponseEnvelope({
+      tool: 'fixture',
+      version: 1,
+      status: 'ok',
+      targetContext: context,
+      freshness: deriveEnvelopeFreshness(context),
+      results: { path: 'src/f59.ts' },
+    });
+    expect(envelope.results).toEqual({ path: 'src/f59.ts', stale: true });
   });
+
+  it.each([50, 51])(
+    'keeps all %i matching paths internally at the serialization boundary',
+    async (count) => {
+      const { resolveTargetContext, getDirtyWorkspacePaths } = await loadActualResolver();
+      const context = await resolveTargetContext(
+        { repo: REPO_ID },
+        {
+          readRegistry: async () => [registryEntry],
+          execGit: execGitFor(
+            CURRENT_COMMIT,
+            Array.from({ length: count }, (_, i) => ` M src/f${i}.ts`).join('\n') + '\n',
+          ),
+        },
+      );
+      expect(context.dirtyWorkspace?.dirtyPaths).toHaveLength(50);
+      expect(context.dirtyWorkspace?.dirtyPathsTruncated).toBe(count > 50 ? true : undefined);
+      expect(getDirtyWorkspacePaths(context.dirtyWorkspace!)).toHaveLength(count);
+    },
+  );
 
   it('omits dirtyPaths for a clean worktree', async () => {
     const { resolveTargetContext } = await loadActualResolver();

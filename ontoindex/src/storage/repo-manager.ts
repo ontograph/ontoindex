@@ -674,9 +674,25 @@ export async function acquireIndexGenerationPin(
       : path.basename(parent) === CURRENT_GENERATION_LINK
         ? path.dirname(parent)
         : parent;
-  // Staging databases and arbitrary legacy databases retain their existing lifecycle.
-  if (path.basename(parent).startsWith('.staging-') || path.basename(absolute) !== 'lbug') {
+  // Staging databases retain their existing lifecycle.
+  if (path.basename(parent).startsWith('.staging-')) {
     return { dbPath: requestedPath, release: async () => {} };
+  }
+  if (path.basename(absolute) !== 'lbug') {
+    const target = await fs.realpath(absolute).catch((err: NodeJS.ErrnoException) => {
+      if (err.code !== 'ENOENT') throw err;
+      return absolute;
+    });
+    const generation = path.dirname(target);
+    if (path.basename(generation).startsWith('.staging-'))
+      return { dbPath: requestedPath, release: async () => {} };
+    if (
+      path.basename(target) !== 'lbug' ||
+      path.basename(path.dirname(generation)) !== GENERATIONS_DIR
+    )
+      return { dbPath: requestedPath, release: async () => {} };
+    if ((await fs.realpath(storagePath)) !== path.dirname(path.dirname(generation)))
+      throw new Error('Database generation resolves outside its generations directory');
   }
   return withGenerationPointerLock(storagePath, async () => {
     const resolved = await fs.realpath(absolute).catch(async (err: NodeJS.ErrnoException) => {
@@ -721,6 +737,7 @@ export async function acquireIndexGenerationPin(
       release: async () => {
         if (released) return;
         await withGenerationPointerLock(storagePath, async () => {
+          if (released) return;
           await fs.unlink(pinPath);
           released = true;
           await pruneIndexGenerationsLocked(storagePath).catch(() => {});

@@ -63,6 +63,47 @@ describe('committed index generation retention', () => {
     expect(await names()).toEqual(['b', 'c', 'd']);
     await pin.release();
   });
+  it('pins published file aliases until concurrent releases finish', async () => {
+    await publish('a');
+    const alias = path.join(storage, 'alias.lbug');
+    await fs.symlink(path.join('generations', 'a', 'lbug'), alias);
+    const pin = await acquireIndexGenerationPin(alias);
+    expect(pin.published).toBe(true);
+    await publish('b');
+    await publish('c');
+    await publish('d');
+    expect(await fs.readFile(pin.dbPath, 'utf8')).toBe('a');
+    await Promise.all([pin.release(), pin.release(), pin.release()]);
+    expect(await names()).toEqual(['b', 'c', 'd']);
+  });
+  it('retries release after unlink failure', async () => {
+    await publish('a');
+    const pin = await acquireIndexGenerationPin(path.join(storage, 'lbug'));
+    const unlink = fs.unlink.bind(fs);
+    const spy = vi.spyOn(fs, 'unlink').mockImplementation(async (filename) => {
+      if (String(filename).includes('.reader-')) {
+        spy.mockImplementation(unlink);
+        throw new Error('injected unlink failure');
+      }
+      return unlink(filename);
+    });
+    await expect(pin.release()).rejects.toThrow('injected unlink failure');
+    await pin.release();
+    expect(
+      (await fs.readdir(path.dirname(pin.dbPath))).some((name) => name.startsWith('.reader-')),
+    ).toBe(false);
+  });
+  it('rejects published aliases that escape their storage root', async () => {
+    await publish('a');
+    const nested = path.join(storage, 'nested');
+    await fs.mkdir(nested);
+    const alias = path.join(nested, 'alias.lbug');
+    await fs.symlink(path.join(storage, 'generations', 'a', 'lbug'), alias);
+    await expect(acquireIndexGenerationPin(alias)).rejects.toThrow(
+      'outside its generations directory',
+    );
+    expect((await fs.lstat(alias)).isSymbolicLink()).toBe(true);
+  });
   it('preserves legacy generations and restores the previous pointer after commit failure', async () => {
     await publish('legacy');
     await fs.unlink(path.join(storage, 'generations', 'legacy', '.retention-managed'));

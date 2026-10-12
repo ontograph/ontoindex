@@ -3,9 +3,60 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
+import {
+  createIndexGeneration,
+  publishIndexGenerationTransaction,
+} from '../../src/storage/repo-manager.js';
 
 withTestLbugDB('result-close', (handle) => {
   describe('native query-result cleanup', () => {
+    it('reuses a published lifetime pin without reader writes or retention scans', async () => {
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      await adapter.closeLbug({ strict: true });
+      const storage = path.join(path.dirname(handle.dbPath), 'published');
+      const generation = await createIndexGeneration(storage, 'warm');
+      await fs.copyFile(handle.dbPath, generation.lbugPath);
+      await fs.writeFile(generation.metaPath, JSON.stringify({ generationId: 'warm' }));
+      await fs.writeFile(generation.snapshotPath, '{}');
+      await publishIndexGenerationTransaction(storage, generation, async () => {});
+      const alias = path.join(storage, 'alias.lbug');
+      await fs.symlink('lbug', alias);
+      try {
+        await adapter.initLbug(alias);
+        const write = vi.spyOn(fs, 'writeFile');
+        const scan = vi.spyOn(fs, 'readdir');
+        try {
+          await adapter.withLbugDb(alias, () => adapter.executeQuery('RETURN 1 AS value'));
+          await adapter.initLbug(alias);
+          expect(write).not.toHaveBeenCalled();
+          expect(scan).not.toHaveBeenCalled();
+        } finally {
+          write.mockRestore();
+          scan.mockRestore();
+        }
+        const next = await createIndexGeneration(storage, 'next');
+        await fs.copyFile(handle.dbPath, next.lbugPath);
+        await fs.writeFile(next.metaPath, JSON.stringify({ generationId: 'next' }));
+        await fs.writeFile(next.snapshotPath, '{}');
+        await publishIndexGenerationTransaction(storage, next, async () => {});
+        await adapter.initLbug(alias);
+        expect(
+          (await fs.readdir(path.join(storage, 'generations', 'warm'))).filter((name) =>
+            name.startsWith('.reader-'),
+          ),
+        ).toEqual([]);
+        expect(
+          (await fs.readdir(path.join(storage, 'generations', 'next'))).filter((name) =>
+            name.startsWith('.reader-'),
+          ),
+        ).toHaveLength(1);
+        expect(await adapter.executeQuery('RETURN 2 AS value')).toEqual([{ value: 2 }]);
+      } finally {
+        await adapter.closeLbug({ strict: true });
+        await fs.rm(storage, { recursive: true, force: true });
+        await adapter.initLbug(handle.dbPath);
+      }
+    });
     it('opens a database alias without replacing it or losing stored rows', async () => {
       const adapter = await import('../../src/core/lbug/lbug-adapter.js');
       await adapter.executeQuery(

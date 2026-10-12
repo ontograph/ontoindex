@@ -4,6 +4,18 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.10] - 2026-10-12
+
+### Fixed
+
+- Mark dirty graph result entries stale without mutating shared results, including files beyond the capped dirty-path summary.
+- Restrict automatically detected verification symbols to explicitly selected files before impact analysis; an empty selection yields no ambient changes.
+- Pin published database generations opened through alternate aliases and make concurrent reader-pin release idempotent while preserving failure retries.
+
+### Performance
+
+- Reuse the singleton's held generation pin for warm queries, avoiding repeated reader-file writes and retention scans.
+
 ## [2.2.9] - 2026-10-12
 
 ### Security

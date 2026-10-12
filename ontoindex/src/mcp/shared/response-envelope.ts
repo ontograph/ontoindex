@@ -3,6 +3,7 @@ import type {
   TargetContext,
   TargetContextDirtyWorkspace,
 } from './target-context.js';
+import { getDirtyWorkspacePaths } from './target-context.js';
 import {
   deriveRecoverableRuntimeState,
   type RecoverableRuntimeState,
@@ -337,30 +338,103 @@ const MAX_RESULT_SCAN_NODES = 5000;
 
 /** Dirty paths that appear as filePath/path/file values anywhere in `results` (bounded scan). */
 export function findDirtyResultPaths(results: unknown, dirtyPaths: readonly string[]): string[] {
-  if (dirtyPaths.length === 0) return [];
+  return scanDirtyResults(results, dirtyPaths, false).paths;
+}
+
+function scanDirtyResults<T>(
+  results: T,
+  dirtyPaths: readonly string[],
+  mark: boolean,
+): {
+  results: T;
+  paths: string[];
+  truncated: boolean;
+} {
+  if (dirtyPaths.length === 0) return { results, paths: [], truncated: false };
   const dirty = new Set(dirtyPaths.map((p) => p.replace(/\\/g, '/')));
   const hits = new Set<string>();
-  const stack: unknown[] = [results];
-  let visited = 0;
-  while (stack.length > 0 && visited < MAX_RESULT_SCAN_NODES) {
-    const node = stack.pop();
-    visited++;
-    if (Array.isArray(node)) {
-      stack.push(...node);
-    } else if (node !== null && typeof node === 'object') {
-      for (const [key, value] of Object.entries(node)) {
-        if (typeof value === 'string') {
-          if (RESULT_PATH_KEYS.has(key)) {
-            const normalized = value.replace(/\\/g, '/');
-            if (dirty.has(normalized)) hits.add(normalized);
-          }
-        } else if (value !== null && typeof value === 'object') {
-          stack.push(value);
+  type Node = {
+    value: Record<string, unknown>;
+    parents: Node[];
+    edges: [string, Node][];
+    dirty: boolean;
+  };
+  const nodes = new Map<object, Node>();
+  const pending: Node[] = [];
+  const add = (value: object): Node => {
+    let node = nodes.get(value);
+    if (!node) {
+      node = { value: value as Record<string, unknown>, parents: [], edges: [], dirty: false };
+      nodes.set(value, node);
+      pending.push(node);
+    }
+    return node;
+  };
+  if (!isRecord(results)) return { results, paths: [], truncated: false };
+  const root = add(results);
+  let visited = 1;
+  let truncated = false;
+  for (let index = 0; index < pending.length; index++) {
+    const node = pending[index];
+    for (const key in node.value) {
+      if (!Object.hasOwn(node.value, key)) continue;
+      if (++visited > MAX_RESULT_SCAN_NODES) {
+        truncated = true;
+        break;
+      }
+      const value = node.value[key];
+      if (typeof value === 'string' && RESULT_PATH_KEYS.has(key)) {
+        const normalized = value.replace(/\\/g, '/');
+        if (dirty.has(normalized)) {
+          hits.add(normalized);
+          node.dirty = true;
         }
+      } else if (isRecord(value)) {
+        if (!nodes.has(value) && ++visited > MAX_RESULT_SCAN_NODES) {
+          truncated = true;
+          break;
+        }
+        const child = add(value);
+        child.parents.push(node);
+        node.edges.push([key, child]);
       }
     }
+    if (truncated) break;
   }
-  return [...hits].sort();
+  if (!mark || hits.size === 0) return { results, paths: [...hits].sort(), truncated };
+  const changed = new Set<Node>();
+  const queue = pending.filter((node) => node.dirty && node.value.stale !== true);
+  for (let index = 0; index < queue.length; index++) {
+    const node = queue[index];
+    if (changed.has(node)) continue;
+    changed.add(node);
+    for (const parent of node.parents) if (!changed.has(parent)) queue.push(parent);
+  }
+  const copies = new Map<Node, Record<string, unknown>>();
+  for (const node of changed) {
+    const copy = Array.isArray(node.value) ? node.value.slice() : Object.assign({}, node.value);
+    if (node.dirty)
+      Object.defineProperty(copy, 'stale', {
+        value: true,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    copies.set(node, copy as Record<string, unknown>);
+  }
+  for (const node of changed) {
+    const copy = copies.get(node)!;
+    for (const [key, child] of node.edges) {
+      if (copies.has(child))
+        Object.defineProperty(copy, key, {
+          value: copies.get(child),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+    }
+  }
+  return { results: (copies.get(root) ?? results) as T, paths: [...hits].sort(), truncated };
 }
 
 export function createCapabilityResponseEnvelope<TResult, TEvidence = unknown>(input: {
@@ -390,6 +464,24 @@ export function createCapabilityResponseEnvelope<TResult, TEvidence = unknown>(i
         })
       : input.recoverable;
 
+  const workspace =
+    'dirtyWorkspace' in input.targetContext ? input.targetContext.dirtyWorkspace : undefined;
+  const dirtyPaths = workspace ? getDirtyWorkspacePaths(workspace) : [];
+  const authoritative =
+    !('scope' in input.targetContext) &&
+    input.targetContext.graphAuthority?.state === 'authoritative' &&
+    Boolean(input.targetContext.targetHead && input.targetContext.currentHead) &&
+    input.targetContext.targetHead === input.targetContext.currentHead;
+  const scanned = scanDirtyResults(input.results, dirtyPaths, !authoritative);
+  const freshness = mergeRuntimeHealthFreshness(input.freshness, input.runtimeHealth);
+  const scanWarnings = scanned.truncated
+    ? ['Dirty result scan truncated at 5000 nodes/edges; additional dirty entries may be unmarked.']
+    : [];
+  if (workspace?.dirtyPathsTruncated && dirtyPaths.length <= (workspace.dirtyPaths?.length ?? 0)) {
+    scanWarnings.push(
+      'Dirty path summary truncated; complete matching paths unavailable, additional dirty entries may be unmarked.',
+    );
+  }
   return {
     envelopeVersion: '1',
     tool: input.tool,
@@ -398,29 +490,15 @@ export function createCapabilityResponseEnvelope<TResult, TEvidence = unknown>(i
     targetContext: input.targetContext,
     capabilitiesUsed: unique(input.capabilitiesUsed ?? []),
     capabilitiesMissing: unique(input.capabilitiesMissing ?? []),
-    freshness: withDirtyResultPaths(
-      mergeRuntimeHealthFreshness(input.freshness, input.runtimeHealth),
-      input.targetContext,
-      input.results,
-    ),
+    freshness:
+      scanned.paths.length > 0 ? { ...freshness, dirtyResultPaths: scanned.paths } : freshness,
     ...(recoverable ? { recoverable } : {}),
-    results: input.results,
+    results: scanned.results,
     evidence: [...(input.evidence ?? [])],
-    warnings: unique(input.warnings ?? []),
+    warnings: unique([...(input.warnings ?? []), ...scanWarnings]),
     limits: input.limits ?? defaultLimits(),
     nextTools: unique(input.nextTools ?? []),
   };
-}
-
-function withDirtyResultPaths(
-  freshness: CapabilityResponseFreshness,
-  targetContext: EnvelopeTargetContext,
-  results: unknown,
-): CapabilityResponseFreshness {
-  const dirtyPaths =
-    'dirtyWorkspace' in targetContext ? (targetContext.dirtyWorkspace?.dirtyPaths ?? []) : [];
-  const dirtyResultPaths = findDirtyResultPaths(results, dirtyPaths);
-  return dirtyResultPaths.length > 0 ? { ...freshness, dirtyResultPaths } : freshness;
 }
 
 export function createEnvelopeFromLegacy<TLegacy extends object, TEvidence = unknown>(

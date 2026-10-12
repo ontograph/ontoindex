@@ -624,6 +624,15 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
 
 const ensureLbugInitialized = async (dbPath: string, opts?: { maxDBSize?: number }) => {
   const requestedPath = dbPath;
+  if (
+    conn &&
+    generationPin?.published &&
+    currentDbAliases.has(requestedPath) &&
+    (await fs.realpath(dbPath)) === currentDbPath
+  ) {
+    currentDbAliases.add(requestedPath);
+    return { db, conn };
+  }
   const pin = await acquireIndexGenerationPin(dbPath);
   let pinTransferred = false;
   dbPath = pin.dbPath;
