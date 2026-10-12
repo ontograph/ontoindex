@@ -187,4 +187,37 @@ describe('mountEmbedRoutes', () => {
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: 'Failed to start embedding generation' });
   });
+
+  it('ends an active progress stream and unregisters its shutdown cleanup idempotently', async () => {
+    const app = express();
+    const cleanups = new Set<() => void>();
+    const lock = { repoPath: '/tmp/embed-progress', token: Symbol('lock') };
+    mountEmbedRoutes(
+      app,
+      jobManager,
+      vi.fn().mockResolvedValue({ name: 'repo', storagePath: '/tmp/embed-progress' }),
+      () => 'repo',
+      vi.fn(() => lock),
+      vi.fn(),
+      (cleanup) => {
+        cleanups.add(cleanup);
+        return () => cleanups.delete(cleanup);
+      },
+    );
+    const job = jobManager.createJob({ repoPath: '/tmp/embed-progress' });
+    jobManager.updateJob(job.id, { status: 'analyzing' });
+    const baseUrl = await listen(app);
+
+    const response = await fetch(`${baseUrl}/api/embed/${job.id}/progress`);
+    const reader = response.body!.getReader();
+    expect((await reader.read()).done).toBe(false);
+    expect(cleanups.size).toBe(1);
+
+    const cleanup = [...cleanups][0]!;
+    cleanup();
+    cleanup();
+
+    expect((await reader.read()).done).toBe(true);
+    expect(cleanups.size).toBe(0);
+  });
 });

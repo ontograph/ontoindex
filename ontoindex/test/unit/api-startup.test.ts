@@ -13,6 +13,16 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
 vi.mock('../../src/server/analyze-job.js', () => ({
   JobManager: class {
     async init() {}
+    getJob(id: string) {
+      return {
+        id,
+        status: 'analyzing',
+        progress: { phase: 'analyzing', percent: 0, message: 'Running' },
+      };
+    }
+    onProgress() {
+      return () => {};
+    }
     async dispose() {
       await lifecycle.disposeJob();
     }
@@ -51,13 +61,17 @@ afterEach(async () => {
 });
 
 describe('HTTP server startup and preflight', () => {
-  it('ends heartbeat streams, drains pending HTTP requests, and disposes once across signals', async () => {
+  it('ends heartbeat and job progress streams, drains requests, and disposes once across signals', async () => {
     vi.stubEnv('ONTOINDEX_HTTP_TOKEN', 'startup-test-token');
     vi.spyOn(LocalBackend.prototype, 'init').mockResolvedValue(undefined);
     const dispose = vi.spyOn(LocalBackend.prototype, 'dispose').mockResolvedValue(undefined);
     const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
     const listen = express.application.listen;
+    let lateHeartbeat!: (req: unknown, res: unknown) => void;
     vi.spyOn(express.application, 'listen').mockImplementation(function (...args: unknown[]) {
+      lateHeartbeat = this.router.stack.find(
+        (layer: { route?: { path: string } }) => layer.route?.path === '/api/heartbeat',
+      ).route.stack[0].handle;
       server = Reflect.apply(listen, this, args) as Server;
       return server;
     } as typeof listen);
@@ -68,6 +82,16 @@ describe('HTTP server startup and preflight', () => {
     const heartbeat = await fetch(`${base}/api/heartbeat`, { headers: { Connection: 'close' } });
     const reader = heartbeat.body!.getReader();
     expect((await reader.read()).done).toBe(false);
+    const progressReaders = [];
+    for (const kind of ['analyze', 'embed']) {
+      const progress = await fetch(`${base}/api/${kind}/active/progress`, {
+        headers: { Authorization: 'Bearer startup-test-token', Connection: 'close' },
+      });
+      expect(progress.status).toBe(200);
+      const progressReader = progress.body!.getReader();
+      expect((await progressReader.read()).done).toBe(false);
+      progressReaders.push(progressReader);
+    }
     let release!: () => void;
     let entered!: () => void;
     const started = new Promise<void>((resolve) => {
@@ -91,7 +115,14 @@ describe('HTTP server startup and preflight', () => {
       expect(listener).toBeDefined();
       listener!();
     }
+    const lateResponse = { status: vi.fn().mockReturnThis(), end: vi.fn() };
+    lateHeartbeat({}, lateResponse);
+    expect(lateResponse.status).toHaveBeenCalledWith(503);
+    expect(lateResponse.end).toHaveBeenCalledOnce();
     expect((await reader.read()).done).toBe(true);
+    for (const progressReader of progressReaders) {
+      expect((await progressReader.read()).done).toBe(true);
+    }
     expect(dispose).not.toHaveBeenCalled();
     release();
     const response = await pending;

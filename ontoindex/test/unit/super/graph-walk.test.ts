@@ -232,6 +232,16 @@ describe('gnGraphWalk', () => {
     expect(definition?.inputSchema.properties.maxSteps.maximum).toBe(50);
     expect(definition?.inputSchema.properties.maxFrontier.maximum).toBe(250);
     expect(definition?.inputSchema.properties.maxExpansionPerStep.maximum).toBe(25);
+    for (const field of ['maxSteps', 'maxFrontier', 'maxExpansionPerStep']) {
+      expect(definition?.inputSchema.properties[field].type).toBe('integer');
+      await expect(
+        dispatchSuper(
+          'gn_graph_walk',
+          { action: 'start', seedSymbol: 'seed-id', [field]: 1.5 },
+          'repo1',
+        ),
+      ).rejects.toThrow(`${field}: expected integer`);
+    }
     expect(generalTools).toContain('gn_graph_walk');
     expect(queryTools).not.toContain('gn_graph_walk');
 

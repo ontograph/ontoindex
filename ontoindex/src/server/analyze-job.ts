@@ -43,6 +43,7 @@ const JOB_TTL_MS = 60 * 60 * 1000; // 1 hour
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const JOB_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 const CHILD_KILL_GRACE_MS = 5_000;
+const DISPOSE_TIMEOUT_MS = 10_000;
 const LEDGER_PROGRESS_DEBOUNCE_MS = 1_000;
 
 interface ChildRegistrationOptions {
@@ -65,6 +66,10 @@ export class JobManager {
   private ledgerPath: string | null = null;
   private isLoading = false;
   private pendingSave: Promise<void> | null = null;
+  private disposing = false;
+  private disposePromise: Promise<void> | null = null;
+  private work = new Set<Promise<unknown>>();
+  private childCleanupErrors: unknown[] = [];
 
   constructor(persistencePath?: string) {
     if (persistencePath) {
@@ -146,6 +151,7 @@ export class JobManager {
 
   /** Create a new job, or return existing active job for the same repo. */
   createJob(params: { repoUrl?: string; repoPath?: string }): AnalyzeJob {
+    if (this.disposing) throw new Error('Job manager is shutting down');
     // Dedup: return existing active job for the same repo (by URL or path)
     for (const job of this.jobs.values()) {
       if (!this.isTerminal(job.status)) {
@@ -199,6 +205,8 @@ export class JobManager {
   ) {
     const job = this.jobs.get(id);
     if (!job) return;
+    if (this.disposing && update.status && !this.isTerminal(update.status)) return;
+    if (this.childCancellationReasons.has(id) && update.status === 'complete') return;
 
     Object.assign(job, update);
 
@@ -257,20 +265,41 @@ export class JobManager {
       const registeredOptions = this.childOptions.get(jobId);
       const cancellationReason = this.childCancellationReasons.get(jobId);
       if (job && cancellationReason) {
-        void this.finishCancelledChild(jobId, child, registeredOptions, cancellationReason);
+        this.trackWork(
+          this.finishCancelledChild(jobId, child, registeredOptions, cancellationReason).catch(
+            (error) => {
+              this.childCleanupErrors.push(error);
+            },
+          ),
+        );
       } else if (job && this.isTerminal(job.status)) {
-        void this.finishTerminalChild(jobId, child, registeredOptions);
+        this.trackWork(
+          this.finishTerminalChild(jobId, child, registeredOptions).catch((error) => {
+            this.childCleanupErrors.push(error);
+          }),
+        );
       } else {
         this.children.delete(jobId);
         this.childOptions.delete(jobId);
         this.clearKillTimer(jobId);
       }
     });
+    if (this.disposing || this.childCancellationReasons.has(jobId)) {
+      this.cancelJob(jobId, this.childCancellationReasons.get(jobId) ?? 'Server shutdown');
+    }
   }
 
   /** Register non-child cancellation work, such as aborting an in-process job. */
   registerCancelHandler(jobId: string, handler: () => void): () => void {
     this.cancelHandlers.set(jobId, handler);
+    if (this.disposing || this.childCancellationReasons.has(jobId)) {
+      this.cancelHandlers.delete(jobId);
+      try {
+        handler();
+      } catch (error) {
+        console.error('Job cancellation handler failed:', error);
+      }
+    }
     return () => {
       if (this.cancelHandlers.get(jobId) === handler) {
         this.cancelHandlers.delete(jobId);
@@ -281,22 +310,37 @@ export class JobManager {
   /** Cancel a running job — sends SIGTERM to child process. */
   cancelJob(jobId: string, reason?: string): boolean {
     const job = this.jobs.get(jobId);
-    if (!job || this.isTerminal(job.status)) return false;
+    if (!job || (this.isTerminal(job.status) && !this.children.has(jobId))) return false;
 
+    const cancellationReason =
+      this.childCancellationReasons.get(jobId) ?? reason ?? 'Analysis cancelled';
     const cancelHandler = this.cancelHandlers.get(jobId);
-    if (cancelHandler) {
-      this.cancelHandlers.delete(jobId);
-      cancelHandler();
+    this.childCancellationReasons.set(jobId, cancellationReason);
+    const child = this.children.get(jobId);
+    const options = this.childOptions.get(jobId);
+    if (child && options?.processGroup) {
+      this.updateJob(jobId, {
+        progress: {
+          phase: 'cancelling',
+          percent: job.progress.percent,
+          message: cancellationReason,
+        },
+        error: cancellationReason,
+      });
+    } else if (!this.isTerminal(job.status)) {
+      this.updateJob(jobId, { status: 'failed', error: cancellationReason });
     }
 
-    const child = this.children.get(jobId);
-    if (child) {
-      const options = this.childOptions.get(jobId);
-      const cancellationReason = reason || 'Analysis cancelled';
-      signalChild(child, 'SIGTERM', options?.processGroup === true);
-      if (options?.processGroup) {
-        this.childCancellationReasons.set(jobId, cancellationReason);
+    if (cancelHandler) {
+      this.cancelHandlers.delete(jobId);
+      try {
+        cancelHandler();
+      } catch (error) {
+        console.error('Job cancellation handler failed:', error);
       }
+    }
+
+    if (child && this.children.get(jobId) === child) {
       const killGraceMs = options?.killGraceMs ?? CHILD_KILL_GRACE_MS;
       if (!this.killTimers.has(jobId)) {
         const killTimer = setTimeout(() => {
@@ -311,23 +355,8 @@ export class JobManager {
         killTimer.unref?.();
         this.killTimers.set(jobId, killTimer);
       }
-      if (options?.processGroup) {
-        this.updateJob(jobId, {
-          progress: {
-            phase: 'cancelling',
-            percent: job.progress.percent,
-            message: cancellationReason,
-          },
-          error: cancellationReason,
-        });
-        return true;
-      }
+      signalChild(child, 'SIGTERM', options?.processGroup === true);
     }
-
-    this.updateJob(jobId, {
-      status: 'failed',
-      error: reason || 'Analysis cancelled',
-    });
 
     return true;
   }
@@ -377,31 +406,64 @@ export class JobManager {
     return () => this.emitter.off(event, listener);
   }
 
-  async dispose() {
-    // Kill all active child processes
-    for (const [jobId, child] of this.children) {
-      signalChild(child, 'SIGTERM', this.childOptions.get(jobId)?.processGroup === true);
-    }
-    this.children.clear();
+  get shuttingDown(): boolean {
+    return this.disposing;
+  }
 
-    // Clear all timeouts
-    for (const timer of this.timeouts.values()) {
-      clearTimeout(timer);
-    }
-    this.timeouts.clear();
-    for (const timer of this.killTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.killTimers.clear();
-    this.childOptions.clear();
-    this.childCancellationReasons.clear();
-    this.cancelHandlers.clear();
+  /** Include route work and its finally cleanup in the shutdown drain. */
+  trackWork(work: Promise<unknown>): void {
+    const tracked = work
+      .then(
+        () => {},
+        () => {},
+      )
+      .finally(() => this.work.delete(tracked));
+    this.work.add(tracked);
+  }
 
+  dispose(): Promise<void> {
+    if (this.disposePromise) return this.disposePromise;
+    this.disposing = true;
+    // Set the shared promise before invoking handlers that can re-enter disposal.
+    this.disposePromise = Promise.resolve().then(() => this.drain());
     clearInterval(this.cleanupTimer);
+    for (const job of this.jobs.values()) {
+      if (!this.isTerminal(job.status) || this.children.has(job.id)) {
+        this.cancelJob(job.id, 'Server shutdown');
+      }
+    }
+    return this.disposePromise;
+  }
+
+  private async drain(): Promise<void> {
+    const deadline = Date.now() + DISPOSE_TIMEOUT_MS;
+    while (this.children.size || this.work.size) {
+      if (Date.now() >= deadline)
+        throw new Error('Job shutdown could not confirm cleanup within 10000ms');
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    if (this.childCleanupErrors.length)
+      throw new AggregateError(this.childCleanupErrors, 'Job child cleanup failed');
+    for (const timer of this.timeouts.values()) clearTimeout(timer);
+    this.timeouts.clear();
+    this.cancelHandlers.clear();
     if (this.ledgerSaveTimer) {
       clearTimeout(this.ledgerSaveTimer);
       this.ledgerSaveTimer = null;
-      await this.saveLedger();
+    }
+    let ledgerDeadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.saveLedger(),
+        new Promise<never>((_, reject) => {
+          ledgerDeadline = setTimeout(
+            () => reject(new Error('Job shutdown ledger flush exceeded 10000ms')),
+            Math.max(0, deadline - Date.now()),
+          );
+        }),
+      ]);
+    } finally {
+      if (ledgerDeadline) clearTimeout(ledgerDeadline);
     }
     this.emitter.removeAllListeners();
 
@@ -440,7 +502,9 @@ function signalChild(child: ChildProcess, signal: NodeJS.Signals, processGroup: 
 
 async function waitForProcessGroupExit(pid: number): Promise<void> {
   if (process.platform === 'win32') return;
+  const deadline = Date.now() + DISPOSE_TIMEOUT_MS;
   while (isProcessGroupAlive(pid)) {
+    if (Date.now() >= deadline) throw new Error(`Process group ${pid} did not exit within 10000ms`);
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }
@@ -449,7 +513,8 @@ function isProcessGroupAlive(pid: number): boolean {
   try {
     process.kill(-pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    // Only ESRCH proves absence; permission errors must retain ownership.
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
   }
 }

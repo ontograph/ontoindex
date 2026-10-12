@@ -62,7 +62,7 @@ describe('JobManager', () => {
       const recovered = manager2.getJob(job1.id);
       expect(recovered).toBeDefined();
       expect(recovered!.status).toBe('failed'); // Recovered active jobs should be failed
-      expect(recovered!.error).toBe('Server restart');
+      expect(recovered!.error).toBe('Server shutdown');
 
       await manager2.dispose();
     } finally {
@@ -208,6 +208,7 @@ describe('JobManager', () => {
       vi.advanceTimersByTime(100);
 
       expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+      child.emit('exit', null, 'SIGKILL');
     } finally {
       vi.useRealTimers();
     }

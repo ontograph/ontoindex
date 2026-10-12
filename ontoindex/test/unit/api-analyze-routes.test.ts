@@ -101,4 +101,74 @@ describe('mountAnalyzeRoutes cancellation lifecycle', () => {
     expect(releaseRepoLock).toHaveBeenCalledTimes(1);
     expect(releaseRepoLock).toHaveBeenCalledWith(lock);
   });
+
+  it('does not retry an analysis worker after disposal', async () => {
+    const app = express();
+    app.use(express.json());
+    const child = new EventEmitter() as ChildProcess;
+    child.send = vi.fn();
+    child.kill = vi.fn(() => {
+      child.emit('exit', null, 'SIGTERM');
+      return true;
+    });
+    forkMockState.fork.mockReturnValue(child);
+    const lock = { repoPath: '/tmp/disposal-route', token: Symbol('lock') };
+    const release = vi.fn();
+    mountAnalyzeRoutes(
+      app,
+      jobManager,
+      { init: vi.fn().mockResolvedValue(true) },
+      () => lock,
+      release,
+    );
+    const base = await listen(app);
+    const response = await fetch(`${base}/api/analyze`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: lock.repoPath }),
+    });
+    expect(response.status).toBe(202);
+    await response.json();
+    vi.useFakeTimers();
+    try {
+      const disposed = jobManager.dispose();
+      await vi.advanceTimersByTimeAsync(1_100);
+      await disposed;
+      expect(forkMockState.fork).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ends an active progress stream and unregisters its shutdown cleanup idempotently', async () => {
+    const app = express();
+    const cleanups = new Set<() => void>();
+    mountAnalyzeRoutes(
+      app,
+      jobManager,
+      { init: vi.fn().mockResolvedValue(true) },
+      vi.fn(() => 'busy'),
+      vi.fn(),
+      (cleanup) => {
+        cleanups.add(cleanup);
+        return () => cleanups.delete(cleanup);
+      },
+    );
+    const job = jobManager.createJob({ repoPath: '/tmp/analyze-progress' });
+    jobManager.updateJob(job.id, { status: 'analyzing' });
+    const baseUrl = await listen(app);
+
+    const response = await fetch(`${baseUrl}/api/analyze/${job.id}/progress`);
+    const reader = response.body!.getReader();
+    expect((await reader.read()).done).toBe(false);
+    expect(cleanups.size).toBe(1);
+
+    const cleanup = [...cleanups][0]!;
+    cleanup();
+    cleanup();
+
+    expect((await reader.read()).done).toBe(true);
+    expect(cleanups.size).toBe(0);
+  });
 });

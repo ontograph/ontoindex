@@ -1153,8 +1153,22 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // SSE heartbeat — clients connect to detect server liveness instantly.
   // When the server shuts down, the TCP connection drops and the client's
   // EventSource fires onerror immediately (no polling delay).
+  let shuttingDown = false;
+  const progressStreamCleanups = new Set<() => void>();
+  const registerShutdownCleanup = (cleanup: () => void) => {
+    if (shuttingDown) {
+      cleanup();
+      return () => {};
+    }
+    progressStreamCleanups.add(cleanup);
+    return () => progressStreamCleanups.delete(cleanup);
+  };
   const heartbeatResponses = new Set<express.Response>();
   app.get('/api/heartbeat', (_req, res) => {
+    if (shuttingDown) {
+      res.status(503).end();
+      return;
+    }
     heartbeatResponses.add(res);
     // Use res.set() instead of res.writeHead() to preserve CORS headers from middleware
     res.set({
@@ -1897,7 +1911,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // ── Analyze API ──────────────────────────────────────────────────────
 
-  mountAnalyzeRoutes(app, jobManager, backend, acquireRepoLock, releaseRepoLock);
+  mountAnalyzeRoutes(
+    app,
+    jobManager,
+    backend,
+    acquireRepoLock,
+    releaseRepoLock,
+    registerShutdownCleanup,
+  );
 
   // ── Embedding endpoints ────────────────────────────────────────────
 
@@ -1911,6 +1932,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     requestedRepo,
     acquireRepoLock,
     releaseRepoLock,
+    registerShutdownCleanup,
   );
 
   // Global error handler — catch anything the route handlers miss
@@ -1944,12 +1966,15 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     // Graceful shutdown — close Express + LadybugDB cleanly
     let shutdownPromise: Promise<void> | undefined;
     const shutdown = () => {
-      shutdownPromise ??= Promise.resolve().then(async () => {
+      if (shutdownPromise) return shutdownPromise;
+      shuttingDown = true;
+      shutdownPromise = Promise.resolve().then(async () => {
         console.log('\nShutting down...');
+        for (const cleanup of [...progressStreamCleanups]) cleanup();
+        for (const response of heartbeatResponses) response.end();
         const httpClosed = new Promise<void>((resolve, reject) => {
           server.close((error) => (error ? reject(error) : resolve()));
         });
-        for (const response of heartbeatResponses) response.end();
         // Streams must close before waiting for the HTTP listener to drain.
         const outcomes = await Promise.allSettled([
           httpClosed,

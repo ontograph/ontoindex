@@ -119,10 +119,15 @@ export function mountAnalyzeRoutes(
   backend: ReloadableBackend,
   acquireRepoLock: (repoPath: string) => RepoWriteLock | string,
   releaseRepoLock: (lock: RepoWriteLock) => void,
+  registerShutdownCleanup?: (cleanup: () => void) => () => void,
 ): void {
   // POST /api/analyze — start a new analysis job
   app.post('/api/analyze', async (req, res) => {
     try {
+      if (jobManager.shuttingDown) {
+        res.status(503).json({ error: 'Server is shutting down' });
+        return;
+      }
       const { url: repoUrl, path: repoLocalPath, force, embeddings } = req.body;
 
       // Input type validation
@@ -164,7 +169,7 @@ export function mountAnalyzeRoutes(
       jobManager.updateJob(job.id, { status: 'cloning' });
 
       // Start async work — don't await
-      (async () => {
+      const work = (async () => {
         let targetPath = repoLocalPath;
         let analyzeLock: RepoWriteLock | null = null;
         let unregisterCancelHandler: (() => void) | null = null;
@@ -175,6 +180,7 @@ export function mountAnalyzeRoutes(
           retryTimer = null;
         };
         try {
+          if (jobManager.shuttingDown) throw new Error('Server is shutting down');
           // Clone if URL provided
           if (repoUrl && !repoLocalPath) {
             const repoName = extractRepoName(repoUrl);
@@ -210,6 +216,8 @@ export function mountAnalyzeRoutes(
           if (!targetPath) {
             throw new Error('No target path resolved');
           }
+
+          if (jobManager.shuttingDown) throw new Error('Server is shutting down');
 
           // Acquire shared repo lock (keyed on storagePath to match embed handler)
           const analyzeLockKey = getStoragePath(targetPath);
@@ -265,7 +273,13 @@ export function mountAnalyzeRoutes(
           const forkWorker = () => {
             retryTimer = null;
             const currentJob = jobManager.getJob(job.id);
-            if (!currentJob || currentJob.status === 'complete' || currentJob.status === 'failed') {
+            if (
+              jobManager.shuttingDown ||
+              !currentJob ||
+              currentJob.status === 'complete' ||
+              currentJob.status === 'failed' ||
+              currentJob.progress.phase === 'cancelling'
+            ) {
               releaseAnalyzeLock();
               return;
             }
@@ -288,6 +302,7 @@ export function mountAnalyzeRoutes(
               if (!isAnalyzeWorkerMessage(msg)) return;
 
               if (msg.type === 'progress') {
+                if (jobManager.shuttingDown) return;
                 jobManager.updateJob(job.id, {
                   status: 'analyzing',
                   progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
@@ -295,12 +310,19 @@ export function mountAnalyzeRoutes(
               } else if (msg.type === 'complete') {
                 workerCompleted = true;
                 releaseAnalyzeLock();
+                if (jobManager.shuttingDown) return;
                 // Reinitialize backend BEFORE marking complete — ensures the new
                 // repo is queryable when the client receives the SSE complete event.
-                reloadBackendWithTimeout(backend)
+                const reloadWork = reloadBackendWithTimeout(backend)
                   .then(() => {
                     const currentJob = jobManager.getJob(job.id);
-                    if (!currentJob || currentJob.status === 'failed') return;
+                    if (
+                      jobManager.shuttingDown ||
+                      !currentJob ||
+                      currentJob.status === 'failed' ||
+                      currentJob.progress.phase === 'cancelling'
+                    )
+                      return;
                     jobManager.updateJob(job.id, {
                       status: 'complete',
                       repoName: msg.result.repoName,
@@ -308,12 +330,15 @@ export function mountAnalyzeRoutes(
                   })
                   .catch((err) => {
                     console.error('backend.init() failed after analyze:', err);
+                    if (jobManager.shuttingDown) return;
                     jobManager.updateJob(job.id, {
                       status: 'failed',
                       error: reloadErrorMessage(err),
                     });
                   });
+                jobManager.trackWork(reloadWork);
               } else if (msg.type === 'error') {
+                if (jobManager.shuttingDown) return;
                 if (!workerProcessActive) {
                   releaseAnalyzeLock();
                 }
@@ -337,7 +362,10 @@ export function mountAnalyzeRoutes(
               const j = jobManager.getJob(job.id);
               if (workerCompleted) return;
               if (!j || j.status === 'complete' || j.status === 'failed') return;
-              if (j.progress.phase === 'cancelling') return;
+              if (jobManager.shuttingDown || j.progress.phase === 'cancelling') {
+                releaseAnalyzeLock();
+                return;
+              }
 
               // Worker crashed — attempt retry if under the limit
               if (j.retryCount < MAX_WORKER_RETRIES) {
@@ -395,6 +423,7 @@ export function mountAnalyzeRoutes(
           });
         }
       })();
+      jobManager.trackWork(work);
 
       res.status(202).json({ jobId: job.id, status: job.status });
     } catch (err: unknown) {
@@ -465,13 +494,23 @@ export function mountAnalyzeRoutes(
       try {
         res.write(':heartbeat\n\n');
       } catch {
-        clearInterval(heartbeat);
-        unsubscribe();
+        cleanup();
       }
     }, 30_000);
 
     // Subscribe to progress updates
-    const unsubscribe = jobManager.onProgress(job.id, (progress) => {
+    let unsubscribe = () => {};
+    let unregisterShutdownCleanup = () => {};
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      clearInterval(heartbeat);
+      unsubscribe();
+      unregisterShutdownCleanup();
+      if (!res.writableEnded) res.end();
+    };
+    unsubscribe = jobManager.onProgress(job.id, (progress) => {
       try {
         eventId++;
         if (progress.phase === 'complete' || progress.phase === 'failed') {
@@ -482,22 +521,17 @@ export function mountAnalyzeRoutes(
               error: eventJob?.error,
             })}\n\n`,
           );
-          clearInterval(heartbeat);
-          res.end();
-          unsubscribe();
+          cleanup();
         } else {
           res.write(`id: ${eventId}\ndata: ${JSON.stringify(progress)}\n\n`);
         }
       } catch {
-        clearInterval(heartbeat);
-        unsubscribe();
+        cleanup();
       }
     });
 
-    req.on('close', () => {
-      clearInterval(heartbeat);
-      unsubscribe();
-    });
+    unregisterShutdownCleanup = registerShutdownCleanup?.(cleanup) ?? (() => {});
+    res.on('close', cleanup);
   });
 
   // DELETE /api/analyze/:jobId — cancel a running analysis job

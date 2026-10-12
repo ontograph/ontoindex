@@ -270,16 +270,33 @@ let generationPin: IndexGenerationPin | undefined;
 let conn: lbug.Connection | null = null;
 let currentDbPath: string | null = null;
 const currentDbAliases = new Set<string>();
-// Failed native handles remain unsafe after the usable session is reset.
-const failedClosePaths = new Set<string>();
+type RetiredLbugSession = {
+  connection: lbug.Connection | null;
+  database: lbug.Database | null;
+  pin: IndexGenerationPin | undefined;
+  paths: Set<string>;
+};
+// Pending and failed native teardown retains ownership after the usable session resets.
+const failedClosePaths = new Set<RetiredLbugSession>();
+
+const captureLbugSession = (): RetiredLbugSession => ({
+  connection: conn,
+  database: db,
+  pin: generationPin,
+  paths: new Set(
+    [...currentDbAliases, ...(currentDbPath ? [currentDbPath] : [])].map((dbPath) =>
+      path.resolve(dbPath),
+    ),
+  ),
+});
 
 const assertNoFailedClose = async (dbPath: string): Promise<void> => {
   if (failedClosePaths.size === 0) return;
   const resolved = path.resolve(dbPath);
   const physical = await fs.realpath(resolved).catch(() => resolved);
-  if (failedClosePaths.has(resolved) || failedClosePaths.has(physical)) {
+  if ([...failedClosePaths].some(({ paths }) => paths.has(resolved) || paths.has(physical))) {
     throw new Error(
-      'LadybugDB native close previously failed for this path; restart the server before reopening or removing it',
+      'LadybugDB native close is pending or previously failed for this path; wait for closure or restart the server before reopening or removing it',
     );
   }
 };
@@ -436,25 +453,28 @@ class LbugQueryTimeoutError extends Error {
 }
 
 const retireTimedOutLbugSession = (): void => {
-  const timedOutConn = conn;
-  const timedOutDb = db;
-  const timedOutPin = generationPin;
+  const retired = captureLbugSession();
+  failedClosePaths.add(retired);
   resetLbugSessionState(true);
 
   // Native getAll() cannot be cancelled. Quarantine the handles immediately so
   // later calls cannot reuse a connection that may still be busy, then close
-  // them best-effort in the background.
+  // them in the background. Keep their identity and pin until both closes succeed.
   void (async () => {
+    let closeFailed = false;
     try {
-      if (timedOutConn) await timedOutConn.close();
+      if (retired.connection) await retired.connection.close();
     } catch {
-      /* best-effort */
+      closeFailed = true;
     }
     try {
-      if (timedOutDb) await timedOutDb.close();
-      await timedOutPin?.release();
+      if (retired.database) await retired.database.close();
+      if (!closeFailed) {
+        await retired.pin?.release();
+        failedClosePaths.delete(retired);
+      }
     } catch {
-      /* best-effort */
+      // Retain this session's handles, identity and pin until process restart.
     }
   })();
 };
@@ -464,6 +484,8 @@ async function withLbugNativeTimeout<T>(
   label: string,
   timeoutMs = GET_ALL_TIMEOUT_MS,
 ): Promise<T> {
+  const queryConnection = conn;
+  const queryDatabase = db;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   try {
@@ -479,7 +501,7 @@ async function withLbugNativeTimeout<T>(
       }),
     ]);
   } catch (err) {
-    if (err instanceof LbugQueryTimeoutError) {
+    if (err instanceof LbugQueryTimeoutError && conn === queryConnection && db === queryDatabase) {
       retireTimedOutLbugSession();
     }
     throw err;
@@ -582,24 +604,21 @@ const closeActiveLbugHandles = async (
       'LadybugDB native close previously failed; restart the server before strict closure',
     );
   }
+  const closing = captureLbugSession();
   let firstError: unknown;
   try {
-    if (conn) await conn.close();
+    if (closing.connection) await closing.connection.close();
   } catch (err) {
     firstError = err;
   }
   try {
-    if (db) await db.close();
-    if (!firstError) await generationPin?.release();
+    if (closing.database) await closing.database.close();
+    if (!firstError) await closing.pin?.release();
   } catch (err) {
     firstError ??= err;
   }
   if (firstError) {
-    for (const dbPath of [...currentDbAliases, ...(currentDbPath ? [currentDbPath] : [])]) {
-      const resolved = path.resolve(dbPath);
-      failedClosePaths.add(resolved);
-      failedClosePaths.add(await fs.realpath(resolved).catch(() => resolved));
-    }
+    failedClosePaths.add(closing);
   }
   // Failed handles are unusable; their paths remain blocked until restart.
   resetLbugSessionState(clearEnsuredIndexes);
@@ -695,6 +714,7 @@ const ensureLbugInitialized = async (dbPath: string, opts?: { maxDBSize?: number
     await doInitLbug(dbPath, opts, pin.published, () => {
       generationPin = pin;
       pinTransferred = true;
+      currentDbAliases.add(requestedPath);
     });
     currentDbAliases.add(requestedPath);
     return { db, conn };
@@ -753,6 +773,7 @@ const doInitLbug = async (
     opts?.maxDBSize === undefined
       ? new lbug.Database(dbPath)
       : new lbug.Database(dbPath, undefined, undefined, undefined, opts.maxDBSize);
+  currentDbPath = dbPath;
   onDatabaseOpened?.();
   conn = new lbug.Connection(db);
 
@@ -772,7 +793,6 @@ const doInitLbug = async (
   // Load VECTOR extension for semantic search support
   await loadVectorExtension();
 
-  currentDbPath = dbPath;
   return { db, conn };
 };
 

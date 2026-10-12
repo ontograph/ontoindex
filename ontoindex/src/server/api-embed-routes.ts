@@ -44,12 +44,21 @@ export function mountEmbedRoutes(
   requestedRepo: (req: express.Request) => string | undefined,
   acquireRepoLock: (repoPath: string) => RepoWriteLock | string,
   releaseRepoLock: (lock: RepoWriteLock) => void,
+  registerShutdownCleanup?: (cleanup: () => void) => () => void,
 ): void {
   // POST /api/embed — trigger server-side embedding generation
   app.post('/api/embed', async (req, res) => {
     let lock: RepoWriteLock | null = null;
     try {
+      if (jobManager.shuttingDown) {
+        res.status(503).json({ error: 'Server is shutting down' });
+        return;
+      }
       const entry = await resolveRepo(requestedRepo(req));
+      if (jobManager.shuttingDown) {
+        res.status(503).json({ error: 'Server is shutting down' });
+        return;
+      }
       if (!entry) {
         res.status(404).json({ error: 'Repository not found' });
         return;
@@ -94,9 +103,11 @@ export function mountEmbedRoutes(
       }, EMBED_TIMEOUT_MS);
 
       // Run embedding pipeline asynchronously
-      (async () => {
+      const work = (async () => {
         try {
+          if (jobManager.shuttingDown) throw new Error('Server is shutting down');
           const lbugPath = await resolveActiveLbugPath(entry.storagePath);
+          if (jobManager.shuttingDown) throw new Error('Server is shutting down');
           const executeScopedQuery = (cypher: string) =>
             withLbugDb(lbugPath, () => executeQuery(cypher));
           const executeScopedWithReusedStatement = (
@@ -110,6 +121,7 @@ export function mountEmbedRoutes(
           // the singleton LadybugDB session lock for the whole job.
           const { fetchExistingEmbeddingHashes } = await import('../core/lbug/lbug-adapter.js');
           const existingEmbeddings = await fetchExistingEmbeddingHashes(executeScopedQuery);
+          if (jobManager.shuttingDown) throw new Error('Server is shutting down');
           if (existingEmbeddings && existingEmbeddings.size > 0) {
             console.log(
               `[embed] ${existingEmbeddings.size} nodes already embedded — incremental run with content-hash comparison`,
@@ -144,18 +156,12 @@ export function mountEmbedRoutes(
             abortController.signal,
           );
 
-          clearTimeout(embedTimeout);
-          unregisterCancelHandler();
-          releaseEmbedLock();
           // Don't overwrite 'failed' if the job was cancelled while the pipeline was running
           const current = jobManager.getJob(job.id);
-          if (!current || current.status !== 'failed') {
+          if (!jobManager.shuttingDown && (!current || current.status !== 'failed')) {
             jobManager.updateJob(job.id, { status: 'complete' });
           }
         } catch (err: unknown) {
-          clearTimeout(embedTimeout);
-          unregisterCancelHandler();
-          releaseEmbedLock();
           const current = jobManager.getJob(job.id);
           if (!current || current.status !== 'failed') {
             jobManager.updateJob(job.id, {
@@ -163,8 +169,13 @@ export function mountEmbedRoutes(
               error: legacyMessageOrFallback(err, 'Embedding generation failed'),
             });
           }
+        } finally {
+          clearTimeout(embedTimeout);
+          unregisterCancelHandler();
+          releaseEmbedLock();
         }
       })();
+      jobManager.trackWork(work);
 
       res.status(202).json({ jobId: job.id, status: EMBED_INITIAL_STATUS });
     } catch (err: unknown) {
@@ -235,13 +246,23 @@ export function mountEmbedRoutes(
       try {
         res.write(':heartbeat\n\n');
       } catch {
-        clearInterval(heartbeat);
-        unsubscribe();
+        cleanup();
       }
     }, 30_000);
 
     // Subscribe to progress updates
-    const unsubscribe = jobManager.onProgress(job.id, (progress) => {
+    let unsubscribe = () => {};
+    let unregisterShutdownCleanup = () => {};
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      clearInterval(heartbeat);
+      unsubscribe();
+      unregisterShutdownCleanup();
+      if (!res.writableEnded) res.end();
+    };
+    unsubscribe = jobManager.onProgress(job.id, (progress) => {
       try {
         eventId++;
         if (progress.phase === 'complete' || progress.phase === 'failed') {
@@ -252,22 +273,17 @@ export function mountEmbedRoutes(
               error: eventJob?.error,
             })}\n\n`,
           );
-          clearInterval(heartbeat);
-          res.end();
-          unsubscribe();
+          cleanup();
         } else {
           res.write(`id: ${eventId}\ndata: ${JSON.stringify(progress)}\n\n`);
         }
       } catch {
-        clearInterval(heartbeat);
-        unsubscribe();
+        cleanup();
       }
     });
 
-    req.on('close', () => {
-      clearInterval(heartbeat);
-      unsubscribe();
-    });
+    unregisterShutdownCleanup = registerShutdownCleanup?.(cleanup) ?? (() => {});
+    res.on('close', cleanup);
   });
 
   // DELETE /api/embed/:jobId — cancel embedding job
