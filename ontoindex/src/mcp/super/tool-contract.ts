@@ -352,7 +352,7 @@ export function gnToolContract(params: ToolContractParams = {}): ToolContractRep
   }
   if (visibleFrontier.internalOnly.length > 0) {
     warnings.push(
-      'Host-visible wrappers are a subset of internal callable tools due to startup-profile or mode filtering; review visibleFrontier.clientVisible and visibleFrontier.internalOnly.',
+      'Host-visible wrappers are a subset of internal callable tools due to startup-profile or mode filtering; review visibleFrontier.hostVisible and visibleFrontier.internalOnly.',
     );
   }
   if (actionDrifted) {
@@ -486,6 +486,7 @@ function computeVisibleFrontier(input: {
   );
   const facadeFirstSet = new Set(facadeFirst);
 
+  // Compatibility alias for server advertisement; no client observation is available here.
   const clientVisible = hostVisible;
   const compatibilityTools = hostVisible.filter((tool) => !facadeFirstSet.has(tool));
   const internalOnly = internalCallable.filter((tool) => !hostSet.has(tool));
@@ -494,6 +495,7 @@ function computeVisibleFrontier(input: {
   const modeDescription = input.mode === 'default' ? 'all modes' : `mode "${input.mode}"`;
   const note = [
     `Callable tools in the OntoIndex registry (${modeDescription}) are compared with host-discoverable wrappers for this process.`,
+    'Client visibility is unobserved: clientVisible is a compatibility alias of hostVisible (server advertisement), not evidence that a client discovered or loaded those tools.',
     `Facade-first guidance prefers ${facadeFirst.length} facade tools before ${compatibilityTools.length} compatibility tools.`,
     'discover({action: "tools"}) should show the recommended facade surface first, with compatibility tools listed separately.',
     `Startup-profile filter currently set to "${input.startupProfile}" can hide internal tools from hosts.`,

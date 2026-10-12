@@ -88,6 +88,121 @@ describe('pageMcpResponse', () => {
     });
   });
 
+  it('uses nested repository identity fallbacks coherently on every page', async () => {
+    const cases: Array<{
+      name: string;
+      envelope: Record<string, unknown>;
+      expected: Record<string, string>;
+    }> = [
+      {
+        name: 'target context',
+        envelope: {
+          targetContext: {
+            repoKey: 'target-repo',
+            repoPath: '/repo/target',
+            graphIndexId: 'index-1',
+            graphAuthority: { generationId: 'generation-1', manifestDigest: 'digest-1' },
+          },
+        },
+        expected: {
+          repoLabel: 'target-repo',
+          repoPath: '/repo/target',
+          graphIndexId: 'index-1',
+          generationId: 'generation-1',
+          manifestDigest: 'digest-1',
+        },
+      },
+      {
+        name: 'freshness',
+        envelope: {
+          freshness: {
+            repoLabel: 'fresh-repo',
+            repoPath: '/repo/fresh',
+            graphGenerationId: 'fresh-generation',
+            graphManifestDigest: 'fresh-digest',
+          },
+        },
+        expected: {
+          repoLabel: 'fresh-repo',
+          repoPath: '/repo/fresh',
+          graphGenerationId: 'fresh-generation',
+          graphManifestDigest: 'fresh-digest',
+        },
+      },
+      {
+        name: 'root identity over conflicting nested identities',
+        envelope: {
+          repoLabel: 'root-repo',
+          repoPath: '/repo/root',
+          targetContext: { repoLabel: 'target-repo', repoPath: '/repo/target' },
+          freshness: { repoLabel: 'fresh-repo', repoPath: '/repo/fresh' },
+        },
+        expected: { repoLabel: 'root-repo', repoPath: '/repo/root' },
+      },
+      {
+        name: 'global target scope does not contribute incidental repository fields',
+        envelope: {
+          targetContext: {
+            scope: 'global',
+            repoLabel: 'incidental-label',
+            repoKey: 'incidental-key',
+            repoPath: '/repo/incidental',
+            graphIndexId: 'global-index',
+          },
+        },
+        expected: { graphIndexId: 'global-index' },
+      },
+      {
+        name: 'complete nested pair replaces incomplete root without mixing fields',
+        envelope: {
+          repoLabel: 'partial-root',
+          targetContext: { repoLabel: 'target-repo', repoPath: '/repo/target' },
+        },
+        expected: { repoLabel: 'target-repo', repoPath: '/repo/target' },
+      },
+      {
+        name: 'partial root is retained when no complete nested pair exists',
+        envelope: {
+          repoLabel: 'partial-root',
+          targetContext: { repoPath: '/repo/target' },
+        },
+        expected: { repoLabel: 'partial-root' },
+      },
+      {
+        name: 'absent repository identity stays absent',
+        envelope: { targetContext: { scope: 'global' } },
+        expected: {},
+      },
+    ];
+
+    for (const testCase of cases) {
+      const identityText = JSON.stringify({ ...testCase.envelope, data: 'x'.repeat(5000) });
+      const args = { repo: 'fixture' };
+      let result = await pageMcpResponse({
+        tool: 'gn_test',
+        args,
+        text: 'y'.repeat(5000),
+        identityText,
+        maxBytes: 1024,
+      });
+
+      while (true) {
+        expect(result.paged, testCase.name).toBe(true);
+        expect(serializedMcpToolResultBytes(result.text), testCase.name).toBeLessThanOrEqual(1024);
+        const page = JSON.parse(result.text) as ResponsePageEnvelope;
+        expect(page.responsePage.identity, testCase.name).toEqual(testCase.expected);
+        const cursor = page.responsePage.nextCursor;
+        if (!cursor) break;
+        result = await pageMcpResponse({
+          tool: 'gn_test',
+          args,
+          cursor,
+          maxBytes: 1024,
+        });
+      }
+    }
+  });
+
   it('reconstructs multibyte text exactly while keeping every page within the byte limit', async () => {
     const maxBytes = 1024;
     const text = 'alpha-\u{1f600}-\u7d42\n'.repeat(4000);

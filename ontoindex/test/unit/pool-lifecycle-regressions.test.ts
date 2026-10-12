@@ -6,6 +6,11 @@ const mocks = vi.hoisted(() => ({
   connClose: vi.fn(async () => {}),
   query: vi.fn(),
   opens: vi.fn(),
+  releasePin: vi.fn(async () => {}),
+}));
+
+vi.mock('../../src/storage/repo-manager.js', () => ({
+  acquireIndexGenerationPin: async (dbPath: string) => ({ dbPath, release: mocks.releasePin }),
 }));
 
 vi.mock('fs/promises', () => ({
@@ -65,8 +70,79 @@ describe('pool lifecycle drain', () => {
       vi.resetAllMocks();
       mocks.dbClose.mockResolvedValue(undefined);
       mocks.connClose.mockResolvedValue(undefined);
+      mocks.releasePin.mockResolvedValue(undefined);
       mocks.identity = 'A';
     }
+  });
+
+  it('awaits native connection, database and pin closure and deduplicates concurrent closes', async () => {
+    mocks.query.mockImplementation(async () => result());
+    await initLbug('lifecycle', '/db');
+    const connection = deferred();
+    const database = deferred();
+    const pin = deferred();
+    mocks.connClose.mockImplementation(async () => {
+      await connection.promise;
+    });
+    mocks.dbClose.mockImplementation(async () => {
+      await database.promise;
+    });
+    mocks.releasePin.mockImplementation(async () => {
+      await pin.promise;
+    });
+    let done = false;
+    const closing = track(
+      closeLbug('lifecycle').then(() => {
+        done = true;
+      }),
+    );
+    const duplicate = track(closeLbug('lifecycle'));
+    await vi.waitFor(() => expect(mocks.connClose).toHaveBeenCalledTimes(2));
+    expect(mocks.dbClose).not.toHaveBeenCalled();
+    connection.resolve();
+    await vi.waitFor(() => expect(mocks.dbClose).toHaveBeenCalledTimes(1));
+    expect(mocks.releasePin).not.toHaveBeenCalled();
+    mocks.releasePin.mockImplementationOnce(async () => {});
+    await expect(initLbug('lifecycle-new-alias', '/db')).rejects.toThrow('database is closing');
+    expect(mocks.opens).toHaveBeenCalledTimes(1);
+    database.resolve();
+    await vi.waitFor(() => expect(mocks.releasePin).toHaveBeenCalledTimes(2));
+    expect(done).toBe(false);
+    pin.resolve();
+    await Promise.all([closing, duplicate]);
+    expect(done).toBe(true);
+    expect(mocks.dbClose).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['connection', 'database', 'pin'])(
+    'propagates %s close failures and permits retry',
+    async (stage) => {
+      mocks.query.mockImplementation(async () => result());
+      await initLbug('lifecycle', '/db');
+      const failure = new Error(`${stage} close failed`);
+      const close =
+        stage === 'connection'
+          ? mocks.connClose
+          : stage === 'database'
+            ? mocks.dbClose
+            : mocks.releasePin;
+      close.mockRejectedValueOnce(failure);
+      await expect(closeLbug('lifecycle')).rejects.toThrow(failure);
+      if (stage === 'connection') expect(mocks.dbClose).not.toHaveBeenCalled();
+      if (stage !== 'pin') expect(mocks.releasePin).not.toHaveBeenCalled();
+      await closeLbug('lifecycle');
+      expect(mocks.releasePin).toHaveBeenCalledTimes(stage === 'pin' ? 2 : 1);
+    },
+  );
+
+  it('closes all aliases of the same native database before resolving', async () => {
+    mocks.query.mockImplementation(async () => result());
+    await initLbug('lifecycle', '/db');
+    await initLbug('lifecycle-alias', '/db');
+    expect(mocks.opens).toHaveBeenCalledTimes(1);
+    await closeLbug('lifecycle');
+    expect(mocks.connClose).toHaveBeenCalledTimes(4);
+    expect(mocks.dbClose).toHaveBeenCalledTimes(1);
   });
 
   it('deduplicates generation replacement and drains the active query before destruction', async () => {

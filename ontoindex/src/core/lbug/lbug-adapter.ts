@@ -270,6 +270,19 @@ let generationPin: IndexGenerationPin | undefined;
 let conn: lbug.Connection | null = null;
 let currentDbPath: string | null = null;
 const currentDbAliases = new Set<string>();
+// Failed native handles remain unsafe after the usable session is reset.
+const failedClosePaths = new Set<string>();
+
+const assertNoFailedClose = async (dbPath: string): Promise<void> => {
+  if (failedClosePaths.size === 0) return;
+  const resolved = path.resolve(dbPath);
+  const physical = await fs.realpath(resolved).catch(() => resolved);
+  if (failedClosePaths.has(resolved) || failedClosePaths.has(physical)) {
+    throw new Error(
+      'LadybugDB native close previously failed for this path; restart the server before reopening or removing it',
+    );
+  }
+};
 let ftsLoaded = false;
 let vectorExtensionLoaded = false;
 
@@ -564,6 +577,11 @@ const closeActiveLbugHandles = async (
   clearEnsuredIndexes = false,
   strict = false,
 ): Promise<void> => {
+  if (strict && !conn && !db && failedClosePaths.size > 0) {
+    throw new Error(
+      'LadybugDB native close previously failed; restart the server before strict closure',
+    );
+  }
   let firstError: unknown;
   try {
     if (conn) await conn.close();
@@ -572,11 +590,18 @@ const closeActiveLbugHandles = async (
   }
   try {
     if (db) await db.close();
-    await generationPin?.release();
+    if (!firstError) await generationPin?.release();
   } catch (err) {
     firstError ??= err;
   }
-  // Session state is always reset so a failed close cannot leave a half-open session.
+  if (firstError) {
+    for (const dbPath of [...currentDbAliases, ...(currentDbPath ? [currentDbPath] : [])]) {
+      const resolved = path.resolve(dbPath);
+      failedClosePaths.add(resolved);
+      failedClosePaths.add(await fs.realpath(resolved).catch(() => resolved));
+    }
+  }
+  // Failed handles are unusable; their paths remain blocked until restart.
   resetLbugSessionState(clearEnsuredIndexes);
   if (strict && firstError) throw firstError;
 };
@@ -623,6 +648,7 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
 };
 
 const ensureLbugInitialized = async (dbPath: string, opts?: { maxDBSize?: number }) => {
+  await assertNoFailedClose(dbPath);
   const requestedPath = dbPath;
   if (
     conn &&
@@ -660,6 +686,7 @@ const ensureLbugInitialized = async (dbPath: string, opts?: { maxDBSize?: number
       // Parent directories may themselves be aliases (for example /tmp).
       dbPath = await fs.realpath(dbPath);
     }
+    await assertNoFailedClose(dbPath);
     if (conn && currentDbPath === dbPath) {
       await pin.release();
       currentDbAliases.add(requestedPath);
@@ -1746,10 +1773,14 @@ export const closeLbug = async (opts?: { strict?: boolean }): Promise<void> => {
   await closeActiveLbugHandles(true, opts?.strict === true);
 };
 
-export const closeLbugForPath = async (dbPath: string): Promise<void> => {
+export const closeLbugForPath = async (
+  dbPath: string,
+  opts?: { strict?: boolean },
+): Promise<void> => {
   await runWithSessionLock(async () => {
+    if (opts?.strict) await assertNoFailedClose(dbPath);
     if (currentDbPath === dbPath || currentDbAliases.has(dbPath)) {
-      await closeActiveLbugHandles(true);
+      await closeActiveLbugHandles(true, opts?.strict === true);
     }
   });
 };

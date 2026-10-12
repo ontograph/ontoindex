@@ -4,14 +4,22 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from '../../src/server/api.js';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 
+const lifecycle = vi.hoisted(() => ({ cleanup: vi.fn(), disposeJob: vi.fn(), listRepos: vi.fn() }));
+vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/storage/repo-manager.js')>()),
+  listRegisteredRepos: lifecycle.listRepos,
+}));
+
 vi.mock('../../src/server/analyze-job.js', () => ({
   JobManager: class {
     async init() {}
-    async dispose() {}
+    async dispose() {
+      await lifecycle.disposeJob();
+    }
   },
 }));
 vi.mock('../../src/server/mcp-http.js', () => ({
-  mountMCPEndpoints: () => ({ cleanup: async () => {}, getDiagnostics: vi.fn() }),
+  mountMCPEndpoints: () => ({ cleanup: lifecycle.cleanup, getDiagnostics: vi.fn() }),
 }));
 
 let server: Server | undefined;
@@ -23,9 +31,11 @@ afterEach(async () => {
   try {
     if (server) {
       server.closeAllConnections();
-      await new Promise<void>((resolve, reject) => {
-        server!.close((error) => (error ? reject(error) : resolve()));
-      });
+      if (server.listening) {
+        await new Promise<void>((resolve, reject) => {
+          server!.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
     }
   } finally {
     server = undefined;
@@ -35,11 +45,64 @@ afterEach(async () => {
       }
     }
     vi.restoreAllMocks();
+    vi.resetAllMocks();
     vi.unstubAllEnvs();
   }
 });
 
 describe('HTTP server startup and preflight', () => {
+  it('ends heartbeat streams, drains pending HTTP requests, and disposes once across signals', async () => {
+    vi.stubEnv('ONTOINDEX_HTTP_TOKEN', 'startup-test-token');
+    vi.spyOn(LocalBackend.prototype, 'init').mockResolvedValue(undefined);
+    const dispose = vi.spyOn(LocalBackend.prototype, 'dispose').mockResolvedValue(undefined);
+    const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    const listen = express.application.listen;
+    vi.spyOn(express.application, 'listen').mockImplementation(function (...args: unknown[]) {
+      server = Reflect.apply(listen, this, args) as Server;
+      return server;
+    } as typeof listen);
+    await createServer(0);
+    const address = server!.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    const base = `http://127.0.0.1:${address.port}`;
+    const heartbeat = await fetch(`${base}/api/heartbeat`, { headers: { Connection: 'close' } });
+    const reader = heartbeat.body!.getReader();
+    expect((await reader.read()).done).toBe(false);
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    lifecycle.listRepos.mockImplementation(async () => {
+      entered();
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return [];
+    });
+    const pending = fetch(`${base}/api/repos`, {
+      headers: { Authorization: 'Bearer startup-test-token', Connection: 'close' },
+    });
+    await started;
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+      const listener = process
+        .listeners(signal)
+        .find((candidate) => !originalSignals.get(signal)!.includes(candidate));
+      expect(listener).toBeDefined();
+      listener!();
+    }
+    expect((await reader.read()).done).toBe(true);
+    expect(dispose).not.toHaveBeenCalled();
+    release();
+    const response = await pending;
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual([]);
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
+    expect(exit).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(lifecycle.cleanup).toHaveBeenCalledTimes(1);
+    expect(lifecycle.disposeJob).toHaveBeenCalledTimes(2);
+  });
   it('starts with Express 5 and preserves CORS/PNA without bypassing API auth', async () => {
     vi.stubEnv('ONTOINDEX_HTTP_TOKEN', 'startup-test-token');
     vi.spyOn(LocalBackend.prototype, 'init').mockResolvedValue(undefined);

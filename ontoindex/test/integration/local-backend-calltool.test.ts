@@ -16,7 +16,8 @@ import {
   LOCAL_BACKEND_FTS_INDEXES,
 } from '../fixtures/local-backend-seed.js';
 
-vi.mock('../../src/storage/repo-manager.js', () => ({
+vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/storage/repo-manager.js')>()),
   listRegisteredRepos: vi.fn().mockResolvedValue([]),
   resolveActiveIndexGeneration: vi.fn().mockResolvedValue(null),
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
@@ -496,8 +497,7 @@ withTestLbugDB(
       });
 
       it('query tool returns error for missing query param', async () => {
-        const result = await backend.callTool('query', {});
-        expect(result).toHaveProperty('error');
+        await expect(backend.callTool('query', {})).rejects.toThrow('Invalid arguments for query');
       });
 
       it('cypher tool returns error for invalid Cypher syntax', async () => {
@@ -581,6 +581,10 @@ withTestLbugDB(
 
       const backend = new LocalBackend();
       await backend.init();
+      // Reuse the writable fixture DB under the registry ID used by the backend.
+      const core = await import('../../src/core/lbug/lbug-adapter.js');
+      const pool = await import('../../src/core/lbug/pool-adapter.js');
+      await pool.initLbugWithDb('test-repo', core.getDatabase()!, handle.dbPath);
       // Stash backend on handle so tests can access it
       (handle as any)._backend = backend;
     },

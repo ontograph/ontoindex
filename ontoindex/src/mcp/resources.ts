@@ -6,10 +6,10 @@
  */
 
 import type { LocalBackend } from './local/local-backend.js';
-import { checkStaleness } from './staleness.js';
 import { loadAnalysisCatalog } from '../analysis-packs/catalog.js';
 import { buildAnalysisExecutionPlan } from '../analysis-packs/execution.js';
 import { loadMemories, loadMemory, type ParsedMemory } from './memory-parser.js';
+import { readRuntimeHealth } from '../core/runtime/runtime-health.js';
 import {
   recordEvidenceReadSafe,
   type EvidenceReadClass,
@@ -661,20 +661,39 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
     return 'error: No codebase loaded. Run: ontoindex analyze';
   }
 
-  // Check staleness
+  // Include current runtime health so callers can distinguish a clean index
+  // from one whose source worktree has changed since indexing.
   const repoPath = repo.repoPath;
-  const lastCommit = repo.lastCommit || 'HEAD';
   const analysisCatalog = repoPath ? await loadAnalysisCatalog(repoPath) : null;
-  const staleness = repoPath
-    ? await checkStaleness(repoPath, lastCommit)
-    : { isStale: false, commitsBehind: 0 };
+  const runtimeHealth = repoPath
+    ? await readRuntimeHealth(repoPath, {
+        repoLabel: repo.name,
+        storagePath: repo.storagePath,
+      }).catch(() => null)
+    : null;
 
   const lines: string[] = [`project: ${context.projectName}`];
 
-  if (staleness.isStale && staleness.hint) {
-    lines.push('');
-    lines.push(`staleness: "${staleness.hint}"`);
-  }
+  const freshnessState =
+    runtimeHealth?.freshnessState === 'clean' && runtimeHealth.dirtyWorktree === null
+      ? 'unknown'
+      : (runtimeHealth?.freshnessState ?? 'unknown');
+  const degradedReason =
+    runtimeHealth?.degradedReason ??
+    (repoPath
+      ? runtimeHealth
+        ? null
+        : 'runtime health unavailable'
+      : 'repository path unavailable');
+  lines.push('');
+  lines.push('runtime_health:');
+  lines.push(`  freshness_state: "${freshnessState}"`);
+  lines.push(`  indexed_commit: "${runtimeHealth?.indexedCommit ?? 'unknown'}"`);
+  lines.push(`  current_commit: "${runtimeHealth?.currentCommit ?? 'unknown'}"`);
+  lines.push(
+    `  dirty_worktree: ${runtimeHealth?.dirtyWorktree === null || !runtimeHealth ? 'unknown' : runtimeHealth.dirtyWorktree}`,
+  );
+  lines.push(`  degraded_reason: ${degradedReason ? JSON.stringify(degradedReason) : 'null'}`);
 
   lines.push('');
   lines.push('stats:');

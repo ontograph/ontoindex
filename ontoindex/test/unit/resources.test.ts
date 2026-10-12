@@ -8,7 +8,11 @@
  * - Error handling for invalid URIs
  * - Resource handlers with mocked backend
  */
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+const { readRuntimeHealthMock } = vi.hoisted(() => ({ readRuntimeHealthMock: vi.fn() }));
+vi.mock('../../src/core/runtime/runtime-health.js', () => ({
+  readRuntimeHealth: readRuntimeHealthMock,
+}));
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -126,6 +130,115 @@ describe('getResourceDefinitions', () => {
       expect(def.description).toContain('response=');
       expect(def.description).toContain('suitability=');
     }
+  });
+});
+
+describe('context resource runtime health', () => {
+  beforeEach(() => {
+    readRuntimeHealthMock.mockReset();
+  });
+  const context = {
+    projectName: 'test-project',
+    stats: { fileCount: 10, functionCount: 50, communityCount: 3, processCount: 5 },
+  };
+
+  function health(overrides: Record<string, unknown> = {}) {
+    return {
+      indexedCommit: 'abc1234',
+      currentCommit: 'abc1234',
+      dirtyWorktree: false,
+      freshnessState: 'clean',
+      degradedReason: null,
+      ...overrides,
+    };
+  }
+
+  it('reports clean runtime health and preserves context stats', async () => {
+    readRuntimeHealthMock.mockResolvedValue(health());
+    const backend = createMockBackend({ context });
+
+    const result = await readResource('ontoindex://repo/test-project/context', backend);
+
+    expect(readRuntimeHealthMock).toHaveBeenCalledWith('/tmp/test-repo', {
+      repoLabel: 'test-repo',
+      storagePath: undefined,
+    });
+    expect(result).toContain('runtime_health:');
+    expect(result).toContain('freshness_state: "clean"');
+    expect(result).toContain('indexed_commit: "abc1234"');
+    expect(result).toContain('current_commit: "abc1234"');
+    expect(result).toContain('dirty_worktree: false');
+    expect(result).toContain('files: 10');
+    expect(result).toContain('symbols: 50');
+  });
+
+  it('reports dirty worktrees and commit mismatch from runtime health', async () => {
+    readRuntimeHealthMock.mockResolvedValue(
+      health({
+        indexedCommit: 'abc1234',
+        currentCommit: 'def5678',
+        dirtyWorktree: true,
+        freshnessState: 'dirty',
+        degradedReason: 'dirty worktree contains uncommitted changes',
+      }),
+    );
+    const backend = createMockBackend({ context });
+
+    const result = await readResource('ontoindex://repo/test-project/context', backend);
+
+    expect(result).toContain('freshness_state: "dirty"');
+    expect(result).toContain('indexed_commit: "abc1234"');
+    expect(result).toContain('current_commit: "def5678"');
+    expect(result).toContain('dirty_worktree: true');
+    expect(result).toContain('degraded_reason: "dirty worktree contains uncommitted changes"');
+  });
+
+  it('does not report clean when the dirty-worktree probe is unknown', async () => {
+    readRuntimeHealthMock.mockResolvedValue(health({ dirtyWorktree: null }));
+    const backend = createMockBackend({ context });
+
+    const result = await readResource('ontoindex://repo/test-project/context', backend);
+
+    expect(result).toContain('freshness_state: "unknown"');
+    expect(result).toContain('dirty_worktree: unknown');
+  });
+
+  it('reports a clean worktree whose indexed commit differs as stale', async () => {
+    readRuntimeHealthMock.mockResolvedValue(
+      health({
+        currentCommit: 'def5678',
+        freshnessState: 'stale',
+        degradedReason: 'indexed commit differs from current HEAD',
+      }),
+    );
+    const result = await readResource(
+      'ontoindex://repo/test-project/context',
+      createMockBackend({ context }),
+    );
+    expect(result).toContain('freshness_state: "stale"');
+    expect(result).toContain('dirty_worktree: false');
+    expect(result).toContain('current_commit: "def5678"');
+  });
+
+  it('reports unknown health when the repository path is unavailable', async () => {
+    const backend = createMockBackend({ resolvedRepo: { id: 'r', name: 'test-project' }, context });
+
+    const result = await readResource('ontoindex://repo/test-project/context', backend);
+
+    expect(readRuntimeHealthMock).not.toHaveBeenCalled();
+    expect(result).toContain('freshness_state: "unknown"');
+    expect(result).toContain('degraded_reason: "repository path unavailable"');
+  });
+
+  it('reports bounded unknown health when the runtime probe fails', async () => {
+    readRuntimeHealthMock.mockRejectedValue(new Error('sensitive probe details'));
+    const backend = createMockBackend({ context });
+
+    const result = await readResource('ontoindex://repo/test-project/context', backend);
+
+    expect(result).toContain('freshness_state: "unknown"');
+    expect(result).toContain('degraded_reason: "runtime health unavailable"');
+    expect(result).not.toContain('sensitive probe details');
   });
 });
 

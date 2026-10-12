@@ -1159,6 +1159,8 @@ export class LocalBackend implements BackendPort {
   private initPromise: Promise<boolean> | null = null;
   private groupToolSvc: GroupService | null = null;
   private analysisLocks: Map<string, Promise<void>> = new Map();
+  private removingRepo = false;
+  private operations = new Set<Promise<unknown>>();
   private readonly confirmWrites: boolean;
   private readonly repoFilter?: string;
   private readonly preferredProjectPath?: string;
@@ -1318,13 +1320,15 @@ export class LocalBackend implements BackendPort {
    * Cross-repo group tools (CLI). Shares logic with MCP `group_*` handlers.
    */
   getGroupService(): GroupService {
+    this.assertAvailable();
     if (!this.groupToolSvc) {
       const port: GroupToolPort = {
         resolveRepo: (p) => this.resolveRepo(p),
-        impact: (r, p, options) => this.impact(r as RepoHandle, { ...p, signal: options?.signal }),
-        query: (r, p) => this.query(r as RepoHandle, p),
-        impactByUid: (id, uid, d, o) => this.impactByUid(id, uid, d, o),
-        context: (r, p) => this.context(r as RepoHandle, p),
+        impact: (r, p, options) =>
+          this.withOperation(() => this.impact(r as RepoHandle, { ...p, signal: options?.signal })),
+        query: (r, p) => this.withOperation(() => this.query(r as RepoHandle, p)),
+        impactByUid: (id, uid, d, o) => this.withOperation(() => this.impactByUid(id, uid, d, o)),
+        context: (r, p) => this.withOperation(() => this.context(r as RepoHandle, p)),
       };
       this.groupToolSvc = new GroupService(port);
     }
@@ -1344,12 +1348,65 @@ export class LocalBackend implements BackendPort {
     return next;
   }
 
+  private assertAvailable(): void {
+    if (this.removingRepo) throw new Error('Repository removal is in progress');
+  }
+
+  /** Admit work before yielding so removal cannot miss an accepted operation. */
+  withOperation<T>(fn: () => Promise<T>): Promise<T> {
+    this.assertAvailable();
+    const operation = Promise.resolve().then(fn);
+    this.operations.add(operation);
+    void operation.then(
+      () => this.operations.delete(operation),
+      () => this.operations.delete(operation),
+    );
+    return operation;
+  }
+
+  async withRepoRemoval<T>(name: string, repoPath: string, remove: () => Promise<T>): Promise<T> {
+    this.assertAvailable();
+    this.removingRepo = true;
+    let id = this.repoId(name, repoPath);
+    try {
+      await Promise.allSettled([
+        ...this.operations,
+        ...(this.initPromise ? [this.initPromise] : []),
+      ]);
+      await Promise.allSettled([...this.analysisLocks.values(), ...this.reinitPromises.values()]);
+      // Registry initialization may have published the target after removal began.
+      id = this.repoId(name, repoPath);
+      await this.closeRepoConnections(name, repoPath);
+      return await remove();
+    } finally {
+      this.repos.delete(id);
+      this.contextCache.delete(id);
+      this.initializedRepos.delete(id);
+      this.lastStalenessCheck.delete(id);
+      this.reinitPromises.delete(id);
+      this.analysisLocks.delete(id);
+      this.initPromise = null;
+      this.removingRepo = false;
+    }
+  }
+
   async closeRepoConnections(name: string, repoPath: string): Promise<void> {
     const id = this.repoId(name, repoPath);
-    await closeLbug(id);
-    this.initializedRepos.delete(id);
-    this.lastStalenessCheck.delete(id);
-    this.reinitPromises.delete(id);
+    const target = this.repos.get(id);
+    const ids = new Set([id]);
+    for (const handle of this.repos.values()) {
+      if (
+        path.resolve(handle.repoPath) === path.resolve(repoPath) ||
+        (target && handle.lbugPath === target.lbugPath)
+      )
+        ids.add(handle.id);
+    }
+    for (const repoId of ids) {
+      await this.withRepoLock(repoId, () => closeLbug(repoId));
+      this.initializedRepos.delete(repoId);
+      this.lastStalenessCheck.delete(repoId);
+      this.reinitPromises.delete(repoId);
+    }
   }
 
   // ─── Initialization ──────────────────────────────────────────────
@@ -1359,13 +1416,14 @@ export class LocalBackend implements BackendPort {
    * Returns true if at least one repo is available.
    */
   async init(options: { signal?: AbortSignal } = {}): Promise<boolean> {
+    this.assertAvailable();
     this.throwIfInitAborted(options.signal);
 
     if (!this.initPromise) {
-      const refreshPromise = (async () => {
+      const refreshPromise = this.withOperation(async () => {
         await this.refreshRepos(options.signal);
         return this.repos.size > 0;
-      })();
+      });
       this.initPromise = refreshPromise;
       void refreshPromise
         .finally(() => {
@@ -1591,6 +1649,7 @@ export class LocalBackend implements BackendPort {
    * while the MCP server was running.
    */
   async resolveRepo(repoParam?: string): Promise<RepoHandle> {
+    this.assertAvailable();
     const result = this.resolveRepoFromCache(repoParam);
     if (result.kind === 'resolved') return result.repo;
 
@@ -1644,10 +1703,12 @@ export class LocalBackend implements BackendPort {
   // ─── Lazy LadybugDB Init ────────────────────────────────────────────
 
   private async ensureInitialized(repoId: string): Promise<void> {
-    const handle = this.repos.get(repoId);
-    if (!handle) throw new Error(`Unknown repo: ${repoId}`);
-    return this.withRepoLock(repoId, () =>
-      ensureRepoInitialized({
+    this.assertAvailable();
+    return this.withRepoLock(repoId, () => {
+      this.assertAvailable();
+      const handle = this.repos.get(repoId);
+      if (!handle) throw new Error(`Unknown repo: ${repoId}`);
+      return ensureRepoInitialized({
         repoId,
         handle,
         initializedRepos: this.initializedRepos,
@@ -1657,8 +1718,8 @@ export class LocalBackend implements BackendPort {
         isLbugDbPathReady,
         initLbug,
         closeLbug,
-      }),
-    );
+      });
+    });
   }
 
   async ensureRepoInitialized(repoId: string): Promise<void> {
@@ -1686,6 +1747,7 @@ export class LocalBackend implements BackendPort {
    * without restarting the MCP server.
    */
   async listRepos(options: { refresh?: boolean } = {}): Promise<ListReposResult> {
+    this.assertAvailable();
     if (options.refresh !== false) {
       await this.init();
     }
@@ -1701,38 +1763,40 @@ export class LocalBackend implements BackendPort {
   // ─── Tool Dispatch ───────────────────────────────────────────────
 
   async callTool(method: string, params: unknown): Promise<unknown> {
-    const start = Date.now();
-    let ok = true;
-    let result: unknown;
-    try {
-      const rawResult = await this._callToolImpl(method, params);
-      result = rawResult;
-      return result;
-    } catch (err) {
-      ok = false;
-      throw err;
-    } finally {
-      const durationMs = Date.now() - start;
-      const normalized = this.normalizeToolParams(params);
-      const repoName =
-        typeof normalized.repo === 'string' && !normalized.repo.startsWith('@')
-          ? normalized.repo
-          : '';
-      let responseSizeBytes = 0;
+    return this.withOperation(async () => {
+      const start = Date.now();
+      let ok = true;
+      let result: unknown;
       try {
-        responseSizeBytes = Buffer.byteLength(JSON.stringify(result ?? ''), 'utf8');
-      } catch {
-        // ignore serialisation errors
+        const rawResult = await this._callToolImpl(method, params);
+        result = rawResult;
+        return result;
+      } catch (err) {
+        ok = false;
+        throw err;
+      } finally {
+        const durationMs = Date.now() - start;
+        const normalized = this.normalizeToolParams(params);
+        const repoName =
+          typeof normalized.repo === 'string' && !normalized.repo.startsWith('@')
+            ? normalized.repo
+            : '';
+        let responseSizeBytes = 0;
+        try {
+          responseSizeBytes = Buffer.byteLength(JSON.stringify(result ?? ''), 'utf8');
+        } catch {
+          // ignore serialisation errors
+        }
+        recordToolCall({
+          ts: new Date().toISOString(),
+          method,
+          repo: repoName,
+          durationMs,
+          responseSizeBytes,
+          ok,
+        });
       }
-      recordToolCall({
-        ts: new Date().toISOString(),
-        method,
-        repo: repoName,
-        durationMs,
-        responseSizeBytes,
-        ok,
-      });
-    }
+    });
   }
 
   private async _callToolImpl(method: string, params: unknown): Promise<unknown> {
@@ -2162,9 +2226,11 @@ export class LocalBackend implements BackendPort {
   }
 
   async executeCypher(repoName: string, query: string): Promise<CypherQueryResult> {
-    const repo = await this.resolveRepo(repoName);
-    await this.ensureInitialized(repo.id);
-    return queryCypher(repo, { query });
+    return this.withOperation(async () => {
+      const repo = await this.resolveRepo(repoName);
+      await this.ensureInitialized(repo.id);
+      return queryCypher(repo, { query });
+    });
   }
 
   private async overview(
@@ -2638,9 +2704,11 @@ export class LocalBackend implements BackendPort {
    * Used by getClustersResource — avoids legacy overview() dispatch.
    */
   async queryClusters(repoName?: string, limit = 100): Promise<QueryClustersResult> {
-    const repo = await this.resolveRepo(repoName);
-    await this.ensureInitialized(repo.id);
-    return queryClustersImpl(repo, limit);
+    return this.withOperation(async () => {
+      const repo = await this.resolveRepo(repoName);
+      await this.ensureInitialized(repo.id);
+      return queryClustersImpl(repo, limit);
+    });
   }
 
   /**
@@ -2648,9 +2716,11 @@ export class LocalBackend implements BackendPort {
    * Used by getProcessesResource — avoids legacy overview() dispatch.
    */
   async queryProcesses(repoName?: string, limit = 50): Promise<QueryProcessesResult> {
-    const repo = await this.resolveRepo(repoName);
-    await this.ensureInitialized(repo.id);
-    return queryProcessesImpl(repo, limit);
+    return this.withOperation(async () => {
+      const repo = await this.resolveRepo(repoName);
+      await this.ensureInitialized(repo.id);
+      return queryProcessesImpl(repo, limit);
+    });
   }
 
   /**
@@ -2661,9 +2731,11 @@ export class LocalBackend implements BackendPort {
     name: string,
     repoName?: string,
   ): Promise<QueryClusterDetailWrapperResult> {
-    const repo = await this.resolveRepo(repoName);
-    await this.ensureInitialized(repo.id);
-    return queryClusterDetailImpl(repo, name) as Promise<QueryClusterDetailWrapperResult>;
+    return this.withOperation(async () => {
+      const repo = await this.resolveRepo(repoName);
+      await this.ensureInitialized(repo.id);
+      return queryClusterDetailImpl(repo, name) as Promise<QueryClusterDetailWrapperResult>;
+    });
   }
 
   /**
@@ -2674,9 +2746,11 @@ export class LocalBackend implements BackendPort {
     name: string,
     repoName?: string,
   ): Promise<QueryProcessDetailWrapperResult> {
-    const repo = await this.resolveRepo(repoName);
-    await this.ensureInitialized(repo.id);
-    return queryProcessDetailImpl(repo, name) as Promise<QueryProcessDetailWrapperResult>;
+    return this.withOperation(async () => {
+      const repo = await this.resolveRepo(repoName);
+      await this.ensureInitialized(repo.id);
+      return queryProcessDetailImpl(repo, name) as Promise<QueryProcessDetailWrapperResult>;
+    });
   }
 
   async dispose(): Promise<void> {

@@ -173,6 +173,12 @@ describe('gnToolContract — visible frontier', () => {
       new Set(getRegisteredFacadeToolNames()),
     );
     expect(report.visibleFrontier.note).toContain('discover({action: "tools"})');
+    expect(report.visibleFrontier.note).toContain('Client visibility is unobserved');
+    expect(report.visibleFrontier.note).toContain(
+      'clientVisible is a compatibility alias of hostVisible',
+    );
+    expect(report.visibleFrontier.clientVisible).toEqual(report.visibleFrontier.hostVisible);
+    expect(report.visibleFrontier.hostVisible).toEqual(report.startupProfile.advertised);
     expect(report.visibleFrontier.compatibilityTools.length).toBeGreaterThan(0);
     for (const tool of report.visibleFrontier.hostVisible) {
       expect(report.visibleFrontier.internalCallable).toContain(tool);
@@ -189,6 +195,14 @@ describe('gnToolContract — visible frontier', () => {
 
     expect(report.visibleFrontier.activeStartupProfile).toBe('core');
     expect(report.visibleFrontier.mode).toBe('default');
+    expect(report.visibleFrontier.note).toContain('Client visibility is unobserved');
+    expect(report.visibleFrontier.clientVisible).toEqual(report.visibleFrontier.hostVisible);
+    expect(report.visibleFrontier.hostVisible).toEqual(report.startupProfile.advertised);
+    expect(report.warnings).toContainEqual(
+      expect.stringContaining(
+        'review visibleFrontier.hostVisible and visibleFrontier.internalOnly',
+      ),
+    );
     expect(report.visibleFrontier.internalOnly.length).toBeGreaterThan(0);
     for (const tool of report.visibleFrontier.internalOnly) {
       expect(report.visibleFrontier.hostVisible).not.toContain(tool);

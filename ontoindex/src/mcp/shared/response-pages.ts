@@ -234,11 +234,26 @@ function extractIdentity(text: string): Record<string, string> {
   try {
     const value = JSON.parse(text) as Record<string, unknown>;
     const identity: Record<string, string> = {};
-    copyString(value, identity, 'repoLabel');
-    copyString(value, identity, 'repoPath');
     const freshness = asRecord(value.freshness);
     const targetContext = asRecord(value.targetContext);
     const graphAuthority = asRecord(targetContext?.graphAuthority);
+
+    // Keep repository identity sourced as one pair. The root is the established
+    // response contract; nested context and freshness are fallbacks for newer
+    // capability envelopes that omit those root fields.
+    const rootRepo = repoIdentity(value);
+    const targetRepo = targetContext?.scope === 'global' ? undefined : repoIdentity(targetContext);
+    const freshnessRepo = repoIdentity(freshness);
+    const repo = isCompleteRepoIdentity(rootRepo)
+      ? rootRepo
+      : isCompleteRepoIdentity(targetRepo)
+        ? targetRepo
+        : isCompleteRepoIdentity(freshnessRepo)
+          ? freshnessRepo
+          : rootRepo;
+    if (repo.repoLabel) identity.repoLabel = repo.repoLabel;
+    if (repo.repoPath) identity.repoPath = repo.repoPath;
+
     copyString(freshness, identity, 'graphGenerationId');
     copyString(freshness, identity, 'graphManifestDigest');
     copyString(targetContext, identity, 'graphIndexId');
@@ -248,6 +263,23 @@ function extractIdentity(text: string): Record<string, string> {
   } catch {
     return {};
   }
+}
+
+function repoIdentity(source: Record<string, unknown> | undefined): {
+  repoLabel?: string;
+  repoPath?: string;
+} {
+  const identity: Record<string, string> = {};
+  copyString(source, identity, 'repoLabel');
+  if (!identity.repoLabel) copyString(source, identity, 'repoKey');
+  copyString(source, identity, 'repoPath');
+  return { repoLabel: identity.repoLabel ?? identity.repoKey, repoPath: identity.repoPath };
+}
+
+function isCompleteRepoIdentity(
+  identity: { repoLabel?: string; repoPath?: string } | undefined,
+): identity is { repoLabel: string; repoPath: string } {
+  return Boolean(identity?.repoLabel && identity.repoPath);
 }
 
 function copyString(

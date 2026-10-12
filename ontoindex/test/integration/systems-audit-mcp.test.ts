@@ -44,7 +44,7 @@ describe('systems audit MCP MVP modules', () => {
       primaryGraphFacts: [],
       freshness: { status: 'not-applicable' },
     });
-    expect(report.systemsEvidence.length).toBeGreaterThan(0);
+    expect(report.systemsEvidence).toEqual(expect.arrayContaining([expect.anything()]));
     expect(report.findings[0]).toMatchObject({
       category: 'resource-leaks',
       lifecycleStatusEffect: 'none',
@@ -63,7 +63,7 @@ describe('systems audit MCP MVP modules', () => {
 
     expect(report.skipReasons).not.toContain('no source or systems facts supplied');
     expect(report.warnings).toEqual([]);
-    expect(report.findings.length).toBeGreaterThan(0);
+    expect(report.findings).toEqual(expect.arrayContaining([expect.anything()]));
   });
 
   it('gnTraceBoundary returns unresolved gaps instead of guessing missing receive side', async () => {
@@ -259,6 +259,28 @@ describe('systems audit MCP MVP modules', () => {
     await expect(
       dispatchSuper('gn_resource_trace', { path: '../outside.cpp' }, repo),
     ).rejects.toThrow(/Path is outside repository: \.\.\/outside\.cpp\. Use a path under /);
+  });
+
+  it('gn_resource_trace accepts a filename beginning with two dots', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'ontoindex-resource-trace-'));
+    try {
+      await writeFile(
+        join(repo, '..valid.cpp'),
+        'int fd = open(path, O_RDONLY);\nclose(fd);\n',
+        'utf8',
+      );
+
+      const report = (await dispatchSuper(
+        'gn_resource_trace',
+        { path: '..valid.cpp' },
+        repo,
+      )) as Record<string, unknown>;
+
+      expect(report.filePath).toBe('..valid.cpp');
+      expect(report.records).toEqual(expect.arrayContaining([expect.anything()]));
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
   });
 
   it('gn_resource_trace resolves alias, canonical, and relative paths from a repo-root alias', async () => {

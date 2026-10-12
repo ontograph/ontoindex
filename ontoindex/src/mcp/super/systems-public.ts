@@ -281,7 +281,8 @@ function isMissingPathError(error: unknown): boolean {
 
 function assertInsideRepo(repoRoot: string, candidate: string, inputPath: string): void {
   const relative = path.relative(repoRoot, candidate);
-  if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) return;
+  if (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+    return;
   throw new Error(`Path is outside repository: ${inputPath}. Use a path under ${repoRoot}.`);
 }
 

@@ -109,6 +109,7 @@ interface PoolEntry {
 }
 
 const pool = new Map<string, PoolEntry>();
+const closePromises = new Map<string, Promise<void>>();
 
 /**
  * Listeners notified when a pool entry is torn down (LRU eviction, idle
@@ -186,6 +187,8 @@ interface SharedDB {
   vectorLoaded: boolean;
   /** When true, closeOne skips db.close() — the Database is owned externally. */
   external?: boolean;
+  closed?: boolean;
+  closing?: boolean;
 }
 const dbCache = new Map<string, SharedDB>();
 
@@ -235,7 +238,9 @@ function ensureIdleTimer(): void {
     const now = Date.now();
     for (const [repoId, entry] of pool) {
       if (now - entry.lastUsed > IDLE_TIMEOUT_MS && entry.checkedOut === 0) {
-        closeOne(repoId);
+        void closeOneWhenIdle(repoId).catch((err) =>
+          realStderrWrite(`LadybugDB idle close failed: ${String(err)}\n`),
+        );
       }
     }
   }, 60_000);
@@ -270,7 +275,9 @@ function evictLRU(): void {
     }
   }
   if (oldestId) {
-    closeOne(oldestId);
+    void closeOneWhenIdle(oldestId).catch((err) =>
+      realStderrWrite(`LadybugDB eviction close failed: ${String(err)}\n`),
+    );
   }
 }
 
@@ -279,26 +286,30 @@ function evictLRU(): void {
  * shared Database ref.  Only closes the Database when no other repoIds
  * reference it (refCount === 0).
  */
-function closeOne(repoId: string): void {
+async function closeOne(repoId: string): Promise<void> {
   const entry = pool.get(repoId);
   if (!entry) return;
 
   entry.closed = true;
   entry.closing = true;
+  const shared = dbCache.get(entry.dbPath);
+  if (shared?.refCount === 1) shared.closing = true;
 
   for (const waiter of entry.waiters.splice(0)) {
     clearTimeout(waiter.timer);
     waiter.reject(new Error(`LadybugDB pool closed for repo "${repoId}"`));
   }
 
-  // Close available connections — fire-and-forget with .catch() to prevent
-  // unhandled rejections.  Native close() returns Promise<void> but can crash
-  // the N-API destructor on macOS/Windows; deferring to process exit lets
-  // dangerouslyIgnoreUnhandledErrors absorb the crash.
-  for (const conn of entry.available) {
-    conn.close().catch(() => {});
+  // Keep failed handles registered so deletion cannot mistake failure for closure.
+  const connections = entry.available;
+  const outcomes = await Promise.allSettled(
+    connections.map((conn) => Promise.resolve().then(() => conn.close())),
+  );
+  entry.available = connections.filter((_, index) => outcomes[index].status === 'rejected');
+  const failure = outcomes.find((outcome) => outcome.status === 'rejected');
+  if (failure?.status === 'rejected') {
+    throw failure.reason;
   }
-  entry.available.length = 0;
 
   // Checked-out connections can't be closed here — they're in-flight.
   // The checkin() function detects entry.closed and closes them on return.
@@ -307,20 +318,18 @@ function closeOne(repoId: string): void {
   // External databases (injected via initLbugWithDb) are never closed here;
   // the core adapter owns their lifecycle. Once no pool entries reference one,
   // remove it from this cache so injected DB objects do not stay pinned.
-  const shared = dbCache.get(entry.dbPath);
   if (shared) {
-    shared.refCount--;
-    if (shared.refCount === 0) {
-      if (shared.external) {
-        dbCache.delete(entry.dbPath);
-      } else {
-        shared.db
-          .close()
-          .then(() => shared.generationPin?.release())
-          .catch(() => {});
-        dbCache.delete(entry.dbPath);
+    if (shared.refCount === 1) {
+      if (!shared.external) {
+        if (!shared.closed) {
+          await shared.db.close();
+          shared.closed = true;
+        }
+        await shared.generationPin?.release();
       }
+      dbCache.delete(entry.dbPath);
     }
+    shared.refCount--;
   }
 
   pool.delete(repoId);
@@ -373,24 +382,34 @@ async function waitForCheckedOutConnections(repoId: string, entry: PoolEntry): P
   }
 }
 
-async function closeOneWhenIdle(repoId: string): Promise<void> {
+function closeOneWhenIdle(repoId: string): Promise<void> {
+  const pending = closePromises.get(repoId);
+  if (pending) return pending;
   const entry = pool.get(repoId);
-  if (!entry) return;
+  if (!entry) return Promise.resolve();
   entry.closing = true;
   for (const waiter of entry.waiters.splice(0)) {
     clearTimeout(waiter.timer);
     waiter.reject(new Error(`LadybugDB pool is closing for repo "${repoId}"`));
   }
-  try {
-    await waitForCheckedOutConnections(repoId, entry);
-    closeOne(repoId);
-  } catch (err) {
-    const current = pool.get(repoId);
-    if (current === entry && !entry.closed) {
-      entry.closing = false;
+  const promise = (async () => {
+    try {
+      await waitForCheckedOutConnections(repoId, entry);
+      await closeOne(repoId);
+    } catch (err) {
+      const current = pool.get(repoId);
+      if (current === entry && !entry.closed) {
+        entry.closing = false;
+      }
+      throw err;
     }
-    throw err;
-  }
+  })();
+  closePromises.set(repoId, promise);
+  void promise.then(
+    () => closePromises.delete(repoId),
+    () => closePromises.delete(repoId),
+  );
+  return promise;
 }
 
 /**
@@ -546,6 +565,7 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
     const existing = pool.get(repoId);
     if (existing) {
       const identity = await readDbIdentity(dbPath);
+      if (existing.closing || existing.closed) throw new Error('LadybugDB database is closing');
       if (identity !== null && existing.dbIdentity !== null && identity !== existing.dbIdentity) {
         // Drain the old generation before opening its replacement.
         await closeOneWhenIdle(repoId);
@@ -586,6 +606,13 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     // Reuse an existing native Database if another repoId already opened this path.
     // This prevents buffer manager exhaustion from multiple mmap regions on the same file.
     let shared = dbCache.get(dbPath);
+    if (
+      shared?.closing ||
+      shared?.closed ||
+      [...pool.values()].some((entry) => entry.dbPath === dbPath && (entry.closing || entry.closed))
+    ) {
+      throw new Error('LadybugDB database is closing');
+    }
     if (!shared) {
       // Open in read-only mode — MCP server never writes to the database.
       // This allows multiple MCP server instances to read concurrently, and
@@ -745,6 +772,13 @@ export async function initLbugWithDb(
   // a new one (which would fail with a file lock error).
   // closeOne() respects the external flag and skips db.close().
   let shared = dbCache.get(dbPath);
+  if (
+    shared?.closing ||
+    shared?.closed ||
+    [...pool.values()].some((entry) => entry.dbPath === dbPath && (entry.closing || entry.closed))
+  ) {
+    throw new Error('LadybugDB database is closing');
+  }
   if (!shared) {
     shared = { db: existingDb, refCount: 0, ftsLoaded: false, vectorLoaded: false, external: true };
     dbCache.set(dbPath, shared);
@@ -1137,7 +1171,11 @@ export const executeParameterized = async <TRow extends object = LbugQueryRow>(
  */
 export const closeLbug = async (repoId?: string): Promise<void> => {
   if (repoId) {
-    await closeOneWhenIdle(repoId);
+    const dbPath = pool.get(repoId)?.dbPath;
+    const ids = dbPath
+      ? [...pool].filter(([, entry]) => entry.dbPath === dbPath).map(([id]) => id)
+      : [repoId];
+    for (const id of ids) await closeOneWhenIdle(id);
     return;
   }
 

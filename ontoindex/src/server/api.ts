@@ -1153,7 +1153,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // SSE heartbeat — clients connect to detect server liveness instantly.
   // When the server shuts down, the TCP connection drops and the client's
   // EventSource fires onerror immediately (no polling delay).
+  const heartbeatResponses = new Set<express.Response>();
   app.get('/api/heartbeat', (_req, res) => {
+    heartbeatResponses.add(res);
     // Use res.set() instead of res.writeHead() to preserve CORS headers from middleware
     res.set({
       'Content-Type': 'text/event-stream',
@@ -1167,7 +1169,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     // Keep-alive ping every 15s to prevent proxy/firewall timeout
     const interval = setInterval(() => res.write(':ping\n\n'), 15_000);
 
-    _req.on('close', () => clearInterval(interval));
+    res.on('close', () => {
+      clearInterval(interval);
+      heartbeatResponses.delete(res);
+    });
   });
 
   // Server info: version and launch context (npx / global / local dev)
@@ -1276,38 +1281,28 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
 
       try {
-        // Close this repo's open LadybugDB handle before deleting files
-        try {
-          await closeLbugForPath(await resolveActiveLbugPath(entry.storagePath));
-          await closeLbugForPath(path.join(entry.storagePath, 'lbug'));
-        } catch {}
-        await backend.closeRepoConnections(entry.name, entry.path);
+        await backend.withRepoRemoval(entry.name, entry.path, async () => {
+          await closeLbugForPath(await resolveActiveLbugPath(entry.storagePath), { strict: true });
+          await closeLbugForPath(path.join(entry.storagePath, 'lbug'), { strict: true });
 
-        // 1. Delete the .ontoindex index/storage directory
-        const storagePath = getStoragePath(entry.path);
-        await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
+          const storagePath = getStoragePath(entry.path);
+          await fs.rm(storagePath, { recursive: true, force: true });
 
-        // 2. Delete the cloned repo dir if it lives under ~/.ontoindex/repos/
-        const cloneDir = getCloneDir(entry.name);
-        try {
-          const stat = await fs.stat(cloneDir);
-          if (stat.isDirectory()) {
-            await fs.rm(cloneDir, { recursive: true, force: true });
+          // A matching name alone does not establish ownership of a clone.
+          const cloneDir = getCloneDir(entry.name);
+          if (path.resolve(entry.path) === path.resolve(cloneDir)) {
+            try {
+              const stat = await fs.stat(cloneDir);
+              if (stat.isDirectory()) await fs.rm(cloneDir, { recursive: true, force: true });
+            } catch (err) {
+              if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+            }
           }
-        } catch {
-          /* clone dir may not exist (local repos) */
-        }
-
-        // 3. Unregister from the global registry
-        const { unregisterRepo } = await import('../storage/repo-manager.js');
-        await unregisterRepo(entry.path);
-
-        // 4. Reinitialize backend to reflect the removal
-        await initBackendWithTimeout(backend, 'backend.init deleteRepo').catch((err) => {
-          console.warn(
-            `[server] backend refresh failed after delete: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          const { unregisterRepo } = await import('../storage/repo-manager.js');
+          await unregisterRepo(entry.path);
         });
+
+        await initBackendWithTimeout(backend, 'backend.init deleteRepo');
 
         res.json({ deleted: entry.name });
       } finally {
@@ -1947,17 +1942,41 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     server.on('error', (err) => reject(err));
 
     // Graceful shutdown — close Express + LadybugDB cleanly
-    const shutdown = async () => {
-      console.log('\nShutting down...');
-      server.close();
-      await jobManager.dispose();
-      await embedJobManager.dispose();
-      await cleanupMcp();
-      await closeLbug();
-      await backend.dispose();
-      process.exit(0);
+    let shutdownPromise: Promise<void> | undefined;
+    const shutdown = () => {
+      shutdownPromise ??= Promise.resolve().then(async () => {
+        console.log('\nShutting down...');
+        const httpClosed = new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
+        for (const response of heartbeatResponses) response.end();
+        // Streams must close before waiting for the HTTP listener to drain.
+        const outcomes = await Promise.allSettled([
+          httpClosed,
+          cleanupMcp(),
+          jobManager.dispose(),
+          embedJobManager.dispose(),
+        ]);
+        const failed = outcomes.find((outcome) => outcome.status === 'rejected');
+        if (failed?.status === 'rejected') throw failed.reason;
+        await closeLbug();
+        await backend.dispose();
+      });
+      return shutdownPromise;
     };
-    process.once('SIGINT', shutdown);
-    process.once('SIGTERM', shutdown);
+    let signalReceived = false;
+    const onSignal = () => {
+      if (signalReceived) return;
+      signalReceived = true;
+      void shutdown().then(
+        () => process.exit(0),
+        (error) => {
+          console.error('Shutdown failed:', error);
+          process.exit(1);
+        },
+      );
+    };
+    process.once('SIGINT', onSignal);
+    process.once('SIGTERM', onSignal);
   });
 };

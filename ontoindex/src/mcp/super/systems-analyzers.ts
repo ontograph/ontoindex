@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+import { resolveContainedRealPath } from '../local/path-util.js';
 import { createEnvelopeFromLegacy } from '../shared/response-envelope.js';
 import { resolveTargetContext } from '../shared/target-context.js';
 import { readRegistry } from '../../storage/repo-manager.js';
@@ -350,20 +351,30 @@ async function resolveRepoPath(repoId: string): Promise<string> {
 
 function assertPathWithinRepo(repoPath: string, absolutePath: string, inputPath: string): void {
   const relative = path.relative(repoPath, absolutePath);
-  if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) return;
+  if (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+    return;
 
   throw new Error(`Path is outside repository: ${inputPath}. Use a path under ${repoPath}.`);
 }
 
 async function resolveInputPath(repoId: string, inputPath: string): Promise<ResolvedInputPath> {
   const repoPath = await resolveRepoPath(repoId);
-  const absolutePath = path.isAbsolute(inputPath)
-    ? path.resolve(inputPath)
-    : path.resolve(repoPath, inputPath);
+  const realRepoPath = await fs.realpath(repoPath);
+  if (!path.isAbsolute(inputPath)) {
+    assertPathWithinRepo(repoPath, path.resolve(repoPath, inputPath), inputPath);
+  }
 
-  assertPathWithinRepo(repoPath, absolutePath, inputPath);
+  let absolutePath: string;
+  try {
+    absolutePath = await resolveContainedRealPath(repoPath, inputPath);
+  } catch (error) {
+    if (error instanceof Error && error.message === `Path escapes repository: ${inputPath}`) {
+      throw new Error(`Path is outside repository: ${inputPath}. Use a path under ${repoPath}.`);
+    }
+    throw error;
+  }
 
-  const repoRelativePath = path.relative(repoPath, absolutePath).split(path.sep).join('/');
+  const repoRelativePath = path.relative(realRepoPath, absolutePath).split(path.sep).join('/');
   return {
     absolutePath,
     repoPath,

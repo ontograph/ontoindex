@@ -23,6 +23,8 @@ import {
   ListResourceTemplatesRequestSchema,
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
+  McpError,
+  ErrorCode,
 } from '@modelcontextprotocol/sdk/types.js';
 import { INTERNAL_TOOL_HANDLERS } from './tools.js';
 import { dispatchFacade, type FacadeTool } from './facade/dispatch.js';
@@ -48,6 +50,7 @@ import {
 } from './shared/response-pages.js';
 
 const MAX_ERROR_URI_CHARS = 4096;
+const MAX_PROMPT_ARGUMENT_BYTES = 4096;
 
 const GRAPH_BACKED_SUPER_TOOLS = new Set<SuperTool>([
   'gn_explore',
@@ -332,95 +335,130 @@ export function createMCPServer(
     },
   );
 
+  const activeRequests = new Set<Promise<unknown>>();
+  let closing = false;
+  let closePromise: Promise<void> | undefined;
+  function trackRequest<T>(operation: () => Promise<T>): Promise<T> {
+    if (closing) return Promise.reject(new McpError(ErrorCode.InternalError, 'Server is closing.'));
+    const pending = Promise.resolve().then(() =>
+      typeof backend.withOperation === 'function' ? backend.withOperation(operation) : operation(),
+    );
+    activeRequests.add(pending);
+    void pending.then(
+      () => activeRequests.delete(pending),
+      () => activeRequests.delete(pending),
+    );
+    return pending;
+  }
+  const closeTransport = server.close.bind(server);
+  server.close = () => {
+    closing = true;
+    closePromise ??= Promise.resolve().then(async () => {
+      try {
+        await closeTransport();
+      } finally {
+        await Promise.allSettled([...activeRequests]);
+      }
+    });
+    return closePromise;
+  };
+
   // Handle list resources request
-  server.setRequestHandler(ListResourcesRequestSchema, async () => {
-    const resources = getResourceDefinitions();
-    return {
-      resources: resources.map((r) => ({
-        uri: r.uri,
-        name: r.name,
-        description: r.description,
-        mimeType: r.mimeType,
-      })),
-    };
-  });
+  server.setRequestHandler(ListResourcesRequestSchema, () =>
+    trackRequest(async () => {
+      const resources = getResourceDefinitions();
+      return {
+        resources: resources.map((r) => ({
+          uri: r.uri,
+          name: r.name,
+          description: r.description,
+          mimeType: r.mimeType,
+        })),
+      };
+    }),
+  );
 
   // Handle list resource templates request (for dynamic resources)
-  server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
-    const templates = getResourceTemplates();
-    return {
-      resourceTemplates: templates.map((t) => ({
-        uriTemplate: t.uriTemplate,
-        name: t.name,
-        description: t.description,
-        mimeType: t.mimeType,
-      })),
-    };
-  });
+  server.setRequestHandler(ListResourceTemplatesRequestSchema, () =>
+    trackRequest(async () => {
+      const templates = getResourceTemplates();
+      return {
+        resourceTemplates: templates.map((t) => ({
+          uriTemplate: t.uriTemplate,
+          name: t.name,
+          description: t.description,
+          mimeType: t.mimeType,
+        })),
+      };
+    }),
+  );
 
   // Handle read resource request
-  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    const { uri } = request.params;
+  server.setRequestHandler(ReadResourceRequestSchema, (request) =>
+    trackRequest(async () => {
+      const { uri } = request.params;
 
-    try {
-      const content = await readResource(uri, backend);
-      const parsed = parseResourceUri(uri);
-      let canonicalUri = uri;
-      if (parsed.kind === 'repo') {
-        canonicalUri =
-          `ontoindex://repo/${encodeURIComponent(parsed.repoName)}/${parsed.resourceType}` +
-          (parsed.param === undefined ? '' : `/${encodeURIComponent(parsed.param)}`);
-      } else if (parsed.kind === 'group') {
-        canonicalUri = `ontoindex://group/${encodeURIComponent(parsed.groupName)}/${parsed.resourceType}`;
+      try {
+        const content = await readResource(uri, backend);
+        const parsed = parseResourceUri(uri);
+        let canonicalUri = uri;
+        if (parsed.kind === 'repo') {
+          canonicalUri =
+            `ontoindex://repo/${encodeURIComponent(parsed.repoName)}/${parsed.resourceType}` +
+            (parsed.param === undefined ? '' : `/${encodeURIComponent(parsed.param)}`);
+        } else if (parsed.kind === 'group') {
+          canonicalUri = `ontoindex://group/${encodeURIComponent(parsed.groupName)}/${parsed.resourceType}`;
+        }
+        const resource =
+          getResourceDefinitions().find((entry) => entry.uri === canonicalUri) ??
+          getResourceTemplates().find((entry) =>
+            new UriTemplate(entry.uriTemplate).match(canonicalUri),
+          );
+        const response = {
+          contents: [
+            {
+              uri,
+              mimeType: resource?.mimeType ?? 'text/plain',
+              text: boundMcpErrorText(
+                (text) => text,
+                content,
+                MCP_RESPONSE_MAX_BYTES,
+                (text) =>
+                  Buffer.byteLength(
+                    JSON.stringify({
+                      contents: [{ uri, mimeType: resource?.mimeType ?? 'text/plain', text }],
+                    }),
+                    'utf8',
+                  ),
+              ),
+            },
+          ],
+        };
+        if (Buffer.byteLength(JSON.stringify(response), 'utf8') > MCP_RESPONSE_MAX_BYTES) {
+          throw new Error('Resource response exceeded the byte limit.');
+        }
+        return response;
+      } catch (err: unknown) {
+        // Bound the whole resource envelope: cap the echoed URI and reserve its bytes.
+        const echoedUri =
+          uri.length > MAX_ERROR_URI_CHARS ? uri.slice(0, MAX_ERROR_URI_CHARS) : uri;
+        const reservedBytes = Buffer.byteLength(JSON.stringify(echoedUri), 'utf8') + 64;
+        return {
+          contents: [
+            {
+              uri: echoedUri,
+              mimeType: 'text/plain',
+              text: boundMcpErrorText(
+                (message) => `Error: ${message}`,
+                String(getReadResourceErrorMessage(err)),
+                MCP_RESPONSE_MAX_BYTES - reservedBytes,
+              ),
+            },
+          ],
+        };
       }
-      const resource =
-        getResourceDefinitions().find((entry) => entry.uri === canonicalUri) ??
-        getResourceTemplates().find((entry) =>
-          new UriTemplate(entry.uriTemplate).match(canonicalUri),
-        );
-      const response = {
-        contents: [
-          {
-            uri,
-            mimeType: resource?.mimeType ?? 'text/plain',
-            text: boundMcpErrorText(
-              (text) => text,
-              content,
-              MCP_RESPONSE_MAX_BYTES,
-              (text) =>
-                Buffer.byteLength(
-                  JSON.stringify({
-                    contents: [{ uri, mimeType: resource?.mimeType ?? 'text/plain', text }],
-                  }),
-                  'utf8',
-                ),
-            ),
-          },
-        ],
-      };
-      if (Buffer.byteLength(JSON.stringify(response), 'utf8') > MCP_RESPONSE_MAX_BYTES) {
-        throw new Error('Resource response exceeded the byte limit.');
-      }
-      return response;
-    } catch (err: unknown) {
-      // Bound the whole resource envelope: cap the echoed URI and reserve its bytes.
-      const echoedUri = uri.length > MAX_ERROR_URI_CHARS ? uri.slice(0, MAX_ERROR_URI_CHARS) : uri;
-      const reservedBytes = Buffer.byteLength(JSON.stringify(echoedUri), 'utf8') + 64;
-      return {
-        contents: [
-          {
-            uri: echoedUri,
-            mimeType: 'text/plain',
-            text: boundMcpErrorText(
-              (message) => `Error: ${message}`,
-              String(getReadResourceErrorMessage(err)),
-              MCP_RESPONSE_MAX_BYTES - reservedBytes,
-            ),
-          },
-        ],
-      };
-    }
-  });
+    }),
+  );
 
   // Handle list tools request
   const startupProfile = getMcpStartupProfileFromEnv();
@@ -443,13 +481,15 @@ export function createMCPServer(
     return schema;
   }
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: activeTools.map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: relaxSchemaForClient(withResponseCursor(tool.inputSchema)),
+  server.setRequestHandler(ListToolsRequestSchema, () =>
+    trackRequest(async () => ({
+      tools: activeTools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: relaxSchemaForClient(withResponseCursor(tool.inputSchema)),
+      })),
     })),
-  }));
+  );
 
   // Handle tool calls — append next-step hints to guide agent workflow
   const FACADE_NAMES = new Set<string>([
@@ -462,128 +502,153 @@ export function createMCPServer(
     'manage',
     'docs',
   ]);
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
-    const typedArgs = (args ?? {}) as Record<string, unknown>;
-    let repoIdentity: RepoIdentity | null = null;
+  server.setRequestHandler(CallToolRequestSchema, (request) =>
+    trackRequest(async () => {
+      const { name, arguments: args } = request.params;
+      const typedArgs = (args ?? {}) as Record<string, unknown>;
+      let repoIdentity: RepoIdentity | null = null;
 
-    try {
-      if (options.transport === 'http' && name === 'gn_quality_mode') {
-        throw new Error(
-          'gn_quality_mode is unavailable over HTTP because it changes process-wide configuration.',
-        );
-      }
-      const responseCursor =
-        typeof typedArgs.response_cursor === 'string' ? typedArgs.response_cursor : undefined;
-      if (responseCursor) {
+      try {
+        if (options.transport === 'http' && name === 'gn_quality_mode') {
+          throw new Error(
+            'gn_quality_mode is unavailable over HTTP because it changes process-wide configuration.',
+          );
+        }
+        const responseCursor =
+          typeof typedArgs.response_cursor === 'string' ? typedArgs.response_cursor : undefined;
+        if (responseCursor) {
+          const page = await pageMcpResponse({
+            tool: name,
+            args: typedArgs,
+            cursor: responseCursor,
+          });
+          return { content: [{ type: 'text', text: page.text }] };
+        }
+
+        let result: unknown;
+        if (!options.full && SUPER_NAMES.has(name as SuperTool)) {
+          if (isRepoOptionalSuperToolName(name)) {
+            result = await dispatchLazySuper(name as SuperTool, typedArgs, '');
+          } else {
+            const repo = await backend.resolveRepo(typedArgs.repo as string | undefined);
+            repoIdentity = {
+              repoLabel: repo.name ?? repo.id,
+              repoPath: repo.repoPath,
+            };
+            if (GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool)) {
+              await backend.ensureRepoInitialized(repo.id);
+            }
+            result = attachRepoScopeIdentity(
+              await dispatchLazySuper(
+                name as SuperTool,
+                typedArgs,
+                repo.id,
+                name === 'gn_safe_refactor'
+                  ? {
+                      repoPath: repo.repoPath,
+                      callTool: backend.callTool.bind(backend),
+                    }
+                  : undefined,
+              ),
+              repo,
+            );
+          }
+        } else if (!options.full && FACADE_NAMES.has(name)) {
+          const action = typedArgs.action as string;
+          if (!action) throw new Error(`Tool "${name}" requires an "action" parameter.`);
+          result = await dispatchFacade(name as FacadeTool, action, typedArgs, backend);
+        } else {
+          result = await backend.callTool(name, typedArgs);
+        }
+        const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+        const hint = getNextStepHint(name, typedArgs);
         const page = await pageMcpResponse({
           tool: name,
           args: typedArgs,
-          cursor: responseCursor,
+          text: resultText + hint,
+          identityText: resultText,
         });
-        return { content: [{ type: 'text', text: page.text }] };
+        return {
+          content: [{ type: 'text', text: page.text }],
+        };
+      } catch (error) {
+        const scopedRepoIdentity = repoIdentity ?? readRepoIdentity(error);
+        return {
+          content: [{ type: 'text', text: formatToolCallErrorMessage(error, scopedRepoIdentity) }],
+          isError: true,
+        };
       }
-
-      let result: unknown;
-      if (!options.full && SUPER_NAMES.has(name as SuperTool)) {
-        if (isRepoOptionalSuperToolName(name)) {
-          result = await dispatchLazySuper(name as SuperTool, typedArgs, '');
-        } else {
-          const repo = await backend.resolveRepo(typedArgs.repo as string | undefined);
-          repoIdentity = {
-            repoLabel: repo.name ?? repo.id,
-            repoPath: repo.repoPath,
-          };
-          if (GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool)) {
-            await backend.ensureRepoInitialized(repo.id);
-          }
-          result = attachRepoScopeIdentity(
-            await dispatchLazySuper(
-              name as SuperTool,
-              typedArgs,
-              repo.id,
-              name === 'gn_safe_refactor'
-                ? {
-                    repoPath: repo.repoPath,
-                    callTool: backend.callTool.bind(backend),
-                  }
-                : undefined,
-            ),
-            repo,
-          );
-        }
-      } else if (!options.full && FACADE_NAMES.has(name)) {
-        const action = typedArgs.action as string;
-        if (!action) throw new Error(`Tool "${name}" requires an "action" parameter.`);
-        result = await dispatchFacade(name as FacadeTool, action, typedArgs, backend);
-      } else {
-        result = await backend.callTool(name, typedArgs);
-      }
-      const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-      const hint = getNextStepHint(name, typedArgs);
-      const page = await pageMcpResponse({
-        tool: name,
-        args: typedArgs,
-        text: resultText + hint,
-        identityText: resultText,
-      });
-      return {
-        content: [{ type: 'text', text: page.text }],
-      };
-    } catch (error) {
-      const scopedRepoIdentity = repoIdentity ?? readRepoIdentity(error);
-      return {
-        content: [{ type: 'text', text: formatToolCallErrorMessage(error, scopedRepoIdentity) }],
-        isError: true,
-      };
-    }
-  });
+    }),
+  );
 
   // Handle list prompts request
-  server.setRequestHandler(ListPromptsRequestSchema, async () => ({
-    prompts: [
-      {
-        name: 'detect_impact',
-        description:
-          'Analyze the impact of your current changes before committing. Guides through scope selection, change detection, process analysis, and risk assessment.',
-        arguments: [
-          {
-            name: 'scope',
-            description: 'What to analyze: unstaged, staged, all, or compare',
-            required: false,
-          },
-          { name: 'base_ref', description: 'Branch/commit for compare scope', required: false },
-        ],
-      },
-      {
-        name: 'generate_map',
-        description:
-          'Generate architecture documentation from the knowledge graph. Creates a codebase overview with execution flows and mermaid diagrams.',
-        arguments: [
-          {
-            name: 'repo',
-            description: 'Repository name (omit if only one indexed)',
-            required: false,
-          },
-        ],
-      },
-    ],
-  }));
+  server.setRequestHandler(ListPromptsRequestSchema, () =>
+    trackRequest(async () => ({
+      prompts: [
+        {
+          name: 'detect_impact',
+          description:
+            'Analyze the impact of your current changes before committing. Guides through scope selection, change detection, process analysis, and risk assessment.',
+          arguments: [
+            {
+              name: 'scope',
+              description: 'What to analyze: unstaged, staged, all, or compare',
+              required: false,
+            },
+            { name: 'base_ref', description: 'Branch/commit for compare scope', required: false },
+          ],
+        },
+        {
+          name: 'generate_map',
+          description:
+            'Generate architecture documentation from the knowledge graph. Creates a codebase overview with execution flows and mermaid diagrams.',
+          arguments: [
+            {
+              name: 'repo',
+              description: 'Repository name (omit if only one indexed)',
+              required: false,
+            },
+          ],
+        },
+      ],
+    })),
+  );
 
   // Handle get prompt request
-  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
+  server.setRequestHandler(GetPromptRequestSchema, (request) =>
+    trackRequest(async () => {
+      const { name, arguments: args } = request.params;
+      const argument = (key: string): string => {
+        const value = args?.[key];
+        if (value === undefined) return '';
+        if (
+          typeof value !== 'string' ||
+          Buffer.byteLength(value, 'utf8') > MAX_PROMPT_ARGUMENT_BYTES
+        ) {
+          throw new McpError(ErrorCode.InvalidParams, 'Invalid prompt argument.');
+        }
+        return value;
+      };
+      const boundedPrompt = <T>(response: T): T => {
+        if (Buffer.byteLength(JSON.stringify(response), 'utf8') > MCP_RESPONSE_MAX_BYTES) {
+          throw new McpError(ErrorCode.InvalidParams, 'Prompt response exceeded the byte limit.');
+        }
+        return response;
+      };
 
-    if (name === 'detect_impact') {
-      const scope = args?.scope || 'all';
-      const baseRef = args?.base_ref || '';
-      return {
-        messages: [
-          {
-            role: 'user' as const,
-            content: {
-              type: 'text' as const,
-              text: `Analyze the impact of my current code changes before committing.
+      if (name === 'detect_impact') {
+        const scope = argument('scope') || 'all';
+        const baseRef = argument('base_ref');
+        if (!['unstaged', 'staged', 'all', 'compare'].includes(scope)) {
+          throw new McpError(ErrorCode.InvalidParams, 'Invalid impact scope.');
+        }
+        return boundedPrompt({
+          messages: [
+            {
+              role: 'user' as const,
+              content: {
+                type: 'text' as const,
+                text: `Analyze the impact of my current code changes before committing.
 
 Follow these steps:
 1. Run \`impact(${JSON.stringify({ action: 'diff', scope, ...(baseRef ? { base_ref: baseRef } : {}) })})\` to find what changed and affected processes
@@ -592,21 +657,21 @@ Follow these steps:
 4. Summarize: changes, affected processes, risk level, and recommended actions
 
 Present the analysis as a clear risk report.`,
+              },
             },
-          },
-        ],
-      };
-    }
+          ],
+        });
+      }
 
-    if (name === 'generate_map') {
-      const repo = args?.repo || '';
-      return {
-        messages: [
-          {
-            role: 'user' as const,
-            content: {
-              type: 'text' as const,
-              text: `Generate architecture documentation for this codebase using the knowledge graph.
+      if (name === 'generate_map') {
+        const repo = argument('repo');
+        return boundedPrompt({
+          messages: [
+            {
+              role: 'user' as const,
+              content: {
+                type: 'text' as const,
+                text: `Generate architecture documentation for this codebase using the knowledge graph.
 
 Follow these steps:
 1. READ \`ontoindex://repo/${repo || '{name}'}/context\` for codebase stats
@@ -615,14 +680,15 @@ Follow these steps:
 4. For the top 5 most important processes, READ \`ontoindex://repo/${repo || '{name}'}/process/{name}\` for step-by-step traces
 5. Generate a mermaid architecture diagram showing the major areas and their connections
 6. Write an ARCHITECTURE.md file with: overview, functional areas, key execution flows, and the mermaid diagram`,
+              },
             },
-          },
-        ],
-      };
-    }
+          ],
+        });
+      }
 
-    throw new Error(`Unknown prompt: ${name}`);
-  });
+      throw new McpError(ErrorCode.InvalidParams, 'Unknown prompt.');
+    }),
+  );
 
   return server;
 }
@@ -670,10 +736,10 @@ export async function startMCPServer(
     if (shuttingDown) return;
     shuttingDown = true;
     try {
-      await backend.dispose();
+      await server.close();
     } catch {}
     try {
-      await server.close();
+      await backend.dispose();
     } catch {}
     process.exit(exitCode);
   };
