@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn(),
   opens: vi.fn(),
   releasePin: vi.fn(async () => {}),
+  construct: vi.fn(),
+  realpath: vi.fn(),
 }));
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
@@ -15,7 +17,8 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
 
 vi.mock('fs/promises', () => ({
   default: {
-    realpath: async () => mocks.identity,
+    realpath: async () =>
+      mocks.realpath.getMockImplementation() ? mocks.realpath() : mocks.identity,
     stat: async () => ({ ino: 1, size: 1, mtimeMs: 1 }),
   },
 }));
@@ -31,13 +34,22 @@ vi.mock('@ladybugdb/core', () => ({
       close = mocks.dbClose;
     },
     Connection: class {
+      constructor() {
+        mocks.construct();
+      }
       query = mocks.query;
       close = mocks.connClose;
     },
   },
 }));
 
-import { closeLbug, executeQuery, initLbug } from '../../src/core/lbug/pool-adapter.js';
+import {
+  closeLbug,
+  executeQuery,
+  initLbug,
+  initLbugWithDb,
+  isLbugDbPathReady,
+} from '../../src/core/lbug/pool-adapter.js';
 
 const result = () => ({ getAll: async () => [], close: async () => {} });
 const releases: Array<() => void> = [];
@@ -65,7 +77,10 @@ describe('pool lifecycle drain', () => {
     vi.useRealTimers();
     try {
       await Promise.allSettled(pendingTasks.splice(0));
-      await closeLbug('lifecycle');
+      mocks.connClose.mockResolvedValue(undefined);
+      mocks.dbClose.mockResolvedValue(undefined);
+      mocks.releasePin.mockResolvedValue(undefined);
+      await closeLbug();
     } finally {
       vi.resetAllMocks();
       mocks.dbClose.mockResolvedValue(undefined);
@@ -197,5 +212,190 @@ describe('pool lifecycle drain', () => {
     await closeLbug('lifecycle');
     expect(mocks.connClose).toHaveBeenCalledTimes(2);
     expect(mocks.dbClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('awaits timeout retirement before database close and retains a stalled close', async () => {
+    vi.useFakeTimers();
+    mocks.query.mockImplementation(async () => result());
+    await initLbug('lifecycle', '/db');
+    const active = deferred();
+    mocks.query.mockImplementationOnce(() => active.promise);
+    const query = track(executeQuery('lifecycle', 'RETURN 1'));
+    const timeout = expect(query).rejects.toThrow('timed out');
+    await vi.advanceTimersByTimeAsync(30_000);
+    await timeout;
+    const nativeClose = deferred();
+    mocks.connClose.mockImplementationOnce(async () => {
+      await nativeClose.promise;
+    });
+    active.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    const closing = track(closeLbug('lifecycle'));
+    const stalled = expect(closing).rejects.toThrow('Timed out waiting');
+    await vi.advanceTimersByTimeAsync(10_000);
+    await stalled;
+    expect(mocks.dbClose).not.toHaveBeenCalled();
+    expect(isLbugDbPathReady('/db')).toBe(true);
+    nativeClose.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    await closeLbug('lifecycle');
+    expect(mocks.connClose).toHaveBeenCalledTimes(2);
+    expect(mocks.dbClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains a rejected retirement handle and blocks aliases until explicit cleanup', async () => {
+    vi.useFakeTimers();
+    mocks.query.mockImplementation(async () => result());
+    await initLbug('lifecycle', '/db');
+    const active = deferred();
+    mocks.query.mockImplementationOnce(() => active.promise);
+    const query = track(executeQuery('lifecycle', 'RETURN 1'));
+    const timeout = expect(query).rejects.toThrow('timed out');
+    await vi.advanceTimersByTimeAsync(30_000);
+    await timeout;
+    mocks.connClose.mockRejectedValue(new Error('retired close failed'));
+    active.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(initLbug('alias', '/db')).rejects.toThrow('database is closing');
+    await expect(closeLbug('lifecycle')).rejects.toThrow('retired close failed');
+    expect(mocks.dbClose).not.toHaveBeenCalled();
+    mocks.connClose.mockResolvedValue(undefined);
+    await closeLbug('lifecycle');
+    expect(mocks.dbClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('awaits partial-construction cleanup before initialization rejects', async () => {
+    mocks.query.mockImplementation(async () => result());
+    mocks.construct
+      .mockImplementationOnce(() => {})
+      .mockImplementationOnce(() => {
+        throw new Error('construction failed');
+      });
+    const nativeClose = deferred();
+    mocks.connClose.mockImplementation(async () => {
+      await nativeClose.promise;
+    });
+    const opening = track(initLbug('lifecycle', '/db'));
+    const rejected = expect(opening).rejects.toThrow('construction failed');
+    await vi.waitFor(() => expect(mocks.connClose).toHaveBeenCalledTimes(1));
+    expect(mocks.dbClose).not.toHaveBeenCalled();
+    await expect(initLbug('alias', '/db')).rejects.toThrow('database is closing');
+    nativeClose.resolve();
+    await rejected;
+    expect(mocks.dbClose).toHaveBeenCalledTimes(1);
+    expect(isLbugDbPathReady('/db')).toBe(false);
+  });
+
+  it.each(['connection', 'database', 'pin'])(
+    'retains failed initialization %s cleanup for retry',
+    async (stage) => {
+      mocks.query.mockImplementation(async () => result());
+      mocks.construct
+        .mockImplementationOnce(() => {})
+        .mockImplementationOnce(() => {
+          throw new Error('construction failed');
+        });
+      const closer =
+        stage === 'connection'
+          ? mocks.connClose
+          : stage === 'database'
+            ? mocks.dbClose
+            : mocks.releasePin;
+      closer.mockRejectedValue(new Error(`${stage} failed`));
+      await expect(initLbug('lifecycle', '/db')).rejects.toThrow(`${stage} failed`);
+      expect(isLbugDbPathReady('/db')).toBe(true);
+      const opens = mocks.opens.mock.calls.length;
+      await expect(initLbug('lifecycle', '/db')).rejects.toThrow('database is closing');
+      expect(mocks.opens).toHaveBeenCalledTimes(opens);
+      closer.mockResolvedValue(undefined);
+      await Promise.all([closeLbug('lifecycle'), closeLbug('lifecycle')]);
+      expect(isLbugDbPathReady('/db')).toBe(false);
+      expect(mocks.dbClose).toHaveBeenCalledTimes(stage === 'database' ? 2 : 1);
+      expect(mocks.releasePin).toHaveBeenCalledTimes(stage === 'pin' ? 2 : 1);
+    },
+  );
+
+  it('closes live aliases and failed initialization references together', async () => {
+    mocks.query.mockImplementation(async () => result());
+    await initLbug('lifecycle', '/db');
+    mocks.construct
+      .mockImplementationOnce(() => {})
+      .mockImplementationOnce(() => {
+        throw new Error('construction failed');
+      });
+    mocks.connClose.mockRejectedValue(new Error('connection failed'));
+    await expect(initLbug('failed-alias', '/db')).rejects.toThrow('connection failed');
+    mocks.connClose.mockResolvedValue(undefined);
+    await closeLbug('failed-alias');
+    expect(mocks.dbClose).toHaveBeenCalledTimes(1);
+    expect(isLbugDbPathReady('/db')).toBe(false);
+  });
+
+  it('never closes an externally supplied database after partial construction fails', async () => {
+    mocks.construct
+      .mockImplementationOnce(() => {})
+      .mockImplementationOnce(() => {
+        throw new Error('construction failed');
+      });
+    mocks.connClose.mockRejectedValue(new Error('connection failed'));
+    const db = { close: mocks.dbClose } as any;
+    await expect(initLbugWithDb('external', db, '/external')).rejects.toThrow('connection failed');
+    mocks.connClose.mockResolvedValue(undefined);
+    await closeLbug();
+    expect(mocks.dbClose).not.toHaveBeenCalled();
+    expect(mocks.releasePin).not.toHaveBeenCalled();
+    expect(isLbugDbPathReady('/external')).toBe(false);
+  });
+
+  it('blocks alias publication and drains its native reference before close returns', async () => {
+    mocks.query.mockImplementation(async () => result());
+    await initLbug('lifecycle', '/db');
+    const publication = deferred();
+    mocks.realpath.mockImplementationOnce(async () => {
+      await publication.promise;
+      return 'A';
+    });
+    const alias = track(initLbug('pending-alias', '/db'));
+    const rejected = expect(alias).rejects.toThrow('database is closing');
+    await vi.waitFor(() => expect(mocks.realpath).toHaveBeenCalledTimes(1));
+    let closed = false;
+    const closing = track(
+      closeLbug('lifecycle').then(() => {
+        closed = true;
+      }),
+    );
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    expect(mocks.dbClose).not.toHaveBeenCalled();
+    publication.resolve();
+    await rejected;
+    await closing;
+    expect(mocks.connClose).toHaveBeenCalledTimes(4);
+    expect(mocks.dbClose).toHaveBeenCalledTimes(1);
+    expect(isLbugDbPathReady('/db')).toBe(false);
+  });
+
+  it('bounds initialization drain and retains handles until a later retry', async () => {
+    vi.useFakeTimers();
+    mocks.query.mockImplementation(async () => result());
+    await initLbug('lifecycle', '/db');
+    const publication = deferred();
+    mocks.realpath.mockImplementationOnce(async () => {
+      await publication.promise;
+      return 'A';
+    });
+    const unrelated = track(initLbug('unrelated', '/other-db'));
+    await vi.advanceTimersByTimeAsync(0);
+    const closing = track(closeLbug('lifecycle'));
+    const timeout = expect(closing).rejects.toThrow('Pool initialization drain timed out');
+    await vi.advanceTimersByTimeAsync(10_000);
+    await timeout;
+    expect(isLbugDbPathReady('/db')).toBe(true);
+    expect(mocks.dbClose).not.toHaveBeenCalled();
+    publication.resolve();
+    await unrelated;
+    await closeLbug('lifecycle');
+    expect(isLbugDbPathReady('/db')).toBe(false);
+    expect(isLbugDbPathReady('/other-db')).toBe(true);
   });
 });

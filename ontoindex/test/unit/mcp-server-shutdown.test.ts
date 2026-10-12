@@ -11,8 +11,10 @@ import { createMCPServer } from '../../src/mcp/server.js';
  */
 describe('MCP server graceful shutdown', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.doUnmock('@modelcontextprotocol/sdk/server/stdio.js');
+    vi.doUnmock('../../src/mcp/local/local-backend.js');
   });
 
   it('exits with a numeric code when a signal handler fires', async () => {
@@ -65,6 +67,80 @@ describe('MCP server graceful shutdown', () => {
     expect(dispose).toHaveBeenCalledTimes(1);
     expect(exitCodes[0]).toBe(0);
   });
+
+  it.each([false, true])(
+    'CLI fatal shutdown waits past 100ms for close and disposal (signal first: %s)',
+    async (signalFirst) => {
+      vi.resetModules();
+      vi.useFakeTimers();
+      let finishClose!: () => void;
+      const closing = new Promise<void>((resolve) => {
+        finishClose = resolve;
+      });
+      let finishDispose!: () => void;
+      const disposing = new Promise<void>((resolve) => {
+        finishDispose = resolve;
+      });
+      const backend = {
+        init: vi.fn().mockResolvedValue(false),
+        listRepos: vi.fn().mockResolvedValue([]),
+        dispose: vi.fn(() => disposing),
+      };
+      vi.doMock('../../src/mcp/local/local-backend.js', () => ({
+        LocalBackend: vi.fn(function () {
+          return backend;
+        }),
+      }));
+      const { mcpCommand } = await import('../../src/cli/mcp.js');
+      const { Server: ActiveServer } = await import('@modelcontextprotocol/sdk/server/index.js');
+      const close = vi.spyOn(ActiveServer.prototype, 'close').mockImplementation(() => closing);
+      const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
+      vi.spyOn(process, 'on').mockImplementation(((
+        event: string,
+        handler: (...args: any[]) => unknown,
+      ) => {
+        const listeners = handlers.get(event) ?? [];
+        listeners.push(handler);
+        handlers.set(event, listeners);
+        return process;
+      }) as typeof process.on);
+      vi.spyOn(process.stdin, 'on').mockReturnValue(process.stdin);
+      vi.spyOn(process.stdout, 'on').mockReturnValue(process.stdout);
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+      const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+
+      await mcpCommand({ repo: '', project: process.cwd() });
+      const emit = (event: string, ...args: any[]) => {
+        for (const handler of handlers.get(event) ?? []) handler(...args);
+      };
+
+      if (signalFirst) emit('SIGTERM', 'SIGTERM');
+      else emit('uncaughtException', new Error('fatal during operation'));
+      emit('SIGINT', 'SIGINT');
+      await vi.advanceTimersByTimeAsync(150);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(backend.dispose).not.toHaveBeenCalled();
+      expect(exit).not.toHaveBeenCalled();
+
+      finishClose();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(backend.dispose).toHaveBeenCalledTimes(1);
+      emit('uncaughtException', new Error('fatal during disposal'));
+      emit('SIGTERM', 'SIGTERM');
+      await vi.advanceTimersByTimeAsync(150);
+      expect(exit).not.toHaveBeenCalled();
+
+      finishDispose();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(handlers.get('uncaughtException')).toHaveLength(1);
+      expect(handlers.get('unhandledRejection')).toHaveLength(1);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(backend.dispose).toHaveBeenCalledTimes(1);
+      expect(exit).toHaveBeenCalledTimes(1);
+      expect(exit).toHaveBeenCalledWith(1);
+    },
+  );
 
   it('stops admission and awaits admitted work across repeated close calls', async () => {
     let resolveOperation!: () => void;

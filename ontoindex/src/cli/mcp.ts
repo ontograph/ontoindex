@@ -104,15 +104,6 @@ function selectProjectCandidate<T extends { path: string }>(
 export const mcpCommand = async (
   options: { full?: boolean; repo?: string; project?: string; confirmWrites?: boolean } = {},
 ) => {
-  process.on('uncaughtException', (err) => {
-    console.error(`OntoIndex MCP: uncaught exception — ${err.message}`);
-    setTimeout(() => process.exit(1), 100);
-  });
-  process.on('unhandledRejection', (reason) => {
-    const msg = reason instanceof Error ? reason.message : String(reason);
-    console.error(`OntoIndex MCP: unhandled rejection — ${msg}`);
-  });
-
   const cwd = path.resolve(process.cwd());
   const inferredProjectPath = getProjectPathFromCwd();
   const explicitProjectPath = options.project?.trim() ? path.resolve(options.project.trim()) : null;

@@ -33,6 +33,8 @@ interface ToolDefinition {
       }
     >;
     required: string[];
+    anyOf?: { required: string[] }[];
+    allOf?: { anyOf: { required: string[] }[] }[];
   };
 }
 
@@ -2124,7 +2126,11 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
         },
         legacyResponse: legacyResponseProperty,
       },
-      required: ['source', 'sink'],
+      required: [],
+      allOf: [
+        { anyOf: [{ required: ['source'] }, { required: ['sourceName'] }] },
+        { anyOf: [{ required: ['sink'] }, { required: ['sinkName'] }] },
+      ],
     },
   },
   {
@@ -2212,7 +2218,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
         },
         legacyResponse: legacyResponseProperty,
       },
-      required: ['target'],
+      required: [],
+      anyOf: [{ required: ['target'] }, { required: ['targetCall'] }],
     },
   },
   {

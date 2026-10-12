@@ -106,6 +106,8 @@ interface PoolEntry {
   closed: boolean;
   /** Set while explicit close waits for active checkouts to finish */
   closing: boolean;
+  /** Retired native connections still closing after query timeout. */
+  pendingRetirements: Set<Promise<void>>;
 }
 
 const pool = new Map<string, PoolEntry>();
@@ -189,8 +191,94 @@ interface SharedDB {
   external?: boolean;
   closed?: boolean;
   closing?: boolean;
+  closeRequested?: boolean;
+  /** Connections remain owned here until native close succeeds. */
+  pendingConnections: Set<lbug.Connection>;
+  connectionCloses: Map<lbug.Connection, Promise<void>>;
+  failedInitRepos: Set<string>;
+  databaseClose?: Promise<void>;
+  pinRelease?: Promise<void>;
+  pinReleased?: boolean;
 }
 const dbCache = new Map<string, SharedDB>();
+const failedInitShares = new Map<
+  string,
+  {
+    shared: SharedDB;
+    dbPath: string;
+    connections: lbug.Connection[];
+    cleanup?: Promise<void>;
+  }
+>();
+
+function newSharedDb(
+  values: Pick<SharedDB, 'db' | 'refCount' | 'ftsLoaded' | 'vectorLoaded'> &
+    Partial<Pick<SharedDB, 'generationPin' | 'external'>>,
+): SharedDB {
+  return {
+    ...values,
+    pendingConnections: new Set(),
+    connectionCloses: new Map(),
+    failedInitRepos: new Set(),
+  };
+}
+
+function trackConnectionClose(shared: SharedDB, conn: lbug.Connection): Promise<void> {
+  shared.pendingConnections.add(conn);
+  const pending = shared.connectionCloses.get(conn);
+  if (pending) return pending;
+  const close = Promise.resolve()
+    .then(() => conn.close())
+    .then(() => {
+      shared.pendingConnections.delete(conn);
+    })
+    .finally(() => {
+      shared.connectionCloses.delete(conn);
+    });
+  shared.connectionCloses.set(conn, close);
+  return close;
+}
+
+async function closeSharedConnections(
+  shared: SharedDB,
+  connections: Iterable<lbug.Connection>,
+): Promise<void> {
+  const outcomes = await withTimeout(
+    Promise.allSettled([...new Set(connections)].map((conn) => trackConnectionClose(shared, conn))),
+    CLOSE_WAIT_TIMEOUT_MS,
+    'Native connection cleanup',
+  );
+  const failure = outcomes.find((outcome) => outcome.status === 'rejected');
+  if (failure?.status === 'rejected') throw failure.reason;
+}
+
+async function closeSharedDatabase(shared: SharedDB): Promise<void> {
+  if (shared.external) return;
+  if (!shared.closed) {
+    shared.databaseClose ??= Promise.resolve()
+      .then(() => shared.db.close())
+      .then(() => {
+        shared.closed = true;
+      });
+    const pending = shared.databaseClose;
+    void pending.catch(() => {
+      if (shared.databaseClose === pending) shared.databaseClose = undefined;
+    });
+    await withTimeout(pending, CLOSE_WAIT_TIMEOUT_MS, 'Native database cleanup');
+  }
+  if (!shared.pinReleased) {
+    shared.pinRelease ??= Promise.resolve()
+      .then(() => shared.generationPin?.release())
+      .then(() => {
+        shared.pinReleased = true;
+      });
+    const pending = shared.pinRelease;
+    void pending.catch(() => {
+      if (shared.pinRelease === pending) shared.pinRelease = undefined;
+    });
+    await withTimeout(pending, CLOSE_WAIT_TIMEOUT_MS, 'Generation pin cleanup');
+  }
+}
 
 /** Max repos in the pool (LRU eviction) */
 const MAX_POOL_SIZE = 5;
@@ -302,13 +390,19 @@ async function closeOne(repoId: string): Promise<void> {
 
   // Keep failed handles registered so deletion cannot mistake failure for closure.
   const connections = entry.available;
-  const outcomes = await Promise.allSettled(
-    connections.map((conn) => Promise.resolve().then(() => conn.close())),
-  );
-  entry.available = connections.filter((_, index) => outcomes[index].status === 'rejected');
-  const failure = outcomes.find((outcome) => outcome.status === 'rejected');
-  if (failure?.status === 'rejected') {
-    throw failure.reason;
+  if (shared) {
+    try {
+      await closeSharedConnections(shared, [...connections, ...shared.pendingConnections]);
+      entry.available = [];
+    } catch (err) {
+      entry.available = connections.filter((conn) => shared.pendingConnections.has(conn));
+      throw err;
+    }
+  } else {
+    const outcomes = await Promise.allSettled(connections.map((conn) => conn.close()));
+    entry.available = connections.filter((_, index) => outcomes[index].status === 'rejected');
+    const failure = outcomes.find((outcome) => outcome.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
   }
 
   // Checked-out connections can't be closed here — they're in-flight.
@@ -321,11 +415,8 @@ async function closeOne(repoId: string): Promise<void> {
   if (shared) {
     if (shared.refCount === 1) {
       if (!shared.external) {
-        if (!shared.closed) {
-          await shared.db.close();
-          shared.closed = true;
-        }
-        await shared.generationPin?.release();
+        await closeSharedConnections(shared, shared.pendingConnections);
+        await closeSharedDatabase(shared);
       }
       dbCache.delete(entry.dbPath);
     }
@@ -345,34 +436,61 @@ async function closeOne(repoId: string): Promise<void> {
   }
 }
 
-function releaseSharedDbAfterFailedInit(dbPath: string, shared: SharedDB): void {
-  shared.refCount = Math.max(0, shared.refCount - 1);
-  if (shared.refCount > 0) return;
-
-  if (shared.external) {
-    dbCache.delete(dbPath);
-    return;
+async function releaseSharedDbAfterFailedInit(
+  repoId: string,
+  dbPath: string,
+  shared: SharedDB,
+  connections: lbug.Connection[],
+): Promise<void> {
+  let failed = failedInitShares.get(repoId);
+  if (!failed) {
+    failed = { shared, dbPath, connections };
+    failedInitShares.set(repoId, failed);
+    shared.failedInitRepos.add(repoId);
+    for (const conn of connections) shared.pendingConnections.add(conn);
   }
-
-  shared.db
-    .close()
-    .then(() => shared.generationPin?.release())
-    .catch(() => {});
-  dbCache.delete(dbPath);
+  if (failed.cleanup) return failed.cleanup;
+  shared.closing = true;
+  const cleanup = (async () => {
+    await closeSharedConnections(
+      shared,
+      failed.connections.filter((conn) => shared.pendingConnections.has(conn)),
+    );
+    // Keep this initialization's reference until database and pin cleanup succeed.
+    if (shared.refCount === 1) {
+      await closeSharedConnections(shared, shared.pendingConnections);
+      if (!shared.external) {
+        await closeSharedDatabase(shared);
+      }
+      dbCache.delete(dbPath);
+    }
+    shared.refCount--;
+    shared.failedInitRepos.delete(repoId);
+    failedInitShares.delete(repoId);
+    shared.closing = shared.closeRequested === true || shared.failedInitRepos.size > 0;
+  })();
+  failed.cleanup = cleanup;
+  try {
+    await cleanup;
+  } finally {
+    failed.cleanup = undefined;
+  }
 }
 
-function closePrewarmedConnections(connections: lbug.Connection[]): void {
-  for (const conn of connections) {
-    conn.close().catch(() => {});
-  }
-  connections.length = 0;
+async function closePrewarmedConnections(
+  repoId: string,
+  dbPath: string,
+  shared: SharedDB,
+  connections: lbug.Connection[],
+): Promise<void> {
+  await releaseSharedDbAfterFailedInit(repoId, dbPath, shared, connections);
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function waitForCheckedOutConnections(repoId: string, entry: PoolEntry): Promise<void> {
   const started = Date.now();
-  while (entry.checkedOut > 0) {
+  while (entry.checkedOut > 0 || entry.pendingRetirements.size > 0) {
     if (Date.now() - started >= CLOSE_WAIT_TIMEOUT_MS) {
       throw new Error(
         `Timed out waiting for ${entry.checkedOut} active LadybugDB quer${entry.checkedOut === 1 ? 'y' : 'ies'} to finish for repo "${repoId}"`,
@@ -558,14 +676,19 @@ async function readDbIdentity(dbPath: string): Promise<string | null> {
  * awaits the first's in-progress init rather than starting a redundant one.
  */
 export const initLbug = async (repoId: string, dbPath: string): Promise<void> => {
+  if (failedInitShares.has(repoId)) throw new Error('LadybugDB database is closing');
   const pending = initPromises.get(repoId);
   if (pending) return pending;
 
   const promise = (async () => {
+    if (failedInitShares.has(repoId)) {
+      throw new Error('LadybugDB database is closing');
+    }
     const existing = pool.get(repoId);
     if (existing) {
       const identity = await readDbIdentity(dbPath);
-      if (existing.closing || existing.closed) throw new Error('LadybugDB database is closing');
+      if (existing.closing || existing.closed || dbCache.get(existing.dbPath)?.closing)
+        throw new Error('LadybugDB database is closing');
       if (identity !== null && existing.dbIdentity !== null && identity !== existing.dbIdentity) {
         // Drain the old generation before opening its replacement.
         await closeOneWhenIdle(repoId);
@@ -629,7 +752,13 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
             true, // readOnly
           );
           restoreStdout();
-          shared = { db, refCount: 0, ftsLoaded: false, vectorLoaded: false, generationPin };
+          shared = newSharedDb({
+            db,
+            refCount: 0,
+            ftsLoaded: false,
+            vectorLoaded: false,
+            generationPin,
+          });
           nativeOwnsPin = true;
           dbCache.set(dbPath, shared);
           break;
@@ -675,7 +804,13 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
             '[ontoindex] WARNING: WAL corruption detected on open; discarding corrupt WAL tail. ' +
               'Data since last checkpoint may be lost. Re-run `ontoindex analyze` if index appears incomplete.\n',
           );
-          shared = { db, refCount: 0, ftsLoaded: false, vectorLoaded: false, generationPin };
+          shared = newSharedDb({
+            db,
+            refCount: 0,
+            ftsLoaded: false,
+            vectorLoaded: false,
+            generationPin,
+          });
           nativeOwnsPin = true;
           dbCache.set(dbPath, shared);
         } catch {
@@ -696,6 +831,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
       }
     }
 
+    if (shared.closing || shared.closed) throw new Error('LadybugDB database is closing');
     shared.refCount++;
     const db = shared.db;
 
@@ -718,26 +854,28 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
       // Done BEFORE pool registration so no concurrent checkout can grab
       // the connection while the async load is in progress.
       await loadExtensionsSilenced(available[0], shared);
+      const dbIdentity = await readDbIdentity(dbPath);
+      if (shared.closing || shared.closed) throw new Error('LadybugDB database is closing');
+      pool.set(repoId, {
+        db,
+        available,
+        checkedOut: 0,
+        waiters: [],
+        lastUsed: Date.now(),
+        dbPath,
+        dbIdentity,
+        closed: false,
+        closing: false,
+        pendingRetirements: new Set(),
+      });
     } catch (err) {
-      closePrewarmedConnections(available);
-      releaseSharedDbAfterFailedInit(dbPath, shared);
+      await closePrewarmedConnections(repoId, dbPath, shared, available);
       throw err;
     }
 
     // Register pool entry only after all connections are pre-warmed and FTS is
     // loaded.  Concurrent executeQuery calls see either "not initialized"
     // (and throw cleanly) or a fully ready pool — never a half-built one.
-    pool.set(repoId, {
-      db,
-      available,
-      checkedOut: 0,
-      waiters: [],
-      lastUsed: Date.now(),
-      dbPath,
-      dbIdentity: await readDbIdentity(dbPath),
-      closed: false,
-      closing: false,
-    });
     ensureIdleTimer();
   } catch (err) {
     if (!nativeOwnsPin) await generationPin.release().catch(() => {});
@@ -761,8 +899,27 @@ export async function initLbugWithDb(
   existingDb: lbug.Database,
   dbPath: string,
 ): Promise<void> {
+  const pending = initPromises.get(repoId);
+  if (pending) return pending;
+  const promise = doInitLbugWithDb(repoId, existingDb, dbPath);
+  initPromises.set(repoId, promise);
+  try {
+    await promise;
+  } finally {
+    initPromises.delete(repoId);
+  }
+}
+
+async function doInitLbugWithDb(
+  repoId: string,
+  existingDb: lbug.Database,
+  dbPath: string,
+): Promise<void> {
+  if (failedInitShares.has(repoId)) throw new Error('LadybugDB database is closing');
   const existing = pool.get(repoId);
   if (existing) {
+    if (existing.closing || existing.closed || dbCache.get(existing.dbPath)?.closing)
+      throw new Error('LadybugDB database is closing');
     existing.lastUsed = Date.now();
     return;
   }
@@ -780,7 +937,13 @@ export async function initLbugWithDb(
     throw new Error('LadybugDB database is closing');
   }
   if (!shared) {
-    shared = { db: existingDb, refCount: 0, ftsLoaded: false, vectorLoaded: false, external: true };
+    shared = newSharedDb({
+      db: existingDb,
+      refCount: 0,
+      ftsLoaded: false,
+      vectorLoaded: false,
+      external: true,
+    });
     dbCache.set(dbPath, shared);
   }
   shared.refCount++;
@@ -798,23 +961,25 @@ export async function initLbugWithDb(
 
     // Load FTS and VECTOR extensions if not already loaded on this Database.
     await loadExtensionsSilenced(available[0], shared);
+    const dbIdentity = await readDbIdentity(dbPath);
+    if (shared.closing || shared.closed) throw new Error('LadybugDB database is closing');
+    pool.set(repoId, {
+      db: existingDb,
+      available,
+      checkedOut: 0,
+      waiters: [],
+      lastUsed: Date.now(),
+      dbPath,
+      dbIdentity,
+      closed: false,
+      closing: false,
+      pendingRetirements: new Set(),
+    });
   } catch (err) {
-    closePrewarmedConnections(available);
-    releaseSharedDbAfterFailedInit(dbPath, shared);
+    await closePrewarmedConnections(repoId, dbPath, shared, available);
     throw err;
   }
 
-  pool.set(repoId, {
-    db: existingDb,
-    available,
-    checkedOut: 0,
-    waiters: [],
-    lastUsed: Date.now(),
-    dbPath,
-    dbIdentity: await readDbIdentity(dbPath),
-    closed: false,
-    closing: false,
-  });
   ensureIdleTimer();
 }
 
@@ -873,7 +1038,9 @@ function checkin(entry: PoolEntry, conn: lbug.Connection): void {
   if (entry.closed) {
     entry.checkedOut = Math.max(0, entry.checkedOut - 1);
     // Pool entry was deleted during checkout — close the orphaned connection
-    conn.close().catch(() => {});
+    const shared = dbCache.get(entry.dbPath);
+    if (shared) void trackConnectionClose(shared, conn).catch(() => {});
+    else void conn.close().catch(() => {});
     return;
   }
   if (entry.waiters.length > 0) {
@@ -889,8 +1056,18 @@ function checkin(entry: PoolEntry, conn: lbug.Connection): void {
 
 function retireConnection(entry: PoolEntry, conn: lbug.Connection): void {
   connStmtCaches.delete(conn);
+  const shared = dbCache.get(entry.dbPath);
+  const close = shared
+    ? trackConnectionClose(shared, conn)
+    : Promise.resolve().then(() => conn.close());
+  entry.pendingRetirements.add(close);
+  void close
+    .catch((error) => {
+      if (shared) shared.closing = true;
+      realStderrWrite(`LadybugDB retired connection close failed: ${String(error)}\n`);
+    })
+    .finally(() => entry.pendingRetirements.delete(close));
   entry.checkedOut = Math.max(0, entry.checkedOut - 1);
-  conn.close().catch(() => {});
 
   if (entry.closed || entry.closing) return;
 
@@ -1171,16 +1348,51 @@ export const executeParameterized = async <TRow extends object = LbugQueryRow>(
  */
 export const closeLbug = async (repoId?: string): Promise<void> => {
   if (repoId) {
-    const dbPath = pool.get(repoId)?.dbPath;
+    const initializing = initPromises.get(repoId);
+    if (initializing)
+      await withTimeout(
+        initializing.catch(() => {}),
+        CLOSE_WAIT_TIMEOUT_MS,
+        'Pool initialization drain',
+      );
+    const failed = failedInitShares.get(repoId);
+    const dbPath = pool.get(repoId)?.dbPath ?? failed?.dbPath;
+    const shared = dbPath ? dbCache.get(dbPath) : undefined;
+    if (shared) {
+      shared.closeRequested = true;
+      shared.closing = true;
+      // Aliases may own a native reference before their pool entry is published.
+      await withTimeout(
+        Promise.allSettled([...initPromises.values()]),
+        CLOSE_WAIT_TIMEOUT_MS,
+        'Pool initialization drain',
+      );
+    }
     const ids = dbPath
       ? [...pool].filter(([, entry]) => entry.dbPath === dbPath).map(([id]) => id)
       : [repoId];
     for (const id of ids) await closeOneWhenIdle(id);
+    for (const [id, state] of [...failedInitShares]) {
+      if (id === repoId || state.dbPath === dbPath)
+        await closePrewarmedConnections(id, state.dbPath, state.shared, state.connections);
+    }
     return;
   }
 
+  for (const shared of dbCache.values()) {
+    shared.closeRequested = true;
+    shared.closing = true;
+  }
+  await withTimeout(
+    Promise.allSettled([...initPromises.values()]),
+    CLOSE_WAIT_TIMEOUT_MS,
+    'Pool initialization drain',
+  );
   for (const id of [...pool.keys()]) {
     await closeOneWhenIdle(id);
+  }
+  for (const [id, state] of [...failedInitShares]) {
+    await closePrewarmedConnections(id, state.dbPath, state.shared, state.connections);
   }
 
   if (idleTimer) {

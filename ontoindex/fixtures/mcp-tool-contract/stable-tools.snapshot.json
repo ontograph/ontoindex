@@ -2922,7 +2922,11 @@
             "default": true
           }
         },
-        "required": ["source", "sink"]
+        "required": [],
+        "allOf": [
+          { "anyOf": [{ "required": ["source"] }, { "required": ["sourceName"] }] },
+          { "anyOf": [{ "required": ["sink"] }, { "required": ["sinkName"] }] }
+        ]
       },
       "contractStatus": "stable",
       "structuredOutput": true,
@@ -3069,7 +3073,8 @@
             "default": true
           }
         },
-        "required": ["target"]
+        "required": [],
+        "anyOf": [{ "required": ["target"] }, { "required": ["targetCall"] }]
       },
       "contractStatus": "stable",
       "structuredOutput": true,

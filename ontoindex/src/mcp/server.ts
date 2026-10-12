@@ -732,7 +732,9 @@ export async function startMCPServer(
 
   // Graceful shutdown helper
   let shuttingDown = false;
+  let shutdownExitCode = 0;
   const shutdown = async (exitCode = 0) => {
+    shutdownExitCode = Math.max(shutdownExitCode, exitCode);
     if (shuttingDown) return;
     shuttingDown = true;
     try {
@@ -741,7 +743,7 @@ export async function startMCPServer(
     try {
       await backend.dispose();
     } catch {}
-    process.exit(exitCode);
+    process.exit(shutdownExitCode);
   };
 
   // Handle graceful shutdown

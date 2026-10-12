@@ -85,6 +85,32 @@ describe('mcpCommand', () => {
     expect(startMCPServer).not.toHaveBeenCalled();
   });
 
+  it('leaves process exception and rejection listeners to the server owner', async () => {
+    const onSpy = vi.spyOn(process, 'on').mockReturnValue(process);
+
+    await mcpCommand();
+
+    expect(
+      onSpy.mock.calls.filter(
+        ([event]) => event === 'uncaughtException' || event === 'unhandledRejection',
+      ),
+    ).toEqual([]);
+    expect(startMCPServer).toHaveBeenCalled();
+  });
+
+  it('reports backend initialization failures and disposes before returning', async () => {
+    backendMocks.init.mockRejectedValueOnce(new Error('registry unavailable'));
+
+    await mcpCommand();
+
+    expect(console.error).toHaveBeenCalledWith(
+      'OntoIndex MCP: backend initialization failed — registry unavailable',
+    );
+    expect(backendMocks.dispose).toHaveBeenCalledTimes(1);
+    expect(process.exitCode).toBe(1);
+    expect(startMCPServer).not.toHaveBeenCalled();
+  });
+
   it('resolves label-based --repo through the registry before comparing paths', async () => {
     getGitRootMock.mockReturnValue('/opt/demodb/_workfolder/OntoIndex');
     backendMocks.listRepos.mockResolvedValue([

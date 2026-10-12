@@ -92,6 +92,16 @@ export function validateSuperParams(name: SuperTool, params: Record<string, unkn
       Object.hasOwn(params, 'sessionId');
     if (!Object.hasOwn(params, key) && !hasSessionAlias) issues.push(`${key}: Required`);
   }
+  const alternatives = [
+    ...(schema.anyOf ? [schema.anyOf] : []),
+    ...(schema.allOf?.map((clause) => clause.anyOf) ?? []),
+  ];
+  for (const branches of alternatives) {
+    if (!branches.some((branch) => branch.required.every((key) => Object.hasOwn(params, key))))
+      issues.push(
+        `${branches.map((branch) => branch.required.join(' and ')).join(' or ')}: Required`,
+      );
+  }
   for (const [key, property] of Object.entries(schema.properties)) {
     if (!Object.hasOwn(params, key)) continue;
     const value = params[key];

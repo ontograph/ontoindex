@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { getPublicToolRegistry } from '../../src/mcp/shared/tool-registry.js';
 import { serializeToolContract } from '../../src/mcp/shared/tool-contract-schema.js';
+import { validateSuperParams } from '../../src/mcp/super/dispatch.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = path.resolve(__dirname, '../../fixtures/mcp-tool-contract');
@@ -58,6 +59,43 @@ describe('tool-contract-schema — snapshot (Phase 3)', () => {
 
     if (experimentalEntry) {
       expect(schema.tools.map((t) => t.name)).not.toContain(experimentalEntry.name);
+    }
+  });
+
+  it('serializes required alias alternatives consistently with dispatch validation', () => {
+    const registry = getPublicToolRegistry({ includeFacades: true });
+    const schema = serializeToolContract(registry, { includeExperimental: false });
+    const cases = [
+      [
+        'gn_taint_trace',
+        [
+          ['source', 'sourceName'],
+          ['sink', 'sinkName'],
+        ],
+      ],
+      ['gn_simulate_fault', [['target', 'targetCall']]],
+    ] as const;
+
+    for (const [name, families] of cases) {
+      const inputSchema = schema.tools.find((tool) => tool.name === name)?.inputSchema;
+      const clauses = families.map((family) => ({
+        anyOf: family.map((key) => ({ required: [key] })),
+      }));
+      expect(inputSchema?.required).toEqual([]);
+      expect(inputSchema?.allOf).toEqual(families.length === 1 ? undefined : clauses);
+      expect(inputSchema?.anyOf).toEqual(families.length === 1 ? clauses[0].anyOf : undefined);
+      const fields = families.flat();
+      for (let mask = 0; mask < 2 ** fields.length; mask++) {
+        const params = Object.fromEntries(
+          fields.filter((_, index) => mask & (1 << index)).map((key) => [key, 'sample']),
+        );
+        const accepted = families.every((family) =>
+          family.some((key) => Object.hasOwn(params, key)),
+        );
+        const validate = () => validateSuperParams(name, params);
+        if (accepted) expect(validate).not.toThrow();
+        else expect(validate).toThrow('Required');
+      }
     }
   });
 
