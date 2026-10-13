@@ -40,6 +40,7 @@ import {
   expandPassiveGraph,
   getSidecarStorePath,
   loadSidecarStoreState,
+  MARKDOWN_DOCUMENT_ANALYZER_ID,
   runMarkdownDocumentPpr,
   resolveRetrievalPolicy,
   selectPassiveFactCandidates,
@@ -58,6 +59,11 @@ import {
   type RetrievalPolicyName,
   type SidecarRequestStatus,
 } from '../../core/ingestion/enrichment/index.js';
+import {
+  scoreMarkdownChunks,
+  resolveMarkdownLinkTarget,
+  applyMarkdownLinkBonus,
+} from '../../core/ingestion/enrichment/markdown-query-ranking.js';
 import { detectChanges as detectChangesImpl } from './backend-detect-changes.js';
 import { impactByUid as impactByUidImpl, runImpact } from './backend-impact.js';
 import { formatCypherAsMarkdown, queryCypher } from './backend-query.js';
@@ -371,6 +377,7 @@ type MarkdownContextFactEntry = {
   source: MarkdownDocsEvidenceSource;
 };
 interface LocalEnrichmentConsumptionOptions {
+  query?: string;
   consumeFacts?: boolean;
   includePassiveRelatedFacts?: boolean;
   includeMarkdownContext?: boolean;
@@ -584,8 +591,8 @@ function passiveCandidateKey(candidate: PassiveGraphFactCandidate): string {
 
 function extractMarkdownContextMetadata(
   entries: readonly MarkdownContextFactEntry[],
-  options: { includePpr?: boolean; retrievalPolicy?: RetrievalPolicyConfig } = {},
-): MarkdownContextMetadata {
+  options: { query?: string; includePpr?: boolean; retrievalPolicy?: RetrievalPolicyConfig } = {},
+): MarkdownContextMetadata & { keptDocPaths: Set<string> } {
   const policy = options.retrievalPolicy;
   const policyPathReasons = policy ? [policy.pathReason] : undefined;
   const filteredEntries = filterMarkdownEntriesByPolicy(entries, policy);
@@ -635,7 +642,10 @@ function extractMarkdownContextMetadata(
     const doc = docs.get(docKey);
     if (doc) {
       doc.chunkCount += 1;
-      doc.freshness.push(source);
+      const sourceKey = JSON.stringify(source);
+      if (!doc.freshness.some((entry) => JSON.stringify(entry) === sourceKey)) {
+        doc.freshness.push(source);
+      }
       doc.degradedReasons = mergeDegradedReasons(
         doc.degradedReasons,
         degradedReasonsForSource(source),
@@ -655,10 +665,66 @@ function extractMarkdownContextMetadata(
     }
   }
 
-  relatedChunks.sort(compareMarkdownChunks);
-  const allRelatedDocs = [...docs.values()].sort((left, right) =>
-    left.docPath.localeCompare(right.docPath),
-  );
+  const hasQuery = (options.query ?? '').trim().length > 0;
+  const chunkScores = hasQuery ? scoreMarkdownChunks(options.query, relatedChunks) : undefined;
+  // Policy-driven expansion is graph-driven: rank by query but keep unmatched chunks.
+  const dropUnmatchedChunks = options.retrievalPolicy === undefined;
+  if (chunkScores) {
+    const links: Array<{ fromChunkKey: string; targetDocPath: string }> = [];
+    for (const { fact } of filteredEntries) {
+      if (
+        fact.kind !== 'markdown-link' ||
+        typeof fact.fromChunkKey !== 'string' ||
+        typeof fact.href !== 'string'
+      )
+        continue;
+      const chunk = chunksByKey.get(fact.fromChunkKey);
+      if (!chunk) continue;
+      const targetDocPath = resolveMarkdownLinkTarget(chunk.docPath, fact.href);
+      if (targetDocPath !== undefined)
+        links.push({ fromChunkKey: fact.fromChunkKey, targetDocPath });
+    }
+    applyMarkdownLinkBonus(chunkScores, relatedChunks, links);
+    if (dropUnmatchedChunks) {
+      const kept = relatedChunks.filter(
+        (chunk) => chunk.chunkKey && chunkScores.has(chunk.chunkKey),
+      );
+      relatedChunks.length = 0;
+      relatedChunks.push(...kept);
+    }
+    relatedChunks.sort(
+      (left, right) =>
+        (chunkScores.get(right.chunkKey ?? '') ?? 0) -
+          (chunkScores.get(left.chunkKey ?? '') ?? 0) || compareMarkdownChunks(left, right),
+    );
+  } else {
+    relatedChunks.sort(compareMarkdownChunks);
+  }
+  if (chunkScores) {
+    const chunkCounts = new Map<string, number>();
+    for (const chunk of relatedChunks) {
+      const docKey = `${chunk.docPath}\0${chunk.fileHash ?? ''}\0${chunk.sourceCommitHash ?? ''}`;
+      chunkCounts.set(docKey, (chunkCounts.get(docKey) ?? 0) + 1);
+    }
+    for (const [docKey, doc] of docs) {
+      doc.chunkCount = chunkCounts.get(docKey) ?? 0;
+    }
+  }
+  const keptDocPaths = new Set(relatedChunks.map((chunk) => chunk.docPath));
+  const firstChunkIndex = new Map<string, number>();
+  relatedChunks.forEach((chunk, index) => {
+    if (!firstChunkIndex.has(chunk.docPath)) firstChunkIndex.set(chunk.docPath, index);
+  });
+  const allRelatedDocs = chunkScores
+    ? [...docs.values()]
+        .filter((doc) => doc.chunkCount > 0)
+        .sort(
+          (left, right) =>
+            (firstChunkIndex.get(left.docPath) ?? Number.MAX_SAFE_INTEGER) -
+              (firstChunkIndex.get(right.docPath) ?? Number.MAX_SAFE_INTEGER) ||
+            left.docPath.localeCompare(right.docPath),
+        )
+    : [...docs.values()].sort((left, right) => left.docPath.localeCompare(right.docPath));
   const relatedDocs = allRelatedDocs.slice(0, MAX_MARKDOWN_RELATED_DOCS);
   const boundedRelatedChunks = relatedChunks.slice(0, MAX_MARKDOWN_RELATED_CHUNKS);
   const relatedDocsTruncated = allRelatedDocs.length > relatedDocs.length;
@@ -674,6 +740,7 @@ function extractMarkdownContextMetadata(
       : undefined;
 
   return {
+    keptDocPaths,
     relatedDocs,
     relatedChunks: boundedRelatedChunks,
     ...(markdownPpr && { markdownPpr }),
@@ -958,6 +1025,20 @@ function markdownFactSourceChunkKey(fact: EnrichmentFact): string | undefined {
   if (typeof fact.chunkKey === 'string') return fact.chunkKey;
   if (typeof fact.fromChunkKey === 'string') return fact.fromChunkKey;
   return undefined;
+}
+
+function boundMarkdownFacts(
+  facts: readonly EnrichmentFact[],
+  chunks: readonly MarkdownRelatedChunk[],
+): EnrichmentFact[] {
+  const keys = new Set(chunks.map((chunk) => chunk.chunkKey).filter(Boolean));
+  return facts.filter((fact) => {
+    if (!isMarkdownDocumentFact(fact)) return true;
+    if (fact.kind === 'markdown-code-mention' && fact.resolutionStatus === 'unresolved')
+      return false;
+    const key = markdownFactSourceChunkKey(fact);
+    return key !== undefined && keys.has(key);
+  });
 }
 
 function toMarkdownDocsEvidenceFact(fact: EnrichmentFact): MarkdownDocsEvidenceFact | undefined {
@@ -2075,6 +2156,7 @@ export class LocalBackend implements BackendPort {
       const markdownContext =
         options.includeMarkdownContext === true
           ? extractMarkdownContextMetadata(markdownEntries, {
+              query: options.query,
               includePpr: options.includeMarkdownPpr,
               retrievalPolicy: options.retrievalPolicy,
             })
@@ -2091,13 +2173,34 @@ export class LocalBackend implements BackendPort {
               ],
             }
           : undefined;
+      const returnedMarkdownDocPaths = new Set(
+        markdownContext?.relatedChunks.map((chunk) => chunk.docPath),
+      );
+      const visibleRecords = markdownContext
+        ? allVisibleRecords.filter(
+            (record) =>
+              record.analyzerId !== MARKDOWN_DOCUMENT_ANALYZER_ID ||
+              returnedMarkdownDocPaths.has(record.filePath),
+          )
+        : allVisibleRecords;
+      const facts = markdownContext
+        ? boundMarkdownFacts(allFacts, markdownContext.relatedChunks)
+        : allFacts;
 
       return {
         ...base,
         used: allFacts.length > 0,
         factConsumption: summary,
-        visibleRecords: allVisibleRecords,
-        facts: allFacts,
+        visibleRecords,
+        facts,
+        ...(markdownContext && {
+          factsBound: {
+            totalFactCount: allFacts.length,
+            totalVisibleRecordCount: allVisibleRecords.length,
+            truncated:
+              facts.length < allFacts.length || visibleRecords.length < allVisibleRecords.length,
+          },
+        }),
         ...(passiveExpansion && {
           relatedFacts: passiveExpansion.relatedFacts,
           relatedSymbols: addPolicyPathReasons(
@@ -2208,6 +2311,7 @@ export class LocalBackend implements BackendPort {
     const result = await queryImpl(repo as any, params);
     const retrievalPolicy = resolveRetrievalPolicy(params.retrieval_policy);
     const enriched = await this.withLocalEnrichmentMetadata(repo, result, {
+      query: params.query,
       consumeFacts:
         params.consume_enrichment_facts === true || retrievalPolicy?.docsExpansion === true,
       includePassiveRelatedFacts:

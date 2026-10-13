@@ -498,3 +498,45 @@ describe('filesystem-walker', () => {
     });
   });
 });
+
+describe('filesystem-walker root-file allowlist', () => {
+  const rootFiles = [
+    'SECURITY.md',
+    'CONTRIBUTING.md',
+    'CHANGELOG.md',
+    'CODE_OF_CONDUCT.md',
+    'LICENSE.md',
+  ];
+  let repoPath: string;
+
+  beforeEach(async () => {
+    repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-root-files-'));
+    await Promise.all(
+      rootFiles.map((fileName) => fs.writeFile(path.join(repoPath, fileName), fileName)),
+    );
+  });
+
+  afterEach(async () => {
+    await fs.rm(repoPath, { recursive: true, force: true });
+  });
+
+  it('returns all allowlisted root files when includeFiles is provided', async () => {
+    const files = await walkRepositoryPaths(repoPath, undefined, { includeFiles: rootFiles });
+
+    expect(files.map((file) => file.path).sort()).toEqual([...rootFiles].sort());
+  });
+
+  it('continues to omit the root files when includeFiles is absent', async () => {
+    const files = await walkRepositoryPaths(repoPath);
+
+    expect(files.map((file) => file.path)).toEqual([]);
+  });
+
+  it('still excludes an allowlisted file larger than the scan size cap', async () => {
+    await fs.writeFile(path.join(repoPath, 'CONTRIBUTING.md'), 'x'.repeat(512 * 1024 + 1));
+
+    const files = await walkRepositoryPaths(repoPath, undefined, { includeFiles: rootFiles });
+
+    expect(files.map((file) => file.path)).not.toContain('CONTRIBUTING.md');
+  });
+});

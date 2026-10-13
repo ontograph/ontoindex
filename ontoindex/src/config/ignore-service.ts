@@ -626,8 +626,12 @@ export const explainPathScope = async (
  * Returns an IgnoreLike object for glob's `ignore` option,
  * enabling directory-level pruning during traversal.
  */
-export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptions) => {
+export const createIgnoreFilter = async (
+  repoPath: string,
+  options?: IgnoreOptions & { includeFiles?: readonly string[] },
+) => {
   const ig = await loadIgnoreRules(repoPath, options);
+  const includeFiles = new Set(options?.includeFiles ?? []);
 
   return {
     ignored(p: Path): boolean {
@@ -637,6 +641,7 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       if (!rel) return false;
       // Check .gitignore / .ontoindexignore patterns
       if (ig && ig.ignores(rel)) return true;
+      if (!rel.includes('/') && includeFiles.has(rel) && p.isFile()) return false;
       // Fall back to hardcoded rules
       return shouldIgnorePath(rel);
     },

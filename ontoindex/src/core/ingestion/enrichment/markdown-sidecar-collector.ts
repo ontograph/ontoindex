@@ -10,12 +10,21 @@ export interface CollectedMarkdownSidecarDocuments {
 }
 
 const MARKDOWN_EXTENSIONS = new Set(['.md', '.mdx']);
+const ROOT_MARKDOWN_FILES = [
+  'SECURITY.md',
+  'CONTRIBUTING.md',
+  'CHANGELOG.md',
+  'CODE_OF_CONDUCT.md',
+  'LICENSE.md',
+];
 
 export async function collectMarkdownSidecarDocuments(
   repoPath: string,
   sourceCommitHash: string,
 ): Promise<CollectedMarkdownSidecarDocuments> {
-  const scanned = await walkRepositoryPaths(repoPath);
+  const scanned = await walkRepositoryPaths(repoPath, undefined, {
+    includeFiles: ROOT_MARKDOWN_FILES,
+  });
   const markdownPaths = scanned
     .map((file) => file.path)
     .filter((filePath) => MARKDOWN_EXTENSIONS.has(extension(filePath)))

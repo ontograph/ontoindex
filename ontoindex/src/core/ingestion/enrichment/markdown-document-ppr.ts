@@ -58,6 +58,7 @@ export interface MarkdownDocumentPprResult {
     maxVisitedNodes: number;
     restartProbability: number;
     visitedCount: number;
+    skippedTotal: number;
     degraded: boolean;
     degradedReasons: Partial<Record<MarkdownDocumentPprSkipReason, number>>;
   };
@@ -214,10 +215,11 @@ export function runMarkdownDocumentPpr(
       .map((id) => nodeById.get(id)?.type)
       .filter((type): type is MarkdownDocumentPprNodeType => type !== undefined),
   ).sort();
+  const skippedPreview = skipped.slice(0, 5);
 
   return {
     rankedIds,
-    skipped,
+    skipped: skippedPreview,
     summary: {
       seedIds: acceptedSeedIds,
       topK,
@@ -225,6 +227,7 @@ export function runMarkdownDocumentPpr(
       maxVisitedNodes,
       restartProbability,
       visitedCount: visited.size,
+      skippedTotal: skipped.length,
       degraded: skipped.length > 0,
       degradedReasons,
     },
@@ -236,7 +239,7 @@ export function runMarkdownDocumentPpr(
           traversedNodeTypes,
           restartProbability,
           visitedCount: visited.size,
-          skipped,
+          skipped: skippedPreview,
         },
       ],
     },
