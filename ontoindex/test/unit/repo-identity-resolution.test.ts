@@ -56,6 +56,25 @@ describe('shared repository identity', () => {
     ).toBe('project');
   });
 
+  it('assigns filtered servers the same canonical id as the full registry', async () => {
+    const { LocalBackend } = await import('../../src/mcp/local/local-backend.js');
+    const backend = new LocalBackend({ repoFilter: first.path }) as any;
+    backend.loadRegisteredReposForBackend = vi.fn().mockResolvedValue(registry);
+    await backend.refreshRepos();
+    expect([...backend.repos.keys()]).toEqual([registryRepoIds(registry).get(first)]);
+  });
+
+  it('uses real candidate paths in ambiguous restart hints', async () => {
+    const { LocalBackend } = await import('../../src/mcp/local/local-backend.js');
+    const backend = new LocalBackend() as any;
+    backend.loadRegisteredReposForBackend = vi.fn().mockResolvedValue(registry);
+    await backend.refreshRepos();
+    await expect(backend.resolveRepo('proj')).rejects.toThrow("--project '/repos/first'");
+    await expect(backend.resolveRepo('proj')).rejects.not.toThrow(
+      "--project '/opt/d1/tmp/ontoindex-build-2.2.22/ontoindex/proj'",
+    );
+  });
+
   it('keeps a newer queued lock tail until that operation settles', async () => {
     const { LocalBackend } = await import('../../src/mcp/local/local-backend.js');
     const backend = new LocalBackend() as any;

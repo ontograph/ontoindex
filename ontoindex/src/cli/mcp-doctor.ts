@@ -52,6 +52,7 @@ export interface McpDoctorReport {
       message: string;
     }>;
   };
+  capabilityGaps?: Array<{ reason: string; repairCommand?: string }>;
   nextCommand: string;
 }
 
@@ -103,7 +104,15 @@ export async function createMcpDoctorReport(
     ? await deps.processLiveness(repoSelector, projectCwd, fallbackRestartCommand)
     : await probeMcpProcessLiveness(repoSelector, projectCwd, fallbackRestartCommand, deps);
   const setupHealth = await (deps.setupHealth ?? probeSetupHealth)(projectCwd);
-  const verdict = resolveVerdict(diagnose, symbolSmoke, processLiveness, setupHealth);
+  const capabilityGaps = diagnose.degradedContext.reasons
+    .filter((reason) => reason === 'embeddings-unavailable' || reason === 'embeddings-missing' || reason.endsWith('-lsp-missing'))
+    .map((reason) => ({
+      reason,
+      ...(reason.startsWith('embeddings-') && diagnose.embeddings?.repairCommand
+        ? { repairCommand: diagnose.embeddings.repairCommand }
+        : {}),
+    }));
+  const verdict = resolveVerdict(diagnose, symbolSmoke, processLiveness, setupHealth, capabilityGaps);
 
   return {
     version: 1,
@@ -115,6 +124,7 @@ export async function createMcpDoctorReport(
     symbolSmoke,
     ...(processLiveness ? { processLiveness } : {}),
     ...(setupHealth && setupHealth.status !== 'ok' ? { setupHealth } : {}),
+    ...(capabilityGaps.length > 0 ? { capabilityGaps } : {}),
     nextCommand:
       diagnose.misconfiguration.recommendedCommand ??
       processLiveness?.repairCommand ??
@@ -180,7 +190,16 @@ export function formatMcpDoctorText(report: McpDoctorReport): string {
     lines.push(`Misconfiguration: ${report.diagnose.misconfiguration.reason}`);
   }
   if (report.diagnose.degradedContext.reasons.length > 0) {
-    lines.push(`Degraded reasons: ${report.diagnose.degradedContext.reasons.join(', ')}`);
+    const requiredReasons = report.diagnose.degradedContext.reasons.filter(
+      (reason) => !isOptionalCapabilityGap(reason),
+    );
+    if (requiredReasons.length > 0) lines.push(`Degraded reasons: ${requiredReasons.join(', ')}`);
+  }
+  if (report.capabilityGaps && report.capabilityGaps.length > 0) {
+    lines.push('Optional capabilities:');
+    for (const gap of report.capabilityGaps) {
+      lines.push(`- ${gap.reason}${gap.repairCommand ? ` (repair: ${gap.repairCommand})` : ''}`);
+    }
   }
   if (report.diagnose.auditFreshness) {
     const audit = report.diagnose.auditFreshness;
@@ -257,6 +276,7 @@ function resolveVerdict(
   symbolSmoke: McpDoctorReport['symbolSmoke'],
   processLiveness: McpDoctorReport['processLiveness'],
   setupHealth?: McpDoctorReport['setupHealth'],
+  capabilityGaps: McpDoctorReport['capabilityGaps'] = [],
 ): McpDoctorVerdict {
   if (diagnose.misconfiguration.status === 'fail') return 'MISCONFIGURED';
   if (diagnose.targetContext && diagnose.targetContext.status !== 'ok') return 'MISCONFIGURED';
@@ -272,7 +292,15 @@ function resolveVerdict(
   }
   if (symbolSmoke?.status === 'failed') return 'DEGRADED';
   if (setupHealth?.status === 'degraded') return 'DEGRADED';
-  return diagnose.degradedContext.status === 'degraded' ? 'DEGRADED' : 'READY';
+  return diagnose.degradedContext.reasons.some((reason) => !isOptionalCapabilityGap(reason))
+    ? 'DEGRADED'
+    : capabilityGaps.length > 0 || diagnose.degradedContext.status === 'ok'
+      ? 'READY'
+      : 'DEGRADED';
+}
+
+function isOptionalCapabilityGap(reason: string): boolean {
+  return reason === 'embeddings-unavailable' || reason === 'embeddings-missing' || reason.endsWith('-lsp-missing');
 }
 
 function resolveRepoSelector(

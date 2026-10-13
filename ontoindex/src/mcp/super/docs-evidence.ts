@@ -1,3 +1,4 @@
+import { resolveRegistryEntry } from '../shared/target-context.js';
 import fs from 'node:fs/promises';
 
 import {
@@ -136,8 +137,9 @@ export async function collectAdvisoryDocsEvidence(
 
 async function resolveRepo(repoId: string): Promise<RepoHandle | null> {
   const repos = await listRegisteredRepos();
+  const selection = resolveRegistryEntry(repos, repoId);
   return (
-    repos.find((repo) => repo.name === repoId || repo.path === repoId) ??
+    (selection.status === 'ok' ? selection.entry : undefined) ??
     repos.find((repo) => repo.name === 'OntoIndex') ??
     null
   );

@@ -266,15 +266,53 @@ function validateMcpEntry(entry: McpEntry, projectPath: string): McpEntryValidat
   return { warnings, errors };
 }
 
-/**
- * Try to read a JSON file, returning null if it doesn't exist or is invalid.
- */
+/** Read JSON config, distinguishing a missing file from an unsafe-to-rewrite one. */
 async function readJsonFile(filePath: string): Promise<unknown | null> {
+  let raw: string;
   try {
-    const raw = await fs.readFile(filePath, 'utf-8');
-    return JSON.parse(raw);
-  } catch {
-    return null;
+    raw = await fs.readFile(filePath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+  try {
+    return JSON.parse(raw.replace(/^\uFEFF/, ''));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `${filePath} is not valid JSON (${message}); fix or remove it, then re-run setup. Left unchanged.`,
+    );
+  }
+}
+
+async function writeFileAtomic(
+  filePath: string,
+  content: string,
+  options: { mode?: number } = {},
+): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  let mode = options.mode ?? 0o600;
+  try {
+    const stat = await fs.stat(filePath);
+    mode = stat.mode & 0o777;
+    const backupPath = `${filePath}.ontoindex-backup`;
+    try {
+      await fs.copyFile(filePath, backupPath, 1);
+      await fs.chmod(backupPath, 0o600);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  const tempPath = `${filePath}.tmp-${process.pid}-${Math.random().toString(16).slice(2)}`;
+  try {
+    await fs.writeFile(tempPath, content, { encoding: 'utf-8', mode });
+    await fs.chmod(tempPath, mode);
+    await fs.rename(tempPath, filePath);
+  } catch (err) {
+    await fs.unlink(tempPath).catch(() => undefined);
+    throw err;
   }
 }
 
@@ -282,8 +320,13 @@ async function readJsonFile(filePath: string): Promise<unknown | null> {
  * Write JSON to a file, creating parent directories if needed.
  */
 async function writeJsonFile(filePath: string, data: JsonValue): Promise<void> {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+  let bom = '';
+  try {
+    if ((await fs.readFile(filePath, 'utf-8')).startsWith('\uFEFF')) bom = '\uFEFF';
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  await writeFileAtomic(filePath, `${bom}${JSON.stringify(data, null, 2)}\n`);
 }
 
 /**
@@ -566,7 +609,7 @@ function getCodexMcpTomlSection(entry: McpEntry): string {
 }
 
 function classifyTomlHeader(line: string): { name: string; array: boolean } | null {
-  const match = line.match(/^\s*(\[\[?)([^\]]+)\]\]?\s*(?:#.*)?(?:\r?\n)?$/);
+  const match = line.replace(/^\uFEFF/, '').match(/^\s*(\[\[?)([^\]]+)\]\]?\s*(?:#.*)?(?:\r?\n)?$/);
   return match ? { name: match[2].trim(), array: match[1] === '[[' } : null;
 }
 
@@ -578,6 +621,7 @@ function isOntoindexMcpSectionHeader(header: { name: string; array: boolean }): 
 }
 
 function findOntoindexMcpSectionRange(existing: string): { start: number; end: number } | null {
+  existing = existing.replace(/^\uFEFF/, '');
   const lines = existing.match(/[^\n]*(?:\n|$)/g)?.filter((line) => line.length > 0) ?? [];
   let startLine = -1;
   let endLine = lines.length;
@@ -655,9 +699,12 @@ async function upsertCodexConfigToml(configPath: string, entry: McpEntry): Promi
   let existing = '';
   try {
     existing = await fs.readFile(configPath, 'utf-8');
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     existing = '';
   }
+  const hadBom = existing.startsWith('\uFEFF');
+  existing = existing.replace(/^\uFEFF/, '');
 
   const section = getCodexMcpTomlSection(entry);
   const existingRange = findOntoindexMcpSectionRange(existing);
@@ -673,8 +720,7 @@ async function upsertCodexConfigToml(configPath: string, entry: McpEntry): Promi
       ? `${existing.trimEnd()}\n\n${section}`
       : section;
 
-  await fs.mkdir(path.dirname(configPath), { recursive: true });
-  await fs.writeFile(configPath, `${nextContent.trimEnd()}\n`, 'utf-8');
+  await writeFileAtomic(configPath, `${hadBom ? '\uFEFF' : ''}${nextContent.trimEnd()}\n`);
 }
 
 async function rethrowIfTomlAmbiguous(configPath: string): Promise<void> {
@@ -694,10 +740,11 @@ async function setupCodex(result: SetupResult, entry: McpEntry): Promise<void> {
     await upsertCodexConfigToml(configPath, entry);
     result.configured.push('Codex (MCP repaired in ~/.codex/config.toml)');
     return;
-  } catch {
+  } catch (err) {
     // Ambiguous TOML is a safety refusal, not a filesystem failure to route around.
     await rethrowIfTomlAmbiguous(configPath);
-    // Fallback for unusual environments where direct config writes fail.
+    result.errors.push(`Codex: ${caughtMessage(err)}`);
+    return;
   }
 
   try {
@@ -722,9 +769,10 @@ async function setupOntocode(result: SetupResult, entry: McpEntry): Promise<void
     await upsertCodexConfigToml(configPath, entry);
     result.configured.push('Ontocode (MCP repaired in ~/.ontocode/config.toml)');
     return;
-  } catch {
+  } catch (err) {
     await rethrowIfTomlAmbiguous(configPath);
-    // Fallback for unusual environments where direct config writes fail.
+    result.errors.push(`Ontocode: ${caughtMessage(err)}`);
+    return;
   }
 
   try {

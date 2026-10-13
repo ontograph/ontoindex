@@ -1582,6 +1582,9 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
 /**
  * Check if a specific repo's pool is active
  */
+/** Read the database path for a live repository alias without changing pool state. */
+export const getLbugDbPath = (repoId: string): string | undefined => pool.get(repoId)?.dbPath;
+
 export const isLbugReady = (repoId: string): boolean => pool.has(repoId);
 
 export const isLbugDbPathReady = (dbPath: string): boolean => dbCache.has(dbPath);

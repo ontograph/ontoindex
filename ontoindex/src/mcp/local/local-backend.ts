@@ -17,6 +17,7 @@ import {
   closeLbug,
   isLbugReady,
   isLbugDbPathReady,
+  getLbugDbPath,
 } from '../../core/lbug/pool-adapter.js';
 export { isWriteQuery } from '../../core/lbug/pool-adapter.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
@@ -1489,7 +1490,8 @@ export class LocalBackend implements BackendPort {
   private async refreshRepos(signal?: AbortSignal): Promise<void> {
     const startedAt = Date.now();
     logStartupTrace('refresh repos: start');
-    const entries = await this.loadRegisteredReposForBackend(signal);
+    const registry = await this.loadRegisteredReposForBackend(signal);
+    const entries = registry.filter((entry) => this.matchesRepoFilter(entry));
     this.throwIfInitAborted(signal);
     logStartupTrace(
       `refresh repos: ${entries.length} registry entr${entries.length === 1 ? 'y' : 'ies'} matched`,
@@ -1499,7 +1501,7 @@ export class LocalBackend implements BackendPort {
     const freshRepos = new Map<string, RepoHandle>();
     const freshContextCache = new Map<string, CodebaseContext>();
 
-    const entryIds = registryRepoIds(entries);
+    const entryIds = registryRepoIds(registry);
     for (const entry of entries) {
       this.throwIfInitAborted(signal);
       const id = entryIds.get(entry)!;
@@ -1582,6 +1584,14 @@ export class LocalBackend implements BackendPort {
       this.initializedRepos.delete(id);
       this.lastStalenessCheck.delete(id);
       evictOverlayState(id);
+      const retiredPath = getLbugDbPath(id);
+      if (
+        retiredPath &&
+        [...this.repos.values()].some(
+          (handle) => path.resolve(handle.lbugPath) === path.resolve(retiredPath),
+        )
+      )
+        continue;
       void closeLbug(id).catch((error) =>
         console.error(`Failed to close retired repository ${id}:`, error),
       );
@@ -1647,7 +1657,7 @@ export class LocalBackend implements BackendPort {
         startedAt,
       );
     }
-    return filtered;
+    return entries;
   }
 
   // ─── Repo Resolution ─────────────────────────────────────────────
@@ -1692,7 +1702,8 @@ export class LocalBackend implements BackendPort {
           candidates,
           environment: repoResolutionEnvironmentFromProcess(),
           preferredRetryLabel: candidates[0]?.label,
-          intendedPath: path.resolve(repoParam),
+          intendedPath:
+            retried.kind === 'ambiguous' ? candidates[0]?.path : path.resolve(repoParam),
         }),
       );
     }

@@ -505,7 +505,7 @@ describe('mcp-doctor', () => {
     );
   });
 
-  it('returns DEGRADED for a correct but reduced-quality target', async () => {
+  it('reports optional capability gaps without degrading a correctly bound server', async () => {
     const report = await createMcpDoctorReport(
       { repo: 'fixture', projectCwd: '/repo/fixture' },
       {
@@ -520,15 +520,40 @@ describe('mcp-doctor', () => {
           },
         }),
         processLiveness: async (_repo, _projectCwd, repairCommand) => ({
-          status: 'unavailable',
-          reason: 'not-probed',
+          status: 'ok',
+          pid: 1234,
           repairCommand,
         }),
       },
     );
 
+    expect(report.verdict).toBe('READY');
+    expect(report.capabilityGaps).toContainEqual({ reason: 'embeddings-unavailable' });
+    expect(formatMcpDoctorText(report)).toContain('Optional capabilities:');
+    expect(formatMcpDoctorText(report)).toContain('- embeddings-unavailable');
+  });
+
+  it('keeps required degraded reasons in the verdict', async () => {
+    const report = await createMcpDoctorReport(
+      { repo: 'fixture', projectCwd: '/repo/fixture' },
+      {
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
+        diagnose: async () => ({
+          ...baseDiagnose,
+          degradedContext: {
+            status: 'degraded',
+            reasons: ['index-stale', 'python-lsp-missing'],
+            affectedAreas: ['freshness', 'lsp'],
+            confidence: 'reduced',
+          },
+        }),
+        processLiveness: async () => ({ status: 'ok', pid: 1234 }),
+      },
+    );
+
     expect(report.verdict).toBe('DEGRADED');
-    expect(formatMcpDoctorText(report)).toContain('Degraded reasons: embeddings-unavailable');
+    expect(report.capabilityGaps).toContainEqual({ reason: 'python-lsp-missing' });
+    expect(formatMcpDoctorText(report)).toContain('Degraded reasons: index-stale');
   });
 
   it('prints audit freshness and MCP resource bridge diagnostics from gn_diagnose', async () => {

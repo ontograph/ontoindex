@@ -66,7 +66,7 @@ import {
   type RuntimeDiagnosticsSnapshot,
 } from '../core/runtime/runtime-diagnostics.js';
 import { JobManager } from './analyze-job.js';
-import { getCloneDir } from './git-clone.js';
+import { getCloneDir, canRemoveClone } from './git-clone.js';
 import { mountAnalyzeRoutes } from './api-analyze-routes.js';
 import { mountEmbedRoutes } from './api-embed-routes.js';
 import safeRegex from 'safe-regex';
@@ -1310,6 +1310,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
 
       try {
+        let keptSource = false;
         await backend.withRepoRemoval(entry.name, entry.path, async () => {
           await closeLbugForPath(await resolveActiveLbugPath(entry.storagePath), { strict: true });
           await closeLbugForPath(path.join(entry.storagePath, 'lbug'), { strict: true });
@@ -1317,17 +1318,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           const storagePath = getStoragePath(entry.path);
           await fs.rm(storagePath, { recursive: true, force: true });
 
-          // A matching name alone does not establish ownership of a clone. Clones live directly
-          // under the clone root as `<name>` (legacy) or `<name>-<url hash>`; only remove the
-          // directory the registry entry points at, and only when it is inside the clone root.
           const cloneRoot = path.resolve(getCloneDir('x'), '..');
           const cloneDir = path.resolve(entry.path);
           if (path.dirname(cloneDir) === cloneRoot) {
-            try {
-              const stat = await fs.stat(cloneDir);
-              if (stat.isDirectory()) await fs.rm(cloneDir, { recursive: true, force: true });
-            } catch (err) {
-              if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+            if (await canRemoveClone(cloneDir, cloneRoot, getCloneDir(entry.name))) {
+              await fs.rm(cloneDir, { recursive: true, force: true });
+            } else {
+              keptSource = true;
             }
           }
           const { unregisterRepo } = await import('../storage/repo-manager.js');
@@ -1336,7 +1333,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
         await initBackendWithTimeout(backend, 'backend.init deleteRepo');
 
-        res.json({ deleted: entry.name });
+        res.json({
+          deleted: entry.name,
+          ...(keptSource
+            ? { keptSource: true, reason: 'Source ownership could not be established' }
+            : {}),
+        });
       } finally {
         releaseRepoLock(lock);
       }

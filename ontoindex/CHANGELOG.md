@@ -4,6 +4,17 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.22] - 2026-10-13
+
+### Fixed
+
+- Delete a cloned repository's source only when it carries an ontoindex ownership marker (or is an exact legacy clone with a `.git` directory); a repo you placed under `~/.ontoindex/repos` is kept and the delete response reports `keptSource`. Refuse to replace an existing directory that ontoindex did not create, and sweep or restore stale clone staging directories.
+- Resolve repositories through the shared resolver in the audit tools, `gn_explore`, `gn_propose_location` and docs evidence, so canonical ids for same-name repositories work and ambiguity is explicit. Compute canonical ids from the full registry even when the server is filtered to one project, and stop retiring a repository id from closing a live alias that shares its database. Ambiguous-repository hints now list the real candidate paths.
+- `gn_safe_edit_check` no longer reports SAFE when the index is stale or the worktree is dirty; it reports CAUTION with a `freshness` object and warning.
+- `setup` refuses to overwrite a client config that is not valid JSON, writes configs atomically with restrictive permissions, keeps a one-time backup, and handles a UTF-8 BOM.
+- `mcp-doctor` no longer reports DEGRADED for missing optional capabilities (embeddings, optional language servers); they are listed under `capabilityGaps`.
+- The Claude pre-tool hook no longer runs `npx -y`, uses a 2 second timeout, and fails open.
+
 ## [2.2.21] - 2026-10-13
 
 ### Fixed

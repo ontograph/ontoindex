@@ -8,6 +8,7 @@ import {
   ingestAuditFindings,
 } from '../../core/audit-lifecycle/index.js';
 import { listRegisteredRepos } from '../../storage/repo-manager.js';
+import { registryRepoIds, resolveRegistryEntry } from '../shared/target-context.js';
 
 export interface AuditIngestParams {
   repo?: string;
@@ -67,15 +68,9 @@ export async function resolveAuditRepoHandle(
   }
 
   const repos = await listRegisteredRepos();
-  const repo = repos.find(
-    (entry) =>
-      entry.name === repoId ||
-      entry.path === repoId ||
-      entry.name === requestedRepo ||
-      entry.path === requestedRepo,
-  );
-  if (!repo) throw new Error(`Repository not found: ${target}`);
-  return { id: repo.name, repoPath: repo.path };
+  const resolved = resolveRegistryEntry(repos, target);
+  if (resolved.status !== 'ok') throw new Error(resolved.action);
+  return { id: registryRepoIds(repos).get(resolved.entry)!, repoPath: resolved.entry.path };
 }
 
 export function clampLimit(value: unknown, defaultValue = DEFAULT_MAX_FINDINGS): number {

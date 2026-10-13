@@ -216,6 +216,60 @@ describe('setupClaudeCode', () => {
     expect(config.mcpServers.ontoindex).toBeDefined();
   });
 
+  it('reports malformed JSON without changing it while configuring other clients', async () => {
+    setPlatform('linux');
+    const claudeConfig = path.join(tempHome, '.claude.json');
+    const original = '{ broken config';
+    await fs.writeFile(claudeConfig, original);
+    await fs.mkdir(path.join(tempHome, '.config', 'opencode'), { recursive: true });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    await expect(fs.readFile(claudeConfig, 'utf-8')).resolves.toBe(original);
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Claude Code:'));
+    const opencode = JSON.parse(
+      await fs.readFile(path.join(tempHome, '.config', 'opencode', 'opencode.json'), 'utf-8'),
+    );
+    expect(opencode.mcp.ontoindex).toBeDefined();
+  });
+
+  it('preserves BOM, existing mode and a one-time backup; leaves no temp file', async () => {
+    setPlatform('linux');
+    const configPath = path.join(tempHome, '.claude.json');
+    const original = '\uFEFF{"existing":true}';
+    await fs.writeFile(configPath, original, { mode: 0o640 });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const updated = await fs.readFile(configPath, 'utf-8');
+    expect(updated.startsWith('\uFEFF')).toBe(true);
+    expect((await fs.stat(configPath)).mode & 0o777).toBe(0o640);
+    expect(await fs.readFile(`${configPath}.ontoindex-backup`, 'utf-8')).toBe(original);
+    expect((await fs.stat(`${configPath}.ontoindex-backup`)).mode & 0o777).toBe(0o600);
+    expect((await fs.readdir(tempHome)).some((name) => name.includes('.tmp-'))).toBe(false);
+
+    const backup = `${configPath}.ontoindex-backup`;
+    await fs.writeFile(backup, 'do not overwrite');
+    await setupCommand();
+    await expect(fs.readFile(backup, 'utf-8')).resolves.toBe('do not overwrite');
+  });
+
+  it('removes the temporary file when atomic rename fails', async () => {
+    setPlatform('linux');
+    const configPath = path.join(tempHome, '.claude.json');
+    const original = '{"keep":true}';
+    await fs.writeFile(configPath, original);
+    vi.spyOn(fs, 'rename').mockRejectedValueOnce(new Error('rename blocked'));
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    await expect(fs.readFile(configPath, 'utf-8')).resolves.toBe(original);
+    expect((await fs.readdir(tempHome)).some((name) => name.includes('.tmp-'))).toBe(false);
+  });
+
   it('leaves truthy non-object Claude Code settings unchanged', async () => {
     setPlatform('linux');
     const settingsPath = path.join(tempHome, '.claude', 'settings.json');
@@ -406,7 +460,7 @@ describe('setupClaudeCode', () => {
     ).toBe(true);
   });
 
-  it('handles corrupt JSON gracefully', async () => {
+  it('leaves corrupt JSON unchanged and reports the setup error', async () => {
     setPlatform('linux');
 
     await fs.writeFile(
@@ -418,12 +472,11 @@ describe('setupClaudeCode', () => {
     const { setupCommand } = await import('../../src/cli/setup.js');
     await setupCommand();
 
-    // readJsonFile returns null on invalid JSON, so mergeMcpConfig
-    // creates a fresh config — the file should now be valid.
-    const raw = await fs.readFile(path.join(tempHome, '.claude.json'), 'utf-8');
-    const config = JSON.parse(raw);
-
-    expect(config.mcpServers.ontoindex).toBeDefined();
+    // Setup catches the parse error for the client and preserves its config.
+    await expect(fs.readFile(path.join(tempHome, '.claude.json'), 'utf-8')).resolves.toBe(
+      '{ this is not valid json !!!',
+    );
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Claude Code:'));
   });
 
   it('leaves truthy non-object OpenCode config unchanged', async () => {

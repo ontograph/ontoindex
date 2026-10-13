@@ -5,7 +5,15 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'node:module';
 import { JobManager, AnalyzeCapacityError } from './analyze-job.js';
 import { getStoragePath } from '../storage/repo-manager.js';
-import { extractRepoName, getCloneDir, cloneOrPull, redactGitUrl } from './git-clone.js';
+import {
+  extractRepoName,
+  getCloneDir,
+  cloneOrPull,
+  redactGitUrl,
+  sweepStaleCloneStaging,
+} from './git-clone.js';
+
+let cloneStagingSweepStarted = false;
 
 const _require = createRequire(import.meta.url);
 const BACKEND_RELOAD_TIMEOUT_MS = 30_000;
@@ -183,6 +191,14 @@ export function mountAnalyzeRoutes(
           if (jobManager.shuttingDown) throw new Error('Server is shutting down');
           // Clone if URL provided
           if (repoUrl && !repoLocalPath) {
+            if (!cloneStagingSweepStarted) {
+              cloneStagingSweepStarted = true;
+              void sweepStaleCloneStaging(path.dirname(getCloneDir('x'))).catch((error) => {
+                process.stderr.write(
+                  `Clone staging cleanup failed: ${redactGitUrl(String(error))}\n`,
+                );
+              });
+            }
             const repoName = extractRepoName(repoUrl);
             targetPath = getCloneDir(repoName, repoUrl);
             const cloneAbort = new AbortController();

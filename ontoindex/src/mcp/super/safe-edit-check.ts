@@ -28,7 +28,7 @@ import {
   getRegisteredFacadeToolNames,
   getRegisteredSuperToolNames,
 } from '../shared/tool-registry.js';
-import { resolveTargetContext } from '../shared/target-context.js';
+import { resolveTargetContext, type TargetContext } from '../shared/target-context.js';
 import { findTestFiles, type TestCoverageResult } from './_helpers/test-coverage.js';
 import { collectAdvisoryDocsEvidence, type AdvisoryDocsEvidenceReport } from './docs-evidence.js';
 import {
@@ -108,6 +108,13 @@ export interface EditCheckReport {
   recommendedAction?: RecommendedAction;
   preChecks: Array<{ check: string; passed: boolean; detail: string }>;
   warnings: string[];
+  freshness?: {
+    authoritative: boolean;
+    reason: string;
+    indexedCommit?: string;
+    headCommit?: string;
+    dirtyFileCount?: number;
+  };
   suggestedNext: Array<{
     tool: string;
     params: object;
@@ -129,6 +136,30 @@ export interface EditCheckReport {
 
 const CANONICAL_NODE_ID_RE = /^[A-Z]\w+:/;
 const IMPACT_QUERY_CONCURRENCY = 3;
+
+function editCheckFreshness(
+  targetContext: TargetContext,
+  authoritative: boolean,
+): NonNullable<EditCheckReport['freshness']> {
+  const reason = authoritative
+    ? targetContext.graphAuthority?.reason ?? 'graph authority established'
+    : targetContext.graphAuthority?.reason ??
+      (targetContext.indexedHead && targetContext.targetHead &&
+      targetContext.indexedHead !== targetContext.targetHead
+        ? 'indexedHead != targetHead'
+        : targetContext.dirtyWorktree
+          ? 'worktree contains uncommitted changes'
+          : 'graph authority unavailable');
+  return {
+    authoritative,
+    reason,
+    ...(targetContext.indexedHead ? { indexedCommit: targetContext.indexedHead } : {}),
+    ...(targetContext.targetHead ? { headCommit: targetContext.targetHead } : {}),
+    ...(targetContext.dirtyFileCount != null
+      ? { dirtyFileCount: targetContext.dirtyFileCount }
+      : {}),
+  };
+}
 
 type QueryRow = Record<string, unknown> & { [index: number]: unknown };
 
@@ -721,7 +752,22 @@ export async function gnSafeEditCheck(
   const targetContext = await resolveTargetContext({
     repo: repoId,
     checkSidecar: params.docsEvidence === true,
+    verifyGraphAuthority: true,
+    requiredGraphCapabilities: ['symbols', 'impact', 'processes'],
   });
+  const graphAuthoritative = targetContext?.graphAuthority?.state === 'authoritative';
+  const freshness = targetContext
+    ? editCheckFreshness(targetContext, graphAuthoritative)
+    : { authoritative: false, reason: 'target context unavailable' };
+  if (!graphAuthoritative && targetContext) {
+    const dirtySummary =
+      freshness.dirtyFileCount !== undefined
+        ? `; worktree has ${freshness.dirtyFileCount} uncommitted changes`
+        : '';
+    warnings.push(
+      `Graph is not authoritative (${freshness.reason}${dirtySummary}): upstream caller counts may be missing recent callers. Verify callers in source before editing.`,
+    );
+  }
 
   // --- 1. Resolve symbol ------------------------------------------------
   const resolved = await resolveSymbol(repoId, params.symbol);
@@ -767,6 +813,7 @@ export async function gnSafeEditCheck(
         },
       ],
       warnings,
+      freshness,
       suggestedNext: [],
     };
     if (params.legacyResponse !== false) {
@@ -886,7 +933,7 @@ export async function gnSafeEditCheck(
   }
 
   // --- 5. Verdict synthesis (deterministic) ----------------------------
-  const { verdict, reasoning } = computeVerdict(
+  const computed = computeVerdict(
     upstream,
     processCount,
     isExported,
@@ -894,6 +941,14 @@ export async function gnSafeEditCheck(
     recentTouchDays,
     force,
   );
+  const verdict =
+    targetContext && !graphAuthoritative && computed.verdict === 'SAFE'
+      ? 'CAUTION'
+      : computed.verdict;
+  const reasoning =
+    targetContext && !graphAuthoritative && computed.verdict === 'SAFE'
+      ? `${computed.reasoning} Graph is not authoritative: ${freshness.reason}. Verify callers in source before editing.`
+    : computed.reasoning;
 
   // --- 6. Recommended tool + suggestedNext ----------------------------
   const recommendedTool = computeRecommendedTool(intent, upstream);
@@ -933,6 +988,7 @@ export async function gnSafeEditCheck(
     ...(recommendedAction !== undefined ? { recommendedAction } : {}),
     preChecks,
     warnings,
+    ...(targetContext ? { freshness } : {}),
     suggestedNext,
     ...(docsEvidence ? { docEvidence: docsEvidence, relatedDocs: docsEvidence.relatedDocs } : {}),
     ...(upstream.rawCounts && downstream.rawCounts
@@ -958,6 +1014,14 @@ export async function gnSafeEditCheck(
           ? 'degraded'
           : 'ok',
     targetContext,
+    freshness: {
+      status: freshness.authoritative ? 'fresh' : 'degraded',
+      actionable: freshness.authoritative,
+      reason: freshness.reason,
+      ...(freshness.indexedCommit ? { indexedCommit: freshness.indexedCommit } : {}),
+      ...(freshness.headCommit ? { headCommit: freshness.headCommit } : {}),
+      ...(freshness.dirtyFileCount != null ? { dirtyFileCount: freshness.dirtyFileCount } : {}),
+    },
     capabilitiesUsed: [
       'symbol-graph',
       'impact-kernel',

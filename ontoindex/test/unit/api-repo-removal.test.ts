@@ -18,7 +18,10 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/core/lbug/lbug-adapter.js')>()),
   closeLbugForPath: mocks.close,
 }));
-vi.mock('../../src/server/git-clone.js', () => ({ getCloneDir: () => '/fixture/clones/repo' }));
+vi.mock('../../src/server/git-clone.js', () => ({
+  getCloneDir: () => '/fixture/clones/repo',
+  canRemoveClone: async () => false,
+}));
 vi.mock('../../src/server/analyze-job.js', () => ({
   JobManager: class {
     async init() {}

@@ -7,6 +7,7 @@
  * Pure facade — read-only, no DB writes, no side effects.
  */
 
+import { resolveRegistryEntry } from '../shared/target-context.js';
 import { gnExplore } from './explore.js';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { listRegisteredRepos } from '../../storage/repo-manager.js';
@@ -210,9 +211,9 @@ async function resolveKnownRepoRoot(repoId: string): Promise<string | undefined>
   }
 
   const repos = await listRegisteredRepos();
-  const repo = repos.find((entry) => entry.name === repoId || entry.path === repoId);
-  if (repo) {
-    return resolve(repo.path);
+  const selection = resolveRegistryEntry(repos, repoId);
+  if (selection.status === 'ok') {
+    return resolve(selection.entry.path);
   }
 
   return undefined;

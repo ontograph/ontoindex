@@ -6,6 +6,9 @@ import {
   cloneOrPull,
   redactGitUrl,
   gitEnvironment,
+  isManagedClone,
+  canRemoveClone,
+  sweepStaleCloneStaging,
 } from '../../src/server/git-clone.js';
 import type { LookupAddress } from 'node:dns';
 import fs from 'node:fs/promises';
@@ -13,6 +16,65 @@ import os from 'node:os';
 import path from 'node:path';
 
 describe('git-clone', () => {
+  it('preserves unmanaged directories and only accepts owned or exact legacy clones', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'clone-ownership-'));
+    const dir = path.join(root, 'repo');
+    try {
+      await fs.mkdir(dir);
+      expect(await canRemoveClone(dir, root, dir)).toBe(false);
+      await fs.mkdir(path.join(dir, '.git'));
+      expect(await canRemoveClone(dir, root, path.join(root, 'other'))).toBe(false);
+      expect(await canRemoveClone(dir, root, dir)).toBe(true);
+      const runGit = vi.fn();
+      await expect(
+        cloneOrPull('https://example.com/repo', dir, undefined, { runGit }),
+      ).rejects.toThrow('Refusing to replace');
+      expect(runGit).not.toHaveBeenCalled();
+      await fs.writeFile(
+        path.join(dir, '.git', 'ontoindex-managed-clone.json'),
+        JSON.stringify({ tool: 'ontoindex', version: 1 }),
+      );
+      expect(await isManagedClone(dir)).toBe(true);
+      expect(await canRemoveClone(dir, root, path.join(root, 'other'))).toBe(true);
+      const link = path.join(root, 'link');
+      await fs.symlink(dir, link);
+      expect(await canRemoveClone(link, root, link)).toBe(false);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('sweeps stale staging and recovers owned orphan backups without following symlinks', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'clone-sweep-'));
+    const id = '12345678-1234-1234-1234-123456789abc';
+    try {
+      for (const name of [
+        `stale.tmp-1-${id}`,
+        `young.tmp-1-${id}`,
+        `repo.old-${id}`,
+        'unrelated',
+      ]) {
+        await fs.mkdir(path.join(root, name));
+      }
+      const backup = path.join(root, `repo.old-${id}`);
+      await fs.mkdir(path.join(backup, '.git'));
+      await fs.writeFile(
+        path.join(backup, '.git', 'ontoindex-managed-clone.json'),
+        '{"tool":"ontoindex"}',
+      );
+      const old = new Date(Date.now() - 10000);
+      await fs.utimes(path.join(root, `stale.tmp-1-${id}`), old, old);
+      await fs.utimes(backup, old, old);
+      await fs.symlink(path.join(root, 'unrelated'), path.join(root, `link.tmp-1-${id}`));
+      await sweepStaleCloneStaging(root, { olderThanMs: 5000 });
+      expect((await fs.readdir(root)).sort()).toEqual(
+        [`link.tmp-1-${id}`, 'repo', 'unrelated', `young.tmp-1-${id}`].sort(),
+      );
+      expect(await isManagedClone(path.join(root, 'repo'))).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
   it('rejects URL credentials without exposing them', async () => {
     const progress = vi.fn();
     const runGit = vi.fn(async () => {});
@@ -68,10 +130,14 @@ describe('git-clone', () => {
     const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'git-clone-origin-'));
     try {
       await fs.mkdir(path.join(parent, '.git'));
+      await fs.writeFile(
+        path.join(parent, '.git', 'ontoindex-managed-clone.json'),
+        '{"tool":"ontoindex"}',
+      );
       await fs.writeFile(path.join(parent, 'old'), 'old');
       const runGit = vi.fn(async (args: string[]) => {
         const staging = args.at(-1)!;
-        await fs.mkdir(staging);
+        await fs.mkdir(path.join(staging, '.git'), { recursive: true });
         await fs.writeFile(path.join(staging, 'new'), 'new');
       });
       const progress = vi.fn();
@@ -83,7 +149,15 @@ describe('git-clone', () => {
       expect(runGit.mock.calls[0]![0]).toContain('https://example.com/repo');
       expect(runGit.mock.calls[0]![0]).not.toContain('pull');
       expect(runGit.mock.calls[0]![0]).not.toContain('config');
-      expect(await fs.readdir(parent)).toEqual(['new']);
+      expect(await fs.readdir(parent)).toEqual(['.git', 'new']);
+      const marker = JSON.parse(
+        await fs.readFile(path.join(parent, '.git', 'ontoindex-managed-clone.json'), 'utf8'),
+      );
+      expect(marker).toMatchObject({
+        version: 1,
+        tool: 'ontoindex',
+        url: redactGitUrl('https://example.com/repo'),
+      });
     } finally {
       await fs.rm(parent, { recursive: true, force: true });
     }
@@ -93,6 +167,11 @@ describe('git-clone', () => {
       const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'git-refresh-'));
       const target = path.join(parent, 'repo');
       await fs.mkdir(target);
+      await fs.mkdir(path.join(target, '.git'));
+      await fs.writeFile(
+        path.join(target, '.git', 'ontoindex-managed-clone.json'),
+        '{"tool":"ontoindex"}',
+      );
       await fs.writeFile(path.join(target, 'old'), 'old');
       const lookup = async () => [{ address: '140.82.121.4', family: 4 }];
       try {
@@ -120,7 +199,7 @@ describe('git-clone', () => {
             started();
             await gate;
           }
-          await fs.mkdir(args.at(-1)!);
+          await fs.mkdir(path.join(args.at(-1)!, '.git'), { recursive: true });
         });
         const first = cloneOrPull('https://example.com/repo', target, undefined, {
           lookup,
@@ -305,7 +384,7 @@ describe('git-clone', () => {
 
     it('pins all-public DNS answers and restricts git protocols', async () => {
       const runGit = vi.fn(async (args: string[]) => {
-        await fs.mkdir(args.at(-1)!);
+        await fs.mkdir(path.join(args.at(-1)!, '.git'), { recursive: true });
       });
       const { parent, target } = await makeTarget();
       const lookup = vi.fn(async () => [

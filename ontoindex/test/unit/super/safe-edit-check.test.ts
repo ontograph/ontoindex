@@ -201,6 +201,7 @@ describe('gnSafeEditCheck', () => {
       targetHead: 'abc123',
       currentHead: 'abc123',
       indexedHead: 'abc123',
+      graphAuthority: { state: 'authoritative', reason: 'index matches current source' },
       dirtyWorktree: false,
       changedSinceIndex: false,
       snapshotMode: 'committed-head',
@@ -249,6 +250,107 @@ describe('gnSafeEditCheck', () => {
     ]);
     expect(report.testCoverage.likelihoodOfCoverage).toBe('HIGH');
     expect(report.symbol.name).toBe('parseToken');
+  });
+
+  it('downgrades SAFE when the index is stale and exposes freshness in the legacy report', async () => {
+    setupMocks({
+      upstreamN: 2,
+      isExported: false,
+      lastDate: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+    mockResolveTargetContext.mockResolvedValue({
+      version: 1,
+      status: 'ok',
+      targetRef: 'HEAD',
+      targetHead: 'head2',
+      currentHead: 'head2',
+      indexedHead: 'head1',
+      graphAuthority: { state: 'review', reason: 'indexedHead != targetHead' },
+      dirtyWorktree: false,
+      dirtyFileCount: 0,
+      warnings: [],
+    });
+    const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' });
+    expect(report.verdict).toBe('CAUTION');
+    expect(report.freshness).toMatchObject({
+      authoritative: false,
+      reason: 'indexedHead != targetHead',
+      indexedCommit: 'head1',
+      headCommit: 'head2',
+    });
+    expect(report.warnings.join(' ')).toContain('Verify callers in source before editing');
+    expect(report.reasoning).toContain('Graph is not authoritative');
+  });
+
+  it('downgrades SAFE when dirty source is absent from the graph', async () => {
+    setupMocks({ upstreamN: 2, isExported: false });
+    mockResolveTargetContext.mockResolvedValue({
+      version: 1,
+      status: 'ok',
+      targetRef: 'HEAD',
+      targetHead: 'head1',
+      currentHead: 'head1',
+      indexedHead: 'head1',
+      graphAuthority: { state: 'review', reason: 'dirty source files are not indexed' },
+      dirtyWorktree: true,
+      dirtyFileCount: 3,
+      warnings: [],
+    });
+    const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' });
+    expect(report.verdict).toBe('CAUTION');
+    expect(report.freshness).toMatchObject({ authoritative: false, dirtyFileCount: 3 });
+  });
+
+  it('preserves BLOCKED when the graph is not authoritative', async () => {
+    setupMocks({ upstreamN: 110, isExported: true });
+    mockResolveTargetContext.mockResolvedValue({
+      version: 1,
+      status: 'ok',
+      targetRef: 'HEAD',
+      targetHead: 'head2',
+      currentHead: 'head2',
+      indexedHead: 'head1',
+      graphAuthority: { state: 'review', reason: 'index stale' },
+      dirtyWorktree: false,
+      warnings: [],
+      embeddings: { status: 'available', count: 5 },
+      lsp: { status: 'unavailable', reason: 'no-lsp-server-on-path' },
+      sidecar: { status: 'unknown', reason: 'not-probed' },
+      policy: { status: 'unknown', reason: 'not-probed' },
+    });
+    const report = await gnSafeEditCheck(REPO_ID, { symbol: 'parseToken' });
+    expect(report.verdict).toBe('BLOCKED');
+  });
+
+  it('includes freshness on the envelope results when the graph is stale', async () => {
+    setupMocks({ upstreamN: 2, isExported: false, lastDate: new Date().toISOString() });
+    mockResolveTargetContext.mockResolvedValue({
+      version: 1,
+      status: 'ok',
+      targetRef: 'HEAD',
+      targetHead: 'head2',
+      currentHead: 'head2',
+      indexedHead: 'head1',
+      graphAuthority: { state: 'review', reason: 'index stale' },
+      dirtyWorktree: false,
+      warnings: [],
+      embeddings: { status: 'available', count: 5 },
+      lsp: { status: 'unavailable', reason: 'no-lsp-server-on-path' },
+      sidecar: { status: 'unknown', reason: 'not-probed' },
+      policy: { status: 'unknown', reason: 'not-probed' },
+    });
+    const envelope = await gnSafeEditCheck(REPO_ID, {
+      symbol: 'parseToken',
+      legacyResponse: false,
+    });
+    expect(envelope.freshness).toMatchObject({
+      status: 'degraded',
+      actionable: false,
+      reason: 'index stale',
+      indexedCommit: 'head1',
+      headCommit: 'head2',
+    });
+    expect((envelope.results as Record<string, unknown>).verdict).toBe('CAUTION');
   });
 
   it('keeps risk verdict unchanged when advisory docs evidence is enabled', async () => {

@@ -7,6 +7,7 @@
  * Pure facade — no caching, no DB writes, no process-global side effects.
  */
 
+import { registryRepoIds, resolveRegistryEntry } from '../shared/target-context.js';
 import {
   classifyIntent,
   type Intent,
@@ -340,18 +341,13 @@ export async function gnExplore(
 ): Promise<ExploreReport | ExploreFilesReport> {
   const warnings: string[] = [];
   const allRepos = await listRegisteredRepos();
-  const requestedRepo = repoId.toLowerCase();
-  const repo = allRepos.find(
-    (r) =>
-      r.name === repoId ||
-      r.path === repoId ||
-      r.name.toLowerCase() === requestedRepo ||
-      r.path.toLowerCase() === requestedRepo,
-  );
-  if (!repo) {
-    throw new Error(`Repository not found: ${repoId}`);
-  }
-  const canonicalRepoId = repo.name.toLowerCase();
+  // Resolve through the shared registry resolver so names, paths and canonical ids all work and
+  // two repositories with the same name are an explicit ambiguity, never a silent first pick.
+  const selection = resolveRegistryEntry(allRepos, repoId);
+  if (selection.status === 'ambiguous') throw new Error(selection.action);
+  if (selection.status !== 'ok') throw new Error(`Repository not found: ${repoId}`);
+  const repo = selection.entry;
+  const canonicalRepoId = registryRepoIds(allRepos).get(repo) as string;
   const resolvedRepo = { ...repo, id: canonicalRepoId, repoPath: repo.path };
   const activeGeneration = await resolveActiveIndexGeneration(repo.storagePath);
   await initLbug(

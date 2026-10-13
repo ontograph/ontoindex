@@ -57,6 +57,78 @@ export function getCloneDir(repoName: string, url?: string): string {
   return path.join(os.homedir(), '.ontoindex', 'repos', `${safeName}-${suffix}`);
 }
 
+/** Positive ownership evidence, without following directory symlinks. */
+export async function isManagedClone(dir: string): Promise<boolean> {
+  try {
+    if (!(await fs.lstat(dir)).isDirectory()) return false;
+    if (!(await fs.lstat(path.join(dir, '.git'))).isDirectory()) return false;
+    const markerPath = path.join(dir, '.git', 'ontoindex-managed-clone.json');
+    if (!(await fs.lstat(markerPath)).isFile()) return false;
+    const marker = JSON.parse(await fs.readFile(markerPath, 'utf8'));
+    return marker?.tool === 'ontoindex';
+  } catch {
+    return false;
+  }
+}
+
+export async function canRemoveClone(
+  dir: string,
+  cloneRoot: string,
+  legacyDir: string,
+): Promise<boolean> {
+  const resolved = path.resolve(dir);
+  if (path.dirname(resolved) !== path.resolve(cloneRoot)) return false;
+  try {
+    if (!(await fs.lstat(resolved)).isDirectory()) return false;
+    if (await isManagedClone(resolved)) return true;
+    return (
+      resolved === path.resolve(legacyDir) &&
+      (await fs.lstat(path.join(resolved, '.git'))).isDirectory()
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function sweepStaleCloneStaging(
+  cloneRoot: string,
+  { olderThanMs = 24 * 60 * 60 * 1000 } = {},
+): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(cloneRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  for (const entry of entries) {
+    const match = /^(.+)\.(tmp-\d+-[0-9a-f-]{36}|old-[0-9a-f-]{36})$/.exec(entry);
+    if (!match) continue;
+    const dir = path.join(cloneRoot, entry);
+    const stat = await fs.lstat(dir);
+    if (!stat.isDirectory() || Date.now() - stat.mtimeMs < olderThanMs) continue;
+    const target = path.join(cloneRoot, match[1]!);
+    if (match[2]!.startsWith('old-')) {
+      let missing = false;
+      try {
+        await fs.lstat(target);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') missing = true;
+        else throw error;
+      }
+      const legacy = path.resolve(target) === path.resolve(getCloneDir(match[1]!));
+      if (
+        missing &&
+        ((await isManagedClone(dir)) || (legacy && (await canRemoveClone(dir, cloneRoot, dir))))
+      ) {
+        await fs.rename(dir, target);
+        continue;
+      }
+    }
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
 // Cloud metadata hostnames that must never be reachable via user-supplied URLs
 const BLOCKED_HOSTNAMES = new Set([
   'localhost',
@@ -265,6 +337,22 @@ async function cloneFresh(
   const backup = `${targetDir}.old-${randomUUID()}`;
   let movedOld = false;
   try {
+    try {
+      await fs.lstat(targetDir);
+      if (
+        !(await canRemoveClone(
+          targetDir,
+          path.dirname(targetDir),
+          getCloneDir(extractRepoName(url)),
+        ))
+      ) {
+        throw new Error(
+          `Refusing to replace an existing directory that ontoindex did not create: ${targetDir}`,
+        );
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
     validateGitUrl(url);
     const parsed = new URL(url);
     let address: string | undefined;
@@ -309,6 +397,15 @@ async function cloneFresh(
     }
     await (options.runGit ?? runGit)(args, undefined, options);
     if (options.signal?.aborted) throw new Error('git operation aborted');
+    await fs.writeFile(
+      path.join(staging, '.git', 'ontoindex-managed-clone.json'),
+      JSON.stringify({
+        version: 1,
+        url: redactGitUrl(url),
+        createdAt: new Date().toISOString(),
+        tool: 'ontoindex',
+      }),
+    );
     try {
       await fs.rename(targetDir, backup);
       movedOld = true;

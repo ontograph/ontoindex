@@ -62,9 +62,13 @@ if [ "$found" = false ]; then
   exit 0
 fi
 
-# Run ontoindex augment — must be fast (<500ms target)
-# augment writes to stderr (KuzuDB captures stdout at OS level), so capture stderr and discard stdout
-RESULT=$(cd "$CWD" && npx -y ontoindex augment "$PATTERN" 2>&1 1>/dev/null)
+# Run the installed ontoindex binary and fail open if unavailable or slow.
+ONTOINDEX_BIN=$(command -v ontoindex 2>/dev/null) || exit 0
+if command -v timeout >/dev/null 2>&1; then
+  RESULT=$(cd "$CWD" && timeout 2 "$ONTOINDEX_BIN" augment "$PATTERN" 2>&1 1>/dev/null) || exit 0
+else
+  RESULT=$(cd "$CWD" && "$ONTOINDEX_BIN" augment "$PATTERN" 2>&1 1>/dev/null) || exit 0
+fi
 
 if [ -n "$RESULT" ]; then
   ESCAPED=$(echo "$RESULT" | jq -Rs .)
