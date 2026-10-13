@@ -133,7 +133,7 @@ it('removes within the barrier, preserves unrelated same-name clones, and refres
     [path.join('/fixture/repo/.ontoindex', 'lbug'), { strict: true }],
   ]);
   expect(rm.mock.calls).toEqual([
-    [path.join('/fixture/repo', '.ontoindex'), { recursive: true, force: true }],
+    [path.resolve('/fixture/repo', '.ontoindex'), { recursive: true, force: true }],
   ]);
   expect(stat).not.toHaveBeenCalledWith('/fixture/clones/repo');
   expect(mocks.unregister).toHaveBeenCalledWith('/fixture/repo');
