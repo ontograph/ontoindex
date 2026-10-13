@@ -70,26 +70,27 @@ describe('failed native open retry', () => {
   ])('caches failures then closes and retries with bounded delay %s', async (raw, delay) => {
     vi.stubEnv('ONTOINDEX_LBUG_FAILED_OPEN_RETRY_MS', raw);
     const pool = await import('../../src/core/lbug/pool-adapter.js');
-    await expect(pool.initLbug('repo', '/repo')).rejects.toThrow('native');
+    await expect(pool.initLbug('repo', '/repo')).rejects.toThrow('unrecoverable');
     vi.setSystemTime(delay - 1);
     await expect(pool.initLbug('repo', '/repo')).rejects.toThrow('native');
-    expect(mocks.construct).toHaveBeenCalledTimes(1);
+    expect(mocks.construct).toHaveBeenCalledTimes(2);
     mocks.fail = false;
     vi.setSystemTime(delay);
     await pool.initLbug('repo', '/repo');
-    expect(mocks.construct).toHaveBeenCalledTimes(2);
-    expect(mocks.close).toHaveBeenCalledTimes(1);
+    expect(mocks.construct).toHaveBeenCalledTimes(3);
+    expect(mocks.close).toHaveBeenCalledTimes(2);
     expect(mocks.releases[0]).toHaveBeenCalledTimes(1);
     await pool.closeLbug('repo');
   });
   it('evicts expired failures before admitting another repo at capacity', async () => {
     const pool = await import('../../src/core/lbug/pool-adapter.js');
-    for (let i = 0; i < 5; i++)
+    for (let i = 0; i < 5; i++) {
       await expect(pool.initLbug(`bad${i}`, `/bad${i}`)).rejects.toThrow();
+    }
     vi.setSystemTime(30000);
     mocks.fail = false;
     await pool.initLbug('good', '/good');
-    expect(mocks.close).toHaveBeenCalledTimes(5);
+    expect(mocks.close).toHaveBeenCalledTimes(10);
     for (const release of mocks.releases.slice(0, 5)) expect(release).toHaveBeenCalledTimes(1);
     await pool.closeLbug('good');
   });

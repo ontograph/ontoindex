@@ -832,6 +832,8 @@ export async function installSkillsTo(
     }
   }
 
+  await cleanStaleSkillArtifacts(targetDir, new Set(skillSources.keys()));
+
   for (const [skillName, source] of skillSources) {
     const skillDir = path.join(targetDir, skillName);
 
@@ -875,13 +877,36 @@ export async function installSkillsTo(
         }
       }
 
-      if (source.isDirectory) {
-        await copyDirRecursive(sourceDir!, skillDir);
-      } else {
-        await fs.mkdir(skillDir, { recursive: true });
-        await fs.writeFile(path.join(skillDir, 'SKILL.md'), sourceContent);
+      const stagingDir = await uniqueSkillArtifactPath(
+        targetDir,
+        `.${skillName}.ontoindex-staging`,
+      );
+      try {
+        if (source.isDirectory) {
+          await copyDirRecursive(sourceDir!, stagingDir);
+        } else {
+          await fs.mkdir(stagingDir, { recursive: true });
+          await fs.writeFile(path.join(stagingDir, 'SKILL.md'), sourceContent);
+        }
+        await fs.writeFile(path.join(stagingDir, '.ontoindex-managed'), '');
+
+        if (!exists) {
+          await fs.rename(stagingDir, skillDir);
+        } else {
+          const oldDir = await uniqueSkillArtifactPath(targetDir, `${skillName}.ontoindex-old`);
+          await fs.rename(skillDir, oldDir);
+          try {
+            await fs.rename(stagingDir, skillDir);
+          } catch (err) {
+            await fs.rename(oldDir, skillDir);
+            throw err;
+          }
+          await fs.rm(oldDir, { recursive: true, force: true });
+        }
+      } catch (err) {
+        await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+        throw err;
       }
-      await fs.writeFile(path.join(skillDir, '.ontoindex-managed'), '');
       installed.push(skillName);
     } catch {
       // Source skill not found — skip
@@ -889,6 +914,50 @@ export async function installSkillsTo(
   }
 
   return installed;
+}
+
+async function uniqueSkillArtifactPath(targetDir: string, prefix: string): Promise<string> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const candidate = path.join(
+      targetDir,
+      `${prefix}-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    try {
+      await fs.lstat(candidate);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return candidate;
+      throw err;
+    }
+  }
+  throw new Error('Unable to allocate a unique skill staging directory');
+}
+
+async function cleanStaleSkillArtifacts(targetDir: string, skillNames: Set<string>): Promise<void> {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  let entries;
+  try {
+    entries = await fs.readdir(targetDir, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    const staging = [...skillNames].some((name) =>
+      entry.name.startsWith(`.${name}.ontoindex-staging-`),
+    );
+    const old = [...skillNames].some((name) => entry.name.startsWith(`${name}.ontoindex-old-`));
+    if (!staging && !old) continue;
+    const artifact = path.join(targetDir, entry.name);
+    try {
+      const stat = await fs.lstat(artifact);
+      if (stat.isDirectory() && !stat.isSymbolicLink() && stat.mtimeMs < cutoff) {
+        await fs.rm(artifact, { recursive: true, force: true });
+      }
+    } catch {
+      // Best effort cleanup; installation remains responsible for its own artifacts.
+    }
+  }
 }
 
 function hasYamlFrontmatter(content: string): boolean {
@@ -905,7 +974,8 @@ export async function removeInvalidLegacyGitNexusSkills(skillsDir: string): Prom
 
   const removed: string[] = [];
   for (const entry of entries) {
-    if (!entry.isDirectory() || entry.isSymbolicLink() || !entry.name.startsWith('gitnexus-')) continue;
+    if (!entry.isDirectory() || entry.isSymbolicLink() || !entry.name.startsWith('gitnexus-'))
+      continue;
     const skillDir = path.join(skillsDir, entry.name);
     try {
       const content = await fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf-8');

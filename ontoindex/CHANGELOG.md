@@ -4,6 +4,13 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.30] - 2026-10-14
+
+- LadybugDB pool: corrupt-WAL recovery now runs. A real database with a bad `<db>.wal` fails in `init()` (checksum failure or read past the end of the file), not in the constructor, and the previous code rethrew before the recovery open could start. The failed primary wrapper is now closed while the generation pin stays held, then the database is reopened with WAL-tail discard. If recovery also fails, the recovery wrapper is retained with the pin and the unrecoverable error is thrown. Lock errors keep their retry loop and are retained only after the last attempt. A gated real-driver test (`ONTOINDEX_REAL_WAL_TEST=1`) covers both a checksum failure and a truncated WAL. The MCP server's existing preflight still refuses to open an index that has a non-empty `lbug.wal` or `lbug.shadow` sidecar and asks for one coordinated `ontoindex analyze`, so the pool-level recovery is reached only when that preflight passes (for example a sidecar that is absent or empty, or a path already marked ready). That policy is unchanged.
+- LadybugDB pool: cleanup of expired failed opens is per entry, so one failing close no longer blocks opening other repos. `closeLbug()` without an argument also closes retained failed opens and releases their pins. The `_initPromise` workaround only runs when the driver field exists.
+- `ontoindex setup`: skills are copied into a staging directory and renamed into place, so a failure part-way no longer leaves an unmarked half-copy that later looks user-owned. A managed refresh keeps the old copy until the new one is in place. Stale staging and backup directories older than 10 minutes are removed.
+- Response paging: an explicit `maxBytes` is honored. Only when not even one character fits is the budget raised, and the page then carries `budgetRaisedTo`.
+
 ## [2.2.29] - 2026-10-14
 
 - `mcp-doctor` run from a directory that is not an indexed repository (no `--repo`, no `--project-cwd`, no `ONTOINDEX_MCP_PROJECT_CWD`) now reports DEGRADED with a `no-target-repo` gap and `ontoindex mcp-doctor --repo <name>` as the next command, instead of MISCONFIGURED with a placeholder path. An explicit selector that is not found, and an ambiguous target, stay MISCONFIGURED.

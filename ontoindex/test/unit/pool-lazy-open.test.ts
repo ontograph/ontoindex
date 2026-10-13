@@ -52,12 +52,12 @@ describe('real driver lazy database open', () => {
     try {
       const pool = await import('../../src/core/lbug/pool-adapter.js');
       await expect(pool.initLbug('lazy', '/lazy')).rejects.toThrow('native initialization failed');
-      expect(init).toHaveBeenCalledTimes(1);
+      expect(init).toHaveBeenCalledTimes(3);
       expect(pool.isLbugDbPathReady('/lazy')).toBe(false);
       await expect(pool.executeQuery('lazy', 'RETURN 1')).rejects.toThrow('not initialized');
       expect(mocks.release).not.toHaveBeenCalled();
       await expect(pool.initLbug('lazy', '/lazy')).rejects.toThrow('native initialization failed');
-      expect(init).toHaveBeenCalledTimes(1);
+      expect(init).toHaveBeenCalledTimes(3);
     } finally {
       if (oldNative) require.cache[nativePath] = oldNative;
       else delete require.cache[nativePath];

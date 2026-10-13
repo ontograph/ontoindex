@@ -126,7 +126,8 @@ function retainFailedNativeOpen(
   // The driver retains its rejected init promise. Public close() awaits that
   // promise before disposing the uninitialized native wrapper, so clear only
   // this completed failure before handing cleanup back to the public API.
-  (db as lbug.Database & { _initPromise: Promise<void> | null })._initPromise = null;
+  if ('_initPromise' in db)
+    (db as lbug.Database & { _initPromise: Promise<void> | null })._initPromise = null;
   failedNativeOpens.set(dbPath, {
     shared: newSharedDb({ db, generationPin, refCount: 0, ftsLoaded: false, vectorLoaded: false }),
     failedAt: Date.now(),
@@ -437,8 +438,12 @@ export const touchRepo = (repoId: string): void => {
 async function evictLRU(): Promise<void> {
   for (const [dbPath, failed] of failedNativeOpens) {
     if (Date.now() - failed.failedAt < FAILED_OPEN_RETRY_MS) continue;
-    await closeSharedDatabase(failed.shared);
-    failedNativeOpens.delete(dbPath);
+    try {
+      await closeSharedDatabase(failed.shared);
+      failedNativeOpens.delete(dbPath);
+    } catch (error) {
+      failed.error = error instanceof Error ? error : new Error(String(error));
+    }
   }
   const occupied = () => pool.size + failedInitShares.size + failedNativeOpens.size;
   if (occupied() < MAX_POOL_SIZE) return;
@@ -914,8 +919,21 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           try {
             await db.init();
           } catch (error) {
-            retainFailedNativeOpen(dbPath, db, generationPin, error);
-            nativeOwnsPin = true;
+            const message = error instanceof Error ? error.message : String(error);
+            const lockError = message.includes('Could not set lock') || message.includes('lock');
+            if (lockError && attempt === LOCK_RETRY_ATTEMPTS) {
+              retainFailedNativeOpen(dbPath, db, generationPin, error);
+              nativeOwnsPin = true;
+            } else {
+              if ('_initPromise' in db)
+                (db as lbug.Database & { _initPromise: Promise<void> | null })._initPromise = null;
+              try {
+                await db.close();
+              } catch (closeError) {
+                retainFailedNativeOpen(dbPath, db, generationPin, closeError);
+                nativeOwnsPin = true;
+              }
+            }
             throw error;
           }
           restoreStdout();
@@ -1603,6 +1621,14 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
   }
   for (const [id, state] of [...failedInitShares]) {
     await closePrewarmedConnections(id, state.dbPath, state.shared, state.connections);
+  }
+  for (const [dbPath, failed] of [...failedNativeOpens]) {
+    try {
+      await closeSharedDatabase(failed.shared);
+      failedNativeOpens.delete(dbPath);
+    } catch (error) {
+      failed.error = error instanceof Error ? error : new Error(String(error));
+    }
   }
   pruneInitializationRoutes();
 

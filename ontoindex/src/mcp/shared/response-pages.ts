@@ -40,6 +40,7 @@ export interface ResponsePageEnvelope {
     nextCursor?: string;
   };
   chunk: string;
+  budgetRaisedTo?: number;
 }
 
 export async function pageMcpResponse(input: {
@@ -55,7 +56,7 @@ export async function pageMcpResponse(input: {
     typeof requestedMaxBytes === 'number' &&
     Number.isFinite(requestedMaxBytes) &&
     requestedMaxBytes > 0
-      ? Math.max(requestedMaxBytes, 1024)
+      ? Math.max(1, Math.floor(requestedMaxBytes))
       : MCP_RESPONSE_MAX_BYTES;
   const args = withoutCursor(input.args);
   const requestHash = digest(stableJson({ tool: input.tool, args }));
@@ -120,7 +121,20 @@ function buildPage(
     }
   }
   if (!best || best.responsePage.returnedBytes === 0) {
-    throw new Error('MCP response byte limit is too small for the paging envelope.');
+    const firstEnd = utf8Boundary(source, offset, Math.min(source.length, offset + 1));
+    if (firstEnd <= offset) {
+      throw new Error('MCP response byte limit is too small for the paging envelope.');
+    }
+    const firstPage = createPageEnvelope(stored, source, offset, firstEnd, totalBytes);
+    let raisedTo = serializedMcpToolResultBytes(JSON.stringify(firstPage));
+    let raisedPage = { ...firstPage, budgetRaisedTo: raisedTo };
+    while (true) {
+      const actualBytes = serializedMcpToolResultBytes(JSON.stringify(raisedPage));
+      if (actualBytes === raisedTo) break;
+      raisedTo = actualBytes;
+      raisedPage = { ...firstPage, budgetRaisedTo: raisedTo };
+    }
+    return raisedPage;
   }
   return best;
 }

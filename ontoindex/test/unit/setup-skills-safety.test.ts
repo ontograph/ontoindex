@@ -43,6 +43,73 @@ describe('setup skill installation safety', () => {
     );
   });
 
+  it('cleans up a partial fresh install and allows a later retry', async () => {
+    const root = await makeTempDir();
+    const source = path.join(root, 'source');
+    const target = path.join(root, 'target');
+    await makeSource(source, 'sample', '---\nname: sample\n---\nsource\n');
+    await fs.mkdir(path.join(source, 'sample', 'nested'));
+    await fs.writeFile(path.join(source, 'sample', 'nested', 'extra.txt'), 'extra');
+    const skipped: string[] = [];
+    const broken = path.join(source, 'sample', 'nested', 'extra.txt');
+    await fs.rm(broken);
+    await fs.symlink(path.join(root, 'missing-source-file'), broken);
+
+    await expect(installSkillsTo(target, skipped, source)).resolves.toEqual([]);
+    await expect(fs.access(path.join(target, 'sample'))).rejects.toThrow();
+    expect(skipped).toEqual([]);
+    expect((await fs.readdir(target)).filter((name) => name.includes('ontoindex-staging'))).toEqual(
+      [],
+    );
+
+    await fs.rm(broken);
+    await fs.writeFile(broken, 'extra');
+    await expect(installSkillsTo(target, undefined, source)).resolves.toEqual(['sample']);
+  });
+
+  it('preserves existing managed content when refreshing fails', async () => {
+    const root = await makeTempDir();
+    const source = path.join(root, 'source');
+    const target = path.join(root, 'target');
+    await makeSource(source, 'sample', '---\nname: sample\n---\nfirst\n');
+    await expect(installSkillsTo(target, undefined, source)).resolves.toEqual(['sample']);
+    await fs.writeFile(path.join(source, 'sample', 'SKILL.md'), '---\nname: sample\n---\nsecond\n');
+    await fs.mkdir(path.join(source, 'sample', 'nested'));
+    await fs.symlink(
+      path.join(root, 'missing-source-file'),
+      path.join(source, 'sample', 'nested', 'broken'),
+    );
+
+    await expect(installSkillsTo(target, undefined, source)).resolves.toEqual([]);
+    await expect(fs.readFile(path.join(target, 'sample', 'SKILL.md'), 'utf-8')).resolves.toContain(
+      'first',
+    );
+    expect((await fs.readdir(target)).filter((name) => name.includes('ontoindex-staging'))).toEqual(
+      [],
+    );
+  });
+
+  it('removes only stale real staging and backup directories for managed skills', async () => {
+    const root = await makeTempDir();
+    const source = path.join(root, 'source');
+    const target = path.join(root, 'target');
+    await makeSource(source, 'sample', '---\nname: sample\n---\nsource\n');
+    await fs.mkdir(target, { recursive: true });
+    const stale = path.join(target, '.sample.ontoindex-staging-old');
+    const fresh = path.join(target, '.sample.ontoindex-staging-fresh');
+    const oldBackup = path.join(target, 'sample.ontoindex-old-old');
+    const unrelated = path.join(target, '.other.ontoindex-staging-old');
+    for (const dir of [stale, fresh, oldBackup, unrelated]) await fs.mkdir(dir);
+    const old = new Date(Date.now() - 11 * 60 * 1000);
+    for (const dir of [stale, oldBackup, unrelated]) await fs.utimes(dir, old, old);
+
+    await expect(installSkillsTo(target, undefined, source)).resolves.toEqual(['sample']);
+    await expect(fs.access(stale)).rejects.toThrow();
+    await expect(fs.access(oldBackup)).rejects.toThrow();
+    await expect(fs.access(fresh)).resolves.toBeUndefined();
+    await expect(fs.access(unrelated)).resolves.toBeUndefined();
+  });
+
   it('skips a differing unmarked user skill and reports its name', async () => {
     const root = await makeTempDir();
     const source = path.join(root, 'source');
