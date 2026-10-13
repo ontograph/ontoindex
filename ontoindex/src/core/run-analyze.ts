@@ -38,7 +38,6 @@ import {
   cleanupOldKuzuFiles,
   createIndexGeneration,
   discardIndexGeneration,
-  activateIndexGeneration,
   publishIndexGenerationTransaction,
   type IndexGenerationPaths,
 } from '../storage/repo-manager.js';
@@ -1673,7 +1672,7 @@ export async function runFullAnalysis(
       stagedGeneration = null;
     } else {
       await closeLbug({ strict: true });
-      await activateIndexGeneration(storagePath, stagedGeneration);
+      await publishIndexGenerationTransaction(storagePath, stagedGeneration, async () => undefined);
       stagedGeneration = null;
     }
 

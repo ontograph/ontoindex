@@ -566,6 +566,7 @@ export interface GenerationCleanupPlan {
 }
 
 export interface GenerationCleanupResult {
+  hadFailures?: boolean;
   kept: Array<{ name: string; reason: string }>;
   candidates?: Array<{ name: string; reason: string; bytes: number }>;
   deleted: Array<{ name: string; bytes: number }>;
@@ -644,11 +645,17 @@ async function planGenerationCleanupLocked(
       const leading = /^(\d+)-/.exec(entry.name);
       const marker = path.join(root, entry.name, '.retention-managed');
       const markerStat = await fs.lstat(marker).catch(() => null);
-      const epoch = leading
-        ? Number(leading[1])
-        : markerStat?.isFile() && !markerStat.isSymbolicLink()
+      const markerValue =
+        markerStat?.isFile() && !markerStat.isSymbolicLink()
           ? Number(await fs.readFile(marker, 'utf8'))
           : 0;
+      // Publication markers and fallback name epochs share the same millisecond scale.
+      const epoch =
+        Number.isSafeInteger(markerValue) && markerValue > 0
+          ? markerValue
+          : leading
+            ? Number(leading[1])
+            : 0;
       return { name: entry.name, epoch: Number.isFinite(epoch) ? epoch : 0 };
     }),
   );
@@ -694,6 +701,7 @@ async function executeGenerationCleanupLocked(
   const eligible = new Set(fresh.candidates.map((candidate) => candidate.name));
   const deleted: Array<{ name: string; bytes: number }> = [];
   const skipped: Array<{ name: string; reason: string }> = [];
+  let hadFailures = false;
   for (const candidate of plan.candidates) {
     if (
       !/^[A-Za-z0-9._-]+$/.test(candidate.name) ||
@@ -719,8 +727,17 @@ async function executeGenerationCleanupLocked(
       continue;
     }
     const bytes = await generationCleanupBytes(directory);
-    await fs.rm(directory, { recursive: true, force: true });
-    deleted.push({ name: candidate.name, bytes });
+    try {
+      await fs.rm(directory, { recursive: true, force: true });
+      deleted.push({ name: candidate.name, bytes });
+    } catch (err) {
+      hadFailures = true;
+      const error = err as NodeJS.ErrnoException;
+      const detail = String(error.code || error.message || 'unknown error')
+        .replace(/(?:[A-Za-z]:[\\/]|\/)[^\s'"<>]+/g, '[path]')
+        .slice(0, 120);
+      skipped.push({ name: candidate.name, reason: `delete-failed: ${detail}` });
+    }
   }
   return {
     kept: fresh.kept,
@@ -728,6 +745,7 @@ async function executeGenerationCleanupLocked(
     skipped,
     bytesReclaimable: fresh.bytesReclaimable,
     dryRun: false,
+    hadFailures,
   };
 }
 
@@ -740,7 +758,8 @@ export const cleanGenerations = (
 ): Promise<GenerationCleanupResult> =>
   withGenerationPointerLock(storagePath, async (): Promise<GenerationCleanupResult> => {
     const plan = await planGenerationCleanupLocked(storagePath, options.keepNewest ?? 2);
-    if (options.dryRun !== false) return { ...plan, deleted: [], skipped: [], dryRun: true };
+    if (options.dryRun !== false)
+      return { ...plan, deleted: [], skipped: [], dryRun: true, hadFailures: false };
     return executeGenerationCleanupLocked(storagePath, plan);
   });
 

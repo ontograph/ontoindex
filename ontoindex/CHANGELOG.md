@@ -4,6 +4,15 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.26] - 2026-10-13
+
+### Fixed
+
+- Plain `ontoindex analyze` now publishes the new index generation through the same transaction as managed analysis. Before, only managed analysis wrote the `.retention-managed` marker and pruned, so every command-line analyze left one more unmarked generation behind forever. Now each new generation gets a marker and old marked generations are pruned to the active one plus the two newest, with live reader pins respected. Generations created by earlier versions have no marker, so automatic pruning still never touches them; remove them with `ontoindex clean --generations`.
+- `ontoindex clean --generations` ranks generations by the `.retention-managed` publication sequence, falling back to the leading number of the directory name. Before, it ranked by the name alone and could keep an older-named generation while treating the most recently published one as obsolete.
+- `ontoindex clean --generations` no longer loses its report when one deletion fails. Each failed deletion is listed as skipped with a short reason, the remaining generations and repositories are still processed, and the command exits with code 1 only after printing everything (and only with `--force`).
+- `ontoindex mcp-doctor` shows which informational runtime warnings sit behind the optional `runtime-warnings` gap. `capabilityGaps[].details` (JSON) and indented lines under "Optional capabilities" (text) list up to five distinct warnings, each cut at 200 characters, with a `+N more` line when there are more.
+
 ## [2.2.25] - 2026-10-13
 
 ### Added

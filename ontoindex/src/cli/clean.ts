@@ -42,25 +42,35 @@ export const cleanCommand = async (options?: {
             : bytes >= 1024
               ? `${(bytes / 1024).toFixed(2)} KB`
               : `${bytes} B`;
+      let hadFailures = false;
       for (const target of targets) {
-        const result = await cleanGenerations(target.storagePath, {
-          dryRun: !options.force,
-          keepNewest: Number(keep),
-        });
-        console.log(`${target.name}: ${size(result.bytesReclaimable)} reclaimable`);
-        for (const generation of result.kept)
-          console.log(`  Keep ${generation.name}: ${generation.reason}`);
-        for (const generation of result.candidates ?? [])
-          console.log(`  Would delete ${generation.name}: ${size(generation.bytes)}`);
-        for (const generation of result.deleted)
-          console.log(`  Deleted ${generation.name}: ${size(generation.bytes)}`);
-        for (const generation of result.skipped)
-          console.log(`  Skipped ${generation.name}: ${generation.reason}`);
+        try {
+          const result = await cleanGenerations(target.storagePath, {
+            dryRun: !options.force,
+            keepNewest: Number(keep),
+          });
+          console.log(`${target.name}: ${size(result.bytesReclaimable)} reclaimable`);
+          for (const generation of result.kept)
+            console.log(`  Keep ${generation.name}: ${generation.reason}`);
+          for (const generation of result.candidates ?? [])
+            console.log(`  Would delete ${generation.name}: ${size(generation.bytes)}`);
+          for (const generation of result.deleted)
+            console.log(`  Deleted ${generation.name}: ${size(generation.bytes)}`);
+          for (const generation of result.skipped)
+            console.log(`  Skipped ${generation.name}: ${generation.reason}`);
+          hadFailures ||= !!result.hadFailures;
+        } catch (err) {
+          hadFailures = true;
+          console.error(
+            `Failed: ${target.name}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       }
+      if (options.force && hadFailures) process.exitCode = 1;
       if (!options.force) console.log('Run with --force to delete');
     } catch (err) {
       console.error('Failed to clean generations:', err);
-      process.exitCode = 1;
+      if (options.force) process.exitCode = 1;
     }
     return;
   }

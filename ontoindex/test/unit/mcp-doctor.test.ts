@@ -1033,14 +1033,57 @@ describe('mcp-doctor', () => {
     const informational = await makeReport([
       '41 untracked files are absent from the graph entirely; 72 tracked changes are indexed at the indexed commit.',
       'dirty worktree contains uncommitted changes',
+      '41 untracked files are absent from the graph entirely; 72 tracked changes are indexed at the indexed commit.',
+      'dirty worktree contains uncommitted changes',
+      'no embeddings are available',
+      'dirty worktree contains uncommitted changes in source files',
+      'dirty worktree contains uncommitted changes in tests',
+      'another dirty worktree warning',
     ]);
     expect(informational.verdict).toBe('READY');
-    expect(informational.capabilityGaps).toContainEqual({ reason: 'runtime-warnings' });
-    expect(formatMcpDoctorText(informational)).toContain('- runtime-warnings');
+    expect(informational.capabilityGaps).toContainEqual({
+      reason: 'runtime-warnings',
+      details: [
+        '41 untracked files are absent from the graph entirely; 72 tracked changes are indexed at the indexed commit.',
+        'dirty worktree contains uncommitted changes',
+        'no embeddings are available',
+        'dirty worktree contains uncommitted changes in source files',
+        'dirty worktree contains uncommitted changes in tests',
+        '+1 more',
+      ],
+    });
+    expect(formatMcpDoctorText(informational)).toContain(
+      'Optional capabilities:\n- runtime-warnings\n  - 41 untracked files are absent from the graph entirely; 72 tracked changes are indexed at the indexed commit.\n  - dirty worktree contains uncommitted changes',
+    );
 
     const unknown = await makeReport(['unrecognized runtime warning']);
     expect(unknown.verdict).toBe('DEGRADED');
     expect(unknown.capabilityGaps ?? []).not.toContainEqual({ reason: 'runtime-warnings' });
+
+    const embeddings = await createMcpDoctorReport(
+      { repo: 'fixture', projectCwd: '/repo/fixture' },
+      {
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
+        diagnose: async () => ({
+          ...baseDiagnose,
+          degradedContext: {
+            ...baseDiagnose.degradedContext,
+            status: 'degraded',
+            reasons: ['embeddings-unavailable'],
+          },
+        }),
+        processLiveness: async (_repo, _cwd, repairCommand) => ({
+          status: 'ok',
+          pid: 1234,
+          repairCommand,
+        }),
+      },
+    );
+    expect(embeddings.capabilityGaps).toContainEqual({ reason: 'embeddings-unavailable' });
+
+    const longWarning = await makeReport(['dirty worktree '.repeat(30)]);
+    expect(longWarning.capabilityGaps?.[0].details?.[0]).toHaveLength(200);
+    expect(longWarning.capabilityGaps?.[0].details?.[0].endsWith('…')).toBe(true);
   });
 
   it('keeps JSON output stable enough for issue reports', async () => {

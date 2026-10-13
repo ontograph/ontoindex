@@ -52,7 +52,7 @@ export interface McpDoctorReport {
       message: string;
     }>;
   };
-  capabilityGaps?: Array<{ reason: string; repairCommand?: string }>;
+  capabilityGaps?: Array<{ reason: string; repairCommand?: string; details?: string[] }>;
   nextCommand: string;
 }
 
@@ -105,7 +105,7 @@ export async function createMcpDoctorReport(
     ? await deps.processLiveness(repoSelector, projectCwd, fallbackRestartCommand)
     : await probeMcpProcessLiveness(repoSelector, projectCwd, fallbackRestartCommand, deps);
   const setupHealth = await (deps.setupHealth ?? probeSetupHealth)(projectCwd);
-  const capabilityGaps = diagnose.degradedContext.reasons
+  const capabilityGaps: NonNullable<McpDoctorReport['capabilityGaps']> = diagnose.degradedContext.reasons
     .filter((reason) => reason === 'embeddings-unavailable' || reason === 'embeddings-missing' || reason.endsWith('-lsp-missing'))
     .map((reason) => ({
       reason,
@@ -117,7 +117,10 @@ export async function createMcpDoctorReport(
     diagnose.degradedContext.reasons.includes('runtime-warnings') &&
     diagnose.warnings.every(isInformationalRuntimeWarning)
   ) {
-    capabilityGaps.push({ reason: 'runtime-warnings' });
+    capabilityGaps.push({
+      reason: 'runtime-warnings',
+      details: summarizeRuntimeWarnings(diagnose.warnings),
+    });
   }
   const verdict = resolveVerdict(diagnose, symbolSmoke, processLiveness, setupHealth, capabilityGaps);
 
@@ -206,6 +209,7 @@ export function formatMcpDoctorText(report: McpDoctorReport): string {
     lines.push('Optional capabilities:');
     for (const gap of report.capabilityGaps) {
       lines.push(`- ${gap.reason}${gap.repairCommand ? ` (repair: ${gap.repairCommand})` : ''}`);
+      for (const detail of gap.details ?? []) lines.push(`  - ${detail}`);
     }
   }
   if (report.diagnose.auditFreshness) {
@@ -317,6 +321,15 @@ function isInformationalRuntimeWarning(warning: string): boolean {
     /dirty worktree/i,
     /no embeddings/i,
   ].some((pattern) => pattern.test(warning));
+}
+
+function summarizeRuntimeWarnings(warnings: string[]): string[] {
+  const unique = [...new Set(warnings.map((warning) => warning.trim()).filter(Boolean))];
+  const details = unique.slice(0, 5).map((warning) =>
+    warning.length > 200 ? `${warning.slice(0, 199)}…` : warning,
+  );
+  if (unique.length > 5) details.push(`+${unique.length - 5} more`);
+  return details;
 }
 
 function resolveRepoSelector(
