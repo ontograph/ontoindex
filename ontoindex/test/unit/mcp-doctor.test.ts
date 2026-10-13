@@ -676,6 +676,28 @@ describe('mcp-doctor', () => {
     }
   });
 
+  it('ignores ordinary absolute paths and URLs outside JSON binding positions', async () => {
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-mcp-doctor-home-'));
+    const tempRepo = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-mcp-doctor-repo-'));
+    try {
+      vi.stubEnv('HOME', tempHome);
+      vi.stubEnv('USERPROFILE', tempHome);
+      await fs.mkdir(path.join(tempRepo, '.claude'), { recursive: true });
+      await fs.writeFile(path.join(tempRepo, '.claude', 'settings.local.json'), JSON.stringify({
+        permissions: { allow: ['Bash(/usr/bin/git status)'] }, note: 'https://example.test/a /opt/tool',
+      }));
+      const report = await createMcpDoctorReport({ repo: 'fixture', projectCwd: tempRepo }, {
+        cwd: () => tempRepo, diagnose: async () => baseDiagnose,
+        processLiveness: async (_repo, _cwd, repairCommand) => ({ status: 'unavailable', repairCommand }),
+      });
+      expect(report.setupHealth).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+      await fs.rm(tempHome, { recursive: true, force: true });
+      await fs.rm(tempRepo, { recursive: true, force: true });
+    }
+  });
+
   it('flags missing generated skill directories as DEGRADED', async () => {
     const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-mcp-doctor-home-'));
     const tempRepo = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-mcp-doctor-repo-'));

@@ -29,6 +29,7 @@ import {
 import { INTERNAL_TOOL_HANDLERS } from './tools.js';
 import { dispatchFacade, type FacadeTool } from './facade/dispatch.js';
 import { attachRepoScopeIdentity } from './shared/response-envelope.js';
+import { isMarkedInvocationError } from './shared/invocation-error.js';
 import { SUPER_NAMES, type SuperTool } from './super/names.js';
 import {
   getMcpStartupProfileFromEnv,
@@ -555,6 +556,7 @@ export function createMCPServer(
         });
         return {
           content: [{ type: 'text', text: page.text }],
+          ...(isMarkedInvocationError(result) ? { isError: true } : {}),
         };
       } catch (error) {
         const scopedRepoIdentity = repoIdentity ?? readRepoIdentity(error);
@@ -713,7 +715,14 @@ export async function startMCPServer(
     },
   });
   const transport = new CompatibleStdioServerTransport(process.stdin, _safeStdout);
-  await server.connect(transport);
+  const trace = ['1', 'true', 'yes'].includes(process.env.ONTOINDEX_MCP_STARTUP_TRACE?.toLowerCase() ?? '');
+  if (trace) console.error('[ontoindex:mcp:init] server.connect: start');
+  try {
+    await server.connect(transport);
+  } catch (error) {
+    if (trace) console.error(`[ontoindex:mcp:init] server.connect: failed: ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
+  }
 
   // Graceful shutdown helper
   let shuttingDown = false;

@@ -11,7 +11,6 @@
 
 import { readFileSync } from 'fs';
 import path, { join } from 'path';
-import { homedir } from 'os';
 import { execFileText } from '../../core/process/exec-file.js';
 import {
   submitAnalysisJob,
@@ -31,9 +30,17 @@ import {
   readRuntimeHealth,
   type RuntimeHealthSnapshot,
 } from '../../core/runtime/runtime-health.js';
-import { readActiveGenerationMeta, type RepoMeta } from '../../storage/repo-manager.js';
+import {
+  getGlobalRegistryPath,
+  readActiveGenerationMeta,
+  type RepoMeta,
+} from '../../storage/repo-manager.js';
 import type { GraphAuthorityCapability, ScopeConfidence } from '../shared/target-context.js';
-import { resolveTargetContext } from '../shared/target-context.js';
+import {
+  resolveTargetContext,
+  resolveRegistryEntry,
+  registryRepoIds,
+} from '../shared/target-context.js';
 import { createEnvelopeFromLegacy } from '../shared/response-envelope.js';
 
 const GIT_PROBE_TIMEOUT_MS = 5_000;
@@ -132,8 +139,8 @@ function normalizeRequiredGraphCapabilities(
 // ---------------------------------------------------------------------------
 
 interface RegistryEntry {
-  name?: string;
-  path?: string;
+  name: string;
+  path: string;
   lastCommit?: string;
   indexedAt?: string;
   stats?: {
@@ -143,7 +150,11 @@ interface RegistryEntry {
 
 function parseRegistryJson(rawRegistry: string): RegistryEntry[] {
   const parsedRegistry: unknown = JSON.parse(rawRegistry);
-  return parsedRegistry as RegistryEntry[];
+  if (!Array.isArray(parsedRegistry)) return parsedRegistry as RegistryEntry[];
+  return parsedRegistry.filter(
+    (entry): entry is RegistryEntry =>
+      !!entry && typeof entry.name === 'string' && typeof entry.path === 'string',
+  );
 }
 
 /** Resolve the repo root via `git rev-parse --show-toplevel`, fallback to cwd. */
@@ -166,22 +177,7 @@ function normalizeRepoPath(repoPath: string | undefined): string | null {
 }
 
 function buildRegistryIds(registry: RegistryEntry[]): Map<RegistryEntry, string> {
-  const ids = new Map<RegistryEntry, string>();
-  const seen = new Map<string, string>();
-  for (const entry of registry) {
-    const base = entry.name?.toLowerCase();
-    const repoPath = normalizeRepoPath(entry.path);
-    if (!base || !repoPath) continue;
-
-    const previousPath = seen.get(base);
-    if (previousPath && previousPath !== repoPath) {
-      ids.set(entry, `${base}-${Buffer.from(repoPath).toString('base64url').slice(0, 6)}`);
-    } else {
-      seen.set(base, repoPath);
-      ids.set(entry, base);
-    }
-  }
-  return ids;
+  return registryRepoIds(registry) as Map<RegistryEntry, string>;
 }
 
 function findRegistryEntry(
@@ -189,29 +185,8 @@ function findRegistryEntry(
   selector: string | undefined,
   cwdRepoRoot: string | undefined,
 ): RegistryEntry | undefined {
-  const registryIds = buildRegistryIds(registry);
-  const selectorLower = selector?.trim().toLowerCase();
-  const selectorPath = normalizeRepoPath(selector);
-  const cwdPath = normalizeRepoPath(cwdRepoRoot);
-
-  if (selectorLower || selectorPath) {
-    const selected = registry.find((entry) => {
-      const entryName = entry.name?.toLowerCase();
-      const entryPath = normalizeRepoPath(entry.path);
-      return (
-        (selectorLower !== undefined &&
-          (entryName === selectorLower || registryIds.get(entry) === selectorLower)) ||
-        (selectorPath !== null && entryPath === selectorPath)
-      );
-    });
-    if (selected) return selected;
-  }
-
-  if (cwdPath) {
-    return registry.find((entry) => normalizeRepoPath(entry.path) === cwdPath);
-  }
-
-  return undefined;
+  const result = resolveRegistryEntry(registry, selector ?? cwdRepoRoot);
+  return result.status === 'ok' ? result.entry : undefined;
 }
 
 function registryEntryMatchesSelector(
@@ -548,7 +523,7 @@ async function buildEnsureFreshReport(
     params.autoAnalyze === true ? { status: 'not-needed' } : { status: 'not-requested' };
 
   // ---- 1. Read registry ---------------------------------------------------
-  const registryPath = join(homedir(), '.ontoindex', 'registry.json');
+  const registryPath = getGlobalRegistryPath();
   let registry: RegistryEntry[] = [];
   try {
     registry = parseRegistryJson(readFileSync(registryPath, 'utf8'));
@@ -571,6 +546,8 @@ async function buildEnsureFreshReport(
   // ---- 2. Resolve the repo from the same registry semantics as MCP --------
   const selector = params.repo?.trim() || repoId.trim() || undefined;
   const cwdRepoRoot = selector ? undefined : await resolveCwdRepoRoot();
+  const selection = resolveRegistryEntry(registry, selector ?? cwdRepoRoot);
+  if (selection.status === 'ambiguous') warnings.push(selection.action);
   const entry = findRegistryEntry(registry, selector, cwdRepoRoot);
   if (!entry) {
     return emptyReport(

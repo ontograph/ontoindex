@@ -1,5 +1,14 @@
-import { describe, it, expect } from 'vitest';
-import { extractRepoName, getCloneDir, validateGitUrl } from '../../src/server/git-clone.js';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  extractRepoName,
+  getCloneDir,
+  validateGitUrl,
+  cloneOrPull,
+} from '../../src/server/git-clone.js';
+import type { LookupAddress } from 'node:dns';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 describe('git-clone', () => {
   describe('extractRepoName', () => {
@@ -120,6 +129,76 @@ describe('git-clone', () => {
 
     it('blocks 0.0.0.0', () => {
       expect(() => validateGitUrl('http://0.0.0.0/repo.git')).toThrow('private/internal');
+    });
+  });
+
+  describe('hostname resolution and pinned cloning', () => {
+    const publicAnswer: LookupAddress = { address: '140.82.121.4', family: 4 };
+    const makeTarget = async () => {
+      const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'git-clone-ssrf-'));
+      return { parent, target: path.join(parent, 'repo') };
+    };
+
+    it.each(['127.0.0.1', '::1', '10.2.3.4', '169.254.169.254', 'fc00::1', '::ffff:10.0.0.1'])(
+      'refuses hostname resolving to %s',
+      async (address) => {
+        const runGit = vi.fn(async (_args: string[]) => {});
+        const { target } = await makeTarget();
+        await expect(
+          cloneOrPull('https://git.example/repo.git', target, undefined, {
+            lookup: async () => [{ address, family: address.includes(':') ? 6 : 4 }],
+            runGit,
+          }),
+        ).rejects.toThrow('private/internal');
+        expect(runGit).not.toHaveBeenCalled();
+      },
+    );
+
+    it('refuses a mixed public and private DNS answer set', async () => {
+      const runGit = vi.fn(async (_args: string[]) => {});
+      const { target } = await makeTarget();
+      await expect(
+        cloneOrPull('https://git.example/repo.git', target, undefined, {
+          lookup: async () => [publicAnswer, { address: '192.168.1.5', family: 4 }],
+          runGit,
+        }),
+      ).rejects.toThrow('private/internal');
+      expect(runGit).not.toHaveBeenCalled();
+    });
+
+    it('pins all-public DNS answers and restricts git protocols', async () => {
+      const runGit = vi.fn(async (_args: string[]) => {});
+      const { parent, target } = await makeTarget();
+      const lookup = vi.fn(async () => [
+        publicAnswer,
+        { address: '2606:50c0:8000::154', family: 6 },
+      ]);
+      await cloneOrPull('https://git.example:8443/repo.git', target, undefined, { lookup, runGit });
+      const args = runGit.mock.calls[0]?.[0] as string[];
+      expect(args).toContain('https://git.example:8443/repo.git');
+      expect(args).toContain(
+        '-chttp.curloptResolve=git.example:8443:140.82.121.4,[2606:50c0:8000::154]',
+      );
+      expect(args).toContain('-cprotocol.allow=never');
+      expect(args).toContain('-cprotocol.https.allow=always');
+      expect(args).toContain('-cprotocol.http.allow=always');
+      expect(args).toContain('-chttp.followRedirects=false');
+      expect(lookup).toHaveBeenCalledWith('git.example', { all: true, verbatim: true });
+      await fs.rm(parent, { recursive: true, force: true });
+    });
+
+    it('refuses hostname clones when DNS resolution fails', async () => {
+      const runGit = vi.fn(async (_args: string[]) => {});
+      const { target } = await makeTarget();
+      await expect(
+        cloneOrPull('https://git.example/repo.git', target, undefined, {
+          lookup: async () => {
+            throw new Error('DNS unavailable');
+          },
+          runGit,
+        }),
+      ).rejects.toThrow('Could not resolve git host');
+      expect(runGit).not.toHaveBeenCalled();
     });
   });
 });

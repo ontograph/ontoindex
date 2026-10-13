@@ -136,6 +136,16 @@ describe('setupCommand codex execution', () => {
     expect(raw).toContain('[profiles.default]');
   });
 
+  it('refuses ambiguous multiline TOML rather than rewriting it', async () => {
+    await fs.mkdir(path.join(tempHome, '.ontocode'), { recursive: true });
+    const configPath = path.join(tempHome, '.ontocode', 'config.toml');
+    const original = 'note = """unterminated\n[mcp_servers.ontoindex] # text';
+    await fs.writeFile(configPath, original, 'utf-8');
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await expect(setupCommand()).rejects.toThrow(/ambiguous.*TOML|unterminated.*string/i);
+    await expect(fs.readFile(configPath, 'utf-8')).resolves.toBe(original);
+  });
+
   it('skips Codex setup entirely when ~/.codex is missing', async () => {
     await fs.rm(path.join(tempHome, '.codex'), { recursive: true, force: true });
 

@@ -427,7 +427,6 @@ async function probeMcpProcessLiveness(
 async function probeSetupHealth(projectCwd: string): Promise<McpDoctorReport['setupHealth']> {
   const issues: NonNullable<McpDoctorReport['setupHealth']>['issues'] = [];
   const normalizedProjectCwd = normalizePath(projectCwd);
-  const normalizedHome = normalizePath(os.homedir());
   const repairCommand = 'ontoindex setup';
 
   const configFiles = [
@@ -438,7 +437,9 @@ async function probeSetupHealth(projectCwd: string): Promise<McpDoctorReport['se
   for (const filePath of configFiles) {
     const raw = await readTextIfExists(filePath);
     if (!raw) continue;
-    const staleMentions = findStaleRepoPaths(raw, normalizedProjectCwd, normalizedHome);
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); } catch { continue; }
+    const staleMentions = findStaleRepoPaths(parsed, normalizedProjectCwd);
     if (staleMentions.length === 0) continue;
     issues.push({
       kind: 'stale-hardcoded-repo-path',
@@ -507,19 +508,25 @@ async function dirExists(dirPath: string): Promise<boolean> {
   }
 }
 
-function findStaleRepoPaths(
-  raw: string,
-  normalizedProjectCwd: string,
-  normalizedHome: string,
-): string[] {
-  const normalized = normalizePath(raw);
-
+function findStaleRepoPaths(parsed: unknown, normalizedProjectCwd: string): string[] {
   const stale = new Set<string>();
-  for (const match of normalized.match(/\/[^\s"'`<>]+/g) ?? []) {
-    if (match.startsWith(normalizedProjectCwd)) continue;
-    if (match.startsWith(normalizedHome)) continue;
-    stale.add(match.replace(/[.,;:]+$/, ''));
-  }
+  const inspectCommand = (command: string) => {
+    const cd = command.match(/(?:^|\s)cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/)?.slice(1).find(Boolean);
+    for (const candidate of [extractCliOptionValue(command, '-C'), extractCliOptionValue(command, '--project'), extractCliOptionValue(command, '--repo'), cd]) {
+      if (!candidate) continue;
+      const target = normalizePath(path.resolve(candidate));
+      const root = normalizePath(path.resolve(normalizedProjectCwd)).replace(/\/$/, '');
+      if (target !== root && !target.startsWith(`${root}/`)) stale.add(candidate);
+    }
+  };
+  const visit = (value: unknown, key = ''): void => {
+    if (Array.isArray(value)) { for (const item of value) visit(item, key); return; }
+    if (value && typeof value === 'object') { for (const [childKey, child] of Object.entries(value)) visit(child, childKey); return; }
+    if (typeof value !== 'string') return;
+    if (['allow', 'deny', 'ask'].includes(key) && value.startsWith('Bash(')) inspectCommand(value.slice(5, -1));
+    if (/hook|command/i.test(key)) inspectCommand(value);
+  };
+  visit(parsed);
   return [...stale];
 }
 

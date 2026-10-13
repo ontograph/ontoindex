@@ -32,6 +32,7 @@ vi.mock('@ladybugdb/core', () => ({
         mocks.opens();
       }
       close = mocks.dbClose;
+      init = async () => {};
     },
     Connection: class {
       constructor() {
@@ -72,6 +73,116 @@ function deferred() {
 }
 
 describe('pool lifecycle drain', () => {
+  it.each(['idle', 'waiters', 'failure'])(
+    'keeps a single retiring slot occupied until native close: %s',
+    async (mode) => {
+      const previous = process.env.ONTOINDEX_LBUG_POOL_SIZE;
+      process.env.ONTOINDEX_LBUG_POOL_SIZE = '1';
+      vi.resetModules();
+      const single = await import('../../src/core/lbug/pool-adapter.js');
+      vi.useFakeTimers();
+      mocks.query.mockImplementation(async () => result());
+      await single.initLbug('single', '/single');
+      const active = deferred();
+      const close = deferred();
+      mocks.query.mockImplementationOnce(() => active.promise);
+      const query = track(single.executeQuery('single', 'RETURN 1'));
+      const timeout = track(expect(query).rejects.toThrow('timed out'));
+      try {
+        await vi.advanceTimersByTimeAsync(30_000);
+        await timeout;
+        mocks.connClose.mockImplementationOnce(async () => {
+          await close.promise;
+          if (mode === 'failure') throw new Error('retired close failed');
+        });
+        active.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        const order: number[] = [];
+        const waiting =
+          mode === 'waiters'
+            ? [2, 3].map((number) =>
+                track(
+                  single.executeQuery('single', `RETURN ${number}`).then(() => {
+                    order.push(number);
+                  }),
+                ),
+              )
+            : [];
+        await vi.advanceTimersByTimeAsync(0);
+        expect(mocks.construct).toHaveBeenCalledTimes(1);
+        close.resolve();
+        await vi.advanceTimersByTimeAsync(0);
+        if (mode === 'failure') {
+          expect(mocks.construct).toHaveBeenCalledTimes(1);
+          await expect(single.executeQuery('single', 'RETURN 2')).rejects.toThrow(
+            'pool is closing',
+          );
+        } else {
+          expect(mocks.construct).toHaveBeenCalledTimes(2);
+          await Promise.all(waiting);
+          if (mode === 'waiters') expect(order).toEqual([2, 3]);
+          await expect(single.executeQuery('single', 'RETURN 4')).resolves.toEqual([]);
+        }
+      } finally {
+        active.resolve();
+        close.resolve();
+        mocks.connClose.mockResolvedValue(undefined);
+        await single.closeLbug();
+        if (previous === undefined) delete process.env.ONTOINDEX_LBUG_POOL_SIZE;
+        else process.env.ONTOINDEX_LBUG_POOL_SIZE = previous;
+        vi.resetModules();
+      }
+    },
+  );
+  it('propagates non-extension errors during extension loading before publication', async () => {
+    mocks.query.mockRejectedValueOnce(new Error('native file read failed'));
+    await expect(initLbug('lifecycle', '/db')).rejects.toThrow('native file read failed');
+    expect(isLbugDbPathReady('/db')).toBe(false);
+  });
+  it('restores a timed-out slot without a queued waiter after native close', async () => {
+    vi.useFakeTimers();
+    mocks.query.mockImplementation(async () => result());
+    await initLbug('lifecycle', '/db');
+    const active = deferred();
+    mocks.query.mockImplementationOnce(() => active.promise);
+    const query = track(executeQuery('lifecycle', 'RETURN 1'));
+    const timeout = track(expect(query).rejects.toThrow('timed out'));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await timeout;
+    active.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.construct).toHaveBeenCalledTimes(3);
+    await expect(executeQuery('lifecycle', 'RETURN 2')).resolves.toEqual([]);
+  });
+
+  it('awaits eviction before admitting simultaneous sixth and seventh pools', async () => {
+    mocks.query.mockImplementation(async () => result());
+    for (let i = 0; i < 5; i++) await initLbug(`cap-${i}`, `/db-${i}`);
+    const close = deferred();
+    mocks.dbClose.mockImplementationOnce(async () => {
+      await close.promise;
+    });
+    const sixth = track(initLbug('cap-5', '/db-5'));
+    const seventh = track(initLbug('cap-6', '/db-6'));
+    await vi.waitFor(() => expect(mocks.dbClose).toHaveBeenCalledTimes(1));
+    expect(mocks.opens).toHaveBeenCalledTimes(5);
+    close.resolve();
+    await Promise.all([sixth, seventh]);
+    expect(mocks.dbClose).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses a sixth pool while all five pools have active queries', async () => {
+    mocks.query.mockImplementation(async () => result());
+    for (let i = 0; i < 5; i++) await initLbug(`cap-${i}`, `/db-${i}`);
+    const gates = Array.from({ length: 5 }, () => deferred());
+    gates.forEach((gate) => mocks.query.mockImplementationOnce(() => gate.promise));
+    const queries = gates.map((_, i) => track(executeQuery(`cap-${i}`, 'RETURN 1')));
+    await Promise.resolve();
+    await expect(initLbug('cap-5', '/db-5')).rejects.toThrow('Retry later');
+    expect(mocks.opens).toHaveBeenCalledTimes(5);
+    gates.forEach((gate) => gate.resolve());
+    await Promise.all(queries);
+  });
   afterEach(async () => {
     for (const release of releases.splice(0)) release();
     vi.useRealTimers();
@@ -117,11 +228,10 @@ describe('pool lifecycle drain', () => {
     connection.resolve();
     await vi.waitFor(() => expect(mocks.dbClose).toHaveBeenCalledTimes(1));
     expect(mocks.releasePin).not.toHaveBeenCalled();
-    mocks.releasePin.mockImplementationOnce(async () => {});
     await expect(initLbug('lifecycle-new-alias', '/db')).rejects.toThrow('database is closing');
     expect(mocks.opens).toHaveBeenCalledTimes(1);
     database.resolve();
-    await vi.waitFor(() => expect(mocks.releasePin).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(mocks.releasePin).toHaveBeenCalledTimes(1));
     expect(done).toBe(false);
     pin.resolve();
     await Promise.all([closing, duplicate]);

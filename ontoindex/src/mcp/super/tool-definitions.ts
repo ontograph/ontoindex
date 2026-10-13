@@ -30,6 +30,8 @@ interface ToolDefinition {
         default?: unknown;
         minimum?: number;
         maximum?: number;
+        minItems?: number;
+        maxItems?: number;
       }
     >;
     required: string[];
@@ -979,7 +981,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           default: true,
         },
       },
-      required: ['session'],
+      required: [],
+      anyOf: [{ required: ['session'] }, { required: ['sessionId'] }],
     },
   },
   {
@@ -1112,7 +1115,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           maximum: 100,
         },
       },
-      required: ['session'],
+      required: [],
+      anyOf: [{ required: ['session'] }, { required: ['sessionId'] }],
     },
   },
   {
@@ -1162,7 +1166,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           maximum: 100000,
         },
       },
-      required: ['session'],
+      required: [],
+      anyOf: [{ required: ['session'] }, { required: ['sessionId'] }],
     },
   },
   {
@@ -1191,7 +1196,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           default: true,
         },
       },
-      required: ['session', 'findingId', 'reason'],
+      required: ['findingId', 'reason'],
+      anyOf: [{ required: ['session'] }, { required: ['sessionId'] }],
     },
   },
   {
@@ -1276,7 +1282,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           default: true,
         },
       },
-      required: ['session'],
+      required: [],
+      anyOf: [{ required: ['session'] }, { required: ['sessionId'] }],
     },
   },
   {
@@ -1306,7 +1313,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           maximum: 100,
         },
       },
-      required: ['session'],
+      required: [],
+      anyOf: [{ required: ['session'] }, { required: ['sessionId'] }],
     },
   },
   {
@@ -1356,7 +1364,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           default: true,
         },
       },
-      required: ['session'],
+      required: [],
+      anyOf: [{ required: ['session'] }, { required: ['sessionId'] }],
     },
   },
   {
@@ -1392,7 +1401,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           default: true,
         },
       },
-      required: ['session'],
+      required: [],
+      anyOf: [{ required: ['session'] }, { required: ['sessionId'] }],
     },
   },
   {
@@ -1435,7 +1445,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           default: true,
         },
       },
-      required: ['session'],
+      required: [],
+      anyOf: [{ required: ['session'] }, { required: ['sessionId'] }],
     },
   },
   {
@@ -1471,7 +1482,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           description: 'Override OntoIndex version recorded in the lock.',
         },
       },
-      required: ['session'],
+      required: [],
+      anyOf: [{ required: ['session'] }, { required: ['sessionId'] }],
     },
   },
   {
@@ -1563,7 +1575,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           maximum: 500,
         },
       },
-      required: ['session'],
+      required: [],
+      anyOf: [{ required: ['session'] }, { required: ['sessionId'] }],
     },
   },
   {
@@ -1593,7 +1606,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           maximum: 500,
         },
       },
-      required: ['session'],
+      required: [],
+      anyOf: [{ required: ['session'] }, { required: ['sessionId'] }],
     },
   },
   {
@@ -1636,7 +1650,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           default: true,
         },
       },
-      required: ['session', 'bundleId'],
+      required: ['bundleId'],
+      anyOf: [{ required: ['session'] }, { required: ['sessionId'] }],
     },
   },
   {
@@ -1670,7 +1685,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           maximum: 100,
         },
       },
-      required: ['session'],
+      required: [],
+      anyOf: [{ required: ['session'] }, { required: ['sessionId'] }],
     },
   },
   {
@@ -1831,7 +1847,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
           description: 'Override required tests for this review.',
         },
       },
-      required: ['session', 'bundleId'],
+      required: ['bundleId'],
+      anyOf: [{ required: ['session'] }, { required: ['sessionId'] }],
     },
   },
   {
@@ -2214,7 +2231,10 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
         sourceText: { type: 'string', description: 'Inline source text to analyze.' },
         target: { type: 'string', description: 'Target call to force, e.g. pidfd_open.' },
         targetCall: { type: 'string', description: 'Alias for target call.' },
-        returnValue: { type: 'string', description: 'Injected return value.' },
+        returnValue: {
+          type: ['string', 'number', 'boolean', 'null'],
+          description: 'Injected return value.',
+        },
         return_value: { type: 'string', description: 'Alias for injected return value.' },
         triggerPath: {
           type: 'array',

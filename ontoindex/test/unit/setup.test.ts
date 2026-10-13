@@ -346,6 +346,25 @@ describe('setupClaudeCode', () => {
     expect(raw).not.toContain('[mcp_servers.ontoindex.tools.gn_explore]');
   });
 
+  it('recognizes commented TOML section headers and preserves neighboring sections', async () => {
+    setPlatform('linux');
+    const codexDir = path.join(tempHome, '.codex');
+    await fs.mkdir(codexDir, { recursive: true });
+    const configPath = path.join(codexDir, 'config.toml');
+    await fs.writeFile(
+      configPath,
+      '[mcp_servers.ontoindex] # owned\r\ncommand = "old"\r\n[profiles.default] # keep\r\ntext = "[mcp_servers.ontoindex]"\r\n[[array.tables]] # keep\r\nname = "kept"',
+      'utf-8',
+    );
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+    const raw = await fs.readFile(configPath, 'utf-8');
+    expect(raw.match(/^\[mcp_servers\.ontoindex\]/gm) ?? []).toHaveLength(1);
+    expect(raw).toContain('[profiles.default] # keep');
+    expect(raw).toContain('[[array.tables]] # keep');
+    expect(raw).toContain('text = "[mcp_servers.ontoindex]"');
+  });
+
   it('reports a packaged CLI validation error when the generated path goes missing', async () => {
     setPlatform('linux');
     existsSyncMock.mockImplementationOnce(() => true);

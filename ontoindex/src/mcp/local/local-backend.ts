@@ -7,7 +7,7 @@
  */
 
 import path from 'path';
-import { createHash } from 'node:crypto';
+import { canonicalRepoId } from '../shared/target-context.js';
 import fs from 'fs/promises';
 import { RepoHandle, BackendPort } from 'ontoindex-shared';
 import { recordToolCall } from './tool-telemetry.js';
@@ -1338,13 +1338,14 @@ export class LocalBackend implements BackendPort {
   private withRepoLock<T>(repoId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.analysisLocks.get(repoId) ?? Promise.resolve();
     const next = prev.then(fn);
-    this.analysisLocks.set(
-      repoId,
-      next.then(
-        () => {},
-        () => {},
-      ),
+    const tail = next.then(
+      () => {},
+      () => {},
     );
+    this.analysisLocks.set(repoId, tail);
+    void tail.then(() => {
+      if (this.analysisLocks.get(repoId) === tail) this.analysisLocks.delete(repoId);
+    });
     return next;
   }
 
@@ -1551,8 +1552,39 @@ export class LocalBackend implements BackendPort {
 
     // Prune repos that no longer exist in the registry
     for (const id of this.initializedRepos) {
-      if (!freshIds.has(id)) {
+      if (
+        !freshIds.has(id) &&
+        this.operations.size === 0 &&
+        !this.analysisLocks.has(id) &&
+        !this.reinitPromises.has(id)
+      ) {
         this.initializedRepos.delete(id);
+      }
+    }
+    // An operation can still hold a removed handle until its promise settles.
+    if (this.operations.size === 0) {
+      for (const id of this.lastStalenessCheck.keys()) {
+        if (!freshIds.has(id) && !this.analysisLocks.has(id) && !this.reinitPromises.has(id)) {
+          this.lastStalenessCheck.delete(id);
+        }
+      }
+    }
+    for (const pendingMap of [this.analysisLocks, this.reinitPromises]) {
+      for (const [id, pending] of pendingMap) {
+        if (freshIds.has(id)) continue;
+        const retire = () => {
+          if (pendingMap.get(id) === pending) pendingMap.delete(id);
+          if (
+            !this.repos.has(id) &&
+            !this.analysisLocks.has(id) &&
+            !this.reinitPromises.has(id) &&
+            this.operations.size === 0
+          ) {
+            this.lastStalenessCheck.delete(id);
+            this.initializedRepos.delete(id);
+          }
+        };
+        void pending.then(retire, retire);
       }
     }
     logStartupTrace('refresh repos: complete', startedAt);
@@ -1568,24 +1600,7 @@ export class LocalBackend implements BackendPort {
 
   /** Generate a stable repo ID, extending the path digest only on collisions. */
   private uniqueRepoId(name: string, repoPath: string, repos: Map<string, RepoHandle>): string {
-    const base = name.toLowerCase();
-    const resolvedPath = path.resolve(repoPath);
-
-    for (const [id, handle] of repos) {
-      if (handle.name.toLowerCase() === base && path.resolve(handle.repoPath) === resolvedPath) {
-        return id;
-      }
-    }
-    if (!repos.has(base)) return base;
-
-    const digest = createHash('sha256').update(resolvedPath).digest('hex');
-    for (let length = 8; length <= digest.length; length += 2) {
-      const candidate = `${base}-${digest.slice(0, length)}`;
-      if (!repos.has(candidate)) return candidate;
-    }
-    let suffix = 2;
-    while (repos.has(`${base}-${digest}-${suffix}`)) suffix += 1;
-    return `${base}-${digest}-${suffix}`;
+    return canonicalRepoId(name, repoPath, repos);
   }
 
   /** Generate a stable repo ID from name + path. */
@@ -2754,6 +2769,11 @@ export class LocalBackend implements BackendPort {
   }
 
   async dispose(): Promise<void> {
+    await Promise.allSettled([
+      ...this.operations,
+      ...this.analysisLocks.values(),
+      ...this.reinitPromises.values(),
+    ]);
     await closeLbug(); // close all connections
     // Note: we intentionally do NOT call disposeEmbedder() here.
     // ONNX Runtime's native cleanup segfaults on macOS and some Linux configs,
@@ -2763,6 +2783,9 @@ export class LocalBackend implements BackendPort {
     this.repos.clear();
     this.contextCache.clear();
     this.initializedRepos.clear();
+    this.analysisLocks.clear();
+    this.lastStalenessCheck.clear();
+    this.reinitPromises.clear();
   }
 
   async disconnect(): Promise<void> {

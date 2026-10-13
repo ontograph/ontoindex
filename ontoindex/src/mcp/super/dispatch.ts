@@ -118,6 +118,33 @@ export function validateSuperParams(name: SuperTool, params: Record<string, unkn
     if (!validType) issues.push(`${key}: expected ${types.join(' or ')}`);
     else if (property.enum && !property.enum.includes(value as string))
       issues.push(`${key}: expected one of ${property.enum.join(', ')}`);
+    if (validType && Array.isArray(value)) {
+      if (property.minItems !== undefined && value.length < property.minItems)
+        issues.push(`${key}: minItems ${property.minItems}`);
+      if (property.maxItems !== undefined && value.length > property.maxItems)
+        issues.push(`${key}: maxItems ${property.maxItems}`);
+      if (property.items) {
+        const itemSchema = property.items;
+        value.forEach((item, index) => {
+          const type = itemSchema.type;
+          const matches =
+            type === 'null'
+              ? item === null
+              : type === 'array'
+                ? Array.isArray(item)
+                : type === 'object'
+                  ? item !== null && typeof item === 'object' && !Array.isArray(item)
+                  : type === 'integer'
+                    ? typeof item === 'number' && Number.isInteger(item)
+                    : type === 'number'
+                      ? typeof item === 'number' && Number.isFinite(item)
+                      : typeof item === type;
+          if (!matches) issues.push(`${key}[${index}]: expected ${type}`);
+          else if (itemSchema.enum && !itemSchema.enum.includes(item as string))
+            issues.push(`${key}[${index}]: expected one of ${itemSchema.enum.join(', ')}`);
+        });
+      }
+    }
   }
   if (issues.length)
     throw new Error(`Invalid arguments for ${name}: ${issues.slice(0, 3).join('; ')}`);

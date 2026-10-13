@@ -425,6 +425,32 @@ describe('gnDiagnose', () => {
     expect(Object.keys(report.envVars).every((k) => k.startsWith('ONTOINDEX_'))).toBe(true);
   });
 
+  it('redacts secret-looking environment values in legacy and envelope reports', async () => {
+    process.env['ONTOINDEX_HTTP_TOKEN'] = 'secret-http-value';
+    process.env['ONTOINDEX_EMBEDDING_API_KEY'] = 'secret-embedding-value';
+    process.env['ONTOINDEX_API_KEY'] = 'secret-api-value';
+    process.env['ONTOINDEX_MCP_AUTO_ANALYZE'] = '  ';
+    mockGnEnsureFresh.mockResolvedValue(makeFreshReport());
+
+    const legacy = await gnDiagnose(REPO_ID, {
+      checkLsp: false, checkEmbeddings: false, checkIndexFreshness: false,
+    });
+    const envelope = await gnDiagnose(REPO_ID, {
+      checkLsp: false, checkEmbeddings: false, checkIndexFreshness: false, legacyResponse: false,
+    });
+
+    for (const report of [legacy, envelope]) {
+      const serialized = JSON.stringify(report);
+      expect(serialized).not.toContain('secret-http-value');
+      expect(serialized).not.toContain('secret-embedding-value');
+      expect(serialized).not.toContain('secret-api-value');
+    }
+    expect(legacy.envVars['ONTOINDEX_HTTP_TOKEN']).toBe('[REDACTED]');
+    expect(legacy.envVars['ONTOINDEX_EMBEDDING_API_KEY']).toBe('[REDACTED]');
+    expect(legacy.envVars['ONTOINDEX_API_KEY']).toBe('[REDACTED]');
+    expect(legacy.setup.auth.httpApiToken).toBe('configured-env-token');
+  });
+
   // ---- Test 6: Multiple recommendations stack correctly ---------------------
   it('stacks multiple recommendations for stale index + no embeddings', async () => {
     mockGnEnsureFresh.mockResolvedValue(makeFreshReport({ isStale: true, embeddingsCount: 0 }));

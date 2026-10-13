@@ -7,6 +7,41 @@ import {
 import { ONTOINDEX_SUPER_TOOLS } from '../../../src/mcp/super/tool-definitions.js';
 
 describe('super argument validation', () => {
+  it('accepts session aliases without changing conflicting values', () => {
+    for (const params of [{ session: 'a' }, { sessionId: 'b' }, { session: 'a', sessionId: 'b' }]) {
+      Object.freeze(params);
+      expect(() => validateSuperParams('gn_audit_bundle', params)).not.toThrow();
+    }
+    expect(() => validateSuperParams('gn_audit_bundle', {})).toThrow('Required');
+  });
+  it('validates array item types and enums', () => {
+    expect(() => validateSuperParams('gn_path_verify', { when: 'x', must: [1] })).toThrow(
+      'must[0]',
+    );
+    expect(() =>
+      validateSuperParams('gn_ensure_fresh', { requiredGraphCapabilities: ['invalid'] }),
+    ).toThrow('requiredGraphCapabilities[0]');
+  });
+  it('enforces declared array bounds without modifying inputs', () => {
+    const property = ONTOINDEX_SUPER_TOOLS.find((tool) => tool.name === 'gn_path_verify')!
+      .inputSchema.properties.must;
+    const original = { ...property };
+    try {
+      Object.assign(property, { minItems: 1, maxItems: 2 });
+      expect(() => validateSuperParams('gn_path_verify', { when: 'x', must: [] })).toThrow(
+        'minItems',
+      );
+      expect(() =>
+        validateSuperParams('gn_path_verify', { when: 'x', must: ['a', 'b', 'c'] }),
+      ).toThrow('maxItems');
+      const params = Object.freeze({ when: 'x', must: Object.freeze(['a']) });
+      expect(() => validateSuperParams('gn_path_verify', params)).not.toThrow();
+    } finally {
+      delete property.minItems;
+      delete property.maxItems;
+      Object.assign(property, original);
+    }
+  });
   it('rejects string boolean before analysis submission', async () => {
     await expect(
       dispatchSuper('gn_ensure_fresh', { autoAnalyze: 'false' }, 'missing'),

@@ -1,3 +1,4 @@
+import { resolveRegistryEntry } from '../shared/target-context.js';
 /**
  * gn_can_delete — dead-code safety super-function (Phase 2 W2b).
  *
@@ -229,12 +230,9 @@ async function fetchCoChangeNetwork(repoId: string, filePath: string): Promise<C
 }
 
 async function resolveRepoRoot(repoId: string): Promise<string | null> {
-  const normalized = repoId.trim().toLowerCase();
-  const repos = await listRegisteredRepos();
-  return (
-    repos.find((repo) => repo.name.toLowerCase() === normalized || repo.path === repoId)?.path ??
-    null
-  );
+  const result = resolveRegistryEntry(await listRegisteredRepos(), repoId);
+  if (result.status === 'ambiguous') throw new Error(result.action);
+  return result.status === 'ok' ? result.entry.path : null;
 }
 
 function parserCoverage(

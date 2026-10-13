@@ -1,3 +1,4 @@
+import { resolveRegistryEntry, registryRepoIds } from '../shared/target-context.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -927,16 +928,11 @@ function rowValue(row: RouteQueryRow, key: string, index: number): string | unde
 
 async function resolveRepoHandle(repoId: string, requestedRepo?: string): Promise<DocsRepoHandle> {
   const repos = await listRegisteredRepos();
-  const repo = repos.find(
-    (entry) =>
-      entry.name === repoId ||
-      entry.path === repoId ||
-      entry.name === requestedRepo ||
-      entry.path === requestedRepo,
-  );
-  if (!repo) throw new Error(`Repository not found: ${requestedRepo ?? repoId}`);
+  const result = resolveRegistryEntry(repos, requestedRepo ?? repoId);
+  if (result.status !== 'ok') throw new Error(result.action);
+  const repo = result.entry;
   return {
-    id: repo.name,
+    id: registryRepoIds(repos).get(repo)!,
     name: repo.name,
     repoPath: repo.path,
     storagePath: repo.storagePath,

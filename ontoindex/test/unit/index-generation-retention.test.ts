@@ -129,6 +129,34 @@ describe('committed index generation retention', () => {
       true,
     );
   });
+  it('removes dead pins from active and retained generations past preserved markers', async () => {
+    await publish('a');
+    await publish('b');
+    await publish('c');
+    vi.spyOn(process, 'kill').mockImplementation(((pid: number) => {
+      if (pid === 123456) throw Object.assign(new Error('dead'), { code: 'ESRCH' });
+      if (pid === 123457) throw Object.assign(new Error('denied'), { code: 'EPERM' });
+      return true;
+    }) as typeof process.kill);
+    const kept = ['.reader-1-live', '.reader-123457-denied', '.reader-malformed'];
+    for (const generation of ['a', 'b', 'c']) {
+      const directory = path.join(storage, 'generations', generation);
+      for (const name of [...kept, '.reader-123456-dead'])
+        await fs.writeFile(path.join(directory, name), '');
+      await fs.symlink('lbug', path.join(directory, '.reader-123456-link'));
+      await fs.mkdir(path.join(directory, '.reader-123456-directory'));
+    }
+    const pin = await acquireIndexGenerationPin(path.join(storage, 'lbug'));
+    await pin.release();
+    for (const generation of ['a', 'b', 'c']) {
+      const entries = await fs.readdir(path.join(storage, 'generations', generation));
+      expect(entries).toEqual(
+        expect.arrayContaining([...kept, '.reader-123456-link', '.reader-123456-directory']),
+      );
+      expect(entries).not.toContain('.reader-123456-dead');
+    }
+    expect(await names()).toEqual(['a', 'b', 'c']);
+  });
   it('retains immediate predecessors despite tied and backward clocks and descending ids', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1000);
     await publish('z');

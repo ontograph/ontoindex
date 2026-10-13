@@ -1,3 +1,4 @@
+import { resolveRegistryEntry } from '../shared/target-context.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -30,6 +31,7 @@ import {
 import { traceTaint, type TaintTraceReport } from '../../core/systems-audit/taint-trace.js';
 
 interface SourceParams {
+  repo?: string;
   sourceText?: string;
   code?: string;
   path?: string;
@@ -78,6 +80,7 @@ export interface TaintTraceMcpParams extends SourceParams {
 }
 
 export interface AbiDiffMcpParams {
+  repo?: string;
   sourceStruct?: string;
   sourceText?: string;
   sourcePath?: string;
@@ -219,12 +222,12 @@ export async function gnAbiDiff(
   params: AbiDiffMcpParams,
 ): Promise<AbiDiffReport | Record<string, unknown>> {
   const source = await loadNamedText(
-    repoId,
+    params.repo ?? repoId,
     params.sourceStruct ?? params.sourceText,
     params.sourcePath,
   );
   const target = await loadNamedText(
-    repoId,
+    params.repo ?? repoId,
     params.targetInterface ?? params.targetText,
     params.targetPath,
   );
@@ -280,7 +283,11 @@ async function loadSource(repoId: string, params: SourceParams): Promise<SourceI
   if (inline !== undefined) {
     return { source: inline, filePath: params.filePath ?? params.path, warnings: [] };
   }
-  const loaded = await loadNamedText(repoId, undefined, params.filePath ?? params.path);
+  const loaded = await loadNamedText(
+    params.repo ?? repoId,
+    undefined,
+    params.filePath ?? params.path,
+  );
   return { source: loaded.text, filePath: loaded.filePath, warnings: loaded.warnings };
 }
 
@@ -321,32 +328,12 @@ async function resolveRepoPath(repoId: string): Promise<string> {
   if (path.isAbsolute(repoId)) return path.resolve(repoId);
 
   const registry = await readRegistry();
-  const normalizedRepo = repoId.toLowerCase();
-
-  const exactMatches = registry.filter(
-    (entry) =>
-      entry.name.toLowerCase() === normalizedRepo ||
-      path.resolve(entry.path) === path.resolve(repoId),
-  );
-  if (exactMatches.length === 1) return path.resolve(exactMatches[0].path);
-
-  const fuzzyMatches = registry.filter((entry) =>
-    entry.name.toLowerCase().includes(normalizedRepo),
-  );
-  if (fuzzyMatches.length === 1) return path.resolve(fuzzyMatches[0].path);
-
-  if (fuzzyMatches.length > 1) {
-    throw new Error(
-      `repo identifier is ambiguous: ${repoId}. Matches: ${fuzzyMatches.map((entry) => entry.path).join(', ')}`,
-    );
+  const result = resolveRegistryEntry(registry, repoId);
+  if (result.status === 'ambiguous') throw new Error(result.action);
+  if (result.status !== 'ok') {
+    throw new Error(`Repository not found for path resolution: ${repoId}. ${result.action}`);
   }
-  if (exactMatches.length > 1) {
-    throw new Error(
-      `repo identifier is ambiguous: ${repoId}. Matches: ${exactMatches.map((entry) => entry.path).join(', ')}`,
-    );
-  }
-
-  throw new Error(`repo not found for path resolution: ${repoId}`);
+  return path.resolve(result.entry.path);
 }
 
 function assertPathWithinRepo(repoPath: string, absolutePath: string, inputPath: string): void {

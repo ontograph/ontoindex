@@ -23,6 +23,7 @@ vi.mock('fs', () => ({
 }));
 
 vi.mock('../../../src/storage/repo-manager.js', () => ({
+  getGlobalRegistryPath: vi.fn(() => `${process.env.ONTOINDEX_HOME || '/home/testuser/.ontoindex'}/registry.json`),
   loadMeta: vi.fn(),
   readActiveGenerationMeta: vi.fn(),
   resolveActiveIndexGeneration: vi.fn(),
@@ -226,6 +227,14 @@ function setupSpawnExit(code: number = 0) {
 // ---------------------------------------------------------------------------
 
 describe('gnEnsureFresh', () => {
+  it.each([undefined, '/custom/ontoindex-home'])('reads the call-time registry home (%s)', async (home) => {
+    if (home) process.env.ONTOINDEX_HOME = home;
+    else delete process.env.ONTOINDEX_HOME;
+    mockReadFileSync.mockReturnValue(makeRegistry() as any);
+    setupExecFile();
+    await gnEnsureFresh(REPO_ID, {});
+    expect(mockReadFileSync).toHaveBeenCalledWith(`${home ?? '/home/testuser/.ontoindex'}/registry.json`, 'utf8');
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     resetFreshnessCache();

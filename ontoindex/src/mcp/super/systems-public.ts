@@ -1,3 +1,4 @@
+import { resolveRegistryEntry } from '../shared/target-context.js';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -372,19 +373,14 @@ async function resolveRepoRoot(repoId: string, requestedRepo: string | undefined
   if (path.isAbsolute(target)) return path.resolve(target);
 
   const repos = await readRegisteredRepos();
-  const repo = repos.find(
-    (entry) =>
-      entry.name === target ||
-      entry.path === target ||
-      entry.name === repoId ||
-      entry.path === repoId,
-  );
-  if (!repo) {
+  const result = resolveRegistryEntry(repos, target);
+  if (result.status === 'ambiguous') throw new Error(result.action);
+  if (result.status !== 'ok') {
     throw new Error(
       `Repository not found for path resolution: ${target}. Pass an absolute repo path or a registered repo name.`,
     );
   }
-  return path.resolve(repo.path);
+  return path.resolve(result.entry.path);
 }
 
 async function readRegisteredRepos(): Promise<{ name: string; path: string }[]> {

@@ -1,3 +1,4 @@
+import { resolveRegistryEntry } from '../shared/target-context.js';
 /**
  * gn_explain_module — File/module overview super-function.
  *
@@ -266,9 +267,10 @@ function skeletonLineCount(skeleton: string | undefined): number | undefined {
 
 // ---------------------------------------------------------------------------
 async function resolveRepoRoot(repoId: string): Promise<string> {
-  const repos = await listRegisteredRepos();
-  const repo = repos.find((candidate) => candidate.name === repoId || candidate.path === repoId);
-  return repo?.path ?? process.cwd();
+  const result = resolveRegistryEntry(await listRegisteredRepos(), repoId);
+  if (result.status === 'ambiguous') throw new Error(result.action);
+  // Preserve the existing cwd fallback for unregistered module inspection.
+  return result.status === 'ok' ? result.entry.path : process.cwd();
 }
 
 // Main function

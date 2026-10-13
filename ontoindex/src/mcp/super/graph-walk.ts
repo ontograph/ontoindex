@@ -1,5 +1,6 @@
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { randomUUID } from 'node:crypto';
+import { markInvocationError } from '../shared/invocation-error.js';
 
 type GraphWalkAction = 'start' | 'step' | 'status';
 type GraphWalkPolicy = 'follow-calls' | 'follow-imports' | 'expand-outward';
@@ -387,7 +388,7 @@ function graphWalkError(
   code: GraphWalkErrorCode,
   message: string,
 ): Record<string, unknown> {
-  return {
+  return markInvocationError({
     version: 1,
     action,
     ok: false,
@@ -396,7 +397,7 @@ function graphWalkError(
     message,
     warnings: [],
     limits: graphWalkLimits(),
-  };
+  });
 }
 
 function graphWalkLimits(): GraphWalkLimits {

@@ -21,6 +21,7 @@ import { extractFunction } from '../local/backend-extract-function.js';
 import { moveSymbol } from '../local/backend-move-symbol.js';
 import { detectChanges } from '../local/backend-detect-changes.js';
 import { gnSafeEditCheck, type EditCheckReport } from './safe-edit-check.js';
+import { markInvocationError } from '../shared/invocation-error.js';
 
 // ---------------------------------------------------------------------------
 // Public API (per plan §3)
@@ -206,7 +207,7 @@ async function makeLookupSymbol(repoId: string): Promise<LookupSymbol> {
   return async (name?: string, uid?: string, _filePath?: string) => {
     const identifier = uid ?? name;
     if (!identifier) {
-      return { error: 'Either symbol_name or symbol_uid is required.' };
+      return markInvocationError({ error: 'Either symbol_name or symbol_uid is required.' });
     }
 
     const isUid = uid !== undefined && CANONICAL_NODE_ID_RE.test(uid);
@@ -240,7 +241,7 @@ async function makeLookupSymbol(repoId: string): Promise<LookupSymbol> {
       }
 
       if (rows.length === 0) {
-        return { error: `Symbol not found: ${identifier}` };
+        return markInvocationError({ error: `Symbol not found: ${identifier}` });
       }
 
       if (!isUid && rows.length > 1) {
@@ -266,7 +267,7 @@ async function makeLookupSymbol(repoId: string): Promise<LookupSymbol> {
         incoming: { calls: [], imports: [], extends: [], implements: [] },
       };
     } catch (err) {
-      return { error: String(err) };
+      return markInvocationError({ error: String(err) });
     }
   };
 }
@@ -483,14 +484,14 @@ export async function gnSafeRefactor(
 
   if (!requestedSymbol) {
     warnings.push('Either `symbol` or deprecated alias `target` is required.');
-    return {
+    return markInvocationError({
       version: 1,
       intent: params.intent,
       symbol: { nodeId: '', name: '', filePath: '', kind: '' },
       preview: emptyPreview,
       applied: false,
       warnings,
-    };
+    });
   }
 
   // --- 1. Unsupported intents (short-circuit before IO) ---------------------
@@ -509,14 +510,14 @@ export async function gnSafeRefactor(
   const resolved = await resolveSymbol(repoId, requestedSymbol);
   if (!resolved || !resolved.nodeId) {
     warnings.push('symbol not found in index');
-    return {
+    return markInvocationError({
       version: 1,
       intent: params.intent,
       symbol: { nodeId: '', name: requestedSymbol, filePath: '', kind: '' },
       preview: emptyPreview,
       applied: false,
       warnings,
-    };
+    });
   }
 
   // --- 3. Pre-check ---------------------------------------------------------

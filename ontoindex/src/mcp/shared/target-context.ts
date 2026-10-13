@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 import { execFileText } from '../../core/process/exec-file.js';
 import {
@@ -593,11 +594,44 @@ async function readRegistrySafely(
   }
 }
 
-function resolveRegistryEntry(
-  registry: RegistryEntry[],
+/** The backend's canonical ID scheme, shared by all registry consumers. */
+export function canonicalRepoId(
+  name: string,
+  repoPath: string,
+  repos: ReadonlyMap<string, { name: string; repoPath: string }>,
+): string {
+  const base = name.toLowerCase();
+  const resolvedPath = path.resolve(repoPath);
+  for (const [id, handle] of repos) {
+    if (handle.name.toLowerCase() === base && path.resolve(handle.repoPath) === resolvedPath) return id;
+  }
+  if (!repos.has(base)) return base;
+  const digest = createHash('sha256').update(resolvedPath).digest('hex');
+  for (let length = 8; length <= digest.length; length += 2) {
+    const candidate = `${base}-${digest.slice(0, length)}`;
+    if (!repos.has(candidate)) return candidate;
+  }
+  let suffix = 2;
+  while (repos.has(`${base}-${digest}-${suffix}`)) suffix += 1;
+  return `${base}-${digest}-${suffix}`;
+}
+
+export function registryRepoIds(registry: readonly { name: string; path: string }[]): Map<object, string> {
+  const ids = new Map<object, string>();
+  const handles = new Map<string, { name: string; repoPath: string }>();
+  for (const entry of registry) {
+    const id = canonicalRepoId(entry.name, entry.path, handles);
+    ids.set(entry, id);
+    handles.set(id, { name: entry.name, repoPath: entry.path });
+  }
+  return ids;
+}
+
+export function resolveRegistryEntry<T extends { name: string; path: string }>(
+  registry: T[],
   repo: string | undefined,
 ):
-  | { status: 'ok'; entry: RegistryEntry }
+  | { status: 'ok'; entry: T }
   | { status: Exclude<TargetContextStatus, 'ok'>; action: string } {
   if (registry.length === 0) {
     return { status: 'no-index', action: 'Run ontoindex analyze for the target repository.' };
@@ -613,7 +647,8 @@ function resolveRegistryEntry(
     };
   }
 
-  const exactMatches = registry.filter((entry) => matchesRepo(entry, repo, false));
+  const ids = registryRepoIds(registry);
+  const exactMatches = registry.filter((entry) => matchesRepo(entry, repo, false) || ids.get(entry) === repo.toLowerCase());
   if (exactMatches.length === 1) return { status: 'ok', entry: exactMatches[0] };
   if (exactMatches.length > 1) {
     return {
@@ -639,7 +674,7 @@ function resolveRegistryEntry(
   };
 }
 
-function matchesRepo(entry: RegistryEntry, repo: string, allowFuzzy: boolean): boolean {
+function matchesRepo(entry: { name: string; path: string }, repo: string, allowFuzzy: boolean): boolean {
   const repoLower = repo.toLowerCase();
   if (entry.name.toLowerCase() === repoLower) return true;
   if (sameResolvedPath(entry.path, repo)) return true;

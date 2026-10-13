@@ -565,21 +565,20 @@ function getCodexMcpTomlSection(entry: McpEntry): string {
   return `[mcp_servers.ontoindex]\ncommand = ${command}\nargs = ${args}\n${env}`;
 }
 
-function isTomlSectionHeader(line: string): boolean {
-  return /^\[\[?.+\]\]?\s*$/.test(line.trim());
+function classifyTomlHeader(line: string): { name: string; array: boolean } | null {
+  const match = line.match(/^\s*(\[\[?)([^\]]+)\]\]?\s*(?:#.*)?(?:\r?\n)?$/);
+  return match ? { name: match[2].trim(), array: match[1] === '[[' } : null;
 }
 
-function isOntoindexMcpSectionHeader(line: string): boolean {
-  const match = line.trim().match(/^\[([^\]]+)\]\s*$/);
-  if (!match) return false;
-  const sectionName = match[1];
+function isOntoindexMcpSectionHeader(header: { name: string; array: boolean }): boolean {
   return (
-    sectionName === 'mcp_servers.ontoindex' || sectionName.startsWith('mcp_servers.ontoindex.')
+    !header.array &&
+    (header.name === 'mcp_servers.ontoindex' || header.name.startsWith('mcp_servers.ontoindex.'))
   );
 }
 
 function findOntoindexMcpSectionRange(existing: string): { start: number; end: number } | null {
-  const lines = existing.match(/^.*(?:\n|$)/gm) ?? [];
+  const lines = existing.match(/[^\n]*(?:\n|$)/g)?.filter((line) => line.length > 0) ?? [];
   let startLine = -1;
   let endLine = lines.length;
   let offset = 0;
@@ -590,20 +589,56 @@ function findOntoindexMcpSectionRange(existing: string): { start: number; end: n
     offset += line.length;
   }
 
+  let quote: '"' | "'" | undefined;
+  let multiline: '"""' | "'''" | undefined;
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
-    if (!isTomlSectionHeader(line)) continue;
+    let visible = '';
+    for (let j = 0; j < line.length; j += 1) {
+      if (multiline) {
+        if (line.startsWith(multiline, j)) {
+          j += 2;
+          multiline = undefined;
+        }
+        continue;
+      }
+      const ch = line[j];
+      if (quote) {
+        if (ch === '\\' && quote === '"') j += 1;
+        else if (ch === quote) quote = undefined;
+        visible += ch;
+        continue;
+      }
+      if ((ch === '"' || ch === "'") && line.startsWith(ch.repeat(3), j)) {
+        multiline = ch.repeat(3) as '"""' | "'''";
+        j += 2;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        quote = ch;
+        visible += ch;
+        continue;
+      }
+      if (ch === '#') break;
+      visible += ch;
+    }
+    if (multiline) continue;
+    const header = classifyTomlHeader(visible);
+    if (!header) continue;
     if (startLine === -1) {
-      if (isOntoindexMcpSectionHeader(line)) {
+      if (isOntoindexMcpSectionHeader(header)) {
         startLine = i;
       }
       continue;
     }
-    if (!isOntoindexMcpSectionHeader(line)) {
+    if (!isOntoindexMcpSectionHeader(header)) {
       endLine = i;
       break;
     }
   }
+
+  if (quote || multiline)
+    throw new Error('Refusing to rewrite ambiguous TOML with an unterminated string');
 
   if (startLine === -1) return null;
   return {
@@ -642,6 +677,11 @@ async function upsertCodexConfigToml(configPath: string, entry: McpEntry): Promi
   await fs.writeFile(configPath, `${nextContent.trimEnd()}\n`, 'utf-8');
 }
 
+async function rethrowIfTomlAmbiguous(configPath: string): Promise<void> {
+  const current = await fs.readFile(configPath, 'utf-8').catch(() => '');
+  findOntoindexMcpSectionRange(current);
+}
+
 async function setupCodex(result: SetupResult, entry: McpEntry): Promise<void> {
   const codexDir = path.join(os.homedir(), '.codex');
   if (!(await dirExists(codexDir))) {
@@ -649,12 +689,14 @@ async function setupCodex(result: SetupResult, entry: McpEntry): Promise<void> {
     return;
   }
 
+  const configPath = path.join(codexDir, 'config.toml');
   try {
-    const configPath = path.join(codexDir, 'config.toml');
     await upsertCodexConfigToml(configPath, entry);
     result.configured.push('Codex (MCP repaired in ~/.codex/config.toml)');
     return;
   } catch {
+    // Ambiguous TOML is a safety refusal, not a filesystem failure to route around.
+    await rethrowIfTomlAmbiguous(configPath);
     // Fallback for unusual environments where direct config writes fail.
   }
 
@@ -675,12 +717,13 @@ async function setupOntocode(result: SetupResult, entry: McpEntry): Promise<void
     return;
   }
 
+  const configPath = path.join(ontocodeDir, 'config.toml');
   try {
-    const configPath = path.join(ontocodeDir, 'config.toml');
     await upsertCodexConfigToml(configPath, entry);
     result.configured.push('Ontocode (MCP repaired in ~/.ontocode/config.toml)');
     return;
   } catch {
+    await rethrowIfTomlAmbiguous(configPath);
     // Fallback for unusual environments where direct config writes fail.
   }
 

@@ -640,7 +640,6 @@ async function pruneIndexGenerationsLocked(storagePath: string): Promise<void> {
       .map((g) => g.name),
   ]);
   for (const generation of managed) {
-    if (retained.has(generation.name)) continue;
     const directory = path.join(root, generation.name);
     let pinned = false;
     for (const name of await fs.readdir(directory)) {
@@ -648,17 +647,18 @@ async function pruneIndexGenerationsLocked(storagePath: string): Promise<void> {
       const pid = /^\.reader-(\d+)-[a-z0-9]+$/.exec(name);
       if (!pid || !processDefinitelyDead(Number(pid[1]))) {
         pinned = true;
-        break;
+        continue;
       }
       const pinPath = path.join(directory, name);
       const stat = await fs.lstat(pinPath);
       if (!stat.isFile() || stat.isSymbolicLink()) {
         pinned = true;
-        break;
+        continue;
       }
       await fs.unlink(pinPath);
     }
-    if (!pinned) await fs.rm(directory, { recursive: true, force: true });
+    if (!pinned && !retained.has(generation.name))
+      await fs.rm(directory, { recursive: true, force: true });
   }
 }
 

@@ -10,6 +10,9 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs/promises';
 import { isIP } from 'net';
+import { lookup as dnsLookup } from 'dns/promises';
+
+type LookupAddress = { address: string; family: number };
 
 /** Extract the repository name from a git URL (HTTPS or SSH). */
 export function extractRepoName(url: string): string {
@@ -129,6 +132,10 @@ function assertNotPrivateIPv6(ip: string): void {
     throw new Error('Cloning from private/internal addresses is not allowed');
   }
 
+  if (lower.startsWith('ff')) {
+    throw new Error('Cloning from private/internal addresses is not allowed');
+  }
+
   // IPv4-mapped IPv6 (::ffff:x.x.x.x or ::ffff:hex:hex)
   // Node may normalize ::ffff:127.0.0.1 to ::ffff:7f00:1
   if (lower.startsWith('::ffff:')) {
@@ -151,6 +158,8 @@ function assertNotPrivateIPv4(ip: string): void {
     (a === 192 && b === 168) ||
     (a === 169 && b === 254) ||
     a === 0 ||
+    (a === 255 && b === 255) ||
+    a >= 224 ||
     (a === 100 && b >= 64 && b <= 127) ||
     (a === 198 && (b === 18 || b === 19))
   ) {
@@ -166,6 +175,8 @@ interface CloneProgress {
 interface GitRunOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
+  lookup?: (hostname: string, options: { all: true; verbatim: true }) => Promise<LookupAddress[]>;
+  runGit?: typeof runGit;
 }
 
 const GIT_TIMEOUT_MS = (() => {
@@ -197,15 +208,56 @@ export async function cloneOrPull(
 
   if (exists) {
     onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
-    await runGit(['pull', '--ff-only'], targetDir, options);
+    await (options.runGit ?? runGit)(gitArgs(['pull', '--ff-only']), targetDir, options);
   } else {
     validateGitUrl(url);
+    const parsed = new URL(url);
+    let address: string | undefined;
+    let addresses: string[] = [];
+    const host = parsed.hostname.toLowerCase();
+    if (isIP(host.replace(/^\[|\]$/g, '')) === 0) {
+      let answers: LookupAddress[];
+      try {
+        answers = await (options.lookup ?? ((h, o) => dnsLookup(h, o)))(host, {
+          all: true,
+          verbatim: true,
+        });
+      } catch {
+        throw new Error('Could not resolve git host');
+      }
+      if (answers.length === 0) throw new Error('Could not resolve git host');
+      for (const answer of answers) {
+        if (answer.family === 4) assertNotPrivateIPv4(answer.address);
+        else if (answer.family === 6) assertNotPrivateIPv6(answer.address);
+        else throw new Error('Could not validate git host address');
+      }
+      address = answers[0]!.address;
+      addresses = answers.map((answer) => answer.address);
+    }
     await fs.mkdir(path.dirname(targetDir), { recursive: true });
     onProgress?.({ phase: 'cloning', message: `Cloning ${url}...` });
-    await runGit(['clone', '--depth', '1', url, targetDir], undefined, options);
+    const args = gitArgs(['clone', '--depth', '1', url, targetDir]);
+    if (address) {
+      const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+      const resolveList = addresses
+        .map((answer) => (answer.includes(':') ? `[${answer}]` : answer))
+        .join(',');
+      args.unshift(`-chttp.curloptResolve=${host}:${port}:${resolveList}`);
+    }
+    await (options.runGit ?? runGit)(args, undefined, options);
   }
 
   return targetDir;
+}
+
+function gitArgs(args: string[]): string[] {
+  return [
+    '-cprotocol.allow=never',
+    '-cprotocol.https.allow=always',
+    '-cprotocol.http.allow=always',
+    '-chttp.followRedirects=false',
+    ...args,
+  ];
 }
 
 export function runGit(args: string[], cwd?: string, options: GitRunOptions = {}): Promise<void> {

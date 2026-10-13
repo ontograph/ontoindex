@@ -112,6 +112,23 @@ interface PoolEntry {
 
 const pool = new Map<string, PoolEntry>();
 const closePromises = new Map<string, Promise<void>>();
+let admissionTail: Promise<void> = Promise.resolve();
+// A failed async open cannot be closed by the driver's public API. Retain ownership.
+const failedNativeOpens = new Map<string, lbug.Database>();
+
+async function serializeAdmission(open: () => Promise<void>): Promise<void> {
+  const previous = admissionTail;
+  let release!: () => void;
+  admissionTail = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    await open();
+  } finally {
+    release();
+  }
+}
 
 /**
  * Listeners notified when a pool entry is torn down (LRU eviction, idle
@@ -379,22 +396,28 @@ export const touchRepo = (repoId: string): void => {
 /**
  * Evict the least-recently-used repo if pool is at capacity
  */
-function evictLRU(): void {
-  if (pool.size < MAX_POOL_SIZE) return;
+async function evictLRU(): Promise<void> {
+  const occupied = () => pool.size + failedInitShares.size + failedNativeOpens.size;
+  if (occupied() < MAX_POOL_SIZE) return;
 
   let oldestId: string | null = null;
   let oldestTime = Infinity;
   for (const [id, entry] of pool) {
-    if (entry.checkedOut === 0 && entry.lastUsed < oldestTime) {
+    if (
+      entry.checkedOut === 0 &&
+      entry.pendingRetirements.size === 0 &&
+      !isAdmissionClosed(entry) &&
+      entry.lastUsed < oldestTime
+    ) {
       oldestTime = entry.lastUsed;
       oldestId = id;
     }
   }
   if (oldestId) {
-    void closeOneWhenIdle(oldestId).catch((err) =>
-      realStderrWrite(`LadybugDB eviction close failed: ${String(err)}\n`),
-    );
+    await closeOneWhenIdle(oldestId);
   }
+  if (occupied() >= MAX_POOL_SIZE)
+    throw new Error('LadybugDB pool is busy at capacity. Retry later.');
 }
 
 /**
@@ -623,6 +646,13 @@ function createConnection(db: lbug.Database): lbug.Connection {
  * MCP JSON-RPC framing. activeQueryCount is bumped so the 1s watchdog
  * timer doesn't prematurely restore stdout while loads are in flight.
  */
+function isUnavailableExtension(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /extension.*(?:not found|not installed|not available|unsupported|does not exist)|(?:cannot|could not|failed to) (?:find|download).*extension/i.test(
+    message,
+  );
+}
+
 async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): Promise<void> {
   silenceStdout();
   activeQueryCount++;
@@ -635,8 +665,9 @@ async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): 
             const loadQuery = `LOAD EXTENSION '${localFtsPath.replace(/'/g, "\\'")}'`;
             await runStatement(conn, loadQuery);
             shared.ftsLoaded = true;
-          } catch (err) {
-            if (err instanceof QueryTimeoutError) throw err;
+          } catch {
+            // A failed explicit-path load falls through to the bare LOAD below, which
+            // applies the strict classifier to the final error.
           }
         }
         if (!shared.ftsLoaded) {
@@ -644,7 +675,7 @@ async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): 
           shared.ftsLoaded = true;
         }
       } catch (err) {
-        if (err instanceof QueryTimeoutError) throw err;
+        if (!isUnavailableExtension(err)) throw err;
         // FTS extension may not be installed — FTS queries will fail gracefully
       }
     }
@@ -654,7 +685,7 @@ async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): 
         await runStatement(conn, 'LOAD EXTENSION VECTOR');
         shared.vectorLoaded = true;
       } catch (err) {
-        if (err instanceof QueryTimeoutError) throw err;
+        if (!isUnavailableExtension(err)) throw err;
         // VECTOR extension may not be available
       }
     }
@@ -747,7 +778,10 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
         return;
       }
     }
-    await doInitLbug(repoId, dbPath);
+    // Fail fast while the same native database is draining; queueing behind its
+    // cleanup would hide the closing state from this caller.
+    if (dbCache.get(dbPath)?.closing) throw new Error('LadybugDB database is closing');
+    await serializeAdmission(() => doInitLbug(repoId, dbPath));
   })();
   initPromises.set(repoId, promise);
   try {
@@ -775,7 +809,11 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
       throw new Error(`LadybugDB not found at ${dbPath}. Run: ontoindex analyze`);
     }
 
-    evictLRU();
+    await evictLRU();
+    if (failedNativeOpens.has(dbPath))
+      throw new Error(
+        'LadybugDB failed native open remains fenced; restart the process before retrying',
+      );
 
     // Reuse an existing native Database if another repoId already opened this path.
     // This prevents buffer manager exhaustion from multiple mmap regions on the same file.
@@ -802,6 +840,12 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
             false, // enableCompression (default)
             true, // readOnly
           );
+          try {
+            await db.init();
+          } catch (error) {
+            failedNativeOpens.set(dbPath, db);
+            throw error;
+          }
           restoreStdout();
           shared = newSharedDb({
             db,
@@ -816,6 +860,10 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
         } catch (err: unknown) {
           restoreStdout();
           lastError = err instanceof Error ? err : new Error(String(err));
+          if (failedNativeOpens.has(dbPath))
+            throw new Error(
+              `LadybugDB native initialization failed: ${lastError.message}; restart the process before retrying`,
+            );
           isLockError =
             lastError.message.includes('Could not set lock') || lastError.message.includes('lock');
           if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
@@ -849,6 +897,12 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
             -1, // checkpointThreshold
             false, // throwOnWalReplayFailure — discard corrupt WAL tail instead of throwing
           );
+          try {
+            await db.init();
+          } catch (error) {
+            failedNativeOpens.set(dbPath, db);
+            throw error;
+          }
           restoreStdout();
           // WAL was corrupt — warn on stderr (process.stderr.write avoids corrupting MCP stdout).
           process.stderr.write(
@@ -953,7 +1007,7 @@ export async function initLbugWithDb(
 ): Promise<void> {
   const pending = initPromises.get(repoId);
   if (pending) return pending;
-  const promise = doInitLbugWithDb(repoId, existingDb, dbPath);
+  const promise = serializeAdmission(() => doInitLbugWithDb(repoId, existingDb, dbPath));
   initPromises.set(repoId, promise);
   try {
     await promise;
@@ -978,6 +1032,11 @@ async function doInitLbugWithDb(
   }
 
   // Register in dbCache with external: true so other initLbug() calls
+  await evictLRU();
+  if (failedNativeOpens.has(dbPath))
+    throw new Error(
+      'LadybugDB failed native open remains fenced; restart the process before retrying',
+    );
   // for the same dbPath reuse this Database instead of trying to open
   // a new one (which would fail with a file lock error).
   // closeOne() respects the external flag and skips db.close().
@@ -1056,7 +1115,7 @@ function checkout(entry: PoolEntry): Promise<lbug.Connection> {
   // Pool was pre-warmed to MAX_CONNS_PER_REPO during init.  If we're here
   // with fewer total connections, something leaked — surface the bug rather
   // than silently creating a connection (which would silence stdout mid-query).
-  const totalConns = entry.available.length + entry.checkedOut;
+  const totalConns = entry.available.length + entry.checkedOut + entry.pendingRetirements.size;
   if (totalConns < MAX_CONNS_PER_REPO) {
     throw new Error(
       `Connection pool integrity error: expected ${MAX_CONNS_PER_REPO} ` +
@@ -1119,8 +1178,20 @@ function retireConnection(entry: PoolEntry, conn: lbug.Connection): void {
   const close = shared
     ? trackConnectionClose(shared, conn)
     : Promise.resolve().then(() => conn.close());
-  entry.pendingRetirements.add(close);
-  void close
+  const retirement = close.then(() => {
+    if (isAdmissionClosed(entry) || ![...pool.values()].includes(entry)) return;
+    const replacement = createConnection(entry.db);
+    const waiter = entry.waiters.shift();
+    if (waiter) {
+      clearTimeout(waiter.timer);
+      entry.checkedOut++;
+      waiter.resolve(replacement);
+    } else {
+      entry.available.push(replacement);
+    }
+  });
+  entry.pendingRetirements.add(retirement);
+  void retirement
     .catch((error) => {
       if (shared) {
         shared.closing = true;
@@ -1128,32 +1199,8 @@ function retireConnection(entry: PoolEntry, conn: lbug.Connection): void {
       }
       realStderrWrite(`LadybugDB retired connection close failed: ${String(error)}\n`);
     })
-    .finally(() => entry.pendingRetirements.delete(close));
+    .finally(() => entry.pendingRetirements.delete(retirement));
   entry.checkedOut = Math.max(0, entry.checkedOut - 1);
-
-  if (isAdmissionClosed(entry)) return;
-
-  while (entry.waiters.length > 0) {
-    const totalConns = entry.available.length + entry.checkedOut;
-    if (entry.available.length > 0) {
-      const waiter = entry.waiters.shift()!;
-      clearTimeout(waiter.timer);
-      entry.checkedOut++;
-      waiter.resolve(entry.available.pop()!);
-      continue;
-    }
-    if (totalConns >= MAX_CONNS_PER_REPO) break;
-
-    const waiter = entry.waiters.shift()!;
-    clearTimeout(waiter.timer);
-    try {
-      entry.checkedOut++;
-      waiter.resolve(createConnection(entry.db));
-    } catch (err: unknown) {
-      entry.checkedOut = Math.max(0, entry.checkedOut - 1);
-      waiter.reject(err instanceof Error ? err : new Error(String(err)));
-    }
-  }
 }
 
 /**

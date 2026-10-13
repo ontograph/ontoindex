@@ -62,6 +62,23 @@ describe('tool-contract-schema — snapshot (Phase 3)', () => {
     }
   });
 
+  it('advertises session alternatives while retaining other required fields', () => {
+    const schema = serializeToolContract(getPublicToolRegistry({ includeFacades: true }), {
+      includeExperimental: false,
+    });
+    expect(schema.tools).toHaveLength(61);
+    for (const tool of schema.tools) {
+      const input = tool.inputSchema as any;
+      if (!input.anyOf?.some((branch: any) => branch.required.includes('session'))) continue;
+      expect(input.anyOf).toEqual([{ required: ['session'] }, { required: ['sessionId'] }]);
+      expect(input.required).not.toContain('session');
+      expect(input.properties.sessionId.type).toBe('string');
+    }
+    expect(
+      schema.tools.find((tool) => tool.name === 'gn_audit_tombstone_create')!.inputSchema.required,
+    ).toEqual(['findingId', 'reason']);
+  });
+
   it('serializes required alias alternatives consistently with dispatch validation', () => {
     const registry = getPublicToolRegistry({ includeFacades: true });
     const schema = serializeToolContract(registry, { includeExperimental: false });
