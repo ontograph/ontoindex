@@ -82,6 +82,7 @@ function generateOntoIndexContent(
 
   const skillsTable = `| Task | Read this skill file |
 |------|---------------------|
+| Start here, any task | \`.claude/skills/ontoindex/ontoindex-navigation/SKILL.md\` |
 | Understand architecture / "How does X work?" | \`.claude/skills/ontoindex/ontoindex-exploring/SKILL.md\` |
 | Blast radius / "What breaks if I change X?" | \`.claude/skills/ontoindex/ontoindex-impact-analysis/SKILL.md\` |
 | Trace bugs / "Why is X failing?" | \`.claude/skills/ontoindex/ontoindex-debugging/SKILL.md\` |
@@ -251,6 +252,16 @@ async function installSkills(repoPath: string): Promise<string[]> {
 
   // Skill definitions bundled with the package
   const skills = [
+    {
+      name: 'ontoindex-navigation',
+      description:
+        'Use first for any code task: OntoIndex freshness gate, tool routing, and what to do when OntoIndex is missing or stale.',
+    },
+    {
+      name: 'ontoindex-pr-review',
+      description:
+        'Use when reviewing a pull request to understand changes, assess merge risk, and check test coverage.',
+    },
     {
       name: 'ontoindex-exploring',
       description:

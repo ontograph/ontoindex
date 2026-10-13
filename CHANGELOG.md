@@ -4,6 +4,20 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-10-14
+
+### Changed
+
+- Rewrote the bundled agent skills for the current MCP surface: every example uses the live `search`, `inspect`, `impact`, `refactor` and `gn_*` tools with an explicit `repo`, and the removed `ontoindex_*` tool names are gone.
+- Added the `ontoindex-navigation` skill (freshness gate, task-to-tool routing, missing or stale index failure path) and installed it first by `setup` and `analyze`; `ontoindex-pr-review` is now also installed by `analyze`.
+- Skills no longer tell agents to run `npx ontoindex analyze`; only the single coordinating session reindexes with the installed binary, and tool risk output is authoritative instead of symbol-count tables.
+- Corrected the `ontoindex-cli` skill: removed the false post-commit hook claim and documented `--skip-agents-md`, `mcp-doctor`, `clean --generations`, and the `wiki` external-LLM, public-Gist and `--api-key` risks.
+- Trimmed each skill to under 45 lines and removed fictional examples.
+
+### Added
+
+- `test/unit/skills-tool-names.test.ts` fails when a bundled skill names a tool that is not in the live MCP registry, mentions a removed tool name, or tells agents to run `npx ontoindex analyze`.
+
 ## [2.2.1] - 2026-09-05
 
 ### Fixed
