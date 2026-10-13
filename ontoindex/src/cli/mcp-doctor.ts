@@ -113,6 +113,12 @@ export async function createMcpDoctorReport(
         ? { repairCommand: diagnose.embeddings.repairCommand }
         : {}),
     }));
+  if (
+    diagnose.degradedContext.reasons.includes('runtime-warnings') &&
+    diagnose.warnings.every(isInformationalRuntimeWarning)
+  ) {
+    capabilityGaps.push({ reason: 'runtime-warnings' });
+  }
   const verdict = resolveVerdict(diagnose, symbolSmoke, processLiveness, setupHealth, capabilityGaps);
 
   return {
@@ -301,7 +307,16 @@ function resolveVerdict(
 }
 
 function isOptionalCapabilityGap(reason: string): boolean {
-  return reason === 'embeddings-unavailable' || reason === 'embeddings-missing' || reason.endsWith('-lsp-missing');
+  return reason === 'embeddings-unavailable' || reason === 'embeddings-missing' || reason.endsWith('-lsp-missing') || reason === 'runtime-warnings';
+}
+
+function isInformationalRuntimeWarning(warning: string): boolean {
+  return [
+    /untracked files are absent from the graph/i,
+    /tracked changes are indexed at the indexed commit/i,
+    /dirty worktree/i,
+    /no embeddings/i,
+  ].some((pattern) => pattern.test(warning));
 }
 
 function resolveRepoSelector(
@@ -563,6 +578,7 @@ async function probeSetupHealth(projectCwd: string): Promise<McpDoctorReport['se
     {
       root: path.join(os.homedir(), '.codex'),
       skillDir: path.join(os.homedir(), '.agents', 'skills'),
+      usageFiles: [path.join(os.homedir(), '.codex', 'config.toml'), path.join(os.homedir(), '.codex', 'hooks.json')],
     },
     {
       root: path.join(os.homedir(), '.cursor'),
@@ -574,8 +590,9 @@ async function probeSetupHealth(projectCwd: string): Promise<McpDoctorReport['se
     },
   ];
 
-  for (const { root, skillDir } of skillChecks) {
+  for (const { root, skillDir, usageFiles } of skillChecks) {
     if (!(await dirExists(root))) continue;
+    if (usageFiles && !(await Promise.all(usageFiles.map(fileExists))).some(Boolean)) continue;
     if (await dirExists(skillDir)) continue;
     issues.push({
       kind: 'missing-generated-skill-dir',
@@ -606,6 +623,14 @@ async function dirExists(dirPath: string): Promise<boolean> {
   try {
     const stat = await fs.stat(dirPath);
     return stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    return (await fs.stat(filePath)).isFile();
   } catch {
     return false;
   }

@@ -25,6 +25,7 @@
  */
 
 import http from 'http';
+import { findOversizedArgument } from '../mcp/shared/arg-limits.js';
 import { writeSync } from 'node:fs';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 
@@ -469,6 +470,12 @@ function getNextStepHint(toolName: string): string {
 
 // ─── Server ───────────────────────────────────────────────────────────
 
+export function evalServerArgumentError(toolName: string, args: unknown): string | undefined {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return undefined;
+  const argumentError = findOversizedArgument(args as Record<string, unknown>);
+  return argumentError ? `Error: Invalid arguments for ${toolName}: ${argumentError}` : undefined;
+}
+
 export async function evalServerCommand(options?: EvalServerOptions): Promise<void> {
   const port = parseInt(options?.port || '4848');
   const idleTimeoutSec = parseInt(options?.idleTimeout || '0');
@@ -539,6 +546,14 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
             res.end('Error: Invalid JSON body');
             return;
           }
+        }
+
+        const argumentError = evalServerArgumentError(toolName, args);
+        if (argumentError) {
+          res.setHeader('Content-Type', 'text/plain');
+          res.writeHead(400);
+          res.end(argumentError);
+          return;
         }
 
         // Call tool, format result as text, append next-step hint

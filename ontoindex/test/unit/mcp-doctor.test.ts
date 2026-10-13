@@ -965,6 +965,84 @@ describe('mcp-doctor', () => {
     }
   });
 
+  it('checks Codex skill setup only when a Codex config or hooks file exists', async () => {
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-mcp-doctor-home-'));
+    const tempRepo = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-mcp-doctor-repo-'));
+    try {
+      vi.stubEnv('HOME', tempHome);
+      vi.stubEnv('USERPROFILE', tempHome);
+      const makeReport = () =>
+        createMcpDoctorReport(
+          { repo: 'fixture', projectCwd: tempRepo },
+          {
+            cwd: () => tempRepo,
+            diagnose: async () => baseDiagnose,
+            processLiveness: async (_repo, _cwd, repairCommand) => ({
+              status: 'ok',
+              pid: 1234,
+              repairCommand,
+            }),
+          },
+        );
+
+      await fs.mkdir(path.join(tempHome, '.codex'));
+      expect((await makeReport()).setupHealth).toBeUndefined();
+
+      await fs.writeFile(path.join(tempHome, '.codex', 'config.toml'), '');
+      let report = await makeReport();
+      expect(report.setupHealth?.issues).toContainEqual(
+        expect.objectContaining({
+          kind: 'missing-generated-skill-dir',
+          path: path.join(tempHome, '.agents', 'skills'),
+        }),
+      );
+
+      await fs.mkdir(path.join(tempHome, '.agents', 'skills'), { recursive: true });
+      report = await makeReport();
+      expect(report.setupHealth).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+      await fs.rm(tempHome, { recursive: true, force: true });
+      await fs.rm(tempRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('treats only allowlisted runtime warning gaps as optional', async () => {
+    const makeReport = (warnings: string[]) =>
+      createMcpDoctorReport(
+        { repo: 'fixture', projectCwd: '/repo/fixture' },
+        {
+          setupHealth: async () => ({ status: 'ok', issues: [] }),
+          diagnose: async () => ({
+            ...baseDiagnose,
+            degradedContext: {
+              ...baseDiagnose.degradedContext,
+              status: 'degraded',
+              reasons: ['runtime-warnings'],
+            },
+            warnings,
+          }),
+          processLiveness: async (_repo, _cwd, repairCommand) => ({
+            status: 'ok',
+            pid: 1234,
+            repairCommand,
+          }),
+        },
+      );
+
+    const informational = await makeReport([
+      '41 untracked files are absent from the graph entirely; 72 tracked changes are indexed at the indexed commit.',
+      'dirty worktree contains uncommitted changes',
+    ]);
+    expect(informational.verdict).toBe('READY');
+    expect(informational.capabilityGaps).toContainEqual({ reason: 'runtime-warnings' });
+    expect(formatMcpDoctorText(informational)).toContain('- runtime-warnings');
+
+    const unknown = await makeReport(['unrecognized runtime warning']);
+    expect(unknown.verdict).toBe('DEGRADED');
+    expect(unknown.capabilityGaps ?? []).not.toContainEqual({ reason: 'runtime-warnings' });
+  });
+
   it('keeps JSON output stable enough for issue reports', async () => {
     const report: McpDoctorReport = await createMcpDoctorReport(
       { repo: 'fixture', projectCwd: '/repo/fixture', symbol: 'main' },

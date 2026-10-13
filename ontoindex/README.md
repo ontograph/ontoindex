@@ -167,16 +167,24 @@ Analysis locks are analyzer-owned. MCP clients and agents must never remove
 `.ontoindex/analyze.lock`; retry the triggering graph operation unchanged only
 after the terminal result is `REFRESHED`.
 
-When MCP starts from a tool checkout, it uses `ONTOINDEX_MCP_PROJECT_CWD` (set by `setup`) as the target-project hint, and startup checks this against the selected repo target.
-If the selected repo target does not match that project scope, startup fails loudly unless override is enabled.
-For external helper checkouts (for example, `cwd=/opt/demodb/_workfolder/OntoIndex` while the target repo is `/opt/demodb/_workfolder/ontocode`), set setup and config against the target repo path:
+The stdio MCP server selects its project from `--project <path>` when supplied, then `ONTOINDEX_MCP_PROJECT_CWD`, then the git root of its working directory, or the working directory itself when it is outside a git repository. `ONTOINDEX_MCP_REPO` does not select the server project.
 
 ```bash
-cd /path/to/target/repo
 ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ontoindex mcp
-ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ontoindex mcp --repo my-target-repo
-ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1 ontoindex mcp   # override when intentionally cross-repo
+ontoindex mcp --project /path/to/target/repo
 ```
+
+`ontoindex mcp-doctor --repo <label-or-path> --project-cwd <path> --json` reports `READY`, `DEGRADED`, or `MISCONFIGURED`. `READY` means the target is configured; `DEGRADED` means it can run with a capability gap or a runtime/setup warning; `MISCONFIGURED` means the target or setup has a configuration mismatch. Optional `capabilityGaps` entries explain unavailable embeddings or language servers and informational runtime warnings. `processLiveness` reports servers bound by `--project` or by their working directory; several servers for one project are expected when separate client sessions start them. `setupHealth` checks editor setup, including `~/.agents/skills` only when `~/.codex/config.toml` or `~/.codex/hooks.json` exists; `ontoindex setup` creates the expected skills directory. The command exits with code 1 only for `MISCONFIGURED`.
+
+## Environment Variables
+
+- `ONTOINDEX_MAX_ARG_CHARS` limits string arguments accepted by MCP tools, REST `/api/search` and `/api/query`, and the eval server. It defaults to `2097152` characters and accepts values from `1024` through `67108864`.
+- `ONTOINDEX_LBUG_BUFFER_MB` sets the read-only index connection's buffer pool size in MiB; it defaults to `0` (use the library default) and accepts `0` through `16384`. In one run, a 64 MiB cap reduced resident memory after opening a 273 MiB index from about 426 MiB to 251 MiB, with queries about 10% slower.
+- `ONTOINDEX_LBUG_POOL_SIZE` sets the per-repository read connection pool size; it defaults to `2` and accepts `1` through `16`.
+
+## Index Generations
+
+`ontoindex clean --generations` prints a dry-run plan for obsolete index generations. It keeps the active generation and, by default, the two newest other generations, as well as generations with a live reader pin, incomplete generations, or generations while analysis is in progress. Add `--force` to delete eligible generations; `--keep <n>` sets the retained non-active generation count from `0` to `10` (default `2`), and `--all` applies the operation to every registered repository. A run deletes at most 50 generations. This mode never removes the active index or unregisters a repository. Generations created by older versions without a retention marker are eligible for cleanup only through this command.
 
 ## MCP Resources
 

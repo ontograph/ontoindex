@@ -6,9 +6,64 @@
  */
 
 import fs from 'fs/promises';
-import { findRepo, unregisterRepo, listRegisteredRepos } from '../storage/repo-manager.js';
+import {
+  findRepo,
+  unregisterRepo,
+  listRegisteredRepos,
+  cleanGenerations,
+} from '../storage/repo-manager.js';
 
-export const cleanCommand = async (options?: { force?: boolean; all?: boolean }) => {
+export const cleanCommand = async (options?: {
+  force?: boolean;
+  all?: boolean;
+  generations?: boolean;
+  keep?: string;
+}) => {
+  if (options?.generations) {
+    try {
+      const keep = options.keep ?? '2';
+      if (!/^\d+$/.test(keep) || Number(keep) > 10)
+        throw new Error('--keep must be an integer from 0 to 10');
+      const repo = options.all ? null : await findRepo(process.cwd());
+      const targets = options.all
+        ? await listRegisteredRepos()
+        : repo
+          ? [{ name: repo.repoPath, storagePath: repo.storagePath }]
+          : [];
+      if (!targets.length) {
+        console.log('No indexed repositories found.');
+        return;
+      }
+      const size = (bytes: number) =>
+        bytes >= 1024 ** 3
+          ? `${(bytes / 1024 ** 3).toFixed(2)} GB`
+          : bytes >= 1024 ** 2
+            ? `${(bytes / 1024 ** 2).toFixed(2)} MB`
+            : bytes >= 1024
+              ? `${(bytes / 1024).toFixed(2)} KB`
+              : `${bytes} B`;
+      for (const target of targets) {
+        const result = await cleanGenerations(target.storagePath, {
+          dryRun: !options.force,
+          keepNewest: Number(keep),
+        });
+        console.log(`${target.name}: ${size(result.bytesReclaimable)} reclaimable`);
+        for (const generation of result.kept)
+          console.log(`  Keep ${generation.name}: ${generation.reason}`);
+        for (const generation of result.candidates ?? [])
+          console.log(`  Would delete ${generation.name}: ${size(generation.bytes)}`);
+        for (const generation of result.deleted)
+          console.log(`  Deleted ${generation.name}: ${size(generation.bytes)}`);
+        for (const generation of result.skipped)
+          console.log(`  Skipped ${generation.name}: ${generation.reason}`);
+      }
+      if (!options.force) console.log('Run with --force to delete');
+    } catch (err) {
+      console.error('Failed to clean generations:', err);
+      process.exitCode = 1;
+    }
+    return;
+  }
   // --all flag: clean all indexed repos
   if (options?.all) {
     if (!options?.force) {

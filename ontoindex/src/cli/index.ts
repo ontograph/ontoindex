@@ -191,6 +191,8 @@ program
   .description('Delete OntoIndex index for current repo')
   .option('-f, --force', 'Skip confirmation prompt')
   .option('--all', 'Clean all indexed repos')
+  .option('--generations', 'Clean obsolete index generations (dry run unless --force)')
+  .option('--keep <n>', 'Non-active generations to retain (0..10)', '2')
   .action(createLazyAction(() => import('./clean.js'), 'cleanCommand'));
 
 program

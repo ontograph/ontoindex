@@ -558,6 +558,192 @@ export const resolveActiveIndexGeneration = async (
   }
 };
 
+export interface GenerationCleanupPlan {
+  keepNewest: number;
+  kept: Array<{ name: string; reason: string }>;
+  candidates: Array<{ name: string; reason: string; bytes: number }>;
+  bytesReclaimable: number;
+}
+
+export interface GenerationCleanupResult {
+  kept: Array<{ name: string; reason: string }>;
+  candidates?: Array<{ name: string; reason: string; bytes: number }>;
+  deleted: Array<{ name: string; bytes: number }>;
+  skipped: Array<{ name: string; reason: string }>;
+  bytesReclaimable: number;
+  dryRun: boolean;
+  keepNewest?: number;
+}
+
+async function generationCleanupReason(directory: string): Promise<string | null> {
+  const stat = await fs.lstat(directory).catch(() => null);
+  if (!stat?.isDirectory() || stat.isSymbolicLink()) return 'unverified';
+  for (const name of ['meta.json', 'snapshot.json', 'lbug']) {
+    const file = await fs.lstat(path.join(directory, name)).catch(() => null);
+    if (!file?.isFile() || file.isSymbolicLink()) return 'unverified';
+  }
+  for (const name of await fs.readdir(directory)) {
+    if (!name.startsWith('.reader-')) continue;
+    const pin = /^\.reader-(\d+)-[a-z0-9]+$/.exec(name);
+    const stat = await fs.lstat(path.join(directory, name));
+    if (!pin || !stat.isFile() || stat.isSymbolicLink() || !processDefinitelyDead(Number(pin[1])))
+      return 'live-pin';
+  }
+  return null;
+}
+
+async function generationCleanupBytes(directory: string): Promise<number> {
+  let bytes = 0;
+  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    const stat = await fs.lstat(target);
+    if (stat.isSymbolicLink()) continue;
+    if (stat.isDirectory()) bytes += await generationCleanupBytes(target);
+    else if (stat.isFile()) bytes += stat.size;
+  }
+  return bytes;
+}
+
+async function planGenerationCleanupLocked(
+  storagePath: string,
+  keepNewest: number,
+): Promise<GenerationCleanupPlan> {
+  if (!Number.isInteger(keepNewest) || keepNewest < 0 || keepNewest > 10)
+    throw new Error('--keep must be an integer from 0 to 10');
+  const plan: GenerationCleanupPlan = { keepNewest, kept: [], candidates: [], bytesReclaimable: 0 };
+  const root = path.resolve(storagePath, GENERATIONS_DIR);
+  const rootStat = await fs.lstat(root).catch(() => null);
+  if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) return plan;
+  const entries = (await fs.readdir(root, { withFileTypes: true })).filter(
+    (entry) =>
+      entry.isDirectory() &&
+      !entry.isSymbolicLink() &&
+      !entry.name.startsWith('.') &&
+      /^[A-Za-z0-9._-]+$/.test(entry.name),
+  );
+  const active = await resolveActiveIndexGeneration(storagePath);
+  const canonicalRoot = await fs.realpath(root);
+  const noActive =
+    !active ||
+    path.dirname(active.generationPath) !== canonicalRoot ||
+    !entries.some((entry) => entry.name === active.generationId);
+  const lock = await fs.lstat(path.join(storagePath, 'analyze.lock')).catch(() => null);
+  const checkpointPath = path.join(storagePath, 'analysis-checkpoint.json');
+  const checkpoint = await fs.lstat(checkpointPath).catch(() => null);
+  let analyzing = !!lock;
+  if (checkpoint) {
+    try {
+      const value = JSON.parse(await fs.readFile(checkpointPath, 'utf8'));
+      analyzing ||= !['completed', 'failed'].includes(value.status);
+    } catch {
+      analyzing = true;
+    }
+  }
+  const generations = await Promise.all(
+    entries.map(async (entry) => {
+      const leading = /^(\d+)-/.exec(entry.name);
+      const marker = path.join(root, entry.name, '.retention-managed');
+      const markerStat = await fs.lstat(marker).catch(() => null);
+      const epoch = leading
+        ? Number(leading[1])
+        : markerStat?.isFile() && !markerStat.isSymbolicLink()
+          ? Number(await fs.readFile(marker, 'utf8'))
+          : 0;
+      return { name: entry.name, epoch: Number.isFinite(epoch) ? epoch : 0 };
+    }),
+  );
+  generations.sort((a, b) => b.epoch - a.epoch || b.name.localeCompare(a.name));
+  const rollback = new Set(
+    generations
+      .filter((g) => g.name !== active?.generationId)
+      .slice(0, keepNewest)
+      .map((g) => g.name),
+  );
+  for (const generation of generations) {
+    const directory = path.join(root, generation.name);
+    const reason = noActive
+      ? 'no-active-generation'
+      : analyzing
+        ? 'analysis-in-progress'
+        : generation.name === active?.generationId
+          ? 'active'
+          : rollback.has(generation.name)
+            ? 'rollback'
+            : await generationCleanupReason(directory);
+    if (reason) plan.kept.push({ name: generation.name, reason });
+    else {
+      const bytes = await generationCleanupBytes(directory);
+      plan.candidates.push({ name: generation.name, bytes, reason: 'obsolete-generation' });
+      plan.bytesReclaimable += bytes;
+    }
+  }
+  return plan;
+}
+
+export const planGenerationCleanup = (storagePath: string, options: { keepNewest?: number } = {}) =>
+  withGenerationPointerLock(storagePath, () =>
+    planGenerationCleanupLocked(storagePath, options.keepNewest ?? 2),
+  );
+
+async function executeGenerationCleanupLocked(
+  storagePath: string,
+  plan: GenerationCleanupPlan,
+): Promise<GenerationCleanupResult> {
+  const fresh = await planGenerationCleanupLocked(storagePath, plan.keepNewest);
+  if (fresh.candidates.length) await sweepDeadReaderPins(storagePath);
+  const eligible = new Set(fresh.candidates.map((candidate) => candidate.name));
+  const deleted: Array<{ name: string; bytes: number }> = [];
+  const skipped: Array<{ name: string; reason: string }> = [];
+  for (const candidate of plan.candidates) {
+    if (
+      !/^[A-Za-z0-9._-]+$/.test(candidate.name) ||
+      candidate.name.startsWith('.') ||
+      !eligible.has(candidate.name)
+    ) {
+      skipped.push({
+        name: candidate.name,
+        reason: fresh.kept.find((g) => g.name === candidate.name)?.reason ?? 'unverified',
+      });
+      continue;
+    }
+    if (deleted.length >= 50) {
+      skipped.push({ name: candidate.name, reason: 'deletion-limit' });
+      continue;
+    }
+    const directory = path.resolve(storagePath, GENERATIONS_DIR, candidate.name);
+    const active = await resolveActiveIndexGeneration(storagePath);
+    const reason =
+      active?.generationId === candidate.name ? 'active' : await generationCleanupReason(directory);
+    if (reason) {
+      skipped.push({ name: candidate.name, reason });
+      continue;
+    }
+    const bytes = await generationCleanupBytes(directory);
+    await fs.rm(directory, { recursive: true, force: true });
+    deleted.push({ name: candidate.name, bytes });
+  }
+  return {
+    kept: fresh.kept,
+    deleted,
+    skipped,
+    bytesReclaimable: fresh.bytesReclaimable,
+    dryRun: false,
+  };
+}
+
+export const executeGenerationCleanup = (storagePath: string, plan: GenerationCleanupPlan) =>
+  withGenerationPointerLock(storagePath, () => executeGenerationCleanupLocked(storagePath, plan));
+
+export const cleanGenerations = (
+  storagePath: string,
+  options: { dryRun?: boolean; keepNewest?: number } = {},
+): Promise<GenerationCleanupResult> =>
+  withGenerationPointerLock(storagePath, async (): Promise<GenerationCleanupResult> => {
+    const plan = await planGenerationCleanupLocked(storagePath, options.keepNewest ?? 2);
+    if (options.dryRun !== false) return { ...plan, deleted: [], skipped: [], dryRun: true };
+    return executeGenerationCleanupLocked(storagePath, plan);
+  });
+
 export const resolveActiveLbugPath = async (storagePath: string): Promise<string> =>
   (await resolveActiveIndexGeneration(storagePath))?.lbugPath ?? path.join(storagePath, 'lbug');
 

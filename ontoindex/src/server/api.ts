@@ -9,6 +9,7 @@
  */
 
 import express from 'express';
+import { findOversizedArgument } from '../mcp/shared/arg-limits.js';
 import cors from 'cors';
 import path from 'path';
 import { createReadStream } from 'fs';
@@ -1464,6 +1465,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Execute Cypher query
   app.post('/api/query', async (req, res) => {
     try {
+      const argumentError = findOversizedArgument(req.body ?? {});
+      if (argumentError) {
+        res.status(400).json({ error: `Invalid arguments: ${argumentError}` });
+        return;
+      }
       const cypher = req.body.cypher as string;
       if (!cypher) {
         res.status(400).json({ error: 'Missing "cypher" in request body' });
@@ -1500,6 +1506,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Search (supports mode: 'hybrid' | 'semantic' | 'bm25', and optional enrichment)
   app.post('/api/search', async (req, res) => {
     try {
+      const argumentError = findOversizedArgument(req.body ?? {});
+      if (argumentError) {
+        res.status(400).json({ error: `Invalid arguments: ${argumentError}` });
+        return;
+      }
       const searchRequest = parseApiSearchRequestBody((req.body ?? {}) as Record<string, unknown>);
       const { query, limit, mode, enrich } = searchRequest;
       if (!query) {

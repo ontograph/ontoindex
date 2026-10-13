@@ -4,6 +4,22 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.25] - 2026-10-13
+
+### Added
+
+- `ontoindex clean --generations [--force] [--keep <n>] [--all]` removes obsolete index generations. It prints a plan by default and deletes only with `--force`. It keeps the active generation and the `--keep` newest others (default 2, range 0 to 10) as rollback candidates, keeps any generation with a live reader pin, an incomplete generation (missing `meta.json`, `snapshot.json` or the database file), and everything while an analysis is running or when no active generation resolves. It runs under the generation pointer lock, re-checks each candidate before deleting, deletes at most 50 per run, and never removes the active index, writes markers, or unregisters a repository. Generations created by older versions have no retention marker, so ordinary pruning never removed them.
+
+### Fixed
+
+- `POST /api/search`, `POST /api/query` and the `eval-server` `/tool/:name` route reject string arguments longer than `ONTOINDEX_MAX_ARG_CHARS` (default 2,097,152) with HTTP 400 before any repository lookup or database work, matching the MCP tools.
+- `mcp-doctor` expects the Codex skills directory `~/.agents/skills` only when `~/.codex/config.toml` or `~/.codex/hooks.json` exists, so an empty `~/.codex` no longer degrades the verdict.
+- `mcp-doctor` lists a `runtime-warnings` reason as an optional capability gap when every warning is one of the known informational notices (untracked or dirty files absent from the graph, no embeddings). Any other warning still degrades the verdict.
+
+### Documentation
+
+- The README documents project selection for `ontoindex mcp`, the doctor verdicts and `capabilityGaps`, `ONTOINDEX_MAX_ARG_CHARS`, `ONTOINDEX_LBUG_BUFFER_MB` and `clean --generations`.
+
 ## [2.2.24] - 2026-10-13
 
 ### Fixed
