@@ -11,6 +11,7 @@
  * Resources: repos, repo/{name}/context, repo/{name}/clusters, ...
  */
 
+import { findOversizedArgument } from './shared/arg-limits.js';
 import { createRequire } from 'module';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { UriTemplate } from '@modelcontextprotocol/sdk/shared/uriTemplate.js';
@@ -519,6 +520,8 @@ export function createMCPServer(
       let repoIdentity: RepoIdentity | null = null;
 
       try {
+        const oversized = findOversizedArgument(typedArgs);
+        if (oversized) throw new Error(`Invalid arguments for ${name}: ${oversized}`);
         if (options.transport === 'http' && name === 'gn_quality_mode') {
           throw new Error(
             'gn_quality_mode is unavailable over HTTP because it changes process-wide configuration.',

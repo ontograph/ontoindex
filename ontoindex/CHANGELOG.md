@@ -4,6 +4,15 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.24] - 2026-10-13
+
+### Fixed
+
+- Reader pin files left by killed servers (`<generation>/.reader-<pid>-<rand>`) are now removed. Every open, release and publish sweeps pins whose process is definitely dead, on every generation including the active one and unmanaged legacy ones, at most 2000 per call. Generation directories are never removed by the sweep and retention policy is unchanged.
+- `mcp-doctor` can now confirm a server that was started without `--project`. On Linux it reads the process working directory from `/proc/<pid>/cwd` and applies the server's own rule (git root of the cwd, else the cwd), so cwd-selected servers no longer report `process-project-binding-unverified`. Several servers bound to the same project by working directory (one per client session) count as `ok`; duplicates that all pass an explicit `--project` stay `ambiguous`.
+- String tool arguments longer than 2,097,152 characters are rejected for every tool (super, facade and legacy) with `Invalid arguments for <tool>: <key>: string longer than <N> characters`. `ONTOINDEX_MAX_ARG_CHARS` (1024 to 67108864) changes the limit. A 10 MB query previously cost about 250 MB of server memory.
+- Numeric arguments with a declared `minimum` or `maximum` are clamped into range before the handler runs instead of being passed through. Out-of-range values are not rejected, so existing clients keep working.
+
 ## [2.2.23] - 2026-10-13
 
 ### Fixed

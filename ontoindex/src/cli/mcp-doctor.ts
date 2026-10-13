@@ -67,6 +67,7 @@ export interface McpDoctorDeps {
     repairCommand: string,
   ) => Promise<McpDoctorReport['processLiveness']>;
   spawnPs?: typeof spawn;
+  readProcessCwd?: (pid: number) => Promise<string | undefined>;
   setupHealth?: (projectCwd: string) => Promise<McpDoctorReport['setupHealth']>;
 }
 
@@ -364,6 +365,7 @@ async function probeMcpProcessLiveness(
       pid: number;
       command: string;
       projectCwd?: string;
+      cwdBound?: boolean;
     }> = [];
     const child = deps.spawnPs?.(
       'ps', ['-ax', '-o', 'pid=', '-o', 'args='], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
@@ -434,6 +436,20 @@ async function probeMcpProcessLiveness(
       });
     });
 
+    if (process.platform === 'linux') {
+      for (const candidate of candidates) {
+        if (candidate.projectCwd) continue;
+        try {
+          const cwd = await (deps.readProcessCwd ?? readProcessCwd)(candidate.pid);
+          if (!cwd) continue;
+          candidate.projectCwd = getGitRoot(cwd) ?? path.resolve(cwd);
+          candidate.cwdBound = true;
+        } catch {
+          // Process cwd can disappear or be inaccessible; keep it unbound.
+        }
+      }
+    }
+
     const matching = candidates.filter((candidate) =>
       matchesBoundPath(candidate.projectCwd, projectCwd),
     );
@@ -441,6 +457,19 @@ async function probeMcpProcessLiveness(
       const match = matching[0];
       return {
         status: 'ok',
+        pid: match.pid,
+        command: match.command,
+        projectCwd: match.projectCwd,
+        repairCommand,
+      };
+    }
+
+    if (matching.length > 1 && matching.every((candidate) => candidate.cwdBound)) {
+      // One server per client session is normal when the project comes from the working directory.
+      const match = matching[0];
+      return {
+        status: 'ok',
+        reason: `${matching.length} servers bound to ${projectCwd} by working directory`,
         pid: match.pid,
         command: match.command,
         projectCwd: match.projectCwd,
@@ -487,6 +516,14 @@ async function probeMcpProcessLiveness(
       reason: err instanceof Error ? err.message : String(err),
       repairCommand,
     };
+  }
+}
+
+async function readProcessCwd(pid: number): Promise<string | undefined> {
+  try {
+    return await fs.readlink(`/proc/${pid}/cwd`);
+  } catch {
+    return undefined;
   }
 }
 

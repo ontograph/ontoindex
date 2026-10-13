@@ -601,8 +601,40 @@ async function markManagedGenerationLocked(
   await fs.writeFile(path.join(generationPath, '.retention-managed'), String(next), { flag: 'wx' });
 }
 
+/** Called under the pointer lock; retained and unmanaged generations also need cleanup. */
+async function sweepDeadReaderPins(storagePath: string): Promise<void> {
+  const root = path.join(storagePath, GENERATIONS_DIR);
+  const rootStat = await fs.lstat(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return;
+  let removed = 0;
+  for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+    if (
+      !entry.isDirectory() ||
+      entry.isSymbolicLink() ||
+      entry.name.startsWith('.') ||
+      safeGenerationId(entry.name) !== entry.name
+    )
+      continue;
+    const directory = path.join(root, entry.name);
+    for (const name of await fs.readdir(directory)) {
+      const pin = /^\.reader-(\d+)-[a-z0-9]+$/.exec(name);
+      if (!pin || !processDefinitelyDead(Number(pin[1]))) continue;
+      const pinPath = path.join(directory, name);
+      try {
+        const stat = await fs.lstat(pinPath);
+        if (!stat.isFile() || stat.isSymbolicLink()) continue;
+        await fs.unlink(pinPath);
+        if (++removed >= 2000) return;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+    }
+  }
+}
+
 /** Only generations published after reader pin adoption are eligible for removal. */
 async function pruneIndexGenerationsLocked(storagePath: string): Promise<void> {
+  await sweepDeadReaderPins(storagePath);
   const root = path.join(storagePath, GENERATIONS_DIR);
   const rootStat = await fs.lstat(root);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return;
@@ -730,6 +762,7 @@ export async function acquireIndexGenerationPin(
       `.reader-${process.pid}-${Math.random().toString(36).slice(2)}`,
     );
     await fs.writeFile(pinPath, '', { flag: 'wx', mode: 0o600 });
+    await sweepDeadReaderPins(storagePath).catch(() => {});
     let released = false;
     return {
       dbPath: resolved,

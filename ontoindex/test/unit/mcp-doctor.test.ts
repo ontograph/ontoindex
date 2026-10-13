@@ -19,6 +19,7 @@ const localBackendMock = vi.hoisted(() => ({
 const processMock = vi.hoisted(() => ({
   spawnPs: vi.fn(),
   getGitRoot: vi.fn(),
+  readProcessCwd: vi.fn(),
 }));
 
 function fakePsProcess(output: string, finish = true) {
@@ -131,6 +132,7 @@ beforeEach(() => {
   localBackendMock.dispose.mockReset().mockResolvedValue(undefined);
   processMock.spawnPs.mockReset();
   processMock.getGitRoot.mockReset();
+  processMock.readProcessCwd.mockReset();
 });
 
 describe('mcp-doctor', () => {
@@ -217,6 +219,92 @@ describe('mcp-doctor', () => {
     );
     const trailingSlash = await probe('/repo/app');
     expect(trailingSlash.processLiveness?.status).toBe('ok');
+  });
+
+  it('binds candidates without --project to their process cwd project root', async () => {
+    processMock.spawnPs.mockImplementation(() =>
+      fakePsProcess('900 node /home/user/.local/bin/ontoindex mcp\n'),
+    );
+    processMock.readProcessCwd.mockResolvedValue('/repo/app/packages/service');
+    processMock.getGitRoot.mockImplementation((cwd: string) =>
+      cwd.startsWith('/repo/app') ? '/repo/app' : null,
+    );
+    const deps = {
+      diagnose: async () => baseDiagnose,
+      setupHealth: async () => ({ status: 'ok' as const, issues: [] }),
+      spawnPs: processMock.spawnPs,
+      readProcessCwd: processMock.readProcessCwd,
+    };
+
+    const matching = await createMcpDoctorReport({ projectCwd: '/repo/app' }, deps);
+    expect(matching.processLiveness).toMatchObject({
+      status: 'ok',
+      pid: 900,
+      projectCwd: '/repo/app',
+    });
+
+    processMock.readProcessCwd.mockResolvedValue('/other/repo/subdir');
+    processMock.getGitRoot.mockReturnValue('/other/repo');
+    const different = await createMcpDoctorReport({ projectCwd: '/repo/app' }, deps);
+    expect(different.processLiveness).toMatchObject({
+      status: 'mismatch',
+      projectCwd: '/other/repo',
+    });
+  });
+
+  it('accepts several cwd-bound servers for one project but keeps explicit duplicates ambiguous', async () => {
+    processMock.readProcessCwd.mockResolvedValue('/repo/app');
+    processMock.getGitRoot.mockReturnValue('/repo/app');
+    const deps = {
+      diagnose: async () => baseDiagnose,
+      setupHealth: async () => ({ status: 'ok' as const, issues: [] }),
+      spawnPs: processMock.spawnPs,
+      readProcessCwd: processMock.readProcessCwd,
+    };
+    processMock.spawnPs.mockImplementationOnce(() =>
+      fakePsProcess(
+        '901 node /home/user/.local/bin/ontoindex mcp\n902 node /home/user/.local/bin/ontoindex mcp\n',
+      ),
+    );
+    const bound = await createMcpDoctorReport({ projectCwd: '/repo/app' }, deps);
+    expect(bound.processLiveness?.status).toBe('ok');
+
+    processMock.spawnPs.mockImplementationOnce(() =>
+      fakePsProcess(
+        '911 node /x/ontoindex mcp --project /repo/app\n912 node /x/ontoindex mcp --project /repo/app\n',
+      ),
+    );
+    const explicit = await createMcpDoctorReport({ projectCwd: '/repo/app' }, deps);
+    expect(explicit.processLiveness?.status).toBe('ambiguous');
+  });
+
+  it('leaves candidates unbound when cwd lookup fails and skips lookup for --project', async () => {
+    const deps = {
+      diagnose: async () => baseDiagnose,
+      setupHealth: async () => ({ status: 'ok' as const, issues: [] }),
+      spawnPs: processMock.spawnPs,
+      readProcessCwd: processMock.readProcessCwd,
+    };
+    processMock.spawnPs.mockImplementationOnce(() =>
+      fakePsProcess('901 node /home/user/.local/bin/ontoindex mcp\n'),
+    );
+    processMock.readProcessCwd.mockRejectedValue(new Error('permission denied'));
+    const failedLookup = await createMcpDoctorReport({ projectCwd: '/repo/app' }, deps);
+    expect(failedLookup.processLiveness).toMatchObject({
+      status: 'unavailable',
+      reason: 'process-project-binding-unverified',
+    });
+
+    processMock.spawnPs.mockImplementationOnce(() =>
+      fakePsProcess(
+        '902 node /opt/ontoindex/ontoindex/dist/cli/index.js mcp --project /repo/app\n',
+      ),
+    );
+    processMock.getGitRoot.mockClear();
+    const explicit = await createMcpDoctorReport({ projectCwd: '/repo/app' }, deps);
+    expect(explicit.processLiveness).toMatchObject({ status: 'ok', projectCwd: '/repo/app' });
+    expect(processMock.readProcessCwd).toHaveBeenCalledTimes(1);
+    expect(processMock.getGitRoot).not.toHaveBeenCalled();
   });
 
   it('streams ps output without retaining unrelated lines and skips oversized lines', async () => {

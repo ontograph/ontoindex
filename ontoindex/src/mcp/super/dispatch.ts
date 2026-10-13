@@ -13,6 +13,7 @@
  */
 
 import type { SuperTool } from './names.js';
+import { resolveMaxArgChars } from '../shared/arg-limits.js';
 import { ONTOINDEX_SUPER_TOOLS } from './tool-definitions.js';
 import type { ExploreParams } from './explore.js';
 import type { ExplainModuleParams } from './explain-module.js';
@@ -84,6 +85,7 @@ export { SUPER_NAMES, type SuperTool } from './names.js';
 export function validateSuperParams(name: SuperTool, params: Record<string, unknown>): void {
   const schema = ONTOINDEX_SUPER_TOOLS.find((tool) => tool.name === name)?.inputSchema;
   if (!schema) throw new Error(`Unknown super tool: ${name}`);
+  const maxArgChars = resolveMaxArgChars();
   const issues: string[] = [];
   for (const key of schema.required) {
     const hasSessionAlias =
@@ -118,6 +120,13 @@ export function validateSuperParams(name: SuperTool, params: Record<string, unkn
     if (!validType) issues.push(`${key}: expected ${types.join(' or ')}`);
     else if (property.enum && !property.enum.includes(value as string))
       issues.push(`${key}: expected one of ${property.enum.join(', ')}`);
+    if (validType && typeof value === 'string') {
+      const limit = Math.min(
+        (property as { maxLength?: number }).maxLength ?? maxArgChars,
+        maxArgChars,
+      );
+      if (value.length > limit) issues.push(`${key}: string longer than ${limit} characters`);
+    }
     if (validType && Array.isArray(value)) {
       if (property.minItems !== undefined && value.length < property.minItems)
         issues.push(`${key}: minItems ${property.minItems}`);
@@ -142,12 +151,40 @@ export function validateSuperParams(name: SuperTool, params: Record<string, unkn
           if (!matches) issues.push(`${key}[${index}]: expected ${type}`);
           else if (itemSchema.enum && !itemSchema.enum.includes(item as string))
             issues.push(`${key}[${index}]: expected one of ${itemSchema.enum.join(', ')}`);
+          if (matches && typeof item === 'string') {
+            const limit = Math.min(
+              (itemSchema as { maxLength?: number }).maxLength ?? maxArgChars,
+              maxArgChars,
+            );
+            if (item.length > limit)
+              issues.push(`${key}[${index}]: string longer than ${limit} characters`);
+          }
         });
       }
     }
   }
   if (issues.length)
     throw new Error(`Invalid arguments for ${name}: ${issues.slice(0, 3).join('; ')}`);
+}
+
+/** Preserve client compatibility while applying declared numeric bounds. */
+export function clampSuperParams(
+  name: SuperTool,
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  const schema = ONTOINDEX_SUPER_TOOLS.find((tool) => tool.name === name)?.inputSchema;
+  if (!schema) throw new Error(`Unknown super tool: ${name}`);
+  const clamped = { ...params };
+  for (const [key, property] of Object.entries(schema.properties)) {
+    if (!Object.hasOwn(params, key) || typeof params[key] !== 'number') continue;
+    const types = Array.isArray(property.type) ? property.type : [property.type];
+    if (!types.includes('number') && !types.includes('integer')) continue;
+    let value = params[key] as number;
+    if (property.minimum !== undefined) value = Math.max(property.minimum, value);
+    if (property.maximum !== undefined) value = Math.min(property.maximum, value);
+    clamped[key] = value;
+  }
+  return clamped;
 }
 
 /**
@@ -166,6 +203,7 @@ export async function dispatchSuper(
   context?: { repoPath: string; projectCwd?: string | null },
 ): Promise<unknown> {
   validateSuperParams(name, params);
+  params = clampSuperParams(name, params);
   switch (name) {
     case 'gn_explore': {
       const { gnExplore } = await import('./explore.js');
