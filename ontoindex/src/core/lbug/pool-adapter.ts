@@ -114,7 +114,25 @@ const pool = new Map<string, PoolEntry>();
 const closePromises = new Map<string, Promise<void>>();
 let admissionTail: Promise<void> = Promise.resolve();
 // A failed async open cannot be closed by the driver's public API. Retain ownership.
-const failedNativeOpens = new Map<string, lbug.Database>();
+// Failed native handles cannot close; their live-PID generation pins stay until process exit.
+const failedNativeOpens = new Map<
+  string,
+  { db: lbug.Database; generationPin: IndexGenerationPin }
+>();
+const unreleasedPins = new Set<IndexGenerationPin>();
+
+async function retryUnreleasedPins(): Promise<void> {
+  for (const pin of unreleasedPins) {
+    try {
+      await pin.release();
+      unreleasedPins.delete(pin);
+    } catch (error) {
+      process.stderr.write(
+        `LadybugDB generation pin release failed for ${pin.dbPath}: ${String(error)}\n`,
+      );
+    }
+  }
+}
 
 async function serializeAdmission(open: () => Promise<void>): Promise<void> {
   const previous = admissionTail;
@@ -368,6 +386,7 @@ let preWarmActive = false;
 function ensureIdleTimer(): void {
   if (idleTimer) return;
   idleTimer = setInterval(() => {
+    void retryUnreleasedPins();
     const now = Date.now();
     for (const [repoId, entry] of pool) {
       if (now - entry.lastUsed > IDLE_TIMEOUT_MS && entry.checkedOut === 0) {
@@ -416,8 +435,13 @@ async function evictLRU(): Promise<void> {
   if (oldestId) {
     await closeOneWhenIdle(oldestId);
   }
-  if (occupied() >= MAX_POOL_SIZE)
+  if (occupied() >= MAX_POOL_SIZE) {
+    if (failedNativeOpens.size >= MAX_POOL_SIZE)
+      throw new Error(
+        `LadybugDB native open failed for ${failedNativeOpens.size} database(s) and cannot be released in-process; restart the MCP server. Paths: ${[...failedNativeOpens.keys()].join(', ')}`,
+      );
     throw new Error('LadybugDB pool is busy at capacity. Retry later.');
+  }
 }
 
 /**
@@ -843,7 +867,8 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           try {
             await db.init();
           } catch (error) {
-            failedNativeOpens.set(dbPath, db);
+            failedNativeOpens.set(dbPath, { db, generationPin });
+            nativeOwnsPin = true;
             throw error;
           }
           restoreStdout();
@@ -900,7 +925,8 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           try {
             await db.init();
           } catch (error) {
-            failedNativeOpens.set(dbPath, db);
+            failedNativeOpens.set(dbPath, { db, generationPin });
+            nativeOwnsPin = true;
             throw error;
           }
           restoreStdout();
@@ -984,7 +1010,17 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     // (and throw cleanly) or a fully ready pool — never a half-built one.
     ensureIdleTimer();
   } catch (err) {
-    if (!nativeOwnsPin) await generationPin.release().catch(() => {});
+    if (!nativeOwnsPin) {
+      try {
+        await generationPin.release();
+      } catch (error) {
+        unreleasedPins.add(generationPin);
+        process.stderr.write(
+          `LadybugDB generation pin release failed for ${dbPath}: ${String(error)}\n`,
+        );
+        ensureIdleTimer();
+      }
+    }
     throw err;
   }
 }
@@ -1456,6 +1492,8 @@ export const executeParameterized = async <TRow extends object = LbugQueryRow>(
  * If omitted, close all repos.
  */
 export const closeLbug = async (repoId?: string): Promise<void> => {
+  // Start the retry without awaiting it: close must fence the pool synchronously.
+  void retryUnreleasedPins();
   if (repoId) {
     const state = initializingShares.get(repoId);
     const initializingShare =

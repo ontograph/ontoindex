@@ -20,6 +20,7 @@ import { semanticSearch } from '../local/backend-query.js';
 import { resolveSymbolCandidates } from '../local/backend-symbol-resolution.js';
 import { resolveAuditRepoHandle } from './audit-ingest.js';
 import { gnScopeGuard } from './audit-advanced.js';
+import { markInvocationError } from '../shared/invocation-error.js';
 
 const GIT_TIMEOUT_MS = 5_000;
 const GIT_MAX_BUFFER = 16 * 1024 * 1024;
@@ -276,7 +277,8 @@ export async function gnWorkerScopeReview(
   const sessionId = requireSession(params);
   const lockValidation = await validateWorkerSession(repo.repoPath, sessionId);
   if (lockValidation.ok === false) {
-    return {
+    // The invalid session lock prevents the requested worker review from running.
+    return markInvocationError({
       version: 1,
       action: 'worker-scope-review',
       ok: false,
@@ -287,7 +289,7 @@ export async function gnWorkerScopeReview(
       lockValidation,
       warnings: [],
       skipReasons: ['invalid-session-lock'],
-    };
+    });
   }
 
   const projection = buildAuditProjection(
@@ -295,7 +297,8 @@ export async function gnWorkerScopeReview(
   );
   const bundle = selectBundle(projection.bundles, sessionId, params.bundleId);
   if (bundle === undefined) {
-    return {
+    // A missing bundle prevents the requested worker review from running.
+    return markInvocationError({
       version: 1,
       action: 'worker-scope-review',
       ok: false,
@@ -305,7 +308,7 @@ export async function gnWorkerScopeReview(
       message: 'Run gn_audit_session_bundle before reviewing worker output.',
       warnings: [],
       skipReasons: ['bundle-required'],
-    };
+    });
   }
 
   const actual = await collectVerificationDiff(repo, {

@@ -6,7 +6,7 @@
  * --full: direct internal tools (deprecated, one minor version).
  */
 
-import { startMCPServer } from '../mcp/server.js';
+import { startMCPServer, withShutdownGrace } from '../mcp/server.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import {
   formatMcpStartupMismatchError,
@@ -113,8 +113,17 @@ export const mcpCommand = async (
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`OntoIndex MCP: backend initialization failed — ${msg}`);
-    await backend.dispose();
     process.exitCode = 1;
+    let cleanedUp = true;
+    try {
+      cleanedUp = await withShutdownGrace(backend.dispose());
+    } catch (cleanupError) {
+      console.error(
+        `OntoIndex MCP: backend cleanup failed — ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+      );
+    }
+    // Force exit only when cleanup is stuck; a stalled operation could otherwise keep the process alive.
+    if (!cleanedUp) process.exit(1);
     return;
   }
 

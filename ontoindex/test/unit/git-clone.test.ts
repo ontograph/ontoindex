@@ -4,6 +4,8 @@ import {
   getCloneDir,
   validateGitUrl,
   cloneOrPull,
+  redactGitUrl,
+  gitEnvironment,
 } from '../../src/server/git-clone.js';
 import type { LookupAddress } from 'node:dns';
 import fs from 'node:fs/promises';
@@ -11,6 +13,72 @@ import os from 'node:os';
 import path from 'node:path';
 
 describe('git-clone', () => {
+  it('rejects URL credentials without exposing them', async () => {
+    const progress = vi.fn();
+    const runGit = vi.fn(async () => {});
+    await expect(
+      cloneOrPull('https://user:secret@git.example/repo', '/nonexistent/ontoindex-test', progress, {
+        runGit,
+      }),
+    ).rejects.toThrow('credentials');
+    expect(progress).not.toHaveBeenCalled();
+    expect(runGit).not.toHaveBeenCalled();
+    expect(() => validateGitUrl('https://user@git.example/repo')).toThrow('credentials');
+  });
+
+  it('redacts userinfo from URLs embedded in output', () => {
+    expect(
+      redactGitUrl('fatal: https://user:secret@example.com/repo and http://token@example.org/x'),
+    ).toBe('fatal: https://example.com/repo and http://example.org/x');
+    expect(redactGitUrl('https://example.com/repo')).toBe('https://example.com/repo');
+  });
+
+  it('isolates git configuration while retaining TLS and proxy settings', () => {
+    const env = gitEnvironment({
+      PATH: '/bin',
+      HTTPS_PROXY: 'proxy',
+      SSL_CERT_FILE: 'ca',
+      GIT_CONFIG_PARAMETERS: 'rewrite',
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'url.x.insteadOf',
+      GIT_CONFIG_VALUE_0: 'https://',
+      GIT_SSH_COMMAND: 'ssh',
+      GIT_ASKPASS: 'prompt',
+    });
+    expect(env).toMatchObject({
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_TERMINAL_PROMPT: '0',
+      PATH: '/bin',
+      HTTPS_PROXY: 'proxy',
+      SSL_CERT_FILE: 'ca',
+    });
+    for (const key of [
+      'GIT_CONFIG_PARAMETERS',
+      'GIT_CONFIG_COUNT',
+      'GIT_CONFIG_KEY_0',
+      'GIT_CONFIG_VALUE_0',
+      'GIT_SSH_COMMAND',
+    ])
+      expect(env).not.toHaveProperty(key);
+    expect(env.GIT_ASKPASS).not.toBe('prompt');
+  });
+
+  it('refuses pulling a checkout with credentialed origin', async () => {
+    const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'git-clone-origin-'));
+    try {
+      await fs.mkdir(path.join(parent, '.git'));
+      const runGit = vi.fn(async () => 'https://user:secret@example.com/repo');
+      const progress = vi.fn();
+      await expect(
+        cloneOrPull('https://example.com/repo', parent, progress, { runGit }),
+      ).rejects.toThrow('credentials');
+      expect(runGit).toHaveBeenCalledTimes(1);
+      expect(progress).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(parent, { recursive: true, force: true });
+    }
+  });
   describe('extractRepoName', () => {
     it('extracts name from HTTPS URL', () => {
       expect(extractRepoName('https://github.com/user/my-repo.git')).toBe('my-repo');

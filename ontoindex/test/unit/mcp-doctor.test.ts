@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
 
 import { createMcpDoctorReport, formatMcpDoctorText } from '../../src/cli/mcp-doctor.js';
 import type { McpDoctorReport } from '../../src/cli/mcp-doctor.js';
@@ -15,12 +17,29 @@ const localBackendMock = vi.hoisted(() => ({
 }));
 
 const processMock = vi.hoisted(() => ({
-  execFileText: vi.fn(),
+  spawnPs: vi.fn(),
   getGitRoot: vi.fn(),
 }));
 
+function fakePsProcess(output: string, finish = true) {
+  const child = new EventEmitter() as EventEmitter & {
+    stdout: PassThrough;
+    stderr: PassThrough;
+    kill: ReturnType<typeof vi.fn>;
+  };
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.kill = vi.fn(() => true);
+  queueMicrotask(() => {
+    child.stdout.end(output);
+    child.stderr.end();
+    if (finish) child.emit('close', 0);
+  });
+  return child;
+}
+
 vi.mock('../../src/core/process/exec-file.js', () => ({
-  execFileText: processMock.execFileText,
+  execFileText: vi.fn(),
 }));
 
 vi.mock('../../src/storage/git.js', () => ({
@@ -110,7 +129,7 @@ beforeEach(() => {
   localBackendMock.init.mockReset().mockResolvedValue(true);
   localBackendMock.callTool.mockReset();
   localBackendMock.dispose.mockReset().mockResolvedValue(undefined);
-  processMock.execFileText.mockReset();
+  processMock.spawnPs.mockReset();
   processMock.getGitRoot.mockReset();
 });
 
@@ -151,18 +170,26 @@ describe('mcp-doctor', () => {
 
   it('uses exact normalized absolute paths, leaves relative bindings unavailable, and recognizes bare MCP commands', async () => {
     processMock.getGitRoot.mockReturnValue(null);
-    processMock.execFileText
-      .mockResolvedValueOnce('11 node /repo/app/ontoindex/dist/cli/index.js mcp --project /repo/app-extra')
-      .mockResolvedValueOnce('12 node /repo/app/ontoindex/dist/cli/index.js mcp --project relative/project')
-      .mockResolvedValueOnce('13 ontoindex mcp')
-      .mockResolvedValueOnce('14 /home/user/.local/bin/ontoindex mcp')
-      .mockResolvedValueOnce('16 node /other/index.js mcp --project /repo/app')
-      .mockResolvedValueOnce('17 node /opt/ontoindex/ontoindex/dist/cli/index.js mcp --project /repo/app')
-      .mockResolvedValueOnce('18 node /opt/ontoindex/ontoindex/dist/cli/index.js mcp --project /repo/foo bar');
+    const output = [
+      '11 node /repo/app/ontoindex/dist/cli/index.js mcp --project /repo/app-extra',
+      '12 node /repo/app/ontoindex/dist/cli/index.js mcp --project relative/project',
+      '13 ontoindex mcp',
+      '14 /home/user/.local/bin/ontoindex mcp',
+      '16 node /other/index.js mcp --project /repo/app',
+      '17 node /opt/ontoindex/ontoindex/dist/cli/index.js mcp --project /repo/app',
+      '18 node /opt/ontoindex/ontoindex/dist/cli/index.js mcp --project /repo/foo bar',
+    ];
+    for (const line of output) {
+      processMock.spawnPs.mockImplementationOnce(() => fakePsProcess(`${line}\n`));
+    }
     const probe = async (projectCwd: string) => {
       const report = await createMcpDoctorReport(
         { projectCwd },
-        { diagnose: async () => baseDiagnose, setupHealth: async () => ({ status: 'ok', issues: [] }) },
+        {
+          diagnose: async () => baseDiagnose,
+          setupHealth: async () => ({ status: 'ok', issues: [] }),
+          spawnPs: processMock.spawnPs,
+        },
       );
       return report;
     };
@@ -185,11 +212,75 @@ describe('mcp-doctor', () => {
     expect(pathWithSpaces.processLiveness?.status).toBe('unavailable');
     expect(pathWithSpaces.verdict).toBe('DEGRADED');
 
-    processMock.execFileText.mockResolvedValueOnce(
-      '15 node /repo/app/ontoindex/dist/cli/index.js mcp --project /repo/app/',
+    processMock.spawnPs.mockImplementationOnce(() =>
+      fakePsProcess('15 node /repo/app/ontoindex/dist/cli/index.js mcp --project /repo/app/\n'),
     );
     const trailingSlash = await probe('/repo/app');
     expect(trailingSlash.processLiveness?.status).toBe('ok');
+  });
+
+  it('streams ps output without retaining unrelated lines and skips oversized lines', async () => {
+    processMock.getGitRoot.mockReturnValue('/repo/app');
+    const unrelated = Array.from(
+      { length: 5000 },
+      (_, index) => `${index + 100} ${'x'.repeat(256)}\n`,
+    ).join('');
+    processMock.spawnPs.mockImplementationOnce(() =>
+      fakePsProcess(
+        `${unrelated}90000 ${'x'.repeat(16 * 1024 + 1)}\n90001 node /opt/ontoindex/ontoindex/dist/cli/index.js mcp --project /repo/app\n`,
+      ),
+    );
+    const report = await createMcpDoctorReport(
+      { projectCwd: '/repo/app' },
+      {
+        diagnose: async () => baseDiagnose,
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
+        spawnPs: processMock.spawnPs,
+      },
+    );
+    expect(report.processLiveness).toMatchObject({ status: 'ok', pid: 90001 });
+  });
+
+  it('reports an unavailable process probe after its timeout', async () => {
+    processMock.getGitRoot.mockReturnValue('/repo/app');
+    processMock.spawnPs.mockImplementationOnce(() => fakePsProcess('', false));
+    vi.useFakeTimers();
+    const pending = createMcpDoctorReport(
+      { projectCwd: '/repo/app' },
+      {
+        diagnose: async () => baseDiagnose,
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
+        spawnPs: processMock.spawnPs,
+      },
+    );
+    await vi.advanceTimersByTimeAsync(2_001);
+    const report = await pending;
+    vi.useRealTimers();
+    expect(report.processLiveness).toMatchObject({
+      status: 'unavailable',
+      reason: 'ps process timed out',
+    });
+  });
+
+  it('caps retained MCP candidates', async () => {
+    processMock.getGitRoot.mockReturnValue('/repo/app');
+    const rows = Array.from(
+      { length: 257 },
+      (_, index) =>
+        `${1000 + index} node /opt/ontoindex/ontoindex/dist/cli/index.js mcp --project /repo/app\n`,
+    ).join('');
+    const child = fakePsProcess(rows, false);
+    processMock.spawnPs.mockImplementationOnce(() => child);
+    const report = await createMcpDoctorReport(
+      { projectCwd: '/repo/app' },
+      {
+        diagnose: async () => baseDiagnose,
+        setupHealth: async () => ({ status: 'ok', issues: [] }),
+        spawnPs: processMock.spawnPs,
+      },
+    );
+    expect(report.processLiveness?.status).toBe('ambiguous');
+    expect(child.kill).toHaveBeenCalled();
   });
 
   it.each([
@@ -198,27 +289,35 @@ describe('mcp-doctor', () => {
       env: { ONTOINDEX_MCP_REPO: 'stale-repo', ONTOINDEX_MCP_PROJECT_CWD: '/repo/project' },
       expected: '/repo/project',
     },
-  ])('ignores legacy repo environment and follows project or cwd: $expected', async ({ env, expected }) => {
-    const diagnose = vi.fn().mockResolvedValue(baseDiagnose);
-    const processLiveness = vi.fn().mockImplementation(async (repo, projectCwd, repairCommand) => {
-      expect(repo).toBe(expected);
-      expect(projectCwd).toBe(expected);
-      expect(repairCommand).toBe(`ontoindex mcp --project '${expected}'`);
-      return { status: 'unavailable', reason: 'not-probed', repairCommand };
-    });
+  ])(
+    'ignores legacy repo environment and follows project or cwd: $expected',
+    async ({ env, expected }) => {
+      const diagnose = vi.fn().mockResolvedValue(baseDiagnose);
+      const processLiveness = vi
+        .fn()
+        .mockImplementation(async (repo, projectCwd, repairCommand) => {
+          expect(repo).toBe(expected);
+          expect(projectCwd).toBe(expected);
+          expect(repairCommand).toBe(`ontoindex mcp --project '${expected}'`);
+          return { status: 'unavailable', reason: 'not-probed', repairCommand };
+        });
 
-    const report = await createMcpDoctorReport({}, {
-      env,
-      cwd: () => '/repo/cwd',
-      diagnose,
-      processLiveness,
-      setupHealth: async () => ({ status: 'ok', issues: [] }),
-    });
+      const report = await createMcpDoctorReport(
+        {},
+        {
+          env,
+          cwd: () => '/repo/cwd',
+          diagnose,
+          processLiveness,
+          setupHealth: async () => ({ status: 'ok', issues: [] }),
+        },
+      );
 
-    expect(report.repoSelector).toBe(expected);
-    expect(diagnose).toHaveBeenCalledWith(expected, expect.any(Object));
-    expect(processLiveness).toHaveBeenCalled();
-  });
+      expect(report.repoSelector).toBe(expected);
+      expect(diagnose).toHaveBeenCalledWith(expected, expect.any(Object));
+      expect(processLiveness).toHaveBeenCalled();
+    },
+  );
 
   it('runs production symbol smoke checks when no injected smokeSymbol is provided', async () => {
     localBackendMock.callTool
@@ -683,13 +782,24 @@ describe('mcp-doctor', () => {
       vi.stubEnv('HOME', tempHome);
       vi.stubEnv('USERPROFILE', tempHome);
       await fs.mkdir(path.join(tempRepo, '.claude'), { recursive: true });
-      await fs.writeFile(path.join(tempRepo, '.claude', 'settings.local.json'), JSON.stringify({
-        permissions: { allow: ['Bash(/usr/bin/git status)'] }, note: 'https://example.test/a /opt/tool',
-      }));
-      const report = await createMcpDoctorReport({ repo: 'fixture', projectCwd: tempRepo }, {
-        cwd: () => tempRepo, diagnose: async () => baseDiagnose,
-        processLiveness: async (_repo, _cwd, repairCommand) => ({ status: 'unavailable', repairCommand }),
-      });
+      await fs.writeFile(
+        path.join(tempRepo, '.claude', 'settings.local.json'),
+        JSON.stringify({
+          permissions: { allow: ['Bash(/usr/bin/git status)'] },
+          note: 'https://example.test/a /opt/tool',
+        }),
+      );
+      const report = await createMcpDoctorReport(
+        { repo: 'fixture', projectCwd: tempRepo },
+        {
+          cwd: () => tempRepo,
+          diagnose: async () => baseDiagnose,
+          processLiveness: async (_repo, _cwd, repairCommand) => ({
+            status: 'unavailable',
+            repairCommand,
+          }),
+        },
+      );
       expect(report.setupHealth).toBeUndefined();
     } finally {
       vi.unstubAllEnvs();

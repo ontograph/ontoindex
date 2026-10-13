@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'node:module';
 import { JobManager } from './analyze-job.js';
 import { getStoragePath } from '../storage/repo-manager.js';
-import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
+import { extractRepoName, getCloneDir, cloneOrPull, redactGitUrl } from './git-clone.js';
 
 const _require = createRequire(import.meta.url);
 const BACKEND_RELOAD_TIMEOUT_MS = 30_000;
@@ -193,7 +193,11 @@ export function mountAnalyzeRoutes(
             jobManager.updateJob(job.id, {
               status: 'cloning',
               repoName,
-              progress: { phase: 'cloning', percent: 0, message: `Cloning ${repoUrl}...` },
+              progress: {
+                phase: 'cloning',
+                percent: 0,
+                message: `Cloning ${redactGitUrl(repoUrl)}...`,
+              },
             });
 
             try {

@@ -34,6 +34,42 @@ describe('committed index generation retention', () => {
       .filter((n) => !n.startsWith('.'))
       .sort();
   }
+  it('keeps a rejected native open generation pinned through later publication', async () => {
+    await publish('failed-native');
+    const constructor = vi.spyOn(lbug, 'Database').mockImplementation(function () {
+      return {
+        init: async () => {
+          throw new Error('native init failed');
+        },
+      } as lbug.Database;
+    } as typeof lbug.Database);
+    await expect(
+      pool.initLbug('failed-native-retention', path.join(storage, 'lbug')),
+    ).rejects.toThrow('native initialization failed');
+    constructor.mockRestore();
+    const directory = path.join(storage, 'generations', 'failed-native');
+    expect((await fs.readdir(directory)).some((name) => name.startsWith('.reader-'))).toBe(true);
+    await publish('b');
+    await publish('c');
+    await publish('d');
+    expect(await names()).toContain('failed-native');
+  });
+  it('removes a newly created mutation lock when initialization fails', async () => {
+    const open = fs.open.bind(fs);
+    const spy = vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      if (String(args[0]).endsWith('current.mutation.lock')) {
+        vi.spyOn(handle, 'writeFile').mockRejectedValueOnce(new Error('lock write failed'));
+      }
+      return handle;
+    });
+    await expect(publish('failed-lock')).rejects.toThrow('lock write failed');
+    await expect(fs.lstat(path.join(storage, 'current.mutation.lock'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    spy.mockRestore();
+    await publish('after-lock');
+  });
   it('opens new and existing unmanaged databases through a root alias', async () => {
     const directory = path.join(storage, 'overlay', 'generation');
     await fs.mkdir(directory, { recursive: true });
@@ -270,13 +306,18 @@ describe('committed index generation retention', () => {
         return unlink(filename);
       });
       const sharing = pool.initLbug('retention-shared', path.join(storage, 'lbug'));
+      const rejected = expect(sharing).rejects.toThrow('database is closing');
+      let closing: Promise<void> | undefined;
       try {
         await releaseEntered;
-        await pool.closeLbug('retention-native');
+        closing = pool.closeLbug('retention-native');
       } finally {
         resumeRelease();
       }
-      await sharing;
+      await Promise.all([closing, rejected]);
+      const published = path.join(storage, 'generations', 'native-a');
+      expect((await fs.readdir(published)).some((name) => name.startsWith('.reader-'))).toBe(false);
+      await pool.initLbug('retention-shared', path.join(storage, 'lbug'));
       unlinkSpy.mockRestore();
       await publish('b');
       await publish('c');

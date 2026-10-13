@@ -55,7 +55,7 @@ describe('real driver lazy database open', () => {
       expect(init).toHaveBeenCalledTimes(1);
       expect(pool.isLbugDbPathReady('/lazy')).toBe(false);
       await expect(pool.executeQuery('lazy', 'RETURN 1')).rejects.toThrow('not initialized');
-      expect(mocks.release).toHaveBeenCalledTimes(1);
+      expect(mocks.release).not.toHaveBeenCalled();
       await expect(pool.initLbug('lazy', '/lazy')).rejects.toThrow('remains fenced');
       expect(init).toHaveBeenCalledTimes(1);
     } finally {

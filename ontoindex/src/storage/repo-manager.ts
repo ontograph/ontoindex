@@ -1084,13 +1084,20 @@ async function acquireExclusiveFile(
   while (Date.now() - started < timeoutMs) {
     try {
       const handle = await fs.open(lockPath, 'wx');
+      const created = await handle.stat();
       try {
         await handle.writeFile(
           JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() }, null, 2),
           'utf-8',
         );
-      } finally {
         await handle.close();
+      } catch (error) {
+        try {
+          const current = await fs.lstat(lockPath);
+          if (current.dev === created.dev && current.ino === created.ino) await fs.unlink(lockPath);
+        } catch {}
+        await handle.close().catch(() => {});
+        throw error;
       }
       let released = false;
       return async () => {
@@ -1193,13 +1200,20 @@ async function acquireRegistryLock(): Promise<() => Promise<void>> {
   while (Date.now() - started < REGISTRY_LOCK_TIMEOUT_MS) {
     try {
       const handle = await fs.open(lockPath, 'wx');
+      const created = await handle.stat();
       try {
         await handle.writeFile(
           JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() }, null, 2),
           'utf-8',
         );
-      } finally {
         await handle.close();
+      } catch (error) {
+        try {
+          const current = await fs.lstat(lockPath);
+          if (current.dev === created.dev && current.ino === created.ino) await fs.unlink(lockPath);
+        } catch {}
+        await handle.close().catch(() => {});
+        throw error;
       }
       let released = false;
       return async () => {

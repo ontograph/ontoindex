@@ -12,6 +12,7 @@ import {
 } from '../../core/analysis/analysis-publication-receipt.js';
 import { resolveActiveIndexGeneration } from '../../storage/repo-manager.js';
 import { resolveTargetContext, type TargetContext } from '../shared/target-context.js';
+import { markInvocationError } from '../shared/invocation-error.js';
 import { gnEnsureFresh, type EnsureFreshReport } from './ensure-fresh.js';
 
 export interface AnalyzeJobParams {
@@ -36,7 +37,10 @@ export interface AnalysisRecovery {
 
 export async function gnAnalyzeJob(repoId: string, params: AnalyzeJobParams): Promise<unknown> {
   const freshness = await gnEnsureFresh(repoId, { repo: params.repo });
-  if (!freshness.repoPath) return { error: 'Repository path could not be resolved.' };
+  if (!freshness.repoPath) {
+    // No repository was resolved, so the requested job lookup cannot run.
+    return markInvocationError({ error: 'Repository path could not be resolved.' });
+  }
   if (params.action === 'cancel') {
     const result = await cancelAnalysisJob(freshness.repoPath, params.jobId);
     return { ...result, repoLabel: freshness.repoLabel, repoPath: freshness.repoPath };
@@ -49,11 +53,12 @@ export async function gnAnalyzeJob(repoId: string, params: AnalyzeJobParams): Pr
         repoPath: freshness.repoPath,
         recovery: await observeRecovery(job, freshness.repoPath),
       }
-    : {
+    : markInvocationError({
+        // The requested job does not exist, so the lookup could not be completed.
         error: 'Analysis job not found.',
         repoLabel: freshness.repoLabel,
         repoPath: freshness.repoPath,
-      };
+      });
 }
 
 async function observeRecovery(

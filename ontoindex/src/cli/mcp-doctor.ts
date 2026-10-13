@@ -1,11 +1,11 @@
 import fs from 'fs/promises';
+import { spawn } from 'child_process';
 import os from 'os';
 import path from 'path';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { shellQuote } from '../mcp/shared/repo-resolution-errors.js';
 import { gnDiagnose } from '../mcp/super/diagnose.js';
 import type { DiagnoseParams, DiagnoseReport } from '../mcp/super/diagnose.js';
-import { execFileText } from '../core/process/exec-file.js';
 import { formatSupportLines } from './status.js';
 import { getGitRoot } from '../storage/git.js';
 
@@ -65,6 +65,7 @@ export interface McpDoctorDeps {
     projectCwd: string,
     repairCommand: string,
   ) => Promise<McpDoctorReport['processLiveness']>;
+  spawnPs?: typeof spawn;
   setupHealth?: (projectCwd: string) => Promise<McpDoctorReport['setupHealth']>;
 }
 
@@ -98,11 +99,9 @@ export async function createMcpDoctorReport(
     projectCwd ??
     repoSelector;
   const fallbackRestartCommand = buildRepairCommand(restartPath, explicitRepo);
-  const processLiveness = await (deps.processLiveness ?? probeMcpProcessLiveness)(
-    repoSelector,
-    projectCwd,
-    fallbackRestartCommand,
-  );
+  const processLiveness = deps.processLiveness
+    ? await deps.processLiveness(repoSelector, projectCwd, fallbackRestartCommand)
+    : await probeMcpProcessLiveness(repoSelector, projectCwd, fallbackRestartCommand, deps);
   const setupHealth = await (deps.setupHealth ?? probeSetupHealth)(projectCwd);
   const verdict = resolveVerdict(diagnose, symbolSmoke, processLiveness, setupHealth);
 
@@ -322,6 +321,7 @@ async function probeMcpProcessLiveness(
   repoSelector: string,
   projectCwd: string,
   repairCommand: string,
+  deps: McpDoctorDeps = {},
 ): Promise<McpDoctorReport['processLiveness']> {
   if (process.platform === 'win32') {
     return {
@@ -332,41 +332,79 @@ async function probeMcpProcessLiveness(
   }
 
   try {
-    const output = await execFileText('ps', ['-ax', '-o', 'pid=', '-o', 'args='], {
-      timeoutMs: 2_000,
-      maxBuffer: 64 * 1024,
-    });
-
     const candidates: Array<{
       pid: number;
       command: string;
       projectCwd?: string;
     }> = [];
+    const child = deps.spawnPs?.(
+      'ps', ['-ax', '-o', 'pid=', '-o', 'args='], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
+    ) ?? spawn('ps', ['-ax', '-o', 'pid=', '-o', 'args='], {
+      stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    });
+    const candidateLimit = 256;
+    const lineLimit = 16 * 1024;
+    await new Promise<void>((resolve, reject) => {
+      let pending = '';
+      let oversized = false;
+      let settled = false;
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        finish(new Error('ps process timed out'));
+      }, 2_000);
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (error) reject(error);
+        else resolve();
+      };
+      const consumeLine = (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        const match = trimmed.match(/^(\d+)\s+(.*)$/);
+        if (!match) return;
 
-    for (const line of output.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const match = trimmed.match(/^(\d+)\s+(.*)$/);
-      if (!match) continue;
+        const pid = Number.parseInt(match[1], 10);
+        if (!Number.isFinite(pid) || pid <= 0) return;
 
-      const pid = Number.parseInt(match[1], 10);
-      if (!Number.isFinite(pid) || pid <= 0) continue;
+        const command = match[2].trim();
+        if (!looksLikeOntoindexMcpCommand(command)) return;
 
-      const command = match[2].trim();
-      if (!looksLikeOntoindexMcpCommand(command)) continue;
-
-      const projectCwd = extractCliOptionValue(command, '--project');
-      if (projectCwd && !hasUnambiguousProjectArgument(command)) {
-        candidates.push({ pid, command });
-        continue;
-      }
-
-      candidates.push({
-        pid,
-        command,
-        projectCwd,
+        const projectCwd = extractCliOptionValue(command, '--project');
+        candidates.push(projectCwd && !hasUnambiguousProjectArgument(command)
+          ? { pid, command }
+          : { pid, command, projectCwd });
+        if (candidates.length >= candidateLimit) {
+          child.kill('SIGKILL');
+          finish();
+        }
+      };
+      child.stdout?.on('data', (chunk: Buffer | string) => {
+        if (settled) return;
+        for (const part of String(chunk).split(/(?<=\n)/)) {
+          const hasNewline = part.endsWith('\n');
+          if (oversized) {
+            if (hasNewline) oversized = false;
+            continue;
+          }
+          const line = pending + part.replace(/\n$/, '');
+          pending = '';
+          if (line.length > lineLimit) {
+            oversized = !hasNewline;
+            continue;
+          }
+          if (hasNewline) consumeLine(line);
+          else pending = line;
+        }
       });
-    }
+      child.stderr?.on('data', () => {});
+      child.once('error', (error: Error) => finish(error));
+      child.once('close', (code: number | null) => {
+        if (pending && !oversized) consumeLine(pending);
+        finish(code === 0 || candidates.length >= candidateLimit ? undefined : new Error(`ps exited with code ${code}`));
+      });
+    });
 
     const matching = candidates.filter((candidate) =>
       matchesBoundPath(candidate.projectCwd, projectCwd),

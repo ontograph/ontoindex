@@ -52,6 +52,33 @@ import {
 
 const MAX_PROMPT_ARGUMENT_BYTES = 4096;
 
+export function getMcpShutdownGraceMs(): number {
+  const raw = Number.parseInt(process.env.ONTOINDEX_MCP_SHUTDOWN_GRACE_MS ?? '', 10);
+  return Number.isFinite(raw) && raw >= 100 && raw <= 60_000 ? raw : 5000;
+}
+
+/** Bound cleanup without changing the backend's disposal contract. Resolves false when the grace expired. */
+export async function withShutdownGrace(
+  cleanup: Promise<unknown>,
+  graceMs = getMcpShutdownGraceMs(),
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      cleanup.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => {
+          process.stderr.write('[ontoindex:mcp] shutdown grace expired; forcing exit\n');
+          resolve(false);
+        }, graceMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 const GRAPH_BACKED_SUPER_TOOLS = new Set<SuperTool>([
   'gn_explore',
   'gn_explain_module',
@@ -729,14 +756,17 @@ export async function startMCPServer(
   let shutdownExitCode = 0;
   const shutdown = async (exitCode = 0) => {
     shutdownExitCode = Math.max(shutdownExitCode, exitCode);
+    // Repeated signals do not cut cleanup short; the grace deadline is the only bound.
     if (shuttingDown) return;
     shuttingDown = true;
-    try {
-      await server.close();
-    } catch {}
-    try {
-      await backend.dispose();
-    } catch {}
+    await withShutdownGrace((async () => {
+      try {
+        await server.close();
+      } catch {}
+      try {
+        await backend.dispose();
+      } catch {}
+    })());
     process.exit(shutdownExitCode);
   };
 
@@ -761,7 +791,7 @@ export async function startMCPServer(
   });
 
   // Handle stdio errors — stdin close means the parent process is gone
-  process.stdin.on('end', shutdown);
+  process.stdin.on('end', () => void shutdown());
   process.stdin.on('error', () => shutdown());
   process.stdout.on('error', () => shutdown());
 }

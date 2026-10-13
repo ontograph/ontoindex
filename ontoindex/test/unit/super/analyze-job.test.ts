@@ -27,6 +27,7 @@ import { resolveActiveIndexGeneration } from '../../../src/storage/repo-manager.
 import { resolveTargetContext } from '../../../src/mcp/shared/target-context.js';
 import { gnAnalyzeJob } from '../../../src/mcp/super/analyze-job.js';
 import { gnEnsureFresh } from '../../../src/mcp/super/ensure-fresh.js';
+import { isMarkedInvocationError } from '../../../src/mcp/shared/invocation-error.js';
 
 const cancelJob = vi.mocked(cancelAnalysisJob);
 const getJob = vi.mocked(getAnalysisJob);
@@ -536,5 +537,22 @@ describe('gnAnalyzeJob', () => {
     });
     expect(ensureFresh).toHaveBeenCalledTimes(3);
     expect(targetContext).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('gnAnalyzeJob invocation errors', () => {
+  it('marks an unresolved repository and a missing job, not a found job', async () => {
+    ensureFresh.mockResolvedValueOnce({ repoPath: undefined } as never);
+    const unresolved = await gnAnalyzeJob('repo', { action: 'status', jobId });
+    expect(JSON.parse(JSON.stringify(unresolved))).toEqual({
+      error: 'Repository path could not be resolved.',
+    });
+    expect(isMarkedInvocationError(unresolved)).toBe(true);
+
+    ensureFresh.mockResolvedValueOnce({ repoPath, repoLabel: 'repo' } as never);
+    getJob.mockResolvedValueOnce(null as never);
+    const missing = await gnAnalyzeJob('repo', { action: 'status', jobId });
+    expect(missing).toMatchObject({ error: 'Analysis job not found.' });
+    expect(isMarkedInvocationError(missing)).toBe(true);
   });
 });

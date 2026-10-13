@@ -17,6 +17,7 @@ import type {
   AuditSession,
 } from '../../src/core/audit-lifecycle/audit-session.js';
 import { gnAuditSessionDispatch } from '../../src/mcp/super/audit-session-tools.js';
+import { isMarkedInvocationError } from '../../src/mcp/shared/invocation-error.js';
 import { gnDispatchPrompt } from '../../src/mcp/super/audit-advanced.js';
 import {
   buildTestGapReport,
@@ -279,6 +280,7 @@ describe('manager audit dispatch wrapper', () => {
     expect(result.ok).toBe(false);
     expect(result.code).toBe('DISPATCH_BLOCKED');
     expect(result.duplicateOnlyChildren).toBe(true);
+    expect(isMarkedInvocationError(result)).toBe(true);
   });
 
   it('refuses dispatch when the event chain is broken, including persist=false', async () => {
@@ -315,6 +317,7 @@ describe('manager audit dispatch wrapper', () => {
       firstBrokenSequence: 0,
       reason: 'checksum-mismatch',
     });
+    expect(isMarkedInvocationError(result)).toBe(true);
   });
 
   it('refuses dispatch for an unverifiable legacy chain', async () => {

@@ -14,6 +14,31 @@ import { lookup as dnsLookup } from 'dns/promises';
 
 type LookupAddress = { address: string; family: number };
 
+/** Remove URL userinfo before rendering untrusted Git output. */
+export function redactGitUrl(text: string): string {
+  return text.replace(/([a-z][a-z\d+.-]*:\/\/)[^\s/]*@/gi, '$1');
+}
+
+export function gitEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...source };
+  for (const key of Object.keys(env)) {
+    if (
+      /^GIT_CONFIG_(?:COUNT|KEY_.*|VALUE_.*|PARAMETERS)$/.test(key) ||
+      /^GIT_SSH/.test(key) ||
+      key === 'GIT_PROXY_COMMAND' ||
+      key === 'GIT_ASKPASS'
+    )
+      delete env[key];
+  }
+  // Preserve operator proxy, PATH, locale and CA settings for transport compatibility.
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  env.GIT_CONFIG_GLOBAL = '/dev/null';
+  env.GIT_TERMINAL_PROMPT = '0';
+  // A no-op askpass keeps credential helpers from opening a GUI prompt.
+  env.GIT_ASKPASS = process.platform === 'win32' ? 'echo' : '/bin/true';
+  return env;
+}
+
 /** Extract the repository name from a git URL (HTTPS or SSH). */
 export function extractRepoName(url: string): string {
   const cleaned = url.replace(/\/+$/, '');
@@ -49,6 +74,10 @@ export function validateGitUrl(url: string): void {
 
   if (!['https:', 'http:'].includes(parsed.protocol)) {
     throw new Error('Only https:// and http:// git URLs are allowed');
+  }
+
+  if (parsed.username || parsed.password) {
+    throw new Error('Git URLs containing credentials are not allowed');
   }
 
   const host = parsed.hostname.toLowerCase();
@@ -207,6 +236,12 @@ export async function cloneOrPull(
   );
 
   if (exists) {
+    const origin = await (options.runGit ?? runGit)(
+      ['config', '--get', 'remote.origin.url'],
+      targetDir,
+      options,
+    );
+    validateGitUrl(typeof origin === 'string' ? origin.trim() : '');
     onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
     await (options.runGit ?? runGit)(gitArgs(['pull', '--ff-only']), targetDir, options);
   } else {
@@ -235,7 +270,7 @@ export async function cloneOrPull(
       addresses = answers.map((answer) => answer.address);
     }
     await fs.mkdir(path.dirname(targetDir), { recursive: true });
-    onProgress?.({ phase: 'cloning', message: `Cloning ${url}...` });
+    onProgress?.({ phase: 'cloning', message: `Cloning ${redactGitUrl(url)}...` });
     const args = gitArgs(['clone', '--depth', '1', url, targetDir]);
     if (address) {
       const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
@@ -260,7 +295,11 @@ function gitArgs(args: string[]): string[] {
   ];
 }
 
-export function runGit(args: string[], cwd?: string, options: GitRunOptions = {}): Promise<void> {
+export function runGit(
+  args: string[],
+  cwd?: string,
+  options: GitRunOptions = {},
+): Promise<string | void> {
   return new Promise((resolve, reject) => {
     if (options.signal?.aborted) {
       reject(new Error('git operation aborted'));
@@ -270,16 +309,11 @@ export function runGit(args: string[], cwd?: string, options: GitRunOptions = {}
     const proc = spawn('git', args, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        // Prevent git from prompting for credentials (hangs the process)
-        GIT_TERMINAL_PROMPT: '0',
-        // Ensure no credential helper tries to open a GUI prompt
-        GIT_ASKPASS: process.platform === 'win32' ? 'echo' : '/bin/true',
-      },
+      env: gitEnvironment(),
     });
 
     let stderr = '';
+    let stdout = '';
     let settled = false;
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -293,7 +327,7 @@ export function runGit(args: string[], cwd?: string, options: GitRunOptions = {}
       if (killTimer) clearTimeout(killTimer);
       options.signal?.removeEventListener('abort', onAbort);
       if (err) reject(err);
-      else resolve();
+      else resolve(stdout.trim());
     };
 
     const terminate = (reason: 'timeout' | 'abort') => {
@@ -315,6 +349,9 @@ export function runGit(args: string[], cwd?: string, options: GitRunOptions = {}
     proc.stderr.on('data', (chunk: Buffer) => {
       stderr = appendCapped(stderr, chunk);
     });
+    proc.stdout.on('data', (chunk: Buffer) => {
+      stdout = appendCapped(stdout, chunk);
+    });
 
     proc.on('close', (code, signal) => {
       if (code === 0 && !timedOut && !options.signal?.aborted) finish();
@@ -324,7 +361,7 @@ export function runGit(args: string[], cwd?: string, options: GitRunOptions = {}
         finish(new Error(`git ${args[0]} aborted`));
       } else {
         // Log full stderr internally but don't expose it to API callers (SSRF mitigation)
-        if (stderr.trim()) console.error(`git ${args[0]} stderr: ${stderr.trim()}`);
+        if (stderr.trim()) console.error(redactGitUrl(`git ${args[0]} stderr: ${stderr.trim()}`));
         finish(
           new Error(
             `git ${args[0]} failed (${code === null ? `signal ${signal}` : `exit code ${code}`})`,
@@ -334,7 +371,7 @@ export function runGit(args: string[], cwd?: string, options: GitRunOptions = {}
     });
 
     proc.on('error', (err) => {
-      finish(new Error(`Failed to spawn git: ${err.message}`));
+      finish(new Error(redactGitUrl(`Failed to spawn git: ${err.message}`)));
     });
   });
 }

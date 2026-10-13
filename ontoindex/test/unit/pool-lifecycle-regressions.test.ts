@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   connClose: vi.fn(async () => {}),
   query: vi.fn(),
   opens: vi.fn(),
+  init: vi.fn(async () => {}),
   releasePin: vi.fn(async () => {}),
   construct: vi.fn(),
   realpath: vi.fn(),
@@ -32,7 +33,7 @@ vi.mock('@ladybugdb/core', () => ({
         mocks.opens();
       }
       close = mocks.dbClose;
-      init = async () => {};
+      init = mocks.init;
     },
     Connection: class {
       constructor() {
@@ -73,6 +74,68 @@ function deferred() {
 }
 
 describe('pool lifecycle drain', () => {
+  it('retains failed native pins and reports permanently exhausted capacity', async () => {
+    vi.resetModules();
+    const isolated = await import('../../src/core/lbug/pool-adapter.js');
+    mocks.query.mockImplementation(async () => result());
+    const external = { close: mocks.dbClose } as any;
+    await isolated.initLbugWithDb('healthy-external', external, '/healthy-external');
+    // Each failed admission may evict an idle entry, so keep the healthy repo active.
+    const active = deferred();
+    mocks.query.mockImplementationOnce(() => active.promise);
+    const query = track(isolated.executeQuery('healthy-external', 'RETURN 1'));
+    mocks.init.mockRejectedValue(new Error('native open failed'));
+    try {
+      for (let i = 0; i < 4; i++) {
+        await expect(isolated.initLbug(`failed-${i}`, `/failed-${i}`)).rejects.toThrow(
+          'native initialization failed',
+        );
+      }
+      await expect(isolated.initLbug('busy', '/busy')).rejects.toThrow('pool is busy at capacity');
+      active.resolve();
+      await query;
+      await expect(isolated.executeQuery('healthy-external', 'RETURN 2')).resolves.toEqual([]);
+      await isolated.closeLbug('healthy-external');
+      await expect(isolated.initLbug('failed-4', '/failed-4')).rejects.toThrow(
+        'native initialization failed',
+      );
+      expect(mocks.releasePin).toHaveBeenCalledTimes(1); // Rejected busy admission only.
+      await expect(isolated.initLbug('blocked', '/blocked')).rejects.toThrow(
+        'restart the MCP server',
+      );
+    } finally {
+      mocks.init.mockResolvedValue(undefined);
+      active.resolve();
+      await isolated.closeLbug();
+    }
+  });
+
+  it('logs and retries a rejected admission pin without replacing its original error', async () => {
+    mocks.releasePin.mockRejectedValueOnce(new Error('pin unlink failed'));
+    // Fail before a native owner exists by filling every admission slot with active queries.
+    mocks.query.mockImplementation(async () => result());
+    for (let i = 0; i < 5; i++) await initLbug(`retry-${i}`, `/retry-${i}`);
+    const active = Array.from({ length: 5 }, () => deferred());
+    const queries = active.map((gate, i) => {
+      mocks.query.mockImplementationOnce(() => gate.promise);
+      return track(executeQuery(`retry-${i}`, 'RETURN 1'));
+    });
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    try {
+      await expect(initLbug('retry-blocked', '/retry-blocked')).rejects.toThrow(
+        'pool is busy at capacity',
+      );
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('pin unlink failed'));
+      const before = mocks.releasePin.mock.calls.length;
+      await closeLbug('unknown');
+      expect(mocks.releasePin.mock.calls.length).toBe(before + 1);
+    } finally {
+      active.forEach((gate) => gate.resolve());
+      await Promise.all(queries);
+      stderr.mockRestore();
+    }
+  });
+
   it.each(['idle', 'waiters', 'failure'])(
     'keeps a single retiring slot occupied until native close: %s',
     async (mode) => {

@@ -9,6 +9,11 @@ const { backendMocks, serverMocks } = vi.hoisted(() => ({
   },
   serverMocks: {
     startMCPServer: vi.fn().mockResolvedValue(undefined),
+    // Pass-through: cleanup completed within the grace period.
+    withShutdownGrace: vi.fn(async (cleanup: Promise<unknown>) => {
+      await cleanup;
+      return true;
+    }),
   },
 }));
 const getGitRootMock = vi.hoisted(() => vi.fn(() => '/target/repo'));
@@ -243,14 +248,16 @@ describe('mcpCommand', () => {
     expect(console.error).toHaveBeenCalledWith(
       expect.stringContaining(`Process cwd: ${process.cwd()}`),
     );
-    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Keep the current project:'));
     expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining(
-        `ontoindex mcp --project '${resolvedPath('/project/a')}'`,
-      ),
+      expect.stringContaining('Keep the current project:'),
     );
     expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining(`ontoindex mcp --project '${resolvedPath('/project/b')}' --repo '${resolvedPath('/project/b')}'`),
+      expect.stringContaining(`ontoindex mcp --project '${resolvedPath('/project/a')}'`),
+    );
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        `ontoindex mcp --project '${resolvedPath('/project/b')}' --repo '${resolvedPath('/project/b')}'`,
+      ),
     );
   });
 
@@ -271,7 +278,9 @@ describe('mcpCommand', () => {
     expect(console.error).toHaveBeenCalledWith(
       expect.stringContaining(`Project cwd: ${resolvedPath('/project/a')}`),
     );
-    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Use the resolved repository:'));
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringContaining('Use the resolved repository:'),
+    );
     expect(backendMocks.dispose).not.toHaveBeenCalled();
     expect(startMCPServer).toHaveBeenCalled();
   });

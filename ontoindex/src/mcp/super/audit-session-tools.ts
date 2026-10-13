@@ -17,6 +17,7 @@ import {
   type StaleAuditSessionLockResult,
 } from '../../core/audit-lifecycle/index.js';
 import { execFileText } from '../../core/process/exec-file.js';
+import { markInvocationError } from '../shared/invocation-error.js';
 import {
   auditChainError,
   gnAuditDedupe,
@@ -515,7 +516,8 @@ export async function gnAuditSessionDispatch(
   }
   const chainFailure = auditChainFailure(managerState.state.integrity);
   if (chainFailure !== undefined) {
-    return {
+    // A broken audit chain prevents the requested dispatch from running.
+    return markInvocationError({
       version: 1,
       action: 'audit-session-dispatch',
       ok: false,
@@ -526,7 +528,7 @@ export async function gnAuditSessionDispatch(
       integrity: managerState.state.integrity,
       warnings: [],
       skipReasons: ['audit-chain-broken'],
-    };
+    });
   }
   const integrity = managerState.state.integrity;
   const bundle = selectPersistedBundle(managerState.projection.bundles, sessionId, params.bundleId);
@@ -543,7 +545,8 @@ export async function gnAuditSessionDispatch(
     bundle.findingIds.length > 0 &&
     bundle.findingIds.every((findingId) => bundle.duplicateFindingIds.includes(findingId));
   if (blockedFindings.length > 0 || duplicateOnlyChildren) {
-    return {
+    // The dispatch was refused, so no worker prompt was produced.
+    return markInvocationError({
       version: 1,
       action: 'audit-session-dispatch',
       ok: false,
@@ -560,7 +563,7 @@ export async function gnAuditSessionDispatch(
       skipReasons: duplicateOnlyChildren
         ? ['duplicate-only-children']
         : blockedFindings.map((finding) => finding.reason),
-    };
+    });
   }
 
   const dispatch = await gnDispatchPrompt(repo.repoPath, {
@@ -775,7 +778,8 @@ async function loadStateReport(
     const failure = auditChainError('audit event store load/parse failed', error);
     return {
       ok: false,
-      report: {
+      // A corrupt audit store prevents the requested operation from running.
+      report: markInvocationError({
         version: 1,
         ok: false,
         code: failure.code,
@@ -783,7 +787,7 @@ async function loadStateReport(
         integrity: { status: 'BROKEN', reason: failure.reason },
         warnings: [],
         skipReasons: ['audit-chain-broken'],
-      },
+      }),
     };
   }
 }
@@ -816,7 +820,8 @@ function auditChainFailureReport(
   sessionId: string,
   error: Error & { code: 'ERR_AUDIT_CHAIN_BROKEN'; firstBrokenSequence?: number; reason: string },
 ): Record<string, unknown> {
-  return {
+  // A broken audit chain prevents the requested manager dispatch from running.
+  return markInvocationError({
     version: 1,
     action,
     ok: false,
@@ -827,7 +832,7 @@ function auditChainFailureReport(
     integrity: { status: 'BROKEN', reason: error.reason },
     warnings: [],
     skipReasons: ['audit-chain-broken'],
-  };
+  });
 }
 
 interface RepeatedFindingTombstoneMatch {
@@ -1060,7 +1065,8 @@ function managerRefusal(
     | { ok: false; code: string; message: string; sessionId: string },
 ): Record<string, unknown> {
   if ('status' in validation && validation.status === 'STALE_SESSION') {
-    return {
+    // A stale lock refuses this manager operation before its requested work runs.
+    return markInvocationError({
       version: 1,
       action,
       ok: false,
@@ -1070,7 +1076,7 @@ function managerRefusal(
       lockValidation: validation,
       warnings: validation.lock.staleWarnings ?? [],
       skipReasons: ['stale-session'],
-    };
+    });
   }
   if ('code' in validation) {
     return managerError(action, sessionId, validation.code, validation.message);
@@ -1089,7 +1095,8 @@ function managerError(
   code: string,
   message: string,
 ): Record<string, unknown> {
-  return {
+  // Missing required manager state means the requested operation cannot proceed.
+  return markInvocationError({
     version: 1,
     action,
     ok: false,
@@ -1098,7 +1105,7 @@ function managerError(
     sessionId,
     warnings: [],
     skipReasons: [code.toLowerCase()],
-  };
+  });
 }
 
 function collectWarnings(report: Record<string, unknown>): string[] {
