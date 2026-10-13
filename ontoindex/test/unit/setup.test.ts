@@ -254,6 +254,7 @@ describe('setupClaudeCode', () => {
   });
 
   it('preserves BOM, existing mode and a one-time backup; leaves no temp file', async () => {
+    const supportsPosixMode = process.platform !== 'win32';
     setPlatform('linux');
     const configPath = path.join(tempHome, '.claude.json');
     const original = '\uFEFF{"existing":true}';
@@ -264,9 +265,10 @@ describe('setupClaudeCode', () => {
 
     const updated = await fs.readFile(configPath, 'utf-8');
     expect(updated.startsWith('\uFEFF')).toBe(true);
-    expect((await fs.stat(configPath)).mode & 0o777).toBe(0o640);
+    if (supportsPosixMode) expect((await fs.stat(configPath)).mode & 0o777).toBe(0o640);
     expect(await fs.readFile(`${configPath}.ontoindex-backup`, 'utf-8')).toBe(original);
-    expect((await fs.stat(`${configPath}.ontoindex-backup`)).mode & 0o777).toBe(0o600);
+    if (supportsPosixMode)
+      expect((await fs.stat(`${configPath}.ontoindex-backup`)).mode & 0o777).toBe(0o600);
     expect((await fs.readdir(tempHome)).some((name) => name.includes('.tmp-'))).toBe(false);
 
     const backup = `${configPath}.ontoindex-backup`;

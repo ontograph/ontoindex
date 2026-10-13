@@ -1260,7 +1260,7 @@ describe('resource YAML string roundtrips', () => {
   });
 
   it('preserves pack, suite, and plan fields and structured params', async () => {
-    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-yaml-catalog-" '));
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-yaml-catalog- '));
     const value = 'quoted " \\ path\nforged: true\u0085line\u2028line\u2029end # comment';
     const packId = 'pack: quoted " \\ value';
     const suiteId = 'suite: quoted " \\ value';
@@ -1357,7 +1357,7 @@ describe('resource YAML string roundtrips', () => {
 
   it('preserves memory metadata and the original Markdown body', async () => {
     const repoDir = await createMemoryRepo('gn-yaml-memory-');
-    const fileName = 'quoted " memory.md';
+    const fileName = 'quoted memory.md';
     const body = '# Body\noriginal: "Markdown"\nsecond line\u2028third line';
     try {
       await fs.writeFile(

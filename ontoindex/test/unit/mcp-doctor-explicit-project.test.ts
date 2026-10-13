@@ -1,9 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import { createMcpDoctorReport } from '../../src/cli/mcp-doctor.js';
 import type { DiagnoseReport } from '../../src/mcp/super/diagnose.js';
 vi.mock('../../src/storage/git.js', () => ({ getGitRoot: () => null }));
+beforeEach(() => {
+  vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+});
 function fakePsProcess(output: string) {
   const child = Object.assign(new EventEmitter(), {
     stdout: new PassThrough(),

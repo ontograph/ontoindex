@@ -54,8 +54,10 @@ describe('backend-overlay snapshot', () => {
     const other = getOverlaySnapshot({ ...handle(), id: 'other' });
     await Promise.all([first, other]);
     evictOverlayState('r');
-    expect(getOverlaySnapshot(handle())).not.toBe(first);
+    const replacement = getOverlaySnapshot(handle());
+    expect(replacement).not.toBe(first);
     expect(getOverlaySnapshot({ ...handle(), id: 'other' })).toBe(other);
+    await replacement;
   });
 
   it('caps cached snapshots at 64 repositories', async () => {
@@ -64,7 +66,9 @@ describe('backend-overlay snapshot', () => {
     await Promise.all(
       Array.from({ length: 64 }, (_, i) => getOverlaySnapshot({ ...handle(), id: `repo-${i}` })),
     );
-    expect(getOverlaySnapshot({ ...handle(), id: 'first' })).not.toBe(first);
+    const replacement = getOverlaySnapshot({ ...handle(), id: 'first' });
+    expect(replacement).not.toBe(first);
+    await replacement;
   });
 
   it('is unusable and empty on a clean tree', async () => {

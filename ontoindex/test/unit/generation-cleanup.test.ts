@@ -63,7 +63,7 @@ describe('explicit generation cleanup', () => {
     const root = await fixture(4);
     const original = fs.rm.bind(fs);
     vi.spyOn(fs, 'rm').mockImplementation(async (target, options) => {
-      if (String(target).endsWith('/2-1-a'))
+      if (path.basename(String(target)) === '2-1-a')
         throw Object.assign(new Error('denied'), { code: 'EACCES' });
       return original(target, options);
     });

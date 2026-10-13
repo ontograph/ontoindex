@@ -112,7 +112,7 @@ describe('mountAnalyzeRoutes cancellation lifecycle', () => {
       return true;
     });
     forkMockState.fork.mockReturnValue(child);
-    const lock = { repoPath: '/tmp/disposal-route', token: Symbol('lock') };
+    const lock = { repoPath: path.join(os.tmpdir(), 'disposal-route'), token: Symbol('lock') };
     const release = vi.fn();
     mountAnalyzeRoutes(
       app,

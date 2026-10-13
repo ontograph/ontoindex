@@ -54,7 +54,7 @@ describe('Group storage', () => {
   it('creates missing configured home and group directories', async () => {
     const home = path.join(tmpDir, 'new-home');
     const group = await createGroupDir(home, 'company');
-    expect(group).toBe(fs.realpathSync(path.join(home, 'groups/company')));
+    expect(group).toBe(fs.realpathSync.native(path.join(home, 'groups/company')));
     expect(await listGroups(home)).toEqual(['company']);
   });
 

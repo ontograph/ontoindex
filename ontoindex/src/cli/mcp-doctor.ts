@@ -1,5 +1,5 @@
 import fs from 'fs/promises';
-import { spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import os from 'os';
 import path from 'path';
 import { LocalBackend } from '../mcp/local/local-backend.js';
@@ -549,7 +549,7 @@ async function probeMcpProcessLiveness(
       });
     });
 
-    if (process.platform === 'linux') {
+    if (process.platform === 'linux' || process.platform === 'darwin') {
       for (const candidate of candidates) {
         if (candidate.projectCwd) continue;
         try {
@@ -651,6 +651,31 @@ async function probeMcpProcessLiveness(
 }
 
 async function readProcessCwd(pid: number): Promise<string | undefined> {
+  if (process.platform === 'darwin') {
+    return new Promise((resolve) => {
+      const child = execFile(
+        'lsof',
+        ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'],
+        {
+          timeout: 2000,
+          encoding: 'utf8',
+        },
+        (error, stdout) => {
+          if (error) {
+            resolve(undefined);
+            return;
+          }
+          const cwd = stdout
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('n'))
+            ?.slice(1);
+          resolve(cwd || undefined);
+        },
+      );
+      child.stderr?.on('data', () => {});
+    });
+  }
+
   try {
     return await fs.readlink(`/proc/${pid}/cwd`);
   } catch {
