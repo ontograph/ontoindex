@@ -84,6 +84,12 @@ export interface EnsureFreshReport {
     status: EmbeddingDriftStatus;
     reason?: string;
     repairCommand?: string;
+    prerequisites?: {
+      urlConfigured: boolean;
+      modelConfigured: boolean;
+      modelHashConfigured: boolean;
+      note: string;
+    };
     expectedModelHash?: string;
     actualModelHash?: string;
   };
@@ -686,6 +692,26 @@ async function buildEnsureFreshReport(
     withEmbeddings: params.withEmbeddings,
   });
   const embeddingsRepairRequired = embeddingsStatus.required && embeddingsStatus.status !== 'ok';
+  if (embeddingsStatus.status === 'missing' || embeddingsRepairRequired) {
+    const urlConfigured = Boolean(process.env.ONTOINDEX_EMBEDDING_URL?.trim());
+    const modelConfigured = Boolean(process.env.ONTOINDEX_EMBEDDING_MODEL?.trim());
+    const modelHashConfigured = Boolean(process.env.ONTOINDEX_EMBEDDING_MODEL_HASH?.trim());
+    const unset = [
+      !urlConfigured && 'ONTOINDEX_EMBEDDING_URL',
+      !modelConfigured && 'ONTOINDEX_EMBEDDING_MODEL',
+      !modelHashConfigured && 'ONTOINDEX_EMBEDDING_MODEL_HASH',
+    ].filter((name): name is string => Boolean(name));
+    const note =
+      urlConfigured && modelConfigured
+        ? `configured; run ontoindex analyze --embeddings${modelHashConfigured ? '' : '; managed repair also requires ONTOINDEX_EMBEDDING_MODEL_HASH'}`
+        : `Set ${unset.join(', ')} before running ontoindex analyze --embeddings.`;
+    embeddingsStatus.prerequisites = {
+      urlConfigured,
+      modelConfigured,
+      modelHashConfigured,
+      note,
+    };
+  }
   const refreshWorkNeeded =
     isStale ||
     // Uncommitted edits are absent from a commit-scoped graph, so a dirty tree

@@ -83,13 +83,31 @@ export async function createMcpDoctorReport(
   const repoSelector = resolveRepoSelector(options, env, implicitCwd ?? cwd);
   const projectCwd = resolveProjectCwd(options, env, implicitCwd ?? cwd);
   const explicitRepo = options.repo?.trim() || undefined;
-  const diagnose = await (deps.diagnose ?? gnDiagnose)(repoSelector, {
+  let diagnose = await (deps.diagnose ?? gnDiagnose)(repoSelector, {
     legacyResponse: true,
     checkLsp: true,
     checkEmbeddings: true,
     checkIndexFreshness: true,
     checkToolContract: true,
   });
+  const selectorIsImplicit = !options.repo?.trim() && needsImplicitCwd;
+  const noTargetRepo = selectorIsImplicit && diagnose.targetContext?.status === 'not-found';
+  if (noTargetRepo) {
+    const mismatchCommand = diagnose.misconfiguration.recommendedCommand;
+    diagnose = {
+      ...diagnose,
+      misconfiguration: { status: 'ok' },
+      degradedContext: {
+        ...diagnose.degradedContext,
+        status: 'degraded',
+        confidence: 'reduced',
+        reasons: [...diagnose.degradedContext.reasons.filter((reason) =>
+          reason !== 'mcp-service-target-mismatch' && reason !== 'target-context-not-found'), 'no-target-repo'],
+      },
+      recommendations: diagnose.recommendations.filter((recommendation) =>
+        recommendation.fix !== mismatchCommand),
+    };
+  }
   const symbolSmoke = await runSymbolSmoke(
     repoSelector,
     options.symbol,
@@ -119,6 +137,16 @@ export async function createMcpDoctorReport(
         ? { repairCommand: diagnose.embeddings.repairCommand }
         : {}),
     }));
+  if (noTargetRepo) {
+    const registeredRepos = diagnose.targetContext?.availableRepos?.slice(0, 5).map((repo) => repo.key);
+    capabilityGaps.push({
+      reason: 'no-target-repo',
+      details: [
+        'current directory is not an indexed repository; run from an indexed repo or pass --repo <name|path>',
+        ...(registeredRepos?.length ? [`Registered repositories: ${registeredRepos.join(', ')}`] : []),
+      ],
+    });
+  }
   if (
     diagnose.degradedContext.reasons.includes('runtime-warnings') &&
     diagnose.warnings.every(isInformationalRuntimeWarning)
@@ -141,7 +169,7 @@ export async function createMcpDoctorReport(
     ...(processLiveness ? { processLiveness } : {}),
     ...(setupHealth && setupHealth.status !== 'ok' ? { setupHealth } : {}),
     ...(capabilityGaps.length > 0 ? { capabilityGaps } : {}),
-    nextCommand:
+    nextCommand: noTargetRepo ? 'ontoindex mcp-doctor --repo <name>' :
       diagnose.misconfiguration.recommendedCommand ??
       processLiveness?.repairCommand ??
       setupHealth?.issues[0]?.repairCommand ??
@@ -299,7 +327,8 @@ function resolveVerdict(
   capabilityGaps: McpDoctorReport['capabilityGaps'] = [],
 ): McpDoctorVerdict {
   if (diagnose.misconfiguration.status === 'fail') return 'MISCONFIGURED';
-  if (diagnose.targetContext && diagnose.targetContext.status !== 'ok') return 'MISCONFIGURED';
+  if (diagnose.targetContext && diagnose.targetContext.status !== 'ok' &&
+    !diagnose.degradedContext.reasons.includes('no-target-repo')) return 'MISCONFIGURED';
   if (processLiveness?.status === 'mismatch') return 'MISCONFIGURED';
   if (setupHealth?.status === 'misconfigured') return 'MISCONFIGURED';
   if (processLiveness?.status === 'ambiguous' || processLiveness?.status === 'missing') {

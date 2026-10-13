@@ -74,7 +74,7 @@ function deferred() {
 }
 
 describe('pool lifecycle drain', () => {
-  it('retains failed native pins and reports permanently exhausted capacity', async () => {
+  it('retains failed native pins and reports busy capacity during cooldown', async () => {
     vi.resetModules();
     const isolated = await import('../../src/core/lbug/pool-adapter.js');
     mocks.query.mockImplementation(async () => result());
@@ -101,7 +101,7 @@ describe('pool lifecycle drain', () => {
       );
       expect(mocks.releasePin).toHaveBeenCalledTimes(1); // Rejected busy admission only.
       await expect(isolated.initLbug('blocked', '/blocked')).rejects.toThrow(
-        'restart the MCP server',
+        'pool is busy at capacity',
       );
     } finally {
       mocks.init.mockResolvedValue(undefined);

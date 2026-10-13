@@ -4,6 +4,13 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.29] - 2026-10-14
+
+- `mcp-doctor` run from a directory that is not an indexed repository (no `--repo`, no `--project-cwd`, no `ONTOINDEX_MCP_PROJECT_CWD`) now reports DEGRADED with a `no-target-repo` gap and `ontoindex mcp-doctor --repo <name>` as the next command, instead of MISCONFIGURED with a placeholder path. An explicit selector that is not found, and an ambiguous target, stay MISCONFIGURED.
+- LadybugDB pool: a failed native open is cleaned up and its generation pin released after a cool-down (`ONTOINDEX_LBUG_FAILED_OPEN_RETRY_MS`, default 30000, range 1000..600000), at the next pool admission. Within the cool-down the cached failure is returned. Failed entries no longer exhaust the five-entry pool until the process restarts.
+- Response paging: a custom `maxBytes` that cannot hold the envelope is raised to a 1024-byte floor instead of throwing; zero, negative and non-finite values use the default.
+- `gn_ensure_fresh` embeddings status gains an additive `prerequisites` object (`urlConfigured`, `modelConfigured`, `modelHashConfigured`, `note`) so a missing-embeddings result says which of `ONTOINDEX_EMBEDDING_URL`, `ONTOINDEX_EMBEDDING_MODEL` and `ONTOINDEX_EMBEDDING_MODEL_HASH` is unset. Values are never returned.
+
 ## [2.2.28] - 2026-10-14
 
 - Argument limits: the aggregate JSON cap is now `ONTOINDEX_MAX_ARG_TOTAL_BYTES` (default at least 4 MiB and always above the per-string cap), so a maximum-size `sourceText` or `pastedText` is no longer rejected. The default array cap is 1024 items (`ONTOINDEX_MAX_ARG_ITEMS` still overrides). Error messages name the variable to raise.

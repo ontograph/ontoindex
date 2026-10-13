@@ -113,13 +113,26 @@ interface PoolEntry {
 const pool = new Map<string, PoolEntry>();
 const closePromises = new Map<string, Promise<void>>();
 let admissionTail: Promise<void> = Promise.resolve();
-// A failed async open cannot be closed by the driver's public API. Retain ownership.
-// Failed native handles cannot close; their live-PID generation pins stay until process exit.
-const failedNativeOpens = new Map<
-  string,
-  { db: lbug.Database; generationPin: IndexGenerationPin }
->();
+// Failed opens remain fenced until their retry cooldown expires and cleanup succeeds.
+const failedNativeOpens = new Map<string, { shared: SharedDB; failedAt: number; error: Error }>();
 const unreleasedPins = new Set<IndexGenerationPin>();
+
+function retainFailedNativeOpen(
+  dbPath: string,
+  db: lbug.Database,
+  generationPin: IndexGenerationPin,
+  error: unknown,
+): void {
+  // The driver retains its rejected init promise. Public close() awaits that
+  // promise before disposing the uninitialized native wrapper, so clear only
+  // this completed failure before handing cleanup back to the public API.
+  (db as lbug.Database & { _initPromise: Promise<void> | null })._initPromise = null;
+  failedNativeOpens.set(dbPath, {
+    shared: newSharedDb({ db, generationPin, refCount: 0, ftsLoaded: false, vectorLoaded: false }),
+    failedAt: Date.now(),
+    error: new Error(`LadybugDB native initialization failed: ${String(error)}`),
+  });
+}
 
 async function retryUnreleasedPins(): Promise<void> {
   for (const pin of unreleasedPins) {
@@ -345,6 +358,12 @@ async function closeSharedDatabase(shared: SharedDB): Promise<void> {
 
 /** Max repos in the pool (LRU eviction) */
 const MAX_POOL_SIZE = 5;
+const FAILED_OPEN_RETRY_MS = readBoundedIntEnv(
+  'ONTOINDEX_LBUG_FAILED_OPEN_RETRY_MS',
+  30_000,
+  1000,
+  600_000,
+);
 /** Idle timeout before closing a repo's connections */
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 /** Max connections per repo (caps concurrent queries per repo) */
@@ -416,6 +435,11 @@ export const touchRepo = (repoId: string): void => {
  * Evict the least-recently-used repo if pool is at capacity
  */
 async function evictLRU(): Promise<void> {
+  for (const [dbPath, failed] of failedNativeOpens) {
+    if (Date.now() - failed.failedAt < FAILED_OPEN_RETRY_MS) continue;
+    await closeSharedDatabase(failed.shared);
+    failedNativeOpens.delete(dbPath);
+  }
   const occupied = () => pool.size + failedInitShares.size + failedNativeOpens.size;
   if (occupied() < MAX_POOL_SIZE) return;
 
@@ -436,10 +460,6 @@ async function evictLRU(): Promise<void> {
     await closeOneWhenIdle(oldestId);
   }
   if (occupied() >= MAX_POOL_SIZE) {
-    if (failedNativeOpens.size >= MAX_POOL_SIZE)
-      throw new Error(
-        `LadybugDB native open failed for ${failedNativeOpens.size} database(s) and cannot be released in-process; restart the MCP server. Paths: ${[...failedNativeOpens.keys()].join(', ')}`,
-      );
     throw new Error('LadybugDB pool is busy at capacity. Retry later.');
   }
 }
@@ -860,11 +880,10 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
       throw new Error(`LadybugDB not found at ${dbPath}. Run: ontoindex analyze`);
     }
 
+    const failed = failedNativeOpens.get(dbPath);
+    if (failed && Date.now() - failed.failedAt < FAILED_OPEN_RETRY_MS) throw failed.error;
     await evictLRU();
-    if (failedNativeOpens.has(dbPath))
-      throw new Error(
-        'LadybugDB failed native open remains fenced; restart the process before retrying',
-      );
+    if (failedNativeOpens.has(dbPath)) throw failedNativeOpens.get(dbPath)!.error;
 
     // Reuse an existing native Database if another repoId already opened this path.
     // This prevents buffer manager exhaustion from multiple mmap regions on the same file.
@@ -895,7 +914,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           try {
             await db.init();
           } catch (error) {
-            failedNativeOpens.set(dbPath, { db, generationPin });
+            retainFailedNativeOpen(dbPath, db, generationPin, error);
             nativeOwnsPin = true;
             throw error;
           }
@@ -913,10 +932,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
         } catch (err: unknown) {
           restoreStdout();
           lastError = err instanceof Error ? err : new Error(String(err));
-          if (failedNativeOpens.has(dbPath))
-            throw new Error(
-              `LadybugDB native initialization failed: ${lastError.message}; restart the process before retrying`,
-            );
+          if (failedNativeOpens.has(dbPath)) throw failedNativeOpens.get(dbPath)!.error;
           isLockError =
             lastError.message.includes('Could not set lock') || lastError.message.includes('lock');
           if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
@@ -953,7 +969,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           try {
             await db.init();
           } catch (error) {
-            failedNativeOpens.set(dbPath, { db, generationPin });
+            retainFailedNativeOpen(dbPath, db, generationPin, error);
             nativeOwnsPin = true;
             throw error;
           }
@@ -1096,11 +1112,10 @@ async function doInitLbugWithDb(
   }
 
   // Register in dbCache with external: true so other initLbug() calls
+  const failed = failedNativeOpens.get(dbPath);
+  if (failed && Date.now() - failed.failedAt < FAILED_OPEN_RETRY_MS) throw failed.error;
   await evictLRU();
-  if (failedNativeOpens.has(dbPath))
-    throw new Error(
-      'LadybugDB failed native open remains fenced; restart the process before retrying',
-    );
+  if (failedNativeOpens.has(dbPath)) throw failedNativeOpens.get(dbPath)!.error;
   // for the same dbPath reuse this Database instead of trying to open
   // a new one (which would fail with a file lock error).
   // closeOne() respects the external flag and skips db.close().

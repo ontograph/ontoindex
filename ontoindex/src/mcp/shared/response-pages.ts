@@ -50,7 +50,13 @@ export async function pageMcpResponse(input: {
   cursor?: string;
   maxBytes?: number;
 }): Promise<{ text: string; paged: boolean }> {
-  const maxBytes = input.maxBytes ?? MCP_RESPONSE_MAX_BYTES;
+  const requestedMaxBytes = input.maxBytes;
+  const maxBytes =
+    typeof requestedMaxBytes === 'number' &&
+    Number.isFinite(requestedMaxBytes) &&
+    requestedMaxBytes > 0
+      ? Math.max(requestedMaxBytes, 1024)
+      : MCP_RESPONSE_MAX_BYTES;
   const args = withoutCursor(input.args);
   const requestHash = digest(stableJson({ tool: input.tool, args }));
 
