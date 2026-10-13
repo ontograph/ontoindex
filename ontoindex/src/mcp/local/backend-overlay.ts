@@ -40,6 +40,7 @@ const EMPTY: OverlaySnapshot = {
 };
 
 const SNAPSHOT_TTL_MS = 2_000;
+const MAX_SNAPSHOTS = 64;
 const snapshotCache = new Map<string, { at: number; value: Promise<OverlaySnapshot> }>();
 const overlayFileIdentities = new Map<string, string>();
 const overlayQueries = new Map<string, Promise<unknown>>();
@@ -126,8 +127,18 @@ export function getOverlaySnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> 
     if (snapshotCache.get(repo.id)?.value === value) snapshotCache.delete(repo.id);
     return { ...EMPTY, reason: `dirty planning failed: ${(err as Error).message}` };
   });
+  for (const [id, cached] of snapshotCache) {
+    if (now - cached.at >= SNAPSHOT_TTL_MS) snapshotCache.delete(id);
+  }
+  while (snapshotCache.size >= MAX_SNAPSHOTS)
+    snapshotCache.delete(snapshotCache.keys().next().value!);
   snapshotCache.set(repo.id, { at: now, value });
   return value;
+}
+
+export function evictOverlayState(repoKey: string): void {
+  snapshotCache.delete(repoKey);
+  overlayFileIdentities.delete(overlayRepoId(repoKey));
 }
 
 export function resetOverlaySnapshotCache(): void {

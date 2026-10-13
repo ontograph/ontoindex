@@ -61,6 +61,40 @@ afterEach(async () => {
 });
 
 describe('HTTP server startup and preflight', () => {
+  it('caps concurrent heartbeat streams and releases a slot when a client closes', async () => {
+    vi.stubEnv('ONTOINDEX_HTTP_TOKEN', 'startup-test-token');
+    vi.spyOn(LocalBackend.prototype, 'init').mockResolvedValue(undefined);
+    const listen = express.application.listen;
+    vi.spyOn(express.application, 'listen').mockImplementation(function (...args: unknown[]) {
+      server = Reflect.apply(listen, this, args) as Server;
+      return server;
+    } as typeof listen);
+    await createServer(0);
+    const address = server!.address();
+    if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+    const base = `http://127.0.0.1:${address.port}`;
+
+    const readers = [];
+    for (let index = 0; index < 64; index++) {
+      const response = await fetch(`${base}/api/heartbeat`);
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      expect((await reader.read()).done).toBe(false);
+      readers.push(reader);
+    }
+
+    const rejected = await fetch(`${base}/api/heartbeat`);
+    expect(rejected.status).toBe(503);
+    expect(rejected.headers.get('Retry-After')).toBe('5');
+
+    await readers[0]!.cancel();
+    await vi.waitFor(async () => {
+      const replacement = await fetch(`${base}/api/heartbeat`);
+      if (replacement.status !== 200) throw new Error('Heartbeat slot has not been released');
+      await replacement.body!.cancel();
+    });
+  });
+
   it('ends heartbeat and job progress streams, drains requests, and disposes once across signals', async () => {
     vi.stubEnv('ONTOINDEX_HTTP_TOKEN', 'startup-test-token');
     vi.spyOn(LocalBackend.prototype, 'init').mockResolvedValue(undefined);

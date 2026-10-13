@@ -120,7 +120,7 @@ export interface DiagnoseReport {
     };
     auth: {
       httpApiToken: 'configured-env-token' | 'generated-per-process';
-      enforcement: 'metadata-only';
+      enforcement: 'api-bearer-enforced';
     };
   };
   responseLimits: {
@@ -342,7 +342,8 @@ function buildSetupSummary(envVars: Record<string, string | undefined>): Diagnos
         envVars['ONTOINDEX_HTTP_TOKEN'] && envVars['ONTOINDEX_HTTP_TOKEN']!.trim().length > 0
           ? 'configured-env-token'
           : 'generated-per-process',
-      enforcement: 'metadata-only',
+      // Describes the HTTP API served by `ontoindex serve`, not MCP stdio.
+      enforcement: 'api-bearer-enforced',
     },
   };
 }

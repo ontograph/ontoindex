@@ -392,7 +392,7 @@ describe('status command behavior', () => {
         },
         auth: {
           httpApiToken: 'generated-per-process',
-          enforcement: 'metadata-only',
+          enforcement: 'api-bearer-enforced',
         },
       },
       responseLimits: {

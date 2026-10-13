@@ -38,6 +38,15 @@ describe('JobManager', () => {
     expect(job2.status).toBe('queued');
   });
 
+  it('caps distinct active jobs while preserving dedup and releasing capacity', () => {
+    const first = manager.createJob({ repoPath: '/one' });
+    manager.createJob({ repoPath: '/two' });
+    expect(manager.createJob({ repoPath: '/one' }).id).toBe(first.id);
+    expect(() => manager.createJob({ repoPath: '/three' })).toThrow('capacity reached');
+    manager.updateJob(first.id, { status: 'complete' });
+    expect(manager.createJob({ repoPath: '/three' }).status).toBe('queued');
+  });
+
   it('deduplicates jobs for the same repo path', () => {
     const job1 = manager.createJob({ repoPath: '/path/to/repo1' });
     manager.updateJob(job1.id, { status: 'analyzing' });

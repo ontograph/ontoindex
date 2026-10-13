@@ -664,19 +664,29 @@ function createConnection(db: lbug.Database): lbug.Connection {
 }
 
 /**
+ * Whether an extension load error means the extension is simply absent, so search
+ * degrades to BM25 instead of failing pool startup. The patterns are the texts the
+ * LadybugDB 0.17 binder emits for official extensions that were never installed and
+ * for paths that do not exist; any other error (corruption, ABI, runtime) stays fatal.
+ */
+export function isUnavailableExtension(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /has not been installed/i.test(message) ||
+    /neither an official extension, nor does the extension path/i.test(message) ||
+    /extension.*(?:not found|not installed|not available|unsupported|does not exist)|(?:cannot|could not|failed to) (?:find|download).*extension/i.test(
+      message,
+    )
+  );
+}
+
+/**
  * Load FTS and VECTOR extensions on a connection with stdout silenced.
  *
  * Native LadybugDB extension loads can write to stdout, which would corrupt
  * MCP JSON-RPC framing. activeQueryCount is bumped so the 1s watchdog
  * timer doesn't prematurely restore stdout while loads are in flight.
  */
-function isUnavailableExtension(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /extension.*(?:not found|not installed|not available|unsupported|does not exist)|(?:cannot|could not|failed to) (?:find|download).*extension/i.test(
-    message,
-  );
-}
-
 async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): Promise<void> {
   silenceStdout();
   activeQueryCount++;

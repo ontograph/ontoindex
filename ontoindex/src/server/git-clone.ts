@@ -11,6 +11,7 @@ import os from 'os';
 import fs from 'fs/promises';
 import { isIP } from 'net';
 import { lookup as dnsLookup } from 'dns/promises';
+import { createHash, randomUUID } from 'crypto';
 
 type LookupAddress = { address: string; family: number };
 
@@ -47,8 +48,13 @@ export function extractRepoName(url: string): string {
 }
 
 /** Get the clone target directory for a repo name. */
-export function getCloneDir(repoName: string): string {
-  return path.join(os.homedir(), '.ontoindex', 'repos', repoName);
+export function getCloneDir(repoName: string, url?: string): string {
+  if (!url) return path.join(os.homedir(), '.ontoindex', 'repos', repoName);
+  const parsed = new URL(url);
+  const identity = `${parsed.protocol.toLowerCase()}//${parsed.host.toLowerCase()}${parsed.pathname.replace(/\/+$/, '').replace(/\.git$/, '')}`;
+  const suffix = createHash('sha256').update(identity).digest('hex').slice(0, 12);
+  const safeName = repoName.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^\.+$/, '_') || 'repo';
+  return path.join(os.homedir(), '.ontoindex', 'repos', `${safeName}-${suffix}`);
 }
 
 // Cloud metadata hostnames that must never be reachable via user-supplied URLs
@@ -224,27 +230,41 @@ function appendCapped(existing: string, chunk: Buffer): string {
  * If targetDir doesn't exist: git clone --depth 1
  * If targetDir exists with .git: git pull --ff-only
  */
+const cloneLocks = new Map<string, Promise<void>>();
+
 export async function cloneOrPull(
   url: string,
   targetDir: string,
   onProgress?: (progress: CloneProgress) => void,
   options: GitRunOptions = {},
 ): Promise<string> {
-  const exists = await fs.access(path.join(targetDir, '.git')).then(
-    () => true,
-    () => false,
-  );
+  const key = path.resolve(targetDir);
+  const previous = cloneLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  cloneLocks.set(key, current);
+  await previous;
+  try {
+    if (options.signal?.aborted) throw new Error('git operation aborted');
+    return await cloneFresh(url, targetDir, onProgress, options);
+  } finally {
+    release();
+    if (cloneLocks.get(key) === current) cloneLocks.delete(key);
+  }
+}
 
-  if (exists) {
-    const origin = await (options.runGit ?? runGit)(
-      ['config', '--get', 'remote.origin.url'],
-      targetDir,
-      options,
-    );
-    validateGitUrl(typeof origin === 'string' ? origin.trim() : '');
-    onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
-    await (options.runGit ?? runGit)(gitArgs(['pull', '--ff-only']), targetDir, options);
-  } else {
+async function cloneFresh(
+  url: string,
+  targetDir: string,
+  onProgress?: (progress: CloneProgress) => void,
+  options: GitRunOptions = {},
+): Promise<string> {
+  const staging = `${targetDir}.tmp-${process.pid}-${randomUUID()}`;
+  const backup = `${targetDir}.old-${randomUUID()}`;
+  let movedOld = false;
+  try {
     validateGitUrl(url);
     const parsed = new URL(url);
     let address: string | undefined;
@@ -271,7 +291,15 @@ export async function cloneOrPull(
     }
     await fs.mkdir(path.dirname(targetDir), { recursive: true });
     onProgress?.({ phase: 'cloning', message: `Cloning ${redactGitUrl(url)}...` });
-    const args = gitArgs(['clone', '--depth', '1', url, targetDir]);
+    const args = gitArgs([
+      'clone',
+      '--depth',
+      '1',
+      '--no-recurse-submodules',
+      '--template=',
+      url,
+      staging,
+    ]);
     if (address) {
       const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
       const resolveList = addresses
@@ -280,6 +308,22 @@ export async function cloneOrPull(
       args.unshift(`-chttp.curloptResolve=${host}:${port}:${resolveList}`);
     }
     await (options.runGit ?? runGit)(args, undefined, options);
+    if (options.signal?.aborted) throw new Error('git operation aborted');
+    try {
+      await fs.rename(targetDir, backup);
+      movedOld = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    try {
+      await fs.rename(staging, targetDir);
+    } catch (error) {
+      if (movedOld) await fs.rename(backup, targetDir);
+      throw error;
+    }
+    if (movedOld) await fs.rm(backup, { recursive: true, force: true }).catch(() => {});
+  } finally {
+    await fs.rm(staging, { recursive: true, force: true });
   }
 
   return targetDir;
@@ -291,6 +335,8 @@ function gitArgs(args: string[]): string[] {
     '-cprotocol.https.allow=always',
     '-cprotocol.http.allow=always',
     '-chttp.followRedirects=false',
+    '-ccore.hooksPath=/dev/null',
+    '-ccore.fsmonitor=false',
     ...args,
   ];
 }

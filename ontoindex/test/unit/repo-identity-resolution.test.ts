@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { canonicalRepoId, resolveRegistryEntry } from '../../src/mcp/shared/target-context.js';
+import {
+  canonicalRepoId,
+  registryRepoIds,
+  resolveRegistryEntry,
+} from '../../src/mcp/shared/target-context.js';
 
 describe('shared repository identity', () => {
   const first = {
@@ -11,6 +15,20 @@ describe('shared repository identity', () => {
   };
   const second = { ...first, path: '/repos/second', storagePath: '/indexes/second' };
   const registry = [first, second];
+
+  it('keeps collision ids stable when the registry is reordered', () => {
+    const forward = registryRepoIds(registry);
+    const reverse = registryRepoIds([...registry].reverse());
+    for (const entry of registry) {
+      expect(forward.get(entry)).toBe(reverse.get(entry));
+      expect(forward.get(entry)).toMatch(/^project-[a-f0-9]{8}$/);
+      expect(resolveRegistryEntry(registry, forward.get(entry))).toEqual({ status: 'ok', entry });
+    }
+    expect(registryRepoIds([first]).get(first)).toBe('project');
+    const ambiguous = resolveRegistryEntry(registry, 'project');
+    expect(ambiguous.status).toBe('ambiguous');
+    if (ambiguous.status !== 'ok') expect(ambiguous.action).toContain(forward.get(first));
+  });
 
   it('resolves paths and canonical collision ids to the same entry', () => {
     const ids = new Map([['project', { name: first.name, repoPath: first.path }]]);

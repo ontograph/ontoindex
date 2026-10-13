@@ -88,7 +88,7 @@ const baseDiagnose: DiagnoseReport = {
     },
     auth: {
       httpApiToken: 'generated-per-process',
-      enforcement: 'metadata-only',
+      enforcement: 'api-bearer-enforced',
     },
   },
   responseLimits: {

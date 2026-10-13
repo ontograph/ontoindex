@@ -92,6 +92,12 @@ const BACKEND_INIT_TIMEOUT_MS = (() => {
   );
   return Number.isFinite(raw) && raw > 0 ? raw : 30_000;
 })();
+const MAX_HEARTBEAT_CLIENTS = (() => {
+  const raw = process.env.ONTOINDEX_MAX_HEARTBEAT_CLIENTS;
+  if (raw === undefined || !/^\d+$/.test(raw)) return 64;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) ? Math.min(1024, Math.max(1, parsed)) : 64;
+})();
 
 type SearchResultSource = 'bm25' | 'semantic';
 
@@ -1169,6 +1175,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       res.status(503).end();
       return;
     }
+    if (heartbeatResponses.size >= MAX_HEARTBEAT_CLIENTS) {
+      res.set('Retry-After', '5').status(503).end();
+      return;
+    }
     heartbeatResponses.add(res);
     // Use res.set() instead of res.writeHead() to preserve CORS headers from middleware
     res.set({
@@ -1182,11 +1192,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
     // Keep-alive ping every 15s to prevent proxy/firewall timeout
     const interval = setInterval(() => res.write(':ping\n\n'), 15_000);
-
-    res.on('close', () => {
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
       clearInterval(interval);
       heartbeatResponses.delete(res);
-    });
+    };
+
+    res.on('close', cleanup);
+    res.on('error', cleanup);
   });
 
   // Server info: version and launch context (npx / global / local dev)
@@ -1302,9 +1317,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           const storagePath = getStoragePath(entry.path);
           await fs.rm(storagePath, { recursive: true, force: true });
 
-          // A matching name alone does not establish ownership of a clone.
-          const cloneDir = getCloneDir(entry.name);
-          if (path.resolve(entry.path) === path.resolve(cloneDir)) {
+          // A matching name alone does not establish ownership of a clone. Clones live directly
+          // under the clone root as `<name>` (legacy) or `<name>-<url hash>`; only remove the
+          // directory the registry entry points at, and only when it is inside the clone root.
+          const cloneRoot = path.resolve(getCloneDir('x'), '..');
+          const cloneDir = path.resolve(entry.path);
+          if (path.dirname(cloneDir) === cloneRoot) {
             try {
               const stat = await fs.stat(cloneDir);
               if (stat.isDirectory()) await fs.rm(cloneDir, { recursive: true, force: true });

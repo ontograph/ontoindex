@@ -708,7 +708,7 @@ describe('gnDiagnose', () => {
         startupTimeoutMs: 30000,
       },
       auth: {
-        enforcement: 'metadata-only',
+        enforcement: 'api-bearer-enforced',
       },
     });
     expect(report.responseLimits).toMatchObject({

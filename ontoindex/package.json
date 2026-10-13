@@ -1,6 +1,6 @@
 {
   "name": "ontoindex",
-  "version": "2.2.20",
+  "version": "2.2.21",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "AGPL-3.0-or-later",
@@ -41,6 +41,7 @@
   ],
   "scripts": {
     "build": "node scripts/build.js",
+    "pretest": "node scripts/build.js",
     "serve": "tsx src/cli/index.ts serve",
     "dev": "tsx watch src/cli/index.ts",
     "test": "vitest run",

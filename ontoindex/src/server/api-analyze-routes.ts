@@ -3,7 +3,7 @@ import path from 'path';
 import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'node:module';
-import { JobManager } from './analyze-job.js';
+import { JobManager, AnalyzeCapacityError } from './analyze-job.js';
 import { getStoragePath } from '../storage/repo-manager.js';
 import { extractRepoName, getCloneDir, cloneOrPull, redactGitUrl } from './git-clone.js';
 
@@ -184,7 +184,7 @@ export function mountAnalyzeRoutes(
           // Clone if URL provided
           if (repoUrl && !repoLocalPath) {
             const repoName = extractRepoName(repoUrl);
-            targetPath = getCloneDir(repoName);
+            targetPath = getCloneDir(repoName, repoUrl);
             const cloneAbort = new AbortController();
             unregisterCancelHandler = jobManager.registerCancelHandler(job.id, () => {
               cloneAbort.abort(new Error('Cancelled by user'));
@@ -432,7 +432,10 @@ export function mountAnalyzeRoutes(
       res.status(202).json({ jobId: job.id, status: job.status });
     } catch (err: unknown) {
       const message = thrownMessage(err);
-      if (message?.includes('already in progress')) {
+      if (err instanceof AnalyzeCapacityError) {
+        res.setHeader('Retry-After', '30');
+        res.status(429).json({ error: message });
+      } else if (message?.includes('already in progress')) {
         res.status(409).json({ error: message });
       } else {
         res.status(500).json({ error: message || 'Failed to start analysis' });

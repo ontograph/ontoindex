@@ -4,6 +4,34 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.21] - 2026-10-13
+
+### Fixed
+
+- Recognise LadybugDB 0.17 `has not been installed` extension-load messages, preserve bundled extensions during tests, and use fresh validated clones with canonical-URL directories.
+- Bound active analysis jobs and overlay-cache size, use order-independent repository IDs for duplicate names, and prune removed-repository state.
+- Clear audit-report timers and reject backend operations while disposing.
+- Report HTTP API bearer-token enforcement in diagnostics and cap concurrent heartbeat clients.
+- Build before running the test suite.
+
+## [2.2.20] - 2026-10-13
+
+### Fixed
+
+- Reject credentialed clone URLs and run Git with isolated configuration; replace pulls with fresh validated clones.
+- Stream process listings in doctor to avoid degraded results on busy hosts.
+- Keep failed native-open pins and report restart-required capacity; bound shutdown and startup-timeout cleanup with `ONTOINDEX_MCP_SHUTDOWN_GRACE_MS`.
+- Mark additional refusals as errors and repair the generation-retention test.
+
+## [2.2.19] - 2026-10-13
+
+### Fixed
+
+- Redact diagnostic environment values by key name; fail closed after lazy native-open failures, enforce the five-database pool cap, and clean dead reader pins across generations.
+- Handle setup TOML header comments, avoid flagging ordinary paths in doctor, and use one repository identity resolver.
+- Honor `ONTOINDEX_HOME` in ensure-fresh, mark returned invocation errors as errors, and accept `session` or `sessionId` in session tools.
+- Resolve clone DNS and pin public addresses.
+
 ## [2.2.10] - 2026-10-12
 
 ### Fixed

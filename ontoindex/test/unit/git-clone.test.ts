@@ -64,22 +64,83 @@ describe('git-clone', () => {
     expect(env.GIT_ASKPASS).not.toBe('prompt');
   });
 
-  it('refuses pulling a checkout with credentialed origin', async () => {
+  it('replaces an existing checkout without reading its config', async () => {
     const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'git-clone-origin-'));
     try {
       await fs.mkdir(path.join(parent, '.git'));
-      const runGit = vi.fn(async () => 'https://user:secret@example.com/repo');
+      await fs.writeFile(path.join(parent, 'old'), 'old');
+      const runGit = vi.fn(async (args: string[]) => {
+        const staging = args.at(-1)!;
+        await fs.mkdir(staging);
+        await fs.writeFile(path.join(staging, 'new'), 'new');
+      });
       const progress = vi.fn();
-      await expect(
-        cloneOrPull('https://example.com/repo', parent, progress, { runGit }),
-      ).rejects.toThrow('credentials');
+      await cloneOrPull('https://example.com/repo', parent, progress, {
+        runGit,
+        lookup: async () => [{ address: '140.82.121.4', family: 4 }],
+      });
       expect(runGit).toHaveBeenCalledTimes(1);
-      expect(progress).not.toHaveBeenCalled();
+      expect(runGit.mock.calls[0]![0]).toContain('https://example.com/repo');
+      expect(runGit.mock.calls[0]![0]).not.toContain('pull');
+      expect(runGit.mock.calls[0]![0]).not.toContain('config');
+      expect(await fs.readdir(parent)).toEqual(['new']);
     } finally {
       await fs.rm(parent, { recursive: true, force: true });
     }
   });
   describe('extractRepoName', () => {
+    it('keeps the checkout on failure and serializes concurrent refreshes', async () => {
+      const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'git-refresh-'));
+      const target = path.join(parent, 'repo');
+      await fs.mkdir(target);
+      await fs.writeFile(path.join(target, 'old'), 'old');
+      const lookup = async () => [{ address: '140.82.121.4', family: 4 }];
+      try {
+        await expect(
+          cloneOrPull('https://example.com/repo', target, undefined, {
+            lookup,
+            runGit: async (args) => {
+              await fs.mkdir(args.at(-1)!);
+              throw new Error('clone failed');
+            },
+          }),
+        ).rejects.toThrow('clone failed');
+        expect(await fs.readdir(parent)).toEqual(['repo']);
+        expect(await fs.readFile(path.join(target, 'old'), 'utf8')).toBe('old');
+        let finish!: () => void;
+        let started!: () => void;
+        const entered = new Promise<void>((resolve) => {
+          started = resolve;
+        });
+        const gate = new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        const runGit = vi.fn(async (args: string[]) => {
+          if (runGit.mock.calls.length === 1) {
+            started();
+            await gate;
+          }
+          await fs.mkdir(args.at(-1)!);
+        });
+        const first = cloneOrPull('https://example.com/repo', target, undefined, {
+          lookup,
+          runGit,
+        });
+        await entered;
+        const second = cloneOrPull('https://example.com/repo', target, undefined, {
+          lookup,
+          runGit,
+        });
+        await Promise.resolve();
+        expect(runGit).toHaveBeenCalledTimes(1);
+        finish();
+        await Promise.all([first, second]);
+        expect(runGit).toHaveBeenCalledTimes(2);
+        expect(await fs.readdir(parent)).toEqual(['repo']);
+      } finally {
+        await fs.rm(parent, { recursive: true, force: true });
+      }
+    });
     it('extracts name from HTTPS URL', () => {
       expect(extractRepoName('https://github.com/user/my-repo.git')).toBe('my-repo');
     });
@@ -102,6 +163,14 @@ describe('git-clone', () => {
   });
 
   describe('getCloneDir', () => {
+    it('isolates identities while canonicalizing host and git suffix', () => {
+      expect(getCloneDir('x', 'https://github.com/a/x.git')).not.toBe(
+        getCloneDir('x', 'https://github.com/b/x.git'),
+      );
+      expect(getCloneDir('x', 'https://GITHUB.com/a/x.git')).toBe(
+        getCloneDir('x', 'https://github.com/a/x/'),
+      );
+    });
     it('returns path under ~/.ontoindex/repos/', () => {
       const dir = getCloneDir('my-repo');
       expect(dir).toContain('.ontoindex');
@@ -235,7 +304,9 @@ describe('git-clone', () => {
     });
 
     it('pins all-public DNS answers and restricts git protocols', async () => {
-      const runGit = vi.fn(async (_args: string[]) => {});
+      const runGit = vi.fn(async (args: string[]) => {
+        await fs.mkdir(args.at(-1)!);
+      });
       const { parent, target } = await makeTarget();
       const lookup = vi.fn(async () => [
         publicAnswer,

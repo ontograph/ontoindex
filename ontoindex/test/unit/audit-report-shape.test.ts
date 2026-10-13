@@ -126,6 +126,16 @@ describe('AuditReportResult shape — structural drift gate', () => {
     result = await runAuditReport(repo, {});
   });
 
+  it('clears backend deadline timers after fast success', async () => {
+    vi.useFakeTimers();
+    try {
+      await runAuditReport(repo, {});
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('has all required scalar fields', () => {
     expect(typeof result.generatedAt).toBe('string');
     expect(typeof result.repo).toBe('string');

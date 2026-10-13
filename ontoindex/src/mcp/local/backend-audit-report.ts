@@ -446,12 +446,18 @@ async function runAuditBackendsBounded(
     }
     const task = tasks[index];
     const timeoutMessage = `${backendNames[index] ?? `backend-${index + 1}`}: timed out after ${options.backendTimeoutMs}ms`;
-    return await Promise.race([
-      task(),
-      new Promise<Error>((resolve) =>
-        setTimeout(() => resolve(new Error(timeoutMessage)), options.backendTimeoutMs),
-      ),
-    ]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        task(),
+        new Promise<Error>((resolve) => {
+          timer = setTimeout(() => resolve(new Error(timeoutMessage)), options.backendTimeoutMs);
+          timer.unref();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   async function worker(): Promise<void> {

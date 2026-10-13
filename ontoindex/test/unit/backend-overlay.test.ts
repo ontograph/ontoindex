@@ -8,6 +8,7 @@ import { planDirtyOverlay } from '../../src/core/analyze-delta.js';
 import * as pool from '../../src/core/lbug/pool-adapter.js';
 import {
   getOverlaySnapshot,
+  evictOverlayState,
   isDirtyPath,
   overlayDbPath,
   overlayRepoId,
@@ -47,6 +48,24 @@ describe('backend-overlay snapshot', () => {
     git(repo, 'commit', '-qm', 'base');
   });
   afterEach(() => fs.rmSync(repo, { recursive: true, force: true }));
+
+  it('evicts one repository without dropping another snapshot', async () => {
+    const first = getOverlaySnapshot(handle());
+    const other = getOverlaySnapshot({ ...handle(), id: 'other' });
+    await Promise.all([first, other]);
+    evictOverlayState('r');
+    expect(getOverlaySnapshot(handle())).not.toBe(first);
+    expect(getOverlaySnapshot({ ...handle(), id: 'other' })).toBe(other);
+  });
+
+  it('caps cached snapshots at 64 repositories', async () => {
+    const first = getOverlaySnapshot({ ...handle(), id: 'first' });
+    await first;
+    await Promise.all(
+      Array.from({ length: 64 }, (_, i) => getOverlaySnapshot({ ...handle(), id: `repo-${i}` })),
+    );
+    expect(getOverlaySnapshot({ ...handle(), id: 'first' })).not.toBe(first);
+  });
 
   it('is unusable and empty on a clean tree', async () => {
     const s = await getOverlaySnapshot(handle());

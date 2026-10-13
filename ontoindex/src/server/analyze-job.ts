@@ -39,6 +39,8 @@ interface JobLedger {
   jobs: AnalyzeJob[];
 }
 
+export class AnalyzeCapacityError extends Error {}
+
 const JOB_TTL_MS = 60 * 60 * 1000; // 1 hour
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const JOB_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
@@ -171,6 +173,17 @@ export class JobManager {
           throw new Error(`Analysis already in progress for this repository (job ${job.id})`);
         }
       }
+    }
+
+    const configured = Number(process.env.ONTOINDEX_MAX_ACTIVE_ANALYZE_JOBS ?? '2');
+    const limit =
+      Number.isInteger(configured) && configured >= 1 && configured <= 8 ? configured : 2;
+    if (
+      Array.from(this.jobs.values()).filter((job) => !this.isTerminal(job.status)).length >= limit
+    ) {
+      throw new AnalyzeCapacityError(
+        `Analysis capacity reached (${limit} active jobs); retry later`,
+      );
     }
 
     const job: AnalyzeJob = {

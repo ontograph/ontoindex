@@ -7,8 +7,9 @@
  */
 
 import path from 'path';
-import { canonicalRepoId } from '../shared/target-context.js';
+import { canonicalRepoId, registryRepoIds } from '../shared/target-context.js';
 import fs from 'fs/promises';
+import { evictOverlayState } from './backend-overlay.js';
 import { RepoHandle, BackendPort } from 'ontoindex-shared';
 import { recordToolCall } from './tool-telemetry.js';
 import {
@@ -1160,6 +1161,7 @@ export class LocalBackend implements BackendPort {
   private groupToolSvc: GroupService | null = null;
   private analysisLocks: Map<string, Promise<void>> = new Map();
   private removingRepo = false;
+  private disposing = false;
   private operations = new Set<Promise<unknown>>();
   private readonly confirmWrites: boolean;
   private readonly repoFilter?: string;
@@ -1355,12 +1357,19 @@ export class LocalBackend implements BackendPort {
 
   /** Admit work before yielding so removal cannot miss an accepted operation. */
   withOperation<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.disposing) throw new Error('backend is shutting down');
     this.assertAvailable();
     const operation = Promise.resolve().then(fn);
     this.operations.add(operation);
     void operation.then(
-      () => this.operations.delete(operation),
-      () => this.operations.delete(operation),
+      () => {
+        this.operations.delete(operation);
+        this.pruneRetiredRepoState();
+      },
+      () => {
+        this.operations.delete(operation);
+        this.pruneRetiredRepoState();
+      },
     );
     return operation;
   }
@@ -1381,6 +1390,7 @@ export class LocalBackend implements BackendPort {
       return await remove();
     } finally {
       this.repos.delete(id);
+      evictOverlayState(id);
       this.contextCache.delete(id);
       this.initializedRepos.delete(id);
       this.lastStalenessCheck.delete(id);
@@ -1489,9 +1499,10 @@ export class LocalBackend implements BackendPort {
     const freshRepos = new Map<string, RepoHandle>();
     const freshContextCache = new Map<string, CodebaseContext>();
 
+    const entryIds = registryRepoIds(entries);
     for (const entry of entries) {
       this.throwIfInitAborted(signal);
-      const id = this.repoIdFromHandles(entry.name, entry.path, freshRepos);
+      const id = entryIds.get(entry)!;
       freshIds.add(id);
 
       const storagePath = entry.storagePath;
@@ -1550,44 +1561,31 @@ export class LocalBackend implements BackendPort {
     this.contextCache = freshContextCache;
     logStartupTrace(`refresh repos: cache updated with ${freshRepos.size} repo(s)`, startedAt);
 
-    // Prune repos that no longer exist in the registry
-    for (const id of this.initializedRepos) {
-      if (
-        !freshIds.has(id) &&
-        this.operations.size === 0 &&
-        !this.analysisLocks.has(id) &&
-        !this.reinitPromises.has(id)
-      ) {
-        this.initializedRepos.delete(id);
-      }
-    }
-    // An operation can still hold a removed handle until its promise settles.
-    if (this.operations.size === 0) {
-      for (const id of this.lastStalenessCheck.keys()) {
-        if (!freshIds.has(id) && !this.analysisLocks.has(id) && !this.reinitPromises.has(id)) {
-          this.lastStalenessCheck.delete(id);
-        }
-      }
-    }
+    this.pruneRetiredRepoState();
     for (const pendingMap of [this.analysisLocks, this.reinitPromises]) {
       for (const [id, pending] of pendingMap) {
         if (freshIds.has(id)) continue;
         const retire = () => {
           if (pendingMap.get(id) === pending) pendingMap.delete(id);
-          if (
-            !this.repos.has(id) &&
-            !this.analysisLocks.has(id) &&
-            !this.reinitPromises.has(id) &&
-            this.operations.size === 0
-          ) {
-            this.lastStalenessCheck.delete(id);
-            this.initializedRepos.delete(id);
-          }
+          this.pruneRetiredRepoState();
         };
         void pending.then(retire, retire);
       }
     }
     logStartupTrace('refresh repos: complete', startedAt);
+  }
+
+  private pruneRetiredRepoState(): void {
+    if (this.operations.size > 0) return;
+    for (const id of new Set([...this.initializedRepos, ...this.lastStalenessCheck.keys()])) {
+      if (this.repos.has(id) || this.analysisLocks.has(id) || this.reinitPromises.has(id)) continue;
+      this.initializedRepos.delete(id);
+      this.lastStalenessCheck.delete(id);
+      evictOverlayState(id);
+      void closeLbug(id).catch((error) =>
+        console.error(`Failed to close retired repository ${id}:`, error),
+      );
+    }
   }
 
   private repoIdFromHandles(
@@ -2769,6 +2767,7 @@ export class LocalBackend implements BackendPort {
   }
 
   async dispose(): Promise<void> {
+    this.disposing = true;
     await Promise.allSettled([
       ...this.operations,
       ...this.analysisLocks.values(),
@@ -2780,6 +2779,7 @@ export class LocalBackend implements BackendPort {
     // and importing the embedder module on Node v24+ crashes if onnxruntime
     // was never loaded during the session. Since process.exit(0) follows
     // immediately after disconnect(), the OS reclaims everything. See #38, #89.
+    for (const id of this.repos.keys()) evictOverlayState(id);
     this.repos.clear();
     this.contextCache.clear();
     this.initializedRepos.clear();

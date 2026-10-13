@@ -619,7 +619,18 @@ export function canonicalRepoId(
 export function registryRepoIds(registry: readonly { name: string; path: string }[]): Map<object, string> {
   const ids = new Map<object, string>();
   const handles = new Map<string, { name: string; repoPath: string }>();
+  const counts = new Map<string, number>();
+  for (const entry of registry) counts.set(entry.name.toLowerCase(), (counts.get(entry.name.toLowerCase()) ?? 0) + 1);
   for (const entry of registry) {
+    if (counts.get(entry.name.toLowerCase()) === 1) {
+      ids.set(entry, entry.name.toLowerCase());
+      handles.set(entry.name.toLowerCase(), { name: entry.name, repoPath: entry.path });
+    }
+  }
+  for (const entry of registry.slice().sort((a, b) => path.resolve(a.path).localeCompare(path.resolve(b.path)))) {
+    if (counts.get(entry.name.toLowerCase()) === 1) continue;
+    const base = entry.name.toLowerCase();
+    if (!handles.has(base)) handles.set(base, { name: base, repoPath: '\0' });
     const id = canonicalRepoId(entry.name, entry.path, handles);
     ids.set(entry, id);
     handles.set(id, { name: entry.name, repoPath: entry.path });
@@ -653,7 +664,7 @@ export function resolveRegistryEntry<T extends { name: string; path: string }>(
   if (exactMatches.length > 1) {
     return {
       status: 'ambiguous',
-      action: `Repository "${repo}" matches multiple indexes. Use an absolute repo path.`,
+      action: `Repository "${repo}" matches multiple indexes. Use a canonical id or absolute repo path: ${exactMatches.map(entry => `${ids.get(entry)} (${entry.path})`).join(', ')}.`,
     };
   }
 
