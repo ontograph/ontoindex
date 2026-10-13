@@ -7,6 +7,7 @@ import { gnDiagnose } from '../mcp/super/diagnose.js';
 import type { DiagnoseParams, DiagnoseReport } from '../mcp/super/diagnose.js';
 import { execFileText } from '../core/process/exec-file.js';
 import { formatSupportLines } from './status.js';
+import { getGitRoot } from '../storage/git.js';
 
 export type McpDoctorVerdict = 'READY' | 'DEGRADED' | 'MISCONFIGURED';
 export type McpDoctorProcessLivenessStatus =
@@ -73,9 +74,11 @@ export async function createMcpDoctorReport(
 ): Promise<McpDoctorReport> {
   const env = deps.env ?? process.env;
   const cwd = deps.cwd?.() ?? process.cwd();
-  const repoSelector = resolveRepoSelector(options, env, cwd);
-  const projectCwd = resolveProjectCwd(options, env, cwd);
-  const explicitRepo = options.repo?.trim() || env.ONTOINDEX_MCP_REPO?.trim() || undefined;
+  const needsImplicitCwd = !options.projectCwd?.trim() && !env.ONTOINDEX_MCP_PROJECT_CWD?.trim();
+  const implicitCwd = needsImplicitCwd ? getGitRoot(cwd) ?? cwd : undefined;
+  const repoSelector = resolveRepoSelector(options, env, implicitCwd ?? cwd);
+  const projectCwd = resolveProjectCwd(options, env, implicitCwd ?? cwd);
+  const explicitRepo = options.repo?.trim() || undefined;
   const diagnose = await (deps.diagnose ?? gnDiagnose)(repoSelector, {
     legacyResponse: true,
     checkLsp: true,
@@ -263,6 +266,11 @@ function resolveVerdict(
   if (processLiveness?.status === 'ambiguous' || processLiveness?.status === 'missing') {
     return 'DEGRADED';
   }
+  if (
+    processLiveness?.status === 'unavailable'
+  ) {
+    return 'DEGRADED';
+  }
   if (symbolSmoke?.status === 'failed') return 'DEGRADED';
   if (setupHealth?.status === 'degraded') return 'DEGRADED';
   return diagnose.degradedContext.status === 'degraded' ? 'DEGRADED' : 'READY';
@@ -275,7 +283,6 @@ function resolveRepoSelector(
 ): string {
   return (
     options.repo?.trim() ||
-    env.ONTOINDEX_MCP_REPO?.trim() ||
     options.projectCwd?.trim() ||
     env.ONTOINDEX_MCP_PROJECT_CWD?.trim() ||
     cwd
@@ -348,10 +355,16 @@ async function probeMcpProcessLiveness(
       const command = match[2].trim();
       if (!looksLikeOntoindexMcpCommand(command)) continue;
 
+      const projectCwd = extractCliOptionValue(command, '--project');
+      if (projectCwd && !hasUnambiguousProjectArgument(command)) {
+        candidates.push({ pid, command });
+        continue;
+      }
+
       candidates.push({
         pid,
         command,
-        projectCwd: extractCliOptionValue(command, '--project'),
+        projectCwd,
       });
     }
 
@@ -373,6 +386,14 @@ async function probeMcpProcessLiveness(
       return {
         status: 'ambiguous',
         reason: `multiple matching MCP processes found for ${projectCwd}`,
+        repairCommand,
+      };
+    }
+
+    if (candidates.some((candidate) => !isAbsolutePath(candidate.projectCwd))) {
+      return {
+        status: 'unavailable',
+        reason: 'process-project-binding-unverified',
         repairCommand,
       };
     }
@@ -514,8 +535,10 @@ function relativeOrAbsolute(baseDir: string, targetPath: string): string {
 function looksLikeOntoindexMcpCommand(command: string): boolean {
   return (
     /(?:^|\s)mcp(?:\s|$)/.test(command) &&
-    command.includes('--project') &&
-    (command.includes('ontoindex') || command.includes('index.js'))
+    (/(?:^|[\s/\\])ontoindex(?:\s|$)/.test(command) ||
+      /(?:^|[\s/\\])ontoindex(?:[\\/]ontoindex)?[\\/]dist[\\/]cli[\\/]index\.js(?:\s|$)/.test(
+        command,
+      ))
   );
 }
 
@@ -527,13 +550,27 @@ function extractCliOptionValue(command: string, option: string): string | undefi
   return match?.[1] ?? match?.[2] ?? match?.[3];
 }
 
+function hasUnambiguousProjectArgument(command: string): boolean {
+  const optionPattern = /(?:^|\s)--project(?:=|\s+)/g;
+  const match = optionPattern.exec(command);
+  if (!match) return true;
+  const valueStart = match.index + match[0].length;
+  const valueMatch = command.slice(valueStart).match(/^(?:"[^"]+"|'[^']+'|[^\s]+)/);
+  if (!valueMatch) return false;
+  return /^\s*(?:--\S.*)?$/.test(command.slice(valueStart + valueMatch[0].length));
+}
+
 function matchesBoundPath(observed: string | undefined, expected: string): boolean {
-  if (!observed) return false;
-  const normalizedObserved = observed.replace(/\\/g, '/');
-  const normalizedExpected = expected.replace(/\\/g, '/');
-  return (
-    normalizedObserved === normalizedExpected || normalizedObserved.includes(normalizedExpected)
-  );
+  if (!isAbsolutePath(observed) || !isAbsolutePath(expected)) return false;
+  const normalizedObserved = path.resolve(observed);
+  const normalizedExpected = path.resolve(expected);
+  return process.platform === 'win32'
+    ? normalizedObserved.toLowerCase() === normalizedExpected.toLowerCase()
+    : normalizedObserved === normalizedExpected;
+}
+
+function isAbsolutePath(value: string | undefined): value is string {
+  return !!value && path.isAbsolute(value);
 }
 
 async function runProductionSymbolSmoke(

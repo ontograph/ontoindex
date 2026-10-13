@@ -15,12 +15,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createMCPServer } from '../../src/mcp/server.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { ReadResourceRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { ReadResourceRequestSchema, McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { UriTemplate } from '@modelcontextprotocol/sdk/shared/uriTemplate.js';
 import * as resources from '../../src/mcp/resources.js';
 import {
   MCP_RESPONSE_MAX_BYTES,
-  serializedMcpToolResultBytes,
 } from '../../src/mcp/shared/response-pages.js';
 
 // ─── Mock backend ──────────────────────────────────────────────────
@@ -133,17 +132,13 @@ describe('resource response MIME types', () => {
         const handler = handlers.mock.calls.find(
           ([schema]) => schema === ReadResourceRequestSchema,
         )?.[1];
-        const response = await (handler as any)({ params: { uri } });
-        expect(response.contents).toEqual([
-          {
-            uri,
-            mimeType: 'text/plain',
-            text: 'Error: Resource response exceeded the byte limit.',
-          },
-        ]);
-        expect(Buffer.byteLength(JSON.stringify(response), 'utf8')).toBeLessThanOrEqual(
-          MCP_RESPONSE_MAX_BYTES,
-        );
+        const error = await (handler as any)({ params: { uri } }).catch((err: unknown) => err);
+        expect(error).toBeInstanceOf(McpError);
+        expect(error.code).toBe(ErrorCode.InternalError);
+        expect(error.message).toContain('Resource read failed.');
+        expect(Buffer.byteLength(JSON.stringify({
+          jsonrpc: '2.0', id: 1, error: { code: error.code, message: error.message },
+        }), 'utf8')).toBeLessThanOrEqual(MCP_RESPONSE_MAX_BYTES);
       } finally {
         handlers.mockRestore();
         read.mockRestore();
@@ -212,7 +207,7 @@ describe('resource response MIME types', () => {
     },
   );
 
-  it('returns resource errors as plain text', async () => {
+  it('rejects backend resource errors without exposing backend details', async () => {
     const read = vi.spyOn(resources, 'readResource').mockRejectedValue(new Error('unavailable'));
     const handlers = vi.spyOn(Server.prototype, 'setRequestHandler');
     try {
@@ -220,10 +215,9 @@ describe('resource response MIME types', () => {
       const handler = handlers.mock.calls.find(
         ([schema]) => schema === ReadResourceRequestSchema,
       )?.[1];
-      const response = await (handler as any)({ params: { uri: 'ontoindex://setup' } });
-      expect(response.contents[0]).toMatchObject({
-        mimeType: 'text/plain',
-        text: 'Error: unavailable',
+      await expect((handler as any)({ params: { uri: 'ontoindex://setup' } })).rejects.toMatchObject({
+        code: ErrorCode.InternalError,
+        message: expect.stringContaining('Resource read failed.'),
       });
     } finally {
       handlers.mockRestore();
@@ -239,17 +233,13 @@ describe('resource response MIME types', () => {
       const handler = handlers.mock.calls.find(
         ([schema]) => schema === ReadResourceRequestSchema,
       )?.[1];
-      const response = await (handler as any)({ params: { uri } });
-      const content = response.contents[0];
-      expect(content.mimeType).toBe('text/plain');
-      expect(content.text).toMatch(/^Error:/);
-      expect(content.text).toContain('… [truncated]');
-      expect(serializedMcpToolResultBytes(content.text, true)).toBeLessThanOrEqual(
-        MCP_RESPONSE_MAX_BYTES,
-      );
-      expect(Buffer.byteLength(JSON.stringify(response), 'utf8')).toBeLessThanOrEqual(
-        MCP_RESPONSE_MAX_BYTES,
-      );
+      const error = await (handler as any)({ params: { uri } }).catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(McpError);
+      expect(error.code).toBe(ErrorCode.InvalidParams);
+      expect(error.message).toContain('… [truncated]');
+      expect(Buffer.byteLength(JSON.stringify({
+        jsonrpc: '2.0', id: 1, error: { code: error.code, message: error.message },
+      }), 'utf8')).toBeLessThanOrEqual(MCP_RESPONSE_MAX_BYTES);
     } finally {
       handlers.mockRestore();
     }

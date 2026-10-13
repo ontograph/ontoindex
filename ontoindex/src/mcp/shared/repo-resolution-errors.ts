@@ -11,7 +11,6 @@ export interface RepoResolutionCandidate {
 }
 
 export interface RepoResolutionEnvironment {
-  mcpRepo?: string;
   projectCwd?: string;
   processCwd?: string;
 }
@@ -31,7 +30,6 @@ export interface McpStartupMismatchErrorOptions {
   projectCwd: string;
   processCwd: string;
   gitRoot?: string;
-  source: 'env' | 'cli';
 }
 
 export function formatRepoResolutionError(options: RepoResolutionErrorOptions): string {
@@ -76,17 +74,19 @@ export function formatRepoResolutionError(options: RepoResolutionErrorOptions): 
 
 export function formatMcpStartupMismatchError(options: McpStartupMismatchErrorOptions): string {
   const selector = options.repoSelector.trim();
-  const sourceLabel = options.source === 'cli' ? '--repo' : 'ONTOINDEX_MCP_REPO';
-  const restartCommand = `ontoindex mcp --project ${shellQuote(options.projectCwd)} --repo ${shellQuote(selector)}`;
+  const projectPath = path.resolve(options.projectCwd);
+  const resolvedRepoPath = path.resolve(options.resolvedRepo.path);
   return [
-    `OntoIndex MCP startup blocked: ${sourceLabel} "${selector}" resolves to ${options.resolvedRepo.label} -> ${options.resolvedRepo.path}, but the target project path is ${options.projectCwd}.`,
+    `OntoIndex MCP startup blocked: --repo "${selector}" resolves to ${options.resolvedRepo.label} -> ${options.resolvedRepo.path}, but the target project path is ${options.projectCwd}.`,
     `Resolved repo: ${options.resolvedRepo.label} -> ${options.resolvedRepo.path}`,
     `Project cwd: ${options.projectCwd}`,
     `Process cwd: ${options.processCwd}`,
     options.gitRoot ? `Git root: ${options.gitRoot}` : '',
     '',
-    'Restart command:',
-    `  ${restartCommand}`,
+    'Keep the current project:',
+    `  ontoindex mcp --project ${shellQuote(projectPath)}`,
+    'Use the resolved repository:',
+    `  ontoindex mcp --project ${shellQuote(resolvedRepoPath)} --repo ${shellQuote(resolvedRepoPath)}`,
   ]
     .filter(Boolean)
     .join('\n');
@@ -103,7 +103,6 @@ export function repoResolutionCandidatesFromEntries(
 
 export function repoResolutionEnvironmentFromProcess(): RepoResolutionEnvironment {
   return {
-    mcpRepo: process.env.ONTOINDEX_MCP_REPO,
     projectCwd: process.env.ONTOINDEX_MCP_PROJECT_CWD,
     processCwd: process.cwd(),
   };
@@ -114,7 +113,6 @@ function formatEnvironmentLines(environment: RepoResolutionEnvironment | undefin
   const lines = [
     '',
     'Current MCP scope:',
-    `- ONTOINDEX_MCP_REPO=${environment.mcpRepo ?? '<unset>'}`,
     `- ONTOINDEX_MCP_PROJECT_CWD=${environment.projectCwd ?? '<unset>'}`,
   ];
   if (environment.processCwd) lines.push(`- process.cwd=${environment.processCwd}`);

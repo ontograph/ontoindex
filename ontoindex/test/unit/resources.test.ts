@@ -9,6 +9,7 @@
  * - Resource handlers with mocked backend
  */
 import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 const { readRuntimeHealthMock } = vi.hoisted(() => ({ readRuntimeHealthMock: vi.fn() }));
 vi.mock('../../src/core/runtime/runtime-health.js', () => ({
   readRuntimeHealth: readRuntimeHealthMock,
@@ -361,7 +362,43 @@ describe('parseResourceUri', () => {
   });
 
   it('rejects unknown group resource tail', () => {
-    expect(() => parseResourceUri('ontoindex://group/foo/bar')).toThrow('Unknown group resource');
+    expect(() => parseResourceUri('ontoindex://group/foo/bar')).toThrow(
+      expect.objectContaining({ code: -32002 }),
+    );
+  });
+
+  it('classifies malformed URIs and percent encoding as invalid params', () => {
+    for (const uri of ['not a URI', 'https://repo/name/context', 'ontoindex://repo/%ZZ/context']) {
+      try {
+        parseResourceUri(uri);
+        throw new Error(`expected ${uri} to fail`);
+      } catch (error) {
+        expect(error).toBeInstanceOf(McpError);
+        expect((error as McpError).code).toBe(ErrorCode.InvalidParams);
+      }
+    }
+  });
+
+  it('classifies unknown URI shapes as invalid params and unsupported types separately', () => {
+    for (const uri of ['ontoindex://unknown', 'ontoindex://repo/name']) {
+      try {
+        parseResourceUri(uri);
+        throw new Error(`expected ${uri} to fail`);
+      } catch (error) {
+        expect((error as McpError).code).toBe(ErrorCode.InvalidParams);
+      }
+    }
+    for (const uri of ['ontoindex://repo/name/cluster', 'ontoindex://repo/name/memory']) {
+      try {
+        parseResourceUri(uri);
+        throw new Error(`expected ${uri} to fail`);
+      } catch (error) {
+        expect((error as McpError).code).toBe(ErrorCode.InvalidParams);
+      }
+    }
+    expect(parseResourceUri('ontoindex://repo/name/not-a-resource')).toEqual({
+      kind: 'repo', repoName: 'name', resourceType: 'not-a-resource',
+    });
   });
 
   it('parses memory list resource', () => {
@@ -740,9 +777,9 @@ describe('readResource', () => {
 
   it('throws for unknown repo-scoped resource type', async () => {
     const backend = createMockBackend();
-    await expect(readResource('ontoindex://repo/test/nonexistent', backend)).rejects.toThrow(
-      'Unknown resource',
-    );
+    await expect(readResource('ontoindex://repo/test/nonexistent', backend)).rejects.toMatchObject({
+      code: -32002,
+    });
   });
 
   it('decodes URI-encoded repo names', async () => {

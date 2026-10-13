@@ -83,7 +83,7 @@ Restart the editor MCP session if needed. The server **refreshes the registry la
 
 ```bash
 npx ontoindex mcp --repo MyRepo
-ONTOINDEX_MCP_REPO=/absolute/path/to/repo npx ontoindex mcp
+npx ontoindex mcp --project /absolute/path/to/repo --repo /absolute/path/to/repo
 ```
 
 ---

@@ -597,7 +597,7 @@ describe('resolveTargetContext', () => {
     }
   });
 
-  it('prefers cwd resolution over ONTOINDEX_MCP_REPO when they disagree', async () => {
+  it('ignores ONTOINDEX_MCP_REPO without lowering cwd confidence', async () => {
     const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/repo/other');
     const previousRepo = process.env.ONTOINDEX_MCP_REPO;
     process.env.ONTOINDEX_MCP_REPO = REPO_ID;
@@ -618,9 +618,69 @@ describe('resolveTargetContext', () => {
       expect(context.status).toBe('ok');
       expect(context.repoLabel).toBe('other-repo');
       expect(context.repoPath).toBe(path.resolve('/repo/other'));
+      expect(context.scopeConfidence).toBe('medium');
+      expect(context.warnings.join('\n')).not.toContain('ONTOINDEX_MCP_REPO');
     } finally {
       if (previousRepo === undefined) delete process.env.ONTOINDEX_MCP_REPO;
       else process.env.ONTOINDEX_MCP_REPO = previousRepo;
+      cwdSpy.mockRestore();
+    }
+  });
+
+  it('ignores legacy env selection outside indexed cwd without probing Git', async () => {
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/outside');
+    process.env.ONTOINDEX_MCP_REPO = REPO_ID;
+    const execGit = vi.fn(execGitFor(CURRENT_COMMIT));
+    try {
+      const { resolveTargetContext } = await loadActualResolver();
+      const context = await resolveTargetContext({}, {
+        readRegistry: async () => [registryEntry, { ...registryEntry, name: 'other-repo', path: '/repo/other' }],
+        execGit,
+      });
+      expect(context.status).toBe('ambiguous');
+      expect(execGit).not.toHaveBeenCalled();
+      expect(context.action).not.toContain('ONTOINDEX_MCP_REPO');
+      expect(context.warnings.join('\n')).not.toContain('ONTOINDEX_MCP_REPO');
+    } finally {
+      cwdSpy.mockRestore();
+    }
+  });
+
+  it('keeps explicit cwd-aligned selection high confidence despite legacy env conflict', async () => {
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/repo/test-repo');
+    process.env.ONTOINDEX_MCP_REPO = 'other-repo';
+    try {
+      const { resolveTargetContext } = await loadActualResolver();
+      for (const options of [{ repo: REPO_ID }, { projectPath: '/repo/test-repo' }]) {
+        const context = await resolveTargetContext(options, {
+          readRegistry: async () => [registryEntry, { ...registryEntry, name: 'other-repo', path: '/repo/other' }],
+          execGit: execGitFor(CURRENT_COMMIT),
+        });
+        expect(context.status).toBe('ok');
+        expect(context.repoLabel).toBe(REPO_ID);
+        expect(context.scopeConfidence).toBe('high');
+        expect(context.warnings.join('\n')).not.toContain('ONTOINDEX_MCP_REPO');
+        expect(context.warnings.join('\n')).not.toContain('REPO_PATH_MISMATCH');
+      }
+    } finally {
+      cwdSpy.mockRestore();
+    }
+  });
+
+  it('preserves PROJECT_CWD fallback despite a conflicting legacy env selector', async () => {
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/outside');
+    process.env.ONTOINDEX_MCP_REPO = 'other-repo';
+    process.env.ONTOINDEX_MCP_PROJECT_CWD = '/repo/test-repo';
+    try {
+      const { resolveTargetContext } = await loadActualResolver();
+      const context = await resolveTargetContext({}, {
+        readRegistry: async () => [registryEntry, { ...registryEntry, name: 'other-repo', path: '/repo/other' }],
+        execGit: execGitFor(CURRENT_COMMIT),
+      });
+      expect(context.status).toBe('ok');
+      expect(context.repoLabel).toBe(REPO_ID);
+      expect(context.warnings.join('\n')).not.toContain('ONTOINDEX_MCP_REPO');
+    } finally {
       cwdSpy.mockRestore();
     }
   });

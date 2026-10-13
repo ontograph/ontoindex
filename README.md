@@ -180,7 +180,6 @@ Linux/macOS:
 ```bash
 cd /path/to/target/repo
 export ONTOINDEX_MCP_PROJECT_CWD="$PWD"
-export ONTOINDEX_MCP_REPO="$PWD"
 ontoindex setup
 ontoindex mcp --repo my-project
 ```
@@ -190,12 +189,11 @@ Windows PowerShell:
 ```powershell
 Set-Location C:\path\to\target\repo
 $env:ONTOINDEX_MCP_PROJECT_CWD = (Get-Location).Path
-$env:ONTOINDEX_MCP_REPO = (Get-Location).Path
 ontoindex setup
 ontoindex mcp --repo my-project
 ```
 
-At startup, OntoIndex prints both the executable working directory and the target project path. If `ONTOINDEX_MCP_REPO` or `--repo` points outside `ONTOINDEX_MCP_PROJECT_CWD`, startup fails unless `ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1` is set.
+At startup, OntoIndex prints both the executable working directory and the target project path. If `--repo` points outside `ONTOINDEX_MCP_PROJECT_CWD`, startup fails unless `ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1` is set.
 
 `ontoindex mcp-doctor --repo <label-or-path> --project-cwd <path> --json` resolves the same repo selector and reports `READY`, `DEGRADED`, or `MISCONFIGURED`; when it detects a mismatch, it includes a restart command for the target project scope.
 

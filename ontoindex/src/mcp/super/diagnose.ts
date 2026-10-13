@@ -166,7 +166,6 @@ export interface DiagnoseReport {
     requestedRepo?: string;
     activeRepoLabel?: string;
     activeRepoPath?: string;
-    mcpRepo?: string;
     projectCwd?: string;
     processCwd?: string;
     recommendedCommand?: string;
@@ -222,11 +221,11 @@ async function probeWhich(binaryName: string): Promise<boolean> {
   }
 }
 
-/** Collect all ONTOINDEX_* keys from process.env. */
+/** Collect active ONTOINDEX_* keys from process.env. */
 function collectOntoIndexEnv(): Record<string, string | undefined> {
   const result: Record<string, string | undefined> = {};
   for (const key of Object.keys(process.env)) {
-    if (key.startsWith('ONTOINDEX_')) {
+    if (key.startsWith('ONTOINDEX_') && key !== 'ONTOINDEX_MCP_REPO') {
       result[key] = process.env[key];
     }
   }
@@ -326,7 +325,7 @@ function buildSetupSummary(envVars: Record<string, string | undefined>): Diagnos
 
   return {
     mcp: {
-      repoFilter: envVars['ONTOINDEX_MCP_REPO']?.trim() || null,
+      repoFilter: null,
       autoAnalyze,
       startupTimeoutMs: parsePositiveInt(
         envVars['ONTOINDEX_MCP_STARTUP_TIMEOUT_MS'],
@@ -423,24 +422,25 @@ function buildMisconfigurationReport(
   repoId: string,
   envVars: Record<string, string | undefined>,
   targetContext: TargetContext | undefined,
+  context?: { projectCwd: string | null; repoPath?: string },
 ): DiagnoseReport['misconfiguration'] {
-  const mcpRepo = envVars['ONTOINDEX_MCP_REPO']?.trim() || undefined;
-  const projectCwd = envVars['ONTOINDEX_MCP_PROJECT_CWD']?.trim() || undefined;
+  const projectCwd =
+    context === undefined
+      ? envVars['ONTOINDEX_MCP_PROJECT_CWD']?.trim() || undefined
+      : context.projectCwd ?? undefined;
   const processCwd = process.cwd();
   const activeRepoPath = targetContext?.repoPath;
   const activeRepoLabel = targetContext?.repoLabel ?? targetContext?.repoKey;
   const pathMismatch =
     activeRepoPath !== undefined &&
-    ((projectCwd !== undefined && !sameResolvedPath(projectCwd, activeRepoPath)) ||
-      (mcpRepo !== undefined &&
-        path.isAbsolute(mcpRepo) &&
-        !sameResolvedPath(mcpRepo, activeRepoPath)));
+    projectCwd !== undefined &&
+    !sameResolvedPath(projectCwd, activeRepoPath);
   const targetMismatch =
     targetContext?.status === 'ambiguous' || targetContext?.status === 'not-found' || pathMismatch;
 
   if (!targetMismatch) return { status: 'ok' };
 
-  const restartPath = activeRepoPath ?? projectCwd ?? mcpRepo ?? '/absolute/path/to/project';
+  const restartPath = activeRepoPath ?? projectCwd ?? '/absolute/path/to/project';
   return {
     status: 'fail',
     severity: 'P1',
@@ -448,7 +448,6 @@ function buildMisconfigurationReport(
     requestedRepo: repoId,
     ...(activeRepoLabel !== undefined ? { activeRepoLabel } : {}),
     ...(activeRepoPath !== undefined ? { activeRepoPath } : {}),
-    ...(mcpRepo !== undefined ? { mcpRepo } : {}),
     ...(projectCwd !== undefined ? { projectCwd } : {}),
     processCwd,
     recommendedCommand: `ontoindex mcp --project ${shellQuote(restartPath)}${
@@ -511,18 +510,22 @@ function buildRuntimeContextSummary(options: {
 export async function gnDiagnose(
   repoId: string,
   params: DiagnoseParams & { legacyResponse?: true },
+  context?: { projectCwd: string | null; repoPath?: string },
 ): Promise<DiagnoseReport>;
 export async function gnDiagnose(
   repoId: string,
   params: DiagnoseParams & { legacyResponse: false },
+  context?: { projectCwd: string | null; repoPath?: string },
 ): Promise<CapabilityResponseEnvelope<Record<string, unknown>>>;
 export async function gnDiagnose(
   repoId: string,
   params: DiagnoseParams,
+  context?: { projectCwd: string | null; repoPath?: string },
 ): Promise<DiagnoseReport | CapabilityResponseEnvelope<Record<string, unknown>>>;
 export async function gnDiagnose(
   repoId: string,
   params: DiagnoseParams,
+  context?: { projectCwd: string | null; repoPath?: string },
 ): Promise<DiagnoseReport | CapabilityResponseEnvelope<Record<string, unknown>>> {
   const warnings: string[] = [];
   const recommendations: DiagnoseReport['recommendations'] = [];
@@ -545,7 +548,7 @@ export async function gnDiagnose(
   if (checkIndexFreshness || checkEmbeddings) {
     let freshReport;
     try {
-      freshReport = await gnEnsureFresh(repoId, { autoAnalyze: false });
+      freshReport = await gnEnsureFresh(context?.repoPath ?? repoId, { autoAnalyze: false });
     } catch (err) {
       warnings.push('gnEnsureFresh failed: ' + (err instanceof Error ? err.message : String(err)));
     }
@@ -697,7 +700,7 @@ export async function gnDiagnose(
   let vectorBackend: DiagnoseReport['vectorBackend'];
   try {
     targetContext = await resolveTargetContext({
-      repo: repoId,
+      repo: context?.repoPath ?? repoId,
       checkSidecar: true,
       readiness: {
         ...(checkEmbeddings && hasFreshReport ? { embeddingsCount } : {}),
@@ -918,7 +921,7 @@ export async function gnDiagnose(
   }
 
   // ---- 9. Degraded context synthesis ----------------------------------------
-  const misconfiguration = buildMisconfigurationReport(repoId, envVars, targetContext);
+  const misconfiguration = buildMisconfigurationReport(repoId, envVars, targetContext, context);
   if (misconfiguration.status === 'fail') {
     recommendations.unshift({
       severity: 'ERROR',

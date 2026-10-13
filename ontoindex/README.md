@@ -173,8 +173,8 @@ For external helper checkouts (for example, `cwd=/opt/demodb/_workfolder/OntoInd
 
 ```bash
 cd /path/to/target/repo
-ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ONTOINDEX_MCP_REPO=/path/to/target/repo ontoindex mcp
-ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ONTOINDEX_MCP_REPO=/path/to/target/repo ontoindex mcp --repo my-target-repo
+ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ontoindex mcp
+ONTOINDEX_MCP_PROJECT_CWD=/path/to/target/repo ontoindex mcp --repo my-target-repo
 ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1 ontoindex mcp   # override when intentionally cross-repo
 ```
 

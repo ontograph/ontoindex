@@ -172,7 +172,6 @@ Linux/macOS:
 ```bash
 cd /path/to/target/repo
 export ONTOINDEX_MCP_PROJECT_CWD="$PWD"
-export ONTOINDEX_MCP_REPO="$PWD"
 ontoindex setup
 ontoindex mcp --repo my-project
 ```
@@ -182,12 +181,11 @@ Windows PowerShell:
 ```powershell
 Set-Location C:\path\to\target\repo
 $env:ONTOINDEX_MCP_PROJECT_CWD = (Get-Location).Path
-$env:ONTOINDEX_MCP_REPO = (Get-Location).Path
 ontoindex setup
 ontoindex mcp --repo my-project
 ```
 
-При старте OntoIndex печатает рабочую директорию executable и путь к целевому проекту. Если `ONTOINDEX_MCP_REPO` или `--repo` указывает за пределы `ONTOINDEX_MCP_PROJECT_CWD`, startup завершается ошибкой, если не задано `ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1`.
+При старте OntoIndex печатает рабочую директорию executable и путь к целевому проекту. Если `--repo` указывает за пределы `ONTOINDEX_MCP_PROJECT_CWD`, startup завершается ошибкой, если не задано `ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1`.
 
 `ontoindex mcp-doctor --repo <label-or-path> --project-cwd <path> --json` разрешает тот же селектор репозитория и возвращает `READY`, `DEGRADED` или `MISCONFIGURED`; при обнаружении mismatch он также предлагает команду перезапуска с правильным project scope.
 

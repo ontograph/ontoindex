@@ -136,7 +136,7 @@ export async function dispatchSuper(
   params: Record<string, unknown>,
   repoId: string,
   backend?: RefactorBackend,
-  context?: { repoPath: string },
+  context?: { repoPath: string; projectCwd?: string | null },
 ): Promise<unknown> {
   validateSuperParams(name, params);
   switch (name) {
@@ -202,7 +202,13 @@ export async function dispatchSuper(
 
     case 'gn_diagnose': {
       const { gnDiagnose } = await import('./diagnose.js');
-      return gnDiagnose(repoId, params as unknown as DiagnoseParams);
+      return gnDiagnose(
+        repoId,
+        params as unknown as DiagnoseParams,
+        context && Object.prototype.hasOwnProperty.call(context, 'projectCwd')
+          ? { projectCwd: context.projectCwd ?? null, repoPath: context.repoPath }
+          : undefined,
+      );
     }
 
     case 'gn_propose_location': {

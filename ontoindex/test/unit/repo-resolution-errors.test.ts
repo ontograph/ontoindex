@@ -13,7 +13,6 @@ describe('repo resolution error formatting', () => {
       requestedRepo: 'ontoindex',
       candidates: [{ label: 'codex', path: '/opt/demodb/_workfolder/Repo With Spaces' }],
       environment: {
-        mcpRepo: '/opt/demodb/_workfolder/Repo With Spaces',
         projectCwd: '/opt/demodb/_workfolder/Repo With Spaces',
         processCwd: '/opt/demodb/_workfolder/OntoIndex',
       },
@@ -23,7 +22,8 @@ describe('repo resolution error formatting', () => {
 
     expect(message).toContain('Repository "ontoindex" not found.');
     expect(message).toContain('- codex -> /opt/demodb/_workfolder/Repo With Spaces');
-    expect(message).toContain('ONTOINDEX_MCP_REPO=/opt/demodb/_workfolder/Repo With Spaces');
+    expect(message).not.toContain('ONTOINDEX_MCP_REPO');
+    expect(message).toContain('ONTOINDEX_MCP_PROJECT_CWD=/opt/demodb/_workfolder/Repo With Spaces');
     expect(message).toContain('repo: "codex"');
     expect(message).toContain("ontoindex mcp --project '/opt/demodb/_workfolder/Repo With Spaces'");
   });
@@ -57,14 +57,19 @@ describe('repo resolution error formatting', () => {
         label: 'repo-with-spaces',
         path: '/opt/demodb/_workfolder/Repo With Spaces',
       },
-      projectCwd: '/opt/demodb/_workfolder/Repo With Spaces',
+      projectCwd: "/project/Current Repo's Checkout",
       processCwd: '/opt/demodb/_workfolder/OntoIndex',
       gitRoot: '/opt/demodb/_workfolder/Repo With Spaces/.git',
-      source: 'cli',
     });
 
+    expect(message).toContain('OntoIndex MCP startup blocked: --repo');
+    expect(message).not.toContain('ONTOINDEX_MCP_REPO');
+    expect(message).toContain('Keep the current project:');
+    expect(message).toContain("ontoindex mcp --project '/project/Current Repo'\"'\"'s Checkout'");
+    expect(message).toContain('Use the resolved repository:');
     expect(message).toContain(
       "ontoindex mcp --project '/opt/demodb/_workfolder/Repo With Spaces' --repo '/opt/demodb/_workfolder/Repo With Spaces'",
     );
+    expect(message).not.toContain("--project '/project/Current Repo'\"'\"'s Checkout' --repo");
   });
 });

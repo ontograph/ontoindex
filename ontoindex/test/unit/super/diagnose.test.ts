@@ -785,8 +785,68 @@ describe('gnDiagnose', () => {
     });
   });
 
-  it('reports repo-target mismatch as a P1 misconfiguration before quality recommendations', async () => {
-    process.env['ONTOINDEX_MCP_REPO'] = '/opt/demodb/_workfolder/Repo With Spaces';
+  it('ignores the removed repo environment selector in targeting and diagnostic output', async () => {
+    process.env['ONTOINDEX_MCP_REPO'] = '/repo/stale-project';
+    mockResolveTargetContext.mockResolvedValue(TARGET_CONTEXT);
+
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false,
+      checkEmbeddings: false,
+      checkIndexFreshness: false,
+      checkToolContract: false,
+    });
+
+    expect(report.misconfiguration).toEqual({ status: 'ok' });
+    expect(report.setup.mcp.repoFilter).toBeNull();
+    expect(report.envVars).not.toHaveProperty('ONTOINDEX_MCP_REPO');
+    expect(report.degradedContext.reasons).not.toContain('mcp-service-target-mismatch');
+  });
+
+  it('resolves an internal repository ID through the trusted selected path', async () => {
+    const report = await gnDiagnose('internal-hashed-id', {
+      checkLsp: false, checkEmbeddings: true, checkIndexFreshness: true, checkToolContract: false,
+    }, { projectCwd: TARGET_REPO_PATH, repoPath: TARGET_REPO_PATH });
+    expect(mockGnEnsureFresh).toHaveBeenCalledWith(TARGET_REPO_PATH, { autoAnalyze: false });
+    expect(mockResolveTargetContext).toHaveBeenCalledWith(expect.objectContaining({
+      repo: TARGET_REPO_PATH,
+    }));
+    expect(report.misconfiguration).toEqual({ status: 'ok' });
+  });
+
+  it('uses the effective startup project instead of the overridden environment project', async () => {
+    process.env['ONTOINDEX_MCP_PROJECT_CWD'] = '/tmp/overridden-project';
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false, checkEmbeddings: false, checkIndexFreshness: false, checkToolContract: false,
+    }, { projectCwd: TARGET_REPO_PATH });
+    expect(report.misconfiguration).toEqual({ status: 'ok' });
+    expect(report.degradedContext.reasons).not.toContain('mcp-service-target-mismatch');
+  });
+
+  it('reports a real mismatch with the effective startup project even when the environment matches', async () => {
+    process.env['ONTOINDEX_MCP_PROJECT_CWD'] = TARGET_REPO_PATH;
+    const report = await gnDiagnose('internal-hashed-id', {
+      checkLsp: false, checkEmbeddings: false, checkIndexFreshness: false, checkToolContract: false,
+    }, { projectCwd: '/tmp/service-project', repoPath: TARGET_REPO_PATH });
+    expect(mockResolveTargetContext).toHaveBeenCalledWith(expect.objectContaining({
+      repo: TARGET_REPO_PATH,
+    }));
+    expect(report.misconfiguration).toMatchObject({
+      status: 'fail', reason: 'mcp-service-target-mismatch', projectCwd: '/tmp/service-project',
+      activeRepoPath: TARGET_REPO_PATH, requestedRepo: 'internal-hashed-id',
+    });
+    expect(report.degradedContext.reasons).toContain('mcp-service-target-mismatch');
+  });
+
+  it('skips environment service binding for explicitly unbound HTTP diagnostics', async () => {
+    process.env['ONTOINDEX_MCP_PROJECT_CWD'] = '/tmp/stdio-project';
+    const report = await gnDiagnose(REPO_ID, {
+      checkLsp: false, checkEmbeddings: false, checkIndexFreshness: false, checkToolContract: false,
+    }, { projectCwd: null });
+    expect(report.misconfiguration).toEqual({ status: 'ok' });
+    expect(report.degradedContext.reasons).not.toContain('mcp-service-target-mismatch');
+  });
+
+  it('retains environment fallback for standalone repo-target mismatch diagnostics', async () => {
     process.env['ONTOINDEX_MCP_PROJECT_CWD'] = '/opt/demodb/_workfolder/Repo With Spaces';
     mockResolveTargetContext.mockResolvedValue({
       ...TARGET_CONTEXT,

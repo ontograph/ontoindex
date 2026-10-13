@@ -46,17 +46,6 @@ function initBackendWithTimeout(backend: LocalBackend): Promise<boolean> {
   });
 }
 
-type RepoFilterSource = 'auto' | 'env' | 'cli';
-
-function resolveRepoFilterSource(options: {
-  full?: boolean;
-  repo?: string;
-  project?: string;
-}): RepoFilterSource {
-  if (options.repo || options.project) return 'cli';
-  return process.env.ONTOINDEX_MCP_REPO ? 'env' : 'auto';
-}
-
 function getProjectPathFromCwd(): string {
   const cwd = process.cwd();
   const gitRoot = getGitRoot(cwd);
@@ -109,9 +98,7 @@ export const mcpCommand = async (
   const explicitProjectPath = options.project?.trim() ? path.resolve(options.project.trim()) : null;
   const configuredProjectPath = resolveConfiguredProjectPath();
   const targetProjectPath = explicitProjectPath ?? configuredProjectPath ?? inferredProjectPath;
-  const repoFilter =
-    options.repo ?? (explicitProjectPath === null ? process.env.ONTOINDEX_MCP_REPO : undefined);
-  const repoFilterSource = resolveRepoFilterSource(options);
+  const repoFilter = options.repo;
   console.error(`OntoIndex: MCP executable cwd: ${cwd}`);
   console.error(`OntoIndex: MCP target project path: ${targetProjectPath}`);
   console.error(`OntoIndex: MCP target repo filter: ${formatRepoFilterLabel(repoFilter)}`);
@@ -182,7 +169,6 @@ export const mcpCommand = async (
       const resolvedRepo = repoCandidates[0];
       if (resolvedRepo && resolvedRepo.path !== targetProjectPath) {
         const detail = formatMcpStartupMismatchError({
-          source: repoFilterSource === 'cli' ? 'cli' : 'env',
           repoSelector: repoFilter,
           resolvedRepo,
           projectCwd: targetProjectPath,
@@ -232,5 +218,5 @@ export const mcpCommand = async (
     );
   }
 
-  await startMCPServer(backend, { full: options.full });
+  await startMCPServer(backend, { full: options.full, projectCwd: targetProjectPath });
 };

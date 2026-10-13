@@ -172,7 +172,6 @@ Linux/macOS：
 ```bash
 cd /path/to/target/repo
 export ONTOINDEX_MCP_PROJECT_CWD="$PWD"
-export ONTOINDEX_MCP_REPO="$PWD"
 ontoindex setup
 ontoindex mcp --repo my-project
 ```
@@ -182,12 +181,11 @@ Windows PowerShell：
 ```powershell
 Set-Location C:\path\to\target\repo
 $env:ONTOINDEX_MCP_PROJECT_CWD = (Get-Location).Path
-$env:ONTOINDEX_MCP_REPO = (Get-Location).Path
 ontoindex setup
 ontoindex mcp --repo my-project
 ```
 
-启动时，OntoIndex 会打印 executable 的工作目录和目标项目路径。如果 `ONTOINDEX_MCP_REPO` 或 `--repo` 指向 `ONTOINDEX_MCP_PROJECT_CWD` 之外的位置，启动会失败，除非设置 `ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1`。
+启动时，OntoIndex 会打印 executable 的工作目录和目标项目路径。如果 `--repo` 指向 `ONTOINDEX_MCP_PROJECT_CWD` 之外的位置，启动会失败，除非设置 `ONTOINDEX_MCP_ALLOW_REPO_MISMATCH=1`。
 
 `ontoindex mcp-doctor --repo <label-or-path> --project-cwd <path> --json` 会解析相同的仓库选择器，并返回 `READY`、`DEGRADED` 或 `MISCONFIGURED`；如果发现 scope mismatch，还会给出对应的重启命令。
 

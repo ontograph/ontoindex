@@ -6,6 +6,7 @@
  */
 
 import { createRequire } from 'node:module';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { LocalBackend } from './local/local-backend.js';
 import { loadAnalysisCatalog } from '../analysis-packs/catalog.js';
 import { buildAnalysisExecutionPlan } from '../analysis-packs/execution.js';
@@ -373,6 +374,22 @@ function parseUnmatchedOnlyParam(raw: string | null): boolean | undefined {
   return undefined;
 }
 
+function decodeResourceSegment(segment: string, uri: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    throw new McpError(ErrorCode.InvalidParams, `Invalid resource URI: ${uri}`);
+  }
+}
+
+function invalidResourceUri(uri: string): McpError {
+  return new McpError(ErrorCode.InvalidParams, `Unknown resource URI: ${uri}`);
+}
+
+function unsupportedResource(uri: string): McpError {
+  return new McpError(-32002, `Unknown resource: ${uri}`);
+}
+
 /**
  * Parse a OntoIndex resource URI (repos, setup, per-repo, or per-group templates).
  * Used by `readResource` and tests (round-trip / dispatch coverage).
@@ -385,11 +402,11 @@ export function parseResourceUri(uri: string): ParsedOntoIndexResource {
   try {
     u = new URL(uri);
   } catch {
-    throw new Error(`Unknown resource URI: ${uri}`);
+    throw invalidResourceUri(uri);
   }
 
   if (u.protocol !== 'ontoindex:') {
-    throw new Error(`Unknown resource URI: ${uri}`);
+    throw invalidResourceUri(uri);
   }
 
   if (u.hostname === 'group') {
@@ -398,20 +415,18 @@ export function parseResourceUri(uri: string): ParsedOntoIndexResource {
       .split('/')
       .filter(Boolean);
     if (segments.length < 2) {
-      throw new Error(
-        `Invalid group resource URI (expected ontoindex://group/{name}/contracts or .../status): ${uri}`,
-      );
+      throw invalidResourceUri(uri);
     }
     const tail = segments[segments.length - 1]!;
     if (tail !== 'contracts' && tail !== 'status') {
-      throw new Error(`Unknown group resource path in URI: ${uri}`);
+      throw unsupportedResource(uri);
     }
     const groupName = segments
       .slice(0, -1)
-      .map((s) => decodeURIComponent(s))
+      .map((s) => decodeResourceSegment(s, uri))
       .join('/');
     if (!groupName) {
-      throw new Error(`Invalid group resource URI (empty group name): ${uri}`);
+      throw invalidResourceUri(uri);
     }
     if (tail === 'status') {
       return { kind: 'group', groupName, resourceType: 'status' };
@@ -434,11 +449,19 @@ export function parseResourceUri(uri: string): ParsedOntoIndexResource {
       .split('/')
       .filter(Boolean);
     if (segments.length < 2) {
-      throw new Error(`Unknown resource URI: ${uri}`);
+      throw invalidResourceUri(uri);
     }
-    const repoName = decodeURIComponent(segments[0]!);
+    const repoName = decodeResourceSegment(segments[0]!, uri);
     const restEncoded = segments.slice(1);
-    const rest = restEncoded.map((s) => decodeURIComponent(s)).join('/');
+    const rest = restEncoded.map((s) => decodeResourceSegment(s, uri)).join('/');
+
+    if (
+      ['cluster', 'process', 'analysis-plan', 'memory'].some(
+        (resourceType) => rest === resourceType || rest === `${resourceType}/`,
+      )
+    ) {
+      throw invalidResourceUri(uri);
+    }
 
     if (rest.startsWith('cluster/')) {
       return {
@@ -476,7 +499,7 @@ export function parseResourceUri(uri: string): ParsedOntoIndexResource {
     return { kind: 'repo', repoName, resourceType: rest };
   }
 
-  throw new Error(`Unknown resource URI: ${uri}`);
+  throw invalidResourceUri(uri);
 }
 
 /**
@@ -584,7 +607,7 @@ export async function readResource(uri: string, backend: LocalBackend): Promise<
         resultPromise = getOnboardingResource(backend, repoName);
         break;
       default:
-        resultPromise = Promise.reject(new Error(`Unknown resource: ${uri}`));
+        resultPromise = Promise.reject(unsupportedResource(uri));
         break;
     }
   }

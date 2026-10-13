@@ -14,6 +14,19 @@ const localBackendMock = vi.hoisted(() => ({
   dispose: vi.fn(),
 }));
 
+const processMock = vi.hoisted(() => ({
+  execFileText: vi.fn(),
+  getGitRoot: vi.fn(),
+}));
+
+vi.mock('../../src/core/process/exec-file.js', () => ({
+  execFileText: processMock.execFileText,
+}));
+
+vi.mock('../../src/storage/git.js', () => ({
+  getGitRoot: processMock.getGitRoot,
+}));
+
 vi.mock('../../src/mcp/local/local-backend.js', () => ({
   LocalBackend: class {
     constructor(options: unknown) {
@@ -97,9 +110,116 @@ beforeEach(() => {
   localBackendMock.init.mockReset().mockResolvedValue(true);
   localBackendMock.callTool.mockReset();
   localBackendMock.dispose.mockReset().mockResolvedValue(undefined);
+  processMock.execFileText.mockReset();
+  processMock.getGitRoot.mockReset();
 });
 
 describe('mcp-doctor', () => {
+  it('resolves only implicit project cwd through getGitRoot once and preserves explicit selector precedence', async () => {
+    processMock.getGitRoot.mockReturnValue('/repo/root');
+    const probe = vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'not-probed' });
+    const deps = {
+      cwd: () => '/repo/root/nested',
+      diagnose: async () => baseDiagnose,
+      processLiveness: probe,
+      setupHealth: async () => ({ status: 'ok' as const, issues: [] }),
+    };
+
+    const implicit = await createMcpDoctorReport({}, deps);
+    expect(implicit.repoSelector).toBe('/repo/root');
+    expect(probe).toHaveBeenCalledWith('/repo/root', '/repo/root', expect.any(String));
+    expect(processMock.getGitRoot).toHaveBeenCalledTimes(1);
+
+    processMock.getGitRoot.mockClear();
+    const explicit = await createMcpDoctorReport(
+      { repo: 'repo-selector', projectCwd: '/explicit/project' },
+      { ...deps, env: { ONTOINDEX_MCP_PROJECT_CWD: '/env/project' } },
+    );
+    expect(explicit.repoSelector).toBe('repo-selector');
+    expect(explicit.processLiveness).toBeDefined();
+    expect(processMock.getGitRoot).not.toHaveBeenCalled();
+
+    processMock.getGitRoot.mockReturnValue('/repo/root');
+    const explicitRepo = await createMcpDoctorReport(
+      { repo: 'repo-selector' },
+      { ...deps, env: {} },
+    );
+    expect(explicitRepo.repoSelector).toBe('repo-selector');
+    expect(probe).toHaveBeenLastCalledWith('repo-selector', '/repo/root', expect.any(String));
+    expect(processMock.getGitRoot).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses exact normalized absolute paths, leaves relative bindings unavailable, and recognizes bare MCP commands', async () => {
+    processMock.getGitRoot.mockReturnValue(null);
+    processMock.execFileText
+      .mockResolvedValueOnce('11 node /repo/app/ontoindex/dist/cli/index.js mcp --project /repo/app-extra')
+      .mockResolvedValueOnce('12 node /repo/app/ontoindex/dist/cli/index.js mcp --project relative/project')
+      .mockResolvedValueOnce('13 ontoindex mcp')
+      .mockResolvedValueOnce('14 /home/user/.local/bin/ontoindex mcp')
+      .mockResolvedValueOnce('16 node /other/index.js mcp --project /repo/app')
+      .mockResolvedValueOnce('17 node /opt/ontoindex/ontoindex/dist/cli/index.js mcp --project /repo/app')
+      .mockResolvedValueOnce('18 node /opt/ontoindex/ontoindex/dist/cli/index.js mcp --project /repo/foo bar');
+    const probe = async (projectCwd: string) => {
+      const report = await createMcpDoctorReport(
+        { projectCwd },
+        { diagnose: async () => baseDiagnose, setupHealth: async () => ({ status: 'ok', issues: [] }) },
+      );
+      return report;
+    };
+
+    const prefix = await probe('/repo/app');
+    expect(prefix.processLiveness?.status).toBe('mismatch');
+    const relative = await probe('/repo/app');
+    expect(relative.processLiveness?.status).toBe('unavailable');
+    const bare = await probe('/repo/app');
+    expect(bare.processLiveness?.status).toBe('unavailable');
+    expect(bare.verdict).toBe('DEGRADED');
+    const installed = await probe('/repo/app');
+    expect(installed.processLiveness?.status).toBe('unavailable');
+    expect(installed.verdict).toBe('DEGRADED');
+    const arbitraryIndex = await probe('/repo/app');
+    expect(arbitraryIndex.processLiveness?.status).toBe('missing');
+    const packageLaunch = await probe('/repo/app');
+    expect(packageLaunch.processLiveness?.status).toBe('ok');
+    const pathWithSpaces = await probe('/repo/foo');
+    expect(pathWithSpaces.processLiveness?.status).toBe('unavailable');
+    expect(pathWithSpaces.verdict).toBe('DEGRADED');
+
+    processMock.execFileText.mockResolvedValueOnce(
+      '15 node /repo/app/ontoindex/dist/cli/index.js mcp --project /repo/app/',
+    );
+    const trailingSlash = await probe('/repo/app');
+    expect(trailingSlash.processLiveness?.status).toBe('ok');
+  });
+
+  it.each([
+    { env: { ONTOINDEX_MCP_REPO: 'stale-repo' }, expected: '/repo/cwd' },
+    {
+      env: { ONTOINDEX_MCP_REPO: 'stale-repo', ONTOINDEX_MCP_PROJECT_CWD: '/repo/project' },
+      expected: '/repo/project',
+    },
+  ])('ignores legacy repo environment and follows project or cwd: $expected', async ({ env, expected }) => {
+    const diagnose = vi.fn().mockResolvedValue(baseDiagnose);
+    const processLiveness = vi.fn().mockImplementation(async (repo, projectCwd, repairCommand) => {
+      expect(repo).toBe(expected);
+      expect(projectCwd).toBe(expected);
+      expect(repairCommand).toBe(`ontoindex mcp --project '${expected}'`);
+      return { status: 'unavailable', reason: 'not-probed', repairCommand };
+    });
+
+    const report = await createMcpDoctorReport({}, {
+      env,
+      cwd: () => '/repo/cwd',
+      diagnose,
+      processLiveness,
+      setupHealth: async () => ({ status: 'ok', issues: [] }),
+    });
+
+    expect(report.repoSelector).toBe(expected);
+    expect(diagnose).toHaveBeenCalledWith(expected, expect.any(Object));
+    expect(processLiveness).toHaveBeenCalled();
+  });
+
   it('runs production symbol smoke checks when no injected smokeSymbol is provided', async () => {
     localBackendMock.callTool
       .mockResolvedValueOnce({
@@ -143,7 +263,7 @@ describe('mcp-doctor', () => {
       },
     );
 
-    expect(report.verdict).toBe('READY');
+    expect(report.verdict).toBe('DEGRADED');
     expect(report.symbolSmoke).toEqual({ status: 'ok' });
     expect(localBackendMock.ctor).toHaveBeenCalledWith({
       repoFilter: 'fixture',
@@ -280,7 +400,7 @@ describe('mcp-doctor', () => {
       },
     );
 
-    expect(unavailableReport.verdict).toBe('READY');
+    expect(unavailableReport.verdict).toBe('DEGRADED');
     expect(formatMcpDoctorText(unavailableReport)).toContain(
       'MCP process: unavailable (process-discovery-unsupported-platform)',
     );
@@ -618,7 +738,7 @@ describe('mcp-doctor', () => {
     expect(localBackendMock.ctor).not.toHaveBeenCalled();
     expect(JSON.parse(JSON.stringify(report))).toMatchObject({
       version: 1,
-      verdict: 'READY',
+      verdict: 'DEGRADED',
       repoSelector: 'fixture',
       projectCwd: '/repo/fixture',
       symbol: 'main',

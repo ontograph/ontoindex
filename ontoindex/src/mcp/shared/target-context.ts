@@ -178,7 +178,6 @@ export async function resolveTargetContext(
   const explicitProjectPath = options.projectPath?.trim()
     ? path.resolve(options.projectPath.trim())
     : undefined;
-  const envRepo = process.env.ONTOINDEX_MCP_REPO?.trim() || undefined;
   const envProjectPath = process.env.ONTOINDEX_MCP_PROJECT_CWD?.trim()
     ? path.resolve(process.env.ONTOINDEX_MCP_PROJECT_CWD.trim())
     : undefined;
@@ -187,7 +186,6 @@ export async function resolveTargetContext(
   const explicitProjectResolution = explicitProjectPath
     ? resolveRegistryEntryByPath(registry, explicitProjectPath)
     : null;
-  const envResolution = envRepo ? resolveRegistryEntry(registry, envRepo) : null;
   const envProjectResolution = envProjectPath
     ? resolveRegistryEntryByPath(registry, envProjectPath)
     : null;
@@ -199,7 +197,7 @@ export async function resolveTargetContext(
       ? 'project'
       : cwdResolution.status === 'ok'
         ? 'cwd'
-        : envResolution?.status === 'ok' || envProjectResolution?.status === 'ok'
+        : envProjectResolution?.status === 'ok'
           ? 'env'
           : noSelectorResolution.status === 'ok'
             ? 'single'
@@ -214,11 +212,9 @@ export async function resolveTargetContext(
         })
       : cwdResolution.status === 'ok'
         ? cwdResolution
-        : envResolution?.status === 'ok'
-          ? envResolution
-          : envProjectResolution?.status === 'ok'
-            ? envProjectResolution
-            : noSelectorResolution;
+        : envProjectResolution?.status === 'ok'
+          ? envProjectResolution
+          : noSelectorResolution;
 
   if (selectedResolution.status !== 'ok') {
     return {
@@ -228,7 +224,7 @@ export async function resolveTargetContext(
       action: actionWithRetryExamples(
         selectedResolution.status,
         registry,
-        explicitRepo ?? explicitProjectPath ?? envRepo ?? envProjectPath,
+        explicitRepo ?? explicitProjectPath ?? envProjectPath,
       ),
       warnings,
     };
@@ -253,20 +249,6 @@ export async function resolveTargetContext(
     );
   }
   if (
-    explicitRepo &&
-    envResolution?.status === 'ok' &&
-    !sameResolvedPath(envResolution.entry.path, repoPath)
-  ) {
-    warnings.push(
-      repoPathMismatchWarning({
-        selector: `explicit repo "${explicitRepo}"`,
-        selectedPath: repoPath,
-        conflictingSource: `ONTOINDEX_MCP_REPO "${envRepo}"`,
-        conflictingPath: envResolution.entry.path,
-      }),
-    );
-  }
-  if (
     explicitProjectPath &&
     cwdResolution.status === 'ok' &&
     !sameResolvedPath(cwdResolution.entry.path, repoPath)
@@ -277,20 +259,6 @@ export async function resolveTargetContext(
         selectedPath: repoPath,
         conflictingSource: `MCP cwd ${cwdRepoRoot}`,
         conflictingPath: cwdResolution.entry.path,
-      }),
-    );
-  }
-  if (
-    explicitProjectPath &&
-    envResolution?.status === 'ok' &&
-    !sameResolvedPath(envResolution.entry.path, repoPath)
-  ) {
-    warnings.push(
-      repoPathMismatchWarning({
-        selector: `explicit project "${explicitProjectPath}"`,
-        selectedPath: repoPath,
-        conflictingSource: `ONTOINDEX_MCP_REPO "${envRepo}"`,
-        conflictingPath: envResolution.entry.path,
       }),
     );
   }
@@ -356,7 +324,6 @@ export async function resolveTargetContext(
       ? null
       : dirtyWorktree === true || headChangedSinceIndex;
   const selectionMismatch =
-    (envResolution?.status === 'ok' && !sameResolvedPath(envResolution.entry.path, repoPath)) ||
     (cwdResolution.status === 'ok' && !sameResolvedPath(cwdResolution.entry.path, repoPath));
   const dirtyWorkspace = resolveDirtyWorkspace({
     dirtyWorktree,
@@ -964,15 +931,6 @@ function actionWithRetryExamples(
     candidates: repoResolutionCandidatesFromEntries(registry),
     environment: repoResolutionEnvironmentFromProcess(),
   });
-}
-
-function buildAmbiguousRepoAction(
-  envRepo: string,
-  envRepoPath: string,
-  cwdRepoRoot: string,
-  cwdRepoPath: string,
-): string {
-  return `Repository selection is ambiguous: ONTOINDEX_MCP_REPO "${envRepo}" resolves to ${envRepoPath}, while MCP cwd ${cwdRepoRoot} resolves to ${cwdRepoPath}. Retry with repo: "${envRepoPath}" or repo: "${cwdRepoPath}".`;
 }
 
 function resolveEmbeddingsReadiness(

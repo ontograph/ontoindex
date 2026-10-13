@@ -49,7 +49,6 @@ import {
   pageMcpResponse,
 } from './shared/response-pages.js';
 
-const MAX_ERROR_URI_CHARS = 4096;
 const MAX_PROMPT_ARGUMENT_BYTES = 4096;
 
 const GRAPH_BACKED_SUPER_TOOLS = new Set<SuperTool>([
@@ -286,25 +285,12 @@ export function getNextStepHint(
   }
 }
 
-function getReadResourceErrorMessage(err: unknown): unknown {
-  if (err instanceof Error) {
-    return err.message;
-  }
-  if (
-    ((typeof err === 'object' && err !== null) || typeof err === 'function') &&
-    'message' in err
-  ) {
-    return (err as { message: unknown }).message;
-  }
-  return undefined;
-}
-
 async function dispatchLazySuper(
   name: SuperTool,
   params: Record<string, unknown>,
   repoId: string,
   backend?: import('./super/safe-refactor.js').RefactorBackend,
-  context?: { repoPath: string },
+  context?: { repoPath: string; projectCwd?: string | null },
 ): Promise<unknown> {
   const { dispatchSuper } = await import('./super/dispatch.js');
   if (context) return dispatchSuper(name, params, repoId, backend, context);
@@ -319,7 +305,7 @@ async function dispatchLazySuper(
  */
 export function createMCPServer(
   backend: LocalBackend,
-  options: { full?: boolean; transport?: 'stdio' | 'http' } = {},
+  options: { full?: boolean; transport?: 'stdio' | 'http'; projectCwd?: string } = {},
 ): Server {
   const require = createRequire(import.meta.url);
   const pkgVersion: string = require('../../package.json').version;
@@ -441,23 +427,17 @@ export function createMCPServer(
         }
         return response;
       } catch (err: unknown) {
-        // Bound the whole resource envelope: cap the echoed URI and reserve its bytes.
-        const echoedUri =
-          uri.length > MAX_ERROR_URI_CHARS ? uri.slice(0, MAX_ERROR_URI_CHARS) : uri;
-        const reservedBytes = Buffer.byteLength(JSON.stringify(echoedUri), 'utf8') + 64;
-        return {
-          contents: [
-            {
-              uri: echoedUri,
-              mimeType: 'text/plain',
-              text: boundMcpErrorText(
-                (message) => `Error: ${message}`,
-                String(getReadResourceErrorMessage(err)),
-                MCP_RESPONSE_MAX_BYTES - reservedBytes,
-              ),
-            },
-          ],
-        };
+        const classified = err instanceof McpError &&
+          (err.code === ErrorCode.InvalidParams || err.code === -32002);
+        const code = classified ? err.code : ErrorCode.InternalError;
+        const message = classified ? err.message : 'Resource read failed.';
+        // Reserve protocol framing and the SDK's error-code prefix; never echo backend data.
+        throw new McpError(code, boundMcpErrorText(
+          (text) => text,
+          message,
+          MCP_RESPONSE_MAX_BYTES - 1024,
+          (text) => Buffer.byteLength(JSON.stringify({ code, message: text }), 'utf8'),
+        ));
       }
     }),
   );
@@ -551,7 +531,9 @@ export function createMCPServer(
                       callTool: backend.callTool.bind(backend),
                     }
                   : undefined,
-                name === 'gn_audit_logic' ? { repoPath: repo.repoPath } : undefined,
+                name === 'gn_diagnose'
+                  ? { repoPath: repo.repoPath, projectCwd: options.projectCwd ?? null }
+                  : name === 'gn_audit_logic' ? { repoPath: repo.repoPath } : undefined,
               ),
               repo,
             );
@@ -716,7 +698,7 @@ function withResponseCursor(schema: any): any {
  */
 export async function startMCPServer(
   backend: LocalBackend,
-  options: { full?: boolean } = {},
+  options: { full?: boolean; projectCwd?: string } = {},
 ): Promise<void> {
   const server = createMCPServer(backend, options);
 
