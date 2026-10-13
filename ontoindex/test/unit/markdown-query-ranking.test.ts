@@ -78,6 +78,43 @@ describe('Markdown query ranking', () => {
     expect(scores.has('b')).toBe(false);
   });
 
+  it('limits scoring to the first 32 distinct query tokens', () => {
+    const tokens = Array.from({ length: 100 }, (_, index) => `term${index}`);
+    const chunks = [
+      {
+        chunkKey: 'first-32',
+        docPath: 'docs/first-32.md',
+        headingPath: [],
+        excerpt: tokens.slice(0, 32).join(' '),
+      },
+      {
+        chunkKey: 'last-68',
+        docPath: 'docs/last-68.md',
+        headingPath: [],
+        excerpt: tokens.slice(32).join(' '),
+      },
+    ];
+
+    expect(scoreMarkdownChunks(tokens.join(' '), chunks)).toEqual(
+      scoreMarkdownChunks(tokens.slice(0, 32).join(' '), chunks),
+    );
+  });
+
+  it('scores 20,000 synthetic chunks within a generous time bound', () => {
+    const chunks = Array.from({ length: 20_000 }, (_, index) => ({
+      chunkKey: `chunk-${index}`,
+      docPath: `docs/chunk-${index}.md`,
+      headingPath: ['Synthetic chunk'],
+      excerpt: index % 100 === 0 ? 'needle appears here' : 'unrelated corpus content',
+    }));
+    const startedAt = performance.now();
+
+    const scores = scoreMarkdownChunks('needle', chunks);
+
+    expect(scores.size).toBe(200);
+    expect(performance.now() - startedAt).toBeLessThan(2_000);
+  });
+
   it('downweights low-authority archive chunks', () => {
     const chunks = [
       {

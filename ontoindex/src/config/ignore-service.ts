@@ -626,12 +626,22 @@ export const explainPathScope = async (
  * Returns an IgnoreLike object for glob's `ignore` option,
  * enabling directory-level pruning during traversal.
  */
+export const ROOT_DOCUMENT_INCLUDE_ALLOWLIST: readonly string[] = Object.freeze([
+  'SECURITY.md',
+  'CONTRIBUTING.md',
+  'CHANGELOG.md',
+  'CODE_OF_CONDUCT.md',
+  'LICENSE.md',
+]);
+
 export const createIgnoreFilter = async (
   repoPath: string,
   options?: IgnoreOptions & { includeFiles?: readonly string[] },
 ) => {
   const ig = await loadIgnoreRules(repoPath, options);
-  const includeFiles = new Set(options?.includeFiles ?? []);
+  const includeFiles = new Set(
+    (options?.includeFiles ?? []).filter((name) => ROOT_DOCUMENT_INCLUDE_ALLOWLIST.includes(name)),
+  );
 
   return {
     ignored(p: Path): boolean {

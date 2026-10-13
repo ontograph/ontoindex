@@ -501,11 +501,21 @@ describe('createIgnoreFilter root-file allowlist', () => {
     },
   );
 
-  it('includes an allowlisted root SECURITY.md file', async () => {
-    await fs.writeFile(path.join(tmpDir, 'SECURITY.md'), 'policy');
-    const filter = await createIgnoreFilter(tmpDir, { includeFiles: ['SECURITY.md'] });
+  it.each(['SECURITY.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'CODE_OF_CONDUCT.md', 'LICENSE.md'])(
+    'includes an allowlisted root %s file',
+    async (fileName) => {
+      await fs.writeFile(path.join(tmpDir, fileName), 'policy');
+      const filter = await createIgnoreFilter(tmpDir, { includeFiles: [fileName] });
 
-    expect(filter.ignored(await getPath('SECURITY.md'))).toBe(false);
+      expect(filter.ignored(await getPath(fileName))).toBe(false);
+    },
+  );
+
+  it('does not bypass built-in ignores for a non-allowlisted root file', async () => {
+    await fs.writeFile(path.join(tmpDir, 'package-lock.json'), '{}');
+    const filter = await createIgnoreFilter(tmpDir, { includeFiles: ['package-lock.json'] });
+
+    expect(filter.ignored(await getPath('package-lock.json'))).toBe(true);
   });
 
   it('does not include a nested file with the same name', async () => {

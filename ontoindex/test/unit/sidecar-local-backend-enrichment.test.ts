@@ -1385,6 +1385,59 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     expect(result.enrichment.relatedDocs).toEqual([]);
   });
 
+  it.each(['!!! ... ???', 'the to and'])(
+    'keeps path-order context for zero-token query %s',
+    async (query) => {
+      const repo = await createRepo();
+      await writeSidecarStore(repo.storagePath, rankingSidecarState());
+      const backend = new LocalBackend();
+      const options = {
+        consume_enrichment_facts: true,
+        include_passive_related_facts: true,
+        include_markdown_context: true,
+      };
+      const empty = await backend.callTool('query', { ...options, query: '' });
+      const result = await backend.callTool('query', { ...options, query });
+      expect(result.enrichment.relatedChunks.length).toBeGreaterThan(0);
+      expect(result.enrichment.relatedChunks).toEqual(empty.enrichment.relatedChunks);
+      expect(result.enrichment.relatedDocs).toEqual(empty.enrichment.relatedDocs);
+    },
+  );
+
+  it('caps context without throwing for more than 150,000 matching chunks', async () => {
+    const repo = await createRepo();
+    const state = markdownSidecarState();
+    const base = state.enrichments[0];
+    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')!;
+    const chunks = Array.from({ length: 150_001 }, (_, index) => ({
+      ...chunk,
+      chunkKey: `chunk-${index}`,
+      chunkIndex: index,
+      headingPath: ['Login'],
+      excerpt: 'login',
+    }));
+    await writeSidecarStore(repo.storagePath, {
+      ...state,
+      enrichments: Array.from({ length: 151 }, (_, index) => ({
+        ...base,
+        filePath: `src/chunks-${index}.ts`,
+        records: chunks.slice(index * 1_000, (index + 1) * 1_000),
+      })),
+    });
+    const backend = new LocalBackend();
+    const result = await backend.callTool('query', {
+      query: 'login',
+      consume_enrichment_facts: true,
+      include_passive_related_facts: true,
+      include_markdown_context: true,
+    });
+    expect(result.enrichment.error).toBeUndefined();
+    expect(result.enrichment.relatedChunks).toHaveLength(10);
+    expect(result.enrichment.relatedDocs).toEqual([
+      expect.objectContaining({ docPath: chunk.docPath, chunkCount: chunks.length }),
+    ]);
+  }, 20_000);
+
   it('GR1-C keeps the Markdown context response below the byte budget', async () => {
     const repo = await createRepo();
     await writeSidecarStore(repo.storagePath, rankingSidecarState());

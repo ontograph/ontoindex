@@ -63,6 +63,7 @@ import {
   scoreMarkdownChunks,
   resolveMarkdownLinkTarget,
   applyMarkdownLinkBonus,
+  tokenizeMarkdownQueryText,
 } from '../../core/ingestion/enrichment/markdown-query-ranking.js';
 import { detectChanges as detectChangesImpl } from './backend-detect-changes.js';
 import { impactByUid as impactByUidImpl, runImpact } from './backend-impact.js';
@@ -596,7 +597,7 @@ function extractMarkdownContextMetadata(
   const policy = options.retrievalPolicy;
   const policyPathReasons = policy ? [policy.pathReason] : undefined;
   const filteredEntries = filterMarkdownEntriesByPolicy(entries, policy);
-  const relatedChunks: MarkdownRelatedChunk[] = [];
+  let relatedChunks: MarkdownRelatedChunk[] = [];
   const docs = new Map<string, MarkdownRelatedDoc>();
   const chunksByKey = new Map<string, MarkdownRelatedChunk>();
   const chunkEvidence = new Map<string, MarkdownDocsEvidenceFact[]>();
@@ -665,7 +666,7 @@ function extractMarkdownContextMetadata(
     }
   }
 
-  const hasQuery = (options.query ?? '').trim().length > 0;
+  const hasQuery = tokenizeMarkdownQueryText(options.query).length > 0;
   const chunkScores = hasQuery ? scoreMarkdownChunks(options.query, relatedChunks) : undefined;
   // Policy-driven expansion is graph-driven: rank by query but keep unmatched chunks.
   const dropUnmatchedChunks = options.retrievalPolicy === undefined;
@@ -686,11 +687,9 @@ function extractMarkdownContextMetadata(
     }
     applyMarkdownLinkBonus(chunkScores, relatedChunks, links);
     if (dropUnmatchedChunks) {
-      const kept = relatedChunks.filter(
+      relatedChunks = relatedChunks.filter(
         (chunk) => chunk.chunkKey && chunkScores.has(chunk.chunkKey),
       );
-      relatedChunks.length = 0;
-      relatedChunks.push(...kept);
     }
     relatedChunks.sort(
       (left, right) =>

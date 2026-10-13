@@ -34,6 +34,7 @@ const STOP_WORDS = new Set([
 ]);
 const BM25_K1 = 1.2;
 const BM25_B = 0.75;
+export const MARKDOWN_MAX_QUERY_TOKENS = 32;
 export const MARKDOWN_ARCHIVE_WEIGHT = 0.5;
 export const MARKDOWN_LINK_BONUS = 0.25;
 
@@ -73,24 +74,38 @@ export function scoreMarkdownChunks(
   chunks: readonly MarkdownRankableChunk[],
 ): Map<string, number> {
   const scores = new Map<string, number>();
-  const queryTokens = [...new Set(tokenizeMarkdownQueryText(query))];
-  if (queryTokens.length === 0 || chunks.length === 0) return scores;
-  const documents = chunks.map((chunk) =>
-    tokenizeMarkdownQueryText([...chunk.headingPath, chunk.excerpt ?? ''].join(' ')),
+  const queryTokens = [...new Set(tokenizeMarkdownQueryText(query))].slice(
+    0,
+    MARKDOWN_MAX_QUERY_TOKENS,
   );
-  const averageLength =
-    documents.reduce((sum, tokens) => sum + tokens.length, 0) / documents.length || 1;
+  if (queryTokens.length === 0 || chunks.length === 0) return scores;
+  const queryTokenSet = new Set(queryTokens);
+  const documents: string[][] = [];
+  let totalLength = 0;
   const documentFrequency = new Map<string, number>();
-  for (const tokens of documents) {
-    for (const token of new Set(tokens)) {
+  for (const chunk of chunks) {
+    const tokens = tokenizeMarkdownQueryText([...chunk.headingPath, chunk.excerpt ?? ''].join(' '));
+    documents.push(tokens);
+    totalLength += tokens.length;
+    const seenQueryTokens = new Set<string>();
+    for (const token of tokens) {
+      if (queryTokenSet.has(token)) seenQueryTokens.add(token);
+    }
+    for (const token of seenQueryTokens) {
       documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
     }
   }
+  const averageLength = totalLength / documents.length || 1;
   chunks.forEach((chunk, index) => {
     if (!chunk.chunkKey) return;
     const tokens = documents[index];
     const termFrequency = new Map<string, number>();
-    for (const token of tokens) termFrequency.set(token, (termFrequency.get(token) ?? 0) + 1);
+    for (const token of tokens) {
+      if (queryTokenSet.has(token)) {
+        termFrequency.set(token, (termFrequency.get(token) ?? 0) + 1);
+      }
+    }
+    if (termFrequency.size === 0) return;
     let score = 0;
     for (const token of queryTokens) {
       const frequency = termFrequency.get(token) ?? 0;
