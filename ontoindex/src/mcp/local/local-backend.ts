@@ -592,7 +592,7 @@ function passiveCandidateKey(candidate: PassiveGraphFactCandidate): string {
 function extractMarkdownContextMetadata(
   entries: readonly MarkdownContextFactEntry[],
   options: { query?: string; includePpr?: boolean; retrievalPolicy?: RetrievalPolicyConfig } = {},
-): MarkdownContextMetadata & { keptDocPaths: Set<string> } {
+): MarkdownContextMetadata {
   const policy = options.retrievalPolicy;
   const policyPathReasons = policy ? [policy.pathReason] : undefined;
   const filteredEntries = filterMarkdownEntriesByPolicy(entries, policy);
@@ -710,7 +710,6 @@ function extractMarkdownContextMetadata(
       doc.chunkCount = chunkCounts.get(docKey) ?? 0;
     }
   }
-  const keptDocPaths = new Set(relatedChunks.map((chunk) => chunk.docPath));
   const firstChunkIndex = new Map<string, number>();
   relatedChunks.forEach((chunk, index) => {
     if (!firstChunkIndex.has(chunk.docPath)) firstChunkIndex.set(chunk.docPath, index);
@@ -740,7 +739,6 @@ function extractMarkdownContextMetadata(
       : undefined;
 
   return {
-    keptDocPaths,
     relatedDocs,
     relatedChunks: boundedRelatedChunks,
     ...(markdownPpr && { markdownPpr }),
