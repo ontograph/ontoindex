@@ -96,7 +96,8 @@ describe('setupCommand skills integration', () => {
 
     const codexConfig = await fs.readFile(path.join(tempHome, '.codex', 'config.toml'), 'utf-8');
     expect(codexConfig).toContain('[mcp_servers.ontoindex]');
-    expect(codexConfig).toContain('dist/cli/index.js');
+    // Built trees launch the packaged CLI; unbuilt source trees use the npx fallback.
+    expect(codexConfig).toMatch(/dist\/cli\/index\.js|command = "npx"/);
     expect(codexConfig).toContain('"mcp"');
 
     const codexSkill = await fs.readFile(
