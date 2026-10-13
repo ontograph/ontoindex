@@ -338,8 +338,21 @@ async function cloneFresh(
   let movedOld = false;
   try {
     try {
-      await fs.lstat(targetDir);
+      const targetStat = await fs.lstat(targetDir);
+      // Pre-marker releases used this exact URL-derived clone location.
+      let unmarkedHashedClone = false;
       if (
+        targetStat.isDirectory() &&
+        path.resolve(targetDir) === path.resolve(getCloneDir(extractRepoName(url), url))
+      ) {
+        try {
+          unmarkedHashedClone = (await fs.lstat(path.join(targetDir, '.git'))).isDirectory();
+        } catch {
+          // Missing or unreadable Git metadata is not evidence of a clone.
+        }
+      }
+      if (
+        !unmarkedHashedClone &&
         !(await canRemoveClone(
           targetDir,
           path.dirname(targetDir),

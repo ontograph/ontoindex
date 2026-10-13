@@ -13,5 +13,8 @@ describe('Claude pre-tool hook', () => {
     expect(source).not.toContain('npx -y');
     expect(source).toContain('command -v ontoindex');
     expect(source).toContain('timeout 2');
+    expect(source).toContain('else\n  exit 0\nfi');
+    expect(source.match(/\$ONTOINDEX_BIN" augment/g)).toHaveLength(1);
+    expect(source).toMatch(/timeout 2 "\$ONTOINDEX_BIN" augment/);
   });
 });

@@ -67,7 +67,7 @@ ONTOINDEX_BIN=$(command -v ontoindex 2>/dev/null) || exit 0
 if command -v timeout >/dev/null 2>&1; then
   RESULT=$(cd "$CWD" && timeout 2 "$ONTOINDEX_BIN" augment "$PATTERN" 2>&1 1>/dev/null) || exit 0
 else
-  RESULT=$(cd "$CWD" && "$ONTOINDEX_BIN" augment "$PATTERN" 2>&1 1>/dev/null) || exit 0
+  exit 0
 fi
 
 if [ -n "$RESULT" ]; then

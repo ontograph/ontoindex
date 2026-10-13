@@ -220,6 +220,25 @@ function traceState(requirementIds: readonly string[]) {
 }
 
 describe('collectAdvisoryDocsEvidence', () => {
+  it.each(['unknown-selector', 'demo'])(
+    'rejects unresolved selector %s without reading unrelated sidecar',
+    async (selector) => {
+      const repo = await createRepo();
+      mockListRegisteredRepos.mockResolvedValue([
+        { ...repo, name: 'OntoIndex' },
+        { ...repo, name: 'demo', path: `${repo.path}/a` },
+        { ...repo, name: 'demo', path: `${repo.path}/b` },
+      ]);
+      const access = vi.spyOn(fs, 'access');
+      try {
+        const report = await collectAdvisoryDocsEvidence(selector, []);
+        expect(report.freshness.reasons).toEqual(['repo-not-registered']);
+        expect(access).not.toHaveBeenCalled();
+      } finally {
+        access.mockRestore();
+      }
+    },
+  );
   beforeEach(() => {
     vi.clearAllMocks();
   });

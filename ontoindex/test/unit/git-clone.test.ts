@@ -16,6 +16,55 @@ import os from 'node:os';
 import path from 'node:path';
 
 describe('git-clone', () => {
+  it.each(['checkout', 'missing-git', 'other-path', 'symlink', 'git-symlink'])(
+    'refreshes only a real unmarked URL-hashed checkout: %s',
+    async (kind) => {
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), 'clone-upgrade-'));
+      const homeSpy = vi.spyOn(os, 'homedir').mockReturnValue(home);
+      const url = 'https://example.com/repo';
+      const hashed = getCloneDir(extractRepoName(url), url);
+      const target = kind === 'other-path' ? path.join(home, 'other') : hashed;
+      const actual = kind === 'symlink' ? path.join(home, 'actual') : target;
+      const runGit = vi.fn(async (args: string[]) => {
+        await fs.mkdir(path.join(args.at(-1)!, '.git'), { recursive: true });
+        await fs.writeFile(path.join(args.at(-1)!, 'new'), 'new');
+      });
+      try {
+        await fs.mkdir(actual, { recursive: true });
+        await fs.writeFile(path.join(actual, 'old'), 'old');
+        if (kind === 'git-symlink') {
+          await fs.mkdir(path.join(home, 'git'));
+          await fs.symlink(path.join(home, 'git'), path.join(actual, '.git'));
+        } else if (kind !== 'missing-git') {
+          await fs.mkdir(path.join(actual, '.git'));
+        }
+        if (kind === 'symlink') {
+          await fs.mkdir(path.dirname(target), { recursive: true });
+          await fs.symlink(actual, target);
+        }
+        expect(await canRemoveClone(target, path.dirname(target), getCloneDir('repo'))).toBe(false);
+        const refresh = cloneOrPull(url, target, undefined, {
+          runGit,
+          lookup: async () => [{ address: '140.82.121.4', family: 4 }],
+        });
+        if (kind === 'checkout') {
+          await refresh;
+          expect(await fs.readdir(target)).toEqual(['.git', 'new']);
+          expect(await isManagedClone(target)).toBe(true);
+          expect(runGit).toHaveBeenCalledTimes(1);
+        } else {
+          await expect(refresh).rejects.toThrow('Refusing to replace');
+          expect(await fs.readFile(path.join(actual, 'old'), 'utf8')).toBe('old');
+          expect(runGit).not.toHaveBeenCalled();
+          if (kind === 'symlink') expect((await fs.lstat(target)).isSymbolicLink()).toBe(true);
+        }
+      } finally {
+        homeSpy.mockRestore();
+        await fs.rm(home, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('preserves unmanaged directories and only accepts owned or exact legacy clones', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'clone-ownership-'));
     const dir = path.join(root, 'repo');

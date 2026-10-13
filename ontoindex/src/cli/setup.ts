@@ -1054,6 +1054,7 @@ export const setupCommand = async () => {
     for (const err of result.errors) {
       console.log(`    ! ${err}`);
     }
+    process.exitCode = 1;
   }
 
   console.log('');

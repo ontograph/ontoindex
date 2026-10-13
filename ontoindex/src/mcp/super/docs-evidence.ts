@@ -138,11 +138,7 @@ export async function collectAdvisoryDocsEvidence(
 async function resolveRepo(repoId: string): Promise<RepoHandle | null> {
   const repos = await listRegisteredRepos();
   const selection = resolveRegistryEntry(repos, repoId);
-  return (
-    (selection.status === 'ok' ? selection.entry : undefined) ??
-    repos.find((repo) => repo.name === 'OntoIndex') ??
-    null
-  );
+  return selection.status === 'ok' ? selection.entry : null;
 }
 
 async function loadSidecar(repo: RepoHandle): Promise<{

@@ -224,14 +224,33 @@ describe('setupClaudeCode', () => {
     await fs.mkdir(path.join(tempHome, '.config', 'opencode'), { recursive: true });
 
     const { setupCommand } = await import('../../src/cli/setup.js');
-    await setupCommand();
+    const previousExitCode = process.exitCode;
+    try {
+      await setupCommand();
 
-    await expect(fs.readFile(claudeConfig, 'utf-8')).resolves.toBe(original);
-    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Claude Code:'));
-    const opencode = JSON.parse(
-      await fs.readFile(path.join(tempHome, '.config', 'opencode', 'opencode.json'), 'utf-8'),
-    );
-    expect(opencode.mcp.ontoindex).toBeDefined();
+      expect(process.exitCode).toBe(1);
+      await expect(fs.readFile(claudeConfig, 'utf-8')).resolves.toBe(original);
+      expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Claude Code:'));
+      const opencode = JSON.parse(
+        await fs.readFile(path.join(tempHome, '.config', 'opencode', 'opencode.json'), 'utf-8'),
+      );
+      expect(opencode.mcp.ontoindex).toBeDefined();
+    } finally {
+      process.exitCode = previousExitCode;
+    }
+  });
+
+  it('keeps the exit code clear when setup has no errors', async () => {
+    setPlatform('linux');
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    const previousExitCode = process.exitCode;
+    try {
+      process.exitCode = 0;
+      await setupCommand();
+      expect(process.exitCode).toBe(0);
+    } finally {
+      process.exitCode = previousExitCode;
+    }
   });
 
   it('preserves BOM, existing mode and a one-time backup; leaves no temp file', async () => {

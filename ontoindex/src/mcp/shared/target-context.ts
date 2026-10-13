@@ -173,6 +173,7 @@ export async function resolveTargetContext(
 ): Promise<TargetContext> {
   const warnings: string[] = [];
   const registry = await readRegistrySafely(deps, warnings);
+  const repoIds = registryRepoIds(registry);
   const targetRef = options.targetRef?.trim() || 'HEAD';
   const base = createBaseContext(targetRef, warnings);
   const explicitRepo = options.repo?.trim() || undefined;
@@ -221,7 +222,7 @@ export async function resolveTargetContext(
     return {
       ...base,
       status: selectedResolution.status,
-      availableRepos: registry.map(toRepoSummary),
+      availableRepos: registry.map((entry) => toRepoSummary(entry, repoIds)),
       action: actionWithRetryExamples(
         selectedResolution.status,
         registry,
@@ -358,7 +359,7 @@ export async function resolveTargetContext(
   return {
     ...base,
     status: 'ok',
-    repoKey: entry.name,
+    repoKey: displayRepoKey(entry, repoIds),
     repoLabel: entry.name ?? path.basename(repoPath),
     repoPath,
     ...(branch ? { branch } : {}),
@@ -1056,8 +1057,14 @@ function resolveQualityMode(): QualityMode {
   return 'fast';
 }
 
-function toRepoSummary(entry: RegistryEntry): TargetContextRepoSummary {
-  return { key: entry.name, path: entry.path };
+/** Canonical id for colliding names; the registry name itself when it is unique. */
+function displayRepoKey(entry: RegistryEntry, repoIds: Map<object, string>): string {
+  const id = repoIds.get(entry)!;
+  return id === entry.name.toLowerCase() ? entry.name : id;
+}
+
+function toRepoSummary(entry: RegistryEntry, repoIds: Map<object, string>): TargetContextRepoSummary {
+  return { key: displayRepoKey(entry, repoIds), path: entry.path };
 }
 
 function formatError(err: unknown): string {

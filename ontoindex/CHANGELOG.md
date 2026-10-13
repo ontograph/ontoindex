@@ -4,6 +4,20 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.23] - 2026-10-13
+
+### Fixed
+
+- A clone made by 2.2.21 at its URL-hashed directory has no ownership marker, so re-analyzing it failed with "Refusing to replace an existing directory". `cloneFresh` now replaces that exact hashed directory when it is a real directory with a real `.git`, and writes the marker. The delete handler still keeps unmarked directories.
+- `repoKey` and `availableRepos[].key` return the canonical id for same-name repositories, so a returned key can be passed back without becoming ambiguous. Unique names are unchanged.
+- Docs evidence no longer falls back to a registry entry named `OntoIndex` when the repository selector is unknown or ambiguous; it reports `repo-not-registered`.
+- `ontoindex setup` exits with code 1 when any client configuration fails, after printing the errors and finishing the remaining clients.
+- The Claude pre-tool hook exits without running `ontoindex` when `timeout` is not installed, so it can never run unbounded.
+
+### Added
+
+- `ONTOINDEX_LBUG_BUFFER_MB` (integer 0..16384, default 0 = library default) sets the LadybugDB buffer pool for read-only opens, including the recovery open. On the 273 MiB ontocode index a 64 MB cap lowered RSS after open from about 426 MiB to 251 MiB with about 10% slower queries.
+
 ## [2.2.22] - 2026-10-13
 
 ### Fixed

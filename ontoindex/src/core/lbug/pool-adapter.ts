@@ -767,6 +767,18 @@ function readBoundedIntEnv(name: string, fallback: number, min: number, max: num
   return Math.max(min, Math.min(max, parsed));
 }
 
+function readBufferManagerSize(): number {
+  const raw = process.env.ONTOINDEX_LBUG_BUFFER_MB;
+  if (!raw) return 0;
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw)) || Number(raw) > 16384) {
+    console.error(
+      '[ontoindex] Invalid ONTOINDEX_LBUG_BUFFER_MB; expected an integer from 0 to 16384; using library default.',
+    );
+    return 0;
+  }
+  return readBoundedIntEnv('ONTOINDEX_LBUG_BUFFER_MB', 0, 0, 16384) * 1048576;
+}
+
 /**
  * Resolve the identity of the database file behind `dbPath`. The path is stable
  * across reindexes, so identity is taken from the resolved real path plus
@@ -865,12 +877,13 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
       // avoids lock conflicts when `ontoindex analyze` is writing.
       let lastError: Error | null = null;
       let isLockError = false;
+      const bufferManagerSize = readBufferManagerSize();
       for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
         silenceStdout();
         try {
           const db = new lbug.Database(
             dbPath,
-            0, // bufferManagerSize (default)
+            bufferManagerSize,
             false, // enableCompression (default)
             true, // readOnly
           );
@@ -924,7 +937,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           const RecoveryDatabase = lbug.Database as unknown as RecoveryDatabaseConstructor;
           const db = new RecoveryDatabase(
             dbPath,
-            0, // bufferManagerSize
+            bufferManagerSize,
             false, // enableCompression
             true, // readOnly
             0, // maxDBSize
