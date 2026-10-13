@@ -7,6 +7,7 @@
  */
 
 import fs from 'fs/promises';
+import fsSync from 'node:fs';
 import path from 'path';
 import os from 'os';
 import { getInferredRepoName } from './git.js';
@@ -587,7 +588,12 @@ async function generationCleanupReason(directory: string): Promise<string | null
     if (!name.startsWith('.reader-')) continue;
     const pin = /^\.reader-(\d+)-[a-z0-9]+$/.exec(name);
     const stat = await fs.lstat(path.join(directory, name));
-    if (!pin || !stat.isFile() || stat.isSymbolicLink() || !processDefinitelyDead(Number(pin[1])))
+    if (
+      !pin ||
+      !stat.isFile() ||
+      stat.isSymbolicLink() ||
+      !readerPinIsDead(Number(pin[1]), stat.mtimeMs)
+    )
       return 'live-pin';
   }
   return null;
@@ -782,6 +788,43 @@ const processDefinitelyDead = (pid: number): boolean => {
   }
 };
 
+export function processStartedAfter(pid: number, referenceMs: number): boolean {
+  if (
+    process.platform !== 'linux' ||
+    !Number.isSafeInteger(pid) ||
+    pid <= 0 ||
+    !Number.isFinite(referenceMs)
+  )
+    return false;
+  try {
+    const stat = fsSync.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const closeParen = stat.lastIndexOf(')');
+    if (closeParen < 0) return false;
+    const fields = stat
+      .slice(closeParen + 1)
+      .trim()
+      .split(/\s+/);
+    const startTicks = Number(fields[19]); // field 22; fields begin at field 3 after comm
+    const bootTime = fsSync.readFileSync('/proc/stat', 'utf8').match(/^btime\s+(\d+)$/m);
+    if (!Number.isFinite(startTicks) || startTicks < 0 || !bootTime) return false;
+    const startedAtMs = Number(bootTime[1]) * 1000 + (startTicks / 100) * 1000;
+    return Number.isFinite(startedAtMs) && startedAtMs > referenceMs + 2000;
+  } catch {
+    return false;
+  }
+}
+
+const readerPinIsDead = (pid: number, pinMtimeMs: number): boolean => {
+  if (pid === process.pid) return false;
+  if (processDefinitelyDead(pid)) return true;
+  try {
+    process.kill(pid, 0);
+    return processStartedAfter(pid, pinMtimeMs);
+  } catch {
+    return false;
+  }
+};
+
 async function markManagedGenerationLocked(
   storagePath: string,
   generationPath: string,
@@ -823,11 +866,12 @@ async function sweepDeadReaderPins(storagePath: string): Promise<void> {
     const directory = path.join(root, entry.name);
     for (const name of await fs.readdir(directory)) {
       const pin = /^\.reader-(\d+)-[a-z0-9]+$/.exec(name);
-      if (!pin || !processDefinitelyDead(Number(pin[1]))) continue;
+      if (!pin) continue;
       const pinPath = path.join(directory, name);
       try {
         const stat = await fs.lstat(pinPath);
         if (!stat.isFile() || stat.isSymbolicLink()) continue;
+        if (!readerPinIsDead(Number(pin[1]), stat.mtimeMs)) continue;
         await fs.unlink(pinPath);
         if (++removed >= 2000) return;
       } catch (err) {
@@ -882,13 +926,17 @@ async function pruneIndexGenerationsLocked(storagePath: string): Promise<void> {
     for (const name of await fs.readdir(directory)) {
       if (!name.startsWith('.reader-')) continue;
       const pid = /^\.reader-(\d+)-[a-z0-9]+$/.exec(name);
-      if (!pid || !processDefinitelyDead(Number(pid[1]))) {
+      if (!pid) {
         pinned = true;
         continue;
       }
       const pinPath = path.join(directory, name);
       const stat = await fs.lstat(pinPath);
       if (!stat.isFile() || stat.isSymbolicLink()) {
+        pinned = true;
+        continue;
+      }
+      if (!readerPinIsDead(Number(pid[1]), stat.mtimeMs)) {
         pinned = true;
         continue;
       }

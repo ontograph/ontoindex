@@ -767,16 +767,21 @@ function readBoundedIntEnv(name: string, fallback: number, min: number, max: num
   return Math.max(min, Math.min(max, parsed));
 }
 
-function readBufferManagerSize(): number {
+export function readBufferManagerSize(): number {
   const raw = process.env.ONTOINDEX_LBUG_BUFFER_MB;
-  if (!raw) return 0;
-  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw)) || Number(raw) > 16384) {
+  if (raw === undefined || raw === '' || raw === '0') return 64 * 1048576;
+  if (
+    !/^\d+$/.test(raw) ||
+    !Number.isSafeInteger(Number(raw)) ||
+    Number(raw) < 1 ||
+    Number(raw) > 16384
+  ) {
     console.error(
-      '[ontoindex] Invalid ONTOINDEX_LBUG_BUFFER_MB; expected an integer from 0 to 16384; using library default.',
+      '[ontoindex] Invalid ONTOINDEX_LBUG_BUFFER_MB; expected an integer from 1 to 16384; using default 64 MB.',
     );
-    return 0;
+    return 64 * 1048576;
   }
-  return readBoundedIntEnv('ONTOINDEX_LBUG_BUFFER_MB', 0, 0, 16384) * 1048576;
+  return Number(raw) * 1048576;
 }
 
 /**

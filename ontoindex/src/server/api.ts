@@ -11,6 +11,7 @@
 import express from 'express';
 import { findOversizedArgument } from '../mcp/shared/arg-limits.js';
 import cors from 'cors';
+import { isTrustedHost, isTrustedOrigin } from './request-guard.js';
 import path from 'path';
 import { createReadStream } from 'fs';
 import { createInterface } from 'readline';
@@ -407,32 +408,7 @@ async function grepFileLines(
  *                 when the header is absent (non-browser request).
  * @returns `true` if the origin is allowed, `false` otherwise.
  */
-export const isAllowedOrigin = (origin: string | undefined): boolean => {
-  if (origin === undefined) {
-    // Non-browser requests (curl, server-to-server) have no Origin header
-    return true;
-  }
-
-  if (
-    origin.startsWith('http://localhost:') ||
-    origin === 'http://localhost' ||
-    origin.startsWith('http://127.0.0.1:') ||
-    origin === 'http://127.0.0.1' ||
-    origin.startsWith('http://[::1]:') ||
-    origin === 'http://[::1]' ||
-    origin === 'https://ontoindex.vercel.app'
-  ) {
-    return true;
-  }
-
-  try {
-    const parsed = new URL(origin);
-    return parsed.protocol === 'https:' && parsed.origin === 'https://ontoindex.vercel.app';
-  } catch {
-    // Malformed origin — reject
-    return false;
-  }
-};
+export const isAllowedOrigin = (origin: string | undefined): boolean => isTrustedOrigin(origin);
 
 export const shouldAllowPrivateNetworkAccess = (origin: string | undefined): boolean =>
   origin !== undefined && isAllowedOrigin(origin);
@@ -930,6 +906,18 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   app.disable('x-powered-by');
   const auth = resolveLocalSessionToken();
 
+  app.use((req, res, next) => {
+    const loopback = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(host.toLowerCase());
+    if (
+      (loopback && !isTrustedHost(req.headers.host, { port: port || req.socket.localPort })) ||
+      !isTrustedOrigin(req.headers.origin)
+    ) {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+    next();
+  });
+
   // Support Chromium Private Network Access (required since Chrome 130+).
   // This must run before CORS because the cors middleware may terminate OPTIONS.
   app.use((req, res, next) => {
@@ -941,9 +929,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // CORS: allow loopback/browser-development origins and the deployed site.
   // Non-browser requests (curl, server-to-server) have no origin and are allowed.
-  // Disallowed origins get the response without Access-Control-Allow-Origin,
-  // so the browser blocks it. We pass `false` instead of throwing an Error to
-  // avoid crashing into Express's default error handler (which returned 500).
+  // The request guard rejects disallowed origins before route handlers run.
   app.use(
     cors({
       exposedHeaders: ['Mcp-Session-Id'],

@@ -76,7 +76,7 @@ it('honors a lower configured cap', async () => {
   expect(mocks.repos).not.toHaveBeenCalled();
 });
 it('allows a 1 MB search to reach repository lookup', async () => {
-  expect((await post('search', { query: 'x'.repeat(1024 * 1024) })).status).toBe(404);
+  expect((await post('search', { query: 'x'.repeat(1024 * 1024 - 64) })).status).toBe(404);
   expect(mocks.repos).toHaveBeenCalledOnce();
 });
 it('reports eval tool argument errors using the same configured cap', () => {

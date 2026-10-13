@@ -1,4 +1,4 @@
-import type { Server } from 'node:http';
+import { request, type Server } from 'node:http';
 import express from 'express';
 import { describe, expect, it, vi } from 'vitest';
 import { createServer } from '../../src/server/api.js';
@@ -33,6 +33,21 @@ describe('HTTP API CORS exposed headers', () => {
         headers: { Origin: 'http://localhost:3000' },
       });
       expect(response.headers.get('access-control-expose-headers')).toBe('Mcp-Session-Id');
+      for (const headers of [
+        { Origin: 'http://localhost.evil.com' },
+        { Host: 'localhost.evil.com' },
+        { Host: '127.0.0.1:1' },
+      ]) {
+        const status = await new Promise<number | undefined>((resolve, reject) => {
+          const req = request(`http://127.0.0.1:${address.port}/`, { headers }, (res) => {
+            res.resume();
+            resolve(res.statusCode);
+          });
+          req.on('error', reject);
+          req.end();
+        });
+        expect(status).toBe(403);
+      }
     } finally {
       if (server) {
         server.closeAllConnections();

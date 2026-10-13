@@ -48,7 +48,7 @@ describe('LadybugDB buffer budget', () => {
       const pool = await import('../../src/core/lbug/pool-adapter.js');
       await pool.initLbug('buffer', '/buffer');
       const valid = raw === '64' || raw === '16384';
-      expect(mocks.construct.mock.calls[0][1]).toBe(valid ? Number(raw) * 1048576 : 0);
+      expect(mocks.construct.mock.calls[0][1]).toBe(valid ? Number(raw) * 1048576 : 64 * 1048576);
       expect(warning).toHaveBeenCalledTimes(raw && raw !== '0' && !valid ? 1 : 0);
       await pool.closeLbug('buffer');
     },

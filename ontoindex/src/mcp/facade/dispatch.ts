@@ -1,5 +1,6 @@
 import type { LocalBackend } from '../local/local-backend.js';
 import type { SuperTool } from '../super/names.js';
+import { ONTOINDEX_FACADE_TOOLS } from './tool-definitions.js';
 import { parseTypedQueryDocument } from '../../core/search/typed-query-document.js';
 import { getMcpStartupProfileFromEnv, getPublicToolRegistry } from '../shared/tool-registry.js';
 import {
@@ -30,6 +31,7 @@ export async function dispatchFacade(
   args: Record<string, unknown>,
   backend: LocalBackend,
 ): Promise<unknown> {
+  args = normalizeFacadeArgs(tool, action, args);
   if (tool === 'discover' && action === 'tools' && args.codebase !== true) {
     const startupProfile = getMcpStartupProfileFromEnv();
     const tools = getPublicToolRegistry({ includeFacades: true, startupProfile }).map((entry) => ({
@@ -78,7 +80,7 @@ export async function dispatchFacade(
   }
 
   const method = getInternalMethod(tool, action);
-  return backend.callTool(method, normalizeFacadeArgs(tool, action, args));
+  return backend.callTool(method, args);
 }
 
 function getAuditFacadeSuperTool(tool: FacadeTool, action: string): SuperTool | null {
@@ -190,6 +192,18 @@ function normalizeFacadeArgs(
 
   if (tool === 'docs' && !normalized.action) {
     normalized.action = action;
+  }
+
+  const properties = ONTOINDEX_FACADE_TOOLS.find((definition) => definition.name === tool)
+    ?.inputSchema.properties;
+  for (const [key, schema] of Object.entries(properties ?? {})) {
+    if (schema.type !== 'number' && schema.type !== 'integer') continue;
+    const value = normalized[key];
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      delete normalized[key];
+      continue;
+    }
+    normalized[key] = Math.min(schema.maximum ?? Infinity, Math.max(schema.minimum ?? -Infinity, value));
   }
 
   return normalized;

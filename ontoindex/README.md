@@ -179,7 +179,7 @@ ontoindex mcp --project /path/to/target/repo
 ## Environment Variables
 
 - `ONTOINDEX_MAX_ARG_CHARS` limits string arguments accepted by MCP tools, REST `/api/search` and `/api/query`, and the eval server. It defaults to `2097152` characters and accepts values from `1024` through `67108864`.
-- `ONTOINDEX_LBUG_BUFFER_MB` sets the read-only index connection's buffer pool size in MiB; it defaults to `0` (use the library default) and accepts `0` through `16384`. In one run, a 64 MiB cap reduced resident memory after opening a 273 MiB index from about 426 MiB to 251 MiB, with queries about 10% slower.
+- `ONTOINDEX_LBUG_BUFFER_MB` sets the read-only index connection's buffer pool size in MiB; it defaults to `64` and accepts `1` through `16384`. Unset, empty, `0`, or invalid values use the 64 MiB default. In one run, a 64 MiB cap reduced resident memory after opening a 273 MiB index from about 426 MiB to 251 MiB, with queries about 10% slower.
 - `ONTOINDEX_LBUG_POOL_SIZE` sets the per-repository read connection pool size; it defaults to `2` and accepts `1` through `16`.
 
 ## Index Generations

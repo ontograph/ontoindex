@@ -4,6 +4,14 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.27] - 2026-10-13
+
+- LadybugDB buffer manager defaults to 64 MB when `ONTOINDEX_LBUG_BUFFER_MB` is unset, empty, `0` or invalid; valid values 1..16384 still override. This cuts per-server resident memory when many sessions run at once.
+- Eval-server and REST API reject requests with an untrusted `Host` (loopback binds) or untrusted `Origin` before any handler runs, closing the cross-origin simple-POST and DNS-rebinding path. Origin matching is now exact and parsed (`http://localhost.evil.com` no longer passes a prefix check).
+- Facade tool numeric arguments are clamped to the bounds declared in each tool schema; non-finite or non-numeric values are dropped. Shared argument limits add an array cap (`ONTOINDEX_MAX_ARG_ITEMS`, default 256) and a 1 MiB aggregate cap for MCP, REST search/query and eval-server.
+- MCP server installs shutdown handlers before `server.connect`, also listens for stdin `close`, and shuts down at once if stdin is already ended.
+- Reader pins whose PID now belongs to a younger process (PID reuse, Linux `/proc` start time) are swept as dead.
+
 ## [2.2.26] - 2026-10-13
 
 ### Fixed

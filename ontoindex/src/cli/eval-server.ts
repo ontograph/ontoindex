@@ -25,6 +25,7 @@
  */
 
 import http from 'http';
+import { isTrustedHost, isTrustedOrigin } from '../server/request-guard.js';
 import { findOversizedArgument } from '../mcp/shared/arg-limits.js';
 import { writeSync } from 'node:fs';
 import { LocalBackend } from '../mcp/local/local-backend.js';
@@ -506,6 +507,14 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
   }
 
   const server = http.createServer(async (req, res) => {
+    if (
+      !isTrustedHost(req.headers.host, { port: port || req.socket.localPort }) ||
+      !isTrustedOrigin(req.headers.origin)
+    ) {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Forbidden');
+      return;
+    }
     resetIdleTimer();
 
     try {

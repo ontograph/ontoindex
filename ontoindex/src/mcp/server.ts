@@ -746,15 +746,9 @@ export async function startMCPServer(
   });
   const transport = new CompatibleStdioServerTransport(process.stdin, _safeStdout);
   const trace = ['1', 'true', 'yes'].includes(process.env.ONTOINDEX_MCP_STARTUP_TRACE?.toLowerCase() ?? '');
-  if (trace) console.error('[ontoindex:mcp:init] server.connect: start');
-  try {
-    await server.connect(transport);
-  } catch (error) {
-    if (trace) console.error(`[ontoindex:mcp:init] server.connect: failed: ${error instanceof Error ? error.message : String(error)}`);
-    throw error;
-  }
 
-  // Graceful shutdown helper
+  // Graceful shutdown helper and listeners must be ready before connect, which
+  // may observe an already-closed stdio stream or emit errors while starting.
   let shuttingDown = false;
   let shutdownExitCode = 0;
   const shutdown = async (exitCode = 0) => {
@@ -773,16 +767,11 @@ export async function startMCPServer(
     process.exit(shutdownExitCode);
   };
 
-  // Handle graceful shutdown
   // Wrapped: Node passes the signal name to handlers, and process.exit()
   // throws ERR_INVALID_ARG_TYPE on a string exit code.
   process.on('SIGINT', () => void shutdown(0));
   process.on('SIGTERM', () => void shutdown(0));
-
-  // Log crashes to stderr so they aren't silently lost.
-  // uncaughtException is fatal — shut down.
-  // unhandledRejection is logged but kept non-fatal (availability-first):
-  // killing the server for one missed catch would be worse than logging it.
+  // uncaughtException is fatal; unhandledRejection is logged but non-fatal (availability-first).
   process.on('uncaughtException', (err) => {
     process.stderr.write(`OntoIndex MCP uncaughtException: ${err?.stack || err}\n`);
     shutdown(1);
@@ -792,9 +781,18 @@ export async function startMCPServer(
       `OntoIndex MCP unhandledRejection: ${formatUnhandledRejectionReason(reason)}\n`,
     );
   });
-
-  // Handle stdio errors — stdin close means the parent process is gone
+  // stdin end/close/error means the parent process is gone.
   process.stdin.on('end', () => void shutdown());
-  process.stdin.on('error', () => shutdown());
-  process.stdout.on('error', () => shutdown());
+  process.stdin.on('close', () => void shutdown());
+  process.stdin.on('error', () => void shutdown());
+  process.stdout.on('error', () => void shutdown());
+  if (process.stdin.destroyed || process.stdin.readableEnded) void shutdown();
+
+  if (trace) console.error('[ontoindex:mcp:init] server.connect: start');
+  try {
+    await server.connect(transport);
+  } catch (error) {
+    if (trace) console.error(`[ontoindex:mcp:init] server.connect: failed: ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
+  }
 }
