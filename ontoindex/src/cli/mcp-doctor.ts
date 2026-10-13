@@ -541,23 +541,24 @@ async function probeMcpProcessLiveness(
       };
     }
 
-    if (matching.length > 1 && matching.every((candidate) => candidate.cwdBound)) {
-      // One server per client session is normal when the project comes from the working directory.
-      const match = matching[0];
+    if (matching.length > 1) {
+      const explicitMatches = matching.filter((candidate) => !candidate.cwdBound);
+      const cwdBoundMatches = matching.length - explicitMatches.length;
+      if (explicitMatches.length === 0 && cwdBoundMatches !== matching.length) {
+        return {
+          status: 'ambiguous',
+          reason: `multiple matching MCP processes found for ${projectCwd}`,
+          repairCommand,
+        };
+      }
+      // Multiple servers can be bound to one project; prefer an explicit target binding.
+      const match = explicitMatches[0] ?? matching[0];
       return {
         status: 'ok',
-        reason: `${matching.length} servers bound to ${projectCwd} by working directory`,
+        reason: `${matching.length} servers bound to ${projectCwd} (${explicitMatches.length} by explicit --project, ${cwdBoundMatches} by working directory)`,
         pid: match.pid,
         command: match.command,
         projectCwd: match.projectCwd,
-        repairCommand,
-      };
-    }
-
-    if (matching.length > 1) {
-      return {
-        status: 'ambiguous',
-        reason: `multiple matching MCP processes found for ${projectCwd}`,
         repairCommand,
       };
     }

@@ -45,7 +45,7 @@ describe('committed index generation retention', () => {
     } as typeof lbug.Database);
     await expect(
       pool.initLbug('failed-native-retention', path.join(storage, 'lbug')),
-    ).rejects.toThrow('native initialization failed');
+    ).rejects.toThrow('native init failed');
     constructor.mockRestore();
     const directory = path.join(storage, 'generations', 'failed-native');
     expect((await fs.readdir(directory)).some((name) => name.startsWith('.reader-'))).toBe(true);

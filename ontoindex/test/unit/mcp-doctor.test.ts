@@ -252,7 +252,7 @@ describe('mcp-doctor', () => {
     });
   });
 
-  it('accepts several cwd-bound servers for one project but keeps explicit duplicates ambiguous', async () => {
+  it('accepts multiple cwd-bound and explicit servers for one project', async () => {
     processMock.readProcessCwd.mockResolvedValue('/repo/app');
     processMock.getGitRoot.mockReturnValue('/repo/app');
     const deps = {
@@ -275,7 +275,11 @@ describe('mcp-doctor', () => {
       ),
     );
     const explicit = await createMcpDoctorReport({ projectCwd: '/repo/app' }, deps);
-    expect(explicit.processLiveness?.status).toBe('ambiguous');
+    expect(explicit.processLiveness).toMatchObject({
+      status: 'ok',
+      pid: 911,
+      reason: '2 servers bound to /repo/app (2 by explicit --project, 0 by working directory)',
+    });
   });
 
   it('leaves candidates unbound when cwd lookup fails and skips lookup for --project', async () => {

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   errors: [] as (string | null)[],
   closes: [] as ReturnType<typeof vi.fn>[],
   absentInitPromise: false,
+  closeError: null as string | null,
 }));
 vi.mock('../../src/storage/repo-manager.js', () => ({
   acquireIndexGenerationPin: async (dbPath: string) => {
@@ -46,6 +47,7 @@ vi.mock('@ladybugdb/core', () => ({
       }
       async close() {
         if (this._initPromise) await this._initPromise;
+        if (mocks.closeError) throw new Error(mocks.closeError);
         await this.closeMock();
         mocks.close();
       }
@@ -63,6 +65,7 @@ beforeEach(() => {
   mocks.fail = true;
   mocks.errors = [];
   mocks.absentInitPromise = false;
+  mocks.closeError = null;
   mocks.closes = [];
 });
 afterEach(() => {
@@ -83,16 +86,38 @@ describe('WAL recovery and failed native cleanup', () => {
     expect(mocks.construct.mock.calls[1][7]).toBe(false);
     expect(mocks.closes[0]).toHaveBeenCalledTimes(1);
     expect(mocks.releases[0]).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledTimes(1);
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('WAL corruption'));
     await pool.closeLbug();
     expect(mocks.releases[0]).toHaveBeenCalledTimes(1);
     warning.mockRestore();
   });
+  it('preserves non-WAL errors and fences retries without recovery', async () => {
+    mocks.errors = ['EACCES: permission denied'];
+    const warning = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const pool = await import('../../src/core/lbug/pool-adapter.js');
+    await expect(pool.initLbug('repo', '/repo')).rejects.toThrow('EACCES: permission denied');
+    await expect(pool.initLbug('repo', '/repo')).rejects.toThrow('EACCES: permission denied');
+    expect(mocks.construct).toHaveBeenCalledTimes(1);
+    expect(mocks.closes[0]).toHaveBeenCalledTimes(1);
+    expect(warning).not.toHaveBeenCalled();
+    await pool.closeLbug();
+    warning.mockRestore();
+  });
+  it('preserves the init error when failed-primary cleanup fails', async () => {
+    mocks.errors = ['corrupt WAL'];
+    mocks.closeError = 'cleanup failure';
+    const pool = await import('../../src/core/lbug/pool-adapter.js');
+    await expect(pool.initLbug('repo', '/repo')).rejects.toThrow('corrupt WAL');
+    expect(mocks.construct).toHaveBeenCalledTimes(1);
+    mocks.closeError = null;
+    await pool.closeLbug();
+  });
   it('retains recovery failures and drains them at shutdown', async () => {
     mocks.errors = ['Corrupted wal file', 'Corrupted wal file'];
     const pool = await import('../../src/core/lbug/pool-adapter.js');
     await expect(pool.initLbug('repo', '/repo')).rejects.toThrow(
-      'unrecoverable due to WAL corruption',
+      /unrecoverable due to WAL corruption.*Cause: Corrupted wal file/,
     );
     expect(mocks.releases[0]).not.toHaveBeenCalled();
     await pool.closeLbug();
@@ -101,7 +126,7 @@ describe('WAL recovery and failed native cleanup', () => {
   });
   it('supports failed wrappers without a driver init promise property', async () => {
     mocks.absentInitPromise = true;
-    mocks.errors = ['bad WAL', 'bad WAL'];
+    mocks.errors = ['corrupt WAL', 'corrupt WAL'];
     const pool = await import('../../src/core/lbug/pool-adapter.js');
     await expect(pool.initLbug('repo', '/repo')).rejects.toThrow('unrecoverable');
     await pool.closeLbug();
@@ -119,7 +144,7 @@ describe('WAL recovery and failed native cleanup', () => {
     await pool.closeLbug();
   });
   it('does not let another path cleanup failure block admission', async () => {
-    mocks.errors = ['bad WAL', 'bad WAL'];
+    mocks.errors = ['corrupt WAL', 'corrupt WAL'];
     const pool = await import('../../src/core/lbug/pool-adapter.js');
     await expect(pool.initLbug('bad', '/bad')).rejects.toThrow();
     mocks.closes[1].mockRejectedValueOnce(new Error('close failed'));

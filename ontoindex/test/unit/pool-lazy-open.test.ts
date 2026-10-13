@@ -51,7 +51,9 @@ describe('real driver lazy database open', () => {
     }));
     try {
       const pool = await import('../../src/core/lbug/pool-adapter.js');
-      await expect(pool.initLbug('lazy', '/lazy')).rejects.toThrow('native initialization failed');
+      await expect(pool.initLbug('lazy', '/lazy')).rejects.toThrow(
+        'Could not set lock on native file',
+      );
       expect(init).toHaveBeenCalledTimes(3);
       expect(pool.isLbugDbPathReady('/lazy')).toBe(false);
       await expect(pool.executeQuery('lazy', 'RETURN 1')).rejects.toThrow('not initialized');

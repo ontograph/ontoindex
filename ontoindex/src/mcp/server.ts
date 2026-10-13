@@ -12,6 +12,7 @@
  */
 
 import { findOversizedArgument } from './shared/arg-limits.js';
+import { createIdleTracker, resolveIdleExitMs } from './shared/idle-exit.js';
 import { createRequire } from 'module';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { UriTemplate } from '@modelcontextprotocol/sdk/shared/uriTemplate.js';
@@ -787,6 +788,51 @@ export async function startMCPServer(
   process.stdin.on('error', () => void shutdown());
   process.stdout.on('error', () => void shutdown());
   if (process.stdin.destroyed || process.stdin.readableEnded) void shutdown();
+
+  const idleMs = resolveIdleExitMs(process.env.ONTOINDEX_MCP_IDLE_EXIT_MS);
+  if (idleMs !== null) {
+    process.stderr.write(
+      `[ontoindex] idle exit enabled after ${idleMs} ms; clients must restart the MCP connection to resume\n`,
+    );
+    const requests = new Set<string>();
+    const idleTracker = createIdleTracker({
+      idleMs,
+      onIdle: () => {
+        process.stderr.write(
+          `[ontoindex] idle for ${idleMs} ms; exiting (restart the MCP client connection to resume)\n`,
+        );
+        void shutdown(0);
+      },
+    });
+    const checkIntervalMs = Math.min(30_000, idleMs / 4);
+    const idleTimer = setInterval(() => idleTracker.check(), checkIntervalMs);
+    idleTimer.unref();
+
+    const onmessage = transport.onmessage;
+    transport.onmessage = (message) => {
+      if ('method' in message) {
+        idleTracker.touch();
+        if ('id' in message) {
+          const key = `${typeof message.id}:${String(message.id)}`;
+          requests.add(key);
+          idleTracker.begin();
+        }
+      }
+      onmessage?.(message);
+    };
+    const send = transport.send.bind(transport);
+    transport.send = async (message, options) => {
+      let requestKey: string | undefined;
+      if (!('method' in message) && 'id' in message) {
+        requestKey = `${typeof message.id}:${String(message.id)}`;
+      }
+      try {
+        return await send(message, options);
+      } finally {
+        if (requestKey !== undefined && requests.delete(requestKey)) idleTracker.end();
+      }
+    };
+  }
 
   if (trace) console.error('[ontoindex:mcp:init] server.connect: start');
   try {

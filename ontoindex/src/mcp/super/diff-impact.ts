@@ -11,7 +11,7 @@
  * authoritative upstream counts; downstream counts are heuristic.
  */
 
-import { execFileSync } from 'child_process';
+import { execFileText } from '../../core/process/exec-file.js';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { emitOrganicRecommendation } from '../../core/recommendations/organic.js';
 import type { OrganicRecommendation } from '../../core/recommendations/types.js';
@@ -265,12 +265,10 @@ interface ReviewResponseContractSource {
   }>;
 }
 
-function gitCapture(repoRoot: string | undefined, args: string[]): string {
-  return execFileSync('git', args, {
+async function gitCapture(repoRoot: string | undefined, args: string[]): Promise<string> {
+  return execFileText('git', args, {
     ...(repoRoot ? { cwd: repoRoot } : {}),
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: GIT_TIMEOUT_MS,
+    timeoutMs: GIT_TIMEOUT_MS,
     maxBuffer: GIT_MAX_BUFFER,
   });
 }
@@ -872,7 +870,7 @@ export async function gnDiffImpact(
   let changedPaths: string[] = [];
   let omittedChangedPathCount = 0;
   try {
-    const out = gitCapture(repoRoot, nameOnlyArgs);
+    const out = await gitCapture(repoRoot, nameOnlyArgs);
     const allChangedPaths = out.split('\n').filter(Boolean);
     const scoped = scopeChangedPathsByPrefixes(allChangedPaths, includePaths);
     if (scoped.omittedPaths.length > 0) {
@@ -904,7 +902,7 @@ export async function gnDiffImpact(
   // ---- 4. Fetch line-count stats ------------------------------------------
   let numstatMap = new Map<string, { added: number; removed: number }>();
   try {
-    const numstatOut = gitCapture(repoRoot, numstatArgs);
+    const numstatOut = await gitCapture(repoRoot, numstatArgs);
     numstatMap = parseNumstat(numstatOut);
   } catch {
     // best-effort — continue with zero counts
@@ -1133,7 +1131,7 @@ export async function gnDiffImpact(
       if (changedPaths.length > reviewerPaths.length) {
         warnings.push(`Reviewer lookup capped at ${MAX_REVIEWER_PATHS} paths`);
       }
-      const gitLogOut = gitCapture(repoRoot, [
+      const gitLogOut = await gitCapture(repoRoot, [
         'log',
         '--format=%aN',
         '-n',
@@ -1467,7 +1465,7 @@ export async function gnReviewDiff(
   let changedPaths: string[] = [];
   let omittedChangedPathCount = 0;
   try {
-    const out = gitCapture(repoRoot, nameOnlyArgs);
+    const out = await gitCapture(repoRoot, nameOnlyArgs);
     const allChangedPaths = out.split('\n').filter(Boolean);
     const scoped = scopeChangedPathsByPrefixes(allChangedPaths, includePaths);
     if (scoped.omittedPaths.length > 0) {
@@ -1491,7 +1489,7 @@ export async function gnReviewDiff(
   let numstatMap = new Map<string, { added: number; removed: number }>();
   if (changedPaths.length > 0) {
     try {
-      const numstatOut = gitCapture(repoRoot, numstatArgs);
+      const numstatOut = await gitCapture(repoRoot, numstatArgs);
       numstatMap = parseNumstat(numstatOut);
     } catch {
       warnings.push('git diff --numstat failed; line counts will be 0');

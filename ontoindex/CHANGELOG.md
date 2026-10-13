@@ -4,6 +4,15 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.31] - 2026-10-14
+
+- LadybugDB pool: corrupt-WAL recovery now starts only for a WAL replay error (`classifyLbugOpenError`). A permission error, an unsupported storage version, an out-of-memory error or an extension error keeps its original message, is not retried with WAL-tail discard, and no longer prints a WAL warning. Lock detection matches native lock phrases instead of any message containing `lock` (so `block` and `clock` no longer count). A failing close of the failed wrapper no longer masks the original error, and the "unrecoverable" error names the recovery cause.
+- `mcp-doctor`: several servers bound to the target, including one started with an explicit `--project` next to others bound by working directory, now report `ok` with the counts and prefer the explicit one for the reported PID.
+- `ontoindex setup`: the stale staging and backup sweep now keeps an artifact whose embedded PID is alive until it is 60 minutes old, takes age from the newest entry inside the directory, and creates staging directories with exclusive `mkdir` and retries. The remaining sub-millisecond gap during a managed refresh is documented, since Node has no atomic directory exchange.
+- `gn_diff_impact`, `gn_review_diff` and `gn_pre_commit_audit` run git through the async `execFileText` helper instead of `execFileSync`, so a slow `git diff` on a large dirty tree no longer blocks every other MCP request for up to 5 seconds.
+- New opt-in `ONTOINDEX_MCP_IDLE_EXIT_MS` (60000 to 86400000, default off): the stdio server exits after that long with no requests and none in flight. Leave it unset for clients that do not restart a stopped server.
+- Test fix: the gated real-driver WAL test seeds its database in a child process. Seeding in the test process let the driver finish its close asynchronously and consume the corrupt WAL, so about one run in three passed without exercising recovery or failed spuriously.
+
 ## [2.2.30] - 2026-10-14
 
 - LadybugDB pool: corrupt-WAL recovery now runs. A real database with a bad `<db>.wal` fails in `init()` (checksum failure or read past the end of the file), not in the constructor, and the previous code rethrew before the recovery open could start. The failed primary wrapper is now closed while the generation pin stays held, then the database is reopened with WAL-tail discard. If recovery also fails, the recovery wrapper is retained with the pin and the unrecoverable error is thrown. Lock errors keep their retry loop and are retained only after the last attempt. A gated real-driver test (`ONTOINDEX_REAL_WAL_TEST=1`) covers both a checksum failure and a truncated WAL. The MCP server's existing preflight still refuses to open an index that has a non-empty `lbug.wal` or `lbug.shadow` sidecar and asks for one coordinated `ontoindex analyze`, so the pool-level recovery is reached only when that preflight passes (for example a sidecar that is absent or empty, or a path already marked ready). That policy is unchanged.

@@ -1,4 +1,6 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -26,15 +28,25 @@ describe.skipIf(!enabled)('pool-adapter against a corrupt WAL (real driver)', ()
     async (_name, wal) => {
       dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-real-wal-'));
       const dbPath = path.join(dir, 'lbug');
-      const { default: lbug } = await import('@ladybugdb/core');
-      const seed = new lbug.Database(dbPath, 0, false, false);
-      await seed.init();
-      const conn = new lbug.Connection(seed);
-      await conn.query('CREATE NODE TABLE Row(id INT64, PRIMARY KEY(id))');
-      await conn.query('UNWIND range(1, 3) AS id CREATE (:Row {id: id})');
-      await conn.query('CHECKPOINT');
-      await conn.close();
-      await seed.close();
+      // Seed in a child process. A Database seeded in this process finishes tearing down
+      // asynchronously after close() resolves and would checkpoint (consume) the corrupt WAL
+      // written below; waiting for the child to exit makes the fixture deterministic.
+      const driverPath = createRequire(import.meta.url).resolve('@ladybugdb/core');
+      const seedScript = `
+      const lbug = require(${JSON.stringify(driverPath)});
+      (async () => {
+        const db = new lbug.Database(${JSON.stringify(dbPath)}, 0, false, false);
+        await db.init();
+        const conn = new lbug.Connection(db);
+        await conn.query('CREATE NODE TABLE Row(id INT64, PRIMARY KEY(id))');
+        await conn.query('UNWIND range(1, 3) AS id CREATE (:Row {id: id})');
+        await conn.query('CHECKPOINT');
+        await conn.close();
+        await db.close();
+        process.exit(0);
+      })().catch((error) => { console.error(error); process.exit(1); });
+    `;
+      execFileSync(process.execPath, ['-e', seedScript], { stdio: 'pipe', timeout: 30_000 });
       await fs.writeFile(`${dbPath}.wal`, wal);
 
       const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);

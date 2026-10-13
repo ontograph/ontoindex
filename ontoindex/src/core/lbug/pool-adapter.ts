@@ -873,6 +873,21 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
  * Pool entry is registered LAST so concurrent executeQuery calls see either
  * "not initialized" (and throw) or a fully ready pool — never a half-built one.
  */
+export function classifyLbugOpenError(message: string): 'lock' | 'wal' | 'other' {
+  if (
+    /Could not set lock/i.test(message) ||
+    /\b(file|database|db)\s+lock\b|\block\s+(held|file|conflict)\b/i.test(message) ||
+    /resource temporarily unavailable|\b(EAGAIN|EWOULDBLOCK)\b/i.test(message)
+  )
+    return 'lock';
+  if (
+    /\bwal\b/i.test(message) &&
+    /corrupt|checksum|replay|past the end of the file|truncat/i.test(message)
+  )
+    return 'wal';
+  return 'other';
+}
+
 async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   const generationPin = await acquireIndexGenerationPin(dbPath);
   dbPath = generationPin.dbPath;
@@ -920,7 +935,8 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
             await db.init();
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            const lockError = message.includes('Could not set lock') || message.includes('lock');
+            const errorClass = classifyLbugOpenError(message);
+            const lockError = errorClass === 'lock';
             if (lockError && attempt === LOCK_RETRY_ATTEMPTS) {
               retainFailedNativeOpen(dbPath, db, generationPin, error);
               nativeOwnsPin = true;
@@ -929,10 +945,14 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
                 (db as lbug.Database & { _initPromise: Promise<void> | null })._initPromise = null;
               try {
                 await db.close();
-              } catch (closeError) {
-                retainFailedNativeOpen(dbPath, db, generationPin, closeError);
+              } catch {
+                retainFailedNativeOpen(dbPath, db, generationPin, error);
                 nativeOwnsPin = true;
               }
+            }
+            if (errorClass === 'other' && !nativeOwnsPin) {
+              retainFailedNativeOpen(dbPath, db, generationPin, error);
+              nativeOwnsPin = true;
             }
             throw error;
           }
@@ -950,27 +970,26 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
         } catch (err: unknown) {
           restoreStdout();
           lastError = err instanceof Error ? err : new Error(String(err));
-          if (failedNativeOpens.has(dbPath)) throw failedNativeOpens.get(dbPath)!.error;
-          isLockError =
-            lastError.message.includes('Could not set lock') || lastError.message.includes('lock');
+          if (failedNativeOpens.has(dbPath)) throw err;
+          isLockError = classifyLbugOpenError(lastError.message) === 'lock';
           if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
           await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_DELAY_MS * attempt));
         }
       }
 
-      // WAL recovery: if the open failed with a non-lock error, attempt to re-open
+      // WAL recovery: if the open failed with a WAL replay error, attempt to re-open
       // with throwOnWalReplayFailure=false so LadybugDB silently discards the corrupt
       // WAL tail and replays up to the last valid checkpoint.  This recovers from
       // process-kill-mid-write scenarios without losing data past the last checkpoint.
       //
       // We only attempt recovery when:
       //   - The DB file exists (so it's not a "DB not found" case)
-      //   - The error was not a file-lock error (lock errors are handled by the retry loop above)
+      //   - The error explicitly identifies WAL corruption or replay failure
       //
       // LadybugDB Database constructor arg positions:
       //   (path, bufferManagerSize, enableCompression, readOnly, maxDBSize,
       //    autoCheckpoint, checkpointThreshold, throwOnWalReplayFailure, enableChecksums)
-      if (!shared && lastError !== null && !isLockError) {
+      if (!shared && lastError !== null && classifyLbugOpenError(lastError.message) === 'wal') {
         silenceStdout();
         try {
           const RecoveryDatabase = lbug.Database as unknown as RecoveryDatabaseConstructor;
@@ -1006,12 +1025,13 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           });
           nativeOwnsPin = true;
           dbCache.set(dbPath, shared);
-        } catch {
+        } catch (error) {
           restoreStdout();
+          const cause = error instanceof Error ? error.message : String(error);
           // Recovery also failed — the database is unrecoverable.
           throw new Error(
             'OntoIndex index unrecoverable due to WAL corruption. ' +
-              'Run `ontoindex clean --force && ontoindex analyze` to rebuild.',
+              `Run \`ontoindex clean --force && ontoindex analyze\` to rebuild. Cause: ${cause}`,
           );
         }
       }

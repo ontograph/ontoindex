@@ -11,8 +11,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mocks — must be declared before the module under test is imported.
 // ---------------------------------------------------------------------------
 
-vi.mock('child_process', () => ({
-  execFileSync: vi.fn(),
+vi.mock('../../../src/core/process/exec-file.js', () => ({
+  execFileText: vi.fn(),
 }));
 
 vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
@@ -69,7 +69,7 @@ vi.mock('../../../src/mcp/super/docs-evidence.js', () => ({
 // Imports (after mocks).
 // ---------------------------------------------------------------------------
 
-import { execFileSync } from 'child_process';
+import { execFileText } from '../../../src/core/process/exec-file.js';
 import { executeParameterized, executeQuery } from '../../../src/core/lbug/pool-adapter.js';
 import { resolveTargetContext } from '../../../src/mcp/shared/target-context.js';
 import { collectAdvisoryDocsEvidence } from '../../../src/mcp/super/docs-evidence.js';
@@ -79,7 +79,7 @@ import {
   gnReviewDiff,
 } from '../../../src/mcp/super/diff-impact.js';
 
-const mockExecFileSync = vi.mocked(execFileSync);
+const mockExecFileText = vi.mocked(execFileText);
 const mockExecute = vi.mocked(executeParameterized);
 const mockExecuteQuery = vi.mocked(executeQuery);
 const mockResolveTargetContext = vi.mocked(resolveTargetContext);
@@ -120,14 +120,14 @@ const MOCK_TARGET_CONTEXT = {
 };
 
 /**
- * Wire up execFileSync to return predictable outputs.
+ * Wire up execFileText to return predictable outputs.
  * - git rev-parse --show-toplevel  → '/repo'
  * - git diff ... --name-only       → nameOnlyOutput
  * - git diff ... --numstat         → numstatOutput
  * - git log --format=%aN ...       → reviewerOutput
  */
 function setupGitMocks(nameOnlyOutput: string, numstatOutput = '', reviewerOutput = '') {
-  mockExecFileSync.mockImplementation((_cmd: string, args: string[]) => {
+  mockExecFileText.mockImplementation(async (_cmd: string, args: string[]) => {
     if (args.includes('--show-toplevel')) return '/repo\n';
     if (args.includes('--name-only')) return nameOnlyOutput;
     if (args.includes('--numstat')) return numstatOutput;
@@ -205,12 +205,12 @@ describe('gnDiffImpact', () => {
 
     await gnDiffImpact(REPO_ID, { commitRange: 'HEAD~3..HEAD' });
 
-    const nameOnlyCall = mockExecFileSync.mock.calls.find((c) => c[1].includes('--name-only'));
+    const nameOnlyCall = mockExecFileText.mock.calls.find((c) => c[1].includes('--name-only'));
     expect(nameOnlyCall).toBeDefined();
     expect(nameOnlyCall![1]).toContain('HEAD~3..HEAD');
     expect(nameOnlyCall![1]).not.toContain('--cached');
 
-    const numstatCall = mockExecFileSync.mock.calls.find((c) => c[1].includes('--numstat'));
+    const numstatCall = mockExecFileText.mock.calls.find((c) => c[1].includes('--numstat'));
     expect(numstatCall).toBeDefined();
     expect(numstatCall![1]).toContain('HEAD~3..HEAD');
     expect(nameOnlyCall?.[2]).toMatchObject({ cwd: '/repo' });
@@ -232,7 +232,7 @@ describe('gnDiffImpact', () => {
     await expect(gnDiffImpact('missing', { scope: 'staged' })).rejects.toThrow(
       'Repository "missing" is not indexed.',
     );
-    expect(mockExecFileSync).not.toHaveBeenCalled();
+    expect(mockExecFileText).not.toHaveBeenCalled();
   });
 
   it('uses the requested repository path when process cwd points at another repository', async () => {
@@ -250,11 +250,11 @@ describe('gnDiffImpact', () => {
       cwdSpy.mockRestore();
     }
 
-    expect(mockExecFileSync.mock.calls.some((call) => call[1].includes('--show-toplevel'))).toBe(
+    expect(mockExecFileText.mock.calls.some((call) => call[1].includes('--show-toplevel'))).toBe(
       false,
     );
     expect(
-      mockExecFileSync.mock.calls
+      mockExecFileText.mock.calls
         .filter((call) => call[0] === 'git')
         .every((call) => (call[2] as { cwd?: string } | undefined)?.cwd === '/repo-b'),
     ).toBe(true);
@@ -267,7 +267,7 @@ describe('gnDiffImpact', () => {
 
     await gnDiffImpact(REPO_ID, { scope: 'staged' });
 
-    const nameOnlyCall = mockExecFileSync.mock.calls.find((c) => c[1].includes('--name-only'));
+    const nameOnlyCall = mockExecFileText.mock.calls.find((c) => c[1].includes('--name-only'));
     expect(nameOnlyCall![1]).toContain('--cached');
     expect(nameOnlyCall![1]).not.toContain('main...HEAD');
   });
@@ -279,7 +279,7 @@ describe('gnDiffImpact', () => {
 
     await gnDiffImpact(REPO_ID, { scope: 'branch' });
 
-    const nameOnlyCall = mockExecFileSync.mock.calls.find((c) => c[1].includes('--name-only'));
+    const nameOnlyCall = mockExecFileText.mock.calls.find((c) => c[1].includes('--name-only'));
     expect(nameOnlyCall![1]).toContain('main...HEAD');
     expect(nameOnlyCall![1]).not.toContain('--cached');
   });
@@ -380,7 +380,7 @@ describe('gnDiffImpact', () => {
       includeReviewers: false,
     });
 
-    const logCall = mockExecFileSync.mock.calls.find((c) => c[1].includes('--format=%aN'));
+    const logCall = mockExecFileText.mock.calls.find((c) => c[1].includes('--format=%aN'));
     expect(logCall).toBeUndefined();
     expect(report.suggestedReviewers).toBeUndefined();
   });
@@ -403,7 +403,7 @@ describe('gnDiffImpact', () => {
 
   // ---- Test 9: git diff failure returns warning, no throw -----------------
   it('returns a warning report when git diff throws', async () => {
-    mockExecFileSync.mockImplementation((_cmd: string, args: string[]) => {
+    mockExecFileText.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.includes('--show-toplevel')) return '/repo\n';
       throw new Error('not a git repository');
     });
@@ -739,7 +739,7 @@ describe('gnReviewDiff', () => {
       degradedReasons: [],
     });
     expect((envelope.limits.budget as { elapsedMs?: number }).elapsedMs).toBeGreaterThanOrEqual(0);
-    const diffCall = mockExecFileSync.mock.calls.find((call) => call[1].includes('--name-only'));
+    const diffCall = mockExecFileText.mock.calls.find((call) => call[1].includes('--name-only'));
     expect(diffCall?.[2]).toMatchObject({ cwd: '/repo' });
     expect(mockResolveTargetContext).toHaveBeenCalledWith({
       repo: REPO_ID,
@@ -823,11 +823,11 @@ describe('gnReviewDiff', () => {
       cwdSpy.mockRestore();
     }
 
-    expect(mockExecFileSync.mock.calls.some((call) => call[1].includes('--show-toplevel'))).toBe(
+    expect(mockExecFileText.mock.calls.some((call) => call[1].includes('--show-toplevel'))).toBe(
       false,
     );
     expect(
-      mockExecFileSync.mock.calls
+      mockExecFileText.mock.calls
         .filter((call) => call[0] === 'git')
         .every((call) => (call[2] as { cwd?: string } | undefined)?.cwd === '/repo-b'),
     ).toBe(true);
@@ -884,7 +884,7 @@ describe('gnReviewDiff', () => {
 
   // ---- RD-6: git diff failure surfaces warning, returns degraded ----------
   it('returns degraded status when git diff fails', async () => {
-    mockExecFileSync.mockImplementation((_cmd: string, args: string[]) => {
+    mockExecFileText.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.includes('--show-toplevel')) return '/repo\n';
       throw new Error('not a git repository');
     });

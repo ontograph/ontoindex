@@ -877,7 +877,7 @@ export async function installSkillsTo(
         }
       }
 
-      const stagingDir = await uniqueSkillArtifactPath(
+      const stagingDir = await createSkillArtifactDirectory(
         targetDir,
         `.${skillName}.ontoindex-staging`,
       );
@@ -885,7 +885,6 @@ export async function installSkillsTo(
         if (source.isDirectory) {
           await copyDirRecursive(sourceDir!, stagingDir);
         } else {
-          await fs.mkdir(stagingDir, { recursive: true });
           await fs.writeFile(path.join(stagingDir, 'SKILL.md'), sourceContent);
         }
         await fs.writeFile(path.join(stagingDir, '.ontoindex-managed'), '');
@@ -893,9 +892,15 @@ export async function installSkillsTo(
         if (!exists) {
           await fs.rename(stagingDir, skillDir);
         } else {
-          const oldDir = await uniqueSkillArtifactPath(targetDir, `${skillName}.ontoindex-old`);
+          const oldDir = await createSkillArtifactDirectory(
+            targetDir,
+            `${skillName}.ontoindex-old`,
+          );
+          await fs.rmdir(oldDir);
           await fs.rename(skillDir, oldDir);
           try {
+            // POSIX has no atomic directory swap in Node (renameat2 RENAME_EXCHANGE is unavailable);
+            // keep this gap short and restore the old directory if installation fails.
             await fs.rename(stagingDir, skillDir);
           } catch (err) {
             await fs.rename(oldDir, skillDir);
@@ -916,24 +921,26 @@ export async function installSkillsTo(
   return installed;
 }
 
-async function uniqueSkillArtifactPath(targetDir: string, prefix: string): Promise<string> {
+async function createSkillArtifactDirectory(targetDir: string, prefix: string): Promise<string> {
+  await fs.mkdir(targetDir, { recursive: true });
   for (let attempt = 0; attempt < 5; attempt++) {
     const candidate = path.join(
       targetDir,
       `${prefix}-${process.pid}-${Math.random().toString(36).slice(2)}`,
     );
     try {
-      await fs.lstat(candidate);
+      await fs.mkdir(candidate);
+      return candidate;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return candidate;
-      throw err;
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
     }
   }
-  throw new Error('Unable to allocate a unique skill staging directory');
+  throw new Error('Unable to allocate a unique skill artifact directory');
 }
 
 async function cleanStaleSkillArtifacts(targetDir: string, skillNames: Set<string>): Promise<void> {
-  const cutoff = Date.now() - 10 * 60 * 1000;
+  const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
+  const sixtyMinutesAgo = Date.now() - 60 * 60 * 1000;
   let entries;
   try {
     entries = await fs.readdir(targetDir, { withFileTypes: true });
@@ -951,7 +958,27 @@ async function cleanStaleSkillArtifacts(targetDir: string, skillNames: Set<strin
     const artifact = path.join(targetDir, entry.name);
     try {
       const stat = await fs.lstat(artifact);
-      if (stat.isDirectory() && !stat.isSymbolicLink() && stat.mtimeMs < cutoff) {
+      if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
+      let newestMtime = stat.mtimeMs;
+      for (const child of await fs.readdir(artifact)) {
+        try {
+          newestMtime = Math.max(newestMtime, (await fs.lstat(path.join(artifact, child))).mtimeMs);
+        } catch {
+          // Ignore entries concurrently removed during the age check.
+        }
+      }
+      const match = /-(\d+)-[^/]+$/.exec(entry.name);
+      const pid = match ? Number(match[1]) : NaN;
+      let alive = false;
+      if (Number.isSafeInteger(pid) && pid > 0) {
+        try {
+          process.kill(pid, 0);
+          alive = true;
+        } catch (err) {
+          alive = (err as NodeJS.ErrnoException).code === 'EPERM';
+        }
+      }
+      if (newestMtime < (alive ? sixtyMinutesAgo : tenMinutesAgo)) {
         await fs.rm(artifact, { recursive: true, force: true });
       }
     } catch {

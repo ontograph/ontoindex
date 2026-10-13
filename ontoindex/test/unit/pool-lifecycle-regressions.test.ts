@@ -88,7 +88,7 @@ describe('pool lifecycle drain', () => {
     try {
       for (let i = 0; i < 4; i++) {
         await expect(isolated.initLbug(`failed-${i}`, `/failed-${i}`)).rejects.toThrow(
-          'unrecoverable due to WAL corruption',
+          'native open failed',
         );
       }
       await expect(isolated.initLbug('busy', '/busy')).rejects.toThrow('pool is busy at capacity');
@@ -97,7 +97,7 @@ describe('pool lifecycle drain', () => {
       await expect(isolated.executeQuery('healthy-external', 'RETURN 2')).resolves.toEqual([]);
       await isolated.closeLbug('healthy-external');
       await expect(isolated.initLbug('failed-4', '/failed-4')).rejects.toThrow(
-        'unrecoverable due to WAL corruption',
+        'native open failed',
       );
       expect(mocks.releasePin).toHaveBeenCalledTimes(1); // Rejected busy admission only.
       await expect(isolated.initLbug('blocked', '/blocked')).rejects.toThrow(

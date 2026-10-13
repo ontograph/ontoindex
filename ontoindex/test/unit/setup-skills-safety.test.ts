@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installSkillsTo, removeInvalidLegacyGitNexusSkills } from '../../src/cli/setup.js';
 
 const tempDirs: string[] = [];
@@ -108,6 +108,71 @@ describe('setup skill installation safety', () => {
     await expect(fs.access(oldBackup)).rejects.toThrow();
     await expect(fs.access(fresh)).resolves.toBeUndefined();
     await expect(fs.access(unrelated)).resolves.toBeUndefined();
+  });
+
+  it('keeps old-looking artifacts owned by a live process and removes dead or very old owners', async () => {
+    const root = await makeTempDir();
+    const source = path.join(root, 'source');
+    const target = path.join(root, 'target');
+    await makeSource(source, 'sample', '---\nname: sample\n---\nsource\n');
+    await fs.mkdir(target, { recursive: true });
+    const live = path.join(target, `.sample.ontoindex-staging-${process.pid}-live`);
+    const dead = path.join(target, '.sample.ontoindex-staging-2147483646-dead');
+    const reused = path.join(target, `.sample.ontoindex-staging-${process.pid}-reused`);
+    for (const dir of [live, dead, reused]) await fs.mkdir(dir);
+    await fs.writeFile(path.join(live, 'active'), 'active');
+    const old = new Date(Date.now() - 20 * 60 * 1000);
+    const veryOld = new Date(Date.now() - 90 * 60 * 1000);
+    await fs.utimes(live, old, old);
+    await fs.utimes(dead, old, old);
+    await fs.utimes(reused, veryOld, veryOld);
+
+    await expect(installSkillsTo(target, undefined, source)).resolves.toEqual(['sample']);
+    await expect(fs.access(path.join(live, 'active'))).resolves.toBeUndefined();
+    await expect(fs.access(dead)).rejects.toThrow();
+    await expect(fs.access(reused)).rejects.toThrow();
+  });
+
+  it('keeps the existing managed skill available when a refresh swap fails', async () => {
+    const root = await makeTempDir();
+    const source = path.join(root, 'source');
+    const target = path.join(root, 'target');
+    await makeSource(source, 'sample', '---\nname: sample\n---\nfirst\n');
+    await installSkillsTo(target, undefined, source);
+    await fs.writeFile(path.join(source, 'sample', 'SKILL.md'), '---\nname: sample\n---\nsecond\n');
+    const originalRename = fs.rename.bind(fs);
+    let renames = 0;
+    vi.spyOn(fs, 'rename').mockImplementation(async (...args) => {
+      renames += 1;
+      if (renames === 2) throw Object.assign(new Error('swap failed'), { code: 'EIO' });
+      return originalRename(...args);
+    });
+    try {
+      await installSkillsTo(target, undefined, source);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    await expect(fs.readFile(path.join(target, 'sample', 'SKILL.md'), 'utf-8')).resolves.toContain(
+      'first',
+    );
+  });
+
+  it('retries a staging mkdir collision', async () => {
+    const root = await makeTempDir();
+    const source = path.join(root, 'source');
+    const target = path.join(root, 'target');
+    await makeSource(source, 'sample', '---\nname: sample\n---\nsource\n');
+    await fs.mkdir(target, { recursive: true });
+    const random = vi.spyOn(Math, 'random');
+    random.mockReturnValueOnce(0.5).mockReturnValueOnce(0.6).mockReturnValue(0.7);
+    await fs.mkdir(
+      path.join(target, `.sample.ontoindex-staging-${process.pid}-${(0.5).toString(36).slice(2)}`),
+    );
+    await expect(installSkillsTo(target, undefined, source)).resolves.toEqual(['sample']);
+    expect(
+      (await fs.readdir(target)).some((name) => name.endsWith((0.5).toString(36).slice(2))),
+    ).toBe(true);
+    vi.restoreAllMocks();
   });
 
   it('skips a differing unmarked user skill and reports its name', async () => {

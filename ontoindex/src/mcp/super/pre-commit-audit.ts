@@ -7,7 +7,7 @@
  * together manually.
  */
 
-import { execFileSync } from 'child_process';
+import { execFileText } from '../../core/process/exec-file.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { emitOrganicRecommendation } from '../../core/recommendations/organic.js';
@@ -210,12 +210,10 @@ type TestCoverageRow = QueryRow;
 type LineRange = { startLine: number; endLine: number };
 type ProcessRow = QueryRow;
 
-function gitCapture(repoRoot: string | undefined, args: string[]): string {
-  return execFileSync('git', args, {
+async function gitCapture(repoRoot: string | undefined, args: string[]): Promise<string> {
+  return execFileText('git', args, {
     ...(repoRoot ? { cwd: repoRoot } : {}),
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: GIT_TIMEOUT_MS,
+    timeoutMs: GIT_TIMEOUT_MS,
     maxBuffer: GIT_MAX_BUFFER,
   });
 }
@@ -565,10 +563,10 @@ export async function gnPreCommitAudit(
   let changedPathScanCapped = false;
   let graphQueryFailed = false;
   try {
-    const trackedPaths = gitCapture(repoRoot, diffArgs).split('\n').filter(Boolean);
+    const trackedPaths = (await gitCapture(repoRoot, diffArgs)).split('\n').filter(Boolean);
     const untrackedPaths =
       scope === 'all' || scope === 'unstaged'
-        ? gitCapture(repoRoot, ['ls-files', '--others', '--exclude-standard'])
+        ? (await gitCapture(repoRoot, ['ls-files', '--others', '--exclude-standard']))
             .split('\n')
             .filter(Boolean)
         : [];
@@ -612,7 +610,7 @@ export async function gnPreCommitAudit(
   let changedLineRanges = new Map<string, LineRange[]>();
   let hunkCoverageAvailable = true;
   try {
-    changedLineRanges = parseChangedLineRanges(gitCapture(repoRoot, patchArgs));
+    changedLineRanges = parseChangedLineRanges(await gitCapture(repoRoot, patchArgs));
   } catch (err) {
     hunkCoverageAvailable = false;
     capabilitiesMissing.add('changed-hunks');
@@ -858,7 +856,7 @@ export async function gnPreCommitAudit(
     if (changedPaths.length > reviewerPaths.length) {
       warnings.push(`Reviewer lookup capped at ${MAX_REVIEWER_PATHS} paths`);
     }
-    const gitLogOut = gitCapture(repoRoot, [
+    const gitLogOut = await gitCapture(repoRoot, [
       'log',
       '--format=%aN',
       '-n',

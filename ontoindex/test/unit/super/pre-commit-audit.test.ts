@@ -14,8 +14,8 @@ import fs from 'node:fs/promises';
 // with vi.fn() inline rather than referencing outer const declarations.
 // ---------------------------------------------------------------------------
 
-vi.mock('child_process', () => ({
-  execFileSync: vi.fn(),
+vi.mock('../../../src/core/process/exec-file.js', () => ({
+  execFileText: vi.fn(),
 }));
 
 vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
@@ -39,12 +39,12 @@ vi.mock('../../../src/storage/git.js', () => ({
 // Imports (after mocks).
 // ---------------------------------------------------------------------------
 
-import { execFileSync } from 'child_process';
+import { execFileText } from '../../../src/core/process/exec-file.js';
 import { executeParameterized } from '../../../src/core/lbug/pool-adapter.js';
 import { resolveTargetContext } from '../../../src/mcp/shared/target-context.js';
 import { gnPreCommitAudit } from '../../../src/mcp/super/pre-commit-audit.js';
 
-const mockExecFileSync = vi.mocked(execFileSync);
+const mockExecFileText = vi.mocked(execFileText);
 const mockExecute = vi.mocked(executeParameterized);
 const mockResolveTargetContext = vi.mocked(resolveTargetContext);
 
@@ -54,14 +54,14 @@ const mockResolveTargetContext = vi.mocked(resolveTargetContext);
 
 const REPO_ID = 'test-repo';
 
-/** Make execFileSync return a given diff output. */
+/** Make execFileText return a given diff output. */
 function setupGitDiff(
   diffOutput: string,
   reviewerOutput = '',
   patchOutput = '',
   untrackedOutput = '',
 ) {
-  mockExecFileSync.mockImplementation((_cmd: string, args: string[]) => {
+  mockExecFileText.mockImplementation(async (_cmd: string, args: string[]) => {
     if (args.includes('--show-toplevel')) return '/repo\n';
     if (args.includes('--others') && args.includes('--exclude-standard')) return untrackedOutput;
     if (args.includes('--name-only')) return diffOutput;
@@ -158,7 +158,7 @@ describe('gnPreCommitAudit', () => {
       verifyGraphAuthority: true,
       requiredGraphCapabilities: ['symbols', 'impact', 'processes'],
     });
-    const diffCall = mockExecFileSync.mock.calls.find((call) => call[1].includes('--name-only'));
+    const diffCall = mockExecFileText.mock.calls.find((call) => call[1].includes('--name-only'));
     expect(diffCall?.[2]).toMatchObject({ cwd: '/repo' });
     expect(report.verdict).toBe('READY');
     expect(report.changedFiles).toHaveLength(1);
@@ -322,7 +322,7 @@ describe('gnPreCommitAudit', () => {
 
     expect(report.verdict).toBe('DO-NOT-COMMIT');
     expect(report.reasoning).toContain('could not be resolved');
-    expect(mockExecFileSync).not.toHaveBeenCalled();
+    expect(mockExecFileText).not.toHaveBeenCalled();
     expect(report.preCommitChecklist).toContainEqual(
       expect.objectContaining({ check: 'repository resolved', state: 'FAIL' }),
     );
@@ -366,11 +366,11 @@ describe('gnPreCommitAudit', () => {
       cwdSpy.mockRestore();
     }
 
-    expect(mockExecFileSync.mock.calls.some((call) => call[1].includes('--show-toplevel'))).toBe(
+    expect(mockExecFileText.mock.calls.some((call) => call[1].includes('--show-toplevel'))).toBe(
       false,
     );
     expect(
-      mockExecFileSync.mock.calls
+      mockExecFileText.mock.calls
         .filter((call) => call[0] === 'git')
         .every((call) => (call[2] as { cwd?: string } | undefined)?.cwd === '/repo-b'),
     ).toBe(true);
@@ -479,7 +479,7 @@ describe('gnPreCommitAudit', () => {
       'src/tracked.ts',
       'src/untracked.ts',
     ]);
-    expect(mockExecFileSync).toHaveBeenCalledWith(
+    expect(mockExecFileText).toHaveBeenCalledWith(
       'git',
       ['ls-files', '--others', '--exclude-standard'],
       expect.objectContaining({ cwd: '/repo' }),
@@ -494,7 +494,7 @@ describe('gnPreCommitAudit', () => {
 
     expect(report.changedFiles.map((file) => file.path)).toEqual(['src/staged.ts']);
     expect(
-      mockExecFileSync.mock.calls.some(
+      mockExecFileText.mock.calls.some(
         (call) => call[1].includes('--others') && call[1].includes('--exclude-standard'),
       ),
     ).toBe(false);
@@ -520,7 +520,7 @@ describe('gnPreCommitAudit', () => {
   });
 
   it('blocks commit when untracked-file enumeration fails', async () => {
-    mockExecFileSync.mockImplementation((_cmd: string, args: string[]) => {
+    mockExecFileText.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.includes('--name-only')) return 'src/tracked.ts\n';
       if (args.includes('--others')) throw new Error('untracked scan unavailable');
       return '';
@@ -569,12 +569,12 @@ describe('gnPreCommitAudit', () => {
     await gnPreCommitAudit(REPO_ID, { scope: 'branch' });
 
     // Find the git diff call (not the rev-parse or log calls)
-    const diffCall = mockExecFileSync.mock.calls.find((call) => call[1].includes('--name-only'));
+    const diffCall = mockExecFileText.mock.calls.find((call) => call[1].includes('--name-only'));
     expect(diffCall).toBeDefined();
     expect(diffCall![1]).toContain('main...HEAD');
     expect(diffCall![1]).not.toContain('--cached');
     expect(
-      mockExecFileSync.mock.calls.some(
+      mockExecFileText.mock.calls.some(
         (call) => call[1].includes('--others') && call[1].includes('--exclude-standard'),
       ),
     ).toBe(false);
@@ -582,7 +582,7 @@ describe('gnPreCommitAudit', () => {
 
   // ---- Test 6: git diff failure blocks commit ----------------------------
   it('returns DO-NOT-COMMIT when git diff throws', async () => {
-    mockExecFileSync.mockImplementation((_cmd: string, args: string[]) => {
+    mockExecFileText.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.includes('--show-toplevel')) return '/repo\n';
       throw new Error('not a git repository');
     });
@@ -599,7 +599,7 @@ describe('gnPreCommitAudit', () => {
   });
 
   it('returns DO-NOT-COMMIT when git diff times out', async () => {
-    mockExecFileSync.mockImplementation((_cmd: string, args: string[]) => {
+    mockExecFileText.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.includes('--show-toplevel')) return '/repo\n';
       const err = Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT' });
       throw err;
@@ -616,7 +616,7 @@ describe('gnPreCommitAudit', () => {
   });
 
   it('returns DO-NOT-COMMIT when git diff exceeds maxBuffer', async () => {
-    mockExecFileSync.mockImplementation((_cmd: string, args: string[]) => {
+    mockExecFileText.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.includes('--show-toplevel')) return '/repo\n';
       const err = Object.assign(new Error('stdout maxBuffer length exceeded'), { code: 'ENOBUFS' });
       throw err;
@@ -748,7 +748,7 @@ describe('gnPreCommitAudit', () => {
   });
 
   it('falls back to file-level symbol audit when diff hunks are unavailable', async () => {
-    mockExecFileSync.mockImplementation((_cmd: string, args: string[]) => {
+    mockExecFileText.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args.includes('--show-toplevel')) return '/repo\n';
       if (args.includes('--name-only')) return 'src/foo.ts\n';
       if (args.includes('--unified=0')) throw new Error('patch unavailable');

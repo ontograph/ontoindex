@@ -95,9 +95,12 @@ import type { LocalBackend } from '../../src/mcp/local/local-backend.js';
 describe('MCP Facade Integration (M-1)', () => {
   beforeEach(() => {
     execFileTextMock.mockReset();
-    execFileTextMock.mockImplementation(async (_command: string, args: string[]) =>
-      args[3] === 'HEAD~1^{commit}' ? 'a'.repeat(40) : 'b'.repeat(40),
-    );
+    execFileTextMock.mockImplementation(async (_command: string, args: string[]) => {
+      if (args[0] === 'diff' && args.includes('--name-only'))
+        return childProcessMocks.nameOnlyOutput;
+      if (args[0] === 'diff' && args.includes('--numstat')) return childProcessMocks.numstatOutput;
+      return args[3] === 'HEAD~1^{commit}' ? 'a'.repeat(40) : 'b'.repeat(40);
+    });
     childProcessMocks.nameOnlyOutput = 'src/alpha.ts\nsrc/beta.ts\n';
     childProcessMocks.numstatOutput = '10\t1\tsrc/alpha.ts\n2\t0\tsrc/beta.ts\n';
     childProcessMocks.execFileSync.mockImplementation((_cmd: string, args: string[]) => {
@@ -488,7 +491,7 @@ describe('MCP Facade Integration (M-1)', () => {
       expect.objectContaining({ cwd: '/tmp/fixture-repo' }),
     );
     expect(result.results.resolvedRange).toBe(resolvedRange);
-    expect(childProcessMocks.execFileSync).toHaveBeenCalledWith(
+    expect(execFileTextMock).toHaveBeenCalledWith(
       'git',
       ['diff', resolvedRange, '--name-only'],
       expect.objectContaining({ cwd: '/tmp/fixture-repo' }),
