@@ -19,7 +19,14 @@ async function fixture(backend: Record<string, unknown>) {
   });
   await server.connect(serverTransport);
   await client.connect(clientTransport);
-  return { client, responses, close: async () => { await client.close(); await server.close(); } };
+  return {
+    client,
+    responses,
+    close: async () => {
+      await client.close();
+      await server.close();
+    },
+  };
 }
 
 describe('MCP resource protocol errors through the SDK', () => {
@@ -37,8 +44,12 @@ describe('MCP resource protocol errors through the SDK', () => {
       const wire = f.responses.find((response: any) => response.error) as any;
       expect(wire.error.code).toBe(code);
       expect(wire.result).toBeUndefined();
-      expect(Buffer.byteLength(JSON.stringify(wire), 'utf8')).toBeLessThanOrEqual(MCP_RESPONSE_MAX_BYTES);
-    } finally { await f.close(); }
+      expect(Buffer.byteLength(JSON.stringify(wire), 'utf8')).toBeLessThanOrEqual(
+        MCP_RESPONSE_MAX_BYTES,
+      );
+    } finally {
+      await f.close();
+    }
   });
 
   it('keeps backend exceptions private and preserves successful reads', async () => {
@@ -47,10 +58,14 @@ describe('MCP resource protocol errors through the SDK', () => {
     try {
       expect((await f.client.readResource({ uri: 'ontoindex://repos' })).contents).toHaveLength(1);
       listRepos.mockRejectedValue(new Error('secret backend detail'));
-      const error = await f.client.readResource({ uri: 'ontoindex://repos' }).catch((err: unknown) => err);
+      const error = await f.client
+        .readResource({ uri: 'ontoindex://repos' })
+        .catch((err: unknown) => err);
       expect(error).toMatchObject({ code: ErrorCode.InternalError });
       expect((error as Error).message).toContain('Resource read failed.');
       expect(JSON.stringify(f.responses)).not.toContain('secret backend detail');
-    } finally { await f.close(); }
+    } finally {
+      await f.close();
+    }
   });
 });

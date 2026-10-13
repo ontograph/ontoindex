@@ -18,9 +18,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { ReadResourceRequestSchema, McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { UriTemplate } from '@modelcontextprotocol/sdk/shared/uriTemplate.js';
 import * as resources from '../../src/mcp/resources.js';
-import {
-  MCP_RESPONSE_MAX_BYTES,
-} from '../../src/mcp/shared/response-pages.js';
+import { MCP_RESPONSE_MAX_BYTES } from '../../src/mcp/shared/response-pages.js';
 
 // ─── Mock backend ──────────────────────────────────────────────────
 
@@ -136,9 +134,16 @@ describe('resource response MIME types', () => {
         expect(error).toBeInstanceOf(McpError);
         expect(error.code).toBe(ErrorCode.InternalError);
         expect(error.message).toContain('Resource read failed.');
-        expect(Buffer.byteLength(JSON.stringify({
-          jsonrpc: '2.0', id: 1, error: { code: error.code, message: error.message },
-        }), 'utf8')).toBeLessThanOrEqual(MCP_RESPONSE_MAX_BYTES);
+        expect(
+          Buffer.byteLength(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              id: 1,
+              error: { code: error.code, message: error.message },
+            }),
+            'utf8',
+          ),
+        ).toBeLessThanOrEqual(MCP_RESPONSE_MAX_BYTES);
       } finally {
         handlers.mockRestore();
         read.mockRestore();
@@ -215,7 +220,9 @@ describe('resource response MIME types', () => {
       const handler = handlers.mock.calls.find(
         ([schema]) => schema === ReadResourceRequestSchema,
       )?.[1];
-      await expect((handler as any)({ params: { uri: 'ontoindex://setup' } })).rejects.toMatchObject({
+      await expect(
+        (handler as any)({ params: { uri: 'ontoindex://setup' } }),
+      ).rejects.toMatchObject({
         code: ErrorCode.InternalError,
         message: expect.stringContaining('Resource read failed.'),
       });
@@ -237,9 +244,16 @@ describe('resource response MIME types', () => {
       expect(error).toBeInstanceOf(McpError);
       expect(error.code).toBe(ErrorCode.InvalidParams);
       expect(error.message).toContain('… [truncated]');
-      expect(Buffer.byteLength(JSON.stringify({
-        jsonrpc: '2.0', id: 1, error: { code: error.code, message: error.message },
-      }), 'utf8')).toBeLessThanOrEqual(MCP_RESPONSE_MAX_BYTES);
+      expect(
+        Buffer.byteLength(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            error: { code: error.code, message: error.message },
+          }),
+          'utf8',
+        ),
+      ).toBeLessThanOrEqual(MCP_RESPONSE_MAX_BYTES);
     } finally {
       handlers.mockRestore();
     }

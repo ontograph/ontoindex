@@ -910,7 +910,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   app.use((req, res, next) => {
     const loopback = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(host.toLowerCase());
     if (
-      (loopback && !isTrustedHost(req.headers.host, { port: port || req.socket.localPort, extraHosts })) ||
+      (loopback &&
+        !isTrustedHost(req.headers.host, { port: port || req.socket.localPort, extraHosts })) ||
       !isTrustedOrigin(req.headers.origin)
     ) {
       res.status(403).json({ error: 'Forbidden' });

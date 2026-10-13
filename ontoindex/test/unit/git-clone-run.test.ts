@@ -13,10 +13,12 @@ import { runGit } from '../../src/server/git-clone.js';
 
 function makeChild() {
   const child = new EventEmitter() as EventEmitter & {
+    stdout: EventEmitter;
     stderr: EventEmitter;
     kill: ReturnType<typeof vi.fn>;
     killed: boolean;
   };
+  child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   child.killed = false;
   child.kill = vi.fn(() => {

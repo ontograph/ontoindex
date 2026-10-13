@@ -142,14 +142,15 @@ function editCheckFreshness(
   authoritative: boolean,
 ): NonNullable<EditCheckReport['freshness']> {
   const reason = authoritative
-    ? targetContext.graphAuthority?.reason ?? 'graph authority established'
-    : targetContext.graphAuthority?.reason ??
-      (targetContext.indexedHead && targetContext.targetHead &&
+    ? (targetContext.graphAuthority?.reason ?? 'graph authority established')
+    : (targetContext.graphAuthority?.reason ??
+      (targetContext.indexedHead &&
+      targetContext.targetHead &&
       targetContext.indexedHead !== targetContext.targetHead
         ? 'indexedHead != targetHead'
         : targetContext.dirtyWorktree
           ? 'worktree contains uncommitted changes'
-          : 'graph authority unavailable');
+          : 'graph authority unavailable'));
   return {
     authoritative,
     reason,
@@ -948,7 +949,7 @@ export async function gnSafeEditCheck(
   const reasoning =
     targetContext && !graphAuthoritative && computed.verdict === 'SAFE'
       ? `${computed.reasoning} Graph is not authoritative: ${freshness.reason}. Verify callers in source before editing.`
-    : computed.reasoning;
+      : computed.reasoning;
 
   // --- 6. Recommended tool + suggestedNext ----------------------------
   const recommendedTool = computeRecommendedTool(intent, upstream);

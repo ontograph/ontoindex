@@ -18,14 +18,24 @@ describe('trusted MCP diagnostic project context', () => {
     const { CallToolRequestSchema } = await import('@modelcontextprotocol/sdk/types.js');
     const handlers = vi.spyOn(Server.prototype, 'setRequestHandler');
     const { createMCPServer } = await import('../../src/mcp/server.js');
-    createMCPServer({ resolveRepo: vi.fn().mockResolvedValue({
-      id: 'repo-1', name: 'requested', repoPath: '/requested/repo',
-    }) } as any, options);
-    const handler = handlers.mock.calls.find(([schema]) => schema === CallToolRequestSchema)?.[1] as any;
+    createMCPServer(
+      {
+        resolveRepo: vi.fn().mockResolvedValue({
+          id: 'repo-1',
+          name: 'requested',
+          repoPath: '/requested/repo',
+        }),
+      } as any,
+      options,
+    );
+    const handler = handlers.mock.calls.find(
+      ([schema]) => schema === CallToolRequestSchema,
+    )?.[1] as any;
     const args = { repo: 'requested', projectCwd: '/spoofed/project' };
     await handler({ params: { name: 'gn_diagnose', arguments: args } });
     expect(dispatchSuper).toHaveBeenCalledWith('gn_diagnose', args, 'repo-1', undefined, {
-      repoPath: '/requested/repo', projectCwd,
+      repoPath: '/requested/repo',
+      projectCwd,
     });
   });
 });

@@ -457,17 +457,20 @@ export function createMCPServer(
         }
         return response;
       } catch (err: unknown) {
-        const classified = err instanceof McpError &&
-          (err.code === ErrorCode.InvalidParams || err.code === -32002);
+        const classified =
+          err instanceof McpError && (err.code === ErrorCode.InvalidParams || err.code === -32002);
         const code = classified ? err.code : ErrorCode.InternalError;
         const message = classified ? err.message : 'Resource read failed.';
         // Reserve protocol framing and the SDK's error-code prefix; never echo backend data.
-        throw new McpError(code, boundMcpErrorText(
-          (text) => text,
-          message,
-          MCP_RESPONSE_MAX_BYTES - 1024,
-          (text) => Buffer.byteLength(JSON.stringify({ code, message: text }), 'utf8'),
-        ));
+        throw new McpError(
+          code,
+          boundMcpErrorText(
+            (text) => text,
+            message,
+            MCP_RESPONSE_MAX_BYTES - 1024,
+            (text) => Buffer.byteLength(JSON.stringify({ code, message: text }), 'utf8'),
+          ),
+        );
       }
     }),
   );
@@ -565,7 +568,9 @@ export function createMCPServer(
                   : undefined,
                 name === 'gn_diagnose'
                   ? { repoPath: repo.repoPath, projectCwd: options.projectCwd ?? null }
-                  : name === 'gn_audit_logic' ? { repoPath: repo.repoPath } : undefined,
+                  : name === 'gn_audit_logic'
+                    ? { repoPath: repo.repoPath }
+                    : undefined,
               ),
               repo,
             );
@@ -746,7 +751,9 @@ export async function startMCPServer(
     },
   });
   const transport = new CompatibleStdioServerTransport(process.stdin, _safeStdout);
-  const trace = ['1', 'true', 'yes'].includes(process.env.ONTOINDEX_MCP_STARTUP_TRACE?.toLowerCase() ?? '');
+  const trace = ['1', 'true', 'yes'].includes(
+    process.env.ONTOINDEX_MCP_STARTUP_TRACE?.toLowerCase() ?? '',
+  );
 
   // Graceful shutdown helper and listeners must be ready before connect, which
   // may observe an already-closed stdio stream or emit errors while starting.
@@ -757,14 +764,16 @@ export async function startMCPServer(
     // Repeated signals do not cut cleanup short; the grace deadline is the only bound.
     if (shuttingDown) return;
     shuttingDown = true;
-    await withShutdownGrace((async () => {
-      try {
-        await server.close();
-      } catch {}
-      try {
-        await backend.dispose();
-      } catch {}
-    })());
+    await withShutdownGrace(
+      (async () => {
+        try {
+          await server.close();
+        } catch {}
+        try {
+          await backend.dispose();
+        } catch {}
+      })(),
+    );
     process.exit(shutdownExitCode);
   };
 
@@ -838,7 +847,10 @@ export async function startMCPServer(
   try {
     await server.connect(transport);
   } catch (error) {
-    if (trace) console.error(`[ontoindex:mcp:init] server.connect: failed: ${error instanceof Error ? error.message : String(error)}`);
+    if (trace)
+      console.error(
+        `[ontoindex:mcp:init] server.connect: failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     throw error;
   }
 }

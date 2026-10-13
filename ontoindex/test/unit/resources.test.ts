@@ -397,7 +397,9 @@ describe('parseResourceUri', () => {
       }
     }
     expect(parseResourceUri('ontoindex://repo/name/not-a-resource')).toEqual({
-      kind: 'repo', repoName: 'name', resourceType: 'not-a-resource',
+      kind: 'repo',
+      repoName: 'name',
+      resourceType: 'not-a-resource',
     });
   });
 
