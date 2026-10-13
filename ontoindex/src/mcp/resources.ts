@@ -734,16 +734,21 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push(`  processes: ${context.stats.processCount}`);
   lines.push('');
   lines.push('tools_available:');
-  lines.push('  - query: Process-grouped code intelligence (execution flows related to a concept)');
-  lines.push('  - context: 360-degree symbol view (categorized refs, process participation)');
-  lines.push('  - impact: Blast radius analysis (what breaks if you change a symbol)');
-  lines.push('  - analysis_catalog: Local pack/suite catalog for CodeQL-style OntoIndex analyses');
-  lines.push('  - detect_changes: Git-diff impact analysis (what do your changes affect)');
-  lines.push('  - rename: Preview-only multi-file rename candidates with confidence tags');
-  lines.push('  - cypher: Raw graph queries');
-  lines.push(
-    `  - list_repos: ${yamlString('Discover all indexed repositories (MCP tool; CLI equivalent: `ontoindex list`)')}`,
-  );
+  lines.push('  - gn_ensure_fresh: Check index freshness and runtime health');
+  lines.push('  - search: Search semantically, with Cypher, or through the repomap');
+  lines.push('  - inspect: Inspect symbol context, evidence, API shapes, or IPC traces');
+  lines.push('  - impact: Analyze symbol, batch, route, or diff impact');
+  lines.push('  - discover: Discover repositories, routes, tools, packs, groups, or sync state');
+  lines.push('  - docs: Trace requirements, check docs drift, or inspect readiness');
+  lines.push('  - audit: Run architectural, migration, and systems audits');
+  lines.push('  - manage: Manage OntoIndex sessions and route maps');
+  lines.push('  - refactor: Preview rename candidates, replace bodies, or stage edits');
+  lines.push('  - gn_explore: Explore a concept and its execution flows');
+  lines.push('  - gn_find_related: Inspect callers, callees, and related symbols');
+  lines.push('  - gn_safe_edit_check: Check risk before editing a symbol');
+  lines.push('  - gn_verify_diff: Verify changed files, symbols, and tests');
+  lines.push('  - gn_review_diff: Review changes with graph-aware impact evidence');
+  lines.push('  - gn_test_gap: Review existing or changed-symbol test evidence');
 
   if (
     analysisCatalog &&
@@ -824,7 +829,7 @@ async function getClustersResource(backend: LocalBackend, repoName?: string): Pr
 
     if (result.clusters.length > displayLimit) {
       lines.push(
-        `\n# Showing top ${displayLimit} of ${result.clusters.length} modules. Use ontoindex_query for deeper search.`,
+        `\n# Showing top ${displayLimit} of ${result.clusters.length} modules. Use search({action:'semantic', repo:'<repo>', query:'...'}) for deeper search.`,
       );
     }
 
@@ -858,7 +863,7 @@ async function getProcessesResource(backend: LocalBackend, repoName?: string): P
 
     if (result.processes.length > displayLimit) {
       lines.push(
-        `\n# Showing top ${displayLimit} of ${result.processes.length} processes. Use ontoindex_query for deeper search.`,
+        `\n# Showing top ${displayLimit} of ${result.processes.length} processes. Use search({action:'semantic', repo:'<repo>', query:'...'}) for deeper search.`,
       );
     }
 
@@ -1164,13 +1169,21 @@ async function getSetupResource(backend: LocalBackend): Promise<string> {
       '',
       '| Tool | What it gives you |',
       '|------|-------------------|',
-      '| `query` | Process-grouped code intelligence — execution flows related to a concept |',
-      '| `context` | 360-degree symbol view — categorized refs, processes it participates in |',
-      '| `impact` | Symbol blast radius — what breaks at depth 1/2/3 with confidence |',
-      '| `detect_changes` | Git-diff impact — what do your current changes affect |',
-      '| `rename` | Preview-only multi-file rename candidates with confidence tags |',
-      '| `cypher` | Raw graph queries |',
-      '| `list_repos` | Discover indexed repos (MCP tool; CLI equivalent: `ontoindex list`) |',
+      '| `gn_ensure_fresh` | Check index freshness and runtime health |',
+      '| `search` | Search semantically, with Cypher, or through the repomap |',
+      '| `inspect` | Inspect symbol context, evidence, API shapes, or IPC traces |',
+      '| `impact` | Analyze symbol, batch, route, or diff impact |',
+      '| `discover` | Discover indexed repositories (CLI equivalent: `ontoindex list`) |',
+      '| `docs` | Trace requirements, check docs drift, or inspect readiness |',
+      '| `audit` | Run architectural, migration, and systems audits |',
+      '| `manage` | Manage OntoIndex sessions and route maps |',
+      '| `refactor` | Preview rename candidates, replace bodies, or stage edits |',
+      '| `gn_explore` | Explore a concept and its execution flows |',
+      '| `gn_find_related` | Inspect callers, callees, and related symbols |',
+      '| `gn_safe_edit_check` | Check risk before editing a symbol |',
+      '| `gn_verify_diff` | Verify changed files, symbols, and tests |',
+      '| `gn_review_diff` | Review changes with graph-aware impact evidence |',
+      '| `gn_test_gap` | Review existing or changed-symbol test evidence |',
       '',
       '## Resources',
       '',

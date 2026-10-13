@@ -4,6 +4,17 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.3] - 2026-10-14
+
+### Changed
+
+- Rewrote the agent-visible text that still named removed tools: next-step hints appended to tool responses, the `tools_available` and setup resources, the Claude session-start hook, and generated community skills now use the live `search`, `inspect`, `impact`, `refactor` and `gn_*` calls. The "d=1 WILL BREAK" wording became "direct dependents, not proof of breakage".
+- Synced the Claude plugin and Cursor integration skill copies with the bundled 2.3.2 skills and added `ontoindex-navigation` to both.
+
+### Added
+
+- Regression tests: a sweep that fails when any next-step hint uses removed tool-call syntax, and `plugin-skills-sync.test.ts`, which fails when a plugin skill copy differs from `skills/*.md`.
+
 ## [2.3.2] - 2026-10-14
 
 ### Changed

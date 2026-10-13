@@ -595,6 +595,8 @@ describe('generateSkillFiles — file output', () => {
     const betaSkill = await fs.readFile(path.join(outputDir, 'beta', 'SKILL.md'), 'utf-8');
     expect(alphaSkill.length).toBeGreaterThan(0);
     expect(betaSkill.length).toBeGreaterThan(0);
+    expect(alphaSkill).toContain('inspect({action: "context", repo: "<repo>", target: "');
+    expect(alphaSkill).toContain('search({action: "semantic", repo: "<repo>", query: "alpha"})');
   });
 
   it('can write generated skills for Codex project-local targets', async () => {
