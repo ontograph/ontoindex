@@ -432,10 +432,12 @@ async function installClaudeCodeSkills(result: SetupResult): Promise<void> {
 
   const skillsDir = path.join(claudeDir, 'skills');
   try {
-    const installed = await installSkillsTo(skillsDir);
+    const skipped: string[] = [];
+    const installed = await installSkillsTo(skillsDir, skipped);
     if (installed.length > 0) {
       result.configured.push(`Claude Code skills (${installed.length} skills → ~/.claude/skills/)`);
     }
+    for (const name of skipped) result.skipped.push(`Skipped (existing user skill): ${name}`);
   } catch (err: unknown) {
     result.errors.push(`Claude Code skills: ${caughtMessage(err)}`);
   }
@@ -800,9 +802,12 @@ async function setupOntocode(result: SetupResult, entry: McpEntry): Promise<void
  *   - Flat file:  skills/{name}.md           → copied as SKILL.md
  *   - Directory:  skills/{name}/SKILL.md     → copied recursively (includes references/, etc.)
  */
-async function installSkillsTo(targetDir: string): Promise<string[]> {
+export async function installSkillsTo(
+  targetDir: string,
+  skipped: string[] = [],
+  skillsRoot = path.join(__dirname, '..', '..', 'skills'),
+): Promise<string[]> {
   const installed: string[] = [];
-  const skillsRoot = path.join(__dirname, '..', '..', 'skills');
 
   let flatFiles: string[] = [];
   let dirSkillFiles: string[] = [];
@@ -831,20 +836,53 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
     const skillDir = path.join(targetDir, skillName);
 
     try {
-      if (source.isDirectory) {
-        const dirSource = path.join(skillsRoot, skillName);
-        const skillContent = await fs.readFile(path.join(dirSource, 'SKILL.md'), 'utf-8');
-        if (!hasYamlFrontmatter(skillContent)) continue;
-        await copyDirRecursive(dirSource, skillDir);
-        installed.push(skillName);
-      } else {
-        const flatSource = path.join(skillsRoot, `${skillName}.md`);
-        const content = await fs.readFile(flatSource, 'utf-8');
-        if (!hasYamlFrontmatter(content)) continue;
-        await fs.mkdir(skillDir, { recursive: true });
-        await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf-8');
-        installed.push(skillName);
+      let exists = false;
+      try {
+        const stat = await fs.lstat(skillDir);
+        exists = true;
+        if (stat.isSymbolicLink() || !stat.isDirectory()) {
+          skipped.push(skillName);
+          continue;
+        }
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
       }
+
+      const sourceDir = source.isDirectory ? path.join(skillsRoot, skillName) : undefined;
+      const sourceSkillPath = sourceDir
+        ? path.join(sourceDir, 'SKILL.md')
+        : path.join(skillsRoot, `${skillName}.md`);
+      const sourceContent = await fs.readFile(sourceSkillPath);
+      if (!hasYamlFrontmatter(sourceContent.toString('utf-8'))) continue;
+
+      if (exists) {
+        let managed = false;
+        try {
+          const markerStat = await fs.lstat(path.join(skillDir, '.ontoindex-managed'));
+          managed = markerStat.isFile();
+        } catch {
+          // Missing marker means this directory may belong to the user.
+        }
+        let existingContent: Buffer | undefined;
+        try {
+          existingContent = await fs.readFile(path.join(skillDir, 'SKILL.md'));
+        } catch (err: unknown) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+        }
+        if (!managed && existingContent && !existingContent.equals(sourceContent)) {
+          skipped.push(skillName);
+          continue;
+        }
+      }
+
+      if (source.isDirectory) {
+        await copyDirRecursive(sourceDir!, skillDir);
+      } else {
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(path.join(skillDir, 'SKILL.md'), sourceContent);
+      }
+      await fs.writeFile(path.join(skillDir, '.ontoindex-managed'), '');
+      installed.push(skillName);
     } catch {
       // Source skill not found — skip
     }
@@ -857,7 +895,7 @@ function hasYamlFrontmatter(content: string): boolean {
   return /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.test(content);
 }
 
-async function removeInvalidLegacyGitNexusSkills(skillsDir: string): Promise<string[]> {
+export async function removeInvalidLegacyGitNexusSkills(skillsDir: string): Promise<string[]> {
   let entries;
   try {
     entries = await fs.readdir(skillsDir, { withFileTypes: true });
@@ -867,7 +905,7 @@ async function removeInvalidLegacyGitNexusSkills(skillsDir: string): Promise<str
 
   const removed: string[] = [];
   for (const entry of entries) {
-    if (!entry.isDirectory() || !entry.name.startsWith('gitnexus-')) continue;
+    if (!entry.isDirectory() || entry.isSymbolicLink() || !entry.name.startsWith('gitnexus-')) continue;
     const skillDir = path.join(skillsDir, entry.name);
     try {
       const content = await fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf-8');
@@ -875,7 +913,9 @@ async function removeInvalidLegacyGitNexusSkills(skillsDir: string): Promise<str
     } catch {
       continue;
     }
-    await fs.rm(skillDir, { recursive: true, force: true });
+    const skillEntries = await fs.readdir(skillDir);
+    if (skillEntries.length !== 1 || skillEntries[0] !== 'SKILL.md') continue;
+    await fs.rm(skillDir, { recursive: true });
     removed.push(entry.name);
   }
   return removed;
@@ -907,10 +947,12 @@ async function installCursorSkills(result: SetupResult): Promise<void> {
 
   const skillsDir = path.join(cursorDir, 'skills');
   try {
-    const installed = await installSkillsTo(skillsDir);
+    const skipped: string[] = [];
+    const installed = await installSkillsTo(skillsDir, skipped);
     if (installed.length > 0) {
       result.configured.push(`Cursor skills (${installed.length} skills → ~/.cursor/skills/)`);
     }
+    for (const name of skipped) result.skipped.push(`Skipped (existing user skill): ${name}`);
   } catch (err: unknown) {
     result.errors.push(`Cursor skills: ${caughtMessage(err)}`);
   }
@@ -925,12 +967,14 @@ async function installOpenCodeSkills(result: SetupResult): Promise<void> {
 
   const skillsDir = path.join(opencodeDir, 'skill');
   try {
-    const installed = await installSkillsTo(skillsDir);
+    const skipped: string[] = [];
+    const installed = await installSkillsTo(skillsDir, skipped);
     if (installed.length > 0) {
       result.configured.push(
         `OpenCode skills (${installed.length} skills → ~/.config/opencode/skill/)`,
       );
     }
+    for (const name of skipped) result.skipped.push(`Skipped (existing user skill): ${name}`);
   } catch (err: unknown) {
     result.errors.push(`OpenCode skills: ${caughtMessage(err)}`);
   }
@@ -946,7 +990,8 @@ async function installCodexSkills(result: SetupResult): Promise<void> {
   const skillsDir = path.join(os.homedir(), '.agents', 'skills');
   try {
     const removedLegacy = await removeInvalidLegacyGitNexusSkills(skillsDir);
-    const installed = await installSkillsTo(skillsDir);
+    const skipped: string[] = [];
+    const installed = await installSkillsTo(skillsDir, skipped);
     if (removedLegacy.length > 0) {
       result.configured.push(
         `Removed invalid legacy GitNexus Codex skills (${removedLegacy.length})`,
@@ -955,6 +1000,7 @@ async function installCodexSkills(result: SetupResult): Promise<void> {
     if (installed.length > 0) {
       result.configured.push(`Codex skills (${installed.length} skills → ~/.agents/skills/)`);
     }
+    for (const name of skipped) result.skipped.push(`Skipped (existing user skill): ${name}`);
   } catch (err: unknown) {
     result.errors.push(`Codex skills: ${caughtMessage(err)}`);
   }

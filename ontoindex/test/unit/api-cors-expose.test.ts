@@ -15,48 +15,66 @@ vi.mock('../../src/server/mcp-http.js', () => ({
 }));
 
 describe('HTTP API CORS exposed headers', () => {
-  it('exposes the MCP session header to an allowed browser origin', async () => {
-    vi.stubEnv('ONTOINDEX_HTTP_TOKEN', 'cors-test-token');
-    vi.spyOn(LocalBackend.prototype, 'init').mockResolvedValue(undefined);
-    let server: Server | undefined;
-    const listen = express.application.listen;
-    vi.spyOn(express.application, 'listen').mockImplementation(function (...args: unknown[]) {
-      server = Reflect.apply(listen, this, args) as Server;
-      return server;
-    } as typeof listen);
+  it.each([false, true])(
+    'proxy allowlist enabled: %s; exposes the MCP session header to an allowed browser origin',
+    async (allowProxy) => {
+      vi.stubEnv('ONTOINDEX_ALLOWED_HOSTS', allowProxy ? 'localhost:8080' : '');
+      vi.stubEnv('ONTOINDEX_HTTP_TOKEN', 'cors-test-token');
+      vi.spyOn(LocalBackend.prototype, 'init').mockResolvedValue(undefined);
+      let server: Server | undefined;
+      const listen = express.application.listen;
+      vi.spyOn(express.application, 'listen').mockImplementation(function (...args: unknown[]) {
+        server = Reflect.apply(listen, this, args) as Server;
+        return server;
+      } as typeof listen);
 
-    try {
-      await createServer(0);
-      const address = server!.address();
-      if (!address || typeof address === 'string') throw new Error('Expected TCP address');
-      const response = await fetch(`http://127.0.0.1:${address.port}/`, {
-        headers: { Origin: 'http://localhost:3000' },
-      });
-      expect(response.headers.get('access-control-expose-headers')).toBe('Mcp-Session-Id');
-      for (const headers of [
-        { Origin: 'http://localhost.evil.com' },
-        { Host: 'localhost.evil.com' },
-        { Host: '127.0.0.1:1' },
-      ]) {
-        const status = await new Promise<number | undefined>((resolve, reject) => {
-          const req = request(`http://127.0.0.1:${address.port}/`, { headers }, (res) => {
-            res.resume();
-            resolve(res.statusCode);
-          });
+      try {
+        await createServer(0);
+        const address = server!.address();
+        if (!address || typeof address === 'string') throw new Error('Expected TCP address');
+        const response = await fetch(`http://127.0.0.1:${address.port}/`, {
+          headers: { Origin: 'http://localhost:3000' },
+        });
+        expect(response.headers.get('access-control-expose-headers')).toBe('Mcp-Session-Id');
+        const proxyStatus = await new Promise<number | undefined>((resolve, reject) => {
+          const req = request(
+            `http://127.0.0.1:${address.port}/`,
+            { headers: { Host: 'localhost:8080' } },
+            (res) => {
+              res.resume();
+              resolve(res.statusCode);
+            },
+          );
           req.on('error', reject);
           req.end();
         });
-        expect(status).toBe(403);
+        expect(proxyStatus).toBe(allowProxy ? 404 : 403);
+
+        for (const headers of [
+          { Origin: 'http://localhost.evil.com' },
+          { Host: 'localhost.evil.com' },
+          { Host: '127.0.0.1:1' },
+        ]) {
+          const status = await new Promise<number | undefined>((resolve, reject) => {
+            const req = request(`http://127.0.0.1:${address.port}/`, { headers }, (res) => {
+              res.resume();
+              resolve(res.statusCode);
+            });
+            req.on('error', reject);
+            req.end();
+          });
+          expect(status).toBe(403);
+        }
+      } finally {
+        if (server) {
+          server.closeAllConnections();
+          await new Promise<void>((resolve, reject) => {
+            server!.close((error) => (error ? reject(error) : resolve()));
+          });
+        }
+        vi.restoreAllMocks();
+        vi.unstubAllEnvs();
       }
-    } finally {
-      if (server) {
-        server.closeAllConnections();
-        await new Promise<void>((resolve, reject) => {
-          server!.close((error) => (error ? reject(error) : resolve()));
-        });
-      }
-      vi.restoreAllMocks();
-      vi.unstubAllEnvs();
-    }
-  });
+    },
+  );
 });

@@ -42,6 +42,7 @@ export interface McpDoctorReport {
     command?: string;
     projectCwd?: string;
     repairCommand?: string;
+    candidates?: Array<{ pid: number; projectCwd?: string }>;
   };
   setupHealth?: {
     status: 'ok' | 'degraded' | 'misconfigured';
@@ -109,6 +110,11 @@ export async function createMcpDoctorReport(
     .filter((reason) => reason === 'embeddings-unavailable' || reason === 'embeddings-missing' || reason.endsWith('-lsp-missing'))
     .map((reason) => ({
       reason,
+      ...(reason.startsWith('embeddings-') ? { details: [
+        `ONTOINDEX_EMBEDDING_URL: ${env.ONTOINDEX_EMBEDDING_URL ? 'set' : 'unset'}`,
+        `ONTOINDEX_EMBEDDING_MODEL: ${env.ONTOINDEX_EMBEDDING_MODEL ? 'set' : 'unset'}`,
+        'Vectors appear after ontoindex analyze --embeddings',
+      ] } : {}),
       ...(reason.startsWith('embeddings-') && diagnose.embeddings?.repairCommand
         ? { repairCommand: diagnose.embeddings.repairCommand }
         : {}),
@@ -259,6 +265,9 @@ export function formatMcpDoctorText(report: McpDoctorReport): string {
       }
     } else if (liveness.status === 'ambiguous') {
       lines.push(`MCP process: ambiguous (${liveness.reason ?? 'multiple matches'})`);
+      for (const candidate of liveness.candidates ?? []) {
+        lines.push(`Candidate: PID ${candidate.pid} -> ${candidate.projectCwd ?? '<unverified>'}`);
+      }
     } else if (liveness.status === 'missing') {
       lines.push(`MCP process: missing (${liveness.reason ?? 'no matching process found'})`);
     } else {
@@ -401,6 +410,7 @@ async function probeMcpProcessLiveness(
       stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     });
     const candidateLimit = 256;
+    let enumerationCapped = false;
     const lineLimit = 16 * 1024;
     await new Promise<void>((resolve, reject) => {
       let pending = '';
@@ -418,6 +428,7 @@ async function probeMcpProcessLiveness(
         else resolve();
       };
       const consumeLine = (line: string) => {
+        if (settled) return;
         const trimmed = line.trim();
         if (!trimmed) return;
         const match = trimmed.match(/^(\d+)\s+(.*)$/);
@@ -434,6 +445,7 @@ async function probeMcpProcessLiveness(
           ? { pid, command }
           : { pid, command, projectCwd });
         if (candidates.length >= candidateLimit) {
+          enumerationCapped = true;
           child.kill('SIGKILL');
           finish();
         }
@@ -481,6 +493,14 @@ async function probeMcpProcessLiveness(
     const matching = candidates.filter((candidate) =>
       matchesBoundPath(candidate.projectCwd, projectCwd),
     );
+    if (enumerationCapped) {
+      return {
+        status: 'ambiguous',
+        reason: `MCP process enumeration capped at ${candidateLimit}; target binding cannot be established for ${projectCwd}`,
+        candidates: candidates.slice(0, 5).map(({ pid, projectCwd }) => ({ pid, projectCwd })),
+        repairCommand,
+      };
+    }
     if (matching.length === 1) {
       const match = matching[0];
       return {
@@ -521,7 +541,16 @@ async function probeMcpProcessLiveness(
       };
     }
 
-    if (candidates.length > 0) {
+    if (candidates.length > 1) {
+      return {
+        status: 'ambiguous',
+        reason: `${candidates.length} running MCP processes, none bound to ${projectCwd}`,
+        candidates: candidates.slice(0, 5).map(({ pid, projectCwd }) => ({ pid, projectCwd })),
+        repairCommand,
+      };
+    }
+
+    if (candidates.length === 1) {
       const observed = candidates[0];
       return {
         status: 'mismatch',

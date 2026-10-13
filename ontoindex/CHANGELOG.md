@@ -4,6 +4,13 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.2.28] - 2026-10-14
+
+- Argument limits: the aggregate JSON cap is now `ONTOINDEX_MAX_ARG_TOTAL_BYTES` (default at least 4 MiB and always above the per-string cap), so a maximum-size `sourceText` or `pastedText` is no longer rejected. The default array cap is 1024 items (`ONTOINDEX_MAX_ARG_ITEMS` still overrides). Error messages name the variable to raise.
+- Host gate: `ONTOINDEX_ALLOWED_HOSTS` lists extra trusted authorities (`host` or `host:port`, no wildcards) for reverse proxies and port forwards. `localhost.` with a trailing dot is accepted. `X-Forwarded-*` headers are still not trusted and the Origin policy is unchanged.
+- `mcp-doctor`: more than one running MCP server with none bound to the target now reports `ambiguous` (DEGRADED) with at most 5 candidates, instead of blaming the first unrelated server as MISCONFIGURED. A single verified foreign server still reports a mismatch. Missing-embedding gaps list which prerequisites are unset (URL, model, `analyze --embeddings`) without printing values or probing the network.
+- `ontoindex setup`: skills are installed with an `.ontoindex-managed` marker. Existing user-owned skills are skipped and reported, symlinked targets are skipped, and legacy `gitnexus-*` cleanup removes only a real directory that contains just an invalid `SKILL.md`.
+
 ## [2.2.27] - 2026-10-13
 
 - LadybugDB buffer manager defaults to 64 MB when `ONTOINDEX_LBUG_BUFFER_MB` is unset, empty, `0` or invalid; valid values 1..16384 still override. This cuts per-server resident memory when many sessions run at once.

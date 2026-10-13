@@ -11,7 +11,7 @@
 import express from 'express';
 import { findOversizedArgument } from '../mcp/shared/arg-limits.js';
 import cors from 'cors';
-import { isTrustedHost, isTrustedOrigin } from './request-guard.js';
+import { isTrustedHost, isTrustedOrigin, parseAllowedHosts } from './request-guard.js';
 import path from 'path';
 import { createReadStream } from 'fs';
 import { createInterface } from 'readline';
@@ -903,13 +903,14 @@ const createRepoLockManager = () => {
 
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
   const app = express();
+  const extraHosts = parseAllowedHosts(process.env.ONTOINDEX_ALLOWED_HOSTS);
   app.disable('x-powered-by');
   const auth = resolveLocalSessionToken();
 
   app.use((req, res, next) => {
     const loopback = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(host.toLowerCase());
     if (
-      (loopback && !isTrustedHost(req.headers.host, { port: port || req.socket.localPort })) ||
+      (loopback && !isTrustedHost(req.headers.host, { port: port || req.socket.localPort, extraHosts })) ||
       !isTrustedOrigin(req.headers.origin)
     ) {
       res.status(403).json({ error: 'Forbidden' });

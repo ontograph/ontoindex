@@ -25,7 +25,7 @@
  */
 
 import http from 'http';
-import { isTrustedHost, isTrustedOrigin } from '../server/request-guard.js';
+import { isTrustedHost, isTrustedOrigin, parseAllowedHosts } from '../server/request-guard.js';
 import { findOversizedArgument } from '../mcp/shared/arg-limits.js';
 import { writeSync } from 'node:fs';
 import { LocalBackend } from '../mcp/local/local-backend.js';
@@ -479,6 +479,7 @@ export function evalServerArgumentError(toolName: string, args: unknown): string
 
 export async function evalServerCommand(options?: EvalServerOptions): Promise<void> {
   const port = parseInt(options?.port || '4848');
+  const extraHosts = parseAllowedHosts(process.env.ONTOINDEX_ALLOWED_HOSTS);
   const idleTimeoutSec = parseInt(options?.idleTimeout || '0');
 
   const backend = new LocalBackend();
@@ -508,7 +509,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
 
   const server = http.createServer(async (req, res) => {
     if (
-      !isTrustedHost(req.headers.host, { port: port || req.socket.localPort }) ||
+      !isTrustedHost(req.headers.host, { port: port || req.socket.localPort, extraHosts }) ||
       !isTrustedOrigin(req.headers.origin)
     ) {
       res.writeHead(403, { 'Content-Type': 'text/plain' });

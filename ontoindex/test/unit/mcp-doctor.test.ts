@@ -616,7 +616,9 @@ describe('mcp-doctor', () => {
     );
 
     expect(report.verdict).toBe('READY');
-    expect(report.capabilityGaps).toContainEqual({ reason: 'embeddings-unavailable' });
+    expect(report.capabilityGaps).toContainEqual(
+      expect.objectContaining({ reason: 'embeddings-unavailable' }),
+    );
     expect(formatMcpDoctorText(report)).toContain('Optional capabilities:');
     expect(formatMcpDoctorText(report)).toContain('- embeddings-unavailable');
   });
@@ -1079,7 +1081,9 @@ describe('mcp-doctor', () => {
         }),
       },
     );
-    expect(embeddings.capabilityGaps).toContainEqual({ reason: 'embeddings-unavailable' });
+    expect(embeddings.capabilityGaps).toContainEqual(
+      expect.objectContaining({ reason: 'embeddings-unavailable' }),
+    );
 
     const longWarning = await makeReport(['dirty worktree '.repeat(30)]);
     expect(longWarning.capabilityGaps?.[0].details?.[0]).toHaveLength(200);

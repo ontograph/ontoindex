@@ -23,18 +23,22 @@ it.each([
 });
 
 it('rejects arrays above the default item cap and accepts its boundary', () => {
-  expect(findOversizedArgument({ targets: Array(257).fill('x') })).toBe(
-    'targets: array longer than 256 items',
+  expect(findOversizedArgument({ targets: Array(1025).fill('x') })).toBe(
+    'targets: array longer than 1024 items (raise ONTOINDEX_MAX_ARG_ITEMS)',
   );
-  expect(findOversizedArgument({ targets: Array(256).fill('x') })).toBeUndefined();
+  expect(findOversizedArgument({ targets: Array(1024).fill('x') })).toBeUndefined();
 });
 
-it('rejects aggregate JSON above one MiB', () => {
-  expect(findOversizedArgument({ a: 'x'.repeat(600_000), b: 'x'.repeat(600_000) })).toBe(
-    'arguments: JSON larger than 1048576 bytes',
-  );
-  expect(findOversizedArgument({ a: 'é'.repeat(600_000) })).toBe(
-    'arguments: JSON larger than 1048576 bytes',
+it('rejects aggregate JSON above the default cap', () => {
+  expect(
+    findOversizedArgument({
+      a: 'x'.repeat(2_000_000),
+      b: 'x'.repeat(2_000_000),
+      c: 'x'.repeat(2_000_000),
+    }),
+  ).toBe('arguments: JSON larger than 5242880 bytes (raise ONTOINDEX_MAX_ARG_TOTAL_BYTES)');
+  expect(findOversizedArgument({ a: 'é'.repeat(2_000_000), b: 'é'.repeat(2_000_000) })).toBe(
+    'arguments: JSON larger than 5242880 bytes (raise ONTOINDEX_MAX_ARG_TOTAL_BYTES)',
   );
 });
 
@@ -42,8 +46,8 @@ it('honors bounded item cap overrides and ignores invalid ones', () => {
   vi.stubEnv('ONTOINDEX_MAX_ARG_ITEMS', '2');
   expect(findOversizedArgument({ targets: ['a', 'b'] })).toBeUndefined();
   expect(findOversizedArgument({ targets: ['a', 'b', 'c'] })).toBe(
-    'targets: array longer than 2 items',
+    'targets: array longer than 2 items (raise ONTOINDEX_MAX_ARG_ITEMS)',
   );
   vi.stubEnv('ONTOINDEX_MAX_ARG_ITEMS', '0');
-  expect(findOversizedArgument({ targets: Array(256).fill('x') })).toBeUndefined();
+  expect(findOversizedArgument({ targets: Array(1024).fill('x') })).toBeUndefined();
 });

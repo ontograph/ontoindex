@@ -178,7 +178,10 @@ ontoindex mcp --project /path/to/target/repo
 
 ## Environment Variables
 
+- `ONTOINDEX_ALLOWED_HOSTS` adds trusted HTTP Host authorities for `serve` and `eval-server` (for example `localhost:8080` for a reverse proxy). Use up to 32 comma-separated hostnames or host:port authorities (IPv6 in brackets), each at most 255 characters. Hostnames are case-insensitive; host-only entries accept any port. Wildcards are unsupported; malformed entries are ignored with one stderr warning. Origin policy remains unchanged.
 - `ONTOINDEX_MAX_ARG_CHARS` limits string arguments accepted by MCP tools, REST `/api/search` and `/api/query`, and the eval server. It defaults to `2097152` characters and accepts values from `1024` through `67108864`.
+- `ONTOINDEX_MAX_ARG_ITEMS` limits array arguments across tools; it defaults to `1024` items and accepts values from `1` through `65536`.
+- `ONTOINDEX_MAX_ARG_TOTAL_BYTES` limits the UTF-8 size of serialized arguments; it defaults to the larger of `4194304` bytes or twice the string limit plus `1048576` bytes, and accepts values from `1024` through `134217728`.
 - `ONTOINDEX_LBUG_BUFFER_MB` sets the read-only index connection's buffer pool size in MiB; it defaults to `64` and accepts `1` through `16384`. Unset, empty, `0`, or invalid values use the 64 MiB default. In one run, a 64 MiB cap reduced resident memory after opening a 273 MiB index from about 426 MiB to 251 MiB, with queries about 10% slower.
 - `ONTOINDEX_LBUG_POOL_SIZE` sets the per-repository read connection pool size; it defaults to `2` and accepts `1` through `16`.
 
