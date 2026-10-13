@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import path from 'node:path';
 
 import {
   formatRepoResolutionError,
@@ -51,6 +52,9 @@ describe('repo resolution error formatting', () => {
   });
 
   it('shell-quotes startup mismatch paths in restart commands', () => {
+    const projectPath = path.resolve("/project/Current Repo's Checkout");
+    const repoPath = path.resolve('/opt/demodb/_workfolder/Repo With Spaces');
+    const quotedProjectPath = `'${projectPath.replace(/'/g, `'"'"'`)}'`;
     const message = formatMcpStartupMismatchError({
       repoSelector: '/opt/demodb/_workfolder/Repo With Spaces',
       resolvedRepo: {
@@ -65,11 +69,9 @@ describe('repo resolution error formatting', () => {
     expect(message).toContain('OntoIndex MCP startup blocked: --repo');
     expect(message).not.toContain('ONTOINDEX_MCP_REPO');
     expect(message).toContain('Keep the current project:');
-    expect(message).toContain("ontoindex mcp --project '/project/Current Repo'\"'\"'s Checkout'");
+    expect(message).toContain(`ontoindex mcp --project ${quotedProjectPath}`);
     expect(message).toContain('Use the resolved repository:');
-    expect(message).toContain(
-      "ontoindex mcp --project '/opt/demodb/_workfolder/Repo With Spaces' --repo '/opt/demodb/_workfolder/Repo With Spaces'",
-    );
-    expect(message).not.toContain("--project '/project/Current Repo'\"'\"'s Checkout' --repo");
+    expect(message).toContain(`ontoindex mcp --project '${repoPath}' --repo '${repoPath}'`);
+    expect(message).not.toContain(`--project ${quotedProjectPath} --repo`);
   });
 });

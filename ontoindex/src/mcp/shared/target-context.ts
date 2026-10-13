@@ -326,7 +326,7 @@ export async function resolveTargetContext(
       ? null
       : dirtyWorktree === true || headChangedSinceIndex;
   const selectionMismatch =
-    (cwdResolution.status === 'ok' && !sameResolvedPath(cwdResolution.entry.path, repoPath));
+    cwdResolution.status === 'ok' && !sameResolvedPath(cwdResolution.entry.path, repoPath);
   const dirtyWorkspace = resolveDirtyWorkspace({
     dirtyWorktree,
     changedSinceIndex,
@@ -604,7 +604,8 @@ export function canonicalRepoId(
   const base = name.toLowerCase();
   const resolvedPath = path.resolve(repoPath);
   for (const [id, handle] of repos) {
-    if (handle.name.toLowerCase() === base && path.resolve(handle.repoPath) === resolvedPath) return id;
+    if (handle.name.toLowerCase() === base && path.resolve(handle.repoPath) === resolvedPath)
+      return id;
   }
   if (!repos.has(base)) return base;
   const digest = createHash('sha256').update(resolvedPath).digest('hex');
@@ -617,18 +618,23 @@ export function canonicalRepoId(
   return `${base}-${digest}-${suffix}`;
 }
 
-export function registryRepoIds(registry: readonly { name: string; path: string }[]): Map<object, string> {
+export function registryRepoIds(
+  registry: readonly { name: string; path: string }[],
+): Map<object, string> {
   const ids = new Map<object, string>();
   const handles = new Map<string, { name: string; repoPath: string }>();
   const counts = new Map<string, number>();
-  for (const entry of registry) counts.set(entry.name.toLowerCase(), (counts.get(entry.name.toLowerCase()) ?? 0) + 1);
+  for (const entry of registry)
+    counts.set(entry.name.toLowerCase(), (counts.get(entry.name.toLowerCase()) ?? 0) + 1);
   for (const entry of registry) {
     if (counts.get(entry.name.toLowerCase()) === 1) {
       ids.set(entry, entry.name.toLowerCase());
       handles.set(entry.name.toLowerCase(), { name: entry.name, repoPath: entry.path });
     }
   }
-  for (const entry of registry.slice().sort((a, b) => path.resolve(a.path).localeCompare(path.resolve(b.path)))) {
+  for (const entry of registry
+    .slice()
+    .sort((a, b) => path.resolve(a.path).localeCompare(path.resolve(b.path)))) {
     if (counts.get(entry.name.toLowerCase()) === 1) continue;
     const base = entry.name.toLowerCase();
     if (!handles.has(base)) handles.set(base, { name: base, repoPath: '\0' });
@@ -642,9 +648,7 @@ export function registryRepoIds(registry: readonly { name: string; path: string 
 export function resolveRegistryEntry<T extends { name: string; path: string }>(
   registry: T[],
   repo: string | undefined,
-):
-  | { status: 'ok'; entry: T }
-  | { status: Exclude<TargetContextStatus, 'ok'>; action: string } {
+): { status: 'ok'; entry: T } | { status: Exclude<TargetContextStatus, 'ok'>; action: string } {
   if (registry.length === 0) {
     return { status: 'no-index', action: 'Run ontoindex analyze for the target repository.' };
   }
@@ -660,12 +664,14 @@ export function resolveRegistryEntry<T extends { name: string; path: string }>(
   }
 
   const ids = registryRepoIds(registry);
-  const exactMatches = registry.filter((entry) => matchesRepo(entry, repo, false) || ids.get(entry) === repo.toLowerCase());
+  const exactMatches = registry.filter(
+    (entry) => matchesRepo(entry, repo, false) || ids.get(entry) === repo.toLowerCase(),
+  );
   if (exactMatches.length === 1) return { status: 'ok', entry: exactMatches[0] };
   if (exactMatches.length > 1) {
     return {
       status: 'ambiguous',
-      action: `Repository "${repo}" matches multiple indexes. Use a canonical id or absolute repo path: ${exactMatches.map(entry => `${ids.get(entry)} (${entry.path})`).join(', ')}.`,
+      action: `Repository "${repo}" matches multiple indexes. Use a canonical id or absolute repo path: ${exactMatches.map((entry) => `${ids.get(entry)} (${entry.path})`).join(', ')}.`,
     };
   }
 
@@ -686,7 +692,11 @@ export function resolveRegistryEntry<T extends { name: string; path: string }>(
   };
 }
 
-function matchesRepo(entry: { name: string; path: string }, repo: string, allowFuzzy: boolean): boolean {
+function matchesRepo(
+  entry: { name: string; path: string },
+  repo: string,
+  allowFuzzy: boolean,
+): boolean {
   const repoLower = repo.toLowerCase();
   if (entry.name.toLowerCase() === repoLower) return true;
   if (sameResolvedPath(entry.path, repo)) return true;
@@ -1063,7 +1073,10 @@ function displayRepoKey(entry: RegistryEntry, repoIds: Map<object, string>): str
   return id === entry.name.toLowerCase() ? entry.name : id;
 }
 
-function toRepoSummary(entry: RegistryEntry, repoIds: Map<object, string>): TargetContextRepoSummary {
+function toRepoSummary(
+  entry: RegistryEntry,
+  repoIds: Map<object, string>,
+): TargetContextRepoSummary {
   return { key: displayRepoKey(entry, repoIds), path: entry.path };
 }
 

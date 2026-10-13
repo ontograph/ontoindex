@@ -203,7 +203,10 @@ function normalizeFacadeArgs(
       delete normalized[key];
       continue;
     }
-    normalized[key] = Math.min(schema.maximum ?? Infinity, Math.max(schema.minimum ?? -Infinity, value));
+    normalized[key] = Math.min(
+      schema.maximum ?? Infinity,
+      Math.max(schema.minimum ?? -Infinity, value),
+    );
   }
 
   return normalized;

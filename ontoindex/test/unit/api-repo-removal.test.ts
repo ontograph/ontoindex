@@ -1,5 +1,6 @@
 import type { Server } from 'node:http';
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import express from 'express';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createServer } from '../../src/server/api.js';
@@ -129,9 +130,11 @@ it('removes within the barrier, preserves unrelated same-name clones, and refres
   expect(await response.json()).toEqual({ deleted: 'repo' });
   expect(mocks.close.mock.calls).toEqual([
     ['/fixture/repo/.ontoindex/active.lbug', { strict: true }],
-    ['/fixture/repo/.ontoindex/lbug', { strict: true }],
+    [path.join('/fixture/repo/.ontoindex', 'lbug'), { strict: true }],
   ]);
-  expect(rm.mock.calls).toEqual([['/fixture/repo/.ontoindex', { recursive: true, force: true }]]);
+  expect(rm.mock.calls).toEqual([
+    [path.resolve('/fixture/repo', '.ontoindex'), { recursive: true, force: true }],
+  ]);
   expect(stat).not.toHaveBeenCalledWith('/fixture/clones/repo');
   expect(mocks.unregister).toHaveBeenCalledWith('/fixture/repo');
   expect(LocalBackend.prototype.init).toHaveBeenCalledTimes(2);

@@ -48,6 +48,7 @@ vi.mock('@ladybugdb/core', () => {
         }
       }
     }
+    init = vi.fn().mockResolvedValue(undefined);
     close = vi.fn().mockResolvedValue(undefined);
   }
 

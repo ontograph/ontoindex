@@ -1,5 +1,5 @@
 import fs from 'fs/promises';
-import { spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import os from 'os';
 import path from 'path';
 import { LocalBackend } from '../mcp/local/local-backend.js';
@@ -79,7 +79,7 @@ export async function createMcpDoctorReport(
   const env = deps.env ?? process.env;
   const cwd = deps.cwd?.() ?? process.cwd();
   const needsImplicitCwd = !options.projectCwd?.trim() && !env.ONTOINDEX_MCP_PROJECT_CWD?.trim();
-  const implicitCwd = needsImplicitCwd ? getGitRoot(cwd) ?? cwd : undefined;
+  const implicitCwd = needsImplicitCwd ? (getGitRoot(cwd) ?? cwd) : undefined;
   const repoSelector = resolveRepoSelector(options, env, implicitCwd ?? cwd);
   const projectCwd = resolveProjectCwd(options, env, implicitCwd ?? cwd);
   const explicitRepo = options.repo?.trim() || undefined;
@@ -101,11 +101,17 @@ export async function createMcpDoctorReport(
         ...diagnose.degradedContext,
         status: 'degraded',
         confidence: 'reduced',
-        reasons: [...diagnose.degradedContext.reasons.filter((reason) =>
-          reason !== 'mcp-service-target-mismatch' && reason !== 'target-context-not-found'), 'no-target-repo'],
+        reasons: [
+          ...diagnose.degradedContext.reasons.filter(
+            (reason) =>
+              reason !== 'mcp-service-target-mismatch' && reason !== 'target-context-not-found',
+          ),
+          'no-target-repo',
+        ],
       },
-      recommendations: diagnose.recommendations.filter((recommendation) =>
-        recommendation.fix !== mismatchCommand),
+      recommendations: diagnose.recommendations.filter(
+        (recommendation) => recommendation.fix !== mismatchCommand,
+      ),
     };
   }
   const symbolSmoke = await runSymbolSmoke(
@@ -124,26 +130,40 @@ export async function createMcpDoctorReport(
     ? await deps.processLiveness(repoSelector, projectCwd, fallbackRestartCommand)
     : await probeMcpProcessLiveness(repoSelector, projectCwd, fallbackRestartCommand, deps);
   const setupHealth = await (deps.setupHealth ?? probeSetupHealth)(projectCwd);
-  const capabilityGaps: NonNullable<McpDoctorReport['capabilityGaps']> = diagnose.degradedContext.reasons
-    .filter((reason) => reason === 'embeddings-unavailable' || reason === 'embeddings-missing' || reason.endsWith('-lsp-missing'))
-    .map((reason) => ({
-      reason,
-      ...(reason.startsWith('embeddings-') ? { details: [
-        `ONTOINDEX_EMBEDDING_URL: ${env.ONTOINDEX_EMBEDDING_URL ? 'set' : 'unset'}`,
-        `ONTOINDEX_EMBEDDING_MODEL: ${env.ONTOINDEX_EMBEDDING_MODEL ? 'set' : 'unset'}`,
-        'Vectors appear after ontoindex analyze --embeddings',
-      ] } : {}),
-      ...(reason.startsWith('embeddings-') && diagnose.embeddings?.repairCommand
-        ? { repairCommand: diagnose.embeddings.repairCommand }
-        : {}),
-    }));
+  const capabilityGaps: NonNullable<McpDoctorReport['capabilityGaps']> =
+    diagnose.degradedContext.reasons
+      .filter(
+        (reason) =>
+          reason === 'embeddings-unavailable' ||
+          reason === 'embeddings-missing' ||
+          reason.endsWith('-lsp-missing'),
+      )
+      .map((reason) => ({
+        reason,
+        ...(reason.startsWith('embeddings-')
+          ? {
+              details: [
+                `ONTOINDEX_EMBEDDING_URL: ${env.ONTOINDEX_EMBEDDING_URL ? 'set' : 'unset'}`,
+                `ONTOINDEX_EMBEDDING_MODEL: ${env.ONTOINDEX_EMBEDDING_MODEL ? 'set' : 'unset'}`,
+                'Vectors appear after ontoindex analyze --embeddings',
+              ],
+            }
+          : {}),
+        ...(reason.startsWith('embeddings-') && diagnose.embeddings?.repairCommand
+          ? { repairCommand: diagnose.embeddings.repairCommand }
+          : {}),
+      }));
   if (noTargetRepo) {
-    const registeredRepos = diagnose.targetContext?.availableRepos?.slice(0, 5).map((repo) => repo.key);
+    const registeredRepos = diagnose.targetContext?.availableRepos
+      ?.slice(0, 5)
+      .map((repo) => repo.key);
     capabilityGaps.push({
       reason: 'no-target-repo',
       details: [
         'current directory is not an indexed repository; run from an indexed repo or pass --repo <name|path>',
-        ...(registeredRepos?.length ? [`Registered repositories: ${registeredRepos.join(', ')}`] : []),
+        ...(registeredRepos?.length
+          ? [`Registered repositories: ${registeredRepos.join(', ')}`]
+          : []),
       ],
     });
   }
@@ -156,7 +176,13 @@ export async function createMcpDoctorReport(
       details: summarizeRuntimeWarnings(diagnose.warnings),
     });
   }
-  const verdict = resolveVerdict(diagnose, symbolSmoke, processLiveness, setupHealth, capabilityGaps);
+  const verdict = resolveVerdict(
+    diagnose,
+    symbolSmoke,
+    processLiveness,
+    setupHealth,
+    capabilityGaps,
+  );
 
   return {
     version: 1,
@@ -169,11 +195,12 @@ export async function createMcpDoctorReport(
     ...(processLiveness ? { processLiveness } : {}),
     ...(setupHealth && setupHealth.status !== 'ok' ? { setupHealth } : {}),
     ...(capabilityGaps.length > 0 ? { capabilityGaps } : {}),
-    nextCommand: noTargetRepo ? 'ontoindex mcp-doctor --repo <name>' :
-      diagnose.misconfiguration.recommendedCommand ??
-      processLiveness?.repairCommand ??
-      setupHealth?.issues[0]?.repairCommand ??
-      fallbackRestartCommand,
+    nextCommand: noTargetRepo
+      ? 'ontoindex mcp-doctor --repo <name>'
+      : (diagnose.misconfiguration.recommendedCommand ??
+        processLiveness?.repairCommand ??
+        setupHealth?.issues[0]?.repairCommand ??
+        fallbackRestartCommand),
   };
 }
 
@@ -327,16 +354,18 @@ function resolveVerdict(
   capabilityGaps: McpDoctorReport['capabilityGaps'] = [],
 ): McpDoctorVerdict {
   if (diagnose.misconfiguration.status === 'fail') return 'MISCONFIGURED';
-  if (diagnose.targetContext && diagnose.targetContext.status !== 'ok' &&
-    !diagnose.degradedContext.reasons.includes('no-target-repo')) return 'MISCONFIGURED';
+  if (
+    diagnose.targetContext &&
+    diagnose.targetContext.status !== 'ok' &&
+    !diagnose.degradedContext.reasons.includes('no-target-repo')
+  )
+    return 'MISCONFIGURED';
   if (processLiveness?.status === 'mismatch') return 'MISCONFIGURED';
   if (setupHealth?.status === 'misconfigured') return 'MISCONFIGURED';
   if (processLiveness?.status === 'ambiguous' || processLiveness?.status === 'missing') {
     return 'DEGRADED';
   }
-  if (
-    processLiveness?.status === 'unavailable'
-  ) {
+  if (processLiveness?.status === 'unavailable') {
     return 'DEGRADED';
   }
   if (symbolSmoke?.status === 'failed') return 'DEGRADED';
@@ -349,7 +378,12 @@ function resolveVerdict(
 }
 
 function isOptionalCapabilityGap(reason: string): boolean {
-  return reason === 'embeddings-unavailable' || reason === 'embeddings-missing' || reason.endsWith('-lsp-missing') || reason === 'runtime-warnings';
+  return (
+    reason === 'embeddings-unavailable' ||
+    reason === 'embeddings-missing' ||
+    reason.endsWith('-lsp-missing') ||
+    reason === 'runtime-warnings'
+  );
 }
 
 function isInformationalRuntimeWarning(warning: string): boolean {
@@ -363,9 +397,9 @@ function isInformationalRuntimeWarning(warning: string): boolean {
 
 function summarizeRuntimeWarnings(warnings: string[]): string[] {
   const unique = [...new Set(warnings.map((warning) => warning.trim()).filter(Boolean))];
-  const details = unique.slice(0, 5).map((warning) =>
-    warning.length > 200 ? `${warning.slice(0, 199)}…` : warning,
-  );
+  const details = unique
+    .slice(0, 5)
+    .map((warning) => (warning.length > 200 ? `${warning.slice(0, 199)}…` : warning));
   if (unique.length > 5) details.push(`+${unique.length - 5} more`);
   return details;
 }
@@ -433,11 +467,15 @@ async function probeMcpProcessLiveness(
       projectCwd?: string;
       cwdBound?: boolean;
     }> = [];
-    const child = deps.spawnPs?.(
-      'ps', ['-ax', '-o', 'pid=', '-o', 'args='], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
-    ) ?? spawn('ps', ['-ax', '-o', 'pid=', '-o', 'args='], {
-      stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
-    });
+    const child =
+      deps.spawnPs?.('ps', ['-ax', '-o', 'pid=', '-o', 'args='], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      }) ??
+      spawn('ps', ['-ax', '-o', 'pid=', '-o', 'args='], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
     const candidateLimit = 256;
     let enumerationCapped = false;
     const lineLimit = 16 * 1024;
@@ -470,9 +508,11 @@ async function probeMcpProcessLiveness(
         if (!looksLikeOntoindexMcpCommand(command)) return;
 
         const projectCwd = extractCliOptionValue(command, '--project');
-        candidates.push(projectCwd && !hasUnambiguousProjectArgument(command)
-          ? { pid, command }
-          : { pid, command, projectCwd });
+        candidates.push(
+          projectCwd && !hasUnambiguousProjectArgument(command)
+            ? { pid, command }
+            : { pid, command, projectCwd },
+        );
         if (candidates.length >= candidateLimit) {
           enumerationCapped = true;
           child.kill('SIGKILL');
@@ -501,11 +541,15 @@ async function probeMcpProcessLiveness(
       child.once('error', (error: Error) => finish(error));
       child.once('close', (code: number | null) => {
         if (pending && !oversized) consumeLine(pending);
-        finish(code === 0 || candidates.length >= candidateLimit ? undefined : new Error(`ps exited with code ${code}`));
+        finish(
+          code === 0 || candidates.length >= candidateLimit
+            ? undefined
+            : new Error(`ps exited with code ${code}`),
+        );
       });
     });
 
-    if (process.platform === 'linux') {
+    if (process.platform === 'linux' || process.platform === 'darwin') {
       for (const candidate of candidates) {
         if (candidate.projectCwd) continue;
         try {
@@ -607,6 +651,31 @@ async function probeMcpProcessLiveness(
 }
 
 async function readProcessCwd(pid: number): Promise<string | undefined> {
+  if (process.platform === 'darwin') {
+    return new Promise((resolve) => {
+      const child = execFile(
+        'lsof',
+        ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'],
+        {
+          timeout: 2000,
+          encoding: 'utf8',
+        },
+        (error, stdout) => {
+          if (error) {
+            resolve(undefined);
+            return;
+          }
+          const cwd = stdout
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('n'))
+            ?.slice(1);
+          resolve(cwd || undefined);
+        },
+      );
+      child.stderr?.on('data', () => {});
+    });
+  }
+
   try {
     return await fs.readlink(`/proc/${pid}/cwd`);
   } catch {
@@ -628,7 +697,11 @@ async function probeSetupHealth(projectCwd: string): Promise<McpDoctorReport['se
     const raw = await readTextIfExists(filePath);
     if (!raw) continue;
     let parsed: unknown;
-    try { parsed = JSON.parse(raw); } catch { continue; }
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      continue;
+    }
     const staleMentions = findStaleRepoPaths(parsed, normalizedProjectCwd);
     if (staleMentions.length === 0) continue;
     issues.push({
@@ -650,7 +723,10 @@ async function probeSetupHealth(projectCwd: string): Promise<McpDoctorReport['se
     {
       root: path.join(os.homedir(), '.codex'),
       skillDir: path.join(os.homedir(), '.agents', 'skills'),
-      usageFiles: [path.join(os.homedir(), '.codex', 'config.toml'), path.join(os.homedir(), '.codex', 'hooks.json')],
+      usageFiles: [
+        path.join(os.homedir(), '.codex', 'config.toml'),
+        path.join(os.homedir(), '.codex', 'hooks.json'),
+      ],
     },
     {
       root: path.join(os.homedir(), '.cursor'),
@@ -711,8 +787,16 @@ async function fileExists(filePath: string): Promise<boolean> {
 function findStaleRepoPaths(parsed: unknown, normalizedProjectCwd: string): string[] {
   const stale = new Set<string>();
   const inspectCommand = (command: string) => {
-    const cd = command.match(/(?:^|\s)cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/)?.slice(1).find(Boolean);
-    for (const candidate of [extractCliOptionValue(command, '-C'), extractCliOptionValue(command, '--project'), extractCliOptionValue(command, '--repo'), cd]) {
+    const cd = command
+      .match(/(?:^|\s)cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/)
+      ?.slice(1)
+      .find(Boolean);
+    for (const candidate of [
+      extractCliOptionValue(command, '-C'),
+      extractCliOptionValue(command, '--project'),
+      extractCliOptionValue(command, '--repo'),
+      cd,
+    ]) {
       if (!candidate) continue;
       const target = normalizePath(path.resolve(candidate));
       const root = normalizePath(path.resolve(normalizedProjectCwd)).replace(/\/$/, '');
@@ -720,10 +804,17 @@ function findStaleRepoPaths(parsed: unknown, normalizedProjectCwd: string): stri
     }
   };
   const visit = (value: unknown, key = ''): void => {
-    if (Array.isArray(value)) { for (const item of value) visit(item, key); return; }
-    if (value && typeof value === 'object') { for (const [childKey, child] of Object.entries(value)) visit(child, childKey); return; }
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, key);
+      return;
+    }
+    if (value && typeof value === 'object') {
+      for (const [childKey, child] of Object.entries(value)) visit(child, childKey);
+      return;
+    }
     if (typeof value !== 'string') return;
-    if (['allow', 'deny', 'ask'].includes(key) && value.startsWith('Bash(')) inspectCommand(value.slice(5, -1));
+    if (['allow', 'deny', 'ask'].includes(key) && value.startsWith('Bash('))
+      inspectCommand(value.slice(5, -1));
     if (/hook|command/i.test(key)) inspectCommand(value);
   };
   visit(parsed);

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import path from 'node:path';
 import {
   canonicalRepoId,
   registryRepoIds,
@@ -34,7 +35,7 @@ describe('shared repository identity', () => {
     const ids = new Map([['project', { name: first.name, repoPath: first.path }]]);
     const id = canonicalRepoId(second.name, second.path, ids);
     expect(id).toBe(
-      `project-${createHash('sha256').update(second.path).digest('hex').slice(0, 8)}`,
+      `project-${createHash('sha256').update(path.resolve(second.path)).digest('hex').slice(0, 8)}`,
     );
     expect(resolveRegistryEntry(registry, id)).toEqual({ status: 'ok', entry: second });
     expect(resolveRegistryEntry(registry, second.path)).toEqual({ status: 'ok', entry: second });

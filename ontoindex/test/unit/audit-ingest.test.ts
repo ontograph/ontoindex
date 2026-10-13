@@ -35,7 +35,7 @@ describe('audit finding ingest', () => {
     );
     fs.symlinkSync('report.md', path.join(repo, 'alias.md'));
     expect((await ingestAuditFindings({ repoPath: repo, sourcePath: 'alias.md' })).sourcePath).toBe(
-      path.join(repo, 'report.md'),
+      fs.realpathSync.native(path.join(repo, 'report.md')),
     );
   });
   it('keeps sourceText path labels compatible without reading them', async () => {
@@ -165,9 +165,9 @@ describe('audit finding ingest', () => {
       now: new Date('2026-05-17T00:00:00.000Z'),
     });
 
-    expect(result.sourcePath).toBe(reportPath);
+    expect(result.sourcePath).toBe(fs.realpathSync.native(reportPath));
     expect(result.rawCount).toBe(1);
-    expect(result.findings[0].source.path).toBe(reportPath);
+    expect(result.findings[0].source.path).toBe(fs.realpathSync.native(reportPath));
   });
 });
 

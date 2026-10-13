@@ -36,7 +36,10 @@ import type { RuntimeHealthSnapshot } from '../../core/runtime/runtime-health.js
 import { readToolTelemetrySummary } from '../local/tool-telemetry.js';
 import { RESPONSE_GUARD_MAX_BYTES } from '../local/response-guard.js';
 import { getResourceContractSummaries } from '../resources.js';
-import { createEmptyEvidenceReadClassCounts, sanitizeTarget } from '../../core/runtime/evidence-read-ledger.js';
+import {
+  createEmptyEvidenceReadClassCounts,
+  sanitizeTarget,
+} from '../../core/runtime/evidence-read-ledger.js';
 import type { EvidenceReadClass } from '../../core/runtime/evidence-read-ledger.js';
 import { getStoragePaths, resolveActiveLbugPath } from '../../storage/repo-manager.js';
 import { getLbugRuntimeDiagnostics } from '../../core/lbug/lbug-adapter.js';
@@ -233,7 +236,9 @@ function collectOntoIndexEnv(): Record<string, string | undefined> {
 }
 
 function isSensitiveOntoIndexEnvKey(key: string): boolean {
-  return /(?:^|[_-])(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE|BEARER|PRIVATE|AUTH|API_KEY)(?:$|[_-])/i.test(key);
+  return /(?:^|[_-])(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE|BEARER|PRIVATE|AUTH|API_KEY)(?:$|[_-])/i.test(
+    key,
+  );
 }
 
 function parseTruthy(value: string | undefined): boolean {
@@ -432,7 +437,7 @@ function buildMisconfigurationReport(
   const projectCwd =
     context === undefined
       ? envVars['ONTOINDEX_MCP_PROJECT_CWD']?.trim() || undefined
-      : context.projectCwd ?? undefined;
+      : (context.projectCwd ?? undefined);
   const processCwd = process.cwd();
   const activeRepoPath = targetContext?.repoPath;
   const activeRepoLabel = targetContext?.repoLabel ?? targetContext?.repoKey;
@@ -1046,10 +1051,14 @@ export async function gnDiagnose(
     runtimeContextSummary,
     degradedContext,
     misconfiguration,
-    envVars: Object.fromEntries(Object.entries(envVars).map(([key, value]) => [
-      key,
-      value === undefined ? undefined : sanitizeTarget(value, { isSensitive: isSensitiveOntoIndexEnvKey(key) }),
-    ])),
+    envVars: Object.fromEntries(
+      Object.entries(envVars).map(([key, value]) => [
+        key,
+        value === undefined
+          ? undefined
+          : sanitizeTarget(value, { isSensitive: isSensitiveOntoIndexEnvKey(key) }),
+      ]),
+    ),
     recommendations,
     warnings,
   };

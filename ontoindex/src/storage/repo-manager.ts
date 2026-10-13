@@ -8,6 +8,7 @@
 
 import fs from 'fs/promises';
 import fsSync from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'path';
 import os from 'os';
 import { getInferredRepoName } from './git.js';
@@ -790,13 +791,24 @@ const processDefinitelyDead = (pid: number): boolean => {
 
 export function processStartedAfter(pid: number, referenceMs: number): boolean {
   if (
-    process.platform !== 'linux' ||
+    (process.platform !== 'linux' && process.platform !== 'darwin') ||
     !Number.isSafeInteger(pid) ||
     pid <= 0 ||
     !Number.isFinite(referenceMs)
   )
     return false;
   try {
+    if (process.platform === 'darwin') {
+      const output = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+        env: { ...process.env, LC_ALL: 'C' },
+        timeout: 2000,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (!output) return false;
+      const startedAtMs = Date.parse(output);
+      return Number.isFinite(startedAtMs) && startedAtMs > referenceMs + 2000;
+    }
     const stat = fsSync.readFileSync(`/proc/${pid}/stat`, 'utf8');
     const closeParen = stat.lastIndexOf(')');
     if (closeParen < 0) return false;

@@ -633,10 +633,16 @@ describe('resolveTargetContext', () => {
     const execGit = vi.fn(execGitFor(CURRENT_COMMIT));
     try {
       const { resolveTargetContext } = await loadActualResolver();
-      const context = await resolveTargetContext({}, {
-        readRegistry: async () => [registryEntry, { ...registryEntry, name: 'other-repo', path: '/repo/other' }],
-        execGit,
-      });
+      const context = await resolveTargetContext(
+        {},
+        {
+          readRegistry: async () => [
+            registryEntry,
+            { ...registryEntry, name: 'other-repo', path: '/repo/other' },
+          ],
+          execGit,
+        },
+      );
       expect(context.status).toBe('ambiguous');
       expect(execGit).not.toHaveBeenCalled();
       expect(context.action).not.toContain('ONTOINDEX_MCP_REPO');
@@ -653,7 +659,10 @@ describe('resolveTargetContext', () => {
       const { resolveTargetContext } = await loadActualResolver();
       for (const options of [{ repo: REPO_ID }, { projectPath: '/repo/test-repo' }]) {
         const context = await resolveTargetContext(options, {
-          readRegistry: async () => [registryEntry, { ...registryEntry, name: 'other-repo', path: '/repo/other' }],
+          readRegistry: async () => [
+            registryEntry,
+            { ...registryEntry, name: 'other-repo', path: '/repo/other' },
+          ],
           execGit: execGitFor(CURRENT_COMMIT),
         });
         expect(context.status).toBe('ok');
@@ -673,10 +682,16 @@ describe('resolveTargetContext', () => {
     process.env.ONTOINDEX_MCP_PROJECT_CWD = '/repo/test-repo';
     try {
       const { resolveTargetContext } = await loadActualResolver();
-      const context = await resolveTargetContext({}, {
-        readRegistry: async () => [registryEntry, { ...registryEntry, name: 'other-repo', path: '/repo/other' }],
-        execGit: execGitFor(CURRENT_COMMIT),
-      });
+      const context = await resolveTargetContext(
+        {},
+        {
+          readRegistry: async () => [
+            registryEntry,
+            { ...registryEntry, name: 'other-repo', path: '/repo/other' },
+          ],
+          execGit: execGitFor(CURRENT_COMMIT),
+        },
+      );
       expect(context.status).toBe('ok');
       expect(context.repoLabel).toBe(REPO_ID);
       expect(context.warnings.join('\n')).not.toContain('ONTOINDEX_MCP_REPO');

@@ -126,6 +126,7 @@ const baseDiagnose: DiagnoseReport = {
 };
 
 beforeEach(() => {
+  vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
   localBackendMock.ctor.mockReset();
   localBackendMock.init.mockReset().mockResolvedValue(true);
   localBackendMock.callTool.mockReset();

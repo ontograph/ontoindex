@@ -43,14 +43,12 @@ it('continues all repositories after a failure and sets the failure exit code', 
     { name: 'first', storagePath: 'first' },
     { name: 'second', storagePath: 'second' },
   ]);
-  mocks.cleanGenerations
-    .mockRejectedValueOnce(new Error('unreadable'))
-    .mockResolvedValueOnce({
-      kept: [],
-      deleted: [{ name: 'old', bytes: 4 }],
-      skipped: [],
-      bytesReclaimable: 4,
-    });
+  mocks.cleanGenerations.mockRejectedValueOnce(new Error('unreadable')).mockResolvedValueOnce({
+    kept: [],
+    deleted: [{ name: 'old', bytes: 4 }],
+    skipped: [],
+    bytesReclaimable: 4,
+  });
   const output = vi.spyOn(console, 'log').mockImplementation(() => {});
   const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
   await cleanCommand({ generations: true, all: true, force: true });
