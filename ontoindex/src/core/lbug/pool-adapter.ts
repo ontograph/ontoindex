@@ -1666,6 +1666,9 @@ export const getLbugDbPath = (repoId: string): string | undefined => pool.get(re
 
 export const isLbugReady = (repoId: string): boolean => pool.has(repoId);
 
+/** Number of repositories with an open read-only connection pool. */
+export const openPoolCount = (): number => pool.size;
+
 export const isLbugDbPathReady = (dbPath: string): boolean => dbCache.has(dbPath);
 
 /** Regex to detect write operations in user-supplied Cypher queries.

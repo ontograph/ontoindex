@@ -4,6 +4,8 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+- `gn_diagnose` reports `processMemory` (RSS, heap, native memory, open repository pools, buffer size and idle-exit setting) and recommends `ONTOINDEX_MCP_IDLE_EXIT_MS` when a server holds 400 MB or more of native memory with no open pool.
+- `ONTOINDEX_MCP_IDLE_EXIT_MS` no longer exits the MCP server while a repository connection pool is still open.
 - Impact analysis binds traversal node ids as a query parameter instead of building them into Cypher text, and reports `UNKNOWN` risk (never `LOW`) when a depth query fails.
 - `export const f = () => ...` emits one `Function` symbol instead of a duplicate `Function` and `Const`, in both the sequential and worker parsers.
 - tsconfig path aliases that name an emitted `.js` file (for example `@/a.js`) resolve to the TypeScript source.

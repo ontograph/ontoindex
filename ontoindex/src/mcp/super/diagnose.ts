@@ -43,6 +43,8 @@ import {
 import type { EvidenceReadClass } from '../../core/runtime/evidence-read-ledger.js';
 import { getStoragePaths, resolveActiveLbugPath } from '../../storage/repo-manager.js';
 import { getLbugRuntimeDiagnostics } from '../../core/lbug/lbug-adapter.js';
+import { openPoolCount } from '../../core/lbug/pool-adapter.js';
+import { resolveIdleExitMs } from '../shared/idle-exit.js';
 
 const WHICH_TIMEOUT_MS = 2_000;
 const WHICH_MAX_BUFFER = 64 * 1024;
@@ -202,8 +204,48 @@ export interface DiagnoseReport {
     };
   };
   envVars: Record<string, string | undefined>;
+  processMemory?: ProcessMemoryReport;
   recommendations: Array<{ severity: 'INFO' | 'WARN' | 'ERROR'; detail: string; fix: string }>;
   warnings: string[];
+}
+
+export interface ProcessMemoryReport {
+  rssMB: number;
+  heapUsedMB: number;
+  heapTotalMB: number;
+  externalMB: number;
+  nativeMB: number;
+  openRepositoryPools: number;
+  bufferPoolMB: number;
+  idleExitMs: number | null;
+}
+
+const BYTES_PER_MB = 1024 * 1024;
+
+function readBufferPoolMB(env: NodeJS.ProcessEnv): number {
+  const raw = env.ONTOINDEX_LBUG_BUFFER_MB;
+  if (raw === undefined || raw === '' || raw === '0') return 64;
+  if (!/^\d+$/.test(raw)) return 64;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= 1 && value <= 16_384 ? value : 64;
+}
+
+export function buildProcessMemory(
+  usage: NodeJS.MemoryUsage = process.memoryUsage(),
+  env: NodeJS.ProcessEnv = process.env,
+  openPools: number = openPoolCount(),
+): ProcessMemoryReport {
+  const toMB = (bytes: number) => Math.round(bytes / BYTES_PER_MB);
+  return {
+    rssMB: toMB(usage.rss),
+    heapUsedMB: toMB(usage.heapUsed),
+    heapTotalMB: toMB(usage.heapTotal),
+    externalMB: toMB(usage.external),
+    nativeMB: toMB(Math.max(0, usage.rss - usage.heapTotal)),
+    openRepositoryPools: openPools,
+    bufferPoolMB: readBufferPoolMB(env),
+    idleExitMs: resolveIdleExitMs(env.ONTOINDEX_MCP_IDLE_EXIT_MS),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1028,6 +1070,16 @@ export async function gnDiagnose(
     recommendations,
   });
 
+  // ---- 9b. Process memory ---------------------------------------------------
+  const processMemory = buildProcessMemory();
+  if (processMemory.nativeMB >= 400 && processMemory.openRepositoryPools === 0) {
+    recommendations.push({
+      severity: 'INFO',
+      detail: `This MCP server holds ${processMemory.nativeMB} MB of native memory with no open repository pool; LadybugDB does not return it to the OS until the process exits.`,
+      fix: 'Set ONTOINDEX_MCP_IDLE_EXIT_MS=600000 only if your MCP client restarts exited stdio servers; otherwise restart the server.',
+    });
+  }
+
   // ---- 10. Assemble report --------------------------------------------------
   const report: DiagnoseReport = {
     version: 1,
@@ -1059,6 +1111,7 @@ export async function gnDiagnose(
           : sanitizeTarget(value, { isSensitive: isSensitiveOntoIndexEnvKey(key) }),
       ]),
     ),
+    processMemory,
     recommendations,
     warnings,
   };
