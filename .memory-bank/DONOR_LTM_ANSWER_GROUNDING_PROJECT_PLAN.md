@@ -1,7 +1,7 @@
 # Donor LTM Answer Grounding Project Plan
 
 Date: 2026-10-14
-Status: Proposed (revised 2026-10-14 after review; reference implementation verified)
+Status: Complete (shipped in PR #108; measurement recorded in the audit-session file; task statuses in the YAML stay OPEN because workers had no manager-loop lease)
 Authority: User requirement of 2026-10-14: review the donor project `serge3emskov/pharma-ltm-assistant`, compare it with OntoIndex, and write an implementation plan for the adoptable ideas. Ideas only; the donor repository has no license, so no donor code or data is copied.
 
 ## Goal
@@ -605,5 +605,12 @@ Decision rule, applied mechanically with `share = ungroundedPaths / pathCitation
 - Plan files under `.memory-bank/` are written in the main session; the task write sets for code and test stay under `ontoindex/`.
 
 ## Closeout
+Executed 2026-10-14 with two workers (`gpt-6-luna`, `gpt-6.1-sol`) copying the verified files.
 
-Not started.
+| Task | Result | Evidence |
+| --- | --- | --- |
+| DL-1.0 | Done | Module and 6 tests copied verbatim; vitest 6 passed, `tsc` exit 0, Prettier clean (PR #108). |
+| DL-2.0 | Done | Evaluation file copied verbatim; 9 tests across 2 files passed. |
+| DL-3.0 | Done | 43 files, 270 path citations, 40 reported (0.148), median 0.27 ms, max 5.26 ms; decision: wiring allowed in a separate plan. Recorded in the audit-session file. |
+
+The checker is not wired into any tool or response.
