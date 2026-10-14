@@ -2,10 +2,13 @@ name: Claude Code Review
 
 # Uses pull_request_target so the workflow runs as defined on the default branch,
 # which allows access to secrets for posting review comments on fork PRs.
-# SECURITY: The checkout pins the fork's HEAD SHA (not the branch name) to
-# prevent TOCTOU races (force-push between trigger and checkout). The
-# claude-code-action sandboxes execution — it does NOT run arbitrary code
-# from the checked-out source.
+# SECURITY: This job holds secrets, so it must never check out code from the
+# pull request. claude-code-action loads project settings (.claude/settings.json
+# hooks, .mcp.json, CLAUDE.md) from the workspace, so a checked-out fork head
+# would let the PR author influence a privileged run. The workspace therefore
+# holds only the DEFAULT branch, and the code-review plugin reads the pull
+# request through `gh pr view` / `gh pr diff` (GitHub API), which needs no
+# local copy of the PR head.
 
 on:
   # Trigger only when explicitly requested:
@@ -54,7 +57,7 @@ jobs:
       id-token: write
 
     steps:
-      # For issue_comment triggers, resolve the PR number, head SHA, and fork repo
+      # Resolve the PR number for both triggers (the review reads the PR via the GitHub API)
       - name: Resolve PR context
         id: pr
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
@@ -72,15 +75,11 @@ jobs:
               pr = context.payload.pull_request;
             }
             core.setOutput('number', pr.number);
-            core.setOutput('sha', pr.head.sha);
-            core.setOutput('repo', pr.head.repo.full_name);
-            core.setOutput('branch', pr.head.ref);
 
-      - name: Checkout PR head
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      # Default branch only (no repository/ref override). Never check out the PR head here.
+      - name: Checkout default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ steps.pr.outputs.repo }}
-          ref: ${{ steps.pr.outputs.sha }}
           fetch-depth: 1
 
       - name: Run Claude Code Review
