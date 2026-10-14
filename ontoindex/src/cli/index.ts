@@ -394,6 +394,14 @@ docsProgram
   .option('--max-candidates-per-fact <n>', 'Maximum linked graph identities per concept')
   .action(createLazyAction(() => import('./docs.js'), 'knowledgeCommand'));
 
+docsProgram
+  .command('verify-answer <file>')
+  .description('Check that paths and symbols cited in an answer file exist in the repository')
+  .option('--json', 'Output stable JSON')
+  .option('--strict', 'Exit non-zero when a cited path or symbol is not found')
+  .option('-r, --repo <path>', 'Target repository')
+  .action(createLazyAction(() => import('./docs.js'), 'verifyAnswerCommand'));
+
 program
   .command('memory <name>')
   .description('Create a local advisory memory skeleton in .ontoindex/memories/')

@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 
 import { closeLbug, executeParameterized, initLbug } from '../core/lbug/pool-adapter.js';
@@ -58,6 +60,8 @@ import {
   type NormalizedRouteCandidate,
 } from '../core/ingestion/enrichment/markdown-route-candidates.js';
 import type { RouteDataAuditRecord } from '../core/ingestion/enrichment/route-data-audit.js';
+import { LbugGraphIdentityProvider } from '../core/ingestion/enrichment/markdown-graph-identity-provider.js';
+import { verifyAnswer } from '../core/ingestion/enrichment/markdown-answer-verify.js';
 import type { MarkdownDocResolutionRecord } from '../core/ingestion/enrichment/markdown-doc-resolver.js';
 import { getCurrentCommit, getGitRoot, isGitRepo } from '../storage/git.js';
 import { findRepo, getStoragePaths, resolveActiveLbugPath } from '../storage/repo-manager.js';
@@ -204,6 +208,79 @@ export const sidecarRunCommand = async (
   if (payload.sidecar.status === 'failed') {
     process.exit(1);
   }
+};
+
+export const verifyAnswerCommand = async (
+  file: string,
+  options: { json?: boolean; strict?: boolean; repo?: string },
+): Promise<void> => {
+  const repoPath = resolveRepoPath(options);
+  if (!repoPath) {
+    console.error('Not a git repository and no --repo specified.');
+    process.exit(1);
+  }
+
+  let answer: string;
+  try {
+    answer = await readFile(file, 'utf8');
+  } catch (error) {
+    console.error(`Cannot read ${file}: ${(error as Error).message}`);
+    process.exit(1);
+  }
+
+  let paths: string[];
+  try {
+    paths = execFileSync('git', ['ls-files'], {
+      cwd: repoPath,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+    })
+      .split('\n')
+      .filter((entry) => entry.length > 0);
+  } catch (error) {
+    console.error(`git ls-files failed: ${(error as Error).message}`);
+    process.exit(1);
+  }
+
+  const warnings: string[] = [];
+  let provider: LbugGraphIdentityProvider | undefined;
+  let opened = false;
+  let failStrict = false;
+  try {
+    const repo = await findRepo(repoPath);
+    if (!repo) {
+      warnings.push('repository is not indexed; symbol check skipped');
+    } else {
+      try {
+        const lbugPath = await resolveActiveLbugPath(getStoragePaths(repo.repoPath).storagePath);
+        opened = true;
+        await initLbug(repoPath, lbugPath);
+        provider = new LbugGraphIdentityProvider({ repoId: repoPath });
+      } catch (error) {
+        provider = undefined;
+        warnings.push(`graph unavailable: ${(error as Error).message}; symbol check skipped`);
+      }
+    }
+    const report = await verifyAnswer({ answer, paths, provider });
+    if (options.json) {
+      console.log(JSON.stringify({ ...report, warnings }, null, 2));
+    } else {
+      console.log(`Answer grounding: ${report.status} (symbols: ${report.symbolCheck})`);
+      for (const item of report.ungrounded) {
+        console.log(`  ungrounded ${item.kind} ${item.text}`);
+      }
+      for (const item of report.unverifiable) {
+        console.log(`  unverifiable ${item.kind} ${item.text}`);
+      }
+      for (const warning of warnings) {
+        console.log(`warning: ${warning}`);
+      }
+    }
+    failStrict = Boolean(options.strict) && report.status === 'ungrounded';
+  } finally {
+    if (opened) await closeLbug(repoPath).catch(() => undefined);
+  }
+  if (failStrict) process.exit(1);
 };
 
 export const traceCommand = async (options: {
