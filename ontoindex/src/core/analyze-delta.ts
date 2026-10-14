@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFileText } from './process/exec-file.js';
-import { shouldIgnorePath } from '../config/ignore-service.js';
+import { loadIgnoreRules, shouldIgnorePath } from '../config/ignore-service.js';
 import { getCurrentCommit } from '../storage/git.js';
 import { getStoragePaths, loadMeta } from '../storage/repo-manager.js';
 import { getScanMaxFileSizeBytes } from './ingestion/scan-config.js';
@@ -364,6 +364,9 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
   const includePaths = new Set<string>();
   const tombstones = new Set<string>();
   const skipped = new Set<string>();
+  const ignoreRules = await loadIgnoreRules(repoPath);
+  const isIgnored = (filePath: string): boolean =>
+    shouldIgnorePath(filePath) || (ignoreRules?.ignores(filePath) ?? false);
 
   const statusOutput = await execFileText(
     'git',
@@ -376,9 +379,9 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
     if (!oldPath) continue;
 
     if (paths.length > 1) {
-      if (!isSourceFilePath(oldPath) || shouldIgnorePath(oldPath)) skipped.add(oldPath);
+      if (!isSourceFilePath(oldPath) || isIgnored(oldPath)) skipped.add(oldPath);
       else tombstones.add(oldPath);
-      if (newPath && isSourceFilePath(newPath) && !shouldIgnorePath(newPath)) {
+      if (newPath && isSourceFilePath(newPath) && !isIgnored(newPath)) {
         includePaths.add(newPath);
       } else if (newPath) {
         skipped.add(newPath);
@@ -386,7 +389,7 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
       continue;
     }
 
-    if (!isSourceFilePath(oldPath) || shouldIgnorePath(oldPath)) {
+    if (!isSourceFilePath(oldPath) || isIgnored(oldPath)) {
       skipped.add(oldPath);
     } else if (status.includes('D')) {
       tombstones.add(oldPath);
@@ -403,7 +406,6 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
     }
   }
 
-  // .ontoindexignore rules remain out of scope because building their glob filter on each probe scans the whole tree.
   const maxFileSizeBytes = getScanMaxFileSizeBytes();
   if (maxFileSizeBytes !== null) {
     const candidates = [...includePaths];
