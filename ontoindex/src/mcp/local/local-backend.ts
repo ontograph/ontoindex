@@ -66,6 +66,12 @@ import {
   tokenizeMarkdownQueryText,
 } from '../../core/ingestion/enrichment/markdown-query-ranking.js';
 import { detectChanges as detectChangesImpl } from './backend-detect-changes.js';
+import { LbugGraphIdentityProvider } from '../../core/ingestion/enrichment/markdown-graph-identity-provider.js';
+import {
+  resolveMentionTexts,
+  type MentionResolutionSummary,
+  type ResolvedMentionTarget,
+} from '../../core/ingestion/enrichment/markdown-mention-resolution.js';
 import { impactByUid as impactByUidImpl, runImpact } from './backend-impact.js';
 import { formatCypherAsMarkdown, queryCypher } from './backend-query.js';
 import { query as queryImpl } from './backend-search.js';
@@ -292,6 +298,11 @@ type MarkdownDocsEvidenceSource = {
 };
 type MarkdownDocsEvidenceFact = {
   kind: string;
+  mention?: string;
+  graphResolution?: {
+    status: 'resolved' | 'ambiguous' | 'unresolved';
+    targets: ResolvedMentionTarget[];
+  };
   lineSpan?: { start: number; end: number };
   requirementId?: string;
   title?: string;
@@ -402,6 +413,7 @@ type LocalEnrichmentConsumptionMetadata =
       factConsumption: ReturnType<typeof consumeEnrichmentFacts>['summary'];
       visibleRecords: ReturnType<typeof consumeEnrichmentFacts>['visibleRecords'];
       facts?: EnrichmentFact[];
+      mentionResolution?: MentionResolutionSummary;
       relatedFacts?: PassiveGraphExpansionUnknown['relatedFacts'];
       relatedSymbols?: PassiveGraphExpansionUnknown['relatedSymbols'];
       relatedIdentities?: PassiveGraphExpansionUnknown['relatedIdentities'];
@@ -1049,6 +1061,14 @@ function toMarkdownDocsEvidenceFact(fact: EnrichmentFact): MarkdownDocsEvidenceF
     return undefined;
   }
   const evidence: MarkdownDocsEvidenceFact = { kind: String(fact.kind) };
+  if (
+    fact.kind === 'markdown-code-mention' &&
+    isObjectResponse(fact.evidence) &&
+    typeof fact.evidence.text === 'string' &&
+    fact.evidence.text.length <= 120
+  ) {
+    evidence.mention = fact.evidence.text;
+  }
   const lineSpan =
     isObjectResponse(fact.lineSpan) && typeof fact.lineSpan.start === 'number'
       ? fact.lineSpan
@@ -2158,6 +2178,32 @@ export class LocalBackend implements BackendPort {
               retrievalPolicy: options.retrievalPolicy,
             })
           : undefined;
+      let mentionResolution: MentionResolutionSummary | undefined;
+      if (markdownContext) {
+        mentionResolution = { status: 'ok', lookups: 0 };
+        try {
+          const mentionEvidence = markdownContext.relatedChunks
+            .filter((chunk) => !chunk.degradedReasons?.length)
+            .flatMap((chunk) => chunk.evidence ?? [])
+            .filter(
+              (evidence) =>
+                evidence.kind === 'markdown-code-mention' && typeof evidence.mention === 'string',
+            );
+          if (mentionEvidence.length > 0) {
+            const { resolutions, summary } = await resolveMentionTexts(
+              mentionEvidence.map((evidence) => evidence.mention!),
+              new LbugGraphIdentityProvider({ repoId: repo.id }),
+            );
+            mentionResolution = summary;
+            for (const evidence of mentionEvidence) {
+              const resolution = resolutions.get(evidence.mention!);
+              if (resolution) evidence.graphResolution = resolution;
+            }
+          }
+        } catch {
+          mentionResolution = { status: 'skipped', lookups: 0, reason: 'error' };
+        }
+      }
       const retrievalPolicyMetadata = options.retrievalPolicy
         ? createRetrievalPolicyMetadata(options.retrievalPolicy, markdownContext)
         : undefined;
@@ -2191,6 +2237,7 @@ export class LocalBackend implements BackendPort {
         visibleRecords,
         facts,
         ...(markdownContext && {
+          mentionResolution,
           factsBound: {
             totalFactCount: allFacts.length,
             totalVisibleRecordCount: allVisibleRecords.length,

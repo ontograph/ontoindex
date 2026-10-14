@@ -58,6 +58,158 @@ import {
 
 const tmpDirs: string[] = [];
 
+const { mentionMocks } = vi.hoisted(() => ({ mentionMocks: { findSymbols: vi.fn() } }));
+
+vi.mock(
+  '../../src/core/ingestion/enrichment/markdown-graph-identity-provider.js',
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import('../../src/core/ingestion/enrichment/markdown-graph-identity-provider.js')
+    >()),
+    LbugGraphIdentityProvider: class {
+      findSymbols = mentionMocks.findSymbols;
+    },
+  }),
+);
+
+function mentionSidecarState() {
+  const state = markdownSidecarState();
+  const base = state.enrichments[0];
+  const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')!;
+  return {
+    ...state,
+    enrichments: [
+      {
+        ...base,
+        records: [
+          chunk,
+          {
+            kind: 'markdown-code-mention',
+            chunkKey: chunk.chunkKey,
+            confidence: 0,
+            resolutionStatus: 'unresolved',
+            evidence: { text: 'buildPhaseList', lineSpan: { start: 12, end: 12 } },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+describe('MR2- Markdown mention backend wiring', () => {
+  beforeEach(() => {
+    mentionMocks.findSymbols.mockReset().mockResolvedValue([
+      {
+        type: 'symbol',
+        id: 'Function:src/x.ts:buildPhaseList',
+        name: 'buildPhaseList',
+        filePath: 'src/x.ts',
+        startLine: 10,
+        confidence: 0.9,
+      },
+    ]);
+  });
+
+  const options = {
+    query: 'login',
+    consume_enrichment_facts: true,
+    include_passive_related_facts: true,
+    include_markdown_context: true,
+  };
+
+  it('MR2-A attaches resolved graph targets to returned chunk evidence', async () => {
+    const repo = await createRepo();
+    await writeSidecarStore(repo.storagePath, mentionSidecarState());
+    const result = await new LocalBackend().callTool('query', options);
+    expect(result.enrichment.relatedChunks).toHaveLength(1);
+    expect(result.enrichment.relatedChunks[0].evidence).toEqual([
+      expect.objectContaining({
+        mention: 'buildPhaseList',
+        graphResolution: {
+          status: 'resolved',
+          targets: [
+            {
+              id: 'Function:src/x.ts:buildPhaseList',
+              name: 'buildPhaseList',
+              filePath: 'src/x.ts',
+              startLine: 10,
+            },
+          ],
+        },
+      }),
+    ]);
+    expect(mentionMocks.findSymbols).toHaveBeenCalledTimes(1);
+    expect(result.enrichment.mentionResolution).toMatchObject({ status: 'ok', lookups: 1 });
+  });
+
+  it('MR2-B preserves chunk keys and order when the provider throws', async () => {
+    const repo = await createRepo();
+    const state = mentionSidecarState();
+    const base = state.enrichments[0];
+    const chunk = base.records[0];
+    const secondChunk = { ...chunk, chunkKey: `${chunk.chunkKey}:second`, chunkIndex: 1 };
+    await writeSidecarStore(repo.storagePath, {
+      ...state,
+      enrichments: [{ ...base, records: [chunk, secondChunk] }],
+    });
+    const backend = new LocalBackend();
+    const baseline = await backend.callTool('query', options);
+    await writeSidecarStore(repo.storagePath, {
+      ...state,
+      enrichments: [{ ...base, records: [...base.records, secondChunk] }],
+    });
+    mentionMocks.findSymbols.mockRejectedValue(new Error('graph unavailable'));
+    const result = await backend.callTool('query', options);
+    expect(baseline.enrichment.relatedChunks).toHaveLength(2);
+    expect(result.enrichment.relatedChunks.map((value: any) => value.chunkKey)).toEqual(
+      baseline.enrichment.relatedChunks.map((value: any) => value.chunkKey),
+    );
+    expect(['skipped', 'partial']).toContain(result.enrichment.mentionResolution?.status);
+    expect(result.enrichment.mentionResolution).toMatchObject({ lookups: expect.any(Number) });
+  });
+
+  it('MR2-C does not look up mentions belonging to chunks outside the returned set', async () => {
+    const repo = await createRepo();
+    const state = mentionSidecarState();
+    const base = state.enrichments[0];
+    const chunk = base.records[0];
+    const hiddenChunk = { ...chunk, chunkKey: `${chunk.chunkKey}:hidden`, chunkIndex: 20 };
+    await writeSidecarStore(repo.storagePath, {
+      ...state,
+      enrichments: [
+        {
+          ...base,
+          records: [
+            ...Array.from({ length: 11 }, (_, index) => ({
+              ...chunk,
+              chunkKey: `returned-${index}`,
+              chunkIndex: index,
+            })),
+            hiddenChunk,
+            { ...base.records[1], chunkKey: hiddenChunk.chunkKey },
+          ],
+        },
+      ],
+    });
+    const result = await new LocalBackend().callTool('query', options);
+    expect(result.enrichment.relatedChunks).toHaveLength(10);
+    expect(result.enrichment.relatedChunks.map((value: any) => value.chunkKey)).not.toContain(
+      hiddenChunk.chunkKey,
+    );
+    expect(mentionMocks.findSymbols).not.toHaveBeenCalled();
+    expect(result.enrichment.mentionResolution).toMatchObject({ status: 'ok', lookups: 0 });
+  });
+
+  it('MR2-D does not look up mentions without Markdown context opt-in', async () => {
+    const repo = await createRepo();
+    await writeSidecarStore(repo.storagePath, mentionSidecarState());
+    const { include_markdown_context: _includeMarkdownContext, ...withoutMarkdown } = options;
+    const result = await new LocalBackend().callTool('query', withoutMarkdown);
+    expect(mentionMocks.findSymbols).not.toHaveBeenCalled();
+    expect(result.enrichment).not.toHaveProperty('mentionResolution');
+  });
+});
+
 async function createRepo() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-sidecar-local-backend-'));
   tmpDirs.push(root);
