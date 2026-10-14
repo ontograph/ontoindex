@@ -119,3 +119,31 @@ Chunk evidence keeps only `mention`; results move to a response-level `mentionTa
 - Offline estimate used to choose the design on the heaviest query: per-item attachment +19.0 KB, per-item with unresolved omitted +16.8 KB, resolved-only +11.9 KB, hoisted map +11.3 KB.
 
 Later merged work: #96 query-time mention resolution; #98 analysis-coordinator test polling ceilings; #99/#100/#102 CI workflow hardening; #101 the 25-fact per-(chunk, fact kind) cap; #103 release 2.3.4; #104 integration test fixes. See the retrieval plan’s “Later merged work” closeout for commits and payload measurements.
+
+## Answer grounding
+
+Run on `0fe72ad` with `/tmp/measure-answer-grounding.mts` against `git ls-files`.
+
+```json
+{"files":43,"pathCitations":270,"ungroundedPaths":40,"medianMs":0.27,"maxMs":5.26}
+```
+
+Samples (first 10):
+
+```text
+.memory-bank/DONOR_LTM_ANSWER_GROUNDING_PROJECT_PLAN.md: docs/x.md
+.memory-bank/MARKDOWN_GRAPH_RAG_RETRIEVAL_PROJECT_PLAN.md: docs/x.md
+.memory-bank/MARKDOWN_GRAPH_RAG_RETRIEVAL_PROJECT_PLAN.md: docs/architecture.md
+.memory-bank/MARKDOWN_GRAPH_RAG_RETRIEVAL_PROJECT_PLAN.md: docs/runbook.md
+.memory-bank/MARKDOWN_GRAPH_RAG_RETRIEVAL_PROJECT_PLAN.md: docs/embeddings.md
+.memory-bank/MARKDOWN_GRAPH_RAG_RETRIEVAL_PROJECT_PLAN.md: docs/testing.md
+.memory-bank/MARKDOWN_GRAPH_RAG_RETRIEVAL_PROJECT_PLAN.md: docs/security.md
+.memory-bank/MARKDOWN_GRAPH_RAG_RETRIEVAL_PROJECT_PLAN.md: docs/locks.md
+.memory-bank/MARKDOWN_GRAPH_RAG_RETRIEVAL_PROJECT_PLAN.md: memory-bank/archive/old-plan.md
+.memory-bank/MARKDOWN_GRAPH_RAG_RETRIEVAL_PROJECT_PLAN.md: docs/zz-architecture.md
+```
+
+Share reported: 40 / 270 = 0.148. Nearly all samples are example paths inside plan documents (`docs/x.md`, `docs/architecture.md`), which do not exist, so they are correct detections.
+
+Decision: Wiring is allowed in a separate plan; this plan does not wire it.
+
