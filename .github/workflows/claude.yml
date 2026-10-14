@@ -56,7 +56,14 @@ jobs:
       id-token: write
       actions: read # required for Claude to read CI results on PRs
     steps:
-      # For PR-related triggers, resolve the fork repo so we can checkout correctly.
+      # SECURITY: this job holds secrets and write tokens, and claude-code-action loads
+      # project settings (.claude/settings.json hooks, .mcp.json, CLAUDE.md) from the
+      # workspace. Checking out a fork's head would let an outside PR author influence a
+      # privileged run, and the action's PR branch handling only fetches from the base
+      # repository's origin, so fork heads are not reliably supported anyway. Fork PRs
+      # are therefore skipped: both the checkout and the action below are gated on
+      # `same_repo`, which fails closed (a missing or deleted head repository counts as
+      # a fork). Use the hardened claude-code-review workflow to review fork PRs.
       - name: Resolve PR context
         id: pr
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
@@ -74,6 +81,7 @@ jobs:
 
             if (!prNumber) {
               core.setOutput('is_pr', 'false');
+              core.setOutput('same_repo', 'true');
               return;
             }
 
@@ -84,21 +92,25 @@ jobs:
             });
             const pr = resp.data;
 
+            const sameRepo = pr.head.repo != null && pr.head.repo.id === pr.base.repo.id;
             core.setOutput('is_pr', 'true');
             core.setOutput('number', String(prNumber));
             core.setOutput('sha', pr.head.sha);
-            core.setOutput('repo', pr.head.repo.full_name);
-            core.setOutput('branch', pr.head.ref);
+            core.setOutput('same_repo', sameRepo ? 'true' : 'false');
+            if (!sameRepo) {
+              core.notice(`Skipping pull request #${prNumber}: its head is not in this repository (fork or deleted fork).`);
+            }
 
       - name: Checkout repository
+        if: steps.pr.outputs.same_repo == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ steps.pr.outputs.is_pr == 'true' && steps.pr.outputs.repo || github.repository }}
           ref: ${{ steps.pr.outputs.is_pr == 'true' && steps.pr.outputs.sha || '' }}
           fetch-depth: 1
 
       - name: Run Claude Code
         id: claude
+        if: steps.pr.outputs.same_repo == 'true'
         uses: anthropics/claude-code-action@9469d113c6afd29550c402740f22d1a97dd1209b # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
