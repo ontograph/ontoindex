@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
+import { glob } from 'glob';
 import {
   shouldIgnorePath,
   isHardcodedIgnoredDirectory,
@@ -470,6 +471,84 @@ describe('createIgnoreFilter', () => {
     expect(filter.ignored(tsPath)).toBe(false);
 
     await fs.unlink(path.join(tmpDir, '.gitignore'));
+  });
+});
+
+describe('createIgnoreFilter root-file allowlist', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-filter-allowlist-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function getPath(relativePath: string) {
+    const [entry] = await glob(relativePath, { cwd: tmpDir, withFileTypes: true });
+    expect(entry).toBeDefined();
+    return entry!;
+  }
+
+  it.each(['SECURITY.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'CODE_OF_CONDUCT.md', 'LICENSE.md'])(
+    'continues to ignore %s by default',
+    async (fileName) => {
+      await fs.writeFile(path.join(tmpDir, fileName), 'policy');
+      const filter = await createIgnoreFilter(tmpDir);
+
+      expect(filter.ignored(await getPath(fileName))).toBe(true);
+    },
+  );
+
+  it.each(['SECURITY.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'CODE_OF_CONDUCT.md', 'LICENSE.md'])(
+    'includes an allowlisted root %s file',
+    async (fileName) => {
+      await fs.writeFile(path.join(tmpDir, fileName), 'policy');
+      const filter = await createIgnoreFilter(tmpDir, { includeFiles: [fileName] });
+
+      expect(filter.ignored(await getPath(fileName))).toBe(false);
+    },
+  );
+
+  it('does not bypass built-in ignores for a non-allowlisted root file', async () => {
+    await fs.writeFile(path.join(tmpDir, 'package-lock.json'), '{}');
+    const filter = await createIgnoreFilter(tmpDir, { includeFiles: ['package-lock.json'] });
+
+    expect(filter.ignored(await getPath('package-lock.json'))).toBe(true);
+  });
+
+  it('does not include a nested file with the same name', async () => {
+    await fs.mkdir(path.join(tmpDir, 'docs'));
+    await fs.writeFile(path.join(tmpDir, 'docs', 'SECURITY.md'), 'policy');
+    const filter = await createIgnoreFilter(tmpDir, { includeFiles: ['SECURITY.md'] });
+
+    expect(filter.ignored(await getPath('docs/SECURITY.md'))).toBe(true);
+  });
+
+  it('does not include a symlink named SECURITY.md', async () => {
+    await fs.writeFile(path.join(tmpDir, 'security-policy.md'), 'policy');
+    await fs.symlink(path.join(tmpDir, 'security-policy.md'), path.join(tmpDir, 'SECURITY.md'));
+    const filter = await createIgnoreFilter(tmpDir, { includeFiles: ['SECURITY.md'] });
+    expect(filter.ignored(await getPath('SECURITY.md'))).toBe(true);
+  });
+
+  it('does not override a matching .gitignore rule', async () => {
+    await fs.writeFile(path.join(tmpDir, '.gitignore'), 'SECURITY.md\n');
+    await fs.writeFile(path.join(tmpDir, 'SECURITY.md'), 'policy');
+    const filter = await createIgnoreFilter(tmpDir, { includeFiles: ['SECURITY.md'] });
+
+    expect(filter.ignored(await getPath('SECURITY.md'))).toBe(true);
+  });
+
+  it('does not match an allowlist entry with different casing', async () => {
+    await fs.writeFile(path.join(tmpDir, 'security.md'), 'policy');
+    const withAllowlist = await createIgnoreFilter(tmpDir, { includeFiles: ['SECURITY.md'] });
+    const withoutAllowlist = await createIgnoreFilter(tmpDir);
+    const entry = await getPath('security.md');
+
+    // The built-in list is case-sensitive for this name, so the allowlist must not change the result.
+    expect(withAllowlist.ignored(entry)).toBe(withoutAllowlist.ignored(entry));
   });
 });
 

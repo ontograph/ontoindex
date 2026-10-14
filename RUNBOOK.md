@@ -62,6 +62,27 @@ npx ontoindex analyze --embeddings
 
 **Large repos:** Analyze may skip or limit embedding work when node counts are very high; watch CLI output.
 
+## Markdown retrieval (docs sidecar)
+
+The Markdown sidecar chunks Markdown documents into enrichment facts; `query` can retrieve those chunks as passive context. With Markdown context enabled, chunks are ranked by BM25 over their heading path and stored excerpt (capped at 2,048 bytes or 40 lines; `ontoindex/src/core/ingestion/enrichment/markdown-sidecar-producer.ts:100-101`). Paths such as `.memory-bank/archive/`, `audit_session-*`, plans, test plans, release notes/readiness, and research reports receive a 0.5 weight, and chunks in documents linked from the best-matching chunk receive a bonus (`ontoindex/src/core/ingestion/enrichment/markdown-query-ranking.ts:37,59-70,132-155`).
+
+**Build or refresh** after Markdown file paths or content change; status reports `stale` until the sidecar is run again:
+
+```bash
+ontoindex docs sidecar run markdown
+ontoindex docs sidecar status
+```
+
+**Query** with the CLI or equivalent MCP options:
+
+```bash
+ontoindex query "<text>" --consume-enrichment-facts --include-passive-related-facts --include-markdown-context --include-markdown-ppr
+```
+
+MCP options: `consume_enrichment_facts`, `include_passive_related_facts`, `include_markdown_context`, and `include_markdown_ppr`. Results appear in `enrichment.relatedDocs`, `enrichment.relatedChunks`, and `enrichment.markdownPpr`; `enrichment.factsBound` describes the bounded `facts`. Responses include at most 5 documents and 10 chunks. Only chunks matching query terms are returned; queries with no matching words and stop-word-only queries such as “how to” return no chunks. `context` and `impact` preserve path order.
+
+The collector reads every non-ignored `.md` and `.mdx` file, plus root `SECURITY.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `CODE_OF_CONDUCT.md`, and `LICENSE.md`; user ignore rules still apply (`ontoindex/src/core/ingestion/enrichment/markdown-sidecar-collector.ts:12-19,23-31`). Matching is lexical and requires no embeddings. Code mentions are stored unresolved, and long sections are matched through their capped excerpt.
+
 ---
 
 ## MCP: no repos / empty tools

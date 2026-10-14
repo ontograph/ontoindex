@@ -31,6 +31,8 @@ export interface WalkRepositoryOptions {
   onSkippedLargeFile?: (file: ScannedFile) => void;
   onUnreadableFile?: (file: ScannedFile, error: unknown) => void;
   includePaths?: string[];
+  /** Exact root-level regular files allowed past built-in file ignores. User ignores still apply. */
+  includeFiles?: readonly string[];
 }
 
 /** Path-only reference (for type signatures) */
@@ -213,7 +215,7 @@ export const walkRepositoryPaths = async (
   onProgress?: (current: number, total: number, filePath: string) => void,
   options?: WalkRepositoryOptions,
 ): Promise<ScannedFile[]> => {
-  const ignoreFilter = await createIgnoreFilter(repoPath);
+  const ignoreFilter = await createIgnoreFilter(repoPath, { includeFiles: options?.includeFiles });
   const nestedGitRoots = await findNestedGitRoots(repoPath, ignoreFilter);
   const scanIgnore = {
     ignored(p: Parameters<typeof ignoreFilter.ignored>[0]): boolean {

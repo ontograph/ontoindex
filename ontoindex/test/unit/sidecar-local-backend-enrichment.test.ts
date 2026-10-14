@@ -53,6 +53,7 @@ import {
   createMarkdownSidecarRunnerExecutor,
   getSidecarStorePath,
   LocalSidecarStore,
+  MARKDOWN_DOCUMENT_ANALYZER_ID,
 } from '../../src/core/ingestion/enrichment/index.js';
 
 const tmpDirs: string[] = [];
@@ -349,6 +350,48 @@ function docsEvidenceSidecarState() {
   };
 }
 
+function rankingSidecarState() {
+  const state = passiveSidecarState();
+  const base = state.enrichments[0];
+  const chunk = (docPath: string, heading: string[], excerpt: string, index: number) => ({
+    kind: 'markdown-chunk',
+    docPath,
+    fileHash: `rank-doc-hash-${index}`,
+    sourceCommitHash: 'abc123',
+    headingPath: heading,
+    lineSpan: { start: 1, end: 5 },
+    chunkIndex: 0,
+    normalizedAnchor: `rank-${index}`,
+    contentHash: `rank-chunk-hash-${index}`,
+    chunkKey: `markdown-chunk:${docPath}:rank-doc-hash-${index}:${heading.join('/')}:rank-${index}:rank-chunk-hash-${index}`,
+    excerpt,
+  });
+  const filler = Array.from({ length: 11 }, (_, index) =>
+    chunk(
+      `docs/a${String(index).padStart(2, '0')}.md`,
+      ['Notes', `Topic ${index}`],
+      `General notes about storage topic ${index}.`,
+      index,
+    ),
+  );
+  const archived = chunk(
+    '.memory-bank/archive/old-plan.md',
+    ['Old Plan', 'Phase tasks'],
+    'Pipeline phase pipeline phase task: add a new phase to the pipeline.',
+    11,
+  );
+  const onTopic = chunk(
+    'docs/zz-architecture.md',
+    ['Architecture', 'How to add a new phase'],
+    'Create a pipeline phase file, export it, and add it to buildPhaseList.',
+    12,
+  );
+  return {
+    ...state,
+    enrichments: [{ ...base, records: [...base.records, ...filler, archived, onTopic] }],
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   backendMocks.queryImpl.mockResolvedValue({ definitions: [] });
@@ -574,7 +617,7 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     const backend = new LocalBackend();
 
     const result = await backend.callTool('query', {
-      query: 'main',
+      query: 'login flow',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
@@ -963,18 +1006,18 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     const backend = new LocalBackend();
 
     const withoutMarkdownOptIn = await backend.callTool('query', {
-      query: 'main',
+      query: 'login flow',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
     });
     const withMarkdownOptIn = await backend.callTool('query', {
-      query: 'main',
+      query: 'login flow',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
     });
     const withMarkdownPpr = await backend.callTool('query', {
-      query: 'main',
+      query: 'login flow',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
@@ -1001,7 +1044,7 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     );
     expect(withMarkdownOptIn.explanation.retrievers).toEqual([
       { name: 'passive-graph-expansion', factCount: 0, identityCount: 0 },
-      { name: 'markdown-passive-graph', factCount: 5, docCount: 1, chunkCount: 2 },
+      { name: 'markdown-passive-graph', factCount: 5, docCount: 1, chunkCount: 1 },
     ]);
     expect(withMarkdownPpr.enrichment.markdownPpr).toMatchObject({
       summary: {
@@ -1046,7 +1089,7 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     const backend = new LocalBackend();
 
     const result = await backend.callTool('query', {
-      query: 'main',
+      query: 'M7 docs evidence',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
@@ -1286,5 +1329,432 @@ describe('LocalBackend sidecar enrichment metadata', () => {
       },
     });
     expect(result.enrichment.reason).toContain('not valid JSON');
+  });
+
+  it('GR1-A ranks the on-topic Markdown chunk first for a matching query', async () => {
+    const repo = await createRepo();
+    await writeSidecarStore(repo.storagePath, rankingSidecarState());
+    backendMocks.queryImpl.mockResolvedValue({
+      processes: [],
+      process_symbols: [],
+      definitions: [
+        {
+          id: 'Function:src/a.ts:main',
+          name: 'main',
+          type: 'function',
+          filePath: 'src/a.ts',
+        },
+      ],
+    });
+    const backend = new LocalBackend();
+    const result = await backend.callTool('query', {
+      query: 'how to add a new pipeline phase',
+      consume_enrichment_facts: true,
+      include_passive_related_facts: true,
+      include_markdown_context: true,
+    });
+    expect(result.enrichment.relatedChunks[0].docPath).toBe('docs/zz-architecture.md');
+    expect(result.enrichment.relatedChunks[1].docPath).toBe('.memory-bank/archive/old-plan.md');
+    expect(result.enrichment.relatedChunks).toHaveLength(2);
+    expect(result.enrichment.relatedDocs[0].docPath).toBe('docs/zz-architecture.md');
+  });
+
+  it('GR1-B returns no Markdown chunks when the query matches nothing', async () => {
+    const repo = await createRepo();
+    await writeSidecarStore(repo.storagePath, rankingSidecarState());
+    backendMocks.queryImpl.mockResolvedValue({
+      processes: [],
+      process_symbols: [],
+      definitions: [
+        {
+          id: 'Function:src/a.ts:main',
+          name: 'main',
+          type: 'function',
+          filePath: 'src/a.ts',
+        },
+      ],
+    });
+    const backend = new LocalBackend();
+    const result = await backend.callTool('query', {
+      query: 'docker compose deployment',
+      consume_enrichment_facts: true,
+      include_passive_related_facts: true,
+      include_markdown_context: true,
+    });
+    expect(result.enrichment.relatedChunks).toEqual([]);
+    expect(result.enrichment.relatedDocs).toEqual([]);
+  });
+
+  it.each(['!!! ... ???', 'the to and'])(
+    'keeps path-order context for zero-token query %s',
+    async (query) => {
+      const repo = await createRepo();
+      await writeSidecarStore(repo.storagePath, rankingSidecarState());
+      const backend = new LocalBackend();
+      const options = {
+        consume_enrichment_facts: true,
+        include_passive_related_facts: true,
+        include_markdown_context: true,
+      };
+      const empty = await backend.callTool('query', { ...options, query: '' });
+      const result = await backend.callTool('query', { ...options, query });
+      expect(result.enrichment.relatedChunks.length).toBeGreaterThan(0);
+      expect(result.enrichment.relatedChunks).toEqual(empty.enrichment.relatedChunks);
+      expect(result.enrichment.relatedDocs).toEqual(empty.enrichment.relatedDocs);
+    },
+  );
+
+  it('caps context without throwing for more than 150,000 matching chunks', async () => {
+    const repo = await createRepo();
+    const state = markdownSidecarState();
+    const base = state.enrichments[0];
+    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')!;
+    const chunks = Array.from({ length: 150_001 }, (_, index) => ({
+      ...chunk,
+      chunkKey: `chunk-${index}`,
+      chunkIndex: index,
+      headingPath: ['Login'],
+      excerpt: 'login',
+    }));
+    await writeSidecarStore(repo.storagePath, {
+      ...state,
+      enrichments: Array.from({ length: 151 }, (_, index) => ({
+        ...base,
+        filePath: `src/chunks-${index}.ts`,
+        records: chunks.slice(index * 1_000, (index + 1) * 1_000),
+      })),
+    });
+    const backend = new LocalBackend();
+    const result = await backend.callTool('query', {
+      query: 'login',
+      consume_enrichment_facts: true,
+      include_passive_related_facts: true,
+      include_markdown_context: true,
+    });
+    expect(result.enrichment.error).toBeUndefined();
+    expect(result.enrichment.relatedChunks).toHaveLength(10);
+    expect(result.enrichment.relatedDocs).toEqual([
+      expect.objectContaining({ docPath: chunk.docPath, chunkCount: chunks.length }),
+    ]);
+  }, 20_000);
+
+  it('GR1-C keeps the Markdown context response below the byte budget', async () => {
+    const repo = await createRepo();
+    await writeSidecarStore(repo.storagePath, rankingSidecarState());
+    backendMocks.queryImpl.mockResolvedValue({
+      processes: [],
+      process_symbols: [],
+      definitions: [
+        {
+          id: 'Function:src/a.ts:main',
+          name: 'main',
+          type: 'function',
+          filePath: 'src/a.ts',
+        },
+      ],
+    });
+    const backend = new LocalBackend();
+    const result = await backend.callTool('query', {
+      query: 'how to add a new pipeline phase',
+      consume_enrichment_facts: true,
+      include_passive_related_facts: true,
+      include_markdown_context: true,
+    });
+    expect(JSON.stringify(result).length).toBeLessThan(200_000);
+  });
+
+  it('GR26-A preserves non-Markdown records with matching, unmatched, or absent chunks', async () => {
+    const repo = await createRepo();
+    const state = markdownSidecarState();
+    const base = state.enrichments[0];
+    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')!;
+    const codeRecord = { ...base, records: [base.records[0]] };
+    const markdownRecord = {
+      ...base,
+      analyzerId: MARKDOWN_DOCUMENT_ANALYZER_ID,
+      filePath: chunk.docPath,
+      fileHash: chunk.fileHash,
+      records: [chunk],
+    };
+    const backend = new LocalBackend();
+
+    for (const scenario of [
+      { query: 'login', records: [codeRecord, markdownRecord], markdownCount: 1 },
+      {
+        query: 'docker compose deployment',
+        records: [codeRecord, markdownRecord],
+        markdownCount: 0,
+      },
+      { query: 'login', records: [codeRecord], markdownCount: 0 },
+    ]) {
+      await writeSidecarStore(repo.storagePath, { ...state, enrichments: scenario.records });
+      const result = await backend.callTool('query', {
+        query: scenario.query,
+        consume_enrichment_facts: true,
+        include_passive_related_facts: true,
+        include_markdown_context: true,
+      });
+
+      expect(result.enrichment.visibleRecords).toHaveLength(1 + scenario.markdownCount);
+      expect(result.enrichment.visibleRecords).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ analyzerId: base.analyzerId, filePath: base.filePath }),
+        ]),
+      );
+      expect(result.enrichment.facts).toContainEqual(codeRecord.records[0]);
+      expect(result.enrichment.relatedChunks).toHaveLength(scenario.markdownCount);
+      expect(result.enrichment).not.toHaveProperty('keptDocPaths');
+    }
+  });
+
+  it('GR26-B keeps all six Markdown record summaries beyond the five-doc preview', async () => {
+    const repo = await createRepo();
+    const state = docsEvidenceSidecarState();
+    const base = state.enrichments[0];
+    const chunks = base.records.filter((fact) => fact.kind === 'markdown-chunk').slice(0, 6);
+    await writeSidecarStore(repo.storagePath, {
+      ...state,
+      enrichments: chunks.map((chunk) => ({
+        ...base,
+        analyzerId: MARKDOWN_DOCUMENT_ANALYZER_ID,
+        filePath: chunk.docPath,
+        fileHash: chunk.fileHash,
+        records: [chunk],
+      })),
+    });
+    const backend = new LocalBackend();
+    const result = await backend.callTool('query', {
+      query: 'M7 docs evidence',
+      consume_enrichment_facts: true,
+      include_passive_related_facts: true,
+      include_markdown_context: true,
+    });
+
+    expect(result.enrichment.facts).toEqual(chunks);
+    expect(result.enrichment.relatedChunks).toHaveLength(6);
+    expect(result.enrichment.relatedDocs).toHaveLength(5);
+    expect(result.enrichment.visibleRecords.map((record: any) => record.filePath)).toEqual(
+      chunks.map((chunk) => chunk.docPath),
+    );
+  });
+
+  it('GR26-C counts only retained chunks for each document', async () => {
+    const repo = await createRepo();
+    const state = markdownSidecarState();
+    const base = state.enrichments[0];
+    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')!;
+    const chunks = ['cache', 'logs'].map((topic, index) => ({
+      ...chunk,
+      headingPath: [topic],
+      excerpt: topic,
+      chunkIndex: index,
+      chunkKey: `${chunk.chunkKey}:${topic}`,
+    }));
+    await writeSidecarStore(repo.storagePath, {
+      ...state,
+      enrichments: [{ ...base, records: chunks }],
+    });
+    const backend = new LocalBackend();
+    const result = await backend.callTool('query', {
+      query: 'cache',
+      consume_enrichment_facts: true,
+      include_passive_related_facts: true,
+      include_markdown_context: true,
+    });
+
+    expect(result.enrichment.relatedChunks).toEqual([
+      expect.objectContaining({ chunkKey: chunks[0].chunkKey }),
+    ]);
+    expect(result.enrichment.relatedDocs).toHaveLength(1);
+    expect(result.enrichment.relatedDocs[0].chunkCount).toBe(1);
+  });
+
+  it('GR26-D reports truncation only when facts or record summaries are removed', async () => {
+    const repo = await createRepo();
+    const state = markdownSidecarState();
+    const base = state.enrichments[0];
+    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')!;
+    await writeSidecarStore(repo.storagePath, {
+      ...state,
+      enrichments: [{ ...base, records: [chunk] }],
+    });
+    const backend = new LocalBackend();
+    for (const [query, truncated] of [
+      ['login', false],
+      ['docker compose deployment', true],
+    ] as const) {
+      const result = await backend.callTool('query', {
+        query,
+        consume_enrichment_facts: true,
+        include_passive_related_facts: true,
+        include_markdown_context: true,
+      });
+
+      expect(result.enrichment.facts).toEqual(truncated ? [] : [chunk]);
+      expect(result.enrichment.factsBound).toEqual({
+        totalFactCount: 1,
+        totalVisibleRecordCount: 1,
+        truncated,
+      });
+      expect(result.enrichment.visibleRecords).toHaveLength(1);
+    }
+  });
+
+  it('GR27-A deduplicates freshness for multiple matching chunks from one document', async () => {
+    const repo = await createRepo();
+    const state = markdownSidecarState();
+    const base = state.enrichments[0];
+    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')!;
+    const chunks = [0, 1, 2].map((index) => ({
+      ...chunk,
+      headingPath: ['Auth', `Login Flow ${index}`],
+      chunkIndex: index,
+      normalizedAnchor: `login-flow-${index}`,
+      contentHash: `chunk-hash-${index}`,
+      chunkKey: `${chunk.chunkKey}:${index}`,
+      excerpt: `Login flow notes ${index}`,
+    }));
+    await writeSidecarStore(repo.storagePath, {
+      ...state,
+      enrichments: [
+        {
+          ...base,
+          analyzerId: MARKDOWN_DOCUMENT_ANALYZER_ID,
+          filePath: chunk.docPath,
+          fileHash: chunk.fileHash,
+          records: chunks,
+        },
+      ],
+    });
+    const backend = new LocalBackend();
+    const result = await backend.callTool('query', {
+      query: 'login flow',
+      consume_enrichment_facts: true,
+      include_passive_related_facts: true,
+      include_markdown_context: true,
+    });
+    const freshness = result.enrichment.relatedDocs[0].freshness;
+
+    expect(result.enrichment.relatedDocs[0].chunkCount).toBe(3);
+    expect(new Set(freshness.map((fact: any) => JSON.stringify(fact))).size).toBe(freshness.length);
+    expect(freshness).toHaveLength(1);
+  });
+
+  it('GR27-B caps related chunks and visible Markdown records to returned documents', async () => {
+    const repo = await createRepo();
+    const state = docsEvidenceSidecarState();
+    const base = state.enrichments[0];
+    const chunks = base.records.filter((fact) => fact.kind === 'markdown-chunk').slice(0, 12);
+    const codeRecord = { ...base, records: [base.records[0]] };
+    const markdownRecords = chunks.map((chunk) => ({
+      ...base,
+      analyzerId: MARKDOWN_DOCUMENT_ANALYZER_ID,
+      filePath: chunk.docPath,
+      fileHash: chunk.fileHash,
+      records: [chunk],
+    }));
+    await writeSidecarStore(repo.storagePath, {
+      ...state,
+      enrichments: [codeRecord, ...markdownRecords],
+    });
+    const backend = new LocalBackend();
+    const result = await backend.callTool('query', {
+      query: 'M7 docs evidence',
+      consume_enrichment_facts: true,
+      include_passive_related_facts: true,
+      include_markdown_context: true,
+    });
+    const returnedDocPaths = result.enrichment.relatedChunks.map((chunk: any) => chunk.docPath);
+    const visiblePaths = new Set(
+      result.enrichment.visibleRecords.map((record: any) => record.filePath),
+    );
+    const expectedVisiblePaths = new Set([base.filePath, ...returnedDocPaths]);
+    const cappedOutDocPaths = chunks
+      .map((chunk) => chunk.docPath)
+      .filter((docPath) => !returnedDocPaths.includes(docPath));
+
+    expect(result.enrichment.relatedChunks).toHaveLength(10);
+    expect(visiblePaths).toEqual(expectedVisiblePaths);
+    expect(cappedOutDocPaths).toHaveLength(2);
+    for (const docPath of cappedOutDocPaths) {
+      expect(visiblePaths.has(docPath)).toBe(false);
+    }
+  });
+
+  it('GR25-B drops unresolved code mentions from facts but preserves chunk evidence', async () => {
+    const repo = await createRepo();
+    const state = docsEvidenceSidecarState();
+    const base = state.enrichments[0];
+    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')!;
+    const ambiguousMention = {
+      ...base.records.find((fact) => fact.kind === 'markdown-code-mention')!,
+      chunkKey: chunk.chunkKey,
+    };
+    const unresolvedMention = {
+      ...ambiguousMention,
+      confidence: 0,
+      resolutionStatus: 'unresolved',
+      candidates: [],
+    };
+    await writeSidecarStore(repo.storagePath, {
+      ...state,
+      enrichments: [{ ...base, records: [chunk, unresolvedMention, ambiguousMention] }],
+    });
+    const backend = new LocalBackend();
+    const result = await backend.callTool('query', {
+      query: 'M7 docs evidence',
+      consume_enrichment_facts: true,
+      include_passive_related_facts: true,
+      include_markdown_context: true,
+    });
+
+    expect(result.enrichment.facts).toEqual([chunk, ambiguousMention]);
+    expect(result.enrichment.relatedChunks).toHaveLength(1);
+    expect(result.enrichment.relatedChunks[0].evidence).toEqual([
+      expect.objectContaining({ kind: 'markdown-code-mention', resolutionStatus: 'unresolved' }),
+      expect.objectContaining({ kind: 'markdown-code-mention', resolutionStatus: 'ambiguous' }),
+    ]);
+  });
+
+  it('GR25-C keeps unmatched chunks and docs with graph-with-passive-docs policy', async () => {
+    const repo = await createRepo();
+    await writeSidecarStore(repo.storagePath, markdownSidecarState());
+    const backend = new LocalBackend();
+    const result = await backend.callTool('query', {
+      query: 'docker compose deployment',
+      retrieval_policy: 'graph-with-passive-docs',
+    });
+
+    expect(result.enrichment.relatedChunks).toEqual([
+      expect.objectContaining({ docPath: 'docs/auth.md', excerpt: 'Login flow notes' }),
+    ]);
+    expect(result.enrichment.relatedDocs).toEqual([
+      expect.objectContaining({ docPath: 'docs/auth.md', chunkCount: 1 }),
+    ]);
+    expect(result.relatedDocs).toEqual(result.enrichment.relatedDocs);
+  });
+
+  it('GR25-A bounds Markdown facts to the returned chunks', async () => {
+    const repo = await createRepo();
+    await writeSidecarStore(repo.storagePath, rankingSidecarState());
+    const backend = new LocalBackend();
+    const result = await backend.callTool('query', {
+      query: 'how to add a new pipeline phase',
+      consume_enrichment_facts: true,
+      include_passive_related_facts: true,
+      include_markdown_context: true,
+    });
+
+    const keys = new Set(result.enrichment.relatedChunks.map((chunk: any) => chunk.chunkKey));
+    const markdownFacts = result.enrichment.facts.filter((fact: any) =>
+      fact.kind.startsWith('markdown-'),
+    );
+    expect(markdownFacts.length).toBeGreaterThan(0);
+    for (const fact of markdownFacts) {
+      expect(keys.has(fact.chunkKey ?? fact.sourceChunkKey ?? fact.fromChunkKey)).toBe(true);
+    }
+    expect(result.enrichment.factsBound.totalFactCount).toBeGreaterThan(
+      result.enrichment.facts.length,
+    );
   });
 });

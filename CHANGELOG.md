@@ -4,6 +4,16 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Added Markdown sidecar collection for root `SECURITY.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `CODE_OF_CONDUCT.md`, and `LICENSE.md`.
+- Added `summary.skippedTotal` to `markdownPpr`.
+- Added `factsBound` to the enrichment block with Markdown context.
+
+### Changed
+
+- Changed `query` with Markdown context to rank chunks by BM25 relevance, return only matching chunks, and bound `facts`, `visibleRecords`, document `freshness`, and PPR `skipped`; responses for this repository shrink from 7.1 MB to 58–135 KB. Existing sidecars need one `ontoindex docs sidecar run markdown` refresh.
+
 ## [2.2.1] - 2026-09-05
 
 ### Fixed
