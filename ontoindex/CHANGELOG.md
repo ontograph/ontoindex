@@ -4,6 +4,7 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+- Markdown document facts in responses are capped at 25 per source chunk and fact kind, preserving original order; `factsBound` reports the per-chunk-kind limit and omissions, and `truncated` indicates omitted facts. Stored sidecar facts, chunk selection and ranking are unchanged.
 - Markdown retrieval resolves identifier-like backtick code mentions in returned chunks against the code graph per request. Chunk evidence carries only `mention` (the text); response metadata carries `mentionTargets`, keyed by mention text, with entries only for mentions that matched code symbols: `{ status: "resolved", targets: [{id, name, filePath, startLine}] }` for exactly one match, or `{ status: "ambiguous", targets: [], candidateCount }` (4 means 4 or more). A mention absent from the map is unresolved or was not looked up. `mentionResolution` (`status`: `ok`, `partial`, or `skipped`; `lookups`; optional `reason`) reports the run. At most 40 distinct names are looked up per response, with up to 3 candidates requested per name and a 1,500 ms total limit. Ambiguous names are never auto-picked; ranking and stored facts are unchanged, and graph failures and timeouts do not fail queries.
 
 ## [2.2.31] - 2026-10-14
