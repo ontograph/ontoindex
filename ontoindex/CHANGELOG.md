@@ -4,6 +4,8 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+- LadybugDB FTS and VECTOR network extension installs now require `ONTOINDEX_ALLOW_EXTENSION_INSTALL=1`; unavailable extensions are cached for the session, and FTS index creation reports a clear error when FTS cannot load.
+
 ## [2.3.4] - 2026-10-14
 
 This release also carries 2.3.1 to 2.3.3, which were prepared but not published separately.

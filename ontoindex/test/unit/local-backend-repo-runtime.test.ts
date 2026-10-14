@@ -188,6 +188,36 @@ describe('resolveRepoFromHandles', () => {
 });
 
 describe('ensureRepoInitialized', () => {
+  it('adopts the commit of a newly published generation when it reopens the index', async () => {
+    const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-republish-'));
+    const storagePath = path.join(repoPath, '.ontoindex');
+    await fs.mkdir(storagePath);
+    const handle = makeRepo('repo', 'repo', repoPath);
+    const initLbug = vi.fn(async () => undefined);
+    try {
+      await fs.writeFile(
+        path.join(storagePath, 'meta.json'),
+        JSON.stringify({ indexedAt: '2026-09-27T06:44:54.355Z', lastCommit: 'def456' }),
+      );
+      await ensureRepoInitialized({
+        repoId: 'repo',
+        handle,
+        initializedRepos: new Set(['repo']),
+        reinitPromises: new Map(),
+        lastStalenessCheck: new Map(),
+        isLbugReady: () => true,
+        initLbug,
+        closeLbug: vi.fn(async () => undefined),
+        resolveActiveLbugPath: vi.fn(async () => '/gen/B/lbug'),
+      });
+      expect(initLbug).toHaveBeenCalledOnce();
+      expect(handle.indexedAt).toBe('2026-09-27T06:44:54.355Z');
+      expect(handle.lastCommit).toBe('def456');
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     {
       label: 'unchanged timestamp',

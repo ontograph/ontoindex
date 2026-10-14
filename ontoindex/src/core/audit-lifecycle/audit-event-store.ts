@@ -585,10 +585,13 @@ function canonicalJson(value: unknown): string {
     return JSON.stringify(value);
   }
   if (typeof value !== 'object') throw new Error('unsupported value in canonical JSON');
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => (entry === undefined ? 'null' : canonicalJson(entry))).join(',')}]`;
+  }
   const record = value as Record<string, unknown>;
   return `{${Object.keys(record)
     .sort()
+    .filter((key) => record[key] !== undefined)
     .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
     .join(',')}}`;
 }

@@ -196,12 +196,25 @@ export function buildAvailableRepoLabels(repos: ReadonlyMap<string, RepoHandle>)
   );
 }
 
-async function readIndexedAt(storagePath: string): Promise<string | null> {
+interface PublishedIndexIdentity {
+  indexedAt: string;
+  lastCommit?: string;
+}
+
+async function readPublishedIndexIdentity(
+  storagePath: string,
+): Promise<PublishedIndexIdentity | null> {
   try {
     const metaPath = path.join(storagePath, 'meta.json');
     const metaRaw = await fs.readFile(metaPath, 'utf-8');
     const meta = JSON.parse(metaRaw);
-    return typeof meta.indexedAt === 'string' && meta.indexedAt.length > 0 ? meta.indexedAt : null;
+    if (typeof meta.indexedAt !== 'string' || meta.indexedAt.length === 0) return null;
+    return {
+      indexedAt: meta.indexedAt,
+      ...(typeof meta.lastCommit === 'string' && meta.lastCommit.length > 0
+        ? { lastCommit: meta.lastCommit }
+        : {}),
+    };
   } catch {
     return null;
   }
@@ -232,12 +245,13 @@ export async function ensureRepoInitialized(options: EnsureRepoInitializedOption
     if (nowMs - lastCheck < 5000) return;
 
     lastStalenessCheck.set(repoId, nowMs);
-    const [indexedAt, activeLbugPath] = await Promise.all([
-      readIndexedAt(handle.storagePath),
+    const [published, activeLbugPath] = await Promise.all([
+      readPublishedIndexIdentity(handle.storagePath),
       resolveActiveLbugPath(handle.storagePath),
     ]);
     const lbugPath = activeLbugPath ?? handle.lbugPath;
-    if ((!indexedAt || indexedAt === handle.indexedAt) && lbugPath === handle.lbugPath) return;
+    if ((!published || published.indexedAt === handle.indexedAt) && lbugPath === handle.lbugPath)
+      return;
 
     const reinit = (async () => {
       try {
@@ -246,7 +260,10 @@ export async function ensureRepoInitialized(options: EnsureRepoInitializedOption
         initializedRepos.delete(repoId);
         await initLbug(repoId, lbugPath);
         handle.lbugPath = lbugPath;
-        if (indexedAt) handle.indexedAt = indexedAt;
+        if (published) {
+          handle.indexedAt = published.indexedAt;
+          if (published.lastCommit) handle.lastCommit = published.lastCommit;
+        }
         initializedRepos.add(repoId);
       } catch (err) {
         lastStalenessCheck.delete(repoId);
@@ -260,15 +277,18 @@ export async function ensureRepoInitialized(options: EnsureRepoInitializedOption
   }
 
   try {
-    const [indexedAt, activeLbugPath] = await Promise.all([
-      readIndexedAt(handle.storagePath),
+    const [published, activeLbugPath] = await Promise.all([
+      readPublishedIndexIdentity(handle.storagePath),
       resolveActiveLbugPath(handle.storagePath),
     ]);
     const lbugPath = activeLbugPath ?? handle.lbugPath;
     await assertIndexCanOpenReadOnly({ ...handle, lbugPath }, isLbugDbPathReady);
     await initLbug(repoId, lbugPath);
     handle.lbugPath = lbugPath;
-    if (indexedAt) handle.indexedAt = indexedAt;
+    if (published) {
+      handle.indexedAt = published.indexedAt;
+      if (published.lastCommit) handle.lastCommit = published.lastCommit;
+    }
     initializedRepos.add(repoId);
   } catch (err: unknown) {
     initializedRepos.delete(repoId);
