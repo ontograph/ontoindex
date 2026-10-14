@@ -22,6 +22,7 @@ import {
   createIndexGeneration,
   loadRepo,
   readActiveGenerationMeta,
+  readProcessStartIdentity,
   publishIndexGenerationTransaction,
   resolveActiveIndexGeneration,
   resolveActiveLbugPath,
@@ -62,6 +63,15 @@ describe('getStoragePaths', () => {
     const paths = getStoragePaths('/home/user/project');
     expect(paths.lbugPath.startsWith(paths.storagePath)).toBe(true);
     expect(paths.metaPath.startsWith(paths.storagePath)).toBe(true);
+  });
+});
+
+describe('process start identity', () => {
+  it.skipIf(process.platform !== 'linux')('reads a stable Linux process start identity', () => {
+    const identity = readProcessStartIdentity(process.pid);
+    expect(identity).toMatch(/^\d+$/);
+    expect(readProcessStartIdentity(process.pid)).toBe(identity);
+    expect(readProcessStartIdentity(2147483647)).toBeUndefined();
   });
 });
 
@@ -409,6 +419,60 @@ describe('index generations', () => {
       await publication;
       await secondActivation;
       expect((await resolveActiveIndexGeneration(storagePath))?.generationId).toBe('generation-2');
+    } finally {
+      await temp.cleanup();
+    }
+  });
+
+  it.skipIf(process.platform !== 'linux')(
+    'reclaims a pointer lock held by a reused pid',
+    async () => {
+      const temp = await createTempDir('ontoindex-generation-reused-pid-');
+      const storagePath = path.join(temp.dbPath, '.ontoindex');
+      try {
+        const generation = await createIndexGeneration(storagePath, 'generation-1');
+        await writeGenerationFiles(generation, 'first');
+        await fs.writeFile(
+          path.join(storagePath, 'current.mutation.lock'),
+          JSON.stringify({ pid: process.pid, pidStart: 'different-start', token: 'old' }),
+        );
+        await activateIndexGeneration(storagePath, generation);
+        expect((await resolveActiveIndexGeneration(storagePath))?.generationId).toBe(
+          'generation-1',
+        );
+      } finally {
+        await temp.cleanup();
+      }
+    },
+    1000,
+  );
+
+  it.each(['current', 'legacy'])('preserves a live pid pointer lock (%s)', async (kind) => {
+    const temp = await createTempDir('ontoindex-generation-live-pid-');
+    const storagePath = path.join(temp.dbPath, '.ontoindex');
+    const lockPath = path.join(storagePath, 'current.mutation.lock');
+    try {
+      const generation = await createIndexGeneration(storagePath, 'generation-1');
+      await writeGenerationFiles(generation, 'first');
+      const owner = {
+        pid: process.pid,
+        ...(kind === 'current' ? { pidStart: readProcessStartIdentity(process.pid) } : {}),
+        token: 'live-owner',
+        startedAt: new Date().toISOString(),
+      };
+      await fs.writeFile(lockPath, JSON.stringify(owner));
+      // Advance only the lock's elapsed-time clock after its first acquisition attempt.
+      const now = Date.now();
+      let calls = 0;
+      const clock = vi.spyOn(Date, 'now').mockImplementation(() => now + (calls++ < 3 ? 0 : 10001));
+      try {
+        await expect(activateIndexGeneration(storagePath, generation)).rejects.toThrow(
+          'Timed out acquiring index generation pointer lock',
+        );
+      } finally {
+        clock.mockRestore();
+      }
+      expect(JSON.parse(await fs.readFile(lockPath, 'utf-8'))).toEqual(owner);
     } finally {
       await temp.cleanup();
     }

@@ -159,6 +159,7 @@ type ErrorWithMessage = {
 
 type ParsedRegistryLock = {
   pid?: unknown;
+  pidStart?: unknown;
   token?: unknown;
   startedAt?: unknown;
 };
@@ -521,6 +522,7 @@ export const publishIndexGenerationTransaction = async <T>(
   commit: (activation: IndexGenerationActivation) => Promise<T>,
 ): Promise<IndexGenerationPublication<T>> =>
   withGenerationPointerLock(storagePath, async () => {
+    await adoptActiveGenerationLocked(storagePath);
     const activation = await activateIndexGenerationLocked(storagePath, generation);
     try {
       const result = await commit(activation);
@@ -779,6 +781,20 @@ export interface IndexGenerationPin {
   release: () => Promise<void>;
 }
 
+export function readProcessStartIdentity(pid: number): string | undefined {
+  if (process.platform !== 'linux' || !Number.isSafeInteger(pid) || pid <= 0) return undefined;
+  try {
+    const stat = fsSync.readFileSync(`/proc/${pid}/stat`, 'utf-8');
+    const fields = stat
+      .slice(stat.lastIndexOf(')') + 1)
+      .trim()
+      .split(/\s+/);
+    return /^\d+$/.test(fields[19] ?? '') ? fields[19] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 const processDefinitelyDead = (pid: number): boolean => {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try {
@@ -809,14 +825,9 @@ export function processStartedAfter(pid: number, referenceMs: number): boolean {
       const startedAtMs = Date.parse(output);
       return Number.isFinite(startedAtMs) && startedAtMs > referenceMs + 2000;
     }
-    const stat = fsSync.readFileSync(`/proc/${pid}/stat`, 'utf8');
-    const closeParen = stat.lastIndexOf(')');
-    if (closeParen < 0) return false;
-    const fields = stat
-      .slice(closeParen + 1)
-      .trim()
-      .split(/\s+/);
-    const startTicks = Number(fields[19]); // field 22; fields begin at field 3 after comm
+    const identity = readProcessStartIdentity(pid);
+    if (identity === undefined) return false;
+    const startTicks = Number(identity);
     const bootTime = fsSync.readFileSync('/proc/stat', 'utf8').match(/^btime\s+(\d+)$/m);
     if (!Number.isFinite(startTicks) || startTicks < 0 || !bootTime) return false;
     const startedAtMs = Number(bootTime[1]) * 1000 + (startTicks / 100) * 1000;
@@ -859,6 +870,53 @@ async function markManagedGenerationLocked(
   if (!Number.isSafeInteger(next) || next <= 0)
     throw new Error('Generation retention sequence exhausted');
   await fs.writeFile(path.join(generationPath, '.retention-managed'), String(next), { flag: 'wx' });
+}
+
+const adoptedActiveGenerations = new Set<string>();
+
+async function adoptActiveGenerationLocked(storagePath: string): Promise<void> {
+  try {
+    const active = await resolveActiveIndexGeneration(storagePath);
+    if (!active) return;
+    const key = `${path.resolve(storagePath)}\0${active.generationId}`;
+    if (adoptedActiveGenerations.has(key)) return;
+
+    const generationsPath = path.join(storagePath, GENERATIONS_DIR);
+    const rootStat = await fs.lstat(generationsPath);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return;
+    const root = await fs.realpath(generationsPath);
+    if (active.generationPath !== path.join(root, active.generationId)) return;
+    const generationStat = await fs.lstat(active.generationPath);
+    if (!generationStat.isDirectory() || generationStat.isSymbolicLink()) return;
+
+    const markerPath = path.join(active.generationPath, '.retention-managed');
+    const markerStat = await fs.lstat(markerPath).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') return null;
+      throw err;
+    });
+    if (markerStat) {
+      if (markerStat.isFile() && !markerStat.isSymbolicLink()) adoptedActiveGenerations.add(key);
+      return;
+    }
+
+    const metaStat = await fs.lstat(active.metaPath);
+    if (!metaStat.isFile() || metaStat.isSymbolicLink()) return;
+    const metadata: unknown = JSON.parse(await fs.readFile(active.metaPath, 'utf8'));
+    if (
+      !metadata ||
+      typeof metadata !== 'object' ||
+      Array.isArray(metadata) ||
+      (metadata as { generationId?: unknown }).generationId !== active.generationId
+    )
+      return;
+    const lbugStat = await fs.lstat(active.lbugPath);
+    if (lbugStat.isSymbolicLink() || (!lbugStat.isFile() && !lbugStat.isDirectory())) return;
+
+    await markManagedGenerationLocked(storagePath, active.generationPath);
+    adoptedActiveGenerations.add(key);
+  } catch {
+    // Adoption is best-effort maintenance; a later publication or pin may retry it.
+  }
 }
 
 /** Called under the pointer lock; retained and unmanaged generations also need cleanup. */
@@ -992,6 +1050,7 @@ export async function acquireIndexGenerationPin(
       throw new Error('Database generation resolves outside its generations directory');
   }
   return withGenerationPointerLock(storagePath, async () => {
+    await adoptActiveGenerationLocked(storagePath);
     const resolved = await fs.realpath(absolute).catch(async (err: NodeJS.ErrnoException) => {
       if (err.code === 'ENOENT' && parent === storagePath)
         return path.join(await fs.realpath(parent), 'lbug');
@@ -1052,6 +1111,9 @@ async function readMetaFile(metaPath: string): Promise<RepoMeta | null> {
     return null;
   }
 }
+
+export const readIndexGenerationMeta = async (generationPath: string): Promise<RepoMeta | null> =>
+  readMetaFile(path.join(generationPath, 'meta.json'));
 
 /**
  * Read the active generation pointer and its metadata as one bounded stable
@@ -1333,10 +1395,12 @@ async function removeRegistryLockIfOwner(
   lockPath: string,
   expectedPid: number,
   expectedToken: unknown = LOCK_TOKEN_ABSENT,
+  expectedPidStart?: unknown,
 ): Promise<boolean> {
   try {
     const current = JSON.parse(await fs.readFile(lockPath, 'utf-8'));
     if (current?.pid !== expectedPid) return false;
+    if (expectedPidStart !== undefined && current?.pidStart !== expectedPidStart) return false;
     if (expectedToken === LOCK_TOKEN_ABSENT) {
       if (current?.token !== undefined) return false;
     } else if (!lockTokensEqual(current?.token, expectedToken)) {
@@ -1385,7 +1449,16 @@ async function acquireExclusiveFile(
       const created = await handle.stat();
       try {
         await handle.writeFile(
-          JSON.stringify({ pid: process.pid, token, startedAt: new Date().toISOString() }, null, 2),
+          JSON.stringify(
+            {
+              pid: process.pid,
+              pidStart: readProcessStartIdentity(process.pid),
+              token,
+              startedAt: new Date().toISOString(),
+            },
+            null,
+            2,
+          ),
           'utf-8',
         );
         await handle.close();
@@ -1426,9 +1499,15 @@ async function acquireExclusiveFile(
       }
 
       const staleByAge = Number.isFinite(lockAgeMs) && lockAgeMs > REGISTRY_LOCK_STALE_MS;
-      if (pid !== null && !isProcessAlive(pid)) {
+      const livePidStart = pid !== null ? readProcessStartIdentity(pid) : undefined;
+      const pidReused =
+        typeof existing?.pidStart === 'string' &&
+        livePidStart !== undefined &&
+        existing.pidStart !== livePidStart;
+      if (pid !== null && (!isProcessAlive(pid) || pidReused)) {
         const staleToken = lockTokenFromExisting(existing);
-        if (await removeRegistryLockIfOwner(lockPath, pid, staleToken)) continue;
+        if (await removeRegistryLockIfOwner(lockPath, pid, staleToken, existing?.pidStart))
+          continue;
       } else if (pid === null && staleByAge) {
         try {
           await fs.unlink(lockPath);

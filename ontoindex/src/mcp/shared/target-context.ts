@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { getPinnedGenerationDir } from '../../core/lbug/pool-adapter.js';
 import { createHash } from 'node:crypto';
 
 import { execFileText } from '../../core/process/exec-file.js';
@@ -14,6 +15,7 @@ import {
 import { loadIgnoreRules, shouldIgnorePath } from '../../config/ignore-service.js';
 import {
   loadMeta,
+  readIndexGenerationMeta,
   readActiveGenerationMeta,
   readRegistry,
   resolveActiveIndexGeneration,
@@ -121,6 +123,7 @@ export interface TargetContext {
   currentHead?: string;
   indexedHead?: string;
   graphIndexId?: string;
+  generationId?: string;
   graphAuthority?: TargetContextGraphAuthority;
   dirtyWorktree: boolean | null;
   dirtyFileCount?: number | null;
@@ -165,6 +168,8 @@ export interface ResolveTargetContextDeps {
   computeSourceManifest?: typeof computeSourceManifest;
   resolveActiveIndexGeneration?: typeof resolveActiveIndexGeneration;
   readActiveGenerationMeta?: typeof readActiveGenerationMeta;
+  getPinnedGenerationDir?: typeof getPinnedGenerationDir;
+  readIndexGenerationMeta?: typeof readIndexGenerationMeta;
 }
 
 export async function resolveTargetContext(
@@ -280,9 +285,28 @@ export async function resolveTargetContext(
   const workspaceSummary = summarizeGitPorcelainStatus(statusOutput);
   const dirtyWorktree = workspaceSummary !== null ? workspaceSummary.dirtyFileCount > 0 : null;
   const dirtyFileCount = workspaceSummary?.dirtyFileCount ?? null;
-  const generationMeta = await readGenerationMetaPair(entry.storagePath, deps);
+  let generationMeta = await readGenerationMetaPair(entry.storagePath, deps);
+  let queriedGenerationId = generationMeta.activeGeneration?.generationId;
+  const pinnedGenerationDir = (deps.getPinnedGenerationDir ?? getPinnedGenerationDir)(entry.name);
+  const pinnedGenerationId = pinnedGenerationDir ? path.basename(pinnedGenerationDir) : undefined;
+  if (pinnedGenerationDir && pinnedGenerationId !== generationMeta.activeGeneration?.generationId) {
+    queriedGenerationId = pinnedGenerationId;
+    const pinnedMeta = await (deps.readIndexGenerationMeta ?? readIndexGenerationMeta)(
+      pinnedGenerationDir,
+    );
+    generationMeta =
+      pinnedMeta?.generationId === pinnedGenerationId
+        ? { ...generationMeta, meta: pinnedMeta, authority: 'active-generation', reason: undefined }
+        : {
+            ...generationMeta,
+            meta: null,
+            authority: 'untrusted',
+            reason: pinnedMeta
+              ? 'active-generation-metadata-mismatch'
+              : 'active-generation-metadata-unavailable',
+          };
+  }
   const activeMeta = generationMeta.meta;
-  const activeGeneration = generationMeta.activeGeneration;
   const trustedIndexMeta = generationMeta.authority !== 'untrusted';
   if (generationMeta.authority === 'untrusted') {
     warnings.push(generationMetadataWarning(generationMeta, entry.lastCommit));
@@ -307,14 +331,14 @@ export async function resolveTargetContext(
             generationMeta.reason === 'active-generation-metadata-mismatch'
               ? 'active graph generation does not match metadata generation'
               : 'active generation metadata authority is untrusted',
-          ...(activeGeneration ? { generationId: activeGeneration.generationId } : {}),
+          ...(queriedGenerationId ? { generationId: queriedGenerationId } : {}),
           coverage: 'unknown' as const,
         }
       : await resolveGraphAuthority(
           repoPath,
           activeMeta,
           deps.computeSourceManifest ?? computeSourceManifest,
-          activeGeneration?.generationId,
+          queriedGenerationId,
           options.requiredGraphCapabilities ?? [],
           targetHead,
           currentHead,
@@ -367,6 +391,7 @@ export async function resolveTargetContext(
     ...(currentHead ? { currentHead } : {}),
     ...(indexedHead ? { indexedHead } : {}),
     ...(entry.indexedAt ? { graphIndexId: entry.indexedAt } : {}),
+    ...(queriedGenerationId ? { generationId: queriedGenerationId } : {}),
     ...(graphAuthority ? { graphAuthority } : {}),
     dirtyWorktree,
     dirtyFileCount,
