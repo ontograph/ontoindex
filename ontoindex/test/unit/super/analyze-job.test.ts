@@ -148,7 +148,7 @@ function makeTargetContext(overrides: Record<string, unknown> = {}) {
 
 describe('gnAnalyzeJob', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     ensureFresh.mockResolvedValue(makeFreshness() as any);
     getJob.mockResolvedValue(makeJob());
     activeGeneration.mockResolvedValue({
@@ -345,6 +345,79 @@ describe('gnAnalyzeJob', () => {
     expect(targetContext).not.toHaveBeenCalled();
     expect(ensureFresh).toHaveBeenCalledTimes(1);
   });
+
+  it('verifies a failed publishing job after the runner exits without mutating it', async () => {
+    const job = makeJob({ status: 'failed', publicationState: 'publishing', exitCode: 9 });
+    const originalJob = structuredClone(job);
+    const receipt = makeReceipt();
+    getJob.mockResolvedValue(job);
+    readReceipt.mockResolvedValue(receipt as any);
+
+    const result: any = await gnAnalyzeJob('repo', { jobId });
+
+    expect(result.recovery).toMatchObject({
+      disposition: 'REFRESHED',
+      reasonCode: 'PUBLICATION_VERIFIED_AFTER_RUNNER_EXIT',
+      receipt,
+      postCheck: { indexedCommit: targetHead, headCommit: targetHead },
+    });
+    expect(targetContext).toHaveBeenCalledTimes(3);
+    expect(activeGeneration).toHaveBeenCalledTimes(3);
+    expect(ensureFresh).toHaveBeenCalledTimes(4);
+    expect(cancelJob).not.toHaveBeenCalled();
+    expect(job).toEqual(originalJob);
+  });
+
+  it.each([
+    'no receipt',
+    'wrong generation',
+    'dirty post-check',
+    'unavailable post-check',
+  ] as const)('preserves analysis failure for a failed publishing job with %s', async (proof) => {
+    getJob.mockResolvedValue(
+      makeJob({ status: 'failed', publicationState: 'publishing', exitCode: 9 }),
+    );
+    if (proof === 'no receipt') readReceipt.mockResolvedValue(null);
+    if (proof === 'wrong generation') {
+      readReceipt.mockResolvedValue(makeReceipt({ generationId: 'generation-other' }) as any);
+    }
+    if (proof === 'dirty post-check') {
+      ensureFresh
+        .mockResolvedValueOnce(makeFreshness() as any)
+        .mockResolvedValueOnce(makeFreshness({ dirtyFileCount: 1 }) as any);
+    }
+    if (proof === 'unavailable post-check') {
+      ensureFresh
+        .mockResolvedValueOnce(makeFreshness() as any)
+        .mockRejectedValueOnce(new Error('post-check unavailable'));
+    }
+
+    const result: any = await gnAnalyzeJob('repo', { jobId });
+
+    expect(result.recovery).toEqual({
+      disposition: 'FAILED',
+      reasonCode: 'ANALYSIS_FAILED',
+      message: `Analysis job ${jobId} failed with exit code 9.`,
+    });
+    expect(cancelJob).not.toHaveBeenCalled();
+  });
+
+  it.each(['published', undefined] as const)(
+    'does not inspect receipts for a failed job with publication state %s',
+    async (publicationState) => {
+      getJob.mockResolvedValue(makeJob({ status: 'failed', publicationState, exitCode: 9 }));
+
+      const result: any = await gnAnalyzeJob('repo', { jobId });
+
+      expect(result.recovery).toEqual({
+        disposition: 'FAILED',
+        reasonCode: 'ANALYSIS_FAILED',
+        message: `Analysis job ${jobId} failed with exit code 9.`,
+      });
+      expect(readReceipt).toHaveBeenCalledTimes(0);
+      expect(cancelJob).not.toHaveBeenCalled();
+    },
+  );
 
   it('does not bless a job after HEAD advances beyond its target', async () => {
     ensureFresh.mockResolvedValueOnce(makeFreshness() as any).mockResolvedValueOnce(

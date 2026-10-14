@@ -6,6 +6,8 @@ import lbug from '@ladybugdb/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { planDirtyOverlay } from '../../src/core/analyze-delta.js';
 import * as pool from '../../src/core/lbug/pool-adapter.js';
+import { resolveSymbolCandidates } from '../../src/mcp/local/backend-symbol-resolution.js';
+import * as backendOverlay from '../../src/mcp/local/backend-overlay.js';
 import {
   getOverlaySnapshot,
   evictOverlayState,
@@ -32,6 +34,10 @@ describe('backend-overlay snapshot', () => {
     fs.mkdirSync(path.join(storage, 'overlay', 'fixture'), { recursive: true });
     fs.writeFileSync(path.join(storage, 'overlay', 'CURRENT'), 'fixture\n');
     fs.writeFileSync(overlayDbPath(storage), 'x');
+    fs.writeFileSync(
+      path.join(storage, 'overlay', 'fixture', 'base.json'),
+      JSON.stringify({ baseGenerationId: null, baseCommit: null }),
+    );
   };
 
   beforeEach(() => {
@@ -47,7 +53,10 @@ describe('backend-overlay snapshot', () => {
     git(repo, 'add', '-A');
     git(repo, 'commit', '-qm', 'base');
   });
-  afterEach(() => fs.rmSync(repo, { recursive: true, force: true }));
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
 
   it('evicts one repository without dropping another snapshot', async () => {
     const first = getOverlaySnapshot(handle());
@@ -112,11 +121,142 @@ describe('backend-overlay snapshot', () => {
   it('uses a distinct pool id', () => {
     expect(overlayRepoId('r')).toBe('r::overlay');
   });
+
+  it('rejects a legacy overlay without recorded base metadata', async () => {
+    fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
+    publishFixture();
+    fs.rmSync(path.join(storage, 'overlay', 'fixture', 'base.json'));
+    expect(await getOverlaySnapshot(handle())).toMatchObject({
+      usable: false,
+      reason: 'overlay has no recorded base; rebuild: ontoindex analyze --dirty-overlay',
+    });
+  });
+
+  it('invalidates a cached matching overlay on the next probe after base activation', async () => {
+    fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
+    publishFixture();
+    const future = new Date(Date.now() + 5_000);
+    fs.utimesSync(overlayDbPath(storage), future, future);
+    expect((await getOverlaySnapshot(handle())).usable).toBe(true);
+    const generation = path.join(storage, 'generations', 'new-base');
+    fs.mkdirSync(generation, { recursive: true });
+    fs.writeFileSync(
+      path.join(generation, 'meta.json'),
+      JSON.stringify({ generationId: 'new-base', lastCommit: 'abcdefgh1234' }),
+    );
+    fs.symlinkSync(generation, path.join(storage, 'current'));
+    expect(await getOverlaySnapshot(handle())).toMatchObject({
+      usable: false,
+      reason:
+        'overlay was built on base legacy/unknown but the active base is new-base/abcdefgh; rebuild: ontoindex analyze --dirty-overlay',
+    });
+  });
+
+  it('rejects a recorded commit that differs from the active base commit', async () => {
+    fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
+    publishFixture();
+    fs.writeFileSync(
+      path.join(storage, 'overlay', 'fixture', 'base.json'),
+      JSON.stringify({ baseGenerationId: null, baseCommit: 'old-commit' }),
+    );
+    expect(await getOverlaySnapshot(handle())).toMatchObject({
+      usable: false,
+      reason: expect.stringContaining('old-comm'),
+    });
+  });
+
+  it('does not resolve base symbols from tombstones when the overlay is unusable', async () => {
+    fs.rmSync(path.join(repo, 'src/gone.ts'));
+    vi.spyOn(pool, 'executeParameterized').mockResolvedValue([
+      {
+        id: 'gone-id',
+        name: 'gone',
+        type: 'Function',
+        filePath: 'src\\gone.ts',
+        startLine: 1,
+        endLine: 2,
+      },
+    ]);
+
+    const result = await resolveSymbolCandidates(handle(), { name: 'gone' }, {});
+
+    expect(result).toEqual({
+      kind: 'not_found',
+      warning: 'Deleted source path(s): src/gone.ts',
+    });
+  });
+
+  it('resolves renamed symbols only from their new path with a usable overlay', async () => {
+    vi.spyOn(backendOverlay, 'getOverlaySnapshot').mockResolvedValue({
+      usable: true,
+      reason: null,
+      dirtyPaths: new Set(['src/gone.ts', 'src/renamed.ts']),
+      overlayPaths: new Set(['src/renamed.ts']),
+      uncoveredPaths: new Set(),
+      tombstones: new Set(['src/gone.ts']),
+    });
+    vi.spyOn(backendOverlay, 'queryOverlay').mockResolvedValue([
+      {
+        id: 'renamed-id',
+        name: 'renamed',
+        type: 'Function',
+        filePath: 'src/renamed.ts',
+        startLine: 1,
+        endLine: 2,
+        content: 'export function renamed() {}',
+      },
+    ]);
+    vi.spyOn(pool, 'executeParameterized').mockResolvedValue([
+      {
+        id: 'gone-id',
+        name: 'renamed',
+        type: 'Function',
+        filePath: 'src/gone.ts',
+        startLine: 1,
+        endLine: 2,
+      },
+    ]);
+
+    const result = await resolveSymbolCandidates(handle(), { name: 'renamed' }, {});
+
+    expect(result).toMatchObject({
+      kind: 'ok',
+      symbol: { id: 'renamed-id', filePath: 'src/renamed.ts', source: 'overlay' },
+    });
+    expect(backendOverlay.queryOverlay).toHaveBeenCalledOnce();
+  });
+
+  it('leaves clean base symbol resolution unchanged', async () => {
+    vi.spyOn(pool, 'executeParameterized').mockResolvedValue([
+      {
+        id: 'clean-id',
+        name: 'clean',
+        type: 'Function',
+        filePath: 'src/a.ts',
+        startLine: 1,
+        endLine: 2,
+      },
+    ]);
+
+    const result = await resolveSymbolCandidates(handle(), { name: 'clean' }, {});
+
+    expect(result).toMatchObject({
+      kind: 'ok',
+      symbol: { id: 'clean-id', filePath: 'src/a.ts' },
+    });
+  });
 });
 
 describe('backend-overlay snapshot single-flight', () => {
   const repo = { id: 'single-flight', repoPath: '/repo', storagePath: '/repo/.ontoindex' };
-  const cleanPlan = { includePaths: [], tombstones: [], tooMany: false, skipped: [] };
+  const cleanPlan = {
+    includePaths: [],
+    uncoveredPaths: [],
+    allDirtyPaths: [],
+    tombstones: [],
+    tooMany: false,
+    skipped: [],
+  };
 
   beforeEach(() => {
     resetOverlaySnapshotCache();

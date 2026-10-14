@@ -1,9 +1,17 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   runImpactKernel,
   type RunImpactKernelOptions,
 } from '../../src/core/impact/impact-kernel.js';
-import { runImpact } from '../../src/mcp/local/backend-impact.js';
+import {
+  runImpact,
+  findDirtyMentions,
+  DIRTY_MENTION_MAX_BYTES,
+  DIRTY_MENTION_MAX_FILES,
+} from '../../src/mcp/local/backend-impact.js';
 import * as poolAdapter from '../../src/core/lbug/pool-adapter.js';
 import { getOverlaySnapshot } from '../../src/mcp/local/backend-overlay.js';
 import { resolveSymbolCandidates } from '../../src/mcp/local/backend-symbol-resolution.js';
@@ -182,4 +190,80 @@ describe('impact kernel dirty traversal boundaries', () => {
       expect(query.mock.calls.filter((call) => call[1].includes('$frontierIds'))).toHaveLength(1);
     },
   );
+});
+
+describe('bounded dirty mentions', () => {
+  it('matches whole names, ignores missing/non-source/oversize files and enforces the file cap', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'impact-dirty-'));
+    try {
+      await fs.writeFile(path.join(root, 'caller.ts'), 'target();');
+      await fs.writeFile(path.join(root, 'other.ts'), 'targetSuffix(); prefixTarget();');
+      await fs.writeFile(path.join(root, 'notes.txt'), 'target();');
+      await fs.writeFile(
+        path.join(root, 'large.ts'),
+        'target();' + ' '.repeat(DIRTY_MENTION_MAX_BYTES),
+      );
+      await fs.writeFile(path.join(root, 'escaped.ts'), 'a.b();');
+      await fs.writeFile(path.join(root, 'wrong.ts'), 'axb();');
+      expect(
+        await findDirtyMentions(
+          root,
+          new Set(['caller.ts', 'other.ts', 'notes.txt', 'large.ts', 'missing.ts']),
+          'target',
+        ),
+      ).toEqual(['caller.ts']);
+      expect(await findDirtyMentions(root, new Set(['escaped.ts', 'wrong.ts']), 'a.b')).toEqual([
+        'escaped.ts',
+      ]);
+      const capped = new Set(
+        Array.from({ length: DIRTY_MENTION_MAX_FILES }, (_, i) => `missing${i}.ts`),
+      );
+      capped.add('caller.ts');
+      expect(await findDirtyMentions(root, capped, 'target')).toEqual([]);
+      expect(await findDirtyMentions(root, new Set(), 'target')).toEqual([]);
+      expect(await findDirtyMentions(root, new Set(['../outside.ts']), 'target')).toEqual([]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('marks clean-target impact partial for a dirty new caller while excluding its definition and tombstones', async () => {
+    vi.resetAllMocks();
+    vi.mocked(poolAdapter.executeQuery).mockResolvedValue([]);
+    vi.mocked(poolAdapter.executeParameterized).mockResolvedValue([]);
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'impact-wiring-'));
+    try {
+      await fs.mkdir(path.join(root, 'src'));
+      await fs.writeFile(path.join(root, 'src/caller.ts'), 'target();');
+      await fs.writeFile(path.join(root, 'src/target.ts'), 'function target() {}');
+      await fs.writeFile(path.join(root, 'src/deleted.ts'), 'target();');
+      vi.mocked(getOverlaySnapshot).mockResolvedValue({
+        usable: false,
+        reason: 'no overlay built',
+        dirtyPaths: new Set(['src/caller.ts', 'src/target.ts', 'src/deleted.ts']),
+        overlayPaths: new Set(),
+        tombstones: new Set(['src/deleted.ts']),
+      });
+      vi.mocked(resolveSymbolCandidates).mockResolvedValue({
+        kind: 'ok',
+        resolvedLabel: 'Function',
+        symbol: { ...target, startLine: 1, endLine: 2 },
+      } as Awaited<ReturnType<typeof resolveSymbolCandidates>>);
+      const result = await runImpact(
+        { ...repo, repoPath: root },
+        { target: 'target', direction: 'upstream' },
+      );
+      expect(result).toMatchObject({
+        impactedCount: 0,
+        risk: 'LOW',
+        partial: true,
+        traversalComplete: false,
+      });
+      expect(result.warnings).toEqual([
+        'Dirty file src/caller.ts mentions target; callers added there are not in the graph',
+      ]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

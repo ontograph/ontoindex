@@ -31,6 +31,7 @@ import {
 } from './lbug/lbug-adapter.js';
 import {
   getStoragePaths,
+  readActiveGenerationMeta,
   saveMeta,
   loadMeta,
   addToGitignore,
@@ -851,6 +852,11 @@ async function runDirtyOverlayAnalysis(
   const currentTempPath = path.join(overlayPath, `.CURRENT-${generationId}.tmp`);
   await fs.mkdir(generationPath);
   try {
+    const activeBase = await readActiveGenerationMeta(storagePath);
+    const overlayBase = {
+      baseGenerationId: activeBase.activeGeneration?.generationId ?? null,
+      baseCommit: activeBase.meta?.lastCommit ?? null,
+    };
     const pipelineResult: PipelineResult =
       includePaths.length === 0
         ? { graph: createKnowledgeGraph(), repoPath, totalFileCount: 0, usedWorkerPool: false }
@@ -871,6 +877,7 @@ async function runDirtyOverlayAnalysis(
     });
     const stats = await getLbugStats();
     await closeLbugForPath(overlayDbPath);
+    await fs.writeFile(path.join(generationPath, 'base.json'), JSON.stringify(overlayBase));
     callbacks.onProgress('done', 100, 'Dirty overlay built; active index unchanged');
     await fs.writeFile(currentTempPath, `${generationId}\n`);
     await fs.rename(currentTempPath, path.join(overlayPath, 'CURRENT'));

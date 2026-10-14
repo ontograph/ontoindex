@@ -24,6 +24,28 @@ afterEach(() => {
 });
 
 describe('createDebouncedWatcher', () => {
+  it('bounds continuous saves to five seconds per burst', async () => {
+    vi.useFakeTimers();
+    const events = makeWatchHarness();
+    const refresh = vi.fn(async () => {});
+    const watcher = createDebouncedWatcher({
+      root: '/repo',
+      isLockHeld: () => false,
+      refresh,
+      watchImpl: events.watchImpl,
+    });
+    watcher.start();
+    for (let window = 0; window < 4; window++) {
+      for (let save = 0; save < 25; save++) {
+        events.emit('src/file.ts');
+        await vi.advanceTimersByTimeAsync(200);
+      }
+      expect(refresh).toHaveBeenCalledTimes(window + 1);
+    }
+    watcher.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('coalesces ten rapid events into one refresh after the debounce window', async () => {
     vi.useFakeTimers();
     const events = makeWatchHarness();

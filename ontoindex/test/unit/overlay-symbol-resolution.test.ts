@@ -7,6 +7,16 @@ const { pool, overlay } = vi.hoisted(() => ({
     isDirtyPath: vi.fn((snapshot: { dirtyPaths: Set<string> }, filePath?: string) =>
       Boolean(filePath && snapshot.dirtyPaths.has(filePath)),
     ),
+    isOverlayReplacedPath: vi.fn(
+      (
+        snapshot: { overlayPaths: Set<string>; tombstones: Set<string> },
+        filePath?: string | null,
+      ) => {
+        if (!filePath) return false;
+        const normalized = filePath.replace(/\\/g, '/');
+        return snapshot.overlayPaths.has(normalized) || snapshot.tombstones.has(normalized);
+      },
+    ),
     queryOverlay: vi.fn(),
   },
 }));
@@ -19,10 +29,20 @@ import { resolveSymbolCandidates } from '../../src/mcp/local/backend-symbol-reso
 const repo = { id: 'repo', repoPath: '/repo', storagePath: '/store' };
 const usable = {
   usable: true,
+  reason: undefined,
   dirtyPaths: new Set(['src/dirty.ts']),
   overlayPaths: new Set(['src/dirty.ts']),
+  uncoveredPaths: new Set<string>(),
+  tombstones: new Set<string>(),
 };
-const unusable = { usable: false, dirtyPaths: new Set(['src/dirty.ts']) };
+const unusable = {
+  usable: false,
+  reason: undefined,
+  dirtyPaths: new Set(['src/dirty.ts']),
+  overlayPaths: new Set<string>(),
+  uncoveredPaths: new Set(['src/dirty.ts']),
+  tombstones: new Set<string>(),
+};
 
 function row(id: string, filePath: string, name = 'lookup') {
   return {
@@ -116,5 +136,20 @@ describe('symbol resolution with a dirty overlay', () => {
       symbol: { id: 'base-id', filePath: 'src/dirty.ts' },
     });
     expect(overlay.queryOverlay).not.toHaveBeenCalled();
+  });
+
+  it('removes a deleted base candidate even for an unusable snapshot', async () => {
+    pool.executeParameterized.mockResolvedValue([row('deleted-id', 'src/deleted.ts')]);
+    overlay.getOverlaySnapshot.mockResolvedValue({
+      ...unusable,
+      tombstones: new Set(['src/deleted.ts']),
+    });
+
+    const result = await resolveSymbolCandidates(repo, { name: 'lookup' }, {});
+
+    expect(result).toMatchObject({
+      kind: 'not_found',
+      warning: expect.stringContaining('src/deleted.ts'),
+    });
   });
 });

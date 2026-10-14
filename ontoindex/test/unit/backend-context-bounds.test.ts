@@ -37,6 +37,21 @@ describe('backend context bounds', () => {
     lbugMocks.executeParameterized.mockResolvedValue([]);
   });
 
+  it.each([undefined, 'Deleted source path(s): src/auth.ts'])(
+    'preserves not-found results and surfaces a defined warning: %s',
+    async (warning) => {
+      resolveMocks.resolveSymbolCandidates.mockResolvedValue({ kind: 'not_found', warning });
+      const { context } = await import('../../src/mcp/local/backend-context.js');
+      const result = await context({ id: 'repo' }, { name: 'login' });
+      const expected = {
+        error: "Symbol 'login' not found",
+        ...(warning !== undefined && { warning }),
+      };
+      expect(result).toStrictEqual(expected);
+      expect(JSON.stringify(result)).toBe(JSON.stringify(expected));
+    },
+  );
+
   it('caps process participation rows for hot symbols', async () => {
     const { context } = await import('../../src/mcp/local/backend-context.js');
     await context({ id: 'repo' }, { name: 'login' });

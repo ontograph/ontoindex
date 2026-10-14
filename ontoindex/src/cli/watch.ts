@@ -1,16 +1,17 @@
 import fs from 'node:fs';
-import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { planDirtyOverlay } from '../core/analyze-delta.js';
 import { createIgnoreFilter } from '../config/ignore-service.js';
 import { readAnalyzeLock } from '../core/runtime/runtime-health.js';
-import { getStoragePaths } from '../storage/repo-manager.js';
+import { getStoragePaths, readActiveGenerationMeta } from '../storage/repo-manager.js';
 import { getGitRoot } from '../storage/git.js';
 
 export interface DebouncedWatcherOptions {
   root: string;
   debounceMs?: number;
+  maxWaitMs?: number;
   isLockHeld: () => Promise<boolean> | boolean;
   refresh: () => Promise<void>;
   shouldIgnore?: (relPath: string) => boolean;
@@ -68,6 +69,7 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
   start(): void;
   stop(): void;
   requestRefresh(): void;
+  isBusy(): boolean;
 } {
   const watch = opts.watchImpl ?? fs.watch;
   const debounceMs = opts.debounceMs ?? 750;
@@ -75,6 +77,7 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
   let watcher: fs.FSWatcher | undefined;
   let parentWatcher: fs.FSWatcher | undefined;
   let timer: NodeJS.Timeout | undefined;
+  let maxTimer: NodeJS.Timeout | undefined;
   let stopped = false;
   let running = false;
   let followUp = false;
@@ -84,6 +87,8 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
     if (stopped) return;
     stopped = true;
     if (timer) clearTimeout(timer);
+    if (maxTimer) clearTimeout(maxTimer);
+    maxTimer = undefined;
     timer = undefined;
     followUp = false;
     watcher?.close();
@@ -128,9 +133,11 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
     watcher.on?.('error', fail);
   };
 
-  const schedule = () => {
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => {
+  const schedule = (bounded = false) => {
+    const fire = () => {
+      if (timer) clearTimeout(timer);
+      if (maxTimer) clearTimeout(maxTimer);
+      maxTimer = undefined;
       timer = undefined;
       if (!checkRoot()) return;
       if (!opts.watchImpl) {
@@ -145,7 +152,14 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
         }
       }
       void runRefresh();
-    }, debounceMs);
+    };
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(fire, debounceMs);
+    timer.unref();
+    if (bounded && !maxTimer) {
+      maxTimer = setTimeout(fire, opts.maxWaitMs ?? 5000);
+      maxTimer.unref();
+    }
   };
 
   const runRefresh = async (): Promise<void> => {
@@ -186,7 +200,7 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
     const relPath = filename == null ? '' : filename.toString();
     if (relPath === '' && !checkRoot()) return;
     if (isIgnoredByDefault(relPath) || opts.shouldIgnore?.(relPath)) return;
-    schedule();
+    schedule(true);
   };
 
   return {
@@ -233,6 +247,7 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
     requestRefresh() {
       if (!stopped) void runRefresh();
     },
+    isBusy: () => running || !!timer || followUp,
   };
 }
 
@@ -250,6 +265,15 @@ export interface WatchCommandDependencies {
   env: NodeJS.ProcessEnv;
   onSignal: (signal: NodeJS.Signals, listener: () => void) => void;
   offSignal: (signal: NodeJS.Signals, listener: () => void) => void;
+  reconcileMs: number;
+  leasePath: string;
+  now: () => number;
+  pid: number;
+  isPidAlive: (pid: number) => boolean;
+  readHead: (repoPath: string) => Promise<string | null>;
+  readBase: (
+    storagePath: string,
+  ) => Promise<{ commit: string | null; generationId: string | null }>;
 }
 
 const EMBEDDING_ENV_PATTERN = /(?:^|_)(?:EMBEDDING|EMBEDDINGS)(?:_|$)/i;
@@ -282,58 +306,174 @@ export async function createWatchCommand(
     env: process.env,
     onSignal: (signal, listener) => process.on(signal, listener),
     offSignal: (signal, listener) => process.off(signal, listener),
+    reconcileMs: 30000,
+    leasePath: path.join(getStoragePaths(repoPath).storagePath, 'watch.lease'),
+    now: Date.now,
+    pid: process.pid,
+    readHead: (root) =>
+      new Promise((resolve) => {
+        execFile('git', ['rev-parse', 'HEAD'], { cwd: root, timeout: 2000 }, (error, stdout) =>
+          resolve(error ? null : stdout.trim() || null),
+        );
+      }),
+    readBase: async (storagePath) => {
+      const { meta, activeGeneration } = await readActiveGenerationMeta(storagePath);
+      return {
+        commit: meta?.lastCommit ?? null,
+        generationId: activeGeneration?.generationId ?? null,
+      };
+    },
+    isPidAlive: (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    },
     ...overrides,
   };
 
   let child: WatchChild | undefined;
   let stopped = false;
-
-  const refresh = async (): Promise<void> => {
-    if (stopped || child) return;
-    await new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        child = undefined;
-        resolve();
-      };
-
-      try {
-        const processChild = deps.spawn(
-          process.execPath,
-          [deps.cliPath, 'analyze', '--dirty-overlay', repoPath],
-          {
-            cwd: repoPath,
-            env: childEnvironment(deps.env),
-            stdio: ['ignore', 'pipe', 'pipe'],
-          },
-        );
-        child = processChild;
-        processChild.stdout?.on('data', (chunk: Buffer | string) => process.stdout.write(chunk));
-        processChild.stderr?.on('data', (chunk: Buffer | string) => process.stderr.write(chunk));
-        processChild.once('error', (error) => {
-          deps.error(`Watch overlay child failed: ${error.message}`);
-          finish();
-        });
-        processChild.once('close', (code, signal) => {
-          deps.log(
-            `Watch overlay analyze exited with code ${code ?? `signal ${signal ?? 'unknown'}`}.`,
-          );
-          if (code !== 0) {
-            deps.error(
-              `Watch overlay analyze failed with code ${code ?? `signal ${signal ?? 'unknown'}`}.`,
-            );
-          }
-          finish();
-        });
-      } catch (error) {
-        deps.error(
-          `Watch overlay child failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-        finish();
-      }
+  let launching = false;
+  let baseRunning = false;
+  let overlayPending = false;
+  let attemptedHead: string | undefined;
+  let signature: string | undefined;
+  const planSignature = (
+    plan: Awaited<ReturnType<typeof planDirtyOverlay>>,
+    generationId: string | null,
+  ) =>
+    JSON.stringify([generationId, [...plan.allDirtyPaths].sort(), [...plan.includePaths].sort()]);
+  const readState = async () => {
+    const head = await deps.readHead(repoPath).catch(() => null);
+    const base = await deps.readBase(getStoragePaths(repoPath).storagePath);
+    return { head, base };
+  };
+  const readLease = (): { pid: number; heartbeat: number } | undefined => {
+    try {
+      return JSON.parse(fs.readFileSync(deps.leasePath, 'utf8'));
+    } catch {
+      return undefined;
+    }
+  };
+  const existing = readLease();
+  if (
+    existing &&
+    Number.isInteger(existing.pid) &&
+    existing.pid > 0 &&
+    deps.now() - existing.heartbeat < 3 * deps.reconcileMs &&
+    deps.isPidAlive(existing.pid)
+  ) {
+    deps.log(`another watcher (pid ${existing.pid}) owns this repository; not building overlays`);
+    return { stop() {} };
+  }
+  fs.mkdirSync(path.dirname(deps.leasePath), { recursive: true });
+  // Exclusive creation prevents two concurrent starts from both claiming a clean lease.
+  if (existing) fs.unlinkSync(deps.leasePath);
+  try {
+    fs.writeFileSync(deps.leasePath, JSON.stringify({ pid: deps.pid, heartbeat: deps.now() }), {
+      flag: 'wx',
     });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    const owner = readLease();
+    deps.log(
+      `another watcher (pid ${owner?.pid ?? 'unknown'}) owns this repository; not building overlays`,
+    );
+    return { stop() {} };
+  }
+  const heartbeat = () =>
+    fs.writeFileSync(deps.leasePath, JSON.stringify({ pid: deps.pid, heartbeat: deps.now() }));
+
+  const runChild = async (baseHead?: string): Promise<void> => {
+    if (stopped || child || launching) {
+      if (baseRunning) overlayPending = true;
+      return;
+    }
+    launching = true;
+    let requestedSignature: string | undefined;
+    try {
+      if (!baseHead) {
+        const plan = await deps.planDirtyOverlay(repoPath);
+        const { base } = await readState();
+        requestedSignature = planSignature(plan, base.generationId);
+      }
+      if (stopped) return;
+      baseRunning = !!baseHead;
+      if (baseHead) attemptedHead = baseHead;
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          child = undefined;
+          baseRunning = false;
+          resolve();
+        };
+
+        try {
+          const processChild = deps.spawn(
+            process.execPath,
+            [deps.cliPath, 'analyze', ...(baseHead ? [] : ['--dirty-overlay']), repoPath],
+            {
+              cwd: repoPath,
+              env: childEnvironment(deps.env),
+              stdio: ['ignore', 'pipe', 'pipe'],
+            },
+          );
+          child = processChild;
+          processChild.stdout?.on('data', (chunk: Buffer | string) => process.stdout.write(chunk));
+          processChild.stderr?.on('data', (chunk: Buffer | string) => process.stderr.write(chunk));
+          processChild.once('error', (error) => {
+            deps.error(`Watch ${baseHead ? 'base' : 'overlay'} child failed: ${error.message}`);
+            finish();
+          });
+          processChild.once('close', (code, signal) => {
+            if (settled) return;
+            if (baseHead) {
+              if (code !== 0)
+                deps.error(
+                  `Watch base analyze failed with code ${code ?? `signal ${signal ?? 'unknown'}`}.`,
+                );
+              overlayPending ||= code === 0;
+              finish();
+              return;
+            }
+            if (code === 0) signature = requestedSignature;
+            deps.log(
+              `Watch overlay analyze exited with code ${code ?? `signal ${signal ?? 'unknown'}`}.`,
+            );
+            if (code !== 0) {
+              deps.error(
+                `Watch overlay analyze failed with code ${code ?? `signal ${signal ?? 'unknown'}`}.`,
+              );
+            }
+            finish();
+          });
+        } catch (error) {
+          deps.error(
+            `Watch ${baseHead ? 'base' : 'overlay'} child failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          finish();
+        }
+      });
+    } finally {
+      launching = false;
+      if (overlayPending && !stopped) {
+        overlayPending = false;
+        watcher.requestRefresh();
+      }
+    }
+  };
+  const refresh = () => runChild();
+  const refreshBase = async (head: string | null, commit: string | null): Promise<boolean> => {
+    if (!head || !commit || head === commit) return false;
+    if (child || launching || attemptedHead === head || (await deps.isLockHeld(repoPath)))
+      return true;
+    void runChild(head);
+    return true;
   };
 
   const ignoreFilter = await deps.createIgnoreFilter(repoPath);
@@ -350,25 +490,58 @@ export async function createWatchCommand(
   const stop = () => {
     if (stopped) return;
     stopped = true;
+    clearInterval(reconcileTimer);
+    if (readLease()?.pid === deps.pid) fs.unlinkSync(deps.leasePath);
     watcher.stop();
     child?.kill('SIGTERM');
     deps.offSignal('SIGINT', stop);
     deps.offSignal('SIGTERM', stop);
   };
+  let reconciling = false;
+  let planningFailed = false;
+  const reconcileTimer = setInterval(() => {
+    if (stopped || reconciling) return;
+    if (readLease()?.pid !== deps.pid) {
+      stop();
+      return;
+    }
+    heartbeat();
+    reconciling = true;
+    void deps
+      .planDirtyOverlay(repoPath)
+      .then(async (plan) => {
+        const { head, base } = await readState();
+        if (stopped || (await refreshBase(head, base.commit))) return;
+        if (!stopped && !watcher.isBusy() && planSignature(plan, base.generationId) !== signature)
+          watcher.requestRefresh();
+      })
+      .catch((error: unknown) => {
+        if (!planningFailed) deps.error(`Watch reconciliation planning failed: ${String(error)}`);
+        planningFailed = true;
+      })
+      .finally(() => {
+        reconciling = false;
+      });
+  }, deps.reconcileMs);
+  reconcileTimer.unref();
   deps.onSignal('SIGINT', stop);
   deps.onSignal('SIGTERM', stop);
   watcher.start();
 
   try {
     const plan = await deps.planDirtyOverlay(repoPath);
-    const dirtyCount = new Set([...plan.includePaths, ...plan.tombstones]).size;
-    const startupState = plan.tooMany
-      ? 'tree is dirty; overlay skipped because the source-file limit was exceeded'
-      : dirtyCount === 0
+    const { head, base } = await readState();
+    signature = planSignature(plan, base.generationId);
+    const dirtyCount = plan.allDirtyPaths.length;
+    const startupState =
+      dirtyCount === 0
         ? 'tree is clean'
-        : `${dirtyCount} dirty source file(s), building overlay`;
+        : `${dirtyCount} dirty source path(s), covering ${plan.includePaths.length} file(s) and leaving ${plan.uncoveredPaths.length + plan.tombstones.length} uncovered`;
     deps.log(`Watching ${repoPath} (debounce ${WATCH_DEBOUNCE_MS} ms); ${startupState}`);
-    if (!plan.tooMany && (plan.includePaths.length > 0 || plan.tombstones.length > 0)) {
+    if (
+      !(await refreshBase(head, base.commit)) &&
+      (plan.includePaths.length > 0 || plan.tombstones.length > 0)
+    ) {
       watcher.requestRefresh();
     }
   } catch (error) {

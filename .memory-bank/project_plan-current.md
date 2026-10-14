@@ -10,4 +10,4 @@ status: active
 
 Projection only, not dispatch authority. Each linked plan's `manager_loop` block is authoritative.
 
-- [Real-time dirty-worktree support](REALTIME_DIRTY_WORKTREE_SUPPORT_PROJECT_PLAN.md) - in-progress; selected RT-1.
+- [Real-time dirty-worktree support](REALTIME_DIRTY_WORKTREE_SUPPORT_PROJECT_PLAN.md) - in-progress; selected RT-1. 2026-10-14 review added RT-36 to RT-44 (status split, overlay base binding, partial coverage, watcher convergence).

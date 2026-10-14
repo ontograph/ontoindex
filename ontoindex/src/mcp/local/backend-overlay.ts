@@ -7,10 +7,11 @@
  * "no callers" or "zero impact".
  */
 import fs from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { planDirtyOverlay, type DirtyOverlayPlan } from '../../core/analyze-delta.js';
 import { closeLbug, executeParameterized, initLbug } from '../../core/lbug/pool-adapter.js';
+import { readActiveGenerationMeta } from '../../storage/repo-manager.js';
 
 export interface OverlayRepo {
   id: string;
@@ -27,6 +28,8 @@ export interface OverlaySnapshot {
   dirtyPaths: ReadonlySet<string>;
   /** Dirty paths that still exist and are covered by the overlay. */
   overlayPaths: ReadonlySet<string>;
+  /** Dirty existing paths omitted from a bounded overlay build. */
+  uncoveredPaths: ReadonlySet<string>;
   /** Deleted or renamed-away paths: base symbols must be suppressed, overlay has none. */
   tombstones: ReadonlySet<string>;
 }
@@ -36,12 +39,16 @@ const EMPTY: OverlaySnapshot = {
   reason: 'no dirty files',
   dirtyPaths: new Set(),
   overlayPaths: new Set(),
+  uncoveredPaths: new Set(),
   tombstones: new Set(),
 };
 
 const SNAPSHOT_TTL_MS = 2_000;
 const MAX_SNAPSHOTS = 64;
-const snapshotCache = new Map<string, { at: number; value: Promise<OverlaySnapshot> }>();
+const snapshotCache = new Map<
+  string,
+  { at: number; baseIdentity: string | null; value: Promise<OverlaySnapshot> }
+>();
 const overlayFileIdentities = new Map<string, string>();
 const overlayQueries = new Map<string, Promise<unknown>>();
 
@@ -85,24 +92,61 @@ export async function resolveOverlayDbPath(storagePath: string): Promise<string 
 async function computeSnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> {
   const plan: DirtyOverlayPlan = await planDirtyOverlay(repo.repoPath);
   const overlayPaths = new Set(plan.includePaths);
+  const uncoveredPaths = new Set(plan.uncoveredPaths);
   const tombstones = new Set(plan.tombstones);
-  const dirtyPaths = new Set([...overlayPaths, ...tombstones]);
+  const dirtyPaths = new Set(plan.allDirtyPaths);
   if (dirtyPaths.size === 0) return EMPTY;
-  const base = { dirtyPaths, overlayPaths, tombstones };
-  if (plan.tooMany) {
-    return { ...base, usable: false, reason: 'more than 50 dirty source files' };
-  }
+  const base = { dirtyPaths, overlayPaths, uncoveredPaths, tombstones };
 
   let builtAt: number;
+  let dbPath: string;
   try {
-    const dbPath = await resolveOverlayDbPath(repo.storagePath);
-    if (!dbPath) throw new Error('no published overlay');
+    const resolved = await resolveOverlayDbPath(repo.storagePath);
+    if (!resolved) throw new Error('no published overlay');
+    dbPath = resolved;
     builtAt = (await fs.stat(dbPath)).mtimeMs;
   } catch {
     return {
       ...base,
       usable: false,
       reason: 'no valid overlay CURRENT generation (run: ontoindex analyze --dirty-overlay)',
+    };
+  }
+  let recordedBase: { baseGenerationId: string | null; baseCommit: string | null };
+  try {
+    recordedBase = JSON.parse(
+      await fs.readFile(path.join(path.dirname(dbPath), 'base.json'), 'utf8'),
+    );
+    if (
+      !recordedBase ||
+      !('baseGenerationId' in recordedBase) ||
+      !('baseCommit' in recordedBase) ||
+      (recordedBase.baseGenerationId !== null &&
+        typeof recordedBase.baseGenerationId !== 'string') ||
+      (recordedBase.baseCommit !== null && typeof recordedBase.baseCommit !== 'string')
+    ) {
+      throw new Error('invalid recorded base');
+    }
+  } catch {
+    return {
+      ...base,
+      usable: false,
+      reason: 'overlay has no recorded base; rebuild: ontoindex analyze --dirty-overlay',
+    };
+  }
+  const activeBase = await readActiveGenerationMeta(repo.storagePath);
+  const baseGenerationId = activeBase.activeGeneration?.generationId ?? null;
+  const baseCommit = activeBase.meta?.lastCommit ?? null;
+  if (
+    recordedBase.baseGenerationId !== baseGenerationId ||
+    recordedBase.baseCommit !== baseCommit
+  ) {
+    const short = (id: string | null, commit: string | null) =>
+      `${id ?? 'legacy'}/${commit?.slice(0, 8) ?? 'unknown'}`;
+    return {
+      ...base,
+      usable: false,
+      reason: `overlay was built on base ${short(recordedBase.baseGenerationId, recordedBase.baseCommit)} but the active base is ${short(baseGenerationId, baseCommit)}; rebuild: ontoindex analyze --dirty-overlay`,
     };
   }
   for (const rel of overlayPaths) {
@@ -121,7 +165,13 @@ async function computeSnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> {
 export function getOverlaySnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> {
   const hit = snapshotCache.get(repo.id);
   const now = Date.now();
-  if (hit && now - hit.at < SNAPSHOT_TTL_MS) return hit.value;
+  let baseIdentity: string | null = null;
+  try {
+    baseIdentity = realpathSync(path.join(repo.storagePath, 'current'));
+  } catch {
+    // No active generation, including legacy root stores.
+  }
+  if (hit && hit.baseIdentity === baseIdentity && now - hit.at < SNAPSHOT_TTL_MS) return hit.value;
   const value = computeSnapshot(repo).catch((err: unknown) => {
     // A late failure must not evict a newer probe started after reset/expiry.
     if (snapshotCache.get(repo.id)?.value === value) snapshotCache.delete(repo.id);
@@ -132,7 +182,7 @@ export function getOverlaySnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> 
   }
   while (snapshotCache.size >= MAX_SNAPSHOTS)
     snapshotCache.delete(snapshotCache.keys().next().value!);
-  snapshotCache.set(repo.id, { at: now, value });
+  snapshotCache.set(repo.id, { at: now, baseIdentity, value });
   return value;
 }
 
@@ -152,6 +202,16 @@ export function isDirtyPath(
 ): boolean {
   if (!filePath) return false;
   return snapshot.dirtyPaths.has(filePath.replace(/\\/g, '/'));
+}
+
+/** True when an overlay row replaces the base row for this dirty path. */
+export function isOverlayReplacedPath(
+  snapshot: OverlaySnapshot,
+  filePath: string | null | undefined,
+): boolean {
+  if (!filePath) return false;
+  const normalized = filePath.replace(/\\/g, '/');
+  return snapshot.overlayPaths.has(normalized) || snapshot.tombstones.has(normalized);
 }
 
 /** Query the overlay store read-only through the MCP pool under a distinct pool id. */
