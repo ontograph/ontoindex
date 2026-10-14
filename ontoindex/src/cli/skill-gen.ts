@@ -700,9 +700,11 @@ const renderSkillMarkdown = (
         : community.label;
   lines.push('## How to Explore');
   lines.push('');
-  lines.push(`1. \`ontoindex_context({name: "${firstEntry}"})\` \u2014 see callers and callees`);
   lines.push(
-    `2. \`ontoindex_query({query: "${community.label.toLowerCase()}"})\` \u2014 find related execution flows`,
+    `1. \`inspect({action: "context", repo: "<repo>", target: "${firstEntry}"})\` \u2014 see callers and callees`,
+  );
+  lines.push(
+    `2. \`search({action: "semantic", repo: "<repo>", query: "${community.label.toLowerCase()}"})\` \u2014 find related execution flows`,
   );
   lines.push('3. Read key files listed above for implementation details');
   lines.push('');
