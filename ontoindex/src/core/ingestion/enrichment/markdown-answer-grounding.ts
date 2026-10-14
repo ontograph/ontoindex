@@ -50,7 +50,7 @@ function pathCitation(raw: string, line: string | undefined): AnswerCitation {
 }
 
 function isCodeLike(text: string): boolean {
-  return /[A-Z_.]/.test(text);
+  return /[A-Z.]/.test(text);
 }
 
 export function extractAnswerCitations(answer: string): AnswerCitation[] {
