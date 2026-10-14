@@ -1277,7 +1277,30 @@ export async function runFullAnalysis(
         graphNodes: pipelineResult.graph.nodeCount,
         graphRelationships: pipelineResult.graph.relationshipCount,
       });
-      await createFTSIndex(table, indexName, selectedProperties);
+      try {
+        await createFTSIndex(table, indexName, selectedProperties);
+      } catch (error) {
+        // A missing FTS extension must not fail the whole analysis: publish the
+        // graph without full-text indexes and say how to enable them.
+        if (!/FTS extension unavailable/.test(error instanceof Error ? error.message : '')) {
+          throw error;
+        }
+        log(
+          '  FTS extension unavailable; skipping full-text indexes (keyword search is degraded). Install libfts.lbug_extension or set ONTOINDEX_ALLOW_EXTENSION_INSTALL=1, then re-run analyze --force.',
+        );
+        emitTelemetry({
+          event: 'fts-index-skip',
+          phaseName: 'fts',
+          table,
+          indexName,
+          properties: selectedProperties,
+          rowCount,
+          reason: 'extension-unavailable',
+          graphNodes: pipelineResult.graph.nodeCount,
+          graphRelationships: pipelineResult.graph.relationshipCount,
+        });
+        break;
+      }
       emitTelemetry({
         event: 'fts-index-end',
         phaseName: 'fts',

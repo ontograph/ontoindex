@@ -301,7 +301,12 @@ const assertNoFailedClose = async (dbPath: string): Promise<void> => {
   }
 };
 let ftsLoaded = false;
+let ftsUnavailable = false;
 let vectorExtensionLoaded = false;
+let vectorExtensionUnavailable = false;
+
+const lbugExtensionInstallAllowed = (): boolean =>
+  process.env.ONTOINDEX_ALLOW_EXTENSION_INSTALL === '1';
 
 /**
  * In-process cache of FTS indexes that have been ensured against the current
@@ -591,7 +596,9 @@ const resetLbugSessionState = (clearEnsuredIndexes = false): void => {
   currentDbPath = null;
   currentDbAliases.clear();
   ftsLoaded = false;
+  ftsUnavailable = false;
   vectorExtensionLoaded = false;
+  vectorExtensionUnavailable = false;
   if (clearEnsuredIndexes) ensuredFTSIndexes.clear();
 };
 
@@ -1928,7 +1935,7 @@ const getEmbeddingTableName = (): string => EMBEDDING_TABLE_NAME;
  * Safe to call multiple times — tracks loaded state via module-level ftsLoaded.
  */
 export const loadFTSExtension = async (): Promise<void> => {
-  if (ftsLoaded) return;
+  if (ftsLoaded || ftsUnavailable) return;
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
@@ -1946,7 +1953,7 @@ export const loadFTSExtension = async (): Promise<void> => {
     } catch (err) {
       if (err instanceof LbugQueryTimeoutError) throw err;
       console.error(
-        'OntoIndex: cached FTS extension load failed, falling back to LadybugDB extension install:',
+        'OntoIndex: cached FTS extension load failed, trying the local LadybugDB extension:',
         getOptionalThrownMessage(err) || localFtsPath,
       );
     }
@@ -1958,29 +1965,50 @@ export const loadFTSExtension = async (): Promise<void> => {
     ftsLoaded = true;
   } catch (err) {
     if (err instanceof LbugQueryTimeoutError) throw err;
-    // Fall back to install + load (requires network)
+    const msg = getOptionalThrownMessage(err) || '';
+    if (
+      msg.includes('already loaded') ||
+      msg.includes('already installed') ||
+      msg.includes('already exists')
+    ) {
+      ftsLoaded = true;
+      return;
+    }
+
+    const hint =
+      localFtsPath ||
+      path.join(
+        defaultLbugExtensionsCacheDir() ?? defaultLbugExtensionsBaseDir(),
+        'libfts.lbug_extension',
+      );
+    if (!lbugExtensionInstallAllowed()) {
+      ftsUnavailable = true;
+      console.error(
+        'OntoIndex: FTS extension unavailable; network installation is disabled.',
+        `Hint: download libfts.lbug_extension to ${hint}, set ONTOINDEX_LADYBUG_EXTENSION_DIR, or set ONTOINDEX_ALLOW_EXTENSION_INSTALL=1.`,
+      );
+      return;
+    }
+
+    // Network installation is opt-in; try it only after local loading fails.
     try {
       await runStatement(conn, 'INSTALL fts', 'INSTALL fts');
       await runStatement(conn, 'LOAD EXTENSION fts', 'LOAD EXTENSION fts retry');
       ftsLoaded = true;
-    } catch (err: unknown) {
-      const msg = getOptionalThrownMessage(err) || '';
+    } catch (installErr: unknown) {
+      if (installErr instanceof LbugQueryTimeoutError) throw installErr;
+      const installMessage = getOptionalThrownMessage(installErr) || '';
       if (
-        msg.includes('already loaded') ||
-        msg.includes('already installed') ||
-        msg.includes('already exists')
+        installMessage.includes('already loaded') ||
+        installMessage.includes('already installed') ||
+        installMessage.includes('already exists')
       ) {
         ftsLoaded = true;
       } else {
-        const hint =
-          localFtsPath ||
-          path.join(
-            defaultLbugExtensionsCacheDir() ?? defaultLbugExtensionsBaseDir(),
-            'libfts.lbug_extension',
-          );
+        ftsUnavailable = true;
         console.error(
           'OntoIndex: FTS extension load failed:',
-          msg,
+          installMessage,
           `Hint: download libfts.lbug_extension to ${hint} or set ONTOINDEX_LADYBUG_EXTENSION_DIR.`,
         );
       }
@@ -1992,7 +2020,7 @@ export const loadFTSExtension = async (): Promise<void> => {
  * Safe to call multiple times -- tracks loaded state via module-level vectorExtensionLoaded.
  */
 export const loadVectorExtension = async (): Promise<void> => {
-  if (vectorExtensionLoaded) return;
+  if (vectorExtensionLoaded || vectorExtensionUnavailable) return;
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
@@ -2010,15 +2038,48 @@ export const loadVectorExtension = async (): Promise<void> => {
     } catch (err) {
       if (err instanceof LbugQueryTimeoutError) throw err;
       console.error(
-        'OntoIndex: cached VECTOR extension load failed, falling back to LadybugDB extension install:',
+        'OntoIndex: cached VECTOR extension load failed, trying the local LadybugDB extension:',
         getOptionalThrownMessage(err) || localVectorPath,
       );
     }
   }
 
+  const vectorHint =
+    localVectorPath ||
+    path.join(
+      defaultLbugExtensionsCacheDir() ?? defaultLbugExtensionsBaseDir(),
+      'libvector.lbug_extension',
+    );
+
+  try {
+    // Use an already-installed extension without requiring network access.
+    await runStatement(conn, 'LOAD EXTENSION VECTOR', 'LOAD EXTENSION VECTOR');
+    vectorExtensionLoaded = true;
+    return;
+  } catch (err: unknown) {
+    if (err instanceof LbugQueryTimeoutError) throw err;
+    const msg = getOptionalThrownMessage(err) || '';
+    if (
+      msg.includes('already loaded') ||
+      msg.includes('already installed') ||
+      msg.includes('already exists')
+    ) {
+      vectorExtensionLoaded = true;
+      return;
+    }
+    if (!lbugExtensionInstallAllowed()) {
+      vectorExtensionUnavailable = true;
+      console.error(
+        'OntoIndex: VECTOR extension unavailable; network installation is disabled.',
+        `Hint: download libvector.lbug_extension to ${vectorHint}, set ONTOINDEX_LADYBUG_EXTENSION_DIR, or set ONTOINDEX_ALLOW_EXTENSION_INSTALL=1.`,
+      );
+      return;
+    }
+  }
+
   try {
     await runStatement(conn, 'INSTALL VECTOR', 'INSTALL VECTOR');
-    await runStatement(conn, 'LOAD EXTENSION VECTOR', 'LOAD EXTENSION VECTOR');
+    await runStatement(conn, 'LOAD EXTENSION VECTOR', 'LOAD EXTENSION VECTOR retry');
     vectorExtensionLoaded = true;
   } catch (err: unknown) {
     if (err instanceof LbugQueryTimeoutError) throw err;
@@ -2030,16 +2091,11 @@ export const loadVectorExtension = async (): Promise<void> => {
     ) {
       vectorExtensionLoaded = true;
     } else {
-      const hint =
-        localVectorPath ||
-        path.join(
-          defaultLbugExtensionsCacheDir() ?? defaultLbugExtensionsBaseDir(),
-          'libvector.lbug_extension',
-        );
+      vectorExtensionUnavailable = true;
       console.error(
         'OntoIndex: VECTOR extension load failed:',
         msg,
-        `Hint: download libvector.lbug_extension to ${hint} or set ONTOINDEX_LADYBUG_EXTENSION_DIR.`,
+        `Hint: download libvector.lbug_extension to ${vectorHint} or set ONTOINDEX_LADYBUG_EXTENSION_DIR.`,
       );
     }
   }
@@ -2062,6 +2118,11 @@ export const createFTSIndex = async (
   }
 
   await loadFTSExtension();
+  if (!ftsLoaded) {
+    throw new Error(
+      `FTS extension unavailable; cannot create full-text index ${tableName}:${indexName}.`,
+    );
+  }
 
   const propList = properties.map((p) => `'${p}'`).join(', ');
   const query = `CALL CREATE_FTS_INDEX('${tableName}', '${indexName}', [${propList}], stemmer := '${stemmer}')`;

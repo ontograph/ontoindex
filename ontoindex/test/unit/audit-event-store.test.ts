@@ -133,6 +133,31 @@ describe('audit event store', () => {
     expect(projection.sessions[0]).toMatchObject({ id: 'session-1', targetHead: 'abc123' });
   });
 
+  it('persists nested metadata with undefined values deterministically', async () => {
+    await store.createSession(sessionInput, { id: 'evt-1' });
+
+    await store.appendEvent({
+      id: 'evt-2',
+      type: 'ScopeGuardEvaluated',
+      occurredAt: '2026-05-17T00:00:01.000Z',
+      sessionId: 'session-1',
+      status: 'PASS',
+      metadata: {
+        freshness: {
+          recommendedAction: undefined,
+          state: 'fresh',
+        },
+        optionalList: [undefined, 'retained'],
+      },
+    });
+
+    const rawStore = JSON.parse(await fs.readFile(store.eventStorePath, 'utf8'));
+    expect(rawStore.events[1].metadata).toEqual({
+      freshness: { state: 'fresh' },
+      optionalList: [null, 'retained'],
+    });
+  });
+
   it('appends finding, verification, status, tombstone, bundle, dispatch, lint, and guard events', async () => {
     await store.createSession(sessionInput, { id: 'evt-1' });
     await store.createFindingCandidate(

@@ -184,6 +184,7 @@ describe('runFullAnalysis snapshot persistence', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     repoManagerGenerationMockState.canonicalGenerationId = null;
+    createFTSIndexMock.mockReset().mockResolvedValue(undefined);
     embeddingPipelineMocks.runEmbeddingPipeline.mockResolvedValue(undefined);
     embeddingPipelineMocks.batchInsertEmbeddings.mockResolvedValue(undefined);
     loadMetaMock.mockResolvedValue(null);
@@ -732,6 +733,57 @@ describe('runFullAnalysis snapshot persistence', () => {
     } finally {
       await fs.rm(repoDir, { recursive: true, force: true });
     }
+  });
+
+  describe('when the FTS extension is unavailable', () => {
+    async function analyzeWithFtsError(error: Error, logs: string[]) {
+      const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-fts-'));
+      try {
+        const graph = createKnowledgeGraph();
+        graph.addNode({
+          id: 'file:auth',
+          label: 'File',
+          properties: { name: 'auth.ts', filePath: 'src/auth.ts' } as any,
+        });
+        graph.addNode({
+          id: 'func:login',
+          label: 'Function',
+          properties: { name: 'login', filePath: 'src/auth.ts' } as any,
+        });
+        runPipelineMock.mockResolvedValue({
+          graph,
+          repoPath: repoDir,
+          totalFileCount: 1,
+          communityResult: undefined,
+          processResult: undefined,
+          usedWorkerPool: false,
+        });
+        executeQueryMock.mockResolvedValue([]);
+        createFTSIndexMock.mockReset().mockRejectedValue(error);
+        return await runFullAnalysis(
+          repoDir,
+          {},
+          { onProgress: vi.fn(), onLog: (message: string) => logs.push(message) },
+        );
+      } finally {
+        await fs.rm(repoDir, { recursive: true, force: true });
+      }
+    }
+
+    it('FTS-A publishes without full-text indexes, logs how to enable them, and stops trying', async () => {
+      const logs: string[] = [];
+      const result = await analyzeWithFtsError(
+        new Error('FTS extension unavailable; cannot create full-text index File:file_fts.'),
+        logs,
+      );
+      expect(result.repoPath).toBeTruthy();
+      expect(createFTSIndexMock).toHaveBeenCalledTimes(1);
+      expect(logs.some((line) => line.includes('ONTOINDEX_ALLOW_EXTENSION_INSTALL=1'))).toBe(true);
+    });
+
+    it('FTS-B still fails analysis on any other full-text index error', async () => {
+      await expect(analyzeWithFtsError(new Error('disk full'), [])).rejects.toThrow('disk full');
+    });
   });
 
   it('passes the symbols profile through and records symbols-only metadata', async () => {
