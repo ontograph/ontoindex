@@ -9,10 +9,11 @@ export function resolveIdleExitMs(raw?: string): number | null {
 export interface IdleTrackerOptions {
   idleMs: number;
   now?: () => number;
+  isBusy?: () => boolean;
   onIdle: () => void;
 }
 
-export function createIdleTracker({ idleMs, now = Date.now, onIdle }: IdleTrackerOptions) {
+export function createIdleTracker({ idleMs, now = Date.now, isBusy, onIdle }: IdleTrackerOptions) {
   let lastActivity = now();
   let inFlight = 0;
   let fired = false;
@@ -32,7 +33,7 @@ export function createIdleTracker({ idleMs, now = Date.now, onIdle }: IdleTracke
       if (inFlight === 0) lastActivity = now();
     },
     check() {
-      if (fired || inFlight > 0 || now() - lastActivity < idleMs) return false;
+      if (fired || inFlight > 0 || now() - lastActivity < idleMs || isBusy?.()) return false;
       fired = true;
       onIdle();
       return true;

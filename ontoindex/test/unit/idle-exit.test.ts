@@ -19,6 +19,31 @@ describe('resolveIdleExitMs', () => {
 });
 
 describe('createIdleTracker', () => {
+  it('blocks while busy without consuming the one-shot or resetting the idle clock', () => {
+    let now = 0;
+    let busy = true;
+    const onIdle = vi.fn();
+    const tracker = createIdleTracker({
+      idleMs: 100,
+      now: () => now,
+      isBusy: () => busy,
+      onIdle,
+    });
+
+    for (const time of [0, 99, 100, 500, 10_000]) {
+      now = time;
+      expect(tracker.check()).toBe(false);
+      expect(onIdle).not.toHaveBeenCalled();
+    }
+
+    busy = false;
+    expect(tracker.check()).toBe(true);
+    expect(tracker.check()).toBe(false);
+    now += 100;
+    expect(tracker.check()).toBe(false);
+    expect(onIdle).toHaveBeenCalledTimes(1);
+  });
+
   it('fires once after the idle interval with no activity', () => {
     let now = 0;
     const onIdle = vi.fn();

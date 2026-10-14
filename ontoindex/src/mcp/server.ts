@@ -13,6 +13,7 @@
 
 import { findOversizedArgument } from './shared/arg-limits.js';
 import { createIdleTracker, resolveIdleExitMs } from './shared/idle-exit.js';
+import { openPoolCount } from '../core/lbug/pool-adapter.js';
 import { createRequire } from 'module';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { UriTemplate } from '@modelcontextprotocol/sdk/shared/uriTemplate.js';
@@ -806,6 +807,7 @@ export async function startMCPServer(
     const requests = new Set<string>();
     const idleTracker = createIdleTracker({
       idleMs,
+      isBusy: () => openPoolCount() > 0,
       onIdle: () => {
         process.stderr.write(
           `[ontoindex] idle for ${idleMs} ms; exiting (restart the MCP client connection to resume)\n`,
