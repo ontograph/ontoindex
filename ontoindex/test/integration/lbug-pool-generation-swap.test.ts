@@ -16,6 +16,11 @@ import {
   closeLbug,
   addPoolCloseListener,
 } from '../../src/core/lbug/pool-adapter.js';
+import {
+  createIndexGeneration,
+  publishIndexGenerationTransaction,
+} from '../../src/storage/repo-manager.js';
+import { resolveTargetContext } from '../../src/mcp/shared/target-context.js';
 
 const repoId = `test-generation-swap-${Date.now()}`;
 let tmpRoot: string | undefined;
@@ -85,5 +90,77 @@ describe('lbug pool generation swap', () => {
 
     const after = await executeQuery(repoId, 'MATCH (f:File) RETURN count(f) AS total');
     expect(after).toBeDefined();
+  });
+
+  it('reports metadata for the generation pinned by the pool during publication', async () => {
+    const templateDbPath = inject<'lbugDbPath'>('lbugDbPath');
+    const templateDir = path.dirname(templateDbPath);
+
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-generation-meta-'));
+    const storagePath = path.join(tmpRoot, '.ontoindex');
+    const commitA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const commitB = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+    const publish = async (generationId: string, lastCommit: string) => {
+      const generation = await createIndexGeneration(storagePath, generationId);
+      await copyGeneration(templateDir, generation.generationPath);
+      await fs.writeFile(
+        generation.metaPath,
+        JSON.stringify({
+          repoPath: '.',
+          lastCommit,
+          indexedAt: generationId,
+          generationId,
+          stats: { files: generationId === 'generation-n' ? 1 : 2 },
+        }),
+      );
+      await fs.writeFile(generation.snapshotPath, '{}');
+      return publishIndexGenerationTransaction(storagePath, generation, async () => {});
+    };
+
+    await publish('generation-n', commitA);
+    const dbPath = path.join(storagePath, 'lbug');
+    await initLbug(repoId, dbPath);
+    const beforeRows = await executeQuery(repoId, 'MATCH (f:File) RETURN count(f) AS total');
+    expect(beforeRows).toBeDefined();
+    expect(
+      (await fs.readdir(path.join(storagePath, 'generations', 'generation-n'))).some((name) =>
+        name.startsWith('.reader-'),
+      ),
+    ).toBe(true);
+
+    await publish('generation-n-plus-one', commitB);
+    const context = await resolveTargetContext(
+      { repo: repoId, verifyGraphAuthority: true },
+      {
+        readRegistry: async () => [
+          {
+            name: repoId,
+            path: tmpRoot!,
+            storagePath,
+            indexedAt: 'registry-index',
+            lastCommit: commitA,
+          },
+        ],
+        execGit: async (_cwd, args) => {
+          const key = args.join(' ');
+          if (key === 'rev-parse --abbrev-ref HEAD') return 'main\n';
+          if (key === 'status --porcelain=v1 --untracked-files=all') return '';
+          return `${commitB}\n`;
+        },
+      },
+    );
+
+    // The open pool reader still owns N, so metadata beside its query context
+    // must also identify N even though current now points to N+1.
+    expect(context).toMatchObject({
+      status: 'ok',
+      indexedHead: commitA,
+      generationId: 'generation-n',
+    });
+    expect(context.indexedHead).not.toBe(commitB);
+    expect(await executeQuery(repoId, 'MATCH (f:File) RETURN count(f) AS total')).toEqual(
+      beforeRows,
+    );
   });
 });

@@ -5,6 +5,7 @@ import lbug from '@ladybugdb/core';
 import * as pool from '../../src/core/lbug/pool-adapter.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  activateIndexGeneration,
   acquireIndexGenerationPin,
   createIndexGeneration,
   publishIndexGenerationTransaction,
@@ -34,6 +35,48 @@ describe('committed index generation retention', () => {
       .filter((n) => !n.startsWith('.'))
       .sort();
   }
+  async function activateUnmanaged(name: string, metadataId = name) {
+    const generation = await createIndexGeneration(storage, name);
+    await fs.writeFile(generation.lbugPath, name);
+    await fs.writeFile(generation.metaPath, JSON.stringify({ generationId: metadataId }));
+    await fs.writeFile(generation.snapshotPath, '{}');
+    return activateIndexGeneration(storage, generation);
+  }
+  it('adopts a valid active generation left unmanaged by a crashed publication', async () => {
+    await activateUnmanaged('orphan');
+    const marker = path.join(storage, 'generations', 'orphan', '.retention-managed');
+    await expect(fs.stat(marker)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    const pin = await acquireIndexGenerationPin(path.join(storage, 'lbug'));
+    expect(await fs.readFile(marker, 'utf8')).toMatch(/^\d+$/);
+    await pin.release();
+
+    await publish('a');
+    await publish('b');
+    await publish('c');
+    expect(await names()).toEqual(['a', 'b', 'c']);
+  });
+  it('does not adopt an active generation whose metadata id mismatches its directory', async () => {
+    await activateUnmanaged('orphan', 'another-generation');
+    const pin = await acquireIndexGenerationPin(path.join(storage, 'lbug'));
+    await pin.release();
+    await expect(
+      fs.stat(path.join(storage, 'generations', 'orphan', '.retention-managed')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+  it('leaves a legacy root-layout database unmanaged', async () => {
+    await fs.writeFile(path.join(storage, 'lbug'), 'legacy database');
+    await fs.writeFile(path.join(storage, 'meta.json'), JSON.stringify({ generationId: 'legacy' }));
+
+    const pin = await acquireIndexGenerationPin(path.join(storage, 'lbug'));
+    expect(pin.published).toBeUndefined();
+    await pin.release();
+    expect(await fs.readFile(path.join(storage, 'lbug'), 'utf8')).toBe('legacy database');
+    expect((await fs.lstat(path.join(storage, 'lbug'))).isSymbolicLink()).toBe(false);
+    await expect(fs.stat(path.join(storage, 'generations'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
   it('keeps a rejected native open generation pinned through later publication', async () => {
     await publish('failed-native');
     const constructor = vi.spyOn(lbug, 'Database').mockImplementation(function () {
@@ -140,7 +183,7 @@ describe('committed index generation retention', () => {
     );
     expect((await fs.lstat(alias)).isSymbolicLink()).toBe(true);
   });
-  it('preserves legacy generations and restores the previous pointer after commit failure', async () => {
+  it('adopts the active legacy generation and restores the previous pointer after commit failure', async () => {
     await publish('legacy');
     await fs.unlink(path.join(storage, 'generations', 'legacy', '.retention-managed'));
     await publish('a');
@@ -151,7 +194,8 @@ describe('committed index generation retention', () => {
     expect(await fs.realpath(path.join(storage, 'current'))).toBe(
       path.join(storage, 'generations', 'd'),
     );
-    expect(await names()).toContain('legacy');
+    expect(await names()).not.toContain('legacy');
+    expect(await names()).toContain('failed');
   });
   it('preserves unknown reader pins and symlink entries', async () => {
     await publish('a');

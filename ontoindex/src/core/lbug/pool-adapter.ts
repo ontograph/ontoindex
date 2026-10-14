@@ -16,6 +16,7 @@
  */
 
 import fs from 'fs/promises';
+import path from 'node:path';
 import lbug, { type LbugValue } from '@ladybugdb/core';
 import { resolveLocalLbugExtensionPath } from './lbug-adapter.js';
 import { acquireIndexGenerationPin, type IndexGenerationPin } from '../../storage/repo-manager.js';
@@ -184,6 +185,13 @@ export function addPoolCloseListener(listener: PoolCloseListener): () => void {
   return () => {
     poolCloseListeners.delete(listener);
   };
+}
+
+/** Return the published generation directory held open for a repo, if any. */
+export function getPinnedGenerationDir(repoId: string): string | undefined {
+  const entry = pool.get(repoId);
+  const generationPin = entry && dbCache.get(entry.dbPath)?.generationPin;
+  return generationPin?.published ? path.dirname(generationPin.dbPath) : undefined;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
