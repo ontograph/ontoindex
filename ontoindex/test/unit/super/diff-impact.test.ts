@@ -70,7 +70,7 @@ vi.mock('../../../src/mcp/super/docs-evidence.js', () => ({
 // ---------------------------------------------------------------------------
 
 import { execFileText } from '../../../src/core/process/exec-file.js';
-import { executeParameterized, executeQuery } from '../../../src/core/lbug/pool-adapter.js';
+import { executeParameterized } from '../../../src/core/lbug/pool-adapter.js';
 import { resolveTargetContext } from '../../../src/mcp/shared/target-context.js';
 import { collectAdvisoryDocsEvidence } from '../../../src/mcp/super/docs-evidence.js';
 import {
@@ -81,7 +81,6 @@ import {
 
 const mockExecFileText = vi.mocked(execFileText);
 const mockExecute = vi.mocked(executeParameterized);
-const mockExecuteQuery = vi.mocked(executeQuery);
 const mockResolveTargetContext = vi.mocked(resolveTargetContext);
 const mockCollectAdvisoryDocsEvidence = vi.mocked(collectAdvisoryDocsEvidence);
 
@@ -162,17 +161,9 @@ function setupGraphMocks(
     if (cypher.includes('count(*)') && cypher.includes('callee')) {
       return [{ count: downstreamCount }];
     }
-    if (cypher.includes("type: 'STEP_IN_PROCESS'")) return processRows;
-    if (cypher.includes("type: 'MEMBER_OF'")) return communityRows;
-    if (cypher.includes("type: 'IMPORTS'") && cypher.includes('test')) {
-      return testFileRows;
-    }
-    return [];
-  });
-
-  // executeQuery is used by the impact kernel for the upstream traversal (depth=1).
-  // Return `upstreamCount` mock caller rows so rawCounts.direct equals upstreamCount.
-  mockExecuteQuery.mockImplementation(async (_repoId: string, cypher: string) => {
+    // The impact kernel binds its frontier ids as a parameter and runs the upstream
+    // traversal (depth=1) through executeParameterized. Return `upstreamCount` mock
+    // caller rows so rawCounts.direct equals upstreamCount.
     if (cypher.includes('MATCH (caller)-[r:CodeRelation]->(n)')) {
       return Array.from({ length: upstreamCount }, (_, i) => ({
         sourceId: 'node-id',
@@ -183,6 +174,11 @@ function setupGraphMocks(
         relType: 'CALLS',
         confidence: 0.9,
       }));
+    }
+    if (cypher.includes("type: 'STEP_IN_PROCESS'")) return processRows;
+    if (cypher.includes("type: 'MEMBER_OF'")) return communityRows;
+    if (cypher.includes("type: 'IMPORTS'") && cypher.includes('test')) {
+      return testFileRows;
     }
     return [];
   });

@@ -4,6 +4,9 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+- Impact analysis binds traversal node ids as a query parameter instead of building them into Cypher text, and reports `UNKNOWN` risk (never `LOW`) when a depth query fails.
+- `export const f = () => ...` emits one `Function` symbol instead of a duplicate `Function` and `Const`, in both the sequential and worker parsers.
+- tsconfig path aliases that name an emitted `.js` file (for example `@/a.js`) resolve to the TypeScript source.
 - LadybugDB FTS and VECTOR network extension installs now require `ONTOINDEX_ALLOW_EXTENSION_INSTALL=1`; unavailable extensions are cached for the session, and FTS index creation reports a clear error when FTS cannot load.
 
 ## [2.3.4] - 2026-10-14

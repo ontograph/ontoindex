@@ -64,19 +64,38 @@ describe('relative JS extensions resolve to TypeScript sources', () => {
   }
 
   it.each([SupportedLanguages.TypeScript, SupportedLanguages.JavaScript])(
-    'does not remap tsconfig aliases for %s',
+    'maps tsconfig alias JS extensions to TypeScript sources for %s',
     (language) => {
-      const ctx = makeCtx(['src/a.ts'], {
-        baseUrl: '.',
-        aliases: new Map([['@/', 'src/']]),
-      });
-      expect(resolveStandard('@/a.js', 'src/b.ts', ctx, language)).toBeNull();
-      expect(resolveStandard('@/a', 'src/b.ts', ctx, language)).toEqual({
+      const aliases = { baseUrl: '.', aliases: new Map([['@/', 'src/']]) };
+      expect(
+        resolveStandard('@/a.js', 'src/b.ts', makeCtx(['src/a.ts'], aliases), language),
+      ).toEqual({
         kind: 'files',
         files: ['src/a.ts'],
       });
+      expect(resolveStandard('@/a', 'src/b.ts', makeCtx(['src/a.ts'], aliases), language)).toEqual({
+        kind: 'files',
+        files: ['src/a.ts'],
+      });
+      // An existing emitted file wins over its source counterpart.
+      expect(
+        resolveStandard('@/a.js', 'src/b.ts', makeCtx(['src/a.ts', 'src/a.js'], aliases), language),
+      ).toEqual({ kind: 'files', files: ['src/a.js'] });
+      expect(resolveStandard('@/a.js', 'src/b.ts', makeCtx([], aliases), language)).toBeNull();
     },
   );
+
+  it('does not remap alias JS extensions for languages other than TypeScript and JavaScript', () => {
+    const aliases = { baseUrl: '.', aliases: new Map([['@/', 'src/']]) };
+    expect(
+      resolveStandard(
+        '@/a.js',
+        'src/b.py',
+        makeCtx(['src/a.ts'], aliases),
+        SupportedLanguages.Python,
+      ),
+    ).toBeNull();
+  });
 
   it.each([SupportedLanguages.TypeScript, SupportedLanguages.JavaScript])(
     'does not remap package suffixes for %s',

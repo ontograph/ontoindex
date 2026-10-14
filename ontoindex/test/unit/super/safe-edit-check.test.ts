@@ -38,7 +38,7 @@ vi.mock('../../../src/mcp/shared/target-context.js', () => ({
 // Imports (after mocks).
 // ---------------------------------------------------------------------------
 
-import { executeParameterized, executeQuery } from '../../../src/core/lbug/pool-adapter.js';
+import { executeParameterized } from '../../../src/core/lbug/pool-adapter.js';
 import { lspBridge } from '../../../src/core/lsp/bridge.js';
 import { findTestFiles } from '../../../src/mcp/super/_helpers/test-coverage.js';
 import { collectAdvisoryDocsEvidence } from '../../../src/mcp/super/docs-evidence.js';
@@ -47,7 +47,6 @@ import { resolveSymbolCandidates } from '../../../src/mcp/local/backend-symbol-r
 import { gnSafeEditCheck } from '../../../src/mcp/super/safe-edit-check.js';
 
 const mockExecuteParameterized = executeParameterized as unknown as ReturnType<typeof vi.fn>;
-const mockExecuteQuery = executeQuery as unknown as ReturnType<typeof vi.fn>;
 const mockGetClient = lspBridge.getClient as unknown as ReturnType<typeof vi.fn>;
 const mockValidateRename = lspBridge.validateRename as unknown as ReturnType<typeof vi.fn>;
 const mockFindTestFiles = findTestFiles as unknown as ReturnType<typeof vi.fn>;
@@ -100,8 +99,9 @@ function downstreamImpactRows(n: number): any[] {
  *  1. resolveSymbol (fuzzy lookup — name match) — sequential before graph probes
  *  2+. non-kernel probes and optional class-seed expansion
  *
- * Kernel-backed impact uses executeQuery; executeParameterized is matched by
- * query shape so bounded concurrency and class seed expansion stay deterministic.
+ * Kernel-backed impact binds its frontier ids and runs through executeParameterized;
+ * calls are matched by query shape so bounded concurrency and class seed expansion
+ * stay deterministic.
  *
  * findTestFiles is mocked separately (uses its own vi.mock).
  * lspBridge.getClient is mocked separately.
@@ -149,6 +149,8 @@ function setupMocks({
     if (query.includes('WHERE s.id = $id') || query.includes('WHERE s.name = $name')) {
       return resolveRows;
     }
+    if (query.includes('MATCH (caller)-[r:CodeRelation]->(n)')) return upstreamRows;
+    if (query.includes('MATCH (n)-[r:CodeRelation]->(callee)')) return downstreamRows;
     if (query.includes("hm.type = 'HAS_METHOD'")) return classConstructorRows;
     if (query.includes("rel.type = 'DEFINES'")) return classFileRows;
     if (query.includes("r.type = 'PARTICIPATES_IN'")) return [{ processCount }];
@@ -158,12 +160,6 @@ function setupMocks({
     }
     if (query.includes('r.lastDate AS lastDate')) return [{ lastDate }];
     if (query.includes('RETURN s.isExported AS isExported')) return [{ isExported }];
-    return [];
-  });
-
-  mockExecuteQuery.mockImplementation(async (_repoId: string, query: string) => {
-    if (query.includes('MATCH (caller)-[r:CodeRelation]->(n)')) return upstreamRows;
-    if (query.includes('MATCH (n)-[r:CodeRelation]->(callee)')) return downstreamRows;
     return [];
   });
 
