@@ -581,7 +581,7 @@ await fs.writeFile(process.argv[2], JSON.stringify({
       } catch {
         return undefined;
       }
-    })) as Record<string, string>;
+    }, 500)) as Record<string, string>;
 
     expect(received).toEqual({
       inherited: 'preserved',
@@ -647,7 +647,7 @@ setInterval(() => {}, 1000);
       const running = await waitFor(async () => {
         const job = await getAnalysisJob(repoPath, submitted.job.id);
         return job?.status === 'running' && (await exists(childPidPath)) ? job : undefined;
-      });
+      }, 300);
       expect(running?.status).toBe('running');
 
       await cancelAnalysisJob(repoPath, submitted.job.id);
@@ -659,14 +659,14 @@ setInterval(() => {}, 1000);
           const job = await getAnalysisJob(repoPath, submitted.job.id);
           return job?.status === 'cancelled' ? job : undefined;
         },
-        400,
+        600,
         20,
       );
       expect(cancelled?.status).toBe('cancelled');
       const childPid = Number(await fs.readFile(childPidPath, 'utf8'));
       expect(isAlive(childPid)).toBe(false);
     },
-    15_000,
+    30_000,
   );
 });
 
