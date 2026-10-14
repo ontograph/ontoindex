@@ -471,6 +471,7 @@ const ENRICHMENT_RECORD_STATUSES: readonly EnrichmentRecordStatus[] = [
 const MARKDOWN_DOCS_SOURCE_PLANE: MarkdownDocsSourcePlane = 'markdown-docs-sidecar';
 const MAX_MARKDOWN_RELATED_DOCS = 5;
 const MAX_MARKDOWN_RELATED_CHUNKS = 10;
+const MAX_MARKDOWN_FACTS_PER_CHUNK_KIND = 25;
 
 function emptyEnrichmentRecordStatusCounts(): EnrichmentStatusCounts {
   return Object.fromEntries(
@@ -1043,15 +1044,30 @@ function markdownFactSourceChunkKey(fact: EnrichmentFact): string | undefined {
 function boundMarkdownFacts(
   facts: readonly EnrichmentFact[],
   chunks: readonly MarkdownRelatedChunk[],
-): EnrichmentFact[] {
+): { facts: EnrichmentFact[]; omittedByChunkCap: number } {
   const keys = new Set(chunks.map((chunk) => chunk.chunkKey).filter(Boolean));
-  return facts.filter((fact) => {
+  const counts = new Map<string, Map<EnrichmentFact['kind'], number>>();
+  let omittedByChunkCap = 0;
+  const boundedFacts = facts.filter((fact) => {
     if (!isMarkdownDocumentFact(fact)) return true;
     if (fact.kind === 'markdown-code-mention' && fact.resolutionStatus === 'unresolved')
       return false;
     const key = markdownFactSourceChunkKey(fact);
-    return key !== undefined && keys.has(key);
+    if (key === undefined || !keys.has(key)) return false;
+    let kindCounts = counts.get(key);
+    if (!kindCounts) {
+      kindCounts = new Map();
+      counts.set(key, kindCounts);
+    }
+    const count = kindCounts.get(fact.kind) ?? 0;
+    if (count >= MAX_MARKDOWN_FACTS_PER_CHUNK_KIND) {
+      omittedByChunkCap++;
+      return false;
+    }
+    kindCounts.set(fact.kind, count + 1);
+    return true;
   });
+  return { facts: boundedFacts, omittedByChunkCap };
 }
 
 function toMarkdownDocsEvidenceFact(fact: EnrichmentFact): MarkdownDocsEvidenceFact | undefined {
@@ -2239,9 +2255,9 @@ export class LocalBackend implements BackendPort {
               returnedMarkdownDocPaths.has(record.filePath),
           )
         : allVisibleRecords;
-      const facts = markdownContext
+      const { facts, omittedByChunkCap } = markdownContext
         ? boundMarkdownFacts(allFacts, markdownContext.relatedChunks)
-        : allFacts;
+        : { facts: allFacts, omittedByChunkCap: 0 };
 
       return {
         ...base,
@@ -2253,6 +2269,8 @@ export class LocalBackend implements BackendPort {
           mentionResolution,
           mentionTargets,
           factsBound: {
+            perChunkKindLimit: MAX_MARKDOWN_FACTS_PER_CHUNK_KIND,
+            omittedByChunkCap,
             totalFactCount: allFacts.length,
             totalVisibleRecordCount: allVisibleRecords.length,
             truncated:

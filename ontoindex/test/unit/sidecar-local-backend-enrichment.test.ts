@@ -657,6 +657,137 @@ afterEach(async () => {
   await Promise.all(tmpDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
 
+describe('FC Markdown per-chunk fact cap', () => {
+  const options = {
+    query: 'login',
+    consume_enrichment_facts: true,
+    include_passive_related_facts: true,
+    include_markdown_context: true,
+  };
+
+  function fixture(mentionCount: number, linkCount = 0, chunkCount = 1) {
+    const state = markdownSidecarState();
+    const base = state.enrichments[0];
+    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')!;
+    const chunks = Array.from({ length: chunkCount }, (_, index) => ({
+      ...chunk,
+      chunkKey: `${chunk.chunkKey}:${index}`,
+      chunkIndex: index,
+    }));
+    const mentions = Array.from({ length: mentionCount }, (_, index) => ({
+      kind: 'markdown-test-mention',
+      schemaVersion: 1,
+      docPath: chunk.docPath,
+      headingPath: chunk.headingPath,
+      lineSpan: { start: 12, end: 12 },
+      sourceChunkKey: chunks[0].chunkKey,
+      mention: `test/unit/login-${index}.test.ts`,
+      normalizedKey: `login-test-${index}`,
+      confidence: 0.85,
+      resolvable: true,
+      evidence: {
+        text: `test/unit/login-${index}.test.ts`,
+        raw: `test/unit/login-${index}.test.ts`,
+        lineSpan: { start: 12, end: 12 },
+      },
+      targetPath: `test/unit/login-${index}.test.ts`,
+    }));
+    const links = Array.from({ length: linkCount }, (_, index) => ({
+      kind: 'markdown-link',
+      fromChunkKey: chunks[0].chunkKey,
+      href: `login-${index}.md`,
+      text: `Login ${index}`,
+      lineSpan: { start: 13, end: 13 },
+      toDocPath: `login-${index}.md`,
+    }));
+    return {
+      state: {
+        ...state,
+        enrichments: [
+          {
+            ...base,
+            analyzerId: MARKDOWN_DOCUMENT_ANALYZER_ID,
+            filePath: chunk.docPath,
+            fileHash: chunk.fileHash,
+            records: [...chunks, ...mentions, ...links],
+          },
+        ],
+      },
+      chunks,
+      mentions,
+      links,
+    };
+  }
+
+  it('FC-A retains the first 25 of 60 test mentions on one returned chunk', async () => {
+    const repo = await createRepo();
+    const { state, mentions } = fixture(60);
+    await writeSidecarStore(repo.storagePath, state);
+    const result = await new LocalBackend().callTool('query', options);
+
+    expect(result.enrichment.relatedChunks).toHaveLength(1);
+    expect(
+      result.enrichment.facts.filter((fact: any) => fact.kind === 'markdown-test-mention'),
+    ).toEqual(mentions.slice(0, 25));
+    expect(result.enrichment.factsBound).toMatchObject({
+      perChunkKindLimit: 25,
+      omittedByChunkCap: 35,
+      truncated: true,
+    });
+  });
+
+  it('FC-B independently caps test mentions and links on the same chunk', async () => {
+    const repo = await createRepo();
+    const { state, mentions, links, chunks } = fixture(30, 30);
+    await writeSidecarStore(repo.storagePath, state);
+    const result = await new LocalBackend().callTool('query', options);
+
+    expect(result.enrichment.facts).toEqual([
+      ...chunks,
+      ...mentions.slice(0, 25),
+      ...links.slice(0, 25),
+    ]);
+    expect(
+      result.enrichment.facts.filter((fact: any) => fact.kind !== 'markdown-chunk'),
+    ).toHaveLength(50);
+    expect(result.enrichment.factsBound).toMatchObject({
+      perChunkKindLimit: 25,
+      omittedByChunkCap: 10,
+      truncated: true,
+    });
+  });
+
+  it('FC-C preserves all 10 test mentions below the cap', async () => {
+    const repo = await createRepo();
+    const { state, chunks, mentions } = fixture(10);
+    await writeSidecarStore(repo.storagePath, state);
+    const result = await new LocalBackend().callTool('query', options);
+
+    expect(result.enrichment.facts).toEqual([...chunks, ...mentions]);
+    expect(result.enrichment.factsBound).toMatchObject({
+      perChunkKindLimit: 25,
+      omittedByChunkCap: 0,
+      truncated: false,
+    });
+  });
+
+  it('FC-D preserves returned chunk count, keys, and order when extra facts are capped', async () => {
+    const repo = await createRepo();
+    const backend = new LocalBackend();
+    await writeSidecarStore(repo.storagePath, fixture(0, 0, 12).state);
+    const baseline = await backend.callTool('query', options);
+    await writeSidecarStore(repo.storagePath, fixture(60, 30, 12).state);
+    const result = await backend.callTool('query', options);
+
+    expect(baseline.enrichment.relatedChunks).toHaveLength(10);
+    expect(result.enrichment.relatedChunks).toHaveLength(baseline.enrichment.relatedChunks.length);
+    expect(result.enrichment.relatedChunks.map((chunk: any) => chunk.chunkKey)).toEqual(
+      baseline.enrichment.relatedChunks.map((chunk: any) => chunk.chunkKey),
+    );
+    expect(result.enrichment.factsBound.omittedByChunkCap).toBe(40);
+  });
+});
+
 describe('LocalBackend sidecar enrichment metadata', () => {
   it('decorates query, context, and impact results with available sidecar status', async () => {
     const repo = await createRepo();
@@ -1844,6 +1975,8 @@ describe('LocalBackend sidecar enrichment metadata', () => {
         totalFactCount: 1,
         totalVisibleRecordCount: 1,
         truncated,
+        perChunkKindLimit: 25,
+        omittedByChunkCap: 0,
       });
       expect(result.enrichment.visibleRecords).toHaveLength(1);
     }
