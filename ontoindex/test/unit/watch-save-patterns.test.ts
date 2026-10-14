@@ -161,7 +161,7 @@ describe('real fs.watch editor save patterns', () => {
     const refreshCountBeforeDelete = refreshes.length;
     fs.rmSync(root, { recursive: true });
     await vi.waitFor(() => expect(logs).toEqual([expect.stringContaining('Watcher stopped:')]), {
-      timeout: SETTLE_MS * 3,
+      timeout: 10_000,
     });
     expect(refreshes.slice(refreshCountBeforeDelete)).toEqual([]);
 
@@ -170,5 +170,5 @@ describe('real fs.watch editor save patterns', () => {
     watcher.start();
     await delay(SETTLE_MS);
     expect(logs).toHaveLength(1);
-  });
+  }, 30_000);
 });

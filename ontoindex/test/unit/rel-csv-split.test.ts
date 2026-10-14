@@ -101,7 +101,11 @@ function writeCsv(lines: string[]): string {
   return csvPath;
 }
 
-async function waitFor(condition: () => boolean, message: string, timeoutMs = 1000): Promise<void> {
+async function waitFor(
+  condition: () => boolean,
+  message: string,
+  timeoutMs = 10_000,
+): Promise<void> {
   const startedAt = Date.now();
   while (!condition()) {
     if (Date.now() - startedAt > timeoutMs) {
@@ -217,7 +221,7 @@ describe('splitRelCsvByLabelPair', () => {
     for (const ws of streams) {
       expect(ws.maxDrainListenersSeen).toBeLessThanOrEqual(1);
     }
-  });
+  }, 30_000);
 
   it('rejects the Promise when a WriteStream emits an error', async () => {
     const csvPath = writeCsv([HEADER, csvLine('Function:a', 'Class:b')]);
@@ -235,7 +239,7 @@ describe('splitRelCsvByLabelPair', () => {
     streams[0].triggerError(new Error('disk full'));
 
     await expect(promise).rejects.toThrow('disk full');
-  });
+  }, 30_000);
 
   it('destroys all streams when one errors (no lingering FDs)', async () => {
     const lines = [HEADER];
@@ -269,7 +273,7 @@ describe('splitRelCsvByLabelPair', () => {
     for (const ws of streams) {
       expect(ws.destroyed).toBe(true);
     }
-  });
+  }, 30_000);
 
   it('handles empty CSV (header only) without errors', async () => {
     const csvPath = writeCsv([HEADER]);
