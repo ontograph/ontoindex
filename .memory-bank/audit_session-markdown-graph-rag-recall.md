@@ -147,3 +147,24 @@ Share reported: 40 / 270 = 0.148. Nearly all samples are example paths inside pl
 
 Decision: Wiring is allowed in a separate plan; this plan does not wire it.
 
+## Answer verify CLI
+
+Built from `feat/answer-verify-cli` (base `0fe72ad`); command `node ontoindex/dist/cli/index.js docs verify-answer <file> [--json] [--strict] [-r <repo>]`.
+
+| Run | Exit | Status | symbolCheck | grounded / ungrounded / unverifiable | Wall time |
+| --- | --- | --- | --- | --- | --- |
+| Donor plan, indexed repo (`/opt/d1/_wrk/ontoindex`, index at `7b1494c`) | 0 | ungrounded | ok | 0 / 15 / 5 | 252 ms |
+| Mention-resolution plan, indexed repo, `--strict` | 1 | ungrounded | ok | 15 / 14 / 11 | 275 ms |
+| Donor plan, repo without an index | 0 | ungrounded | skipped | 0 / 5 / 15 | 81 ms |
+| Mention-resolution plan, repo without an index, `--strict` | 1 | ungrounded | skipped | 0 / 11 / 29 | 83 ms |
+| Donor plan, current worktree (not registered) | 0 | ungrounded | skipped | 4 / 1 / 15 | not timed |
+| Mention-resolution plan, current worktree | 0 | grounded | skipped | 11 / 0 / 29 | not timed |
+| Missing input file | 1 | message `Cannot read ...` | n/a | n/a | n/a |
+
+Findings:
+
+- Without an index every symbol citation is reported unverifiable, never ungrounded, and a warning is printed; no stack trace in any run.
+- The indexed run used the stale main checkout, so its path list (`git ls-files` at `7b1494c`) lacks files added since; paths such as `markdown-answer-grounding.ts` are correctly absent there. Only the worktree runs reflect current `master`: the donor plan's one ungrounded path is the example `docs/x.md`.
+- False positives remain for plain identifiers that contain an underscore, for example `node_modules` and `allowed_write_set` in backticks, which the grounding module treats as code-like symbols. This was not changed because the module is outside this plan's write set.
+- Registering a worktree as an indexed repo was not attempted, so a symbol-check run against a fresh index of current `master` is still open.
+
