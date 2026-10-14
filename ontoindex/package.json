@@ -68,7 +68,7 @@
     "graphology": "^0.26.0",
     "graphology-indices": "^0.17.0",
     "graphology-utils": "^2.5.2",
-    "ignore": "^7.0.5",
+    "ignore": "^7.0.12",
     "js-yaml": "^4.2.0",
     "lru-cache": "^11.5.1",
     "mdast-util-from-markdown": "^2.0.3",
