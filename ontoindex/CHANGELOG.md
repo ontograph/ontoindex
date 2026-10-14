@@ -4,6 +4,8 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+- Markdown retrieval resolves identifier-like backtick code mentions in returned chunks against the code graph per request. Chunk evidence carries only `mention` (the text); response metadata carries `mentionTargets`, keyed by mention text, with entries only for mentions that matched code symbols: `{ status: "resolved", targets: [{id, name, filePath, startLine}] }` for exactly one match, or `{ status: "ambiguous", targets: [], candidateCount }` (4 means 4 or more). A mention absent from the map is unresolved or was not looked up. `mentionResolution` (`status`: `ok`, `partial`, or `skipped`; `lookups`; optional `reason`) reports the run. At most 40 distinct names are looked up per response, with up to 3 candidates requested per name and a 1,500 ms total limit. Ambiguous names are never auto-picked; ranking and stored facts are unchanged, and graph failures and timeouts do not fail queries.
+
 ## [2.2.31] - 2026-10-14
 
 - LadybugDB pool: corrupt-WAL recovery now starts only for a WAL replay error (`classifyLbugOpenError`). A permission error, an unsupported storage version, an out-of-memory error or an extension error keeps its original message, is not retried with WAL-tail discard, and no longer prints a WAL warning. Lock detection matches native lock phrases instead of any message containing `lock` (so `block` and `clock` no longer count). A failing close of the failed wrapper no longer masks the original error, and the "unrecoverable" error names the recovery cause.
