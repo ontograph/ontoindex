@@ -87,6 +87,7 @@ describe('Windows-style path handling', () => {
       relative().startsWith('node_modules/'),
     );
     const command = await createWatchCommand('/repo', {
+      leasePath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'watch-win-')), 'watch.lease'),
       createWatcher: (options) => {
         watcherOptions = options;
         return { start: vi.fn(), stop: vi.fn() };
@@ -97,6 +98,8 @@ describe('Windows-style path handling', () => {
       })) as never,
       planDirtyOverlay: vi.fn(async () => ({
         includePaths: [],
+        uncoveredPaths: [],
+        allDirtyPaths: [],
         tombstones: [],
         tooMany: false,
         skipped: [],
@@ -122,6 +125,8 @@ describe('Windows-style path handling', () => {
 
     expect(plan).toEqual({
       includePaths: ['new name.ts'],
+      uncoveredPaths: [],
+      allDirtyPaths: ['new name.ts', 'old name.ts'],
       tombstones: ['old name.ts'],
       tooMany: false,
       skipped: [],
@@ -135,6 +140,8 @@ describe('Windows-style path handling', () => {
 
     expect(plan).toEqual({
       includePaths: ['new name.ts'],
+      uncoveredPaths: [],
+      allDirtyPaths: ['new name.ts', 'old name.ts'],
       tombstones: ['old name.ts'],
       tooMany: false,
       skipped: [],
@@ -157,6 +164,8 @@ describe('Windows-style path handling', () => {
 
       expect(await planDirtyOverlay(repo)).toEqual({
         includePaths: ['new name.ts'],
+        uncoveredPaths: [],
+        allDirtyPaths: ['new name.ts', 'old name.ts'],
         tombstones: ['old name.ts'],
         tooMany: false,
         skipped: [],

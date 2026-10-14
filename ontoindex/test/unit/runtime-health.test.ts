@@ -160,6 +160,20 @@ function makeBootstrapSource(
   };
 }
 
+async function makeCommittedGitRepo(): Promise<string> {
+  const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-health-git-'));
+  await fs.mkdir(path.join(repoPath, 'src'));
+  await fs.writeFile(path.join(repoPath, 'src/main.ts'), 'export const initial = true;\n');
+  execFileSync('git', ['init', '--quiet'], { cwd: repoPath });
+  execFileSync('git', ['config', 'user.name', 'Runtime Health Test'], { cwd: repoPath });
+  execFileSync('git', ['config', 'user.email', 'runtime-health@example.invalid'], {
+    cwd: repoPath,
+  });
+  execFileSync('git', ['add', 'src/main.ts'], { cwd: repoPath });
+  execFileSync('git', ['commit', '--quiet', '-m', 'initial fixture'], { cwd: repoPath });
+  return repoPath;
+}
+
 describe('deriveRuntimeHealth', () => {
   const base = {
     indexedCommit: 'abc123def456',
@@ -257,7 +271,8 @@ describe('deriveRuntimeHealth', () => {
       }),
     ).toEqual({
       freshnessState: 'dirty',
-      degradedReason: 'dirty worktree contains uncommitted changes',
+      degradedReason:
+        'committed index is current, but uncommitted files are not represented in the graph',
       repairCommand: 'commit, stash, or clean the worktree, then rerun ontoindex analyze',
       repairAction: {
         tool: 'ontoindex',
@@ -266,6 +281,105 @@ describe('deriveRuntimeHealth', () => {
         reason: 'analyze after the worktree is clean',
       },
     });
+  });
+
+  it('reports current committed freshness and coverable dirty source files', async () => {
+    const repoPath = await makeCommittedGitRepo();
+    try {
+      const indexedCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: repoPath,
+        encoding: 'utf8',
+      }).trim();
+      await fs.appendFile(path.join(repoPath, 'src/main.ts'), '\nexport const changed = true;\n');
+
+      const health = await readRuntimeHealth(repoPath, {
+        meta: {
+          repoPath,
+          lastCommit: indexedCommit,
+          indexedAt: '2026-10-14T00:00:00.000Z',
+          stats: { embeddings: 3 },
+        },
+      });
+
+      expect(health.freshnessState).toBe('dirty');
+      expect(health.degradedReason).toBe(
+        'committed index is current, but uncommitted files are not represented in the graph',
+      );
+      expect(health.committedFreshness).toBe('fresh');
+      expect(health.dirtyCoverage).toEqual({
+        state: 'coverable',
+        dirtySourceFiles: 1,
+        cap: 50,
+      });
+      expect(health.embeddingsAvailable).toBe(true);
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
+  });
+
+  it('reports stale committed freshness independently of worktree coverage', async () => {
+    const repoPath = await makeCommittedGitRepo();
+    try {
+      const health = await readRuntimeHealth(repoPath, {
+        meta: {
+          repoPath,
+          lastCommit: '0'.repeat(40),
+          indexedAt: '2026-10-14T00:00:00.000Z',
+        },
+      });
+
+      expect(health.committedFreshness).toBe('stale');
+      expect(health.dirtyCoverage).toEqual({ state: 'none', dirtySourceFiles: 0, cap: 50 });
+      expect(health.embeddingsAvailable).toBeNull();
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
+  });
+
+  it('reports unknown dirty coverage and a warning when the overlay probe fails', async () => {
+    const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-health-bad-git-'));
+    try {
+      await fs.writeFile(path.join(repoPath, '.git'), 'invalid git directory pointer\n');
+      const health = await readRuntimeHealth(repoPath, {
+        meta: {
+          repoPath,
+          lastCommit: 'a'.repeat(40),
+          indexedAt: '2026-10-14T00:00:00.000Z',
+        },
+      });
+
+      expect(health.dirtyCoverage).toEqual({ state: 'unknown', dirtySourceFiles: null, cap: 50 });
+      expect(
+        health.warnings.some((warning) => warning.includes('dirty overlay probe failed')),
+      ).toBe(true);
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
+  });
+
+  it('reports over-cap dirty source coverage without inventing an exact count', async () => {
+    const repoPath = await makeCommittedGitRepo();
+    try {
+      await Promise.all(
+        Array.from({ length: 51 }, (_, index) =>
+          fs.writeFile(
+            path.join(repoPath, `src/dirty-${index}.ts`),
+            `export const value${index} = ${index};\n`,
+          ),
+        ),
+      );
+      const indexedCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: repoPath,
+        encoding: 'utf8',
+      }).trim();
+      const health = await readRuntimeHealth(repoPath, {
+        meta: { repoPath, lastCommit: indexedCommit, indexedAt: '2026-10-14T00:00:00.000Z' },
+      });
+
+      expect(health.dirtyCoverage).toEqual({ state: 'over-cap', dirtySourceFiles: null, cap: 50 });
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
   });
 
   it('classifies degraded runtime artifacts', () => {

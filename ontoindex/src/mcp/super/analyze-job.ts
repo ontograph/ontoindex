@@ -97,14 +97,36 @@ async function observeRecovery(
     return recovery('FAILED', 'CANCELLED', `Analysis job ${job.id} was cancelled.`);
   }
   if (job.status === 'failed') {
-    return recovery(
+    const failedRecovery = recovery(
       'FAILED',
       'ANALYSIS_FAILED',
       `Analysis job ${job.id} failed${
         typeof job.exitCode === 'number' ? ` with exit code ${job.exitCode}` : ''
       }.`,
     );
+    if (job.publicationState !== 'publishing') return failedRecovery;
+    try {
+      const publicationRecovery = await verifyPublishedJob(job, resolvedRepoPath);
+      if (publicationRecovery.disposition === 'REFRESHED') {
+        return {
+          ...publicationRecovery,
+          reasonCode: 'PUBLICATION_VERIFIED_AFTER_RUNNER_EXIT',
+          message:
+            'The analyzer exited before recording publication, but the publication receipt and current index postconditions prove that the requested refresh succeeded.',
+        };
+      }
+    } catch {
+      // A failed job remains failed unless the complete publication check proves success.
+    }
+    return failedRecovery;
   }
+  return verifyPublishedJob(job, resolvedRepoPath);
+}
+
+async function verifyPublishedJob(
+  job: AnalysisJobRecord,
+  resolvedRepoPath: string,
+): Promise<AnalysisRecovery> {
   const activeGeneration = await resolveActiveIndexGeneration(
     path.join(resolvedRepoPath, '.ontoindex'),
   );

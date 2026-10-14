@@ -49,7 +49,12 @@ import type {
   TypedQueryRequest,
 } from '../../core/search/typed-query-document.js';
 import { RepoHandle } from './tool-params.js';
-import { getOverlaySnapshot, isDirtyPath, queryOverlay } from './backend-overlay.js';
+import {
+  getOverlaySnapshot,
+  isDirtyPath,
+  isOverlayReplacedPath,
+  queryOverlay,
+} from './backend-overlay.js';
 import type { OverlaySnapshot } from './backend-overlay.js';
 
 type SearchRepoHandle = RepoHandle;
@@ -1875,7 +1880,8 @@ export async function query(
         ...toEnrichedSymbolRow(row),
         source: 'overlay',
       }));
-      const keepBase = (row: EnrichedSymbolRow) => !isDirtyPath(overlaySnapshot!, row.filePath);
+      const keepBase = (row: EnrichedSymbolRow) =>
+        !isOverlayReplacedPath(overlaySnapshot!, row.filePath);
       // Commit the replacement only after every overlay read succeeds.
       const cleanBm25 = bm25Results.filter(keepBase);
       const cleanSemantic = semanticResults.filter(keepBase);
@@ -1887,7 +1893,8 @@ export async function query(
       lockedResults = cleanLocked;
       if (typedCandidateMap) {
         for (const [key, candidate] of typedCandidateMap) {
-          if (isDirtyPath(overlaySnapshot, candidate.filePath)) typedCandidateMap.delete(key);
+          if (isOverlayReplacedPath(overlaySnapshot, candidate.filePath))
+            typedCandidateMap.delete(key);
         }
       }
       overlayApplied = true;

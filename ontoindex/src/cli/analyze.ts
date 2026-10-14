@@ -543,11 +543,13 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   if (options?.dirtyOverlay) {
     try {
       const plan = await planDirtyOverlay(repoPath);
-      if (plan.tooMany) {
-        throw new Error('Dirty overlay is limited to 50 source files; refusing a full scan.');
-      }
       overlayPaths = plan.includePaths;
       includePaths = overlayPaths;
+      if (plan.tooMany) {
+        console.log(
+          `  Dirty overlay covers ${plan.includePaths.length} source file(s); ${plan.uncoveredPaths.length + plan.tombstones.length} dirty source path(s) are not fully covered.\n`,
+        );
+      }
     } catch (err) {
       console.error(
         `  Dirty overlay planning failed: ${err instanceof Error ? err.message : String(err)}\n`,

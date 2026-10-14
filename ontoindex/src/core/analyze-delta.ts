@@ -276,6 +276,8 @@ export async function planExperimentalFileDeltaRefresh(
 
 export interface DirtyOverlayPlan {
   includePaths: string[];
+  uncoveredPaths: string[];
+  allDirtyPaths: string[];
   tombstones: string[];
   tooMany: boolean;
   skipped: string[];
@@ -395,10 +397,38 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
     }
   }
 
-  const sourcePathCount = new Set([...includePaths, ...tombstones]).size;
-  const tooMany = sourcePathCount > MAX_CHANGED_FILES_FOR_BOUNDED_REFRESH;
+  const allDirtyPaths = [...new Set([...includePaths, ...tombstones])].sort();
+  const tooMany = allDirtyPaths.length > MAX_CHANGED_FILES_FOR_BOUNDED_REFRESH;
+  let plannedIncludePaths = [...includePaths].sort();
+  let uncoveredPaths: string[] = [];
+  if (tooMany) {
+    const newestFirst = await Promise.all(
+      [...includePaths].map(async (filePath) => {
+        try {
+          return { filePath, mtimeMs: (await fs.stat(path.join(repoPath, filePath))).mtimeMs };
+        } catch {
+          return { filePath, mtimeMs: null };
+        }
+      }),
+    );
+    newestFirst.sort((a, b) => {
+      if (a.mtimeMs === null && b.mtimeMs !== null) return 1;
+      if (a.mtimeMs !== null && b.mtimeMs === null) return -1;
+      return (
+        (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0) ||
+        (a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0)
+      );
+    });
+    plannedIncludePaths = newestFirst
+      .slice(0, MAX_CHANGED_FILES_FOR_BOUNDED_REFRESH)
+      .map(({ filePath }) => filePath);
+    const covered = new Set(plannedIncludePaths);
+    uncoveredPaths = [...includePaths].filter((filePath) => !covered.has(filePath)).sort();
+  }
   return {
-    includePaths: tooMany ? [] : [...includePaths].sort(),
+    includePaths: plannedIncludePaths,
+    uncoveredPaths,
+    allDirtyPaths,
     tombstones: [...tombstones].sort(),
     tooMany,
     skipped: [...skipped].sort(),

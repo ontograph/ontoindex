@@ -1,7 +1,7 @@
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import {
   getOverlaySnapshot,
-  isDirtyPath,
+  isOverlayReplacedPath,
   queryOverlay,
   type OverlaySnapshot,
 } from './backend-overlay.js';
@@ -71,7 +71,7 @@ type SymbolResolutionOutcome =
       kind: 'ambiguous';
       candidates: AmbiguousSymbol[];
     }
-  | { kind: 'not_found' };
+  | { kind: 'not_found'; warning?: string };
 
 type QueryRow = Record<string, unknown> | readonly unknown[];
 
@@ -183,15 +183,21 @@ async function readOverlayRows(
   repo: SymbolResolutionRepoHandle,
   cypher: string,
   params: Record<string, unknown>,
-): Promise<{ snapshot: OverlaySnapshot; rows: QueryRow[] } | undefined> {
+): Promise<{ snapshot: OverlaySnapshot; rows: QueryRow[]; overlayAvailable: boolean } | undefined> {
   if (!repo.repoPath || !repo.storagePath) return undefined;
+  let snapshot: OverlaySnapshot;
   try {
-    const snapshot = await getOverlaySnapshot({
+    snapshot = await getOverlaySnapshot({
       id: repo.id,
       repoPath: repo.repoPath,
       storagePath: repo.storagePath,
     });
-    if (!snapshot.usable) return undefined;
+  } catch {
+    // Without a snapshot there is no reliable tombstone evidence to apply.
+    return undefined;
+  }
+  if (!snapshot.usable) return { snapshot, rows: [], overlayAvailable: false };
+  try {
     const rows = await queryOverlay(
       { id: repo.id, repoPath: repo.repoPath, storagePath: repo.storagePath },
       cypher,
@@ -199,6 +205,7 @@ async function readOverlayRows(
     );
     return {
       snapshot,
+      overlayAvailable: true,
       rows: (rows as QueryRow[]).filter((row) => {
         const filePath = rowValue(row, 'filePath', 3);
         return (
@@ -207,9 +214,37 @@ async function readOverlayRows(
       }),
     };
   } catch {
-    // Overlay state is advisory; preserve the original base-only behavior.
-    return undefined;
+    // Keep the snapshot for tombstone safety while preserving base-only fallback.
+    return { snapshot, rows: [], overlayAvailable: false };
   }
+}
+
+function filterBaseRows(
+  rows: QueryRow[],
+  overlay: Awaited<ReturnType<typeof readOverlayRows>>,
+): { rows: QueryRow[]; tombstones: string[] } {
+  if (!overlay) return { rows, tombstones: [] };
+  const kept: QueryRow[] = [];
+  const tombstones = new Set<string>();
+  for (const row of rows) {
+    const filePath = rowValue(row, 'filePath', 3);
+    const normalized = typeof filePath === 'string' ? filePath.replace(/\\/g, '/') : undefined;
+    if (normalized && overlay.snapshot.tombstones.has(normalized)) {
+      tombstones.add(normalized);
+      continue;
+    }
+    if (overlay.overlayAvailable && isOverlayReplacedPath(overlay.snapshot, normalized)) {
+      continue;
+    }
+    kept.push(row);
+  }
+  return { rows: kept, tombstones: [...tombstones] };
+}
+
+function notFoundForTombstones(paths: string[]): SymbolResolutionOutcome {
+  return paths.length > 0
+    ? { kind: 'not_found', warning: `Deleted source path(s): ${paths.join(', ')}` }
+    : { kind: 'not_found' };
 }
 
 export function toSymbolIdentity(symbol: ResolvedSymbol): SymbolIdentity {
@@ -244,11 +279,8 @@ export async function resolveSymbolCandidates(
     const params = { uid };
     const rows = await executeParameterized(repo.id, cypher, params);
     const overlay = await readOverlayRows(repo, cypher, params);
-    const candidates = (rows as QueryRow[])
-      .filter(
-        (row) => !overlay || !isDirtyPath(overlay.snapshot, rowValue(row, 'filePath', 3) as string),
-      )
-      .map((row) => parseSymbolRow(row, include_content));
+    const filtered = filterBaseRows(rows as QueryRow[], overlay);
+    const candidates = filtered.rows.map((row) => parseSymbolRow(row, include_content));
     if (overlay) {
       candidates.push(
         ...overlay.rows.map((row) => ({
@@ -257,7 +289,7 @@ export async function resolveSymbolCandidates(
         })),
       );
     }
-    if (candidates.length === 0) return { kind: 'not_found' };
+    if (candidates.length === 0) return notFoundForTombstones(filtered.tombstones);
     const symbol = candidates[0];
     await enrichCandidateLabels(repo, [symbol]);
     return { kind: 'ok', symbol, resolvedLabel: symbol.type };
@@ -284,9 +316,8 @@ export async function resolveSymbolCandidates(
   const cypher = `MATCH (n) ${whereClause} RETURN ${selectClause} LIMIT 20`;
   const rows = await executeParameterized(repo.id, cypher, queryParams);
   const overlay = await readOverlayRows(repo, cypher, queryParams);
-  const baseRows = (rows as QueryRow[]).filter(
-    (row) => !overlay || !isDirtyPath(overlay.snapshot, rowValue(row, 'filePath', 3) as string),
-  );
+  const filtered = filterBaseRows(rows as QueryRow[], overlay);
+  const baseRows = filtered.rows;
   const queryRows = [...baseRows, ...(overlay?.rows ?? [])];
   const normalized: ResolvedSymbol[] = [
     ...baseRows.map((r) => parseSymbolRow(r, include_content)),
@@ -296,7 +327,7 @@ export async function resolveSymbolCandidates(
     })),
   ];
 
-  if (normalized.length === 0) return { kind: 'not_found' };
+  if (normalized.length === 0) return notFoundForTombstones(filtered.tombstones);
 
   await enrichCandidateLabels(repo, normalized);
 

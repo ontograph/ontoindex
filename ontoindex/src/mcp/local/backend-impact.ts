@@ -104,6 +104,7 @@ interface ImpactErrorResult extends ImpactBaseResult {
   risk: 'UNKNOWN';
   error: string;
   suggestion?: string;
+  warnings?: string[];
 }
 
 interface ImpactAmbiguousResult extends ImpactBaseResult {
@@ -140,6 +141,7 @@ interface ImpactSuccessResult extends ImpactBaseResult {
   };
   risk: ImpactRisk;
   partial?: true;
+  traversalComplete?: false;
   warnings?: string[];
   summary: {
     direct: number;
@@ -242,6 +244,43 @@ export async function runImpact(
   }
 }
 
+export const DIRTY_MENTION_MAX_FILES = 100;
+export const DIRTY_MENTION_MAX_BYTES = 256 * 1024;
+
+/** Conservative evidence of callers absent from the committed graph. */
+export async function findDirtyMentions(
+  repoPath: string,
+  dirtyPaths: ReadonlySet<string>,
+  name: string,
+): Promise<string[]> {
+  if (!name || dirtyPaths.size === 0) return [];
+  const root = await fs.realpath(repoPath).catch(() => undefined);
+  if (!root) return [];
+  const pattern = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+  const mentions: string[] = [];
+  for (const filePath of [...dirtyPaths].slice(0, DIRTY_MENTION_MAX_FILES)) {
+    if (!getLanguageFromFilename(filePath)) continue;
+    const absolute = path.resolve(root, filePath);
+    if (!absolute.startsWith(`${root}${path.sep}`)) continue;
+    const canonical = await fs.realpath(absolute).catch(() => undefined);
+    if (!canonical || !canonical.startsWith(`${root}${path.sep}`)) continue;
+    const handle = await fs.open(canonical, 'r').catch(() => undefined);
+    if (!handle) continue;
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > DIRTY_MENTION_MAX_BYTES) continue;
+      const buffer = Buffer.alloc(DIRTY_MENTION_MAX_BYTES);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      if (pattern.test(buffer.toString('utf8', 0, bytesRead))) mentions.push(filePath);
+    } catch {
+      // Missing or unreadable dirty files provide no mention evidence.
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  }
+  return mentions;
+}
+
 async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise<ImpactResult> {
   throwIfAborted(params.signal);
   const { target, direction } = params;
@@ -259,6 +298,7 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
 
   let outcome: Awaited<ReturnType<typeof resolveSymbolCandidates>> | undefined;
   let dirtyPaths: ReadonlySet<string> | undefined;
+  let tombstones: ReadonlySet<string> | undefined;
   if (repo.repoPath && repo.storagePath) {
     const snapshot = await getOverlaySnapshot({
       id: repo.id,
@@ -266,6 +306,7 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
       storagePath: repo.storagePath,
     }).catch(() => undefined);
     dirtyPaths = snapshot?.dirtyPaths;
+    tombstones = snapshot?.tombstones;
     if (snapshot?.usable) {
       // Dirty-file source fallback returns early, so try the overlay first.
       outcome = await resolveSymbolCandidates(
@@ -304,6 +345,7 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
       risk: 'UNKNOWN',
       resolutionReason: 'not-in-index',
       graphImpactAvailable: false,
+      ...(outcome.warning !== undefined && { warnings: [outcome.warning] }),
     };
   }
 
@@ -358,7 +400,7 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
         'Graph impact is unavailable for uncommitted symbols: the overlay contains symbols only. Empty results do not mean zero callers or zero impact.',
     };
   }
-  return runImpactBFS(repo, sym, symType, direction, {
+  const result = await runImpactBFS(repo, sym, symType, direction, {
     maxDepth,
     relationTypes,
     includeTests,
@@ -366,6 +408,28 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
     dirtyPaths,
     signal: params.signal,
   });
+  if (repo.repoPath && dirtyPaths?.size) {
+    const candidates = new Set(
+      [...dirtyPaths].filter(
+        (filePath) =>
+          !tombstones?.has(filePath) &&
+          filePath.replace(/\\/g, '/') !== sym.filePath.replace(/\\/g, '/'),
+      ),
+    );
+    const mentions = await findDirtyMentions(repo.repoPath, candidates, sym.name);
+    if (mentions.length > 0) {
+      result.partial = true;
+      result.traversalComplete = false;
+      result.warnings = [
+        ...(result.warnings ?? []),
+        ...mentions.map(
+          (filePath) =>
+            `Dirty file ${filePath} mentions ${sym.name}; callers added there are not in the graph`,
+        ),
+      ];
+    }
+  }
+  return result;
 }
 
 function sourceOnlyImpact(

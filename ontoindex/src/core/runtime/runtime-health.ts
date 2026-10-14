@@ -16,6 +16,7 @@ import {
   type RepoMeta,
   type DegradedFileAggregates,
 } from '../../storage/repo-manager.js';
+import { planDirtyOverlay } from '../analyze-delta.js';
 
 export type RuntimeHealthState =
   | 'clean'
@@ -77,6 +78,16 @@ export interface RuntimeHealthSnapshot {
   currentCommit: string | null;
   dirtyWorktree: boolean | null;
   freshnessState: RuntimeHealthState;
+  /** Commit-only freshness, excluding uncommitted source changes. */
+  committedFreshness?: 'fresh' | 'stale' | 'unknown';
+  /** Bounded source-file coverage available to a dirty overlay. */
+  dirtyCoverage?: {
+    state: 'none' | 'coverable' | 'over-cap' | 'unknown';
+    dirtySourceFiles: number | null;
+    cap: number;
+  };
+  /** Whether stored metadata reports at least one embedding vector. */
+  embeddingsAvailable?: boolean | null;
   degradedReason: string | null;
   repairCommand: string;
   repairAction?: RuntimeRepairAction;
@@ -98,6 +109,7 @@ export interface ReadRuntimeHealthOptions {
 
 const GIT_TIMEOUT_MS = 5_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
+const DIRTY_COVERAGE_CAP = 50;
 
 type SourceFreshness = {
   state: 'clean' | 'stale' | 'degraded' | 'untrusted';
@@ -117,6 +129,7 @@ export async function readRuntimeHealth(
   const repoHasGit = hasGitDir(repoPath);
   const currentCommit = repoHasGit ? normalizeCommit(getCurrentCommit(repoPath)) : null;
   const dirtyWorktree = repoHasGit ? await readDirtyWorktree(repoPath, warnings) : null;
+  const dirtyCoverage = await readDirtyCoverage(repoPath, repoHasGit, warnings);
   const analyzeLock = await readAnalyzeLock(storagePath, warnings);
   const analysisCheckpoint = await readAnalysisCheckpoint(storagePath, warnings);
   const embeddingCheckpoint = await readEmbeddingCheckpoint(storagePath, warnings);
@@ -154,6 +167,17 @@ export async function readRuntimeHealth(
     currentCommit,
     dirtyWorktree,
     freshnessState,
+    committedFreshness:
+      indexedCommit !== null && currentCommit !== null
+        ? indexedCommit === currentCommit
+          ? 'fresh'
+          : 'stale'
+        : 'unknown',
+    dirtyCoverage,
+    embeddingsAvailable:
+      typeof meta?.stats?.embeddings === 'number' && Number.isFinite(meta.stats.embeddings)
+        ? meta.stats.embeddings > 0
+        : null,
     degradedReason,
     repairCommand,
     repairAction,
@@ -193,7 +217,7 @@ export function deriveRuntimeHealth(input: {
   });
   const dirtyReason =
     input.dirtyWorktree === true && !input.sourceFreshness
-      ? 'dirty worktree contains uncommitted changes'
+      ? 'committed index is current, but uncommitted files are not represented in the graph'
       : null;
   const staleReason =
     input.indexedCommit && input.currentCommit && input.indexedCommit !== input.currentCommit
@@ -438,6 +462,33 @@ async function readDirtyWorktree(repoPath: string, warnings: string[]): Promise<
   } catch (error) {
     warnings.push(`runtime health git status probe failed: ${formatError(error)}`);
     return null;
+  }
+}
+
+async function readDirtyCoverage(
+  repoPath: string,
+  repoHasGit: boolean,
+  warnings: string[],
+): Promise<NonNullable<RuntimeHealthSnapshot['dirtyCoverage']>> {
+  if (!repoHasGit) {
+    warnings.push('runtime dirty overlay unavailable: repository has no Git directory');
+    return { state: 'unknown', dirtySourceFiles: null, cap: DIRTY_COVERAGE_CAP };
+  }
+
+  try {
+    const plan = await planDirtyOverlay(repoPath);
+    if (plan.tooMany) {
+      return { state: 'over-cap', dirtySourceFiles: null, cap: DIRTY_COVERAGE_CAP };
+    }
+    const dirtySourceFiles = new Set([...plan.includePaths, ...plan.tombstones]).size;
+    return {
+      state: dirtySourceFiles === 0 ? 'none' : 'coverable',
+      dirtySourceFiles,
+      cap: DIRTY_COVERAGE_CAP,
+    };
+  } catch (error) {
+    warnings.push(`runtime dirty overlay probe failed: ${formatError(error)}`);
+    return { state: 'unknown', dirtySourceFiles: null, cap: DIRTY_COVERAGE_CAP };
   }
 }
 

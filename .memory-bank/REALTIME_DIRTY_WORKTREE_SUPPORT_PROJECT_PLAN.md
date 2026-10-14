@@ -1030,7 +1030,7 @@ tasks:
         - dist/
     expected_evidence:
       - 'No overlay: no extra line, or a single neutral line when the tree is dirty and suggests ontoindex analyze --dirty-overlay.'
-      - 'Usable overlay: ''Overlay: usable, N file(s), built <relative time>''.'
+      - "Usable overlay: 'Overlay: usable, N file(s), built <relative time>'."
       - 'Stale overlay: names the reason (older than a dirty file, more than 50 dirty files, unreadable) using the same reason strings getOverlaySnapshot returns; no new staleness logic.'
       - Existing status tests pass unchanged.
     rollback:
@@ -1102,38 +1102,412 @@ tasks:
     stop_conditions:
       - The live session cannot be driven without editing production code.
     known_blockers: []
+
+  RT-36:
+    title: When the indexed commit equals HEAD and the worktree is dirty, runtime health reports committed freshness, dirty-file overlay coverage, and embeddings as separate fields, and the overall state is not degraded unless the database itself is unusable
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: medium
+    owner_files:
+      - ontoindex/src/core/runtime/runtime-health.ts
+      - ontoindex/test/unit/runtime-health.test.ts
+    allowed_write_set:
+      - ontoindex/src/core/runtime/runtime-health.ts
+      - ontoindex/test/unit/runtime-health.test.ts
+    non_goals:
+      - Removing or renaming existing runtimeHealth fields; new fields are additive.
+      - Changing the overlay staleness rule or getOverlaySnapshot.
+      - Changing ontoindex status output (RT-26 owns it).
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/runtime-health.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/core/runtime/runtime-health.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - 'Indexed commit equals HEAD with dirty files: committedFreshness is fresh, dirtyCoverage reports covered, uncovered, and overlay state, and degradedReason no longer says the whole index is degraded.'
+      - 'Indexed commit differs from HEAD: state is stale, as before.'
+      - 'Missing optional embeddings are reported in their own field and do not change freshnessState.'
+      - 'A failed dirty-file scan reports dirtyCoverage unknown, never zero dirty files.'
+      - Existing runtime-health tests pass unchanged or change only where the degraded label for a dirty-only tree is replaced.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - Consumers outside the write set break on the changed freshnessState value for a dirty-only tree.
+      - Reading overlay coverage needs changes outside the write set.
+    known_blockers: []
+
+  RT-37:
+    title: When a new base generation is published between a request's database pin and its metadata read, the request reports the metadata of the generation it actually queried and returns that generation id
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: high
+    owner_files:
+      - ontoindex/src/storage/repo-manager.ts
+      - ontoindex/src/core/lbug/pool-adapter.ts
+      - ontoindex/src/mcp/shared/target-context.ts
+      - ontoindex/test/integration/lbug-pool-generation-swap.test.ts
+    allowed_write_set:
+      - ontoindex/src/storage/repo-manager.ts
+      - ontoindex/src/core/lbug/pool-adapter.ts
+      - ontoindex/src/mcp/shared/target-context.ts
+      - ontoindex/test/integration/lbug-pool-generation-swap.test.ts
+    non_goals:
+      - Changing the publication lock, pointer swap, or retention policy.
+      - A second metadata store.
+    required_validation:
+      - cd ontoindex && npx vitest run test/integration/lbug-pool-generation-swap.test.ts test/unit/target-context.test.ts test/unit/index-generation-retention.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/storage/repo-manager.ts
+        - src/core/lbug/pool-adapter.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - A test that pins generation N, publishes N+1, then reads metadata fails before the change by reporting N+1, and passes after it by reporting N.
+      - The response carries the queried generation id.
+      - A request opened after publication reports N+1.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - The reproduction test passes before any change (the mismatch is not real); record that and close as proof-only.
+      - Binding metadata to the pin needs changes in local-backend-repo-runtime.ts or other files outside the write set.
+    known_blockers: []
+
+  RT-38:
+    title: When the base generation or HEAD changes after an overlay is built, the overlay snapshot is unusable with a reason naming the base mismatch, so an old overlay is never served on top of a newer base
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: medium
+    owner_files:
+      - ontoindex/src/core/run-analyze.ts
+      - ontoindex/src/mcp/local/backend-overlay.ts
+      - ontoindex/test/unit/backend-overlay.test.ts
+      - ontoindex/test/unit/dirty-overlay-build.test.ts
+    allowed_write_set:
+      - ontoindex/src/core/run-analyze.ts
+      - ontoindex/src/mcp/local/backend-overlay.ts
+      - ontoindex/test/unit/backend-overlay.test.ts
+      - ontoindex/test/unit/dirty-overlay-build.test.ts
+    non_goals:
+      - Rebuilding the overlay automatically (RT-42 and RT-43 schedule rebuilds).
+      - Changing the file-mtime staleness rule.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/backend-overlay.test.ts test/unit/dirty-overlay-build.test.ts test/unit/overlay-generations.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/core/run-analyze.ts
+        - src/mcp/local/backend-overlay.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - Each overlay generation records the base generation id and base commit it was built against.
+      - An overlay whose recorded base differs from the active base is unusable with a base-mismatch reason.
+      - An overlay without recorded base data (built before this change) is unusable with a rebuild hint.
+      - The snapshot cache is keyed by repository and base generation, so a base swap is seen within one probe.
+    rollback:
+      - Revert the write-set files; old overlays are rebuilt by the next analyze --dirty-overlay.
+    stop_conditions:
+      - Reading the active base generation needs files outside the write set.
+    known_blockers: []
+
+  RT-39:
+    title: When more than 50 dirty source files exist, the overlay covers up to 50 of them, newest first, reports the rest as uncovered, and stays usable for the covered files instead of turning off for the whole repo
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: [RT-38]
+    type: code
+    validation_tier: unit-fast
+    impact_risk: high
+    owner_files:
+      - ontoindex/src/core/analyze-delta.ts
+      - ontoindex/src/mcp/local/backend-overlay.ts
+      - ontoindex/src/mcp/local/backend-search.ts
+      - ontoindex/src/mcp/local/backend-symbol-resolution.ts
+      - ontoindex/src/cli/analyze.ts
+      - ontoindex/src/cli/watch.ts
+      - ontoindex/test/unit/dirty-overlay-plan.test.ts
+      - ontoindex/test/unit/backend-overlay.test.ts
+    allowed_write_set:
+      - ontoindex/src/core/analyze-delta.ts
+      - ontoindex/src/mcp/local/backend-overlay.ts
+      - ontoindex/src/mcp/local/backend-search.ts
+      - ontoindex/src/mcp/local/backend-symbol-resolution.ts
+      - ontoindex/src/cli/analyze.ts
+      - ontoindex/src/cli/watch.ts
+      - ontoindex/test/unit/dirty-overlay-plan.test.ts
+      - ontoindex/test/unit/backend-overlay.test.ts
+    non_goals:
+      - Raising the 50-file cap.
+      - Changing planExperimentalFileDeltaRefresh.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/dirty-overlay-plan.test.ts test/unit/backend-overlay.test.ts test/unit/experimental-file-delta.test.ts test/unit/watch.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/core/analyze-delta.ts
+        - src/mcp/local/backend-overlay.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - 'With 75 dirty source files the plan returns 50 includePaths ordered by newest mtime and 25 uncoveredPaths; tombstones are always included.'
+      - 'The snapshot keeps dirtyPaths as every dirty source path, so isDirtyPath, impact traversal, and the mutation guard still treat uncovered files as dirty.'
+      - 'Search and symbol resolution drop base rows only for paths the overlay replaces (covered or tombstoned); uncovered paths keep their base rows, flagged stale.'
+      - 'Source eligibility uses the same ignore and file-size rules as full analyze, so generated, vendored, and over-cap files are never overlay candidates.'
+      - analyze --dirty-overlay and watch build the covered subset instead of refusing above the cap.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - Reusing the analyze ignore and size rules needs changes in the scan owner outside the write set.
+      - A caller of tooMany outside the write set changes behavior.
+    known_blockers: []
+
+  RT-40:
+    title: When a file is deleted or renamed away and no usable overlay exists, context, impact, and symbol resolution never return that file's base symbols as current; they are omitted or flagged deleted
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: [RT-39]
+    type: code
+    validation_tier: unit-fast
+    impact_risk: medium
+    owner_files:
+      - ontoindex/src/mcp/local/backend-symbol-resolution.ts
+      - ontoindex/test/unit/backend-overlay.test.ts
+    allowed_write_set:
+      - ontoindex/src/mcp/local/backend-symbol-resolution.ts
+      - ontoindex/test/unit/backend-overlay.test.ts
+    non_goals:
+      - Changing search ranking.
+      - Serving deleted content from git history.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/backend-overlay.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/mcp/local/backend-symbol-resolution.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - With an unusable overlay, resolving a symbol from a deleted file returns no current candidate and a warning naming the deleted path.
+      - With a usable overlay, a renamed symbol resolves only at its new path.
+      - Clean-file resolution is unchanged.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - Context or impact handlers outside the write set must change to show the warning.
+    known_blockers: []
+
+  RT-41:
+    title: When impact runs on a clean target and a dirty source file mentions the target's name, the result is marked partial and names those files, because calls added in dirty files are not in the graph
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: medium
+    owner_files:
+      - ontoindex/src/mcp/local/backend-impact.ts
+      - ontoindex/test/unit/impact-kernel-dirty.test.ts
+    allowed_write_set:
+      - ontoindex/src/mcp/local/backend-impact.ts
+      - ontoindex/test/unit/impact-kernel-dirty.test.ts
+    non_goals:
+      - Parsing dirty files or adding CALLS edges to the overlay.
+      - Changing the risk score of clean results when no dirty file mentions the target.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/impact-kernel-dirty.test.ts test/unit/backend-impact-identity.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/mcp/local/backend-impact.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - A dirty file that newly calls a clean target yields traversalComplete false and a warning naming that file.
+      - The scan reads at most the dirty source files in the snapshot and a bounded number of bytes per file.
+      - With no dirty source files, results and timings are unchanged.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - The name scan adds more than 100 ms at 50 dirty files on this repo.
+    known_blockers: []
+
+  RT-42:
+    title: When source files change continuously, ontoindex watch starts a refresh within a maximum wait, catches missed events with a periodic git-status check, and only one watcher per repository builds overlays
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: code
+    validation_tier: unit-fast
+    impact_risk: medium
+    owner_files:
+      - ontoindex/src/cli/watch.ts
+      - ontoindex/test/unit/watch.test.ts
+    allowed_write_set:
+      - ontoindex/src/cli/watch.ts
+      - ontoindex/test/unit/watch.test.ts
+    non_goals:
+      - A new npm dependency.
+      - Changing the 750 ms debounce default.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/watch.test.ts test/unit/watch-command.test.ts test/unit/watch-save-patterns.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/cli/watch.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - A save every 200 ms for 20 s starts a refresh within the maximum wait (default 5 s) and at least once per maximum-wait window.
+      - A change made with no filesystem event (simulated) is refreshed after the next periodic check (default 30 s), which compares the git-status dirty set with the last built set.
+      - A second watcher on the same repository sees the live lease (pid and heartbeat), logs that another watcher owns the repository, and builds nothing; a stale lease is taken over.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - The lease needs a cross-process lock primitive outside node:fs.
+    known_blockers: []
+
+  RT-43:
+    title: When HEAD moves or the overlay is unusable because of a base mismatch, ontoindex watch runs one base analyze before the next overlay build, and skips it while analyze.lock is held
+    status: OPEN
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on: [RT-38, RT-42]
+    type: code
+    validation_tier: unit-fast
+    impact_risk: medium
+    owner_files:
+      - ontoindex/src/cli/watch.ts
+      - ontoindex/test/unit/watch.test.ts
+    allowed_write_set:
+      - ontoindex/src/cli/watch.ts
+      - ontoindex/test/unit/watch.test.ts
+    non_goals:
+      - Running analyze --embeddings from the watcher.
+      - Triggering a base analyze only because many files are uncovered.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/watch.test.ts test/unit/watch-command.test.ts
+      - cd ontoindex && npx tsc --noEmit
+    validation_workspace:
+      root: ontoindex
+      inputs:
+        - src/cli/watch.ts
+      generated_outputs:
+        - dist/
+    expected_evidence:
+      - A HEAD change produces exactly one base analyze, then one overlay build.
+      - A base mismatch reported by the overlay snapshot produces the same sequence.
+      - A held analyze.lock skips the base analyze and retries it, as the overlay refresh already does.
+    rollback:
+      - Revert the write-set files.
+    stop_conditions:
+      - Detecting a HEAD change needs a new watcher on .git internals that makes the save-pattern tests flaky.
+    known_blockers: []
+
+  RT-44:
+    title: A read-only diagnostic measures, with a long-lived MCP reader and repeated publications, how many base and overlay generations stay on disk, when the reader re-pins, and what state remains after a process is killed between pointer swap and job completion
+    status: OPEN
+    classification: proof-only
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: diagnostic
+    validation_tier: unit-fast
+    impact_risk: low
+    owner_files:
+      - ontoindex/src/storage/repo-manager.ts
+      - ontoindex/src/mcp/local/local-backend-repo-runtime.ts
+    allowed_write_set: []
+    non_goals:
+      - Fixing defects inside this task; each confirmed defect becomes its own task.
+    required_validation:
+      - cd ontoindex && npx vitest run test/unit/index-generation-retention.test.ts test/integration/lbug-pool-generation-swap.test.ts
+    expected_evidence:
+      - 'Recorded counts and bytes of retained base and overlay generations after 10 publications with one reader held open.'
+      - 'Whether and when a busy reader re-pins to the newest generation, with file:line evidence.'
+      - 'The pointer, generation, and job state after a kill between pointer swap and job completion, and whether the next start recovers it.'
+      - A recommendation for a byte budget and whether retained-generation counts belong in status.
+    rollback:
+      - None; read-only.
+    stop_conditions:
+      - The diagnostic cannot run without editing production code.
+    known_blockers: []
 ```
 
 ## Required Traceability
 
-| Requirement ID | ADR/user requirement | Disposition | Task IDs | Validation |
-| --- | --- | --- | --- | --- |
-| RT-REQ-1 | Tool results flag which returned files are dirty | implementation | RT-1 | target-context and envelope tests |
-| RT-REQ-2 | Dirty files get a separate overlay graph that never mutates the active generation | implementation | RT-2, RT-3 | dirty-overlay build and plan tests |
-| RT-REQ-3 | A debounced watcher keeps the overlay current | implementation | RT-4 | watch tests |
-| RT-REQ-4 | Queries serve dirty paths from the overlay | proof-only | RT-5 | read-path spike |
-| RT-REQ-5 | Embeddings are not refreshed for the overlay | non-goal | RT-2 | documented limit |
-| RT-REQ-6 | Queries, symbol lookup, context and impact serve dirty paths from the overlay without claiming zero impact | implementation | RT-6, RT-7, RT-8 | overlay merge, resolution and context/impact tests |
-| RT-REQ-7 | The overlay build does not flake on the default 8 TB mmap | implementation | RT-9 | 30 consecutive passing runs |
-| RT-REQ-8 | NodeNext .js imports resolve to .ts so the graph has real cross-file edges | implementation | RT-10 | resolver fixture and re-analysis |
-| RT-REQ-9 | A rebuilt overlay is picked up by a running server | implementation | RT-11 | rebuild-then-query test |
-| RT-REQ-10 | Impact flags dirty rows instead of trusting stale ids | implementation | RT-12 | impact-kernel-dirty tests |
-| RT-REQ-11 | A watch command keeps the overlay current | implementation | RT-13 | watch-command tests |
-| RT-REQ-12 | A regression in .js-to-.ts mapping fails a real-pipeline test | implementation | RT-14 | js-specifier-edges integration test |
-| RT-REQ-13 | The watcher says what it is doing at startup | implementation | RT-15 | watch-command tests |
-| RT-REQ-14 | Overlay performance is measured, not assumed | proof-only | RT-16 | benchmark output |
-| RT-REQ-15 | ./dir.js resolves to dir/index.ts | implementation | RT-17 | resolver unit and integration tests |
-| RT-REQ-16 | The watcher survives real editor save patterns | implementation | RT-18 | real-file watcher tests |
-| RT-REQ-17 | Windows-style paths behave like POSIX paths | proof-only | RT-19 | host-independent path tests |
-| RT-REQ-18 | The feature is documented and discoverable | implementation | RT-20 | doc claims checked against code |
-| RT-REQ-19 | Mutation tools never apply graph line numbers to a file that changed since indexing | implementation | RT-21 | mutation-dirty-guard tests |
-| RT-REQ-20 | Windows test assertions are separator-agnostic | implementation | RT-22 | mutation-dirty-guard tests |
-| RT-REQ-21 | Overlay tests release file handles before deleting or renaming on Windows | implementation | RT-23 | overlay tests |
-| RT-REQ-22 | macOS watcher tests pass or are skipped with a recorded reason | implementation | RT-24 | watch-save-patterns tests |
-| RT-REQ-23 | An overlay rebuild never deletes or rewrites an open store | implementation | RT-25 | overlay-generations tests with a real open reader |
-| RT-REQ-24 | A user can see the overlay's state | implementation | RT-26 | status tests |
-| RT-REQ-25 | Machine-specific files stay out of the repo | proof-only | RT-27 | audit recorded in the closeout |
-| RT-REQ-26 | The watcher, MCP server and overlay work together on a real repo | proof-only | RT-28 | live session record |
+| Requirement ID | ADR/user requirement                                                                                       | Disposition    | Task IDs         | Validation                                         |
+| -------------- | ---------------------------------------------------------------------------------------------------------- | -------------- | ---------------- | -------------------------------------------------- |
+| RT-REQ-1       | Tool results flag which returned files are dirty                                                           | implementation | RT-1             | target-context and envelope tests                  |
+| RT-REQ-2       | Dirty files get a separate overlay graph that never mutates the active generation                          | implementation | RT-2, RT-3       | dirty-overlay build and plan tests                 |
+| RT-REQ-3       | A debounced watcher keeps the overlay current                                                              | implementation | RT-4             | watch tests                                        |
+| RT-REQ-4       | Queries serve dirty paths from the overlay                                                                 | proof-only     | RT-5             | read-path spike                                    |
+| RT-REQ-5       | Embeddings are not refreshed for the overlay                                                               | non-goal       | RT-2             | documented limit                                   |
+| RT-REQ-6       | Queries, symbol lookup, context and impact serve dirty paths from the overlay without claiming zero impact | implementation | RT-6, RT-7, RT-8 | overlay merge, resolution and context/impact tests |
+| RT-REQ-7       | The overlay build does not flake on the default 8 TB mmap                                                  | implementation | RT-9             | 30 consecutive passing runs                        |
+| RT-REQ-8       | NodeNext .js imports resolve to .ts so the graph has real cross-file edges                                 | implementation | RT-10            | resolver fixture and re-analysis                   |
+| RT-REQ-9       | A rebuilt overlay is picked up by a running server                                                         | implementation | RT-11            | rebuild-then-query test                            |
+| RT-REQ-10      | Impact flags dirty rows instead of trusting stale ids                                                      | implementation | RT-12            | impact-kernel-dirty tests                          |
+| RT-REQ-11      | A watch command keeps the overlay current                                                                  | implementation | RT-13            | watch-command tests                                |
+| RT-REQ-12      | A regression in .js-to-.ts mapping fails a real-pipeline test                                              | implementation | RT-14            | js-specifier-edges integration test                |
+| RT-REQ-13      | The watcher says what it is doing at startup                                                               | implementation | RT-15            | watch-command tests                                |
+| RT-REQ-14      | Overlay performance is measured, not assumed                                                               | proof-only     | RT-16            | benchmark output                                   |
+| RT-REQ-15      | ./dir.js resolves to dir/index.ts                                                                          | implementation | RT-17            | resolver unit and integration tests                |
+| RT-REQ-16      | The watcher survives real editor save patterns                                                             | implementation | RT-18            | real-file watcher tests                            |
+| RT-REQ-17      | Windows-style paths behave like POSIX paths                                                                | proof-only     | RT-19            | host-independent path tests                        |
+| RT-REQ-18      | The feature is documented and discoverable                                                                 | implementation | RT-20            | doc claims checked against code                    |
+| RT-REQ-19      | Mutation tools never apply graph line numbers to a file that changed since indexing                        | implementation | RT-21            | mutation-dirty-guard tests                         |
+| RT-REQ-20      | Windows test assertions are separator-agnostic                                                             | implementation | RT-22            | mutation-dirty-guard tests                         |
+| RT-REQ-21      | Overlay tests release file handles before deleting or renaming on Windows                                  | implementation | RT-23            | overlay tests                                      |
+| RT-REQ-22      | macOS watcher tests pass or are skipped with a recorded reason                                             | implementation | RT-24            | watch-save-patterns tests                          |
+| RT-REQ-23      | An overlay rebuild never deletes or rewrites an open store                                                 | implementation | RT-25            | overlay-generations tests with a real open reader  |
+| RT-REQ-24      | A user can see the overlay's state                                                                         | implementation | RT-26            | status tests                                       |
+| RT-REQ-25      | Machine-specific files stay out of the repo                                                                | proof-only     | RT-27            | audit recorded in the closeout                     |
+| RT-REQ-26      | The watcher, MCP server and overlay work together on a real repo                                           | proof-only     | RT-28            | live session record                                |
+| RT-REQ-27      | Health separates committed freshness, dirty coverage, and embeddings; a dirty tree alone is not degraded   | implementation | RT-36            | runtime-health tests                               |
+| RT-REQ-28      | A request's metadata comes from the generation it queried                                                  | implementation | RT-37            | generation-swap reproduction test                  |
+| RT-REQ-29      | An overlay is served only on the base it was built against                                                 | implementation | RT-38            | backend-overlay and overlay-build tests            |
+| RT-REQ-30      | More than 50 dirty source files gives partial coverage, not zero                                           | implementation | RT-39            | dirty-overlay-plan and backend-overlay tests       |
+| RT-REQ-31      | Deleted and renamed-away files never resolve as current                                                    | implementation | RT-40            | backend-overlay tests                              |
+| RT-REQ-32      | Impact on a clean target is partial when dirty files may add callers                                       | implementation | RT-41            | impact-kernel-dirty tests                          |
+| RT-REQ-33      | The watcher converges under continuous edits and missed events, with one watcher per repository            | implementation | RT-42            | watch tests                                        |
+| RT-REQ-34      | A HEAD move or base mismatch rebuilds the base before the overlay                                          | implementation | RT-43            | watch tests                                        |
+| RT-REQ-35      | Generation retention, re-pinning, and crash state are measured before a disk budget is set                 | proof-only     | RT-44            | diagnostic record                                  |
 
 ## Decisions And Non-Goals
 
@@ -1155,11 +1529,22 @@ tasks:
 
 - 2026-10-10 next-step selection after the cross-platform CI pass: chose versioned overlay generations (RT-25) over cross-process close notifications (new machinery) and over delete retries (masks the problem for long-lived readers), status visibility (RT-26), the pre-merge audit (RT-27, done), and a live end-to-end session (RT-28). Rejected a broad ESLint warning cleanup (out of scope) and skipping the live session (every test so far covered pieces).
 
+- 2026-10-14 review of "index is degraded" on a continuously changing tree. Observed: indexed commit equals HEAD (`7b1494c`), 115 dirty paths (75 source files by extension), optional embeddings missing, 2 files over the scan size cap. Two causes, neither a database fault: `runtime-health.ts` labels any dirty tree degraded, and the overlay is all-or-nothing above 50 dirty source files (`analyze-delta.ts:399-401`, `backend-overlay.ts:91-93`), so it is off for this whole repo.
+- Chosen design, three parts used together:
+  1. Truthful status: separate committed freshness, dirty coverage, and embeddings (RT-36); report metadata from the generation actually queried (RT-37).
+  2. Correct, converging overlay: bind each overlay to its base (RT-38); partial coverage above the cap (RT-39); deleted files never resolve (RT-40); impact is partial when dirty files may add callers (RT-41); maximum wait, periodic git-status catch-up, and a one-watcher lease (RT-42).
+  3. Snapshot fallback through the existing generation publication and pins: a HEAD move or base mismatch triggers one base analyze before the next overlay (RT-43); retention and re-pinning are measured before choosing a disk budget (RT-44).
+- Order: RT-36 and RT-38 first (RT-38 plus RT-39 restores the overlay on this repo), then RT-40, RT-41, RT-37, then RT-42, RT-43, RT-44. RT-37 starts with a reproduction test, because the mixed-version read was reported by review and is not yet shown by a test.
+- Rejected: raising the 50-file cap (does not fix base mismatch or deleted files, and makes each build slower); in-place transactional graph updates (the generation and overlay owners already provide isolation; no measurement shows they are too slow); a new store, lock daemon, or watcher dependency.
+- Covered by later work, statuses unchanged pending gate review: RT-4's watcher core is the one RT-13 registers and wires; RT-5's merge points are implemented by RT-6, RT-7, and RT-8. Watcher saves during a refresh already get one follow-up, and a held analyze.lock already retries (`watch.ts:151-180`).
+- Vector search for dirty files still lags until `analyze --embeddings`; RT-36 reports that instead of hiding it.
+
 ## Closeout
 
 RT-1 (2026-10-10), implemented locally in PR 83 without sub-agent role receipts, so it stays OPEN here until reviewed by the gates: `dirtyWorkspace.dirtyPaths` (cap 50, `dirtyPathsTruncated`) added in target-context.ts; `freshness.dirtyResultPaths` added in response-envelope.ts (bounded scan of filePath/path/file in results). 6 new tests pass; 41/41 in the two touched files; tsc clean. Full unit run: 6885 pass, 4 fail in mcp-doctor.test.ts, which fail identically on unmodified master. Per-result `stale` markers were not added; only the path list on freshness.
 
 2026-10-10 sub-agent phase (parent verified diffs, ran tsc, prettier, and the full unit suite; 6899 pass, 4 pre-existing mcp-doctor failures):
+
 - RT-2 (gpt-6.1-sol): `analyze --dirty-overlay` builds a disposable store at `.ontoindex/overlay` and never activates a generation. I added the CLI flag registration the agent was blocked on. Live check: 8 dirty files gave 442 nodes; the active `meta.json` md5 was identical before and after.
 - RT-3 (gpt-6-luna): `planDirtyOverlay` in analyze-delta.ts (append-only); 7 tests including rename, delete, AD/DU, spaces, and the 50-file cap.
 - RT-4 (gpt-6-luna): `createDebouncedWatcher` in src/cli/watch.ts, dependency-free, lock-aware, injected refresh. Not registered as a CLI command and not yet wired to the overlay build.
@@ -1168,6 +1553,7 @@ RT-1 (2026-10-10), implemented locally in PR 83 without sub-agent role receipts,
 - Statuses left OPEN: no authenticated role receipts exist (dispatch was not through the manager loop).
 
 2026-10-10 query-path phase. I wrote backend-overlay.ts (snapshot, isDirtyPath, queryOverlay on a distinct pool id, 2s TTL cache; usable only when the overlay is newer than every dirty file) and its test; sub-agents did the hooks. Parent verified: tsc clean, prettier clean on touched files, 6930 unit tests pass with the same 4 pre-existing mcp-doctor failures.
+
 - RT-6 (gpt-6.1-sol): backend-search.ts drops dirty base candidates and merges overlay symbols before ranking; bypasses the structured cache when usable.
 - RT-7 (gpt-6-luna): shared resolver merges overlay candidates, drops dirty base candidates, tags source overlay. Activates only when the repo handle carries repoPath and storagePath.
 - RT-8 (gpt-6.1-sol): context and impact pass those fields; overlay targets get source overlay, impact returns risk UNKNOWN with graphImpactAvailable false.
@@ -1175,8 +1561,9 @@ RT-1 (2026-10-10), implemented locally in PR 83 without sub-agent role receipts,
 - Known gaps: impact-kernel.ts:344-364 does not filter dirty paths, so stale dirty IDs can still enter the BFS from a clean target (not changed). Callers backend-move-symbol, backend-extract-function, backend-symbol-mutations still omit storagePath, so mutations stay base-only (intended: do not edit from an overlay). Overlay has no embeddings. The watcher is not registered or wired to the overlay build. Statuses stay OPEN: no authenticated role receipts.
 
 2026-10-10 hardening phase (5 sub-agents: gpt-6.1-sol on RT-10/11/12, gpt-6-luna on RT-9/13). Parent verified: tsc clean, prettier clean on every touched file, 7018 unit tests pass with the same 4 pre-existing mcp-doctor failures, overlay-build test 30/30 runs (was 1 failure in 10).
+
 - RT-10: the import resolver now maps ./a.js to a.ts (opt-in per call, TS/JS relative imports only). Measured on this repo after `analyze --force`: ts-to-ts IMPORTS edges 294 -> 3578; cross-file CALLS 1419 -> 4239; `runImpactKernel` callers 0 -> 4 (diff-review, write-through-verification, safe-edit-check, backend-impact). This was a pre-existing indexer bug that made every impact/context answer about NodeNext TypeScript under-report callers.
-- RT-9: initLbug takes an optional maxDBSize; only the overlay build passes 4 GiB (2**32; note 1<<32 is 0 in JS). Default path unchanged. A bounded store is readable by the pool adapter.
+- RT-9: initLbug takes an optional maxDBSize; only the overlay build passes 4 GiB (2\*\*32; note 1<<32 is 0 in JS). Default path unchanged. A bounded store is readable by the pool adapter.
 - RT-11: overlay pool handle is invalidated when the store file identity changes or disappears; failed snapshot computations are not cached; concurrent probes are single-flight.
 - RT-12: impact traversal keeps dirty rows, flags them dirty, does not expand through them, and marks the result partial with one warning. No dirty set means identical output.
 - RT-13: `ontoindex watch [path]` registered; spawns a child `analyze --dirty-overlay` per debounced burst, honors analyze.lock, strips embedding env from the child.
@@ -1184,6 +1571,7 @@ RT-1 (2026-10-10), implemented locally in PR 83 without sub-agent role receipts,
 - Statuses stay OPEN: no authenticated role receipts exist.
 
 2026-10-10 verification phase (3 sub-agents: gpt-6.1-sol on RT-14 and RT-16, gpt-6-luna on RT-15). Parent re-ran: tsc clean, prettier clean, 20 tests in the touched suites, and the benchmark.
+
 - Local CI reproduction on commit 61f0b6c: prettier (root) clean; eslint 0 errors (4622 pre-existing warnings); tsc (ontoindex) clean; tsc -b (ontoindex-web) clean; unit suite with the CI coverage flags: 7018 pass, 4 pre-existing mcp-doctor failures; coverage 70.2% statements, 59.5% branches, 78.2% functions, 72.7% lines against CI floors 26/23/28/27. Windows and macOS jobs were not reproduced locally.
 - RT-14: js-specifier-edges integration test runs the real pipeline and asserts exact edges (b->a, c->a, d->sub/index, e->f, no edge for a missing target). It fails on c1767b5 (only c->a resolves) and passes 5/5 on the fixed tree.
 - RT-15: `ontoindex watch` prints one startup line, e.g. `Watching <root> (debounce 750 ms); tree is clean`, and nothing while idle.
@@ -1191,6 +1579,7 @@ RT-1 (2026-10-10), implemented locally in PR 83 without sub-agent role receipts,
 - Statuses stay OPEN: no authenticated role receipts exist.
 
 2026-10-10 robustness phase (5 sub-agents: gpt-6-luna on RT-17 and RT-19, gpt-6.1-sol on RT-18, RT-20 and RT-21). Parent re-ran: tsc clean, prettier clean, watcher suites 10/10 runs green.
+
 - RT-17: `./dir.js` now resolves to `dir/index.ts` (real file > dir.ts > dir/index.ts); 72 resolver tests, 205 with integration; verified end to end on a scratch repo (u1.ts -> dir/index.ts).
 - RT-18: real `fs.watch` with real file operations: in-place write, temp+rename, delete+create, vim backup rename, 20-write burst, nested create each yield exactly 1 refresh; backup/swap/4913-only yields 0. Defects found and fixed in watch.ts: backup suffix `~` and Vim `4913` were not ignored; stale-inode watch after a rename was not re-armed (re-armed after each debounce); watcher errors and root replacement are now logged and stop cleanly (restart needs a new watcher). The new suite failed 9 of 15 runs before the final fix, 0 of 15 after. Linux/Node 24 only; re-arming rescans the tree and large-tree cost is unmeasured.
 - RT-19: 8 host-independent Windows-path tests pass plus 1 documented expected failure: tryResolveWithExtensions called directly with a backslash path does not normalize it. Not a live defect: filesystem-walker.ts normalizes to forward slashes before the resolver runs. Real windows-latest CI has still not run on this work.
@@ -1199,18 +1588,19 @@ RT-1 (2026-10-10), implemented locally in PR 83 without sub-agent role receipts,
 - Statuses stay OPEN: no authenticated role receipts exist.
 
 2026-10-10 cross-platform fixes (3 sub-agents: gpt-6-luna on RT-22 and RT-24, gpt-6.1-sol on RT-23). Parent ran the four touched test files 5 times on Linux (63/63 each), tsc clean, whole-repo prettier clean. NONE of these fixes has been run on Windows or macOS; the draft PR 85 rerun is the only evidence.
+
 - RT-22: mutation-dirty-guard assertions now match both path separators (Windows CI failure: absolute backslash path in the message). Two guard cases added (host-native absolute path, backslash-relative path). The agent did not run its own tests (another validation was active), so the parent ran them.
 - RT-23: the Windows file-lock failures were NOT fixed, only isolated. Three tests are skipped on win32 with a comment naming RT-23: the overlay-build rename (EPERM on generations/.staging-baseline) and two backend-overlay lifecycle tests (reading a rebuilt or deleted overlay while a pooled reader is open). The agent classified all three as production lifecycle issues, unproven: run-analyze.ts:784 removes the overlay directory without telling MCP readers; backend-overlay.ts:125-138 closes a reader only after it sees the file disappear, which is too late for Windows to allow the delete; closeActiveLbugHandles (lbug-adapter.ts:531-542) swallows close failures. On Windows a running MCP server plus `ontoindex watch` rebuilding the overlay can therefore fail. This is a real open risk, not covered by any passing test there.
 - RT-24: macOS watcher tests now use realpath'd temp roots, a 2 s settle on darwin, a 300 ms warm-up, and each "artifact alone" test also performs a real save so it can no longer pass vacuously. No darwin skip. Unverified until macOS CI runs; if it still fails the next step is skipIf(darwin) and a production investigation.
 
 2026-10-10 second CI round on draft PR 85: Windows tests PASS now (the three file-lock tests are skipped on win32 by design, see above). macOS still failed all real-fs.watch tests. Two temporary diagnostic tests on the probe branch showed the cause: on macOS the root-parent watcher receives a replayed `rename:root` event for the root's own creation right after it is armed (events seen: `rename:root`, then `rename:a.ts`), and watch.ts treated every parent `rename` of the root name as a replacement and stopped the watcher (`Watcher stopped: Watched root was removed or replaced`) before any file event. So this was a production defect, not a test-setup problem: on macOS `ontoindex watch` would have stopped itself at startup.
+
 - Fix (watch.ts): a parent `rename` of the root is now ambiguous on both platforms (macOS replays creation; Linux reuses inode and birthtime on an instant delete and recreate). The watcher re-stats the root: if it is gone it stops and logs; if a directory exists it adopts the new identity and re-arms the recursive watch. Behavior change: an instant delete-and-recreate of the root now keeps the watcher alive instead of stopping it; the old test expecting a stop was replaced by one that expects it to keep watching and still refresh after a save, plus a test that a root that stays deleted stops with a log. A first attempt using a 250 ms replay window made Linux worse (8 of 25 runs failed) and was reverted; the stat-then-rearm version passed 25 of 25 Linux runs of all three watcher suites.
 - Not yet verified on macOS: the fix is validated on Linux only; the macOS CI rerun is the evidence.
 
 2026-10-10 third CI round on draft PR 85: macOS PASSES (all 13 watcher tests; the one remaining failure, bench-gate, is a timing-based benchmark check that passed in two earlier macOS runs and on rerun). Windows failed only the rewritten "recreated at once" watcher test: `Watcher stopped: Watched root was replaced`. Cause: the second code path, checkRoot(), still treated a replaced-but-present root as fatal while the parent-rename path now re-armed. Fix: checkRoot() now adopts the new root identity and re-arms; only a root that is gone stops the watcher. The 20-writes test also had a flaky wall-clock assertion on the write loop itself (231 ms against a 100 ms bound in 1 of 25 local runs); removed, since it measured the machine and not the watcher. Linux: 24 of 25 runs clean before removing it, 32 of 32 tests after. Windows and macOS need the CI rerun as evidence.
 
 2026-10-10 pre-merge audit (RT-27, done in the main session): the branch carried an edit to the tracked, shared `.mcp.json` that replaced three upstream paths with this machine's `/opt/d1/_wrk/ontoindex`. That fixed this checkout and would break it for every other contributor (the file also lists other developers' absolute paths). Reverted to master's version; local MCP wiring for this machine lives in `~/.ontocode/config.toml`, which is not part of the repo. No TODO, FIXME, or debugger statements were added; added console.log calls are CLI user output (overlay summary, watch lines, benchmark usage). No machine paths appear in shipped source or scripts.
-
 
 ## Evidence note: RT-25 immutability root cause and fix
 
@@ -1248,3 +1638,80 @@ Probe PR #89 result (since closed): the Windows unit job passed with 471 files p
 `closeLbug({ strict: true })` rethrows the first failed Connection or Database close, after always resetting the session state. `runFullAnalysis` uses it immediately before `activateIndexGeneration`, so a generation is never renamed into place while a native handle may still be open. Every other caller keeps the old best-effort behavior. `test/unit/lbug-strict-close.test.ts` injects a Connection close failure and asserts the rethrow; the agent-free mutation check (strict throw disabled) made it fail. Linux only until a probe runs. Consequence to watch: an analyze whose final close fails now fails instead of publishing a possibly-locked generation.
 
 Probe PR #90 result for RT-35 (since closed): Windows, Ubuntu, lint, format and typecheck passed. macOS failed once in `test/unit/watch-save-patterns.test.ts` ("logs and stops when the root is deleted and not recreated": expected `[ { content: 'initial', ... } ]` to equal `[]`), then passed on a failed-job rerun with no code change. That test exercises `ontoindex watch` and real `fs.watch`, not the lbug close path, so I judge it a pre-existing timing flake. This is a judgement from one rerun, not a root-cause fix, and it is the second macOS watcher flake recorded in this plan. A deterministic fix for that test is still open. Only `check` failed otherwise, the known bug fixed by PR #84.
+
+## Evidence note: status split and partial coverage (RT-36, RT-38, RT-39, RT-41)
+
+Dispatch mode stays `human`: `sub-agent` mode needs exactly one dependency-ready task and this plan has about 27. Work ran through leaf sub-agents (gpt-6-luna xhigh, gpt-6.1-sol low) with disjoint write sets; the parent re-ran every check. No authenticated role receipts exist, so all four tasks stay OPEN.
+
+- RT-36 (luna): `RuntimeHealthSnapshot` gains additive `committedFreshness`, `dirtyCoverage` (`none|coverable|over-cap|unknown`, cap 50) and `embeddingsAvailable`. A failed dirty scan reports `unknown`, never `none`. For a dirty tree whose indexed commit equals HEAD, `degradedReason` now reads "committed index is current, but uncommitted files are not represented in the graph"; `freshnessState` keeps the value `dirty`. Two other test files still contain the old text but pass because they supply the string themselves (`resources.test.ts`, `response-envelope.test.ts`).
+- RT-38 (sol): each overlay writes `base.json` (`baseGenerationId`, `baseCommit`) before the CURRENT pointer is renamed. `computeSnapshot` rejects an overlay with no `base.json` or a different base, and the cache re-checks the active generation pointer on every probe. Existing overlays are unusable until rebuilt with `analyze --dirty-overlay`.
+- RT-39 (luna): above 50 eligible files `planDirtyOverlay` returns the 50 newest in `includePaths`, the rest in `uncoveredPaths`, and every dirty path in `allDirtyPaths`; `tooMany` is kept. Snapshot `dirtyPaths` holds all dirty paths; `overlayPaths` holds covered ones only. Search and symbol resolution drop base rows only for covered or tombstoned paths (`isOverlayReplacedPath`), so uncovered files keep base rows. `analyze --dirty-overlay` and `watch` build the covered subset and log counts. The worker stopped once at its write-set limit; two test files that encoded the old all-or-nothing behavior were added to its set. Live check on this repo: 92 dirty source files, 50 covered, 42 uncovered.
+- RT-41 (sol): `findDirtyMentions` scans at most 100 dirty files of at most 256 KiB for a whole-word match of the target name; a match sets `partial: true`, `traversalComplete: false` and a warning naming the file. Risk is unchanged, and the scan is skipped when there are no dirty files.
+- Validation by the parent after the last edit: 14 test files, 211 passed and 1 existing expected failure; `tsc --noEmit` exit 0; Prettier clean on touched files; `gn_verify_diff` PASS with no unexpected files.
+- Gaps: overlay eligibility is still extension-based (the analyze scan's ignore and size rules were not reused); uncovered rows are not marked `stale` beyond the existing dirty-path list; the RT-41 scan is a name match and can over-report. RT-37, RT-40, RT-42, RT-43 and RT-44 are not started.
+
+## Evidence note: deleted files and watcher convergence (RT-40, RT-42)
+
+Same method as the previous note: leaf sub-agents (gpt-6-luna xhigh on RT-40, gpt-6.1-sol low on RT-42), disjoint write sets, parent re-ran all checks. Statuses stay OPEN (no authenticated role receipts).
+
+- RT-40: `resolveSymbolCandidates` removes base candidates in `snapshot.tombstones` whether or not the overlay is usable. If that removes every candidate the outcome is `not_found` with `warning: "Deleted source path(s): ..."`. A usable overlay resolves a renamed symbol only at its new path. Clean-file resolution is unchanged. Gap: the context and impact handlers do not yet display the new `warning` field, so callers see "not found" without the reason.
+- RT-42: `ontoindex watch` fires a refresh at most 5 s (`maxWaitMs`) after the first event of a burst even if saves continue; a 30 s reconcile tick compares the current dirty and covered signature with the last requested one and requests a refresh when they differ; a lease file `<storage>/watch.lease` (pid and heartbeat) makes a second watcher on the same repository log that another watcher owns it and build nothing. Stale leases are taken over. The reconcile timer is unref'd and cleared on stop. Residual race: two watchers started in the same instant against a stale lease can both take over; `analyze.lock` serializes their builds, so the cost is one extra build.
+- Parent found and fixed one regression: `createWatchCommand` now writes the lease under the repository storage path, and `windows-path-handling.test.ts` called it with `/repo` and failed with EACCES. The test now passes a temp lease path. Both workers had run with that file outside their write set and reported green.
+- Validation by the parent after the last edit, twice in a row: 13 test files, 217 passed and 1 existing expected failure; `tsc --noEmit` exit 0; Prettier clean on touched files.
+- Not started: RT-37, RT-43, RT-44. RT-43 depends on RT-38 and RT-42, both now implemented.
+
+## Evidence note: pinned metadata, HEAD moves, warning display (RT-37, RT-43, RT-40 follow-up)
+
+Leaf sub-agents: gpt-6-luna xhigh on RT-37, gpt-6.1-sol low on RT-43 and on the RT-40 follow-up; disjoint write sets; parent re-ran checks. Statuses stay OPEN (no authenticated role receipts).
+
+- RT-37: reproduced. After a publish of N+1 while a pool reader held N, target context reported N+1 metadata beside N rows. `pool-adapter.ts` exports `getPinnedGenerationDir(repoId)`; `resolveTargetContext` reads the pinned generation's `meta.json` when it differs from the active one, reports `generationId`, and degrades authority when that metadata is missing or mismatched. A request opened after the publish reports N+1. Integration test added in `lbug-pool-generation-swap.test.ts`. `resolveTargetContext` has 40 upstream dependents (OntoIndex HIGH); the change is additive. Other tools that read `readActiveGenerationMeta` directly (`ensure-fresh.ts`) are unchanged and can still show the newer generation.
+- RT-43: the 30 s reconcile tick and startup compare `git rev-parse HEAD` with the active base commit. A difference spawns one base `analyze` (no `--force`, no embeddings), once per HEAD value, only when `analyze.lock` is free, then requests one overlay build. Failure is logged once and not retried for the same HEAD. The base generation id is part of the reconcile signature, so a base rebuilt elsewhere refreshes the overlay without a base analyze. One child runs at a time. The worker saw four startup timing assertions fail in its first two runs and fixed the test harness (microtask waits).
+- RT-40 follow-up: context returns `warning` and impact returns `warnings: [...]` with the deleted path when symbol resolution reports one; results without a warning are unchanged.
+- Parent validation after the last edit: 18 test files, 262 passed, 1 existing expected failure, 1 failed; `tsc --noEmit` exit 0; Prettier clean after formatting `target-context.ts` and `target-context.test.ts`.
+- Known failure, not caused by this work: `index-generation-retention.test.ts` "holds a native pool reader until its database closes" times out with "Pool initialization drain timed out after 10000ms". It passes on a clean checkout of HEAD and still fails with the RT-37 getter removed, so the cause is the roughly 500 lines of earlier uncommitted changes in `pool-adapter.ts` (connection and pin close tracking). Needs its own diagnosis task before merge.
+- Also noted: `target-context.ts` carries an unrelated earlier edit removing `ONTOINDEX_MCP_REPO` resolution; `target-context.test.ts` still has a test named "ignores ONTOINDEX_MCP_REPO" that passes.
+- Not started: RT-44 (retention measurement). It should run after the failing pool test is understood, because it exercises the same pin lifecycle.
+
+## Evidence note: pool test diagnosis and RT-44 measurements
+
+Two read-only investigators (gpt-6-luna xhigh by code trace, gpt-6.1-sol low by bisecting a scratch copy) diagnosed the failing pool test; two measurement workers (same models) produced RT-44 data in scratch copies. Scratch copies are deleted. Statuses stay OPEN.
+
+- Failing test `index-generation-retention.test.ts` "holds a native pool reader until its database closes": both investigators reached the same cause. The uncommitted `closeLbug(repoId)` in `pool-adapter.ts` fences the whole shared native database and then waits for every in-flight initialization. The test held an alias initialization open until `closeLbug` returned, so the drain could not finish (10 s timeout), and the resumed alias then hit "LadybugDB database is closing". The bisect confirmed that removing the two `requestSharedClose` calls and the drain makes the test pass.
+- Decision: close-all semantics are deliberate. `pool-lifecycle-regressions.test.ts` ("closes all aliases of the same native database before resolving") asserts them, and that file already contains the uncommitted pool rewrite. I therefore changed the older test and not the pool: it now finishes the alias initialization, checks that generation `native-a` is retained and queryable, then closes. The `closeLbug` doc comment said "close only that repo's connections"; it now describes closing the repo and every alias that shares its database. This test change removes coverage of "alias initialization in flight while another alias is closed"; that case now rejects with "database is closing" by design. If per-repo close is wanted instead, the option is to revert the two `requestSharedClose` calls and the drain, and replace the alias regression test.
+- RT-44 retention (fixture: about 1.02 MB per generation, 11 publications, one reader): the reader stays pinned to generation 1 for all 11 publications. Disk holds the pinned generation plus the active and two prior ones, so it plateaus at 4 generations (4.08 MB) instead of 3 (3.06 MB). Re-pin happens only when `local-backend-repo-runtime.ts:229-249` reinitializes (checked at most every 5 s, when `indexedAt` or the active database path changes) or when `initLbug` is called again for the repo id (`pool-adapter.ts:745-776`); after that the pin moved to generation 11 and disk returned to 3 generations. Releasing the reader reclaimed the pinned generation on the next publish. Recommended rule: keep active + 2 prior + live pins; budget about 3 generation sizes per repo plus one per live pin outside that set plus staging headroom. A hard byte cap is not recommended, because pins must not be deleted. Cost is bounded by one extra generation per long-lived idle reader.
+- RT-44 crash (SIGKILL between the pointer swap and the end of the commit callback, scratch run): `current` points to the new generation B, its `meta.json` is consistent, readers work, and the dead-PID `current.mutation.lock` is reclaimed on the first pin acquisition, so later publishes succeed immediately. Not recovered: B lacks the `.retention-managed` marker (written only after the callback, `repo-manager.ts:526`), so B is never pruned; a pre-swap kill leaves a staging directory that is removed only after 24 h (`repo-manager.ts:623`); the analysis job stays `publishing`, becomes `failed` once the runner is dead (`analysis-coordinator.ts:310`), and `gn_analyze_job` reports `ANALYSIS_FAILED` for an index that is active. The pointer lock checks PID liveness only, so a reused PID could block reclaim for the 10 s acquisition timeout (inferred from source, not run). Limit: the kill point was after the swap and inside the callback, not at every instruction inside activation.
+- Follow-up candidates, not started: reconcile an interrupted publication under the pointer lock at start (mark B managed and reconcile the job when the receipt matches, else restore the previous generation); add process-start identity to the pointer lock; make `ensure-fresh.ts` report the pinned generation like target context now does.
+- Parent validation after the last edit: 19 test files, 290 passed and 1 existing expected failure; `tsc --noEmit` exit 0; Prettier clean on every file changed this session. 11 other modified files (`mcp-doctor`, `server`, `diagnose` and related tests) were already unformatted before this session and were not touched.
+
+## Evidence note: crash-recovery follow-ups from RT-44
+
+Options compared before dispatch. Interrupted publication: (1) write a publication-intent file before the swap and reconcile it at start, (2) adopt the active generation when it is consistent but unmarked, (3) restore the previous generation. Picked (2): idempotent, one `stat` per process and generation, no new durable format, cannot discard a valid newer index. Pid reuse: (1) record the process start identity in the lock owner, (2) heartbeat and stale age, (3) leave. Picked (1): deterministic, backward compatible. Executed by leaf sub-agents (gpt-6-luna xhigh, gpt-6.1-sol low) editing disjoint hunks of `repo-manager.ts`; statuses stay OPEN.
+
+- Adoption: `adoptActiveGenerationLocked` runs under the pointer lock at the start of `publishIndexGenerationTransaction` and `acquireIndexGenerationPin`. It writes `.retention-managed` for the active generation only when `meta.json` parses and names the directory, the lbug store is a real file or directory (not a symlink), and the generations root is a real directory. Legacy root layouts are untouched. Failures are swallowed. Each generation is checked once per process. Tests cover the crash case, retention after adoption, a mismatched `meta.json`, and legacy layout.
+- Pid reuse: the exclusive lock owner file records `pidStart` (Linux, field 22 of `/proc/<pid>/stat`); reclaim also fires when the live pid's start identity is readable and differs, and removal re-checks it. Absent field, unreadable identity, and non-Linux hosts behave as before. The registry lock's own acquisition and reclaim code is unchanged, but it calls the same `acquireExclusiveFile`, so it also writes `pidStart`. Tests cover identity read, a reused pid, a matching live owner, and a legacy lock.
+- Dropped: making `ensure-fresh.ts` report a pinned generation. The pool pin exists only inside the MCP server process; a CLI call has no pin, so the mismatch cannot occur there.
+- Still open: reconcile the analysis job (`publishing` becomes `failed` for an index that is active). It needs the analysis-coordinator owner and a receipt match, so it is a separate task.
+- Parent validation after the last edit: 20 test files, 350 passed and 1 existing expected failure; `tsc --noEmit` exit 0; Prettier clean on files changed in this session (`repo-manager.ts` needed one formatting fix inside the adoption helper).
+
+## Evidence note: analysis job state after a crashed publication
+
+Problem: after a SIGKILL between the pointer swap and `commitManagedAnalysisPublication`, the job is `failed` with `publicationState: publishing`, while the active generation holds a valid publication receipt for it. `gn_analyze_job` reported `ANALYSIS_FAILED` for an index that is active and fresh.
+
+Options compared: (1) change `getAnalysisJob` or the coordinator to rewrite the job record on recovery, (2) reconcile at start under the pointer lock, (3) make the read-side `observeRecovery` verify the receipt and post-conditions for failed jobs that were publishing and report success only when everything checks out. Picked (3): it writes nothing, uses the existing receipt and post-check code, and cannot turn a failure into a success without proof. (1) and (2) mutate the authoritative job record from a reader or add a new startup path in the coordinator.
+
+Executed by leaf sub-agents (gpt-6-luna xhigh on the source, gpt-6.1-sol low on tests); statuses stay OPEN.
+
+- `observeRecovery` in `src/mcp/super/analyze-job.ts` now runs the shared receipt and post-condition check (extracted as `verifyPublishedJob`) for a failed job whose `publicationState` is `publishing`. Success returns `REFRESHED` with reason `PUBLICATION_VERIFIED_AFTER_RUNNER_EXIT`; any other outcome, including a thrown check, returns today's `FAILED` / `ANALYSIS_FAILED` result. Failed jobs with `published` or no publication state, and every non-failed job, behave as before. No job record is written.
+- Tests: seven cases in `test/unit/super/analyze-job.test.ts` (verified success with receipt attached and the job object unchanged; no receipt; wrong generation; dirty post-check; unavailable post-check; `published` and undefined states do not read receipts). The test worker changed the shared `beforeEach` from `clearAllMocks` to `resetAllMocks` so unused one-shot mock values cannot leak between cases; every default is re-staged right after, and all 30 earlier cases still pass.
+- Limits: the stored job record still says `failed`; only the status report changes. A repository that is dirty or has moved past the job's target commit still gets `FAILED`, because the existing post-check requires a clean worktree at the target commit. In this repository, with uncommitted changes, the new path therefore reports success only after a clean build at the target.
+- Parent validation after the last edit: 40 test files, 1007 passed and 1 existing expected failure; `tsc --noEmit` exit 0; Prettier clean on both changed files.
+
+## Evidence note: full-suite verification of the uncommitted tree
+
+Until now only targeted test subsets had been run. Two verification workers (gpt-6-luna xhigh on the full unit suite, gpt-6.1-sol low on lint, formatting, integration and type checks) ran against the real tree, with baselines from a clean `HEAD` archive. Two fix workers (same models) repaired the failures. Statuses stay OPEN.
+
+- First full unit run: 504 files, 8124 tests, 11 failed in two files, `overlay-context-impact.test.ts` (6) and `overlay-symbol-resolution.test.ts` (5). Both pass at `HEAD`, so all 11 were caused by uncommitted changes. Cause: the tests mock `backend-overlay.js` and build snapshot fixtures from before this work. They lack the new `isOverlayReplacedPath` export and the `tombstones`, `overlayPaths` and `uncoveredPaths` fields that `backend-symbol-resolution.ts` now reads. Production code was correct; the fix changed test fixtures and the mock only, with the production semantics copied into the mock. One regression test was added per file: uncovered dirty base rows are kept while covered ones are dropped; an unusable snapshot whose tombstones hold the only candidate gives `not_found` with a warning naming the path.
+- Second full unit run after the fixes: 504 files passed, 8060 tests passed, 1 expected fail, 65 skipped, exit 0. Earlier targeted subsets had missed these two files because their names do not mention the symbols that changed.
+- Integration tests related to overlay, watch, dirty, generation, pool, analyze and mcp: 19 files passed and 1 skipped (208 tests passed, 1 skipped). `tsc --noEmit` exit 0.
+- ESLint on the 101 modified or untracked source and test files: 0 errors. New warnings against `HEAD` appear in session-owned files (`pool-adapter.ts` +3, `target-context.ts` +1, `pool-lifecycle-regressions.test.ts` +4, `lbug-pool-generation-swap.test.ts` +1, `super/analyze-job.test.ts` +8) and in files from earlier uncommitted work. Warnings are non-blocking.
+- Prettier flags 11 files, none touched this session: `mcp-doctor.ts`, `server.ts`, `diagnose.ts` and their tests, plus two untracked tests. Nine of them pass at `HEAD`, so the unformatted state came from earlier uncommitted work.

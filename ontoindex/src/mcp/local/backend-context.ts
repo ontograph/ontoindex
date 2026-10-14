@@ -231,7 +231,10 @@ export async function context(
   );
 
   if (outcome.kind === 'not_found') {
-    return { error: `Symbol '${name || uid}' not found` };
+    return {
+      error: `Symbol '${name || uid}' not found`,
+      ...(outcome.warning !== undefined && { warning: outcome.warning }),
+    };
   }
 
   if (outcome.kind === 'ambiguous') {

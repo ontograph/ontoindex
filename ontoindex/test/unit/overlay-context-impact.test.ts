@@ -7,6 +7,16 @@ const { pool, overlay, execFileText } = vi.hoisted(() => ({
     isDirtyPath: vi.fn((snapshot: { dirtyPaths: Set<string> }, filePath?: string) =>
       Boolean(filePath && snapshot.dirtyPaths.has(filePath.replace(/\\/g, '/'))),
     ),
+    isOverlayReplacedPath: vi.fn(
+      (
+        snapshot: { overlayPaths: Set<string>; tombstones: Set<string> },
+        filePath?: string | null,
+      ) => {
+        if (!filePath) return false;
+        const normalized = filePath.replace(/\\/g, '/');
+        return snapshot.overlayPaths.has(normalized) || snapshot.tombstones.has(normalized);
+      },
+    ),
     queryOverlay: vi.fn(),
   },
   execFileText: vi.fn(),
@@ -28,6 +38,7 @@ const usable = {
   reason: null,
   dirtyPaths: new Set(['src/dirty.ts']),
   overlayPaths: new Set(['src/dirty.ts']),
+  uncoveredPaths: new Set<string>(),
   tombstones: new Set<string>(),
 };
 
@@ -49,6 +60,11 @@ describe('overlay context and impact', () => {
     overlay.isDirtyPath.mockImplementation((snapshot, filePath) =>
       Boolean(filePath && snapshot.dirtyPaths.has(filePath.replace(/\\/g, '/'))),
     );
+    overlay.isOverlayReplacedPath.mockImplementation((snapshot, filePath) => {
+      if (!filePath) return false;
+      const normalized = filePath.replace(/\\/g, '/');
+      return snapshot.overlayPaths.has(normalized) || snapshot.tombstones.has(normalized);
+    });
     pool.executeParameterized.mockResolvedValue([]);
     pool.executeQuery.mockResolvedValue([]);
     overlay.getOverlaySnapshot.mockResolvedValue(usable);
@@ -148,6 +164,25 @@ describe('overlay context and impact', () => {
       });
     }
     expect(pool.executeQuery).not.toHaveBeenCalled();
+  });
+
+  it('keeps base rows for uncovered dirty paths and drops overlay-covered base rows', async () => {
+    const uncovered = symbol('src/dirty.ts');
+    const replaced = symbol('src/replaced.ts');
+    overlay.getOverlaySnapshot.mockResolvedValue({
+      ...usable,
+      dirtyPaths: new Set(['src/dirty.ts', 'src/replaced.ts']),
+      overlayPaths: new Set(['src/replaced.ts']),
+      uncoveredPaths: new Set(['src/dirty.ts']),
+    });
+    pool.executeParameterized.mockImplementation(async (_id, query: string) =>
+      query.includes('AS startLine') ? [uncovered, replaced] : [],
+    );
+
+    const result = await context(repo, { name: 'lookup' });
+
+    expect(result).toMatchObject({ status: 'found', symbol: { filePath: 'src/dirty.ts' } });
+    expect(result).not.toMatchObject({ symbol: { filePath: 'src/replaced.ts' } });
   });
 
   it.each(['object', 'tuple'] as const)(

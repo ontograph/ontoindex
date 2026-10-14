@@ -147,6 +147,9 @@ describe('disposable dirty overlay build', () => {
       const overlayDbPath = await resolveOverlayDbPath(storagePath);
       expect(overlayDbPath).not.toBeNull();
       expect((await fs.stat(overlayDbPath!)).isFile()).toBe(true);
+      expect(
+        JSON.parse(await fs.readFile(path.join(path.dirname(overlayDbPath!), 'base.json'), 'utf8')),
+      ).toEqual({ baseGenerationId: generation.generationId, baseCommit: null });
       const overlayCurrent = await fs.readFile(path.join(overlayPath, 'CURRENT'));
       const overlayBefore = await fs.readFile(overlayDbPath!);
       // Verify the immutable publication read-only, without writable catalog

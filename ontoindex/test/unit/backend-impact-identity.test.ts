@@ -31,6 +31,30 @@ describe('backend impact identity ergonomics', () => {
     lbugMocks.executeQuery.mockResolvedValue([]);
   });
 
+  it.each([undefined, 'Deleted source path(s): src/auth.ts'])(
+    'preserves not-found results and surfaces a defined warning: %s',
+    async (warning) => {
+      resolveMocks.resolveSymbolCandidates.mockResolvedValue({ kind: 'not_found', warning });
+      const { runImpact } = await import('../../src/mcp/local/backend-impact.js');
+      const result = await runImpact(
+        { id: 'repo', name: 'repo' },
+        { target: 'login', direction: 'upstream' },
+      );
+      const expected = {
+        error: "Target 'login' not found",
+        target: { name: 'login' },
+        direction: 'upstream',
+        impactedCount: 0,
+        risk: 'UNKNOWN',
+        resolutionReason: 'not-in-index',
+        graphImpactAvailable: false,
+        ...(warning !== undefined && { warnings: [warning] }),
+      };
+      expect(result).toStrictEqual(expected);
+      expect(JSON.stringify(result)).toBe(JSON.stringify(expected));
+    },
+  );
+
   it('accepts nodeId as a target_uid alias', async () => {
     resolveMocks.resolveSymbolCandidates.mockResolvedValue({
       kind: 'ok',

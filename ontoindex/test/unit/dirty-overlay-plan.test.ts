@@ -61,6 +61,15 @@ describe('dirty overlay planner', () => {
 
       expect(plan).toEqual({
         includePaths: ['added.rs', 'modified.ts', 'renamed-new.js', 'untracked with spaces.go'],
+        uncoveredPaths: [],
+        allDirtyPaths: [
+          'added.rs',
+          'deleted.py',
+          'modified.ts',
+          'rename-old.js',
+          'renamed-new.js',
+          'untracked with spaces.go',
+        ],
         tombstones: ['deleted.py', 'rename-old.js'],
         tooMany: false,
         skipped: ['rename-non-source.txt', 'renamed-non-source.txt'],
@@ -69,17 +78,28 @@ describe('dirty overlay planner', () => {
   );
 
   it(
-    'returns tooMany and no include paths when more than 50 dirty source files exist',
+    'covers the 50 newest dirty files and reports the rest as uncovered',
     withGitRepo(async (repoDir) => {
-      for (let index = 0; index < 51; index += 1) {
+      writeFile(repoDir, 'src/deleted.ts', 'export const deleted = true;\n');
+      commitFiles(repoDir);
+      fs.unlinkSync(path.join(repoDir, 'src/deleted.ts'));
+      for (let index = 0; index < 75; index += 1) {
         writeFile(repoDir, `src/file-${index}.ts`, `export const value${index} = ${index};\n`);
+        const mtime = new Date(1_700_000_000_000 + index * 1_000);
+        fs.utimesSync(path.join(repoDir, `src/file-${index}.ts`), mtime, mtime);
       }
 
       const plan = await planDirtyOverlay(repoDir);
 
       expect(plan.tooMany).toBe(true);
-      expect(plan.includePaths).toEqual([]);
-      expect(plan.tombstones).toEqual([]);
+      expect(plan.includePaths).toEqual(
+        Array.from({ length: 50 }, (_, index) => `src/file-${74 - index}.ts`),
+      );
+      expect(plan.uncoveredPaths).toEqual(
+        Array.from({ length: 25 }, (_, index) => `src/file-${index}.ts`).sort(),
+      );
+      expect(plan.tombstones).toEqual(['src/deleted.ts']);
+      expect(plan.allDirtyPaths).toHaveLength(76);
       expect(plan.skipped).toEqual([]);
     }),
   );
@@ -96,6 +116,8 @@ describe('dirty overlay planner', () => {
       const plan = await planDirtyOverlay(repoDir);
 
       expect(plan.includePaths).toEqual(['module.ts']);
+      expect(plan.uncoveredPaths).toEqual([]);
+      expect(plan.allDirtyPaths).toEqual(['module.ts']);
       expect(plan.tombstones).toEqual([]);
       expect(plan.tooMany).toBe(false);
       expect(plan.skipped).toEqual(['notes.md']);
@@ -133,6 +155,8 @@ describe('dirty overlay planner', () => {
 
       expect(plan.tombstones).toEqual(['added-then-deleted.ts', 'conflict.ts']);
       expect(plan.includePaths).toEqual([]);
+      expect(plan.uncoveredPaths).toEqual([]);
+      expect(plan.allDirtyPaths).toEqual(['added-then-deleted.ts', 'conflict.ts']);
       expect(plan.tooMany).toBe(false);
       expect(plan.skipped).toEqual([]);
     }),
