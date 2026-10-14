@@ -299,10 +299,6 @@ type MarkdownDocsEvidenceSource = {
 type MarkdownDocsEvidenceFact = {
   kind: string;
   mention?: string;
-  graphResolution?: {
-    status: 'resolved' | 'ambiguous' | 'unresolved';
-    targets: ResolvedMentionTarget[];
-  };
   lineSpan?: { start: number; end: number };
   requirementId?: string;
   title?: string;
@@ -414,6 +410,14 @@ type LocalEnrichmentConsumptionMetadata =
       visibleRecords: ReturnType<typeof consumeEnrichmentFacts>['visibleRecords'];
       facts?: EnrichmentFact[];
       mentionResolution?: MentionResolutionSummary;
+      mentionTargets?: Record<
+        string,
+        {
+          status: 'resolved' | 'ambiguous';
+          targets: ResolvedMentionTarget[];
+          candidateCount?: number;
+        }
+      >;
       relatedFacts?: PassiveGraphExpansionUnknown['relatedFacts'];
       relatedSymbols?: PassiveGraphExpansionUnknown['relatedSymbols'];
       relatedIdentities?: PassiveGraphExpansionUnknown['relatedIdentities'];
@@ -2179,7 +2183,12 @@ export class LocalBackend implements BackendPort {
             })
           : undefined;
       let mentionResolution: MentionResolutionSummary | undefined;
+      let mentionTargets: Extract<
+        LocalEnrichmentConsumptionMetadata,
+        { factConsumption: unknown }
+      >['mentionTargets'];
       if (markdownContext) {
+        mentionTargets = {};
         mentionResolution = { status: 'ok', lookups: 0 };
         try {
           const mentionEvidence = markdownContext.relatedChunks
@@ -2195,10 +2204,14 @@ export class LocalBackend implements BackendPort {
               new LbugGraphIdentityProvider({ repoId: repo.id }),
             );
             mentionResolution = summary;
-            for (const evidence of mentionEvidence) {
-              const resolution = resolutions.get(evidence.mention!);
-              if (resolution) evidence.graphResolution = resolution;
-            }
+            const returnedMentions = new Set(mentionEvidence.map((evidence) => evidence.mention!));
+            mentionTargets = Object.fromEntries(
+              [...resolutions].flatMap(([text, resolution]) =>
+                returnedMentions.has(text) && resolution.status !== 'unresolved'
+                  ? [[text, { ...resolution, status: resolution.status }]]
+                  : [],
+              ),
+            );
           }
         } catch {
           mentionResolution = { status: 'skipped', lookups: 0, reason: 'error' };
@@ -2238,6 +2251,7 @@ export class LocalBackend implements BackendPort {
         facts,
         ...(markdownContext && {
           mentionResolution,
+          mentionTargets,
           factsBound: {
             totalFactCount: allFacts.length,
             totalVisibleRecordCount: allVisibleRecords.length,

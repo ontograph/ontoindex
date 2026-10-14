@@ -125,19 +125,20 @@ describe('MR2- Markdown mention backend wiring', () => {
     expect(result.enrichment.relatedChunks[0].evidence).toEqual([
       expect.objectContaining({
         mention: 'buildPhaseList',
-        graphResolution: {
-          status: 'resolved',
-          targets: [
-            {
-              id: 'Function:src/x.ts:buildPhaseList',
-              name: 'buildPhaseList',
-              filePath: 'src/x.ts',
-              startLine: 10,
-            },
-          ],
-        },
       }),
     ]);
+    expect(result.enrichment.relatedChunks[0].evidence[0]).not.toHaveProperty('graphResolution');
+    expect(result.enrichment.mentionTargets.buildPhaseList).toEqual({
+      status: 'resolved',
+      targets: [
+        {
+          id: 'Function:src/x.ts:buildPhaseList',
+          name: 'buildPhaseList',
+          filePath: 'src/x.ts',
+          startLine: 10,
+        },
+      ],
+    });
     expect(mentionMocks.findSymbols).toHaveBeenCalledTimes(1);
     expect(result.enrichment.mentionResolution).toMatchObject({ status: 'ok', lookups: 1 });
   });
@@ -166,6 +167,7 @@ describe('MR2- Markdown mention backend wiring', () => {
     );
     expect(['skipped', 'partial']).toContain(result.enrichment.mentionResolution?.status);
     expect(result.enrichment.mentionResolution).toMatchObject({ lookups: expect.any(Number) });
+    expect(result.enrichment.mentionTargets ?? {}).toEqual({});
   });
 
   it('MR2-C does not look up mentions belonging to chunks outside the returned set', async () => {
@@ -207,6 +209,101 @@ describe('MR2- Markdown mention backend wiring', () => {
     const result = await new LocalBackend().callTool('query', withoutMarkdown);
     expect(mentionMocks.findSymbols).not.toHaveBeenCalled();
     expect(result.enrichment).not.toHaveProperty('mentionResolution');
+  });
+
+  it('MR4-A returns one map entry for the same mention on two chunks', async () => {
+    const repo = await createRepo();
+    const state = mentionSidecarState();
+    const base = state.enrichments[0];
+    const chunk = base.records[0];
+    const secondChunk = { ...chunk, chunkKey: `${chunk.chunkKey}:second`, chunkIndex: 1 };
+    await writeSidecarStore(repo.storagePath, {
+      ...state,
+      enrichments: [
+        {
+          ...base,
+          records: [
+            ...base.records,
+            secondChunk,
+            { ...base.records[1], chunkKey: secondChunk.chunkKey },
+          ],
+        },
+      ],
+    });
+    const result = await new LocalBackend().callTool('query', options);
+    expect(result.enrichment.relatedChunks).toHaveLength(2);
+    for (const returnedChunk of result.enrichment.relatedChunks) {
+      expect(returnedChunk.evidence).toEqual([
+        expect.objectContaining({ mention: 'buildPhaseList' }),
+      ]);
+      expect(returnedChunk.evidence[0]).not.toHaveProperty('graphResolution');
+    }
+    expect(Object.keys(result.enrichment.mentionTargets)).toEqual(['buildPhaseList']);
+    expect(result.enrichment.mentionTargets.buildPhaseList.status).toBe('resolved');
+    expect(mentionMocks.findSymbols).toHaveBeenCalledTimes(1);
+  });
+
+  it('MR4-B omits unresolved mentions from the map', async () => {
+    const repo = await createRepo();
+    await writeSidecarStore(repo.storagePath, mentionSidecarState());
+    mentionMocks.findSymbols.mockResolvedValue([]);
+    const result = await new LocalBackend().callTool('query', options);
+    expect(result.enrichment.relatedChunks[0].evidence).toEqual([
+      expect.objectContaining({ mention: 'buildPhaseList' }),
+    ]);
+    expect(result.enrichment.mentionTargets ?? {}).toEqual({});
+    expect(mentionMocks.findSymbols).toHaveBeenCalledTimes(1);
+    expect(result.enrichment.mentionResolution).toMatchObject({ status: 'ok', lookups: 1 });
+  });
+
+  it('MR4-C bounds the map to 40 entries for 60 distinct returned mentions', async () => {
+    const repo = await createRepo();
+    const state = mentionSidecarState();
+    const base = state.enrichments[0];
+    const chunks = Array.from({ length: 10 }, (_, index) => ({
+      ...base.records[0],
+      chunkKey: `mention-cap-${index}`,
+      chunkIndex: index,
+    }));
+    const mentions = chunks.flatMap((chunk, chunkIndex) =>
+      Array.from({ length: 6 }, (_, index) => ({
+        ...base.records[1],
+        chunkKey: chunk.chunkKey,
+        evidence: { text: `buildPhase${chunkIndex * 6 + index}`, lineSpan: { start: 12, end: 12 } },
+      })),
+    );
+    mentionMocks.findSymbols.mockImplementation(async ({ mention: name }: { mention: string }) => [
+      {
+        type: 'symbol',
+        id: `Function:src/x.ts:${name}`,
+        name,
+        filePath: 'src/x.ts',
+        startLine: 10,
+        confidence: 0.9,
+      },
+    ]);
+    await writeSidecarStore(repo.storagePath, {
+      ...state,
+      enrichments: [{ ...base, records: [...chunks, ...mentions] }],
+    });
+    const result = await new LocalBackend().callTool('query', options);
+    expect(result.enrichment.relatedChunks).toHaveLength(10);
+    const returnedMentions = new Set(
+      result.enrichment.relatedChunks.flatMap((chunk: any) =>
+        chunk.evidence.map((evidence: any) => evidence.mention),
+      ),
+    );
+    expect(returnedMentions.size).toBe(60);
+    const targets = Object.entries(result.enrichment.mentionTargets);
+    expect(targets.length).toBeGreaterThan(0);
+    expect(targets.length).toBeLessThanOrEqual(40);
+    for (const [mention, resolution] of targets) {
+      expect(returnedMentions.has(mention)).toBe(true);
+      expect(resolution).toMatchObject({
+        status: 'resolved',
+        targets: [expect.objectContaining({ name: mention })],
+      });
+    }
   });
 });
 
