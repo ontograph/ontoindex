@@ -45,7 +45,7 @@ describe('Markdown mention resolution', () => {
     expect(resolutions.get('bar')).toEqual({ status: 'unresolved', targets: [] });
   });
 
-  it('MR1-C: preserves ambiguity and caps targets, including raw overflow', async () => {
+  it('MR1-C: reports ambiguity with counts and no targets, including raw overflow', async () => {
     const findSymbols = vi
       .fn()
       .mockResolvedValueOnce([candidate('a'), candidate('b')])
@@ -55,11 +55,21 @@ describe('Markdown mention resolution', () => {
         ...['b', 'c', 'd'].map((id) => ({ type: 'file', id })),
       ]);
     const { resolutions } = await resolveMentionTexts(['two', 'four', 'mixed'], { findSymbols });
-    expect(resolutions.get('two')?.status).toBe('ambiguous');
-    expect(resolutions.get('two')?.targets.map((target) => target.id)).toEqual(['a', 'b']);
-    expect(resolutions.get('four')?.status).toBe('ambiguous');
-    expect(resolutions.get('four')?.targets.map((target) => target.id)).toEqual(['a', 'b', 'c']);
-    expect(resolutions.get('mixed')?.status).toBe('ambiguous');
+    expect(resolutions.get('two')).toEqual({
+      status: 'ambiguous',
+      targets: [],
+      candidateCount: 2,
+    });
+    expect(resolutions.get('four')).toEqual({
+      status: 'ambiguous',
+      targets: [],
+      candidateCount: 4,
+    });
+    expect(resolutions.get('mixed')).toEqual({
+      status: 'ambiguous',
+      targets: [],
+      candidateCount: 1,
+    });
   });
 
   it('MR1-D: caps distinct lookups and maps aliases to original texts', async () => {

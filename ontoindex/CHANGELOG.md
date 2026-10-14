@@ -4,7 +4,7 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
-- Markdown retrieval resolves identifier-like backtick code mentions in returned chunks against the code graph per request, with bounded lookups and explicit resolved, ambiguous, or unresolved evidence; graph failures and timeouts do not fail queries.
+- Markdown retrieval resolves identifier-like backtick code mentions in returned chunks against the code graph per request, with bounded lookups and explicit resolved, ambiguous, or unresolved evidence. Ambiguous names report a candidate count and no targets and are never auto-picked; only resolved mentions carry exactly one target (`id`, `name`, `filePath`, `startLine`). Graph failures and timeouts do not fail queries.
 
 ## [2.2.31] - 2026-10-14
 

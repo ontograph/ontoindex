@@ -13,6 +13,7 @@ export interface ResolvedMentionTarget {
 export interface MentionResolution {
   status: 'resolved' | 'ambiguous' | 'unresolved';
   targets: ResolvedMentionTarget[];
+  candidateCount?: number;
 }
 export interface MentionResolutionSummary {
   status: 'ok' | 'partial' | 'skipped';
@@ -79,10 +80,17 @@ export async function resolveMentionTexts(
             : codeCandidates.length === 1
               ? 'resolved'
               : 'unresolved',
-        targets: codeCandidates
-          .slice(0, MARKDOWN_MENTION_MAX_CANDIDATES)
-          .map(({ id, name, filePath, startLine }) => ({ id, name, filePath, startLine })),
+        targets: [],
       };
+      if (resolution.status === 'ambiguous') {
+        resolution.candidateCount = Math.min(
+          codeCandidates.length,
+          MARKDOWN_MENTION_MAX_CANDIDATES + 1,
+        );
+      } else if (resolution.status === 'resolved') {
+        const { id, name, filePath, startLine } = codeCandidates[0]!;
+        resolution.targets = [{ id, name, filePath, startLine }];
+      }
       for (const text of originalTexts) resolutions.set(text, resolution);
     } catch {
       summary.status = 'partial';
