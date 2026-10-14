@@ -163,46 +163,46 @@ export function getNextStepHint(
       return `\n\n---\n**Next:** READ ontoindex://repo/{name}/context for any repo above to get its overview and check staleness. Outside MCP, the CLI equivalent is \`ontoindex list\`.`;
 
     case 'query':
-      return `\n\n---\n**Next:** To understand a specific symbol in depth, use context({name: "<symbol_name>"${repoParam}}) to see categorized refs and process participation.`;
+      return `\n\n---\n**Next:** To understand a specific symbol in depth, use inspect({action: "context", name: "<symbol_name>"${repoParam}}) to see categorized refs and process participation.`;
 
     case 'context':
-      return `\n\n---\n**Next:** If planning changes, use impact({target: "${args?.name || '<name>'}", direction: "upstream"${repoParam}}) to check blast radius. To see execution flows, READ ontoindex://repo/${repoPath}/processes.`;
+      return `\n\n---\n**Next:** If planning changes, use impact({action: "symbol", target: "${args?.name || '<name>'}", direction: "upstream"${repoParam}}) to check blast radius. To see execution flows, READ ontoindex://repo/${repoPath}/processes.`;
 
     case 'impact':
-      return `\n\n---\n**Next:** Review d=1 items first (WILL BREAK). To check affected execution flows, READ ontoindex://repo/${repoPath}/processes.`;
+      return `\n\n---\n**Next:** Review depth-1 direct dependents first; they are the closest dependents, not proof of breakage. To check affected execution flows, READ ontoindex://repo/${repoPath}/processes.`;
 
     case 'detect_changes':
-      return `\n\n---\n**Next:** Review affected processes. Use context() on high-risk changed symbols. READ ontoindex://repo/${repoPath}/process/{name} for full execution traces. For explicit post-edit verification, keep detect_changes for diff impact, then run gn_verify_diff({ expectedFiles: ["<file>"], expectedSymbols: ["<symbol>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }).`;
+      return `\n\n---\n**Next:** Review affected processes. Use inspect({action: "context", ...}) on high-risk changed symbols. READ ontoindex://repo/${repoPath}/process/{name} for full execution traces. For explicit post-edit verification, then run gn_verify_diff({ expectedFiles: ["<file>"], expectedSymbols: ["<symbol>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }).`;
 
     case 'cycle_detect':
-      return `\n\n---\n**Next:** Pick a representative cycle member and run impact({target: "<name>", direction: "upstream"${repoParam}}) to see what keeps the cycle relevant. Use context({name: "<name>"${repoParam}}) to inspect the concrete edges inside the cycle.`;
+      return `\n\n---\n**Next:** Pick a representative cycle member and run impact({action: "symbol", target: "<name>", direction: "upstream"${repoParam}}) to see what keeps the cycle relevant. Use inspect({action: "context", name: "<name>"${repoParam}}) to inspect the concrete edges inside the cycle.`;
 
     case 'coupling_matrix':
-      return `\n\n---\n**Next:** Inspect the most unstable module, then use query({query: "<module name>"${repoParam}}) or cypher({query: "MATCH ... MEMBER_OF ... RETURN ... "${repoParam}}) to see the concrete cross-module edges behind its Ca/Ce score.`;
+      return `\n\n---\n**Next:** Inspect the most unstable module, then use search({action: "semantic", query: "<module name>"${repoParam}}) or search({action: "cypher", query: "MATCH ... RETURN ... LIMIT 50"${repoParam}}) to see the concrete cross-module edges behind its Ca/Ce score.`;
 
     case 'migration_progress':
       return `\n\n---\n**Next:** Start with remaining_files[0], then use gn_verify_diff({ expectedFiles: ["<file>"], expectedSymbols: ["<symbol>"]${repoParam ? `, repo: "${repo}"` : ''} }) after each migration slice to keep the blast radius controlled.`;
 
     case 'boundary_violations':
-      return `\n\n---\n**Next:** Pick one violating source file and run context({name: "<symbol>", file_path: "<source_file>"${repoParam}}) or impact({target: "<symbol>", direction: "downstream"${repoParam}}) before untangling the dependency.`;
+      return `\n\n---\n**Next:** Pick one violating source file and run inspect({action: "context", name: "<symbol>", file_path: "<source_file>"${repoParam}}) or impact({action: "symbol", target: "<symbol>", direction: "downstream"${repoParam}}) before untangling the dependency.`;
 
     case 'type_coverage':
-      return `\n\n---\n**Next:** Start with the highest-risk finding, then use context({name: "<enclosing_symbol>"${repoParam}}) to inspect callers before tightening the type boundary.`;
+      return `\n\n---\n**Next:** Start with the highest-risk finding, then use inspect({action: "context", name: "<enclosing_symbol>"${repoParam}}) to inspect callers before tightening the type boundary.`;
 
     case 'rename':
-      return `\n\n---\n**Next:** Review the rename candidate list, edit the affected files directly, then run gn_verify_diff({ expectedSymbols: ["<renamed_symbol>"], expectedFiles: ["<expected_file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }).`;
+      return `\n\n---\n**Next:** Rename is preview-only (refactor({action: "rename", target: "<symbol>", new_name: "<new>", dry_run: true${repoParam}})); review the candidate list, edit the affected files directly, then run gn_verify_diff({ expectedSymbols: ["<renamed_symbol>"], expectedFiles: ["<expected_file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }).`;
 
     case 'rename_symbol':
-      return `\n\n---\n**Next:** Review the rename candidate list, edit the affected files directly, then run gn_verify_diff({ expectedSymbols: ["<renamed_symbol>"], expectedFiles: ["<expected_file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }).`;
+      return `\n\n---\n**Next:** Rename is preview-only (refactor({action: "rename", target: "<symbol>", new_name: "<new>", dry_run: true${repoParam}})); review the candidate list, edit the affected files directly, then run gn_verify_diff({ expectedSymbols: ["<renamed_symbol>"], expectedFiles: ["<expected_file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }).`;
 
     case 'cypher':
-      return `\n\n---\n**Next:** To explore a result symbol, use context({name: "<name>"${repoParam}}). For schema reference, READ ontoindex://repo/${repoPath}/schema.`;
+      return `\n\n---\n**Next:** To explore a result symbol, use inspect({action: "context", name: "<name>"${repoParam}}). For schema reference, READ ontoindex://repo/${repoPath}/schema.`;
 
     case 'route_map':
-      return `\n\n---\n**Next:** To trace the impact of a specific route, use api_impact({route: "<method> <path>"${repoParam}}). For a handler's blast radius, use impact({target: "<handler>"${repoParam}}).`;
+      return `\n\n---\n**Next:** To trace the impact of a specific route, use impact({action: "route", route: "<method> <path>"${repoParam}}). For a handler's blast radius, use impact({action: "symbol", target: "<handler>"${repoParam}}).`;
 
     case 'tool_map':
-      return `\n\n---\n**Next:** For details on any discovered tool, use context({name: "<tool_name>"${repoParam}}).`;
+      return `\n\n---\n**Next:** For details on any discovered tool, use inspect({action: "context", name: "<tool_name>"${repoParam}}).`;
 
     case 'analysis_catalog':
       return `\n\n---\n**Next:** READ ontoindex://repo/${repoPath}/analysis-packs and ontoindex://repo/${repoPath}/analysis-suites to inspect the discovered pack and suite manifests in resource form.`;
@@ -211,61 +211,61 @@ export function getNextStepHint(
       return `\n\n---\n**Next:** Review the rerun status for each finding, then update the source audit file or fix the still-live findings before rerunning the audit.`;
 
     case 'pattern_audit':
-      return `\n\n---\n**Next:** Start with the highest-signal finding, then use evidence_pack({targets: ["<file>:<line>"]${repoParam}}) or context({name: "<symbol>"${repoParam}}) to inspect the risky code in place.`;
+      return `\n\n---\n**Next:** Start with the highest-signal finding, then use inspect({action: "evidence", targets: ["<file>:<line>"]${repoParam}}) or inspect({action: "context", name: "<symbol>"${repoParam}}) to inspect the risky code in place.`;
 
     case 'build_residue_audit':
       return `\n\n---\n**Next:** Triage build-output matches first. If they are real leakage, inspect the source file and the emitting build path before changing filters or bundling logic.`;
 
     case 'cross_doc_drift':
-      return `\n\n---\n**Next:** Update the stale plan/audit docs or fix the still-open findings, then rerun cross_doc_drift(${repoParam ? `{repo: "${repo}"}` : ''}) to confirm the documentation matches reality.`;
+      return `\n\n---\n**Next:** Update the stale plan/audit docs or fix the still-open findings, then rerun audit({action: "drift"${repoParam}}) to confirm the documentation matches reality.`;
 
     case 'evidence_pack':
-      return `\n\n---\n**Next:** Use the snippets to verify the implementation detail you care about, then switch to context({name: "<symbol>"${repoParam}}) if you need callers, callees, or process participation.`;
+      return `\n\n---\n**Next:** Use the snippets to verify the implementation detail you care about, then switch to inspect({action: "context", name: "<symbol>"${repoParam}}) if you need callers, callees, or process participation.`;
 
     case 'graph_diff':
-      return `\n\n---\n**Next:** Inspect the highest-signal added or removed edge, then use context({uid: "<symbol_uid>"${repoParam}}) or impact({target: "<name>", direction: "upstream"${repoParam}}) to understand the architectural consequence.`;
+      return `\n\n---\n**Next:** Inspect the highest-signal added or removed edge, then use inspect({action: "context", uid: "<symbol_uid>"${repoParam}}) or impact({action: "symbol", target: "<name>", direction: "upstream"${repoParam}}) to understand the architectural consequence.`;
 
     case 'hotspot_analysis':
-      return `\n\n---\n**Next:** Take the top hotspot file and run repomap({focus: ["<file>"]${repoParam}}) or impact({target: "<symbol>", direction: "upstream"${repoParam}}) before refactoring it.`;
+      return `\n\n---\n**Next:** Take the top hotspot file and run search({action: "repomap", focus: ["<file>"]${repoParam}}) or impact({action: "symbol", target: "<symbol>", direction: "upstream"${repoParam}}) before refactoring it.`;
 
     case 'impact_batch':
-      return `\n\n---\n**Next:** Review shared callers in the union result first, then drill into the riskiest symbol with context({name: "<name>"${repoParam}}) before changing multiple targets together.`;
+      return `\n\n---\n**Next:** Review shared callers in the union result first, then drill into the riskiest symbol with inspect({action: "context", name: "<name>"${repoParam}}) before changing multiple targets together.`;
 
     case 'tech_debt':
-      return `\n\n---\n**Next:** Start with the top-ranked symbol, then use impact({target: "<name>", direction: "upstream"${repoParam}}) to confirm the real blast radius before refactoring it.`;
+      return `\n\n---\n**Next:** Start with the top-ranked symbol, then use impact({action: "symbol", target: "<name>", direction: "upstream"${repoParam}}) to confirm the real blast radius before refactoring it.`;
 
     case 'verification_gap':
-      return `\n\n---\n**Next:** Add or update tests for the uncovered files, then rerun verification_gap(${repoParam ? `{repo: "${repo}"}` : ''}) to confirm coverage moved from uncovered to covered.`;
+      return `\n\n---\n**Next:** Add or update tests for the uncovered files, then rerun gn_test_gap({${repoParam ? ` repo: "${repo}" ` : ''}}) to confirm coverage moved from uncovered to covered.`;
 
     case 'ipc_trace':
-      return `\n\n---\n**Next:** Follow the traced bridge steps into context({name: "<symbol>"${repoParam}}) or evidence_pack({targets: ["<file>:<line>"]${repoParam}}) to inspect the native boundary in detail.`;
+      return `\n\n---\n**Next:** Follow the traced bridge steps into inspect({action: "context", name: "<symbol>"${repoParam}}) or inspect({action: "evidence", targets: ["<file>:<line>"]${repoParam}}) to inspect the native boundary in detail.`;
 
     case 'requirements_trace':
-      return `\n\n---\n**Next:** Review uncovered or weakly-linked requirement IDs first, then add the missing implementation/test trace points before rerunning requirements_trace(${repoParam ? `{repo: "${repo}"}` : ''}).`;
+      return `\n\n---\n**Next:** Review uncovered or weakly-linked requirement IDs first, then add the missing implementation/test trace points before rerunning audit({action: "requirements"${repoParam}}).`;
 
     case 'dead_code':
-      return `\n\n---\n**Next:** Start with the highest-confidence unreached symbols, then use context({name: "<symbol>"${repoParam}}) or impact({target: "<symbol>", direction: "upstream"${repoParam}}) before deleting anything.`;
+      return `\n\n---\n**Next:** Start with the highest-confidence unreached symbols, then use inspect({action: "context", name: "<symbol>"${repoParam}}) or impact({action: "symbol", target: "<symbol>", direction: "upstream"${repoParam}}) before deleting anything.`;
 
     case 'shape_check':
-      return `\n\n---\n**Next:** If the shape diverges, use impact({target: "<symbol>", direction: "downstream"${repoParam}}) to see callers that assume the old shape.`;
+      return `\n\n---\n**Next:** If the shape diverges, use impact({action: "symbol", target: "<symbol>", direction: "downstream"${repoParam}}) to see callers that assume the old shape.`;
 
     case 'api_impact':
-      return `\n\n---\n**Next:** For each downstream symbol, run context({name: "<name>"${repoParam}}) before changing the route signature.`;
+      return `\n\n---\n**Next:** For each downstream symbol, run inspect({action: "context", name: "<name>"${repoParam}}) before changing the route signature.`;
 
     case 'repomap':
-      return `\n\n---\n**Next:** Review the top-ranked symbols; to dig into a specific one, use context({name: "<name>"${repoParam}}). For a downstream impact check, use impact({target: "<name>", direction: "downstream"${repoParam}}).`;
+      return `\n\n---\n**Next:** Review the top-ranked symbols; to dig into a specific one, use inspect({action: "context", name: "<name>"${repoParam}}). For a downstream impact check, use impact({action: "symbol", target: "<name>", direction: "downstream"${repoParam}}).`;
 
     case 'route':
-      return `\n\n---\n**Next:** Call the suggested tool directly. If the classification misses, fall back to query({query: "..."${repoParam}}).`;
+      return `\n\n---\n**Next:** Call the suggested tool directly. If the classification misses, fall back to search({action: "semantic", query: "..."${repoParam}}).`;
 
     case 'session':
       return `\n\n---\n**Next:** After set/get, use list({ action: "list", session_id: "${args?.session_id || '<id>'}"${repoParam} }) to see all keys for this session.`;
 
     case 'group_list':
-      return `\n\n---\n**Next:** For cross-member impact, call impact({target: "<symbol>", repo: "@<groupName>"}).`;
+      return `\n\n---\n**Next:** For cross-member impact, call impact({action: "symbol", target: "<symbol>", repo: "@<groupName>"}).`;
 
     case 'group_sync':
-      return `\n\n---\n**Next:** After sync, list_repos(${repoParam ? `{repo: "${repo}"}` : ''}) to verify fresh indexedAt. For a fresh query, use query({q: "<term>", repo: "@<groupName>"}).`;
+      return `\n\n---\n**Next:** After sync, discover({action: "repos"}) to verify fresh indexedAt. For a fresh query, use search({action: "semantic", query: "<term>", repo: "@<groupName>"}).`;
 
     case 'sandbox':
       return `\n\n---\n**Next:** Sandbox apply is unavailable. Review the staged preview, edit files directly, then verify with gn_verify_diff({ changedFiles: [...], expectedFiles: [...]${repoParam} }).`;
@@ -274,7 +274,7 @@ export function getNextStepHint(
       return `\n\n---\n**Next:** Previewed with dry_run? Rerun replace_symbol({ uid: "${args?.uid || '<uid>'}", new_body: "...", dry_run: false, confirm: true${repoParam} }) to write. Then run gn_verify_diff({ expectedSymbols: ["<symbol>"], expectedFiles: ["<file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }) to verify the rewrite didn't regress callers.`;
 
     case 'get_symbol_info':
-      return `\n\n---\n**Next:** Use the returned UID with rename_symbol({ uid: "<uid>", new_name: "...", dry_run: true${repoParam} }) to review zero-ambiguity rename candidates; then edit files directly and verify. Use update_symbol_body({ uid: "<uid>", new_body: "..."${repoParam} }) to rewrite the implementation.`;
+      return `\n\n---\n**Next:** Use the returned UID with refactor({action: "rename", uid: "<uid>", new_name: "...", dry_run: true${repoParam}}) to review zero-ambiguity rename candidates; then edit files directly and verify. Use update_symbol_body({ uid: "<uid>", new_body: "..."${repoParam} }) to rewrite the implementation.`;
 
     case 'update_symbol_body':
       return `\n\n---\n**Next:** Run gn_verify_diff({ expectedSymbols: ["<symbol>"], expectedFiles: ["<file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }) to verify the rewrite didn't regress callers.`;
@@ -306,7 +306,7 @@ export function getNextStepHint(
 
     // Legacy tool names — still return useful hints
     case 'explore':
-      return `\n\n---\n**Next:** If planning changes, use impact({target: "<name>", direction: "upstream"${repoParam}}).`;
+      return `\n\n---\n**Next:** If planning changes, use impact({action: "symbol", target: "<name>", direction: "upstream"${repoParam}}).`;
     case 'overview':
       return `\n\n---\n**Next:** To drill into an area, READ ontoindex://repo/${repoPath}/cluster/{name}. To see execution flows, READ ontoindex://repo/${repoPath}/processes.`;
 

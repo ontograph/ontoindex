@@ -472,6 +472,11 @@ describe('readResource', () => {
     expect(result).toContain('OntoIndex MCP');
     expect(result).toContain('proj');
     expect(result).toContain('CLI equivalent: `ontoindex list`');
+    expect(result).toContain('| `gn_ensure_fresh` |');
+    expect(result).toContain('| `search` |');
+    expect(result).toContain('| `inspect` |');
+    expect(result).not.toContain('| `query` |');
+    expect(result).not.toContain('| `detect_changes` |');
   });
 
   it('returns fallback when setup has no repos', async () => {
@@ -509,7 +514,8 @@ describe('readResource', () => {
     expect(backend.resolveRepo).toHaveBeenCalledWith('test-project');
     expect(result).toContain('test-project');
     expect(result).toContain('files: 10');
-    expect(result).toContain('CLI equivalent: `ontoindex list`');
+    expect(result).toContain('search: Search semantically');
+    expect(result).not.toContain('ontoindex_query');
   });
 
   it('includes analysis catalog summary in context when manifests exist', async () => {
@@ -1171,6 +1177,13 @@ describe('resource YAML string roundtrips', () => {
     });
     const context = await read('context');
     expect(context.project).toBe(value);
+    expect(context.tools_available.map((tool: object) => Object.keys(tool)[0])).toContain('search');
+    expect(context.tools_available.map((tool: object) => Object.keys(tool)[0])).toContain(
+      'gn_ensure_fresh',
+    );
+    expect(context.tools_available.map((tool: object) => Object.keys(tool)[0])).not.toContain(
+      'query',
+    );
     expect(
       context.resources_available.slice(1, 8).map((entry: object) => Object.keys(entry)),
     ).toEqual(

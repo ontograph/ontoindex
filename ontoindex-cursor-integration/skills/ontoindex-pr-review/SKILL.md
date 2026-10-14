@@ -1,163 +1,27 @@
 ---
 name: ontoindex-pr-review
-description: "Use when the user wants to review a pull request, understand what a PR changes, assess risk of merging, or check for missing test coverage. Examples: \"Review this PR\", \"What does PR #42 change?\", \"Is this PR safe to merge?\""
+description: 'Review a pull request or diff for correctness, merge risk, and missing test coverage.'
 ---
 
-# PR Review with OntoIndex
+Read ontoindex-navigation first (freshness gate and failure path).
 
-## When to Use
+## Establish the review scope
 
-- "Review this PR"
-- "What does PR #42 change?"
-- "Is this safe to merge?"
-- "What's the blast radius of this PR?"
-- "Are there missing tests for this PR?"
-- Reviewing someone else's code changes before merge
+Run `gh auth status` first, then `gh pr diff <pr> --repo <owner/repository>`.
+Resolve the PR's base and head commits and ensure the local comparison contains those commits.
+Use that exact range for graph-assisted review:
 
-## Workflow
-
-```
-1. gh pr diff <number>                                    → Get the raw diff
-2. ontoindex_detect_changes({scope: "compare", base_ref: "main"})  → Map diff to affected flows
-3. For each changed symbol:
-   ontoindex_impact({target: "<symbol>", direction: "upstream"})    → Blast radius per change
-4. ontoindex_context({name: "<key symbol>"})               → Understand callers/callees
-5. READ ontoindex://repo/{name}/processes                   → Check affected execution flows
-6. Summarize findings with risk assessment
+```text
+gn_review_diff({repo: "<repo>", scope: "commit-range", commitRange: "<base>...<head>"})
+gn_diff_impact({repo: "<repo>", scope: "commit-range", commitRange: "<base>...<head>"})
+gn_test_gap({repo: "<repo>", scope: "compare", diffRef: "<base>", changedFiles: ["<changed-file>"], executedTests: ["<executed-test>"]})
 ```
 
-> If "Index is stale" → run `npx ontoindex analyze` in terminal before reviewing.
+Run coverage comparison in the checkout of the reviewed head; supply only tests actually executed.
+Read the diff and current source for changed contracts, callers, error paths, and regression evidence.
+Graph coverage matches may be heuristic; inspect the tests before treating them as coverage.
+Use the tool's risk classification; warn on HIGH or CRITICAL before any follow-up edit.
 
-## Checklist
-
-```
-- [ ] Fetch PR diff (gh pr diff or git diff base...head)
-- [ ] ontoindex_detect_changes to map changes to affected execution flows
-- [ ] ontoindex_impact on each non-trivial changed symbol
-- [ ] Review d=1 items (WILL BREAK) — are callers updated?
-- [ ] ontoindex_context on key changed symbols to understand full picture
-- [ ] Check if affected processes have test coverage
-- [ ] Assess overall risk level
-- [ ] Write review summary with findings
-```
-
-## Review Dimensions
-
-| Dimension | How OntoIndex Helps |
-| --- | --- |
-| **Correctness** | `context` shows callers — are they all compatible with the change? |
-| **Blast radius** | `impact` shows d=1/d=2/d=3 dependents — anything missed? |
-| **Completeness** | `detect_changes` shows all affected flows — are they all handled? |
-| **Test coverage** | `impact({includeTests: true})` shows which tests touch changed code |
-| **Breaking changes** | d=1 upstream items that aren't updated in the PR = potential breakage |
-
-## Risk Assessment
-
-| Signal | Risk |
-| --- | --- |
-| Changes touch <3 symbols, 0-1 processes | LOW |
-| Changes touch 3-10 symbols, 2-5 processes | MEDIUM |
-| Changes touch >10 symbols or many processes | HIGH |
-| Changes touch auth, payments, or data integrity code | CRITICAL |
-| d=1 callers exist outside the PR diff | Potential breakage — flag it |
-
-## Tools
-
-**ontoindex_detect_changes** — map PR diff to affected execution flows:
-
-```
-ontoindex_detect_changes({scope: "compare", base_ref: "main"})
-
-→ Changed: 8 symbols in 4 files
-→ Affected processes: CheckoutFlow, RefundFlow, WebhookHandler
-→ Risk: MEDIUM
-```
-
-**ontoindex_impact** — blast radius per changed symbol:
-
-```
-ontoindex_impact({target: "validatePayment", direction: "upstream"})
-
-→ d=1 (WILL BREAK):
-  - processCheckout (src/checkout.ts:42) [CALLS, 100%]
-  - webhookHandler (src/webhooks.ts:15) [CALLS, 100%]
-
-→ d=2 (LIKELY AFFECTED):
-  - checkoutRouter (src/routes/checkout.ts:22) [CALLS, 95%]
-```
-
-**ontoindex_impact with tests** — check test coverage:
-
-```
-ontoindex_impact({target: "validatePayment", direction: "upstream", includeTests: true})
-
-→ Tests that cover this symbol:
-  - validatePayment.test.ts [direct]
-  - checkout.integration.test.ts [via processCheckout]
-```
-
-**ontoindex_context** — understand a changed symbol's role:
-
-```
-ontoindex_context({name: "validatePayment"})
-
-→ Incoming calls: processCheckout, webhookHandler
-→ Outgoing calls: verifyCard, fetchRates
-→ Processes: CheckoutFlow (step 3/7), RefundFlow (step 1/5)
-```
-
-## Example: "Review PR #42"
-
-```
-1. gh pr diff 42 > /tmp/pr42.diff
-   → 4 files changed: payments.ts, checkout.ts, types.ts, utils.ts
-
-2. ontoindex_detect_changes({scope: "compare", base_ref: "main"})
-   → Changed symbols: validatePayment, PaymentInput, formatAmount
-   → Affected processes: CheckoutFlow, RefundFlow
-   → Risk: MEDIUM
-
-3. ontoindex_impact({target: "validatePayment", direction: "upstream"})
-   → d=1: processCheckout, webhookHandler (WILL BREAK)
-   → webhookHandler is NOT in the PR diff — potential breakage!
-
-4. ontoindex_impact({target: "PaymentInput", direction: "upstream"})
-   → d=1: validatePayment (in PR), createPayment (NOT in PR)
-   → createPayment uses the old PaymentInput shape — breaking change!
-
-5. ontoindex_context({name: "formatAmount"})
-   → Called by 12 functions — but change is backwards-compatible (added optional param)
-
-6. Review summary:
-   - MEDIUM risk — 3 changed symbols affect 2 execution flows
-   - BUG: webhookHandler calls validatePayment but isn't updated for new signature
-   - BUG: createPayment depends on PaymentInput type which changed
-   - OK: formatAmount change is backwards-compatible
-   - Tests: checkout.test.ts covers processCheckout path, but no webhook test
-```
-
-## Review Output Format
-
-Structure your review as:
-
-```markdown
-## PR Review: <title>
-
-**Risk: LOW / MEDIUM / HIGH / CRITICAL**
-
-### Changes Summary
-- <N> symbols changed across <M> files
-- <P> execution flows affected
-
-### Findings
-1. **[severity]** Description of finding
-   - Evidence from OntoIndex tools
-   - Affected callers/flows
-
-### Missing Coverage
-- Callers not updated in PR: ...
-- Untested flows: ...
-
-### Recommendation
-APPROVE / REQUEST CHANGES / NEEDS DISCUSSION
-```
+Report actionable findings with file/line evidence, a concrete trigger, and the consequence.
+Separate confirmed defects from evidence gaps; state when no defects were found and what remains unverified.
+Use `gh pr checks <pr> --repo <owner/repository>` before claiming CI is green.

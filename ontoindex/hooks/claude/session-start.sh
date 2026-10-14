@@ -23,20 +23,13 @@ fi
 cat << 'EOF'
 ## OntoIndex Code Intelligence
 
-This codebase is indexed by OntoIndex, providing a knowledge graph with execution flows, relationships, and semantic search.
+This codebase is indexed by OntoIndex, providing execution flows, relationships, and semantic search.
 
-**Available MCP Tools:**
-- `query` — Process-grouped code intelligence (execution flows related to a concept)
-- `context` — 360-degree symbol view (categorized refs, process participation)
-- `impact` — Blast radius analysis (what breaks if you change a symbol)
-- `detect_changes` — Git-diff impact analysis (what do your changes affect)
-- `rename` — Multi-file coordinated rename with confidence tags
-- `cypher` — Raw graph queries
-- `list_repos` — Discover indexed repos
+**Quick Start:** Call `gn_ensure_fresh({repo, autoAnalyze:false})`, then `search({action:'semantic', repo, query})` for relevant code, `inspect({action:'context', repo, target})` for symbol context, and `impact({action:'symbol', repo, target, direction:'upstream'})` before edits. Use `gn_verify_diff({repo, scope:'all', changedFiles, expectedFiles})` to verify changes and `discover({action:'repos'})` to find indexed repositories.
 
-**Quick Start:** READ `ontoindex://repo/{name}/context` for codebase overview, then use `query` to find execution flows.
+If the index is stale, report it to the single coordinating session; sub-agents must never reindex.
 
-**Resources:** `ontoindex://repo/{name}/context` (overview), `/processes` (execution flows), `/schema` (for Cypher)
+**Resources:** `ontoindex://repos`, `ontoindex://repo/{name}/context`, `ontoindex://repo/{name}/processes`, `ontoindex://repo/{name}/schema`
 EOF
 
 exit 0

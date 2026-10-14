@@ -14,6 +14,31 @@ All notable changes to OntoIndex will be documented in this file.
 
 - Changed `query` with Markdown context to rank chunks by BM25 relevance, return only matching chunks, and bound `facts`, `visibleRecords`, document `freshness`, and PPR `skipped`; responses for this repository shrink from 7.1 MB to 58–135 KB. Existing sidecars need one `ontoindex docs sidecar run markdown` refresh.
 
+## [2.3.3] - 2026-10-14
+
+### Changed
+
+- Rewrote the agent-visible text that still named removed tools: next-step hints appended to tool responses, the `tools_available` and setup resources, the Claude session-start hook, and generated community skills now use the live `search`, `inspect`, `impact`, `refactor` and `gn_*` calls. The "d=1 WILL BREAK" wording became "direct dependents, not proof of breakage".
+- Synced the Claude plugin and Cursor integration skill copies with the bundled 2.3.2 skills and added `ontoindex-navigation` to both.
+
+### Added
+
+- Regression tests: a sweep that fails when any next-step hint uses removed tool-call syntax, and `plugin-skills-sync.test.ts`, which fails when a plugin skill copy differs from `skills/*.md`.
+
+## [2.3.2] - 2026-10-14
+
+### Changed
+
+- Rewrote the bundled agent skills for the current MCP surface: every example uses the live `search`, `inspect`, `impact`, `refactor` and `gn_*` tools with an explicit `repo`, and the removed `ontoindex_*` tool names are gone.
+- Added the `ontoindex-navigation` skill (freshness gate, task-to-tool routing, missing or stale index failure path) and installed it first by `setup` and `analyze`; `ontoindex-pr-review` is now also installed by `analyze`.
+- Skills no longer tell agents to run `npx ontoindex analyze`; only the single coordinating session reindexes with the installed binary, and tool risk output is authoritative instead of symbol-count tables.
+- Corrected the `ontoindex-cli` skill: removed the false post-commit hook claim and documented `--skip-agents-md`, `mcp-doctor`, `clean --generations`, and the `wiki` external-LLM, public-Gist and `--api-key` risks.
+- Trimmed each skill to under 45 lines and removed fictional examples.
+
+### Added
+
+- `test/unit/skills-tool-names.test.ts` fails when a bundled skill names a tool that is not in the live MCP registry, mentions a removed tool name, or tells agents to run `npx ontoindex analyze`.
+
 ## [2.2.1] - 2026-09-05
 
 ### Fixed

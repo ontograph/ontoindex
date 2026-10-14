@@ -1,82 +1,25 @@
 ---
 name: ontoindex-cli
-description: "Use when the user needs to run OntoIndex CLI commands like analyze/index a repo, check status, clean the index, generate a wiki, or list indexed repos. Examples: \"Index this repo\", \"Reanalyze the codebase\", \"Generate a wiki\""
+description: 'Use when the user needs to operate the OntoIndex CLI to index, inspect, clean, or document a repository.'
 ---
+
+Read ontoindex-navigation first.
 
 # OntoIndex CLI Commands
 
-All commands work via `npx` — no global install required.
+Run the installed `ontoindex` command from the target repository. Only the coordinating session runs `ontoindex analyze`; sub-agents never analyze. Never launch analyze through npx; npx can fetch a different version.
 
-## Commands
+`analyze` indexes the repository and updates the OntoIndex block in `AGENTS.md` and `CLAUDE.md`. Use `--skip-agents-md` to leave those files untouched. The index is commit-based, so a dirty tree needs direct source checks. Embeddings are optional and off by default.
 
-### analyze — Build or refresh the index
+| Command                                                                | Purpose                                                                                                                            |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `ontoindex analyze [path]`                                             | Build or refresh the index; `--force` reindexes, `--embeddings` enables embeddings.                                                |
+| `ontoindex status [--repo <repo>]`                                     | Show index status for the current or selected repository.                                                                          |
+| `ontoindex list`                                                       | List registered indexed repositories.                                                                                              |
+| `ontoindex mcp-doctor [--repo <repo>] [--project-cwd <path>] [--json]` | Check MCP repository targeting and print repair guidance.                                                                          |
+| `ontoindex clean`                                                      | Show confirmation before deleting the current repository index.                                                                    |
+| `ontoindex clean --generations [--keep <n>]`                           | Preview obsolete generation cleanup; `--keep` retains 0–10 non-active generations (default 2). Add `--force` to delete candidates. |
+| `ontoindex clean --all --force`                                        | Delete indexes for every registered repository. This is destructive; ask the user before running it.                               |
+| `ontoindex wiki [path]`                                                | Generate repository documentation with an external LLM. Run only on explicit user request.                                         |
 
-```bash
-npx ontoindex analyze
-```
-
-Run from the project root. This parses all source files, builds the knowledge graph, writes it to `.ontoindex/`, and generates CLAUDE.md / AGENTS.md context files.
-
-| Flag           | Effect                                                           |
-| -------------- | ---------------------------------------------------------------- |
-| `--force`      | Force full re-index even if up to date                           |
-| `--embeddings` | Enable embedding generation for semantic search (off by default) |
-
-**When to run:** First time in a project, after major code changes, or when `ontoindex://repo/{name}/context` reports the index is stale. In Claude Code, a PostToolUse hook runs `analyze` automatically after `git commit` and `git merge`, preserving embeddings if previously generated.
-
-### status — Check index freshness
-
-```bash
-npx ontoindex status
-```
-
-Shows whether the current repo has a OntoIndex index, when it was last updated, and symbol/relationship counts. Use this to check if re-indexing is needed.
-
-### clean — Delete the index
-
-```bash
-npx ontoindex clean
-```
-
-Deletes the `.ontoindex/` directory and unregisters the repo from the global registry. Use before re-indexing if the index is corrupt or after removing OntoIndex from a project.
-
-| Flag      | Effect                                            |
-| --------- | ------------------------------------------------- |
-| `--force` | Skip confirmation prompt                          |
-| `--all`   | Clean all indexed repos, not just the current one |
-
-### wiki — Generate documentation from the graph
-
-```bash
-npx ontoindex wiki
-```
-
-Generates repository documentation from the knowledge graph using an LLM. Requires an API key (saved to `~/.ontoindex/config.json` on first use).
-
-| Flag                | Effect                                    |
-| ------------------- | ----------------------------------------- |
-| `--force`           | Force full regeneration                   |
-| `--model <model>`   | LLM model (default: minimax/minimax-m2.5) |
-| `--base-url <url>`  | LLM API base URL                          |
-| `--api-key <key>`   | LLM API key                               |
-| `--concurrency <n>` | Parallel LLM calls (default: 3)           |
-| `--gist`            | Publish wiki as a public GitHub Gist      |
-
-### list — Show all indexed repos
-
-```bash
-npx ontoindex list
-```
-
-Lists all repositories registered in `~/.ontoindex/registry.json`. The MCP `list_repos` tool provides the same information.
-
-## After Indexing
-
-1. **Read `ontoindex://repo/{name}/context`** to verify the index loaded
-2. Use the other OntoIndex skills (`exploring`, `debugging`, `impact-analysis`, `refactoring`) for your task
-
-## Troubleshooting
-
-- **"Not inside a git repository"**: Run from a directory inside a git repo
-- **Index is stale after re-analyzing**: Restart Claude Code to reload the MCP server
-- **Embeddings slow**: Omit `--embeddings` (it's off by default) or set `OPENAI_API_KEY` for faster API-based embedding
+`wiki` can publish a public GitHub Gist with `--gist`. Prefer `ONTOINDEX_API_KEY` or `OPENAI_API_KEY` from the environment; avoid putting secrets on the command line. The CLI also accepts `--api-key <key>` and saves it in `~/.ontoindex/config.json`.
