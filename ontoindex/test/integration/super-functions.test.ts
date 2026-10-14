@@ -15,6 +15,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { initLbug, closeLbug } from '../../src/mcp/core/lbug-adapter.js';
 import { gnExplore } from '../../src/mcp/super/explore.js';
@@ -46,7 +47,12 @@ const SLOW_PROPOSE_LOCATION_TIMEOUT_MS = 90_000;
 // Pool lifecycle.
 // ---------------------------------------------------------------------------
 
+// The self-index is produced by `ontoindex analyze` and is not committed, so a fresh
+// checkout has none. Without it the whole file is skipped instead of failing.
+const HAS_SELF_INDEX = existsSync(LBUG_PATH);
+
 beforeAll(async () => {
+  if (!HAS_SELF_INDEX) return;
   await initLbug(REPO_ID, LBUG_PATH);
 }, 30_000);
 
@@ -62,7 +68,7 @@ afterAll(async () => {
 // Test 1: gnExplore — concept-level discovery.
 // ---------------------------------------------------------------------------
 
-describe('gnExplore', () => {
+describe.skipIf(!HAS_SELF_INDEX)('gnExplore', () => {
   it(
     'returns a valid ExploreReport shape for a known concept',
     async () => {
@@ -112,7 +118,7 @@ describe('gnExplore', () => {
 // Test 2: gnExplainModule — file/module overview.
 // ---------------------------------------------------------------------------
 
-describe('gnExplainModule', () => {
+describe.skipIf(!HAS_SELF_INDEX)('gnExplainModule', () => {
   it('returns a valid ExplainModuleReport for an indexed file', async () => {
     // ontoindex/src/mcp/local/backend-search.ts is stable in the monorepo index.
     const report = await gnExplainModule(REPO_ID, {
@@ -174,7 +180,7 @@ describe('gnExplainModule', () => {
 // Test 3: gnFindRelated — symbol-level neighborhood.
 // ---------------------------------------------------------------------------
 
-describe('gnFindRelated', () => {
+describe.skipIf(!HAS_SELF_INDEX)('gnFindRelated', () => {
   it('returns a valid FindRelatedReport for mergeWithRRF', async () => {
     const report = await gnFindRelated(REPO_ID, { symbol: 'mergeWithRRF' });
 
@@ -218,7 +224,7 @@ describe('gnFindRelated', () => {
 // Test 4: env-var management — no persistent side effects.
 // ---------------------------------------------------------------------------
 
-describe('env-var invariant', () => {
+describe.skipIf(!HAS_SELF_INDEX)('env-var invariant', () => {
   it(
     'gnExplore does not persistently set ONTOINDEX_INTENT_ENSEMBLE',
     async () => {
@@ -266,7 +272,7 @@ describe('env-var invariant', () => {
 // Test 5 (Phase 2 W2d): gnSafeEditCheck — pre-edit risk synthesis.
 // ---------------------------------------------------------------------------
 
-describe('gnSafeEditCheck', () => {
+describe.skipIf(!HAS_SELF_INDEX)('gnSafeEditCheck', () => {
   it('returns a valid EditCheckReport with verdict and blastRadius for mergeWithRRF', async () => {
     const report = await gnSafeEditCheck(REPO_ID, { symbol: 'mergeWithRRF' });
 
@@ -301,7 +307,7 @@ describe('gnSafeEditCheck', () => {
 // Test 6 (Phase 2 W2d): gnCanDelete — dead-code safety verdict.
 // ---------------------------------------------------------------------------
 
-describe('gnCanDelete', () => {
+describe.skipIf(!HAS_SELF_INDEX)('gnCanDelete', () => {
   it('returns DO-NOT-DELETE for mergeWithRRF (it has callers)', async () => {
     const report = await gnCanDelete(REPO_ID, { symbol: 'mergeWithRRF' });
 
@@ -334,7 +340,7 @@ describe('gnCanDelete', () => {
 // Test 7 (Phase 2 W2d): gnPreCommitAudit — ship-readiness verdict.
 // ---------------------------------------------------------------------------
 
-describe('gnPreCommitAudit', () => {
+describe.skipIf(!HAS_SELF_INDEX)('gnPreCommitAudit', () => {
   it('returns a valid CommitAuditReport for staged scope on a clean tree', async () => {
     // The working tree is clean on main (no staged changes) — expect READY.
     // If there are staged changes (unlikely in CI), the verdict may be REVIEW or
@@ -381,7 +387,7 @@ describe('gnPreCommitAudit', () => {
 // Test 8 (Phase 3 W3d): gnSafeRefactor — dry-run preview without apply.
 // ---------------------------------------------------------------------------
 
-describe('gnSafeRefactor', () => {
+describe.skipIf(!HAS_SELF_INDEX)('gnSafeRefactor', () => {
   it('dryRun:true returns preview with applied:false and does not modify files', async () => {
     const report = await gnSafeRefactor(REPO_ID, {
       intent: 'rename',
@@ -415,7 +421,7 @@ describe('gnSafeRefactor', () => {
 // Test 9 (Phase 3 W3d): gnEnsureFresh — staleness check against self-index.
 // ---------------------------------------------------------------------------
 
-describe('gnEnsureFresh', () => {
+describe.skipIf(!HAS_SELF_INDEX)('gnEnsureFresh', () => {
   it('returns a valid EnsureFreshReport with preCheck containing both commits', async () => {
     const report = await gnEnsureFresh(REPO_ID, {});
 
@@ -447,7 +453,7 @@ describe('gnEnsureFresh', () => {
 // Test 10 (Phase 3 W3d): gnQualityMode — env var mutation and restore.
 // ---------------------------------------------------------------------------
 
-describe('gnQualityMode', () => {
+describe.skipIf(!HAS_SELF_INDEX)('gnQualityMode', () => {
   // Save and restore process.env around each test — gnQualityMode mutates it.
   let savedEnv: Record<string, string | undefined> = {};
 
@@ -509,7 +515,7 @@ describe('gnQualityMode', () => {
 // Test 11 (Phase 4 W4d): gnDiffImpact — PR blast-radius report.
 // ---------------------------------------------------------------------------
 
-describe('gnDiffImpact', () => {
+describe.skipIf(!HAS_SELF_INDEX)('gnDiffImpact', () => {
   it('returns a valid DiffImpactReport for staged scope (works on empty staged diff)', async () => {
     // scope: 'staged' is safe to run in any CI state — an empty staged area
     // yields an empty changedFiles list and no error.
@@ -567,7 +573,7 @@ describe('gnDiffImpact', () => {
 // Test 12 (Phase 4 W4d): gnDiagnose — read-only system-status report.
 // ---------------------------------------------------------------------------
 
-describe('gnDiagnose', () => {
+describe.skipIf(!HAS_SELF_INDEX)('gnDiagnose', () => {
   it('returns a valid DiagnoseReport with indexFreshness + envVars + recommendations', async () => {
     const report = await gnDiagnose(REPO_ID, {});
 
@@ -611,7 +617,7 @@ describe('gnDiagnose', () => {
 // Test 13 (Phase 4 W4d): gnProposeLocation — where-to-add-new-code suggester.
 // ---------------------------------------------------------------------------
 
-describe('gnProposeLocation', () => {
+describe.skipIf(!HAS_SELF_INDEX)('gnProposeLocation', () => {
   it(
     'returns a valid ProposeLocationReport with 0+ candidates (no warning when index has data)',
     async () => {

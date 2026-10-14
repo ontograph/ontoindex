@@ -73,7 +73,8 @@ const AUGMENT_FTS_INDEXES = [
 ];
 
 // Mock repo-manager so augment() finds our test DB
-vi.mock('../../src/storage/repo-manager.js', () => ({
+vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/storage/repo-manager.js')>()),
   listRegisteredRepos: vi.fn(),
 }));
 

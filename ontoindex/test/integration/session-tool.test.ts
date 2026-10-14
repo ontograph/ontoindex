@@ -17,6 +17,18 @@ describe('Session MCP Tool Integration', () => {
       mockData = data as string;
     });
     vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+    vi.mocked(fs.realpath).mockImplementation(async (path) => String(path));
+    vi.mocked(fs.lstat).mockResolvedValue({ isSymbolicLink: () => false } as any);
+    vi.mocked(fs.open).mockImplementation(
+      async (path) =>
+        ({
+          writeFile: async (data: string) => {
+            if (!String(path).endsWith('.lock')) mockData = data;
+          },
+          close: async () => {},
+        }) as any,
+    );
+    vi.mocked(fs.rename).mockResolvedValue(undefined);
 
     backend = new LocalBackend();
 
@@ -63,10 +75,11 @@ describe('Session MCP Tool Integration', () => {
   });
 
   it('returns error on invalid action', async () => {
-    const result = await backend.callTool('session', {
-      action: 'invalid_action' as any,
-      session_id: 'test-session-123',
-    });
-    expect(result.error).toContain('Unknown action: invalid_action');
+    await expect(
+      backend.callTool('session', {
+        action: 'invalid_action' as any,
+        session_id: 'test-session-123',
+      }),
+    ).rejects.toThrow('Invalid arguments for session: action:');
   });
 });
