@@ -36,6 +36,12 @@ describe('markdown answer grounding', () => {
     ]);
   });
 
+  it('DL1-G skips lowercase snake_case words but keeps upper-case constants', () => {
+    expect(
+      extractAnswerCitations('Use `node_modules`, `allowed_write_set` and `MAX_CITATIONS`.'),
+    ).toEqual([{ kind: 'symbol', text: 'MAX_CITATIONS' }]);
+  });
+
   it('DL1-B grounds exact and suffix path matches', () => {
     const result = checkAnswerGrounding('`RUNBOOK.md` and core/a/b.ts', evidence);
     expect(result.status).toBe('grounded');
