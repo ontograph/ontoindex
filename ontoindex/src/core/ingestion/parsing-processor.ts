@@ -19,6 +19,8 @@ import { extractLightweight } from './lightweight-extractor.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import {
   getDefinitionNodeFromCaptures,
+  collectNonVariableDefinitionNameStarts,
+  isShadowedVariableDefinition,
   findEnclosingClassInfo,
   getLabelFromCaptures,
   CLASS_CONTAINER_TYPES,
@@ -1040,6 +1042,9 @@ const processSequentialFileMatches = (
 ): void => {
   const { file, language, lineOffset, isVueSetup, provider, matches, typeEnv } = preparedFile;
   const knownTypeOwnerHints = collectKnownTypeOwnerHints(matches, provider, file.path);
+  // Mirrors parse-worker: drop Const/Static/Variable symbols for names already
+  // defined by a function/class/… pattern (e.g. `export const f = () => …`).
+  const nonVariableNameStarts = collectNonVariableDefinitionNameStarts(matches);
 
   matches.forEach((match) => {
     const captureMap: Record<string, SyntaxNode> = {};
@@ -1063,6 +1068,7 @@ const processSequentialFileMatches = (
         : null;
     let nodeLabel = extractedClassSymbol?.type ?? defaultNodeLabel;
     if (!nameNode && nodeLabel !== 'Constructor' && !extractedClassSymbol) return;
+    if (isShadowedVariableDefinition(nodeLabel, nameNode, nonVariableNameStarts)) return;
     const cppTypeDeclarationName =
       language === SupportedLanguages.CPlusPlus &&
       (nodeLabel === 'Class' || nodeLabel === 'Struct') &&

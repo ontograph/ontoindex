@@ -68,8 +68,9 @@ export const resolveImportPath = (
             ? targetPrefix + remainder
             : tsconfigPaths.baseUrl + '/' + targetPrefix + remainder;
 
-        // Try direct resolution from repo root
-        const resolved = tryResolveWithExtensions(rewritten, allFiles);
+        // Try direct resolution from repo root. NodeNext aliases such as `@/a.js` name
+        // the emitted file, so map emitted extensions back to their TypeScript sources.
+        const resolved = tryResolveWithExtensions(rewritten, allFiles, { mapJsToTs: true });
         if (resolved) return cache(resolved);
 
         // Try suffix matching as fallback

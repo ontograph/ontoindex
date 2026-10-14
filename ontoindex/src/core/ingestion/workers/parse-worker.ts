@@ -80,6 +80,8 @@ import { getLanguageFromFilename, getLanguageFromShebang } from 'ontoindex-share
 import {
   FUNCTION_NODE_TYPES,
   getDefinitionNodeFromCaptures,
+  collectNonVariableDefinitionNameStarts,
+  isShadowedVariableDefinition,
   findEnclosingClassInfo,
   type EnclosingClassInfo,
   getLabelFromCaptures,
@@ -1324,6 +1326,10 @@ const processFileMatches = (state: FileProcessingState, result: ParseWorkerResul
   // (e.g. @definition.function) to avoid duplicate nodes when @definition.const/@definition.variable
   // patterns overlap with the same source range.
   const processedDefinitionNodes = new Set<number>();
+  // Name identifiers already defined by a function/class/… pattern. The export and
+  // bare declaration patterns capture different definition nodes for the same
+  // name, so the start-index check above alone misses `export const f = () => …`.
+  const nonVariableNameStarts = collectNonVariableDefinitionNameStarts(matches);
 
   for (const match of matches) {
     const captureMap = buildCaptureMap(match);
@@ -1798,6 +1804,7 @@ const processFileMatches = (state: FileProcessingState, result: ParseWorkerResul
     ) {
       continue;
     }
+    if (isShadowedVariableDefinition(nodeLabel, nameNode, nonVariableNameStarts)) continue;
     if (definitionNode) {
       processedDefinitionNodes.add(definitionNode.startIndex);
     }

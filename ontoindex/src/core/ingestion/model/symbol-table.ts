@@ -258,6 +258,17 @@ export const createSymbolTable = (): InternalSymbolTable => {
     type: NodeLabel,
     metadata?: AddMetadata,
   ): SymbolDefinition => {
+    // Idempotent per node: one declaration can match several tree-sitter
+    // patterns (e.g. `export const f = () => …` matches both the bare and the
+    // `export_statement` arrow-function patterns). Registering the same nodeId
+    // twice would make the resolver see two identical candidates, treat the
+    // call as ambiguous, and drop the CALLS edge.
+    const existingDef = fileIndex
+      .get(filePath)
+      ?.get(name)
+      ?.find((candidate) => candidate.nodeId === nodeId);
+    if (existingDef) return existingDef;
+
     const qualifiedName = CLASS_TYPES.has(type)
       ? (metadata?.qualifiedName ?? name)
       : metadata?.qualifiedName;

@@ -21,7 +21,7 @@ vi.mock('../../src/mcp/local/backend-symbol-resolution.js', () => ({
 const repo = { id: 'repo', name: 'repo', repoPath: '/repo', storagePath: '/store' };
 const target = { id: 'target', name: 'target', type: 'Function', filePath: 'src/target.ts' };
 const options: RunImpactKernelOptions = { direction: 'upstream', maxDepth: 3 };
-const query = vi.mocked(poolAdapter.executeQuery);
+const query = vi.mocked(poolAdapter.executeParameterized);
 
 function row(id: string, filePath = `src/${id}.ts`) {
   return { id, name: id, type: 'Function', filePath, relType: 'CALLS', confidence: 0.95 };
@@ -67,8 +67,8 @@ describe('impact kernel dirty traversal boundaries', () => {
         'Impact traversal stopped at dirty paths with stale graph IDs: src/dirty.ts',
       ]);
       expect(query).toHaveBeenCalledTimes(3);
-      expect(query.mock.calls[1][1]).toContain("n.id IN ['clean']");
-      expect(query.mock.calls[2][1]).toContain("n.id IN ['cleanChild']");
+      expect(query.mock.calls[1][2]).toEqual({ frontierIds: ['clean'] });
+      expect(query.mock.calls[2][2]).toEqual({ frontierIds: ['cleanChild'] });
     },
   );
 
@@ -98,7 +98,7 @@ describe('impact kernel dirty traversal boundaries', () => {
     ]);
     expect(result.partial).toBe(true);
     expect(query).toHaveBeenCalledTimes(2);
-    expect(query.mock.calls[1][1]).toContain("n.id IN ['clean']");
+    expect(query.mock.calls[1][2]).toEqual({ frontierIds: ['clean'] });
   });
 
   it('marks even a final-depth dirty row partial and normalizes graph path separators', async () => {
@@ -151,7 +151,7 @@ describe('impact kernel dirty traversal boundaries', () => {
     expect(result.impacted.map(({ id }) => id)).toEqual(['clean']);
     expect(result.partial).toBe(false);
     expect(result.warnings).toEqual([]);
-    expect(query.mock.calls[1][1]).toContain("n.id IN ['clean']");
+    expect(query.mock.calls[1][2]).toEqual({ frontierIds: ['clean'] });
   });
 
   it.each([false, true])(
@@ -179,7 +179,7 @@ describe('impact kernel dirty traversal boundaries', () => {
         warnings: [expect.stringContaining('src/dirty.ts')],
         byDepth: { 1: [expect.objectContaining({ id: 'dirty', dirty: true })] },
       });
-      expect(query).toHaveBeenCalledTimes(1);
+      expect(query.mock.calls.filter((call) => call[1].includes('$frontierIds'))).toHaveLength(1);
     },
   );
 });
