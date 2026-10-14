@@ -117,3 +117,5 @@ Chunk evidence keeps only `mention`; results move to a response-level `mentionTa
 - Growth: median 3.7 KB, maximum 16.4 KB (the 20 KB stop condition now holds for all eight queries; it was 24 KB with per-item attachment).
 - Wall time (whole CLI process): median 1,466 ms versus 1,557 ms on master, p95 1,897 versus 1,799 ms. The p95 difference is within run-to-run noise on this machine; lookup cost was not isolated.
 - Offline estimate used to choose the design on the heaviest query: per-item attachment +19.0 KB, per-item with unresolved omitted +16.8 KB, resolved-only +11.9 KB, hoisted map +11.3 KB.
+
+Later merged work: #96 query-time mention resolution; #98 analysis-coordinator test polling ceilings; #99/#100/#102 CI workflow hardening; #101 the 25-fact per-(chunk, fact kind) cap; #103 release 2.3.4; #104 integration test fixes. See the retrieval plan’s “Later merged work” closeout for commits and payload measurements.

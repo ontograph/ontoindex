@@ -862,3 +862,12 @@ Merge-readiness round (2026-10-14, workers: `gpt-6.1-sol` x5, `gpt-6-luna` x2):
 - Full `test/unit` on the branch before the fixes: 14 failures in 5 files (`analysis-coordinator`, `kimi-k3-mcp-smoke`, `setup-codex`, `setup`, `skip-git-cli`), none importing a changed module; `setup.test.ts` needs the unbuilt packaged CLI. CI on all three OSes passed. The suite was not re-run after the fixes.
 - Decision: leave `explanation.retrievers[0].seedIds` as is (saving too small for an unversioned contract change).
 - Decision: mention resolution should be bounded query-time resolution of returned chunks only, reusing `LbugGraphIdentityProvider` and `resolveMarkdownDocumentFacts`; no stored-fact change. Needs its own plan; `toMarkdownDocsEvidenceFact` currently drops `target.id`, and `boundMarkdownFacts` drops unresolved mentions.
+
+### Later merged work
+
+- #96 (`c39d641`): query-time mention resolution for returned Markdown chunks.
+- #98 (`3cf4454`): longer analysis-coordinator test polling ceilings.
+- #99/#100/#102 (`1855fd7`, `75a4be4`, `4772efa`): CI workflow hardening with checkout v7.0.1, default-branch checkout in `claude-code-review`, and fork-PR skips in `claude.yml`.
+- #101 (`0e1c52f`): cap response facts at 25 per (chunk, fact kind); `factsBound.perChunkKindLimit` and `omittedByChunkCap` report the bound and omissions. Recorded zero-token query responses fell from 380 KB to about 140–148 KB; stored facts and ranking are unchanged.
+- #103 (`569c8b6`, release commit `d540838`): release 2.3.4.
+- #104 (`a69c469`): integration test fixes for stale mocks, session expectations, self-index and the golden fixture.

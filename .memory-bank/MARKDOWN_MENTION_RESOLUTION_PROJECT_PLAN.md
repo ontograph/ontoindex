@@ -288,3 +288,5 @@ Executed 2026-10-14 with workers `gpt-6.1-sol` x7 and `gpt-6-luna` x4 (task stat
 MR-3.0 measurement is in `audit_session-markdown-graph-rag-recall.md`. Per-item attachment with up to 3 targets added up to 50 KB; count-only ambiguity cut that to 24 KB on the heaviest query; the `mentionTargets` map brings it to 16 KB, median 3.7 KB, so the 20 KB stop condition holds for all eight queries.
 
 Merged as PR #96 (`c39d641`); temporary worktrees removed. Sidecars do not need a rerun because stored facts are unchanged.
+
+Later merged work: #96 query-time mention resolution; #98 analysis-coordinator test polling ceilings; #99/#100/#102 CI workflow hardening; #101 the 25-fact per-(chunk, fact kind) cap; #103 release 2.3.4; #104 integration test fixes. See the retrieval plan’s “Later merged work” closeout for commits and payload measurements.
