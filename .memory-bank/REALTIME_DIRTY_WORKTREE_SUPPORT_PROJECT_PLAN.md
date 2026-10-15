@@ -1693,3 +1693,14 @@ RT-1’s earlier residual is outdated: per-result stale marking exists on master
 - RT-44 overlay half: `overlay-generations.test.ts` publishes 10 overlay generations with one held and shows the retained directory count stays at the pruning limit of 3 plus the held one, with CURRENT naming the newest. Residual: overlay pruning (`generations.slice(3)` in `run-analyze.ts`) is not reader-aware. On Linux a held generation survives only if the OS refuses the delete, so the test models that refusal. A byte budget and a retained-generation count in status remain recommendations, not implemented.
 - Tasks stay OPEN; `dispatch_mode` stays `human`.
 
+## Evidence note: saved runs for RT-9, RT-10, RT-16 and RT-23 (2026-10-15)
+
+`.memory-bank/evidence/rt-evidence-runs-2026-10-15.md` holds the commands, commit, machine and results.
+
+- RT-9: `dirty-overlay-build.test.ts` passed 30 of 30 consecutive runs.
+- RT-23: `dirty-overlay-build.test.ts` and `backend-overlay.test.ts` passed 20 of 20 consecutive runs on Linux.
+- RT-16: `overlay-benchmark.mjs` exited 0; warm medians are 0.84 s for 1 file, 2.42 s for 10, 1.16 s for 25 and 1.38 s for 50, against a 41 s baseline analyze.
+- RT-10: a clean clone analyzed with an isolated registry has 3,855 TS-to-TS IMPORTS edges (294 before the fix) and 8 direct callers of `runImpactKernel`. The original import specifier is not stored on the edge, so the `.js` specifier count cannot be reported.
+
+Tracker route: the manager runtime accepts `complete-local` for `full` and auditor-gated tasks when `dispatch_mode` is `none`, the task is the active next task, its dependencies are DONE, no role results or dispatch binding exist, and `closeout.main_session_evidence` carries `authorized_by`, `authorization_ref` and `validation_summary`. Each task needs its own fresh evidence, so bulk closure is not justified.
+
