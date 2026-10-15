@@ -198,6 +198,86 @@ describe('watch command', () => {
     command.stop();
   });
 
+  it('rebuilds exactly one overlay when the generation changes during reconciliation', async () => {
+    vi.useFakeTimers();
+    const options = { generationId: 'one' };
+    const harness = makeHarness(options);
+    const command = await harness.start();
+
+    options.generationId = 'two';
+    await vi.advanceTimersByTimeAsync(30000);
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
+
+    expect(harness.spawn.mock.calls[0]?.[1]).toEqual([
+      '/cli/index.js',
+      'analyze',
+      '--dirty-overlay',
+      harness.repoPath,
+    ]);
+    harness.child.emit('close', 0, null);
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    command.stop();
+  });
+
+  it('queues one overlay rebuild when the generation changes during an overlay child', async () => {
+    vi.useFakeTimers();
+    const options = { initiallyDirty: true, generationId: 'one' };
+    const harness = makeHarness(options);
+    const command = await harness.start();
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
+
+    options.generationId = 'two';
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+
+    harness.child.emit('close', 0, null);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(harness.spawn).toHaveBeenCalledTimes(2);
+    });
+    expect(harness.spawn.mock.calls[0]?.[1]).toEqual([
+      '/cli/index.js',
+      'analyze',
+      '--dirty-overlay',
+      harness.repoPath,
+    ]);
+    expect(harness.spawn.mock.calls[1]?.[1]).toEqual([
+      '/cli/index.js',
+      'analyze',
+      '--dirty-overlay',
+      harness.repoPath,
+    ]);
+
+    harness.child.emit('close', 0, null);
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(harness.spawn).toHaveBeenCalledTimes(2);
+    command.stop();
+  });
+
+  it('retries the base refresh once after analyze.lock is released', async () => {
+    vi.useFakeTimers();
+    const options = { head: 'next', commit: 'old', lockHeld: true };
+    const harness = makeHarness(options);
+    const command = await harness.start();
+
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(harness.spawn).not.toHaveBeenCalled();
+
+    options.lockHeld = false;
+    await vi.advanceTimersByTimeAsync(30000);
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
+    expect(harness.spawn.mock.calls[0]?.[1]).toEqual([
+      '/cli/index.js',
+      'analyze',
+      harness.repoPath,
+    ]);
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    command.stop();
+  });
+
   it('does not refresh the base when reading HEAD fails', async () => {
     vi.useFakeTimers();
     const harness = makeHarness({ headFails: true, commit: 'old' });

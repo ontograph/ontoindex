@@ -1685,3 +1685,11 @@ Dispatch mode stays `human` and all tasks stay OPEN. Implementation is present f
 | RT-20 | NOT_MET | Guide rewritten by PR #123. |
 
 RT-1’s earlier residual is outdated: per-result stale marking exists on master via `scanDirtyResults` in `response-envelope.ts`. PRs #120–#123 are merged to master; tasks remain OPEN and `dispatch_mode` remains `human`.
+
+## Evidence note: RT-41, RT-43 and RT-44 test evidence (2026-10-15)
+
+- RT-41: `impact-kernel-dirty.test.ts` now asserts that with no dirty source files the mention scan opens no file and matches the clean baseline, and that 50 dirty files cause at most 50 opens and reads, each no larger than `DIRTY_MENTION_MAX_BYTES`. No wall-clock threshold is asserted.
+- RT-43: `watch-command.test.ts` now covers a base generation change between reconcile ticks (one overlay rebuild, no base analyze), a generation change during an overlay child (one further rebuild), and a base refresh that waits for `analyze.lock` and then runs once. The existing HEAD-change test covers one base analyze followed by one overlay build. The overlay snapshot's own base-mismatch reason is reached through the generation signature; the watcher does not read that reason directly.
+- RT-44 overlay half: `overlay-generations.test.ts` publishes 10 overlay generations with one held and shows the retained directory count stays at the pruning limit of 3 plus the held one, with CURRENT naming the newest. Residual: overlay pruning (`generations.slice(3)` in `run-analyze.ts`) is not reader-aware. On Linux a held generation survives only if the OS refuses the delete, so the test models that refusal. A byte budget and a retained-generation count in status remain recommendations, not implemented.
+- Tasks stay OPEN; `dispatch_mode` stays `human`.
+
