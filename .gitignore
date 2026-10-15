@@ -55,6 +55,8 @@ HANDOFF*.md
 
 .env*.local
 .ontoindex
+# Local agent research reports and session state, not source.
+.ontocode/
 # Assets (screenshots, images)
 assets/
 
