@@ -1653,3 +1653,9 @@ Until now only targeted test subsets had been run. Two verification workers (gpt
 ## Evidence note: merged pull requests and overlay eligibility parity
 
 PR #118 (`a4c4659`) and PR #119 (`364b5a4`) squash-merged to master with green CI. PR #120 (`feat/overlay-eligibility-parity`) adds the built-in ignore, size cap, and root `.gitignore`/`.ontoindexignore` rules to `planDirtyOverlay` through `loadIgnoreRules` and two root reads, without a tree walk. The full unit suite passed (8,520 tests). Task statuses remain OPEN until receipt gates exist; tracker closure needs a `depends_on` chain before `dispatch_mode` changes to sub-agent.
+
+## Evidence note: merge status and tracker residual (2026-10-15)
+
+PR #120 (`9cda700`) and PR #121 (`f516102`) are also squash-merged to master, so PRs #118 to #121 are all on master. PR #122 adds `.ontocode/` to `.gitignore`.
+
+Dispatch mode stays `human` and all tasks stay OPEN. Implementation is present for RT-36 to RT-44 and the earlier closed work, but no authenticated role receipts exist, so closure is pending. Closing legitimately needs either `dispatch_mode: none` with `complete-local` and fresh main-session evidence per task, or real coder and auditor dispatch with receipts. Known acceptance gap: RT-1 has no per-result `stale` marker, only the `dirtyResultPaths` list on freshness. Audit each task's acceptance criteria against current source before any `complete-local` closure.
