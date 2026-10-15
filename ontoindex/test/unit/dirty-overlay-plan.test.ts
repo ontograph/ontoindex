@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import fsPromises from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { planDirtyOverlay } from '../../src/core/analyze-delta.js';
 
 function runGit(repoPath: string, args: string[]): string {
@@ -41,6 +42,198 @@ function withGitRepo(test: (repoPath: string) => Promise<void>): () => Promise<v
 }
 
 describe('dirty overlay planner', () => {
+  it(
+    'skips dirty sources matching .ontoindexignore',
+    withGitRepo(async (repoDir) => {
+      writeFile(repoDir, '.ontoindexignore', 'src/private/**\n');
+      commitFiles(repoDir);
+      writeFile(repoDir, 'src/private/value.ts', 'export const value = 1;\n');
+
+      const plan = await planDirtyOverlay(repoDir);
+
+      expect(plan.includePaths).toEqual([]);
+      expect(plan.allDirtyPaths).toEqual([]);
+      expect(plan.skipped).toEqual(['src/private/value.ts']);
+    }),
+  );
+
+  it(
+    'skips tracked modified sources matching .gitignore',
+    withGitRepo(async (repoDir) => {
+      writeFile(repoDir, 'src/generated.ts', 'export const value = 1;\n');
+      commitFiles(repoDir);
+      writeFile(repoDir, '.gitignore', 'src/generated.ts\n');
+      runGit(repoDir, ['add', '.gitignore']);
+      runGit(repoDir, ['commit', '--quiet', '-m', 'ignore generated source']);
+      writeFile(repoDir, 'src/generated.ts', 'export const value = 2;\n');
+
+      const plan = await planDirtyOverlay(repoDir);
+
+      expect(plan.includePaths).toEqual([]);
+      expect(plan.allDirtyPaths).toEqual([]);
+      expect(plan.skipped).toEqual(['src/generated.ts']);
+    }),
+  );
+
+  it(
+    'does not tombstone deleted tracked sources matching an ignore rule',
+    withGitRepo(async (repoDir) => {
+      writeFile(repoDir, '.ontoindexignore', 'src/generated.ts\n');
+      writeFile(repoDir, 'src/generated.ts', 'export const value = 1;\n');
+      commitFiles(repoDir);
+      fs.unlinkSync(path.join(repoDir, 'src/generated.ts'));
+
+      const plan = await planDirtyOverlay(repoDir);
+
+      expect(plan.tombstones).toEqual([]);
+      expect(plan.allDirtyPaths).toEqual([]);
+      expect(plan.skipped).toEqual(['src/generated.ts']);
+    }),
+  );
+
+  it(
+    'includes dirty sources that do not match root ignore rules',
+    withGitRepo(async (repoDir) => {
+      writeFile(repoDir, '.gitignore', 'generated/**\n');
+      writeFile(repoDir, '.ontoindexignore', 'private/**\n');
+      commitFiles(repoDir);
+      writeFile(repoDir, 'src/value.ts', 'export const value = 1;\n');
+
+      const plan = await planDirtyOverlay(repoDir);
+
+      expect(plan.includePaths).toEqual(['src/value.ts']);
+      expect(plan.allDirtyPaths).toEqual(['src/value.ts']);
+      expect(plan.skipped).toEqual([]);
+    }),
+  );
+
+  it(
+    'keeps modified and deleted sources eligible without ignore files',
+    withGitRepo(async (repoDir) => {
+      writeFile(repoDir, 'src/value.ts', 'export const value = 1;\n');
+      writeFile(repoDir, 'src/gone.ts', 'export const gone = true;\n');
+      commitFiles(repoDir);
+      writeFile(repoDir, 'src/value.ts', 'export const value = 2;\n');
+      fs.unlinkSync(path.join(repoDir, 'src/gone.ts'));
+
+      const plan = await planDirtyOverlay(repoDir);
+
+      expect(plan.includePaths).toEqual(['src/value.ts']);
+      expect(plan.tombstones).toEqual(['src/gone.ts']);
+      expect(plan.allDirtyPaths).toEqual(['src/gone.ts', 'src/value.ts']);
+      expect(plan.skipped).toEqual([]);
+    }),
+  );
+
+  it(
+    'skips modified dependency and build outputs',
+    withGitRepo(async (repoDir) => {
+      const files = ['node_modules/pkg/index.ts', 'dist/out.js', 'src/a.ts'];
+      for (const file of files) writeFile(repoDir, file, 'const before = 1;\n');
+      commitFiles(repoDir);
+      for (const file of files) writeFile(repoDir, file, 'const after = 2;\n');
+
+      const plan = await planDirtyOverlay(repoDir);
+
+      expect(plan.includePaths).toEqual(['src/a.ts']);
+      expect(plan.allDirtyPaths).toEqual(['src/a.ts']);
+      expect(plan.skipped).toEqual(['dist/out.js', 'node_modules/pkg/index.ts']);
+    }),
+  );
+
+  it.each([
+    { cap: '1', includePaths: ['src/small.ts'], skipped: ['src/large.ts'] },
+    { cap: '0', includePaths: ['src/large.ts', 'src/small.ts'], skipped: [] },
+  ])(
+    'applies the current scan size cap ($cap KiB) to modified sources',
+    async ({ cap, includePaths, skipped }) => {
+      const previousCap = process.env.ONTOINDEX_SCAN_MAX_FILE_KB;
+      try {
+        process.env.ONTOINDEX_SCAN_MAX_FILE_KB = cap;
+        await withGitRepo(async (repoDir) => {
+          writeFile(repoDir, 'src/large.ts', 'const before = 1;\n');
+          writeFile(repoDir, 'src/small.ts', 'const before = 1;\n');
+          commitFiles(repoDir);
+          writeFile(repoDir, 'src/large.ts', 'x'.repeat(3 * 1024));
+          writeFile(repoDir, 'src/small.ts', 'const after = 2;\n');
+
+          const plan = await planDirtyOverlay(repoDir);
+
+          expect(plan.includePaths).toEqual(includePaths);
+          expect(plan.allDirtyPaths).toEqual(includePaths);
+          expect(plan.skipped).toEqual(skipped);
+        })();
+      } finally {
+        if (previousCap === undefined) delete process.env.ONTOINDEX_SCAN_MAX_FILE_KB;
+        else process.env.ONTOINDEX_SCAN_MAX_FILE_KB = previousCap;
+      }
+    },
+  );
+
+  it(
+    'keeps deleted sources as tombstones but skips deleted dependencies',
+    withGitRepo(async (repoDir) => {
+      writeFile(repoDir, 'src/gone.ts', 'export const gone = true;\n');
+      writeFile(repoDir, 'node_modules/x/y.ts', 'export const ignored = true;\n');
+      commitFiles(repoDir);
+      fs.unlinkSync(path.join(repoDir, 'src/gone.ts'));
+      fs.unlinkSync(path.join(repoDir, 'node_modules/x/y.ts'));
+
+      const plan = await planDirtyOverlay(repoDir);
+
+      expect(plan.tombstones).toEqual(['src/gone.ts']);
+      expect(plan.includePaths).toEqual([]);
+      expect(plan.allDirtyPaths).toEqual(['src/gone.ts']);
+      expect(plan.skipped).toEqual(['node_modules/x/y.ts']);
+    }),
+  );
+
+  it(
+    'does not count ignored paths toward the 50-file cap',
+    withGitRepo(async (repoDir) => {
+      for (let index = 0; index < 60; index += 1) {
+        writeFile(repoDir, `node_modules/p/f${index}.ts`, 'export const ignored = true;\n');
+      }
+      const sources = ['src/a.ts', 'src/b.ts', 'src/c.ts'];
+      for (const file of sources) writeFile(repoDir, file, 'export const value = 1;\n');
+
+      const plan = await planDirtyOverlay(repoDir);
+
+      expect(plan.tooMany).toBe(false);
+      expect(plan.includePaths).toEqual(sources);
+      expect(plan.allDirtyPaths).toEqual(sources);
+      expect(plan.uncoveredPaths).toEqual([]);
+      expect(plan.skipped).toEqual(
+        Array.from({ length: 60 }, (_, index) => `node_modules/p/f${index}.ts`).sort(),
+      );
+    }),
+  );
+
+  it(
+    'keeps a modified source eligible when stat fails',
+    withGitRepo(async (repoDir) => {
+      writeFile(repoDir, 'src/missing.ts', 'const before = 1;\n');
+      commitFiles(repoDir);
+      writeFile(repoDir, 'src/missing.ts', 'const after = 2;\n');
+      const originalStat = fsPromises.stat;
+      const stat = vi.spyOn(fsPromises, 'stat').mockImplementation((...args) => {
+        if (args[0] === path.join(repoDir, 'src/missing.ts')) {
+          fs.rmSync(path.join(repoDir, 'src/missing.ts'), { force: true });
+        }
+        return originalStat(...args);
+      });
+      try {
+        const plan = await planDirtyOverlay(repoDir);
+
+        expect(plan.includePaths).toEqual(['src/missing.ts']);
+        expect(plan.allDirtyPaths).toEqual(['src/missing.ts']);
+        expect(plan.skipped).toEqual([]);
+      } finally {
+        stat.mockRestore();
+      }
+    }),
+  );
+
   it(
     'includes modified, added, and untracked sources and tombstones deleted and renamed-away sources',
     withGitRepo(async (repoDir) => {

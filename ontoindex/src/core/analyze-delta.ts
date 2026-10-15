@@ -1,12 +1,15 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFileText } from './process/exec-file.js';
+import { loadIgnoreRules, shouldIgnorePath } from '../config/ignore-service.js';
 import { getCurrentCommit } from '../storage/git.js';
 import { getStoragePaths, loadMeta } from '../storage/repo-manager.js';
+import { getScanMaxFileSizeBytes } from './ingestion/scan-config.js';
 
 const GIT_TIMEOUT_MS = 5_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
 const MAX_CHANGED_FILES_FOR_BOUNDED_REFRESH = 50;
+const OVERLAY_SIZE_STAT_CONCURRENCY = 16;
 
 const SOURCE_FILE_EXTENSIONS = new Set([
   '.ts',
@@ -361,6 +364,9 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
   const includePaths = new Set<string>();
   const tombstones = new Set<string>();
   const skipped = new Set<string>();
+  const ignoreRules = await loadIgnoreRules(repoPath);
+  const isIgnored = (filePath: string): boolean =>
+    shouldIgnorePath(filePath) || (ignoreRules?.ignores(filePath) ?? false);
 
   const statusOutput = await execFileText(
     'git',
@@ -373,14 +379,17 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
     if (!oldPath) continue;
 
     if (paths.length > 1) {
-      if (isSourceFilePath(oldPath)) tombstones.add(oldPath);
-      else skipped.add(oldPath);
-      if (newPath && isSourceFilePath(newPath)) includePaths.add(newPath);
-      else if (newPath) skipped.add(newPath);
+      if (!isSourceFilePath(oldPath) || isIgnored(oldPath)) skipped.add(oldPath);
+      else tombstones.add(oldPath);
+      if (newPath && isSourceFilePath(newPath) && !isIgnored(newPath)) {
+        includePaths.add(newPath);
+      } else if (newPath) {
+        skipped.add(newPath);
+      }
       continue;
     }
 
-    if (!isSourceFilePath(oldPath)) {
+    if (!isSourceFilePath(oldPath) || isIgnored(oldPath)) {
       skipped.add(oldPath);
     } else if (status.includes('D')) {
       tombstones.add(oldPath);
@@ -394,6 +403,27 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
       includePaths.add(oldPath);
     } else {
       skipped.add(oldPath);
+    }
+  }
+
+  const maxFileSizeBytes = getScanMaxFileSizeBytes();
+  if (maxFileSizeBytes !== null) {
+    const candidates = [...includePaths];
+    for (let offset = 0; offset < candidates.length; offset += OVERLAY_SIZE_STAT_CONCURRENCY) {
+      const batch = candidates.slice(offset, offset + OVERLAY_SIZE_STAT_CONCURRENCY);
+      await Promise.all(
+        batch.map(async (filePath) => {
+          try {
+            const stat = await fs.stat(path.join(repoPath, filePath));
+            if (stat.size > maxFileSizeBytes) {
+              includePaths.delete(filePath);
+              skipped.add(filePath);
+            }
+          } catch {
+            // A missing or unreadable path may still be an overlay candidate; retain it fail-open.
+          }
+        }),
+      );
     }
   }
 

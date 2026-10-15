@@ -8,6 +8,9 @@ import {
   getLanguageFromShebang,
   type SupportedLanguages,
 } from 'ontoindex-shared';
+import { getScanMaxFileSizeBytes } from './scan-config.js';
+
+export { getScanMaxFileSizeBytes };
 
 export interface FileEntry {
   path: string;
@@ -41,9 +44,6 @@ export interface FilePath {
 }
 
 const READ_CONCURRENCY = 32;
-
-/** Default discovery skip cap — large files are usually generated/vendored and crash tree-sitter */
-const DEFAULT_MAX_FILE_SIZE = 512 * 1024;
 
 const toPosixPath = (value: string): string => value.replace(/\\/g, '/');
 
@@ -196,14 +196,6 @@ export async function normalizeRepositoryIncludePaths(
 function includePathToGlob(includePath: string): string {
   if (includePath === '.' || includePath === './') return '**/*';
   return includePath.endsWith('/') ? `${includePath}**/*` : includePath;
-}
-
-function getScanMaxFileSizeBytes(): number | null {
-  const raw = process.env.ONTOINDEX_SCAN_MAX_FILE_KB;
-  if (raw == null || raw.trim() === '') return DEFAULT_MAX_FILE_SIZE;
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value < 0) return DEFAULT_MAX_FILE_SIZE;
-  return value === 0 ? null : Math.floor(value * 1024);
 }
 
 /**
