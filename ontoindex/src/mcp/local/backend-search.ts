@@ -1858,24 +1858,29 @@ export async function query(
   if (overlaySnapshot?.usable) {
     try {
       const terms = [...new Set(searchQuery.toLowerCase().split(/\s+/).filter(Boolean))];
-      const overlayRows =
+      // The overlay DB holds only overlay files. Filtering by path in JS avoids an
+      // untyped `n.filePath IN $list` scan that returned no rows on LadybugDB.
+      const overlayPathSet = overlaySnapshot.overlayPaths;
+      const overlayRawRows =
         overlaySnapshot.overlayPaths.size === 0
           ? []
           : await queryOverlay<LookupRow>(
               repo,
               `MATCH (n)
-             WHERE n.filePath IN $paths
-               AND (${terms.map((_, i) => `(lower(n.name) CONTAINS $term${i} OR lower(n.filePath) CONTAINS $term${i})`).join(' OR ')})
+             WHERE (${terms.map((_, i) => `(lower(n.name) CONTAINS $term${i} OR lower(n.filePath) CONTAINS $term${i})`).join(' OR ')})
              RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
                     n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
-             ORDER BY n.filePath, n.id
-             LIMIT $limit`,
+             ORDER BY n.filePath, n.id`,
               {
-                paths: [...overlaySnapshot.overlayPaths],
-                limit: searchLimit,
                 ...Object.fromEntries(terms.map((term, i) => [`term${i}`, term])),
               },
             );
+      const overlayRows = overlayRawRows
+        .filter((row) => {
+          const filePath = rowValue(row, 'filePath', 3);
+          return typeof filePath === 'string' && overlayPathSet.has(filePath.replace(/\\/g, '/'));
+        })
+        .slice(0, searchLimit);
       const overlayResults: MutableEnrichedSymbolRow[] = overlayRows.map((row) => ({
         ...toEnrichedSymbolRow(row),
         source: 'overlay',
