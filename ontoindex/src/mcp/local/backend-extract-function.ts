@@ -86,15 +86,19 @@ export async function extractFunction(
     node.namedChildren.forEach(visit);
   };
   visit(tree.rootNode);
-  const declaration = nodes.find(
+  const declarations = nodes.filter(
     (node) =>
       node.type === 'function_declaration' &&
       node.childForFieldName('name')?.text === name &&
       (node.parent?.type === 'program' || node.parent?.type === 'export_statement') &&
-      (node.parent?.type !== 'export_statement' || node.parent.parent?.type === 'program') &&
-      node.startPosition.row + 1 === startLine &&
-      node.endPosition.row + 1 === endLine,
+      (node.parent?.type !== 'export_statement' || node.parent.parent?.type === 'program'),
   );
+  let declaration = declarations.find(
+    (node) => node.startPosition.row + 1 === startLine && node.endPosition.row + 1 === endLine,
+  );
+  if (!declaration && warnings && dry_run && declarations.length === 1) {
+    declaration = declarations[0];
+  }
   if (!declaration) throw new Error('Stale range or unsupported function declaration');
   if (
     nodes.some(
@@ -225,7 +229,7 @@ export async function extractFunction(
     throw new Error('Source changed during extraction');
   await fs.writeFile(sourceAbsolute, newSource, 'utf-8');
 
-  const insertedAt = startLine;
+  const insertedAt = declaration.startPosition.row + 1;
   return {
     success: true,
     uid,

@@ -162,9 +162,12 @@ describe('mutation dirty guard', () => {
     await fs.writeFile(source, prefix + original);
     resolve(operation);
     if (operation === 'extract') {
-      await expect(mutate(operation, true)).rejects.toThrow(
-        'Stale range or unsupported function declaration',
-      );
+      const result = await mutate(operation, true);
+      expect(result).toMatchObject({
+        success: true,
+        dry_run: true,
+        warnings: [expect.stringMatching(/src[\\/]a\.ts:.*line range may be stale/)],
+      });
     } else {
       const result = await mutate(operation, true);
       expect(result).toMatchObject({
@@ -174,6 +177,16 @@ describe('mutation dirty guard', () => {
       });
     }
     expect(await fs.readFile(source, 'utf8')).toBe(prefix + original);
+    expect(await fs.readFile(target, 'utf8')).toBe('// target\n');
+  });
+
+  it('rejects a dirty extract dry run when multiple top-level declarations have the same name', async () => {
+    await fs.writeFile(source, prefix + original + '\nexport function first() {\n  return 3;\n}\n');
+    resolve('extract');
+
+    await expect(mutate('extract', true)).rejects.toThrow(
+      'Stale range or unsupported function declaration',
+    );
     expect(await fs.readFile(target, 'utf8')).toBe('// target\n');
   });
 

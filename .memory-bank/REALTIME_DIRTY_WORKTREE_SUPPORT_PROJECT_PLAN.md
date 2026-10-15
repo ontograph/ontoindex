@@ -1659,3 +1659,29 @@ PR #118 (`a4c4659`) and PR #119 (`364b5a4`) squash-merged to master with green C
 PR #120 (`9cda700`) and PR #121 (`f516102`) are also squash-merged to master, so PRs #118 to #121 are all on master. PR #122 adds `.ontocode/` to `.gitignore`.
 
 Dispatch mode stays `human` and all tasks stay OPEN. Implementation is present for RT-36 to RT-44 and the earlier closed work, but no authenticated role receipts exist, so closure is pending. Closing legitimately needs either `dispatch_mode: none` with `complete-local` and fresh main-session evidence per task, or real coder and auditor dispatch with receipts. Known acceptance gap: RT-1 has no per-result `stale` marker, only the `dirtyResultPaths` list on freshness. Audit each task's acceptance criteria against current source before any `complete-local` closure.
+
+## Evidence note: audit of RT tasks against master (2026-10-15)
+
+| Task | Verdict | Residual |
+|---|---|---|
+| RT-15, RT-17, RT-19, RT-25, RT-26, RT-38, RT-40 | MET | — |
+| RT-3 | PARTIAL | Older “empty includePaths above 50” wording is superseded by RT-39, which covers the 50 newest eligible files and reports the rest as uncovered. |
+| RT-9 | PARTIAL | 30/30 run claim has no retained artifact. |
+| RT-10 | PARTIAL | Reanalysis metrics appear only in plan prose. |
+| RT-16 | PARTIAL | No saved benchmark output. |
+| RT-18 | PARTIAL | Fixture is not a temporary git repository. |
+| RT-21 | PARTIAL | Dirty extract dry run threw; fixed in the branch following this note. |
+| RT-22 | PARTIAL | Host-native paths tested; Windows-style absolute paths are covered by the windows-latest CI job, not on Linux. |
+| RT-23 | PARTIAL | 20/20 Linux repetitions are not independently evidenced. |
+| RT-24 | PARTIAL | Darwin watcher flake is recorded. |
+| RT-27, RT-28 | PARTIAL | No scratch transcript. |
+| RT-36 | PARTIAL | Fixed by PR #123 with `coveredFiles` and `uncoveredFiles`. |
+| RT-37 | PARTIAL | Test ends at generation N. |
+| RT-39 | PARTIAL | Uncovered base rows lack a per-row stale flag. |
+| RT-41 | PARTIAL | No no-dirty timing regression. |
+| RT-42 | PARTIAL | Fixed by PR #123 with per-file mtime/size signatures. |
+| RT-43 | PARTIAL | No overlay-snapshot mismatch probe; generation change already rebuilds. |
+| RT-44 | PARTIAL | No 10-publication overlay measurement. |
+| RT-20 | NOT_MET | Guide rewritten by PR #123. |
+
+RT-1’s earlier residual is outdated: per-result stale marking exists on master via `scanDirtyResults` in `response-envelope.ts`. PRs #120–#123 are merged to master; tasks remain OPEN and `dispatch_mode` remains `human`.

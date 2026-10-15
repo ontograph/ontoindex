@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { resolveSymbolCandidates } from '../../src/mcp/local/backend-symbol-resolution.js';
+import { guardMutationRange } from '../../src/mcp/local/backend-move-symbol.js';
 import { extractFunction } from '../../src/mcp/local/backend-extract-function.js';
 
 vi.mock('../../src/mcp/local/backend-symbol-resolution.js', () => ({
@@ -158,6 +159,7 @@ it.each([
 
 it('rejects a stale source range and unsupported language', async () => {
   await fixture(original, 'sample.ts', 1);
+  vi.mocked(guardMutationRange).mockResolvedValueOnce(undefined);
   await expect(extractFunction(repo, { uid: 'sample', new_name: 'helper' })).rejects.toThrow(
     'Stale range',
   );
@@ -165,6 +167,18 @@ it('rejects a stale source range and unsupported language', async () => {
   await expect(extractFunction(repo, { uid: 'sample', new_name: 'helper' })).rejects.toThrow(
     'JavaScript and TypeScript',
   );
+});
+
+it('relocates a unique declaration for a warned dry run with a stale range', async () => {
+  await fixture(original, 'sample.ts', 1);
+
+  const result = await extractFunction(repo, { uid: 'sample', new_name: 'helper' });
+
+  expect(result).toMatchObject({ success: true, dry_run: true, warnings: ['dirty range'] });
+  expect(result.preview).toContain(
+    '// λ prefix\nfunction helper(\n  value: number,\n  extra: number\n): number {',
+  );
+  expect(await fs.readFile(sourceFile, 'utf8')).toBe(original);
 });
 
 it('copies body directives so strict functions retain an undefined receiver', async () => {
