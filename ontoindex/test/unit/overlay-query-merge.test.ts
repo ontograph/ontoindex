@@ -156,11 +156,9 @@ describe('query dirty-overlay merge', () => {
       expect(executeParameterized).not.toHaveBeenCalledWith(repo.id, expect.any(String), {
         nodeId: stale.nodeId,
       });
-      expect(queryOverlay).toHaveBeenCalledWith(
-        repo,
-        expect.not.stringContaining('IN $paths'),
-        { term0: 'cachestore' },
-      );
+      expect(queryOverlay).toHaveBeenCalledWith(repo, expect.not.stringContaining('IN $paths'), {
+        term0: 'cachestore',
+      });
       expect(SemanticRetrievalCache.prototype.lookup).not.toHaveBeenCalled();
       expect(SemanticRetrievalCache.prototype.set).not.toHaveBeenCalled();
     },
