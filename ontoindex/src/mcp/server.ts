@@ -289,8 +289,12 @@ export function getNextStepHint(
     case 'discover':
       return `\n\n---\n**Next:** Use search({action: "semantic", query: "..."}) to find code, or inspect({action: "context", name: "..."}) for a symbol deep-dive.`;
     case 'search':
-      if (args?.action === 'semantic' && args?.consume_enrichment_facts !== true) {
-        return `\n\n---\n**Next:** To include opt-in sidecar context, rerun search({action: "semantic", query: "...", consume_enrichment_facts: true, include_passive_related_facts: true, include_markdown_context: true${repoParam}}), then inspect({action: "context", target: "<symbol>"${repoParam}}) for a result.`;
+      if (
+        args?.action === 'semantic' &&
+        args?.consume_enrichment_facts !== true &&
+        (args?.retrieval_policy === undefined || args?.retrieval_policy === 'graph-only')
+      ) {
+        return `\n\n---\n**Next:** To include opt-in sidecar context, rerun search({action: "semantic", query: "...", retrieval_policy: "graph-with-passive-docs"${repoParam}}), then inspect({action: "context", target: "<symbol>"${repoParam}}) for a result.`;
       }
       if (args?.action === 'semantic' && args?.include_markdown_context === true) {
         return `\n\n---\n**Next:** Use inspect({action: "context", target: "<symbol>", consume_enrichment_facts: true${repoParam}}) for code refs, or rerun search with include_markdown_ppr: true to include bounded Markdown document PPR metadata.`;

@@ -103,6 +103,13 @@ SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). W
           minimum: 1,
           maximum: 200,
         },
+        max_tokens: {
+          type: 'number',
+          description:
+            'Approximate token cap for primary results (process_symbols, definitions, skeletons). Results are trimmed in rank order and a budget report is added. Docs and enrichment payloads are trimmed to the remaining budget: related docs, related chunks, visible records, then facts. Omit for no cap.',
+          minimum: 1,
+          maximum: 200000,
+        },
         include_content: {
           type: 'boolean',
           description: 'Include full symbol source code (default: false)',
@@ -1128,6 +1135,13 @@ AFTER THIS: Review the snippets to understand implementation details or to verif
           type: 'number',
           description: 'Number of lines of context around each hit (default: 3)',
           default: 3,
+        },
+        max_tokens: {
+          type: 'number',
+          description:
+            'Approximate token cap for evidence snippets. Entries past the cap keep file and line range and omit the snippet. Omit for no cap.',
+          minimum: 1,
+          maximum: 200000,
         },
         repo: {
           type: 'string',

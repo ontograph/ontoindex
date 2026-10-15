@@ -70,6 +70,18 @@ describe('direct CLI tool commands', () => {
     });
   });
 
+  it('passes --max-tokens to the query tool', async () => {
+    callToolMock.mockResolvedValue({ results: [] });
+    const { queryCommand } = await import('../../src/cli/tool.js');
+
+    await queryCommand('auth flow', { maxTokens: '1200' });
+
+    expect(callToolMock).toHaveBeenCalledWith(
+      'query',
+      expect.objectContaining({ query: 'auth flow', max_tokens: 1200 }),
+    );
+  });
+
   it('rejects unknown typed query document lines before backend dispatch', async () => {
     const { queryCommand } = await import('../../src/cli/tool.js');
 

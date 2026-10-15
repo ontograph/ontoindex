@@ -2140,3 +2140,121 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     );
   });
 });
+
+describe('LocalBackend semantic max_tokens', () => {
+  beforeEach(() => {
+    backendMocks.queryImpl.mockReset();
+  });
+
+  it('trims primary results when max_tokens is set', async () => {
+    await createRepo();
+    backendMocks.queryImpl.mockResolvedValue({
+      definitions: Array.from({ length: 10 }, (_, index) => ({
+        name: `d${index}`,
+        filePath: 'src/a.ts',
+        detail: 'x'.repeat(400),
+      })),
+    });
+
+    const result = await new LocalBackend().callTool('query', {
+      query: 'auth',
+      max_tokens: 300,
+    });
+
+    expect(result.definitions.length).toBeGreaterThanOrEqual(1);
+    expect(result.definitions.length).toBeLessThan(10);
+    expect(result.budget.truncated).toBe(true);
+    expect(result.budget.max_tokens).toBe(300);
+  });
+
+  it('strips content before dropping results when max_tokens is set', async () => {
+    await createRepo();
+    backendMocks.queryImpl.mockResolvedValue({
+      definitions: Array.from({ length: 10 }, (_, index) => ({
+        name: `d${index}`,
+        filePath: 'src/a.ts',
+        content: 'x'.repeat(400),
+      })),
+    });
+
+    const result = await new LocalBackend().callTool('query', {
+      query: 'auth',
+      max_tokens: 300,
+    });
+
+    expect(result.definitions).toHaveLength(10);
+    expect(result.budget.content_stripped).toBeGreaterThan(0);
+    expect(result.budget.dropped_definitions).toBe(0);
+  });
+
+  it('leaves results unchanged without max_tokens', async () => {
+    await createRepo();
+    backendMocks.queryImpl.mockResolvedValue({
+      definitions: Array.from({ length: 10 }, (_, index) => ({
+        name: `d${index}`,
+        filePath: 'src/a.ts',
+        content: 'x'.repeat(400),
+      })),
+    });
+
+    const result = await new LocalBackend().callTool('query', { query: 'auth' });
+
+    expect(result.definitions).toHaveLength(10);
+    expect(result).not.toHaveProperty('budget');
+  });
+
+  it('trims docs enrichment to the remaining budget', async () => {
+    const repo = await createRepo();
+    await writeSidecarStore(repo.storagePath, markdownSidecarState());
+    backendMocks.queryImpl.mockResolvedValue({
+      processes: [],
+      process_symbols: [],
+      definitions: [
+        {
+          id: 'Function:src/a.ts:main',
+          name: 'main',
+          type: 'function',
+          filePath: 'src/a.ts',
+        },
+      ],
+    });
+    const backend = new LocalBackend();
+
+    const result = await backend.callTool('query', {
+      query: 'main',
+      retrieval_policy: 'graph-with-passive-docs',
+      max_tokens: 1,
+    });
+
+    expect(result.enrichment.budget.truncated).toBe(true);
+    expect(result.enrichment.relatedChunks).toEqual([]);
+    expect(result.retrievalPolicy).toBeDefined();
+  });
+
+  it('keeps docs enrichment under a large budget', async () => {
+    const repo = await createRepo();
+    await writeSidecarStore(repo.storagePath, markdownSidecarState());
+    backendMocks.queryImpl.mockResolvedValue({
+      processes: [],
+      process_symbols: [],
+      definitions: [
+        {
+          id: 'Function:src/a.ts:main',
+          name: 'main',
+          type: 'function',
+          filePath: 'src/a.ts',
+        },
+      ],
+    });
+    const backend = new LocalBackend();
+
+    const result = await backend.callTool('query', {
+      query: 'main',
+      retrieval_policy: 'graph-with-passive-docs',
+      max_tokens: 100000,
+    });
+
+    expect(result.enrichment.relatedChunks[0].docPath).toBe('docs/auth.md');
+    expect(result.enrichment.budget.truncated).toBe(false);
+  });
+});

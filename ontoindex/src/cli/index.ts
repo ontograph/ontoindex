@@ -424,6 +424,7 @@ program
   .option('-c, --context <text>', 'Task context to improve ranking')
   .option('-g, --goal <text>', 'What you want to find')
   .option('-l, --limit <n>', 'Max processes to return (default: 5)')
+  .option('--max-tokens <n>', 'Approximate token cap for primary results')
   .option('--content', 'Include full symbol source code')
   .option('--include-explanations', 'Include bounded explanation text for symbol-level results')
   .option(

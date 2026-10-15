@@ -105,6 +105,7 @@ export async function queryCommand(
     context?: string;
     goal?: string;
     limit?: string;
+    maxTokens?: string;
     content?: boolean;
     includeExplanations?: boolean;
     includePath?: string[];
@@ -133,6 +134,7 @@ export async function queryCommand(
   };
   if (options?.includePath?.length) params.include_paths = options.includePath;
   if (options?.excludePath?.length) params.exclude_paths = options.excludePath;
+  if (options?.maxTokens) params.max_tokens = Number.parseInt(options.maxTokens, 10);
   if (options?.typed) {
     params.typedQuery = query;
   } else {

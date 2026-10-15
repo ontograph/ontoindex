@@ -163,4 +163,38 @@ describe('evidence_pack', () => {
     expect(result.evidence[0].start_line).toBe(3);
     expect(result.evidence[0].end_line).toBe(3);
   });
+
+  it('omits snippets past max_tokens and keeps line ranges', async () => {
+    const repo: any = { id: 'not-initialized', name: 't', repoPath: tmpDir };
+    const result = await runEvidencePack(repo, {
+      targets: ['src/auth.ts:2', 'src/auth.ts:7'],
+      context_lines: 1,
+      max_tokens: 1,
+    });
+    expect(result.evidence[0].snippet).toBeDefined();
+    expect(result.evidence[1].snippet).toBeUndefined();
+    expect(result.evidence[1].snippet_omitted).toBe(true);
+    expect(result.evidence[1].start_line).toBeDefined();
+    expect(result.budget?.snippets_omitted).toBe(1);
+    expect(result.budget?.over_budget).toBe(true);
+  });
+
+  it('keeps all snippets under a large max_tokens', async () => {
+    const repo: any = { id: 'not-initialized', name: 't', repoPath: tmpDir };
+    const result = await runEvidencePack(repo, {
+      targets: ['src/auth.ts:2', 'src/auth.ts:7'],
+      context_lines: 1,
+      max_tokens: 100000,
+    });
+    expect(result.evidence[0].snippet).toBeDefined();
+    expect(result.evidence[1].snippet).toBeDefined();
+    expect(result.budget?.snippets_omitted).toBe(0);
+    expect(result.budget?.over_budget).toBe(false);
+  });
+
+  it('adds no budget without max_tokens', async () => {
+    const repo: any = { id: 'not-initialized', name: 't', repoPath: tmpDir };
+    const result = await runEvidencePack(repo, { targets: ['src/auth.ts:1'] });
+    expect(result.budget).toBeUndefined();
+  });
 });

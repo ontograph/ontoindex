@@ -18,6 +18,7 @@
  */
 import fs from 'fs/promises';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { estimateTokens } from '../../core/wiki/llm-client.js';
 import { normalizeRepoRelativePath, resolveContainedRepoPath } from './backend-repo-paths.js';
 // Local RepoHandle alias — see backend-route.ts note.
 type RepoHandle = { readonly id: string; readonly name: string; readonly repoPath: string };
@@ -29,6 +30,7 @@ interface EvidenceEntry {
   start_line?: number;
   end_line?: number;
   snippet?: string;
+  snippet_omitted?: boolean;
   symbol_name?: string;
   symbol_type?: string;
 }
@@ -42,6 +44,12 @@ interface EvidencePackResult {
   unresolved_count: number;
   evidence: EvidenceEntry[];
   unresolved: Array<{ target: string; reason: string }>;
+  budget?: {
+    max_tokens: number;
+    estimated_tokens: number;
+    snippets_omitted: number;
+    over_budget: boolean;
+  };
   error?: string;
 }
 
@@ -254,7 +262,12 @@ async function resolveSymbol(
 
 export async function runEvidencePack(
   repo: RepoHandle,
-  params: { targets?: string[]; include_snippet?: boolean; context_lines?: number },
+  params: {
+    targets?: string[];
+    include_snippet?: boolean;
+    context_lines?: number;
+    max_tokens?: number;
+  },
 ): Promise<EvidencePackResult> {
   try {
     const rawTargets = Array.isArray(params?.targets) ? params!.targets : [];
@@ -295,6 +308,33 @@ export async function runEvidencePack(
       });
     }
 
+    let budget: EvidencePackResult['budget'];
+    if (typeof params?.max_tokens === 'number') {
+      const maxTokens = params.max_tokens;
+      let used = 0;
+      let omitted = 0;
+      evidence.forEach((entry, index) => {
+        const cost = estimateTokens(JSON.stringify(entry));
+        if (index === 0 || used + cost <= maxTokens) {
+          used += cost;
+          return;
+        }
+        if (entry.snippet !== undefined) {
+          delete entry.snippet;
+          entry.snippet_omitted = true;
+          omitted += 1;
+        }
+        used += estimateTokens(JSON.stringify(entry));
+      });
+      const estimated = estimateTokens(JSON.stringify(evidence));
+      budget = {
+        max_tokens: maxTokens,
+        estimated_tokens: estimated,
+        snippets_omitted: omitted,
+        over_budget: estimated > maxTokens,
+      };
+    }
+
     return {
       status: 'success',
       tool: 'evidence_pack',
@@ -304,6 +344,7 @@ export async function runEvidencePack(
       unresolved_count: unresolved.length,
       evidence,
       unresolved,
+      ...(budget && { budget }),
     };
   } catch (err: unknown) {
     return {

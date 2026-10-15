@@ -1,0 +1,26 @@
+[
+  {
+    "query": "evidence pack snippet window",
+    "expect_file": "src/mcp/local/backend-evidence-pack.ts"
+  },
+  {
+    "query": "BM25 full text search",
+    "expect_file": "src/core/search/bm25-index.ts"
+  },
+  {
+    "query": "reciprocal rank fusion merge",
+    "expect_file": "src/core/search/hybrid-search.ts"
+  },
+  {
+    "query": "repomap token budget",
+    "expect_file": "src/mcp/local/backend-repomap.ts"
+  },
+  {
+    "query": "retrieval policy docs expansion",
+    "expect_file": "src/core/ingestion/enrichment/docs-retrieval-policies.ts"
+  },
+  {
+    "query": "query intent classification",
+    "expect_file": "src/core/search/intent-classifier.ts"
+  }
+]
