@@ -15,14 +15,14 @@ manager_loop:
   authority: true
   status: in-progress
   selection_policy: active_next_task-first
-  active_next_task: RT-1
+  active_next_task: RT-2
   max_in_flight: 1
-  dispatch_mode: human
-
+  dispatch_mode: none
+  reopen_gate: null
 tasks:
   RT-1:
     title: When a tool result references files that are dirty or untracked, the response envelope lists those paths under dirtyWorkspace.dirtyPaths and marks them stale
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -31,40 +31,47 @@ tasks:
     validation_tier: unit-fast
     impact_risk: medium
     owner_files:
-      - ontoindex/src/mcp/shared/target-context.ts
-      - ontoindex/src/mcp/shared/response-envelope.ts
-      - ontoindex/test/unit/target-context.test.ts
-      - ontoindex/test/unit/response-envelope.test.ts
+    - ontoindex/src/mcp/shared/target-context.ts
+    - ontoindex/src/mcp/shared/response-envelope.ts
+    - ontoindex/test/unit/target-context.test.ts
+    - ontoindex/test/unit/response-envelope.test.ts
     allowed_write_set:
-      - ontoindex/src/mcp/shared/target-context.ts
-      - ontoindex/src/mcp/shared/response-envelope.ts
-      - ontoindex/test/unit/target-context.test.ts
-      - ontoindex/test/unit/response-envelope.test.ts
+    - ontoindex/src/mcp/shared/target-context.ts
+    - ontoindex/src/mcp/shared/response-envelope.ts
+    - ontoindex/test/unit/target-context.test.ts
+    - ontoindex/test/unit/response-envelope.test.ts
     non_goals:
-      - Changing indexing, analyze, or the database.
-      - Fetching or embedding live source for dirty files (a later step).
-      - Renaming existing envelope fields; only add dirtyPaths (capped list).
+    - Changing indexing, analyze, or the database.
+    - Fetching or embedding live source for dirty files (a later step).
+    - Renaming existing envelope fields; only add dirtyPaths (capped list).
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/target-context.test.ts test/unit/response-envelope.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/target-context.test.ts test/unit/response-envelope.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/mcp/shared/target-context.ts
-        - src/mcp/shared/response-envelope.ts
+      - src/mcp/shared/target-context.ts
+      - src/mcp/shared/response-envelope.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - A fixture with two dirty files yields dirtyWorkspace.dirtyPaths of exactly those two paths, capped at 50 with a truncated flag.
-      - A clean worktree yields no dirtyPaths and unchanged envelopes (existing tests still pass).
-      - Result entries whose filePath is dirty carry stale true; others do not.
+    - A fixture with two dirty files yields dirtyWorkspace.dirtyPaths of exactly those two paths, capped at 50 with a truncated flag.
+    - A clean worktree yields no dirtyPaths and unchanged envelopes (existing tests still pass).
+    - Result entries whose filePath is dirty carry stale true; others do not.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - Envelope change breaks the public response schema or needs a version bump.
-      - Per-result marking needs changes outside the write set.
+    - Envelope change breaks the public response schema or needs a version bump.
+    - Per-result marking needs changes outside the write set.
     known_blockers: []
-
+    closeout:
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: current-thread, user message 'you are only one developer here - and you must take care to all tasks'
+        validation_summary: 'RT-1 re-verified on master 6783906 plus evidence branch eb6de18, 2026-10-15. target-context.ts sets dirtyWorkspace.dirtyPaths (cap 50) with dirtyPathsTruncated; response-envelope.ts scanDirtyResults marks result nodes whose filePath/path/file is dirty with stale true and lists them in freshness.dirtyResultPaths. npx vitest run test/unit/target-context.test.ts test/unit/response-envelope.test.ts: 2 files, 66 tests passed. npx tsc --noEmit: exit 0. Full test:unit passed on the merged PRs (8532 and 8538 tests).'
+      role_results:
+        coder-worker: null
+    dod_status: pass
   RT-2:
     title: When analyze --dirty-overlay runs on a dirty tree, the bounded pipeline writes only to <storage>/overlay and the active generation, its meta, and its node and edge counts are unchanged
     status: OPEN
@@ -76,37 +83,36 @@ tasks:
     validation_tier: unit-fast
     impact_risk: high
     owner_files:
-      - ontoindex/src/core/run-analyze.ts
-      - ontoindex/src/cli/analyze.ts
-      - ontoindex/test/unit/dirty-overlay-build.test.ts
+    - ontoindex/src/core/run-analyze.ts
+    - ontoindex/src/cli/analyze.ts
+    - ontoindex/test/unit/dirty-overlay-build.test.ts
     allowed_write_set:
-      - ontoindex/src/core/run-analyze.ts
-      - ontoindex/src/cli/analyze.ts
-      - ontoindex/test/unit/dirty-overlay-build.test.ts
+    - ontoindex/src/core/run-analyze.ts
+    - ontoindex/src/cli/analyze.ts
+    - ontoindex/test/unit/dirty-overlay-build.test.ts
     non_goals:
-      - Changing the default analyze path or the existing --experimental-file-delta behavior.
-      - Embeddings for the overlay.
-      - Reading the overlay at query time (RT-5).
+    - Changing the default analyze path or the existing --experimental-file-delta behavior.
+    - Embeddings for the overlay.
+    - Reading the overlay at query time (RT-5).
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/dirty-overlay-build.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/dirty-overlay-build.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/core/run-analyze.ts
+      - src/core/run-analyze.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - After an overlay build the active generation id, meta.json, and node and edge counts equal their values before the build.
-      - The overlay store exists and contains only the dirty files' symbols.
-      - A failure during the overlay build leaves the active generation untouched and removes the partial overlay.
+    - After an overlay build the active generation id, meta.json, and node and edge counts equal their values before the build.
+    - The overlay store exists and contains only the dirty files' symbols.
+    - A failure during the overlay build leaves the active generation untouched and removes the partial overlay.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - Overlay output cannot be separated from activateIndexGeneration without changing the default path.
-      - Write set must grow beyond the listed files.
+    - Overlay output cannot be separated from activateIndexGeneration without changing the default path.
+    - Write set must grow beyond the listed files.
     known_blockers: []
-
   RT-3:
     title: Given modified, added, untracked, or deleted files, planDirtyOverlay returns the eligible source paths and a tombstone list for deleted paths instead of reporting unsafe
     status: OPEN
@@ -118,220 +124,220 @@ tasks:
     validation_tier: unit-fast
     impact_risk: medium
     owner_files:
-      - ontoindex/src/core/analyze-delta.ts
-      - ontoindex/test/unit/dirty-overlay-plan.test.ts
+    - ontoindex/src/core/analyze-delta.ts
+    - ontoindex/test/unit/dirty-overlay-plan.test.ts
     allowed_write_set:
-      - ontoindex/src/core/analyze-delta.ts
-      - ontoindex/test/unit/dirty-overlay-plan.test.ts
+    - ontoindex/src/core/analyze-delta.ts
+    - ontoindex/test/unit/dirty-overlay-plan.test.ts
     non_goals:
-      - Changing planExperimentalFileDeltaRefresh behavior or its existing tests.
-      - Running analyze.
+    - Changing planExperimentalFileDeltaRefresh behavior or its existing tests.
+    - Running analyze.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/dirty-overlay-plan.test.ts test/unit/experimental-file-delta.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/dirty-overlay-plan.test.ts test/unit/experimental-file-delta.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/core/analyze-delta.ts
+      - src/core/analyze-delta.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - Modified, added, and untracked source files appear in includePaths.
-      - Deleted and renamed-away paths appear in tombstones, not includePaths.
-      - More than 50 dirty source files returns tooMany true with an empty includePaths.
-      - Non-source files are ignored.
+    - Modified, added, and untracked source files appear in includePaths.
+    - Deleted and renamed-away paths appear in tombstones, not includePaths.
+    - More than 50 dirty source files returns tooMany true with an empty includePaths.
+    - Non-source files are ignored.
     rollback:
-      - Revert analyze-delta.ts and the new test.
+    - Revert analyze-delta.ts and the new test.
     stop_conditions:
-      - Existing experimental-file-delta tests must change.
+    - Existing experimental-file-delta tests must change.
     known_blockers: []
-
   RT-4:
     title: When source files are saved, ontoindex watch runs one debounced overlay refresh and skips while analyze.lock is held
     status: OPEN
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
-    depends_on: [RT-2, RT-3]
+    depends_on:
+    - RT-2
+    - RT-3
     type: code
     validation_tier: unit-fast
     impact_risk: medium
     owner_files:
-      - ontoindex/src/cli/watch.ts
-      - ontoindex/test/unit/watch.test.ts
+    - ontoindex/src/cli/watch.ts
+    - ontoindex/test/unit/watch.test.ts
     allowed_write_set:
-      - ontoindex/src/cli/watch.ts
-      - ontoindex/test/unit/watch.test.ts
+    - ontoindex/src/cli/watch.ts
+    - ontoindex/test/unit/watch.test.ts
     non_goals:
-      - A new npm dependency; use node:fs recursive watch.
-      - Registering the command in cli/index.ts (done separately after review).
-      - Embeddings from the watcher.
+    - A new npm dependency; use node:fs recursive watch.
+    - Registering the command in cli/index.ts (done separately after review).
+    - Embeddings from the watcher.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/watch.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/watch.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/cli/watch.ts
+      - src/cli/watch.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - Ten rapid saves trigger exactly one refresh after the debounce window.
-      - A save while the lock is held is skipped and logged, not queued twice.
-      - node_modules, dist, and .git paths never trigger a refresh.
+    - Ten rapid saves trigger exactly one refresh after the debounce window.
+    - A save while the lock is held is skipped and logged, not queued twice.
+    - node_modules, dist, and .git paths never trigger a refresh.
     rollback:
-      - Delete watch.ts and its test.
+    - Delete watch.ts and its test.
     stop_conditions:
-      - Watching needs a new npm dependency.
+    - Watching needs a new npm dependency.
     known_blockers: []
-
   RT-5:
     title: A read-only spike lists the query and context code paths and the smallest merge point for serving dirty paths from the overlay
     status: OPEN
     classification: proof-only
     assurance_profile: full
     complexity: complex
-    depends_on: [RT-2]
+    depends_on:
+    - RT-2
     type: diagnostic
     validation_tier: unit-fast
     impact_risk: high
     owner_files:
-      - ontoindex/src/mcp/local/local-backend.ts
+    - ontoindex/src/mcp/local/local-backend.ts
     allowed_write_set: []
     non_goals:
-      - Starting before a read-path spike names the exact hook points.
+    - Starting before a read-path spike names the exact hook points.
     required_validation:
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/mcp/local/local-backend.ts
+      - src/mcp/local/local-backend.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - A spike report lists the query and context code paths and the smallest merge point.
+    - A spike report lists the query and context code paths and the smallest merge point.
     rollback:
-      - Not applicable until the spike decides.
+    - Not applicable until the spike decides.
     stop_conditions:
-      - Merging needs changes to more than one tool family.
+    - Merging needs changes to more than one tool family.
     known_blockers:
-      - Needs the overlay store from RT-2.
-
+    - Needs the overlay store from RT-2.
   RT-6:
     title: When the overlay snapshot is usable, query results drop base symbols from dirty paths and include matching overlay symbols marked source overlay
     status: OPEN
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
-    depends_on: [RT-2]
+    depends_on:
+    - RT-2
     type: code
     validation_tier: unit-fast
     impact_risk: high
     owner_files:
-      - ontoindex/src/mcp/local/backend-search.ts
-      - ontoindex/test/unit/overlay-query-merge.test.ts
+    - ontoindex/src/mcp/local/backend-search.ts
+    - ontoindex/test/unit/overlay-query-merge.test.ts
     allowed_write_set:
-      - ontoindex/src/mcp/local/backend-search.ts
-      - ontoindex/test/unit/overlay-query-merge.test.ts
+    - ontoindex/src/mcp/local/backend-search.ts
+    - ontoindex/test/unit/overlay-query-merge.test.ts
     non_goals:
-      - Editing backend-overlay.ts or any file outside this write set.
-      - Treating overlay symbols as proof of zero callers or zero impact.
+    - Editing backend-overlay.ts or any file outside this write set.
+    - Treating overlay symbols as proof of zero callers or zero impact.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/overlay-query-merge.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/overlay-query-merge.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/mcp/local/backend-overlay.ts
+      - src/mcp/local/backend-overlay.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - A dirty path's stale base symbol is absent and the overlay symbol is present with source overlay.
-      - With an unusable snapshot, results are byte-identical to today.
+    - A dirty path's stale base symbol is absent and the overlay symbol is present with source overlay.
+    - With an unusable snapshot, results are byte-identical to today.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - The hook needs a file outside the write set.
+    - The hook needs a file outside the write set.
     known_blockers: []
-
   RT-7:
     title: When the overlay snapshot is usable, symbol resolution for context and impact finds overlay symbols for dirty paths and never returns a stale base symbol for them
     status: OPEN
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
-    depends_on: [RT-2]
+    depends_on:
+    - RT-2
     type: code
     validation_tier: unit-fast
     impact_risk: high
     owner_files:
-      - ontoindex/src/mcp/local/backend-symbol-resolution.ts
-      - ontoindex/test/unit/overlay-symbol-resolution.test.ts
+    - ontoindex/src/mcp/local/backend-symbol-resolution.ts
+    - ontoindex/test/unit/overlay-symbol-resolution.test.ts
     allowed_write_set:
-      - ontoindex/src/mcp/local/backend-symbol-resolution.ts
-      - ontoindex/test/unit/overlay-symbol-resolution.test.ts
+    - ontoindex/src/mcp/local/backend-symbol-resolution.ts
+    - ontoindex/test/unit/overlay-symbol-resolution.test.ts
     non_goals:
-      - Editing backend-overlay.ts or any file outside this write set.
-      - Treating overlay symbols as proof of zero callers or zero impact.
+    - Editing backend-overlay.ts or any file outside this write set.
+    - Treating overlay symbols as proof of zero callers or zero impact.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/overlay-symbol-resolution.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/overlay-symbol-resolution.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/mcp/local/backend-overlay.ts
+      - src/mcp/local/backend-overlay.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - Resolving a name defined only in a dirty file returns the overlay symbol, not not_found.
-      - A symbol deleted from a dirty file resolves to not_found, not the stale base symbol.
-      - With an unusable snapshot, behavior is unchanged.
+    - Resolving a name defined only in a dirty file returns the overlay symbol, not not_found.
+    - A symbol deleted from a dirty file resolves to not_found, not the stale base symbol.
+    - With an unusable snapshot, behavior is unchanged.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - The hook needs a file outside the write set.
+    - The hook needs a file outside the write set.
     known_blockers: []
-
   RT-8:
     title: When a context or impact target resolves from the overlay, the response is marked source overlay and impact reports risk UNKNOWN with graphImpactAvailable false
     status: OPEN
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
-    depends_on: [RT-7]
+    depends_on:
+    - RT-7
     type: code
     validation_tier: unit-fast
     impact_risk: high
     owner_files:
-      - ontoindex/src/mcp/local/backend-context.ts
-      - ontoindex/src/mcp/local/backend-impact.ts
-      - ontoindex/test/unit/overlay-context-impact.test.ts
+    - ontoindex/src/mcp/local/backend-context.ts
+    - ontoindex/src/mcp/local/backend-impact.ts
+    - ontoindex/test/unit/overlay-context-impact.test.ts
     allowed_write_set:
-      - ontoindex/src/mcp/local/backend-context.ts
-      - ontoindex/src/mcp/local/backend-impact.ts
-      - ontoindex/test/unit/overlay-context-impact.test.ts
+    - ontoindex/src/mcp/local/backend-context.ts
+    - ontoindex/src/mcp/local/backend-impact.ts
+    - ontoindex/test/unit/overlay-context-impact.test.ts
     non_goals:
-      - Editing backend-overlay.ts or any file outside this write set.
-      - Treating overlay symbols as proof of zero callers or zero impact.
+    - Editing backend-overlay.ts or any file outside this write set.
+    - Treating overlay symbols as proof of zero callers or zero impact.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/overlay-context-impact.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/overlay-context-impact.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/mcp/local/backend-overlay.ts
+      - src/mcp/local/backend-overlay.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - Impact for an overlay target returns risk UNKNOWN, never LOW or zero callers.
-      - Context for an overlay target carries source overlay and no base process membership.
-      - Non-overlay targets are unchanged.
+    - Impact for an overlay target returns risk UNKNOWN, never LOW or zero callers.
+    - Context for an overlay target carries source overlay and no base process membership.
+    - Non-overlay targets are unchanged.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - The hook needs a file outside the write set.
+    - The hook needs a file outside the write set.
     known_blockers: []
-
   RT-9:
     title: When the overlay is built, initLbug opens its store with a bounded maxDBSize so the 8 TB default mmap cannot fail, and dirty-overlay-build.test.ts passes 30 of 30 consecutive runs
     status: OPEN
@@ -343,34 +349,33 @@ tasks:
     validation_tier: unit-fast
     impact_risk: medium
     owner_files:
-      - ontoindex/src/core/lbug/lbug-adapter.ts
-      - ontoindex/src/core/run-analyze.ts
+    - ontoindex/src/core/lbug/lbug-adapter.ts
+    - ontoindex/src/core/run-analyze.ts
     allowed_write_set:
-      - ontoindex/src/core/lbug/lbug-adapter.ts
-      - ontoindex/src/core/run-analyze.ts
+    - ontoindex/src/core/lbug/lbug-adapter.ts
+    - ontoindex/src/core/run-analyze.ts
     non_goals:
-      - Changing the default size for the active-generation build.
-      - Editing pool-adapter.ts.
+    - Changing the default size for the active-generation build.
+    - Editing pool-adapter.ts.
     required_validation:
-      - cd ontoindex && for i in $(seq 1 30); do npx vitest run test/unit/dirty-overlay-build.test.ts || exit 1; done
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && for i in $(seq 1 30); do npx vitest run test/unit/dirty-overlay-build.test.ts || exit 1; done
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/core/lbug/lbug-adapter.ts
+      - src/core/lbug/lbug-adapter.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - initLbug accepts an optional maxDBSize; the default call path is unchanged and passes no new argument.
-      - The overlay build passes a bounded power-of-two size; a database created that way is readable by the pool adapter.
-      - dirty-overlay-build.test.ts passes 30 of 30 consecutive runs (it failed 1 of 10 before).
+    - initLbug accepts an optional maxDBSize; the default call path is unchanged and passes no new argument.
+    - The overlay build passes a bounded power-of-two size; a database created that way is readable by the pool adapter.
+    - dirty-overlay-build.test.ts passes 30 of 30 consecutive runs (it failed 1 of 10 before).
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - lbug rejects the bounded size or cannot reopen the store.
-      - Write set must grow.
+    - lbug rejects the bounded size or cannot reopen the store.
+    - Write set must grow.
     known_blockers: []
-
   RT-10:
     title: When a relative import ends in .js, .jsx, .mjs or .cjs and only the matching .ts, .tsx, .mts or .cts file exists, the import resolver links it to that file so IMPORTS and cross-file CALLS edges exist
     status: OPEN
@@ -382,38 +387,37 @@ tasks:
     validation_tier: unit-fast
     impact_risk: high
     owner_files:
-      - ontoindex/src/core/ingestion/import-resolvers/utils.ts
-      - ontoindex/src/core/ingestion/import-resolvers/standard.ts
-      - ontoindex/test/unit/import-resolver-js-extension.test.ts
+    - ontoindex/src/core/ingestion/import-resolvers/utils.ts
+    - ontoindex/src/core/ingestion/import-resolvers/standard.ts
+    - ontoindex/test/unit/import-resolver-js-extension.test.ts
     allowed_write_set:
-      - ontoindex/src/core/ingestion/import-resolvers/utils.ts
-      - ontoindex/src/core/ingestion/import-resolvers/standard.ts
-      - ontoindex/test/unit/import-resolver-js-extension.test.ts
+    - ontoindex/src/core/ingestion/import-resolvers/utils.ts
+    - ontoindex/src/core/ingestion/import-resolvers/standard.ts
+    - ontoindex/test/unit/import-resolver-js-extension.test.ts
     non_goals:
-      - Changing non-relative (package or alias) resolution: the .js-to-.ts fallback is opt-in per call and only standard.ts relative-import branch passes it.
-      - Changing other languages' resolvers.
+    - Changing non-relative (package or alias) resolution: the .js-to-.ts fallback is opt-in per call and only standard.ts relative-import branch passes it.
+    - Changing other languages' resolvers.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/import-resolver-js-extension.test.ts
-      - cd ontoindex && npx vitest run test/unit --reporter=dot -t resolver
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/import-resolver-js-extension.test.ts
+    - cd ontoindex && npx vitest run test/unit --reporter=dot -t resolver
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/core/ingestion/import-resolvers/utils.ts
+      - src/core/ingestion/import-resolvers/utils.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - A fixture with import './a.js' where only a.ts exists yields an IMPORTS edge and a CALLS edge to the imported function (before: none; extensionless './a' already worked).
-      - If a real a.js exists it still wins over a.ts.
-      - Resolution adds only Set lookups, no extra IO; the existing resolver tests pass unchanged.
-      - Re-analyzing this repo raises tsToTs IMPORTS well above 294 and gives runImpactKernel callers.
+    - A fixture with import './a.js' where only a.ts exists yields an IMPORTS edge and a CALLS edge to the imported function (before: none; extensionless './a' already worked).
+    - If a real a.js exists it still wins over a.ts.
+    - Resolution adds only Set lookups, no extra IO; the existing resolver tests pass unchanged.
+    - Re-analyzing this repo raises tsToTs IMPORTS well above 294 and gives runImpactKernel callers.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - Behavior change breaks an existing resolver test and the test cannot be explained by the fix.
-      - Write set must grow.
+    - Behavior change breaks an existing resolver test and the test cannot be explained by the fix.
+    - Write set must grow.
     known_blockers: []
-
   RT-11:
     title: When the overlay store is rebuilt while the MCP server is running, the next overlay read opens the new store and never reads the deleted one, and concurrent calls share one dirty-file probe
     status: OPEN
@@ -425,34 +429,33 @@ tasks:
     validation_tier: unit-fast
     impact_risk: high
     owner_files:
-      - ontoindex/src/mcp/local/backend-overlay.ts
-      - ontoindex/test/unit/backend-overlay.test.ts
+    - ontoindex/src/mcp/local/backend-overlay.ts
+    - ontoindex/test/unit/backend-overlay.test.ts
     allowed_write_set:
-      - ontoindex/src/mcp/local/backend-overlay.ts
-      - ontoindex/test/unit/backend-overlay.test.ts
+    - ontoindex/src/mcp/local/backend-overlay.ts
+    - ontoindex/test/unit/backend-overlay.test.ts
     non_goals:
-      - Auto-spawning rebuilds from read tools (opt-in watcher only).
-      - Editing pool-adapter.ts.
+    - Auto-spawning rebuilds from read tools (opt-in watcher only).
+    - Editing pool-adapter.ts.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/backend-overlay.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/backend-overlay.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/mcp/local/backend-overlay.ts
+      - src/mcp/local/backend-overlay.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - A test builds an overlay, queries it through the real pool, rebuilds it with different symbols, queries again and sees the new symbols (the pool handle is closed and reopened when the store file identity changes).
-      - Ten concurrent getOverlaySnapshot calls run one git probe (single-flight), and the cache TTL behavior is unchanged.
-      - Overlay read failures still degrade to base-only.
+    - A test builds an overlay, queries it through the real pool, rebuilds it with different symbols, queries again and sees the new symbols (the pool handle is closed and reopened when the store file identity changes).
+    - Ten concurrent getOverlaySnapshot calls run one git probe (single-flight), and the cache TTL behavior is unchanged.
+    - Overlay read failures still degrade to base-only.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - Closing the overlay handle requires editing pool-adapter.ts.
-      - Write set must grow.
+    - Closing the overlay handle requires editing pool-adapter.ts.
+    - Write set must grow.
     known_blockers: []
-
   RT-12:
     title: When an upstream or downstream traversal from a clean target reaches a dirty file, that row is returned flagged dirty, is not expanded further, and the result is marked partial with a warning
     status: OPEN
@@ -464,37 +467,36 @@ tasks:
     validation_tier: unit-fast
     impact_risk: high
     owner_files:
-      - ontoindex/src/core/impact/impact-kernel.ts
-      - ontoindex/src/mcp/local/backend-impact.ts
-      - ontoindex/test/unit/impact-kernel-dirty.test.ts
+    - ontoindex/src/core/impact/impact-kernel.ts
+    - ontoindex/src/mcp/local/backend-impact.ts
+    - ontoindex/test/unit/impact-kernel-dirty.test.ts
     allowed_write_set:
-      - ontoindex/src/core/impact/impact-kernel.ts
-      - ontoindex/src/mcp/local/backend-impact.ts
-      - ontoindex/test/unit/impact-kernel-dirty.test.ts
+    - ontoindex/src/core/impact/impact-kernel.ts
+    - ontoindex/src/mcp/local/backend-impact.ts
+    - ontoindex/test/unit/impact-kernel-dirty.test.ts
     non_goals:
-      - Dropping dirty rows (that would understate risk).
-      - Changing the shape of results for callers that pass no dirty set.
+    - Dropping dirty rows (that would understate risk).
+    - Changing the shape of results for callers that pass no dirty set.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/impact-kernel-dirty.test.ts
-      - cd ontoindex && npx vitest run $(find test/unit -maxdepth 1 -name '*.test.ts' | grep -E 'impact|safe-edit' | sort)
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/impact-kernel-dirty.test.ts
+    - cd ontoindex && npx vitest run $(find test/unit -maxdepth 1 -name '*.test.ts' | grep -E 'impact|safe-edit' | sort)
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/core/impact/impact-kernel.ts
+      - src/core/impact/impact-kernel.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - A row whose filePath is in the dirty set is kept (never silently dropped), carries dirty true, and its id is not added to the next frontier.
-      - traversalComplete is false and a warning names the dirty path.
-      - With no dirty set supplied, results are byte-identical to today (existing impact tests unchanged).
+    - A row whose filePath is in the dirty set is kept (never silently dropped), carries dirty true, and its id is not added to the next frontier.
+    - traversalComplete is false and a warning names the dirty path.
+    - With no dirty set supplied, results are byte-identical to today (existing impact tests unchanged).
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - Existing impact-kernel tests need to change.
-      - Write set must grow.
+    - Existing impact-kernel tests need to change.
+    - Write set must grow.
     known_blockers: []
-
   RT-13:
     title: When ontoindex watch is run, saving source files triggers one debounced child analyze --dirty-overlay and is skipped while analyze.lock is held
     status: OPEN
@@ -506,37 +508,36 @@ tasks:
     validation_tier: unit-fast
     impact_risk: medium
     owner_files:
-      - ontoindex/src/cli/watch.ts
-      - ontoindex/src/cli/index.ts
-      - ontoindex/test/unit/watch-command.test.ts
+    - ontoindex/src/cli/watch.ts
+    - ontoindex/src/cli/index.ts
+    - ontoindex/test/unit/watch-command.test.ts
     allowed_write_set:
-      - ontoindex/src/cli/watch.ts
-      - ontoindex/src/cli/index.ts
-      - ontoindex/test/unit/watch-command.test.ts
+    - ontoindex/src/cli/watch.ts
+    - ontoindex/src/cli/index.ts
+    - ontoindex/test/unit/watch-command.test.ts
     non_goals:
-      - Embeddings from the watcher.
-      - A new npm dependency.
+    - Embeddings from the watcher.
+    - A new npm dependency.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/watch-command.test.ts test/unit/watch.test.ts
-      - cd ontoindex && npx vitest run test/unit/cli-index-help.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/watch-command.test.ts test/unit/watch.test.ts
+    - cd ontoindex && npx vitest run test/unit/cli-index-help.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/cli/watch.ts
+      - src/cli/watch.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - The command is registered and listed in ontoindex --help.
-      - A burst of saves spawns exactly one child overlay build; a save during an active build schedules at most one follow-up.
-      - A held analyze.lock skips the refresh with a log line; a failing child is logged and the watcher keeps running; Ctrl-C stops the watcher and kills any child.
+    - The command is registered and listed in ontoindex --help.
+    - A burst of saves spawns exactly one child overlay build; a save during an active build schedules at most one follow-up.
+    - A held analyze.lock skips the refresh with a log line; a failing child is logged and the watcher keeps running; Ctrl-C stops the watcher and kills any child.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - The child cannot be spawned without editing run-analyze.ts or analyze.ts.
-      - Write set must grow.
+    - The child cannot be spawned without editing run-analyze.ts or analyze.ts.
+    - Write set must grow.
     known_blockers: []
-
   RT-14:
     title: When a fixture repo uses NodeNext .js import specifiers, the real analyze pipeline produces the exact IMPORTS and CALLS edges between its files, so a regression in the .js-to-.ts mapping fails a test
     status: OPEN
@@ -548,31 +549,30 @@ tasks:
     validation_tier: unit-fast
     impact_risk: low
     owner_files:
-      - ontoindex/test/integration/js-specifier-edges.test.ts
+    - ontoindex/test/integration/js-specifier-edges.test.ts
     allowed_write_set:
-      - ontoindex/test/integration/js-specifier-edges.test.ts
+    - ontoindex/test/integration/js-specifier-edges.test.ts
     non_goals:
-      - Editing production code.
-      - Checking edge counts of this repo.
+    - Editing production code.
+    - Checking edge counts of this repo.
     required_validation:
-      - cd ontoindex && npx vitest run test/integration/js-specifier-edges.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/integration/js-specifier-edges.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - test/integration/js-specifier-edges.test.ts
+      - test/integration/js-specifier-edges.test.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - A fixture with a.ts, b.ts (import './a.js'), c.ts (import './a'), d.ts (import './sub/index.js' where only sub/index.ts exists) and e.ts (alias-free .mjs specifier to f.mts) yields IMPORTS b->a, c->a, d->sub/index, e->f and CALLS from each caller to the callee.
-      - A file importing './missing.js' with no .ts or .js file yields no edge.
-      - The test runs the real pipeline (not mocks) and finishes in under 30 s.
+    - A fixture with a.ts, b.ts (import './a.js'), c.ts (import './a'), d.ts (import './sub/index.js' where only sub/index.ts exists) and e.ts (alias-free .mjs specifier to f.mts) yields IMPORTS b->a, c->a, d->sub/index, e->f and CALLS from each caller to the callee.
+    - A file importing './missing.js' with no .ts or .js file yields no edge.
+    - The test runs the real pipeline (not mocks) and finishes in under 30 s.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - The real pipeline cannot be run from a test without editing production code.
+    - The real pipeline cannot be run from a test without editing production code.
     known_blockers: []
-
   RT-15:
     title: When ontoindex watch starts it prints one line naming the watched root, the debounce, and whether the tree is clean or dirty, and when idle it stays silent
     status: OPEN
@@ -584,34 +584,33 @@ tasks:
     validation_tier: unit-fast
     impact_risk: low
     owner_files:
-      - ontoindex/src/cli/watch.ts
-      - ontoindex/test/unit/watch-command.test.ts
+    - ontoindex/src/cli/watch.ts
+    - ontoindex/test/unit/watch-command.test.ts
     allowed_write_set:
-      - ontoindex/src/cli/watch.ts
-      - ontoindex/test/unit/watch-command.test.ts
+    - ontoindex/src/cli/watch.ts
+    - ontoindex/test/unit/watch-command.test.ts
     non_goals:
-      - Changing refresh, lock, or spawn behavior.
-      - Editing index.ts.
+    - Changing refresh, lock, or spawn behavior.
+    - Editing index.ts.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/watch-command.test.ts test/unit/watch.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/watch-command.test.ts test/unit/watch.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/cli/watch.ts
+      - src/cli/watch.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - Startup logs exactly one line containing the root path and debounce milliseconds.
-      - A clean tree logs a clean-tree note, a dirty tree logs the dirty file count before the first build.
-      - No periodic output while idle.
-      - The existing watch tests still pass.
+    - Startup logs exactly one line containing the root path and debounce milliseconds.
+    - A clean tree logs a clean-tree note, a dirty tree logs the dirty file count before the first build.
+    - No periodic output while idle.
+    - The existing watch tests still pass.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - The change needs a file outside the write set.
+    - The change needs a file outside the write set.
     known_blockers: []
-
   RT-16:
     title: When the overlay is built for 1, 10, 25 and 50 dirty files on this repo, a benchmark script records wall time per size so later performance claims are backed by numbers
     status: OPEN
@@ -623,29 +622,28 @@ tasks:
     validation_tier: unit-fast
     impact_risk: low
     owner_files:
-      - ontoindex/scripts/overlay-benchmark.mjs
+    - ontoindex/scripts/overlay-benchmark.mjs
     allowed_write_set:
-      - ontoindex/scripts/overlay-benchmark.mjs
+    - ontoindex/scripts/overlay-benchmark.mjs
     non_goals:
-      - Changing any production code or adding a CI job.
+    - Changing any production code or adding a CI job.
     required_validation:
-      - cd ontoindex && npm run build && node scripts/overlay-benchmark.mjs
+    - cd ontoindex && npm run build && node scripts/overlay-benchmark.mjs
     validation_workspace:
       root: ontoindex
       inputs:
-        - scripts/overlay-benchmark.mjs
+      - scripts/overlay-benchmark.mjs
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - The script copies N tracked source files into a temp git clone with a one-line edit, runs the built CLI analyze --dirty-overlay once warm, and prints wall time and node and edge counts per N as JSON.
-      - It prints a summary table and exits nonzero if any build fails.
-      - Results for 1, 10, 25 and 50 files are reported in the closeout with the machine and commit.
+    - The script copies N tracked source files into a temp git clone with a one-line edit, runs the built CLI analyze --dirty-overlay once warm, and prints wall time and node and edge counts per N as JSON.
+    - It prints a summary table and exits nonzero if any build fails.
+    - Results for 1, 10, 25 and 50 files are reported in the closeout with the machine and commit.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - The script needs network access or the repo's live .ontoindex.
+    - The script needs network access or the repo's live .ontoindex.
     known_blockers: []
-
   RT-17:
     title: When a TS or JS file imports ./dir.js and only dir/index.ts exists, the resolver links the import to dir/index.ts, and a real a.js or dir.ts still wins
     status: OPEN
@@ -657,34 +655,33 @@ tasks:
     validation_tier: unit-fast
     impact_risk: low
     owner_files:
-      - ontoindex/src/core/ingestion/import-resolvers/utils.ts
-      - ontoindex/test/unit/import-resolver-js-extension.test.ts
+    - ontoindex/src/core/ingestion/import-resolvers/utils.ts
+    - ontoindex/test/unit/import-resolver-js-extension.test.ts
     allowed_write_set:
-      - ontoindex/src/core/ingestion/import-resolvers/utils.ts
-      - ontoindex/test/unit/import-resolver-js-extension.test.ts
+    - ontoindex/src/core/ingestion/import-resolvers/utils.ts
+    - ontoindex/test/unit/import-resolver-js-extension.test.ts
     non_goals:
-      - Changing the opt-in rule: still only the relative TS/JS branch of standard.ts.
-      - Editing standard.ts.
+    - Changing the opt-in rule: still only the relative TS/JS branch of standard.ts.
+    - Editing standard.ts.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/import-resolver-js-extension.test.ts test/integration/js-specifier-edges.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/import-resolver-js-extension.test.ts test/integration/js-specifier-edges.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/core/ingestion/import-resolvers/utils.ts
+      - src/core/ingestion/import-resolvers/utils.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - ./dir.js resolves to dir/index.ts when neither dir.js nor dir.ts exists (found on a scratch repo: before, u1.ts had no IMPORTS edge).
-      - ./dir.js still resolves to dir.ts when both dir.ts and dir/index.ts exist.
-      - ./dir.mjs resolves to dir/index.mts and ./dir.jsx to dir/index.tsx; aliases and other languages are still not remapped.
-      - All 66 existing resolver tests pass unchanged.
+    - ./dir.js resolves to dir/index.ts when neither dir.js nor dir.ts exists (found on a scratch repo: before, u1.ts had no IMPORTS edge).
+    - ./dir.js still resolves to dir.ts when both dir.ts and dir/index.ts exist.
+    - ./dir.mjs resolves to dir/index.mts and ./dir.jsx to dir/index.tsx; aliases and other languages are still not remapped.
+    - All 66 existing resolver tests pass unchanged.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - The fix needs standard.ts or another file.
+    - The fix needs standard.ts or another file.
     known_blockers: []
-
   RT-18:
     title: When an editor saves by writing a temp file and renaming it over the original, by delete-then-create, or by in-place truncate, the watcher triggers exactly one overlay refresh per save and the new content is queryable
     status: OPEN
@@ -696,35 +693,34 @@ tasks:
     validation_tier: unit-fast
     impact_risk: medium
     owner_files:
-      - ontoindex/src/cli/watch.ts
-      - ontoindex/test/unit/watch-save-patterns.test.ts
+    - ontoindex/src/cli/watch.ts
+    - ontoindex/test/unit/watch-save-patterns.test.ts
     allowed_write_set:
-      - ontoindex/src/cli/watch.ts
-      - ontoindex/test/unit/watch-save-patterns.test.ts
+    - ontoindex/src/cli/watch.ts
+    - ontoindex/test/unit/watch-save-patterns.test.ts
     non_goals:
-      - Adding a dependency.
-      - Changing refresh, lock, or spawn behavior beyond what the save patterns need.
+    - Adding a dependency.
+    - Changing refresh, lock, or spawn behavior beyond what the save patterns need.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/watch-save-patterns.test.ts test/unit/watch.test.ts test/unit/watch-command.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/watch-save-patterns.test.ts test/unit/watch.test.ts test/unit/watch-command.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/cli/watch.ts
+      - src/cli/watch.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - A test with real files in a temp git repo and the real createDebouncedWatcher (no watchImpl mock) performs each save pattern and observes exactly one refresh after the debounce.
-      - A backup-suffix file (a.ts~, .a.ts.swp, a.ts.tmp) never triggers a refresh by itself, but the rename onto a.ts does.
-      - A watcher whose root is deleted and recreated does not crash the process; the failure is logged.
-      - Existing watch tests still pass.
+    - A test with real files in a temp git repo and the real createDebouncedWatcher (no watchImpl mock) performs each save pattern and observes exactly one refresh after the debounce.
+    - A backup-suffix file (a.ts~, .a.ts.swp, a.ts.tmp) never triggers a refresh by itself, but the rename onto a.ts does.
+    - A watcher whose root is deleted and recreated does not crash the process; the failure is logged.
+    - Existing watch tests still pass.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - Node fs.watch cannot deliver the rename event on this platform (report which pattern and why).
-      - The fix needs a file outside the write set.
+    - Node fs.watch cannot deliver the rename event on this platform (report which pattern and why).
+    - The fix needs a file outside the write set.
     known_blockers: []
-
   RT-19:
     title: When dirty paths, overlay snapshots, the watcher ignore filter, and the planner receive backslash or mixed-separator paths as Windows produces them, they behave identically to forward-slash paths
     status: OPEN
@@ -736,31 +732,30 @@ tasks:
     validation_tier: unit-fast
     impact_risk: low
     owner_files:
-      - ontoindex/test/unit/windows-path-handling.test.ts
+    - ontoindex/test/unit/windows-path-handling.test.ts
     allowed_write_set:
-      - ontoindex/test/unit/windows-path-handling.test.ts
+    - ontoindex/test/unit/windows-path-handling.test.ts
     non_goals:
-      - Editing production code (report defects instead).
-      - Running on Windows.
+    - Editing production code (report defects instead).
+    - Running on Windows.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/windows-path-handling.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/windows-path-handling.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - test/unit/windows-path-handling.test.ts
+      - test/unit/windows-path-handling.test.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - Tests feed backslash and mixed-separator paths through isDirtyPath, findDirtyResultPaths, the watcher ignore function, and the planDirtyOverlay porcelain parser (use forward-slash porcelain output, since git emits those on Windows too).
-      - Each case asserts the same result as the forward-slash form; a case that exposes a real defect is reported with the failing input (do not fix production code in this task).
-      - No test depends on the host OS.
+    - Tests feed backslash and mixed-separator paths through isDirtyPath, findDirtyResultPaths, the watcher ignore function, and the planDirtyOverlay porcelain parser (use forward-slash porcelain output, since git emits those on Windows too).
+    - Each case asserts the same result as the forward-slash form; a case that exposes a real defect is reported with the failing input (do not fix production code in this task).
+    - No test depends on the host OS.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - Testing requires exporting a private function from production code.
+    - Testing requires exporting a private function from production code.
     known_blockers: []
-
   RT-20:
     title: A reader of the docs can find what --dirty-overlay, ontoindex watch, freshness.dirtyResultPaths, and source overlay mean, when to use them, and their limits
     status: OPEN
@@ -772,30 +767,29 @@ tasks:
     validation_tier: unit-fast
     impact_risk: low
     owner_files:
-      - .memory-bank/knowledge-hub/dirty-worktree.md
+    - .memory-bank/knowledge-hub/dirty-worktree.md
     allowed_write_set:
-      - .memory-bank/knowledge-hub/dirty-worktree.md
+    - .memory-bank/knowledge-hub/dirty-worktree.md
     non_goals:
-      - Editing code or README.
-      - Claiming behavior that was not verified.
+    - Editing code or README.
+    - Claiming behavior that was not verified.
     required_validation:
-      - npx prettier --check .memory-bank/knowledge-hub/dirty-worktree.md
+    - npx prettier --check .memory-bank/knowledge-hub/dirty-worktree.md
     validation_workspace:
       root: .
       inputs:
-        - .memory-bank/knowledge-hub/dirty-worktree.md
+      - .memory-bank/knowledge-hub/dirty-worktree.md
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - The page states: how to build an overlay, how to run watch, the 50-file limit, that the overlay has symbols only (no edges, no embeddings), that impact on an overlay symbol returns UNKNOWN, what dirtyWorkspace.dirtyPaths and freshness.dirtyResultPaths contain, and that the overlay is treated as stale once a dirty file is saved after the build.
-      - Every command and field name on the page was checked against the code (cite the file for each).
-      - It lists measured build times from the benchmark with the caveat that they are not a scaling law.
+    - The page states: how to build an overlay, how to run watch, the 50-file limit, that the overlay has symbols only (no edges, no embeddings), that impact on an overlay symbol returns UNKNOWN, what dirtyWorkspace.dirtyPaths and freshness.dirtyResultPaths contain, and that the overlay is treated as stale once a dirty file is saved after the build.
+    - Every command and field name on the page was checked against the code (cite the file for each).
+    - It lists measured build times from the benchmark with the caveat that they are not a scaling law.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - A claimed behavior cannot be confirmed in the code.
+    - A claimed behavior cannot be confirmed in the code.
     known_blockers: []
-
   RT-21:
     title: When move_symbol, extract_function, or a symbol mutation targets a symbol in a file with uncommitted changes and its line range did not come from a usable overlay, a real write is refused before any file is touched and a dry run carries a stale-lines warning
     status: OPEN
@@ -807,40 +801,39 @@ tasks:
     validation_tier: unit-fast
     impact_risk: high
     owner_files:
-      - ontoindex/src/mcp/local/backend-move-symbol.ts
-      - ontoindex/src/mcp/local/backend-extract-function.ts
-      - ontoindex/src/mcp/local/backend-symbol-mutations.ts
-      - ontoindex/test/unit/mutation-dirty-guard.test.ts
+    - ontoindex/src/mcp/local/backend-move-symbol.ts
+    - ontoindex/src/mcp/local/backend-extract-function.ts
+    - ontoindex/src/mcp/local/backend-symbol-mutations.ts
+    - ontoindex/test/unit/mutation-dirty-guard.test.ts
     allowed_write_set:
-      - ontoindex/src/mcp/local/backend-move-symbol.ts
-      - ontoindex/src/mcp/local/backend-extract-function.ts
-      - ontoindex/src/mcp/local/backend-symbol-mutations.ts
-      - ontoindex/test/unit/mutation-dirty-guard.test.ts
+    - ontoindex/src/mcp/local/backend-move-symbol.ts
+    - ontoindex/src/mcp/local/backend-extract-function.ts
+    - ontoindex/src/mcp/local/backend-symbol-mutations.ts
+    - ontoindex/test/unit/mutation-dirty-guard.test.ts
     non_goals:
-      - Changing the resolver or overlay code.
-      - Blocking mutations on clean files.
-      - Enabling writes on the MCP server.
+    - Changing the resolver or overlay code.
+    - Blocking mutations on clean files.
+    - Enabling writes on the MCP server.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/mutation-dirty-guard.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/mutation-dirty-guard.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/mcp/local/backend-move-symbol.ts
+      - src/mcp/local/backend-move-symbol.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - A reproduction on a temp copy shows the defect first - a dirty file whose lines shifted makes the real write cut the wrong lines.
-      - With the same setup after the fix, the real write throws before any file changes and the file content is byte-identical.
-      - A dry run on that file returns success with a warning naming the dirty file.
-      - Clean files and overlay-sourced symbols behave as before.
+    - A reproduction on a temp copy shows the defect first - a dirty file whose lines shifted makes the real write cut the wrong lines.
+    - With the same setup after the fix, the real write throws before any file changes and the file content is byte-identical.
+    - A dry run on that file returns success with a warning naming the dirty file.
+    - Clean files and overlay-sourced symbols behave as before.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - The guard needs a file outside the write set.
-      - The dirty probe cannot be called from the mutation modules without changing the resolver.
+    - The guard needs a file outside the write set.
+    - The dirty probe cannot be called from the mutation modules without changing the resolver.
     known_blockers: []
-
   RT-22:
     title: When mutation-dirty-guard tests assert error and warning text containing a file path, they match both separators, and pass on Linux and on a Windows path form
     status: OPEN
@@ -852,30 +845,29 @@ tasks:
     validation_tier: unit-fast
     impact_risk: low
     owner_files:
-      - ontoindex/test/unit/mutation-dirty-guard.test.ts
+    - ontoindex/test/unit/mutation-dirty-guard.test.ts
     allowed_write_set:
-      - ontoindex/test/unit/mutation-dirty-guard.test.ts
+    - ontoindex/test/unit/mutation-dirty-guard.test.ts
     non_goals:
-      - Editing production code.
+    - Editing production code.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/mutation-dirty-guard.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/mutation-dirty-guard.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - test/unit/mutation-dirty-guard.test.ts
+      - test/unit/mutation-dirty-guard.test.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - The four failing assertions (regexes with src\\/a\\.ts) match a message containing C:\\Users\\...\\src\\a.ts and one containing src/a.ts.
-      - A direct unit test calls the production message builder (or guardMutationRange with a Windows-style absolute symbol.filePath and a repo path) and asserts the guard still detects the dirty file when the path is absolute with backslashes.
-      - Passes on Linux; the fix to the production relative-path logic, if one is needed, is reported rather than made.
+    - The four failing assertions (regexes with src\\/a\\.ts) match a message containing C:\\Users\\...\\src\\a.ts and one containing src/a.ts.
+    - A direct unit test calls the production message builder (or guardMutationRange with a Windows-style absolute symbol.filePath and a repo path) and asserts the guard still detects the dirty file when the path is absolute with backslashes.
+    - Passes on Linux; the fix to the production relative-path logic, if one is needed, is reported rather than made.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - guardMutationRange mis-detects dirty files for Windows absolute paths (report it).
+    - guardMutationRange mis-detects dirty files for Windows absolute paths (report it).
     known_blockers: []
-
   RT-23:
     title: When the overlay build and overlay pool tests run on Windows, every LadybugDB handle on a store is closed before the test deletes, renames, or rebuilds that store
     status: OPEN
@@ -887,34 +879,33 @@ tasks:
     validation_tier: unit-fast
     impact_risk: medium
     owner_files:
-      - ontoindex/test/unit/dirty-overlay-build.test.ts
-      - ontoindex/test/unit/backend-overlay.test.ts
+    - ontoindex/test/unit/dirty-overlay-build.test.ts
+    - ontoindex/test/unit/backend-overlay.test.ts
     allowed_write_set:
-      - ontoindex/test/unit/dirty-overlay-build.test.ts
-      - ontoindex/test/unit/backend-overlay.test.ts
+    - ontoindex/test/unit/dirty-overlay-build.test.ts
+    - ontoindex/test/unit/backend-overlay.test.ts
     non_goals:
-      - Editing production code (report instead).
-      - Changing the overlay design.
+    - Editing production code (report instead).
+    - Changing the overlay design.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/dirty-overlay-build.test.ts test/unit/backend-overlay.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/dirty-overlay-build.test.ts test/unit/backend-overlay.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - test/unit/dirty-overlay-build.test.ts
+      - test/unit/dirty-overlay-build.test.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - Read the Windows CI log in /tmp/win.clean: EPERM on rename of .ontoindex/generations/.staging-baseline-... in dirty-overlay-build.test.ts line 70 (activateIndexGeneration while a handle may still be open), and 'Cannot read from file ... locked a portion of the file' reading a rebuilt overlay in backend-overlay.test.ts.
-      - For each, classify as test ordering (handle still open) or a production defect (overlay pool or builder keeps a handle). Test-ordering causes are fixed in the test; production causes are reported with the exact lines.
-      - On Linux the tests still pass 20 of 20 runs.
-      - Where a close really cannot be guaranteed on Windows, the test is skipped with it.skipIf(process.platform === 'win32') plus a comment naming the lock and a plan reference, never silently.
+    - Read the Windows CI log in /tmp/win.clean: EPERM on rename of .ontoindex/generations/.staging-baseline-... in dirty-overlay-build.test.ts line 70 (activateIndexGeneration while a handle may still be open), and 'Cannot read from file ... locked a portion of the file' reading a rebuilt overlay in backend-overlay.test.ts.
+    - For each, classify as test ordering (handle still open) or a production defect (overlay pool or builder keeps a handle). Test-ordering causes are fixed in the test; production causes are reported with the exact lines.
+    - On Linux the tests still pass 20 of 20 runs.
+    - Where a close really cannot be guaranteed on Windows, the test is skipped with it.skipIf(process.platform === 'win32') plus a comment naming the lock and a plan reference, never silently.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - The cause is a production handle leak (report it with file and line).
+    - The cause is a production handle leak (report it with file and line).
     known_blockers: []
-
   RT-24:
     title: When the real fs.watch save-pattern tests run on macOS, each is either proven to pass there or explicitly skipped on darwin with the reason recorded, because the failure could not be reproduced locally
     status: OPEN
@@ -926,31 +917,30 @@ tasks:
     validation_tier: unit-fast
     impact_risk: low
     owner_files:
-      - ontoindex/test/unit/watch-save-patterns.test.ts
+    - ontoindex/test/unit/watch-save-patterns.test.ts
     allowed_write_set:
-      - ontoindex/test/unit/watch-save-patterns.test.ts
+    - ontoindex/test/unit/watch-save-patterns.test.ts
     non_goals:
-      - Editing watch.ts without a reproduced cause.
+    - Editing watch.ts without a reproduced cause.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/watch-save-patterns.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/watch-save-patterns.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - test/unit/watch-save-patterns.test.ts
+      - test/unit/watch-save-patterns.test.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - Read the macOS CI log in /tmp/mac.clean: all 10 real-fs.watch tests observed 0 refreshes, including an in-place write.
-      - Use fs.realpathSync on the temp root before creating the watcher and the files (macOS temp dirs live under a symlinked /var and /tmp), and widen SETTLE_MS on darwin; if that is not enough to explain it the test is skipped on darwin with a comment naming the observed symptom.
-      - No production change in this task. Production watcher behavior on macOS stays unverified and is recorded as such.
-      - On Linux the file still passes 15 of 15 runs.
+    - Read the macOS CI log in /tmp/mac.clean: all 10 real-fs.watch tests observed 0 refreshes, including an in-place write.
+    - Use fs.realpathSync on the temp root before creating the watcher and the files (macOS temp dirs live under a symlinked /var and /tmp), and widen SETTLE_MS on darwin; if that is not enough to explain it the test is skipped on darwin with a comment naming the observed symptom.
+    - No production change in this task. Production watcher behavior on macOS stays unverified and is recorded as such.
+    - On Linux the file still passes 15 of 15 runs.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - The cause appears to be in watch.ts itself rather than the test setup (report it).
+    - The cause appears to be in watch.ts itself rather than the test setup (report it).
     known_blockers: []
-
   RT-25:
     title: When an overlay is rebuilt while a reader has the previous one open, the builder publishes a new overlay generation and never deletes or rewrites a store that is open, so the reader keeps working on any OS and picks up the new generation on its next query
     status: OPEN
@@ -962,83 +952,82 @@ tasks:
     validation_tier: unit-fast
     impact_risk: high
     owner_files:
-      - ontoindex/src/core/run-analyze.ts
-      - ontoindex/src/mcp/local/backend-overlay.ts
-      - ontoindex/test/unit/overlay-generations.test.ts
-      - ontoindex/src/cli/analyze.ts
-      - ontoindex/scripts/overlay-benchmark.mjs
+    - ontoindex/src/core/run-analyze.ts
+    - ontoindex/src/mcp/local/backend-overlay.ts
+    - ontoindex/test/unit/overlay-generations.test.ts
+    - ontoindex/src/cli/analyze.ts
+    - ontoindex/scripts/overlay-benchmark.mjs
     allowed_write_set:
-      - ontoindex/src/core/run-analyze.ts
-      - ontoindex/src/mcp/local/backend-overlay.ts
-      - ontoindex/test/unit/overlay-generations.test.ts
-      - ontoindex/src/cli/analyze.ts
-      - ontoindex/scripts/overlay-benchmark.mjs
+    - ontoindex/src/core/run-analyze.ts
+    - ontoindex/src/mcp/local/backend-overlay.ts
+    - ontoindex/test/unit/overlay-generations.test.ts
+    - ontoindex/src/cli/analyze.ts
+    - ontoindex/scripts/overlay-benchmark.mjs
     non_goals:
-      - Changing the main index generation code in repo-manager.ts.
-      - Cross-process locks or notifications.
-      - Changing what the overlay contains.
+    - Changing the main index generation code in repo-manager.ts.
+    - Cross-process locks or notifications.
+    - Changing what the overlay contains.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/overlay-generations.test.ts test/unit/backend-overlay.test.ts test/unit/dirty-overlay-build.test.ts test/unit/overlay-query-merge.test.ts test/unit/overlay-context-impact.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/overlay-generations.test.ts test/unit/backend-overlay.test.ts test/unit/dirty-overlay-build.test.ts test/unit/overlay-query-merge.test.ts test/unit/overlay-context-impact.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/core/run-analyze.ts
+      - src/core/run-analyze.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - The builder writes <storage>/overlay/<generation>/lbug and then atomically replaces <storage>/overlay/CURRENT (write temp file, rename); it never removes a generation directory before publishing the new one.
-      - After publishing, previous generations are removed best-effort; a removal that fails (a reader holds it) is ignored, logged at most once, and retried on the next build. At most 3 old generations are kept.
-      - The reader resolves the path through CURRENT on every query; when CURRENT names a different generation it closes the old pool handle and opens the new one; a missing or unreadable CURRENT means no overlay (base-only), never an error.
-      - 'A test with a real open reader on generation 1 builds generation 2 and asserts: the build succeeds, the open reader still answers from generation 1 until its next query, and the next query returns generation 2 symbols.'
-      - A failed build leaves CURRENT and the previous generation untouched and removes only its own partial directory.
-      - The three overlay tests skipped on win32 in RT-23 are re-enabled (no skipIf) because the delete-while-open path no longer exists; if one still cannot pass on Windows it stays skipped with the exact reason.
+    - The builder writes <storage>/overlay/<generation>/lbug and then atomically replaces <storage>/overlay/CURRENT (write temp file, rename); it never removes a generation directory before publishing the new one.
+    - After publishing, previous generations are removed best-effort; a removal that fails (a reader holds it) is ignored, logged at most once, and retried on the next build. At most 3 old generations are kept.
+    - The reader resolves the path through CURRENT on every query; when CURRENT names a different generation it closes the old pool handle and opens the new one; a missing or unreadable CURRENT means no overlay (base-only), never an error.
+    - 'A test with a real open reader on generation 1 builds generation 2 and asserts: the build succeeds, the open reader still answers from generation 1 until its next query, and the next query returns generation 2 symbols.'
+    - A failed build leaves CURRENT and the previous generation untouched and removes only its own partial directory.
+    - The three overlay tests skipped on win32 in RT-23 are re-enabled (no skipIf) because the delete-while-open path no longer exists; if one still cannot pass on Windows it stays skipped with the exact reason.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - The reader cannot be changed without editing pool-adapter.ts.
-      - overlayDbPath is imported by files outside the write set and cannot stay backward compatible (check with ontoindex and grep first).
+    - The reader cannot be changed without editing pool-adapter.ts.
+    - overlayDbPath is imported by files outside the write set and cannot stay backward compatible (check with ontoindex and grep first).
     known_blockers: []
-
   RT-26:
     title: When ontoindex status runs in a repo, it prints one overlay line saying whether an overlay exists, how many files it covers, when it was built, and whether it is usable or stale and why
     status: OPEN
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
-    depends_on: ['RT-25']
+    depends_on:
+    - RT-25
     type: code
     validation_tier: unit-fast
     impact_risk: low
     owner_files:
-      - ontoindex/src/cli/status.ts
-      - ontoindex/test/unit/status.test.ts
+    - ontoindex/src/cli/status.ts
+    - ontoindex/test/unit/status.test.ts
     allowed_write_set:
-      - ontoindex/src/cli/status.ts
-      - ontoindex/test/unit/status.test.ts
+    - ontoindex/src/cli/status.ts
+    - ontoindex/test/unit/status.test.ts
     non_goals:
-      - Changing getOverlaySnapshot or the staleness rule.
-      - JSON output changes beyond one additive field.
+    - Changing getOverlaySnapshot or the staleness rule.
+    - JSON output changes beyond one additive field.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/status.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/status.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/cli/status.ts
+      - src/cli/status.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - 'No overlay: no extra line, or a single neutral line when the tree is dirty and suggests ontoindex analyze --dirty-overlay.'
-      - "Usable overlay: 'Overlay: usable, N file(s), built <relative time>'."
-      - 'Stale overlay: names the reason (older than a dirty file, more than 50 dirty files, unreadable) using the same reason strings getOverlaySnapshot returns; no new staleness logic.'
-      - Existing status tests pass unchanged.
+    - 'No overlay: no extra line, or a single neutral line when the tree is dirty and suggests ontoindex analyze --dirty-overlay.'
+    - 'Usable overlay: ''Overlay: usable, N file(s), built <relative time>''.'
+    - 'Stale overlay: names the reason (older than a dirty file, more than 50 dirty files, unreadable) using the same reason strings getOverlaySnapshot returns; no new staleness logic.'
+    - Existing status tests pass unchanged.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - Reading the overlay needs files outside the write set.
+    - Reading the overlay needs files outside the write set.
     known_blockers: []
-
   RT-27:
     title: Before merge, the branch diff against master contains no machine-specific files and no leftover debris, and the findings are recorded
     status: OPEN
@@ -1050,59 +1039,58 @@ tasks:
     validation_tier: unit-fast
     impact_risk: low
     owner_files:
-      - .memory-bank/REALTIME_DIRTY_WORKTREE_SUPPORT_PROJECT_PLAN.md
+    - .memory-bank/REALTIME_DIRTY_WORKTREE_SUPPORT_PROJECT_PLAN.md
     allowed_write_set: []
     non_goals:
-      - Fixing findings inside this task.
+    - Fixing findings inside this task.
     required_validation:
-      - git diff origin/master...HEAD --name-status
+    - git diff origin/master...HEAD --name-status
     validation_workspace:
       root: .
       inputs:
-        - .memory-bank/REALTIME_DIRTY_WORKTREE_SUPPORT_PROJECT_PLAN.md
+      - .memory-bank/REALTIME_DIRTY_WORKTREE_SUPPORT_PROJECT_PLAN.md
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - The diff was listed and each non-source file justified; machine paths, TODO or debugger additions and temporary files were searched for.
-      - The shared .mcp.json edit that pointed at this machine was found and reverted in commit 7759d27.
+    - The diff was listed and each non-source file justified; machine paths, TODO or debugger additions and temporary files were searched for.
+    - The shared .mcp.json edit that pointed at this machine was found and reverted in commit 7759d27.
     rollback:
-      - Not applicable.
+    - Not applicable.
     stop_conditions:
-      - A finding cannot be resolved without editing outside the branch.
+    - A finding cannot be resolved without editing outside the branch.
     known_blockers: []
-
   RT-28:
     title: With the built MCP server connected and ontoindex watch running on this repo, a real edit session keeps query and context answers current for the edited file and the run is recorded with timings and any failures
     status: OPEN
     classification: proof-only
     assurance_profile: full
     complexity: complex
-    depends_on: [RT-25]
+    depends_on:
+    - RT-25
     type: diagnostic
     validation_tier: unit-fast
     impact_risk: low
     owner_files:
-      - .memory-bank/REALTIME_DIRTY_WORKTREE_SUPPORT_PROJECT_PLAN.md
+    - .memory-bank/REALTIME_DIRTY_WORKTREE_SUPPORT_PROJECT_PLAN.md
     allowed_write_set: []
     non_goals:
-      - Fixing defects inside this task; each defect becomes its own task.
+    - Fixing defects inside this task; each defect becomes its own task.
     required_validation:
-      - node ontoindex/dist/cli/index.js watch
+    - node ontoindex/dist/cli/index.js watch
     validation_workspace:
       root: .
       inputs:
-        - .memory-bank/REALTIME_DIRTY_WORKTREE_SUPPORT_PROJECT_PLAN.md
+      - .memory-bank/REALTIME_DIRTY_WORKTREE_SUPPORT_PROJECT_PLAN.md
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - A scratch clone of this repo is edited by a script in at least five ways while a real MCP client session queries it, and for each edit the time until the new symbol is returned with source overlay is recorded.
-      - Any stale answer, error, hang, or CPU spike is recorded with the exact step.
+    - A scratch clone of this repo is edited by a script in at least five ways while a real MCP client session queries it, and for each edit the time until the new symbol is returned with source overlay is recorded.
+    - Any stale answer, error, hang, or CPU spike is recorded with the exact step.
     rollback:
-      - Delete the scratch clone.
+    - Delete the scratch clone.
     stop_conditions:
-      - The live session cannot be driven without editing production code.
+    - The live session cannot be driven without editing production code.
     known_blockers: []
-
   RT-36:
     title: When the indexed commit equals HEAD and the worktree is dirty, runtime health reports committed freshness, dirty-file overlay coverage, and embeddings as separate fields, and the overall state is not degraded unless the database itself is unusable
     status: OPEN
@@ -1114,37 +1102,36 @@ tasks:
     validation_tier: unit-fast
     impact_risk: medium
     owner_files:
-      - ontoindex/src/core/runtime/runtime-health.ts
-      - ontoindex/test/unit/runtime-health.test.ts
+    - ontoindex/src/core/runtime/runtime-health.ts
+    - ontoindex/test/unit/runtime-health.test.ts
     allowed_write_set:
-      - ontoindex/src/core/runtime/runtime-health.ts
-      - ontoindex/test/unit/runtime-health.test.ts
+    - ontoindex/src/core/runtime/runtime-health.ts
+    - ontoindex/test/unit/runtime-health.test.ts
     non_goals:
-      - Removing or renaming existing runtimeHealth fields; new fields are additive.
-      - Changing the overlay staleness rule or getOverlaySnapshot.
-      - Changing ontoindex status output (RT-26 owns it).
+    - Removing or renaming existing runtimeHealth fields; new fields are additive.
+    - Changing the overlay staleness rule or getOverlaySnapshot.
+    - Changing ontoindex status output (RT-26 owns it).
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/runtime-health.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/runtime-health.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/core/runtime/runtime-health.ts
+      - src/core/runtime/runtime-health.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - 'Indexed commit equals HEAD with dirty files: committedFreshness is fresh, dirtyCoverage reports covered, uncovered, and overlay state, and degradedReason no longer says the whole index is degraded.'
-      - 'Indexed commit differs from HEAD: state is stale, as before.'
-      - 'Missing optional embeddings are reported in their own field and do not change freshnessState.'
-      - 'A failed dirty-file scan reports dirtyCoverage unknown, never zero dirty files.'
-      - Existing runtime-health tests pass unchanged or change only where the degraded label for a dirty-only tree is replaced.
+    - 'Indexed commit equals HEAD with dirty files: committedFreshness is fresh, dirtyCoverage reports covered, uncovered, and overlay state, and degradedReason no longer says the whole index is degraded.'
+    - 'Indexed commit differs from HEAD: state is stale, as before.'
+    - Missing optional embeddings are reported in their own field and do not change freshnessState.
+    - A failed dirty-file scan reports dirtyCoverage unknown, never zero dirty files.
+    - Existing runtime-health tests pass unchanged or change only where the degraded label for a dirty-only tree is replaced.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - Consumers outside the write set break on the changed freshnessState value for a dirty-only tree.
-      - Reading overlay coverage needs changes outside the write set.
+    - Consumers outside the write set break on the changed freshnessState value for a dirty-only tree.
+    - Reading overlay coverage needs changes outside the write set.
     known_blockers: []
-
   RT-37:
     title: When a new base generation is published between a request's database pin and its metadata read, the request reports the metadata of the generation it actually queried and returns that generation id
     status: OPEN
@@ -1156,39 +1143,38 @@ tasks:
     validation_tier: unit-fast
     impact_risk: high
     owner_files:
-      - ontoindex/src/storage/repo-manager.ts
-      - ontoindex/src/core/lbug/pool-adapter.ts
-      - ontoindex/src/mcp/shared/target-context.ts
-      - ontoindex/test/integration/lbug-pool-generation-swap.test.ts
+    - ontoindex/src/storage/repo-manager.ts
+    - ontoindex/src/core/lbug/pool-adapter.ts
+    - ontoindex/src/mcp/shared/target-context.ts
+    - ontoindex/test/integration/lbug-pool-generation-swap.test.ts
     allowed_write_set:
-      - ontoindex/src/storage/repo-manager.ts
-      - ontoindex/src/core/lbug/pool-adapter.ts
-      - ontoindex/src/mcp/shared/target-context.ts
-      - ontoindex/test/integration/lbug-pool-generation-swap.test.ts
+    - ontoindex/src/storage/repo-manager.ts
+    - ontoindex/src/core/lbug/pool-adapter.ts
+    - ontoindex/src/mcp/shared/target-context.ts
+    - ontoindex/test/integration/lbug-pool-generation-swap.test.ts
     non_goals:
-      - Changing the publication lock, pointer swap, or retention policy.
-      - A second metadata store.
+    - Changing the publication lock, pointer swap, or retention policy.
+    - A second metadata store.
     required_validation:
-      - cd ontoindex && npx vitest run test/integration/lbug-pool-generation-swap.test.ts test/unit/target-context.test.ts test/unit/index-generation-retention.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/integration/lbug-pool-generation-swap.test.ts test/unit/target-context.test.ts test/unit/index-generation-retention.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/storage/repo-manager.ts
-        - src/core/lbug/pool-adapter.ts
+      - src/storage/repo-manager.ts
+      - src/core/lbug/pool-adapter.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - A test that pins generation N, publishes N+1, then reads metadata fails before the change by reporting N+1, and passes after it by reporting N.
-      - The response carries the queried generation id.
-      - A request opened after publication reports N+1.
+    - A test that pins generation N, publishes N+1, then reads metadata fails before the change by reporting N+1, and passes after it by reporting N.
+    - The response carries the queried generation id.
+    - A request opened after publication reports N+1.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - The reproduction test passes before any change (the mismatch is not real); record that and close as proof-only.
-      - Binding metadata to the pin needs changes in local-backend-repo-runtime.ts or other files outside the write set.
+    - The reproduction test passes before any change (the mismatch is not real); record that and close as proof-only.
+    - Binding metadata to the pin needs changes in local-backend-repo-runtime.ts or other files outside the write set.
     known_blockers: []
-
   RT-38:
     title: When the base generation or HEAD changes after an overlay is built, the overlay snapshot is unusable with a reason naming the base mismatch, so an old overlay is never served on top of a newer base
     status: OPEN
@@ -1200,131 +1186,130 @@ tasks:
     validation_tier: unit-fast
     impact_risk: medium
     owner_files:
-      - ontoindex/src/core/run-analyze.ts
-      - ontoindex/src/mcp/local/backend-overlay.ts
-      - ontoindex/test/unit/backend-overlay.test.ts
-      - ontoindex/test/unit/dirty-overlay-build.test.ts
+    - ontoindex/src/core/run-analyze.ts
+    - ontoindex/src/mcp/local/backend-overlay.ts
+    - ontoindex/test/unit/backend-overlay.test.ts
+    - ontoindex/test/unit/dirty-overlay-build.test.ts
     allowed_write_set:
-      - ontoindex/src/core/run-analyze.ts
-      - ontoindex/src/mcp/local/backend-overlay.ts
-      - ontoindex/test/unit/backend-overlay.test.ts
-      - ontoindex/test/unit/dirty-overlay-build.test.ts
+    - ontoindex/src/core/run-analyze.ts
+    - ontoindex/src/mcp/local/backend-overlay.ts
+    - ontoindex/test/unit/backend-overlay.test.ts
+    - ontoindex/test/unit/dirty-overlay-build.test.ts
     non_goals:
-      - Rebuilding the overlay automatically (RT-42 and RT-43 schedule rebuilds).
-      - Changing the file-mtime staleness rule.
+    - Rebuilding the overlay automatically (RT-42 and RT-43 schedule rebuilds).
+    - Changing the file-mtime staleness rule.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/backend-overlay.test.ts test/unit/dirty-overlay-build.test.ts test/unit/overlay-generations.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/backend-overlay.test.ts test/unit/dirty-overlay-build.test.ts test/unit/overlay-generations.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/core/run-analyze.ts
-        - src/mcp/local/backend-overlay.ts
+      - src/core/run-analyze.ts
+      - src/mcp/local/backend-overlay.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - Each overlay generation records the base generation id and base commit it was built against.
-      - An overlay whose recorded base differs from the active base is unusable with a base-mismatch reason.
-      - An overlay without recorded base data (built before this change) is unusable with a rebuild hint.
-      - The snapshot cache is keyed by repository and base generation, so a base swap is seen within one probe.
+    - Each overlay generation records the base generation id and base commit it was built against.
+    - An overlay whose recorded base differs from the active base is unusable with a base-mismatch reason.
+    - An overlay without recorded base data (built before this change) is unusable with a rebuild hint.
+    - The snapshot cache is keyed by repository and base generation, so a base swap is seen within one probe.
     rollback:
-      - Revert the write-set files; old overlays are rebuilt by the next analyze --dirty-overlay.
+    - Revert the write-set files; old overlays are rebuilt by the next analyze --dirty-overlay.
     stop_conditions:
-      - Reading the active base generation needs files outside the write set.
+    - Reading the active base generation needs files outside the write set.
     known_blockers: []
-
   RT-39:
     title: When more than 50 dirty source files exist, the overlay covers up to 50 of them, newest first, reports the rest as uncovered, and stays usable for the covered files instead of turning off for the whole repo
     status: OPEN
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
-    depends_on: [RT-38]
+    depends_on:
+    - RT-38
     type: code
     validation_tier: unit-fast
     impact_risk: high
     owner_files:
-      - ontoindex/src/core/analyze-delta.ts
-      - ontoindex/src/mcp/local/backend-overlay.ts
-      - ontoindex/src/mcp/local/backend-search.ts
-      - ontoindex/src/mcp/local/backend-symbol-resolution.ts
-      - ontoindex/src/cli/analyze.ts
-      - ontoindex/src/cli/watch.ts
-      - ontoindex/test/unit/dirty-overlay-plan.test.ts
-      - ontoindex/test/unit/backend-overlay.test.ts
+    - ontoindex/src/core/analyze-delta.ts
+    - ontoindex/src/mcp/local/backend-overlay.ts
+    - ontoindex/src/mcp/local/backend-search.ts
+    - ontoindex/src/mcp/local/backend-symbol-resolution.ts
+    - ontoindex/src/cli/analyze.ts
+    - ontoindex/src/cli/watch.ts
+    - ontoindex/test/unit/dirty-overlay-plan.test.ts
+    - ontoindex/test/unit/backend-overlay.test.ts
     allowed_write_set:
-      - ontoindex/src/core/analyze-delta.ts
-      - ontoindex/src/mcp/local/backend-overlay.ts
-      - ontoindex/src/mcp/local/backend-search.ts
-      - ontoindex/src/mcp/local/backend-symbol-resolution.ts
-      - ontoindex/src/cli/analyze.ts
-      - ontoindex/src/cli/watch.ts
-      - ontoindex/test/unit/dirty-overlay-plan.test.ts
-      - ontoindex/test/unit/backend-overlay.test.ts
+    - ontoindex/src/core/analyze-delta.ts
+    - ontoindex/src/mcp/local/backend-overlay.ts
+    - ontoindex/src/mcp/local/backend-search.ts
+    - ontoindex/src/mcp/local/backend-symbol-resolution.ts
+    - ontoindex/src/cli/analyze.ts
+    - ontoindex/src/cli/watch.ts
+    - ontoindex/test/unit/dirty-overlay-plan.test.ts
+    - ontoindex/test/unit/backend-overlay.test.ts
     non_goals:
-      - Raising the 50-file cap.
-      - Changing planExperimentalFileDeltaRefresh.
+    - Raising the 50-file cap.
+    - Changing planExperimentalFileDeltaRefresh.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/dirty-overlay-plan.test.ts test/unit/backend-overlay.test.ts test/unit/experimental-file-delta.test.ts test/unit/watch.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/dirty-overlay-plan.test.ts test/unit/backend-overlay.test.ts test/unit/experimental-file-delta.test.ts test/unit/watch.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/core/analyze-delta.ts
-        - src/mcp/local/backend-overlay.ts
+      - src/core/analyze-delta.ts
+      - src/mcp/local/backend-overlay.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - 'With 75 dirty source files the plan returns 50 includePaths ordered by newest mtime and 25 uncoveredPaths; tombstones are always included.'
-      - 'The snapshot keeps dirtyPaths as every dirty source path, so isDirtyPath, impact traversal, and the mutation guard still treat uncovered files as dirty.'
-      - 'Search and symbol resolution drop base rows only for paths the overlay replaces (covered or tombstoned); uncovered paths keep their base rows, flagged stale.'
-      - 'Source eligibility uses the same ignore and file-size rules as full analyze, so generated, vendored, and over-cap files are never overlay candidates.'
-      - analyze --dirty-overlay and watch build the covered subset instead of refusing above the cap.
+    - With 75 dirty source files the plan returns 50 includePaths ordered by newest mtime and 25 uncoveredPaths; tombstones are always included.
+    - The snapshot keeps dirtyPaths as every dirty source path, so isDirtyPath, impact traversal, and the mutation guard still treat uncovered files as dirty.
+    - Search and symbol resolution drop base rows only for paths the overlay replaces (covered or tombstoned); uncovered paths keep their base rows, flagged stale.
+    - Source eligibility uses the same ignore and file-size rules as full analyze, so generated, vendored, and over-cap files are never overlay candidates.
+    - analyze --dirty-overlay and watch build the covered subset instead of refusing above the cap.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - Reusing the analyze ignore and size rules needs changes in the scan owner outside the write set.
-      - A caller of tooMany outside the write set changes behavior.
+    - Reusing the analyze ignore and size rules needs changes in the scan owner outside the write set.
+    - A caller of tooMany outside the write set changes behavior.
     known_blockers: []
-
   RT-40:
     title: When a file is deleted or renamed away and no usable overlay exists, context, impact, and symbol resolution never return that file's base symbols as current; they are omitted or flagged deleted
     status: OPEN
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
-    depends_on: [RT-39]
+    depends_on:
+    - RT-39
     type: code
     validation_tier: unit-fast
     impact_risk: medium
     owner_files:
-      - ontoindex/src/mcp/local/backend-symbol-resolution.ts
-      - ontoindex/test/unit/backend-overlay.test.ts
+    - ontoindex/src/mcp/local/backend-symbol-resolution.ts
+    - ontoindex/test/unit/backend-overlay.test.ts
     allowed_write_set:
-      - ontoindex/src/mcp/local/backend-symbol-resolution.ts
-      - ontoindex/test/unit/backend-overlay.test.ts
+    - ontoindex/src/mcp/local/backend-symbol-resolution.ts
+    - ontoindex/test/unit/backend-overlay.test.ts
     non_goals:
-      - Changing search ranking.
-      - Serving deleted content from git history.
+    - Changing search ranking.
+    - Serving deleted content from git history.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/backend-overlay.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/backend-overlay.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/mcp/local/backend-symbol-resolution.ts
+      - src/mcp/local/backend-symbol-resolution.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - With an unusable overlay, resolving a symbol from a deleted file returns no current candidate and a warning naming the deleted path.
-      - With a usable overlay, a renamed symbol resolves only at its new path.
-      - Clean-file resolution is unchanged.
+    - With an unusable overlay, resolving a symbol from a deleted file returns no current candidate and a warning naming the deleted path.
+    - With a usable overlay, a renamed symbol resolves only at its new path.
+    - Clean-file resolution is unchanged.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - Context or impact handlers outside the write set must change to show the warning.
+    - Context or impact handlers outside the write set must change to show the warning.
     known_blockers: []
-
   RT-41:
     title: When impact runs on a clean target and a dirty source file mentions the target's name, the result is marked partial and names those files, because calls added in dirty files are not in the graph
     status: OPEN
@@ -1336,33 +1321,32 @@ tasks:
     validation_tier: unit-fast
     impact_risk: medium
     owner_files:
-      - ontoindex/src/mcp/local/backend-impact.ts
-      - ontoindex/test/unit/impact-kernel-dirty.test.ts
+    - ontoindex/src/mcp/local/backend-impact.ts
+    - ontoindex/test/unit/impact-kernel-dirty.test.ts
     allowed_write_set:
-      - ontoindex/src/mcp/local/backend-impact.ts
-      - ontoindex/test/unit/impact-kernel-dirty.test.ts
+    - ontoindex/src/mcp/local/backend-impact.ts
+    - ontoindex/test/unit/impact-kernel-dirty.test.ts
     non_goals:
-      - Parsing dirty files or adding CALLS edges to the overlay.
-      - Changing the risk score of clean results when no dirty file mentions the target.
+    - Parsing dirty files or adding CALLS edges to the overlay.
+    - Changing the risk score of clean results when no dirty file mentions the target.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/impact-kernel-dirty.test.ts test/unit/backend-impact-identity.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/impact-kernel-dirty.test.ts test/unit/backend-impact-identity.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/mcp/local/backend-impact.ts
+      - src/mcp/local/backend-impact.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - A dirty file that newly calls a clean target yields traversalComplete false and a warning naming that file.
-      - The scan reads at most the dirty source files in the snapshot and a bounded number of bytes per file.
-      - With no dirty source files, results and timings are unchanged.
+    - A dirty file that newly calls a clean target yields traversalComplete false and a warning naming that file.
+    - The scan reads at most the dirty source files in the snapshot and a bounded number of bytes per file.
+    - With no dirty source files, results and timings are unchanged.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - The name scan adds more than 100 ms at 50 dirty files on this repo.
+    - The name scan adds more than 100 ms at 50 dirty files on this repo.
     known_blockers: []
-
   RT-42:
     title: When source files change continuously, ontoindex watch starts a refresh within a maximum wait, catches missed events with a periodic git-status check, and only one watcher per repository builds overlays
     status: OPEN
@@ -1374,71 +1358,71 @@ tasks:
     validation_tier: unit-fast
     impact_risk: medium
     owner_files:
-      - ontoindex/src/cli/watch.ts
-      - ontoindex/test/unit/watch.test.ts
+    - ontoindex/src/cli/watch.ts
+    - ontoindex/test/unit/watch.test.ts
     allowed_write_set:
-      - ontoindex/src/cli/watch.ts
-      - ontoindex/test/unit/watch.test.ts
+    - ontoindex/src/cli/watch.ts
+    - ontoindex/test/unit/watch.test.ts
     non_goals:
-      - A new npm dependency.
-      - Changing the 750 ms debounce default.
+    - A new npm dependency.
+    - Changing the 750 ms debounce default.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/watch.test.ts test/unit/watch-command.test.ts test/unit/watch-save-patterns.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/watch.test.ts test/unit/watch-command.test.ts test/unit/watch-save-patterns.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/cli/watch.ts
+      - src/cli/watch.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - A save every 200 ms for 20 s starts a refresh within the maximum wait (default 5 s) and at least once per maximum-wait window.
-      - A change made with no filesystem event (simulated) is refreshed after the next periodic check (default 30 s), which compares the git-status dirty set with the last built set.
-      - A second watcher on the same repository sees the live lease (pid and heartbeat), logs that another watcher owns the repository, and builds nothing; a stale lease is taken over.
+    - A save every 200 ms for 20 s starts a refresh within the maximum wait (default 5 s) and at least once per maximum-wait window.
+    - A change made with no filesystem event (simulated) is refreshed after the next periodic check (default 30 s), which compares the git-status dirty set with the last built set.
+    - A second watcher on the same repository sees the live lease (pid and heartbeat), logs that another watcher owns the repository, and builds nothing; a stale lease is taken over.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - The lease needs a cross-process lock primitive outside node:fs.
+    - The lease needs a cross-process lock primitive outside node:fs.
     known_blockers: []
-
   RT-43:
     title: When HEAD moves or the overlay is unusable because of a base mismatch, ontoindex watch runs one base analyze before the next overlay build, and skips it while analyze.lock is held
     status: OPEN
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
-    depends_on: [RT-38, RT-42]
+    depends_on:
+    - RT-38
+    - RT-42
     type: code
     validation_tier: unit-fast
     impact_risk: medium
     owner_files:
-      - ontoindex/src/cli/watch.ts
-      - ontoindex/test/unit/watch.test.ts
+    - ontoindex/src/cli/watch.ts
+    - ontoindex/test/unit/watch.test.ts
     allowed_write_set:
-      - ontoindex/src/cli/watch.ts
-      - ontoindex/test/unit/watch.test.ts
+    - ontoindex/src/cli/watch.ts
+    - ontoindex/test/unit/watch.test.ts
     non_goals:
-      - Running analyze --embeddings from the watcher.
-      - Triggering a base analyze only because many files are uncovered.
+    - Running analyze --embeddings from the watcher.
+    - Triggering a base analyze only because many files are uncovered.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/watch.test.ts test/unit/watch-command.test.ts
-      - cd ontoindex && npx tsc --noEmit
+    - cd ontoindex && npx vitest run test/unit/watch.test.ts test/unit/watch-command.test.ts
+    - cd ontoindex && npx tsc --noEmit
     validation_workspace:
       root: ontoindex
       inputs:
-        - src/cli/watch.ts
+      - src/cli/watch.ts
       generated_outputs:
-        - dist/
+      - dist/
     expected_evidence:
-      - A HEAD change produces exactly one base analyze, then one overlay build.
-      - A base mismatch reported by the overlay snapshot produces the same sequence.
-      - A held analyze.lock skips the base analyze and retries it, as the overlay refresh already does.
+    - A HEAD change produces exactly one base analyze, then one overlay build.
+    - A base mismatch reported by the overlay snapshot produces the same sequence.
+    - A held analyze.lock skips the base analyze and retries it, as the overlay refresh already does.
     rollback:
-      - Revert the write-set files.
+    - Revert the write-set files.
     stop_conditions:
-      - Detecting a HEAD change needs a new watcher on .git internals that makes the save-pattern tests flaky.
+    - Detecting a HEAD change needs a new watcher on .git internals that makes the save-pattern tests flaky.
     known_blockers: []
-
   RT-44:
     title: A read-only diagnostic measures, with a long-lived MCP reader and repeated publications, how many base and overlay generations stay on disk, when the reader re-pins, and what state remains after a process is killed between pointer swap and job completion
     status: OPEN
@@ -1450,22 +1434,22 @@ tasks:
     validation_tier: unit-fast
     impact_risk: low
     owner_files:
-      - ontoindex/src/storage/repo-manager.ts
-      - ontoindex/src/mcp/local/local-backend-repo-runtime.ts
+    - ontoindex/src/storage/repo-manager.ts
+    - ontoindex/src/mcp/local/local-backend-repo-runtime.ts
     allowed_write_set: []
     non_goals:
-      - Fixing defects inside this task; each confirmed defect becomes its own task.
+    - Fixing defects inside this task; each confirmed defect becomes its own task.
     required_validation:
-      - cd ontoindex && npx vitest run test/unit/index-generation-retention.test.ts test/integration/lbug-pool-generation-swap.test.ts
+    - cd ontoindex && npx vitest run test/unit/index-generation-retention.test.ts test/integration/lbug-pool-generation-swap.test.ts
     expected_evidence:
-      - 'Recorded counts and bytes of retained base and overlay generations after 10 publications with one reader held open.'
-      - 'Whether and when a busy reader re-pins to the newest generation, with file:line evidence.'
-      - 'The pointer, generation, and job state after a kill between pointer swap and job completion, and whether the next start recovers it.'
-      - A recommendation for a byte budget and whether retained-generation counts belong in status.
+    - Recorded counts and bytes of retained base and overlay generations after 10 publications with one reader held open.
+    - Whether and when a busy reader re-pins to the newest generation, with file:line evidence.
+    - The pointer, generation, and job state after a kill between pointer swap and job completion, and whether the next start recovers it.
+    - A recommendation for a byte budget and whether retained-generation counts belong in status.
     rollback:
-      - None; read-only.
+    - None; read-only.
     stop_conditions:
-      - The diagnostic cannot run without editing production code.
+    - The diagnostic cannot run without editing production code.
     known_blockers: []
 ```
 
