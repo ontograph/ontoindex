@@ -848,6 +848,14 @@ tasks:
     - Node fs.watch cannot deliver the rename event on this platform (report which pattern and why).
     - The fix needs a file outside the write set.
     known_blockers: []
+    closeout:
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: current-thread, user message 'you are only one developer here - and you must take care to all tasks'
+        validation_summary: 'Fresh run 2026-10-15 on branch work/tracker-closure (master 6783906 plus test commits). watch-save-patterns.test.ts passed 15 of 15 consecutive runs on Linux (real fs.watch and the real createDebouncedWatcher, no watchImpl mock): in-place write, temp-file rename over the original, delete then create, and Vim backup rename each produce exactly one refresh with the new content; backup-suffix files (a.ts~, .a.ts.swp, a.ts.tmp, 4913) never refresh by themselves; a root deleted and recreated at once keeps watching; a root deleted and not recreated logs ''Watcher stopped'' and stops cleanly. watch.test.ts and watch-command.test.ts also pass. The fixture directory is now a real temporary git repository (git init), matching the acceptance wording. tsc exit 0.'
+      role_results:
+        coder-worker: null
+
   RT-19:
     title: When dirty paths, overlay snapshots, the watcher ignore filter, and the planner receive backslash or mixed-separator paths as Windows produces them, they behave identically to forward-slash paths
     status: DONE
