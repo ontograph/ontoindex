@@ -5,8 +5,11 @@
 The active graph records the indexed commit in metadata. Edits and untracked
 files made after indexing are absent from that snapshot until another analysis
 reads them; matching `HEAD` does not prove that the graph reflects current source.
-Runtime health reports `dirty` for an otherwise healthy, current index when Git
-reports uncommitted changes. An overlay does not clear that dirty state. [1][2]
+Runtime health separates commit freshness from the dirty tree: a current index
+with uncommitted changes reports `committedFreshness: fresh`, and
+`dirtyCoverage` states how many dirty source files the overlay can cover
+(`coveredFiles`, `uncoveredFiles`, `dirtySourceFiles`, `cap`). An overlay does
+not clear the dirty state. [1][2]
 
 ## Build a disposable overlay
 
@@ -14,20 +17,25 @@ reports uncommitted changes. An overlay does not clear that dirty state. [1][2]
 ontoindex analyze --dirty-overlay
 ```
 
-This rebuilds `<storage>/overlay` using the `symbols` pipeline profile and stores
-its database at `<storage>/overlay/lbug` (normally `.ontoindex/overlay/lbug`).
-The overlay directory is disposable and replaced on each build. This branch
-returns before active-index lifecycle operations: it does not activate a
-generation or write `meta.json`, and skips embeddings and skill generation. [2][3]
+This builds an immutable overlay generation under `<storage>/overlay/<generationId>/`
+(database in `lbug/`, base binding in `base.json`) with the `symbols` pipeline
+profile, then publishes it by atomically replacing `<storage>/overlay/CURRENT`.
+Readers never open a half-built store; a failed build is removed and old
+generations are pruned best-effort. `base.json` records the base generation and
+commit the overlay was built on. This branch does not activate a base generation
+or write `meta.json`, and skips embeddings and skill generation. [2][3]
 
 Planning uses Git status, including staged, unstaged and untracked source paths.
 Deleted source paths become tombstones; a rename tombstones the old source path
 and includes the new source path. Tombstones let readers suppress old identities
 without trying to parse a missing file. Unsupported extensions are skipped. [4]
 
-The limit is 50 distinct source paths, including tombstones; a rename can count
-as two. Above this limit, the CLI refuses rather than doing a full scan, and
-readers reject any existing overlay. [3][4][5]
+Planning also drops paths the scan would drop: built-in ignore rules, root
+`.gitignore` and `.ontoindexignore` rules, and files above the scan size cap.
+The overlay covers at most 50 source paths. Above that, it covers the 50 most
+recently modified files, keeps tombstones, and reports the rest as uncovered
+(`uncoveredPaths`); it does not refuse. Readers keep base rows for uncovered
+dirty paths and flag them through the dirty-path metadata. [3][4][5]
 
 ## Keep it refreshed
 
@@ -38,14 +46,21 @@ ontoindex watch [path]
 Omit `[path]` to use the current directory; the command resolves its Git root.
 The CLI exposes no watch-specific options beyond help. Startup prints a line
 such as `Watching <root> (debounce 750 ms); tree is clean`; dirty startup instead
-reports the dirty-source count and starts a build, unless over the limit or
-blocked by an active analyze lock. There is no periodic idle status output. [6][7]
+reports the dirty-source count, how many files are covered and how many are
+left uncovered, and starts a build unless an active analyze lock blocks it.
+There is no periodic idle status output. [6][7]
 
-The recursive watcher debounces changes for 750 ms and starts a child
+The recursive watcher debounces changes for 750 ms (with a 5 s maximum wait so a
+steady stream of saves still triggers a build) and starts a child
 `analyze --dirty-overlay`. Refreshes are serialized, with a follow-up refresh
 when changes arrive during a running refresh. An active `analyze.lock` skips
-the refresh and clears queued work; releasing the lock alone does not trigger
-a retry. The child also acquires the normal analyze lock. [3][6]
+the refresh and reschedules it, so the build retries after the lock is released.
+Every 30 s a reconcile pass re-plans the overlay and compares a signature of the
+base generation, the dirty path set, and each covered file's modification time
+and size, so a missed event or a second save to an already-dirty file still
+converges. If `HEAD` moved, the watcher rebuilds the base first and then the
+overlay. A lease file keeps a second watcher from building for the same
+repository. The child also acquires the normal analyze lock. [3][6]
 
 Events under `node_modules`, `dist`, `.git` and `.ontoindex` are ignored, as are
 listed binary, archive, media, font, log, lock and temporary extensions.
@@ -56,8 +71,9 @@ from the child; overlay analysis itself reports zero embeddings. [2][6][8]
 
 ## Reading overlay results
 
-An overlay is usable only when its database exists, the source-path limit is
-not exceeded, and no included dirty file has a modification time later than the
+An overlay is usable only when its database exists, its recorded base generation
+and commit match the active base (legacy overlays without a base binding are
+rejected), and no included dirty file has a modification time later than the
 database. Equal timestamps pass this check. Saving a file after the build makes
 the overlay stale once its file timestamp is newer. Snapshot checks are cached
 for two seconds, so this is not an instantaneous content-hash guarantee. [5]
@@ -108,7 +124,8 @@ Mutation tools (`move_symbol`, `extract_function`, replace/delete symbol) slice
 the graph's stored line range out of the live file. The graph keeps index-time
 ranges, so on a file with uncommitted edits a base range can be wrong. Real
 writes are therefore refused for a dirty file unless the range came from a
-usable overlay; dry runs succeed and carry a warning. Clean files are
+usable overlay. A dry run of `extract_function` on a dirty file can still fail
+with a stale-range error when only a base range is available. Clean files are
 unaffected. The guard depends on the same two-second snapshot cache and is not
 protection against concurrent edits. [10][19][21]
 

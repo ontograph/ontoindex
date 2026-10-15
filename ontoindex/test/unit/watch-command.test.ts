@@ -14,6 +14,7 @@ import {
 } from '../../src/cli/watch.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const temporaryRepos = new Set<string>();
 
 function makeHarness(
   options: {
@@ -25,7 +26,11 @@ function makeHarness(
     headFails?: boolean;
   } = {},
 ) {
-  const leasePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'watch-test-')), 'watch.lease');
+  const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-repo-'));
+  temporaryRepos.add(repoPath);
+  fs.mkdirSync(path.join(repoPath, 'src'));
+  fs.writeFileSync(path.join(repoPath, 'src/dirty.ts'), 'initial');
+  const leasePath = path.join(repoPath, 'watch.lease');
   let emit: ((filename: string) => void) | undefined;
   const child = new EventEmitter() as EventEmitter & {
     stdout: PassThrough;
@@ -61,6 +66,7 @@ function makeHarness(
   );
 
   return {
+    repoPath,
     leasePath,
     child,
     spawn,
@@ -71,7 +77,7 @@ function makeHarness(
       emit?.(filename);
     },
     async start() {
-      const command = await createWatchCommand('/repo', {
+      const command = await createWatchCommand(repoPath, {
         leasePath,
         spawn,
         createWatcher,
@@ -104,6 +110,8 @@ function makeHarness(
 }
 
 afterEach(() => {
+  for (const repoPath of temporaryRepos) fs.rmSync(repoPath, { recursive: true, force: true });
+  temporaryRepos.clear();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -116,7 +124,11 @@ describe('watch command', () => {
     const command = await harness.start();
     options.head = 'next';
     await vi.advanceTimersByTimeAsync(30000);
-    expect(harness.spawn.mock.calls[0]?.[1]).toEqual(['/cli/index.js', 'analyze', '/repo']);
+    expect(harness.spawn.mock.calls[0]?.[1]).toEqual([
+      '/cli/index.js',
+      'analyze',
+      harness.repoPath,
+    ]);
     harness.emit('src/save.ts');
     await vi.advanceTimersByTimeAsync(100);
     expect(harness.spawn).toHaveBeenCalledTimes(1);
@@ -127,7 +139,7 @@ describe('watch command', () => {
       '/cli/index.js',
       'analyze',
       '--dirty-overlay',
-      '/repo',
+      harness.repoPath,
     ]);
     harness.child.emit('close', 0, null);
     await vi.advanceTimersByTimeAsync(30000);
@@ -159,7 +171,11 @@ describe('watch command', () => {
     expect(harness.spawn).not.toHaveBeenCalled();
     options.lockHeld = false;
     await vi.advanceTimersByTimeAsync(30000);
-    expect(harness.spawn.mock.calls[0]?.[1]).toEqual(['/cli/index.js', 'analyze', '/repo']);
+    expect(harness.spawn.mock.calls[0]?.[1]).toEqual([
+      '/cli/index.js',
+      'analyze',
+      harness.repoPath,
+    ]);
     command.stop();
   });
 
@@ -174,7 +190,7 @@ describe('watch command', () => {
       '/cli/index.js',
       'analyze',
       '--dirty-overlay',
-      '/repo',
+      harness.repoPath,
     ]);
     harness.child.emit('close', 0, null);
     await vi.advanceTimersByTimeAsync(30000);
@@ -197,9 +213,50 @@ describe('watch command', () => {
     const command = await harness.start();
     options.initiallyDirty = true;
     await vi.advanceTimersByTimeAsync(30000);
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
     expect(harness.spawn).toHaveBeenCalledTimes(1);
     harness.child.emit('close', 0, null);
     await vi.advanceTimersByTimeAsync(30000);
+    await vi.waitFor(() => expect(harness.planDirtyOverlay).toHaveBeenCalledTimes(4));
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    command.stop();
+  });
+
+  it('reconciles a save to an already dirty file once after an overlay build', async () => {
+    vi.useFakeTimers();
+    const harness = makeHarness({ initiallyDirty: true });
+    const command = await harness.start();
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+
+    fs.appendFileSync(path.join(harness.repoPath, 'src/dirty.ts'), ' changed');
+    harness.child.emit('close', 0, null);
+    await vi.advanceTimersByTimeAsync(30000);
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(2));
+    expect(harness.spawn).toHaveBeenCalledTimes(2);
+
+    harness.child.emit('close', 0, null);
+    const plansBefore = harness.planDirtyOverlay.mock.calls.length;
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(harness.planDirtyOverlay.mock.calls.length).toBeGreaterThanOrEqual(plansBefore + 2);
+    });
+    expect(harness.spawn).toHaveBeenCalledTimes(2);
+    command.stop();
+  });
+
+  it('does not refresh an unchanged covered file during reconciliation', async () => {
+    vi.useFakeTimers();
+    const harness = makeHarness({ initiallyDirty: true });
+    const command = await harness.start();
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
+    harness.child.emit('close', 0, null);
+    const plansBefore = harness.planDirtyOverlay.mock.calls.length;
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(harness.planDirtyOverlay.mock.calls.length).toBeGreaterThanOrEqual(plansBefore + 2);
+    });
+
     expect(harness.spawn).toHaveBeenCalledTimes(1);
     command.stop();
   });
@@ -249,9 +306,9 @@ describe('watch command', () => {
     expect(harness.spawn).toHaveBeenCalledTimes(1);
     expect(harness.spawn).toHaveBeenCalledWith(
       process.execPath,
-      ['/cli/index.js', 'analyze', '--dirty-overlay', '/repo'],
+      ['/cli/index.js', 'analyze', '--dirty-overlay', harness.repoPath],
       expect.objectContaining({
-        cwd: '/repo',
+        cwd: harness.repoPath,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { PATH: '/bin', HF_HOME: '/models' },
       }),
@@ -297,6 +354,7 @@ describe('watch command', () => {
     expect(harness.spawn).not.toHaveBeenCalled();
     options.lockHeld = false;
     await vi.advanceTimersByTimeAsync(100);
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
     expect(harness.spawn).toHaveBeenCalledTimes(1);
     command.stop();
     expect(vi.getTimerCount()).toBe(0);
@@ -306,6 +364,7 @@ describe('watch command', () => {
     vi.useFakeTimers();
     const harness = makeHarness({ initiallyDirty: true });
     const command = await harness.start();
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
     expect(harness.spawn).toHaveBeenCalledTimes(1);
     harness.emit('src/one.ts');
     harness.emit('src/two.ts');
@@ -313,6 +372,7 @@ describe('watch command', () => {
     expect(harness.spawn).toHaveBeenCalledTimes(1);
     harness.child.emit('close', 0, null);
     await vi.advanceTimersByTimeAsync(0);
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(2));
     expect(harness.spawn).toHaveBeenCalledTimes(2);
     command.stop();
   });
@@ -337,6 +397,7 @@ describe('watch command', () => {
     vi.useFakeTimers();
     const harness = makeHarness({ initiallyDirty: true });
     const command = await harness.start();
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
     expect(harness.spawn).toHaveBeenCalledTimes(1);
 
     command.stop();
@@ -358,17 +419,20 @@ describe('watch command', () => {
     const command = await harness.start();
 
     expect(harness.log).toHaveBeenCalledTimes(1);
-    expect(harness.log).toHaveBeenCalledWith('Watching /repo (debounce 750 ms); tree is clean');
+    expect(harness.log).toHaveBeenCalledWith(
+      `Watching ${harness.repoPath} (debounce 750 ms); tree is clean`,
+    );
     command.stop();
   });
 
   it('logs the dirty source count before starting the initial overlay build', async () => {
     const harness = makeHarness({ initiallyDirty: true });
     const command = await harness.start();
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
 
     expect(harness.log).toHaveBeenNthCalledWith(
       1,
-      'Watching /repo (debounce 750 ms); 1 dirty source path(s), covering 1 file(s) and leaving 0 uncovered',
+      `Watching ${harness.repoPath} (debounce 750 ms); 1 dirty source path(s), covering 1 file(s) and leaving 0 uncovered`,
     );
     expect(harness.spawn).toHaveBeenCalledTimes(1);
     command.stop();
@@ -380,7 +444,7 @@ describe('watch command', () => {
     const command = await harness.start();
 
     expect(harness.log).toHaveBeenCalledWith(
-      'Watching /repo (debounce 750 ms); dirty state unknown',
+      `Watching ${harness.repoPath} (debounce 750 ms); dirty state unknown`,
     );
     expect(harness.error).toHaveBeenCalledWith(
       'Initial watch overlay planning failed: git unavailable',
@@ -402,7 +466,7 @@ describe('watch command', () => {
     const command = await harness.start();
 
     expect(harness.log).toHaveBeenCalledWith(
-      'Watching /repo (debounce 750 ms); 2 dirty source path(s), covering 1 file(s) and leaving 1 uncovered',
+      `Watching ${harness.repoPath} (debounce 750 ms); 2 dirty source path(s), covering 1 file(s) and leaving 1 uncovered`,
     );
     expect(harness.spawn).toHaveBeenCalledTimes(1);
     command.stop();

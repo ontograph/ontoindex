@@ -341,11 +341,29 @@ export async function createWatchCommand(
   let overlayPending = false;
   let attemptedHead: string | undefined;
   let signature: string | undefined;
-  const planSignature = (
+  const planSignature = async (
     plan: Awaited<ReturnType<typeof planDirtyOverlay>>,
     generationId: string | null,
-  ) =>
-    JSON.stringify([generationId, [...plan.allDirtyPaths].sort(), [...plan.includePaths].sort()]);
+  ) => {
+    const includePaths = [...plan.includePaths].sort();
+    const fingerprints = await Promise.all(
+      includePaths.map(async (includePath) => {
+        try {
+          const stat = await fs.promises.stat(path.join(repoPath, includePath));
+          return [includePath, stat.mtimeMs, stat.size];
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [includePath, 'gone'];
+          throw error;
+        }
+      }),
+    );
+    return JSON.stringify([
+      generationId,
+      [...plan.allDirtyPaths].sort(),
+      includePaths,
+      fingerprints,
+    ]);
+  };
   const readState = async () => {
     const head = await deps.readHead(repoPath).catch(() => null);
     const base = await deps.readBase(getStoragePaths(repoPath).storagePath);
@@ -398,7 +416,7 @@ export async function createWatchCommand(
       if (!baseHead) {
         const plan = await deps.planDirtyOverlay(repoPath);
         const { base } = await readState();
-        requestedSignature = planSignature(plan, base.generationId);
+        requestedSignature = await planSignature(plan, base.generationId);
       }
       if (stopped) return;
       baseRunning = !!baseHead;
@@ -512,7 +530,11 @@ export async function createWatchCommand(
       .then(async (plan) => {
         const { head, base } = await readState();
         if (stopped || (await refreshBase(head, base.commit))) return;
-        if (!stopped && !watcher.isBusy() && planSignature(plan, base.generationId) !== signature)
+        if (
+          !stopped &&
+          !watcher.isBusy() &&
+          (await planSignature(plan, base.generationId)) !== signature
+        )
           watcher.requestRefresh();
       })
       .catch((error: unknown) => {
@@ -531,7 +553,7 @@ export async function createWatchCommand(
   try {
     const plan = await deps.planDirtyOverlay(repoPath);
     const { head, base } = await readState();
-    signature = planSignature(plan, base.generationId);
+    signature = await planSignature(plan, base.generationId);
     const dirtyCount = plan.allDirtyPaths.length;
     const startupState =
       dirtyCount === 0

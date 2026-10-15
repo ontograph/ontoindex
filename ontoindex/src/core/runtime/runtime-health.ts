@@ -84,6 +84,8 @@ export interface RuntimeHealthSnapshot {
   dirtyCoverage?: {
     state: 'none' | 'coverable' | 'over-cap' | 'unknown';
     dirtySourceFiles: number | null;
+    coveredFiles?: number | null;
+    uncoveredFiles?: number | null;
     cap: number;
   };
   /** Whether stored metadata reports at least one embedding vector. */
@@ -472,23 +474,40 @@ async function readDirtyCoverage(
 ): Promise<NonNullable<RuntimeHealthSnapshot['dirtyCoverage']>> {
   if (!repoHasGit) {
     warnings.push('runtime dirty overlay unavailable: repository has no Git directory');
-    return { state: 'unknown', dirtySourceFiles: null, cap: DIRTY_COVERAGE_CAP };
+    return {
+      state: 'unknown',
+      dirtySourceFiles: null,
+      coveredFiles: null,
+      uncoveredFiles: null,
+      cap: DIRTY_COVERAGE_CAP,
+    };
   }
 
   try {
     const plan = await planDirtyOverlay(repoPath);
-    if (plan.tooMany) {
-      return { state: 'over-cap', dirtySourceFiles: null, cap: DIRTY_COVERAGE_CAP };
-    }
-    const dirtySourceFiles = new Set([...plan.includePaths, ...plan.tombstones]).size;
+    const coveredFiles = plan.includePaths.length + plan.tombstones.length;
+    const uncoveredFiles = plan.uncoveredPaths.length;
+    const dirtySourceFiles = new Set([
+      ...plan.includePaths,
+      ...plan.tombstones,
+      ...plan.uncoveredPaths,
+    ]).size;
     return {
-      state: dirtySourceFiles === 0 ? 'none' : 'coverable',
+      state: plan.tooMany ? 'over-cap' : dirtySourceFiles === 0 ? 'none' : 'coverable',
       dirtySourceFiles,
+      coveredFiles,
+      uncoveredFiles,
       cap: DIRTY_COVERAGE_CAP,
     };
   } catch (error) {
     warnings.push(`runtime dirty overlay probe failed: ${formatError(error)}`);
-    return { state: 'unknown', dirtySourceFiles: null, cap: DIRTY_COVERAGE_CAP };
+    return {
+      state: 'unknown',
+      dirtySourceFiles: null,
+      coveredFiles: null,
+      uncoveredFiles: null,
+      cap: DIRTY_COVERAGE_CAP,
+    };
   }
 }
 
