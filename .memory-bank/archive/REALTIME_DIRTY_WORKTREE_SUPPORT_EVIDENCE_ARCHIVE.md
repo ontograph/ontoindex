@@ -181,3 +181,59 @@ Until now only targeted test subsets had been run. Two verification workers (gpt
 - ESLint on the 101 modified or untracked source and test files: 0 errors. New warnings against `HEAD` appear in session-owned files (`pool-adapter.ts` +3, `target-context.ts` +1, `pool-lifecycle-regressions.test.ts` +4, `lbug-pool-generation-swap.test.ts` +1, `super/analyze-job.test.ts` +8) and in files from earlier uncommitted work. Warnings are non-blocking.
 - Prettier flags 11 files, none touched this session: `mcp-doctor.ts`, `server.ts`, `diagnose.ts` and their tests, plus two untracked tests. Nine of them pass at `HEAD`, so the unformatted state came from earlier uncommitted work.
 
+# Moved from the plan on 2026-10-15 (third archive pass)
+
+## Evidence note: merged pull requests and overlay eligibility parity
+
+PR #118 (`a4c4659`) and PR #119 (`364b5a4`) squash-merged to master with green CI. PR #120 (`feat/overlay-eligibility-parity`) adds the built-in ignore, size cap, and root `.gitignore`/`.ontoindexignore` rules to `planDirtyOverlay` through `loadIgnoreRules` and two root reads, without a tree walk. The full unit suite passed (8,520 tests). Task statuses remain OPEN until receipt gates exist; tracker closure needs a `depends_on` chain before `dispatch_mode` changes to sub-agent.
+
+## Evidence note: merge status and tracker residual (2026-10-15)
+
+PR #120 (`9cda700`) and PR #121 (`f516102`) are also squash-merged to master, so PRs #118 to #121 are all on master. PR #122 adds `.ontocode/` to `.gitignore`.
+
+Dispatch mode stays `human` and all tasks stay OPEN. Implementation is present for RT-36 to RT-44 and the earlier closed work, but no authenticated role receipts exist, so closure is pending. Closing legitimately needs either `dispatch_mode: none` with `complete-local` and fresh main-session evidence per task, or real coder and auditor dispatch with receipts. Known acceptance gap: RT-1 has no per-result `stale` marker, only the `dirtyResultPaths` list on freshness. Audit each task's acceptance criteria against current source before any `complete-local` closure.
+
+## Evidence note: audit of RT tasks against master (2026-10-15)
+
+| Task | Verdict | Residual |
+|---|---|---|
+| RT-15, RT-17, RT-19, RT-25, RT-26, RT-38, RT-40 | MET | — |
+| RT-3 | PARTIAL | Older “empty includePaths above 50” wording is superseded by RT-39, which covers the 50 newest eligible files and reports the rest as uncovered. |
+| RT-9 | PARTIAL | 30/30 run claim has no retained artifact. |
+| RT-10 | PARTIAL | Reanalysis metrics appear only in plan prose. |
+| RT-16 | PARTIAL | No saved benchmark output. |
+| RT-18 | PARTIAL | Fixture is not a temporary git repository. |
+| RT-21 | PARTIAL | Dirty extract dry run threw; fixed in the branch following this note. |
+| RT-22 | PARTIAL | Host-native paths tested; Windows-style absolute paths are covered by the windows-latest CI job, not on Linux. |
+| RT-23 | PARTIAL | 20/20 Linux repetitions are not independently evidenced. |
+| RT-24 | PARTIAL | Darwin watcher flake is recorded. |
+| RT-27, RT-28 | PARTIAL | No scratch transcript. |
+| RT-36 | PARTIAL | Fixed by PR #123 with `coveredFiles` and `uncoveredFiles`. |
+| RT-37 | PARTIAL | Test ends at generation N. |
+| RT-39 | PARTIAL | Uncovered base rows lack a per-row stale flag. |
+| RT-41 | PARTIAL | No no-dirty timing regression. |
+| RT-42 | PARTIAL | Fixed by PR #123 with per-file mtime/size signatures. |
+| RT-43 | PARTIAL | No overlay-snapshot mismatch probe; generation change already rebuilds. |
+| RT-44 | PARTIAL | No 10-publication overlay measurement. |
+| RT-20 | NOT_MET | Guide rewritten by PR #123. |
+
+RT-1’s earlier residual is outdated: per-result stale marking exists on master via `scanDirtyResults` in `response-envelope.ts`. PRs #120–#123 are merged to master; tasks remain OPEN and `dispatch_mode` remains `human`.
+
+## Evidence note: RT-41, RT-43 and RT-44 test evidence (2026-10-15)
+
+- RT-41: `impact-kernel-dirty.test.ts` now asserts that with no dirty source files the mention scan opens no file and matches the clean baseline, and that 50 dirty files cause at most 50 opens and reads, each no larger than `DIRTY_MENTION_MAX_BYTES`. No wall-clock threshold is asserted.
+- RT-43: `watch-command.test.ts` now covers a base generation change between reconcile ticks (one overlay rebuild, no base analyze), a generation change during an overlay child (one further rebuild), and a base refresh that waits for `analyze.lock` and then runs once. The existing HEAD-change test covers one base analyze followed by one overlay build. The overlay snapshot's own base-mismatch reason is reached through the generation signature; the watcher does not read that reason directly.
+- RT-44 overlay half: `overlay-generations.test.ts` publishes 10 overlay generations with one held and shows the retained directory count stays at the pruning limit of 3 plus the held one, with CURRENT naming the newest. Residual: overlay pruning (`generations.slice(3)` in `run-analyze.ts`) is not reader-aware. On Linux a held generation survives only if the OS refuses the delete, so the test models that refusal. A byte budget and a retained-generation count in status remain recommendations, not implemented.
+- Tasks stay OPEN; `dispatch_mode` stays `human`.
+
+## Evidence note: saved runs for RT-9, RT-10, RT-16 and RT-23 (2026-10-15)
+
+`.memory-bank/evidence/rt-evidence-runs-2026-10-15.md` holds the commands, commit, machine and results.
+
+- RT-9: `dirty-overlay-build.test.ts` passed 30 of 30 consecutive runs.
+- RT-23: `dirty-overlay-build.test.ts` and `backend-overlay.test.ts` passed 20 of 20 consecutive runs on Linux.
+- RT-16: `overlay-benchmark.mjs` exited 0; warm medians are 0.84 s for 1 file, 2.42 s for 10, 1.16 s for 25 and 1.38 s for 50, against a 41 s baseline analyze.
+- RT-10: a clean clone analyzed with an isolated registry has 3,855 TS-to-TS IMPORTS edges (294 before the fix) and 8 direct callers of `runImpactKernel`. The original import specifier is not stored on the edge, so the `.js` specifier count cannot be reported.
+
+Tracker route: the manager runtime accepts `complete-local` for `full` and auditor-gated tasks when `dispatch_mode` is `none`, the task is the active next task, its dependencies are DONE, no role results or dispatch binding exist, and `closeout.main_session_evidence` carries `authorized_by`, `authorization_ref` and `validation_summary`. Each task needs its own fresh evidence, so bulk closure is not justified.
+
