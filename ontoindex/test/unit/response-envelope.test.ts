@@ -15,6 +15,7 @@ import {
   createStaleIndexRecoverableState,
 } from '../../src/mcp/shared/recoverable-runtime-state.js';
 import type { TargetContext } from '../../src/mcp/shared/target-context.js';
+import { resolveTargetContext } from '../../src/mcp/shared/target-context.js';
 
 describe('response envelope repo identity', () => {
   const repo = {
@@ -591,5 +592,47 @@ describe('dirty result paths', () => {
     for (let i = 0; i < 10_000; i++) deep = { child: deep };
     expect(make(deep).warnings).toHaveLength(1);
     expect(make({ filePath: 'src/other.ts' }).freshness.dirtyResultPaths).toBeUndefined();
+  });
+
+  it('marks dirty paths beyond the serialized fifty-path cap as stale', async () => {
+    const status = Array.from({ length: 60 }, (_, i) => ` M src/f${i}.ts`).join('\n') + '\n';
+    const context = await resolveTargetContext(
+      { repo: 'fixture' },
+      {
+        readRegistry: async () => [
+          {
+            name: 'fixture',
+            path: '/repo/fixture',
+            storagePath: '/repo/fixture/.ontoindex',
+            indexedAt: 'graph-index-1',
+            lastCommit: 'abc123def456abc123def456abc123def456abc1',
+            stats: { embeddings: 0 },
+          },
+        ],
+        execGit: async (_cwd, args) => {
+          const key = args.join(' ');
+          if (key === 'rev-parse --abbrev-ref HEAD') return 'main\n';
+          if (key === 'rev-parse HEAD') return 'abc123def456abc123def456abc123def456abc1\n';
+          if (key === 'status --porcelain=v1 --untracked-files=all') return status;
+          return 'abc123def456abc123def456abc123def456abc1\n';
+        },
+      },
+    );
+    const envelope = createCapabilityResponseEnvelope({
+      tool: 'fixture',
+      version: 1,
+      status: 'ok',
+      targetContext: context,
+      freshness: deriveEnvelopeFreshness(context),
+      results: {
+        beyondCap: { filePath: 'src/f59.ts' },
+        clean: { filePath: 'src/clean.ts' },
+      },
+    });
+    expect(envelope.results).toEqual({
+      beyondCap: { filePath: 'src/f59.ts', stale: true },
+      clean: { filePath: 'src/clean.ts' },
+    });
+    expect(envelope.freshness.dirtyResultPaths).toEqual(['src/f59.ts']);
   });
 });
