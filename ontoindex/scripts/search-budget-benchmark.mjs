@@ -26,10 +26,13 @@ const configs = [
 const argv = process.argv.slice(2);
 let projectPath;
 let outputPath;
+let assertResults = false;
 for (let i = 0; i < argv.length; i += 1) {
   if (argv[i] === '--out') {
     if (!argv[i + 1]) throw new Error('--out requires a path');
     outputPath = argv[++i];
+  } else if (argv[i] === '--assert') {
+    assertResults = true;
   } else if (argv[i].startsWith('--')) {
     throw new Error(`Unknown option: ${argv[i]}`);
   } else if (projectPath === undefined) {
@@ -68,8 +71,7 @@ for (const config of configs) {
       tokens: Math.ceil(bytes / 4),
       hit: hits.some(
         (item) =>
-          typeof item?.filePath === 'string' &&
-          item.filePath.endsWith(question.expect_file),
+          typeof item?.filePath === 'string' && item.filePath.endsWith(question.expect_file),
       ),
     });
   }
@@ -77,8 +79,7 @@ for (const config of configs) {
 
 for (const config of configs) {
   const configRows = rows.filter((row) => row.config === config.label);
-  const meanTokens =
-    configRows.reduce((sum, row) => sum + row.tokens, 0) / configRows.length;
+  const meanTokens = configRows.reduce((sum, row) => sum + row.tokens, 0) / configRows.length;
   const hitRate = configRows.filter((row) => row.hit).length / configRows.length;
   console.log(`\n### ${config.label}`);
   console.log('| Mean tokens | Hit rate |');
@@ -88,6 +89,29 @@ for (const config of configs) {
 
 if (outputPath) {
   await fs.writeFile(path.resolve(outputPath), `${JSON.stringify(rows, null, 2)}\n`);
+}
+
+if (assertResults) {
+  const baseline = rows.filter((row) => row.config === 'uncapped');
+  const baselineHitRate = baseline.filter((row) => row.hit).length / baseline.length;
+  let failed = false;
+  for (const config of configs.filter(({ options }) => options.max_tokens)) {
+    const configRows = rows.filter((row) => row.config === config.label);
+    const meanTokens = configRows.reduce((sum, row) => sum + row.tokens, 0) / configRows.length;
+    const hitRate = configRows.filter((row) => row.hit).length / configRows.length;
+    const ceiling = config.options.max_tokens * (config.options.retrieval_policy ? 1.6 : 1.15);
+    const reasons = [];
+    if (hitRate < baselineHitRate) reasons.push('hit rate below uncapped');
+    if (meanTokens > ceiling) reasons.push(`mean tokens ${meanTokens} exceeds ceiling ${ceiling}`);
+    if (reasons.length > 0) {
+      failed = true;
+      console.log(`ASSERT FAIL: ${config.label}: ${reasons.join('; ')}`);
+      for (const row of configRows.filter((row) => row.hit === false))
+        console.log(JSON.stringify(row));
+    }
+  }
+  if (failed) process.exit(1);
+  console.log('ASSERT OK');
 }
 
 process.exit(0);

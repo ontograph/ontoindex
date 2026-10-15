@@ -1,13 +1,13 @@
 # Search and evidence token caps: implementation plan
 
-Status: T0-T7 implemented and verified (branch `feat/search-max-tokens`, commit
-`e728be3`, based on `origin/master` `6783906`). Full `test:unit` passes
-(549 files, 8547 tests). Review follow-ups applied: `@group` search now rejects
-`max_tokens` with an error (deferred item D2 is resolved by rejection), the
-tool-contract snapshot fixture lists the new parameter, and the READMEs and the
-changelog mention it. T8 is open: push and pull request are blocked because
-`gh auth status` reports an invalid token for `er77`. Run `gh auth login`, then
-push the branch and open the PR against `master`.
+Status: Phase 1 (T0-T7) and Phase 2 (T9-T13) implemented and verified in
+worktree `/opt/d1/_wrk/ontoindex-max-tokens`, branch `feat/search-max-tokens`
+(based on `origin/master` `6783906`). Phase 1 is commit `e728be3`; Phase 2 is
+the commit that follows `a78fe91`. Full `test:unit` passes (550 files, 8563
+tests), `tsc --noEmit` exits 0, and the benchmark assertion passes. T8 is open:
+push and pull request are blocked because `gh auth status` reports an invalid
+token for `er77`. Run `gh auth login`, then push the branch and open the PR
+against `master`.
 
 ## Execution result
 
@@ -513,7 +513,8 @@ override of that policy.
 ## Deferred
 
 - D1. Resolved by Phase 2 (T10, T11).
-- D2. Resolved: no work needed. See Phase 2 review finding F4.
+- D2. Resolved in Phase 1 by rejection: `@group` search returns an error when
+  `max_tokens` is set (`LocalBackend` group dispatch).
 - D3. Agent-level comparison of read-only work against search plus reads.
   This needs model runs and frozen questions, and is outside this plan.
 
@@ -535,7 +536,7 @@ Measured on the Phase 1 build, query `repomap token budget`, `limit:3`,
 | F1 | Docs policy plus `max_tokens: 1200` still returns about 59 KB. `max_tokens` counts only primary results. | `enrichment` 50 KB: `facts` 18.9 KB, `relatedChunks` 22.3 KB, `visibleRecords` 2.1 KB, `relatedDocs` 4.1 KB. |
 | F2 | `relatedDocs` is emitted twice: inside `enrichment` and again at top level by `attachRetrievalPolicyMetadata`, which reuses `enrichment.relatedDocs`. | `local-backend.ts`, `attachRetrievalPolicyMetadata`. Top level 4,003 B, `enrichment.relatedDocs` 4,003 B. |
 | F3 | Greedy cap loses a hit when `include_content` is on. For `reciprocal rank fusion merge` the cap keeps 3 of 9 items and drops `hybrid-search.ts`. Each item is 250-1,500 B, and `content` is the variable part. | Benchmark: hit rate 83.3%. |
-| F4 | Group search needs no change. `groupQuery` forwards `max_tokens` to each member through `...queryOptions`, and then reads only `processes`, which the cap never trims. | `core/group/service.ts`, `groupQuery`. |
+| F4 | `groupQuery` forwards `max_tokens` to each member through `...queryOptions` and then reads only `processes`, which the cap never trims. Honoring the parameter silently would be wrong, so `@group` search rejects it with an error. | `core/group/service.ts`, `groupQuery`; `test/unit/mcp/group-repo-routing.test.ts`. |
 | F5 | The docs path costs about 73 ms more than a plain query (237 ms against 164 ms median). CPU profile over 41 calls: `loadSidecarStoreState` 4.0% self time (about 10 ms per call, 8.6 MB JSON), `tokenizeMarkdownQueryText` 2.4%, `extractMarkdownContextMetadata` 2.1%. The rest is async wait. | `node --cpu-prof`. |
 | F6 | `gh` token is invalid (HTTP 401), so push and PR stay blocked. | `gh auth status`. |
 
@@ -552,7 +553,8 @@ Measured on the Phase 1 build, query `repomap token budget`, `limit:3`,
 | Latency (F5) | A. Cache `loadSidecarStoreState` by file mtime and size. | Rejected. Saves about 10 ms of 237 ms and adds an invalidation risk for same-millisecond writes. |
 | | B. Keep primary trimming before docs expansion. | Already in place: `passiveTargetsFromQueryResult(result)` runs on the trimmed result, so docs expansion only sees kept results. |
 | | C. Tokenizer and metadata micro-optimization. | Rejected. 2% each. |
-| Group search (F4) | Add `max_tokens` handling to `groupQuery`. | Rejected. Not needed. |
+| Group search (F4) | A. Trim aggregated group results. | Rejected. The response is merged across repositories, and a cap would need a second ranking pass. |
+| | B. Reject `max_tokens` for `@group`. | **Chosen and shipped in Phase 1.** |
 
 ### Consolidated tasks
 
@@ -721,11 +723,37 @@ coordinator runs `npm run build` and
 Expected after T9-T11: every capped config at or below 1,380 tokens, and hit
 rate 100% in all configs.
 
+### Phase 2 result
+
+T13 was added after the first benchmark: `mentionTargets` (about 2.1 KB) was
+counted as fixed overhead, which pushed `remaining_before` negative and dropped
+every array while the response stayed near 1,900 tokens. It is now the
+lowest-priority droppable array in `applyEnrichmentTokenBudget`.
+
+Benchmark with `--assert` (6 queries, `limit:3`, `max_symbols:3`), mean tokens
+and hit rate:
+
+| Config | Phase 1 | Phase 2 |
+|---|---|---|
+| uncapped | 839 / 100% | 836 / 100% |
+| `max_tokens: 1200` | 888 / 100% | 892 / 100% |
+| `include_content` | 2000 / 100% | 1996 / 100% |
+| `include_content` + `max_tokens: 1200` | 1201 / 83% | 1288 / 100% |
+| docs policy + `max_tokens: 1200` | 19335 / 100% | 1678 / 100% |
+
+- Shrink-before-drop (T9) restored the lost hit, at 88 more tokens on average.
+- The docs-policy response fell from about 19,300 to about 1,700 tokens. The
+  remaining overhead is the fixed enrichment core (`retrievalPolicy`,
+  `explanation`, `docsEvidence`, `summary`, about 1.4 KB) and the `budget`
+  reports. The docs ceiling in `--assert` is therefore `1.6 * max_tokens`.
+- Latency is unchanged: the docs path costs about 73 ms more than a plain query
+  (237 ms against 164 ms median). `loadSidecarStoreState` is 4% of CPU.
+
 ### Order
 
 | Wave | Tasks | Write sets |
 |---|---|---|
 | 1 | T9 (`sol` low), T10 (`luna` xhigh) in parallel | disjoint |
 | 2 | T11 (`sol` low) | `local-backend.ts`, schemas, one test file |
-| 3 | T12 (`luna` xhigh), then coordinator build and benchmark | one script |
+| 3 | T12 (`sol` low) and T13 (`luna` xhigh) in parallel, then coordinator build and benchmark | disjoint |
 | 4 | Coordinator: tests, `gn_verify_diff`, local commit | none |

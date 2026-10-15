@@ -174,7 +174,7 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
         max_tokens: {
           type: 'number',
           description:
-            'For action="semantic", approximate token cap for primary results (process_symbols, definitions, skeletons). Results are trimmed in rank order and a budget report is added. Enrichment and docs payloads are not counted. Omit for no cap.',
+            'For action="semantic", approximate token cap for primary results (process_symbols, definitions, skeletons). Results are trimmed in rank order and a budget report is added. Docs and enrichment payloads are trimmed to the remaining budget: related docs, related chunks, visible records, then facts. Omit for no cap.',
           minimum: 1,
           maximum: 200000,
         },

@@ -76,6 +76,7 @@ import { impactByUid as impactByUidImpl, runImpact } from './backend-impact.js';
 import { formatCypherAsMarkdown, queryCypher } from './backend-query.js';
 import { query as queryImpl } from './backend-search.js';
 import { applySearchTokenBudget } from './search-token-budget.js';
+import { applyEnrichmentTokenBudget } from './enrichment-token-budget.js';
 import { context as contextImpl } from './backend-context.js';
 import { runContextNeighborhood } from './backend-context-neighborhood.js';
 import {
@@ -2392,7 +2393,7 @@ export class LocalBackend implements BackendPort {
         ? applySearchTokenBudget(rawResult, params.max_tokens)
         : rawResult;
     const retrievalPolicy = resolveRetrievalPolicy(params.retrieval_policy);
-    const enriched = await this.withLocalEnrichmentMetadata(repo, result, {
+    const enrichedFull = await this.withLocalEnrichmentMetadata(repo, result, {
       query: params.query,
       consumeFacts:
         params.consume_enrichment_facts === true || retrievalPolicy?.docsExpansion === true,
@@ -2414,6 +2415,10 @@ export class LocalBackend implements BackendPort {
       primaryResults: primaryResultsFromQueryResult(result),
       retrievalPolicy,
     });
+    const enriched =
+      typeof params.max_tokens === 'number'
+        ? applyEnrichmentTokenBudget(enrichedFull, params.max_tokens)
+        : enrichedFull;
     const enrichedRecord: Record<string, unknown> | undefined = isObjectResponse(enriched)
       ? enriched
       : undefined;

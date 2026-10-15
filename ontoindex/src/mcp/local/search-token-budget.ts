@@ -8,6 +8,7 @@ export interface SearchTokenBudgetReport {
   dropped_process_symbols: number;
   dropped_definitions: number;
   skeletons_dropped: boolean;
+  content_stripped: number;
   truncated: boolean;
   over_budget: boolean;
 }
@@ -23,8 +24,10 @@ export function applySearchTokenBudget<T>(result: T, maxTokens: number): T {
     definitions?: unknown;
     process_symbols?: unknown;
   };
-  const processSymbols = Array.isArray(input.process_symbols) ? input.process_symbols : undefined;
-  const definitions = Array.isArray(input.definitions) ? input.definitions : undefined;
+  const processSymbols = Array.isArray(input.process_symbols)
+    ? [...input.process_symbols]
+    : undefined;
+  const definitions = Array.isArray(input.definitions) ? [...input.definitions] : undefined;
   if (!processSymbols && !definitions) return result;
 
   const output: Record<string, unknown> = { ...(result as Record<string, unknown>) };
@@ -40,6 +43,30 @@ export function applySearchTokenBudget<T>(result: T, maxTokens: number): T {
     delete base.skeletons;
     delete output.skeletons;
     skeletonsDropped = true;
+  }
+
+  let total = estimateJsonTokens(base);
+  for (const item of [...(processSymbols ?? []), ...(definitions ?? [])]) {
+    total += estimateJsonTokens(item) + 1;
+  }
+  let contentStripped = 0;
+  for (const items of [definitions, processSymbols]) {
+    if (!items) continue;
+    for (let index = items.length - 1; index >= 0 && total > maxTokens; index--) {
+      const item = items[index];
+      if (
+        item === null ||
+        typeof item !== 'object' ||
+        !Object.prototype.hasOwnProperty.call(item, 'content')
+      ) {
+        continue;
+      }
+      const stripped = { ...item };
+      delete stripped.content;
+      items[index] = stripped;
+      total += estimateJsonTokens(stripped) - estimateJsonTokens(item);
+      contentStripped++;
+    }
   }
 
   let used = estimateJsonTokens(base);
@@ -89,10 +116,12 @@ export function applySearchTokenBudget<T>(result: T, maxTokens: number): T {
     dropped_process_symbols: (processSymbols?.length ?? 0) - keptProcessSymbols.length,
     dropped_definitions: (definitions?.length ?? 0) - keptDefinitions.length,
     skeletons_dropped: skeletonsDropped,
+    content_stripped: contentStripped,
     truncated:
       (processSymbols?.length ?? 0) - keptProcessSymbols.length > 0 ||
       (definitions?.length ?? 0) - keptDefinitions.length > 0 ||
-      skeletonsDropped,
+      skeletonsDropped ||
+      contentStripped > 0,
     over_budget: estimateJsonTokens(estimatedOutput) > maxTokens,
   };
   output.budget = report;
