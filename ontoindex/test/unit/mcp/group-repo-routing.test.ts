@@ -121,6 +121,16 @@ repos:
     expect(groupSpyQuery).toHaveBeenCalledWith(expect.objectContaining(options));
   });
 
+  it('rejects max_tokens for group search instead of silently ignoring it', async () => {
+    const out = await new LocalBackend().callTool('query', {
+      repo: '@g1',
+      query: 'login',
+      max_tokens: 1200,
+    });
+    expect(String((out as { error: string }).error)).toMatch(/max_tokens is not supported/);
+    expect(groupSpyQuery).not.toHaveBeenCalled();
+  });
+
   it('routes impact to groupImpact with resolved repo member path', async () => {
     const backend = new LocalBackend();
     const out = await backend.callTool('impact', {

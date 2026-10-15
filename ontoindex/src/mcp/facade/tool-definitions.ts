@@ -171,6 +171,13 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
           minimum: 1,
           maximum: 200,
         },
+        max_tokens: {
+          type: 'number',
+          description:
+            'For action="semantic", approximate token cap for primary results (process_symbols, definitions, skeletons). Results are trimmed in rank order and a budget report is added. Enrichment and docs payloads are not counted. Omit for no cap.',
+          minimum: 1,
+          maximum: 200000,
+        },
         include_content: {
           type: 'boolean',
           description: 'Include full symbol source content for semantic results.',
@@ -249,6 +256,13 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
           type: 'number',
           description: 'Evidence-pack context lines.',
           default: 3,
+        },
+        max_tokens: {
+          type: 'number',
+          description:
+            'For action="evidence", approximate token cap for evidence snippets. Entries past the cap keep file and line range and omit the snippet. Omit for no cap.',
+          minimum: 1,
+          maximum: 200000,
         },
         route: { type: 'string', description: 'API route for shape checks.' },
         symbol_name: { type: 'string', description: 'IPC trace symbol name.' },

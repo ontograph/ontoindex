@@ -75,6 +75,7 @@ import {
 import { impactByUid as impactByUidImpl, runImpact } from './backend-impact.js';
 import { formatCypherAsMarkdown, queryCypher } from './backend-query.js';
 import { query as queryImpl } from './backend-search.js';
+import { applySearchTokenBudget } from './search-token-budget.js';
 import { context as contextImpl } from './backend-context.js';
 import { runContextNeighborhood } from './backend-context-neighborhood.js';
 import {
@@ -2374,6 +2375,7 @@ export class LocalBackend implements BackendPort {
       goal?: string;
       limit?: number;
       max_symbols?: number;
+      max_tokens?: number;
       include_content?: boolean;
       consume_enrichment_facts?: boolean;
       include_passive_related_facts?: boolean;
@@ -2384,7 +2386,11 @@ export class LocalBackend implements BackendPort {
     },
   ): Promise<QueryResult> {
     await this.ensureInitialized(repo.id);
-    const result = await queryImpl(repo as any, params);
+    const rawResult = await queryImpl(repo as any, params);
+    const result =
+      typeof params.max_tokens === 'number'
+        ? applySearchTokenBudget(rawResult, params.max_tokens)
+        : rawResult;
     const retrievalPolicy = resolveRetrievalPolicy(params.retrieval_policy);
     const enriched = await this.withLocalEnrichmentMetadata(repo, result, {
       query: params.query,
@@ -2716,6 +2722,12 @@ export class LocalBackend implements BackendPort {
       return svc.groupImpact(impactArgs);
     }
     if (method === 'query') {
+      if (params.max_tokens !== undefined) {
+        return {
+          error:
+            'max_tokens is not supported for @group search: the group response is aggregated across repositories and cannot be trimmed to a token cap. Search one repository instead.',
+        };
+      }
       const {
         repo: _repo,
         name: _name,

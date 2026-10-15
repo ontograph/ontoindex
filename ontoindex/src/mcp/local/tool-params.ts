@@ -38,6 +38,7 @@ export const QuerySchema = BaseRepoSchema.extend({
   goal: z.string().optional(),
   limit: z.number().min(1).max(100).default(5),
   max_symbols: z.number().min(1).max(200).default(10),
+  max_tokens: z.number().min(1).max(200000).optional(),
   include_content: z.boolean().default(false),
   include_skeleton: z.boolean().optional(),
   service: z.string().min(1).optional(),
@@ -289,6 +290,7 @@ export const EvidencePackSchema = BaseRepoSchema.extend({
   targets: z.array(z.string()),
   include_snippet: z.boolean().default(true),
   context_lines: z.number().default(3),
+  max_tokens: z.number().min(1).max(200000).optional(),
 });
 
 export interface EvidencePackParams extends z.input<typeof EvidencePackSchema> {}

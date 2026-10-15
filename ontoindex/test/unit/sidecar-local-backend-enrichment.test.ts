@@ -2140,3 +2140,46 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     );
   });
 });
+
+describe('LocalBackend semantic max_tokens', () => {
+  beforeEach(() => {
+    backendMocks.queryImpl.mockReset();
+  });
+
+  it('trims primary results when max_tokens is set', async () => {
+    await createRepo();
+    backendMocks.queryImpl.mockResolvedValue({
+      definitions: Array.from({ length: 10 }, (_, index) => ({
+        name: `d${index}`,
+        filePath: 'src/a.ts',
+        content: 'x'.repeat(400),
+      })),
+    });
+
+    const result = await new LocalBackend().callTool('query', {
+      query: 'auth',
+      max_tokens: 300,
+    });
+
+    expect(result.definitions.length).toBeGreaterThanOrEqual(1);
+    expect(result.definitions.length).toBeLessThan(10);
+    expect(result.budget.truncated).toBe(true);
+    expect(result.budget.max_tokens).toBe(300);
+  });
+
+  it('leaves results unchanged without max_tokens', async () => {
+    await createRepo();
+    backendMocks.queryImpl.mockResolvedValue({
+      definitions: Array.from({ length: 10 }, (_, index) => ({
+        name: `d${index}`,
+        filePath: 'src/a.ts',
+        content: 'x'.repeat(400),
+      })),
+    });
+
+    const result = await new LocalBackend().callTool('query', { query: 'auth' });
+
+    expect(result.definitions).toHaveLength(10);
+    expect(result).not.toHaveProperty('budget');
+  });
+});

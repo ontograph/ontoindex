@@ -406,7 +406,14 @@ export function gnHelp(
       ],
       responseSize: {
         compactByDefault: true,
-        boundedTools: ['gn_docs', 'search.limit', 'inspect.limit', 'repomap.token_budget'],
+        boundedTools: [
+          'gn_docs',
+          'search.limit',
+          'inspect.limit',
+          'repomap.token_budget',
+          'search.max_tokens',
+          'inspect.max_tokens',
+        ],
         defaultDocsItems: 25,
         maxDocsItems: 100,
         stalePartialAmbiguousVisible: true,

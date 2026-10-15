@@ -25,9 +25,18 @@ describe('MCP Next-Step Hints', () => {
       repo: 'my-repo',
     });
 
-    expect(hint).toContain('consume_enrichment_facts: true');
-    expect(hint).toContain('include_markdown_context: true');
+    expect(hint).toContain('retrieval_policy: "graph-with-passive-docs"');
     expect(hint).toContain('repo: "my-repo"');
+  });
+
+  it('does not re-suggest docs when a docs retrieval policy is set', () => {
+    const hint = getNextStepHint('search', {
+      action: 'semantic',
+      query: 'x',
+      retrieval_policy: 'graph-with-passive-docs',
+    });
+
+    expect(hint).not.toContain('rerun search');
   });
 
   it('clarifies the CLI equivalent for list_repos', () => {

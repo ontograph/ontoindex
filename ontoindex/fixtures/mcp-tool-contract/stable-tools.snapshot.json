@@ -3355,6 +3355,12 @@
             "enum": ["signatures", "outline", "full", "compressed", "files"],
             "description": "Repomap output format.",
             "default": "signatures"
+          },
+          "max_tokens": {
+            "type": "number",
+            "description": "For action=\"semantic\", approximate token cap for primary results (process_symbols, definitions, skeletons). Results are trimmed in rank order and a budget report is added. Enrichment and docs payloads are not counted. Omit for no cap.",
+            "minimum": 1,
+            "maximum": 200000
           }
         },
         "required": ["action"],
@@ -3541,6 +3547,12 @@
           "symbol_name": {
             "type": "string",
             "description": "IPC trace symbol name."
+          },
+          "max_tokens": {
+            "type": "number",
+            "description": "For action=\"evidence\", approximate token cap for evidence snippets. Entries past the cap keep file and line range and omit the snippet. Omit for no cap.",
+            "minimum": 1,
+            "maximum": 200000
           }
         },
         "required": ["action"],

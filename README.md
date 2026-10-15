@@ -163,6 +163,7 @@ If embeddings already exist, `ontoindex analyze` preserves them; use `ontoindex 
 | Index current repository                  | `ontoindex analyze`                                                       | `ontoindex analyze`                                                       |
 | Semantic query scoped to backend files    | `ontoindex query "search ranking" --include-path ontoindex/src/mcp/local` | `ontoindex query "search ranking" --include-path ontoindex/src/mcp/local` |
 | Semantic query with explanations          | `ontoindex query "search ranking" --include-explanations`                 | `ontoindex query "search ranking" --include-explanations`                 |
+| Semantic query under a token cap          | `ontoindex query "search ranking" --max-tokens 2000`                      | `ontoindex query "search ranking" --max-tokens 2000`                      |
 | Generate repo skills for Claude and Codex | `ontoindex analyze --skills --skills-target claude,codex`                 | `ontoindex analyze --skills --skills-target claude,codex`                 |
 | Configure supported MCP clients           | `ontoindex setup`                                                         | `ontoindex setup`                                                         |
 | Start MCP server manually                 | `ontoindex mcp`                                                           | `ontoindex mcp`                                                           |
