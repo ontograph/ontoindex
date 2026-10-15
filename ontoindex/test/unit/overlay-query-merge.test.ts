@@ -156,15 +156,25 @@ describe('query dirty-overlay merge', () => {
       expect(executeParameterized).not.toHaveBeenCalledWith(repo.id, expect.any(String), {
         nodeId: stale.nodeId,
       });
-      expect(queryOverlay).toHaveBeenCalledWith(
-        repo,
-        expect.stringContaining('n.filePath IN $paths'),
-        { paths: ['src/dirty.ts'], limit: 50, term0: 'cachestore' },
-      );
+      expect(queryOverlay).toHaveBeenCalledWith(repo, expect.not.stringContaining('IN $paths'), {
+        term0: 'cachestore',
+      });
       expect(SemanticRetrievalCache.prototype.lookup).not.toHaveBeenCalled();
       expect(SemanticRetrievalCache.prototype.set).not.toHaveBeenCalled();
     },
   );
+
+  it('keeps only rows from overlay paths and caps them at the search limit', async () => {
+    vi.mocked(getOverlaySnapshot).mockResolvedValue(snapshot(true));
+    vi.mocked(queryOverlay).mockResolvedValue([
+      { ...overlayRow, id: 'x', name: 'Outside', filePath: 'src/other.ts' },
+      overlayRow,
+    ]);
+    const result = await query(repo, { ...options, intent_ensemble: false });
+    const json = JSON.stringify(result);
+    expect(json).toContain(overlayRow.name);
+    expect(json).not.toContain('Outside');
+  });
 
   it('suppresses dirty graph and locked exact candidates as well', async () => {
     vi.mocked(getOverlaySnapshot).mockResolvedValue(snapshot(true));
