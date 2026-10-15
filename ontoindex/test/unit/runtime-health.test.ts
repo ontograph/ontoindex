@@ -309,6 +309,8 @@ describe('deriveRuntimeHealth', () => {
       expect(health.dirtyCoverage).toEqual({
         state: 'coverable',
         dirtySourceFiles: 1,
+        coveredFiles: 1,
+        uncoveredFiles: 0,
         cap: 50,
       });
       expect(health.embeddingsAvailable).toBe(true);
@@ -329,7 +331,13 @@ describe('deriveRuntimeHealth', () => {
       });
 
       expect(health.committedFreshness).toBe('stale');
-      expect(health.dirtyCoverage).toEqual({ state: 'none', dirtySourceFiles: 0, cap: 50 });
+      expect(health.dirtyCoverage).toEqual({
+        state: 'none',
+        dirtySourceFiles: 0,
+        coveredFiles: 0,
+        uncoveredFiles: 0,
+        cap: 50,
+      });
       expect(health.embeddingsAvailable).toBeNull();
     } finally {
       await fs.rm(repoPath, { recursive: true, force: true });
@@ -348,7 +356,13 @@ describe('deriveRuntimeHealth', () => {
         },
       });
 
-      expect(health.dirtyCoverage).toEqual({ state: 'unknown', dirtySourceFiles: null, cap: 50 });
+      expect(health.dirtyCoverage).toEqual({
+        state: 'unknown',
+        dirtySourceFiles: null,
+        coveredFiles: null,
+        uncoveredFiles: null,
+        cap: 50,
+      });
       expect(
         health.warnings.some((warning) => warning.includes('dirty overlay probe failed')),
       ).toBe(true);
@@ -357,7 +371,7 @@ describe('deriveRuntimeHealth', () => {
     }
   });
 
-  it('reports over-cap dirty source coverage without inventing an exact count', async () => {
+  it('reports covered and uncovered dirty source files beyond the overlay cap', async () => {
     const repoPath = await makeCommittedGitRepo();
     try {
       await Promise.all(
@@ -376,7 +390,45 @@ describe('deriveRuntimeHealth', () => {
         meta: { repoPath, lastCommit: indexedCommit, indexedAt: '2026-10-14T00:00:00.000Z' },
       });
 
-      expect(health.dirtyCoverage).toEqual({ state: 'over-cap', dirtySourceFiles: null, cap: 50 });
+      expect(health.dirtyCoverage).toEqual({
+        state: 'over-cap',
+        dirtySourceFiles: 51,
+        coveredFiles: 50,
+        uncoveredFiles: 1,
+        cap: 50,
+      });
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
+  });
+
+  it('counts tombstones as covered when source files exceed the overlay cap', async () => {
+    const repoPath = await makeCommittedGitRepo();
+    try {
+      await Promise.all(
+        Array.from({ length: 51 }, (_, index) =>
+          fs.writeFile(
+            path.join(repoPath, `src/dirty-${index}.ts`),
+            `export const value${index} = ${index};\n`,
+          ),
+        ),
+      );
+      await fs.unlink(path.join(repoPath, 'src/main.ts'));
+      const indexedCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: repoPath,
+        encoding: 'utf8',
+      }).trim();
+      const health = await readRuntimeHealth(repoPath, {
+        meta: { repoPath, lastCommit: indexedCommit, indexedAt: '2026-10-14T00:00:00.000Z' },
+      });
+
+      expect(health.dirtyCoverage).toEqual({
+        state: 'over-cap',
+        dirtySourceFiles: 52,
+        coveredFiles: 51,
+        uncoveredFiles: 1,
+        cap: 50,
+      });
     } finally {
       await fs.rm(repoPath, { recursive: true, force: true });
     }
