@@ -28,6 +28,8 @@ describe('immutable overlay generations (real LadybugDB)', () => {
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
       .sort();
+  // Mirrors the literal `generations.slice(3)` in run-analyze.ts (runDirtyOverlayAnalysis pruning).
+  const retentionLimit = async () => 3;
 
   async function build(name: string, fail = false, onLog = vi.fn()) {
     const analyzeRepo = vi.fn(async () => ({
@@ -184,6 +186,55 @@ describe('immutable overlay generations (real LadybugDB)', () => {
     await build('gen3');
     expect(await directories()).toHaveLength(3);
     expect(await queryOverlay(repo, cypher)).toEqual([{ name: 'gen3' }]);
+  });
+
+  it('bounds retained generations with a simulated OS lock until reader release', async () => {
+    const retained = await retentionLimit();
+    await build('held');
+    await queryOverlay(repo, cypher);
+    const heldId = (await current()).trim();
+    const realRm = fs.rm.bind(fs);
+    const blockedRm = vi.spyOn(fs, 'rm').mockImplementation(async (target, options) => {
+      if (target === path.join(overlay, heldId)) {
+        throw Object.assign(new Error('locked a portion of the file'), { code: 'EPERM' });
+      }
+      return realRm(target, options);
+    });
+
+    let newestId = heldId;
+    for (let index = 1; index < 10; index += 1) {
+      await build(`retained-${index}`);
+      newestId = path.basename(path.dirname((await resolveOverlayDbPath(repo.storagePath))!));
+    }
+    const heldPath = path.join(overlay, heldId);
+    expect((await fs.stat(heldPath)).isDirectory()).toBe(true);
+    expect(await pool.executeParameterized(overlayRepoId(repo.id), cypher, {})).toEqual([
+      { name: 'held' },
+    ]);
+    expect(await directories()).toHaveLength(retained + 1);
+    expect(newestId).toBe((await current()).trim());
+    async function totalBytes(directory: string): Promise<number> {
+      const entries = await fs.readdir(directory, { withFileTypes: true });
+      const sizes = await Promise.all(
+        entries.map(async (entry) => {
+          const target = path.join(directory, entry.name);
+          return entry.isDirectory() ? totalBytes(target) : (await fs.stat(target)).size;
+        }),
+      );
+      return sizes.reduce((sum, size) => sum + size, 0);
+    }
+    const retainedBytes = (
+      await Promise.all((await directories()).map((name) => totalBytes(path.join(overlay, name))))
+    ).reduce((sum, size) => sum + size, 0);
+    expect(retainedBytes).toBeGreaterThan(0);
+    expect(Number.isFinite(retainedBytes)).toBe(true);
+
+    blockedRm.mockRestore();
+    await queryOverlay(repo, cypher);
+    await build('after-release');
+    await expect(fs.stat(heldPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await directories()).toHaveLength(retained);
+    expect((await current()).trim()).not.toBe(heldId);
   });
 
   it.each(['', '../outside', '/absolute', 'one/two', '..', 'gen\nother', 'missing-generation'])(
