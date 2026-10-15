@@ -15,7 +15,7 @@ manager_loop:
   authority: true
   status: in-progress
   selection_policy: active_next_task-first
-  active_next_task: RT-39
+  active_next_task: RT-18
   max_in_flight: 1
   dispatch_mode: none
   reopen_gate: null
@@ -1252,7 +1252,7 @@ tasks:
     known_blockers: []
   RT-36:
     title: When the indexed commit equals HEAD and the worktree is dirty, runtime health reports committed freshness, dirty-file overlay coverage, and embeddings as separate fields, and the overall state is not degraded unless the database itself is unusable
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -1291,9 +1291,17 @@ tasks:
     - Consumers outside the write set break on the changed freshnessState value for a dirty-only tree.
     - Reading overlay coverage needs changes outside the write set.
     known_blockers: []
+    closeout:
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: current-thread, user message 'you are only one developer here - and you must take care to all tasks'
+        validation_summary: 'Fresh run 2026-10-15 on branch work/tracker-closure (master 6783906 plus test commits). npx vitest run test/unit/runtime-health.test.ts: 1 file, 36 tests passed; tsc exit 0. dirtyCoverage now reports state, dirtySourceFiles, coveredFiles and uncoveredFiles (PR #123), freshnessState stays fresh for a dirty-only tree, a failed scan reports unknown.'
+      role_results:
+        coder-worker: null
+    dod_status: pass
   RT-37:
     title: When a new base generation is published between a request's database pin and its metadata read, the request reports the metadata of the generation it actually queried and returns that generation id
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -1334,6 +1342,14 @@ tasks:
     - The reproduction test passes before any change (the mismatch is not real); record that and close as proof-only.
     - Binding metadata to the pin needs changes in local-backend-repo-runtime.ts or other files outside the write set.
     known_blockers: []
+    closeout:
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: current-thread, user message 'you are only one developer here - and you must take care to all tasks'
+        validation_summary: 'Fresh run 2026-10-15 on branch work/tracker-closure (master 6783906 plus test commits). integration lbug-pool-generation-swap + target-context + index-generation-retention: 3 files, 52 tests passed (run in worktree wt_gap at commit dc5b5c2, cherry-picked here as ac37286). The pinned reader reports generation N while N+1 is current; after closing the pool and re-initialising on the same storage a new request reports commit B and generation-n-plus-one and a graph query succeeds. Full test:unit in wt_gap: 548 files, 8533 tests passed.'
+      role_results:
+        coder-worker: null
+    dod_status: pass
   RT-38:
     title: When the base generation or HEAD changes after an overlay is built, the overlay snapshot is unusable with a reason naming the base mismatch, so an old overlay is never served on top of a newer base
     status: DONE
@@ -1387,7 +1403,7 @@ tasks:
     dod_status: pass
   RT-39:
     title: When more than 50 dirty source files exist, the overlay covers up to 50 of them, newest first, reports the rest as uncovered, and stays usable for the covered files instead of turning off for the whole repo
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -1439,9 +1455,17 @@ tasks:
     - Reusing the analyze ignore and size rules needs changes in the scan owner outside the write set.
     - A caller of tooMany outside the write set changes behavior.
     known_blockers: []
+    closeout:
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: current-thread, user message 'you are only one developer here - and you must take care to all tasks'
+        validation_summary: 'Fresh run 2026-10-15 on branch work/tracker-closure (master 6783906 plus test commits). dirty-overlay-plan, backend-overlay, experimental-file-delta, watch and response-envelope tests: 5 files, 83 tests passed. 75 dirty files cover the 50 newest and report 25 uncovered with tombstones kept (dirty-overlay-plan.test.ts), uncovered paths stay dirty so isDirtyPath, impact traversal and the mutation guard treat them as dirty, and a result on a dirty path beyond the 50-path serialized cap is marked stale: true and listed in freshness.dirtyResultPaths (response-envelope.test.ts, commit ac37286). Planner applies built-in ignore, size cap and root .gitignore/.ontoindexignore rules (PR #120). Residual noted: search rows for uncovered paths carry the envelope-level stale flag, not a separate per-row marker inside the overlay merge.'
+      role_results:
+        coder-worker: null
+    dod_status: pass
   RT-40:
     title: When a file is deleted or renamed away and no usable overlay exists, context, impact, and symbol resolution never return that file's base symbols as current; they are omitted or flagged deleted
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -1477,9 +1501,17 @@ tasks:
     stop_conditions:
     - Context or impact handlers outside the write set must change to show the warning.
     known_blockers: []
+    closeout:
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: current-thread, user message 'you are only one developer here - and you must take care to all tasks'
+        validation_summary: 'Fresh run 2026-10-15 on branch work/tracker-closure (master 6783906 plus test commits). npx vitest run test/unit/backend-overlay.test.ts: 1 file, 19 tests passed (deleted-path omission with warning, renamed identity, unchanged clean resolution); tsc exit 0.'
+      role_results:
+        coder-worker: null
+    dod_status: pass
   RT-41:
     title: When impact runs on a clean target and a dirty source file mentions the target's name, the result is marked partial and names those files, because calls added in dirty files are not in the graph
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -1514,9 +1546,17 @@ tasks:
     stop_conditions:
     - The name scan adds more than 100 ms at 50 dirty files on this repo.
     known_blockers: []
+    closeout:
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: current-thread, user message 'you are only one developer here - and you must take care to all tasks'
+        validation_summary: 'Fresh run 2026-10-15 on branch work/tracker-closure (master 6783906 plus test commits). impact-kernel-dirty plus backend-impact-identity tests: 2 files, 23 tests passed, including the no-dirty-files scan opening zero files and the 50-file open and byte bounds (PR #125 branch); tsc exit 0.'
+      role_results:
+        coder-worker: null
+    dod_status: pass
   RT-42:
     title: When source files change continuously, ontoindex watch starts a refresh within a maximum wait, catches missed events with a periodic git-status check, and only one watcher per repository builds overlays
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -1551,9 +1591,17 @@ tasks:
     stop_conditions:
     - The lease needs a cross-process lock primitive outside node:fs.
     known_blockers: []
+    closeout:
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: current-thread, user message 'you are only one developer here - and you must take care to all tasks'
+        validation_summary: 'Fresh run 2026-10-15 on branch work/tracker-closure (master 6783906 plus test commits). watch, watch-command and watch-save-patterns tests: 3 files, 51 tests passed, including the per-file mtime and size signature for a repeat save to an already-dirty file (PR #123); tsc exit 0.'
+      role_results:
+        coder-worker: null
+    dod_status: pass
   RT-43:
     title: When HEAD moves or the overlay is unusable because of a base mismatch, ontoindex watch runs one base analyze before the next overlay build, and skips it while analyze.lock is held
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -1590,9 +1638,17 @@ tasks:
     stop_conditions:
     - Detecting a HEAD change needs a new watcher on .git internals that makes the save-pattern tests flaky.
     known_blockers: []
+    closeout:
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: current-thread, user message 'you are only one developer here - and you must take care to all tasks'
+        validation_summary: 'Fresh run 2026-10-15 on branch work/tracker-closure (master 6783906 plus test commits). watch plus watch-command tests: 2 files, 38 tests passed: one base analyze then one overlay build on a HEAD change, one overlay rebuild on a base generation change (including during an overlay child), and a base refresh that waits for analyze.lock then runs once; tsc exit 0.'
+      role_results:
+        coder-worker: null
+    dod_status: pass
   RT-44:
     title: A read-only diagnostic measures, with a long-lived MCP reader and repeated publications, how many base and overlay generations stay on disk, when the reader re-pins, and what state remains after a process is killed between pointer swap and job completion
-    status: OPEN
+    status: DONE
     classification: proof-only
     assurance_profile: full
     complexity: complex
@@ -1618,6 +1674,14 @@ tasks:
     stop_conditions:
     - The diagnostic cannot run without editing production code.
     known_blockers: []
+    closeout:
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: current-thread, user message 'you are only one developer here - and you must take care to all tasks'
+        validation_summary: 'Fresh run 2026-10-15 on branch work/tracker-closure (master 6783906 plus test commits). index-generation-retention, lbug-pool-generation-swap and overlay-generations tests: 3 files, 33 tests passed; 10-publication overlay retention test keeps the pruning limit of 3 plus the held generation. Recorded base measurements and crash follow-ups are in the archive. Residual recorded: overlay pruning is not reader-aware on Linux; a byte budget and a retained-generation count in status remain recommendations.'
+      role_results:
+        coder-worker: null
+    dod_status: pass
 ```
 
 ## Required Traceability
