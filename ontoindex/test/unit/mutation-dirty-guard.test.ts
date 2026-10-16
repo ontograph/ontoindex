@@ -190,6 +190,19 @@ describe('mutation dirty guard', () => {
     expect(await fs.readFile(target, 'utf8')).toBe('// target\n');
   });
 
+  // RT-22: guardMutationRange relativizes with the host `path`. A Windows absolute path
+  // (C:\repo\src\a.ts) is only recognised as absolute on win32, where the windows-latest CI
+  // job runs the host-native case above. On POSIX the same string is a relative name, so the
+  // dirty-path lookup does not match. The production relative-path logic is reported, not changed.
+  it('documents that a Windows absolute path is only resolved on a win32 host', () => {
+    const repoRoot = 'C:\\work\\repo';
+    const absolute = 'C:\\work\\repo\\src\\a.ts';
+    expect(path.win32.relative(repoRoot, absolute)).toBe('src\\a.ts');
+    expect(path.win32.isAbsolute(absolute)).toBe(true);
+    expect(path.posix.isAbsolute(absolute)).toBe(false);
+    expect(path.posix.relative(repoRoot, absolute).replace(/\\/g, '/')).not.toBe('src/a.ts');
+  });
+
   it.each(['host-native absolute path', 'backslash-relative path'])(
     'detects a dirty file with a %s',
     async (pathKind) => {

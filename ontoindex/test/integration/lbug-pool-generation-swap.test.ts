@@ -130,25 +130,26 @@ describe('lbug pool generation swap', () => {
     ).toBe(true);
 
     await publish('generation-n-plus-one', commitB);
+    const contextDeps = {
+      readRegistry: async () => [
+        {
+          name: repoId,
+          path: tmpRoot!,
+          storagePath,
+          indexedAt: 'registry-index',
+          lastCommit: commitA,
+        },
+      ],
+      execGit: async (_cwd: string, args: string[]) => {
+        const key = args.join(' ');
+        if (key === 'rev-parse --abbrev-ref HEAD') return 'main\n';
+        if (key === 'status --porcelain=v1 --untracked-files=all') return '';
+        return `${commitB}\n`;
+      },
+    };
     const context = await resolveTargetContext(
       { repo: repoId, verifyGraphAuthority: true },
-      {
-        readRegistry: async () => [
-          {
-            name: repoId,
-            path: tmpRoot!,
-            storagePath,
-            indexedAt: 'registry-index',
-            lastCommit: commitA,
-          },
-        ],
-        execGit: async (_cwd, args) => {
-          const key = args.join(' ');
-          if (key === 'rev-parse --abbrev-ref HEAD') return 'main\n';
-          if (key === 'status --porcelain=v1 --untracked-files=all') return '';
-          return `${commitB}\n`;
-        },
-      },
+      contextDeps,
     );
 
     // The open pool reader still owns N, so metadata beside its query context
@@ -162,5 +163,19 @@ describe('lbug pool generation swap', () => {
     expect(await executeQuery(repoId, 'MATCH (f:File) RETURN count(f) AS total')).toEqual(
       beforeRows,
     );
+
+    // Once the old reader is released, a new request must follow current to N+1.
+    await closeLbug(repoId);
+    await initLbug(repoId, dbPath);
+    const nextContext = await resolveTargetContext(
+      { repo: repoId, verifyGraphAuthority: true },
+      contextDeps,
+    );
+    expect(nextContext).toMatchObject({
+      status: 'ok',
+      indexedHead: commitB,
+      generationId: 'generation-n-plus-one',
+    });
+    expect(await executeQuery(repoId, 'MATCH (f:File) RETURN count(f) AS total')).toBeDefined();
   });
 });
