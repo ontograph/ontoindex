@@ -146,25 +146,101 @@ describe('query dirty-overlay merge', () => {
         include_citations: true,
       });
       expect(result).toMatchObject({
-        definitions: [{ name: clean.name }, { ...overlayRow, source: 'overlay' }],
+        definitions: [{ ...overlayRow, source: 'overlay' }, { name: clean.name }],
         structured_retrieval: {
-          candidates: [{ label: clean.name }, { label: overlayRow.name, source: 'overlay' }],
-          rows: [{ label: clean.name }, { label: overlayRow.name, source: 'overlay' }],
+          candidates: [{ label: overlayRow.name, source: 'overlay' }, { label: clean.name }],
+          rows: [{ label: overlayRow.name, source: 'overlay' }, { label: clean.name }],
         },
       });
       expect(JSON.stringify(result)).not.toContain(stale.name);
       expect(executeParameterized).not.toHaveBeenCalledWith(repo.id, expect.any(String), {
         nodeId: stale.nodeId,
       });
-      expect(queryOverlay).toHaveBeenCalledWith(
-        repo,
-        expect.stringContaining('n.filePath IN $paths'),
-        { paths: ['src/dirty.ts'], limit: 50, term0: 'cachestore' },
-      );
+      expect(queryOverlay).toHaveBeenCalledWith(repo, expect.not.stringContaining('IN $paths'), {
+        path0: 'src/dirty.ts',
+        limit: 50,
+        term0: 'cachestore',
+      });
+      expect(vi.mocked(queryOverlay).mock.calls[0][1]).toContain('n.filePath = $path0');
+      expect(vi.mocked(queryOverlay).mock.calls[0][1]).toContain('LIMIT $limit');
       expect(SemanticRetrievalCache.prototype.lookup).not.toHaveBeenCalled();
       expect(SemanticRetrievalCache.prototype.set).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    [false, false],
+    [false, true],
+    [true, false],
+    [true, true],
+  ])(
+    'ranks overlay matches before trimming a full clean pool (ensemble=%s, structured=%s)',
+    async (ensemble, structured) => {
+      vi.mocked(getOverlaySnapshot).mockResolvedValue(snapshot(true));
+      vi.mocked(bm25Search).mockResolvedValue({
+        results: [
+          stale,
+          ...Array.from({ length: 50 }, (_, index) => ({
+            ...clean,
+            nodeId: `Function:src/clean-${index}.ts:CleanCacheStore${index}`,
+            name: `CleanCacheStore${index}`,
+            filePath: `src/clean-${index}.ts`,
+          })),
+        ],
+        ftsUsed: true,
+      });
+      const exactOverlay = { ...overlayRow, name: 'CacheStore' };
+      vi.mocked(queryOverlay).mockResolvedValue([exactOverlay]);
+
+      const result = await query(repo, {
+        ...options,
+        intent_ensemble: ensemble,
+        structured_output: structured,
+      });
+
+      expect(result.definitions).toHaveLength(20);
+      expect(result.definitions).toEqual(
+        expect.arrayContaining([expect.objectContaining({ ...exactOverlay, source: 'overlay' })]),
+      );
+      expect(JSON.stringify(result)).not.toContain(stale.name);
+      if (structured) {
+        expect(result.structured_retrieval.candidates).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ label: exactOverlay.name, source: 'overlay' }),
+          ]),
+        );
+      }
+    },
+  );
+
+  it('keeps only rows from overlay paths and caps them at the search limit', async () => {
+    vi.mocked(getOverlaySnapshot).mockResolvedValue(
+      snapshot(true, ['src/dirty.ts', 'src/other.ts']),
+    );
+    vi.mocked(queryOverlay).mockResolvedValue([
+      { ...overlayRow, id: 'outside', name: 'Outside', filePath: 'src/untracked.ts' },
+      ...Array.from({ length: 60 }, (_, index) => ({
+        ...overlayRow,
+        id: `overlay-${index}`,
+        name: `CacheStore${index}`,
+        filePath: index % 2 === 0 ? 'src/dirty.ts' : 'src/other.ts',
+      })),
+    ]);
+    const result = await query(repo, { ...options, intent_ensemble: false });
+    const json = JSON.stringify(result);
+    expect(json).toContain('CacheStore0');
+    expect(json).not.toContain('Outside');
+    expect(result.definitions).toHaveLength(20);
+    expect(queryOverlay).toHaveBeenCalledWith(repo, expect.any(String), {
+      path0: 'src/dirty.ts',
+      path1: 'src/other.ts',
+      limit: 50,
+      term0: 'cachestore',
+    });
+    expect(vi.mocked(queryOverlay).mock.calls[0][1]).toContain('n.filePath = $path0');
+    expect(vi.mocked(queryOverlay).mock.calls[0][1]).toContain('n.filePath = $path1');
+    expect(vi.mocked(queryOverlay).mock.calls[0][1]).toContain('LIMIT $limit');
+  });
 
   it('suppresses dirty graph and locked exact candidates as well', async () => {
     vi.mocked(getOverlaySnapshot).mockResolvedValue(snapshot(true));
