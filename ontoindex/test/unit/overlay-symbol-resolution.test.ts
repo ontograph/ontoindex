@@ -253,6 +253,32 @@ describe('symbol resolution with a dirty overlay', () => {
     },
   );
 
+  it('prefers a new workspace Class over its Constructor using the workspace graph', async () => {
+    const snapshot: OverlaySnapshot = {
+      ...usable,
+      reason: null,
+      parseErrorPaths: new Set(),
+      capability: 'workspace-graph',
+      generation: 'workspace-generation',
+    };
+    pool.executeParameterized.mockResolvedValue([]);
+    overlay.queryOverlay.mockImplementation(async (_repo, cypher, params) => {
+      if (params.symName)
+        return [
+          { ...row('Class:new', 'src/dirty.ts', 'Widget'), type: 'Class' },
+          { ...row('Constructor:new', 'src/dirty.ts', 'Widget'), type: 'Constructor' },
+        ];
+      if (cypher.includes('`Class`')) return [{ id: 'Class:new' }];
+      return [];
+    });
+    const result = await resolveSymbolCandidates(repo, { name: 'Widget' }, {}, { snapshot });
+    expect(result).toMatchObject({
+      kind: 'ok',
+      symbol: { id: 'Class:new' },
+      resolvedLabel: 'Class',
+    });
+  });
+
   it('excludes tombstones from the complete workspace graph with a deletion warning', async () => {
     const snapshot: OverlaySnapshot = {
       ...usable,

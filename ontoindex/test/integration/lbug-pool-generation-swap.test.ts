@@ -241,6 +241,23 @@ describe('lbug pool generation swap', () => {
     expect(await executeQuery(repoId, 'MATCH (f:File) RETURN count(f) AS total')).toBeDefined();
   });
 
+  it.each([
+    ['global', () => closeLbug()],
+    ['alias', () => closeLbug(repoId)],
+  ])('defers a %s close while a request scope holds the pin', async (_name, close) => {
+    const { stable } = await pinnedFixture();
+    await initLbug(repoId, stable);
+    let pinned!: string;
+    await withPinnedGeneration(repoId, stable, async () => {
+      pinned = getPinnedRepoId(repoId)!;
+      const before = await executeQuery(repoId, 'MATCH (f:File) RETURN count(f) AS total');
+      await close();
+      expect(getLbugDbPath(pinned)).toBeDefined();
+      expect(await executeQuery(repoId, 'MATCH (f:File) RETURN count(f) AS total')).toEqual(before);
+    });
+    expect(getLbugDbPath(pinned)).toBeUndefined();
+  });
+
   it('releases failed scopes and reuses nested scopes', async () => {
     const { stable, markers } = await pinnedFixture();
     let pinned!: string;

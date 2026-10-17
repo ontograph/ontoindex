@@ -325,8 +325,12 @@ Measured (reviewer, 1,322-file copy of src+test): `runFullAnalysis({workspaceGra
 capture ~0.13 s; reuse inventory check 83 ms. A 10x tree is extrapolated at ~470 s and an
 unreliable ~19 GiB RSS: the full-graph build is the cost risk, not capture.
 
-Confirmed and NOT fixed: `closeLbug()` / `closeLbug(repoId)` close pinned entries under a
-live scope (a later query in the same request fails). Dead until wired: `selectWorkspaceCapability`,
+Fixed 2026-10-17 after an independent challenge of the opt-in route (two reviewers; the gate,
+coalescing, lock release and ALS handling had no defects): `closeLbug()` / `closeLbug(repoId)` now
+defer closing a database that a live request pin references (the scope's final release closes it;
+two integration tests fail without the fix), and the Class/Constructor preference query in
+`resolveSymbolCandidates` reads the workspace generation instead of the base index. Still open:
+an explicit shutdown no longer force-closes a pinned database until the scope ends. Dead until wired: `isAuthoritativePath`, `selectWorkspaceCapability`,
 `isAuthoritativePath`, `workspaceGraph` (no production caller), `snapshotIdentity` (no supplier),
 `createWatchCommand` `refreshCallback` (no supplier). No `prepareWorkspaceRead`, so a user
 today gets NO automatic dirty-workspace answer: `ontoindex context` still returns committed

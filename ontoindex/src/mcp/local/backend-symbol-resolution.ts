@@ -348,11 +348,20 @@ export async function resolveSymbolCandidates(
     const ambiguousType = normalized.some((s) => s.type === '' || s.type === 'Constructor');
     if (ambiguousType) {
       const candidateIds = normalized.map((s) => s.id).filter(Boolean);
+      const workspaceSnapshot =
+        overlay?.snapshot.capability === 'workspace-graph' ? overlay.snapshot : undefined;
       for (const label of ['Class', 'Interface']) {
-        const labelRows = await executeParameterized(
-          repo.id,
-          `MATCH (n:\`${label}\`) WHERE n.id IN $candidateIds RETURN n.id AS id LIMIT 1`,
-          { candidateIds },
+        const labelCypher = `MATCH (n:\`${label}\`) WHERE n.id IN $candidateIds RETURN n.id AS id LIMIT 1`;
+        // A workspace graph is the whole truth; the base index lacks its new classes.
+        const labelRows = await (
+          workspaceSnapshot
+            ? queryOverlay(
+                { id: repo.id, repoPath: repo.repoPath, storagePath: repo.storagePath },
+                labelCypher,
+                { candidateIds },
+                workspaceSnapshot.generation,
+              )
+            : executeParameterized(repo.id, labelCypher, { candidateIds })
         ).catch(() => []);
         if (labelRows.length > 0) {
           const preferredId = rowValue(labelRows[0] as QueryRow, 'id', 0);

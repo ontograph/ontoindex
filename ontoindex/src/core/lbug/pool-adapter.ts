@@ -121,6 +121,15 @@ export function getPinnedRepoId(repoId: string): string | undefined {
   return pinnedContext.getStore()?.get(repoId);
 }
 
+/** True when a request scope still holds a pin on an entry sharing this database. */
+function hasLivePin(shared: SharedDB | undefined): boolean {
+  if (!shared) return false;
+  for (const [id, count] of pinnedReferences) {
+    if (count > 0 && dbCache.get(pool.get(id)?.dbPath ?? '') === shared) return true;
+  }
+  return false;
+}
+
 /** Keep every query in one request on the generation resolved at admission. */
 export async function withPinnedGeneration<T>(
   repoId: string,
@@ -1645,6 +1654,11 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
       pool.get(repoId)?.dbPath ?? failedInitShares.get(repoId)?.dbPath ?? initializingShare?.dbPath;
     const knownShared =
       initializingShare?.shared ?? (knownPath ? dbCache.get(knownPath) : undefined);
+    if (hasLivePin(knownShared)) {
+      // A live request scope owns this database; its final release closes it.
+      await closeOneWhenIdle(repoId);
+      return;
+    }
     if (knownShared) requestSharedClose(knownShared);
     const initializing = initPromises.get(repoId);
     if (initializing)
@@ -1691,7 +1705,7 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
   }
 
   for (const shared of dbCache.values()) {
-    requestSharedClose(shared);
+    if (!hasLivePin(shared)) requestSharedClose(shared);
   }
   await withTimeout(
     Promise.allSettled([...initPromises.values()]),
@@ -1699,6 +1713,7 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
     'Pool initialization drain',
   );
   for (const id of [...pool.keys()]) {
+    if (hasLivePin(dbCache.get(pool.get(id)?.dbPath ?? ''))) continue;
     await closeOneWhenIdle(id);
   }
   for (const [id, state] of [...failedInitShares]) {
