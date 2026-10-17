@@ -74,6 +74,8 @@ it('publishes a partial captured workspace graph with parse-error paths without 
     await fs.mkdir(home);
     await fs.writeFile(path.join(home, 'registry.json'), '[]\n');
     vi.stubEnv('ONTOINDEX_HOME', home);
+    // The snapshot is only usable with the feature on; the gate has its own test.
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
     await fs.writeFile(path.join(repo, '.gitignore'), '.ontoindex/\n');
     await fs.writeFile(
       path.join(repo, 'src/caller.ts'),
