@@ -127,11 +127,14 @@ import {
   moveSymbolByUid as moveSymbolByUidImpl,
 } from './backend-symbol-mutations.js';
 import { canonicalize } from './path-util.js';
+import { RepoIdleTracker } from './repo-idle-tracker.js';
 import { normalizeLimit } from './tool-utils.js';
 import {
   buildAvailableRepoLabels,
   committedGraphNotice,
   ensureRepoInitialized,
+  forgetWorkspaceRuntime,
+  hasWorkspaceBuild,
   prepareWorkspaceRead,
   resolveRepoFromHandles,
   WorkspacePreparationError,
@@ -1346,6 +1349,8 @@ export class LocalBackend implements BackendPort {
   private initializedRepos: Set<string> = new Set();
   private reinitPromises: Map<string, Promise<void>> = new Map();
   private lastStalenessCheck: Map<string, number> = new Map();
+  private repoIdle = new RepoIdleTracker();
+  private idleTimer: NodeJS.Timeout | undefined;
   private initPromise: Promise<boolean> | null = null;
   private groupToolSvc: GroupService | null = null;
   private analysisLocks: Map<string, Promise<void>> = new Map();
@@ -1781,6 +1786,49 @@ export class LocalBackend implements BackendPort {
     logStartupTrace('refresh repos: complete', startedAt);
   }
 
+  /** Start the idle sweep on first use. Only the automatic workspace route holds runtime state. */
+  private trackRepoUse(repoId: string): () => void {
+    if (process.env.ONTOINDEX_AUTO_WORKSPACE !== '1' || this.disposing) return () => {};
+    this.repoIdle.begin(repoId);
+    if (!this.idleTimer) {
+      this.idleTimer = setInterval(() => void this.evictIdleRepos(), 15_000);
+      this.idleTimer.unref();
+    }
+    let ended = false;
+    return () => {
+      if (ended) return;
+      ended = true;
+      this.repoIdle.end(repoId);
+    };
+  }
+
+  /** Release runtime state of repos idle for 60 s, or beyond the eight most recent idle ones. */
+  async evictIdleRepos(): Promise<string[]> {
+    const evicted: string[] = [];
+    for (const id of this.repoIdle.candidates()) {
+      if (this.disposing || this.removingRepo) break;
+      if (this.analysisLocks.has(id) || this.reinitPromises.has(id) || hasWorkspaceBuild(id)) {
+        continue;
+      }
+      try {
+        await this.withRepoLock(id, async () => {
+          // Recheck under the repo lock: a request may have arrived while we waited.
+          if (!this.repoIdle.candidates().includes(id) || hasWorkspaceBuild(id)) return;
+          this.initializedRepos.delete(id);
+          this.lastStalenessCheck.delete(id);
+          forgetWorkspaceRuntime(id);
+          evictOverlayState(id);
+          await closeLbug(id);
+          this.repoIdle.forget(id);
+          evicted.push(id);
+        });
+      } catch (error) {
+        console.error(`Failed to evict idle repository ${id}:`, error);
+      }
+    }
+    return evicted;
+  }
+
   private pruneRetiredRepoState(): void {
     if (this.operations.size > 0) return;
     for (const id of new Set([...this.initializedRepos, ...this.lastStalenessCheck.keys()])) {
@@ -2099,6 +2147,20 @@ export class LocalBackend implements BackendPort {
     const repo = await this.resolveRepo(this.getRepoParam(params));
     const handler = this.repoToolHandlers[method];
     if (!handler) throw new Error(`Unknown tool: ${method}`);
+    const endUse = this.trackRepoUse(repo.id);
+    try {
+      return await this.dispatchTrackedRepoTool(repo, method, params, handler);
+    } finally {
+      endUse();
+    }
+  }
+
+  private async dispatchTrackedRepoTool(
+    repo: RepoHandle,
+    method: string,
+    params: NormalizedToolParams,
+    handler: RepoToolHandler,
+  ): Promise<unknown> {
     const invoke = () => handler(repo, params);
     let result: unknown;
     let preparationNote: string | undefined;
@@ -3138,6 +3200,8 @@ export class LocalBackend implements BackendPort {
 
   async dispose(): Promise<void> {
     this.disposing = true;
+    if (this.idleTimer) clearInterval(this.idleTimer);
+    this.idleTimer = undefined;
     await Promise.allSettled([
       ...this.operations,
       ...this.analysisLocks.values(),

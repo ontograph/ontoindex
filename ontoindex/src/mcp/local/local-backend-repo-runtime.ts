@@ -86,6 +86,17 @@ const BUSY_LOCK_COOLDOWN_MS = 5_000;
 const failedBuilds = new Map<string, { identity: string; until: number; message: string }>();
 const busyLocks = new Map<string, { until: number; message: string }>();
 
+/** True while a working-tree build for this repo is running or queued. */
+export function hasWorkspaceBuild(repoId: string): boolean {
+  return workspaceBuilds.has(repoId);
+}
+
+/** Drop cooldown memory for a repo; an in-flight build is left alone. */
+export function forgetWorkspaceRuntime(repoId: string): void {
+  failedBuilds.delete(repoId);
+  busyLocks.delete(repoId);
+}
+
 export function resetWorkspaceBuildFailures(): void {
   failedBuilds.clear();
   busyLocks.clear();

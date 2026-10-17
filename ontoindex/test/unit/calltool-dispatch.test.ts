@@ -84,6 +84,7 @@ import {
   prepareWorkspaceRead,
   WorkspacePreparationError,
 } from '../../src/mcp/local/local-backend-repo-runtime.js';
+import * as runtimeModule from '../../src/mcp/local/local-backend-repo-runtime.js';
 import {
   getOverlaySnapshot,
   withPinnedOverlay,
@@ -318,6 +319,84 @@ describe('request workspace gate', () => {
     (backend as any).repoToolHandlers.overview = async () => ['base'];
     expect(await backend.callTool('overview', {})).toEqual(['base']);
     expect(withPinnedOverlay).not.toHaveBeenCalled();
+  });
+
+  describe('idle repository eviction', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    });
+    const idleSetup = async () => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+      (backend as any).repoToolHandlers.overview = async () => ({ items: [1] });
+      await backend.callTool('overview', {});
+      return (await backend.resolveRepo(undefined)).id as string;
+    };
+
+    it('releases runtime state of a repo idle for 60 seconds', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const id = await idleSetup();
+      (backend as any).initializedRepos.add(id);
+      vi.setSystemTime(Date.now() + 61_000);
+      expect(await backend.evictIdleRepos()).toEqual([id]);
+      expect((backend as any).initializedRepos.has(id)).toBe(false);
+      expect(closeLbug).toHaveBeenCalledWith(id);
+    });
+
+    it('keeps a repo that was used within the last minute', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const id = await idleSetup();
+      (backend as any).initializedRepos.add(id);
+      vi.setSystemTime(Date.now() + 30_000);
+      expect(await backend.evictIdleRepos()).toEqual([]);
+      expect((backend as any).initializedRepos.has(id)).toBe(true);
+    });
+
+    it('never evicts a repo with a request still running', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+      let finish!: () => void;
+      (backend as any).repoToolHandlers.overview = () =>
+        new Promise((resolve) => {
+          finish = () => resolve({ items: [1] });
+        });
+      const running = backend.callTool('overview', {});
+      await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+      const id = (await backend.resolveRepo(undefined)).id as string;
+      (backend as any).initializedRepos.add(id);
+      vi.setSystemTime(Date.now() + 10 * 60_000);
+      expect(await backend.evictIdleRepos()).toEqual([]);
+      expect((backend as any).initializedRepos.has(id)).toBe(true);
+      finish();
+      await running;
+    });
+
+    it('leaves a repo with a working-tree build in progress alone', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const id = await idleSetup();
+      (backend as any).initializedRepos.add(id);
+      const building = vi.spyOn(runtimeModule, 'hasWorkspaceBuild').mockReturnValue(true);
+      try {
+        vi.setSystemTime(Date.now() + 61_000);
+        expect(await backend.evictIdleRepos()).toEqual([]);
+        expect((backend as any).initializedRepos.has(id)).toBe(true);
+      } finally {
+        building.mockRestore();
+      }
+    });
+
+    it('does not track repos when the flag is off', async () => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
+      vi.useFakeTimers({ toFake: ['Date'] });
+      (backend as any).repoToolHandlers.overview = async () => ({ items: [1] });
+      await backend.callTool('overview', {});
+      const id = (await backend.resolveRepo(undefined)).id as string;
+      (backend as any).initializedRepos.add(id);
+      vi.setSystemTime(Date.now() + 10 * 60_000);
+      expect(await backend.evictIdleRepos()).toEqual([]);
+      expect((backend as any).initializedRepos.has(id)).toBe(true);
+      expect(closeLbug).not.toHaveBeenCalled();
+    });
   });
 
   describe('impactByUid', () => {
