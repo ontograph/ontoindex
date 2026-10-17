@@ -65,10 +65,14 @@ const workspaceDependencies: WorkspacePreparationDependencies = {
 /** Measured: 1.3k files ~ 47 s and 1.9 GiB; cost grows with file count. */
 const DEFAULT_MAX_WORKSPACE_FILES = 2500;
 const FAILED_BUILD_COOLDOWN_MS = 30_000;
+// A held analyze lock usually means the user is running `ontoindex analyze`; recheck soon, not per request.
+const BUSY_LOCK_COOLDOWN_MS = 5_000;
 const failedBuilds = new Map<string, { identity: string; until: number; message: string }>();
+const busyLocks = new Map<string, { until: number; message: string }>();
 
 export function resetWorkspaceBuildFailures(): void {
   failedBuilds.clear();
+  busyLocks.clear();
 }
 
 /**
@@ -221,16 +225,27 @@ export async function prepareWorkspaceRead(options: {
     if (failed && failed.identity === identity && failed.until > dependencies.now()) {
       return degrade(new WorkspacePreparationError('workspace_build_failed', failed.message));
     }
+    const busy = busyLocks.get(options.repo.id);
+    if (busy && busy.until > dependencies.now()) {
+      return degrade(new WorkspacePreparationError('workspace_busy', busy.message));
+    }
     const built = workspaceBuild(options.repo.id, identity, async () => {
       let lock: Awaited<ReturnType<WorkspacePreparationDependencies['acquireLock']>>;
       try {
         lock = await dependencies.acquireLock(options.repo.repoPath);
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
+        const isBusy = /already running|Cannot safely recover|recovering the analyze lock/i.test(
+          message,
+        );
+        if (isBusy) {
+          busyLocks.set(options.repo.id, {
+            until: dependencies.now() + BUSY_LOCK_COOLDOWN_MS,
+            message,
+          });
+        }
         throw new WorkspacePreparationError(
-          /already running|Cannot safely recover|recovering the analyze lock/i.test(message)
-            ? 'workspace_busy'
-            : 'workspace_build_failed',
+          isBusy ? 'workspace_busy' : 'workspace_build_failed',
           message,
           { cause },
         );

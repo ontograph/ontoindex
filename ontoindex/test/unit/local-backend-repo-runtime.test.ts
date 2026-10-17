@@ -110,6 +110,20 @@ describe('workspace read preparation', () => {
     await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({ code: 'workspace_busy' });
     expect(f.dependencies.buildWorkspaceGraph).not.toHaveBeenCalled();
   });
+  it('does not retry a held analyze lock on every request', async () => {
+    const f = fixture();
+    f.dependencies.getSnapshot.mockReset();
+    f.dependencies.getSnapshot.mockResolvedValue(f.dirty);
+    f.dependencies.acquireLock.mockRejectedValue(new Error('OntoIndex analyze is already running'));
+    await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({ code: 'workspace_busy' });
+    await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({ code: 'workspace_busy' });
+    expect(f.dependencies.acquireLock).toHaveBeenCalledTimes(1);
+    f.dependencies.now.mockReturnValue(6_000);
+    f.dependencies.acquireLock.mockResolvedValue({ release: f.release });
+    f.dependencies.getSnapshot.mockResolvedValueOnce(f.dirty).mockResolvedValue(f.ready);
+    await prepareWorkspaceRead(f.options);
+    expect(f.dependencies.acquireLock).toHaveBeenCalledTimes(2);
+  });
   it('refuses a build for a repository above the file limit without taking the lock', async () => {
     const f = fixture();
     f.dependencies.baseFileCount.mockResolvedValue(5000);
@@ -188,6 +202,24 @@ describe('workspace read preparation', () => {
         expect(snapshot.preparationNote).toContain('workspace_timeout');
       }
       finish();
+    });
+    it('lets the next request join a build that outlasted the previous waiter', async () => {
+      const f = fixture();
+      manyDirty(f);
+      let finish!: () => void;
+      f.dependencies.buildWorkspaceGraph.mockImplementation(
+        () => new Promise<void>((resolve) => (finish = resolve)),
+      );
+      const first = await prepareWorkspaceRead({ ...f.options, deadline: performance.now() + 30 });
+      expect(first.preparationNote).toContain('workspace_timeout');
+      const second = prepareWorkspaceRead(f.options);
+      await vi.waitFor(() => expect(f.dependencies.getSnapshot).toHaveBeenCalledTimes(2));
+      f.dependencies.getSnapshot.mockResolvedValue(f.ready);
+      finish();
+      expect((await second).usable).toBe(true);
+      expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce();
+      expect(f.dependencies.acquireLock).toHaveBeenCalledOnce();
+      expect(f.release).toHaveBeenCalledOnce();
     });
     it('still throws for a read that needs relationships', async () => {
       const f = fixture();
