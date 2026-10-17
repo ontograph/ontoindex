@@ -110,6 +110,24 @@ describe('workspace read preparation', () => {
     await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({ code: 'workspace_busy' });
     expect(f.dependencies.buildWorkspaceGraph).not.toHaveBeenCalled();
   });
+  it('says when the held lock belongs to this server', async () => {
+    const f = fixture();
+    f.dependencies.getSnapshot.mockReset();
+    f.dependencies.getSnapshot.mockResolvedValue(f.dirty);
+    f.dependencies.acquireLock.mockRejectedValue(
+      new Error(
+        `OntoIndex analyze is already running for this repo (PID ${process.pid} since now).`,
+      ),
+    );
+    await expect(prepareWorkspaceRead(f.options)).rejects.toThrow(/started by this server/);
+    const other = fixture();
+    other.dependencies.getSnapshot.mockReset();
+    other.dependencies.getSnapshot.mockResolvedValue(other.dirty);
+    other.dependencies.acquireLock.mockRejectedValue(
+      new Error('OntoIndex analyze is already running for this repo (PID 1 since now).'),
+    );
+    await expect(prepareWorkspaceRead(other.options)).rejects.not.toThrow(/started by this server/);
+  });
   it('does not retry a held analyze lock on every request', async () => {
     const f = fixture();
     f.dependencies.getSnapshot.mockReset();

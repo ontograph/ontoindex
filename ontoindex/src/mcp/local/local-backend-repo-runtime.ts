@@ -234,10 +234,15 @@ export async function prepareWorkspaceRead(options: {
       try {
         lock = await dependencies.acquireLock(options.repo.repoPath);
       } catch (cause) {
-        const message = cause instanceof Error ? cause.message : String(cause);
+        const rawMessage = cause instanceof Error ? cause.message : String(cause);
         const isBusy = /already running|Cannot safely recover|recovering the analyze lock/i.test(
-          message,
+          rawMessage,
         );
+        // A lock held by this very process is the working-tree build of an earlier request.
+        const message =
+          isBusy && rawMessage.includes(`PID ${process.pid} `)
+            ? `A working-tree graph build started by this server is still running; retry shortly. ${rawMessage}`
+            : rawMessage;
         if (isBusy) {
           busyLocks.set(options.repo.id, {
             until: dependencies.now() + BUSY_LOCK_COOLDOWN_MS,
