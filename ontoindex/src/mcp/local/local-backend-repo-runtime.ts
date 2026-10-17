@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import syncFs from 'node:fs';
 import path from 'path';
+import { fileURLToPath } from 'node:url';
 import { RepoHandle } from 'ontoindex-shared';
 import { resolveActiveIndexGeneration } from '../../storage/repo-manager.js';
 import { readActiveGenerationMeta } from '../../storage/repo-manager.js';
@@ -21,7 +22,7 @@ export interface WorkspaceReadRepo {
 export interface WorkspacePreparationDependencies {
   getSnapshot(repo: WorkspaceReadRepo): Promise<OverlaySnapshot>;
   acquireLock(repoPath: string): Promise<{ release(): Promise<void> }>;
-  buildWorkspaceGraph(repoPath: string, signal?: AbortSignal): Promise<void>;
+  buildWorkspaceGraph(repo: WorkspaceReadRepo): Promise<void>;
   evictSnapshot(repoId: string): void;
   /** Committed-index file count, used to refuse builds that cost too much. */
   baseFileCount(repo: WorkspaceReadRepo): Promise<number | undefined>;
@@ -48,10 +49,24 @@ const workspaceDependencies: WorkspacePreparationDependencies = {
   getSnapshot: getOverlaySnapshot,
   acquireLock: async (repoPath) =>
     (await import('../../cli/analyze.js')).acquireAnalyzeLock(repoPath),
-  buildWorkspaceGraph: async (repoPath) => {
+  buildWorkspaceGraph: async (repo) => {
+    // The build runs in its own process group so a deadline can kill it and return its memory.
+    const child = fileURLToPath(new URL('../../core/workspace-build-child.js', import.meta.url));
+    if (syncFs.existsSync(child)) {
+      const { superviseWorkspaceBuild } = await import('./workspace-build-supervisor.js');
+      await superviseWorkspaceBuild({
+        command: process.execPath,
+        args: [child, repo.repoPath],
+        cwd: repo.repoPath,
+        storagePath: repo.storagePath,
+        timeoutMs: Number(process.env.ONTOINDEX_WORKSPACE_BUILD_TIMEOUT_MS) || 120_000,
+      });
+      return;
+    }
+    // Running from TypeScript sources (tests, tsx): no compiled child entry, so build in-process.
     const { runFullAnalysis } = await import('../../core/run-analyze.js');
     await runFullAnalysis(
-      repoPath,
+      repo.repoPath,
       { workspaceGraph: true, skipNativeClose: true },
       { onProgress() {} },
     );
@@ -258,7 +273,7 @@ export async function prepareWorkspaceRead(options: {
       }
       try {
         try {
-          await dependencies.buildWorkspaceGraph(options.repo.repoPath);
+          await dependencies.buildWorkspaceGraph(options.repo);
         } finally {
           await lock.release();
         }
