@@ -185,6 +185,8 @@ ontoindex mcp --project /path/to/target/repo
 - `ONTOINDEX_MAX_ARG_TOTAL_BYTES` limits the UTF-8 size of serialized arguments; it defaults to the larger of `4194304` bytes or twice the string limit plus `1048576` bytes, and accepts values from `1024` through `134217728`.
 - `ONTOINDEX_LBUG_BUFFER_MB` sets the read-only index connection's buffer pool size in MiB; it defaults to `64` and accepts `1` through `16384`. Unset, empty, `0`, or invalid values use the 64 MiB default. In one run, a 64 MiB cap reduced resident memory after opening a 273 MiB index from about 426 MiB to 251 MiB, with queries about 10% slower.
 - `ONTOINDEX_LBUG_POOL_SIZE` sets the per-repository read connection pool size; it defaults to `2` and accepts `1` through `16`.
+- `ONTOINDEX_AUTO_WORKSPACE=1` is experimental and off by default. When set, MCP `context`, `impact` and `query` read the working tree instead of the last committed index: the first such read after an edit builds a disposable working-tree graph under `.ontoindex/overlay/` (about 40 seconds for 1,700 files on 8 cores, then under a second per call), and later reads reuse it until files change again. The committed index is never modified. Other tools (`gn_*` super-tools, `repomap`, resources) still read the committed index and warn when the tree is dirty. Search on the working-tree graph has no vector ranking.
+- `ONTOINDEX_WORKSPACE_MAX_FILES` caps the committed file count for which a working-tree graph is built; it defaults to `2500`. Above it, `context` and `impact` fail with `workspace_too_large`, and `query` answers from the committed index with a warning. Run `ontoindex analyze` to refresh the committed index instead.
 
 ## Index Generations
 

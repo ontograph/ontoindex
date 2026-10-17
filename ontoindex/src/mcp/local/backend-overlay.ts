@@ -42,6 +42,8 @@ export interface OverlaySnapshot {
   coverage?: 'complete' | 'degraded' | 'partial';
   /** Full-text indexes built into a workspace-graph generation (empty or absent: no lexical lane). */
   ftsIndexes?: readonly string[];
+  /** Set when a full workspace build was skipped and this snapshot is a degraded fallback. */
+  preparationNote?: string;
   /** Why the overlay is not usable (for diagnostics); null when usable. */
   reason: string | null;
   /** Repo-relative paths that are dirty (modified/added/untracked/deleted); base symbols for these are stale. */

@@ -239,6 +239,7 @@ describe('request workspace gate', () => {
     expect(prepareWorkspaceRead).toHaveBeenCalledWith({
       repo: expect.objectContaining({ repoPath: MOCK_REPO_ENTRY.path }),
       needsRelationships,
+      wantsWorkspaceGraph: needsRelationships || method === 'query',
       deadline: expect.any(Number),
     });
   });
@@ -319,6 +320,23 @@ describe('request workspace gate', () => {
   });
 
   describe('impactByUid', () => {
+    it('adds the preparation note to the result of a degraded read', async () => {
+      vi.mocked(prepareWorkspaceRead).mockResolvedValueOnce({
+        ...cleanSnapshot(),
+        preparationNote: 'Working-tree graph not built (workspace_too_large); test note',
+      });
+      (backend as any).repoToolHandlers.overview = async () => ({ items: [1], warnings: ['old'] });
+      const result = (await backend.callTool('overview', {})) as { warnings: string[] };
+      expect(result.warnings).toEqual(['old', expect.stringContaining('workspace_too_large')]);
+    });
+
+    it('leaves results alone when there is no preparation note', async () => {
+      (backend as any).repoToolHandlers.overview = async () => ({ items: [1] });
+      expect(await backend.callTool('overview', {})).toEqual(
+        expect.not.objectContaining({ warnings: expect.anything() }),
+      );
+    });
+
     const opts = { maxDepth: 3, relationTypes: ['CALLS'], minConfidence: 0, includeTests: false };
     let repoId: string;
     beforeEach(async () => {

@@ -1075,7 +1075,17 @@ async function runWorkspaceAnalysis(
     let pruneFailed = false;
     try {
       pruneFailed = await pruneOverlayGenerations(overlayPath, generationId);
-      await overlayArtifactBytes(overlayPath);
+      const publishedBytes = await overlayArtifactBytes(overlayPath);
+      if (publishedBytes > budget) {
+        // The budget is checked before a build, so one build can overshoot; say so instead of hiding it.
+        try {
+          callbacks.onLog?.(
+            `Overlay artifacts now use ${publishedBytes} bytes, above the ${budget} byte budget; the next build will be refused until older generations are released.`,
+          );
+        } catch {
+          // A logging callback must not turn housekeeping into a failed build.
+        }
+      }
       // Legacy single-file overlays are never opened by generation readers.
       await fs.rm(path.join(overlayPath, 'lbug'), { recursive: true, force: true }).catch(() => {
         pruneFailed = true;

@@ -151,6 +151,8 @@ function workspaceBuild(
 export async function prepareWorkspaceRead(options: {
   repo: WorkspaceReadRepo;
   needsRelationships: boolean;
+  /** Build the working-tree graph even when no relationships are needed; failure degrades. */
+  wantsWorkspaceGraph?: boolean;
   signal?: AbortSignal;
   deadline?: number;
   dependencies?: Partial<WorkspacePreparationDependencies>;
@@ -161,14 +163,15 @@ export async function prepareWorkspaceRead(options: {
   if (options.signal?.aborted) throw new WorkspacePreparationError('workspace_cancelled');
   if (!(deadline > performance.now())) throw new WorkspacePreparationError('workspace_timeout');
   // Bound the entire preparation, including the initial snapshot probe, per caller.
-  const work = async () => {
+  const work = async (onSnapshot: (snapshot: OverlaySnapshot) => void) => {
     const snapshot = await dependencies.getSnapshot(options.repo);
+    onSnapshot(snapshot);
     if (snapshot.dirtyPaths.size === 0) return snapshot;
     const activeBaseChanged = snapshot.reason?.includes('active base') ?? false;
     const decision = selectWorkspaceCapability({
       eligibleChangeCount: snapshot.dirtyPaths.size,
       configChanged: [...snapshot.dirtyPaths].some(isResolverConfigPath),
-      needsRelationships: options.needsRelationships,
+      needsRelationships: options.needsRelationships || options.wantsWorkspaceGraph === true,
       haveUsableSymbolsOverlay: snapshot.usable && snapshot.capability !== 'workspace-graph',
       haveUsableWorkspaceGraph:
         snapshot.usable &&
@@ -178,13 +181,35 @@ export async function prepareWorkspaceRead(options: {
       headChanged: activeBaseChanged,
     });
     if (decision.action !== 'build-workspace-graph') return snapshot;
+    // A read that needs no relationships can still answer from the committed graph plus the
+    // dirty-file merge, so a refused or failing build degrades the answer instead of failing it.
+    const degrade = (error: unknown): OverlaySnapshot => {
+      if (
+        options.needsRelationships ||
+        !(error instanceof WorkspacePreparationError) ||
+        !['workspace_too_large', 'workspace_busy', 'workspace_build_failed'].includes(error.code)
+      ) {
+        throw error;
+      }
+      return {
+        ...snapshot,
+        // The fallback may be a generation that a concurrent build prunes before the request pins
+        // it, so a degraded answer never pins an overlay: it reads the committed index only.
+        ...(snapshot.usable
+          ? { usable: false, reason: 'working-tree graph not built; overlay not used' }
+          : {}),
+        preparationNote: `Working-tree graph not built (${error.code}); results use the committed index and may miss uncommitted changes. ${error.message}`,
+      };
+    };
     const maxFiles =
       Number(process.env.ONTOINDEX_WORKSPACE_MAX_FILES) || DEFAULT_MAX_WORKSPACE_FILES;
     const fileCount = await dependencies.baseFileCount(options.repo);
     if (fileCount !== undefined && fileCount > maxFiles) {
-      throw new WorkspacePreparationError(
-        'workspace_too_large',
-        `Repository has ${fileCount} indexed files (limit ${maxFiles}); a full workspace graph build is refused. Run \`ontoindex analyze\` or raise ONTOINDEX_WORKSPACE_MAX_FILES.`,
+      return degrade(
+        new WorkspacePreparationError(
+          'workspace_too_large',
+          `Repository has ${fileCount} indexed files (limit ${maxFiles}); a full workspace graph build is refused. Run \`ontoindex analyze\` or raise ONTOINDEX_WORKSPACE_MAX_FILES.`,
+        ),
       );
     }
     const identity = JSON.stringify([
@@ -194,9 +219,9 @@ export async function prepareWorkspaceRead(options: {
     ]);
     const failed = failedBuilds.get(options.repo.id);
     if (failed && failed.identity === identity && failed.until > dependencies.now()) {
-      throw new WorkspacePreparationError('workspace_build_failed', failed.message);
+      return degrade(new WorkspacePreparationError('workspace_build_failed', failed.message));
     }
-    return workspaceBuild(options.repo.id, identity, async () => {
+    const built = workspaceBuild(options.repo.id, identity, async () => {
       let lock: Awaited<ReturnType<WorkspacePreparationDependencies['acquireLock']>>;
       try {
         lock = await dependencies.acquireLock(options.repo.repoPath);
@@ -230,9 +255,16 @@ export async function prepareWorkspaceRead(options: {
         throw new WorkspacePreparationError('workspace_build_failed', message, { cause });
       }
     });
+    try {
+      return await built;
+    } catch (error) {
+      return degrade(error);
+    }
   };
   return new Promise<OverlaySnapshot>((resolve, reject) => {
     let settled = false;
+    // Set once the wait budget is spent: a read that can degrade answers from the committed index.
+    let latestSnapshot: OverlaySnapshot | undefined;
     const finish = (error?: unknown, value?: OverlaySnapshot) => {
       if (settled) return;
       settled = true;
@@ -243,12 +275,27 @@ export async function prepareWorkspaceRead(options: {
     };
     const abort = () => finish(new WorkspacePreparationError('workspace_cancelled'));
     const timer = setTimeout(
-      () => finish(new WorkspacePreparationError('workspace_timeout')),
+      () => {
+        if (!options.needsRelationships && latestSnapshot && latestSnapshot.dirtyPaths.size > 0) {
+          finish(undefined, {
+            ...latestSnapshot,
+            ...(latestSnapshot.usable
+              ? { usable: false, reason: 'working-tree graph not built; overlay not used' }
+              : {}),
+            preparationNote:
+              'Working-tree graph not built (workspace_timeout); the build is still running, so results use the committed index and may miss uncommitted changes. Retry shortly.',
+          });
+          return;
+        }
+        finish(new WorkspacePreparationError('workspace_timeout'));
+      },
       Math.max(0, deadline - performance.now()),
     );
     options.signal?.addEventListener('abort', abort, { once: true });
     if (options.signal?.aborted) abort();
-    void work().then(
+    void work((snapshot) => {
+      latestSnapshot = snapshot;
+    }).then(
       (value) => finish(undefined, value),
       (error) => finish(error),
     );

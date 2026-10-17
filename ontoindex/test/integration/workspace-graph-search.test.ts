@@ -77,8 +77,7 @@ describe('search on a workspace graph', () => {
     vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
     backend = new LocalBackend();
     await backend.init();
-    // The first relationship read builds the workspace graph that search then reads.
-    await backend.callTool('context', { name: 'pricingEngine', repo });
+    // No context/impact call first: the first search must prepare the workspace graph itself.
   }, 240_000);
 
   afterAll(async () => {

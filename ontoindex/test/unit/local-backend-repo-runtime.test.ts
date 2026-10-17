@@ -123,6 +123,91 @@ describe('workspace read preparation', () => {
     await prepareWorkspaceRead(f.options);
     expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce();
   });
+  describe('reads that need no relationships', () => {
+    const manyDirty = (f: ReturnType<typeof fixture>) => {
+      f.dirty.dirtyPaths = new Set(Array.from({ length: 60 }, (_, i) => `f${i}.ts`));
+      f.options.needsRelationships = false;
+      f.dependencies.getSnapshot.mockResolvedValue(f.dirty);
+    };
+    it.each([
+      ['too large', 'workspace_too_large'],
+      ['busy', 'workspace_busy'],
+      ['build failure', 'workspace_build_failed'],
+    ])('degrades to the committed index when the build is refused: %s', async (kind, code) => {
+      const f = fixture();
+      manyDirty(f);
+      if (kind === 'too large') f.dependencies.baseFileCount.mockResolvedValue(9000);
+      if (kind === 'busy')
+        f.dependencies.acquireLock.mockRejectedValue(
+          new Error('OntoIndex analyze is already running'),
+        );
+      if (kind === 'build failure')
+        f.dependencies.buildWorkspaceGraph.mockRejectedValue(new Error('boom'));
+      const snapshot = await prepareWorkspaceRead(f.options);
+      expect(snapshot.preparationNote).toContain(code);
+      expect(snapshot.dirtyPaths.size).toBe(60);
+    });
+    it('never pins a stale overlay when degrading', async () => {
+      const f = fixture();
+      manyDirty(f);
+      // 60 dirty files force a workspace build even though a symbols overlay is usable.
+      f.dependencies.getSnapshot.mockReset();
+      f.dependencies.getSnapshot.mockResolvedValue({
+        ...f.ready,
+        dirtyPaths: f.dirty.dirtyPaths,
+        capability: 'symbols',
+        generation: 'old-generation',
+        reason: 'overlay was built on base a/1 but the active base is b/2; rebuild',
+      });
+      f.dependencies.baseFileCount.mockResolvedValue(9000);
+      const snapshot = await prepareWorkspaceRead(f.options);
+      expect(f.dependencies.baseFileCount).toHaveBeenCalled();
+      expect(snapshot.usable).toBe(false);
+      expect(snapshot.generation).toBe('old-generation');
+      expect(snapshot.dirtyPaths.size).toBe(60);
+      expect(snapshot.preparationNote).toContain('workspace_too_large');
+    });
+    it.each([
+      ['search', false, 'degrades'],
+      ['relationship read', true, 'throws'],
+    ])('a %s whose build outlasts the deadline %s', async (_name, needsRelationships, outcome) => {
+      const f = fixture();
+      manyDirty(f);
+      f.options.needsRelationships = needsRelationships;
+      let finish!: () => void;
+      f.dependencies.buildWorkspaceGraph.mockImplementation(
+        () => new Promise<void>((resolve) => (finish = resolve)),
+      );
+      const deadline = performance.now() + 50;
+      const pending = prepareWorkspaceRead({ ...f.options, deadline });
+      if (outcome === 'throws') {
+        await expect(pending).rejects.toMatchObject({ code: 'workspace_timeout' });
+      } else {
+        const snapshot = await pending;
+        expect(snapshot.usable).toBe(false);
+        expect(snapshot.preparationNote).toContain('workspace_timeout');
+      }
+      finish();
+    });
+    it('still throws for a read that needs relationships', async () => {
+      const f = fixture();
+      manyDirty(f);
+      f.options.needsRelationships = true;
+      f.dependencies.baseFileCount.mockResolvedValue(9000);
+      await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({
+        code: 'workspace_too_large',
+      });
+    });
+    it('does not degrade on cancellation or timeout', async () => {
+      const f = fixture();
+      manyDirty(f);
+      const controller = new AbortController();
+      controller.abort();
+      await expect(
+        prepareWorkspaceRead({ ...f.options, signal: controller.signal }),
+      ).rejects.toMatchObject({ code: 'workspace_cancelled' });
+    });
+  });
   it('does not rebuild an unchanged failed snapshot until the cooldown expires', async () => {
     const f = fixture();
     f.dependencies.buildWorkspaceGraph.mockRejectedValueOnce(new Error('broken'));

@@ -1250,6 +1250,10 @@ const RELATIONSHIP_TOOLS = new Set([
   'evidence_pack',
 ]);
 
+// Plain search ranks on the working-tree graph once one exists, so it asks for the build too.
+// Unlike RELATIONSHIP_TOOLS it degrades to the committed index when the build is refused.
+const WORKSPACE_GRAPH_TOOLS = new Set([...RELATIONSHIP_TOOLS, 'query']);
+
 function workspacePreparationError(error: unknown): Error & { code: string; retryable?: boolean } {
   if (error instanceof WorkspacePreparationError) {
     return Object.assign(new Error(`workspace_preparation_failed: ${error.message}`), {
@@ -2076,6 +2080,7 @@ export class LocalBackend implements BackendPort {
     if (!handler) throw new Error(`Unknown tool: ${method}`);
     const invoke = () => handler(repo, params);
     let result: unknown;
+    let preparationNote: string | undefined;
     if (UNGATED_REPO_TOOLS.has(method) || getReadRequestContext()?.repoId === repo.id) {
       result = await invoke();
     } else {
@@ -2085,11 +2090,13 @@ export class LocalBackend implements BackendPort {
         snapshot = await prepareWorkspaceRead({
           repo,
           needsRelationships: RELATIONSHIP_TOOLS.has(method),
+          wantsWorkspaceGraph: WORKSPACE_GRAPH_TOOLS.has(method),
           deadline,
         });
       } catch (error) {
         throw workspacePreparationError(error);
       }
+      preparationNote = snapshot.preparationNote;
       // withPinnedOverlay owns the actual generation lease and releases it on exit.
       // Keep the request hook idempotent for downstream preparation ownership.
       let released = false;
@@ -2124,6 +2131,13 @@ export class LocalBackend implements BackendPort {
       } finally {
         await context.release();
       }
+    }
+    if (preparationNote && isObjectResponse(result)) {
+      const existing = (result as { warnings?: unknown }).warnings;
+      result = {
+        ...(result as Record<string, unknown>),
+        warnings: [...(Array.isArray(existing) ? existing : []), preparationNote],
+      };
     }
     if (method !== 'query' && method !== 'context' && method !== 'impact') {
       return isObjectResponse(result) ? attachRepoScopeIdentity(result, repo) : result;
