@@ -445,6 +445,14 @@ Follow-up (same day): `repomap` now reads the pinned working-tree graph through 
 
 Still open after this round: idle-repo eviction; watcher `refreshCallback` and cache `snapshotIdentity` suppliers; hard-link (nlink>1) rejection, which the ADR does not clearly require; routes not on the workspace path (`repomap`, `explore`, resources, pagination, docs); a timed-out build holds the analyze lock until it ends; the ADW-2a..ADW-5c verification re-scope; ADW-7/8 acceptance evidence.
 
+## Review round 5 (2026-10-18)
+
+- A probe showed flag-off `context`, `explore` and `impact` still read a persisted working-tree graph (the same leak fixed earlier for `repomap` and search). Fixed once in `getOverlaySnapshot`: a workspace-graph generation is unusable unless `ONTOINDEX_AUTO_WORKSPACE=1`. The `impact` leg of the regression test fails without the fix. Visible side effect: `ontoindex status` prints "Overlay: stale (workspace graph ignored ...)" for such a repo when the flag is off.
+- The snapshot cache is now keyed on the flag, so toggling it cannot serve a stale answer inside the 2 s TTL (test fails without the key).
+- Group-service `impact`, `query` and `context` ports route through `dispatchRepoTool` when the flag is on (test fails without it, 3 cases). `impactByUid` was already routed.
+- Measured peak RSS on a 1,717-file copy of this repo: full base analyze 2.47 GB (55 s), workspace-graph build 2.72 GB (48 s). One run each, 8 cores. Capture already caps inputs at 512 MiB and 512 KiB per file; nothing bounds the build's memory or time after capture, and the build runs in the server process. A tighter capture byte budget lowers the admitted workload but cannot guarantee RSS. Hard enforcement needs a child process with a deadline (larger change, not started).
+- Resource handlers (`resources.ts`: context, clusters, processes, cluster and process detail) read the committed graph directly and show no notice; fixing needs `committedGraphNotice` applied to resource text, because `withCommittedGraphNotice` ignores strings. Not done.
+
 ## Completed Design Gate
 
 ADW-1 was completed with manager_loop complete-local on 2026-10-17 at revision
