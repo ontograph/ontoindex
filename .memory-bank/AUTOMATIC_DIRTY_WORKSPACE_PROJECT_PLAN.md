@@ -418,6 +418,19 @@ Changes made this round: reads that need no relationships (search, overview and 
 
 Challenger on these changes found two defects, both fixed with tests that fail without the fix: (1) a search whose build outlasted the 60 s waiter deadline still threw `workspace_timeout` (now answers from the committed index with a note; relationship reads still throw); (2) a degraded fallback could carry a usable old overlay generation that a concurrent build prunes before the request pins it, so dispatch failed with 'overlay generation no longer available' (a degraded snapshot is now marked unusable). My first test for (2) passed with the fix removed; the fixture had to be reset before it proved anything. Follow-up: aborting an abandoned build was rejected. On a repository whose build exceeds the 60 s waiter deadline, every search would abort and restart it and the graph would never finish. The build keeps running instead, and a test shows the next request joins it (one build, one lock, one release). A held analyze lock is now remembered for 5 s so requests stop re-probing it (test fails without it). Still true: an abandoned waiter's build holds the analyze lock until it ends, so `ontoindex analyze` started in that window reports the lock as held.
 
+## Manager-loop status and proposed re-scope (2026-10-17, HEAD f50eb7c)
+
+Loop state, read-only: `manager_loop_next` returns `no_dispatch` for ADW-2: the accepted terminal result is `blocked: dependency gate` (receipt `role-result-706e6872...`, verdict BLOCKED, blocker text "path error during source inspection") and "requires fresh evidence before redispatch". ADW-1 is DONE; every other task is OPEN; there are no PASS receipts.
+
+Fresh evidence gathered outside the loop: ADW-2's own `required_validation` passes on the current tree (`workspace-input-capture.test.ts`, 67 tests, exit 0; `git diff --check` exit 0). The blocker named in the receipt (a missing ADW-1 contract and a path error from an absent `ONTOINDEX.md`) is an environment fault of that worker, and ADW-1 is now accepted. The code and tests for ADW-2 through roughly ADW-5 exist on this branch (commits b4a1041..f50eb7c) but were written in the main session, not under authenticated worker leases.
+
+This is not acceptance. Options for the owner of the loop, none applied:
+1. Reopen ADW-2 with the fresh evidence above and dispatch a `coder-worker` or challenger that verifies the existing diff and returns a PASS receipt; repeat per task. Honest, slow, one receipt per task.
+2. Re-scope the tracker to the work actually done (collapse ADW-2..5 into verification-only packets whose write set is empty) so each can receive a PASS from a read-only challenger.
+3. Leave the loop as is and treat this branch as unreviewed-by-loop work; merge only through the normal PR review.
+
+Recommendation: option 1 for ADW-2 first, to learn whether the worker role can issue PASS for pre-existing work (it refused earlier), then decide between 1 and 2.
+
 ## Completed Design Gate
 
 ADW-1 was completed with manager_loop complete-local on 2026-10-17 at revision
