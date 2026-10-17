@@ -2778,6 +2778,25 @@ export class LocalBackend implements BackendPort {
 
     const repo = this.repos.get(repoId);
     if (!repo) return null;
+    if (process.env.ONTOINDEX_AUTO_WORKSPACE === '1') {
+      // Same gate and pinned workspace generation as the public `impact` tool.
+      try {
+        const routed = (await this.dispatchRepoTool('impact', {
+          repo: repoId,
+          target: uid,
+          target_uid: uid,
+          direction: direction === 'downstream' ? 'downstream' : 'upstream',
+          maxDepth: opts.maxDepth,
+          relationTypes: opts.relationTypes,
+          minConfidence: opts.minConfidence,
+          includeTests: opts.includeTests,
+        })) as Record<string, unknown> | null;
+        if (!routed || 'error' in routed || routed.status === 'ambiguous') return null;
+        return routed as unknown as ImpactByUidResult;
+      } catch {
+        return null;
+      }
+    }
     return impactByUidImpl(repo, uid, direction, opts);
   }
 

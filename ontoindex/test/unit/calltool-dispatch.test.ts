@@ -317,6 +317,55 @@ describe('request workspace gate', () => {
     expect(await backend.callTool('overview', {})).toEqual(['base']);
     expect(withPinnedOverlay).not.toHaveBeenCalled();
   });
+
+  describe('impactByUid', () => {
+    const opts = { maxDepth: 3, relationTypes: ['CALLS'], minConfidence: 0, includeTests: false };
+    let repoId: string;
+    beforeEach(async () => {
+      repoId = (await backend.resolveRepo(undefined)).id;
+      vi.spyOn(backend as any, 'ensureInitialized').mockResolvedValue(undefined);
+    });
+    afterEach(() => vi.unstubAllEnvs());
+
+    it('routes through the gated impact handler when the workspace flag is on', async () => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+      const handler = vi.fn(async () => ({ risk: 'LOW', impactedCount: 1, byDepth: {} }));
+      (backend as any).repoToolHandlers.impact = handler;
+      const result = await backend.impactByUid(repoId, 'uid-1', 'downstream', opts);
+      expect(result).toMatchObject({ impactedCount: 1 });
+      expect(handler).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ target_uid: 'uid-1', direction: 'downstream', maxDepth: 3 }),
+      );
+      expect(prepareWorkspaceRead).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      ['error', { error: 'not found' }],
+      ['ambiguous', { status: 'ambiguous' }],
+    ])('returns null for a %s workspace result', async (_name, payload) => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+      (backend as any).repoToolHandlers.impact = async () => payload;
+      expect(await backend.impactByUid(repoId, 'uid-1', 'upstream', opts)).toBeNull();
+    });
+
+    it('returns null when workspace preparation fails', async () => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+      vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(
+        new WorkspacePreparationError('workspace_busy'),
+      );
+      (backend as any).repoToolHandlers.impact = vi.fn();
+      expect(await backend.impactByUid(repoId, 'uid-1', 'upstream', opts)).toBeNull();
+    });
+
+    it('does not use the gated handler when the flag is off', async () => {
+      const handler = vi.fn();
+      (backend as any).repoToolHandlers.impact = handler;
+      await backend.impactByUid(repoId, 'uid-1', 'upstream', opts);
+      expect(handler).not.toHaveBeenCalled();
+      expect(prepareWorkspaceRead).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('LocalBackend.init', () => {
