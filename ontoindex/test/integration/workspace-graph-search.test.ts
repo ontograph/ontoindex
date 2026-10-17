@@ -124,6 +124,40 @@ describe('search on a workspace graph', () => {
     expect(paths.some((p) => p.startsWith('src/'))).toBe(false);
   });
 
+  it('builds a repomap from the working tree', async () => {
+    const result = (await backend.callTool('repomap', {
+      repo,
+      focus: ['src/fresh.ts'],
+      format: 'full',
+      token_budget: 5000,
+    })) as { status: string; symbols: Array<{ name: string }> };
+    expect(result.status).toBe('success');
+    expect(result.symbols.map((symbol) => symbol.name)).toContain('pricingFreshlyAdded');
+  });
+
+  it('ignores a persisted working-tree graph when the flag is off', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
+    try {
+      const names = (symbols: Array<{ name: string }> = []) => symbols.map((symbol) => symbol.name);
+      const searched = (await search({ query: 'pricingFreshlyAdded' })) as {
+        definitions?: Array<{ name: string; source?: string }>;
+      };
+      // The dirty-file merge may still surface the changed file; it must not use the workspace lane.
+      expect((searched as { warning?: string }).warning ?? '').not.toContain(
+        'Vector search is unavailable',
+      );
+      const mapped = (await backend.callTool('repomap', {
+        repo,
+        focus: ['src/fresh.ts'],
+        format: 'full',
+        token_budget: 5000,
+      })) as { symbols?: Array<{ name: string }> };
+      expect(names(mapped.symbols)).not.toContain('pricingFreshlyAdded');
+    } finally {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    }
+  });
+
   it('reports that vector search is unavailable', async () => {
     const result = (await search({ query: 'pricingEngine' })) as { warning?: string };
     expect(result.warning).toContain('Vector search is unavailable');

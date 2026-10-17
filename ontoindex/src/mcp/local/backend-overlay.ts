@@ -138,6 +138,7 @@ const pinnedOverlay = new AsyncLocalStorage<{
   repoId: string;
   dbPath: string;
   generation: string;
+  capability?: OverlaySnapshot['capability'];
 }>();
 
 /** Keep every overlay query in a request on the generation its snapshot validated. */
@@ -166,7 +167,10 @@ export async function withPinnedOverlay<T>(
   }
   try {
     return await withPinnedGeneration(overlayRepoId(repo.id), dbPath, () =>
-      pinnedOverlay.run({ repoId: repo.id, dbPath, generation }, fn),
+      pinnedOverlay.run(
+        { repoId: repo.id, dbPath, generation, capability: snapshot.capability },
+        fn,
+      ),
     );
   } finally {
     await marker.release().catch(() => {});
@@ -174,6 +178,20 @@ export async function withPinnedOverlay<T>(
 }
 
 export const overlayRepoId = (repoId: string): string => `${repoId}::overlay`;
+
+/**
+ * Pool id that serves the whole working tree for this request, or the committed id when the
+ * request holds no pinned workspace graph. A symbols-only overlay is never returned: it holds
+ * the changed files alone, so reading it as the whole graph would drop every clean file.
+ */
+export function workspaceGraphPoolId(repoId: string): string {
+  // Opt-in only: a working-tree graph left on disk must not change flag-off behavior.
+  if (process.env.ONTOINDEX_AUTO_WORKSPACE !== '1') return repoId;
+  const pinned = pinnedOverlay.getStore();
+  return pinned?.repoId === repoId && pinned.capability === 'workspace-graph'
+    ? overlayRepoId(repoId)
+    : repoId;
+}
 
 /** True when the current request holds a pinned overlay generation for this repository. */
 export function hasPinnedOverlay(repoId: string): boolean {

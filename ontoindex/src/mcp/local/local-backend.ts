@@ -1252,7 +1252,7 @@ const RELATIONSHIP_TOOLS = new Set([
 
 // Plain search ranks on the working-tree graph once one exists, so it asks for the build too.
 // Unlike RELATIONSHIP_TOOLS it degrades to the committed index when the build is refused.
-const WORKSPACE_GRAPH_TOOLS = new Set([...RELATIONSHIP_TOOLS, 'query']);
+const WORKSPACE_GRAPH_TOOLS = new Set([...RELATIONSHIP_TOOLS, 'query', 'repomap']);
 
 function workspacePreparationError(error: unknown): Error & { code: string; retryable?: boolean } {
   if (error instanceof WorkspacePreparationError) {

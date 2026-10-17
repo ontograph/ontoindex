@@ -233,13 +233,14 @@ describe('request workspace gate', () => {
     ['ipc_trace', true],
     ['evidence_pack', true],
     ['query', false],
+    ['repomap', false],
   ])('prepares %s with needsRelationships=%s', async (method, needsRelationships) => {
     (backend as any).repoToolHandlers[method as string] = async () => [];
     await (backend as any).dispatchRepoTool(method, {});
     expect(prepareWorkspaceRead).toHaveBeenCalledWith({
       repo: expect.objectContaining({ repoPath: MOCK_REPO_ENTRY.path }),
       needsRelationships,
-      wantsWorkspaceGraph: needsRelationships || method === 'query',
+      wantsWorkspaceGraph: needsRelationships || method === 'query' || method === 'repomap',
       deadline: expect.any(Number),
     });
   });

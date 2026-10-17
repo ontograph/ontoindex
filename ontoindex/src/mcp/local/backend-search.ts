@@ -1667,6 +1667,7 @@ export async function query(
   // overlay pool id resolves to that pinned generation, so ranking and enrichment read it
   // instead of the committed index. Typed queries keep the dirty-file merge.
   const workspaceLane =
+    process.env.ONTOINDEX_AUTO_WORKSPACE === '1' &&
     searchInput.mode !== 'typed' &&
     overlaySnapshot?.usable === true &&
     overlaySnapshot.capability === 'workspace-graph' &&
