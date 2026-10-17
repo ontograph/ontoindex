@@ -129,6 +129,22 @@ async function analyze(cli, repo, env, overlay, signal) {
 }
 
 async function main() {
+  if (process.argv.includes('--automatic')) {
+    const automatic = await import('./overlay-benchmark-automatic.mjs');
+    if (process.argv.includes('--help') || process.argv.includes('-h'))
+      return console.log(automatic.usage);
+    const artifact = await automatic.runAutomatic(
+      automatic.parseAutomaticArgs(process.argv.slice(2)),
+    );
+    const failed = artifact.workloads.filter((w) => !w.budgets.pass);
+    console.error(
+      failed.length
+        ? `Budget failures: ${JSON.stringify(failed.map((w) => ({ size: w.size, phase: w.phase, failures: w.budgets.failures })))}`
+        : 'All declared budgets passed.',
+    );
+    process.exitCode = failed.length ? 2 : 0;
+    return;
+  }
   const opts = parseArgs(process.argv.slice(2));
   if (!opts) {
     console.log(usage);
