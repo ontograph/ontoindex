@@ -246,6 +246,49 @@ describe('context resource runtime health', () => {
   });
 });
 
+describe('committed graph notice on resources', () => {
+  const notice = 'does not include 2 uncommitted file change(s)';
+  const backend = () =>
+    createMockBackend({
+      context: {
+        projectName: 'p',
+        stats: { fileCount: 1, functionCount: 1, communityCount: 0, processCount: 0 },
+      },
+      committedGraphNoticeFor: vi.fn().mockResolvedValue(notice),
+    });
+
+  it.each(['context', 'clusters', 'processes'])(
+    'adds the notice to the %s resource',
+    async (type) => {
+      readRuntimeHealthMock.mockResolvedValue({
+        indexedCommit: 'abc1234',
+        currentCommit: 'abc1234',
+        dirtyWorktree: false,
+        freshnessState: 'clean',
+        degradedReason: null,
+      });
+      const text = await readResource(`ontoindex://repo/test-repo/${type}`, backend());
+      expect(text).toContain(notice);
+      expect(() => yaml.load(text)).not.toThrow();
+    },
+  );
+
+  it('does not add the notice to the schema resource', async () => {
+    expect(await readResource('ontoindex://repo/test-repo/schema', backend())).not.toContain(
+      notice,
+    );
+  });
+
+  it('still returns the resource when the notice lookup fails', async () => {
+    const failing = createMockBackend({
+      committedGraphNoticeFor: vi.fn().mockRejectedValue(new Error('boom')),
+    });
+    await expect(readResource('ontoindex://repo/test-repo/clusters', failing)).resolves.toBeTypeOf(
+      'string',
+    );
+  });
+});
+
 describe('getResourceTemplates', () => {
   it('returns 14 dynamic templates', () => {
     const templates = getResourceTemplates();

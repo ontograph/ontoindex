@@ -613,7 +613,19 @@ export async function readResource(uri: string, backend: LocalBackend): Promise<
   }
 
   try {
-    const result = await resultPromise;
+    let result = await resultPromise;
+    // These resources read the committed graph directly; say so when the working tree differs.
+    if (
+      parsed.kind === 'repo' &&
+      ['context', 'clusters', 'processes', 'cluster', 'process'].includes(parsed.resourceType)
+    ) {
+      try {
+        const notice = await backend.committedGraphNoticeFor?.(repoName);
+        if (notice) result = `${result}\n# ${notice}`;
+      } catch {
+        // The notice is advisory; never fail the resource read for it.
+      }
+    }
     let memoryFreshness: string | undefined = undefined;
     if (readClass === 'advisory_memory' && result.includes('invalid_memory: true')) {
       memoryFreshness = 'invalid';

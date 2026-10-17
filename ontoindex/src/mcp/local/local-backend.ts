@@ -1963,6 +1963,11 @@ export class LocalBackend implements BackendPort {
     return { ...record, warnings: [...warnings, notice] } as T;
   }
 
+  /** Committed-graph notice for a resource read, or undefined when nothing is uncommitted. */
+  async committedGraphNoticeFor(repoParam?: string): Promise<string | undefined> {
+    return committedGraphNotice(await this.resolveRepo(repoParam));
+  }
+
   // ─── Public Getters ──────────────────────────────────────────────
 
   /**
