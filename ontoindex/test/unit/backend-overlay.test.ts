@@ -62,6 +62,7 @@ describe('backend-overlay snapshot', () => {
 
   beforeEach(() => {
     resetOverlaySnapshotCache();
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
     vi.mocked(workspaceConfigurationIdentity).mockResolvedValue({
       configurationDigest: 'config',
       parserIdentity: 'parser',
@@ -79,6 +80,7 @@ describe('backend-overlay snapshot', () => {
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     fs.rmSync(repo, { recursive: true, force: true });
   });
 
@@ -130,6 +132,17 @@ describe('backend-overlay snapshot', () => {
     expect(workspaceConfigurationIdentity).toHaveBeenLastCalledWith(repo, undefined);
     expect([...(await getOverlaySnapshot(handle())).overlayPaths]).toEqual(['src/a.ts']);
     expect([...(await getOverlaySnapshot(handle())).parseErrorPaths]).toEqual([]);
+  });
+
+  it('treats a persisted workspace graph as unusable when the flag is off', async () => {
+    fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
+    publishWorkspaceFixture();
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
+    resetOverlaySnapshotCache();
+    expect(await getOverlaySnapshot(handle())).toMatchObject({
+      usable: false,
+      reason: expect.stringContaining('ONTOINDEX_AUTO_WORKSPACE'),
+    });
   });
 
   it('reuses partial coverage while withholding authority for parse-error paths', async () => {

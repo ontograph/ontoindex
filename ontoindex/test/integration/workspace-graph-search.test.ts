@@ -153,6 +153,15 @@ describe('search on a workspace graph', () => {
         token_budget: 5000,
       })) as { symbols?: Array<{ name: string }> };
       expect(names(mapped.symbols)).not.toContain('pricingFreshlyAdded');
+      for (const tool of ['context', 'impact'] as const) {
+        const read = (await backend.callTool(tool, {
+          repo,
+          target: 'pricingFreshlyAdded',
+        })) as { source?: string };
+        expect(read.source, `${tool} must not read the persisted working-tree graph`).not.toBe(
+          'workspace-graph',
+        );
+      }
     } finally {
       vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
     }

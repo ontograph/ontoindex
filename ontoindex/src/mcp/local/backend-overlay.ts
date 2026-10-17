@@ -314,6 +314,14 @@ async function computeSnapshot(
     };
   }
   const workspaceGraph = recordedBase.capability === 'workspace-graph';
+  if (workspaceGraph && process.env.ONTOINDEX_AUTO_WORKSPACE !== '1') {
+    // A persisted working-tree graph is invisible to every reader unless the feature is on.
+    return {
+      ...base,
+      usable: false,
+      reason: 'workspace graph ignored: ONTOINDEX_AUTO_WORKSPACE is not enabled',
+    };
+  }
   if (workspaceGraph) {
     base.capability = 'workspace-graph';
     base.coverage = recordedBase.coverage;
