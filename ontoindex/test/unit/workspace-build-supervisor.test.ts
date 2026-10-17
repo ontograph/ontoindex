@@ -2,8 +2,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   superviseWorkspaceBuild,
+  sweepOrphanedWorkspaceBuild,
   WorkspaceBuildError,
 } from '../../src/mcp/local/workspace-build-supervisor.js';
 
@@ -108,5 +110,96 @@ describe('superviseWorkspaceBuild', () => {
       timeoutMs: 2000,
     }).catch((e: unknown) => e);
     expect((error as WorkspaceBuildError).kind).toBe('failed');
+  });
+
+  describe('sweepOrphanedWorkspaceBuild', () => {
+    const deadPid = () => {
+      const r = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))']);
+      return Number(r.stdout.toString());
+    };
+    const leave = async (marker: Record<string, unknown>) => {
+      // Entries that predate the build and are not the current generation must survive.
+      await fs.mkdir(path.join(storage, 'overlay', 'prior-gen'));
+      await fs.mkdir(path.join(storage, 'workspace-inputs', 'capture-prior'), { recursive: true });
+      await fs.mkdir(path.join(storage, 'overlay', 'orphan-gen'));
+      await fs.writeFile(path.join(storage, 'overlay', '.CURRENT-orphan.tmp'), 'x');
+      await fs.mkdir(path.join(storage, 'workspace-inputs', 'capture-orphan'), { recursive: true });
+      await fs.writeFile(
+        path.join(storage, 'workspace-build.owner.json'),
+        JSON.stringify({
+          before: {
+            overlay: ['CURRENT', 'old-gen', 'prior-gen'],
+            'workspace-inputs': ['capture-prior'],
+          },
+          ...marker,
+        }),
+      );
+    };
+
+    it('removes what a dead owner left and keeps what predates the build', async () => {
+      await leave({ parentPid: deadPid() });
+      expect(await sweepOrphanedWorkspaceBuild(storage)).toBe(true);
+      expect((await fs.readdir(path.join(storage, 'overlay'))).sort()).toEqual([
+        'CURRENT',
+        'old-gen',
+        'prior-gen',
+      ]);
+      expect(await fs.readdir(path.join(storage, 'workspace-inputs'))).toEqual(['capture-prior']);
+      await expect(fs.stat(path.join(storage, 'workspace-build.owner.json'))).rejects.toThrow();
+    });
+
+    it('does nothing while the owner is alive', async () => {
+      await leave({ parentPid: process.ppid });
+      expect(await sweepOrphanedWorkspaceBuild(storage)).toBe(false);
+      expect((await fs.readdir(path.join(storage, 'workspace-inputs'))).sort()).toEqual([
+        'capture-orphan',
+        'capture-prior',
+      ]);
+    });
+
+    it('does nothing when this process owns the marker', async () => {
+      await leave({ parentPid: process.pid });
+      expect(await sweepOrphanedWorkspaceBuild(storage)).toBe(false);
+    });
+
+    it('does nothing while the build child group is still running', async () => {
+      const survivor = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      try {
+        await leave({ parentPid: deadPid(), childPid: survivor.pid });
+        expect(await sweepOrphanedWorkspaceBuild(storage)).toBe(false);
+        expect(await fs.readdir(path.join(storage, 'workspace-inputs'))).toContain(
+          'capture-orphan',
+        );
+      } finally {
+        process.kill(-survivor.pid!, 'SIGKILL');
+      }
+    });
+
+    it('never removes the generation that became current', async () => {
+      await leave({ parentPid: deadPid() });
+      await fs.writeFile(path.join(storage, 'overlay', 'CURRENT'), 'orphan-gen\n');
+      expect(await sweepOrphanedWorkspaceBuild(storage)).toBe(true);
+      expect(await fs.readdir(path.join(storage, 'overlay'))).toContain('orphan-gen');
+    });
+
+    it('ignores a missing or malformed marker', async () => {
+      expect(await sweepOrphanedWorkspaceBuild(storage)).toBe(false);
+      await fs.writeFile(path.join(storage, 'workspace-build.owner.json'), '{not json');
+      expect(await sweepOrphanedWorkspaceBuild(storage)).toBe(false);
+    });
+
+    it('a new supervised build sweeps a dead owner first and leaves no marker behind', async () => {
+      await leave({ parentPid: deadPid() });
+      await run('0');
+      expect((await fs.readdir(path.join(storage, 'overlay'))).sort()).toEqual([
+        'CURRENT',
+        'old-gen',
+        'prior-gen',
+      ]);
+      await expect(fs.stat(path.join(storage, 'workspace-build.owner.json'))).rejects.toThrow();
+    });
   });
 });

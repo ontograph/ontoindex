@@ -24,6 +24,14 @@ export interface SupervisedBuild {
 }
 
 const STDERR_TAIL_BYTES = 4096;
+const OWNER_MARKER = 'workspace-build.owner.json';
+
+interface OwnerMarker {
+  parentPid: number;
+  childPid?: number;
+  /** Entries that existed before the build started; everything else is the build's own. */
+  before: Record<string, string[]>;
+}
 const OWNED_DIRECTORIES = ['overlay', 'workspace-inputs'];
 
 async function listEntries(directory: string): Promise<Set<string>> {
@@ -60,6 +68,44 @@ async function removeNewArtifacts(
   }
 }
 
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Remove what a build left behind when its server died. Call only while holding the analyze lock.
+ * The marker names the dead owner and the entries that predate the build, so nothing else is
+ * touched. A live owner or a surviving child group means we cannot prove the build stopped.
+ */
+export async function sweepOrphanedWorkspaceBuild(storagePath: string): Promise<boolean> {
+  const markerPath = path.join(storagePath, OWNER_MARKER);
+  let marker: OwnerMarker;
+  try {
+    marker = JSON.parse(await fs.readFile(markerPath, 'utf8')) as OwnerMarker;
+  } catch {
+    return false;
+  }
+  if (
+    !Number.isInteger(marker.parentPid) ||
+    marker.parentPid === process.pid ||
+    pidAlive(marker.parentPid) ||
+    (marker.childPid !== undefined && groupAlive(marker.childPid))
+  ) {
+    return false;
+  }
+  await removeNewArtifacts(
+    storagePath,
+    new Map(Object.entries(marker.before ?? {}).map(([name, list]) => [name, new Set(list)])),
+  );
+  await fs.rm(markerPath, { force: true });
+  return true;
+}
+
 function groupAlive(pid: number): boolean {
   try {
     process.kill(-pid, 0);
@@ -82,12 +128,37 @@ async function waitForGroupExit(pid: number, limitMs: number): Promise<boolean> 
  * is killed and reaped before this returns, so the caller can safely release the analyze lock.
  */
 export async function superviseWorkspaceBuild(options: SupervisedBuild): Promise<void> {
+  await sweepOrphanedWorkspaceBuild(options.storagePath).catch(() => false);
   const before = await snapshotArtifacts(options.storagePath);
+  const markerPath = path.join(options.storagePath, OWNER_MARKER);
+  const writeMarker = (childPid?: number) =>
+    fs.writeFile(
+      markerPath,
+      JSON.stringify({
+        parentPid: process.pid,
+        childPid,
+        before: Object.fromEntries([...before].map(([name, set]) => [name, [...set]])),
+      } satisfies OwnerMarker),
+    );
+  await writeMarker();
+  try {
+    await runSupervised(options, before, writeMarker);
+  } finally {
+    await fs.rm(markerPath, { force: true }).catch(() => {});
+  }
+}
+
+async function runSupervised(
+  options: SupervisedBuild,
+  before: Map<string, Set<string>>,
+  writeMarker: (childPid?: number) => Promise<void>,
+): Promise<void> {
   const child = spawn(options.command, options.args, {
     cwd: options.cwd,
     detached: true,
     stdio: ['ignore', 'ignore', 'pipe'],
   });
+  if (child.pid) await writeMarker(child.pid).catch(() => {});
   let stderrTail = '';
   child.stderr?.on('data', (chunk: Buffer) => {
     stderrTail = (stderrTail + chunk.toString('utf8')).slice(-STDERR_TAIL_BYTES);
