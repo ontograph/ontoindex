@@ -528,60 +528,56 @@ manager_loop:
         - gpt-6.1-sol
         reasoning_effort: high
   reopen_gate: null
-  last_decision: dispatch
+  last_decision: dispatched
 tasks:
   ADW-2:
-    title: Capture bounded source/config bytes with content identity
+    title: Verify the existing bounded capture with content identity (verification-only)
     status: OPEN
-    classification: implementation-ready
+    classification: proof-only
     assurance_profile: full
     complexity: complex
     depends_on: []
-    type: code
+    type: proof
     validation_tier: unit-fast
     impact_risk: high
     owner_files:
-    - ontoindex/src/core/analyze-delta.ts
-    - ontoindex/src/core/indexing/source-manifest.ts
-    - ontoindex/test/unit/workspace-input-capture.test.ts
-    allowed_write_set:
-    - ontoindex/src/core/analyze-delta.ts
-    - ontoindex/src/core/indexing/source-manifest.ts
-    - ontoindex/test/unit/workspace-input-capture.test.ts
+    - .memory-bank/AUTOMATIC_DIRTY_WORKSPACE_PROJECT_PLAN.md
+    allowed_write_set: []
     non_goals:
+    - No source or test edits; the capture code in ontoindex/src/core/analyze-delta.ts, ontoindex/src/core/indexing/source-manifest.ts and ontoindex/test/unit/workspace-input-capture.test.ts already exists on branch feat/automatic-dirty-workspace and is reviewed here, not rewritten.
     - No adjacent refactors, new runtime owner, dependencies, provider calls, user Git mutations or release publication.
     required_validation:
     - cd ontoindex && ONTOINDEX_TEST_WORKERS=1 node node_modules/vitest/vitest.mjs run --maxWorkers=1 --no-file-parallelism test/unit/workspace-input-capture.test.ts
     - git diff --check
     expected_evidence:
-    - Given equal-size/equal-mtime edits, rename/delete, config changes and symlink escape, capture changes the manifest or rejects the input; at most two attempts occur and owned failed captures are removed.
+    - Read the existing capture diff against the accepted ADW-1 contract (the 'Completed Design Gate' section of this file and .memory-bank/ADR_AUTOMATIC_DIRTY_WORKSPACE.md) and return PASS only if equal-size/equal-mtime edits, rename/delete, config changes and symlink escape change the manifest or are rejected, at most two attempts occur and owned failed captures are removed; otherwise NEEDS_REWORK with the exact defect. The author of the code is the main session; this reviewer did not write it.
     rollback:
     - Revert only this packet; preserve unrelated work, committed graph and live reader pins.
     stop_conditions:
-    - 'Missing accepted ADW-1 contract, required owner outside this write set, architecture choice or changed dependency: stop for manager preparation; do not widen scope.'
+    - 'The accepted ADW-1 contract is the immutable record under ## Completed Design Gate (manager_loop complete-local revision 402c12f612b62f96bf84a705666eb331272a1c21c12cb0ffaf5e8bf67db00436) plus the ADR; it is present, so do not stop for its absence. Stop only if it is genuinely unreadable.'
     - 'Missing capability, stale success, unbounded cleanup or failed validation: retain evidence and return the exact blocker.'
     known_blockers: []
     dispatch:
-      role: coder-worker
-      attempts: 3
+      role: coder-auditor
+      attempts: 4
       max_attempts: 8
-      dispatch_id: 4115e439-6643-4fac-a004-22b256b24753
-      scope_sha256: f1d4ab5f08699fb2aae3fefba99deb926e748ab487a02ddd3dc0fc61c05f10ce
-      lease_state: result-accepted
+      dispatch_id: e0611a22-e180-4d27-8be1-0cb040cf1485
+      scope_sha256: ab8600cd176f2d64cb4052a2e4235e23152ddc2530c122fe8e3b36ef8208ce61
+      lease_state: running
       preflight_result: pass
-      dispatched_at: '1792249328749'
-      assigned_agent: null
-      agent_type_requested: cdr-worker
+      dispatched_at: '1792269170883'
+      assigned_agent: 01a14b91-389a-7702-a1f4-1a9ca4f302b5
+      agent_type_requested: cdr-auditor
       model_requested: gpt-6.1-sol
       model_effective: gpt-6.1-sol
       route_attempts: 1
-      wait_state: null
+      wait_state: child-terminal-result
       blocker_fingerprint: null
-      terminal_classification: 'blocked: dependency gate'
-      last_progress_revision: accepted-receipt:role-result-706e68725771cd4d7c850b5d96ab1592f4731edcaf8a550eb2292900e7063c8f
-      result_receipt_id: role-result-706e68725771cd4d7c850b5d96ab1592f4731edcaf8a550eb2292900e7063c8f
-      result_verdict: BLOCKED
-      result_blocker: 'blocked: path error during source inspection'
+      terminal_classification: null
+      last_progress_revision: b3f273405cfb07eb275ed3d67bca7f4218f4ed07ab75b8fe482850a1a87dc7fd
+      result_receipt_id: null
+      result_verdict: null
+      result_blocker: null
     closeout:
       role_results: []
   ADW-2a:
