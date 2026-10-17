@@ -431,6 +431,18 @@ This is not acceptance. Options for the owner of the loop, none applied:
 
 Recommendation: option 1 for ADW-2 first, to learn whether the worker role can issue PASS for pre-existing work (it refused earlier), then decide between 1 and 2.
 
+## Review round 4 and ADW-2 HOLD evidence (2026-10-18)
+
+ADW-2 auditor HOLD (receipt `role-result-cdf8ddb9...`): "transient ancestor-symlink containment is not established" for the interval between `checkCapturePath` and `fs.open` in `captureWorkspaceInputs`. Integration into the loop was rejected twice: first `capability_unavailable: tracking_write` (workspace was read-only), then `needs-rework: plan/task contract requires dispatch.role coder-manager`. The lease stays `running`; no state was hand-edited. A `coder-manager` must adjudicate.
+
+Evidence for that adjudication: `test/unit/workspace-capture-toctou.test.ts` intercepts the first `fs.open` of the target and swaps the `src` ancestor for a symlink to an outside tree immediately before the real open. Capture throws `unsupported` and no capture directory contains outside bytes. The same probe was run with `O_NOFOLLOW` removed, and with both `O_NOFOLLOW` and the post-read `checkCapturePath` removed: each still throws `unsupported` (the remaining layers catch it). So the window is covered by at least two independent checks today; the test pins the outcome. Not proven: a swap of a deeper ancestor while bytes are being read, or races outside Node's async open path.
+
+Also done this round (two gpt-6.1-sol low sub-agents, verified by me):
+- Configuration traversal no longer descends into nested repositories (a child directory containing `.git` is skipped); `workspace-capture-nested-repo.test.ts` fails without the change (2 tests).
+- The CLI `tool.ts` backend is disposed after every command (`disposeBackend()`, try/finally; the `impact` error path disposes before `process.exit(1)`); two tests in `tool-direct-cli.test.ts` fail without the change. Exit codes and stdout are unchanged.
+
+Still open after this round: idle-repo eviction; watcher `refreshCallback` and cache `snapshotIdentity` suppliers; hard-link (nlink>1) rejection, which the ADR does not clearly require; routes not on the workspace path (`repomap`, `explore`, resources, pagination, docs); a timed-out build holds the analyze lock until it ends; the ADW-2a..ADW-5c verification re-scope; ADW-7/8 acceptance evidence.
+
 ## Completed Design Gate
 
 ADW-1 was completed with manager_loop complete-local on 2026-10-17 at revision

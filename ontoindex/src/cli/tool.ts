@@ -32,6 +32,16 @@ async function getBackend(): Promise<LocalBackend> {
   return _backend;
 }
 
+export async function disposeBackend(): Promise<void> {
+  try {
+    await _backend?.dispose();
+  } catch (err: unknown) {
+    console.error('OntoIndex: Failed to dispose backend:', err);
+  } finally {
+    _backend = null;
+  }
+}
+
 /**
  * Write tool output to stdout using low-level fd write.
  *
@@ -122,36 +132,40 @@ export async function queryCommand(
   }
 
   const query = options?.typed ? parseTypedQueryDocument(queryText) : queryText;
-  const backend = await getBackend();
-  const params: Record<string, unknown> = {
-    task_context: options?.context,
-    goal: options?.goal,
-    limit: options?.limit ? parseInt(options.limit) : undefined,
-    include_content: options?.content ?? false,
-    include_explanations: options?.includeExplanations ?? false,
-    repo: options?.repo,
-  };
-  if (options?.includePath?.length) params.include_paths = options.includePath;
-  if (options?.excludePath?.length) params.exclude_paths = options.excludePath;
-  if (options?.typed) {
-    params.typedQuery = query;
-  } else {
-    params.query = query;
+  try {
+    const backend = await getBackend();
+    const params: Record<string, unknown> = {
+      task_context: options?.context,
+      goal: options?.goal,
+      limit: options?.limit ? parseInt(options.limit) : undefined,
+      include_content: options?.content ?? false,
+      include_explanations: options?.includeExplanations ?? false,
+      repo: options?.repo,
+    };
+    if (options?.includePath?.length) params.include_paths = options.includePath;
+    if (options?.excludePath?.length) params.exclude_paths = options.excludePath;
+    if (options?.typed) {
+      params.typedQuery = query;
+    } else {
+      params.query = query;
+    }
+    if (options?.consumeEnrichmentFacts !== undefined) {
+      params.consume_enrichment_facts = options.consumeEnrichmentFacts;
+    }
+    if (options?.includePassiveRelatedFacts !== undefined) {
+      params.include_passive_related_facts = options.includePassiveRelatedFacts;
+    }
+    if (options?.includeMarkdownContext !== undefined) {
+      params.include_markdown_context = options.includeMarkdownContext;
+    }
+    if (options?.includeMarkdownPpr !== undefined) {
+      params.include_markdown_ppr = options.includeMarkdownPpr;
+    }
+    const result = await backend.callTool('query', params);
+    output(result);
+  } finally {
+    await disposeBackend();
   }
-  if (options?.consumeEnrichmentFacts !== undefined) {
-    params.consume_enrichment_facts = options.consumeEnrichmentFacts;
-  }
-  if (options?.includePassiveRelatedFacts !== undefined) {
-    params.include_passive_related_facts = options.includePassiveRelatedFacts;
-  }
-  if (options?.includeMarkdownContext !== undefined) {
-    params.include_markdown_context = options.includeMarkdownContext;
-  }
-  if (options?.includeMarkdownPpr !== undefined) {
-    params.include_markdown_ppr = options.includeMarkdownPpr;
-  }
-  const result = await backend.callTool('query', params);
-  output(result);
 }
 
 export async function contextCommand(
@@ -168,15 +182,19 @@ export async function contextCommand(
     process.exit(1);
   }
 
-  const backend = await getBackend();
-  const result = await backend.callTool('context', {
-    name: name || undefined,
-    uid: options?.uid,
-    file_path: options?.file,
-    include_content: options?.content ?? false,
-    repo: options?.repo,
-  });
-  output(result);
+  try {
+    const backend = await getBackend();
+    const result = await backend.callTool('context', {
+      name: name || undefined,
+      uid: options?.uid,
+      file_path: options?.file,
+      include_content: options?.content ?? false,
+      repo: options?.repo,
+    });
+    output(result);
+  } finally {
+    await disposeBackend();
+  }
 }
 
 export async function impactCommand(
@@ -194,15 +212,19 @@ export async function impactCommand(
   }
 
   try {
-    const backend = await getBackend();
-    const result = await backend.callTool('impact', {
-      target,
-      direction: options?.direction || 'upstream',
-      maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
-      includeTests: options?.includeTests ?? false,
-      repo: options?.repo,
-    });
-    output(result);
+    try {
+      const backend = await getBackend();
+      const result = await backend.callTool('impact', {
+        target,
+        direction: options?.direction || 'upstream',
+        maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
+        includeTests: options?.includeTests ?? false,
+        repo: options?.repo,
+      });
+      output(result);
+    } finally {
+      await disposeBackend();
+    }
   } catch (err: unknown) {
     // Belt-and-suspenders: catch infrastructure failures (getBackend, callTool transport)
     // The backend's impact() already returns structured errors for graph query failures
@@ -228,12 +250,16 @@ export async function cypherCommand(
     process.exit(1);
   }
 
-  const backend = await getBackend();
-  const result = await backend.callTool('cypher', {
-    query,
-    repo: options?.repo,
-  });
-  output(result);
+  try {
+    const backend = await getBackend();
+    const result = await backend.callTool('cypher', {
+      query,
+      repo: options?.repo,
+    });
+    output(result);
+  } finally {
+    await disposeBackend();
+  }
 }
 
 function formatDetectChangesResult(result: unknown): string {
@@ -302,13 +328,17 @@ export async function detectChangesCommand(options?: {
   repo?: string;
   includePath?: string[];
 }): Promise<void> {
-  const backend = await getBackend();
-  const params: Record<string, unknown> = {
-    scope: options?.scope || 'unstaged',
-    base_ref: options?.baseRef,
-    repo: options?.repo,
-  };
-  if (options?.includePath?.length) params.include_paths = options.includePath;
-  const result = await backend.callTool('detect_changes', params);
-  output(formatDetectChangesResult(result));
+  try {
+    const backend = await getBackend();
+    const params: Record<string, unknown> = {
+      scope: options?.scope || 'unstaged',
+      base_ref: options?.baseRef,
+      repo: options?.repo,
+    };
+    if (options?.includePath?.length) params.include_paths = options.includePath;
+    const result = await backend.callTool('detect_changes', params);
+    output(formatDetectChangesResult(result));
+  } finally {
+    await disposeBackend();
+  }
 }

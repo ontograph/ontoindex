@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const disposeMock = vi.fn();
 const initMock = vi.fn();
 const callToolMock = vi.fn();
 const constructorMock = vi.fn();
@@ -11,6 +12,7 @@ vi.mock('../../src/mcp/local/local-backend.js', () => ({
       constructorMock(options);
     }
 
+    dispose = disposeMock;
     init = initMock;
     callTool = callToolMock;
   },
@@ -23,11 +25,36 @@ vi.mock('node:fs', () => ({
 describe('direct CLI tool commands', () => {
   beforeEach(() => {
     vi.resetModules();
+    disposeMock.mockReset();
     constructorMock.mockReset();
     initMock.mockReset();
     callToolMock.mockReset();
     writeSyncMock.mockReset();
     initMock.mockResolvedValue(true);
+  });
+
+  it('writes output before disposing and creates a fresh backend for the next command', async () => {
+    callToolMock.mockResolvedValue({ results: [] });
+    const { contextCommand } = await import('../../src/cli/tool.js');
+
+    await contextCommand('first');
+
+    expect(writeSyncMock).toHaveBeenCalledWith(1, '{\n  "results": []\n}\n');
+    expect(disposeMock).toHaveBeenCalledTimes(1);
+    expect(writeSyncMock.mock.invocationCallOrder[0]).toBeLessThan(
+      disposeMock.mock.invocationCallOrder[0],
+    );
+    await contextCommand('second');
+    expect(constructorMock).toHaveBeenCalledTimes(2);
+    expect(disposeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('disposes the backend when a command fails', async () => {
+    callToolMock.mockRejectedValue(new Error('tool failed'));
+    const { contextCommand } = await import('../../src/cli/tool.js');
+
+    await expect(contextCommand('first')).rejects.toThrow('tool failed');
+    expect(disposeMock).toHaveBeenCalledTimes(1);
   });
 
   it('creates direct CLI backend with cwd as preferred project path', async () => {

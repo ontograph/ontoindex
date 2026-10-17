@@ -725,8 +725,15 @@ async function workspaceConfigurationPaths(
           ['node_modules', '.git', 'bin', 'obj', '.ontoindex'].includes(entry.name)
         )
           continue;
+        const childDirectory = directory === '.' ? entry.name : `${directory}/${entry.name}`;
+        try {
+          await fs.lstat(path.join(root, childDirectory, '.git'));
+          continue;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
         queue.push({
-          directory: directory === '.' ? entry.name : `${directory}/${entry.name}`,
+          directory: childDirectory,
           depth: depth + 1,
         });
       }
