@@ -48,6 +48,17 @@ describe('search on a workspace graph', () => {
       path.join(root, 'docs/notes.ts'),
       'export function pricingDocs() { return 2; }\n',
     );
+    // More strong matches outside docs/ than the ranking window holds, and one weak match inside it.
+    for (let i = 0; i < 70; i++) {
+      await fs.writeFile(
+        path.join(root, `src/shared${String(i).padStart(2, '0')}.ts`),
+        'export function rankTermShared() { return rankTermShared; }\n',
+      );
+    }
+    await fs.writeFile(
+      path.join(root, 'docs/weak.ts'),
+      "export function docsOnlyWeak() { return 'rankTermShared'; }\n",
+    );
     git('add', '.');
     git('commit', '-qm', 'base');
     await runFullAnalysis(
@@ -100,6 +111,18 @@ describe('search on a workspace graph', () => {
       filePath: 'docs/notes.ts',
     });
     expect(hits(await search({ query: 'pricingDocs', include_paths: ['src'] }))).toEqual([]);
+  });
+
+  it('finds a weak match inside the requested prefix despite many stronger matches outside it', async () => {
+    const result = await search({ query: 'rankTermShared', include_paths: ['docs'] });
+    expect(hits(result).map((hit) => hit.filePath)).toContain('docs/weak.ts');
+  });
+
+  it('excludes a prefix before ranking', async () => {
+    const result = await search({ query: 'rankTermShared', exclude_paths: ['src'] });
+    const paths = hits(result).map((hit) => hit.filePath);
+    expect(paths).toContain('docs/weak.ts');
+    expect(paths.some((p) => p.startsWith('src/'))).toBe(false);
   });
 
   it('reports that vector search is unavailable', async () => {

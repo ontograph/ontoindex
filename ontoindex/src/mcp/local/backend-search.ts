@@ -1824,7 +1824,12 @@ export async function query(
     const [bm25SearchResult, semanticSearchResults] = await Promise.all([
       timer.time(
         'bm25',
-        bm25SearchImpl(workspaceLane ? { ...repo, id: graphId } : repo, searchQuery, searchLimit),
+        workspaceLane
+          ? bm25SearchImpl({ ...repo, id: graphId }, searchQuery, searchLimit, {
+              include: includePaths,
+              exclude: excludePaths,
+            })
+          : bm25SearchImpl(repo, searchQuery, searchLimit),
       ),
       workspaceLane
         ? Promise.resolve([] as Awaited<ReturnType<typeof semanticSearchImpl>>)
