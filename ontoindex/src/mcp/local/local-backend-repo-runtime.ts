@@ -63,7 +63,8 @@ const workspaceDependencies: WorkspacePreparationDependencies = {
 };
 
 /** Measured: 1.3k files ~ 47 s and 1.9 GiB; cost grows with file count. */
-const DEFAULT_MAX_WORKSPACE_FILES = 2500;
+// A 1,717-file build took 48 s (about 28 ms per file), so the 60 s waiter deadline is reached near 2,100 files.
+const DEFAULT_MAX_WORKSPACE_FILES = 2000;
 const FAILED_BUILD_COOLDOWN_MS = 30_000;
 // A held analyze lock usually means the user is running `ontoindex analyze`; recheck soon, not per request.
 const BUSY_LOCK_COOLDOWN_MS = 5_000;
