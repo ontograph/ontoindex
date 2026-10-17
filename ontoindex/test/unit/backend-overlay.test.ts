@@ -143,6 +143,9 @@ describe('backend-overlay snapshot', () => {
       usable: false,
       reason: expect.stringContaining('ONTOINDEX_AUTO_WORKSPACE'),
     });
+    // Turning the flag on must not serve the cached unusable answer.
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    expect(await getOverlaySnapshot(handle())).toMatchObject({ usable: true });
   });
 
   it('reuses partial coverage while withholding authority for parse-error paths', async () => {

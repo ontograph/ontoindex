@@ -126,6 +126,8 @@ const snapshotCache = new Map<
   {
     at: number;
     baseIdentity: string | null;
+    /** The flag changes what a persisted workspace graph means, so it is part of the identity. */
+    workspaceFlag: boolean;
     value: Promise<OverlaySnapshot>;
     plan: Promise<DirtyOverlayPlan>;
     settled: boolean;
@@ -531,13 +533,19 @@ async function computeSnapshot(
 export function getOverlaySnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> {
   const hit = snapshotCache.get(repo.id);
   const now = Date.now();
+  const workspaceFlag = process.env.ONTOINDEX_AUTO_WORKSPACE === '1';
   let baseIdentity: string | null = null;
   try {
     baseIdentity = realpathSync(path.join(repo.storagePath, 'current'));
   } catch {
     // No active generation, including legacy root stores.
   }
-  if (hit && hit.baseIdentity === baseIdentity && now - hit.at < SNAPSHOT_TTL_MS) {
+  if (
+    hit &&
+    hit.baseIdentity === baseIdentity &&
+    hit.workspaceFlag === workspaceFlag &&
+    now - hit.at < SNAPSHOT_TTL_MS
+  ) {
     // A usable answer authorizes overlay reads, so it is never served from cache: re-plan the
     // dirty set (a newly dirty file must not be missed) and re-verify byte/config identity.
     if (hit.settled && hit.usable) {
@@ -563,7 +571,15 @@ export function getOverlaySnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> 
   }
   while (snapshotCache.size >= MAX_SNAPSHOTS)
     snapshotCache.delete(snapshotCache.keys().next().value!);
-  const entry = { at: now, baseIdentity, value, plan, settled: false, usable: false };
+  const entry = {
+    at: now,
+    baseIdentity,
+    workspaceFlag,
+    value,
+    plan,
+    settled: false,
+    usable: false,
+  };
   snapshotCache.set(repo.id, entry);
   void value.then((snapshot) => {
     entry.settled = true;
