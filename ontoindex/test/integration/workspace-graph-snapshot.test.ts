@@ -11,6 +11,7 @@ import { closeLbug, initLbug, loadGraphToLbug } from '../../src/core/lbug/lbug-a
 import * as repoManager from '../../src/storage/repo-manager.js';
 import {
   getOverlaySnapshot,
+  queryOverlay,
   resetOverlaySnapshotCache,
 } from '../../src/mcp/local/backend-overlay.js';
 import { buildTestGraph } from '../helpers/test-graph.js';
@@ -221,6 +222,36 @@ it('publishes a partial captured workspace graph with parse-error paths without 
     await fs.rm(root, { recursive: true, force: true });
   }
 }, 120_000);
+
+it('builds full-text indexes into the published workspace generation', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-graph-fts-'));
+  try {
+    await fs.mkdir(path.join(root, 'src'), { recursive: true });
+    await fs.writeFile(
+      path.join(root, 'src/a.ts'),
+      'export function uniqueNeedleAlpha() { return 1; }\n',
+    );
+    execFileSync('git', ['-C', root, 'init', '-q']);
+    await runFullAnalysis(
+      root,
+      { workspaceGraph: true, skipNativeClose: true },
+      { onProgress: () => {} },
+    );
+    const { storagePath } = repoManager.getStoragePaths(root);
+    const overlay = path.join(storagePath, 'overlay');
+    const current = (await fs.readFile(path.join(overlay, 'CURRENT'), 'utf8')).trim();
+    const base = JSON.parse(await fs.readFile(path.join(overlay, current, 'base.json'), 'utf8'));
+    expect(base.ftsIndexes).toEqual(expect.arrayContaining(['function_fts']));
+    expect(base.ftsDurationMs).toBeGreaterThanOrEqual(0);
+    const rows = await queryOverlay(
+      { id: 'fts-test', repoPath: root, storagePath },
+      "CALL QUERY_FTS_INDEX('Function', 'function_fts', 'uniqueNeedleAlpha', conjunctive := false) RETURN node.name AS name",
+    );
+    expect(rows.map((row) => (row as { name: string }).name)).toContain('uniqueNeedleAlpha');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
 
 it('marks the graph degraded when parse-error paths exceed the recorded list', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-graph-trunc-'));

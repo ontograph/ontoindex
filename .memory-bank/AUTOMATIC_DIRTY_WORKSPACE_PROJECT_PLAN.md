@@ -401,6 +401,8 @@ the base index; (e) a test with a real workspace generation that fails for: exac
 alphabetical window, `include_paths`, deleted file, and parse-error file. Do not start (b) before (a)
 is measured, because FTS may add a large share of the build time.
 
+Step (a) done 2026-10-17: the workspace build now creates the standard FTS indexes before publishing and records `ftsIndexes` and `ftsDurationMs` in `base.json` (a missing FTS extension leaves an empty list; the generation stays valid). Measured on the 1,673-file copy: 1.4 s for five indexes, generation 50 MiB -> 82 MiB, first `context` call 43.3 s (39.8 s before; run-to-run noise is of similar size). One integration test builds a real workspace generation and runs `QUERY_FTS_INDEX` against it through `queryOverlay`; it fails without the change. Nothing reads the indexes yet (steps b-e).
+
 ## Completed Design Gate
 
 ADW-1 was completed with manager_loop complete-local on 2026-10-17 at revision

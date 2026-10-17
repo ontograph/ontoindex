@@ -951,6 +951,8 @@ async function runWorkspaceAnalysis(
             coverage: 'complete',
             parseErrorCount: 0,
             parseErrorFiles: [] as string[],
+            ftsIndexes: undefined as string[] | undefined,
+            ftsDurationMs: undefined as number | undefined,
             dirtyPaths: [...dirtyPathSet].sort(),
             tombstones: [...dirtyPlan!.tombstones].sort(),
           }
@@ -1013,8 +1015,37 @@ async function runWorkspaceAnalysis(
       },
     );
     const stats = await getLbugStats();
+    let ftsIndexes: string[] | undefined;
+    let ftsDurationMs: number | undefined;
+    if (workspaceGraph) {
+      // Pool readers are read-only and cannot create indexes, so build them before publishing.
+      const ftsStart = Date.now();
+      const counts = countGraphNodesByLabel(pipelineResult.graph);
+      ftsIndexes = [];
+      for (const { table, indexName, properties } of FTS_INDEXES) {
+        if ((counts.get(table) ?? 0) === 0) continue;
+        try {
+          await createFTSIndex(
+            table,
+            indexName,
+            selectAnalyzeFTSProperties(table, properties, pipelineResult.graph),
+          );
+          ftsIndexes.push(indexName);
+        } catch (error) {
+          // Without the extension the generation stays valid but cannot rank lexical queries.
+          if (!/FTS extension unavailable/.test(error instanceof Error ? error.message : '')) {
+            throw error;
+          }
+          ftsIndexes = [];
+          break;
+        }
+      }
+      ftsDurationMs = Date.now() - ftsStart;
+    }
     await closeLbugForPath(overlayDbPath);
     if (workspaceGraph) {
+      overlayBase.ftsIndexes = ftsIndexes;
+      overlayBase.ftsDurationMs = ftsDurationMs;
       // A truncated path list cannot say which files failed, so no path may be called authoritative.
       const parseErrorListTruncated = parseErrorCount > parseErrorFiles.size;
       overlayBase.coverage =
