@@ -51,8 +51,10 @@ import type {
 import { RepoHandle } from './tool-params.js';
 import {
   getOverlaySnapshot,
+  hasPinnedOverlay,
   isDirtyPath,
   isOverlayReplacedPath,
+  overlayRepoId,
   queryOverlay,
 } from './backend-overlay.js';
 import type { OverlaySnapshot } from './backend-overlay.js';
@@ -1661,6 +1663,16 @@ export async function query(
   }
   // HEAD-keyed cached results cannot describe an overlay generation.
   const bypassStructuredCache = overlaySnapshot?.usable === true || !!overlayWarning;
+  // A pinned workspace generation with full-text indexes ranks the whole working tree. The
+  // overlay pool id resolves to that pinned generation, so ranking and enrichment read it
+  // instead of the committed index. Typed queries keep the dirty-file merge.
+  const workspaceLane =
+    searchInput.mode !== 'typed' &&
+    overlaySnapshot?.usable === true &&
+    overlaySnapshot.capability === 'workspace-graph' &&
+    (overlaySnapshot.ftsIndexes?.length ?? 0) > 0 &&
+    hasPinnedOverlay(repo.id);
+  const graphId = workspaceLane ? overlayRepoId(repo.id) : repo.id;
 
   // ONTOINDEX_INTENT_ENSEMBLE=1 activates per-intent weighted-RRF (v13 P1 W1b-step-1).
   // Default OFF — existing v12 RRF code path runs unchanged for all production users.
@@ -1810,15 +1822,33 @@ export async function query(
     typedCandidateMap = routed.candidateMap;
   } else {
     const [bm25SearchResult, semanticSearchResults] = await Promise.all([
-      timer.time('bm25', bm25SearchImpl(repo, searchQuery, searchLimit)),
-      timer.time('vector', semanticSearchImpl(repo, searchQuery, searchLimit, intentModelOverride)),
+      timer.time(
+        'bm25',
+        bm25SearchImpl(workspaceLane ? { ...repo, id: graphId } : repo, searchQuery, searchLimit),
+      ),
+      workspaceLane
+        ? Promise.resolve([] as Awaited<ReturnType<typeof semanticSearchImpl>>)
+        : timer.time(
+            'vector',
+            semanticSearchImpl(repo, searchQuery, searchLimit, intentModelOverride),
+          ),
     ]);
+    if (workspaceLane) {
+      typedWarnings.push(
+        'Vector search is unavailable on the working-tree graph; results use full-text ranking only.',
+      );
+    }
 
     bm25Results = bm25SearchResult.results as EnrichedSymbolRow[];
     semanticResults = semanticSearchResults as EnrichedSymbolRow[];
     ftsUsed = bm25SearchResult.ftsUsed;
 
-    if (params.retrieval_policy === 'symbol-neighborhood') {
+    if (params.retrieval_policy === 'symbol-neighborhood' && workspaceLane) {
+      // The frontier reads base embeddings and ANN edges; none exist for the working tree.
+      typedWarnings.push(
+        'retrieval_policy symbol-neighborhood is unavailable on the working-tree graph and was ignored.',
+      );
+    } else if (params.retrieval_policy === 'symbol-neighborhood') {
       frontierResult = await timer.time(
         'semantic_frontier',
         runSymbolNeighborhoodFrontierSearch(
@@ -1848,14 +1878,14 @@ export async function query(
       const graphSeeds = bm25Results.slice(0, 10);
       graphResults = await timer.time(
         'graph_traversal',
-        graphTraversalRank(repo.id, graphSeeds, graphEdgeTypes, 2, 50),
+        graphTraversalRank(graphId, graphSeeds, graphEdgeTypes, 2, 50),
       );
     }
   }
 
   let overlayApplied = false;
   if (overlayWarning) typedWarnings.push(overlayWarning);
-  if (overlaySnapshot?.usable) {
+  if (overlaySnapshot?.usable && !workspaceLane) {
     try {
       const terms = [...new Set(searchQuery.toLowerCase().split(/\s+/).filter(Boolean))];
       // Scalar predicates avoid unreliable untyped IN-list scans while retaining
@@ -2041,7 +2071,7 @@ export async function query(
     let processRows: ProcessLookupRow[] = [];
     try {
       processRows = (await executeParameterized(
-        repo.id,
+        graphId,
         `
         MATCH (n {id: $nodeId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
         RETURN p.id AS pid, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
@@ -2056,7 +2086,7 @@ export async function query(
     let module: string | undefined;
     try {
       const cohesionRows = (await executeParameterized(
-        repo.id,
+        graphId,
         `
         MATCH (n {id: $nodeId})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
         RETURN c.cohesion AS cohesion, c.heuristicLabel AS module
@@ -2076,7 +2106,7 @@ export async function query(
     if (includeContent) {
       try {
         const contentRows = (await executeParameterized(
-          repo.id,
+          graphId,
           `
           MATCH (n {id: $nodeId})
           RETURN n.content AS content
@@ -2094,7 +2124,7 @@ export async function query(
     let citationPath: string | undefined;
     try {
       const citationRows = (await executeParameterized(
-        repo.id,
+        graphId,
         `
         MATCH (m)-[r:CodeRelation]->(n {id: $nodeId})
         WHERE r.type IN ['CALLS', 'IMPORTS']
@@ -2264,7 +2294,7 @@ export async function query(
       Promise.all(
         dedupedSymbols
           .slice(0, TOP_N_FOR_BFS)
-          .map((s) => computeGraphPathWithDiagnostics(repo.id, s.id)),
+          .map((s) => computeGraphPathWithDiagnostics(graphId, s.id)),
       ),
     );
     for (let i = 0; i < TOP_N_FOR_BFS; i++) {
@@ -2311,7 +2341,7 @@ export async function query(
       ).slice(0, 5);
       await Promise.all(
         topFilePaths.map(async (fp) => {
-          const text = await getFileSkeleton(repo.id, fp, skeletonDepth);
+          const text = await getFileSkeleton(graphId, fp, skeletonDepth);
           if (text) skeletons[fp] = text;
         }),
       );

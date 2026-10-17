@@ -40,6 +40,8 @@ export interface OverlaySnapshot {
   usable: boolean;
   capability?: 'symbols' | 'workspace-graph';
   coverage?: 'complete' | 'degraded' | 'partial';
+  /** Full-text indexes built into a workspace-graph generation (empty or absent: no lexical lane). */
+  ftsIndexes?: readonly string[];
   /** Why the overlay is not usable (for diagnostics); null when usable. */
   reason: string | null;
   /** Repo-relative paths that are dirty (modified/added/untracked/deleted); base symbols for these are stale. */
@@ -171,6 +173,11 @@ export async function withPinnedOverlay<T>(
 
 export const overlayRepoId = (repoId: string): string => `${repoId}::overlay`;
 
+/** True when the current request holds a pinned overlay generation for this repository. */
+export function hasPinnedOverlay(repoId: string): boolean {
+  return pinnedOverlay.getStore()?.repoId === repoId;
+}
+
 function validGeneration(value: string): string | null {
   const id = value.trim();
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) ? id : null;
@@ -222,6 +229,7 @@ async function computeSnapshot(
     generation?: string;
     capability?: OverlaySnapshot['capability'];
     coverage?: OverlaySnapshot['coverage'];
+    ftsIndexes?: readonly string[];
   } = { dirtyPaths, parseErrorPaths: new Set(), overlayPaths, uncoveredPaths, tombstones };
 
   let dbPath: string;
@@ -245,6 +253,7 @@ async function computeSnapshot(
     includePaths?: string[];
     capability?: OverlaySnapshot['capability'];
     coverage?: OverlaySnapshot['coverage'];
+    ftsIndexes?: unknown;
     dirtyPaths?: string[];
     tombstones?: string[];
   };
@@ -288,6 +297,12 @@ async function computeSnapshot(
   if (workspaceGraph) {
     base.capability = 'workspace-graph';
     base.coverage = recordedBase.coverage;
+    if (
+      Array.isArray(recordedBase.ftsIndexes) &&
+      recordedBase.ftsIndexes.every((item) => typeof item === 'string')
+    ) {
+      base.ftsIndexes = recordedBase.ftsIndexes as string[];
+    }
     overlayPaths.clear();
     for (const rel of dirtyPaths) if (!tombstones.has(rel)) overlayPaths.add(rel);
     uncoveredPaths.clear();
