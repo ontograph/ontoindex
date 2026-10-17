@@ -1860,30 +1860,46 @@ export async function query(
       const terms = [...new Set(searchQuery.toLowerCase().split(/\s+/).filter(Boolean))];
       // Scalar predicates avoid unreliable untyped IN-list scans while retaining
       // the database result limit.
+      // A workspace graph is the whole truth: every file is searched and no base row survives.
+      const wholeWorkspace = overlaySnapshot.capability === 'workspace-graph';
       const overlayPathSet = overlaySnapshot.overlayPaths;
       const overlayPaths = [...overlayPathSet];
+      const termPredicate = terms
+        .map((_, i) => `(lower(n.name) CONTAINS $term${i} OR lower(n.filePath) CONTAINS $term${i})`)
+        .join(' OR ');
       const overlayRawRows =
-        overlaySnapshot.overlayPaths.size === 0
+        !wholeWorkspace && overlaySnapshot.overlayPaths.size === 0
           ? []
           : await queryOverlay<LookupRow>(
               repo,
               `MATCH (n)
-             WHERE (${overlayPaths.map((_, i) => `n.filePath = $path${i}`).join(' OR ')})
-               AND (${terms.map((_, i) => `(lower(n.name) CONTAINS $term${i} OR lower(n.filePath) CONTAINS $term${i})`).join(' OR ')})
+             WHERE ${
+               wholeWorkspace
+                 ? `n.filePath IS NOT NULL`
+                 : `(${overlayPaths.map((_, i) => `n.filePath = $path${i}`).join(' OR ')})`
+             }
+               AND (${termPredicate})
              RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
                     n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
              ORDER BY n.filePath, n.id
              LIMIT $limit`,
               {
                 limit: searchLimit,
-                ...Object.fromEntries(overlayPaths.map((filePath, i) => [`path${i}`, filePath])),
+                ...(wholeWorkspace
+                  ? {}
+                  : Object.fromEntries(overlayPaths.map((filePath, i) => [`path${i}`, filePath]))),
                 ...Object.fromEntries(terms.map((term, i) => [`term${i}`, term])),
               },
+              ...(wholeWorkspace ? [overlaySnapshot.generation] : []),
             );
       const overlayRows = overlayRawRows
         .filter((row) => {
           const filePath = rowValue(row, 'filePath', 3);
-          return typeof filePath === 'string' && overlayPathSet.has(filePath.replace(/\\/g, '/'));
+          if (typeof filePath !== 'string') return false;
+          const normalized = filePath.replace(/\\/g, '/');
+          return wholeWorkspace
+            ? !overlaySnapshot!.tombstones.has(normalized)
+            : overlayPathSet.has(normalized);
         })
         .slice(0, searchLimit);
       const overlayResults: MutableEnrichedSymbolRow[] = overlayRows.map((row) => ({
@@ -1891,7 +1907,7 @@ export async function query(
         source: 'overlay',
       }));
       const keepBase = (row: EnrichedSymbolRow) =>
-        !isOverlayReplacedPath(overlaySnapshot!, row.filePath);
+        !wholeWorkspace && !isOverlayReplacedPath(overlaySnapshot!, row.filePath);
       // Commit the replacement only after every overlay read succeeds.
       const cleanBm25 = bm25Results.filter(keepBase);
       const cleanSemantic = semanticResults.filter(keepBase);
@@ -1910,7 +1926,7 @@ export async function query(
       lockedResults = cleanLocked;
       if (typedCandidateMap) {
         for (const [key, candidate] of typedCandidateMap) {
-          if (isOverlayReplacedPath(overlaySnapshot, candidate.filePath))
+          if (wholeWorkspace || isOverlayReplacedPath(overlaySnapshot, candidate.filePath))
             typedCandidateMap.delete(key);
         }
       }
