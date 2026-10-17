@@ -1515,11 +1515,27 @@ export class LocalBackend implements BackendPort {
     if (!this.groupToolSvc) {
       const port: GroupToolPort = {
         resolveRepo: (p) => this.resolveRepo(p),
+        // With the workspace flag on, group fan-out must use the same gate and pinned generation
+        // as the public tools; flag off keeps the direct handlers.
         impact: (r, p, options) =>
-          this.withOperation(() => this.impact(r as RepoHandle, { ...p, signal: options?.signal })),
-        query: (r, p) => this.withOperation(() => this.query(r as RepoHandle, p)),
+          this.withOperation(() =>
+            process.env.ONTOINDEX_AUTO_WORKSPACE === '1'
+              ? this.dispatchRepoTool('impact', { ...p, repo: r.id, signal: options?.signal })
+              : this.impact(r as RepoHandle, { ...p, signal: options?.signal }),
+          ),
+        query: (r, p) =>
+          this.withOperation(() =>
+            process.env.ONTOINDEX_AUTO_WORKSPACE === '1'
+              ? this.dispatchRepoTool('query', { ...p, repo: r.id })
+              : this.query(r as RepoHandle, p),
+          ),
         impactByUid: (id, uid, d, o) => this.withOperation(() => this.impactByUid(id, uid, d, o)),
-        context: (r, p) => this.withOperation(() => this.context(r as RepoHandle, p)),
+        context: (r, p) =>
+          this.withOperation(() =>
+            process.env.ONTOINDEX_AUTO_WORKSPACE === '1'
+              ? this.dispatchRepoTool('context', { ...p, repo: r.id })
+              : this.context(r as RepoHandle, p),
+          ),
       };
       this.groupToolSvc = new GroupService(port);
     }

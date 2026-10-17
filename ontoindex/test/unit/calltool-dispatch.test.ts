@@ -384,6 +384,30 @@ describe('request workspace gate', () => {
       expect(handler).not.toHaveBeenCalled();
       expect(prepareWorkspaceRead).not.toHaveBeenCalled();
     });
+
+    describe('group service ports', () => {
+      const ports = ['impact', 'query', 'context'] as const;
+      const call = (port: (typeof ports)[number]) => {
+        const svc = backend.getGroupService() as any;
+        const repo = { id: repoId } as any;
+        const params = { target: 'x', query: 'x', name: 'x' };
+        return svc.port[port](repo, params, {});
+      };
+
+      it.each(ports)('routes %s through the workspace gate when the flag is on', async (port) => {
+        vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+        const handler = vi.fn(async () => ({ ok: port }));
+        (backend as any).repoToolHandlers[port] = handler;
+        expect(await call(port)).toMatchObject({ ok: port });
+        expect(prepareWorkspaceRead).toHaveBeenCalledOnce();
+      });
+
+      it.each(ports)('does not prepare a workspace for %s when the flag is off', async (port) => {
+        vi.spyOn(backend as any, port).mockResolvedValue({ ok: port });
+        expect(await call(port)).toMatchObject({ ok: port });
+        expect(prepareWorkspaceRead).not.toHaveBeenCalled();
+      });
+    });
   });
 });
 
