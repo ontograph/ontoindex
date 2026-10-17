@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +8,142 @@ import {
   ensureRepoInitialized,
   RepoPreparationWaitError,
   resolveRepoFromHandles,
+  prepareWorkspaceRead,
 } from '../../src/mcp/local/local-backend-repo-runtime.js';
+import type { OverlaySnapshot } from '../../src/mcp/local/backend-overlay.js';
+
+describe('workspace read preparation', () => {
+  afterEach(() => vi.unstubAllEnvs());
+  let sequence = 0;
+  function fixture() {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    const dirty: OverlaySnapshot = {
+      usable: false,
+      reason: 'missing',
+      dirtyPaths: new Set(['a.ts']),
+      parseErrorPaths: new Set(),
+      overlayPaths: new Set(),
+      uncoveredPaths: new Set(),
+      tombstones: new Set(),
+    };
+    const ready: OverlaySnapshot = {
+      ...dirty,
+      usable: true,
+      reason: null,
+      capability: 'workspace-graph',
+      coverage: 'complete',
+    };
+    const release = vi.fn(async () => {});
+    const dependencies = {
+      getSnapshot: vi
+        .fn(async () => dirty)
+        .mockResolvedValueOnce(dirty)
+        .mockResolvedValue(ready),
+      acquireLock: vi.fn(async () => ({ release })),
+      buildWorkspaceGraph: vi.fn(async () => {}),
+      evictSnapshot: vi.fn(),
+    };
+    const options = {
+      repo: { id: `workspace-${sequence++}`, repoPath: '/repo', storagePath: '/repo/.ontoindex' },
+      needsRelationships: true,
+      dependencies,
+    };
+    return { dirty, ready, release, dependencies, options };
+  }
+  it.each(['clean', 'flag off', 'symbols'])('does not build for %s', async (kind) => {
+    const f = fixture();
+    if (kind === 'clean') f.dirty.dirtyPaths = new Set();
+    if (kind === 'flag off') vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
+    if (kind === 'symbols') f.options.needsRelationships = false;
+    expect(await prepareWorkspaceRead(f.options)).toBe(f.dirty);
+    expect(f.dependencies.acquireLock).not.toHaveBeenCalled();
+    expect(f.dependencies.buildWorkspaceGraph).not.toHaveBeenCalled();
+  });
+  it('builds, releases, evicts, and validates a new snapshot', async () => {
+    const f = fixture();
+    expect(await prepareWorkspaceRead(f.options)).toBe(f.ready);
+    expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce();
+    expect(f.release).toHaveBeenCalledOnce();
+    expect(f.dependencies.evictSnapshot).toHaveBeenCalledWith(f.options.repo.id);
+    expect(f.dependencies.getSnapshot).toHaveBeenCalledTimes(2);
+  });
+  it('shares concurrent builds and collapses changed snapshots into one successor', async () => {
+    const f = fixture();
+    let finish!: () => void;
+    f.dependencies.getSnapshot.mockResolvedValue(f.dirty);
+    f.dependencies.buildWorkspaceGraph.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const first = prepareWorkspaceRead(f.options);
+    const shared = prepareWorkspaceRead(f.options);
+    await vi.waitFor(() => expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce());
+    f.dependencies.getSnapshot.mockResolvedValue({ ...f.dirty, dirtyPaths: new Set(['b.ts']) });
+    const second = prepareWorkspaceRead(f.options);
+    const third = prepareWorkspaceRead(f.options);
+    await vi.waitFor(() => expect(f.dependencies.getSnapshot).toHaveBeenCalledTimes(4));
+    f.dependencies.getSnapshot.mockResolvedValue(f.ready);
+    finish();
+    await Promise.all([first, shared, second, third]);
+    expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledTimes(2);
+  });
+  it('returns busy without building when the lock is held', async () => {
+    const f = fixture();
+    f.dependencies.acquireLock.mockRejectedValue(new Error('OntoIndex analyze is already running'));
+    await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({ code: 'workspace_busy' });
+    expect(f.dependencies.buildWorkspaceGraph).not.toHaveBeenCalled();
+  });
+  it('releases a failed build and retries on the next request', async () => {
+    const f = fixture();
+    f.dependencies.buildWorkspaceGraph.mockRejectedValueOnce(new Error('broken'));
+    f.dependencies.getSnapshot.mockResolvedValue(f.dirty);
+    await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({
+      code: 'workspace_build_failed',
+    });
+    expect(f.release).toHaveBeenCalledOnce();
+    f.dependencies.getSnapshot.mockResolvedValueOnce(f.dirty).mockResolvedValue(f.ready);
+    await prepareWorkspaceRead(f.options);
+    expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledTimes(2);
+  });
+  it.each(['timeout', 'cancelled'])(
+    'bounds one waiter with %s without stopping another',
+    async (code) => {
+      const f = fixture();
+      const controller = new AbortController();
+      let finish!: () => void;
+      f.dependencies.getSnapshot.mockResolvedValue(f.dirty);
+      f.dependencies.buildWorkspaceGraph.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const first = prepareWorkspaceRead({
+        ...f.options,
+        signal: controller.signal,
+        deadline: performance.now() + (code === 'timeout' ? 40 : 1000),
+      });
+      const rejected = expect(first).rejects.toMatchObject({ code: `workspace_${code}` });
+      const second = prepareWorkspaceRead(f.options);
+      await vi.waitFor(() => expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce());
+      if (code === 'cancelled') controller.abort();
+      await rejected;
+      f.dependencies.getSnapshot.mockResolvedValue(f.ready);
+      finish();
+      expect(await second).toBe(f.ready);
+      expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce();
+    },
+  );
+  it('rejects an unusable snapshot after building', async () => {
+    const f = fixture();
+    f.dependencies.getSnapshot.mockResolvedValue(f.dirty);
+    await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({
+      code: 'workspace_build_failed',
+    });
+  });
+});
 
 describe('generation reopen retry', () => {
   it.each(['close', 'init'])(

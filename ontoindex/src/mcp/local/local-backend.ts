@@ -4,6 +4,8 @@
  * Provides tool implementations using local .ontoindex/ indexes.
  * Supports multiple indexed repositories via a global registry.
  * LadybugDB connections are opened lazily per repo on first query.
+ * ONTOINDEX_AUTO_WORKSPACE=1 prepares dirty workspace graphs at the read gate;
+ * leaving it unset preserves the existing overlay snapshot behavior.
  */
 
 import path from 'path';
@@ -11,12 +13,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { performance } from 'node:perf_hooks';
 import { canonicalRepoId, registryRepoIds } from '../shared/target-context.js';
 import fs from 'fs/promises';
-import {
-  evictOverlayState,
-  getOverlaySnapshot,
-  withPinnedOverlay,
-  type OverlaySnapshot,
-} from './backend-overlay.js';
+import { evictOverlayState, withPinnedOverlay, type OverlaySnapshot } from './backend-overlay.js';
 import { RepoHandle, BackendPort } from 'ontoindex-shared';
 import { recordToolCall } from './tool-telemetry.js';
 import {
@@ -134,7 +131,9 @@ import { normalizeLimit } from './tool-utils.js';
 import {
   buildAvailableRepoLabels,
   ensureRepoInitialized,
+  prepareWorkspaceRead,
   resolveRepoFromHandles,
+  WorkspacePreparationError,
 } from './local-backend-repo-runtime.js';
 import {
   formatRepoResolutionError,
@@ -1234,7 +1233,29 @@ const UNGATED_REPO_TOOLS = new Set([
   'move_symbol', // Mutation owners.
 ]);
 
-function workspacePreparationError(error: unknown): Error & { code: string } {
+const RELATIONSHIP_TOOLS = new Set([
+  'context',
+  'impact',
+  'impact_batch',
+  'api_impact',
+  'cycle_detect',
+  'coupling_matrix',
+  'boundary_violations',
+  'hotspot_analysis',
+  'dead_code',
+  'tech_debt',
+  'audit_report',
+  'ipc_trace',
+  'evidence_pack',
+]);
+
+function workspacePreparationError(error: unknown): Error & { code: string; retryable?: boolean } {
+  if (error instanceof WorkspacePreparationError) {
+    return Object.assign(new Error(`workspace_preparation_failed: ${error.message}`), {
+      code: error.code,
+      retryable: error.code === 'workspace_busy' || error.code === 'workspace_timeout',
+    });
+  }
   return Object.assign(new Error(`workspace_preparation_failed: ${errorMessage(error)}`), {
     code: 'workspace_preparation_failed',
   });
@@ -2051,7 +2072,11 @@ export class LocalBackend implements BackendPort {
       const deadline = performance.now() + 60_000;
       let snapshot: OverlaySnapshot;
       try {
-        snapshot = await getOverlaySnapshot(repo);
+        snapshot = await prepareWorkspaceRead({
+          repo,
+          needsRelationships: RELATIONSHIP_TOOLS.has(method),
+          deadline,
+        });
       } catch (error) {
         throw workspacePreparationError(error);
       }

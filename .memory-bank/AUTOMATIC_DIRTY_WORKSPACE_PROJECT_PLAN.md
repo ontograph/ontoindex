@@ -333,6 +333,38 @@ today gets NO automatic dirty-workspace answer: `ontoindex context` still return
 results or a manual overlay. Missing entirely: eight-idle-repos / 60 s eviction, hard-link
 rejection, nested-repo rejection in capture, CLI backend disposal.
 
+## First end-to-end route (2026-10-17, branch feat/automatic-dirty-workspace)
+
+Checkpoint commit `b4a1041` holds the program up to review round 2 (41 files; the three
+pre-existing dirty files, `Makefile` and `justfile` were not staged). On top of it, an
+opt-in route now exists, OFF by default:
+
+- `prepareWorkspaceRead` (`local-backend-repo-runtime.ts`), active only when
+  `ONTOINDEX_AUTO_WORKSPACE=1`: clean tree returns the plain snapshot; otherwise it uses
+  `selectWorkspaceCapability`, and for relationship reads on a dirty tree builds ONE isolated
+  workspace graph under the existing analyze lock (`workspace_busy` if held, never waits),
+  coalesced per repo with one pending successor, per-waiter timeout/abort, then re-reads the
+  snapshot and refuses to return an unusable one. Typed `WorkspacePreparationError` codes:
+  `workspace_busy | workspace_build_failed | workspace_timeout | workspace_cancelled`.
+- `dispatchRepoTool` calls it for graph reads; `RELATIONSHIP_TOOLS` need relationships.
+- `resolveSymbolCandidates` treats a workspace-graph snapshot as the whole truth (base rows
+  dropped, tombstones kept) and tags symbols `graph: 'workspace-graph'`; `context` and
+  `impact` then run real relationship traversal through `queryOverlay` on the pinned
+  generation (`impact-kernel.ts` takes an optional `query`, default unchanged). A symbol in a
+  parse-error file reports `graphImpactAvailable:false` / UNKNOWN.
+
+Measured end to end (tmp repo, committed index + dirty edit, `context`/`impact`):
+flag unset: `freshlyAdded` NOT found, `impact callee` LOW/1 from the committed graph (the
+dirty edit is invisible). Flag set: `freshlyAdded` found with `source: workspace-graph`,
+`graphImpactAvailable:true`, callers of `callee` populated, ~2.5 s for the first call
+(includes the build), ~1.3 s earlier on the symbols-only path. 139 test files, 1979 tests
+passed / 13 skipped, `tsc` clean, eslint 0 errors.
+
+Not done on this route: search (ADW-5d), lazy super-tools / facade aliases (5f), resources
+(5g), pagination (5h), docs (5i), CLI disposal, idle eviction, a retry/backoff policy for
+failed builds, a build-cost gate for large repos (47 s / 1.9 GiB measured on 1.3k files), and
+default-on activation. A watch-driven background refresh is not connected either.
+
 Open: independent challenger over the round-2 fixes and ADW-5b/5c;
 
 ## Completed Design Gate

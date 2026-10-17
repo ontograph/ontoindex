@@ -45,6 +45,7 @@ interface ResolvedSymbol {
   endLine: number;
   content?: string;
   source?: 'overlay';
+  graph?: 'workspace-graph';
 }
 
 interface AmbiguousSymbol extends ResolvedSymbol {
@@ -66,6 +67,7 @@ type SymbolResolutionOutcome =
       kind: 'ok';
       symbol: ResolvedSymbol;
       resolvedLabel: string;
+      snapshot?: OverlaySnapshot;
     }
   | {
       kind: 'ambiguous';
@@ -213,7 +215,10 @@ async function readOverlayRows(
     rows: (rows as QueryRow[]).filter((row) => {
       const filePath = rowValue(row, 'filePath', 3);
       return (
-        typeof filePath === 'string' && snapshot.overlayPaths.has(filePath.replace(/\\/g, '/'))
+        typeof filePath === 'string' &&
+        (snapshot.capability === 'workspace-graph'
+          ? !snapshot.tombstones.has(filePath.replace(/\\/g, '/'))
+          : snapshot.overlayPaths.has(filePath.replace(/\\/g, '/')))
       );
     }),
   };
@@ -236,6 +241,7 @@ function filterBaseRows(
     if (overlay.overlayAvailable && isOverlayReplacedPath(overlay.snapshot, normalized)) {
       continue;
     }
+    if (overlay.overlayAvailable && overlay.snapshot.capability === 'workspace-graph') continue;
     kept.push(row);
   }
   return { rows: kept, tombstones: [...tombstones] };
@@ -287,13 +293,16 @@ export async function resolveSymbolCandidates(
         ...overlay.rows.map((row) => ({
           ...parseSymbolRow(row, include_content),
           source: 'overlay' as const,
+          ...(overlay?.snapshot.capability === 'workspace-graph'
+            ? { graph: 'workspace-graph' as const }
+            : {}),
         })),
       );
     }
     if (candidates.length === 0) return notFoundForTombstones(filtered.tombstones);
     const symbol = candidates[0];
     await enrichCandidateLabels(repo, [symbol]);
-    return { kind: 'ok', symbol, resolvedLabel: symbol.type };
+    return { kind: 'ok', symbol, resolvedLabel: symbol.type, snapshot: overlay?.snapshot };
   }
 
   if (!name) return { kind: 'not_found' };
@@ -325,6 +334,9 @@ export async function resolveSymbolCandidates(
     ...(overlay?.rows ?? []).map((r) => ({
       ...parseSymbolRow(r, include_content),
       source: 'overlay' as const,
+      ...(overlay?.snapshot.capability === 'workspace-graph'
+        ? { graph: 'workspace-graph' as const }
+        : {}),
     })),
   ];
 
@@ -350,6 +362,7 @@ export async function resolveSymbolCandidates(
               kind: 'ok',
               symbol: preferred,
               resolvedLabel: label,
+              snapshot: overlay?.snapshot,
             };
           }
         }
@@ -362,6 +375,7 @@ export async function resolveSymbolCandidates(
       kind: 'ok',
       symbol: normalized[0],
       resolvedLabel: '',
+      snapshot: overlay?.snapshot,
     };
   }
 
@@ -387,7 +401,12 @@ export async function resolveSymbolCandidates(
   });
 
   if (scored.length >= 2 && scored[0].score >= 0.95 && scored[0].score - scored[1].score > 0.09) {
-    return { kind: 'ok', symbol: scored[0], resolvedLabel: scored[0].type };
+    return {
+      kind: 'ok',
+      symbol: scored[0],
+      resolvedLabel: scored[0].type,
+      snapshot: overlay?.snapshot,
+    };
   }
 
   return { kind: 'ambiguous', candidates: scored };

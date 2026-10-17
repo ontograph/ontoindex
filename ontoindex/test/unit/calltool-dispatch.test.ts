@@ -70,7 +70,20 @@ vi.mock('../../src/mcp/local/backend-overlay.js', async (importOriginal) => {
   };
 });
 
+vi.mock('../../src/mcp/local/local-backend-repo-runtime.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../src/mcp/local/local-backend-repo-runtime.js')>();
+  return {
+    ...actual,
+    prepareWorkspaceRead: vi.fn(({ repo }) => getOverlaySnapshot(repo)),
+  };
+});
+
 import { LocalBackend, getReadRequestContext } from '../../src/mcp/local/local-backend.js';
+import {
+  prepareWorkspaceRead,
+  WorkspacePreparationError,
+} from '../../src/mcp/local/local-backend-repo-runtime.js';
 import {
   getOverlaySnapshot,
   withPinnedOverlay,
@@ -156,6 +169,7 @@ describe('request workspace gate', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    vi.mocked(prepareWorkspaceRead).mockImplementation(({ repo }) => getOverlaySnapshot(repo));
     vi.mocked(getOverlaySnapshot).mockImplementation(async () => cleanSnapshot());
     vi.mocked(withPinnedOverlay).mockImplementation(async (_repo, _snapshot, fn) => fn());
     backend = new LocalBackend();
@@ -177,6 +191,7 @@ describe('request workspace gate', () => {
     };
     expect(await backend.callTool('overview', { timeoutMs: 1 })).toEqual(['nested']);
     expect(getOverlaySnapshot).toHaveBeenCalledTimes(1);
+    expect(prepareWorkspaceRead).toHaveBeenCalledTimes(1);
     expect(getReadRequestContext()).toBeUndefined();
   });
 
@@ -203,6 +218,31 @@ describe('request workspace gate', () => {
     },
   );
 
+  it.each([
+    ['context', true],
+    ['impact', true],
+    ['impact_batch', true],
+    ['api_impact', true],
+    ['cycle_detect', true],
+    ['coupling_matrix', true],
+    ['boundary_violations', true],
+    ['hotspot_analysis', true],
+    ['dead_code', true],
+    ['tech_debt', true],
+    ['audit_report', true],
+    ['ipc_trace', true],
+    ['evidence_pack', true],
+    ['query', false],
+  ])('prepares %s with needsRelationships=%s', async (method, needsRelationships) => {
+    (backend as any).repoToolHandlers[method as string] = async () => [];
+    await (backend as any).dispatchRepoTool(method, {});
+    expect(prepareWorkspaceRead).toHaveBeenCalledWith({
+      repo: expect.objectContaining({ repoPath: MOCK_REPO_ENTRY.path }),
+      needsRelationships,
+      deadline: expect.any(Number),
+    });
+  });
+
   it('keeps diagnostic, history, lifecycle, mutation and global routes ungated', async () => {
     for (const method of [
       'gn_diagnose',
@@ -224,6 +264,7 @@ describe('request workspace gate', () => {
     }
     await backend.callTool('list_repos', {});
     expect(getOverlaySnapshot).not.toHaveBeenCalled();
+    expect(prepareWorkspaceRead).not.toHaveBeenCalled();
   });
 
   it('fails preparation with a typed error before running the handler', async () => {
@@ -233,6 +274,23 @@ describe('request workspace gate', () => {
     await expect(backend.callTool('overview', {})).rejects.toMatchObject({
       code: 'workspace_preparation_failed',
       message: 'workspace_preparation_failed: capture failed',
+    });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['workspace_busy', true],
+    ['workspace_timeout', true],
+    ['workspace_cancelled', false],
+    ['workspace_build_failed', false],
+  ] as const)('preserves preparation code %s and retryability', async (code, retryable) => {
+    vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(new WorkspacePreparationError(code));
+    const handler = vi.fn();
+    (backend as any).repoToolHandlers.overview = handler;
+    await expect(backend.callTool('overview', {})).rejects.toMatchObject({
+      code,
+      retryable,
+      message: expect.stringMatching(/^workspace_preparation_failed:/),
     });
     expect(handler).not.toHaveBeenCalled();
   });

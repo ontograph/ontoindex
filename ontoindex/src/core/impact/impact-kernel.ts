@@ -83,6 +83,7 @@ export interface RunImpactKernelOptions {
   classSeedExpansion?: boolean;
   dirtyPaths?: ReadonlySet<string>;
   signal?: AbortSignal;
+  query?: (cypher: string, params: Record<string, unknown>) => Promise<unknown[]>;
 }
 
 type QueryRow = Record<string, unknown> | readonly unknown[];
@@ -245,6 +246,8 @@ async function expandClassSeeds(
   symId: string,
   symType: string,
   signal?: AbortSignal,
+  query: NonNullable<RunImpactKernelOptions['query']> = (cypher, params) =>
+    executeParameterized(repo.id, cypher, params),
 ): Promise<{ seedIds: string[]; warnings: string[] }> {
   const seedIds = [symId];
   const warnings: string[] = [];
@@ -253,8 +256,7 @@ async function expandClassSeeds(
   try {
     throwIfAborted(signal);
     const [ctorRows, fileRows] = await Promise.all([
-      executeParameterized(
-        repo.id,
+      query(
         `
         MATCH (n)-[hm:CodeRelation]->(c:Constructor)
         WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
@@ -263,8 +265,7 @@ async function expandClassSeeds(
       `,
         { symId },
       ),
-      executeParameterized(
-        repo.id,
+      query(
         `
         MATCH (f:File)-[rel:CodeRelation]->(n)
         WHERE n.id = $symId AND rel.type = 'DEFINES'
@@ -312,7 +313,7 @@ export async function runImpactKernel(
   const expansion =
     opts.classSeedExpansion === false
       ? { seedIds: [symId], warnings: [] }
-      : await expandClassSeeds(repo, symId, symType, opts.signal);
+      : await expandClassSeeds(repo, symId, symType, opts.signal, opts.query);
   warnings.push(...expansion.warnings);
 
   const visited = new Set<string>(expansion.seedIds);
@@ -338,7 +339,9 @@ export async function runImpactKernel(
 
     let related: ImpactRelatedRow[];
     try {
-      related = (await executeParameterized(repo.id, query, {
+      related = (await (
+        opts.query ?? ((cypher, params) => executeParameterized(repo.id, cypher, params))
+      )(query, {
         frontierIds: frontier,
       })) as ImpactRelatedRow[];
     } catch (err) {

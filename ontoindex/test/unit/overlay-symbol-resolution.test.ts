@@ -17,6 +17,10 @@ const { pool, overlay } = vi.hoisted(() => ({
         return snapshot.overlayPaths.has(normalized) || snapshot.tombstones.has(normalized);
       },
     ),
+    isAuthoritativePath: vi.fn(
+      (snapshot: { parseErrorPaths: Set<string> }, filePath: string) =>
+        !snapshot.parseErrorPaths.has(filePath.replace(/\\/g, '/')),
+    ),
     queryOverlay: vi.fn(),
   },
 }));
@@ -222,6 +226,115 @@ describe('symbol resolution with a dirty overlay', () => {
     expect(result).toMatchObject({
       kind: 'not_found',
       warning: expect.stringContaining('src/deleted.ts'),
+    });
+  });
+  it.each([{ name: 'lookup' }, { uid: 'workspace-id' }])(
+    'uses the complete workspace graph for %o and drops all base rows',
+    async (query) => {
+      const snapshot: OverlaySnapshot = {
+        ...usable,
+        reason: null,
+        parseErrorPaths: new Set(),
+        capability: 'workspace-graph',
+        generation: 'workspace-generation',
+      };
+      pool.executeParameterized.mockResolvedValue([row('stale-id', 'src/clean.ts')]);
+      overlay.queryOverlay.mockResolvedValue([row('workspace-id', 'src/clean.ts')]);
+      const result = await resolveSymbolCandidates(repo, query, {}, { snapshot });
+      expect(result).toMatchObject({
+        kind: 'ok',
+        symbol: {
+          id: 'workspace-id',
+          source: 'overlay',
+          graph: 'workspace-graph',
+        },
+      });
+      if (result.kind === 'ok') expect(result.snapshot).toBe(snapshot);
+    },
+  );
+
+  it('excludes tombstones from the complete workspace graph with a deletion warning', async () => {
+    const snapshot: OverlaySnapshot = {
+      ...usable,
+      reason: null,
+      parseErrorPaths: new Set(),
+      capability: 'workspace-graph',
+      tombstones: new Set(['src/deleted.ts']),
+    };
+    pool.executeParameterized.mockResolvedValue([row('deleted-id', 'src/deleted.ts')]);
+    overlay.queryOverlay.mockResolvedValue([row('deleted-id', 'src/deleted.ts')]);
+    await expect(
+      resolveSymbolCandidates(repo, { name: 'lookup' }, {}, { snapshot }),
+    ).resolves.toEqual({ kind: 'not_found', warning: 'Deleted source path(s): src/deleted.ts' });
+  });
+
+  it('traverses workspace callers of an unchanged symbol through the pinned graph', async () => {
+    const { runImpact } = await import('../../src/mcp/local/backend-impact.js');
+    const snapshot: OverlaySnapshot = {
+      ...usable,
+      reason: null,
+      parseErrorPaths: new Set(),
+      capability: 'workspace-graph',
+      generation: 'workspace-generation',
+    };
+    overlay.getOverlaySnapshot.mockResolvedValue(snapshot);
+    pool.executeParameterized.mockResolvedValue([row('base-id', 'src/clean.ts')]);
+    overlay.queryOverlay.mockImplementation(async (_repo, cypher, params) => {
+      if (params.symName) return [row('workspace-id', 'src/clean.ts')];
+      if (cypher.includes('RETURN n.id AS sourceId'))
+        return [
+          {
+            sourceId: 'workspace-id',
+            id: 'caller-id',
+            name: 'caller',
+            type: 'Function',
+            filePath: 'src/dirty.ts',
+            relType: 'CALLS',
+            confidence: 0.9,
+          },
+        ];
+      return [];
+    });
+    const result = await runImpact(
+      { ...repo, name: 'repo' },
+      {
+        target: 'lookup',
+        direction: 'upstream',
+        maxDepth: 1,
+      },
+    );
+    expect(result).toMatchObject({
+      source: 'workspace-graph',
+      graphImpactAvailable: true,
+      impactedCount: 1,
+      byDepth: { 1: [{ id: 'caller-id' }] },
+    });
+    expect(overlay.queryOverlay.mock.calls.every((call) => call[3] === snapshot.generation)).toBe(
+      true,
+    );
+    expect(pool.executeParameterized).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses authoritative impact when a workspace target failed parsing', async () => {
+    const { runImpact } = await import('../../src/mcp/local/backend-impact.js');
+    overlay.getOverlaySnapshot.mockResolvedValue({
+      ...usable,
+      capability: 'workspace-graph',
+      parseErrorPaths: new Set(['src/dirty.ts']),
+    });
+    overlay.queryOverlay.mockResolvedValue([row('workspace-id', 'src/dirty.ts')]);
+    const result = await runImpact(
+      { ...repo, name: 'repo' },
+      {
+        target: 'lookup',
+        direction: 'upstream',
+      },
+    );
+    expect(result).toMatchObject({
+      source: 'workspace-graph',
+      risk: 'UNKNOWN',
+      graphImpactAvailable: false,
+      error: expect.stringContaining('not proof of zero impact'),
     });
   });
 });

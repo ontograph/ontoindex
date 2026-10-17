@@ -17,6 +17,10 @@ const { pool, overlay, execFileText } = vi.hoisted(() => ({
         return snapshot.overlayPaths.has(normalized) || snapshot.tombstones.has(normalized);
       },
     ),
+    isAuthoritativePath: vi.fn(
+      (snapshot: { parseErrorPaths: Set<string> }, filePath: string) =>
+        !snapshot.parseErrorPaths.has(filePath.replace(/\\/g, '/')),
+    ),
     queryOverlay: vi.fn(),
   },
   execFileText: vi.fn(),
@@ -65,6 +69,9 @@ describe('overlay context and impact', () => {
       const normalized = filePath.replace(/\\/g, '/');
       return snapshot.overlayPaths.has(normalized) || snapshot.tombstones.has(normalized);
     });
+    overlay.isAuthoritativePath.mockImplementation(
+      (snapshot, filePath) => !snapshot.parseErrorPaths.has(filePath.replace(/\\/g, '/')),
+    );
     pool.executeParameterized.mockResolvedValue([]);
     pool.executeQuery.mockResolvedValue([]);
     overlay.getOverlaySnapshot.mockResolvedValue(usable);
@@ -116,6 +123,55 @@ describe('overlay context and impact', () => {
         expect.any(Object),
         undefined,
       );
+    },
+  );
+
+  it.each([false, true])(
+    'uses workspace graph relationships (parse error: %s)',
+    async (parseError) => {
+      const current = symbol();
+      overlay.getOverlaySnapshot.mockResolvedValue({
+        ...usable,
+        capability: 'workspace-graph',
+        coverage: parseError ? 'partial' : 'complete',
+        generation: 'workspace-generation',
+        parseErrorPaths: new Set(parseError ? [current.filePath] : []),
+      });
+      overlay.queryOverlay.mockImplementation(async (_repo, query: string) => {
+        if (query.includes('AS startLine')) return [current];
+        if (query.includes('AS relType'))
+          return [
+            {
+              relType: 'CALLS',
+              uid: 'neighbor',
+              name: 'neighbor',
+              filePath: 'src/other.ts',
+              kind: 'Function',
+            },
+          ];
+        return [];
+      });
+      const result = await context(repo, { name: current.name });
+      expect(result).toMatchObject({
+        source: 'workspace-graph',
+        graphImpactAvailable: !parseError,
+        incoming: { calls: [{ uid: 'neighbor' }] },
+        outgoing: { calls: [{ uid: 'neighbor' }] },
+      });
+      expect(
+        pool.executeParameterized.mock.calls.every((call) => !call[1].includes('CodeRelation')),
+      ).toBe(true);
+      expect(overlay.queryOverlay).toHaveBeenCalledWith(
+        expect.objectContaining({ id: repo.id }),
+        expect.stringContaining('AS relType'),
+        { symId: current.id },
+        'workspace-generation',
+      );
+      if (parseError)
+        expect(result).toMatchObject({
+          warnings: ['Symbol file failed to parse; relationships may be incomplete'],
+          contextCompleteness: { missingReasons: expect.arrayContaining(['parse-error-file']) },
+        });
     },
   );
 

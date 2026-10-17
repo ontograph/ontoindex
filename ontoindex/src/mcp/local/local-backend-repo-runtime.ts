@@ -3,6 +3,207 @@ import syncFs from 'node:fs';
 import path from 'path';
 import { RepoHandle } from 'ontoindex-shared';
 import { resolveActiveIndexGeneration } from '../../storage/repo-manager.js';
+import {
+  evictOverlayState,
+  getOverlaySnapshot,
+  isResolverConfigPath,
+  selectWorkspaceCapability,
+  type OverlaySnapshot,
+} from './backend-overlay.js';
+
+export interface WorkspaceReadRepo {
+  id: string;
+  repoPath: string;
+  storagePath: string;
+}
+
+export interface WorkspacePreparationDependencies {
+  getSnapshot(repo: WorkspaceReadRepo): Promise<OverlaySnapshot>;
+  acquireLock(repoPath: string): Promise<{ release(): Promise<void> }>;
+  buildWorkspaceGraph(repoPath: string, signal?: AbortSignal): Promise<void>;
+  evictSnapshot(repoId: string): void;
+}
+
+export class WorkspacePreparationError extends Error {
+  constructor(
+    public readonly code:
+      | 'workspace_busy'
+      | 'workspace_build_failed'
+      | 'workspace_timeout'
+      | 'workspace_cancelled',
+    message: string = code,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = 'WorkspacePreparationError';
+  }
+}
+
+const workspaceDependencies: WorkspacePreparationDependencies = {
+  getSnapshot: getOverlaySnapshot,
+  acquireLock: async (repoPath) =>
+    (await import('../../cli/analyze.js')).acquireAnalyzeLock(repoPath),
+  buildWorkspaceGraph: async (repoPath) => {
+    const { runFullAnalysis } = await import('../../core/run-analyze.js');
+    await runFullAnalysis(
+      repoPath,
+      { workspaceGraph: true, skipNativeClose: true },
+      { onProgress() {} },
+    );
+  },
+  evictSnapshot: evictOverlayState,
+};
+
+interface WorkspaceBuild {
+  identity: string;
+  promise: Promise<OverlaySnapshot>;
+  pending?: {
+    identity: string;
+    run: () => Promise<OverlaySnapshot>;
+    promise: Promise<OverlaySnapshot>;
+    resolve: (value: OverlaySnapshot) => void;
+    reject: (error: unknown) => void;
+  };
+}
+const workspaceBuilds = new Map<string, WorkspaceBuild>();
+
+function workspaceBuild(
+  repoId: string,
+  identity: string,
+  run: () => Promise<OverlaySnapshot>,
+): Promise<OverlaySnapshot> {
+  const current = workspaceBuilds.get(repoId);
+  if (current) {
+    if (current.identity === identity && !current.pending) return current.promise;
+    if (!current.pending) {
+      let resolve!: (value: OverlaySnapshot) => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise<OverlaySnapshot>((yes, no) => {
+        resolve = yes;
+        reject = no;
+      });
+      void promise.catch(() => {});
+      current.pending = { identity, run, promise, resolve, reject };
+    } else {
+      current.pending.run = run;
+      current.pending.identity = identity;
+    }
+    return current.pending.promise;
+  }
+  const state: WorkspaceBuild = { identity, promise: Promise.resolve().then(run) };
+  workspaceBuilds.set(repoId, state);
+  const settle = () => {
+    workspaceBuilds.delete(repoId);
+    if (state.pending) {
+      const pending = state.pending;
+      workspaceBuild(repoId, pending.identity, pending.run).then(pending.resolve, pending.reject);
+    }
+  };
+  state.promise = state.promise.then(
+    (value) => {
+      settle();
+      return value;
+    },
+    (error) => {
+      settle();
+      throw error;
+    },
+  );
+  void state.promise.catch(() => {});
+  return state.promise;
+}
+
+export async function prepareWorkspaceRead(options: {
+  repo: WorkspaceReadRepo;
+  needsRelationships: boolean;
+  signal?: AbortSignal;
+  deadline?: number;
+  dependencies?: Partial<WorkspacePreparationDependencies>;
+}): Promise<OverlaySnapshot> {
+  const dependencies = { ...workspaceDependencies, ...options.dependencies };
+  if (process.env.ONTOINDEX_AUTO_WORKSPACE !== '1') return dependencies.getSnapshot(options.repo);
+  const deadline = Math.min(options.deadline ?? Infinity, performance.now() + 60_000);
+  if (options.signal?.aborted) throw new WorkspacePreparationError('workspace_cancelled');
+  if (!(deadline > performance.now())) throw new WorkspacePreparationError('workspace_timeout');
+  // Bound the entire preparation, including the initial snapshot probe, per caller.
+  const work = async () => {
+    const snapshot = await dependencies.getSnapshot(options.repo);
+    if (snapshot.dirtyPaths.size === 0) return snapshot;
+    const activeBaseChanged = snapshot.reason?.includes('active base') ?? false;
+    const decision = selectWorkspaceCapability({
+      eligibleChangeCount: snapshot.dirtyPaths.size,
+      configChanged: [...snapshot.dirtyPaths].some(isResolverConfigPath),
+      needsRelationships: options.needsRelationships,
+      haveUsableSymbolsOverlay: snapshot.usable && snapshot.capability !== 'workspace-graph',
+      haveUsableWorkspaceGraph:
+        snapshot.usable &&
+        snapshot.capability === 'workspace-graph' &&
+        snapshot.coverage !== 'degraded',
+      baseMatches: !activeBaseChanged,
+      headChanged: activeBaseChanged,
+    });
+    if (decision.action !== 'build-workspace-graph') return snapshot;
+    const identity = JSON.stringify([
+      snapshot.generation,
+      snapshot.reason,
+      [...snapshot.dirtyPaths].sort(),
+    ]);
+    return workspaceBuild(options.repo.id, identity, async () => {
+      let lock: Awaited<ReturnType<WorkspacePreparationDependencies['acquireLock']>>;
+      try {
+        lock = await dependencies.acquireLock(options.repo.repoPath);
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        throw new WorkspacePreparationError(
+          /already running|Cannot safely recover|recovering the analyze lock/i.test(message)
+            ? 'workspace_busy'
+            : 'workspace_build_failed',
+          message,
+          { cause },
+        );
+      }
+      try {
+        try {
+          await dependencies.buildWorkspaceGraph(options.repo.repoPath);
+        } finally {
+          await lock.release();
+        }
+        dependencies.evictSnapshot(options.repo.id);
+        const updated = await dependencies.getSnapshot(options.repo);
+        if (!updated.usable) throw new Error(updated.reason ?? 'Workspace snapshot is unusable');
+        return updated;
+      } catch (cause) {
+        throw new WorkspacePreparationError(
+          'workspace_build_failed',
+          cause instanceof Error ? cause.message : String(cause),
+          { cause },
+        );
+      }
+    });
+  };
+  return new Promise<OverlaySnapshot>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: unknown, value?: OverlaySnapshot) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      options.signal?.removeEventListener('abort', abort);
+      if (error) reject(error);
+      else resolve(value!);
+    };
+    const abort = () => finish(new WorkspacePreparationError('workspace_cancelled'));
+    const timer = setTimeout(
+      () => finish(new WorkspacePreparationError('workspace_timeout')),
+      Math.max(0, deadline - performance.now()),
+    );
+    options.signal?.addEventListener('abort', abort, { once: true });
+    if (options.signal?.aborted) abort();
+    void work().then(
+      (value) => finish(undefined, value),
+      (error) => finish(error),
+    );
+  });
+}
 
 interface EnsureRepoInitializedOptions {
   repoId: string;
