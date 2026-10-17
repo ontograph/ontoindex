@@ -371,6 +371,36 @@ default-on activation. A watch-driven background refresh is not connected either
 
 Open: independent challenger over the round-2 fixes and ADW-5b/5c;
 
+## Search on a workspace graph — design (2026-10-17, not implemented)
+
+Facts from source: `query()` (`backend-search.ts`) ranks with BM25 (`searchFTSFromLbug`, FTS indexes), a
+vector lane (embeddings), a graph-traversal lane and typed candidates, then enriches rows from the base
+graph. The workspace-graph build (`run-analyze.ts`, workspaceGraph branch) writes nodes and edges only:
+no FTS index step, `embeddings: 0`, `embeddingLifecycle` off. Pool queries open the database read-only, so
+`CREATE_FTS_INDEX` cannot run at query time. A reverted attempt (89b00aa) replaced ranking with an
+alphabetical substring scan, which lost exact hits, applied `include_paths` after the limit, skipped
+enrichment and read the base skeleton.
+
+Options considered:
+1. Substring scan on the workspace graph (the reverted attempt). Cheap, wrong ranking. Rejected.
+2. Build FTS indexes inside the workspace build, then run the existing BM25 lane on the pinned
+   generation. Correct lexical ranking for dirty and clean files, one extra build phase (cost on the
+   order of the committed FTS phase), no vector lane. Needs `searchFTSFromLbug` to accept an executor
+   bound to the pinned generation (it already has an executor seam) and the build to call the existing
+   `createFTSIndex` before publish.
+3. Keep base ranking and only re-rank/replace rows from the dirty set, adding new dirty symbols by the
+   existing symbols-overlay merge (today's behavior). No new cost, but clean files whose resolution
+   changed because of config or neighbouring edits keep stale rows.
+
+Recommendation: option 3 stays the default for `query`. Option 2 is the only correct way to be
+authoritative, so implement it in this order: (a) FTS phase in the workspace build, behind the existing
+size gate, measured; (b) BM25 lane on the pinned generation with the same limit/`include_paths`
+semantics as today; (c) rows tagged `workspace-graph`, enrichment (processes, content, skeleton) read
+from the same generation; (d) vector lane reported as unavailable in `warnings` rather than served from
+the base index; (e) a test with a real workspace generation that fails for: exact hit beyond the
+alphabetical window, `include_paths`, deleted file, and parse-error file. Do not start (b) before (a)
+is measured, because FTS may add a large share of the build time.
+
 ## Completed Design Gate
 
 ADW-1 was completed with manager_loop complete-local on 2026-10-17 at revision
