@@ -344,6 +344,7 @@ interface WorkerExtractedData {
   constructorBindings: FileConstructorBindings[];
   fileScopeBindings: FileScopeBindings[];
   fileTimings: ParseFileTiming[];
+  parseErrorPaths: string[];
   extractorTimings: ParseExtractorTiming[];
   degraded?: {
     reason: string;
@@ -382,6 +383,7 @@ const createEmptyWorkerExtractedData = (): WorkerExtractedData => ({
   constructorBindings: [],
   fileScopeBindings: [],
   fileTimings: [],
+  parseErrorPaths: [],
   extractorTimings: [],
   parsedFiles: [],
 });
@@ -430,6 +432,7 @@ const appendWorkerExtractedData = (
   for (const item of src.constructorBindings) target.constructorBindings.push(item);
   for (const item of src.fileScopeBindings) target.fileScopeBindings.push(item);
   for (const item of src.fileTimings) target.fileTimings.push(item);
+  for (const item of src.parseErrorPaths) target.parseErrorPaths.push(item);
   for (const item of src.extractorTimings) target.extractorTimings.push(item);
   for (const item of src.parsedFiles) target.parsedFiles.push(item);
   if (src.degraded) {
@@ -522,6 +525,9 @@ const mergeWorkerChunkResults = (
     if (result.parsedFiles) {
       for (const item of result.parsedFiles) extracted.parsedFiles.push(item);
     }
+    if (result.parseErrorPaths) {
+      for (const item of result.parseErrorPaths) extracted.parseErrorPaths.push(item);
+    }
     if (result.fileTimings) {
       for (const item of result.fileTimings) extracted.fileTimings.push(item);
     }
@@ -602,6 +608,7 @@ const clearParseWorkerResult = (result: ParseWorkerResult): void => {
   result.parsedFiles.length = 0;
   result.processedPaths.length = 0;
   result.fileTimings.length = 0;
+  result.parseErrorPaths.length = 0;
   result.extractorTimings.length = 0;
   result.skippedLanguages = {};
   result.fileCount = 0;
@@ -953,6 +960,7 @@ const prepareSequentialFile = async (
   file: { path: string; content: string },
   astCache: ASTCache,
   skippedLanguages: Map<string, number>,
+  parseErrorPaths: string[],
 ): Promise<PreparedSequentialFile | null> => {
   // Extension/basename wins; extensionless scripts fall back to the bounded
   // first-line shebang so sequential parsing matches parent/worker decisions.
@@ -992,6 +1000,8 @@ const prepareSequentialFile = async (
     console.warn(`Skipping unparseable file: ${file.path}`);
     return null;
   }
+
+  if (tree.rootNode.hasError) parseErrorPaths.push(file.path);
 
   const maxAstNodes = getParseMaxAstNodes();
   const astNodeCount = tree.rootNode.descendantCount + 1;
@@ -1465,7 +1475,13 @@ const processSequentialFiles = async (
 
     if (i % 20 === 0) await yieldToEventLoop();
 
-    const preparedFile = await prepareSequentialFile(parser, file, astCache, skippedLanguages);
+    const preparedFile = await prepareSequentialFile(
+      parser,
+      file,
+      astCache,
+      skippedLanguages,
+      combinedData.parseErrorPaths,
+    );
     if (!preparedFile) {
       // Lightweight fallback for oversized or unparseable files
       const language = getLanguageFromFilename(file.path) ?? getLanguageFromShebang(file.content);
@@ -1528,6 +1544,7 @@ export const processParsing = async (
   onSubBatchStart?: WorkerSubBatchStartCallback,
   onWorkerResult?: WorkerResultCallback,
   workerFailureMode: ParseWorkerRetryPolicy = PARSE_WORKER_RETRY_POLICY_SEQUENTIAL,
+  onSequentialParseErrors?: (paths: string[]) => void,
 ): Promise<WorkerExtractedData | null> => {
   const legacySignature = typeof repoPathOrSymbolTable !== 'string';
   const repoPath = legacySignature ? '' : repoPathOrSymbolTable;
@@ -1585,6 +1602,13 @@ export const processParsing = async (
 
   // Fallback: sequential parsing mutates the graph/symbol table directly and
   // intentionally has no worker-extracted data for parse-impl to consume.
-  await processParsingSequential(graph, files, symbolTable, astCache, onFileProgress);
+  const sequentialData = await processParsingSequential(
+    graph,
+    files,
+    symbolTable,
+    astCache,
+    onFileProgress,
+  );
+  onSequentialParseErrors?.(sequentialData.parseErrorPaths);
   return null;
 };

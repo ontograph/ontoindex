@@ -12,6 +12,10 @@ import path from 'path';
 import { inject } from 'vitest';
 import {
   initLbug,
+  withPinnedGeneration,
+  getPinnedRepoId,
+  getLbugDbPath,
+  executeParameterized,
   executeQuery,
   closeLbug,
   addPoolCloseListener,
@@ -177,5 +181,122 @@ describe('lbug pool generation swap', () => {
       generationId: 'generation-n-plus-one',
     });
     expect(await executeQuery(repoId, 'MATCH (f:File) RETURN count(f) AS total')).toBeDefined();
+  });
+
+  async function pinnedFixture() {
+    const template = inject<'lbugDbPath'>('lbugDbPath');
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-request-pin-'));
+    const storage = path.join(tmpRoot, '.ontoindex');
+    const publish = async (id: string) => {
+      const generation = await createIndexGeneration(storage, id);
+      await copyGeneration(path.dirname(template), generation.generationPath);
+      await fs.writeFile(
+        generation.metaPath,
+        JSON.stringify({
+          repoPath: '.',
+          lastCommit: id,
+          indexedAt: id,
+          generationId: id,
+          stats: { files: 1 },
+        }),
+      );
+      await fs.writeFile(generation.snapshotPath, '{}');
+      // Publication renames the staging directory; the activation reports the final paths.
+      return (await publishIndexGenerationTransaction(storage, generation, async () => {}))
+        .activeGeneration;
+    };
+    const a = await publish('pin-a');
+    const b = await publish('pin-b');
+    // Publishing activates each generation, so point the stable alias back at A.
+    const current = path.join(storage, 'current');
+    await fs.rm(current, { force: true });
+    await fs.symlink(a.generationPath, current, 'dir');
+    const markers = async () =>
+      (await fs.readdir(a.generationPath)).filter((n) => n.startsWith('.reader-'));
+    return { a, b, current, stable: path.join(current, path.basename(template)), markers };
+  }
+
+  it('keeps both query paths pinned across publication and restores the mutable alias', async () => {
+    const { a, b, current, stable, markers } = await pinnedFixture();
+    await initLbug(repoId, stable);
+    let pinned!: string;
+    await withPinnedGeneration(repoId, stable, async () => {
+      pinned = getPinnedRepoId(repoId)!;
+      expect(getLbugDbPath(pinned)).toBe(await fs.realpath(a.lbugPath));
+      expect(await markers()).toHaveLength(1);
+      const before = await executeQuery(repoId, 'MATCH (f:File) RETURN count(f) AS total');
+      await fs.rm(current);
+      await fs.symlink(b.generationPath, current, 'dir');
+      await initLbug(repoId, stable);
+      expect(
+        await executeParameterized(repoId, 'MATCH (f:File) RETURN count(f) AS total', {}),
+      ).toEqual(before);
+      expect(getLbugDbPath(pinned)).toBe(await fs.realpath(a.lbugPath));
+      expect(await markers()).toHaveLength(1);
+    });
+    expect(getPinnedRepoId(repoId)).toBeUndefined();
+    expect(getLbugDbPath(pinned)).toBeUndefined();
+    expect(await markers()).toHaveLength(0);
+    expect(getLbugDbPath(repoId)).toBe(await fs.realpath(b.lbugPath));
+    expect(await executeQuery(repoId, 'MATCH (f:File) RETURN count(f) AS total')).toBeDefined();
+  });
+
+  it('releases failed scopes and reuses nested scopes', async () => {
+    const { stable, markers } = await pinnedFixture();
+    let pinned!: string;
+    const error = new Error('request failed');
+    await expect(
+      withPinnedGeneration(repoId, stable, async () => {
+        pinned = getPinnedRepoId(repoId)!;
+        await withPinnedGeneration(repoId, stable, async () => {
+          expect(getPinnedRepoId(repoId)).toBe(pinned);
+        });
+        expect(getLbugDbPath(pinned)).toBeDefined();
+        throw error;
+      }),
+    ).rejects.toBe(error);
+    expect(getLbugDbPath(pinned)).toBeUndefined();
+    expect(await markers()).toHaveLength(0);
+  });
+
+  it('shares concurrent scopes and closes only on the final release', async () => {
+    const { stable, markers } = await pinnedFixture();
+    let finishFirst!: () => void;
+    let finishSecond!: () => void;
+    let firstStarted!: () => void;
+    let secondStarted!: () => void;
+    const firstReady = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    const secondReady = new Promise<void>((resolve) => {
+      secondStarted = resolve;
+    });
+    const firstEnd = new Promise<void>((resolve) => {
+      finishFirst = resolve;
+    });
+    const secondEnd = new Promise<void>((resolve) => {
+      finishSecond = resolve;
+    });
+    let pinned!: string;
+    const first = withPinnedGeneration(repoId, stable, async () => {
+      pinned = getPinnedRepoId(repoId)!;
+      firstStarted();
+      await firstEnd;
+    });
+    await firstReady;
+    const second = withPinnedGeneration(repoId, stable, async () => {
+      expect(getPinnedRepoId(repoId)).toBe(pinned);
+      secondStarted();
+      await secondEnd;
+    });
+    await secondReady;
+    expect(await markers()).toHaveLength(1);
+    finishFirst();
+    await first;
+    expect(getLbugDbPath(pinned)).toBeDefined();
+    finishSecond();
+    await second;
+    expect(getLbugDbPath(pinned)).toBeUndefined();
+    expect(await markers()).toHaveLength(0);
   });
 });

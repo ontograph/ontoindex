@@ -17,6 +17,7 @@
 
 import fs from 'fs/promises';
 import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import lbug, { type LbugValue } from '@ladybugdb/core';
 import { resolveLocalLbugExtensionPath } from './lbug-adapter.js';
 import { acquireIndexGenerationPin, type IndexGenerationPin } from '../../storage/repo-manager.js';
@@ -113,6 +114,50 @@ interface PoolEntry {
 
 const pool = new Map<string, PoolEntry>();
 const closePromises = new Map<string, Promise<void>>();
+const pinnedContext = new AsyncLocalStorage<ReadonlyMap<string, string>>();
+const pinnedReferences = new Map<string, number>();
+
+export function getPinnedRepoId(repoId: string): string | undefined {
+  return pinnedContext.getStore()?.get(repoId);
+}
+
+/** Keep every query in one request on the generation resolved at admission. */
+export async function withPinnedGeneration<T>(
+  repoId: string,
+  databasePath: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const realDbPath = await fs.realpath(databasePath);
+  const pinnedId = `${repoId}\u0000pin\u0000${realDbPath}`;
+  if (getPinnedRepoId(repoId) === pinnedId) return fn();
+
+  // Reserve before awaiting initialization so concurrent scopes and eviction see it.
+  pinnedReferences.set(pinnedId, (pinnedReferences.get(pinnedId) ?? 0) + 1);
+  try {
+    // A previous final release may still be draining this immutable entry.
+    await closePromises.get(pinnedId);
+    await initLbug(pinnedId, realDbPath);
+    const context = new Map(pinnedContext.getStore());
+    context.set(repoId, pinnedId);
+    return await pinnedContext.run(context, fn);
+  } finally {
+    const remaining = (pinnedReferences.get(pinnedId) ?? 1) - 1;
+    if (remaining > 0) {
+      pinnedReferences.set(pinnedId, remaining);
+    } else {
+      // Keep the entry identified as a pin until closeLbug has selected its
+      // narrow close path; ordinary aliases retain their existing semantics.
+      pinnedReferences.set(pinnedId, 0);
+      try {
+        await closeLbug(pinnedId);
+      } catch (error) {
+        realStderrWrite(`LadybugDB request pin release failed: ${String(error)}\n`);
+      } finally {
+        if (pinnedReferences.get(pinnedId) === 0) pinnedReferences.delete(pinnedId);
+      }
+    }
+  }
+}
 let admissionTail: Promise<void> = Promise.resolve();
 // Failed opens remain fenced until their retry cooldown expires and cleanup succeeds.
 const failedNativeOpens = new Map<string, { shared: SharedDB; failedAt: number; error: Error }>();
@@ -189,7 +234,7 @@ export function addPoolCloseListener(listener: PoolCloseListener): () => void {
 
 /** Return the published generation directory held open for a repo, if any. */
 export function getPinnedGenerationDir(repoId: string): string | undefined {
-  const entry = pool.get(repoId);
+  const entry = pool.get(getPinnedRepoId(repoId) ?? repoId);
   const generationPin = entry && dbCache.get(entry.dbPath)?.generationPin;
   return generationPin?.published ? path.dirname(generationPin.dbPath) : undefined;
 }
@@ -417,7 +462,11 @@ function ensureIdleTimer(): void {
     void retryUnreleasedPins();
     const now = Date.now();
     for (const [repoId, entry] of pool) {
-      if (now - entry.lastUsed > IDLE_TIMEOUT_MS && entry.checkedOut === 0) {
+      if (
+        !pinnedReferences.has(repoId) &&
+        now - entry.lastUsed > IDLE_TIMEOUT_MS &&
+        entry.checkedOut === 0
+      ) {
         void closeOneWhenIdle(repoId).catch((err) =>
           realStderrWrite(`LadybugDB idle close failed: ${String(err)}\n`),
         );
@@ -434,7 +483,7 @@ function ensureIdleTimer(): void {
  * Call this during long-running operations to prevent the connection from being closed.
  */
 export const touchRepo = (repoId: string): void => {
-  const entry = pool.get(repoId);
+  const entry = pool.get(getPinnedRepoId(repoId) ?? repoId);
   if (entry) {
     entry.lastUsed = Date.now();
   }
@@ -460,6 +509,7 @@ async function evictLRU(): Promise<void> {
   let oldestTime = Infinity;
   for (const [id, entry] of pool) {
     if (
+      !pinnedReferences.has(id) &&
       entry.checkedOut === 0 &&
       entry.pendingRetirements.size === 0 &&
       !isAdmissionClosed(entry) &&
@@ -1448,7 +1498,7 @@ export const executeQuery = async <TRow extends object = LbugQueryRow>(
   repoId: string,
   cypher: string,
 ): Promise<LbugQueryResult<TRow>> => {
-  const entry = pool.get(repoId);
+  const entry = pool.get(getPinnedRepoId(repoId) ?? repoId);
   if (!entry) {
     throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
   }
@@ -1505,7 +1555,7 @@ export const executeParameterized = async <TRow extends object = LbugQueryRow>(
   cypher: string,
   params: LbugQueryParams,
 ): Promise<LbugQueryResult<TRow>> => {
-  const entry = pool.get(repoId);
+  const entry = pool.get(getPinnedRepoId(repoId) ?? repoId);
   if (!entry) {
     throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
   }
@@ -1581,6 +1631,10 @@ export const executeParameterized = async <TRow extends object = LbugQueryRow>(
  * If omitted, close all repos.
  */
 export const closeLbug = async (repoId?: string): Promise<void> => {
+  if (repoId && pinnedReferences.has(repoId)) {
+    await closeOneWhenIdle(repoId);
+    return;
+  }
   // Start the retry without awaiting it: close must fence the pool synchronously.
   void retryUnreleasedPins();
   if (repoId) {

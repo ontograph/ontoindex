@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { execFile, spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -251,9 +252,11 @@ export function createDebouncedWatcher(opts: DebouncedWatcherOptions): {
   };
 }
 
-type WatchChild = Pick<ChildProcess, 'once' | 'kill' | 'stdout' | 'stderr'>;
+type WatchChild = Pick<ChildProcess, 'once' | 'removeListener' | 'kill' | 'stdout' | 'stderr'>;
 
 export interface WatchCommandDependencies {
+  refreshCallback?: (reason: 'startup' | 'event' | 'reconcile' | 'base-head') => Promise<void>;
+  retryDelaysMs?: number[];
   spawn: typeof nodeSpawn;
   createWatcher: typeof createDebouncedWatcher;
   isLockHeld: (repoPath: string) => Promise<boolean> | boolean;
@@ -288,7 +291,7 @@ function childEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 export async function createWatchCommand(
   repoPath: string,
   overrides: Partial<WatchCommandDependencies> = {},
-): Promise<{ stop(): void }> {
+): Promise<{ stop(): Promise<void>; owned: boolean }> {
   const deps: WatchCommandDependencies = {
     spawn: nodeSpawn,
     createWatcher: createDebouncedWatcher,
@@ -341,6 +344,31 @@ export async function createWatchCommand(
   let overlayPending = false;
   let attemptedHead: string | undefined;
   let signature: string | undefined;
+  let retryTimer: NodeJS.Timeout | undefined;
+  let inFlightCallback: Promise<void> | undefined;
+  let retryIndex = 0;
+  let retryIdentity: string | undefined;
+  let refreshReason: 'startup' | 'event' | 'reconcile' = 'event';
+  const token = randomUUID();
+  const retryDelays = deps.retryDelaysMs?.length
+    ? deps.retryDelaysMs
+    : [1000, 2000, 4000, 8000, 16000, 30000];
+  const resetRetry = () => {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = undefined;
+    retryIndex = 0;
+  };
+  const scheduleRetry = (head?: string) => {
+    if (stopped || retryTimer) return;
+    retryTimer = setTimeout(
+      () => {
+        retryTimer = undefined;
+        void runChild(head);
+      },
+      retryDelays[Math.min(retryIndex++, retryDelays.length - 1)],
+    );
+    retryTimer.unref();
+  };
   const planSignature = async (
     plan: Awaited<ReturnType<typeof planDirtyOverlay>>,
     generationId: string | null,
@@ -369,7 +397,7 @@ export async function createWatchCommand(
     const base = await deps.readBase(getStoragePaths(repoPath).storagePath);
     return { head, base };
   };
-  const readLease = (): { pid: number; heartbeat: number } | undefined => {
+  const readLease = (): { pid: number; heartbeat: number; token?: string } | undefined => {
     try {
       return JSON.parse(fs.readFileSync(deps.leasePath, 'utf8'));
     } catch {
@@ -385,25 +413,34 @@ export async function createWatchCommand(
     deps.isPidAlive(existing.pid)
   ) {
     deps.log(`another watcher (pid ${existing.pid}) owns this repository; not building overlays`);
-    return { stop() {} };
+    const done = Promise.resolve();
+    return { owned: false, stop: () => done };
   }
   fs.mkdirSync(path.dirname(deps.leasePath), { recursive: true });
   // Exclusive creation prevents two concurrent starts from both claiming a clean lease.
   if (existing) fs.unlinkSync(deps.leasePath);
   try {
-    fs.writeFileSync(deps.leasePath, JSON.stringify({ pid: deps.pid, heartbeat: deps.now() }), {
-      flag: 'wx',
-    });
+    fs.writeFileSync(
+      deps.leasePath,
+      JSON.stringify({ pid: deps.pid, token, heartbeat: deps.now() }),
+      {
+        flag: 'wx',
+      },
+    );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     const owner = readLease();
     deps.log(
       `another watcher (pid ${owner?.pid ?? 'unknown'}) owns this repository; not building overlays`,
     );
-    return { stop() {} };
+    const done = Promise.resolve();
+    return { owned: false, stop: () => done };
   }
   const heartbeat = () =>
-    fs.writeFileSync(deps.leasePath, JSON.stringify({ pid: deps.pid, heartbeat: deps.now() }));
+    fs.writeFileSync(
+      deps.leasePath,
+      JSON.stringify({ pid: deps.pid, token, heartbeat: deps.now() }),
+    );
 
   const runChild = async (baseHead?: string): Promise<void> => {
     if (stopped || child || launching) {
@@ -420,7 +457,25 @@ export async function createWatchCommand(
       }
       if (stopped) return;
       baseRunning = !!baseHead;
-      if (baseHead) attemptedHead = baseHead;
+      if (deps.refreshCallback) {
+        try {
+          const reason = baseHead ? 'base-head' : refreshReason;
+          refreshReason = 'event';
+          // Tracked so stop() can prove the callback settled before releasing ownership.
+          inFlightCallback = deps.refreshCallback(reason);
+          await inFlightCallback;
+          if (baseHead) attemptedHead = baseHead;
+          else signature = requestedSignature;
+          resetRetry();
+        } catch (error) {
+          deps.error(`Watch refresh failed: ${String(error)}`);
+          scheduleRetry(baseHead);
+        } finally {
+          inFlightCallback = undefined;
+          baseRunning = false;
+        }
+        return;
+      }
       await new Promise<void>((resolve) => {
         let settled = false;
         const finish = () => {
@@ -446,6 +501,7 @@ export async function createWatchCommand(
           processChild.stderr?.on('data', (chunk: Buffer | string) => process.stderr.write(chunk));
           processChild.once('error', (error) => {
             deps.error(`Watch ${baseHead ? 'base' : 'overlay'} child failed: ${error.message}`);
+            if (baseHead) scheduleRetry(baseHead);
             finish();
           });
           processChild.once('close', (code, signal) => {
@@ -455,6 +511,10 @@ export async function createWatchCommand(
                 deps.error(
                   `Watch base analyze failed with code ${code ?? `signal ${signal ?? 'unknown'}`}.`,
                 );
+              if (code === 0) {
+                attemptedHead = baseHead;
+                resetRetry();
+              } else scheduleRetry(baseHead);
               overlayPending ||= code === 0;
               finish();
               return;
@@ -474,6 +534,7 @@ export async function createWatchCommand(
           deps.error(
             `Watch ${baseHead ? 'base' : 'overlay'} child failed: ${error instanceof Error ? error.message : String(error)}`,
           );
+          if (baseHead) scheduleRetry(baseHead);
           finish();
         }
       });
@@ -488,7 +549,13 @@ export async function createWatchCommand(
   const refresh = () => runChild();
   const refreshBase = async (head: string | null, commit: string | null): Promise<boolean> => {
     if (!head || !commit || head === commit) return false;
-    if (child || launching || attemptedHead === head || (await deps.isLockHeld(repoPath)))
+    if (
+      child ||
+      launching ||
+      retryTimer ||
+      attemptedHead === head ||
+      (await deps.isLockHeld(repoPath))
+    )
       return true;
     void runChild(head);
     return true;
@@ -505,22 +572,81 @@ export async function createWatchCommand(
     log: deps.log,
   });
 
-  const stop = () => {
-    if (stopped) return;
+  let stopPromise: Promise<void> | undefined;
+  const signalStop = () => {
+    void stop().catch((error) => deps.error(String(error)));
+  };
+  const ownsLease = () => {
+    const lease = readLease();
+    return lease?.pid === deps.pid && lease.token === token;
+  };
+  const stop = (): Promise<void> => {
+    if (stopPromise) return stopPromise;
     stopped = true;
     clearInterval(reconcileTimer);
-    if (readLease()?.pid === deps.pid) fs.unlinkSync(deps.leasePath);
+    resetRetry();
     watcher.stop();
-    child?.kill('SIGTERM');
-    deps.offSignal('SIGINT', stop);
-    deps.offSignal('SIGTERM', stop);
+    deps.offSignal('SIGINT', signalStop);
+    deps.offSignal('SIGTERM', signalStop);
+    const ownedChild = child;
+    const ownedCallback = inFlightCallback;
+    stopPromise = (async () => {
+      if (ownedCallback) {
+        let deadline: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            ownedCallback.then(
+              () => {},
+              () => {},
+            ),
+            new Promise<never>((_, reject) => {
+              deadline = setTimeout(
+                () =>
+                  reject(
+                    new Error('Watch cleanup failure: refresh callback unsettled after 5000ms'),
+                  ),
+                5000,
+              );
+              deadline.unref();
+            }),
+          ]);
+        } finally {
+          clearTimeout(deadline);
+        }
+      }
+      if (ownedChild)
+        await new Promise<void>((resolve, reject) => {
+          const timers: NodeJS.Timeout[] = [];
+          const finish = () => {
+            for (const timer of timers) clearTimeout(timer);
+            ownedChild.removeListener('close', finish);
+            ownedChild.removeListener('exit', finish);
+            resolve();
+          };
+          ownedChild.once('close', finish);
+          ownedChild.once('exit', finish);
+          const killTimer = setTimeout(() => ownedChild.kill('SIGKILL'), 2000);
+          const deadline = setTimeout(() => {
+            clearTimeout(killTimer);
+            ownedChild.removeListener('close', finish);
+            ownedChild.removeListener('exit', finish);
+            reject(new Error('Watch cleanup failure: child exit unproven after 5000ms'));
+          }, 5000);
+          timers.push(killTimer, deadline);
+          killTimer.unref();
+          deadline.unref();
+          ownedChild.kill('SIGTERM');
+        });
+      if (ownsLease()) fs.unlinkSync(deps.leasePath);
+    })();
+    return stopPromise;
   };
   let reconciling = false;
   let planningFailed = false;
   const reconcileTimer = setInterval(() => {
     if (stopped || reconciling) return;
-    if (readLease()?.pid !== deps.pid) {
-      stop();
+    if (!ownsLease()) {
+      signalStop();
       return;
     }
     heartbeat();
@@ -529,6 +655,12 @@ export async function createWatchCommand(
       .planDirtyOverlay(repoPath)
       .then(async (plan) => {
         const { head, base } = await readState();
+        const identity = JSON.stringify([head, await planSignature(plan, base.generationId)]);
+        if (retryIdentity !== identity) {
+          resetRetry();
+          retryIdentity = identity;
+        }
+        refreshReason = 'reconcile';
         if (stopped || (await refreshBase(head, base.commit))) return;
         if (
           !stopped &&
@@ -546,14 +678,16 @@ export async function createWatchCommand(
       });
   }, deps.reconcileMs);
   reconcileTimer.unref();
-  deps.onSignal('SIGINT', stop);
-  deps.onSignal('SIGTERM', stop);
+  deps.onSignal('SIGINT', signalStop);
+  deps.onSignal('SIGTERM', signalStop);
   watcher.start();
 
   try {
     const plan = await deps.planDirtyOverlay(repoPath);
     const { head, base } = await readState();
     signature = await planSignature(plan, base.generationId);
+    retryIdentity = JSON.stringify([head, signature]);
+    refreshReason = 'startup';
     const dirtyCount = plan.allDirtyPaths.length;
     const startupState =
       dirtyCount === 0
@@ -573,7 +707,7 @@ export async function createWatchCommand(
     );
   }
 
-  return { stop };
+  return { stop, owned: true };
 }
 
 export async function watchCommand(inputPath = process.cwd()): Promise<void> {

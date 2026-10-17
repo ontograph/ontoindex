@@ -25,6 +25,7 @@ vi.mock('../../src/core/lbug/pool-adapter.js', () => pool);
 vi.mock('../../src/mcp/local/backend-overlay.js', () => overlay);
 
 import { resolveSymbolCandidates } from '../../src/mcp/local/backend-symbol-resolution.js';
+import type { OverlaySnapshot } from '../../src/mcp/local/backend-overlay.js';
 
 const repo = { id: 'repo', repoPath: '/repo', storagePath: '/store' };
 const usable = {
@@ -81,6 +82,7 @@ describe('symbol resolution with a dirty overlay', () => {
       }),
       expect.stringContaining('WHERE n.name = $symName'),
       { symName: 'lookup' },
+      undefined,
     );
   });
 
@@ -116,13 +118,83 @@ describe('symbol resolution with a dirty overlay', () => {
     expect(result).toMatchObject({ kind: 'ok', symbol: { id: 'base-id' } });
   });
 
-  it('preserves base candidates when the overlay disappears after the snapshot', async () => {
+  it('rejects when the overlay disappears after a usable snapshot', async () => {
     pool.executeParameterized.mockResolvedValue([row('base-id', 'src/dirty.ts')]);
     overlay.queryOverlay.mockRejectedValueOnce(new Error('no published overlay'));
 
-    const result = await resolveSymbolCandidates(repo, { name: 'lookup' }, {});
+    await expect(resolveSymbolCandidates(repo, { name: 'lookup' }, {})).rejects.toThrow(
+      'no published overlay',
+    );
+  });
 
-    expect(result).toMatchObject({ kind: 'ok', symbol: { id: 'base-id' } });
+  it.each([{ name: 'lookup' }, { uid: 'overlay-id' }])(
+    'uses the explicit snapshot for %o without rereading CURRENT',
+    async (query) => {
+      const snapshot: OverlaySnapshot = {
+        ...usable,
+        reason: null,
+        parseErrorPaths: new Set(),
+        generation: 'pinned-generation',
+      };
+      overlay.queryOverlay.mockResolvedValue([row('overlay-id', 'src/dirty.ts')]);
+
+      const result = await resolveSymbolCandidates(repo, query, {}, { snapshot });
+
+      expect(result).toMatchObject({ kind: 'ok', symbol: { id: 'overlay-id', source: 'overlay' } });
+      expect(overlay.getOverlaySnapshot).not.toHaveBeenCalled();
+      expect(overlay.queryOverlay.mock.calls[0][3]).toBe('pinned-generation');
+    },
+  );
+
+  it('resolves only the new name of a renamed symbol in the explicit snapshot', async () => {
+    const snapshot: OverlaySnapshot = {
+      ...usable,
+      reason: null,
+      parseErrorPaths: new Set(),
+      tombstones: new Set(['src/old.ts']),
+    };
+    pool.executeParameterized.mockImplementation(async (_repo, _cypher, params) =>
+      params.symName === 'oldName' ? [row('old-id', 'src/old.ts', 'oldName')] : [],
+    );
+    overlay.queryOverlay.mockImplementation(async (_repo, _cypher, params) =>
+      params.symName === 'newName' ? [row('new-id', 'src/dirty.ts', 'newName')] : [],
+    );
+
+    await expect(
+      resolveSymbolCandidates(repo, { name: 'oldName' }, {}, { snapshot }),
+    ).resolves.toEqual({ kind: 'not_found', warning: 'Deleted source path(s): src/old.ts' });
+    await expect(
+      resolveSymbolCandidates(repo, { name: 'newName' }, {}, { snapshot }),
+    ).resolves.toMatchObject({ kind: 'ok', symbol: { id: 'new-id', name: 'newName' } });
+  });
+
+  it('propagates a generation mismatch instead of returning a base identity', async () => {
+    pool.executeParameterized.mockResolvedValue([row('base-id', 'src/clean.ts')]);
+    overlay.queryOverlay.mockRejectedValue(
+      new Error('overlay generation changed since the snapshot was validated'),
+    );
+    const snapshot: OverlaySnapshot = {
+      ...usable,
+      reason: null,
+      parseErrorPaths: new Set(),
+      generation: 'pinned',
+    };
+
+    await expect(
+      resolveSymbolCandidates(repo, { name: 'lookup' }, {}, { snapshot }),
+    ).rejects.toThrow('overlay generation changed since the snapshot was validated');
+  });
+
+  it('keeps base-only resolution for an explicit unusable snapshot without querying overlay', async () => {
+    const snapshot: OverlaySnapshot = { ...unusable, reason: null, parseErrorPaths: new Set() };
+    pool.executeParameterized.mockResolvedValue([row('base-id', 'src/dirty.ts')]);
+    overlay.queryOverlay.mockRejectedValue(new Error('no published overlay'));
+
+    await expect(
+      resolveSymbolCandidates(repo, { name: 'lookup' }, {}, { snapshot }),
+    ).resolves.toMatchObject({ kind: 'ok', symbol: { id: 'base-id' } });
+    expect(overlay.getOverlaySnapshot).not.toHaveBeenCalled();
+    expect(overlay.queryOverlay).not.toHaveBeenCalled();
   });
 
   it('preserves base-only behavior for an unusable snapshot', async () => {

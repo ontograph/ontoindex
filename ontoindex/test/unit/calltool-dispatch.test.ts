@@ -53,7 +53,29 @@ vi.mock('../../src/mcp/core/embedder.js', () => ({
   getEmbeddingDims: vi.fn().mockReturnValue(384),
 }));
 
-import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+vi.mock('../../src/mcp/local/backend-overlay.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/mcp/local/backend-overlay.js')>();
+  return {
+    ...actual,
+    getOverlaySnapshot: vi.fn(async () => ({
+      usable: false,
+      reason: 'no dirty files',
+      dirtyPaths: new Set<string>(),
+      parseErrorPaths: new Set<string>(),
+      overlayPaths: new Set<string>(),
+      uncoveredPaths: new Set<string>(),
+      tombstones: new Set<string>(),
+    })),
+    withPinnedOverlay: vi.fn(async (_repo, _snapshot, fn) => fn()),
+  };
+});
+
+import { LocalBackend, getReadRequestContext } from '../../src/mcp/local/local-backend.js';
+import {
+  getOverlaySnapshot,
+  withPinnedOverlay,
+  type OverlaySnapshot,
+} from '../../src/mcp/local/backend-overlay.js';
 import { listRegisteredRepos, cleanupOldKuzuFiles } from '../../src/storage/repo-manager.js';
 import {
   initLbug,
@@ -119,6 +141,125 @@ afterEach(async () => {
 });
 
 // ─── LocalBackend lifecycle ──────────────────────────────────────────
+
+describe('request workspace gate', () => {
+  let backend: LocalBackend;
+  const cleanSnapshot = (): OverlaySnapshot => ({
+    usable: false,
+    reason: 'no dirty files',
+    dirtyPaths: new Set(),
+    parseErrorPaths: new Set(),
+    overlayPaths: new Set(),
+    uncoveredPaths: new Set(),
+    tombstones: new Set(),
+  });
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.mocked(getOverlaySnapshot).mockImplementation(async () => cleanSnapshot());
+    vi.mocked(withPinnedOverlay).mockImplementation(async (_repo, _snapshot, fn) => fn());
+    backend = new LocalBackend();
+    setupSingleRepo();
+    await backend.init();
+  });
+
+  it('gates nested reads once and shares the context and fixed deadline', async () => {
+    let outer: ReturnType<typeof getReadRequestContext>;
+    const handlers = (backend as any).repoToolHandlers;
+    handlers.overview = async () => {
+      outer = getReadRequestContext();
+      return backend.callTool('route_map', {});
+    };
+    handlers.route_map = async () => {
+      expect(getReadRequestContext()).toBe(outer);
+      expect(outer!.deadline).toBeGreaterThan(performance.now() + 59_000);
+      return ['nested'];
+    };
+    expect(await backend.callTool('overview', { timeoutMs: 1 })).toEqual(['nested']);
+    expect(getOverlaySnapshot).toHaveBeenCalledTimes(1);
+    expect(getReadRequestContext()).toBeUndefined();
+  });
+
+  it.each([false, true])(
+    'pins usable generations and releases on handler error=%s',
+    async (fails) => {
+      vi.mocked(getOverlaySnapshot).mockResolvedValue({
+        ...cleanSnapshot(),
+        usable: true,
+        generation: 'g1',
+      });
+      let release: ReturnType<typeof vi.spyOn>;
+      (backend as any).repoToolHandlers.overview = async () => {
+        release = vi.spyOn(getReadRequestContext()!, 'release');
+        expect(withPinnedOverlay).toHaveBeenCalledTimes(1);
+        if (fails) throw new Error('handler failed');
+        return ['ok'];
+      };
+      const call = backend.callTool('overview', {});
+      if (fails) await expect(call).rejects.toThrow('handler failed');
+      else expect(await call).toEqual(['ok']);
+      expect(release!).toHaveBeenCalledTimes(1);
+      await getReadRequestContext()?.release();
+    },
+  );
+
+  it('keeps diagnostic, history, lifecycle, mutation and global routes ungated', async () => {
+    for (const method of [
+      'gn_diagnose',
+      'analysis_catalog',
+      'session',
+      'detect_changes',
+      'graph_diff',
+      'audit_rerun',
+      'rename',
+      'rename_symbol',
+      'sandbox',
+      'replace_symbol',
+      'update_symbol_body',
+      'extract_function',
+      'move_symbol',
+    ]) {
+      (backend as any).repoToolHandlers[method] = async () => [];
+      await (backend as any).dispatchRepoTool(method, {});
+    }
+    await backend.callTool('list_repos', {});
+    expect(getOverlaySnapshot).not.toHaveBeenCalled();
+  });
+
+  it('fails preparation with a typed error before running the handler', async () => {
+    vi.mocked(getOverlaySnapshot).mockRejectedValueOnce(new Error('capture failed'));
+    const handler = vi.fn();
+    (backend as any).repoToolHandlers.overview = handler;
+    await expect(backend.callTool('overview', {})).rejects.toMatchObject({
+      code: 'workspace_preparation_failed',
+      message: 'workspace_preparation_failed: capture failed',
+    });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('fails a vanished usable generation without running the handler', async () => {
+    vi.mocked(getOverlaySnapshot).mockResolvedValueOnce({
+      ...cleanSnapshot(),
+      usable: true,
+      generation: 'gone',
+    });
+    vi.mocked(withPinnedOverlay).mockRejectedValueOnce(
+      new Error('overlay generation no longer available'),
+    );
+    const handler = vi.fn();
+    (backend as any).repoToolHandlers.overview = handler;
+    await expect(backend.callTool('overview', {})).rejects.toMatchObject({
+      code: 'workspace_preparation_failed',
+    });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('preserves clean base results without pinning', async () => {
+    (backend as any).repoToolHandlers.overview = async () => ['base'];
+    expect(await backend.callTool('overview', {})).toEqual(['base']);
+    expect(withPinnedOverlay).not.toHaveBeenCalled();
+  });
+});
 
 describe('LocalBackend.init', () => {
   let backend: LocalBackend;

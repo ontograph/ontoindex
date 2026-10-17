@@ -39,7 +39,10 @@ function makeHarness(
   };
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
-  child.kill = vi.fn();
+  child.kill = vi.fn(() => {
+    child.emit('exit', 0, null);
+    return true;
+  });
 
   const spawn = vi.fn(() => child as never);
   const log = vi.fn();
@@ -76,7 +79,7 @@ function makeHarness(
     emit(filename: string) {
       emit?.(filename);
     },
-    async start() {
+    async start(overrides: Parameters<typeof createWatchCommand>[1] = {}) {
       const command = await createWatchCommand(repoPath, {
         leasePath,
         spawn,
@@ -101,6 +104,7 @@ function makeHarness(
         env: { PATH: '/bin', ONTOINDEX_EMBEDDING_MODEL_HASH: 'test', HF_HOME: '/models' },
         onSignal,
         offSignal,
+        ...overrides,
       });
       // Allow the startup refresh's dirty plan and base reads to settle.
       for (let i = 0; i < 10; i++) await Promise.resolve();
@@ -147,19 +151,22 @@ describe('watch command', () => {
     command.stop();
   });
 
-  it('logs base failure once and retries only after HEAD changes', async () => {
+  it('retries failed base refresh for the same HEAD', async () => {
     vi.useFakeTimers();
     const options = { head: 'next', commit: 'old' };
     const harness = makeHarness(options);
     const command = await harness.start();
     harness.child.emit('close', 7, null);
     await vi.advanceTimersByTimeAsync(60000);
-    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    expect(harness.spawn).toHaveBeenCalledTimes(2);
     expect(harness.error).toHaveBeenCalledTimes(1);
     expect(harness.error).toHaveBeenCalledWith('Watch base analyze failed with code 7.');
+    harness.child.emit('close', 0, null);
     options.head = 'newer';
     await vi.advanceTimersByTimeAsync(30000);
-    expect(harness.spawn).toHaveBeenCalledTimes(2);
+    expect(harness.spawn.mock.calls.some((call) => !call[1].includes('--dirty-overlay'))).toBe(
+      true,
+    );
     command.stop();
   });
 
@@ -351,6 +358,8 @@ describe('watch command', () => {
     harness.emit('src/file.ts');
     expect(harness.spawn).not.toHaveBeenCalled();
     expect(harness.planDirtyOverlay).not.toHaveBeenCalled();
+    expect(command.owned).toBe(false);
+    expect(harness.child.kill).not.toHaveBeenCalled();
     expect(harness.log).toHaveBeenCalledWith(expect.stringContaining('another watcher'));
     command.stop();
     expect(fs.existsSync(harness.leasePath)).toBe(true);
@@ -482,6 +491,106 @@ describe('watch command', () => {
 
     command.stop();
     expect(harness.child.kill).toHaveBeenCalledWith('SIGTERM');
+  });
+
+  it('routes automatic refreshes through the callback and retries failures with capped backoff', async () => {
+    vi.useFakeTimers();
+    const harness = makeHarness({ head: 'next', commit: 'old' });
+    const callback = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('one'))
+      .mockRejectedValueOnce(new Error('two'))
+      .mockResolvedValue(undefined);
+    const command = await harness.start({ refreshCallback: callback, retryDelaysMs: [10, 20] });
+    expect(callback).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(9);
+    expect(callback).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(callback).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(19);
+    expect(callback).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(callback).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(callback).toHaveBeenCalledTimes(3);
+    expect(harness.spawn).not.toHaveBeenCalled();
+    await command.stop();
+  });
+
+  it('runs automatic startup and event refresh without children', async () => {
+    vi.useFakeTimers();
+    const harness = makeHarness({ initiallyDirty: true });
+    const callback = vi.fn(async () => {});
+    const command = await harness.start({ refreshCallback: callback });
+    await vi.waitFor(() => expect(callback).toHaveBeenCalledWith('startup'));
+    harness.emit('src/dirty.ts');
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.waitFor(() => expect(callback).toHaveBeenCalledWith('event'));
+    expect(harness.spawn).not.toHaveBeenCalled();
+    await command.stop();
+  });
+
+  it('keeps the lease until an in-flight automatic refresh settles', async () => {
+    const harness = makeHarness({ initiallyDirty: true });
+    let finish!: () => void;
+    const callback = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const command = await harness.start({ refreshCallback: callback });
+    await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
+    let stopped = false;
+    const stopping = command.stop().then(() => {
+      stopped = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(stopped).toBe(false);
+    expect(fs.existsSync(harness.leasePath)).toBe(true);
+    finish();
+    await stopping;
+    expect(fs.existsSync(harness.leasePath)).toBe(false);
+  });
+
+  it('rejects cleanup when child exit cannot be proven', async () => {
+    vi.useFakeTimers();
+    const harness = makeHarness({ initiallyDirty: true });
+    harness.child.kill.mockImplementation(() => true);
+    const command = await harness.start();
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
+    const stopped = command.stop();
+    const rejected = expect(stopped).rejects.toThrow('cleanup failure');
+    await vi.advanceTimersByTimeAsync(5000);
+    await rejected;
+    expect(fs.existsSync(harness.leasePath)).toBe(true);
+  });
+
+  it('preserves a replacement token with the same PID', async () => {
+    const harness = makeHarness();
+    const command = await harness.start();
+    fs.writeFileSync(
+      harness.leasePath,
+      JSON.stringify({ pid: process.pid, token: 'replacement', heartbeat: Date.now() }),
+    );
+    await command.stop();
+    expect(JSON.parse(fs.readFileSync(harness.leasePath, 'utf8')).token).toBe('replacement');
+  });
+
+  it('awaits child exit, escalates and returns the same stop promise', async () => {
+    vi.useFakeTimers();
+    const harness = makeHarness({ initiallyDirty: true });
+    harness.child.kill.mockImplementation(() => true);
+    const command = await harness.start();
+    await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
+    const stopped = command.stop();
+    expect(command.stop()).toBe(stopped);
+    expect(fs.existsSync(harness.leasePath)).toBe(true);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(harness.child.kill).toHaveBeenLastCalledWith('SIGKILL');
+    harness.child.emit('exit', 0, null);
+    await stopped;
+    expect(fs.existsSync(harness.leasePath)).toBe(false);
   });
 
   it('registers watch in CLI help', () => {

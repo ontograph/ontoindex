@@ -114,6 +114,7 @@ describe('overlay context and impact', () => {
         { id: repo.id, repoPath: repo.repoPath, storagePath: repo.storagePath },
         expect.any(String),
         expect.any(Object),
+        undefined,
       );
     },
   );
@@ -250,25 +251,35 @@ describe('overlay context and impact', () => {
     expect(overlay.queryOverlay).not.toHaveBeenCalled();
   });
 
-  it.each(['snapshot', 'query'] as const)(
-    'degrades %s errors to base behavior',
-    async (failure) => {
-      const current = symbol();
-      pool.executeParameterized.mockImplementation(async (_id, query: string) =>
-        query.includes('AS startLine') ? [current] : [],
-      );
-      overlay.getOverlaySnapshot.mockResolvedValue({ ...usable, usable: false });
-      const baseContext = await context(repo, { name: current.name });
-      const baseImpact = await runImpact(repo, { target: current.name, direction: 'upstream' });
-      overlay.getOverlaySnapshot.mockResolvedValue(usable);
-      if (failure === 'snapshot')
-        overlay.getOverlaySnapshot.mockRejectedValue(new Error('snapshot'));
-      else overlay.queryOverlay.mockRejectedValue(new Error('overlay query'));
+  it('degrades snapshot errors to base behavior', async () => {
+    const current = symbol();
+    pool.executeParameterized.mockImplementation(async (_id, query: string) =>
+      query.includes('AS startLine') ? [current] : [],
+    );
+    overlay.getOverlaySnapshot.mockResolvedValue({ ...usable, usable: false });
+    const baseContext = await context(repo, { name: current.name });
+    const baseImpact = await runImpact(repo, { target: current.name, direction: 'upstream' });
+    overlay.getOverlaySnapshot.mockRejectedValue(new Error('snapshot'));
 
-      expect(await context(repo, { name: current.name })).toEqual(baseContext);
-      expect(await runImpact(repo, { target: current.name, direction: 'upstream' })).toEqual(
-        baseImpact,
-      );
-    },
-  );
+    expect(await context(repo, { name: current.name })).toEqual(baseContext);
+    expect(await runImpact(repo, { target: current.name, direction: 'upstream' })).toEqual(
+      baseImpact,
+    );
+  });
+
+  it('rejects instead of returning stale base answers when a usable overlay query fails', async () => {
+    const current = symbol();
+    pool.executeParameterized.mockImplementation(async (_id, query: string) =>
+      query.includes('AS startLine') ? [current] : [],
+    );
+    overlay.getOverlaySnapshot.mockResolvedValue(usable);
+    overlay.queryOverlay.mockRejectedValue(new Error('overlay query'));
+
+    // Context rejects; impact reports the same failure as an error response. Neither returns
+    // the stale base answer.
+    await expect(context(repo, { name: current.name })).rejects.toThrow('overlay query');
+    expect(await runImpact(repo, { target: current.name, direction: 'upstream' })).toMatchObject({
+      error: 'overlay query',
+    });
+  });
 });

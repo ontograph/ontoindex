@@ -230,6 +230,7 @@ export interface ParseWorkerResult {
   processedPaths: string[];
   /** Per-file worker timing for large-repo failure and hotspot localization. */
   fileTimings: ParseFileTiming[];
+  parseErrorPaths: string[];
   /** Per-extractor-family timing for large-repo hotspot localization. */
   extractorTimings: ParseExtractorTiming[];
   skippedLanguages: Record<string, number>;
@@ -365,6 +366,7 @@ export const mergeParseWorkerResult = (target: ParseWorkerResult, src: ParseWork
   appendAll(target.parsedFiles, src.parsedFiles);
   appendAll(target.processedPaths, src.processedPaths);
   appendAll(target.fileTimings, src.fileTimings);
+  appendAll(target.parseErrorPaths, src.parseErrorPaths);
   appendAll(target.extractorTimings, src.extractorTimings);
   for (const [lang, count] of Object.entries(src.skippedLanguages)) {
     target.skippedLanguages[lang] = (target.skippedLanguages[lang] || 0) + count;
@@ -393,6 +395,7 @@ export const createEmptyResult = (): ParseWorkerResult => ({
   parsedFiles: [],
   processedPaths: [],
   fileTimings: [],
+  parseErrorPaths: [],
   extractorTimings: [],
   skippedLanguages: {},
   fileCount: 0,

@@ -14,6 +14,11 @@ import fs from 'fs/promises';
 import * as fsSync from 'fs';
 import { type PipelineOptions, type PipelineProfile } from './ingestion/pipeline.js';
 import { normalizeRepositoryIncludePaths } from './ingestion/filesystem-walker.js';
+import {
+  planDirtyOverlay,
+  captureWorkspaceInputs,
+  type WorkspaceInputCapture,
+} from './analyze-delta.js';
 import { createTypeScriptAnalyzeRuntime, type AnalyzeRuntime } from './ingestion/runtime/index.js';
 import {
   initLbug,
@@ -31,6 +36,9 @@ import {
 } from './lbug/lbug-adapter.js';
 import {
   getStoragePaths,
+  OVERLAY_ARTIFACT_BUDGET_BYTES,
+  overlayArtifactBytes,
+  pruneOverlayGenerations,
   readActiveGenerationMeta,
   saveMeta,
   loadMeta,
@@ -138,6 +146,8 @@ export interface AnalyzeOptions {
   includePaths?: string[];
   /** Build a disposable graph without publishing an index generation. */
   dirtyOverlay?: boolean;
+  /** Build an isolated complete graph of captured workspace inputs. */
+  workspaceGraph?: boolean;
   /** Repository-relative dirty source files; at most 50, never directory roots. */
   overlayPaths?: string[];
   /** Publication identity supplied only by the managed analysis runner. */
@@ -828,6 +838,16 @@ async function runDirtyOverlayAnalysis(
   callbacks: AnalyzeCallbacks,
   dependencies: RunFullAnalysisDependencies,
 ): Promise<AnalyzeResult> {
+  return runWorkspaceAnalysis(repoPath, overlayPaths, callbacks, dependencies, false);
+}
+
+async function runWorkspaceAnalysis(
+  repoPath: string,
+  overlayPaths: string[],
+  callbacks: AnalyzeCallbacks,
+  dependencies: RunFullAnalysisDependencies,
+  workspaceGraph: boolean,
+): Promise<AnalyzeResult> {
   if (overlayPaths.length > 50) {
     throw new Error('Dirty overlay is limited to 50 source files; refusing a full scan.');
   }
@@ -846,19 +866,103 @@ async function runDirtyOverlayAnalysis(
   if (!(await fs.lstat(overlayPath)).isDirectory()) {
     throw new Error('Dirty overlay directory must not be a symlink.');
   }
+  const previousCurrent = (
+    await fs.readFile(path.join(overlayPath, 'CURRENT'), 'utf8').catch(() => '')
+  ).trim();
+  await pruneOverlayGenerations(overlayPath, previousCurrent);
+  const bytes = await overlayArtifactBytes(overlayPath);
+  const configuredBudget = Number(process.env.ONTOINDEX_OVERLAY_BUDGET_BYTES);
+  const budget =
+    Number.isSafeInteger(configuredBudget) &&
+    configuredBudget >= 0 &&
+    process.env.ONTOINDEX_OVERLAY_BUDGET_BYTES !== undefined
+      ? configuredBudget
+      : OVERLAY_ARTIFACT_BUDGET_BYTES;
+  if (bytes > budget) {
+    throw Object.assign(
+      new Error(`Overlay artifacts use ${bytes} bytes, exceeding budget ${budget} bytes.`),
+      {
+        code: 'overlay_budget_exceeded',
+      },
+    );
+  }
   const generationId = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`;
   const generationPath = path.join(overlayPath, generationId);
   const overlayDbPath = path.join(generationPath, 'lbug');
   const currentTempPath = path.join(overlayPath, `.CURRENT-${generationId}.tmp`);
   await fs.mkdir(generationPath);
+  let capture: WorkspaceInputCapture | undefined;
   try {
+    // Build from one verified byte snapshot so the stored manifest identifies the exact inputs.
+    if (workspaceGraph) capture = await captureWorkspaceInputs(repoPath);
+    else if (includePaths.length > 0)
+      capture = await captureWorkspaceInputs(repoPath, { includePaths });
+    const inventory: Record<string, [number, number | null, number | null, string]> = {};
+    let inventoryTruncated = false;
+    if (workspaceGraph) {
+      const entries = capture!.manifest.workspaceCapture!.entries;
+      inventoryTruncated = entries.length > 100_000;
+      if (!inventoryTruncated) {
+        for (const entry of entries) {
+          const stat = await fs.lstat(path.join(repoPath, entry.path)).catch(() => null);
+          inventory[entry.path] = [
+            entry.byteLength,
+            stat?.mtimeMs ?? null,
+            stat?.ino ?? null,
+            entry.digest,
+          ];
+        }
+        inventoryTruncated = Buffer.byteLength(JSON.stringify(inventory)) > 64 * 1024 * 1024;
+      }
+    }
     const activeBase = await readActiveGenerationMeta(storagePath);
+    if (
+      workspaceGraph &&
+      ((getCurrentCommit(repoPath) || null) !== capture!.head ||
+        (activeBase.activeGeneration?.generationId ?? null) !== capture!.baseGenerationId ||
+        (activeBase.meta?.lastCommit ?? null) !== capture!.baseCommit)
+    ) {
+      throw new Error('Workspace graph base or HEAD changed after capture; rebuild required.');
+    }
+    const dirtyPlan = workspaceGraph ? await planDirtyOverlay(repoPath) : undefined;
+    const dirtyPathSet = new Set(dirtyPlan?.allDirtyPaths ?? includePaths);
+    let degraded = inventoryTruncated;
+    let parseErrorCount = 0;
+    const parseErrorFiles = new Set<string>();
     const overlayBase = {
       baseGenerationId: activeBase.activeGeneration?.generationId ?? null,
       baseCommit: activeBase.meta?.lastCommit ?? null,
+      manifestDigest: capture?.manifestDigest ?? null,
+      configurationDigest: capture?.manifest.workspaceCapture?.configurationDigest ?? null,
+      parserIdentity: capture?.manifest.workspaceCapture?.parserIdentity ?? null,
+      includePaths,
+      ...(workspaceGraph
+        ? {
+            inventory: inventoryTruncated ? undefined : inventory,
+            inventoryTruncated,
+            ...(inventoryTruncated
+              ? {
+                  inventoryReason:
+                    'workspace graph input inventory exceeds 100000 entries or 64 MiB',
+                }
+              : {}),
+            capability: 'workspace-graph',
+            profile: 'full',
+            coverage: 'complete',
+            parseErrorCount: 0,
+            parseErrorFiles: [] as string[],
+            dirtyPaths: [...dirtyPathSet].sort(),
+            tombstones: [...dirtyPlan!.tombstones].sort(),
+          }
+        : {}),
+      inputs: Object.fromEntries(
+        (capture?.manifest.workspaceCapture?.entries ?? [])
+          .filter((entry) => dirtyPathSet.has(entry.path))
+          .map((entry) => [entry.path, entry.digest]),
+      ),
     };
     const pipelineResult: PipelineResult =
-      includePaths.length === 0
+      !workspaceGraph && includePaths.length === 0
         ? { graph: createKnowledgeGraph(), repoPath, totalFileCount: 0, usedWorkerPool: false }
         : await runAnalysisPipeline(
             repoPath,
@@ -868,15 +972,68 @@ async function runDirtyOverlayAnalysis(
                 Math.round(p.percent * 0.6),
                 PHASE_LABELS[p.phase] || p.phase,
               ),
-            { profile: 'symbols', includePaths },
+            {
+              profile: workspaceGraph ? 'full' : 'symbols',
+              ...(workspaceGraph
+                ? {
+                    onTelemetry: (
+                      event: Parameters<NonNullable<PipelineOptions['onTelemetry']>>[0],
+                    ) => {
+                      if (event.event === 'parse-error-files') {
+                        parseErrorCount += event.parseErrorCount ?? 0;
+                        for (const filePath of event.parseErrorFiles ?? []) {
+                          if (parseErrorFiles.size < 1000) parseErrorFiles.add(filePath);
+                        }
+                      }
+                      if (
+                        event.degradedFiles?.length ||
+                        event.event === 'phase-error' ||
+                        event.degradedReason ||
+                        event.slowFiles?.some((file) => file.status !== 'processed')
+                      ) {
+                        degraded = true;
+                      }
+                    },
+                  }
+                : { includePaths }),
+              capturedWorkspace: {
+                captureRoot: capture!.captureRoot,
+                canonicalRepoPath: capture!.canonicalRepoPath,
+              },
+            },
             dependencies.analyzeRuntime,
           );
     await initLbug(overlayDbPath, { maxDBSize: 2 ** 32 });
-    await loadGraphToLbug(pipelineResult.graph, repoPath, generationPath, (message) => {
-      callbacks.onProgress('lbug', 80, message);
-    });
+    await loadGraphToLbug(
+      pipelineResult.graph,
+      capture?.captureRoot ?? repoPath,
+      generationPath,
+      (message) => {
+        callbacks.onProgress('lbug', 80, message);
+      },
+    );
     const stats = await getLbugStats();
     await closeLbugForPath(overlayDbPath);
+    if (workspaceGraph) {
+      // A truncated path list cannot say which files failed, so no path may be called authoritative.
+      const parseErrorListTruncated = parseErrorCount > parseErrorFiles.size;
+      overlayBase.coverage =
+        degraded || parseErrorListTruncated
+          ? 'degraded'
+          : parseErrorCount > 0
+            ? 'partial'
+            : 'complete';
+      overlayBase.parseErrorCount = parseErrorCount;
+      overlayBase.parseErrorFiles = [...parseErrorFiles].sort();
+      const currentBase = await readActiveGenerationMeta(storagePath);
+      if (
+        (getCurrentCommit(repoPath) || null) !== capture!.head ||
+        (currentBase.activeGeneration?.generationId ?? null) !== overlayBase.baseGenerationId ||
+        (currentBase.meta?.lastCommit ?? null) !== overlayBase.baseCommit
+      ) {
+        throw new Error('Workspace graph base or HEAD changed during analysis; rebuild required.');
+      }
+    }
     await fs.writeFile(path.join(generationPath, 'base.json'), JSON.stringify(overlayBase));
     callbacks.onProgress('done', 100, 'Dirty overlay built; active index unchanged');
     await fs.writeFile(currentTempPath, `${generationId}\n`);
@@ -886,20 +1043,8 @@ async function runDirtyOverlayAnalysis(
     // so pruning is only housekeeping, never a condition of build success.
     let pruneFailed = false;
     try {
-      const generations = [];
-      for (const entry of await fs.readdir(overlayPath, { withFileTypes: true })) {
-        if (!entry.isDirectory() || !/^\d+-\d+-[a-z0-9]+$/.test(entry.name)) continue;
-        const dir = path.join(overlayPath, entry.name);
-        generations.push({ name: entry.name, dir, mtime: (await fs.stat(dir)).mtimeMs });
-      }
-      generations.sort((a, b) =>
-        a.name === generationId ? -1 : b.name === generationId ? 1 : b.mtime - a.mtime,
-      );
-      for (const generation of generations.slice(3)) {
-        await fs.rm(generation.dir, { recursive: true, force: true }).catch(() => {
-          pruneFailed = true;
-        });
-      }
+      pruneFailed = await pruneOverlayGenerations(overlayPath, generationId);
+      await overlayArtifactBytes(overlayPath);
       // Legacy single-file overlays are never opened by generation readers.
       await fs.rm(path.join(overlayPath, 'lbug'), { recursive: true, force: true }).catch(() => {
         pruneFailed = true;
@@ -926,6 +1071,8 @@ async function runDirtyOverlayAnalysis(
     await fs.rm(currentTempPath, { force: true }).catch(() => {});
     await fs.rm(generationPath, { recursive: true, force: true }).catch(() => {});
     throw err;
+  } finally {
+    await capture?.dispose().catch(() => {});
   }
 }
 
@@ -947,6 +1094,9 @@ export async function runFullAnalysis(
   dependencies: RunFullAnalysisDependencies = {},
 ): Promise<AnalyzeResult> {
   // Keep overlay builds outside every active-index lifecycle operation below.
+  if (options.workspaceGraph === true) {
+    return runWorkspaceAnalysis(repoPath, [], callbacks, dependencies, true);
+  }
   if (options.dirtyOverlay === true) {
     return runDirtyOverlayAnalysis(repoPath, options.overlayPaths ?? [], callbacks, dependencies);
   }

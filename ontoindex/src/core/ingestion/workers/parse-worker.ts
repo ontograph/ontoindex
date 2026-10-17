@@ -854,6 +854,7 @@ const processBatch = async (
     parsedFiles: [],
     processedPaths: [],
     fileTimings: [],
+    parseErrorPaths: [],
     extractorTimings: [],
     skippedLanguages: {},
     fileCount: 0,
@@ -1212,6 +1213,7 @@ const prepareFileContext = (
   file: HydratedParseWorkerInput,
   language: SupportedLanguages,
   query: Parser.Query,
+  parseErrorPaths: string[],
 ): PreparedFileContext | null => {
   if (file.content.length > TREE_SITTER_MAX_BUFFER) return null;
 
@@ -1240,6 +1242,8 @@ const prepareFileContext = (
     );
     return null;
   }
+
+  if (tree.rootNode.hasError) parseErrorPaths.push(file.path);
 
   const maxAstNodes = getParseMaxAstNodes();
   const astNodeCount = tree.rootNode.descendantCount + 1;
@@ -2199,7 +2203,9 @@ const processPreparedWorkerFile = (
 
   try {
     onFileStart?.(file.path);
-    const fileContext = timeFamily('prepare', () => prepareFileContext(file, language, query));
+    const fileContext = timeFamily('prepare', () =>
+      prepareFileContext(file, language, query, result.parseErrorPaths),
+    );
     if (!fileContext) {
       // Lightweight fallback for oversized or unparseable files
       const native = isNativeEnabled();

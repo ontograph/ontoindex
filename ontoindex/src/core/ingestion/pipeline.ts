@@ -45,6 +45,8 @@ import {
 } from './pipeline-phases/index.js';
 
 export interface PipelineOptions {
+  /** Read inputs from an isolated capture while retaining the repository identity. */
+  capturedWorkspace?: { captureRoot: string; canonicalRepoPath: string };
   /** Selects the ingestion phase set. Defaults to the full index profile. */
   profile?: PipelineProfile;
   /** Skip MRO, community detection, and process extraction for faster test runs. */
@@ -66,6 +68,7 @@ export interface PipelineOptions {
       | 'parse-sub-batch-start'
       | 'parse-worker-result'
       | 'parse-degraded-files'
+      | 'parse-error-files'
       | 'parse-slowest-files'
       | 'parse-slowest-extractors'
       | 'cross-file-plan'
@@ -106,6 +109,8 @@ export interface PipelineOptions {
     parseWorkerRecoveryWindowSize?: number;
     firstFilePath?: string;
     lastFilePath?: string;
+    parseErrorCount?: number;
+    parseErrorFiles?: string[];
     degradedReason?: string;
     degradedAction?:
       | 'quarantine-files'
@@ -193,7 +198,7 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
 
   const phases: PipelinePhase[] = [
     scanPhase,
-    gitMiningPhase,
+    ...(options?.capturedWorkspace ? [] : [gitMiningPhase]),
     structurePhase,
     markdownPhase,
     cobolPhase,
@@ -274,7 +279,7 @@ export const runPipelineFromRepo = async (
   const phases = buildPhaseList(options);
 
   const results = await runPipeline(phases, {
-    repoPath,
+    repoPath: options?.capturedWorkspace?.captureRoot ?? repoPath,
     graph,
     onProgress,
     options,
@@ -286,7 +291,7 @@ export const runPipelineFromRepo = async (
 
   return {
     graph,
-    repoPath,
+    repoPath: options?.capturedWorkspace?.canonicalRepoPath ?? repoPath,
     totalFileCount: outputs.totalFiles,
     communityResult: outputs.communityResult,
     processResult: outputs.processResult,

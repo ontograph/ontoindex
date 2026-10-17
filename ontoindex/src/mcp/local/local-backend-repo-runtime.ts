@@ -16,6 +16,8 @@ interface EnsureRepoInitializedOptions {
   closeLbug: (repoId: string) => Promise<void>;
   resolveActiveLbugPath?: (storagePath: string) => Promise<string | null>;
   now?: () => number;
+  signal?: AbortSignal;
+  deadline?: number;
 }
 
 async function readAnalyzeLock(storagePath: string): Promise<string | null> {
@@ -220,7 +222,112 @@ async function readPublishedIndexIdentity(
   }
 }
 
-export async function ensureRepoInitialized(options: EnsureRepoInitializedOptions): Promise<void> {
+interface RepoPreparationWait {
+  promise: Promise<void>;
+  waiters: number;
+}
+
+export class RepoPreparationWaitError extends Error {
+  constructor(public readonly code: 'cancelled' | 'timeout') {
+    super(`Repository preparation wait ${code}`);
+    this.name = 'RepoPreparationWaitError';
+  }
+}
+
+interface RepoPreparation extends RepoPreparationWait {
+  snapshot: string;
+  pending?: RepoPreparationWait & {
+    options: EnsureRepoInitializedOptions;
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  };
+}
+
+const preparations = new WeakMap<Map<string, Promise<void>>, Map<string, RepoPreparation>>();
+
+export function ensureRepoInitialized(options: EnsureRepoInitializedOptions): Promise<void> {
+  const now = performance.now();
+  const deadline = Math.min(options.deadline ?? Infinity, now + 60_000);
+  if (options.signal?.aborted) return Promise.reject(new RepoPreparationWaitError('cancelled'));
+  if (!(deadline > now)) return Promise.reject(new RepoPreparationWaitError('timeout'));
+  const state = getRepoPreparation(options);
+  state.waiters++;
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: unknown, failed = false) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      options.signal?.removeEventListener('abort', abort);
+      state.waiters--;
+      if (failed) reject(error);
+      else resolve();
+    };
+    const abort = () => finish(new RepoPreparationWaitError('cancelled'), true);
+    const timer = setTimeout(
+      () => finish(new RepoPreparationWaitError('timeout'), true),
+      Math.max(0, deadline - performance.now()),
+    );
+    options.signal?.addEventListener('abort', abort, { once: true });
+    if (options.signal?.aborted) abort();
+    state.promise.then(
+      () => finish(),
+      (error) => finish(error, true),
+    );
+  });
+}
+
+function getRepoPreparation(options: EnsureRepoInitializedOptions): RepoPreparationWait {
+  let repos = preparations.get(options.reinitPromises);
+  if (!repos) {
+    repos = new Map();
+    preparations.set(options.reinitPromises, repos);
+  }
+  const snapshot = JSON.stringify([
+    options.handle.lbugPath,
+    options.handle.indexedAt,
+    options.handle.lastCommit,
+  ]);
+  const current = repos.get(options.repoId);
+  if (current) {
+    if (snapshot === current.snapshot && !current.pending) return current;
+    if (!current.pending) {
+      let resolve!: () => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise<void>((yes, no) => {
+        resolve = yes;
+        reject = no;
+      });
+      void promise.catch(() => {});
+      current.pending = { options, promise, resolve, reject, waiters: 0 };
+    } else {
+      current.pending.options = options;
+    }
+    return current.pending;
+  }
+  const state: RepoPreparation = { snapshot, promise: Promise.resolve(), waiters: 0 };
+  // Register before asynchronous preparation starts, including the initial open.
+  const promise = Promise.resolve().then(() => initializeRepo(options));
+  state.promise = promise.then(
+    () => settle(),
+    (error) => {
+      settle();
+      throw error;
+    },
+  );
+  void state.promise.catch(() => {});
+  repos.set(options.repoId, state);
+  function settle(): void {
+    repos!.delete(options.repoId);
+    if (state.pending) {
+      const pending = state.pending;
+      getRepoPreparation(pending.options).promise.then(pending.resolve, pending.reject);
+    }
+  }
+  return state;
+}
+
+async function initializeRepo(options: EnsureRepoInitializedOptions): Promise<void> {
   const {
     repoId,
     handle,

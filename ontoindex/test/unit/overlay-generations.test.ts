@@ -16,6 +16,44 @@ import {
   resolveOverlayDbPath,
 } from '../../src/mcp/local/backend-overlay.js';
 import { buildTestGraph } from '../helpers/test-graph.js';
+import {
+  acquireOverlayGenerationPin,
+  overlayArtifactBytes,
+  pruneOverlayGenerations,
+} from '../../src/storage/repo-manager.js';
+
+describe('overlay reader retention', () => {
+  it('retains live pins and removes eligible generations with dead markers', async () => {
+    const storage = await fs.mkdtemp(path.join(os.tmpdir(), 'overlay-pins-'));
+    const overlay = path.join(storage, 'overlay');
+    try {
+      for (let index = 1; index <= 5; index++) {
+        const dir = path.join(overlay, `${index}-1-abc`);
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(path.join(dir, 'lbug'), 'artifact');
+        await fs.utimes(dir, index, index);
+      }
+      const live = path.join(overlay, '1-1-abc');
+      const pin = await acquireOverlayGenerationPin(live);
+      await fs.writeFile(path.join(overlay, '2-1-abc', '.reader-2147483647-dead'), '');
+      // Pin creation changes mtime; restore chronology for deterministic retention.
+      await fs.utimes(live, 1, 1);
+      await fs.utimes(path.join(overlay, '2-1-abc'), 2, 2);
+      expect(await pruneOverlayGenerations(overlay, '5-1-abc')).toBe(true);
+      expect(await fs.stat(live)).toBeDefined();
+      await expect(fs.stat(path.join(overlay, '2-1-abc'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      expect(await overlayArtifactBytes(overlay)).toBe(32);
+      await pin.release();
+      await fs.utimes(live, 1, 1);
+      expect(await pruneOverlayGenerations(overlay, '5-1-abc')).toBe(false);
+      await expect(fs.stat(live)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fs.rm(storage, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('immutable overlay generations (real LadybugDB)', () => {
   let root: string;
@@ -55,7 +93,16 @@ describe('immutable overlay generations (real LadybugDB)', () => {
       { analyzeRuntime: { analyzeRepo } },
     );
     expect(analyzeRepo).toHaveBeenCalledWith(
-      expect.objectContaining({ options: { profile: 'symbols', includePaths: ['source.ts'] } }),
+      expect.objectContaining({
+        options: {
+          profile: 'symbols',
+          includePaths: ['source.ts'],
+          capturedWorkspace: {
+            captureRoot: expect.stringContaining('workspace-inputs'),
+            canonicalRepoPath: expect.any(String),
+          },
+        },
+      }),
     );
     expect(result.stats.embeddings).toBe(0);
     return result;

@@ -6,6 +6,7 @@ import type { RepoHandle } from 'ontoindex-shared';
 
 import {
   ensureRepoInitialized,
+  RepoPreparationWaitError,
   resolveRepoFromHandles,
 } from '../../src/mcp/local/local-backend-repo-runtime.js';
 
@@ -287,5 +288,154 @@ describe('ensureRepoInitialized', () => {
     } finally {
       await fs.rm(storagePath, { recursive: true, force: true });
     }
+  });
+});
+
+describe('repository preparation coalescing', () => {
+  function fixture() {
+    const handle = makeRepo('coalesce', 'coalesce', '/missing/coalesce');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const initLbug = vi.fn(async () => {
+      await gate;
+    });
+    const options = {
+      repoId: handle.id,
+      handle,
+      initializedRepos: new Set<string>(),
+      reinitPromises: new Map<string, Promise<void>>(),
+      lastStalenessCheck: new Map<string, number>(),
+      isLbugReady: () => false,
+      initLbug,
+      closeLbug: vi.fn(async () => {}),
+      resolveActiveLbugPath: vi.fn(async () => null),
+    };
+    return { options, initLbug, release };
+  }
+
+  it('cancels one waiter without cancelling shared preparation', async () => {
+    const { options, initLbug, release } = fixture();
+    const controller = new AbortController();
+    const first = ensureRepoInitialized({ ...options, signal: controller.signal });
+    const second = ensureRepoInitialized(options);
+    const rejected = expect(first).rejects.toMatchObject({ code: 'cancelled' });
+    controller.abort();
+    await rejected;
+    release();
+    await second;
+    expect(initLbug).toHaveBeenCalledOnce();
+  });
+
+  it('times out one waiter while another still resolves', async () => {
+    vi.useFakeTimers();
+    try {
+      const { options, initLbug, release } = fixture();
+      const first = ensureRepoInitialized({ ...options, deadline: performance.now() + 10 });
+      const second = ensureRepoInitialized(options);
+      const rejected = expect(first).rejects.toMatchObject({ code: 'timeout' });
+      await vi.advanceTimersByTimeAsync(10);
+      await rejected;
+      release();
+      await second;
+      expect(initLbug).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('caps the waiter deadline at sixty seconds and observes late failure', async () => {
+    vi.useFakeTimers();
+    try {
+      const { options, initLbug, release } = fixture();
+      initLbug.mockImplementationOnce(async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 60_001));
+        throw new Error('late failure');
+      });
+      const waiter = ensureRepoInitialized({ ...options, deadline: performance.now() + 120_000 });
+      const rejected = expect(waiter).rejects.toBeInstanceOf(RepoPreparationWaitError);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await rejected;
+      // Flush native filesystem preparation before advancing its delayed initializer.
+      await vi.waitFor(() => expect(initLbug).toHaveBeenCalledOnce());
+      await vi.runAllTimersAsync();
+      release();
+      // The late shared rejection is observed even though no waiter remains.
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('removes abort listeners after preparation settles', async () => {
+    const { options, release } = fixture();
+    const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, 'removeEventListener');
+    const waiter = ensureRepoInitialized({ ...options, signal: controller.signal });
+    release();
+    await waiter;
+    expect(remove).toHaveBeenCalledWith('abort', expect.any(Function));
+  });
+
+  it('fails a queued successor once and permits a fresh retry', async () => {
+    const { options, initLbug } = fixture();
+    initLbug.mockImplementation(async () => {
+      throw new Error('failed');
+    });
+    const first = ensureRepoInitialized(options);
+    const successor = ensureRepoInitialized({
+      ...options,
+      handle: { ...options.handle, indexedAt: 'next' },
+    });
+    await Promise.all([
+      expect(first).rejects.toThrow('failed'),
+      expect(successor).rejects.toThrow('failed'),
+    ]);
+    expect(initLbug).toHaveBeenCalledTimes(2);
+    initLbug.mockResolvedValue(undefined);
+    await ensureRepoInitialized(options);
+    expect(initLbug).toHaveBeenCalledTimes(3);
+  });
+
+  it('shares concurrent preparation for the same snapshot and starts fresh after settling', async () => {
+    const { options, initLbug, release } = fixture();
+    const first = ensureRepoInitialized(options);
+    const second = ensureRepoInitialized(options);
+    expect(first).not.toBe(second);
+    await vi.waitFor(() => expect(initLbug).toHaveBeenCalledTimes(1));
+    release();
+    await Promise.all([first, second]);
+    await ensureRepoInitialized(options);
+    expect(initLbug).toHaveBeenCalledTimes(2);
+  });
+
+  it('collapses changed snapshots into one latest successor', async () => {
+    const { options, initLbug, release } = fixture();
+    const first = ensureRepoInitialized(options);
+    await vi.waitFor(() => expect(initLbug).toHaveBeenCalledTimes(1));
+    const second = ensureRepoInitialized({
+      ...options,
+      handle: { ...options.handle, lbugPath: '/gen/B/lbug' },
+    });
+    const third = ensureRepoInitialized({
+      ...options,
+      handle: { ...options.handle, lbugPath: '/gen/C/lbug' },
+    });
+    expect(second).not.toBe(third);
+    expect(initLbug).toHaveBeenCalledTimes(1);
+    release();
+    await Promise.all([first, second, third]);
+    expect(initLbug).toHaveBeenCalledTimes(2);
+    expect(initLbug).toHaveBeenLastCalledWith(options.repoId, '/gen/C/lbug');
+  });
+
+  it('clears failed preparation so the next call retries', async () => {
+    const { options, initLbug, release } = fixture();
+    initLbug.mockRejectedValueOnce(new Error('preparation failed'));
+    await expect(ensureRepoInitialized(options)).rejects.toThrow('preparation failed');
+    release();
+    await ensureRepoInitialized(options);
+    expect(initLbug).toHaveBeenCalledTimes(2);
   });
 });

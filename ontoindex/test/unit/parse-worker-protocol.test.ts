@@ -36,6 +36,7 @@ describe('parse worker protocol schema', () => {
       fileScopeBindings: [],
       parsedFiles: [],
       processedPaths: [],
+      parseErrorPaths: [],
       fileTimings: [],
       extractorTimings: [],
       skippedLanguages: {},

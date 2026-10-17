@@ -183,40 +183,40 @@ async function readOverlayRows(
   repo: SymbolResolutionRepoHandle,
   cypher: string,
   params: Record<string, unknown>,
+  pinnedSnapshot?: OverlaySnapshot,
 ): Promise<{ snapshot: OverlaySnapshot; rows: QueryRow[]; overlayAvailable: boolean } | undefined> {
   if (!repo.repoPath || !repo.storagePath) return undefined;
   let snapshot: OverlaySnapshot;
   try {
-    snapshot = await getOverlaySnapshot({
-      id: repo.id,
-      repoPath: repo.repoPath,
-      storagePath: repo.storagePath,
-    });
+    snapshot =
+      pinnedSnapshot ??
+      (await getOverlaySnapshot({
+        id: repo.id,
+        repoPath: repo.repoPath,
+        storagePath: repo.storagePath,
+      }));
   } catch {
     // Without a snapshot there is no reliable tombstone evidence to apply.
     return undefined;
   }
   if (!snapshot.usable) return { snapshot, rows: [], overlayAvailable: false };
-  try {
-    const rows = await queryOverlay(
-      { id: repo.id, repoPath: repo.repoPath, storagePath: repo.storagePath },
-      cypher,
-      params,
-    );
-    return {
-      snapshot,
-      overlayAvailable: true,
-      rows: (rows as QueryRow[]).filter((row) => {
-        const filePath = rowValue(row, 'filePath', 3);
-        return (
-          typeof filePath === 'string' && snapshot.overlayPaths.has(filePath.replace(/\\/g, '/'))
-        );
-      }),
-    };
-  } catch {
-    // Keep the snapshot for tombstone safety while preserving base-only fallback.
-    return { snapshot, rows: [], overlayAvailable: false };
-  }
+  // A usable snapshot promises these identities; query errors must fail closed.
+  const rows = await queryOverlay(
+    { id: repo.id, repoPath: repo.repoPath, storagePath: repo.storagePath },
+    cypher,
+    params,
+    snapshot.generation,
+  );
+  return {
+    snapshot,
+    overlayAvailable: true,
+    rows: (rows as QueryRow[]).filter((row) => {
+      const filePath = rowValue(row, 'filePath', 3);
+      return (
+        typeof filePath === 'string' && snapshot.overlayPaths.has(filePath.replace(/\\/g, '/'))
+      );
+    }),
+  };
 }
 
 function filterBaseRows(
@@ -270,6 +270,7 @@ export async function resolveSymbolCandidates(
   repo: SymbolResolutionRepoHandle,
   query: ResolutionQuery,
   hints: ResolutionHints,
+  options: { snapshot?: OverlaySnapshot } = {},
 ): Promise<SymbolResolutionOutcome> {
   const { uid, name, include_content } = query;
   const selectClause = `n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`;
@@ -278,7 +279,7 @@ export async function resolveSymbolCandidates(
     const cypher = `MATCH (n {id: $uid}) RETURN ${selectClause} LIMIT 1`;
     const params = { uid };
     const rows = await executeParameterized(repo.id, cypher, params);
-    const overlay = await readOverlayRows(repo, cypher, params);
+    const overlay = await readOverlayRows(repo, cypher, params, options.snapshot);
     const filtered = filterBaseRows(rows as QueryRow[], overlay);
     const candidates = filtered.rows.map((row) => parseSymbolRow(row, include_content));
     if (overlay) {
@@ -315,7 +316,7 @@ export async function resolveSymbolCandidates(
 
   const cypher = `MATCH (n) ${whereClause} RETURN ${selectClause} LIMIT 20`;
   const rows = await executeParameterized(repo.id, cypher, queryParams);
-  const overlay = await readOverlayRows(repo, cypher, queryParams);
+  const overlay = await readOverlayRows(repo, cypher, queryParams, options.snapshot);
   const filtered = filterBaseRows(rows as QueryRow[], overlay);
   const baseRows = filtered.rows;
   const queryRows = [...baseRows, ...(overlay?.rows ?? [])];

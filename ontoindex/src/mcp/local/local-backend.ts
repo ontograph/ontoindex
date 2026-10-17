@@ -7,9 +7,16 @@
  */
 
 import path from 'path';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { performance } from 'node:perf_hooks';
 import { canonicalRepoId, registryRepoIds } from '../shared/target-context.js';
 import fs from 'fs/promises';
-import { evictOverlayState } from './backend-overlay.js';
+import {
+  evictOverlayState,
+  getOverlaySnapshot,
+  withPinnedOverlay,
+  type OverlaySnapshot,
+} from './backend-overlay.js';
 import { RepoHandle, BackendPort } from 'ontoindex-shared';
 import { recordToolCall } from './tool-telemetry.js';
 import {
@@ -1196,6 +1203,43 @@ const REPO_AGNOSTIC_TOOL_NAMES = [
 
 const REPO_AGNOSTIC_TOOL_METHODS = new Set<string>(REPO_AGNOSTIC_TOOL_NAMES);
 
+export interface ReadRequestContext {
+  repoId: string;
+  snapshot: OverlaySnapshot;
+  deadline: number;
+  signal?: AbortSignal;
+  release(): Promise<void>;
+}
+
+const readRequestContext = new AsyncLocalStorage<ReadRequestContext>();
+
+export function getReadRequestContext(): ReadRequestContext | undefined {
+  return readRequestContext.getStore();
+}
+
+// These operations retain their existing diagnosis, history, and mutation guards.
+const UNGATED_REPO_TOOLS = new Set([
+  'gn_diagnose', // Diagnosis must remain available when preparation fails.
+  'analysis_catalog', // Reports available analysis metadata.
+  'session', // Persists session state rather than reading the graph.
+  'detect_changes',
+  'graph_diff', // Preserve explicitly selected Git references.
+  'audit_rerun', // Audit lifecycle owns its own freshness and mutation guards.
+  'rename',
+  'rename_symbol', // Rename preview/apply shares mutation guards.
+  'sandbox',
+  'replace_symbol',
+  'update_symbol_body',
+  'extract_function',
+  'move_symbol', // Mutation owners.
+]);
+
+function workspacePreparationError(error: unknown): Error & { code: string } {
+  return Object.assign(new Error(`workspace_preparation_failed: ${errorMessage(error)}`), {
+    code: 'workspace_preparation_failed',
+  });
+}
+
 function isRepoAgnosticToolName(method: string): method is RepoAgnosticToolName {
   return REPO_AGNOSTIC_TOOL_METHODS.has(method);
 }
@@ -1999,7 +2043,53 @@ export class LocalBackend implements BackendPort {
     const repo = await this.resolveRepo(this.getRepoParam(params));
     const handler = this.repoToolHandlers[method];
     if (!handler) throw new Error(`Unknown tool: ${method}`);
-    const result = await handler(repo, params);
+    const invoke = () => handler(repo, params);
+    let result: unknown;
+    if (UNGATED_REPO_TOOLS.has(method) || getReadRequestContext()?.repoId === repo.id) {
+      result = await invoke();
+    } else {
+      const deadline = performance.now() + 60_000;
+      let snapshot: OverlaySnapshot;
+      try {
+        snapshot = await getOverlaySnapshot(repo);
+      } catch (error) {
+        throw workspacePreparationError(error);
+      }
+      // withPinnedOverlay owns the actual generation lease and releases it on exit.
+      // Keep the request hook idempotent for downstream preparation ownership.
+      let released = false;
+      const context: ReadRequestContext = {
+        repoId: repo.id,
+        snapshot,
+        deadline,
+        async release() {
+          if (released) return;
+          released = true;
+        },
+      };
+      try {
+        result = await readRequestContext.run(context, async () => {
+          if (!snapshot.usable) return invoke();
+          let enteredHandler = false;
+          try {
+            return await withPinnedOverlay(repo, snapshot, () => {
+              enteredHandler = true;
+              return invoke();
+            });
+          } catch (error) {
+            if (
+              !enteredHandler &&
+              errorMessage(error).includes('overlay generation no longer available')
+            ) {
+              throw workspacePreparationError(error);
+            }
+            throw error;
+          }
+        });
+      } finally {
+        await context.release();
+      }
+    }
     if (method !== 'query' && method !== 'context' && method !== 'impact') {
       return isObjectResponse(result) ? attachRepoScopeIdentity(result, repo) : result;
     }

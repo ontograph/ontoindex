@@ -17,6 +17,35 @@ import { buildTestGraph } from '../helpers/test-graph.js';
 import { resolveOverlayDbPath } from '../../src/mcp/local/backend-overlay.js';
 
 describe('disposable dirty overlay build', () => {
+  it('refuses an over-budget pinned overlay before capture or build', async () => {
+    const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-overlay-budget-'));
+    const overlay = path.join(repoManager.getStoragePaths(repoPath).storagePath, 'overlay');
+    const generation = path.join(overlay, '1-1-abc');
+    const previous = process.env.ONTOINDEX_OVERLAY_BUDGET_BYTES;
+    const analyzeRepo = vi.fn();
+    try {
+      await fs.mkdir(generation, { recursive: true });
+      await fs.writeFile(path.join(generation, 'lbug'), 'over-budget');
+      await fs.writeFile(path.join(generation, `.reader-${process.pid}-live`), '');
+      process.env.ONTOINDEX_OVERLAY_BUDGET_BYTES = '1';
+      await expect(
+        runFullAnalysis(
+          repoPath,
+          { dirtyOverlay: true, overlayPaths: [] },
+          { onProgress: () => {} },
+          { analyzeRuntime: { analyzeRepo } },
+        ),
+      ).rejects.toMatchObject({ code: 'overlay_budget_exceeded' });
+      expect(analyzeRepo).not.toHaveBeenCalled();
+      expect(await fs.readdir(overlay)).toEqual(['1-1-abc']);
+      expect(await fs.readdir(repoPath)).toEqual(['.ontoindex']);
+    } finally {
+      if (previous === undefined) delete process.env.ONTOINDEX_OVERLAY_BUDGET_BYTES;
+      else process.env.ONTOINDEX_OVERLAY_BUDGET_BYTES = previous;
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
+  });
+
   it('isolates dirty symbols, preserves the active generation, and removes a failed partial store', async () => {
     const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-overlay-build-'));
     const { storagePath, metaPath } = repoManager.getStoragePaths(repoPath);
@@ -137,9 +166,18 @@ describe('disposable dirty overlay build', () => {
       );
       expect(analyzeRepo).toHaveBeenCalledWith(
         expect.objectContaining({
-          options: { profile: 'symbols', includePaths: ['src/dirty.ts'] },
+          options: {
+            profile: 'symbols',
+            includePaths: ['src/dirty.ts'],
+            capturedWorkspace: {
+              captureRoot: expect.stringContaining('workspace-inputs'),
+              canonicalRepoPath: await fs.realpath(repoPath),
+            },
+          },
         }),
       );
+      // The capture is disposed after publication.
+      expect(await fs.readdir(path.join(storagePath, 'workspace-inputs'))).toEqual([]);
       expect(result.stats.files).toBe(1);
       expect(result.stats.embeddings).toBe(0);
       expect(result.embeddingLifecycle).toEqual({ mode: 'off', state: 'absent' });
@@ -149,7 +187,19 @@ describe('disposable dirty overlay build', () => {
       expect((await fs.stat(overlayDbPath!)).isFile()).toBe(true);
       expect(
         JSON.parse(await fs.readFile(path.join(path.dirname(overlayDbPath!), 'base.json'), 'utf8')),
-      ).toEqual({ baseGenerationId: generation.generationId, baseCommit: null });
+      ).toEqual({
+        baseGenerationId: generation.generationId,
+        baseCommit: null,
+        manifestDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+        configurationDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+        parserIdentity: expect.any(String),
+        includePaths: ['src/dirty.ts'],
+        inputs: {
+          'src/dirty.ts': createHash('sha256')
+            .update('export function dirtyNow() { return 2; }\n')
+            .digest('hex'),
+        },
+      });
       const overlayCurrent = await fs.readFile(path.join(overlayPath, 'CURRENT'));
       const overlayBefore = await fs.readFile(overlayDbPath!);
       // Verify the immutable publication read-only, without writable catalog

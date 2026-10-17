@@ -217,6 +217,7 @@ function emitParseTelemetry(
     | 'parse-sub-batch-start'
     | 'parse-worker-result'
     | 'parse-degraded-files'
+    | 'parse-error-files'
     | 'parse-slowest-files'
     | 'parse-slowest-extractors',
   details: {
@@ -244,6 +245,8 @@ function emitParseTelemetry(
     parseWorkerRecoveryWindowSize?: number;
     firstFilePath?: string;
     lastFilePath?: string;
+    parseErrorCount?: number;
+    parseErrorFiles?: string[];
     degradedReason?: string;
     degradedAction?:
       | 'quarantine-files'
@@ -305,6 +308,7 @@ function clearChunkWorkerData(data: ChunkWorkerData): void {
   data.constructorBindings.length = 0;
   data.fileScopeBindings.length = 0;
   data.fileTimings.length = 0;
+  data.parseErrorPaths.length = 0;
   data.extractorTimings.length = 0;
   data.parsedFiles.length = 0;
   data.degraded = undefined;
@@ -710,6 +714,15 @@ export async function runChunkedParseAndResolve(
             }
           : undefined,
         workerFailureMode,
+        (paths) => {
+          if (paths.length === 0) return;
+          emitParseTelemetry(options, graph, pipelineStart, 'parse-error-files', {
+            chunkIndex: chunkIdx + 1,
+            chunkCount: numChunks,
+            parseErrorCount: paths.length,
+            parseErrorFiles: paths.slice(0, 100),
+          });
+        },
       );
       if (chunkWorkerData) {
         chunkFiles.length = 0;
@@ -721,6 +734,14 @@ export async function runChunkedParseAndResolve(
         console.warn(
           'Worker pool disabled for remaining parse chunks after fallback to sequential parsing.',
         );
+      }
+      if (chunkWorkerData?.parseErrorPaths.length) {
+        emitParseTelemetry(options, graph, pipelineStart, 'parse-error-files', {
+          chunkIndex: chunkIdx + 1,
+          chunkCount: numChunks,
+          parseErrorCount: chunkWorkerData.parseErrorPaths.length,
+          parseErrorFiles: chunkWorkerData.parseErrorPaths.slice(0, 100),
+        });
       }
       if (chunkWorkerData?.degraded) {
         if (chunkWorkerData.degraded.fatal) {
