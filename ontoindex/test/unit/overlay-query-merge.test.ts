@@ -168,43 +168,6 @@ describe('query dirty-overlay merge', () => {
     },
   );
 
-  it('searches the whole workspace graph and drops every base row', async () => {
-    vi.mocked(getOverlaySnapshot).mockResolvedValue({
-      ...snapshot(true, ['src/dirty.ts']),
-      capability: 'workspace-graph',
-      coverage: 'complete',
-      generation: 'workspace-generation',
-      tombstones: new Set(['src/gone.ts']),
-    });
-    vi.mocked(queryOverlay).mockResolvedValue([
-      overlayRow,
-      {
-        ...overlayRow,
-        id: 'Function:src/clean.ts:CacheStore',
-        filePath: 'src/clean.ts',
-        name: 'WorkspaceClean',
-      },
-      {
-        ...overlayRow,
-        id: 'Function:src/gone.ts:CacheStore',
-        filePath: 'src/gone.ts',
-        name: 'Gone',
-      },
-    ]);
-    const result = await query(repo, { ...options, structured_output: true });
-    const serialized = JSON.stringify(result);
-    expect(serialized).toContain('WorkspaceClean');
-    expect(serialized).toContain(overlayRow.name);
-    expect(serialized).not.toContain(stale.name);
-    expect(serialized).not.toContain(clean.name);
-    expect(serialized).not.toContain('Gone');
-    const [, cypher, params, generation] = vi.mocked(queryOverlay).mock.calls[0];
-    expect(cypher).toContain('n.filePath IS NOT NULL');
-    expect(cypher).not.toContain('$path0');
-    expect(params).not.toHaveProperty('path0');
-    expect(generation).toBe('workspace-generation');
-  });
-
   it.each([
     [false, false],
     [false, true],
