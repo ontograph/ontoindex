@@ -78,8 +78,9 @@ const workspaceDependencies: WorkspacePreparationDependencies = {
 };
 
 /** Measured: 1.3k files ~ 47 s and 1.9 GiB; cost grows with file count. */
-// A 1,717-file build took 48 s (about 28 ms per file), so the 60 s waiter deadline is reached near 2,100 files.
-const DEFAULT_MAX_WORKSPACE_FILES = 2000;
+// Builds cost about 33 ms per file (491 files 15 s, 1,225 files 42 s, 2,662 files 90 s on 8 cores), so the
+// ADR's 55 s dirty-cold limit is reached near 1,600 files.
+const DEFAULT_MAX_WORKSPACE_FILES = 1600;
 const FAILED_BUILD_COOLDOWN_MS = 30_000;
 // A held analyze lock usually means the user is running `ontoindex analyze`; recheck soon, not per request.
 const BUSY_LOCK_COOLDOWN_MS = 5_000;
