@@ -8,6 +8,7 @@ import {
   ensureRepoInitialized,
   RepoPreparationWaitError,
   resolveRepoFromHandles,
+  committedGraphNotice,
   prepareWorkspaceRead,
 } from '../../src/mcp/local/local-backend-repo-runtime.js';
 import type { OverlaySnapshot } from '../../src/mcp/local/backend-overlay.js';
@@ -15,6 +16,18 @@ import type { OverlaySnapshot } from '../../src/mcp/local/backend-overlay.js';
 describe('workspace read preparation', () => {
   afterEach(() => vi.unstubAllEnvs());
   let sequence = 0;
+  it.each([
+    ['flag off', '0', 2, undefined],
+    ['clean tree', '1', 0, undefined],
+    ['dirty tree', '1', 2, expect.stringContaining('2 uncommitted file change')],
+  ])('committed-graph notice: %s', async (_name, flag, count, expected) => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', flag);
+    const snapshot = {
+      dirtyPaths: new Set(Array.from({ length: count }, (_, i) => `f${i}.ts`)),
+    } as unknown as OverlaySnapshot;
+    const repo = { id: 'n', repoPath: '/r', storagePath: '/r/.o' };
+    expect(await committedGraphNotice(repo, async () => snapshot)).toEqual(expected);
+  });
   function fixture() {
     vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
     const dirty: OverlaySnapshot = {

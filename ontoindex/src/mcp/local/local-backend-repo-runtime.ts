@@ -71,6 +71,24 @@ export function resetWorkspaceBuildFailures(): void {
   failedBuilds.clear();
 }
 
+/**
+ * Tools that read the committed graph directly (super-tools, facade audit aliases) do not use the
+ * workspace generation. Say so, instead of letting them look consistent with context/impact.
+ */
+export async function committedGraphNotice(
+  repo: WorkspaceReadRepo,
+  getSnapshot: WorkspacePreparationDependencies['getSnapshot'] = getOverlaySnapshot,
+): Promise<string | undefined> {
+  if (process.env.ONTOINDEX_AUTO_WORKSPACE !== '1') return undefined;
+  try {
+    const snapshot = await getSnapshot(repo);
+    if (snapshot.dirtyPaths.size === 0) return undefined;
+    return `This tool reads the committed index and does not include ${snapshot.dirtyPaths.size} uncommitted file change(s); use context, impact or query for the working tree.`;
+  } catch {
+    return undefined;
+  }
+}
+
 interface WorkspaceBuild {
   identity: string;
   promise: Promise<OverlaySnapshot>;

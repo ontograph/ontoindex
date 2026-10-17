@@ -556,23 +556,26 @@ export function createMCPServer(
             if (GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool)) {
               await backend.ensureRepoInitialized(repo.id);
             }
-            result = attachRepoScopeIdentity(
-              await dispatchLazySuper(
-                name as SuperTool,
-                typedArgs,
-                repo.id,
-                name === 'gn_safe_refactor'
-                  ? {
-                      repoPath: repo.repoPath,
-                      callTool: backend.callTool.bind(backend),
-                    }
+            const superResult = await dispatchLazySuper(
+              name as SuperTool,
+              typedArgs,
+              repo.id,
+              name === 'gn_safe_refactor'
+                ? {
+                    repoPath: repo.repoPath,
+                    callTool: backend.callTool.bind(backend),
+                  }
+                : undefined,
+              name === 'gn_diagnose'
+                ? { repoPath: repo.repoPath, projectCwd: options.projectCwd ?? null }
+                : name === 'gn_audit_logic'
+                  ? { repoPath: repo.repoPath }
                   : undefined,
-                name === 'gn_diagnose'
-                  ? { repoPath: repo.repoPath, projectCwd: options.projectCwd ?? null }
-                  : name === 'gn_audit_logic'
-                    ? { repoPath: repo.repoPath }
-                    : undefined,
-              ),
+            );
+            result = attachRepoScopeIdentity(
+              GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool)
+                ? ((await backend.withCommittedGraphNotice?.(superResult, repo)) ?? superResult)
+                : superResult,
               repo,
             );
           }

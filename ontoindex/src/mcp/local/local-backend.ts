@@ -130,6 +130,7 @@ import { canonicalize } from './path-util.js';
 import { normalizeLimit } from './tool-utils.js';
 import {
   buildAvailableRepoLabels,
+  committedGraphNotice,
   ensureRepoInitialized,
   prepareWorkspaceRead,
   resolveRepoFromHandles,
@@ -1931,6 +1932,15 @@ export class LocalBackend implements BackendPort {
 
   async ensureRepoInitialized(repoId: string): Promise<void> {
     return this.ensureInitialized(repoId);
+  }
+
+  /** Add a notice to a result from a tool that reads the committed graph directly. */
+  async withCommittedGraphNotice<T>(result: T, repo: RepoHandle): Promise<T> {
+    const notice = await committedGraphNotice(repo);
+    if (!notice || !result || typeof result !== 'object' || Array.isArray(result)) return result;
+    const record = result as Record<string, unknown>;
+    const warnings = Array.isArray(record.warnings) ? record.warnings : [];
+    return { ...record, warnings: [...warnings, notice] } as T;
   }
 
   // ─── Public Getters ──────────────────────────────────────────────
