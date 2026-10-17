@@ -42,6 +42,8 @@ describe('workspace read preparation', () => {
       acquireLock: vi.fn(async () => ({ release })),
       buildWorkspaceGraph: vi.fn(async () => {}),
       evictSnapshot: vi.fn(),
+      baseFileCount: vi.fn(async (): Promise<number | undefined> => 10),
+      now: vi.fn(() => 0),
     };
     const options = {
       repo: { id: `workspace-${sequence++}`, repoPath: '/repo', storagePath: '/repo/.ontoindex' },
@@ -95,6 +97,36 @@ describe('workspace read preparation', () => {
     await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({ code: 'workspace_busy' });
     expect(f.dependencies.buildWorkspaceGraph).not.toHaveBeenCalled();
   });
+  it('refuses a build for a repository above the file limit without taking the lock', async () => {
+    const f = fixture();
+    f.dependencies.baseFileCount.mockResolvedValue(5000);
+    f.dependencies.getSnapshot.mockResolvedValue(f.dirty);
+    await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({
+      code: 'workspace_too_large',
+    });
+    expect(f.dependencies.acquireLock).not.toHaveBeenCalled();
+    vi.stubEnv('ONTOINDEX_WORKSPACE_MAX_FILES', '9000');
+    f.dependencies.getSnapshot.mockResolvedValueOnce(f.dirty).mockResolvedValue(f.ready);
+    await prepareWorkspaceRead(f.options);
+    expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce();
+  });
+  it('does not rebuild an unchanged failed snapshot until the cooldown expires', async () => {
+    const f = fixture();
+    f.dependencies.buildWorkspaceGraph.mockRejectedValueOnce(new Error('broken'));
+    f.dependencies.getSnapshot.mockResolvedValue(f.dirty);
+    await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({
+      code: 'workspace_build_failed',
+    });
+    await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({
+      code: 'workspace_build_failed',
+      message: 'broken',
+    });
+    expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledTimes(1);
+    f.dependencies.now.mockReturnValue(31_000);
+    f.dependencies.getSnapshot.mockResolvedValueOnce(f.dirty).mockResolvedValue(f.ready);
+    await prepareWorkspaceRead(f.options);
+    expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledTimes(2);
+  });
   it('releases a failed build and retries on the next request', async () => {
     const f = fixture();
     f.dependencies.buildWorkspaceGraph.mockRejectedValueOnce(new Error('broken'));
@@ -103,6 +135,7 @@ describe('workspace read preparation', () => {
       code: 'workspace_build_failed',
     });
     expect(f.release).toHaveBeenCalledOnce();
+    f.dependencies.now.mockReturnValue(31_000);
     f.dependencies.getSnapshot.mockResolvedValueOnce(f.dirty).mockResolvedValue(f.ready);
     await prepareWorkspaceRead(f.options);
     expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledTimes(2);

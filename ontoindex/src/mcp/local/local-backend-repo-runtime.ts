@@ -3,6 +3,7 @@ import syncFs from 'node:fs';
 import path from 'path';
 import { RepoHandle } from 'ontoindex-shared';
 import { resolveActiveIndexGeneration } from '../../storage/repo-manager.js';
+import { readActiveGenerationMeta } from '../../storage/repo-manager.js';
 import {
   evictOverlayState,
   getOverlaySnapshot,
@@ -22,6 +23,9 @@ export interface WorkspacePreparationDependencies {
   acquireLock(repoPath: string): Promise<{ release(): Promise<void> }>;
   buildWorkspaceGraph(repoPath: string, signal?: AbortSignal): Promise<void>;
   evictSnapshot(repoId: string): void;
+  /** Committed-index file count, used to refuse builds that cost too much. */
+  baseFileCount(repo: WorkspaceReadRepo): Promise<number | undefined>;
+  now(): number;
 }
 
 export class WorkspacePreparationError extends Error {
@@ -29,6 +33,7 @@ export class WorkspacePreparationError extends Error {
     public readonly code:
       | 'workspace_busy'
       | 'workspace_build_failed'
+      | 'workspace_too_large'
       | 'workspace_timeout'
       | 'workspace_cancelled',
     message: string = code,
@@ -52,7 +57,19 @@ const workspaceDependencies: WorkspacePreparationDependencies = {
     );
   },
   evictSnapshot: evictOverlayState,
+  baseFileCount: async (repo) =>
+    (await readActiveGenerationMeta(repo.storagePath)).meta?.stats?.files,
+  now: () => Date.now(),
 };
+
+/** Measured: 1.3k files ~ 47 s and 1.9 GiB; cost grows with file count. */
+const DEFAULT_MAX_WORKSPACE_FILES = 2500;
+const FAILED_BUILD_COOLDOWN_MS = 30_000;
+const failedBuilds = new Map<string, { identity: string; until: number; message: string }>();
+
+export function resetWorkspaceBuildFailures(): void {
+  failedBuilds.clear();
+}
 
 interface WorkspaceBuild {
   identity: string;
@@ -143,11 +160,24 @@ export async function prepareWorkspaceRead(options: {
       headChanged: activeBaseChanged,
     });
     if (decision.action !== 'build-workspace-graph') return snapshot;
+    const maxFiles =
+      Number(process.env.ONTOINDEX_WORKSPACE_MAX_FILES) || DEFAULT_MAX_WORKSPACE_FILES;
+    const fileCount = await dependencies.baseFileCount(options.repo);
+    if (fileCount !== undefined && fileCount > maxFiles) {
+      throw new WorkspacePreparationError(
+        'workspace_too_large',
+        `Repository has ${fileCount} indexed files (limit ${maxFiles}); a full workspace graph build is refused. Run \`ontoindex analyze\` or raise ONTOINDEX_WORKSPACE_MAX_FILES.`,
+      );
+    }
     const identity = JSON.stringify([
       snapshot.generation,
       snapshot.reason,
       [...snapshot.dirtyPaths].sort(),
     ]);
+    const failed = failedBuilds.get(options.repo.id);
+    if (failed && failed.identity === identity && failed.until > dependencies.now()) {
+      throw new WorkspacePreparationError('workspace_build_failed', failed.message);
+    }
     return workspaceBuild(options.repo.id, identity, async () => {
       let lock: Awaited<ReturnType<WorkspacePreparationDependencies['acquireLock']>>;
       try {
@@ -173,11 +203,13 @@ export async function prepareWorkspaceRead(options: {
         if (!updated.usable) throw new Error(updated.reason ?? 'Workspace snapshot is unusable');
         return updated;
       } catch (cause) {
-        throw new WorkspacePreparationError(
-          'workspace_build_failed',
-          cause instanceof Error ? cause.message : String(cause),
-          { cause },
-        );
+        const message = cause instanceof Error ? cause.message : String(cause);
+        failedBuilds.set(options.repo.id, {
+          identity,
+          until: dependencies.now() + FAILED_BUILD_COOLDOWN_MS,
+          message,
+        });
+        throw new WorkspacePreparationError('workspace_build_failed', message, { cause });
       }
     });
   };

@@ -330,7 +330,7 @@ coalescing, lock release and ALS handling had no defects): `closeLbug()` / `clos
 defer closing a database that a live request pin references (the scope's final release closes it;
 two integration tests fail without the fix), and the Class/Constructor preference query in
 `resolveSymbolCandidates` reads the workspace generation instead of the base index. Still open:
-an explicit shutdown no longer force-closes a pinned database until the scope ends. Dead until wired: `isAuthoritativePath`, `selectWorkspaceCapability`,
+an explicit shutdown no longer force-closes a pinned database until the scope ends. Build-cost gate added: `prepareWorkspaceRead` refuses a workspace-graph build when the base index has more than 2500 files (`ONTOINDEX_WORKSPACE_MAX_FILES`, error `workspace_too_large`, derived from the 1.3k-file / 47 s / 1.9 GiB measurement), and a failed build for an unchanged snapshot is not retried for 30 s. Dead until wired: `isAuthoritativePath`, `selectWorkspaceCapability`,
 `isAuthoritativePath`, `workspaceGraph` (no production caller), `snapshotIdentity` (no supplier),
 `createWatchCommand` `refreshCallback` (no supplier). No `prepareWorkspaceRead`, so a user
 today gets NO automatic dirty-workspace answer: `ontoindex context` still returns committed
