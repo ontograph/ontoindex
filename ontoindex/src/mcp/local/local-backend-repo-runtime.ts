@@ -206,11 +206,12 @@ export async function prepareWorkspaceRead(options: {
   const work = async (onSnapshot: (snapshot: OverlaySnapshot) => void) => {
     const snapshot = await dependencies.getSnapshot(options.repo);
     onSnapshot(snapshot);
-    if (snapshot.dirtyPaths.size === 0) return snapshot;
+    const configPaths = snapshot.configPaths ?? new Set<string>();
+    if (snapshot.dirtyPaths.size === 0 && configPaths.size === 0) return snapshot;
     const activeBaseChanged = snapshot.reason?.includes('active base') ?? false;
     const decision = selectWorkspaceCapability({
       eligibleChangeCount: snapshot.dirtyPaths.size,
-      configChanged: [...snapshot.dirtyPaths].some(isResolverConfigPath),
+      configChanged: configPaths.size > 0 || [...snapshot.dirtyPaths].some(isResolverConfigPath),
       needsRelationships: options.needsRelationships || options.wantsWorkspaceGraph === true,
       haveUsableSymbolsOverlay: snapshot.usable && snapshot.capability !== 'workspace-graph',
       haveUsableWorkspaceGraph:
@@ -256,6 +257,7 @@ export async function prepareWorkspaceRead(options: {
       snapshot.generation,
       snapshot.reason,
       [...snapshot.dirtyPaths].sort(),
+      [...configPaths].sort(),
     ]);
     const failed = failedBuilds.get(options.repo.id);
     if (failed && failed.identity === identity && failed.until > dependencies.now()) {

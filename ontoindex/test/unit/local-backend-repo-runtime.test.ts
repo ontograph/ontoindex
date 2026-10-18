@@ -84,6 +84,22 @@ describe('workspace read preparation', () => {
     expect(f.dependencies.evictSnapshot).toHaveBeenCalledWith(f.options.repo.id);
     expect(f.dependencies.getSnapshot).toHaveBeenCalledTimes(3);
   });
+  it('builds the working-tree graph for a configuration-only edit', async () => {
+    const f = fixture();
+    // No dirty source file: only tsconfig.json differs from the committed tree.
+    const configOnly = {
+      ...f.dirty,
+      dirtyPaths: new Set<string>(),
+      configPaths: new Set(['tsconfig.json']),
+    };
+    f.dependencies.getSnapshot.mockReset();
+    f.dependencies.getSnapshot
+      .mockResolvedValueOnce(configOnly)
+      .mockResolvedValueOnce(configOnly)
+      .mockResolvedValue(f.ready);
+    expect(await prepareWorkspaceRead(f.options)).toBe(f.ready);
+    expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce();
+  });
   it('adopts a graph another server finished while this one waited for the lock', async () => {
     const f = fixture();
     // The probe sees a dirty tree; by the time the lock is ours, a peer has published the graph.

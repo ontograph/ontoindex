@@ -48,6 +48,11 @@ export interface OverlaySnapshot {
   reason: string | null;
   /** Repo-relative paths that are dirty (modified/added/untracked/deleted); base symbols for these are stale. */
   dirtyPaths: ReadonlySet<string>;
+  /**
+   * Dirty resolver-configuration files. Reported only when ONTOINDEX_AUTO_WORKSPACE=1, so they
+   * stay out of the source-only `dirtyPaths` that the flag-off routes rely on.
+   */
+  configPaths?: ReadonlySet<string>;
   /** Paths whose parse errors prevent authoritative relationship answers. */
   parseErrorPaths: ReadonlySet<string>;
   /** Dirty paths that still exist and are covered by the overlay. */
@@ -245,7 +250,12 @@ async function computeSnapshot(
   const uncoveredPaths = new Set(plan.uncoveredPaths);
   const tombstones = new Set(plan.tombstones);
   const dirtyPaths = new Set(plan.allDirtyPaths);
-  if (dirtyPaths.size === 0) return EMPTY;
+  // A configuration-only edit is a change only for the working-tree graph route.
+  const configPaths =
+    process.env.ONTOINDEX_AUTO_WORKSPACE === '1'
+      ? new Set(plan.configPaths ?? [])
+      : new Set<string>();
+  if (dirtyPaths.size === 0 && configPaths.size === 0) return EMPTY;
   const base: Pick<
     OverlaySnapshot,
     'dirtyPaths' | 'parseErrorPaths' | 'overlayPaths' | 'uncoveredPaths' | 'tombstones'
@@ -254,7 +264,15 @@ async function computeSnapshot(
     capability?: OverlaySnapshot['capability'];
     coverage?: OverlaySnapshot['coverage'];
     ftsIndexes?: readonly string[];
-  } = { dirtyPaths, parseErrorPaths: new Set(), overlayPaths, uncoveredPaths, tombstones };
+    configPaths?: ReadonlySet<string>;
+  } = {
+    dirtyPaths,
+    parseErrorPaths: new Set(),
+    overlayPaths,
+    uncoveredPaths,
+    tombstones,
+    ...(configPaths.size ? { configPaths } : {}),
+  };
 
   let dbPath: string;
   try {

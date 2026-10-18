@@ -298,6 +298,11 @@ export interface DirtyOverlayPlan {
   tombstones: string[];
   tooMany: boolean;
   skipped: string[];
+  /**
+   * Dirty resolver-configuration files (tsconfig, package manifests, ignore files). Kept apart
+   * from `allDirtyPaths`, which stays source-only: only the working-tree graph route consumes it.
+   */
+  configPaths: string[];
 }
 
 function decodePorcelainPath(value: string): string {
@@ -469,6 +474,10 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
     const covered = new Set(plannedIncludePaths);
     uncoveredPaths = [...includePaths].filter((filePath) => !covered.has(filePath)).sort();
   }
+  const configPaths = [...skipped]
+    .filter((filePath) => CAPTURE_CONFIGURATION.test(path.posix.basename(filePath)))
+    .filter((filePath) => !isIgnored(filePath))
+    .sort();
   return {
     includePaths: plannedIncludePaths,
     uncoveredPaths,
@@ -476,6 +485,7 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
     tombstones: [...tombstones].sort(),
     tooMany,
     skipped: [...skipped].sort(),
+    configPaths,
   };
 }
 

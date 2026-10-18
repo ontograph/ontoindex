@@ -564,6 +564,45 @@ describe('backend-overlay snapshot', () => {
   });
 });
 
+describe('backend-overlay configuration-only dirtiness', () => {
+  const repo = { id: 'config-only', repoPath: '/repo', storagePath: '/repo/.ontoindex' };
+  const configPlan = {
+    includePaths: [],
+    uncoveredPaths: [],
+    allDirtyPaths: [],
+    tombstones: [],
+    tooMany: false,
+    skipped: ['tsconfig.json'],
+    configPaths: ['tsconfig.json'],
+  };
+  beforeEach(() => {
+    resetOverlaySnapshotCache();
+    vi.mocked(planDirtyOverlay).mockReset();
+    vi.mocked(planDirtyOverlay).mockResolvedValue(configPlan);
+  });
+  afterEach(() => {
+    resetOverlaySnapshotCache();
+    vi.mocked(planDirtyOverlay).mockReset();
+    vi.unstubAllEnvs();
+  });
+
+  it('is a dirty tree for the working-tree route, with source dirtiness still empty', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    const snapshot = await getOverlaySnapshot(repo);
+    expect(snapshot.configPaths).toEqual(new Set(['tsconfig.json']));
+    expect(snapshot.dirtyPaths.size).toBe(0);
+    expect(snapshot.reason).not.toBe('no dirty files');
+  });
+
+  it.each(['0', undefined])('is invisible when the flag is %s', async (flag) => {
+    if (flag === undefined) vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '');
+    else vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', flag);
+    const snapshot = await getOverlaySnapshot(repo);
+    expect(snapshot.reason).toBe('no dirty files');
+    expect(snapshot.configPaths).toBeUndefined();
+  });
+});
+
 describe('backend-overlay snapshot single-flight', () => {
   const repo = { id: 'single-flight', repoPath: '/repo', storagePath: '/repo/.ontoindex' };
   const cleanPlan = {
