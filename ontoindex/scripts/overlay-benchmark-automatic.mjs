@@ -194,7 +194,8 @@ export async function runSample(ctx, { size, phase, symbol, rawDir, label }) {
   };
   const call = async () => {
     const started = performance.now();
-    const response = await client.callTool(request);
+    // The SDK default is 60 s, the same as the server's wait limit; the harness must see the server's answer.
+    const response = await client.callTool(request, undefined, { timeout: 300_000 });
     return {
       ms: performance.now() - started,
       text: (response.content ?? []).map((c) => c.text ?? '').join(''),
