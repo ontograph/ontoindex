@@ -18,7 +18,7 @@ import {
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const STDERR_LIMIT = 16 * 1024 ** 2;
-export const EXTRA_CASES = ['config', 'contention'];
+export const EXTRA_CASES = ['config', 'contention', 'parity'];
 /** A tracked resolver configuration that the snapshot must treat as an input. */
 const CONFIG_FILE = 'ontoindex/tsconfig.json';
 const BUSY_RETRY_MS = 500;
@@ -29,14 +29,14 @@ const SAMPLE_MS = 20;
 const NATIVE_ERROR =
   /Buffer manager exception|Unable to allocate|buffer pool is full|SIGSEGV|Segmentation fault/i;
 export const usage = `Usage: node scripts/overlay-benchmark.mjs --automatic --output <file> [--pilot]
-  [--sizes 0,1,50,51|none] [--extras config,contention|none] [--repetitions 20] [--repo <path>] [--cli <path>]
+  [--sizes 0,1,50,51|none] [--extras config,contention,parity|none] [--repetitions 20] [--repo <path>] [--cli <path>]
 --pilot measures one cold size-1 read. --output writes the artifact plus <file>.raw/ references.
 Needs a built CLI, GNU time at /usr/bin/time and Linux /proc.`;
 
 export function parseAutomaticArgs(argv) {
   const opts = {
     sizes: [0, 1, 50, 51],
-    extras: ['config', 'contention'],
+    extras: ['config', 'contention', 'parity'],
     repetitions: 20,
     pilot: false,
     output: null,
@@ -187,6 +187,7 @@ export async function runSample(
     retryBusy,
     buildsBefore,
     barrier,
+    flagOff,
   },
 ) {
   const { Client, StdioClientTransport } = ctx.sdk;
@@ -197,6 +198,8 @@ export async function runSample(
     ONTOINDEX_AUTO_WORKSPACE: '1',
     ONTOINDEX_WORKSPACE_MAX_FILES: String(ctx.maxFiles),
   };
+  // The compatible baseline for the clean-gate budget: the same read with the feature off.
+  if (flagOff) delete env.ONTOINDEX_AUTO_WORKSPACE;
   const transport = new StdioClientTransport({
     command: '/usr/bin/time',
     args: ['-f', '%x %U %S', '-o', timeFile, process.execPath, ctx.cli, 'mcp'],
@@ -305,6 +308,7 @@ export async function runSample(
       label,
       size,
       case: caseName ?? `size-${size}`,
+      flagOff: !!flagOff,
       phase,
       busyRetries,
       evidenceOk,
@@ -363,6 +367,39 @@ function pickSymbol(clone, files) {
   }
   throw new Error('No exported function found in the selected files');
 }
+
+/** The context answer without the trailing next-step hint, reduced to what parity compares. */
+export function contextFingerprint(text) {
+  const body = text.split('\n---\n')[0];
+  const answer = JSON.parse(body);
+  const uids = (group) => (group?.calls ?? []).map((c) => c.uid).sort();
+  return {
+    status: answer.status,
+    symbol: answer.symbol?.uid ?? null,
+    incoming: uids(answer.incoming),
+    outgoing: uids(answer.outgoing),
+  };
+}
+
+/** Differences between a working-tree answer and a full-graph reference for the same bytes. */
+export function diffFingerprints(actual, reference) {
+  const out = [];
+  if (actual.status !== reference.status)
+    out.push(`status ${actual.status} != ${reference.status}`);
+  if (actual.symbol !== reference.symbol)
+    out.push(`symbol ${actual.symbol} != ${reference.symbol}`);
+  for (const side of ['incoming', 'outgoing']) {
+    const have = new Set(actual[side]);
+    const want = new Set(reference[side]);
+    const missing = [...want].filter((u) => !have.has(u));
+    const extra = [...have].filter((u) => !want.has(u));
+    if (missing.length) out.push(`${side} missing ${missing.slice(0, 5).join(', ')}`);
+    if (extra.length) out.push(`${side} extra ${extra.slice(0, 5).join(', ')}`);
+  }
+  return out;
+}
+
+const PARITY_PROBE = 'adwParityProbe';
 
 export async function runAutomatic(opts) {
   if (process.platform !== 'linux') throw new Error('Automatic benchmark needs Linux /proc');
@@ -462,9 +499,27 @@ export async function runAutomatic(opts) {
       try {
         for (const phase of phases) {
           const samples = [],
-            metas = [];
+            metas = [],
+            baselineSamples = [],
+            baselineMetas = [];
           for (let i = 0; i < opts.repetitions; i++) {
             if (phase === 'cold') coldReset();
+            // Clean workload: alternate a flag-off read and a flag-on read so load drift hits both.
+            if (size === 0)
+              accept(
+                baselineSamples,
+                baselineMetas,
+                await runSample(ctx, {
+                  size,
+                  phase,
+                  symbol,
+                  rawDir,
+                  label: `s${size}-${phase}-baseline-${i}`,
+                  flagOff: true,
+                }),
+                `size ${size} ${phase} baseline`,
+                i + 1,
+              );
             accept(
               samples,
               metas,
@@ -480,18 +535,23 @@ export async function runAutomatic(opts) {
             );
           }
           const summary = summarize(samples);
+          const baseline = baselineSamples.length ? summarize(baselineSamples) : undefined;
           const overlayBytes = overlayBytesNow();
           workloads.push({
             size,
             phase,
             workload: size === 0 ? 'clean' : 'dirty',
             summary,
+            ...(baseline
+              ? { baseline: { summary: baseline, samples: baselineSamples, metas: baselineMetas } }
+              : {}),
             artifactBytes: overlayBytes,
             budgets: evaluateBudgets({
               phase,
               workload: size === 0 ? 'clean' : 'dirty',
               summary,
               artifactBytes: overlayBytes,
+              baselineP95Ms: baseline?.latency.p95,
             }),
             samples,
             metas,
@@ -622,6 +682,97 @@ export async function runAutomatic(opts) {
         if (edited.length) git(['checkout', '--', ...edited], clone);
       }
     }
+    if (opts.extras.includes('parity')) {
+      // Semantic edit: a new exported function that calls the probed symbol. The working-tree
+      // answer must equal a full analyze of the same bytes, including the new caller.
+      const target = eligible.find((f) =>
+        new RegExp(`export (?:async )?function ${symbol}\\b`).test(
+          fs.readFileSync(path.join(clone, f), 'utf8'),
+        ),
+      );
+      if (!target) throw new Error(`No file exports ${symbol} for the parity edit`);
+      const probe = `\nexport function ${PARITY_PROBE}(...args: Parameters<typeof ${symbol}>) {\n  return ${symbol}(...args);\n}\n`;
+      const refRoot = path.join(temp, 'reference');
+      fs.mkdirSync(refRoot);
+      const refClone = path.join(refRoot, 'repo');
+      git(['clone', '-q', '--no-hardlinks', '--', clone, refClone], refRoot);
+      fs.appendFileSync(path.join(refClone, target), probe);
+      git(['add', '-A'], refClone);
+      git(
+        [
+          '-c',
+          'user.name=adw',
+          '-c',
+          'user.email=adw@example.invalid',
+          'commit',
+          '-q',
+          '-m',
+          'parity',
+        ],
+        refClone,
+      );
+      const refName = `${repoName}ref`;
+      const refEnv = { ...env, ONTOINDEX_HOME: path.join(temp, 'ref-home') };
+      execFileSync(
+        process.execPath,
+        [opts.cli, 'analyze', refClone, '--skip-agents-md', '--name', refName],
+        { cwd: refClone, env: refEnv, stdio: 'pipe' },
+      );
+      const reference = await runSample(
+        { ...ctx, clone: refClone, env: refEnv, repoName: refName },
+        {
+          size: 0,
+          phase: 'cold',
+          symbol,
+          rawDir,
+          label: 'parity-reference',
+          caseName: 'parity-reference',
+          expectWorkspace: false,
+          flagOff: true,
+        },
+      );
+      if (!reference.meta.evidenceOk)
+        throw new Error(`Parity reference did not answer; see ${rawDir}`);
+      const referencePrint = contextFingerprint(
+        fs.readFileSync(path.join(rawDir, 'parity-reference.response.txt'), 'utf8'),
+      );
+      if (!referencePrint.incoming.some((uid) => uid.includes(PARITY_PROBE)))
+        throw new Error(
+          `Parity reference does not show the new caller ${PARITY_PROBE}; the edit is not exercising the graph`,
+        );
+      fs.appendFileSync(path.join(clone, target), probe);
+      const samples = [],
+        metas = [],
+        differences = [];
+      try {
+        for (let i = 0; i < opts.repetitions; i++) {
+          coldReset();
+          const label = `parity-${i}`;
+          const result = await runSample(ctx, {
+            size: 1,
+            phase: 'cold',
+            symbol,
+            rawDir,
+            label,
+            caseName: 'parity',
+            expectWorkspace: true,
+          });
+          accept(samples, metas, result, 'parity', i + 1);
+          const diff = diffFingerprints(
+            contextFingerprint(fs.readFileSync(path.join(rawDir, `${label}.response.txt`), 'utf8')),
+            referencePrint,
+          );
+          differences.push(diff);
+          if (diff.length) throw new Error(`Parity round ${i + 1} differs: ${diff.join('; ')}`);
+        }
+      } finally {
+        git(['checkout', '--', target], clone);
+      }
+      extraWorkload('parity', 'cold', samples, metas, {
+        reference: referencePrint,
+        differencesPerRound: differences,
+      });
+    }
     machine.loadAverageEnd = os.loadavg();
     const artifact = {
       mode: opts.pilot ? 'pilot' : 'matrix',
@@ -642,7 +793,7 @@ export async function runAutomatic(opts) {
         'Warm CPU is sampled from /proc deltas, not terminal GNU time, so it cannot prove the CPU ceiling.',
         'Process-tree RSS is sampled every 20 ms where the scan keeps up (see maxSampleGapMs); it is not an exact native peak.',
         'Contention: two server processes read one dirty clone together; each retries a retryable workspace_busy answer every 500 ms. The invariant checked is exactly one new generation per round; lock exclusivity itself is not observed.',
-        'No baseline comparison and no same-input full-graph parity check.',
+        'Clean-gate overhead compares size 0 against a flag-off read of the same clean tree, alternated per repetition. No same-input full-graph parity check.',
       ],
     };
     fs.writeFileSync(opts.output, JSON.stringify(artifact, null, 2));
