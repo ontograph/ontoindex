@@ -141,6 +141,8 @@ const pinnedOverlay = new AsyncLocalStorage<{
   dbPath: string;
   generation: string;
   capability?: OverlaySnapshot['capability'];
+  /** The snapshot this request was admitted with; nested readers must see the same one. */
+  snapshot: OverlaySnapshot;
 }>();
 
 /** Keep every overlay query in a request on the generation its snapshot validated. */
@@ -170,7 +172,7 @@ export async function withPinnedOverlay<T>(
   try {
     return await withPinnedGeneration(overlayRepoId(repo.id), dbPath, () =>
       pinnedOverlay.run(
-        { repoId: repo.id, dbPath, generation, capability: snapshot.capability },
+        { repoId: repo.id, dbPath, generation, capability: snapshot.capability, snapshot },
         fn,
       ),
     );
@@ -531,6 +533,12 @@ async function computeSnapshot(
 
 /** Cached for a short TTL so one tool call (and bursts of calls) share one git probe. */
 export function getOverlaySnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> {
+  // One snapshot per response: a request that already pinned a generation reads through it.
+  // Re-probing here repeats the dirty plan and the configuration walk for every nested reader.
+  if (process.env.ONTOINDEX_AUTO_WORKSPACE === '1') {
+    const pinned = pinnedOverlay.getStore();
+    if (pinned?.repoId === repo.id) return Promise.resolve(pinned.snapshot);
+  }
   const hit = snapshotCache.get(repo.id);
   const now = Date.now();
   const workspaceFlag = process.env.ONTOINDEX_AUTO_WORKSPACE === '1';

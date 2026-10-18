@@ -736,6 +736,42 @@ describe('backend-overlay real pool lifecycle', () => {
     await expect(queryOverlay(repo, cypher)).resolves.toEqual([{ name: 'generationB' }]);
   });
 
+  it('serves nested snapshot reads from the pinned request without re-planning', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    try {
+      await buildOverlay('generationA');
+      const admitted = snapshot('generationA');
+      const before = vi.mocked(planDirtyOverlay).mock.calls.length;
+      await withPinnedOverlay(repo, admitted, async () => {
+        for (let i = 0; i < 3; i++) expect(await getOverlaySnapshot(repo)).toBe(admitted);
+      });
+      expect(vi.mocked(planDirtyOverlay).mock.calls.length).toBe(before);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('does not reuse the pinned snapshot for a different repository or with the flag off', async () => {
+    await buildOverlay('generationA');
+    const admitted = snapshot('generationA');
+    await withPinnedOverlay(repo, admitted, async () => {
+      // Flag off: the pin carries no meaning for snapshot reads.
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
+      try {
+        expect(await getOverlaySnapshot(repo)).not.toBe(admitted);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+      try {
+        const other = { ...repo, id: `${repo.id}-other` };
+        expect(await getOverlaySnapshot(other)).not.toBe(admitted);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+  });
+
   it('rejects a snapshot whose generation is no longer available', async () => {
     const callback = vi.fn(async () => 'unreachable');
     await expect(withPinnedOverlay(repo, snapshot('missing'), callback)).rejects.toThrow(
