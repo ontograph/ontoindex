@@ -217,17 +217,27 @@ export interface ProcessMemoryReport {
   nativeMB: number;
   openRepositoryPools: number;
   bufferPoolMB: number;
+  /** Buffer for working-tree graph generations: 256 unless the setting overrides every database. */
+  workspaceBufferPoolMB: number;
   idleExitMs: number | null;
 }
 
 const BYTES_PER_MB = 1024 * 1024;
 
-function readBufferPoolMB(env: NodeJS.ProcessEnv): number {
+/** The explicit setting in MiB, or undefined when it is unset or invalid. */
+function explicitBufferPoolMB(env: NodeJS.ProcessEnv): number | undefined {
   const raw = env.ONTOINDEX_LBUG_BUFFER_MB;
-  if (raw === undefined || raw === '' || raw === '0') return 64;
-  if (!/^\d+$/.test(raw)) return 64;
+  if (raw === undefined || raw === '' || raw === '0' || !/^\d+$/.test(raw)) return undefined;
   const value = Number(raw);
-  return Number.isSafeInteger(value) && value >= 1 && value <= 16_384 ? value : 64;
+  return Number.isSafeInteger(value) && value >= 1 && value <= 16_384 ? value : undefined;
+}
+
+function readBufferPoolMB(env: NodeJS.ProcessEnv): number {
+  return explicitBufferPoolMB(env) ?? 64;
+}
+
+function readWorkspaceBufferPoolMB(env: NodeJS.ProcessEnv): number {
+  return explicitBufferPoolMB(env) ?? 256;
 }
 
 export function buildProcessMemory(
@@ -244,6 +254,7 @@ export function buildProcessMemory(
     nativeMB: toMB(Math.max(0, usage.rss - usage.heapTotal)),
     openRepositoryPools: openPools,
     bufferPoolMB: readBufferPoolMB(env),
+    workspaceBufferPoolMB: readWorkspaceBufferPoolMB(env),
     idleExitMs: resolveIdleExitMs(env.ONTOINDEX_MCP_IDLE_EXIT_MS),
   };
 }
