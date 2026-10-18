@@ -350,7 +350,8 @@ export async function gnExplainModule(
       repoId,
       `MATCH (f:File {filePath: $path})-[:CodeRelation {type: 'DEFINES'}]->(s)
        WHERE s.isExported = true
-       RETURN s LIMIT ${PUBLIC_API_LIMIT}`,
+       RETURN s.name AS name, label(s) AS kind, s.startLine AS startLine, s.endLine AS endLine
+       LIMIT ${PUBLIC_API_LIMIT}`,
       { path: params.filePath },
     );
     if (symbolRows.length >= PUBLIC_API_LIMIT) {

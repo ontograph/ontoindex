@@ -327,4 +327,38 @@ describe('gnExplainModule', () => {
     expect(report.fileStats.lineCount).toBe(42);
     expect(report.warnings).toContain('lineCount estimated from file skeleton');
   });
+  it('projects only the needed columns for exported symbols instead of whole node rows', async () => {
+    setupDefaultMocks();
+
+    await gnExplainModule('test-repo', { filePath: 'src/foo.ts' });
+
+    const definesQuery = mockExecute.mock.calls
+      .map((call) => String(call[1]))
+      .find((cypher) => cypher.includes("type: 'DEFINES'") && cypher.includes('isExported'));
+    expect(definesQuery).toBeDefined();
+    // Returning `s` materialises every property of every exported node (documentation,
+    // content, embeddings) and exhausts a 64 MiB buffer pool on large files.
+    expect(definesQuery).not.toMatch(/RETURN\s+s\s+LIMIT/);
+    expect(definesQuery).toMatch(/s\.name AS name/);
+  });
+  it('reads flat projected rows for exported symbols', async () => {
+    setupDefaultMocks();
+    const base = mockExecute.getMockImplementation()!;
+    mockExecute.mockImplementation(async (repoId, cypher, params) => {
+      if (String(cypher).includes('isExported') && String(cypher).includes('s.name AS name')) {
+        return [
+          { name: 'doWork', kind: 'Function', startLine: 10, endLine: 20 },
+          { name: 'MyClass', kind: 'Class', startLine: 30, endLine: 50 },
+        ];
+      }
+      return base(repoId, cypher, params);
+    });
+
+    const report = await gnExplainModule('test-repo', { filePath: 'src/foo.ts' });
+
+    expect(report.publicAPI.map((a) => [a.name, a.kind])).toEqual([
+      ['doWork', 'Function'],
+      ['MyClass', 'Class'],
+    ]);
+  });
 });
