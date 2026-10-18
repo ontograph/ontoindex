@@ -519,14 +519,11 @@ export async function runAutomatic(opts) {
     };
 
     if (opts.extras.includes('config')) {
-      // Whitespace-only edit of a tracked resolver configuration plus one source edit. The
-      // configuration edit alone is not a dirty path (the planner counts source files only), so
-      // the source edit is what makes the read prepare a working-tree graph.
+      // Whitespace-only edit of a tracked resolver configuration and nothing else: the planner
+      // reports it as a configuration change, which selects a full working-tree graph.
       const configPath = path.join(clone, CONFIG_FILE);
       if (!fs.existsSync(configPath)) throw new Error(`${CONFIG_FILE} missing from the corpus`);
       fs.appendFileSync(configPath, '\n\n');
-      const configSource = eligible[0];
-      fs.appendFileSync(path.join(clone, configSource), '\n// adw benchmark dirty edit\n');
       try {
         for (const phase of opts.pilot ? ['cold'] : ['cold', 'warm']) {
           const samples = [],
@@ -552,7 +549,7 @@ export async function runAutomatic(opts) {
           extraWorkload('config', phase, samples, metas);
         }
       } finally {
-        git(['checkout', '--', CONFIG_FILE, configSource], clone);
+        git(['checkout', '--', CONFIG_FILE], clone);
       }
     }
 
