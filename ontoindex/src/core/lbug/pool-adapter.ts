@@ -859,9 +859,23 @@ function readBoundedIntEnv(name: string, fallback: number, min: number, max: num
   return Math.max(min, Math.min(max, parsed));
 }
 
-export function readBufferManagerSize(): number {
+/** Working-tree graphs hold the whole repository and run the heaviest read queries. */
+const OVERLAY_BUFFER_BYTES = 256 * 1048576;
+
+/** True for `<storage>/overlay/<generation>/lbug`, where workspace graphs are published. */
+function isOverlayGenerationPath(dbPath: string): boolean {
+  return path.basename(path.dirname(path.dirname(dbPath))) === 'overlay';
+}
+
+/**
+ * Buffer for a read-only open. An explicit `ONTOINDEX_LBUG_BUFFER_MB` applies to every database;
+ * otherwise workspace generations get 256 MiB and the committed index keeps 64 MiB.
+ */
+export function readBufferManagerSize(dbPath?: string): number {
   const raw = process.env.ONTOINDEX_LBUG_BUFFER_MB;
-  if (raw === undefined || raw === '' || raw === '0') return 64 * 1048576;
+  if (raw === undefined || raw === '' || raw === '0') {
+    return dbPath && isOverlayGenerationPath(dbPath) ? OVERLAY_BUFFER_BYTES : 64 * 1048576;
+  }
   if (
     !/^\d+$/.test(raw) ||
     !Number.isSafeInteger(Number(raw)) ||
@@ -988,7 +1002,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
       // avoids lock conflicts when `ontoindex analyze` is writing.
       let lastError: Error | null = null;
       let isLockError = false;
-      const bufferManagerSize = readBufferManagerSize();
+      const bufferManagerSize = readBufferManagerSize(dbPath);
       for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
         silenceStdout();
         try {
