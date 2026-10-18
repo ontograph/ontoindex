@@ -10,6 +10,7 @@ import {
   resolveRepoFromHandles,
   committedGraphNotice,
   prepareWorkspaceRead,
+  WORKSPACE_PREPARATION_DEADLINE_MS,
 } from '../../src/mcp/local/local-backend-repo-runtime.js';
 import type { OverlaySnapshot } from '../../src/mcp/local/backend-overlay.js';
 
@@ -220,6 +221,31 @@ describe('workspace read preparation', () => {
         expect(snapshot.preparationNote).toContain('workspace_timeout');
       }
       finish();
+    });
+    it('keeps waiting past sixty seconds for a slow build and stops at the preparation cap', async () => {
+      vi.useFakeTimers();
+      try {
+        const f = fixture();
+        manyDirty(f);
+        f.options.needsRelationships = true;
+        let finish!: () => void;
+        f.dependencies.buildWorkspaceGraph.mockImplementation(
+          () => new Promise<void>((resolve) => (finish = resolve)),
+        );
+        let outcome = 'pending';
+        const pending = prepareWorkspaceRead(f.options).then(
+          () => (outcome = 'resolved'),
+          (error: { code?: string }) => (outcome = error.code ?? 'rejected'),
+        );
+        await vi.advanceTimersByTimeAsync(65_000);
+        expect(outcome).toBe('pending');
+        await vi.advanceTimersByTimeAsync(WORKSPACE_PREPARATION_DEADLINE_MS);
+        await pending;
+        expect(outcome).toBe('workspace_timeout');
+        finish();
+      } finally {
+        vi.useRealTimers();
+      }
     });
     it('lets the next request join a build that outlasted the previous waiter', async () => {
       const f = fixture();

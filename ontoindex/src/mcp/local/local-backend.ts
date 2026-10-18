@@ -136,6 +136,7 @@ import {
   forgetWorkspaceRuntime,
   hasWorkspaceBuild,
   prepareWorkspaceRead,
+  WORKSPACE_PREPARATION_DEADLINE_MS,
   resolveRepoFromHandles,
   WorkspacePreparationError,
 } from './local-backend-repo-runtime.js';
@@ -2167,7 +2168,7 @@ export class LocalBackend implements BackendPort {
     if (UNGATED_REPO_TOOLS.has(method) || getReadRequestContext()?.repoId === repo.id) {
       result = await invoke();
     } else {
-      const deadline = performance.now() + 60_000;
+      const deadline = performance.now() + WORKSPACE_PREPARATION_DEADLINE_MS;
       let snapshot: OverlaySnapshot;
       try {
         snapshot = await prepareWorkspaceRead({

@@ -45,6 +45,10 @@ export class WorkspacePreparationError extends Error {
   }
 }
 
+const WORKSPACE_BUILD_TIMEOUT_MS = 120_000;
+/** Admission waits past the build's own deadline so a slow cold build is not abandoned just short of finishing. */
+export const WORKSPACE_PREPARATION_DEADLINE_MS = WORKSPACE_BUILD_TIMEOUT_MS + 10_000;
+
 const workspaceDependencies: WorkspacePreparationDependencies = {
   getSnapshot: getOverlaySnapshot,
   acquireLock: async (repoPath) =>
@@ -59,7 +63,8 @@ const workspaceDependencies: WorkspacePreparationDependencies = {
         args: [child, repo.repoPath],
         cwd: repo.repoPath,
         storagePath: repo.storagePath,
-        timeoutMs: Number(process.env.ONTOINDEX_WORKSPACE_BUILD_TIMEOUT_MS) || 120_000,
+        timeoutMs:
+          Number(process.env.ONTOINDEX_WORKSPACE_BUILD_TIMEOUT_MS) || WORKSPACE_BUILD_TIMEOUT_MS,
       });
       return;
     }
@@ -191,7 +196,10 @@ export async function prepareWorkspaceRead(options: {
 }): Promise<OverlaySnapshot> {
   const dependencies = { ...workspaceDependencies, ...options.dependencies };
   if (process.env.ONTOINDEX_AUTO_WORKSPACE !== '1') return dependencies.getSnapshot(options.repo);
-  const deadline = Math.min(options.deadline ?? Infinity, performance.now() + 60_000);
+  const deadline = Math.min(
+    options.deadline ?? Infinity,
+    performance.now() + WORKSPACE_PREPARATION_DEADLINE_MS,
+  );
   if (options.signal?.aborted) throw new WorkspacePreparationError('workspace_cancelled');
   if (!(deadline > performance.now())) throw new WorkspacePreparationError('workspace_timeout');
   // Bound the entire preparation, including the initial snapshot probe, per caller.
