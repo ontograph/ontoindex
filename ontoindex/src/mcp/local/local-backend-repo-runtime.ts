@@ -292,11 +292,25 @@ export async function prepareWorkspaceRead(options: {
         );
       }
       try {
+        // Another server may have finished the same build between the snapshot above and this lock.
+        // Re-reading under the lock keeps one writer per dirty tree across processes.
+        let adopted: OverlaySnapshot | undefined;
         try {
-          await dependencies.buildWorkspaceGraph(options.repo);
+          dependencies.evictSnapshot(options.repo.id);
+          const recheck = await dependencies.getSnapshot(options.repo);
+          if (
+            recheck.usable &&
+            recheck.capability === 'workspace-graph' &&
+            recheck.coverage !== 'degraded'
+          ) {
+            adopted = recheck;
+          } else {
+            await dependencies.buildWorkspaceGraph(options.repo);
+          }
         } finally {
           await lock.release();
         }
+        if (adopted) return adopted;
         dependencies.evictSnapshot(options.repo.id);
         const updated = await dependencies.getSnapshot(options.repo);
         if (!updated.usable) throw new Error(updated.reason ?? 'Workspace snapshot is unusable');

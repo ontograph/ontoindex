@@ -52,6 +52,7 @@ describe('workspace read preparation', () => {
       getSnapshot: vi
         .fn(async () => dirty)
         .mockResolvedValueOnce(dirty)
+        .mockResolvedValueOnce(dirty)
         .mockResolvedValue(ready),
       acquireLock: vi.fn(async () => ({ release })),
       buildWorkspaceGraph: vi.fn(async () => {}),
@@ -81,7 +82,29 @@ describe('workspace read preparation', () => {
     expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce();
     expect(f.release).toHaveBeenCalledOnce();
     expect(f.dependencies.evictSnapshot).toHaveBeenCalledWith(f.options.repo.id);
-    expect(f.dependencies.getSnapshot).toHaveBeenCalledTimes(2);
+    expect(f.dependencies.getSnapshot).toHaveBeenCalledTimes(3);
+  });
+  it('adopts a graph another server finished while this one waited for the lock', async () => {
+    const f = fixture();
+    // The probe sees a dirty tree; by the time the lock is ours, a peer has published the graph.
+    f.dependencies.getSnapshot.mockReset();
+    f.dependencies.getSnapshot.mockResolvedValueOnce(f.dirty).mockResolvedValue(f.ready);
+    expect(await prepareWorkspaceRead(f.options)).toBe(f.ready);
+    expect(f.dependencies.acquireLock).toHaveBeenCalledOnce();
+    expect(f.dependencies.buildWorkspaceGraph).not.toHaveBeenCalled();
+    expect(f.release).toHaveBeenCalledOnce();
+  });
+  it('releases the lock when the under-lock re-read fails', async () => {
+    const f = fixture();
+    f.dependencies.getSnapshot
+      .mockReset()
+      .mockResolvedValueOnce(f.dirty)
+      .mockRejectedValueOnce(new Error('probe failed'));
+    await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({
+      code: 'workspace_build_failed',
+    });
+    expect(f.release).toHaveBeenCalledOnce();
+    expect(f.dependencies.buildWorkspaceGraph).not.toHaveBeenCalled();
   });
   it('shares concurrent builds and collapses changed snapshots into one successor', async () => {
     const f = fixture();
@@ -99,8 +122,12 @@ describe('workspace read preparation', () => {
     f.dependencies.getSnapshot.mockResolvedValue({ ...f.dirty, dirtyPaths: new Set(['b.ts']) });
     const second = prepareWorkspaceRead(f.options);
     const third = prepareWorkspaceRead(f.options);
-    await vi.waitFor(() => expect(f.dependencies.getSnapshot).toHaveBeenCalledTimes(4));
-    f.dependencies.getSnapshot.mockResolvedValue(f.ready);
+    await vi.waitFor(() => expect(f.dependencies.getSnapshot).toHaveBeenCalledTimes(5));
+    // First build's post-build read, then the successor's under-lock re-read, then its post-build read.
+    f.dependencies.getSnapshot
+      .mockResolvedValueOnce(f.ready)
+      .mockResolvedValueOnce(f.dirty)
+      .mockResolvedValue(f.ready);
     finish();
     await Promise.all([first, shared, second, third]);
     expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledTimes(2);
@@ -139,7 +166,10 @@ describe('workspace read preparation', () => {
     expect(f.dependencies.acquireLock).toHaveBeenCalledTimes(1);
     f.dependencies.now.mockReturnValue(6_000);
     f.dependencies.acquireLock.mockResolvedValue({ release: f.release });
-    f.dependencies.getSnapshot.mockResolvedValueOnce(f.dirty).mockResolvedValue(f.ready);
+    f.dependencies.getSnapshot
+      .mockResolvedValueOnce(f.dirty)
+      .mockResolvedValueOnce(f.dirty)
+      .mockResolvedValue(f.ready);
     await prepareWorkspaceRead(f.options);
     expect(f.dependencies.acquireLock).toHaveBeenCalledTimes(2);
   });
@@ -152,7 +182,11 @@ describe('workspace read preparation', () => {
     });
     expect(f.dependencies.acquireLock).not.toHaveBeenCalled();
     vi.stubEnv('ONTOINDEX_WORKSPACE_MAX_FILES', '9000');
-    f.dependencies.getSnapshot.mockResolvedValueOnce(f.dirty).mockResolvedValue(f.ready);
+    f.dependencies.getSnapshot
+      .mockReset()
+      .mockResolvedValueOnce(f.dirty)
+      .mockResolvedValueOnce(f.dirty)
+      .mockResolvedValue(f.ready);
     await prepareWorkspaceRead(f.options);
     expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce();
   });
@@ -257,7 +291,7 @@ describe('workspace read preparation', () => {
       const first = await prepareWorkspaceRead({ ...f.options, deadline: performance.now() + 30 });
       expect(first.preparationNote).toContain('workspace_timeout');
       const second = prepareWorkspaceRead(f.options);
-      await vi.waitFor(() => expect(f.dependencies.getSnapshot).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(f.dependencies.getSnapshot).toHaveBeenCalledTimes(3));
       f.dependencies.getSnapshot.mockResolvedValue(f.ready);
       finish();
       expect((await second).usable).toBe(true);
@@ -297,7 +331,10 @@ describe('workspace read preparation', () => {
     });
     expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledTimes(1);
     f.dependencies.now.mockReturnValue(31_000);
-    f.dependencies.getSnapshot.mockResolvedValueOnce(f.dirty).mockResolvedValue(f.ready);
+    f.dependencies.getSnapshot
+      .mockResolvedValueOnce(f.dirty)
+      .mockResolvedValueOnce(f.dirty)
+      .mockResolvedValue(f.ready);
     await prepareWorkspaceRead(f.options);
     expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledTimes(2);
   });
@@ -310,7 +347,10 @@ describe('workspace read preparation', () => {
     });
     expect(f.release).toHaveBeenCalledOnce();
     f.dependencies.now.mockReturnValue(31_000);
-    f.dependencies.getSnapshot.mockResolvedValueOnce(f.dirty).mockResolvedValue(f.ready);
+    f.dependencies.getSnapshot
+      .mockResolvedValueOnce(f.dirty)
+      .mockResolvedValueOnce(f.dirty)
+      .mockResolvedValue(f.ready);
     await prepareWorkspaceRead(f.options);
     expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledTimes(2);
   });
