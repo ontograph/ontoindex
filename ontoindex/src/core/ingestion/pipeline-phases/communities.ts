@@ -52,7 +52,9 @@ export const communitiesPhase: PipelinePhase<CommunitiesOutput> = {
       );
     }
 
+    const communityIds = new Set<string>();
     communityResult.communities.forEach((comm) => {
+      communityIds.add(comm.id);
       ctx.graph.addNode({
         id: comm.id,
         label: 'Community' as const,
@@ -66,7 +68,10 @@ export const communitiesPhase: PipelinePhase<CommunitiesOutput> = {
       });
     });
 
+    // Singleton communities get no node; an edge to one would dangle and the bulk
+    // edge COPY can abort on it. The full membership list still feeds `processes`.
     communityResult.memberships.forEach((membership) => {
+      if (!communityIds.has(membership.communityId)) return;
       ctx.graph.addRelationship({
         id: `${membership.nodeId}_member_of_${membership.communityId}`,
         type: 'MEMBER_OF',
