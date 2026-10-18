@@ -18,17 +18,25 @@ import {
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const STDERR_LIMIT = 16 * 1024 ** 2;
+export const EXTRA_CASES = ['config', 'contention'];
+/** A tracked resolver configuration that the snapshot must treat as an input. */
+const CONFIG_FILE = 'ontoindex/tsconfig.json';
+const BUSY_RETRY_MS = 500;
+const BUSY_ANSWER =
+  /already running|Cannot safely recover|recovering the analyze lock|build started by this server is still running|is currently being rebuilt/i;
+const CALL_TIMEOUT_MS = 300_000;
 const SAMPLE_MS = 20;
 const NATIVE_ERROR =
   /Buffer manager exception|Unable to allocate|buffer pool is full|SIGSEGV|Segmentation fault/i;
 export const usage = `Usage: node scripts/overlay-benchmark.mjs --automatic --output <file> [--pilot]
-  [--sizes 0,1,50,51] [--repetitions 20] [--repo <path>] [--cli <path>]
+  [--sizes 0,1,50,51|none] [--extras config,contention|none] [--repetitions 20] [--repo <path>] [--cli <path>]
 --pilot measures one cold size-1 read. --output writes the artifact plus <file>.raw/ references.
 Needs a built CLI, GNU time at /usr/bin/time and Linux /proc.`;
 
 export function parseAutomaticArgs(argv) {
   const opts = {
     sizes: [0, 1, 50, 51],
+    extras: ['config', 'contention'],
     repetitions: 20,
     pilot: false,
     output: null,
@@ -42,13 +50,20 @@ export function parseAutomaticArgs(argv) {
       opts.pilot = true;
       continue;
     }
-    if (!['--sizes', '--repetitions', '--output', '--repo', '--cli'].includes(arg))
+    if (!['--sizes', '--extras', '--repetitions', '--output', '--repo', '--cli'].includes(arg))
       throw new Error(`Unknown argument: ${arg}`);
     const value = argv[++i];
     if (!value || value.startsWith('--')) throw new Error(`Missing value for ${arg}`);
-    if (arg === '--sizes') {
-      if (!/^\d+(,\d+)*$/.test(value)) throw new Error('--sizes must be comma-separated integers');
-      opts.sizes = value.split(',').map(Number);
+    if (arg === '--extras') {
+      const names = value === 'none' ? [] : value.split(',');
+      if (names.some((n) => !EXTRA_CASES.includes(n)) || new Set(names).size !== names.length)
+        throw new Error(`--extras must be unique names from ${EXTRA_CASES.join(',')} or none`);
+      opts.extras = names;
+    } else if (arg === '--sizes') {
+      if (value === 'none') opts.sizes = [];
+      else if (!/^\d+(,\d+)*$/.test(value))
+        throw new Error('--sizes must be comma-separated integers or none');
+      else opts.sizes = value.split(',').map(Number);
       if (opts.sizes.some((n) => n > 51) || new Set(opts.sizes).size !== opts.sizes.length)
         throw new Error('--sizes must be unique integers from 0 to 51');
     } else if (arg === '--repetitions') {
@@ -59,6 +74,7 @@ export function parseAutomaticArgs(argv) {
   if (!opts.output) throw new Error('--output is required');
   if (opts.pilot) {
     opts.sizes = [1];
+    opts.extras = [];
     opts.repetitions = 1;
   }
   return opts;
@@ -158,7 +174,21 @@ async function loadSdk() {
 }
 
 /** One sample: a fresh server process, optionally an untimed preparation read, one timed read. */
-export async function runSample(ctx, { size, phase, symbol, rawDir, label }) {
+export async function runSample(
+  ctx,
+  {
+    size,
+    phase,
+    symbol,
+    rawDir,
+    label,
+    caseName,
+    expectWorkspace,
+    retryBusy,
+    buildsBefore,
+    barrier,
+  },
+) {
   const { Client, StdioClientTransport } = ctx.sdk;
   const timeFile = path.join(ctx.temp, `time-${label}.txt`);
   // The benchmark corpus may exceed the default build gate; the gate has its own tests.
@@ -183,7 +213,7 @@ export async function runSample(ctx, { size, phase, symbol, rawDir, label }) {
     else stderrText += chunk.toString('utf8');
   });
   const client = new Client({ name: 'adw-benchmark', version: '1' });
-  const before = new Set(generations(ctx.clone));
+  const before = buildsBefore ?? new Set(generations(ctx.clone));
   await client.connect(transport);
   const root = transport.pid;
   const state = { peak: 0, seen: new Set(), count: 0, maxGapMs: 0, last: performance.now() };
@@ -192,15 +222,23 @@ export async function runSample(ctx, { size, phase, symbol, rawDir, label }) {
     name: 'inspect',
     arguments: { action: 'context', repo: ctx.repoName, target: symbol },
   };
+  let busyRetries = 0;
   const call = async () => {
     const started = performance.now();
-    // The SDK default is 60 s, the same as the server's wait limit; the harness must see the server's answer.
-    const response = await client.callTool(request, undefined, { timeout: 300_000 });
-    return {
-      ms: performance.now() - started,
-      text: (response.content ?? []).map((c) => c.text ?? '').join(''),
-      isError: !!response.isError,
-    };
+    for (;;) {
+      // The SDK default is 60 s, the same as the server's wait limit; the harness must see the server's answer.
+      const response = await client.callTool(request, undefined, { timeout: CALL_TIMEOUT_MS });
+      const text = (response.content ?? []).map((c) => c.text ?? '').join('');
+      // The server's retryable code is not part of the MCP text, so match the message a client sees.
+      const busy = !!response.isError && BUSY_ANSWER.test(text);
+      // A second client that finds the build owned elsewhere retries, as a real client would.
+      if (busy && retryBusy && performance.now() - started < CALL_TIMEOUT_MS) {
+        busyRetries++;
+        await new Promise((r) => setTimeout(r, BUSY_RETRY_MS));
+        continue;
+      }
+      return { ms: performance.now() - started, text, isError: !!response.isError };
+    }
   };
   let cpuBefore = 0;
   if (phase === 'warm') {
@@ -210,6 +248,8 @@ export async function runSample(ctx, { size, phase, symbol, rawDir, label }) {
   const measured = await call();
   const cpuSampled = phase === 'warm' ? treeCpuTicks(root) - cpuBefore : undefined;
   clearInterval(timer);
+  // Contending clients stay up until every peer has its answer, so one's exit is not another's leftover.
+  if (barrier) await barrier();
   const closeStart = performance.now();
   await client.close();
   const deadline = Date.now() + 10_000;
@@ -237,7 +277,7 @@ export async function runSample(ctx, { size, phase, symbol, rawDir, label }) {
     /* leaves NaN, which validateSample rejects */
   }
   if (phase === 'warm') cpuSeconds = cpuSampled;
-  const wantsWorkspace = size > 0;
+  const wantsWorkspace = expectWorkspace ?? size > 0;
   const evidenceOk =
     !measured.isError &&
     /"status":\s*"found"/.test(measured.text) &&
@@ -264,7 +304,9 @@ export async function runSample(ctx, { size, phase, symbol, rawDir, label }) {
     meta: {
       label,
       size,
+      case: caseName ?? `size-${size}`,
       phase,
+      busyRetries,
       evidenceOk,
       leftovers,
       cpuSource: phase === 'warm' ? 'sampled' : 'gnu-time',
@@ -388,6 +430,30 @@ export async function runAutomatic(opts) {
       node: process.version,
     };
     const workloads = [];
+    const accept = (samples, metas, { sample, meta }, label, index) => {
+      if (!meta.evidenceOk)
+        throw new Error(
+          `Sample ${meta.label} did not return the expected evidence (stale or failed answer); see ${rawDir}`,
+        );
+      const verdict = validateSample(sample);
+      if (!verdict.ok)
+        throw new Error(
+          `Sample ${meta.label} invalid: ${verdict.reasons.join(', ')}; see ${rawDir}`,
+        );
+      samples.push(sample);
+      metas.push(meta);
+      console.error(
+        `${label} ${index}/${opts.repetitions}: ${sample.latencyMs.toFixed(0)} ms, ${(sample.peakRssBytes / 1024 ** 2).toFixed(0)} MB, builds ${sample.buildCount}`,
+      );
+    };
+    const overlayBytesNow = () => {
+      const overlayDir = path.join(clone, '.ontoindex', 'overlay');
+      return fs.existsSync(overlayDir)
+        ? Number(execFileSync('du', ['-sb', overlayDir], { encoding: 'utf8' }).split('\t')[0])
+        : 0;
+    };
+    const coldReset = () =>
+      fs.rmSync(path.join(clone, '.ontoindex', 'overlay'), { recursive: true, force: true });
     for (const size of opts.sizes) {
       const edited = eligible.slice(0, size);
       for (const f of edited)
@@ -398,38 +464,23 @@ export async function runAutomatic(opts) {
           const samples = [],
             metas = [];
           for (let i = 0; i < opts.repetitions; i++) {
-            if (phase === 'cold')
-              fs.rmSync(path.join(clone, '.ontoindex', 'overlay'), {
-                recursive: true,
-                force: true,
-              });
-            const { sample, meta } = await runSample(ctx, {
-              size,
-              phase,
-              symbol,
-              rawDir,
-              label: `s${size}-${phase}-${i}`,
-            });
-            if (!meta.evidenceOk)
-              throw new Error(
-                `Sample ${meta.label} did not return the expected evidence (stale or failed answer); see ${rawDir}`,
-              );
-            const verdict = validateSample(sample);
-            if (!verdict.ok)
-              throw new Error(
-                `Sample ${meta.label} invalid: ${verdict.reasons.join(', ')}; see ${rawDir}`,
-              );
-            samples.push(sample);
-            metas.push(meta);
-            console.error(
-              `size ${size} ${phase} ${i + 1}/${opts.repetitions}: ${sample.latencyMs.toFixed(0)} ms, ${(sample.peakRssBytes / 1024 ** 2).toFixed(0)} MB, builds ${sample.buildCount}`,
+            if (phase === 'cold') coldReset();
+            accept(
+              samples,
+              metas,
+              await runSample(ctx, {
+                size,
+                phase,
+                symbol,
+                rawDir,
+                label: `s${size}-${phase}-${i}`,
+              }),
+              `size ${size} ${phase}`,
+              i + 1,
             );
           }
           const summary = summarize(samples);
-          const overlayDir = path.join(clone, '.ontoindex', 'overlay');
-          const overlayBytes = fs.existsSync(overlayDir)
-            ? Number(execFileSync('du', ['-sb', overlayDir], { encoding: 'utf8' }).split('\t')[0])
-            : 0;
+          const overlayBytes = overlayBytesNow();
           workloads.push({
             size,
             phase,
@@ -450,6 +501,130 @@ export async function runAutomatic(opts) {
         if (edited.length) git(['checkout', '--', ...edited], clone);
       }
     }
+    const extraWorkload = (name, phase, samples, metas, extra = {}) => {
+      const summary = summarize(samples);
+      const artifactBytes = overlayBytesNow();
+      workloads.push({
+        size: null,
+        case: name,
+        phase,
+        workload: 'dirty',
+        summary,
+        artifactBytes,
+        budgets: evaluateBudgets({ phase, workload: 'dirty', summary, artifactBytes }),
+        ...extra,
+        samples,
+        metas,
+      });
+    };
+
+    if (opts.extras.includes('config')) {
+      // Whitespace-only edit of a tracked resolver configuration plus one source edit. The
+      // configuration edit alone is not a dirty path (the planner counts source files only), so
+      // the source edit is what makes the read prepare a working-tree graph.
+      const configPath = path.join(clone, CONFIG_FILE);
+      if (!fs.existsSync(configPath)) throw new Error(`${CONFIG_FILE} missing from the corpus`);
+      fs.appendFileSync(configPath, '\n\n');
+      const configSource = eligible[0];
+      fs.appendFileSync(path.join(clone, configSource), '\n// adw benchmark dirty edit\n');
+      try {
+        for (const phase of opts.pilot ? ['cold'] : ['cold', 'warm']) {
+          const samples = [],
+            metas = [];
+          for (let i = 0; i < opts.repetitions; i++) {
+            if (phase === 'cold') coldReset();
+            accept(
+              samples,
+              metas,
+              await runSample(ctx, {
+                size: 0,
+                phase,
+                symbol,
+                rawDir,
+                label: `config-${phase}-${i}`,
+                caseName: 'config',
+                expectWorkspace: true,
+              }),
+              `config ${phase}`,
+              i + 1,
+            );
+          }
+          extraWorkload('config', phase, samples, metas);
+        }
+      } finally {
+        git(['checkout', '--', CONFIG_FILE, configSource], clone);
+      }
+    }
+
+    if (opts.extras.includes('contention')) {
+      // Two clients start together on one dirty tree with no generation: one must build, the
+      // other must wait or join, and exactly one generation may result.
+      const edited = eligible.slice(0, 1);
+      for (const f of edited)
+        fs.appendFileSync(path.join(clone, f), '\n// adw benchmark dirty edit\n');
+      try {
+        const samples = [],
+          metas = [],
+          writers = [];
+        for (let i = 0; i < opts.repetitions; i++) {
+          coldReset();
+          const known = new Set(generations(clone));
+          let arrived = 0;
+          let release;
+          const gate = new Promise((resolve) => (release = resolve));
+          const barrier = async () => {
+            if (++arrived === 2) release();
+            await gate;
+          };
+          const pair = await Promise.all(
+            ['a', 'b'].map((who) =>
+              runSample(ctx, {
+                size: 1,
+                phase: 'cold',
+                symbol,
+                rawDir,
+                label: `contention-${i}-${who}`,
+                caseName: 'contention',
+                expectWorkspace: true,
+                retryBusy: true,
+                buildsBefore: known,
+                barrier,
+              }),
+            ),
+          );
+          const created = generations(clone).filter((n) => !known.has(n)).length;
+          if (created !== 1) {
+            const names = generations(clone).filter((n) => !known.has(n));
+            fs.writeFileSync(
+              path.join(rawDir, `contention-${i}.generations.json`),
+              JSON.stringify({
+                names,
+                answers: pair.map((r) => ({
+                  label: r.meta.label,
+                  evidenceOk: r.meta.evidenceOk,
+                  busyRetries: r.meta.busyRetries,
+                  builds: r.sample.buildCount,
+                  latencyMs: r.sample.latencyMs,
+                })),
+              }),
+            );
+            throw new Error(
+              `Contention round ${i + 1} created ${created} generations (${names.join(', ')}), expected exactly one writer; see ${rawDir}`,
+            );
+          }
+          writers.push(created);
+          pair.forEach((result, who) =>
+            accept(samples, metas, result, `contention ${who ? 'b' : 'a'}`, i + 1),
+          );
+        }
+        extraWorkload('contention', 'cold', samples, metas, {
+          rounds: opts.repetitions,
+          writersPerRound: writers,
+        });
+      } finally {
+        if (edited.length) git(['checkout', '--', ...edited], clone);
+      }
+    }
     machine.loadAverageEnd = os.loadavg();
     const artifact = {
       mode: opts.pilot ? 'pilot' : 'matrix',
@@ -457,6 +632,7 @@ export async function runAutomatic(opts) {
       cli: opts.cli,
       machine,
       repetitions: opts.repetitions,
+      extras: opts.extras,
       eligibleFiles: eligible.length,
       indexedFiles: JSON.parse(fs.readFileSync(path.join(clone, '.ontoindex', 'meta.json'), 'utf8'))
         .stats?.files,
@@ -468,7 +644,8 @@ export async function runAutomatic(opts) {
         'Cold: fresh server process and no matching workspace generation; OS caches are not flushed.',
         'Warm CPU is sampled from /proc deltas, not terminal GNU time, so it cannot prove the CPU ceiling.',
         'Process-tree RSS is sampled every 20 ms where the scan keeps up (see maxSampleGapMs); it is not an exact native peak.',
-        'No baseline comparison, no config or two-client contention workloads, no same-input full-graph parity check.',
+        'Contention: two server processes read one dirty clone together; each retries a retryable workspace_busy answer every 500 ms. The invariant checked is exactly one new generation per round; lock exclusivity itself is not observed.',
+        'No baseline comparison and no same-input full-graph parity check.',
       ],
     };
     fs.writeFileSync(opts.output, JSON.stringify(artifact, null, 2));

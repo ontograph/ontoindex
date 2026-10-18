@@ -33,9 +33,22 @@ describe('automatic overlay benchmark', () => {
     expect(opts.pilot).toBe(true);
   });
 
+  it('includes the config and contention workloads by default and lets each be dropped', () => {
+    const base = ['--automatic', '--output', '/tmp/x.json'];
+    expect(parseAutomaticArgs(base).extras).toEqual(['config', 'contention']);
+    expect(parseAutomaticArgs([...base, '--extras', 'none']).extras).toEqual([]);
+    expect(parseAutomaticArgs([...base, '--extras', 'contention']).extras).toEqual(['contention']);
+    expect(parseAutomaticArgs([...base, '--sizes', 'none']).sizes).toEqual([]);
+    expect(
+      parseAutomaticArgs(['--automatic', '--pilot', '--output', '/tmp/x.json']).extras,
+    ).toEqual([]);
+  });
+
   it.each([
     [['--sizes', '0,52'], '--sizes'],
     [['--sizes', '1,1'], '--sizes'],
+    [['--extras', 'config,config'], '--extras'],
+    [['--extras', 'parity'], '--extras'],
     [['--repetitions', '0'], '--repetitions'],
     [['--bogus', 'x'], 'Unknown argument'],
   ])('rejects invalid arguments %j', (extra, message) => {
