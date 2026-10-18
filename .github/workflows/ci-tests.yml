@@ -2,6 +2,10 @@ name: Tests
 
 on:
   workflow_call:
+    inputs:
+      linux_only:
+        type: boolean
+        default: false
 
 jobs:
   tests:
@@ -61,7 +65,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON(inputs.linux_only && '["ubuntu-latest"]' || '["ubuntu-latest","windows-latest","macos-latest"]') }}
         node: [22]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
