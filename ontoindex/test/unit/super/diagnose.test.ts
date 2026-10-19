@@ -869,7 +869,7 @@ describe('gnDiagnose', () => {
     expect(report.degradedContext.reasons).not.toContain('mcp-service-target-mismatch');
   });
 
-  it('reports a real mismatch with the effective startup project even when the environment matches', async () => {
+  it('accepts the trusted selected repo when the startup project differs', async () => {
     process.env['ONTOINDEX_MCP_PROJECT_CWD'] = TARGET_REPO_PATH;
     const report = await gnDiagnose(
       'internal-hashed-id',
@@ -886,14 +886,46 @@ describe('gnDiagnose', () => {
         repo: TARGET_REPO_PATH,
       }),
     );
+    expect(report.misconfiguration).toEqual({ status: 'ok' });
+    expect(report.degradedContext.reasons).not.toContain('mcp-service-target-mismatch');
+  });
+
+  it.each(['ambiguous', 'not-found'] as const)(
+    'preserves %s target failures despite a matching trusted path',
+    async (status) => {
+      mockResolveTargetContext.mockResolvedValue({ ...TARGET_CONTEXT, status });
+      const report = await gnDiagnose(
+        REPO_ID,
+        {
+          checkLsp: false,
+          checkEmbeddings: false,
+          checkIndexFreshness: false,
+          checkToolContract: false,
+        },
+        { projectCwd: TARGET_REPO_PATH, repoPath: TARGET_REPO_PATH },
+      );
+      expect(report.misconfiguration).toMatchObject({
+        status: 'fail',
+        reason: 'mcp-service-target-mismatch',
+      });
+    },
+  );
+
+  it('reports a resolved path different from the trusted selected repo', async () => {
+    const report = await gnDiagnose(
+      REPO_ID,
+      {
+        checkLsp: false,
+        checkEmbeddings: false,
+        checkIndexFreshness: false,
+        checkToolContract: false,
+      },
+      { projectCwd: TARGET_REPO_PATH, repoPath: '/tmp/requested-other-project' },
+    );
     expect(report.misconfiguration).toMatchObject({
       status: 'fail',
       reason: 'mcp-service-target-mismatch',
-      projectCwd: '/tmp/service-project',
-      activeRepoPath: TARGET_REPO_PATH,
-      requestedRepo: 'internal-hashed-id',
     });
-    expect(report.degradedContext.reasons).toContain('mcp-service-target-mismatch');
   });
 
   it('skips environment service binding for explicitly unbound HTTP diagnostics', async () => {

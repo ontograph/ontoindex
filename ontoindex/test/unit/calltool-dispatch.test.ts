@@ -43,6 +43,10 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
 }));
 
+vi.mock('../../src/mcp/super/diagnose.js', () => ({
+  gnDiagnose: vi.fn().mockResolvedValue({ misconfiguration: { status: 'ok' } }),
+}));
+
 // Also mock the search modules to avoid loading onnxruntime
 vi.mock('../../src/core/search/bm25-index.js', () => ({
   searchFTSFromLbug: vi.fn().mockResolvedValue([]),
@@ -54,6 +58,7 @@ vi.mock('../../src/mcp/core/embedder.js', () => ({
 }));
 
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { gnDiagnose } from '../../src/mcp/super/diagnose.js';
 import { listRegisteredRepos, cleanupOldKuzuFiles } from '../../src/storage/repo-manager.js';
 import {
   initLbug,
@@ -249,6 +254,30 @@ describe('LocalBackend.callTool', () => {
     backend = new LocalBackend();
     setupSingleRepo();
     await backend.init();
+  });
+
+  it.each([null, '/tmp/startup-other-project'])(
+    'passes trusted selected repo context to diagnostics with startup project %s',
+    async (projectCwd) => {
+      backend = new LocalBackend({ preferredProjectPath: projectCwd ?? undefined });
+      await backend.init();
+      const params = { repo: MOCK_REPO_ENTRY.name, checkLsp: false };
+      await backend.callTool('gn_diagnose', params);
+      expect(gnDiagnose).toHaveBeenCalledWith(expect.any(String), params, {
+        repoPath: MOCK_REPO_ENTRY.path,
+        projectCwd,
+      });
+    },
+  );
+
+  it('rejects diagnostics outside an explicit repo filter', async () => {
+    await setupMultipleReposWithReadableOther();
+    backend = new LocalBackend({ repoFilter: 'other-project' });
+    await backend.init();
+    await expect(
+      backend.callTool('gn_diagnose', { repo: MOCK_REPO_ENTRY.name }),
+    ).rejects.toThrow();
+    expect(gnDiagnose).not.toHaveBeenCalled();
   });
 
   it('routes list_repos without needing repo param', async () => {

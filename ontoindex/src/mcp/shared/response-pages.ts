@@ -50,6 +50,8 @@ export async function pageMcpResponse(input: {
   identityText?: string;
   cursor?: string;
   maxBytes?: number;
+  responseBudgetBytes?: number;
+  isError?: boolean;
 }): Promise<{ text: string; paged: boolean }> {
   const requestedMaxBytes = input.maxBytes;
   const maxBytes =
@@ -59,6 +61,9 @@ export async function pageMcpResponse(input: {
       ? Math.max(1, Math.floor(requestedMaxBytes))
       : MCP_RESPONSE_MAX_BYTES;
   const args = withoutCursor(input.args);
+  if (input.cursor && input.responseBudgetBytes !== undefined) {
+    args.response_budget_bytes = input.responseBudgetBytes;
+  }
   const requestHash = digest(stableJson({ tool: input.tool, args }));
 
   if (input.cursor) {
@@ -72,8 +77,18 @@ export async function pageMcpResponse(input: {
     };
   }
 
-  const text = input.text ?? '';
-  if (serializedMcpToolResultBytes(text) <= maxBytes) return { text, paged: false };
+  let text = input.text ?? '';
+  if (input.responseBudgetBytes !== undefined) {
+    text = applyLogicalResponseBudget(
+      text,
+      input.tool,
+      input.responseBudgetBytes,
+      input.isError ?? false,
+    );
+  }
+  if (serializedMcpToolResultBytes(text, input.isError ?? false) <= maxBytes) {
+    return { text, paged: false };
+  }
 
   const now = Date.now();
   const stored: StoredResponsePage = {
@@ -93,6 +108,129 @@ export async function pageMcpResponse(input: {
     text: JSON.stringify(page),
     paged: true,
   };
+}
+
+/** Validate the opt-in logical response budget before any backend work starts. */
+export function validateResponseBudget(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error('response_budget_bytes must be a positive safe integer.');
+  }
+  return value;
+}
+
+const EXPLORE_DETAIL_FIELDS = ['topProcesses', 'topSymbols', 'clusters', 'taskPack'] as const;
+const RESULT_DETAIL_FIELDS = ['results', 'evidence'] as const;
+const SEARCH_DETAIL_FIELDS = [
+  'results', 'evidence', 'processes', 'process_symbols', 'definitions',
+] as const;
+
+/** Remove only whole, recognized detail collections; unknown or diagnostic-rich shapes fail closed. */
+export function applyLogicalResponseBudget(
+  text: string, tool: string, requestedBytes: number, isError = false,
+): string {
+  if (serializedMcpToolResultBytes(text, isError) <= requestedBytes) return text;
+  let value: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error();
+    value = parsed as Record<string, unknown>;
+  } catch {
+    throw new Error('response_budget_bytes cannot fit this non-JSON response without losing diagnostics.');
+  }
+
+  let candidates: readonly string[] | undefined = tool === 'gn_explore' ? EXPLORE_DETAIL_FIELDS
+    : tool === 'search' ? SEARCH_DETAIL_FIELDS
+    : tool === 'inspect' || tool === 'impact' || tool === 'audit'
+      ? RESULT_DETAIL_FIELDS
+      : undefined;
+  if (!candidates) throw new Error('response_budget_bytes is too small for a safe response projection.');
+
+  const isEnvelope = value.envelopeVersion === '1' &&
+    typeof value.tool === 'string' && Array.isArray(value.evidence) &&
+    Array.isArray(value.capabilitiesUsed) && Array.isArray(value.capabilitiesMissing) &&
+    Array.isArray(value.warnings) && value.freshness !== undefined &&
+    value.targetContext !== undefined;
+  if (isEnvelope) candidates = RESULT_DETAIL_FIELDS;
+  const isRepoWrapper = typeof value.repoLabel === 'string' &&
+    typeof value.repoPath === 'string' && value.result !== undefined;
+  const isKnownOrdinary = Boolean(candidates?.some((field) => isDetailCollection(value[field])));
+  if (!isEnvelope && !isRepoWrapper && !isKnownOrdinary) {
+    throw new Error('response_budget_bytes is too small for a safe response projection.');
+  }
+  if (isEnvelope && value.status !== 'ok') {
+    throw new Error('response_budget_bytes is too small to preserve the response diagnostics.');
+  }
+
+  const originalBytes = serializedMcpToolResultBytes(text, isError);
+  const originalValue = { ...value };
+  const omittedFields: string[] = [];
+  for (const field of candidates) {
+    const detail = value[field];
+    if (!isDetailCollection(detail) || detailHasDiagnostics(detail)) continue;
+    delete value[field];
+    omittedFields.push(field);
+    const projected = withBudgetMetadata(value, requestedBytes, originalBytes, omittedFields, isError);
+    if (serializedMcpToolResultBytes(projected, isError) <= requestedBytes) return projected;
+  }
+  // Repository identity wrappers retain their identity while only known result detail is removed.
+  if (isRepoWrapper && value.result && typeof value.result === 'object' && !Array.isArray(value.result)) {
+    const wrapped = value.result as Record<string, unknown>;
+    const wrappedCandidates = wrapped.envelopeVersion === '1' ? RESULT_DETAIL_FIELDS : candidates;
+    const nextValue = { ...originalValue, result: { ...wrapped } };
+    const nextOmitted: string[] = [];
+    for (const field of wrappedCandidates) {
+      const detail = wrapped[field];
+      if (!isDetailCollection(detail) || detailHasDiagnostics(detail)) continue;
+      delete (nextValue.result as Record<string, unknown>)[field];
+      nextOmitted.push(`result.${field}`);
+      const projected = withBudgetMetadata(nextValue, requestedBytes, originalBytes, nextOmitted, isError);
+      if (serializedMcpToolResultBytes(projected, isError) <= requestedBytes) return projected;
+    }
+  }
+  throw new Error('response_budget_bytes is too small to preserve the response diagnostics.');
+}
+
+function isDetailCollection(value: unknown): value is unknown[] | Record<string, unknown> {
+  return Array.isArray(value) || Boolean(value && typeof value === 'object');
+}
+
+function withBudgetMetadata(
+  value: Record<string, unknown>, requestedBytes: number, originalBytes: number,
+  omittedFields: string[], isError: boolean,
+): string {
+  const result = { ...value };
+  let returnedBytes = 0;
+  let text = '';
+  for (let i = 0; i < 8; i++) {
+    result.responseBudget = {
+      requestedBytes, originalBytes, returnedBytes: returnedBytes || 0,
+      truncated: true, omittedFields: [...omittedFields],
+    };
+    text = JSON.stringify(result, null, 2);
+    const actual = serializedMcpToolResultBytes(text, isError);
+    if (actual === returnedBytes) return text;
+    returnedBytes = actual;
+  }
+  result.responseBudget = { requestedBytes, originalBytes, returnedBytes, truncated: true, omittedFields: [...omittedFields] };
+  return JSON.stringify(result, null, 2);
+}
+
+function detailHasDiagnostics(value: unknown): boolean {
+  const pending = [value];
+  let visited = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || typeof current !== 'object') continue;
+    for (const [key, child] of Object.entries(current)) {
+      if (++visited > 5000) return true;
+      if (/^(warnings?|errors?|candidates|ambiguity|contextCompleteness|freshness|capabilitiesMissing|recoverable|limits)$/i.test(key)) return true;
+      if (key === 'status' && !['ok', 'found', 'success'].includes(String(child))) return true;
+      if ((key === 'found' || key === 'success') && child !== true) return true;
+      if (child && typeof child === 'object') pending.push(child);
+    }
+  }
+  return false;
 }
 
 function buildPage(

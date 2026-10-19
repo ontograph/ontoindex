@@ -1326,7 +1326,10 @@ export class LocalBackend implements BackendPort {
       },
       gn_diagnose: async (repo, params) => {
         const { gnDiagnose } = await import('../super/diagnose.js');
-        return gnDiagnose(repo.id, params as any);
+        return gnDiagnose(repo.id, params as any, {
+          repoPath: repo.repoPath,
+          projectCwd: this.preferredProjectPath ?? null,
+        });
       },
       detect_changes: async (repo, params) => {
         await this.ensureInitialized(repo.id);
