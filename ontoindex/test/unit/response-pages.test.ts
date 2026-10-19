@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   pageMcpResponse,
   serializedMcpToolResultBytes,
+  validateResponseBudget,
   type ResponsePageEnvelope,
 } from '../../src/mcp/shared/response-pages.js';
 
@@ -23,6 +24,104 @@ afterEach(async () => {
 });
 
 describe('pageMcpResponse', () => {
+  it('validates an opt-in budget as a positive safe integer', () => {
+    expect(validateResponseBudget(undefined)).toBeUndefined();
+    expect(validateResponseBudget(1024)).toBe(1024);
+    for (const value of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, '1024']) {
+      expect(() => validateResponseBudget(value)).toThrow('positive safe integer');
+    }
+  });
+
+  it('omits only known detail collections and reports stable serialized byte counts', async () => {
+    const original = JSON.stringify({
+      status: 'ok',
+      summary: 'kept',
+      topSymbols: Array.from({ length: 20 }, (_, i) => ({ name: `λ-symbol-${i}`, source: 'x'.repeat(300) })),
+      warnings: [],
+    }, null, 2);
+    const budget = 700;
+    const result = await pageMcpResponse({
+      tool: 'gn_explore', args: { response_budget_bytes: budget }, text: original,
+      responseBudgetBytes: budget,
+    });
+    const projected = JSON.parse(result.text) as Record<string, any>;
+    expect(result.paged).toBe(false);
+    expect(projected.summary).toBe('kept');
+    expect(projected.topSymbols).toBeUndefined();
+    expect(projected.warnings).toEqual([]);
+    expect(projected.responseBudget).toMatchObject({
+      requestedBytes: budget, truncated: true, omittedFields: ['topSymbols'],
+    });
+    expect(projected.responseBudget.returnedBytes).toBe(serializedMcpToolResultBytes(result.text));
+    expect(serializedMcpToolResultBytes(result.text)).toBeLessThanOrEqual(budget);
+  });
+
+  it('fails closed for unknown layouts and refuses to omit detail containing diagnostics', async () => {
+    const text = JSON.stringify({
+      topSymbols: [{ name: 'x', warnings: ['retain me'] }],
+      summary: 'x'.repeat(2000),
+    });
+    await expect(pageMcpResponse({
+      tool: 'gn_explore', args: {}, text, responseBudgetBytes: 400,
+    })).rejects.toThrow('preserve the response diagnostics');
+    await expect(pageMcpResponse({
+      tool: 'unregistered', args: {}, text, responseBudgetBytes: 400,
+    })).rejects.toThrow('safe response projection');
+  });
+
+  it('projects known capability envelopes without losing protected diagnostics', async () => {
+    const text = JSON.stringify({
+      envelopeVersion: '1', tool: 'search', version: 1, status: 'ok',
+      targetContext: { scope: 'global', reason: 'query' },
+      capabilitiesUsed: [], capabilitiesMissing: [],
+      freshness: { status: 'fresh', actionable: true, reason: 'current' },
+      results: ['x'.repeat(1500)], evidence: [], warnings: [], limits: {}, nextTools: [],
+    });
+    const budget = 1000;
+    const result = await pageMcpResponse({
+      tool: 'search', args: {}, text, responseBudgetBytes: budget,
+    });
+    const projected = JSON.parse(result.text);
+    expect(projected.results).toBeUndefined();
+    expect(projected.freshness.status).toBe('fresh');
+    expect(projected.responseBudget.omittedFields).toContain('results');
+    expect(serializedMcpToolResultBytes(result.text)).toBeLessThanOrEqual(budget);
+  });
+
+  it('projects known repository wrappers while retaining repository identity', async () => {
+    const text = JSON.stringify({
+      repoLabel: 'fixture', repoPath: '/repo/fixture',
+      result: { summary: 'kept', results: ['x'.repeat(1600)] },
+    });
+    const budget = 700;
+    const result = await pageMcpResponse({
+      tool: 'search', args: {}, text, responseBudgetBytes: budget,
+    });
+    const projected = JSON.parse(result.text);
+    expect(projected.repoLabel).toBe('fixture');
+    expect(projected.repoPath).toBe('/repo/fixture');
+    expect(projected.result.summary).toBe('kept');
+    expect(projected.result.results).toBeUndefined();
+    expect(serializedMcpToolResultBytes(result.text)).toBeLessThanOrEqual(budget);
+  });
+
+  it('binds cursor replay to the requested logical budget', async () => {
+    const first = await pageMcpResponse({
+      tool: 'gn_explore', args: { response_budget_bytes: 60_000 },
+      text: 'x'.repeat(55_000),
+      responseBudgetBytes: 60_000,
+    });
+    expect(first.paged).toBe(true);
+    const cursor = (JSON.parse(first.text) as ResponsePageEnvelope).responsePage.nextCursor;
+    expect(cursor).toBeDefined();
+    await expect(pageMcpResponse({
+      tool: 'gn_explore',
+      args: { response_budget_bytes: 60_001 },
+      cursor,
+      responseBudgetBytes: 60_001,
+    })).rejects.toThrow('does not match');
+  });
+
   it('returns responses that already fit without paging', async () => {
     const result = await pageMcpResponse({ tool: 'gn_test', args: {}, text: 'small' });
 

@@ -483,10 +483,16 @@ function buildMisconfigurationReport(
   const processCwd = process.cwd();
   const activeRepoPath = targetContext?.repoPath;
   const activeRepoLabel = targetContext?.repoLabel ?? targetContext?.repoKey;
-  const pathMismatch =
+  const trustedTargetMatches =
+    targetContext?.status === 'ok' &&
+    context?.repoPath !== undefined &&
     activeRepoPath !== undefined &&
-    projectCwd !== undefined &&
-    !sameResolvedPath(projectCwd, activeRepoPath);
+    sameResolvedPath(context.repoPath, activeRepoPath);
+  const pathMismatch =
+    !trustedTargetMatches &&
+    activeRepoPath !== undefined &&
+    ((context?.repoPath !== undefined && !sameResolvedPath(context.repoPath, activeRepoPath)) ||
+      (projectCwd !== undefined && !sameResolvedPath(projectCwd, activeRepoPath)));
   const targetMismatch =
     targetContext?.status === 'ambiguous' || targetContext?.status === 'not-found' || pathMismatch;
 

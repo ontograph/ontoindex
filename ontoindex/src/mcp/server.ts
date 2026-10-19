@@ -51,6 +51,7 @@ import {
   boundMcpErrorText,
   MCP_RESPONSE_MAX_BYTES,
   pageMcpResponse,
+  validateResponseBudget,
 } from './shared/response-pages.js';
 
 const MAX_PROMPT_ARGUMENT_BYTES = 4096;
@@ -527,6 +528,7 @@ export function createMCPServer(
       try {
         const oversized = findOversizedArgument(typedArgs);
         if (oversized) throw new Error(`Invalid arguments for ${name}: ${oversized}`);
+        const responseBudgetBytes = validateResponseBudget(typedArgs.response_budget_bytes);
         if (options.transport === 'http' && name === 'gn_quality_mode') {
           throw new Error(
             'gn_quality_mode is unavailable over HTTP because it changes process-wide configuration.',
@@ -539,6 +541,7 @@ export function createMCPServer(
             tool: name,
             args: typedArgs,
             cursor: responseCursor,
+            responseBudgetBytes,
           });
           return { content: [{ type: 'text', text: page.text }] };
         }
@@ -584,12 +587,14 @@ export function createMCPServer(
           result = await backend.callTool(name, typedArgs);
         }
         const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-        const hint = getNextStepHint(name, typedArgs);
+        const hint = responseBudgetBytes === undefined ? getNextStepHint(name, typedArgs) : '';
         const page = await pageMcpResponse({
           tool: name,
           args: typedArgs,
           text: resultText + hint,
           identityText: resultText,
+          responseBudgetBytes,
+          isError: isMarkedInvocationError(result),
         });
         return {
           content: [{ type: 'text', text: page.text }],
@@ -727,6 +732,10 @@ function withResponseCursor(schema: any): any {
         type: 'string',
         description:
           'Opaque continuation cursor returned by a truncated response. Repeat the same tool request with this value to read the next immutable UTF-8 JSON-text page.',
+      },
+      response_budget_bytes: {
+        type: 'integer',
+        description: 'Optional positive safe-integer logical response budget in serialized MCP bytes.',
       },
     },
   };

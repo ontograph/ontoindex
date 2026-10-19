@@ -97,6 +97,14 @@ export interface CommitAuditReport {
     processesAvailable: boolean;
     hunkCoverageAvailable: boolean;
   };
+  evaluation: {
+    status: 'skipped' | 'incomplete' | 'completed';
+    scope: NonNullable<PreCommitAuditParams['scope']>;
+    includePaths: string[];
+    /** Paths selected for evaluation after the changed-path cap. */
+    evaluatedPathCount: number;
+    graphValidated: boolean;
+  };
 }
 
 export interface CommitAuditEvidence {
@@ -386,14 +394,12 @@ export async function gnPreCommitAudit(
   const evidence: CommitAuditEvidence[] = [];
   const evidenceIdRef = { value: 1 };
   const capabilitiesMissing = new Set<string>();
-  const capabilitiesUsed = [
-    'git-diff',
-    'graph-symbol-audit',
-    'graph-impact-counts',
-    'graph-test-coverage',
-    'reviewer-history',
-    'target-context',
-  ];
+  const scope = params.scope ?? 'staged';
+  const includePaths = params.includePaths ?? [];
+  const capabilitiesUsed: string[] = [];
+  let evaluationStatus: CommitAuditReport['evaluation']['status'] = 'incomplete';
+  let evaluatedPathCount = 0;
+  let graphValidated = false;
   const limits: CommitAuditReport['limits'] = {
     maxChangedPaths: MAX_CHANGED_PATHS,
     maxReviewerPaths: MAX_REVIEWER_PATHS,
@@ -404,7 +410,12 @@ export async function gnPreCommitAudit(
     verifyGraphAuthority: true,
     requiredGraphCapabilities: ['symbols', 'impact', 'processes'] as const,
   };
-  const targetContext = await resolveTargetContext({ repo: repoId, ...authorityOptions }).catch(
+  capabilitiesUsed.push('target-context');
+  const targetContext = await resolveTargetContext({
+    repo: repoId,
+    ...authorityOptions,
+    ...(includePaths.length > 0 ? { scopePaths: includePaths } : {}),
+  }).catch(
     (err) => createUnknownTargetContext(err instanceof Error ? err.message : String(err)),
   );
   const repoRoot =
@@ -503,6 +514,13 @@ export async function gnPreCommitAudit(
         processesAvailable: true,
         hunkCoverageAvailable: true,
       },
+      evaluation: {
+        status: evaluationStatus,
+        scope,
+        includePaths: [...includePaths],
+        evaluatedPathCount,
+        graphValidated,
+      },
     };
   };
 
@@ -521,8 +539,6 @@ export async function gnPreCommitAudit(
   }
 
   // ---- 1. Build git diff args per scope ----------------------------------
-  const scope = params.scope ?? 'staged';
-  const includePaths = params.includePaths ?? [];
   let diffArgs: string[];
   let patchArgs: string[];
   switch (scope) {
@@ -562,7 +578,9 @@ export async function gnPreCommitAudit(
   let changedPaths: string[] = [];
   let changedPathScanCapped = false;
   let graphQueryFailed = false;
+  let symbolScanCapped = false;
   try {
+    capabilitiesUsed.push('git-diff');
     const trackedPaths = (await gitCapture(repoRoot, diffArgs)).split('\n').filter(Boolean);
     const untrackedPaths =
       scope === 'all' || scope === 'unstaged'
@@ -593,6 +611,7 @@ export async function gnPreCommitAudit(
 
   // ---- 3. Empty diff — nothing to audit ---------------------------------
   if (changedPaths.length === 0) {
+    evaluationStatus = 'skipped';
     return baseReport({
       verdict: 'READY',
       reasoning:
@@ -606,6 +625,7 @@ export async function gnPreCommitAudit(
       ],
     });
   }
+  evaluatedPathCount = changedPaths.length;
 
   let changedLineRanges = new Map<string, LineRange[]>();
   let hunkCoverageAvailable = true;
@@ -634,7 +654,6 @@ export async function gnPreCommitAudit(
     targetType: 'scope',
     repo: repoId,
   });
-
   const allChangedNodeIds: string[] = [];
   const symbolEvidenceIds = new Map<string, string[]>();
   const hunkEvidenceIds = new Map<string, string[]>();
@@ -669,15 +688,20 @@ export async function gnPreCommitAudit(
     // Find symbols defined in this file
     let symbolRows: SymbolRow[] = [];
     try {
+      capabilitiesUsed.push('graph-symbol-audit');
       symbolRows = (await executeParameterized(
         repoId,
         `MATCH (f:File {filePath: $path})-[r:CodeRelation {type: 'DEFINES'}]->(s)
-         RETURN s.id AS id, s.name AS name, s.startLine AS startLine, s.endLine AS endLine LIMIT ${MAX_SYMBOLS_PER_FILE}`,
+         RETURN s.id AS id, s.name AS name, s.startLine AS startLine, s.endLine AS endLine LIMIT ${MAX_SYMBOLS_PER_FILE + 1}`,
         { path: filePath },
       )) as SymbolRow[];
+      if (symbolRows.length > MAX_SYMBOLS_PER_FILE) {
+        symbolScanCapped = true;
+        warnings.push(`Symbol scan for ${filePath} capped at ${MAX_SYMBOLS_PER_FILE} symbols`);
+      }
       symbolRows = symbolRows
-        .filter((row) => overlapsChangedRange(row, ranges))
-        .slice(0, MAX_SYMBOLS_PER_FILE);
+        .slice(0, MAX_SYMBOLS_PER_FILE)
+        .filter((row) => overlapsChangedRange(row, ranges));
     } catch (err) {
       graphQueryFailed = true;
       warnings.push(
@@ -706,6 +730,7 @@ export async function gnPreCommitAudit(
       // Upstream count (callers)
       let upstreamCount = 0;
       try {
+        capabilitiesUsed.push('graph-impact-counts');
         const upRows = (await executeParameterized(
           repoId,
           `MATCH (caller)-[r:CodeRelation]->(target {id: $id})
@@ -786,6 +811,7 @@ export async function gnPreCommitAudit(
   let coveredAfter = 0;
   for (const filePath of changedPaths) {
     try {
+      capabilitiesUsed.push('graph-test-coverage');
       const testRows = (await executeParameterized(
         repoId,
         `MATCH (t:File)-[r:CodeRelation {type: 'IMPORTS'}]->(target:File {filePath: $path})
@@ -828,6 +854,7 @@ export async function gnPreCommitAudit(
 
   const testCoverageDelta = { coveredBefore, coveredAfter, deltaPp };
 
+  capabilitiesUsed.push('process-enrichment');
   const { affectedProcesses, processesAvailable } = await queryAffectedProcesses(
     repoId,
     uniqueStrings(allChangedNodeIds),
@@ -836,8 +863,6 @@ export async function gnPreCommitAudit(
   if (!processesAvailable) {
     graphQueryFailed = true;
     capabilitiesMissing.add('process-enrichment');
-  } else {
-    capabilitiesUsed.push('process-enrichment');
   }
   const processEvidenceIds = affectedProcesses.map((process) =>
     pushEvidence(evidence, evidenceIdRef, {
@@ -852,6 +877,7 @@ export async function gnPreCommitAudit(
   // ---- 7. Suggested reviewers (best-effort) ------------------------------
   let suggestedReviewers: string[] | undefined;
   try {
+    capabilitiesUsed.push('reviewer-history');
     const reviewerPaths = changedPaths.slice(0, MAX_REVIEWER_PATHS);
     if (changedPaths.length > reviewerPaths.length) {
       warnings.push(`Reviewer lookup capped at ${MAX_REVIEWER_PATHS} paths`);
@@ -878,6 +904,8 @@ export async function gnPreCommitAudit(
 
   // ---- 8. Verdict synthesis ----------------------------------------------
   const hasHighRisk = changedFiles.some((f) => f.perSymbolImpact.risk === 'HIGH');
+  graphValidated = graphAuthoritative && !graphQueryFailed && !changedPathScanCapped && !symbolScanCapped;
+  evaluationStatus = graphValidated && hunkCoverageAvailable ? 'completed' : 'incomplete';
   const hasUnexpected = unexpectedSymbols.length > 0 && params.expectedSymbols !== undefined;
   const coverageDrop = deltaPp < -5;
 
@@ -895,6 +923,7 @@ export async function gnPreCommitAudit(
     !graphAuthoritative ||
     graphQueryFailed ||
     changedPathScanCapped ||
+    symbolScanCapped ||
     hasUnexpected ||
     coverageDrop
   ) {
@@ -908,6 +937,9 @@ export async function gnPreCommitAudit(
     }
     if (changedPathScanCapped) {
       reasons.push(`changed file scan capped at ${MAX_CHANGED_PATHS} paths`);
+    }
+    if (symbolScanCapped) {
+      reasons.push(`symbol scan capped at ${MAX_SYMBOLS_PER_FILE} symbols per file`);
     }
     if (hasUnexpected) {
       reasons.push(`unexpected symbols changed: ${unexpectedSymbols.slice(0, 5).join(', ')}`);
