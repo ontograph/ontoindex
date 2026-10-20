@@ -24,6 +24,8 @@ class NativeCsvRowWriter {
 const createCsvRowWriter = (csvPath, header) => new NativeCsvRowWriter(csvPath, header);
 
 module.exports = {
+  NativeFileLock: native.NativeFileLock,
+  tryAcquireFileLock: native.tryAcquireFileLock,
   createCsvRowWriter,
   createNativeCsvRowWriter: createCsvRowWriter,
   NativeHeritageMap: native.NativeHeritageMap,

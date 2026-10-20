@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { RepoHandle } from 'ontoindex-shared';
 
 import {
@@ -10,9 +12,448 @@ import {
   resolveRepoFromHandles,
   committedGraphNotice,
   prepareWorkspaceRead,
+  stopWorkspaceBuild,
+  acquireWorkspaceWatch,
   WORKSPACE_PREPARATION_DEADLINE_MS,
 } from '../../src/mcp/local/local-backend-repo-runtime.js';
 import type { OverlaySnapshot } from '../../src/mcp/local/backend-overlay.js';
+
+const { createWatchCommand } = vi.hoisted(() => ({ createWatchCommand: vi.fn() }));
+vi.mock('../../src/cli/watch.js', () => ({ createWatchCommand }));
+
+describe('shared workspace watcher lifecycle', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    createWatchCommand.mockReset();
+  });
+
+  it('drains every retained alias before stopping and admitting a replacement watcher', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-watch-alias-'));
+    const aliasPath = `${root}-alias`;
+    await fs.symlink(root, aliasPath);
+    const repo = { id: root, repoPath: root, storagePath: path.join(root, '.ontoindex') };
+    const alias = { ...repo, id: aliasPath, repoPath: aliasPath };
+    const stop = vi.fn(async () => {});
+    createWatchCommand.mockResolvedValue({ stop, owned: true });
+    const dirty = {
+      usable: false,
+      reason: 'missing',
+      dirtyPaths: new Set(['a.ts']),
+      parseErrorPaths: new Set(),
+      overlayPaths: new Set(),
+      uncoveredPaths: new Set(),
+      tombstones: new Set(),
+    } as OverlaySnapshot;
+    const signals: AbortSignal[] = [];
+    const drains: (() => void)[] = [];
+    const dependencies = {
+      getSnapshot: async () => dirty,
+      baseFileCount: async () => 1,
+      acquireLock: async () => ({ release: async () => {} }),
+      evictSnapshot() {},
+      buildWorkspaceGraph: async (_repo: typeof repo, signal?: AbortSignal) => {
+        signals.push(signal!);
+        await new Promise<void>((resolve) => {
+          drains.push(resolve);
+        });
+      },
+    };
+    try {
+      const first = await acquireWorkspaceWatch(repo);
+      const last = await acquireWorkspaceWatch(alias);
+      expect(createWatchCommand).toHaveBeenCalledOnce();
+      expect(createWatchCommand.mock.calls[0][0]).toBe(await fs.realpath(root));
+      const reads = [repo, alias].map((owner) =>
+        prepareWorkspaceRead({
+          repo: owner,
+          needsRelationships: true,
+          dependencies,
+        }).catch((error) => error.code),
+      );
+      await vi.waitFor(() => expect(signals).toHaveLength(2));
+      await first.release();
+      expect(signals.every((signal) => !signal.aborted)).toBe(true);
+      expect(stop).not.toHaveBeenCalled();
+      const release = last.release();
+      await vi.waitFor(() => expect(signals[0].aborted).toBe(true));
+      let replacementReady = false;
+      const replacement = acquireWorkspaceWatch(repo).then((value) => {
+        replacementReady = true;
+        return value;
+      });
+      expect(signals[1].aborted).toBe(false);
+      expect(replacementReady).toBe(false);
+      drains[0]();
+      await vi.waitFor(() => expect(signals[1].aborted).toBe(true));
+      expect(stop).not.toHaveBeenCalled();
+      expect(createWatchCommand).toHaveBeenCalledOnce();
+      drains[1]();
+      await release;
+      expect(await Promise.all(reads)).toEqual(['workspace_cancelled', 'workspace_cancelled']);
+      const renewed = await replacement;
+      expect(stop).toHaveBeenCalledOnce();
+      expect(createWatchCommand).toHaveBeenCalledTimes(2);
+      await renewed.release();
+    } finally {
+      drains.forEach((drain) => drain());
+      await Promise.all([stopWorkspaceBuild(repo), stopWorkspaceBuild(alias)]);
+      await fs.rm(aliasPath, { force: true });
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('retains the admission fence when final shared cleanup fails', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-watch-failed-'));
+    const repo = { id: root, repoPath: root, storagePath: path.join(root, '.ontoindex') };
+    const stop = vi.fn(async () => {
+      throw new Error('watcher still owned');
+    });
+    createWatchCommand.mockResolvedValue({ stop, owned: true });
+    try {
+      const first = await acquireWorkspaceWatch(repo);
+      const last = await acquireWorkspaceWatch({ ...repo, id: `${root}-alias` });
+      await first.release();
+      expect(stop).not.toHaveBeenCalled();
+      await expect(last.release()).rejects.toThrow('Workspace watcher cleanup failed');
+      await expect(acquireWorkspaceWatch(repo)).rejects.toThrow('Workspace watcher cleanup failed');
+      await expect(last.release()).rejects.toThrow('Workspace watcher cleanup failed');
+      expect(createWatchCommand).toHaveBeenCalledOnce();
+      expect(stop).toHaveBeenCalledOnce();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// Run the real compiled runtime and child entry in separate processes. Only the entry's
+// analysis dependency is replaced; source-mode fallback must never satisfy this fixture.
+async function compiledAdmissionFixture(config: {
+  repoPath: string;
+  runtime: string;
+  supervisor: string;
+  analyze: string;
+  child: string;
+  state: string;
+  peer?: boolean;
+}) {
+  // Keep the serialized subprocess function independent of Vitest's import rewriting.
+  const load = new Function('url', 'return import(url)');
+  const fs = (await load('node:fs/promises')) as typeof import('node:fs/promises');
+  const syncFs = (await load('node:fs')) as typeof import('node:fs');
+  const path = (await load('node:path')) as typeof import('node:path');
+  const cp = (await load('node:child_process')) as typeof import('node:child_process');
+  const { fileURLToPath } = (await load('node:url')) as typeof import('node:url');
+  const { syncBuiltinESMExports } = (await load('node:module')) as typeof import('node:module');
+  const storagePath = path.join(config.repoPath, '.ontoindex');
+  const markerPath = path.join(storagePath, 'workspace-build.owner.json');
+  const lockPath = path.join(storagePath, 'analyze.lock');
+  const entriesPath = path.join(config.repoPath, 'entries.jsonl');
+  const { prepareWorkspaceRead } = await load(config.runtime);
+  const { sweepOrphanedWorkspaceBuild } = await load(config.supervisor);
+  const originalKill = process.kill.bind(process);
+  const originalSpawn = cp.default.spawn;
+  let group: number | undefined;
+  const builds: number[] = [];
+  cp.default.spawn = ((...args: Parameters<typeof originalSpawn>) => {
+    const child = originalSpawn(...args);
+    if (args[0] === process.execPath && args[1]?.[0] === fileURLToPath(config.child)) {
+      group = child.pid;
+      if (child.pid) {
+        builds.push(child.pid);
+        syncFs.appendFileSync(path.join(config.repoPath, 'groups.jsonl'), `${child.pid}\n`);
+      }
+    }
+    return child;
+  }) as typeof originalSpawn;
+  syncBuiltinESMExports();
+  const exists = (filename: string) =>
+    fs.stat(filename).then(
+      () => true,
+      () => false,
+    );
+  const readEntries = async () =>
+    (await fs.readFile(entriesPath, 'utf8').catch(() => ''))
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  const dirty = {
+    usable: false,
+    reason: 'missing',
+    generation: config.peer ? 'changed-identity' : 'initial',
+    dirtyPaths: new Set([config.peer ? 'b.ts' : 'a.ts']),
+    configPaths: new Set(),
+    parseErrorPaths: new Set(),
+    overlayPaths: new Set(),
+    uncoveredPaths: new Set(),
+    tombstones: new Set(),
+  };
+  let probes = 0;
+  const prepare = () =>
+    prepareWorkspaceRead({
+      repo: { id: 'fixture', repoPath: config.repoPath, storagePath },
+      needsRelationships: true,
+      dependencies: {
+        getSnapshot: async () =>
+          ++probes < 3
+            ? dirty
+            : {
+                ...dirty,
+                usable: true,
+                reason: null,
+                capability: 'workspace-graph',
+                coverage: 'complete',
+              },
+        baseFileCount: async () => 1,
+        evictSnapshot() {},
+      },
+    }).then(
+      () => ({ result: 'completed' }),
+      (error: { code: string; message: string }) => ({
+        result: error.code,
+        message: error.message,
+      }),
+    );
+  const runPeer = (script: string, args: string[] = []) => {
+    const result = cp.spawnSync(process.execPath, ['--input-type=module', '-e', script, ...args], {
+      cwd: config.repoPath,
+      encoding: 'utf8',
+      timeout: 15_000,
+      maxBuffer: 1024 * 1024,
+      env: { ...process.env, IQ4F_ENTRY_MODE: 'successor' },
+    });
+    if (result.error || result.status !== 0) {
+      throw new Error(
+        `Fixture peer failed (${result.status}): ${result.error ?? ''} ${result.stderr}`,
+      );
+    }
+    return JSON.parse(result.stdout.trim());
+  };
+  try {
+    if (config.peer) {
+      const outcome = await prepare();
+      return { ...outcome, builds, entries: await readEntries() };
+    }
+    if (config.state === 'reaped') {
+      const owner = cp.spawnSync(process.execPath, ['-e', '0']);
+      if (owner.error || owner.status !== 0 || !owner.pid)
+        throw new Error('Fixture owner did not reap');
+      await fs.mkdir(path.join(storagePath, 'overlay', 'orphan'), { recursive: true });
+      await fs.writeFile(
+        markerPath,
+        JSON.stringify({
+          parentPid: owner.pid,
+          childPid: owner.pid,
+          before: { overlay: ['CURRENT', 'old-gen'], 'workspace-inputs': [] },
+        }),
+      );
+    }
+    if (config.state === 'unresolved') {
+      // Ignore SIGKILL only for the group spawned by this runtime. Its actual survivor
+      // keeps groupAlive true; all unrelated PIDs/signals use the real implementation.
+      process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+        if (group !== undefined && pid === -group && signal === 'SIGKILL') return true;
+        return originalKill(pid, signal);
+      }) as typeof process.kill;
+    }
+    const first = await prepare();
+    const markerAfterFirst = await exists(markerPath);
+    const lockAfterFirst = await exists(lockPath);
+    const entriesAfterFirst = await readEntries();
+    const survivor = entriesAfterFirst.find((entry) => entry.survivor)?.survivor as
+      | number
+      | undefined;
+    let survivorAlive = false;
+    if (survivor) {
+      originalKill(survivor, 0);
+      survivorAlive = true;
+    }
+    const swept = await sweepOrphanedWorkspaceBuild(storagePath);
+    // CLI and MCP peers are independent processes; no in-memory cooldown or lock mock.
+    const cli = runPeer(
+      `
+      const { acquireAnalyzeLock } = await import(${JSON.stringify(config.analyze)});
+      try {
+        const lock = await acquireAnalyzeLock(process.argv[1]);
+        await lock.release();
+        console.log(JSON.stringify({ admitted: true }));
+      } catch (error) {
+        console.log(JSON.stringify({ admitted: false, message: error.message }));
+      }
+    `,
+      [config.repoPath],
+    );
+    const peerConfig = { ...config, peer: true };
+    const mcp = runPeer(`
+      const result = await (${compiledAdmissionFixture.toString()})(${JSON.stringify(peerConfig)});
+      console.log(JSON.stringify(result));
+    `);
+    return {
+      state: config.state,
+      first,
+      markerAfterFirst,
+      lockAfterFirst,
+      survivorAlive,
+      swept,
+      cli,
+      mcp,
+      entriesAfterFirst,
+      markerAfterSuccessor: await exists(markerPath),
+      liveArtifactRetained: await exists(path.join(storagePath, 'overlay', 'live-gen')),
+      liveCaptureRetained: await exists(path.join(storagePath, 'workspace-inputs', 'live-capture')),
+    };
+  } finally {
+    process.kill = originalKill;
+    cp.default.spawn = originalSpawn;
+    syncBuiltinESMExports();
+    if (!config.peer && config.state === 'unresolved') {
+      // The handshake records only fixture-owned children, never host processes.
+      for (const entry of await readEntries()) {
+        if (!entry.survivor) continue;
+        try {
+          originalKill(-entry.pid, 'SIGKILL');
+        } catch {}
+      }
+    }
+  }
+}
+
+describe('compiled surviving-build admission', () => {
+  it.each(['absent', 'reaped', 'unresolved'])(
+    'retains ownership until the build is safely reaped: %s',
+    async (state) => {
+      const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'iq4f-admission-'));
+      const dist = fileURLToPath(new URL('../../dist/', import.meta.url));
+      const config = {
+        repoPath,
+        state,
+        runtime: pathToFileURL(path.join(dist, 'mcp/local/local-backend-repo-runtime.js')).href,
+        supervisor: pathToFileURL(path.join(dist, 'mcp/local/workspace-build-supervisor.js')).href,
+        analyze: pathToFileURL(path.join(dist, 'cli/analyze.js')).href,
+        child: pathToFileURL(path.join(dist, 'core/workspace-build-child.js')).href,
+      };
+      try {
+        for (const url of [config.runtime, config.supervisor, config.analyze, config.child]) {
+          await fs.access(fileURLToPath(url));
+        }
+        const storage = path.join(repoPath, '.ontoindex');
+        await fs.mkdir(path.join(storage, 'overlay', 'old-gen'), { recursive: true });
+        await fs.writeFile(path.join(storage, 'overlay', 'CURRENT'), 'old-gen\n');
+        const preload = path.join(repoPath, 'analysis-fixture.mjs');
+        await fs.writeFile(
+          preload,
+          `
+          import { registerHooks } from 'node:module';
+          const child = ${JSON.stringify(config.child)};
+          registerHooks({
+            resolve(specifier, context, nextResolve) {
+              if (context.parentURL === child && specifier === './run-analyze.js') {
+                return { url: 'iq4f:analysis', shortCircuit: true };
+              }
+              return nextResolve(specifier, context);
+            },
+            load(url, context, nextLoad) {
+              if (url !== 'iq4f:analysis') return nextLoad(url, context);
+              return { format: 'module', shortCircuit: true, source: ${JSON.stringify(`
+                import fs from 'node:fs';
+                import path from 'node:path';
+                import { spawn } from 'node:child_process';
+                import { pathToFileURL } from 'node:url';
+                export async function runFullAnalysis(repoPath, options) {
+                  const storage = path.join(repoPath, '.ontoindex');
+                  let survivor;
+                  if (process.env.IQ4F_ENTRY_MODE === 'unresolved') {
+                    const worker = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+                      stdio: 'ignore',
+                    });
+                    survivor = worker.pid;
+                    fs.mkdirSync(path.join(storage, 'overlay', 'live-gen'), { recursive: true });
+                    fs.mkdirSync(path.join(storage, 'workspace-inputs', 'live-capture'), { recursive: true });
+                  }
+                  fs.appendFileSync(path.join(repoPath, 'entries.jsonl'), JSON.stringify({
+                    pid: process.pid, survivor, options, entry: pathToFileURL(process.argv[1]).href,
+                    marker: JSON.parse(fs.readFileSync(path.join(storage, 'workspace-build.owner.json'), 'utf8')),
+                  }) + '\\n');
+                }
+              `)} };
+            },
+          });
+        `,
+        );
+        const result = spawnSync(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            `console.log(JSON.stringify(await (${compiledAdmissionFixture.toString()})(${JSON.stringify(config)})));`,
+          ],
+          {
+            cwd: repoPath,
+            encoding: 'utf8',
+            timeout: 25_000,
+            maxBuffer: 1024 * 1024,
+            env: {
+              ...process.env,
+              ONTOINDEX_AUTO_WORKSPACE: '1',
+              IQ4F_ENTRY_MODE: state,
+              NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(preload).href}`,
+            },
+          },
+        );
+        expect(result.error, result.stderr).toBeUndefined();
+        expect(result.status, result.stderr).toBe(0);
+        const observed = JSON.parse(result.stdout.trim());
+        console.info('IQ-4F compiled admission', JSON.stringify(observed));
+        const firstEntry = observed.entriesAfterFirst[0];
+        expect(firstEntry.entry).toBe(config.child);
+        expect(firstEntry.options).toEqual({ workspaceGraph: true, skipNativeClose: true });
+        expect(firstEntry.pid).toBe(firstEntry.marker.childPid);
+        if (state === 'unresolved') {
+          expect(observed.first).toMatchObject({
+            result: 'workspace_build_failed',
+            message: 'Working-tree graph build failed.',
+          });
+          expect(observed.survivorAlive).toBe(true);
+          expect
+            .soft(observed.markerAfterFirst, 'unstoppable must retain recovery ownership')
+            .toBe(true);
+          expect
+            .soft(observed.cli.admitted, 'CLI must refuse an unresolved build owner')
+            .toBe(false);
+          expect.soft(observed.cli.message).toContain('Cannot safely recover');
+          expect.soft(observed.mcp.result).toBe('workspace_busy');
+          expect
+            .soft(observed.mcp.builds, 'independent MCP must not spawn a successor')
+            .toEqual([]);
+          expect.soft(observed.markerAfterSuccessor).toBe(true);
+          expect.soft(observed.liveArtifactRetained).toBe(true);
+          expect.soft(observed.liveCaptureRetained).toBe(true);
+        } else {
+          expect(observed.first.result).toBe('completed');
+          expect(observed.survivorAlive).toBe(false);
+          expect(observed.markerAfterFirst).toBe(false);
+          expect(observed.lockAfterFirst).toBe(false);
+          expect(observed.cli.admitted).toBe(true);
+          expect(observed.mcp.result).toBe('completed');
+          expect(observed.mcp.builds).toHaveLength(1);
+          expect(observed.mcp.entries).toHaveLength(2);
+        }
+      } finally {
+        // Also cover an outer timeout before the subprocess could run its own finally.
+        const groups = await fs
+          .readFile(path.join(repoPath, 'groups.jsonl'), 'utf8')
+          .catch(() => '');
+        for (const raw of groups.trim().split('\n').filter(Boolean)) {
+          try {
+            process.kill(-Number(raw), 'SIGKILL');
+          } catch {}
+        }
+        await fs.rm(repoPath, { recursive: true, force: true });
+      }
+    },
+  );
+});
 
 describe('workspace read preparation', () => {
   afterEach(() => vi.unstubAllEnvs());
@@ -21,6 +462,7 @@ describe('workspace read preparation', () => {
     ['flag off', '0', 2, undefined],
     ['clean tree', '1', 0, undefined],
     ['dirty tree', '1', 2, expect.stringContaining('2 uncommitted file change')],
+    ['default dirty tree', undefined, 2, expect.stringContaining('2 uncommitted file change')],
   ])('committed-graph notice: %s', async (_name, flag, count, expected) => {
     vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', flag);
     const snapshot = {
@@ -55,7 +497,12 @@ describe('workspace read preparation', () => {
         .mockResolvedValueOnce(dirty)
         .mockResolvedValue(ready),
       acquireLock: vi.fn(async () => ({ release })),
-      buildWorkspaceGraph: vi.fn(async () => {}),
+      buildWorkspaceGraph: vi.fn(
+        async (
+          _repo: { id: string; repoPath: string; storagePath: string },
+          _signal?: AbortSignal,
+        ) => {},
+      ),
       evictSnapshot: vi.fn(),
       baseFileCount: vi.fn(async (): Promise<number | undefined> => 10),
       now: vi.fn(() => 0),
@@ -67,14 +514,118 @@ describe('workspace read preparation', () => {
     };
     return { dirty, ready, release, dependencies, options };
   }
-  it.each(['clean', 'flag off', 'symbols'])('does not build for %s', async (kind) => {
+  it.each([
+    ['getSnapshot', 'timeout'],
+    ['getSnapshot', 'cancelled'],
+    ['baseFileCount', 'timeout'],
+    ['baseFileCount', 'cancelled'],
+  ] as const)('does not admit a build after %s resumes for a %s caller', async (probe, code) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    try {
+      const f = fixture();
+      const controller = new AbortController();
+      let resume!: () => void;
+      let entered!: () => void;
+      const probeEntered = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const deferred = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      if (probe === 'getSnapshot') {
+        f.dependencies.getSnapshot
+          .mockReset()
+          .mockResolvedValue(f.dirty)
+          .mockImplementationOnce(async () => {
+            entered();
+            await deferred;
+            return f.dirty;
+          });
+      } else {
+        f.dependencies.baseFileCount.mockImplementationOnce(async () => {
+          entered();
+          await deferred;
+          return 10;
+        });
+      }
+      const pending = prepareWorkspaceRead({
+        ...f.options,
+        signal: controller.signal,
+        deadline: performance.now() + 50,
+      });
+      const rejected = expect(pending).rejects.toMatchObject({ code: `workspace_${code}` });
+      await probeEntered;
+      if (code === 'timeout') await vi.advanceTimersByTimeAsync(50);
+      else controller.abort();
+      await rejected;
+      resume();
+      // The rejected caller settles before its probe continuation; drain that continuation too.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(f.dependencies.acquireLock).not.toHaveBeenCalled();
+      expect(f.dependencies.buildWorkspaceGraph).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it.each(['clean', 'flag off'])('does not build for %s', async (kind) => {
     const f = fixture();
     if (kind === 'clean') f.dirty.dirtyPaths = new Set();
     if (kind === 'flag off') vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
-    if (kind === 'symbols') f.options.needsRelationships = false;
     expect(await prepareWorkspaceRead(f.options)).toBe(f.dirty);
     expect(f.dependencies.acquireLock).not.toHaveBeenCalled();
     expect(f.dependencies.buildWorkspaceGraph).not.toHaveBeenCalled();
+  });
+  it('builds bounded symbols through the shared builder', async () => {
+    const f = fixture();
+    f.options.needsRelationships = false;
+    f.ready.capability = 'symbols';
+    expect(await prepareWorkspaceRead(f.options)).toBe(f.ready);
+    expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledWith(
+      f.options.repo,
+      expect.any(AbortSignal),
+      { workspaceGraph: false, includePaths: ['a.ts'] },
+    );
+  });
+  it('builds a missing workspace graph when activation is absent', async () => {
+    const f = fixture();
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', undefined);
+    expect(await prepareWorkspaceRead(f.options)).toBe(f.ready);
+    expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledWith(
+      f.options.repo,
+      expect.any(AbortSignal),
+      { workspaceGraph: true, includePaths: ['a.ts'] },
+    );
+  });
+  it('fails closed when dirty planning cannot establish workspace identity', async () => {
+    const f = fixture();
+    f.dirty.dirtyPaths = new Set();
+    f.dirty.reason = 'dirty planning failed: private detail';
+    await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({
+      code: 'workspace_build_failed',
+    });
+    expect(f.dependencies.buildWorkspaceGraph).not.toHaveBeenCalled();
+  });
+  it('builds once for a clean tree whose HEAD differs from the committed base', async () => {
+    const f = fixture();
+    f.dirty.dirtyPaths = new Set();
+    f.dirty.baseMatches = false;
+    f.dirty.headChanged = true;
+    f.dirty.currentHead = 'new-head';
+    f.ready.dirtyPaths = new Set();
+    f.dependencies.getSnapshot.mockReset().mockResolvedValue(f.dirty);
+    f.dependencies.buildWorkspaceGraph.mockImplementation(async () => {
+      f.dependencies.getSnapshot.mockResolvedValue(f.ready);
+    });
+    expect(await prepareWorkspaceRead(f.options)).toBe(f.ready);
+    expect(await prepareWorkspaceRead(f.options)).toBe(f.ready);
+    expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce();
+  });
+  it('rejects a weaker symbols result for a full graph caller', async () => {
+    const f = fixture();
+    f.ready.capability = 'symbols';
+    await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({
+      code: 'workspace_build_failed',
+    });
   });
   it('builds, releases, evicts, and validates a new snapshot', async () => {
     const f = fixture();
@@ -189,6 +740,60 @@ describe('workspace read preparation', () => {
     await prepareWorkspaceRead(f.options);
     expect(f.dependencies.acquireLock).toHaveBeenCalledTimes(2);
   });
+  it.each(['error', 'non-error'])(
+    'keeps %s lock and build diagnostics out of first and cached messages for all reads',
+    async (kind) => {
+      const privateText = `SYNTHETIC_SECRET\nSYNTHETIC_SOURCE_${'x'.repeat(8192)}`;
+      for (const failure of ['busy', 'same-server busy', 'lock', 'build']) {
+        const f = fixture();
+        f.dependencies.getSnapshot.mockReset().mockResolvedValue(f.dirty);
+        const raw = failure.includes('busy')
+          ? `OntoIndex analyze is already running (PID ${failure === 'same-server busy' ? process.pid : 1} since now). ${privateText}`
+          : privateText;
+        const cause = kind === 'error' ? new Error(raw) : raw;
+        const code = failure.includes('busy') ? 'workspace_busy' : 'workspace_build_failed';
+        const message =
+          failure === 'same-server busy'
+            ? 'A working-tree graph build started by this server is still running; retry shortly.'
+            : failure === 'busy'
+              ? 'An analyze lock is held; retry shortly.'
+              : failure === 'lock'
+                ? 'Working-tree graph lock acquisition failed.'
+                : 'Working-tree graph build failed.';
+        if (failure === 'build') f.dependencies.buildWorkspaceGraph.mockRejectedValue(cause);
+        else f.dependencies.acquireLock.mockRejectedValue(cause);
+
+        await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({
+          code,
+          message,
+          cause,
+        });
+        await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({ code, message });
+        expect(f.dependencies.acquireLock).toHaveBeenCalledTimes(failure === 'lock' ? 2 : 1);
+        expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledTimes(
+          failure === 'build' ? 1 : 0,
+        );
+        expect(f.release).toHaveBeenCalledTimes(failure === 'build' ? 1 : 0);
+
+        f.options.needsRelationships = false;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          await expect(
+            prepareWorkspaceRead({ ...f.options, wantsWorkspaceGraph: true }),
+          ).rejects.toMatchObject({ code, message });
+        }
+        f.dependencies.now.mockReturnValue(31_000);
+        f.dependencies.acquireLock.mockResolvedValue({ release: f.release });
+        f.dependencies.buildWorkspaceGraph.mockResolvedValue(undefined);
+        f.dependencies.getSnapshot
+          .mockResolvedValueOnce(f.dirty)
+          .mockResolvedValueOnce(f.dirty)
+          .mockResolvedValue(f.ready);
+        expect(await prepareWorkspaceRead({ ...f.options, needsRelationships: true })).toBe(
+          f.ready,
+        );
+      }
+    },
+  );
   it('refuses a build for a repository above the file limit without taking the lock', async () => {
     const f = fixture();
     f.dependencies.baseFileCount.mockResolvedValue(5000);
@@ -216,7 +821,7 @@ describe('workspace read preparation', () => {
       ['too large', 'workspace_too_large'],
       ['busy', 'workspace_busy'],
       ['build failure', 'workspace_build_failed'],
-    ])('degrades to the committed index when the build is refused: %s', async (kind, code) => {
+    ])('rejects when the required build is refused: %s', async (kind, code) => {
       const f = fixture();
       manyDirty(f);
       if (kind === 'too large') f.dependencies.baseFileCount.mockResolvedValue(9000);
@@ -226,11 +831,9 @@ describe('workspace read preparation', () => {
         );
       if (kind === 'build failure')
         f.dependencies.buildWorkspaceGraph.mockRejectedValue(new Error('boom'));
-      const snapshot = await prepareWorkspaceRead(f.options);
-      expect(snapshot.preparationNote).toContain(code);
-      expect(snapshot.dirtyPaths.size).toBe(60);
+      await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({ code });
     });
-    it('never pins a stale overlay when degrading', async () => {
+    it('rejects a refused build instead of returning a stale symbols overlay', async () => {
       const f = fixture();
       manyDirty(f);
       // 60 dirty files force a workspace build even though a symbols overlay is usable.
@@ -243,17 +846,15 @@ describe('workspace read preparation', () => {
         reason: 'overlay was built on base a/1 but the active base is b/2; rebuild',
       });
       f.dependencies.baseFileCount.mockResolvedValue(9000);
-      const snapshot = await prepareWorkspaceRead(f.options);
+      await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({
+        code: 'workspace_too_large',
+      });
       expect(f.dependencies.baseFileCount).toHaveBeenCalled();
-      expect(snapshot.usable).toBe(false);
-      expect(snapshot.generation).toBe('old-generation');
-      expect(snapshot.dirtyPaths.size).toBe(60);
-      expect(snapshot.preparationNote).toContain('workspace_too_large');
     });
     it.each([
-      ['search', false, 'degrades'],
-      ['relationship read', true, 'throws'],
-    ])('a %s whose build outlasts the deadline %s', async (_name, needsRelationships, outcome) => {
+      ['search', false],
+      ['relationship read', true],
+    ])('rejects a %s whose build outlasts the deadline', async (_name, needsRelationships) => {
       const f = fixture();
       manyDirty(f);
       f.options.needsRelationships = needsRelationships;
@@ -263,16 +864,10 @@ describe('workspace read preparation', () => {
       );
       const deadline = performance.now() + 50;
       const pending = prepareWorkspaceRead({ ...f.options, deadline });
-      if (outcome === 'throws') {
-        await expect(pending).rejects.toMatchObject({ code: 'workspace_timeout' });
-      } else {
-        const snapshot = await pending;
-        expect(snapshot.usable).toBe(false);
-        expect(snapshot.preparationNote).toContain('workspace_timeout');
-      }
+      await expect(pending).rejects.toMatchObject({ code: 'workspace_timeout' });
       finish();
     });
-    it('keeps waiting past sixty seconds for a slow build and stops at the preparation cap', async () => {
+    it('waits until the sixty-second preparation cap and then rejects', async () => {
       vi.useFakeTimers();
       try {
         const f = fixture();
@@ -287,9 +882,10 @@ describe('workspace read preparation', () => {
           () => (outcome = 'resolved'),
           (error: { code?: string }) => (outcome = error.code ?? 'rejected'),
         );
-        await vi.advanceTimersByTimeAsync(65_000);
+        expect(WORKSPACE_PREPARATION_DEADLINE_MS).toBe(60_000);
+        await vi.advanceTimersByTimeAsync(59_999);
         expect(outcome).toBe('pending');
-        await vi.advanceTimersByTimeAsync(WORKSPACE_PREPARATION_DEADLINE_MS);
+        await vi.advanceTimersByTimeAsync(1);
         await pending;
         expect(outcome).toBe('workspace_timeout');
         finish();
@@ -304,8 +900,9 @@ describe('workspace read preparation', () => {
       f.dependencies.buildWorkspaceGraph.mockImplementation(
         () => new Promise<void>((resolve) => (finish = resolve)),
       );
-      const first = await prepareWorkspaceRead({ ...f.options, deadline: performance.now() + 30 });
-      expect(first.preparationNote).toContain('workspace_timeout');
+      await expect(
+        prepareWorkspaceRead({ ...f.options, deadline: performance.now() + 30 }),
+      ).rejects.toMatchObject({ code: 'workspace_timeout' });
       const second = prepareWorkspaceRead(f.options);
       await vi.waitFor(() => expect(f.dependencies.getSnapshot).toHaveBeenCalledTimes(3));
       f.dependencies.getSnapshot.mockResolvedValue(f.ready);
@@ -324,7 +921,7 @@ describe('workspace read preparation', () => {
         code: 'workspace_too_large',
       });
     });
-    it('does not degrade on cancellation or timeout', async () => {
+    it('rejects a cancelled read', async () => {
       const f = fixture();
       manyDirty(f);
       const controller = new AbortController();
@@ -343,7 +940,7 @@ describe('workspace read preparation', () => {
     });
     await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({
       code: 'workspace_build_failed',
-      message: 'broken',
+      message: 'Working-tree graph build failed.',
     });
     expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledTimes(1);
     f.dependencies.now.mockReturnValue(31_000);
@@ -370,6 +967,43 @@ describe('workspace read preparation', () => {
     await prepareWorkspaceRead(f.options);
     expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledTimes(2);
   });
+  it('drains lifecycle cancellation and suppresses its queued successor', async () => {
+    const f = fixture();
+    const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-stop-'));
+    f.options.repo.storagePath = storagePath;
+    let ownerSignal!: AbortSignal;
+    let finish!: () => void;
+    f.dependencies.getSnapshot.mockResolvedValue(f.dirty);
+    f.dependencies.buildWorkspaceGraph.mockImplementationOnce((_repo, signal) => {
+      ownerSignal = signal!;
+      return new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+    });
+    try {
+      const first = prepareWorkspaceRead(f.options);
+      const firstRejected = expect(first).rejects.toMatchObject({ code: 'workspace_cancelled' });
+      await vi.waitFor(() => expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce());
+      f.dependencies.getSnapshot.mockResolvedValue({ ...f.dirty, generation: 'successor' });
+      const next = prepareWorkspaceRead(f.options);
+      const nextRejected = expect(next).rejects.toMatchObject({ code: 'workspace_cancelled' });
+      await vi.waitFor(() => expect(f.dependencies.getSnapshot).toHaveBeenCalledTimes(3));
+      let stopped = false;
+      const stop = stopWorkspaceBuild(f.options.repo).then(() => {
+        stopped = true;
+      });
+      expect(ownerSignal.aborted).toBe(true);
+      await nextRejected;
+      expect(stopped).toBe(false);
+      finish();
+      await firstRejected;
+      await stop;
+      expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce();
+      expect(f.release).toHaveBeenCalledOnce();
+    } finally {
+      await fs.rm(storagePath, { recursive: true, force: true });
+    }
+  });
   it.each(['timeout', 'cancelled'])(
     'bounds one waiter with %s without stopping another',
     async (code) => {
@@ -391,7 +1025,10 @@ describe('workspace read preparation', () => {
       const rejected = expect(first).rejects.toMatchObject({ code: `workspace_${code}` });
       const second = prepareWorkspaceRead(f.options);
       await vi.waitFor(() => expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce());
+      const ownerSignal = f.dependencies.buildWorkspaceGraph.mock.calls[0][1];
+      expect(ownerSignal).not.toBe(controller.signal);
       if (code === 'cancelled') controller.abort();
+      expect(ownerSignal?.aborted).toBe(false);
       await rejected;
       f.dependencies.getSnapshot.mockResolvedValue(f.ready);
       finish();

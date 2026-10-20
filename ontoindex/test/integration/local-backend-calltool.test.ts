@@ -5,7 +5,7 @@
  * instance, verifying cypher, context, impact, and query tools work
  * end-to-end against seeded graph data with FTS indexes.
  */
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
@@ -15,6 +15,9 @@ import {
   LOCAL_BACKEND_SEED_DATA,
   LOCAL_BACKEND_FTS_INDEXES,
 } from '../fixtures/local-backend-seed.js';
+
+beforeAll(() => vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0'));
+afterAll(() => vi.unstubAllEnvs());
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/storage/repo-manager.js')>()),

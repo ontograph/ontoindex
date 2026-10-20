@@ -14,7 +14,7 @@
  *
  * Issues: #285, #290, #292, #297
  */
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import { initLbug, executeQuery, closeLbug } from '../../src/mcp/core/lbug-adapter.js';
@@ -26,6 +26,9 @@ import {
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
 import { vi } from 'vitest';
+
+beforeAll(() => vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0'));
+afterAll(() => vi.unstubAllEnvs());
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/storage/repo-manager.js')>()),

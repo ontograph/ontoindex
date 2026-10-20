@@ -138,9 +138,29 @@ it('publishes a partial captured workspace graph with parse-error paths without 
       status: git('status', '--porcelain'),
       current: await fs.readlink(path.join(storagePath, 'current')),
     };
-    const analyzeRepo = vi.fn(({ repoPath, onProgress, options }) =>
-      runPipelineFromRepo(repoPath, onProgress, { ...options, skipWorkers: true }),
-    );
+    const analyzeRepo = vi.fn(({ repoPath, onProgress, options }) => {
+      const phaseEvent = {
+        event: 'phase-end' as const,
+        phaseName: 'injected-phase',
+        elapsedMs: 5,
+        durationMs: 5,
+        rssBytes: 0,
+        heapUsedBytes: 0,
+        heapTotalBytes: 0,
+        heapLimitBytes: 0,
+        graphNodes: 0,
+        graphRelationships: 0,
+      };
+      options?.onTelemetry?.(phaseEvent);
+      for (const durationMs of [-1, NaN, Infinity]) {
+        options?.onTelemetry?.({ ...phaseEvent, phaseName: 'invalid-phase', durationMs });
+      }
+      options?.onTelemetry?.({ ...phaseEvent, phaseName: '' });
+      for (let i = 0; i < 140; i++) {
+        options?.onTelemetry?.({ ...phaseEvent, phaseName: `bounded-phase-${i}` });
+      }
+      return runPipelineFromRepo(repoPath, onProgress, { ...options, skipWorkers: true });
+    });
     const options = { workspaceGraph: true, skipNativeClose: true, embeddings: true };
     const dependencies = { analyzeRuntime: { analyzeRepo } };
     const result = await runFullAnalysis(repo, options, { onProgress: () => {} }, dependencies);
@@ -154,7 +174,8 @@ it('publishes a partial captured workspace graph with parse-error paths without 
     expect(graph.edges).toContain(
       JSON.stringify(['Function:src/caller.ts:caller', 'Function:src/callee.ts:callee', 'CALLS']),
     );
-    expect(JSON.parse(await fs.readFile(path.join(published, 'base.json'), 'utf8'))).toMatchObject({
+    const base = JSON.parse(await fs.readFile(path.join(published, 'base.json'), 'utf8'));
+    expect(base).toMatchObject({
       capability: 'workspace-graph',
       profile: 'full',
       includePaths: [],
@@ -165,6 +186,20 @@ it('publishes a partial captured workspace graph with parse-error paths without 
       tombstones: ['src/deleted.ts'],
       inputs: { 'src/callee.ts': expect.stringMatching(/^[a-f0-9]{64}$/) },
     });
+    for (const key of ['captureAndInventoryMs', 'pipelineMs', 'storageLoadMs', 'ftsMs']) {
+      expect(Number.isFinite(base.buildTimings[key])).toBe(true);
+      expect(base.buildTimings[key]).toBeGreaterThanOrEqual(0);
+    }
+    expect(base.buildTimings.ftsMs).toBe(base.ftsDurationMs);
+    expect(base.buildTimings.phases).toHaveLength(128);
+    expect(base.buildTimings.phases[0]).toEqual({ name: 'injected-phase', durationMs: 5 });
+    expect(base.buildTimings.phases).not.toContainEqual({ name: 'invalid-phase', durationMs: -1 });
+    for (const phase of base.buildTimings.phases) {
+      expect(phase.name).not.toBe('invalid-phase');
+      expect(phase.name.length).toBeGreaterThan(0);
+      expect(Number.isFinite(phase.durationMs)).toBe(true);
+      expect(phase.durationMs).toBeGreaterThanOrEqual(0);
+    }
     const independent = await runPipelineFromRepo(copy, () => {}, {
       skipWorkers: true,
       profile: 'full',

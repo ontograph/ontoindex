@@ -11,6 +11,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { getCurrentCommit } from '../../storage/git.js';
 import {
   CAPTURE_CONFIGURATION,
   planDirtyOverlay,
@@ -28,6 +29,12 @@ import {
   acquireOverlayGenerationPin,
   readActiveGenerationMeta,
 } from '../../storage/repo-manager.js';
+
+/** Read the activation setting per request so explicit disablement takes effect immediately. */
+export function isAutomaticWorkspaceEnabled(): boolean {
+  const value = process.env.ONTOINDEX_AUTO_WORKSPACE;
+  return value === undefined || value === '1';
+}
 
 export interface OverlayRepo {
   id: string;
@@ -49,7 +56,7 @@ export interface OverlaySnapshot {
   /** Repo-relative paths that are dirty (modified/added/untracked/deleted); base symbols for these are stale. */
   dirtyPaths: ReadonlySet<string>;
   /**
-   * Dirty resolver-configuration files. Reported only when ONTOINDEX_AUTO_WORKSPACE=1, so they
+   * Dirty resolver-configuration files. Reported only when automatic workspace reads are enabled, so they
    * stay out of the source-only `dirtyPaths` that the flag-off routes rely on.
    */
   configPaths?: ReadonlySet<string>;
@@ -63,6 +70,12 @@ export interface OverlaySnapshot {
   tombstones: ReadonlySet<string>;
   /** Overlay generation whose identity this snapshot validated; queries must read the same one. */
   generation?: string;
+  manifestDigest?: string;
+  baseGenerationId?: string | null;
+  baseCommit?: string | null;
+  currentHead?: string | null;
+  baseMatches?: boolean;
+  headChanged?: boolean;
 }
 
 export function isResolverConfigPath(filePath: string): boolean {
@@ -175,12 +188,16 @@ export async function withPinnedOverlay<T>(
     throw new Error('overlay generation no longer available');
   }
   try {
-    return await withPinnedGeneration(overlayRepoId(repo.id), dbPath, () =>
-      pinnedOverlay.run(
-        { repoId: repo.id, dbPath, generation, capability: snapshot.capability, snapshot },
-        fn,
-      ),
-    );
+    const runOverlay = () =>
+      withPinnedGeneration(overlayRepoId(repo.id), dbPath, () =>
+        pinnedOverlay.run(
+          { repoId: repo.id, dbPath, generation, capability: snapshot.capability, snapshot },
+          fn,
+        ),
+      );
+    return await (isAutomaticWorkspaceEnabled() && snapshot.capability === 'workspace-graph'
+      ? withPinnedGeneration(repo.id, dbPath, runOverlay)
+      : runOverlay());
   } finally {
     await marker.release().catch(() => {});
   }
@@ -195,7 +212,7 @@ export const overlayRepoId = (repoId: string): string => `${repoId}::overlay`;
  */
 export function workspaceGraphPoolId(repoId: string): string {
   // Opt-in only: a working-tree graph left on disk must not change flag-off behavior.
-  if (process.env.ONTOINDEX_AUTO_WORKSPACE !== '1') return repoId;
+  if (!isAutomaticWorkspaceEnabled()) return repoId;
   const pinned = pinnedOverlay.getStore();
   return pinned?.repoId === repoId && pinned.capability === 'workspace-graph'
     ? overlayRepoId(repoId)
@@ -205,6 +222,12 @@ export function workspaceGraphPoolId(repoId: string): string {
 /** True when the current request holds a pinned overlay generation for this repository. */
 export function hasPinnedOverlay(repoId: string): boolean {
   return pinnedOverlay.getStore()?.repoId === repoId;
+}
+
+/** Snapshot admitted for this request, without re-reading overlay CURRENT. */
+export function getPinnedOverlaySnapshot(repoId: string): OverlaySnapshot | undefined {
+  const pinned = pinnedOverlay.getStore();
+  return pinned?.repoId === repoId ? pinned.snapshot : undefined;
 }
 
 function validGeneration(value: string): string | null {
@@ -251,11 +274,26 @@ async function computeSnapshot(
   const tombstones = new Set(plan.tombstones);
   const dirtyPaths = new Set(plan.allDirtyPaths);
   // A configuration-only edit is a change only for the working-tree graph route.
-  const configPaths =
-    process.env.ONTOINDEX_AUTO_WORKSPACE === '1'
-      ? new Set(plan.configPaths ?? [])
-      : new Set<string>();
-  if (dirtyPaths.size === 0 && configPaths.size === 0) return EMPTY;
+  const configPaths = isAutomaticWorkspaceEnabled()
+    ? new Set(plan.configPaths ?? [])
+    : new Set<string>();
+  const automatic = isAutomaticWorkspaceEnabled();
+  if (!automatic && dirtyPaths.size === 0 && configPaths.size === 0) return EMPTY;
+  const activeBase = await readActiveGenerationMeta(repo.storagePath);
+  const baseGenerationId = activeBase.activeGeneration?.generationId ?? null;
+  const baseCommit = activeBase.meta?.lastCommit ?? null;
+  const currentHead = automatic ? getCurrentCommit(repo.repoPath) || null : null;
+  const identity = automatic
+    ? {
+        currentHead,
+        baseGenerationId,
+        baseCommit,
+        baseMatches: currentHead !== null && baseCommit === currentHead,
+        headChanged: currentHead === null || baseCommit !== currentHead,
+      }
+    : {};
+  if (dirtyPaths.size === 0 && configPaths.size === 0 && identity.baseMatches)
+    return { ...EMPTY, ...identity };
   const base: Pick<
     OverlaySnapshot,
     'dirtyPaths' | 'parseErrorPaths' | 'overlayPaths' | 'uncoveredPaths' | 'tombstones'
@@ -265,7 +303,13 @@ async function computeSnapshot(
     coverage?: OverlaySnapshot['coverage'];
     ftsIndexes?: readonly string[];
     configPaths?: ReadonlySet<string>;
+    currentHead?: string | null;
+    baseGenerationId?: string | null;
+    baseCommit?: string | null;
+    baseMatches?: boolean;
+    headChanged?: boolean;
   } = {
+    ...identity,
     dirtyPaths,
     parseErrorPaths: new Set(),
     overlayPaths,
@@ -298,6 +342,7 @@ async function computeSnapshot(
     ftsIndexes?: unknown;
     dirtyPaths?: string[];
     tombstones?: string[];
+    head?: string | null;
   };
   try {
     recordedBase = JSON.parse(
@@ -320,9 +365,6 @@ async function computeSnapshot(
       reason: 'overlay has no recorded base; rebuild: ontoindex analyze --dirty-overlay',
     };
   }
-  const activeBase = await readActiveGenerationMeta(repo.storagePath);
-  const baseGenerationId = activeBase.activeGeneration?.generationId ?? null;
-  const baseCommit = activeBase.meta?.lastCommit ?? null;
   if (
     recordedBase.baseGenerationId !== baseGenerationId ||
     recordedBase.baseCommit !== baseCommit
@@ -332,11 +374,15 @@ async function computeSnapshot(
     return {
       ...base,
       usable: false,
+      ...(automatic ? { baseMatches: false } : {}),
       reason: `overlay was built on base ${short(recordedBase.baseGenerationId, recordedBase.baseCommit)} but the active base is ${short(baseGenerationId, baseCommit)}; rebuild: ontoindex analyze --dirty-overlay`,
     };
   }
   const workspaceGraph = recordedBase.capability === 'workspace-graph';
-  if (workspaceGraph && process.env.ONTOINDEX_AUTO_WORKSPACE !== '1') {
+  if (automatic && (currentHead === null || recordedBase.head !== currentHead)) {
+    return { ...base, usable: false, reason: 'overlay HEAD identity differs; rebuild required' };
+  }
+  if (workspaceGraph && !isAutomaticWorkspaceEnabled()) {
     // A persisted working-tree graph is invisible to every reader unless the feature is on.
     return {
       ...base,
@@ -395,8 +441,9 @@ async function computeSnapshot(
   // Content identity, not mtime: the overlay is reusable only for the exact bytes it was built from.
   const inputs = (recordedBase as { inputs?: Record<string, string> }).inputs;
   if (
-    typeof (recordedBase as { manifestDigest?: unknown }).manifestDigest !== 'string' &&
-    overlayPaths.size > 0
+    (typeof (recordedBase as { manifestDigest?: unknown }).manifestDigest !== 'string' ||
+      !(recordedBase as { manifestDigest?: string }).manifestDigest?.trim()) &&
+    (workspaceGraph || overlayPaths.size > 0)
   ) {
     return {
       ...base,
@@ -485,7 +532,6 @@ async function computeSnapshot(
           usable: false,
           reason: `workspace graph input paths changed: ${changedPaths.slice(0, 5).join(', ')}; rebuild`,
         };
-      const changed: string[] = [];
       for (const rel of current) {
         const recorded = inventory[rel];
         if (!Array.isArray(recorded) || recorded.length !== 4 || typeof recorded[3] !== 'string') {
@@ -502,20 +548,11 @@ async function computeSnapshot(
             usable: false,
             reason: `workspace graph input is not a regular file: ${rel}; rebuild`,
           };
-        if (stat.size !== recorded[0] || stat.mtimeMs !== recorded[1] || stat.ino !== recorded[2])
-          changed.push(rel);
-      }
-      if (changed.length > 200)
-        return {
-          ...base,
-          usable: false,
-          reason: 'workspace graph has too many changed inputs; rebuild',
-        };
-      for (const rel of changed) {
+        // Metadata can be preserved across byte changes, so every input needs a digest.
         const digest = createHash('sha256')
           .update(await fs.readFile(path.join(repo.repoPath, rel)))
           .digest('hex');
-        if (digest !== inventory[rel][3])
+        if (digest !== recorded[3])
           return {
             ...base,
             usable: false,
@@ -546,20 +583,27 @@ async function computeSnapshot(
       return { ...base, usable: false, reason: `cannot read ${rel}` };
     }
   }
-  return { ...base, usable: true, reason: null };
+  return {
+    ...base,
+    usable: true,
+    reason: null,
+    manifestDigest: (recordedBase as { manifestDigest?: string }).manifestDigest,
+    baseGenerationId: recordedBase.baseGenerationId,
+    baseCommit: recordedBase.baseCommit,
+  };
 }
 
 /** Cached for a short TTL so one tool call (and bursts of calls) share one git probe. */
 export function getOverlaySnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> {
   // One snapshot per response: a request that already pinned a generation reads through it.
   // Re-probing here repeats the dirty plan and the configuration walk for every nested reader.
-  if (process.env.ONTOINDEX_AUTO_WORKSPACE === '1') {
+  if (isAutomaticWorkspaceEnabled()) {
     const pinned = pinnedOverlay.getStore();
     if (pinned?.repoId === repo.id) return Promise.resolve(pinned.snapshot);
   }
   const hit = snapshotCache.get(repo.id);
   const now = Date.now();
-  const workspaceFlag = process.env.ONTOINDEX_AUTO_WORKSPACE === '1';
+  const workspaceFlag = isAutomaticWorkspaceEnabled();
   let baseIdentity: string | null = null;
   try {
     baseIdentity = realpathSync(path.join(repo.storagePath, 'current'));
@@ -570,18 +614,12 @@ export function getOverlaySnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> 
     hit &&
     hit.baseIdentity === baseIdentity &&
     hit.workspaceFlag === workspaceFlag &&
-    now - hit.at < SNAPSHOT_TTL_MS
+    now - hit.at < SNAPSHOT_TTL_MS &&
+    // A settled clean/unusable result cannot observe edits made after its probe.
+    !(workspaceFlag && hit.settled && !hit.usable) &&
+    // Usable results must revalidate; cache the replacement so concurrent readers share it.
+    !(hit.settled && hit.usable)
   ) {
-    // A usable answer authorizes overlay reads, so it is never served from cache: re-plan the
-    // dirty set (a newly dirty file must not be missed) and re-verify byte/config identity.
-    if (hit.settled && hit.usable) {
-      return planDirtyOverlay(repo.repoPath)
-        .then((plan) => computeSnapshot(repo, plan))
-        .catch((err: unknown) => ({
-          ...EMPTY,
-          reason: `dirty planning failed: ${(err as Error).message}`,
-        }));
-    }
     return hit.value;
   }
   const plan = planDirtyOverlay(repo.repoPath);

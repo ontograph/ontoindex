@@ -893,6 +893,7 @@ async function runWorkspaceAnalysis(
   await fs.mkdir(generationPath);
   let capture: WorkspaceInputCapture | undefined;
   try {
+    const captureStart = performance.now();
     // Build from one verified byte snapshot so the stored manifest identifies the exact inputs.
     if (workspaceGraph) capture = await captureWorkspaceInputs(repoPath);
     else if (includePaths.length > 0)
@@ -915,9 +916,11 @@ async function runWorkspaceAnalysis(
         inventoryTruncated = Buffer.byteLength(JSON.stringify(inventory)) > 64 * 1024 * 1024;
       }
     }
+    const captureAndInventoryMs = performance.now() - captureStart;
+    const phases: { name: string; durationMs: number }[] = [];
     const activeBase = await readActiveGenerationMeta(storagePath);
     if (
-      workspaceGraph &&
+      capture &&
       ((getCurrentCommit(repoPath) || null) !== capture!.head ||
         (activeBase.activeGeneration?.generationId ?? null) !== capture!.baseGenerationId ||
         (activeBase.meta?.lastCommit ?? null) !== capture!.baseCommit)
@@ -930,6 +933,7 @@ async function runWorkspaceAnalysis(
     let parseErrorCount = 0;
     const parseErrorFiles = new Set<string>();
     const overlayBase = {
+      head: capture?.head ?? (getCurrentCommit(repoPath) || null),
       baseGenerationId: activeBase.activeGeneration?.generationId ?? null,
       baseCommit: activeBase.meta?.lastCommit ?? null,
       manifestDigest: capture?.manifestDigest ?? null,
@@ -963,6 +967,7 @@ async function runWorkspaceAnalysis(
           .map((entry) => [entry.path, entry.digest]),
       ),
     };
+    const pipelineStart = performance.now();
     const pipelineResult: PipelineResult =
       !workspaceGraph && includePaths.length === 0
         ? { graph: createKnowledgeGraph(), repoPath, totalFileCount: 0, usedWorkerPool: false }
@@ -981,6 +986,17 @@ async function runWorkspaceAnalysis(
                     onTelemetry: (
                       event: Parameters<NonNullable<PipelineOptions['onTelemetry']>>[0],
                     ) => {
+                      if (
+                        event.event === 'phase-end' &&
+                        typeof event.phaseName === 'string' &&
+                        event.phaseName.length > 0 &&
+                        typeof event.durationMs === 'number' &&
+                        Number.isFinite(event.durationMs) &&
+                        event.durationMs >= 0 &&
+                        phases.length < 128
+                      ) {
+                        phases.push({ name: event.phaseName, durationMs: event.durationMs });
+                      }
                       if (event.event === 'parse-error-files') {
                         parseErrorCount += event.parseErrorCount ?? 0;
                         for (const filePath of event.parseErrorFiles ?? []) {
@@ -1005,6 +1021,8 @@ async function runWorkspaceAnalysis(
             },
             dependencies.analyzeRuntime,
           );
+    const pipelineMs = performance.now() - pipelineStart;
+    const storageStart = performance.now();
     await initLbug(overlayDbPath, { maxDBSize: 2 ** 32 });
     await loadGraphToLbug(
       pipelineResult.graph,
@@ -1015,11 +1033,12 @@ async function runWorkspaceAnalysis(
       },
     );
     const stats = await getLbugStats();
+    const storageLoadMs = performance.now() - storageStart;
     let ftsIndexes: string[] | undefined;
     let ftsDurationMs: number | undefined;
     if (workspaceGraph) {
       // Pool readers are read-only and cannot create indexes, so build them before publishing.
-      const ftsStart = Date.now();
+      const ftsStart = performance.now();
       const counts = countGraphNodesByLabel(pipelineResult.graph);
       ftsIndexes = [];
       for (const { table, indexName, properties } of FTS_INDEXES) {
@@ -1040,12 +1059,21 @@ async function runWorkspaceAnalysis(
           break;
         }
       }
-      ftsDurationMs = Date.now() - ftsStart;
+      ftsDurationMs = performance.now() - ftsStart;
     }
     await closeLbugForPath(overlayDbPath);
     if (workspaceGraph) {
       overlayBase.ftsIndexes = ftsIndexes;
       overlayBase.ftsDurationMs = ftsDurationMs;
+      Object.assign(overlayBase, {
+        buildTimings: {
+          captureAndInventoryMs,
+          pipelineMs,
+          storageLoadMs,
+          ftsMs: ftsDurationMs,
+          phases,
+        },
+      });
       // A truncated path list cannot say which files failed, so no path may be called authoritative.
       const parseErrorListTruncated = parseErrorCount > parseErrorFiles.size;
       overlayBase.coverage =
@@ -1056,14 +1084,14 @@ async function runWorkspaceAnalysis(
             : 'complete';
       overlayBase.parseErrorCount = parseErrorCount;
       overlayBase.parseErrorFiles = [...parseErrorFiles].sort();
-      const currentBase = await readActiveGenerationMeta(storagePath);
-      if (
-        (getCurrentCommit(repoPath) || null) !== capture!.head ||
-        (currentBase.activeGeneration?.generationId ?? null) !== overlayBase.baseGenerationId ||
-        (currentBase.meta?.lastCommit ?? null) !== overlayBase.baseCommit
-      ) {
-        throw new Error('Workspace graph base or HEAD changed during analysis; rebuild required.');
-      }
+    }
+    const currentBase = await readActiveGenerationMeta(storagePath);
+    if (
+      (getCurrentCommit(repoPath) || null) !== overlayBase.head ||
+      (currentBase.activeGeneration?.generationId ?? null) !== overlayBase.baseGenerationId ||
+      (currentBase.meta?.lastCommit ?? null) !== overlayBase.baseCommit
+    ) {
+      throw new Error('Workspace graph base or HEAD changed during analysis; rebuild required.');
     }
     await fs.writeFile(path.join(generationPath, 'base.json'), JSON.stringify(overlayBase));
     callbacks.onProgress('done', 100, 'Dirty overlay built; active index unchanged');

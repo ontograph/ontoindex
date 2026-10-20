@@ -1,6 +1,16 @@
 import { describe, it, expect, vi } from 'vitest';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { closeLbug, getLbugDbPath } from '../../src/core/lbug/pool-adapter.js';
+import { acquireWorkspaceWatch } from '../../src/mcp/local/local-backend-repo-runtime.js';
+import * as overlay from '../../src/mcp/local/backend-overlay.js';
+vi.mock('../../src/mcp/local/backend-overlay.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/mcp/local/backend-overlay.js')>()),
+  getOverlaySnapshot: vi.fn(),
+}));
+vi.mock('../../src/mcp/local/local-backend-repo-runtime.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/mcp/local/local-backend-repo-runtime.js')>()),
+  acquireWorkspaceWatch: vi.fn(),
+}));
 vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/core/lbug/pool-adapter.js')>()),
   closeLbug: vi.fn().mockResolvedValue(undefined),
@@ -8,6 +18,95 @@ vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => ({
 }));
 
 describe('backend state retention', () => {
+  it('cancels one watcher startup waiter while another survives and releases once', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    const release = vi.fn().mockResolvedValue(undefined);
+    let ready!: (watch: { release: typeof release }) => void;
+    vi.mocked(acquireWorkspaceWatch)
+      .mockClear()
+      .mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            ready = resolve;
+          }),
+      );
+    const probe = vi.mocked(overlay.getOverlaySnapshot).mockResolvedValue({
+      usable: false,
+      reason: 'no dirty files',
+      baseMatches: true,
+      headChanged: false,
+      dirtyPaths: new Set(),
+      parseErrorPaths: new Set(),
+      overlayPaths: new Set(),
+      uncoveredPaths: new Set(),
+      tombstones: new Set(),
+    });
+    const backend = new LocalBackend({ watchWorkspace: true });
+    const repo = { id: 'pending-watch', repoPath: '/repo', storagePath: '/repo/.ontoindex' } as any;
+    const cancelledHandler = vi.fn(async () => 'cancelled');
+    const survivorHandler = vi.fn(async () => 'survived');
+    const controller = new AbortController();
+    try {
+      const cancelled = backend.withOperation(
+        () => backend.withPreparedRepoRead(repo, { needsRelationships: false }, cancelledHandler),
+        { signal: controller.signal },
+      );
+      const survivor = backend.withOperation(() =>
+        backend.withPreparedRepoRead(repo, { needsRelationships: false }, survivorHandler),
+      );
+      await vi.waitFor(() => expect(acquireWorkspaceWatch).toHaveBeenCalledTimes(1));
+      const rejected = expect(cancelled).rejects.toMatchObject({ code: 'workspace_cancelled' });
+      controller.abort();
+      await rejected;
+      expect(probe).not.toHaveBeenCalled();
+      expect(cancelledHandler).not.toHaveBeenCalled();
+      ready({ release });
+      await expect(survivor).resolves.toBe('survived');
+      expect(probe).toHaveBeenCalledTimes(1);
+      expect(survivorHandler).toHaveBeenCalledOnce();
+      expect(cancelledHandler).not.toHaveBeenCalled();
+      await backend.dispose();
+      expect(release).toHaveBeenCalledOnce();
+    } finally {
+      probe.mockReset();
+      vi.mocked(acquireWorkspaceWatch).mockClear();
+      vi.unstubAllEnvs();
+    }
+  });
+  it('retains one watch for concurrent requests and releases it before draining operations', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    const release = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(acquireWorkspaceWatch).mockResolvedValue({ release });
+    const backend = new LocalBackend({ watchWorkspace: true }) as any;
+    const repo = { id: 'watch-backend', repoPath: '/repo', storagePath: '/repo/.ontoindex' };
+    await Promise.all([backend.retainWorkspaceWatch(repo), backend.retainWorkspaceWatch(repo)]);
+    expect(acquireWorkspaceWatch).toHaveBeenCalledTimes(1);
+    let drain!: () => void;
+    const active = backend.withOperation(
+      () =>
+        new Promise<void>((resolve) => {
+          drain = resolve;
+        }),
+    );
+    const disposal = backend.dispose();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(release).toHaveBeenCalledTimes(1);
+    drain();
+    await active;
+    await disposal;
+    vi.mocked(acquireWorkspaceWatch).mockClear();
+    vi.unstubAllEnvs();
+  });
+
+  it('leaves foreground backend reads without a watcher', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    const backend = new LocalBackend() as any;
+    await backend.retainWorkspaceWatch({ id: 'foreground' });
+    expect(acquireWorkspaceWatch).not.toHaveBeenCalled();
+    await backend.dispose();
+    vi.unstubAllEnvs();
+  });
   it('keeps shared-path live aliases open while closing distinct retired paths', () => {
     vi.mocked(closeLbug).mockClear();
     vi.mocked(getLbugDbPath).mockImplementation((id) =>

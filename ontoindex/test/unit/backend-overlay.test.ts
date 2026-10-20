@@ -11,6 +11,7 @@ import { resolveSymbolCandidates } from '../../src/mcp/local/backend-symbol-reso
 import * as backendOverlay from '../../src/mcp/local/backend-overlay.js';
 import {
   getOverlaySnapshot,
+  isAutomaticWorkspaceEnabled,
   evictOverlayState,
   isDirtyPath,
   isAuthoritativePath,
@@ -34,6 +35,33 @@ vi.mock('../../src/core/analyze-delta.js', async (importOriginal) => {
 const git = (cwd: string, ...args: string[]) =>
   expect(spawnSync('git', args, { cwd, encoding: 'utf8' }).status).toBe(0);
 
+describe('automatic workspace activation', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each([
+    [undefined, true],
+    ['1', true],
+    ['0', false],
+    ['', false],
+    ['invalid', false],
+  ] as const)('uses the activation value %s', (flag, expected) => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', flag);
+    expect(isAutomaticWorkspaceEnabled()).toBe(expected);
+  });
+
+  it('reads environment changes without caching activation', () => {
+    for (const [flag, expected] of [
+      [undefined, true],
+      ['0', false],
+      ['1', true],
+      ['', false],
+    ] as const) {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', flag);
+      expect(isAutomaticWorkspaceEnabled()).toBe(expected);
+    }
+  });
+});
+
 describe('backend-overlay snapshot', () => {
   let repo: string;
   let storage: string;
@@ -47,6 +75,10 @@ describe('backend-overlay snapshot', () => {
       JSON.stringify({
         baseGenerationId: null,
         baseCommit: null,
+        head: spawnSync('git', ['rev-parse', 'HEAD'], {
+          cwd: repo,
+          encoding: 'utf8',
+        }).stdout.trim(),
         manifestDigest: 'f'.repeat(64),
         configurationDigest: 'config',
         parserIdentity: 'parser',
@@ -133,6 +165,22 @@ describe('backend-overlay snapshot', () => {
     expect([...(await getOverlaySnapshot(handle())).overlayPaths]).toEqual(['src/a.ts']);
     expect([...(await getOverlaySnapshot(handle())).parseErrorPaths]).toEqual([]);
   });
+
+  it.each([undefined, '', '   '])(
+    'rejects a workspace graph without a nonempty manifest digest (%s)',
+    async (manifestDigest) => {
+      fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
+      publishWorkspaceFixture();
+      const metadataPath = path.join(storage, 'overlay', 'fixture', 'base.json');
+      const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+      metadata.manifestDigest = manifestDigest;
+      fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+      expect(await getOverlaySnapshot(handle())).toMatchObject({
+        usable: false,
+        reason: expect.stringContaining('no manifest identity'),
+      });
+    },
+  );
 
   it('treats a persisted workspace graph as unusable when the flag is off', async () => {
     fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
@@ -237,7 +285,7 @@ describe('backend-overlay snapshot', () => {
     },
   );
 
-  it('validates an unchanged 1300-file inventory without content reads', async () => {
+  it('validates the content of an unchanged 1300-file inventory', async () => {
     for (let n = 0; n < 1298; n++)
       fs.writeFileSync(path.join(repo, `src/scale${n}.ts`), 'export const value = 1;');
     git(repo, 'add', 'src');
@@ -249,7 +297,7 @@ describe('backend-overlay snapshot', () => {
     console.log(`1300-file inventory snapshot: ${(performance.now() - started).toFixed(1)} ms`);
   });
 
-  it('bounds changed input hashes at 200', async () => {
+  it('reuses an inventory with more than 200 touched but unchanged inputs', async () => {
     fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
     for (let n = 0; n < 201; n++)
       fs.writeFileSync(path.join(repo, `src/file${n}.ts`), 'export const value = 1;');
@@ -260,12 +308,12 @@ describe('backend-overlay snapshot', () => {
     for (let n = 0; n < 201; n++)
       fs.utimesSync(path.join(repo, `src/file${n}.ts`), new Date(), new Date(Date.now() + 5000));
     expect(await getOverlaySnapshot(handle())).toMatchObject({
-      usable: false,
-      reason: expect.stringContaining('too many changed inputs'),
+      usable: true,
+      reason: null,
     });
   });
 
-  it('accepts the documented residual when a non-dirty input preserves size, mtime and inode', async () => {
+  it('rejects changed bytes when a non-dirty input preserves size, mtime and inode', async () => {
     fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
     publishWorkspaceFixture();
     git(repo, 'update-index', '--assume-unchanged', 'src/gone.ts');
@@ -273,10 +321,12 @@ describe('backend-overlay snapshot', () => {
     fs.writeFileSync(path.join(repo, 'src/gone.ts'), 'export const g = 2;\n');
     const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
     // Simulate exactly preserved stat identity without platform timestamp rounding.
-    // This deliberately accepted residual avoids reading every unchanged file.
     metadata.inventory['src/gone.ts'][1] = fs.statSync(path.join(repo, 'src/gone.ts')).mtimeMs;
     fs.writeFileSync(metadataPath, JSON.stringify(metadata));
-    expect((await getOverlaySnapshot(handle())).usable).toBe(true);
+    expect(await getOverlaySnapshot(handle())).toMatchObject({
+      usable: false,
+      reason: expect.stringContaining('stale for src/gone.ts'),
+    });
   });
 
   it('rejects a workspace graph when the recorded dirty set differs', async () => {
@@ -290,6 +340,7 @@ describe('backend-overlay snapshot', () => {
   });
 
   it('evicts one repository without dropping another snapshot', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
     const first = getOverlaySnapshot(handle());
     const other = getOverlaySnapshot({ ...handle(), id: 'other' });
     await Promise.all([first, other]);
@@ -316,6 +367,20 @@ describe('backend-overlay snapshot', () => {
     expect(s.usable).toBe(false);
     expect(s.dirtyPaths.size).toBe(0);
   });
+
+  it.each(['src/a.ts', 'tsconfig.json'])(
+    'observes %s edits after a clean probe within the TTL',
+    async (file) => {
+      vi.spyOn(Date, 'now').mockReturnValue(1_000);
+      expect((await getOverlaySnapshot(handle())).dirtyPaths.size).toBe(0);
+      fs.writeFileSync(
+        path.join(repo, file),
+        file.endsWith('.ts') ? 'export const a = 2;\n' : '{}\n',
+      );
+      const changed = await getOverlaySnapshot(handle());
+      expect([...changed.dirtyPaths, ...(changed.configPaths ?? [])]).toContain(file);
+    },
+  );
 
   it('reports dirty paths but is unusable when no overlay was built', async () => {
     fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
@@ -356,7 +421,14 @@ describe('backend-overlay snapshot', () => {
     publishFixture();
     fs.writeFileSync(
       path.join(storage, 'overlay', 'fixture', 'base.json'),
-      JSON.stringify({ baseGenerationId: null, baseCommit: null }),
+      JSON.stringify({
+        head: spawnSync('git', ['rev-parse', 'HEAD'], {
+          cwd: repo,
+          encoding: 'utf8',
+        }).stdout.trim(),
+        baseGenerationId: null,
+        baseCommit: null,
+      }),
     );
     expect(await getOverlaySnapshot(handle())).toMatchObject({
       usable: false,
@@ -382,6 +454,45 @@ describe('backend-overlay snapshot', () => {
       reason: expect.stringContaining('stale for src/a.ts'),
     });
   });
+
+  it.each(['changed bytes', 'new dirty file'] as const)(
+    'shares a fresh pending probe after a usable result and revalidates %s after settlement',
+    async (change) => {
+      vi.spyOn(Date, 'now').mockReturnValue(1_000);
+      fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
+      publishWorkspaceFixture();
+      const plan = await planDirtyOverlay(repo);
+      expect((await getOverlaySnapshot(handle())).usable).toBe(true);
+      vi.mocked(planDirtyOverlay).mockClear();
+      vi.mocked(workspaceConfigurationIdentity).mockClear();
+      let finish!: (planned: typeof plan) => void;
+      vi.mocked(planDirtyOverlay).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+
+      const calls = Array.from({ length: 10 }, () => getOverlaySnapshot(handle()));
+      expect(planDirtyOverlay).toHaveBeenCalledExactlyOnceWith(repo);
+      expect(calls.every((call) => call === calls[0])).toBe(true);
+      finish(plan);
+      const snapshots = await Promise.all(calls);
+      expect(snapshots.every((snapshot) => snapshot === snapshots[0])).toBe(true);
+      expect(snapshots[0].usable).toBe(true);
+      expect(workspaceConfigurationIdentity).toHaveBeenCalledTimes(1);
+
+      const changedPath = change === 'changed bytes' ? 'src/a.ts' : 'src/b.ts';
+      fs.writeFileSync(path.join(repo, changedPath), 'export const changed = 3;\n');
+      expect(await getOverlaySnapshot(handle())).toMatchObject({
+        usable: false,
+        reason: expect.stringContaining(
+          change === 'changed bytes' ? 'stale for src/a.ts' : 'dirty paths or tombstones differ',
+        ),
+      });
+      expect(planDirtyOverlay).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it.each(['configurationDigest', 'parserIdentity'] as const)(
     'rejects changed %s within the TTL',
@@ -586,17 +697,19 @@ describe('backend-overlay configuration-only dirtiness', () => {
     vi.unstubAllEnvs();
   });
 
-  it('is a dirty tree for the working-tree route, with source dirtiness still empty', async () => {
-    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
-    const snapshot = await getOverlaySnapshot(repo);
-    expect(snapshot.configPaths).toEqual(new Set(['tsconfig.json']));
-    expect(snapshot.dirtyPaths.size).toBe(0);
-    expect(snapshot.reason).not.toBe('no dirty files');
-  });
+  it.each([undefined, '1'])(
+    'routes configuration-only dirtiness with activation %s',
+    async (flag) => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', flag);
+      const snapshot = await getOverlaySnapshot(repo);
+      expect(snapshot.configPaths).toEqual(new Set(['tsconfig.json']));
+      expect(snapshot.dirtyPaths.size).toBe(0);
+      expect(snapshot.reason).not.toBe('no dirty files');
+    },
+  );
 
-  it.each(['0', undefined])('is invisible when the flag is %s', async (flag) => {
-    if (flag === undefined) vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '');
-    else vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', flag);
+  it.each(['0', '', 'invalid'])('is invisible when the flag is %s', async (flag) => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', flag);
     const snapshot = await getOverlaySnapshot(repo);
     expect(snapshot.reason).toBe('no dirty files');
     expect(snapshot.configPaths).toBeUndefined();
@@ -615,6 +728,7 @@ describe('backend-overlay snapshot single-flight', () => {
   };
 
   beforeEach(() => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
     resetOverlaySnapshotCache();
     vi.mocked(planDirtyOverlay).mockReset();
   });
@@ -622,6 +736,26 @@ describe('backend-overlay snapshot single-flight', () => {
     resetOverlaySnapshotCache();
     vi.mocked(planDirtyOverlay).mockReset();
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it('shares a fresh pending probe after a settled clean automatic-workspace result', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    vi.mocked(planDirtyOverlay).mockResolvedValueOnce(cleanPlan);
+    await getOverlaySnapshot(repo);
+    let finish!: (plan: typeof cleanPlan) => void;
+    vi.mocked(planDirtyOverlay).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const calls = Array.from({ length: 10 }, () => getOverlaySnapshot(repo));
+    expect(planDirtyOverlay).toHaveBeenCalledTimes(2);
+    expect(calls.every((call) => call === calls[0])).toBe(true);
+    finish(cleanPlan);
+    await Promise.all(calls);
   });
 
   it('shares one pending git probe across ten concurrent calls and caches success', async () => {
@@ -774,6 +908,34 @@ describe('backend-overlay real pool lifecycle', () => {
     });
     await expect(queryOverlay(repo, cypher)).resolves.toEqual([{ name: 'generationB' }]);
   });
+
+  it.each(['workspace-graph', 'symbols'] as const)(
+    'pins the committed pool alias only for automatic %s snapshots',
+    async (capability) => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+      await buildOverlay('selected');
+      const pin = vi.spyOn(pool, 'withPinnedGeneration');
+      try {
+        await withPinnedOverlay(repo, { ...snapshot('selected'), capability }, async () => {
+          if (capability === 'workspace-graph') {
+            await expect(pool.executeQuery(repo.id, cypher)).resolves.toEqual([
+              { name: 'selected' },
+            ]);
+          }
+          await expect(queryOverlay(repo, cypher)).resolves.toEqual([{ name: 'selected' }]);
+        });
+        const ids = pin.mock.calls.map(([id]) => id);
+        expect(ids).toEqual(
+          capability === 'workspace-graph'
+            ? [repo.id, overlayRepoId(repo.id)]
+            : [overlayRepoId(repo.id)],
+        );
+      } finally {
+        await pool.closeLbug(repo.id);
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   it('serves nested snapshot reads from the pinned request without re-planning', async () => {
     vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');

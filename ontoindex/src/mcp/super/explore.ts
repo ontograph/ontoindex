@@ -254,7 +254,7 @@ async function fetchCluster(
     const rows = await executeParameterized(
       repoId,
       `MATCH (n {id: $nodeId})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-       RETURN c.heuristicLabel AS name, c.role AS role
+       RETURN c.heuristicLabel AS name
        LIMIT 1`,
       { nodeId },
     );
@@ -262,7 +262,7 @@ async function fetchCluster(
     const row = rows[0] as QueryRow;
     return {
       name: rowString(row, 'name', 0),
-      role: rowString(row, 'role', 1),
+      role: '',
     };
   } catch {
     return null;
@@ -274,8 +274,8 @@ async function fetchCoChangedFiles(repoId: string, filePath: string): Promise<st
     const rows = await executeParameterized(
       repoId,
       `MATCH (f:File {filePath: $path})-[r:CodeRelation {type: 'CO_CHANGED_WITH'}]-(other:File)
-       RETURN other.filePath AS otherPath, r.count AS cnt
-       ORDER BY r.count DESC
+       RETURN other.filePath AS otherPath, r.confidence AS cnt
+       ORDER BY r.confidence DESC
        LIMIT 5`,
       { path: filePath },
     );

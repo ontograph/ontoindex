@@ -13,11 +13,37 @@ if (!repoPath) {
 
 startParentWatchdog(process.ppid);
 
-runFullAnalysis(
-  repoPath,
-  { workspaceGraph: true, skipNativeClose: true },
-  { onProgress() {} },
-).then(
+let options: Parameters<typeof runFullAnalysis>[1] = {
+  workspaceGraph: true,
+  skipNativeClose: true,
+};
+if (process.argv[3] !== undefined) {
+  try {
+    const paths: unknown = JSON.parse(process.argv[4] ?? 'null');
+    if (
+      process.argv[3] !== '--symbols' ||
+      process.argv.length !== 5 ||
+      !Array.isArray(paths) ||
+      paths.length > 50 ||
+      paths.some(
+        (item) =>
+          typeof item !== 'string' ||
+          !item ||
+          item.includes('\\') ||
+          item.startsWith('/') ||
+          item.split('/').some((part) => part === '..' || part === '.'),
+      )
+    ) {
+      throw new Error('invalid bounded symbols paths');
+    }
+    options = { dirtyOverlay: true, overlayPaths: paths, skipNativeClose: true };
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(2);
+  }
+}
+
+runFullAnalysis(repoPath, options, { onProgress() {} }).then(
   () => process.exit(0),
   (error: unknown) => {
     console.error(error instanceof Error ? error.message : String(error));

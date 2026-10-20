@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { pool, overlay } = vi.hoisted(() => ({
   pool: { executeParameterized: vi.fn() },
@@ -26,7 +26,11 @@ const { pool, overlay } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/core/lbug/pool-adapter.js', () => pool);
-vi.mock('../../src/mcp/local/backend-overlay.js', () => overlay);
+vi.mock('../../src/mcp/local/backend-overlay.js', async (importOriginal) => {
+  const { isAutomaticWorkspaceEnabled } =
+    await importOriginal<typeof import('../../src/mcp/local/backend-overlay.js')>();
+  return { ...overlay, isAutomaticWorkspaceEnabled };
+});
 
 import { resolveSymbolCandidates } from '../../src/mcp/local/backend-symbol-resolution.js';
 import type { OverlaySnapshot } from '../../src/mcp/local/backend-overlay.js';
@@ -61,7 +65,9 @@ function row(id: string, filePath: string, name = 'lookup') {
 }
 
 describe('symbol resolution with a dirty overlay', () => {
+  afterEach(() => vi.unstubAllEnvs());
   beforeEach(() => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
     vi.clearAllMocks();
     pool.executeParameterized.mockResolvedValue([]);
     overlay.getOverlaySnapshot.mockResolvedValue(usable);
@@ -231,6 +237,7 @@ describe('symbol resolution with a dirty overlay', () => {
   it.each([{ name: 'lookup' }, { uid: 'workspace-id' }])(
     'uses the complete workspace graph for %o and drops all base rows',
     async (query) => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
       const snapshot: OverlaySnapshot = {
         ...usable,
         reason: null,
@@ -250,10 +257,12 @@ describe('symbol resolution with a dirty overlay', () => {
         },
       });
       if (result.kind === 'ok') expect(result.snapshot).toBe(snapshot);
+      expect(pool.executeParameterized).not.toHaveBeenCalled();
     },
   );
 
   it('prefers a new workspace Class over its Constructor using the workspace graph', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
     const snapshot: OverlaySnapshot = {
       ...usable,
       reason: null,
@@ -294,7 +303,27 @@ describe('symbol resolution with a dirty overlay', () => {
     ).resolves.toEqual({ kind: 'not_found', warning: 'Deleted source path(s): src/deleted.ts' });
   });
 
+  it('excludes tombstones from the automatic workspace graph without querying base', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    const snapshot: OverlaySnapshot = {
+      ...usable,
+      reason: null,
+      parseErrorPaths: new Set(),
+      capability: 'workspace-graph',
+      tombstones: new Set(['src/deleted.ts']),
+    };
+    pool.executeParameterized.mockResolvedValue([row('deleted-id', 'src/deleted.ts')]);
+    overlay.queryOverlay.mockResolvedValue([row('deleted-id', 'src/deleted.ts')]);
+
+    await expect(
+      resolveSymbolCandidates(repo, { name: 'lookup' }, {}, { snapshot }),
+    ).resolves.toEqual({ kind: 'not_found' });
+    expect(pool.executeParameterized).not.toHaveBeenCalled();
+    expect(overlay.queryOverlay).toHaveBeenCalled();
+  });
+
   it('traverses workspace callers of an unchanged symbol through the pinned graph', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
     const { runImpact } = await import('../../src/mcp/local/backend-impact.js');
     const snapshot: OverlaySnapshot = {
       ...usable,
@@ -338,10 +367,11 @@ describe('symbol resolution with a dirty overlay', () => {
     expect(overlay.queryOverlay.mock.calls.every((call) => call[3] === snapshot.generation)).toBe(
       true,
     );
-    expect(pool.executeParameterized).toHaveBeenCalledTimes(1);
+    expect(pool.executeParameterized).not.toHaveBeenCalled();
   });
 
   it('refuses authoritative impact when a workspace target failed parsing', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
     const { runImpact } = await import('../../src/mcp/local/backend-impact.js');
     overlay.getOverlaySnapshot.mockResolvedValue({
       ...usable,

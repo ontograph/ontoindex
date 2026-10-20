@@ -180,8 +180,10 @@ function normalizeKind(raw: string | undefined): ExplainModuleReport['publicAPI'
  * `startLine` for a `/** ... *\/` block or a `//` comment.
  */
 function extractLeadingComment(sourceLines: string[], startLine: number): string | undefined {
+  if (!Number.isInteger(startLine) || startLine <= 1 || startLine > sourceLines.length) {
+    return undefined;
+  }
   const idx = startLine - 1; // convert to 0-based
-  if (idx <= 0) return undefined;
 
   const candidates: string[] = [];
   for (let i = idx - 1; i >= Math.max(0, idx - 3); i--) {
@@ -294,7 +296,7 @@ export async function gnExplainModule(
   // ---- 1. Resolve the File node ------------------------------------------
   const fileRows = await executeParameterized(
     repoId,
-    'MATCH (f:File {filePath: $path}) RETURN f LIMIT 1',
+    'MATCH (f:File {filePath: $path}) RETURN f.filePath AS filePath LIMIT 1',
     {
       path: params.filePath,
     },
@@ -397,13 +399,29 @@ export async function gnExplainModule(
   // ---- 5. Co-changed files -----------------------------------------------
   const coChangedFiles: ExplainModuleReport['coChangedFiles'] = [];
   if (params.includeCoChange !== false) {
-    const coRows = await executeParameterized(
+    const outgoingRows = await executeParameterized(
       repoId,
-      `MATCH (f:File {filePath: $path})-[r:CodeRelation {type: 'CO_CHANGED_WITH'}]-(other:File)
+      `MATCH (f:File {filePath: $path})-[r:CodeRelation {type: 'CO_CHANGED_WITH'}]->(other:File)
        RETURN other.filePath AS path, r.confidence AS coChangeCount
        ORDER BY r.confidence DESC LIMIT 10`,
       { path: params.filePath },
     );
+    const incomingRows = await executeParameterized(
+      repoId,
+      `MATCH (f:File {filePath: $path})<-[r:CodeRelation {type: 'CO_CHANGED_WITH'}]-(other:File)
+       RETURN other.filePath AS path, r.confidence AS coChangeCount
+       ORDER BY r.confidence DESC LIMIT 10`,
+      { path: params.filePath },
+    );
+    const coRows = [...outgoingRows, ...incomingRows]
+      .sort((a, b) => {
+        const aCount = rowValue(toQueryRow(a), 'coChangeCount', 1);
+        const bCount = rowValue(toQueryRow(b), 'coChangeCount', 1);
+        if (aCount == null) return bCount == null ? 0 : -1;
+        if (bCount == null) return 1;
+        return (bCount as number) - (aCount as number);
+      })
+      .slice(0, 10);
     for (const row of coRows) {
       const queryRow = toQueryRow(row);
       coChangedFiles.push({

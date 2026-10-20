@@ -131,6 +131,38 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('gn_explore', () => {
+  it('preserves cluster and co-change enrichment with supported graph properties', async () => {
+    mockBackendQuery.mockResolvedValue(makeDefaultQueryResult(1));
+    mockExecuteParameterized.mockImplementation(async (_repoId: string, cypher: string) => {
+      if (/\bc\.role\b|\br\.count\b/.test(cypher)) {
+        throw new Error('Property is absent from the graph schema');
+      }
+      if (cypher.includes("type: 'MEMBER_OF'")) return [{ name: 'Search' }];
+      if (cypher.includes("type: 'CO_CHANGED_WITH'")) {
+        if (
+          !cypher.includes('r.confidence AS cnt') ||
+          !cypher.includes('ORDER BY r.confidence DESC')
+        ) {
+          throw new Error('Co-change ranking must use stored confidence');
+        }
+        return [{ otherPath: 'src/related.ts', cnt: 0.8 }];
+      }
+      if (cypher.includes('count(f) AS cnt')) return [{ cnt: 2 }];
+      if (cypher.includes('f.filePath AS fp')) return [{ fp: 'src/mod0.ts' }];
+      return [];
+    });
+
+    const report = await gnExplore('test-repo', { query: 'search flow' });
+
+    expect(report.topSymbols[0]).toMatchObject({
+      cluster: 'Search',
+      coChangedFiles: ['src/related.ts'],
+    });
+    expect(report.clusters).toEqual([
+      { name: 'Search', role: '', fileCount: 2, keyFiles: ['src/mod0.ts'] },
+    ]);
+  });
+
   it('initializes the active generation database instead of a stale root alias', async () => {
     const generationPath = '/tmp/test-repo/.ontoindex/generations/generation-2';
     mockResolveActiveIndexGeneration.mockResolvedValue({

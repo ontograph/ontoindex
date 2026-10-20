@@ -190,6 +190,7 @@ describe('disposable dirty overlay build', () => {
       ).toEqual({
         baseGenerationId: generation.generationId,
         baseCommit: null,
+        head: null,
         manifestDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
         configurationDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
         parserIdentity: expect.any(String),

@@ -1,3 +1,4 @@
+import { isAutomaticWorkspaceEnabled } from './local/backend-overlay.js';
 /**
  * MCP Server (Multi-Repo)
  *
@@ -51,6 +52,7 @@ import {
   boundMcpErrorText,
   MCP_RESPONSE_MAX_BYTES,
   pageMcpResponse,
+  validateResponseBudget,
 } from './shared/response-pages.js';
 
 const MAX_PROMPT_ARGUMENT_BYTES = 4096;
@@ -97,6 +99,17 @@ const GRAPH_BACKED_SUPER_TOOLS = new Set<SuperTool>([
   'gn_docs',
 ]);
 
+const WORKSPACE_READ_SUPER_TOOLS = new Set<SuperTool>([
+  'gn_explore',
+  'gn_explain_module',
+  'gn_find_related',
+  'gn_graph_walk',
+  'gn_safe_edit_check',
+  'gn_can_delete',
+  'gn_propose_location',
+  'gn_docs',
+]);
+
 interface StackLike {
   stack?: unknown;
 }
@@ -129,11 +142,31 @@ function readRepoIdentity(value: unknown): RepoIdentity | null {
 
 function formatToolCallErrorMessage(error: unknown, repo?: RepoIdentity | null): string {
   const message = error instanceof Error ? error.message : String(error);
+  const candidate =
+    error !== null && typeof error === 'object' ? (error as Record<string, unknown>) : undefined;
+  const code =
+    typeof candidate?.code === 'string' &&
+    [
+      'workspace_busy',
+      'workspace_build_failed',
+      'workspace_too_large',
+      'workspace_timeout',
+      'workspace_cancelled',
+    ].includes(candidate.code)
+      ? candidate.code
+      : undefined;
   return boundMcpErrorText(
     (boundedMessage) =>
-      repo
+      repo || code
         ? JSON.stringify(
-            { error: boundedMessage, repoLabel: repo.repoLabel, repoPath: repo.repoPath },
+            {
+              error: boundedMessage,
+              ...(repo ? { repoLabel: repo.repoLabel, repoPath: repo.repoPath } : {}),
+              ...(code ? { code } : {}),
+              ...(code && typeof candidate?.retryable === 'boolean'
+                ? { retryable: candidate.retryable }
+                : {}),
+            },
             null,
             2,
           )
@@ -357,10 +390,15 @@ export function createMCPServer(
   const activeRequests = new Set<Promise<unknown>>();
   let closing = false;
   let closePromise: Promise<void> | undefined;
-  function trackRequest<T>(operation: () => Promise<T>): Promise<T> {
+  function trackRequest<T>(
+    operation: () => Promise<T>,
+    options?: { signal?: AbortSignal },
+  ): Promise<T> {
     if (closing) return Promise.reject(new McpError(ErrorCode.InternalError, 'Server is closing.'));
     const pending = Promise.resolve().then(() =>
-      typeof backend.withOperation === 'function' ? backend.withOperation(operation) : operation(),
+      typeof backend.withOperation === 'function'
+        ? backend.withOperation(operation, options)
+        : operation(),
     );
     activeRequests.add(pending);
     void pending.then(
@@ -518,94 +556,115 @@ export function createMCPServer(
     'manage',
     'docs',
   ]);
-  server.setRequestHandler(CallToolRequestSchema, (request) =>
-    trackRequest(async () => {
-      const { name, arguments: args } = request.params;
-      const typedArgs = (args ?? {}) as Record<string, unknown>;
-      let repoIdentity: RepoIdentity | null = null;
+  server.setRequestHandler(CallToolRequestSchema, (request, extra) =>
+    trackRequest(
+      async () => {
+        const { name, arguments: args } = request.params;
+        const typedArgs = (args ?? {}) as Record<string, unknown>;
+        let repoIdentity: RepoIdentity | null = null;
 
-      try {
-        const oversized = findOversizedArgument(typedArgs);
-        if (oversized) throw new Error(`Invalid arguments for ${name}: ${oversized}`);
-        if (options.transport === 'http' && name === 'gn_quality_mode') {
-          throw new Error(
-            'gn_quality_mode is unavailable over HTTP because it changes process-wide configuration.',
-          );
-        }
-        const responseCursor =
-          typeof typedArgs.response_cursor === 'string' ? typedArgs.response_cursor : undefined;
-        if (responseCursor) {
+        try {
+          const oversized = findOversizedArgument(typedArgs);
+          if (oversized) throw new Error(`Invalid arguments for ${name}: ${oversized}`);
+          const responseBudgetBytes = validateResponseBudget(typedArgs.response_budget_bytes);
+          if (options.transport === 'http' && name === 'gn_quality_mode') {
+            throw new Error(
+              'gn_quality_mode is unavailable over HTTP because it changes process-wide configuration.',
+            );
+          }
+          const responseCursor =
+            typeof typedArgs.response_cursor === 'string' ? typedArgs.response_cursor : undefined;
+          if (responseCursor) {
+            const page = await pageMcpResponse({
+              tool: name,
+              args: typedArgs,
+              cursor: responseCursor,
+              responseBudgetBytes,
+            });
+            return { content: [{ type: 'text', text: page.text }] };
+          }
+
+          let result: unknown;
+          if (!options.full && SUPER_NAMES.has(name as SuperTool)) {
+            if (isRepoOptionalSuperToolName(name)) {
+              result = await dispatchLazySuper(name as SuperTool, typedArgs, '');
+            } else {
+              const repo = await backend.resolveRepo(typedArgs.repo as string | undefined);
+              repoIdentity = {
+                repoLabel: repo.name ?? repo.id,
+                repoPath: repo.repoPath,
+              };
+              if (GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool)) {
+                await backend.ensureRepoInitialized(repo.id);
+              }
+              const preparedRead =
+                WORKSPACE_READ_SUPER_TOOLS.has(name as SuperTool) &&
+                typeof backend.withPreparedRepoRead === 'function';
+              const preparedAutoRead = preparedRead && isAutomaticWorkspaceEnabled();
+              const operation = () =>
+                dispatchLazySuper(
+                  name as SuperTool,
+                  typedArgs,
+                  repo.id,
+                  name === 'gn_safe_refactor'
+                    ? {
+                        repoPath: repo.repoPath,
+                        callTool: backend.callTool.bind(backend),
+                      }
+                    : undefined,
+                  name === 'gn_diagnose'
+                    ? { repoPath: repo.repoPath, projectCwd: options.projectCwd ?? null }
+                    : name === 'gn_audit_logic'
+                      ? { repoPath: repo.repoPath }
+                      : undefined,
+                );
+              const superResult = preparedRead
+                ? await backend.withPreparedRepoRead(
+                    repo,
+                    { needsRelationships: true, wantsWorkspaceGraph: true },
+                    operation,
+                  )
+                : await operation();
+              result = attachRepoScopeIdentity(
+                GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool) && !preparedAutoRead
+                  ? ((await backend.withCommittedGraphNotice?.(superResult, repo)) ?? superResult)
+                  : superResult,
+                repo,
+              );
+            }
+          } else if (!options.full && FACADE_NAMES.has(name)) {
+            const action = typedArgs.action as string;
+            if (!action) throw new Error(`Tool "${name}" requires an "action" parameter.`);
+            result = await dispatchFacade(name as FacadeTool, action, typedArgs, backend);
+          } else {
+            result = await backend.callTool(name, typedArgs);
+          }
+          const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+          const hint = responseBudgetBytes === undefined ? getNextStepHint(name, typedArgs) : '';
           const page = await pageMcpResponse({
             tool: name,
             args: typedArgs,
-            cursor: responseCursor,
+            text: resultText + hint,
+            identityText: resultText,
+            responseBudgetBytes,
+            isError: isMarkedInvocationError(result),
           });
-          return { content: [{ type: 'text', text: page.text }] };
+          return {
+            content: [{ type: 'text', text: page.text }],
+            ...(isMarkedInvocationError(result) ? { isError: true } : {}),
+          };
+        } catch (error) {
+          const scopedRepoIdentity = repoIdentity ?? readRepoIdentity(error);
+          return {
+            content: [
+              { type: 'text', text: formatToolCallErrorMessage(error, scopedRepoIdentity) },
+            ],
+            isError: true,
+          };
         }
-
-        let result: unknown;
-        if (!options.full && SUPER_NAMES.has(name as SuperTool)) {
-          if (isRepoOptionalSuperToolName(name)) {
-            result = await dispatchLazySuper(name as SuperTool, typedArgs, '');
-          } else {
-            const repo = await backend.resolveRepo(typedArgs.repo as string | undefined);
-            repoIdentity = {
-              repoLabel: repo.name ?? repo.id,
-              repoPath: repo.repoPath,
-            };
-            if (GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool)) {
-              await backend.ensureRepoInitialized(repo.id);
-            }
-            const superResult = await dispatchLazySuper(
-              name as SuperTool,
-              typedArgs,
-              repo.id,
-              name === 'gn_safe_refactor'
-                ? {
-                    repoPath: repo.repoPath,
-                    callTool: backend.callTool.bind(backend),
-                  }
-                : undefined,
-              name === 'gn_diagnose'
-                ? { repoPath: repo.repoPath, projectCwd: options.projectCwd ?? null }
-                : name === 'gn_audit_logic'
-                  ? { repoPath: repo.repoPath }
-                  : undefined,
-            );
-            result = attachRepoScopeIdentity(
-              GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool)
-                ? ((await backend.withCommittedGraphNotice?.(superResult, repo)) ?? superResult)
-                : superResult,
-              repo,
-            );
-          }
-        } else if (!options.full && FACADE_NAMES.has(name)) {
-          const action = typedArgs.action as string;
-          if (!action) throw new Error(`Tool "${name}" requires an "action" parameter.`);
-          result = await dispatchFacade(name as FacadeTool, action, typedArgs, backend);
-        } else {
-          result = await backend.callTool(name, typedArgs);
-        }
-        const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-        const hint = getNextStepHint(name, typedArgs);
-        const page = await pageMcpResponse({
-          tool: name,
-          args: typedArgs,
-          text: resultText + hint,
-          identityText: resultText,
-        });
-        return {
-          content: [{ type: 'text', text: page.text }],
-          ...(isMarkedInvocationError(result) ? { isError: true } : {}),
-        };
-      } catch (error) {
-        const scopedRepoIdentity = repoIdentity ?? readRepoIdentity(error);
-        return {
-          content: [{ type: 'text', text: formatToolCallErrorMessage(error, scopedRepoIdentity) }],
-          isError: true,
-        };
-      }
-    }),
+      },
+      { signal: extra?.signal },
+    ),
   );
 
   // Handle list prompts request
@@ -731,6 +790,11 @@ function withResponseCursor(schema: any): any {
         description:
           'Opaque continuation cursor returned by a truncated response. Repeat the same tool request with this value to read the next immutable UTF-8 JSON-text page.',
       },
+      response_budget_bytes: {
+        type: 'integer',
+        description:
+          'Optional positive safe-integer logical response budget in serialized MCP bytes.',
+      },
     },
   };
 }
@@ -768,16 +832,24 @@ export async function startMCPServer(
     // Repeated signals do not cut cleanup short; the grace deadline is the only bound.
     if (shuttingDown) return;
     shuttingDown = true;
-    await withShutdownGrace(
+    const completed = await withShutdownGrace(
       (async () => {
-        try {
-          await server.close();
-        } catch {}
-        try {
-          await backend.dispose();
-        } catch {}
+        // close fences admission synchronously; disposal cancels builders that
+        // admitted readers may be waiting on, so both must drain together.
+        const closing = (async () => server.close())();
+        const disposing = (async () => backend.dispose())();
+        const results = await Promise.allSettled([closing, disposing]);
+        for (const [index, result] of results.entries()) {
+          if (result.status === 'rejected') {
+            shutdownExitCode = 1;
+            process.stderr.write(
+              `[ontoindex:mcp] ${index === 0 ? 'server close' : 'backend disposal'} failed: ${boundMcpErrorText((message) => message, String(result.reason))}\n`,
+            );
+          }
+        }
       })(),
     );
+    if (!completed) shutdownExitCode = 1;
     process.exit(shutdownExitCode);
   };
 

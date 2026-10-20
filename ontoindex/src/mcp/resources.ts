@@ -1,3 +1,4 @@
+import { isAutomaticWorkspaceEnabled } from './local/backend-overlay.js';
 /**
  * MCP Resources (Multi-Repo)
  *
@@ -125,7 +126,7 @@ const RESOURCE_TEMPLATES: ResourceTemplateEntry[] = [
     mimeType: 'text/yaml',
     contract: {
       purpose: 'repo overview and staleness hints',
-      freshness: 'indexed graph snapshot with runtime staleness probe',
+      freshness: 'committed graph snapshot; excludes uncommitted changes; runtime staleness probe',
       evidenceClass: 'graph_evidence',
       responsePolicy: 'compact summary; bounded fields',
       suitability: { audit: 'verified-only', docs: true, diagnostics: true },
@@ -138,7 +139,7 @@ const RESOURCE_TEMPLATES: ResourceTemplateEntry[] = [
     mimeType: 'text/yaml',
     contract: {
       purpose: 'top functional-area inventory',
-      freshness: 'indexed graph snapshot',
+      freshness: 'committed graph snapshot; excludes uncommitted changes',
       evidenceClass: 'graph_evidence',
       responsePolicy: 'top 20 modules; emits truncation hint when clipped',
       suitability: { audit: 'verified-only', docs: true, diagnostics: false },
@@ -151,7 +152,7 @@ const RESOURCE_TEMPLATES: ResourceTemplateEntry[] = [
     mimeType: 'text/yaml',
     contract: {
       purpose: 'execution-flow inventory',
-      freshness: 'indexed graph snapshot',
+      freshness: 'committed graph snapshot; excludes uncommitted changes',
       evidenceClass: 'graph_evidence',
       responsePolicy: 'top 20 processes; emits truncation hint when clipped',
       suitability: { audit: 'verified-only', docs: true, diagnostics: false },
@@ -216,7 +217,7 @@ const RESOURCE_TEMPLATES: ResourceTemplateEntry[] = [
     mimeType: 'text/yaml',
     contract: {
       purpose: 'module detail with representative members',
-      freshness: 'indexed graph snapshot',
+      freshness: 'committed graph snapshot; excludes uncommitted changes',
       evidenceClass: 'graph_evidence',
       responsePolicy: 'member list capped at 20; emits overflow hint',
       suitability: { audit: 'verified-only', docs: true, diagnostics: false },
@@ -229,7 +230,7 @@ const RESOURCE_TEMPLATES: ResourceTemplateEntry[] = [
     mimeType: 'text/yaml',
     contract: {
       purpose: 'process step trace for one execution flow',
-      freshness: 'indexed graph snapshot',
+      freshness: 'committed graph snapshot; excludes uncommitted changes',
       evidenceClass: 'graph_evidence',
       responsePolicy: 'step list bounded by process detail limit; emits truncation marker',
       suitability: { audit: 'verified-only', docs: true, diagnostics: false },
@@ -556,69 +557,64 @@ export async function readResource(uri: string, backend: LocalBackend): Promise<
     }
   }
 
-  let resultPromise: Promise<string>;
-
-  if (parsed.kind === 'repos') {
-    resultPromise = getReposResource(backend);
-  } else if (parsed.kind === 'setup') {
-    resultPromise = getSetupResource(backend);
-  } else if (parsed.kind === 'group') {
-    if (parsed.resourceType === 'contracts') {
-      resultPromise = backend.readGroupContractsResource(parsed.groupName, parsed.contractsFilter);
+  const operation = async (): Promise<string> => {
+    if (parsed.kind === 'repos') {
+      return getReposResource(backend);
+    } else if (parsed.kind === 'setup') {
+      return getSetupResource(backend);
+    } else if (parsed.kind === 'group') {
+      if (parsed.resourceType === 'contracts') {
+        return backend.readGroupContractsResource(parsed.groupName, parsed.contractsFilter);
+      } else {
+        return backend.readGroupStatusResource(parsed.groupName);
+      }
     } else {
-      resultPromise = backend.readGroupStatusResource(parsed.groupName);
+      switch (parsed.resourceType) {
+        case 'context':
+          return getContextResource(backend, repoName);
+        case 'clusters':
+          return getClustersResource(backend, repoName);
+        case 'processes':
+          return getProcessesResource(backend, repoName);
+        case 'schema':
+          return Promise.resolve(getSchemaResource());
+        case 'analysis-packs':
+          return getAnalysisPacksResource(backend, repoName);
+        case 'analysis-suites':
+          return getAnalysisSuitesResource(backend, repoName);
+        case 'analysis-plan':
+          return getAnalysisPlanResource(parsed.param!, backend, repoName);
+        case 'cluster':
+          return getClusterDetailResource(parsed.param!, backend, repoName);
+        case 'process':
+          return getProcessDetailResource(parsed.param!, backend, repoName);
+        case 'memories':
+          return getMemoriesResource(backend, repoName);
+        case 'memory':
+          return getMemoryResource(parsed.param!, backend, repoName);
+        case 'onboarding':
+          return getOnboardingResource(backend, repoName);
+        default:
+          return Promise.reject(unsupportedResource(uri));
+      }
     }
-  } else {
-    switch (parsed.resourceType) {
-      case 'context':
-        resultPromise = getContextResource(backend, repoName);
-        break;
-      case 'clusters':
-        resultPromise = getClustersResource(backend, repoName);
-        break;
-      case 'processes':
-        resultPromise = getProcessesResource(backend, repoName);
-        break;
-      case 'schema':
-        resultPromise = Promise.resolve(getSchemaResource());
-        break;
-      case 'analysis-packs':
-        resultPromise = getAnalysisPacksResource(backend, repoName);
-        break;
-      case 'analysis-suites':
-        resultPromise = getAnalysisSuitesResource(backend, repoName);
-        break;
-      case 'analysis-plan':
-        resultPromise = getAnalysisPlanResource(parsed.param!, backend, repoName);
-        break;
-      case 'cluster':
-        resultPromise = getClusterDetailResource(parsed.param!, backend, repoName);
-        break;
-      case 'process':
-        resultPromise = getProcessDetailResource(parsed.param!, backend, repoName);
-        break;
-      case 'memories':
-        resultPromise = getMemoriesResource(backend, repoName);
-        break;
-      case 'memory':
-        resultPromise = getMemoryResource(parsed.param!, backend, repoName);
-        break;
-      case 'onboarding':
-        resultPromise = getOnboardingResource(backend, repoName);
-        break;
-      default:
-        resultPromise = Promise.reject(unsupportedResource(uri));
-        break;
-    }
-  }
+  };
+  const graphResource =
+    parsed.kind === 'repo' &&
+    ['context', 'clusters', 'processes', 'cluster', 'process'].includes(parsed.resourceType);
+  const preparedRead = graphResource && typeof backend.withPreparedRepoRead === 'function';
+  const preparedAutoRead = preparedRead && isAutomaticWorkspaceEnabled();
 
   try {
-    let result = await resultPromise;
-    // These resources read the committed graph directly; say so when the working tree differs.
-    if (
-      parsed.kind === 'repo' &&
-      ['context', 'clusters', 'processes', 'cluster', 'process'].includes(parsed.resourceType)
-    ) {
+    let result = preparedRead
+      ? await backend.withPreparedRepoRead(
+          await backend.resolveRepo(repoName),
+          { needsRelationships: true, wantsWorkspaceGraph: true },
+          operation,
+        )
+      : await operation();
+    // Legacy reads retain the committed graph notice.
+    if (graphResource && !preparedAutoRead) {
       try {
         const notice = await backend.committedGraphNoticeFor?.(repoName);
         if (notice) result = `${result}\n# ${notice}`;

@@ -91,7 +91,15 @@ export const BUDGETS = Object.freeze({
   cleanGateOverheadMs: (baselineP95) => Math.max(100, 0.25 * baselineP95),
 });
 
-export function evaluateBudgets({ phase, workload, summary, artifactBytes, baselineP95Ms }) {
+export function evaluateBudgets({
+  phase,
+  workload,
+  summary,
+  artifactBytes,
+  baselineP95Ms,
+  cpuSources,
+  cpuEvidence,
+}) {
   const failures = [];
   const check = (budget, limit, observed) => {
     if (!Number.isFinite(observed) || observed < 0 || observed > limit)
@@ -99,6 +107,46 @@ export function evaluateBudgets({ phase, workload, summary, artifactBytes, basel
   };
   if (phase !== 'cold' && phase !== 'warm') throw new Error('Invalid phase');
   if (workload !== 'clean' && workload !== 'dirty') throw new Error('Invalid workload');
+  let validCpuEvidence = false;
+  if (phase === 'warm') {
+    try {
+      validCpuEvidence =
+        Number.isSafeInteger(summary.count) &&
+        summary.count > 0 &&
+        Array.isArray(cpuEvidence) &&
+        cpuEvidence.length === summary.count &&
+        Array.from(cpuEvidence).every((evidence) => {
+          cgroupCpuDelta(evidence?.before, evidence?.after);
+          cgroupCpuDelta(evidence?.after, evidence?.final);
+          const interval = cgroupCpuDelta(evidence?.before, evidence?.final);
+          return (
+            Number.isFinite(evidence?.cpuSeconds) &&
+            evidence.cpuSeconds >= 0 &&
+            Math.abs(evidence.cpuSeconds - interval.cpuSeconds) <= 1e-9
+          );
+        }) &&
+        Number.isFinite(summary.cpuSeconds.p95) &&
+        Math.abs(
+          nearestRankP95(cpuEvidence.map((evidence) => evidence.cpuSeconds)) -
+            summary.cpuSeconds.p95,
+        ) <= 1e-9;
+    } catch {
+      validCpuEvidence = false;
+    }
+  }
+  if (
+    phase === 'warm' &&
+    (!validCpuEvidence ||
+      !Array.isArray(cpuSources) ||
+      summary.count <= 0 ||
+      cpuSources.length !== summary.count ||
+      !Array.from(cpuSources).every((source) => source === 'terminal-interval'))
+  )
+    failures.push({
+      budget: 'warmCpuAccounting',
+      limit: 'terminal-interval accounting for every warm sample',
+      observed: { sampleCount: summary.count, cpuSources: cpuSources ?? null },
+    });
   if (phase === 'warm') check('warmP95Ms', BUDGETS.warmP95Ms, summary.latency.p95);
   if (phase === 'cold' && workload === 'dirty')
     check('dirtyColdP95Ms', BUDGETS.dirtyColdP95Ms, summary.latency.p95);
@@ -161,5 +209,39 @@ export function parseGnuTime(text) {
   )
     throw new Error('Missing or invalid terminal CPU accounting');
   const [userSeconds, systemSeconds] = fields.map(Number);
+  return { userSeconds, systemSeconds, cpuSeconds: userSeconds + systemSeconds };
+}
+
+export function parseCgroupCpuStat(text) {
+  const counters = {};
+  for (const line of text.split(/\r?\n/)) {
+    const [key, value, ...extra] = line.trim().split(/\s+/);
+    if (key !== 'user_usec' && key !== 'system_usec') continue;
+    if (
+      Object.hasOwn(counters, key) ||
+      extra.length ||
+      !/^\d+$/.test(value ?? '') ||
+      !Number.isSafeInteger(Number(value))
+    )
+      throw new Error('Invalid cgroup CPU counter');
+    counters[key] = Number(value);
+  }
+  if (!Object.hasOwn(counters, 'user_usec') || !Object.hasOwn(counters, 'system_usec'))
+    throw new Error('Missing cgroup CPU counter');
+  return { userUsec: counters.user_usec, systemUsec: counters.system_usec };
+}
+
+export function cgroupCpuDelta(before, after) {
+  for (const key of ['userUsec', 'systemUsec']) {
+    if (
+      !Number.isSafeInteger(before?.[key]) ||
+      before[key] < 0 ||
+      !Number.isSafeInteger(after?.[key]) ||
+      after[key] < before[key]
+    )
+      throw new Error('Invalid or regressing cgroup CPU counter');
+  }
+  const userSeconds = (after.userUsec - before.userUsec) / 1_000_000;
+  const systemSeconds = (after.systemUsec - before.systemUsec) / 1_000_000;
   return { userSeconds, systemSeconds, cpuSeconds: userSeconds + systemSeconds };
 }

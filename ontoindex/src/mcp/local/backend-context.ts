@@ -1,5 +1,6 @@
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import {
+  isAutomaticWorkspaceEnabled,
   getOverlaySnapshot,
   isAuthoritativePath,
   queryOverlay,
@@ -13,6 +14,22 @@ const MAX_CONTEXT_PROCESS_ROWS = (() => {
 })();
 const MAX_CONTEXT_RELATIONSHIP_ROWS = 30;
 const MAX_CONTEXT_CONCEPT_ROWS = 10;
+const METHOD_METADATA_KEYS = new Set([
+  'visibility',
+  'isStatic',
+  'isAbstract',
+  'isFinal',
+  'isVirtual',
+  'isOverride',
+  'isAsync',
+  'isPartial',
+  'returnType',
+  'parameterCount',
+  'isVariadic',
+  'requiredParameterCount',
+  'parameterTypes',
+  'annotations',
+]);
 
 interface ContextRepoHandle {
   id: string;
@@ -187,23 +204,19 @@ async function fetchMethodMetadata(
     const metaRows = (await graphQuery(
       `
       MATCH (n {id: $symId})
-      RETURN n.visibility AS visibility, n.isStatic AS isStatic, n.isAbstract AS isAbstract,
-             n.isFinal AS isFinal, n.isVirtual AS isVirtual, n.isOverride AS isOverride,
-             n.isAsync AS isAsync, n.isPartial AS isPartial, n.returnType AS returnType,
-             n.parameterCount AS parameterCount, n.isVariadic AS isVariadic,
-             n.requiredParameterCount AS requiredParameterCount,
-             n.parameterTypes AS parameterTypes, n.annotations AS annotations
+      RETURN n
       LIMIT 1
     `,
       { symId },
     )) as MethodMetadataRow[];
     if (metaRows.length === 0) return { queryFailed: false };
 
-    const row = metaRows[0];
+    const node = rowValue(metaRows[0], 'n', 0);
+    if (!node || typeof node !== 'object') return { queryFailed: false };
     const meta: Record<string, unknown> = {};
-    // Only include defined properties to distinguish "not applicable" from "not enriched"
-    for (const [key, val] of rowEntries(row)) {
-      if (val !== null && val !== undefined) meta[key] = val;
+    // Optional fields vary by node schema; never project them across all labels.
+    for (const [key, val] of rowEntries(node as QueryRow)) {
+      if (METHOD_METADATA_KEYS.has(key) && val !== null && val !== undefined) meta[key] = val;
     }
     return { metadata: Object.keys(meta).length > 0 ? meta : undefined, queryFailed: false };
   } catch {
@@ -235,9 +248,18 @@ export async function context(
   if (overlayRepo) {
     try {
       snapshot = await getOverlaySnapshot(overlayRepo);
-    } catch {
+    } catch (error) {
+      if (isAutomaticWorkspaceEnabled()) throw error;
       /* Resolver retains base fallback. */
     }
+  }
+  if (
+    isAutomaticWorkspaceEnabled() &&
+    snapshot &&
+    !snapshot.usable &&
+    (snapshot.dirtyPaths.size > 0 || (snapshot.configPaths?.size ?? 0) > 0)
+  ) {
+    throw new Error(snapshot.reason ?? 'Automatic workspace snapshot is unavailable');
   }
   const outcome = await resolveSymbolCandidates(
     repo,

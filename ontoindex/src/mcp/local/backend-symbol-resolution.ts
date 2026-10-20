@@ -1,5 +1,6 @@
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import {
+  isAutomaticWorkspaceEnabled,
   getOverlaySnapshot,
   isOverlayReplacedPath,
   queryOverlay,
@@ -197,8 +198,9 @@ async function readOverlayRows(
         repoPath: repo.repoPath,
         storagePath: repo.storagePath,
       }));
-  } catch {
+  } catch (error) {
     // Without a snapshot there is no reliable tombstone evidence to apply.
+    if (isAutomaticWorkspaceEnabled()) throw error;
     return undefined;
   }
   if (!snapshot.usable) return { snapshot, rows: [], overlayAvailable: false };
@@ -284,8 +286,13 @@ export async function resolveSymbolCandidates(
   if (uid) {
     const cypher = `MATCH (n {id: $uid}) RETURN ${selectClause} LIMIT 1`;
     const params = { uid };
-    const rows = await executeParameterized(repo.id, cypher, params);
     const overlay = await readOverlayRows(repo, cypher, params, options.snapshot);
+    const rows =
+      isAutomaticWorkspaceEnabled() &&
+      overlay?.overlayAvailable &&
+      overlay.snapshot.capability === 'workspace-graph'
+        ? []
+        : await executeParameterized(repo.id, cypher, params);
     const filtered = filterBaseRows(rows as QueryRow[], overlay);
     const candidates = filtered.rows.map((row) => parseSymbolRow(row, include_content));
     if (overlay) {
@@ -324,8 +331,13 @@ export async function resolveSymbolCandidates(
   }
 
   const cypher = `MATCH (n) ${whereClause} RETURN ${selectClause} LIMIT 20`;
-  const rows = await executeParameterized(repo.id, cypher, queryParams);
   const overlay = await readOverlayRows(repo, cypher, queryParams, options.snapshot);
+  const rows =
+    isAutomaticWorkspaceEnabled() &&
+    overlay?.overlayAvailable &&
+    overlay.snapshot.capability === 'workspace-graph'
+      ? []
+      : await executeParameterized(repo.id, cypher, queryParams);
   const filtered = filterBaseRows(rows as QueryRow[], overlay);
   const baseRows = filtered.rows;
   const queryRows = [...baseRows, ...(overlay?.rows ?? [])];

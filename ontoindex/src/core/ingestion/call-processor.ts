@@ -1362,6 +1362,8 @@ const resolvePreparedSequentialFile = (
   }
 };
 
+export type CallQueryCache = Map<ReturnType<Parser['getLanguage']>, Map<string, Parser.Query>>;
+
 export const processCalls = async (
   graph: KnowledgeGraph,
   files: SequentialCallInput[],
@@ -1378,6 +1380,7 @@ export const processCalls = async (
   importedRawReturnTypesMap?: ReadonlyMap<string, ReadonlyMap<string, string>>,
   heritageMap?: MaybePromiseHeritageMap,
   bindingAccumulator?: BindingAccumulator,
+  queryCache: CallQueryCache = new Map(),
 ): Promise<ExtractedHeritage[]> => {
   const resolvedHeritageMap = heritageMap ? await heritageMap : undefined;
   const parser = await loadParser();
@@ -1438,7 +1441,16 @@ export const processCalls = async (
     let matches;
     try {
       const lang = parser.getLanguage();
-      const query = new Parser.Query(lang, queryStr);
+      let queries = queryCache.get(lang);
+      if (!queries) {
+        queries = new Map<string, Parser.Query>();
+        queryCache.set(lang, queries);
+      }
+      let query = queries.get(queryStr);
+      if (!query) {
+        query = new Parser.Query(lang, queryStr);
+        queries.set(queryStr, query);
+      }
       matches = query.matches(tree.rootNode);
     } catch (queryError) {
       console.warn(`Query error for ${file.path}:`, queryError);

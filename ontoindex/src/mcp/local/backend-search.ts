@@ -50,6 +50,7 @@ import type {
 } from '../../core/search/typed-query-document.js';
 import { RepoHandle } from './tool-params.js';
 import {
+  isAutomaticWorkspaceEnabled,
   getOverlaySnapshot,
   hasPinnedOverlay,
   isDirtyPath,
@@ -1656,18 +1657,44 @@ export async function query(
   const searchLimit = processLimit * maxSymbolsPerProcess;
   let overlaySnapshot: OverlaySnapshot | undefined;
   let overlayWarning: string | undefined;
+  const automaticWorkspace = isAutomaticWorkspaceEnabled();
   try {
     overlaySnapshot = await getOverlaySnapshot(repo);
   } catch (err) {
+    if (automaticWorkspace) throw err;
     overlayWarning = `Overlay unavailable; using base results: ${err instanceof Error ? err.message : String(err)}`;
   }
-  // HEAD-keyed cached results cannot describe an overlay generation.
-  const bypassStructuredCache = overlaySnapshot?.usable === true || !!overlayWarning;
+  if (
+    automaticWorkspace &&
+    (!overlaySnapshot ||
+      (!overlaySnapshot.usable &&
+        (overlaySnapshot.dirtyPaths.size > 0 || (overlaySnapshot.configPaths?.size ?? 0) > 0)) ||
+      (overlaySnapshot.usable && !overlaySnapshot.generation))
+  ) {
+    throw new Error(overlaySnapshot?.reason ?? 'Workspace snapshot unavailable');
+  }
+  const snapshotIdentity =
+    automaticWorkspace && overlaySnapshot?.usable
+      ? JSON.stringify([
+          overlaySnapshot.generation,
+          overlaySnapshot.capability,
+          overlaySnapshot.coverage,
+        ])
+      : undefined;
+  // Candidate-only cache entries cannot satisfy overlay enrichment requests.
+  const bypassStructuredCache =
+    !!overlayWarning ||
+    (overlaySnapshot?.usable === true &&
+      (!snapshotIdentity ||
+        includeContent ||
+        (params.include_skeleton ?? skeletonDefault) ||
+        params.include_citations === true ||
+        (params.include_lsp_refs ?? process.env.ONTOINDEX_LSP_REFERENCES === '1')));
   // A pinned workspace generation with full-text indexes ranks the whole working tree. The
   // overlay pool id resolves to that pinned generation, so ranking and enrichment read it
   // instead of the committed index. Typed queries keep the dirty-file merge.
   const workspaceLane =
-    process.env.ONTOINDEX_AUTO_WORKSPACE === '1' &&
+    isAutomaticWorkspaceEnabled() &&
     searchInput.mode !== 'typed' &&
     overlaySnapshot?.usable === true &&
     overlaySnapshot.capability === 'workspace-graph' &&
@@ -1715,6 +1742,7 @@ export async function query(
     ],
     indexedHead: repo.lastCommit,
     embeddingModelHash,
+    snapshotIdentity,
     filters: searchInput.mode === 'typed' ? searchInput.document.filters : undefined,
   });
   let cacheStatus: 'hit' | 'miss' | 'stale' | 'expired' | undefined;
@@ -1724,7 +1752,7 @@ export async function query(
     params.retrieval_diagnostics === true ? await buildVectorBackendDiagnostics(repo) : undefined;
 
   if (params.structured_output === true && !bypassStructuredCache) {
-    const cacheLookup = await cache.lookup(cacheKey, repo.lastCommit);
+    const cacheLookup = await cache.lookup(cacheKey, repo.lastCommit, snapshotIdentity);
     cacheStatus = cacheLookup.status;
     cacheAgeMs = cacheLookup.ageMs;
     const cached = cacheLookup.result;
@@ -1915,6 +1943,7 @@ export async function query(
                 ...Object.fromEntries(overlayPaths.map((filePath, i) => [`path${i}`, filePath])),
                 ...Object.fromEntries(terms.map((term, i) => [`term${i}`, term])),
               },
+              overlaySnapshot.generation,
             );
       const overlayRows = overlayRawRows
         .filter((row) => {
@@ -1952,6 +1981,7 @@ export async function query(
       }
       overlayApplied = true;
     } catch (err) {
+      if (automaticWorkspace) throw err;
       typedWarnings.push(
         `Overlay unavailable; using base results: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -2522,6 +2552,7 @@ export async function query(
           freshness: structuredRetrieval.capabilityState.freshness,
         },
         indexedHead: repo.lastCommit,
+        snapshotIdentity,
       });
       cacheEvictedEntries = cacheSet.evicted;
       structuredRetrieval.capabilityState.cacheEvictedEntries = cacheEvictedEntries;

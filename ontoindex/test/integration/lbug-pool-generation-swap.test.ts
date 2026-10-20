@@ -9,6 +9,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import lbug from '@ladybugdb/core';
 import { inject } from 'vitest';
 import {
   initLbug,
@@ -23,6 +24,8 @@ import {
 import {
   createIndexGeneration,
   publishIndexGenerationTransaction,
+  acquireOverlayGenerationPin,
+  pruneOverlayGenerations,
 } from '../../src/storage/repo-manager.js';
 import { resolveTargetContext } from '../../src/mcp/shared/target-context.js';
 
@@ -190,6 +193,15 @@ describe('lbug pool generation swap', () => {
     const publish = async (id: string) => {
       const generation = await createIndexGeneration(storage, id);
       await copyGeneration(path.dirname(template), generation.generationPath);
+      const db = new lbug.Database(generation.lbugPath);
+      const conn = new lbug.Connection(db);
+      try {
+        const result = await conn.query(`CREATE (:File {id: '${id}', name: '${id}'})`);
+        for (const item of Array.isArray(result) ? result : [result]) await item.close();
+      } finally {
+        await conn.close();
+        await db.close();
+      }
       await fs.writeFile(
         generation.metaPath,
         JSON.stringify({
@@ -224,13 +236,13 @@ describe('lbug pool generation swap', () => {
       pinned = getPinnedRepoId(repoId)!;
       expect(getLbugDbPath(pinned)).toBe(await fs.realpath(a.lbugPath));
       expect(await markers()).toHaveLength(1);
-      const before = await executeQuery(repoId, 'MATCH (f:File) RETURN count(f) AS total');
+      const query = 'MATCH (f:File) RETURN f.name AS sentinel';
+      const before = await executeQuery(repoId, query);
+      expect(before).toEqual([{ sentinel: 'pin-a' }]);
       await fs.rm(current);
       await fs.symlink(b.generationPath, current, 'dir');
       await initLbug(repoId, stable);
-      expect(
-        await executeParameterized(repoId, 'MATCH (f:File) RETURN count(f) AS total', {}),
-      ).toEqual(before);
+      expect(await executeParameterized(repoId, query, {})).toEqual(before);
       expect(getLbugDbPath(pinned)).toBe(await fs.realpath(a.lbugPath));
       expect(await markers()).toHaveLength(1);
     });
@@ -238,7 +250,35 @@ describe('lbug pool generation swap', () => {
     expect(getLbugDbPath(pinned)).toBeUndefined();
     expect(await markers()).toHaveLength(0);
     expect(getLbugDbPath(repoId)).toBe(await fs.realpath(b.lbugPath));
-    expect(await executeQuery(repoId, 'MATCH (f:File) RETURN count(f) AS total')).toBeDefined();
+    expect(await executeQuery(repoId, 'MATCH (f:File) RETURN f.name AS sentinel')).toEqual([
+      { sentinel: 'pin-b' },
+    ]);
+  });
+
+  it('retains a pinned overlay generation during pruning and removes it after release', async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-overlay-pin-'));
+    const overlay = path.join(tmpRoot, 'overlay');
+    for (let index = 1; index <= 5; index++) {
+      const dir = path.join(overlay, `${index}-1-abc`);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path.join(dir, 'lbug'), 'artifact');
+      await fs.utimes(dir, index, index);
+    }
+    const oldGeneration = path.join(overlay, '1-1-abc');
+    const pin = await acquireOverlayGenerationPin(oldGeneration);
+    try {
+      await fs.utimes(oldGeneration, 1, 1);
+      await pruneOverlayGenerations(overlay, '5-1-abc');
+      expect(await fs.stat(oldGeneration)).toBeDefined();
+      await expect(fs.stat(path.join(overlay, '2-1-abc'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    } finally {
+      await pin.release();
+    }
+    await fs.utimes(oldGeneration, 1, 1);
+    await pruneOverlayGenerations(overlay, '5-1-abc');
+    await expect(fs.stat(oldGeneration)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it.each([

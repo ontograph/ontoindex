@@ -19,7 +19,12 @@ import {
   type ImpactKernelRawCounts,
 } from '../../core/impact/impact-kernel.js';
 import { resolveSymbolCandidates, toSymbolIdentity } from './backend-symbol-resolution.js';
-import { getOverlaySnapshot, queryOverlay, isAuthoritativePath } from './backend-overlay.js';
+import {
+  isAutomaticWorkspaceEnabled,
+  getOverlaySnapshot,
+  queryOverlay,
+  isAuthoritativePath,
+} from './backend-overlay.js';
 
 interface ImpactRepoHandle {
   id: string;
@@ -300,12 +305,24 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
   let outcome: Awaited<ReturnType<typeof resolveSymbolCandidates>> | undefined;
   let dirtyPaths: ReadonlySet<string> | undefined;
   let tombstones: ReadonlySet<string> | undefined;
+  const automaticWorkspace = isAutomaticWorkspaceEnabled();
   if (repo.repoPath && repo.storagePath) {
     const snapshot = await getOverlaySnapshot({
       id: repo.id,
       repoPath: repo.repoPath,
       storagePath: repo.storagePath,
-    }).catch(() => undefined);
+    }).catch((error) => {
+      if (automaticWorkspace) throw error;
+      return undefined;
+    });
+    if (
+      automaticWorkspace &&
+      snapshot &&
+      !snapshot.usable &&
+      (snapshot.dirtyPaths.size > 0 || (snapshot.configPaths?.size ?? 0) > 0)
+    ) {
+      throw new Error(snapshot.reason ?? 'Automatic workspace snapshot is unavailable');
+    }
     dirtyPaths = snapshot?.dirtyPaths;
     tombstones = snapshot?.tombstones;
     if (snapshot?.usable) {
@@ -319,7 +336,7 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
     }
   }
 
-  if (outcome?.kind !== 'ok' || outcome.symbol.source !== 'overlay') {
+  if (!automaticWorkspace && (outcome?.kind !== 'ok' || outcome.symbol.source !== 'overlay')) {
     const sourceFallback = await resolveSourceOnly(repo, params);
     if (sourceFallback?.kind === 'found') return sourceOnlyImpact(sourceFallback, direction);
     if (sourceFallback?.kind === 'unavailable') {
@@ -436,7 +453,7 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
     result.source = 'workspace-graph';
     result.graphImpactAvailable = true;
   }
-  if (!workspaceSnapshot && repo.repoPath && dirtyPaths?.size) {
+  if (!automaticWorkspace && !workspaceSnapshot && repo.repoPath && dirtyPaths?.size) {
     const candidates = new Set(
       [...dirtyPaths].filter(
         (filePath) =>

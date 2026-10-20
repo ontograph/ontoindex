@@ -429,6 +429,10 @@ describe('gnDiagnose', () => {
     process.env['ONTOINDEX_HTTP_TOKEN'] = 'secret-http-value';
     process.env['ONTOINDEX_EMBEDDING_API_KEY'] = 'secret-embedding-value';
     process.env['ONTOINDEX_API_KEY'] = 'secret-api-value';
+    process.env['ONTOINDEX_TEST_URL'] =
+      'https://synthetic-url-user:synthetic-url-password@example.invalid/api?key=synthetic-url-query#synthetic-url-fragment';
+    process.env['ONTOINDEX_TEST_ENDPOINT'] = 'https://example.invalid/synthetic-endpoint-path';
+    process.env['ONTOINDEX_CUSTOM_VAR'] = 'ordinary-scalar-value';
     process.env['ONTOINDEX_MCP_AUTO_ANALYZE'] = '  ';
     mockGnEnsureFresh.mockResolvedValue(makeFreshReport());
 
@@ -449,7 +453,23 @@ describe('gnDiagnose', () => {
       expect(serialized).not.toContain('secret-http-value');
       expect(serialized).not.toContain('secret-embedding-value');
       expect(serialized).not.toContain('secret-api-value');
+      for (const marker of [
+        'synthetic-url-user',
+        'synthetic-url-password',
+        'synthetic-url-query',
+        'synthetic-url-fragment',
+        'synthetic-endpoint-path',
+      ]) {
+        expect(serialized).not.toContain(marker);
+      }
     }
+    const expectedEnvVars = {
+      ONTOINDEX_TEST_URL: '[REDACTED]',
+      ONTOINDEX_TEST_ENDPOINT: '[REDACTED]',
+      ONTOINDEX_CUSTOM_VAR: 'ordinary-scalar-value',
+    };
+    expect(legacy.envVars).toMatchObject(expectedEnvVars);
+    expect(envelope.results).toMatchObject({ envVars: expectedEnvVars });
     expect(legacy.envVars['ONTOINDEX_HTTP_TOKEN']).toBe('[REDACTED]');
     expect(legacy.envVars['ONTOINDEX_EMBEDDING_API_KEY']).toBe('[REDACTED]');
     expect(legacy.envVars['ONTOINDEX_API_KEY']).toBe('[REDACTED]');
@@ -598,6 +618,84 @@ describe('gnDiagnose', () => {
     // embeddings should be absent (no data)
     expect(report.embeddings).toBeUndefined();
   });
+
+  it.each([true, false])(
+    'omits rejection payloads from diagnostics with legacyResponse=%s',
+    async (legacyResponse) => {
+      const payload =
+        'credential=synthetic-secret\nsource: private source text\n' + 'long-payload'.repeat(1000);
+      for (const rejection of [new Error(payload), payload]) {
+        mockGnEnsureFresh.mockRejectedValue(rejection);
+        mockResolveTargetContext.mockRejectedValue(rejection);
+        mockGetSemanticVectorBackendStatus.mockRejectedValue(rejection);
+        process.env['ONTOINDEX_VECTOR_BACKEND'] = 'zvec';
+
+        const report = await gnDiagnose(REPO_ID, {
+          legacyResponse,
+          checkLsp: false,
+          checkToolContract: false,
+        });
+
+        expect(report.warnings).toEqual(
+          expect.arrayContaining([
+            'gnEnsureFresh failed: freshness probe unavailable',
+            'resolveTargetContext failed: target context unavailable',
+            'zvec backend diagnostics failed: vector backend status unavailable',
+          ]),
+        );
+        const serialized = JSON.stringify(report);
+        for (const marker of ['synthetic-secret', 'private source text', 'long-payload']) {
+          expect(serialized).not.toContain(marker);
+        }
+      }
+    },
+  );
+
+  it.each([true, false])(
+    'omits audit and support rejection payloads with legacyResponse=%s',
+    async (legacyResponse) => {
+      const payload =
+        'credential=synthetic-audit-secret\nprivate audit source\n' + 'x'.repeat(10000);
+      for (const rejection of [new Error(payload), payload]) {
+        mockComputeAuditFreshness.mockRejectedValue(rejection);
+        mockGetLbugRuntimeDiagnostics.mockRejectedValue(rejection);
+        const readFile = vi
+          .spyOn(fs, 'readFile')
+          .mockResolvedValue(
+            JSON.stringify({ sessions: [{ id: 'session-123', targetHead: CURRENT_COMMIT }] }),
+          );
+        try {
+          const report = await gnDiagnose(REPO_ID, {
+            legacyResponse,
+            checkLsp: false,
+            checkToolContract: false,
+          });
+          expect(report.warnings).toEqual(
+            expect.arrayContaining([
+              'computeAuditFreshness failed: audit freshness unavailable',
+              'support diagnostics failed: support status unavailable',
+            ]),
+          );
+          expect(JSON.stringify(report)).not.toContain('synthetic-audit-secret');
+          expect(JSON.stringify(report)).not.toContain('private audit source');
+
+          readFile.mockRejectedValue(rejection);
+          const unreadable = await gnDiagnose(REPO_ID, {
+            legacyResponse,
+            checkLsp: false,
+            checkToolContract: false,
+          });
+          expect(unreadable.warnings).toContain(
+            'failed to load audit projection status: audit projection unavailable',
+          );
+          expect(JSON.stringify(unreadable)).not.toContain('synthetic-audit-secret');
+          expect(JSON.stringify(unreadable)).not.toContain('private audit source');
+        } finally {
+          readFile.mockRestore();
+        }
+      }
+    },
+  );
 
   // ---- Test 14: Embeddings populated count > 0 → no embeddings recommendation
   it('omits embeddings recommendation when embeddings are populated', async () => {
@@ -869,7 +967,7 @@ describe('gnDiagnose', () => {
     expect(report.degradedContext.reasons).not.toContain('mcp-service-target-mismatch');
   });
 
-  it('reports a real mismatch with the effective startup project even when the environment matches', async () => {
+  it('accepts the trusted selected repo when the startup project differs', async () => {
     process.env['ONTOINDEX_MCP_PROJECT_CWD'] = TARGET_REPO_PATH;
     const report = await gnDiagnose(
       'internal-hashed-id',
@@ -886,14 +984,46 @@ describe('gnDiagnose', () => {
         repo: TARGET_REPO_PATH,
       }),
     );
+    expect(report.misconfiguration).toEqual({ status: 'ok' });
+    expect(report.degradedContext.reasons).not.toContain('mcp-service-target-mismatch');
+  });
+
+  it.each(['ambiguous', 'not-found'] as const)(
+    'preserves %s target failures despite a matching trusted path',
+    async (status) => {
+      mockResolveTargetContext.mockResolvedValue({ ...TARGET_CONTEXT, status });
+      const report = await gnDiagnose(
+        REPO_ID,
+        {
+          checkLsp: false,
+          checkEmbeddings: false,
+          checkIndexFreshness: false,
+          checkToolContract: false,
+        },
+        { projectCwd: TARGET_REPO_PATH, repoPath: TARGET_REPO_PATH },
+      );
+      expect(report.misconfiguration).toMatchObject({
+        status: 'fail',
+        reason: 'mcp-service-target-mismatch',
+      });
+    },
+  );
+
+  it('reports a resolved path different from the trusted selected repo', async () => {
+    const report = await gnDiagnose(
+      REPO_ID,
+      {
+        checkLsp: false,
+        checkEmbeddings: false,
+        checkIndexFreshness: false,
+        checkToolContract: false,
+      },
+      { projectCwd: TARGET_REPO_PATH, repoPath: '/tmp/requested-other-project' },
+    );
     expect(report.misconfiguration).toMatchObject({
       status: 'fail',
       reason: 'mcp-service-target-mismatch',
-      projectCwd: '/tmp/service-project',
-      activeRepoPath: TARGET_REPO_PATH,
-      requestedRepo: 'internal-hashed-id',
     });
-    expect(report.degradedContext.reasons).toContain('mcp-service-target-mismatch');
   });
 
   it('skips environment service binding for explicitly unbound HTTP diagnostics', async () => {
@@ -1157,11 +1287,13 @@ describe('gnDiagnose', () => {
       status: 'degraded',
       capabilitiesUsed: expect.arrayContaining(['target-context', 'embeddings-probe']),
       capabilitiesMissing: expect.arrayContaining(['embeddings', 'sidecar']),
-      warnings: expect.arrayContaining([
-        expect.stringContaining('semantic retrieval fell back to lexical/graph ranking'),
-      ]),
       nextTools: expect.arrayContaining(['gn_ensure_fresh', 'gn_quality_mode']),
     });
+    expect(report.warnings).not.toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('semantic retrieval fell back to lexical/graph ranking'),
+      ]),
+    );
     expect((report.results as Record<string, unknown>).embeddings).toMatchObject({
       populated: false,
     });

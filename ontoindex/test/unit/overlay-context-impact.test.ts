@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { pool, overlay, execFileText } = vi.hoisted(() => ({
   pool: { executeParameterized: vi.fn(), executeQuery: vi.fn() },
@@ -59,7 +59,9 @@ function symbol(filePath = 'src/dirty.ts', name = 'lookup') {
 }
 
 describe('overlay context and impact', () => {
+  afterEach(() => vi.unstubAllEnvs());
   beforeEach(() => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
     vi.resetAllMocks();
     overlay.isDirtyPath.mockImplementation((snapshot, filePath) =>
       Boolean(filePath && snapshot.dirtyPaths.has(filePath.replace(/\\/g, '/'))),
@@ -129,6 +131,7 @@ describe('overlay context and impact', () => {
   it.each([false, true])(
     'uses workspace graph relationships (parse error: %s)',
     async (parseError) => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
       const current = symbol();
       overlay.getOverlaySnapshot.mockResolvedValue({
         ...usable,
@@ -158,9 +161,7 @@ describe('overlay context and impact', () => {
         incoming: { calls: [{ uid: 'neighbor' }] },
         outgoing: { calls: [{ uid: 'neighbor' }] },
       });
-      expect(
-        pool.executeParameterized.mock.calls.every((call) => !call[1].includes('CodeRelation')),
-      ).toBe(true);
+      expect(pool.executeParameterized).not.toHaveBeenCalled();
       expect(overlay.queryOverlay).toHaveBeenCalledWith(
         expect.objectContaining({ id: repo.id }),
         expect.stringContaining('AS relType'),
@@ -321,6 +322,105 @@ describe('overlay context and impact', () => {
     expect(await runImpact(repo, { target: current.name, direction: 'upstream' })).toEqual(
       baseImpact,
     );
+  });
+
+  it('fails closed on automatic snapshot errors before base resolution', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    overlay.getOverlaySnapshot.mockRejectedValue(new Error('captured graph unavailable'));
+
+    await expect(context(repo, { name: 'lookup' })).rejects.toThrow('captured graph unavailable');
+    expect(await runImpact(repo, { target: 'lookup', direction: 'upstream' })).toMatchObject({
+      risk: 'UNKNOWN',
+      error: 'captured graph unavailable',
+    });
+    expect(pool.executeParameterized).not.toHaveBeenCalled();
+    expect(execFileText).not.toHaveBeenCalled();
+  });
+
+  it.each(['source', 'configuration'])(
+    'fails closed when automatic snapshot preparation omitted dirty %s',
+    async (change) => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+      overlay.getOverlaySnapshot.mockResolvedValue({
+        ...usable,
+        usable: false,
+        reason: 'snapshot unavailable',
+        dirtyPaths: new Set(change === 'source' ? ['src/dirty.ts'] : []),
+        configPaths: new Set(change === 'configuration' ? ['tsconfig.json'] : []),
+      });
+      await expect(context(repo, { name: 'lookup' })).rejects.toThrow('snapshot unavailable');
+      expect(await runImpact(repo, { target: 'lookup', direction: 'upstream' })).toMatchObject({
+        risk: 'UNKNOWN',
+        error: 'snapshot unavailable',
+      });
+      expect(pool.executeParameterized).not.toHaveBeenCalled();
+      expect(execFileText).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['missing', 'deleted', 'parse-error'])(
+    'does not resolve automatic %s targets from later live files',
+    async (failure) => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+      const current = symbol();
+      overlay.getOverlaySnapshot.mockResolvedValue({
+        ...usable,
+        capability: 'workspace-graph',
+        coverage: failure === 'parse-error' ? 'partial' : 'complete',
+        generation: 'captured-A',
+        parseErrorPaths: new Set(failure === 'parse-error' ? [current.filePath] : []),
+        tombstones: new Set(failure === 'deleted' ? [current.filePath] : []),
+      });
+      overlay.queryOverlay.mockImplementation(async (_repo, query: string) =>
+        failure === 'parse-error' && query.includes('AS startLine') ? [current] : [],
+      );
+      execFileText.mockResolvedValue(' M src/dirty.ts\n');
+      expect(
+        await runImpact(repo, {
+          target: current.name,
+          file_path: current.filePath,
+          direction: 'upstream',
+        }),
+      ).toMatchObject({ risk: 'UNKNOWN', graphImpactAvailable: false });
+      expect(execFileText).not.toHaveBeenCalled();
+      expect(pool.executeParameterized).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps captured context content and edges on the selected generation after publication', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    const captured = { ...symbol(), content: 'export function lookup() { return "A"; }' };
+    const snapshot = {
+      ...usable,
+      capability: 'workspace-graph',
+      coverage: 'complete',
+      generation: 'captured-A',
+      parseErrorPaths: new Set<string>(),
+    };
+    overlay.getOverlaySnapshot.mockResolvedValue(snapshot);
+    overlay.queryOverlay.mockImplementation(async (_repo, query: string, _params, generation) => {
+      expect(generation).toBe('captured-A');
+      overlay.getOverlaySnapshot.mockResolvedValue({ ...snapshot, generation: 'published-C' });
+      if (query.includes('AS startLine')) return [captured];
+      if (query.includes('AS relType'))
+        return [
+          {
+            relType: 'CALLS',
+            uid: 'captured-neighbor',
+            name: 'capturedNeighbor',
+            filePath: 'src/neighbor.ts',
+            kind: 'Function',
+          },
+        ];
+      return [];
+    });
+    expect(await context(repo, { name: captured.name, include_content: true })).toMatchObject({
+      symbol: { content: captured.content },
+      incoming: { calls: [{ uid: 'captured-neighbor' }] },
+    });
+    expect(pool.executeParameterized).not.toHaveBeenCalled();
+    expect(overlay.getOverlaySnapshot).toHaveBeenCalledTimes(1);
+    expect(execFileText).not.toHaveBeenCalled();
   });
 
   it('rejects instead of returning stale base answers when a usable overlay query fails', async () => {

@@ -185,9 +185,36 @@ ontoindex mcp --project /path/to/target/repo
 - `ONTOINDEX_MAX_ARG_TOTAL_BYTES` limits the UTF-8 size of serialized arguments; it defaults to the larger of `4194304` bytes or twice the string limit plus `1048576` bytes, and accepts values from `1024` through `134217728`.
 - `ONTOINDEX_LBUG_BUFFER_MB` sets the read-only index connection's buffer pool size in MiB; it defaults to `64` and accepts `1` through `16384`. Unset, empty, `0`, or invalid values use the default: 64 MiB for the committed index and 256 MiB for working-tree graph generations (`overlay/<generation>`), which hold the whole repository and run the heaviest queries. A valid setting applies to both. In one run, a 64 MiB cap reduced resident memory after opening a 273 MiB index from about 426 MiB to 251 MiB, with queries about 10% slower.
 - `ONTOINDEX_LBUG_POOL_SIZE` sets the per-repository read connection pool size; it defaults to `2` and accepts `1` through `16`.
-- `ONTOINDEX_AUTO_WORKSPACE=1` is experimental and off by default. When set, MCP `context`, `impact` and `query` read the working tree instead of the last committed index: the first such read after an edit builds a disposable working-tree graph under `.ontoindex/overlay/` (about 40 seconds for 1,700 files on 8 cores, then under a second per call), and later reads reuse it until files change again. The committed index is never modified. Other tools (`gn_*` super-tools, `repomap`, resources) still read the committed index and warn when the tree is dirty. Search on the working-tree graph has no vector ranking.
-- `ONTOINDEX_WORKSPACE_BUILD_TIMEOUT_MS` is the hard limit for one working-tree graph build (default `120000`). The build runs in its own process, so on timeout the whole process group is killed, partial generations are removed and the analyze lock is released. The 60 s wait limit only stops a caller from waiting; the build itself continues until this limit.
-- `ONTOINDEX_WORKSPACE_MAX_FILES` caps the committed file count for which a working-tree graph is built; it defaults to `1600`, the size at which a build on 8 cores reaches about 55 s. Above it, `context` and `impact` fail with `workspace_too_large`, and `query` answers from the committed index with a warning. Run `ontoindex analyze` to refresh the committed index instead.
+- `ONTOINDEX_AUTO_WORKSPACE` controls automatic preparation of current workspace reads. An absent setting or exactly `1` enables it; `0`, an empty setting, or any other value disables it. Supported CLI and MCP reads prepare an immutable workspace generation when eligible source, configuration or base identity changes. Matching clean inputs reuse the committed index without a workspace build. Relationship reads use the full supported workspace graph; fresh lexical search has no new semantic vectors. Graph resources, lazy read tools, docs code facts and group reads share the preparation boundary. Diagnostics and explicit historical references retain their own scope. See [Working with uncommitted code](#working-with-uncommitted-code) for coverage and recovery.
+- `ONTOINDEX_WORKSPACE_BUILD_TIMEOUT_MS` limits one supervised workspace build; the default is `120000` ms. The request preparation deadline is `60000` ms and covers capture and waiting. Cancelling one waiter does not cancel a shared build still needed by another waiter. Failed preparation returns its typed error; retry only where the response says the error is retryable.
+- `ONTOINDEX_WORKSPACE_MAX_FILES` limits the indexed file count admitted to a full workspace build; the default is `1600`. A required graph above the limit returns `workspace_too_large`. Refresh the committed index with `ontoindex analyze`, reduce the input scope, or deliberately adjust the limit for available resources. An ordinary read does not substitute a stale committed success for failed required preparation. Benchmark runs that raise this gate must say so.
+
+## Working with uncommitted code
+
+Automatic reads capture eligible files from disk and pin one immutable generation
+for graph queries and source enrichment. Matching generations are reused. The
+capture is verified within finite retries; it is not an atomic filesystem
+snapshot. Unsaved editor buffers and dynamic or external resolver inputs are
+outside its coverage. Parse failures and unsupported capabilities remain explicit.
+
+Logical pagination is bound to the admitted generation and input manifest; restart
+the query when that binding changes. Saved response pages replay their original
+bytes. Group reads prepare each repository independently and do not promise an
+atomic snapshot across repositories. Read preparation preserves existing write
+permissions and mutation guards.
+
+Preparation failures return `workspace_busy`, `workspace_timeout`,
+`workspace_cancelled`, `workspace_too_large` or `workspace_build_failed`.
+Inspect the error and stderr before retrying; retry only when the response marks
+the error retryable. A caller that expires before build admission starts no new
+build. A build already admitted can finish for another waiter. Failed owned
+captures are cleaned up; live readers retain their generation pins.
+
+Set `ONTOINDEX_AUTO_WORKSPACE=0` to use committed/manual-overlay behavior.
+`ontoindex analyze --dirty-overlay` and `ontoindex watch [path]` remain available
+for manual operation; ordinary automatic reads require neither. Full workspace
+graphs above the configured file gate fail explicitly. Adjust that gate only
+for the available memory and CPU; the defaults and deadlines are listed above.
 
 ## Index Generations
 

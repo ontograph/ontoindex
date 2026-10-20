@@ -11,6 +11,8 @@ import {
   parseVmRssKb,
   processTreeRssBytes,
   parseGnuTime,
+  parseCgroupCpuStat,
+  cgroupCpuDelta,
 } from '../../scripts/overlay-benchmark-stats.mjs';
 
 const valid = () => ({
@@ -26,8 +28,22 @@ const valid = () => ({
   stderrTruncated: false,
   nativeError: false,
 });
+const cpuEvidence = (cpuSeconds = 0.1) => ({
+  cpuSeconds,
+  before: { userUsec: 10_000_000, systemUsec: 20_000_000 },
+  after: { userUsec: 10_000_000 + Math.round((cpuSeconds * 1e6) / 2), systemUsec: 20_000_000 },
+  final: { userUsec: 10_000_000 + Math.round(cpuSeconds * 1e6), systemUsec: 20_000_000 },
+});
 const budget = (phase = 'warm', workload = 'clean', sample = valid(), extras = {}) =>
-  evaluateBudgets({ phase, workload, summary: summarize([sample]), artifactBytes: 0, ...extras });
+  evaluateBudgets({
+    phase,
+    workload,
+    summary: summarize([sample]),
+    artifactBytes: 0,
+    cpuSources: ['terminal-interval'],
+    cpuEvidence: [cpuEvidence(sample.cpuSeconds)],
+    ...extras,
+  });
 
 describe('benchmark statistics', () => {
   it('averages positions 10 and 11 for twenty samples without mutating input', () => {
@@ -99,6 +115,189 @@ describe('benchmark statistics', () => {
 });
 
 describe('shipping budgets', () => {
+  it.each(
+    [
+      undefined,
+      [],
+      ['terminal-interval'],
+      ['terminal-interval', 'sampled'],
+      ['sampled', 'sampled'],
+      ['gnu-time', 'gnu-time'],
+      new Array(2),
+      'terminal-interval',
+    ].map((cpuSources) => ({ cpuSources })),
+  )(
+    'rejects warm CPU provenance $cpuSources despite compliant numeric metrics',
+    ({ cpuSources }) => {
+      const summary = summarize([valid(), valid()]);
+      const result = evaluateBudgets({
+        phase: 'warm',
+        workload: 'clean',
+        summary,
+        artifactBytes: 0,
+        cpuSources,
+        cpuEvidence: [cpuEvidence(), cpuEvidence()],
+      });
+      expect(result).toEqual({
+        pass: false,
+        failures: [
+          {
+            budget: 'warmCpuAccounting',
+            limit: 'terminal-interval accounting for every warm sample',
+            observed: { sampleCount: 2, cpuSources: cpuSources ?? null },
+          },
+        ],
+      });
+    },
+  );
+  it('rejects absent provenance and empty warm summaries', () => {
+    const summary = summarize([valid()]);
+    expect(
+      evaluateBudgets({ phase: 'warm', workload: 'clean', summary, artifactBytes: 0 }).failures.map(
+        (failure) => failure.budget,
+      ),
+    ).toEqual(['warmCpuAccounting']);
+    expect(
+      budget('warm', 'clean', valid(), {
+        summary: { ...summary, count: 0 },
+        cpuSources: [],
+      }).failures.map((failure) => failure.budget),
+    ).toEqual(['warmCpuAccounting']);
+  });
+  it('accepts complete interval provenance while retaining the numeric warm CPU limit', () => {
+    expect(budget().pass).toBe(true);
+    expect(budget('warm', 'clean', { ...valid(), cpuSeconds: 1 }).pass).toBe(true);
+    expect(budget('warm', 'clean', { ...valid(), cpuSeconds: 1.1 })).toEqual({
+      pass: false,
+      failures: [{ budget: 'warmCpuSeconds', limit: 1, observed: 1.1 }],
+    });
+    expect(
+      budget('warm', 'clean', valid(), {
+        summary: summarize([valid(), valid()]),
+        cpuSources: ['terminal-interval', 'terminal-interval'],
+        cpuEvidence: [cpuEvidence(), cpuEvidence()],
+      }).pass,
+    ).toBe(true);
+  });
+  it.each(
+    [
+      undefined,
+      [],
+      new Array(1),
+      [cpuEvidence(), cpuEvidence()],
+      [{ ...cpuEvidence(), after: undefined }],
+      [{ ...cpuEvidence(), final: undefined }],
+      [{ ...cpuEvidence(), cpuSeconds: 0.2 }],
+      [{ ...cpuEvidence(), cpuSeconds: undefined }],
+    ].map((evidence) => ({ evidence })),
+  )(
+    'rejects absent, incomplete or inconsistent CPU evidence $evidence despite terminal labels',
+    ({ evidence }) => {
+      expect(budget('warm', 'clean', valid(), { cpuEvidence: evidence })).toEqual({
+        pass: false,
+        failures: [
+          {
+            budget: 'warmCpuAccounting',
+            limit: 'terminal-interval accounting for every warm sample',
+            observed: { sampleCount: 1, cpuSources: ['terminal-interval'] },
+          },
+        ],
+      });
+    },
+  );
+  it.each(['before', 'after', 'final'] as const)(
+    'rejects invalid %s counter components',
+    (snapshot) => {
+      for (const component of ['userUsec', 'systemUsec'] as const) {
+        for (const value of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity]) {
+          const evidence = cpuEvidence();
+          evidence[snapshot][component] = value;
+          expect(
+            budget('warm', 'clean', valid(), { cpuEvidence: [evidence] }).failures.map(
+              (failure) => failure.budget,
+            ),
+          ).toEqual(['warmCpuAccounting']);
+        }
+      }
+    },
+  );
+  it.each([
+    ['after', 'before', 'userUsec'],
+    ['after', 'before', 'systemUsec'],
+    ['final', 'after', 'userUsec'],
+    ['final', 'after', 'systemUsec'],
+  ] as const)(
+    'rejects %s regressing from %s in %s despite increasing total CPU',
+    (later, earlier, component) => {
+      const evidence = cpuEvidence();
+      evidence[later][component] = evidence[earlier][component] - 1;
+      const other = component === 'userUsec' ? 'systemUsec' : 'userUsec';
+      evidence[later][other] = evidence[earlier][other] + 1_000_000;
+      expect(
+        budget('warm', 'clean', valid(), { cpuEvidence: [evidence] }).failures.map(
+          (failure) => failure.budget,
+        ),
+      ).toEqual(['warmCpuAccounting']);
+    },
+  );
+  it('charges CPU through the final empty-scope snapshot', () => {
+    expect(budget('warm', 'clean', { ...valid(), cpuSeconds: 1 }).pass).toBe(true);
+    const evidence = cpuEvidence();
+    const cpuSeconds = cgroupCpuDelta(evidence.before, evidence.after).cpuSeconds;
+    expect(
+      budget(
+        'warm',
+        'clean',
+        { ...valid(), cpuSeconds },
+        {
+          cpuEvidence: [{ ...evidence, cpuSeconds }],
+        },
+      ),
+    ).toEqual({
+      pass: false,
+      failures: [
+        {
+          budget: 'warmCpuAccounting',
+          limit: 'terminal-interval accounting for every warm sample',
+          observed: { sampleCount: 1, cpuSources: ['terminal-interval'] },
+        },
+      ],
+    });
+  });
+  it('requires the CPU p95 to agree with the evidence for every sample', () => {
+    const samples = [valid(), { ...valid(), cpuSeconds: 0.4 }];
+    const extras = {
+      summary: summarize(samples),
+      cpuSources: ['terminal-interval', 'terminal-interval'],
+      cpuEvidence: samples.map((sample) => cpuEvidence(sample.cpuSeconds)),
+    };
+    expect(budget('warm', 'clean', valid(), extras).pass).toBe(true);
+    expect(
+      budget('warm', 'clean', valid(), {
+        ...extras,
+        summary: { ...extras.summary, cpuSeconds: { median: 0.25, p95: 0.1 } },
+      }).failures.map((failure) => failure.budget),
+    ).toEqual(['warmCpuAccounting']);
+  });
+  it('allows only floating-point tolerance when matching interval CPU', () => {
+    expect(
+      budget('warm', 'clean', valid(), {
+        cpuEvidence: [{ ...cpuEvidence(), cpuSeconds: 0.1 + 5e-10 }],
+      }).pass,
+    ).toBe(true);
+    expect(
+      budget('warm', 'clean', valid(), {
+        cpuEvidence: [{ ...cpuEvidence(), cpuSeconds: 0.1 + 2e-9 }],
+      }).failures.map((failure) => failure.budget),
+    ).toEqual(['warmCpuAccounting']);
+  });
+  it.each([undefined, [], ['sampled'], ['gnu-time']].map((cpuSources) => ({ cpuSources })))(
+    'leaves cold budgets unchanged for CPU provenance $cpuSources',
+    ({ cpuSources }) =>
+      expect(budget('cold', 'dirty', valid(), { cpuSources, cpuEvidence: undefined }).pass).toBe(
+        true,
+      ),
+  );
   it('accepts compliant samples and exact limits', () => {
     expect(budget().pass).toBe(true);
     expect(
@@ -143,6 +342,91 @@ describe('shipping budgets', () => {
 });
 
 describe('Linux process accounting', () => {
+  it('parses cgroup CPU counters while accepting unknown keys and whitespace', () => {
+    expect(
+      parseCgroupCpuStat(
+        'usage_usec 9999999\n\tsystem_usec\t750000\nuser_usec 1250000\nfuture_counter 7\n',
+      ),
+    ).toEqual({ userUsec: 1250000, systemUsec: 750000 });
+    expect(parseCgroupCpuStat('user_usec 0\nsystem_usec 0')).toEqual({
+      userUsec: 0,
+      systemUsec: 0,
+    });
+    expect(parseCgroupCpuStat(`user_usec ${Number.MAX_SAFE_INTEGER}\nsystem_usec 0`)).toEqual({
+      userUsec: Number.MAX_SAFE_INTEGER,
+      systemUsec: 0,
+    });
+  });
+  it.each([
+    '',
+    'usage_usec 10',
+    'user_usec 1',
+    'system_usec 1',
+    'user_usec 1\nuser_usec 2\nsystem_usec 3',
+    'user_usec 1\nsystem_usec 2\nsystem_usec 3',
+    'user_usec\nsystem_usec 1',
+    'user_usec 1 2\nsystem_usec 1',
+    ...['-1', '0.5', 'NaN', 'Infinity', '-Infinity', '9007199254740992'].flatMap((value) => [
+      `user_usec ${value}\nsystem_usec 1`,
+      `user_usec 1\nsystem_usec ${value}`,
+    ]),
+  ])('rejects missing, duplicate or invalid cgroup CPU counters %j', (text) => {
+    expect(() => parseCgroupCpuStat(text)).toThrow();
+  });
+  it('excludes the baseline and converts each interval counter from microseconds', () => {
+    expect(
+      cgroupCpuDelta(
+        parseCgroupCpuStat('user_usec 10000000\nsystem_usec 20000000'),
+        parseCgroupCpuStat('user_usec 11250000\nsystem_usec 20750000'),
+      ),
+    ).toEqual({ userSeconds: 1.25, systemSeconds: 0.75, cpuSeconds: 2 });
+  });
+  it.each([
+    [
+      { userUsec: 0, systemUsec: 0 },
+      { userUsec: 0, systemUsec: 0 },
+    ],
+    [
+      { userUsec: 100, systemUsec: 200 },
+      { userUsec: 100, systemUsec: 200 },
+    ],
+  ])('accepts an unchanged cgroup CPU interval %j to %j', (before, after) => {
+    expect(cgroupCpuDelta(before, after)).toEqual({
+      userSeconds: 0,
+      systemSeconds: 0,
+      cpuSeconds: 0,
+    });
+  });
+  it.each([
+    [
+      { userUsec: 100, systemUsec: 200 },
+      { userUsec: 99, systemUsec: 1000 },
+    ],
+    [
+      { userUsec: 100, systemUsec: 200 },
+      { userUsec: 1000, systemUsec: 199 },
+    ],
+  ])(
+    'rejects either counter regressing even when the total increases %j to %j',
+    (before, after) => {
+      expect(() => cgroupCpuDelta(before, after)).toThrow();
+    },
+  );
+  it.each([
+    null,
+    undefined,
+    {},
+    { userUsec: 0 },
+    { systemUsec: 0 },
+    ...[-1, 0.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1, '1'].flatMap((value) => [
+      { userUsec: value, systemUsec: 0 },
+      { userUsec: 0, systemUsec: value },
+    ]),
+  ])('rejects invalid direct cgroup snapshots in either position %j', (snapshot) => {
+    const zero = { userUsec: 0, systemUsec: 0 };
+    expect(() => cgroupCpuDelta(snapshot, zero)).toThrow();
+    expect(() => cgroupCpuDelta(zero, snapshot)).toThrow();
+  });
   it('parses stat after the last closing parenthesis', () =>
     expect(parseProcStat('123 (a) (b) S 42 0 0')).toEqual({ pid: 123, ppid: 42 }));
   it('rejects malformed proc stat', () => expect(() => parseProcStat('garbage')).toThrow());

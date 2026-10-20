@@ -8,7 +8,7 @@
  * - Error handling for invalid URIs
  * - Resource handlers with mocked backend
  */
-import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 const { readRuntimeHealthMock } = vi.hoisted(() => ({ readRuntimeHealthMock: vi.fn() }));
 vi.mock('../../src/core/runtime/runtime-health.js', () => ({
@@ -21,6 +21,7 @@ import { createRequire } from 'node:module';
 import {
   getResourceDefinitions,
   getResourceTemplates,
+  getResourceContractSummaries,
   parseResourceUri,
   readResource,
 } from '../../src/mcp/resources.js';
@@ -74,6 +75,64 @@ async function createMemoryRepo(prefix: string): Promise<string> {
   await fs.mkdir(path.join(repoDir, '.ontoindex/memories'), { recursive: true });
   return repoDir;
 }
+
+describe('prepared graph resource scope', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each([
+    [undefined, false],
+    ['1', false],
+    ['0', true],
+    ['', true],
+    ['invalid', true],
+  ] as const)(
+    'uses committed notices for prepared reads with activation %s',
+    async (flag, hasNotice) => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', flag);
+      const notice = 'committed graph notice';
+      const backend = createMockBackend({
+        withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => operation()),
+        committedGraphNoticeFor: vi.fn().mockResolvedValue(notice),
+      });
+      const result = await readResource('ontoindex://repo/test-repo/clusters', backend);
+      expect(backend.withPreparedRepoRead).toHaveBeenCalledOnce();
+      expect(backend.committedGraphNoticeFor).toHaveBeenCalledTimes(hasNotice ? 1 : 0);
+      expect(result.includes(notice)).toBe(hasNotice);
+    },
+  );
+
+  it.each([false, true])('enters preparation before graph queries (failure: %s)', async (fail) => {
+    const events: string[] = [];
+    const backend = createMockBackend({
+      queryClusters: vi.fn(async () => {
+        events.push('query');
+        return { clusters: [] };
+      }),
+      withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => {
+        events.push('prepare');
+        if (fail) throw new Error('workspace blocked');
+        const result = await operation();
+        events.push('release');
+        return result;
+      }),
+    });
+    const result = readResource('ontoindex://repo/test-repo/clusters', backend);
+    if (fail) await expect(result).rejects.toThrow('workspace blocked');
+    else await expect(result).resolves.toContain('modules:');
+    expect(events).toEqual(fail ? ['prepare'] : ['prepare', 'query', 'release']);
+    expect(backend.withPreparedRepoRead).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'test-repo' }),
+      { needsRelationships: true, wantsWorkspaceGraph: true },
+      expect.any(Function),
+    );
+  });
+
+  it('leaves diagnostic resources outside graph preparation', async () => {
+    const backend = createMockBackend({ withPreparedRepoRead: vi.fn() });
+    await readResource('ontoindex://repo/test-repo/schema', backend);
+    expect(backend.withPreparedRepoRead).not.toHaveBeenCalled();
+  });
+});
 
 function makeMemoryContent(overrides: string[] = [], bodyLines: string[] = ['# Memory']): string {
   return [
@@ -254,10 +313,21 @@ describe('committed graph notice on resources', () => {
         projectName: 'p',
         stats: { fileCount: 1, functionCount: 1, communityCount: 0, processCount: 0 },
       },
+      clusterDetail: {
+        cluster: { heuristicLabel: 'Auth', symbolCount: 5, cohesion: 0.85 },
+        members: [{ name: 'login', type: 'Function', filePath: 'src/auth.ts' }],
+      },
+      processDetail: {
+        process: { heuristicLabel: 'LoginFlow', processType: 'intra_community', stepCount: 3 },
+        steps: [
+          { step: 1, name: 'login', filePath: 'src/auth.ts' },
+          { step: 2, name: 'validate', filePath: 'src/validate.ts' },
+        ],
+      },
       committedGraphNoticeFor: vi.fn().mockResolvedValue(notice),
     });
 
-  it.each(['context', 'clusters', 'processes'])(
+  it.each(['context', 'clusters', 'processes', 'cluster/Auth', 'process/LoginFlow'])(
     'adds the notice to the %s resource',
     async (type) => {
       readRuntimeHealthMock.mockResolvedValue({
@@ -333,6 +403,20 @@ describe('getResourceTemplates', () => {
       expect(tmpl.description).toContain('suitability=');
     }
   });
+
+  it.each(['context', 'clusters', 'processes', 'cluster/{clusterName}', 'process/{processName}'])(
+    'declares committed graph scope for %s on both discovery surfaces',
+    (resource) => {
+      const uri = `ontoindex://repo/{name}/${resource}`;
+      const template = getResourceTemplates().find((entry) => entry.uriTemplate === uri);
+      const summary = getResourceContractSummaries().find((entry) => entry.uri === uri);
+      const freshness = 'committed graph snapshot; excludes uncommitted changes';
+      expect(template?.description).toContain(`freshness=${freshness}`);
+      expect(summary?.contract.freshness).toBe(
+        resource === 'context' ? `${freshness}; runtime staleness probe` : freshness,
+      );
+    },
+  );
 });
 
 describe('parseResourceUri', () => {

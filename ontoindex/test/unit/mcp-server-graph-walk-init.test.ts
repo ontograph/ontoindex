@@ -10,6 +10,58 @@ afterEach(() => {
 });
 
 describe('MCP graph-walk initialization', () => {
+  it.each([false, true])(
+    'prepares lazy graph reads before dispatch (failure: %s)',
+    async (fail) => {
+      vi.resetModules();
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+      const { Server } = await import('@modelcontextprotocol/sdk/server/index.js');
+      const { CallToolRequestSchema } = await import('@modelcontextprotocol/sdk/types.js');
+      const events: string[] = [];
+      const dispatchSuper = vi.fn(async () => {
+        events.push('dispatch');
+        return { walkId: 'prepared-walk' };
+      });
+      vi.doMock('../../src/mcp/super/dispatch.js', () => ({ dispatchSuper }));
+      const handlerSpy = vi.spyOn(Server.prototype, 'setRequestHandler');
+      const { createMCPServer } = await import('../../src/mcp/server.js');
+      const repo = { id: 'repo-1', name: 'fixture', repoPath: '/repo/fixture' };
+      const backend = {
+        callTool: vi.fn(),
+        resolveRepo: vi.fn(async () => repo),
+        ensureRepoInitialized: vi.fn(async () => {
+          events.push('initialize');
+        }),
+        withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => {
+          events.push('prepare');
+          if (fail) throw new Error('workspace blocked');
+          const result = await operation();
+          events.push('release');
+          return result;
+        }),
+        withCommittedGraphNotice: vi.fn(),
+      };
+      createMCPServer(backend as any);
+      const handler = handlerSpy.mock.calls.find(
+        ([schema]) => schema === CallToolRequestSchema,
+      )?.[1] as any;
+      const response = await handler({
+        params: { name: 'gn_graph_walk', arguments: { repo: 'fixture', action: 'start' } },
+      });
+      expect(backend.withPreparedRepoRead).toHaveBeenCalledWith(
+        repo,
+        { needsRelationships: true, wantsWorkspaceGraph: true },
+        expect.any(Function),
+      );
+      expect(events).toEqual(
+        fail ? ['initialize', 'prepare'] : ['initialize', 'prepare', 'dispatch', 'release'],
+      );
+      expect(dispatchSuper).toHaveBeenCalledTimes(fail ? 0 : 1);
+      expect(response.isError).toBe(fail ? true : undefined);
+      expect(backend.withCommittedGraphNotice).not.toHaveBeenCalled();
+    },
+  );
+
   it('initializes a cold repository before dispatching the first graph walk', async () => {
     vi.resetModules();
     const { Server } = await import('@modelcontextprotocol/sdk/server/index.js');

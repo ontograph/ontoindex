@@ -289,7 +289,7 @@ function collectOntoIndexEnv(): Record<string, string | undefined> {
 }
 
 function isSensitiveOntoIndexEnvKey(key: string): boolean {
-  return /(?:^|[_-])(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE|BEARER|PRIVATE|AUTH|API_KEY)(?:$|[_-])/i.test(
+  return /(?:^|[_-])(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE|BEARER|PRIVATE|AUTH|API_KEY|URL|ENDPOINT)(?:$|[_-])/i.test(
     key,
   );
 }
@@ -494,10 +494,16 @@ function buildMisconfigurationReport(
   const processCwd = process.cwd();
   const activeRepoPath = targetContext?.repoPath;
   const activeRepoLabel = targetContext?.repoLabel ?? targetContext?.repoKey;
-  const pathMismatch =
+  const trustedTargetMatches =
+    targetContext?.status === 'ok' &&
+    context?.repoPath !== undefined &&
     activeRepoPath !== undefined &&
-    projectCwd !== undefined &&
-    !sameResolvedPath(projectCwd, activeRepoPath);
+    sameResolvedPath(context.repoPath, activeRepoPath);
+  const pathMismatch =
+    !trustedTargetMatches &&
+    activeRepoPath !== undefined &&
+    ((context?.repoPath !== undefined && !sameResolvedPath(context.repoPath, activeRepoPath)) ||
+      (projectCwd !== undefined && !sameResolvedPath(projectCwd, activeRepoPath)));
   const targetMismatch =
     targetContext?.status === 'ambiguous' || targetContext?.status === 'not-found' || pathMismatch;
 
@@ -612,8 +618,8 @@ export async function gnDiagnose(
     let freshReport;
     try {
       freshReport = await gnEnsureFresh(context?.repoPath ?? repoId, { autoAnalyze: false });
-    } catch (err) {
-      warnings.push('gnEnsureFresh failed: ' + (err instanceof Error ? err.message : String(err)));
+    } catch {
+      warnings.push('gnEnsureFresh failed: freshness probe unavailable');
     }
 
     if (freshReport) {
@@ -786,10 +792,8 @@ export async function gnDiagnose(
         fix: 'Run ontoindex analyze for the target repository.',
       });
     }
-  } catch (err) {
-    warnings.push(
-      'resolveTargetContext failed: ' + (err instanceof Error ? err.message : String(err)),
-    );
+  } catch {
+    warnings.push('resolveTargetContext failed: target context unavailable');
   }
 
   const requestedVectorBackend = envVars['ONTOINDEX_VECTOR_BACKEND']?.trim().toLowerCase();
@@ -812,10 +816,8 @@ export async function gnDiagnose(
           fix: 'Refresh the zvec mirror or unset ONTOINDEX_VECTOR_BACKEND to stay on LadybugDB.',
         });
       }
-    } catch (err) {
-      warnings.push(
-        'zvec backend diagnostics failed: ' + (err instanceof Error ? err.message : String(err)),
-      );
+    } catch {
+      warnings.push('zvec backend diagnostics failed: vector backend status unavailable');
     }
   }
 
@@ -871,10 +873,8 @@ export async function gnDiagnose(
       if (params.explainFile) {
         fileScopeExplanation = await explainPathScope(fileScopeRepoPath, params.explainFile);
       }
-    } catch (err) {
-      warnings.push(
-        'file-scope diagnostics failed: ' + (err instanceof Error ? err.message : String(err)),
-      );
+    } catch {
+      warnings.push('file-scope diagnostics failed: file scope unavailable');
     }
   }
 
@@ -923,16 +923,14 @@ export async function gnDiagnose(
                 : 'Commit, stash, or clean the worktree, then replay or restart the audit session.',
             });
           }
-        } catch (err) {
+        } catch {
           auditFreshness = {
             status: 'unknown',
             targetHead,
             sessionId,
             ...(repairCommand ? { repairCommand } : {}),
           };
-          warnings.push(
-            `computeAuditFreshness failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          warnings.push('computeAuditFreshness failed: audit freshness unavailable');
         }
       } else {
         auditFreshness = { status: 'missing' };
@@ -942,9 +940,7 @@ export async function gnDiagnose(
         auditFreshness = { status: 'missing' };
       } else {
         auditFreshness = { status: 'unknown' };
-        warnings.push(
-          `failed to load audit projection status: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        warnings.push('failed to load audit projection status: audit projection unavailable');
       }
     }
   } else {
@@ -964,11 +960,9 @@ export async function gnDiagnose(
         fix: 'Run ontoindex setup to register the MCP server in your tools.',
       });
     }
-  } catch (err) {
+  } catch {
     mcpResourceBridge = { exposed: false, exposedTo: [] };
-    warnings.push(
-      `checkMcpResourceBridge failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    warnings.push('checkMcpResourceBridge failed: MCP resource bridge status unavailable');
   }
 
   // ---- 8.7. Support diagnostics ---------------------------------------------
@@ -976,10 +970,8 @@ export async function gnDiagnose(
   if (auditRepoPath) {
     try {
       support = await buildSupportDiagnostics(auditRepoPath);
-    } catch (err) {
-      warnings.push(
-        `support diagnostics failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+    } catch {
+      warnings.push('support diagnostics failed: support status unavailable');
     }
   }
 
@@ -1161,7 +1153,6 @@ export async function gnDiagnose(
       ...(lspAvailable?.rust === false ? ['rust-lsp'] : []),
       ...(setup.mcp.autoAnalyze === 'enabled' ? ['bounded-startup-policy'] : []),
     ],
-    semanticFallbackUsed: checkEmbeddings && embeddings?.status === 'missing',
     diagnosticsRequested: true,
     nextTools: ['gn_ensure_fresh', 'gn_quality_mode', 'gn_tool_contract'],
   });

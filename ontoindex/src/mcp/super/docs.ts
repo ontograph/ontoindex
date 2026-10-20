@@ -2,7 +2,8 @@ import { resolveRegistryEntry, registryRepoIds } from '../shared/target-context.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { executeParameterized, getPinnedGenerationDir } from '../../core/lbug/pool-adapter.js';
+import { isAutomaticWorkspaceEnabled, getPinnedOverlaySnapshot } from '../local/backend-overlay.js';
 import {
   type DocsReportEnvelope,
   type DocsSidecarStatus,
@@ -248,6 +249,30 @@ export async function runDocsMcpAction(
     MAX_DOCS_MCP_CANDIDATES_PER_FACT,
   );
   const allFacts = collectMarkdownFacts(loaded.state);
+  const resolutions = collectMarkdownDocResolutionRecords(loaded.state);
+  const admittedOverlay = getPinnedOverlaySnapshot(repo.id);
+  // Bind the complete derivation inputs, excluding volatile lock counters and presentation limits.
+  const bindingInputs = {
+    version: 1,
+    action,
+    id: params.id ?? null,
+    repo: { id: repo.id, path: repo.repoPath, storagePath: repo.storagePath },
+    graph: {
+      automaticWorkspace: isAutomaticWorkspaceEnabled(),
+      capability: admittedOverlay?.capability ?? null,
+      coverage: admittedOverlay?.coverage ?? null,
+      generation: admittedOverlay?.generation ?? getPinnedGenerationDir(repo.id) ?? null,
+    },
+    baseReport: {
+      version: loaded.baseReport.version,
+      repo: loaded.baseReport.repo,
+      sidecar: loaded.baseReport.sidecar,
+      manifest: loaded.baseReport.manifest ?? null,
+    },
+    allFacts,
+    resolutions,
+    maxCandidatesPerFact,
+  };
   const trackerState = summarizeTrackerState(collectTrackerStateFacts(loaded.state));
   const knowledgeFacts = allFacts.filter((fact) => !isMarkdownTrackerStateFact(fact));
 
@@ -302,7 +327,7 @@ export async function runDocsMcpAction(
       createMarkdownKnowledgeReport({
         baseReport: loaded.baseReport,
         facts: knowledgeFacts,
-        resolutions: collectMarkdownDocResolutionRecords(loaded.state),
+        resolutions,
         maxItems: knowledgeMaxItems,
         maxCandidatesPerFact,
       }),
@@ -320,6 +345,7 @@ export async function runDocsMcpAction(
       summarizeKnowledgeItem,
       extractKnowledgeGraphFacts,
       repo.name,
+      JSON.stringify(bindingInputs),
       advisoryMemories,
       trackerState,
     );
@@ -356,8 +382,8 @@ export async function runDocsMcpAction(
     });
     const report = createMarkdownRequirementTraceReport({
       baseReport: loaded.baseReport,
-      facts: collectMarkdownFacts(loaded.state),
-      resolutions: collectMarkdownDocResolutionRecords(loaded.state),
+      facts: allFacts,
+      resolutions,
       requirementId: params.id,
       maxItems: Number.MAX_SAFE_INTEGER,
       maxCandidatesPerFact,
@@ -374,6 +400,7 @@ export async function runDocsMcpAction(
       summarizeTraceItem,
       extractTraceGraphFacts,
       repo.name,
+      JSON.stringify(bindingInputs),
     );
   }
 
@@ -387,12 +414,13 @@ export async function runDocsMcpAction(
     repo: repo.id,
   });
   const facts = allFacts;
+  const codeCandidates = createCodeRouteCandidatesFromAuditRecords(
+    await collectCodeRouteCandidates(repo.id, warnings),
+  );
   const report = createMarkdownApiDriftReport({
     baseReport: loaded.baseReport,
     docCandidates: createDocRouteCandidates(facts.filter(isMarkdownApiSpecFact)),
-    codeCandidates: createCodeRouteCandidatesFromAuditRecords(
-      await collectCodeRouteCandidates(repo.id, warnings),
-    ),
+    codeCandidates,
     warnings,
     maxItems: Number.MAX_SAFE_INTEGER,
     maxCandidatesPerFact,
@@ -409,6 +437,7 @@ export async function runDocsMcpAction(
     summarizeDriftItem,
     extractDriftGraphFacts,
     repo.name,
+    JSON.stringify({ ...bindingInputs, codeCandidates }),
   );
 }
 
@@ -615,7 +644,7 @@ function extractKnowledgeGraphFacts(_items: readonly MarkdownKnowledgeReportItem
 
 function createKnowledgeContextDerivationLimit(maxItems: number, cursor?: string): number {
   if (!cursor) return maxItems + 1;
-  const match = /^gn-page-v1:(\d+):(\d+)$/.exec(cursor);
+  const match = cursor.length <= 128 ? /^gn-page-v2:(\d+):(\d+):[a-f0-9]{64}$/.exec(cursor) : null;
   if (!match) return maxItems + 1;
   const [, pageSizeText, offsetText] = match;
   const pageSize = normalizePositiveInt(
@@ -1008,10 +1037,15 @@ function finalizeDocsItemsReport<TItem>(
   toSummaryItem: (item: TItem) => Record<string, unknown>,
   extractGraphFacts: (items: readonly TItem[]) => unknown[],
   repoLabel: string,
+  binding: string,
   advisoryMemories?: DocsAdvisoryMemorySummary,
   trackerState?: DocsTrackerStateSummary,
 ): DocsMcpReport {
-  const page = paginateMcpItems(envelope.items, { pageSize: maxItems, cursor: params.cursor });
+  const page = paginateMcpItems(envelope.items, {
+    pageSize: maxItems,
+    cursor: params.cursor,
+    binding,
+  });
   const cursor = shouldExposeCursor(page.page) ? page.page : undefined;
   const truncated = page.page.offset > 0 || page.page.hasMore;
   const nextAction = createDocsNextAction(action, envelope, cursor, storeMissing);

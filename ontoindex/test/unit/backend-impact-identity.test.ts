@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,10 +26,13 @@ vi.mock('../../src/mcp/local/backend-symbol-resolution.js', async (importOrigina
 
 describe('backend impact identity ergonomics', () => {
   beforeEach(() => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
     vi.clearAllMocks();
     lbugMocks.executeParameterized.mockResolvedValue([]);
     lbugMocks.executeQuery.mockResolvedValue([]);
   });
+
+  afterEach(() => vi.unstubAllEnvs());
 
   it.each([undefined, 'Deleted source path(s): src/auth.ts'])(
     'preserves not-found results and surfaces a defined warning: %s',

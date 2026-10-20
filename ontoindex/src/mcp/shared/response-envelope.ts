@@ -453,6 +453,7 @@ export function createCapabilityResponseEnvelope<TResult, TEvidence = unknown>(i
   capabilitiesMissing?: readonly string[];
   freshness: CapabilityResponseFreshness;
   runtimeHealth?: RuntimeHealthFreshnessInput | null;
+  diagnosticsRequested?: boolean;
   recoverable?: RecoverableRuntimeState | null;
   results: TResult;
   evidence?: readonly TEvidence[];
@@ -460,27 +461,43 @@ export function createCapabilityResponseEnvelope<TResult, TEvidence = unknown>(i
   limits?: Record<string, unknown>;
   nextTools?: readonly string[];
 }): CapabilityResponseEnvelope<TResult, TEvidence> {
+  const authoritative =
+    !('scope' in input.targetContext) &&
+    input.targetContext.graphAuthority?.state === 'authoritative' &&
+    Boolean(input.targetContext.targetHead && input.targetContext.currentHead) &&
+    input.targetContext.targetHead === input.targetContext.currentHead;
+  const ordinaryWorkspaceRead =
+    authoritative &&
+    !('scope' in input.targetContext) &&
+    input.targetContext.graphAuthority?.capability === 'workspace-graph' &&
+    (input.status === 'success' || input.status === 'ok') &&
+    !input.diagnosticsRequested &&
+    input.tool !== 'gn_diagnose' &&
+    input.tool !== 'gn_ensure_fresh';
+  const runtimeHealth: RuntimeHealthFreshnessInput | null | undefined =
+    ordinaryWorkspaceRead && input.runtimeHealth?.freshnessState === 'dirty'
+      ? {
+          freshnessState: input.runtimeHealth.freshnessState,
+          degradedReason: null,
+          repairCommand: undefined,
+        }
+      : input.runtimeHealth;
   const recoverable =
     input.recoverable === undefined
       ? deriveRecoverableRuntimeState({
           freshnessStatus: input.freshness.status,
           freshnessReason: input.freshness.reason,
-          runtimeHealthState: input.runtimeHealth?.freshnessState,
-          runtimeDegradedReason: input.runtimeHealth?.degradedReason,
-          runtimeRepairCommand: input.runtimeHealth?.repairCommand,
+          runtimeHealthState: runtimeHealth?.freshnessState,
+          runtimeDegradedReason: runtimeHealth?.degradedReason,
+          runtimeRepairCommand: runtimeHealth?.repairCommand,
         })
       : input.recoverable;
 
   const workspace =
     'dirtyWorkspace' in input.targetContext ? input.targetContext.dirtyWorkspace : undefined;
   const dirtyPaths = workspace ? getDirtyWorkspacePaths(workspace) : [];
-  const authoritative =
-    !('scope' in input.targetContext) &&
-    input.targetContext.graphAuthority?.state === 'authoritative' &&
-    Boolean(input.targetContext.targetHead && input.targetContext.currentHead) &&
-    input.targetContext.targetHead === input.targetContext.currentHead;
   const scanned = scanDirtyResults(input.results, dirtyPaths, !authoritative);
-  const freshness = mergeRuntimeHealthFreshness(input.freshness, input.runtimeHealth);
+  const freshness = mergeRuntimeHealthFreshness(input.freshness, runtimeHealth);
   const scanWarnings = scanned.truncated
     ? ['Dirty result scan truncated at 5000 nodes/edges; additional dirty entries may be unmarked.']
     : [];
@@ -521,6 +538,7 @@ export function createEnvelopeFromLegacy<TLegacy extends object, TEvidence = unk
     capabilitiesMissing: diagnostics.capabilitiesMissing,
     freshness: input.freshness ?? deriveEnvelopeFreshness(input.targetContext),
     runtimeHealth: input.runtimeHealth,
+    diagnosticsRequested: input.diagnosticsRequested,
     recoverable: input.recoverable,
     results: legacyReportToEnvelopeResults(input.legacy, input.omitResultKeys),
     evidence: input.evidence,

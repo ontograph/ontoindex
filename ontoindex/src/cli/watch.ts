@@ -257,6 +257,7 @@ type WatchChild = Pick<ChildProcess, 'once' | 'removeListener' | 'kill' | 'stdou
 export interface WatchCommandDependencies {
   refreshCallback?: (reason: 'startup' | 'event' | 'reconcile' | 'base-head') => Promise<void>;
   retryDelaysMs?: number[];
+  maxRetryAttempts?: number;
   spawn: typeof nodeSpawn;
   createWatcher: typeof createDebouncedWatcher;
   isLockHeld: (repoPath: string) => Promise<boolean> | boolean;
@@ -347,19 +348,30 @@ export async function createWatchCommand(
   let retryTimer: NodeJS.Timeout | undefined;
   let inFlightCallback: Promise<void> | undefined;
   let retryIndex = 0;
+  let retriesExhausted = false;
   let retryIdentity: string | undefined;
   let refreshReason: 'startup' | 'event' | 'reconcile' = 'event';
   const token = randomUUID();
   const retryDelays = deps.retryDelaysMs?.length
     ? deps.retryDelaysMs
     : [1000, 2000, 4000, 8000, 16000, 30000];
+  const maxRetryAttempts = deps.maxRetryAttempts ?? 8;
   const resetRetry = () => {
     if (retryTimer) clearTimeout(retryTimer);
     retryTimer = undefined;
     retryIndex = 0;
+    retriesExhausted = false;
   };
   const scheduleRetry = (head?: string) => {
     if (stopped || retryTimer) return;
+    if (retryIndex >= maxRetryAttempts) {
+      if (!retriesExhausted)
+        deps.error(
+          `Watch retries exhausted after ${maxRetryAttempts} attempts; waiting for repository changes`,
+        );
+      retriesExhausted = true;
+      return;
+    }
     retryTimer = setTimeout(
       () => {
         retryTimer = undefined;
@@ -443,6 +455,7 @@ export async function createWatchCommand(
     );
 
   const runChild = async (baseHead?: string): Promise<void> => {
+    if (retriesExhausted || retryTimer) return;
     if (stopped || child || launching) {
       if (baseRunning) overlayPending = true;
       return;
@@ -501,7 +514,7 @@ export async function createWatchCommand(
           processChild.stderr?.on('data', (chunk: Buffer | string) => process.stderr.write(chunk));
           processChild.once('error', (error) => {
             deps.error(`Watch ${baseHead ? 'base' : 'overlay'} child failed: ${error.message}`);
-            if (baseHead) scheduleRetry(baseHead);
+            scheduleRetry(baseHead);
             finish();
           });
           processChild.once('close', (code, signal) => {
@@ -519,7 +532,10 @@ export async function createWatchCommand(
               finish();
               return;
             }
-            if (code === 0) signature = requestedSignature;
+            if (code === 0) {
+              signature = requestedSignature;
+              resetRetry();
+            }
             deps.log(
               `Watch overlay analyze exited with code ${code ?? `signal ${signal ?? 'unknown'}`}.`,
             );
@@ -527,6 +543,7 @@ export async function createWatchCommand(
               deps.error(
                 `Watch overlay analyze failed with code ${code ?? `signal ${signal ?? 'unknown'}`}.`,
               );
+              scheduleRetry();
             }
             finish();
           });
@@ -534,7 +551,7 @@ export async function createWatchCommand(
           deps.error(
             `Watch ${baseHead ? 'base' : 'overlay'} child failed: ${error instanceof Error ? error.message : String(error)}`,
           );
-          if (baseHead) scheduleRetry(baseHead);
+          scheduleRetry(baseHead);
           finish();
         }
       });
@@ -661,7 +678,8 @@ export async function createWatchCommand(
           retryIdentity = identity;
         }
         refreshReason = 'reconcile';
-        if (stopped || (await refreshBase(head, base.commit))) return;
+        if (stopped || retriesExhausted || retryTimer || (await refreshBase(head, base.commit)))
+          return;
         if (
           !stopped &&
           !watcher.isBusy() &&

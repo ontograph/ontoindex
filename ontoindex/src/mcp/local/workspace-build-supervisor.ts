@@ -4,7 +4,7 @@ import path from 'node:path';
 
 export class WorkspaceBuildError extends Error {
   constructor(
-    public readonly kind: 'timeout' | 'failed' | 'unstoppable',
+    public readonly kind: 'timeout' | 'cancelled' | 'failed' | 'unstoppable',
     message: string,
   ) {
     super(message);
@@ -19,6 +19,7 @@ export interface SupervisedBuild {
   /** Repository storage directory that owns `overlay/` and `workspace-inputs/`. */
   storagePath: string;
   timeoutMs: number;
+  signal?: AbortSignal;
   /** How long to wait for the killed process group to disappear. */
   reapMs?: number;
 }
@@ -29,6 +30,7 @@ const OWNER_MARKER = 'workspace-build.owner.json';
 interface OwnerMarker {
   parentPid: number;
   childPid?: number;
+  state?: 'quarantined';
   /** Entries that existed before the build started; everything else is the build's own. */
   before: Record<string, string[]>;
 }
@@ -37,7 +39,8 @@ const OWNED_DIRECTORIES = ['overlay', 'workspace-inputs'];
 async function listEntries(directory: string): Promise<Set<string>> {
   try {
     return new Set(await fs.readdir(directory));
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     return new Set();
   }
 }
@@ -56,7 +59,10 @@ async function removeNewArtifacts(
   before: Map<string, Set<string>>,
 ): Promise<void> {
   const current = (
-    await fs.readFile(path.join(storagePath, 'overlay', 'CURRENT'), 'utf8').catch(() => '')
+    await fs.readFile(path.join(storagePath, 'overlay', 'CURRENT'), 'utf8').catch((error) => {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      return '';
+    })
   ).trim();
   for (const name of OWNED_DIRECTORIES) {
     const known = before.get(name) ?? new Set<string>();
@@ -73,7 +79,49 @@ function pidAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+async function readOwnerMarker(storagePath: string): Promise<OwnerMarker | null> {
+  const markerPath = path.join(storagePath, OWNER_MARKER);
+  try {
+    if (!(await fs.lstat(markerPath)).isFile()) throw new Error('Owner marker is not a file.');
+    const marker = JSON.parse(await fs.readFile(markerPath, 'utf8'));
+    const validPid = (pid: unknown) =>
+      Number.isInteger(pid) && Number(pid) > 0 && Number(pid) <= 2_147_483_647;
+    if (
+      !marker ||
+      typeof marker !== 'object' ||
+      Array.isArray(marker) ||
+      !validPid(marker.parentPid) ||
+      (marker.childPid !== undefined && !validPid(marker.childPid)) ||
+      (marker.state !== undefined && marker.state !== 'quarantined') ||
+      (marker.state === 'quarantined' && marker.childPid === undefined) ||
+      !marker.before ||
+      typeof marker.before !== 'object' ||
+      Array.isArray(marker.before) ||
+      Object.keys(marker.before).length !== OWNED_DIRECTORIES.length ||
+      !OWNED_DIRECTORIES.every(
+        (name) =>
+          Array.isArray(marker.before[name]) &&
+          marker.before[name].every(
+            (entry: unknown) =>
+              typeof entry === 'string' &&
+              entry.length > 0 &&
+              entry !== '.' &&
+              entry !== '..' &&
+              !/[\\/\0]/.test(entry),
+          ),
+      )
+    )
+      throw new Error('Invalid owner identity or incomplete artifact snapshot.');
+    return marker as OwnerMarker;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new Error(`Cannot safely recover workspace build. Inspect owner marker: ${markerPath}`, {
+      cause: error,
+    });
   }
 }
 
@@ -84,26 +132,30 @@ function pidAlive(pid: number): boolean {
  */
 export async function sweepOrphanedWorkspaceBuild(storagePath: string): Promise<boolean> {
   const markerPath = path.join(storagePath, OWNER_MARKER);
-  let marker: OwnerMarker;
-  try {
-    marker = JSON.parse(await fs.readFile(markerPath, 'utf8')) as OwnerMarker;
-  } catch {
-    return false;
-  }
+  const marker = await readOwnerMarker(storagePath);
+  if (!marker) return false;
   if (
-    !Number.isInteger(marker.parentPid) ||
-    marker.parentPid === process.pid ||
-    pidAlive(marker.parentPid) ||
+    (marker.state !== 'quarantined' && pidAlive(marker.parentPid)) ||
     (marker.childPid !== undefined && groupAlive(marker.childPid))
   ) {
     return false;
   }
   await removeNewArtifacts(
     storagePath,
-    new Map(Object.entries(marker.before ?? {}).map(([name, list]) => [name, new Set(list)])),
+    new Map(Object.entries(marker.before).map(([name, list]) => [name, new Set(list)])),
   );
   await fs.rm(markerPath, { force: true });
   return true;
+}
+
+/** Check only while holding the shared analyze lock, before admitting any writer. */
+export async function assertWorkspaceBuildAdmission(storagePath: string): Promise<void> {
+  await sweepOrphanedWorkspaceBuild(storagePath);
+  if (await readOwnerMarker(storagePath)) {
+    throw new Error(
+      `Cannot safely recover workspace build. Owner is unresolved; retry after it stops. Marker: ${path.join(storagePath, OWNER_MARKER)}`,
+    );
+  }
 }
 
 function groupAlive(pid: number): boolean {
@@ -111,7 +163,7 @@ function groupAlive(pid: number): boolean {
     process.kill(-pid, 0);
     return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
   }
 }
 
@@ -128,43 +180,71 @@ async function waitForGroupExit(pid: number, limitMs: number): Promise<boolean> 
  * is killed and reaped before this returns, so the caller can safely release the analyze lock.
  */
 export async function superviseWorkspaceBuild(options: SupervisedBuild): Promise<void> {
-  await sweepOrphanedWorkspaceBuild(options.storagePath).catch(() => false);
+  if (options.signal?.aborted)
+    throw new WorkspaceBuildError('cancelled', 'Workspace graph build was cancelled.');
+  await assertWorkspaceBuildAdmission(options.storagePath);
   const before = await snapshotArtifacts(options.storagePath);
   const markerPath = path.join(options.storagePath, OWNER_MARKER);
-  const writeMarker = (childPid?: number) =>
+  const writeMarker = (childPid?: number, state?: 'quarantined') =>
     fs.writeFile(
       markerPath,
       JSON.stringify({
         parentPid: process.pid,
         childPid,
+        ...(state ? { state } : {}),
         before: Object.fromEntries([...before].map(([name, set]) => [name, [...set]])),
       } satisfies OwnerMarker),
     );
   await writeMarker();
   try {
     await runSupervised(options, before, writeMarker);
-  } finally {
-    await fs.rm(markerPath, { force: true }).catch(() => {});
+  } catch (error) {
+    if (!(error instanceof WorkspaceBuildError) || error.kind === 'unstoppable') throw error;
+    await fs.rm(markerPath, { force: true });
+    throw error;
   }
+  await fs.rm(markerPath, { force: true });
 }
 
 async function runSupervised(
   options: SupervisedBuild,
   before: Map<string, Set<string>>,
-  writeMarker: (childPid?: number) => Promise<void>,
+  writeMarker: (childPid?: number, state?: 'quarantined') => Promise<void>,
 ): Promise<void> {
+  if (options.signal?.aborted)
+    throw new WorkspaceBuildError('cancelled', 'Workspace graph build was cancelled.');
   const child = spawn(options.command, options.args, {
     cwd: options.cwd,
     detached: true,
     stdio: ['ignore', 'ignore', 'pipe'],
   });
-  if (child.pid) await writeMarker(child.pid).catch(() => {});
   let stderrTail = '';
   child.stderr?.on('data', (chunk: Buffer) => {
     stderrTail = (stderrTail + chunk.toString('utf8')).slice(-STDERR_TAIL_BYTES);
   });
   const pid = child.pid;
-  const outcome = await new Promise<{ code: number | null; timedOut: boolean; error?: Error }>(
+  let cancelled = false;
+  let escalationTimer: ReturnType<typeof setTimeout> | undefined;
+  const abort = () => {
+    cancelled = true;
+    try {
+      if (pid) process.kill(-pid, 'SIGTERM');
+    } catch {
+      /* Already gone. */
+    }
+    if (pid) {
+      escalationTimer = setTimeout(() => {
+        try {
+          if (groupAlive(pid)) process.kill(-pid, 'SIGKILL');
+        } catch {
+          /* Already gone. */
+        }
+      }, 2000);
+    }
+  };
+  options.signal?.addEventListener('abort', abort, { once: true });
+  if (options.signal?.aborted) abort();
+  const exited = new Promise<{ code: number | null; timedOut: boolean; error?: Error }>(
     (resolve) => {
       let timedOut = false;
       const timer = setTimeout(() => {
@@ -177,14 +257,32 @@ async function runSupervised(
       }, options.timeoutMs);
       child.once('error', (error) => {
         clearTimeout(timer);
+        clearTimeout(escalationTimer);
+        options.signal?.removeEventListener('abort', abort);
         resolve({ code: null, timedOut, error });
       });
       child.once('exit', (code) => {
         clearTimeout(timer);
+        clearTimeout(escalationTimer);
+        options.signal?.removeEventListener('abort', abort);
         resolve({ code, timedOut });
       });
     },
   );
+  let publicationError: unknown;
+  if (pid) {
+    try {
+      await writeMarker(pid);
+    } catch (error) {
+      publicationError = error;
+      try {
+        process.kill(-pid, 'SIGKILL');
+      } catch {
+        /* Already gone. */
+      }
+    }
+  }
+  const outcome = await exited;
   // Kill stragglers (for example a grandchild) even after a normal exit.
   if (pid && groupAlive(pid)) {
     try {
@@ -194,18 +292,30 @@ async function runSupervised(
     }
   }
   if (pid && !(await waitForGroupExit(pid, options.reapMs ?? 5000))) {
+    // Keep the published identity even if quarantine publication itself fails.
+    if (!publicationError) await writeMarker(pid, 'quarantined').catch(() => {});
     throw new WorkspaceBuildError('unstoppable', 'Workspace build process group did not stop.');
+  }
+  if (publicationError) {
+    throw new WorkspaceBuildError(
+      'unstoppable',
+      `Workspace build owner identity could not be recorded. Inspect ${path.join(options.storagePath, OWNER_MARKER)} before retrying.`,
+    );
+  }
+  if (cancelled) {
+    await removeNewArtifacts(options.storagePath, before);
+    throw new WorkspaceBuildError('cancelled', 'Workspace graph build was cancelled and stopped.');
   }
   if (outcome.error) throw new WorkspaceBuildError('failed', outcome.error.message);
   if (outcome.timedOut) {
-    await removeNewArtifacts(options.storagePath, before).catch(() => {});
+    await removeNewArtifacts(options.storagePath, before);
     throw new WorkspaceBuildError(
       'timeout',
       `Workspace graph build exceeded ${options.timeoutMs} ms and was stopped.`,
     );
   }
   if (outcome.code !== 0) {
-    await removeNewArtifacts(options.storagePath, before).catch(() => {});
+    await removeNewArtifacts(options.storagePath, before);
     throw new WorkspaceBuildError(
       'failed',
       `Workspace graph build exited with code ${outcome.code}${stderrTail ? `: ${stderrTail.trim()}` : ''}`,

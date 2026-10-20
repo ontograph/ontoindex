@@ -42,6 +42,133 @@ vi.mock('../../../src/mcp/core/embedder.js', () => ({
 
 import { LocalBackend } from '../../../src/mcp/local/local-backend.js';
 import { GroupService } from '../../../src/core/group/service.js';
+import type { GroupRepoHandle } from '../../../src/core/group/service.js';
+
+describe('LocalBackend real GroupService member routing', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ontoindex-group-member-routing-'));
+    const groupDir = path.join(tmpDir, 'groups', 'g1');
+    fs.mkdirSync(groupDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(groupDir, 'group.yaml'),
+      `version: 1
+name: g1
+repos:
+  app/backend: test-backend
+  app/frontend: test-frontend
+`,
+    );
+    vi.stubEnv('ONTOINDEX_HOME', tmpDir);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it.each(['1', '0'])(
+    'routes members through the expected handler with AUTO_WORKSPACE=%s',
+    async (flag) => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', flag);
+      const backend = new LocalBackend();
+      const member: GroupRepoHandle = {
+        id: 'test-backend',
+        name: 'test-backend',
+        repoPath: path.join(tmpDir, 'backend'),
+        storagePath: path.join(tmpDir, 'backend-storage'),
+      };
+      const resolveRepo = vi.spyOn(backend, 'resolveRepo').mockImplementation(async (name) => {
+        expect(name).toBe('test-backend');
+        return member as Awaited<ReturnType<LocalBackend['resolveRepo']>>;
+      });
+      type MemberHandlers = {
+        dispatchRepoTool(method: string, params: Record<string, unknown>): Promise<unknown>;
+        query(repo: GroupRepoHandle, params: Record<string, unknown>): Promise<unknown>;
+        context(repo: GroupRepoHandle, params: Record<string, unknown>): Promise<unknown>;
+        impact(repo: GroupRepoHandle, params: Record<string, unknown>): Promise<unknown>;
+      };
+      const handlers = backend as unknown as MemberHandlers;
+      const dispatch = vi.spyOn(handlers, 'dispatchRepoTool').mockImplementation(async (method) => {
+        if (method === 'query') return { processes: [] };
+        if (method === 'context') return { status: 'missing' };
+        return { error: 'routing-sentinel' };
+      });
+      const query = vi.spyOn(handlers, 'query').mockResolvedValue({ processes: [] });
+      const context = vi.spyOn(handlers, 'context').mockResolvedValue({ status: 'missing' });
+      const impact = vi.spyOn(handlers, 'impact').mockResolvedValue({ error: 'routing-sentinel' });
+      const service = backend.getGroupService();
+
+      await service.groupQuery({
+        name: 'g1',
+        query: 'login',
+        subgroup: 'app/backend',
+        subgroupExact: true,
+      });
+      await service.groupContext({
+        name: 'g1',
+        target: 'Sym',
+        subgroup: 'app/backend',
+        subgroupExact: true,
+      });
+      const result = await service.groupImpact({
+        name: 'g1',
+        repo: 'app/backend',
+        target: 'Sym',
+        direction: 'upstream',
+      });
+
+      expect(result).toHaveProperty('local.error', 'routing-sentinel');
+      expect(resolveRepo).toHaveBeenCalledTimes(3);
+      if (flag === '1') {
+        expect(dispatch).toHaveBeenCalledTimes(3);
+        expect(dispatch).toHaveBeenNthCalledWith(
+          1,
+          'query',
+          expect.objectContaining({ repo: member.id, query: 'login' }),
+        );
+        expect(dispatch).toHaveBeenNthCalledWith(
+          2,
+          'context',
+          expect.objectContaining({ repo: member.id, name: 'Sym' }),
+        );
+        expect(dispatch).toHaveBeenNthCalledWith(
+          3,
+          'impact',
+          expect.objectContaining({
+            repo: member.id,
+            target: 'Sym',
+            direction: 'upstream',
+            signal: expect.any(AbortSignal),
+          }),
+        );
+        expect(query).not.toHaveBeenCalled();
+        expect(context).not.toHaveBeenCalled();
+        expect(impact).not.toHaveBeenCalled();
+      } else {
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(query).toHaveBeenCalledExactlyOnceWith(
+          member,
+          expect.objectContaining({ query: 'login' }),
+        );
+        expect(context).toHaveBeenCalledExactlyOnceWith(
+          member,
+          expect.objectContaining({ name: 'Sym' }),
+        );
+        expect(impact).toHaveBeenCalledExactlyOnceWith(
+          member,
+          expect.objectContaining({
+            target: 'Sym',
+            direction: 'upstream',
+            signal: expect.any(AbortSignal),
+          }),
+        );
+      }
+    },
+  );
+});
 
 describe('LocalBackend @group repo routing', () => {
   let tmpDir: string;

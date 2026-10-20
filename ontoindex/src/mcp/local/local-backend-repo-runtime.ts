@@ -6,6 +6,7 @@ import { RepoHandle } from 'ontoindex-shared';
 import { resolveActiveIndexGeneration } from '../../storage/repo-manager.js';
 import { readActiveGenerationMeta } from '../../storage/repo-manager.js';
 import {
+  isAutomaticWorkspaceEnabled,
   evictOverlayState,
   getOverlaySnapshot,
   isResolverConfigPath,
@@ -22,7 +23,14 @@ export interface WorkspaceReadRepo {
 export interface WorkspacePreparationDependencies {
   getSnapshot(repo: WorkspaceReadRepo): Promise<OverlaySnapshot>;
   acquireLock(repoPath: string): Promise<{ release(): Promise<void> }>;
-  buildWorkspaceGraph(repo: WorkspaceReadRepo): Promise<void>;
+  buildWorkspaceGraph(
+    repo: WorkspaceReadRepo,
+    signal?: AbortSignal,
+    build?: {
+      workspaceGraph: boolean;
+      includePaths: string[];
+    },
+  ): Promise<void>;
   evictSnapshot(repoId: string): void;
   /** Committed-index file count, used to refuse builds that cost too much. */
   baseFileCount(repo: WorkspaceReadRepo): Promise<number | undefined>;
@@ -46,23 +54,30 @@ export class WorkspacePreparationError extends Error {
 }
 
 const WORKSPACE_BUILD_TIMEOUT_MS = 120_000;
-/** Admission waits past the build's own deadline so a slow cold build is not abandoned just short of finishing. */
-export const WORKSPACE_PREPARATION_DEADLINE_MS = WORKSPACE_BUILD_TIMEOUT_MS + 10_000;
+/** Each caller has its own wait budget; the shared build may continue for other callers. */
+export const WORKSPACE_PREPARATION_DEADLINE_MS = 60_000;
 
 const workspaceDependencies: WorkspacePreparationDependencies = {
   getSnapshot: getOverlaySnapshot,
   acquireLock: async (repoPath) =>
     (await import('../../cli/analyze.js')).acquireAnalyzeLock(repoPath),
-  buildWorkspaceGraph: async (repo) => {
+  buildWorkspaceGraph: async (repo, signal, build) => {
     // The build runs in its own process group so a deadline can kill it and return its memory.
     const child = fileURLToPath(new URL('../../core/workspace-build-child.js', import.meta.url));
     if (syncFs.existsSync(child)) {
       const { superviseWorkspaceBuild } = await import('./workspace-build-supervisor.js');
       await superviseWorkspaceBuild({
         command: process.execPath,
-        args: [child, repo.repoPath],
+        args: [
+          child,
+          repo.repoPath,
+          ...(build?.workspaceGraph === false
+            ? ['--symbols', JSON.stringify(build.includePaths)]
+            : []),
+        ],
         cwd: repo.repoPath,
         storagePath: repo.storagePath,
+        signal,
         timeoutMs:
           Number(process.env.ONTOINDEX_WORKSPACE_BUILD_TIMEOUT_MS) || WORKSPACE_BUILD_TIMEOUT_MS,
       });
@@ -72,7 +87,12 @@ const workspaceDependencies: WorkspacePreparationDependencies = {
     const { runFullAnalysis } = await import('../../core/run-analyze.js');
     await runFullAnalysis(
       repo.repoPath,
-      { workspaceGraph: true, skipNativeClose: true },
+      {
+        ...(build?.workspaceGraph === false
+          ? { dirtyOverlay: true, overlayPaths: build.includePaths }
+          : { workspaceGraph: true }),
+        skipNativeClose: true,
+      },
       { onProgress() {} },
     );
   },
@@ -116,7 +136,7 @@ export async function committedGraphNotice(
   repo: WorkspaceReadRepo,
   getSnapshot: WorkspacePreparationDependencies['getSnapshot'] = getOverlaySnapshot,
 ): Promise<string | undefined> {
-  if (process.env.ONTOINDEX_AUTO_WORKSPACE !== '1') return undefined;
+  if (!isAutomaticWorkspaceEnabled()) return undefined;
   try {
     const snapshot = await getSnapshot(repo);
     if (snapshot.dirtyPaths.size === 0) return undefined;
@@ -127,11 +147,13 @@ export async function committedGraphNotice(
 }
 
 interface WorkspaceBuild {
+  controller: AbortController;
+  stopping: boolean;
   identity: string;
   promise: Promise<OverlaySnapshot>;
   pending?: {
     identity: string;
-    run: () => Promise<OverlaySnapshot>;
+    run: (signal: AbortSignal) => Promise<OverlaySnapshot>;
     promise: Promise<OverlaySnapshot>;
     resolve: (value: OverlaySnapshot) => void;
     reject: (error: unknown) => void;
@@ -139,13 +161,102 @@ interface WorkspaceBuild {
 }
 const workspaceBuilds = new Map<string, WorkspaceBuild>();
 
+interface WorkspaceWatch {
+  references: number;
+  aliases: Map<string, WorkspaceReadRepo>;
+  ready: Promise<{ stop(): Promise<void>; owned: boolean }>;
+  stopping?: Promise<void>;
+}
+const workspaceWatches = new Map<string, WorkspaceWatch>();
+
+/** One process-wide watcher per canonical repository, retained by long-lived backends. */
+export async function acquireWorkspaceWatch(
+  repo: WorkspaceReadRepo,
+): Promise<{ release(): Promise<void> }> {
+  const canonicalPath = await fs.realpath(repo.repoPath);
+  let state = workspaceWatches.get(canonicalPath);
+  if (state?.stopping) {
+    await state.stopping;
+    return acquireWorkspaceWatch(repo);
+  }
+  if (!state) {
+    state = {
+      references: 0,
+      aliases: new Map(),
+      ready: Promise.resolve().then(async () => {
+        const { createWatchCommand } = await import('../../cli/watch.js');
+        return createWatchCommand(canonicalPath, {
+          refreshCallback: async () => {
+            evictOverlayState(repo.id);
+            await prepareWorkspaceRead({
+              repo,
+              needsRelationships: true,
+              wantsWorkspaceGraph: true,
+            });
+          },
+          onSignal() {},
+          offSignal() {},
+          log: (message) => console.error(message),
+          error: (message) => console.error(message),
+        });
+      }),
+    };
+    workspaceWatches.set(canonicalPath, state);
+  }
+  state.aliases.set(repo.id, repo);
+  state.references++;
+  const entry = state;
+  try {
+    await entry.ready;
+  } catch (error) {
+    if (--entry.references === 0 && workspaceWatches.get(canonicalPath) === entry) {
+      workspaceWatches.delete(canonicalPath);
+    }
+    throw error;
+  }
+  let released = false;
+  return {
+    async release() {
+      if (released) return entry.stopping;
+      released = true;
+      if (--entry.references > 0) return;
+      entry.stopping = (async () => {
+        const watcher = await entry.ready;
+        const errors: unknown[] = [];
+        for (const alias of entry.aliases.values()) {
+          try {
+            await stopWorkspaceBuild(alias);
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+        try {
+          await watcher.stop();
+        } catch (error) {
+          errors.push(error);
+        }
+        if (errors.length) throw new AggregateError(errors, 'Workspace watcher cleanup failed');
+      })();
+      try {
+        await entry.stopping;
+        if (workspaceWatches.get(canonicalPath) === entry) workspaceWatches.delete(canonicalPath);
+      } catch (error) {
+        // Keep the rejected stop as an admission fence when ownership could not be drained.
+        throw error;
+      }
+    },
+  };
+}
+
 function workspaceBuild(
   repoId: string,
   identity: string,
-  run: () => Promise<OverlaySnapshot>,
+  run: (signal: AbortSignal) => Promise<OverlaySnapshot>,
 ): Promise<OverlaySnapshot> {
   const current = workspaceBuilds.get(repoId);
   if (current) {
+    if (current.stopping)
+      return Promise.reject(new WorkspacePreparationError('workspace_cancelled'));
     if (current.identity === identity && !current.pending) return current.promise;
     if (!current.pending) {
       let resolve!: (value: OverlaySnapshot) => void;
@@ -160,13 +271,21 @@ function workspaceBuild(
       current.pending.run = run;
       current.pending.identity = identity;
     }
+    // A superseding request may replace the queued closure; callers validate their own
+    // required capability after the queue resolves.
     return current.pending.promise;
   }
-  const state: WorkspaceBuild = { identity, promise: Promise.resolve().then(run) };
+  const controller = new AbortController();
+  const state: WorkspaceBuild = {
+    identity,
+    controller,
+    stopping: false,
+    promise: Promise.resolve().then(() => run(controller.signal)),
+  };
   workspaceBuilds.set(repoId, state);
   const settle = () => {
     workspaceBuilds.delete(repoId);
-    if (state.pending) {
+    if (state.pending && !state.stopping) {
       const pending = state.pending;
       workspaceBuild(repoId, pending.identity, pending.run).then(pending.resolve, pending.reject);
     }
@@ -185,30 +304,52 @@ function workspaceBuild(
   return state.promise;
 }
 
+/** Stop the repository-owned build and drain it before releasing lifecycle resources. */
+export async function stopWorkspaceBuild(repo: WorkspaceReadRepo): Promise<void> {
+  const state = workspaceBuilds.get(repo.id);
+  if (!state) return;
+  state.stopping = true;
+  state.pending?.reject(new WorkspacePreparationError('workspace_cancelled'));
+  state.pending = undefined;
+  state.controller.abort();
+  // Build failures are delivered to their waiters; unresolved ownership must still fail shutdown.
+  await state.promise.catch(() => {});
+  const { assertWorkspaceBuildAdmission } = await import('./workspace-build-supervisor.js');
+  await assertWorkspaceBuildAdmission(repo.storagePath);
+}
+
 export async function prepareWorkspaceRead(options: {
   repo: WorkspaceReadRepo;
   needsRelationships: boolean;
-  /** Build the working-tree graph even when no relationships are needed; failure degrades. */
+  /** Require the working-tree graph even when no relationships are needed. */
   wantsWorkspaceGraph?: boolean;
   signal?: AbortSignal;
   deadline?: number;
+  /** Shared watcher startup is awaited inside the caller's preparation budget. */
+  beforeSnapshot?: () => Promise<void>;
   dependencies?: Partial<WorkspacePreparationDependencies>;
 }): Promise<OverlaySnapshot> {
   const dependencies = { ...workspaceDependencies, ...options.dependencies };
-  if (process.env.ONTOINDEX_AUTO_WORKSPACE !== '1') return dependencies.getSnapshot(options.repo);
+  if (!isAutomaticWorkspaceEnabled()) return dependencies.getSnapshot(options.repo);
   const deadline = Math.min(
     options.deadline ?? Infinity,
     performance.now() + WORKSPACE_PREPARATION_DEADLINE_MS,
   );
-  if (options.signal?.aborted) throw new WorkspacePreparationError('workspace_cancelled');
-  if (!(deadline > performance.now())) throw new WorkspacePreparationError('workspace_timeout');
+  const assertCallerActive = () => {
+    if (options.signal?.aborted) throw new WorkspacePreparationError('workspace_cancelled');
+    if (!(deadline > performance.now())) throw new WorkspacePreparationError('workspace_timeout');
+  };
+  assertCallerActive();
   // Bound the entire preparation, including the initial snapshot probe, per caller.
-  const work = async (onSnapshot: (snapshot: OverlaySnapshot) => void) => {
+  const work = async () => {
+    await options.beforeSnapshot?.();
+    assertCallerActive();
     const snapshot = await dependencies.getSnapshot(options.repo);
-    onSnapshot(snapshot);
+    assertCallerActive();
+    if (snapshot.reason?.startsWith('dirty planning failed:')) {
+      throw new WorkspacePreparationError('workspace_build_failed');
+    }
     const configPaths = snapshot.configPaths ?? new Set<string>();
-    if (snapshot.dirtyPaths.size === 0 && configPaths.size === 0) return snapshot;
-    const activeBaseChanged = snapshot.reason?.includes('active base') ?? false;
     const decision = selectWorkspaceCapability({
       eligibleChangeCount: snapshot.dirtyPaths.size,
       configChanged: configPaths.size > 0 || [...snapshot.dirtyPaths].some(isResolverConfigPath),
@@ -218,42 +359,32 @@ export async function prepareWorkspaceRead(options: {
         snapshot.usable &&
         snapshot.capability === 'workspace-graph' &&
         snapshot.coverage !== 'degraded',
-      baseMatches: !activeBaseChanged,
-      headChanged: activeBaseChanged,
+      baseMatches: snapshot.baseMatches ?? true,
+      headChanged: snapshot.headChanged ?? false,
     });
-    if (decision.action !== 'build-workspace-graph') return snapshot;
-    // A read that needs no relationships can still answer from the committed graph plus the
-    // dirty-file merge, so a refused or failing build degrades the answer instead of failing it.
-    const degrade = (error: unknown): OverlaySnapshot => {
-      if (
-        options.needsRelationships ||
-        !(error instanceof WorkspacePreparationError) ||
-        !['workspace_too_large', 'workspace_busy', 'workspace_build_failed'].includes(error.code)
-      ) {
-        throw error;
-      }
-      return {
-        ...snapshot,
-        // The fallback may be a generation that a concurrent build prunes before the request pins
-        // it, so a degraded answer never pins an overlay: it reads the committed index only.
-        ...(snapshot.usable
-          ? { usable: false, reason: 'working-tree graph not built; overlay not used' }
-          : {}),
-        preparationNote: `Working-tree graph not built (${error.code}); results use the committed index and may miss uncommitted changes. ${error.message}`,
-      };
-    };
+    if (decision.action !== 'build-workspace-graph' && decision.action !== 'build-symbols-overlay')
+      return snapshot;
+    const workspaceGraph = decision.action === 'build-workspace-graph';
+    const satisfies = (value: OverlaySnapshot) =>
+      value.usable &&
+      (workspaceGraph
+        ? value.capability === 'workspace-graph' && value.coverage !== 'degraded'
+        : value.capability !== 'workspace-graph' || value.coverage !== 'degraded');
     const maxFiles =
       Number(process.env.ONTOINDEX_WORKSPACE_MAX_FILES) || DEFAULT_MAX_WORKSPACE_FILES;
-    const fileCount = await dependencies.baseFileCount(options.repo);
+    const fileCount = workspaceGraph ? await dependencies.baseFileCount(options.repo) : undefined;
+    assertCallerActive();
     if (fileCount !== undefined && fileCount > maxFiles) {
-      return degrade(
-        new WorkspacePreparationError(
-          'workspace_too_large',
-          `Repository has ${fileCount} indexed files (limit ${maxFiles}); a full workspace graph build is refused. Run \`ontoindex analyze\` or raise ONTOINDEX_WORKSPACE_MAX_FILES.`,
-        ),
+      throw new WorkspacePreparationError(
+        'workspace_too_large',
+        `Repository has ${fileCount} indexed files (limit ${maxFiles}); a full workspace graph build is refused. Run \`ontoindex analyze\` or raise ONTOINDEX_WORKSPACE_MAX_FILES.`,
       );
     }
     const identity = JSON.stringify([
+      workspaceGraph,
+      snapshot.currentHead,
+      snapshot.baseGenerationId,
+      snapshot.baseCommit,
       snapshot.generation,
       snapshot.reason,
       [...snapshot.dirtyPaths].sort(),
@@ -261,13 +392,14 @@ export async function prepareWorkspaceRead(options: {
     ]);
     const failed = failedBuilds.get(options.repo.id);
     if (failed && failed.identity === identity && failed.until > dependencies.now()) {
-      return degrade(new WorkspacePreparationError('workspace_build_failed', failed.message));
+      throw new WorkspacePreparationError('workspace_build_failed', failed.message);
     }
     const busy = busyLocks.get(options.repo.id);
     if (busy && busy.until > dependencies.now()) {
-      return degrade(new WorkspacePreparationError('workspace_busy', busy.message));
+      throw new WorkspacePreparationError('workspace_busy', busy.message);
     }
-    const built = workspaceBuild(options.repo.id, identity, async () => {
+    assertCallerActive();
+    const built = workspaceBuild(options.repo.id, identity, async (signal) => {
       let lock: Awaited<ReturnType<WorkspacePreparationDependencies['acquireLock']>>;
       try {
         lock = await dependencies.acquireLock(options.repo.repoPath);
@@ -279,8 +411,10 @@ export async function prepareWorkspaceRead(options: {
         // A lock held by this very process is the working-tree build of an earlier request.
         const message =
           isBusy && rawMessage.includes(`PID ${process.pid} `)
-            ? `A working-tree graph build started by this server is still running; retry shortly. ${rawMessage}`
-            : rawMessage;
+            ? 'A working-tree graph build started by this server is still running; retry shortly.'
+            : isBusy
+              ? 'An analyze lock is held; retry shortly.'
+              : 'Working-tree graph lock acquisition failed.';
         if (isBusy) {
           busyLocks.set(options.repo.id, {
             until: dependencies.now() + BUSY_LOCK_COOLDOWN_MS,
@@ -294,20 +428,35 @@ export async function prepareWorkspaceRead(options: {
         );
       }
       try {
+        if (signal.aborted) {
+          await lock.release();
+          throw new WorkspacePreparationError('workspace_cancelled');
+        }
         // Another server may have finished the same build between the snapshot above and this lock.
         // Re-reading under the lock keeps one writer per dirty tree across processes.
         let adopted: OverlaySnapshot | undefined;
         try {
           dependencies.evictSnapshot(options.repo.id);
           const recheck = await dependencies.getSnapshot(options.repo);
-          if (
-            recheck.usable &&
-            recheck.capability === 'workspace-graph' &&
-            recheck.coverage !== 'degraded'
-          ) {
+          if (satisfies(recheck)) {
             adopted = recheck;
           } else {
-            await dependencies.buildWorkspaceGraph(options.repo);
+            if (signal.aborted) throw new WorkspacePreparationError('workspace_cancelled');
+            if (
+              !workspaceGraph &&
+              (recheck.baseMatches === false ||
+                recheck.headChanged === true ||
+                (recheck.configPaths?.size ?? 0) > 0 ||
+                recheck.dirtyPaths.size > 50)
+            ) {
+              throw new Error(
+                'Workspace identity changed before bounded symbols analysis; retry required',
+              );
+            }
+            await dependencies.buildWorkspaceGraph(options.repo, signal, {
+              workspaceGraph,
+              includePaths: [...recheck.dirtyPaths].filter((item) => !recheck.tombstones.has(item)),
+            });
           }
         } finally {
           await lock.release();
@@ -315,10 +464,13 @@ export async function prepareWorkspaceRead(options: {
         if (adopted) return adopted;
         dependencies.evictSnapshot(options.repo.id);
         const updated = await dependencies.getSnapshot(options.repo);
-        if (!updated.usable) throw new Error(updated.reason ?? 'Workspace snapshot is unusable');
+        if (!satisfies(updated))
+          throw new Error(updated.reason ?? 'Workspace snapshot lacks requested capability');
         return updated;
       } catch (cause) {
-        const message = cause instanceof Error ? cause.message : String(cause);
+        if (signal.aborted)
+          throw new WorkspacePreparationError('workspace_cancelled', undefined, { cause });
+        const message = 'Working-tree graph build failed.';
         failedBuilds.set(options.repo.id, {
           identity,
           until: dependencies.now() + FAILED_BUILD_COOLDOWN_MS,
@@ -327,16 +479,12 @@ export async function prepareWorkspaceRead(options: {
         throw new WorkspacePreparationError('workspace_build_failed', message, { cause });
       }
     });
-    try {
-      return await built;
-    } catch (error) {
-      return degrade(error);
-    }
+    const result = await built;
+    if (!satisfies(result)) throw new WorkspacePreparationError('workspace_build_failed');
+    return result;
   };
   return new Promise<OverlaySnapshot>((resolve, reject) => {
     let settled = false;
-    // Set once the wait budget is spent: a read that can degrade answers from the committed index.
-    let latestSnapshot: OverlaySnapshot | undefined;
     const finish = (error?: unknown, value?: OverlaySnapshot) => {
       if (settled) return;
       settled = true;
@@ -347,28 +495,19 @@ export async function prepareWorkspaceRead(options: {
     };
     const abort = () => finish(new WorkspacePreparationError('workspace_cancelled'));
     const timer = setTimeout(
-      () => {
-        if (!options.needsRelationships && latestSnapshot && latestSnapshot.dirtyPaths.size > 0) {
-          finish(undefined, {
-            ...latestSnapshot,
-            ...(latestSnapshot.usable
-              ? { usable: false, reason: 'working-tree graph not built; overlay not used' }
-              : {}),
-            preparationNote:
-              'Working-tree graph not built (workspace_timeout); the build is still running, so results use the committed index and may miss uncommitted changes. Retry shortly.',
-          });
-          return;
-        }
-        finish(new WorkspacePreparationError('workspace_timeout'));
-      },
+      () => finish(new WorkspacePreparationError('workspace_timeout')),
       Math.max(0, deadline - performance.now()),
     );
     options.signal?.addEventListener('abort', abort, { once: true });
     if (options.signal?.aborted) abort();
-    void work((snapshot) => {
-      latestSnapshot = snapshot;
-    }).then(
-      (value) => finish(undefined, value),
+    void work().then(
+      (value) => {
+        if (!(deadline > performance.now())) {
+          finish(new WorkspacePreparationError('workspace_timeout'));
+        } else {
+          finish(undefined, value);
+        }
+      },
       (error) => finish(error),
     );
   });

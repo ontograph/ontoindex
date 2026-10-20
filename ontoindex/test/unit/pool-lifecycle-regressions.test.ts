@@ -36,8 +36,8 @@ vi.mock('@ladybugdb/core', () => ({
       init = mocks.init;
     },
     Connection: class {
-      constructor() {
-        mocks.construct();
+      constructor(db: unknown, numThreads?: number) {
+        mocks.construct(db, numThreads);
       }
       query = mocks.query;
       close = mocks.connClose;
@@ -74,6 +74,17 @@ function deferred() {
 }
 
 describe('pool lifecycle drain', () => {
+  it('caps native query threads for every initial pool connection', async () => {
+    mocks.query.mockImplementation(async () => result());
+    const external = { close: mocks.dbClose } as any;
+    await initLbugWithDb('thread-cap', external, '/thread-cap');
+    expect(mocks.construct).toHaveBeenCalledTimes(2);
+    expect(mocks.construct.mock.calls).toEqual([
+      [external, 4],
+      [external, 4],
+    ]);
+  });
+
   it('retains failed native pins and reports busy capacity during cooldown', async () => {
     vi.resetModules();
     const isolated = await import('../../src/core/lbug/pool-adapter.js');

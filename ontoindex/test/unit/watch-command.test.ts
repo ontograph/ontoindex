@@ -170,6 +170,61 @@ describe('watch command', () => {
     command.stop();
   });
 
+  it.each(['base', 'overlay'] as const)(
+    'bounds failed %s retries until repository identity changes',
+    async (kind) => {
+      vi.useFakeTimers();
+      const options = {
+        head: 'next',
+        commit: kind === 'base' ? 'old' : 'next',
+        initiallyDirty: kind === 'overlay',
+      };
+      const harness = makeHarness(options);
+      const command = await harness.start({ retryDelaysMs: [1000], maxRetryAttempts: 2 });
+      try {
+        await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(1));
+        for (let attempt = 0; attempt < 3; attempt++) {
+          await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(attempt + 1));
+          harness.child.emit('close', 7, null);
+          for (let event = 0; event < 3; event++) {
+            harness.emit('src/dirty.ts');
+            await vi.advanceTimersByTimeAsync(100);
+          }
+          expect(harness.spawn).toHaveBeenCalledTimes(attempt + 1);
+          await vi.advanceTimersByTimeAsync(700);
+        }
+        const exhausted =
+          'Watch retries exhausted after 2 attempts; waiting for repository changes';
+        expect(harness.error.mock.calls.filter(([message]) => message === exhausted)).toHaveLength(
+          1,
+        );
+        await vi.advanceTimersByTimeAsync(90000);
+        harness.emit('src/dirty.ts');
+        await vi.advanceTimersByTimeAsync(100);
+        expect(harness.spawn).toHaveBeenCalledTimes(3);
+        expect(harness.error.mock.calls.filter(([message]) => message === exhausted)).toHaveLength(
+          1,
+        );
+
+        options.head = 'newer';
+        await vi.advanceTimersByTimeAsync(30000);
+        await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(4));
+        for (let attempt = 0; attempt < 3; attempt++) {
+          await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(attempt + 4));
+          harness.child.emit('close', 7, null);
+          await vi.advanceTimersByTimeAsync(1000);
+        }
+        expect(harness.spawn).toHaveBeenCalledTimes(6);
+        expect(harness.error.mock.calls.filter(([message]) => message === exhausted)).toHaveLength(
+          2,
+        );
+      } finally {
+        await command.stop();
+      }
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
   it('retries a skipped base refresh after analyze.lock is released', async () => {
     vi.useFakeTimers();
     const options = { head: 'next', commit: 'old', lockHeld: true };
@@ -466,7 +521,7 @@ describe('watch command', () => {
     command.stop();
   });
 
-  it('logs child failure and keeps watching for later saves', async () => {
+  it('logs child failure and keeps later saves within retry backoff', async () => {
     vi.useFakeTimers();
     const harness = makeHarness();
     const command = await harness.start();
@@ -478,6 +533,8 @@ describe('watch command', () => {
     expect(harness.error).toHaveBeenCalledWith(expect.stringContaining('failed with code 1'));
     harness.emit('src/second.ts');
     await vi.advanceTimersByTimeAsync(100);
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(900);
     expect(harness.spawn).toHaveBeenCalledTimes(2);
     command.stop();
   });
@@ -515,6 +572,39 @@ describe('watch command', () => {
     expect(callback).toHaveBeenCalledTimes(3);
     expect(harness.spawn).not.toHaveBeenCalled();
     await command.stop();
+  });
+
+  it('bounds automatic callback retries and rearms after dirty content changes', async () => {
+    vi.useFakeTimers();
+    const harness = makeHarness({ initiallyDirty: true });
+    const callback = vi.fn().mockRejectedValue(new Error('persistent failure'));
+    const command = await harness.start({
+      refreshCallback: callback,
+      retryDelaysMs: [1000],
+      maxRetryAttempts: 2,
+    });
+    try {
+      await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(1));
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(attempt + 1));
+        harness.emit('src/dirty.ts');
+        await vi.advanceTimersByTimeAsync(100);
+        expect(callback).toHaveBeenCalledTimes(attempt + 1);
+        await vi.advanceTimersByTimeAsync(900);
+      }
+      await vi.advanceTimersByTimeAsync(90000);
+      expect(callback).toHaveBeenCalledTimes(3);
+      const exhausted = 'Watch retries exhausted after 2 attempts; waiting for repository changes';
+      expect(harness.error.mock.calls.filter(([message]) => message === exhausted)).toHaveLength(1);
+      fs.writeFileSync(path.join(harness.repoPath, 'src/dirty.ts'), 'changed content');
+      await vi.advanceTimersByTimeAsync(30000);
+      await vi.waitFor(() => expect(callback).toHaveBeenCalledTimes(6), { timeout: 5000 });
+      expect(harness.error.mock.calls.filter(([message]) => message === exhausted)).toHaveLength(2);
+      expect(harness.spawn).not.toHaveBeenCalled();
+    } finally {
+      await command.stop();
+    }
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('runs automatic startup and event refresh without children', async () => {

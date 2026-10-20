@@ -301,7 +301,7 @@ async function fetchCoChangedFiles(
     const rows: QueryRow[] = await executeParameterized(
       repoId,
       `MATCH (f:File {filePath: $path})-[r:CodeRelation {type: 'CO_CHANGED_WITH'}]-(other:File)
-       RETURN other.filePath AS filePath, r.confidence AS coChangeCount, r.lastDate AS lastDate
+       RETURN other.filePath AS filePath, r.confidence AS coChangeCount
        ORDER BY r.confidence DESC
        LIMIT $max`,
       { path: filePath, max },
@@ -309,7 +309,7 @@ async function fetchCoChangedFiles(
     return rows.map((row) => ({
       filePath: rowString(row, 'filePath', 0),
       coChangeCount: Number(rowValue(row, 'coChangeCount', 1, 0)),
-      lastChangedTogether: rowString(row, 'lastDate', 2),
+      lastChangedTogether: '',
     }));
   } catch {
     return [];

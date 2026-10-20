@@ -4,8 +4,8 @@
  * Provides tool implementations using local .ontoindex/ indexes.
  * Supports multiple indexed repositories via a global registry.
  * LadybugDB connections are opened lazily per repo on first query.
- * ONTOINDEX_AUTO_WORKSPACE=1 prepares dirty workspace graphs at the read gate;
- * leaving it unset preserves the existing overlay snapshot behavior.
+ * Automatic workspace reads prepare dirty workspace graphs at the read gate;
+ * setting ONTOINDEX_AUTO_WORKSPACE=0 preserves legacy overlay snapshot behavior.
  */
 
 import path from 'path';
@@ -13,7 +13,12 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { performance } from 'node:perf_hooks';
 import { canonicalRepoId, registryRepoIds } from '../shared/target-context.js';
 import fs from 'fs/promises';
-import { evictOverlayState, withPinnedOverlay, type OverlaySnapshot } from './backend-overlay.js';
+import {
+  isAutomaticWorkspaceEnabled,
+  evictOverlayState,
+  withPinnedOverlay,
+  type OverlaySnapshot,
+} from './backend-overlay.js';
 import { RepoHandle, BackendPort } from 'ontoindex-shared';
 import { recordToolCall } from './tool-telemetry.js';
 import {
@@ -131,6 +136,7 @@ import { RepoIdleTracker } from './repo-idle-tracker.js';
 import { normalizeLimit } from './tool-utils.js';
 import {
   buildAvailableRepoLabels,
+  acquireWorkspaceWatch,
   committedGraphNotice,
   ensureRepoInitialized,
   forgetWorkspaceRuntime,
@@ -1256,16 +1262,19 @@ const RELATIONSHIP_TOOLS = new Set([
 
 // Plain search ranks on the working-tree graph once one exists, so it asks for the build too.
 // Unlike RELATIONSHIP_TOOLS it degrades to the committed index when the build is refused.
-const WORKSPACE_GRAPH_TOOLS = new Set([...RELATIONSHIP_TOOLS, 'query', 'repomap']);
+const WORKSPACE_GRAPH_TOOLS = new Set([...RELATIONSHIP_TOOLS, 'query', 'repomap', 'search']);
 
 function workspacePreparationError(error: unknown): Error & { code: string; retryable?: boolean } {
   if (error instanceof WorkspacePreparationError) {
-    return Object.assign(new Error(`workspace_preparation_failed: ${error.message}`), {
-      code: error.code,
-      retryable: error.code === 'workspace_busy' || error.code === 'workspace_timeout',
-    });
+    return Object.assign(
+      new Error(`workspace_preparation_failed: ${error.code}`, { cause: error }),
+      {
+        code: error.code,
+        retryable: error.code === 'workspace_busy' || error.code === 'workspace_timeout',
+      },
+    );
   }
-  return Object.assign(new Error(`workspace_preparation_failed: ${errorMessage(error)}`), {
+  return Object.assign(new Error('workspace_preparation_failed', { cause: error }), {
     code: 'workspace_preparation_failed',
   });
 }
@@ -1339,6 +1348,7 @@ const KNOWN_METHODS = new Set<string>([
  * caller that forgets to pass options can never mutate an index.
  */
 interface LocalBackendOptions {
+  readonly watchWorkspace?: boolean;
   readonly confirmWrites?: boolean;
   readonly repoFilter?: string;
   readonly preferredProjectPath?: string;
@@ -1358,6 +1368,11 @@ export class LocalBackend implements BackendPort {
   private removingRepo = false;
   private disposing = false;
   private operations = new Set<Promise<unknown>>();
+  private workspaceWatches = new Map<string, Promise<{ release(): Promise<void> }>>();
+  private watchCleanup = new Set<Promise<void>>();
+  private watchCleanupErrors: unknown[] = [];
+  private readonly watchWorkspace: boolean;
+  private operationContext = new AsyncLocalStorage<{ signal?: AbortSignal }>();
   private readonly confirmWrites: boolean;
   private readonly repoFilter?: string;
   private readonly preferredProjectPath?: string;
@@ -1365,6 +1380,7 @@ export class LocalBackend implements BackendPort {
   private readonly repoToolHandlers: Record<string, RepoToolHandler>;
 
   constructor(options: LocalBackendOptions = {}) {
+    this.watchWorkspace = options.watchWorkspace === true;
     this.confirmWrites = options.confirmWrites === true;
     this.repoFilter = options.repoFilter?.trim() || undefined;
     this.preferredProjectPath = options.preferredProjectPath
@@ -1402,7 +1418,10 @@ export class LocalBackend implements BackendPort {
       },
       gn_diagnose: async (repo, params) => {
         const { gnDiagnose } = await import('../super/diagnose.js');
-        return gnDiagnose(repo.id, params as any);
+        return gnDiagnose(repo.id, params as any, {
+          repoPath: repo.repoPath,
+          projectCwd: this.preferredProjectPath ?? null,
+        });
       },
       detect_changes: async (repo, params) => {
         await this.ensureInitialized(repo.id);
@@ -1525,20 +1544,20 @@ export class LocalBackend implements BackendPort {
         // as the public tools; flag off keeps the direct handlers.
         impact: (r, p, options) =>
           this.withOperation(() =>
-            process.env.ONTOINDEX_AUTO_WORKSPACE === '1'
+            isAutomaticWorkspaceEnabled()
               ? this.dispatchRepoTool('impact', { ...p, repo: r.id, signal: options?.signal })
               : this.impact(r as RepoHandle, { ...p, signal: options?.signal }),
           ),
         query: (r, p) =>
           this.withOperation(() =>
-            process.env.ONTOINDEX_AUTO_WORKSPACE === '1'
+            isAutomaticWorkspaceEnabled()
               ? this.dispatchRepoTool('query', { ...p, repo: r.id })
               : this.query(r as RepoHandle, p),
           ),
         impactByUid: (id, uid, d, o) => this.withOperation(() => this.impactByUid(id, uid, d, o)),
         context: (r, p) =>
           this.withOperation(() =>
-            process.env.ONTOINDEX_AUTO_WORKSPACE === '1'
+            isAutomaticWorkspaceEnabled()
               ? this.dispatchRepoTool('context', { ...p, repo: r.id })
               : this.context(r as RepoHandle, p),
           ),
@@ -1567,10 +1586,11 @@ export class LocalBackend implements BackendPort {
   }
 
   /** Admit work before yielding so removal cannot miss an accepted operation. */
-  withOperation<T>(fn: () => Promise<T>): Promise<T> {
+  withOperation<T>(fn: () => Promise<T>, options?: { signal?: AbortSignal }): Promise<T> {
     if (this.disposing) throw new Error('backend is shutting down');
     this.assertAvailable();
-    const operation = Promise.resolve().then(fn);
+    const context = options ?? this.operationContext.getStore() ?? {};
+    const operation = Promise.resolve().then(() => this.operationContext.run(context, fn));
     this.operations.add(operation);
     void operation.then(
       () => {
@@ -1624,6 +1644,7 @@ export class LocalBackend implements BackendPort {
         ids.add(handle.id);
     }
     for (const repoId of ids) {
+      await this.releaseWorkspaceWatch(repoId);
       await this.withRepoLock(repoId, () => closeLbug(repoId));
       this.initializedRepos.delete(repoId);
       this.lastStalenessCheck.delete(repoId);
@@ -1769,6 +1790,11 @@ export class LocalBackend implements BackendPort {
     }
 
     this.throwIfInitAborted(signal);
+    for (const id of this.workspaceWatches.keys()) {
+      const previous = this.repos.get(id);
+      const fresh = freshRepos.get(id);
+      if (!fresh || previous?.repoPath !== fresh.repoPath) await this.releaseWorkspaceWatch(id);
+    }
     this.repos = freshRepos;
     this.contextCache = freshContextCache;
     logStartupTrace(`refresh repos: cache updated with ${freshRepos.size} repo(s)`, startedAt);
@@ -1789,7 +1815,7 @@ export class LocalBackend implements BackendPort {
 
   /** Start the idle sweep on first use. Only the automatic workspace route holds runtime state. */
   private trackRepoUse(repoId: string): () => void {
-    if (process.env.ONTOINDEX_AUTO_WORKSPACE !== '1' || this.disposing) return () => {};
+    if (!isAutomaticWorkspaceEnabled() || this.disposing) return () => {};
     this.repoIdle.begin(repoId);
     if (!this.idleTimer) {
       this.idleTimer = setInterval(() => void this.evictIdleRepos(), 15_000);
@@ -1815,6 +1841,7 @@ export class LocalBackend implements BackendPort {
         await this.withRepoLock(id, async () => {
           // Recheck under the repo lock: a request may have arrived while we waited.
           if (!this.repoIdle.candidates().includes(id) || hasWorkspaceBuild(id)) return;
+          await this.releaseWorkspaceWatch(id);
           this.initializedRepos.delete(id);
           this.lastStalenessCheck.delete(id);
           forgetWorkspaceRuntime(id);
@@ -1832,6 +1859,16 @@ export class LocalBackend implements BackendPort {
 
   private pruneRetiredRepoState(): void {
     if (this.operations.size > 0) return;
+    for (const id of this.workspaceWatches.keys()) {
+      if (this.repos.has(id)) continue;
+      const cleanup = this.releaseWorkspaceWatch(id);
+      this.watchCleanup.add(cleanup);
+      void cleanup
+        .catch((error) => this.watchCleanupErrors.push(error))
+        .finally(() => {
+          this.watchCleanup.delete(cleanup);
+        });
+    }
     for (const id of new Set([...this.initializedRepos, ...this.lastStalenessCheck.keys()])) {
       if (this.repos.has(id) || this.analysisLocks.has(id) || this.reinitPromises.has(id)) continue;
       this.initializedRepos.delete(id);
@@ -2156,31 +2193,54 @@ export class LocalBackend implements BackendPort {
     }
   }
 
-  private async dispatchTrackedRepoTool(
+  private async retainWorkspaceWatch(repo: RepoHandle): Promise<void> {
+    if (!this.watchWorkspace || !isAutomaticWorkspaceEnabled()) return;
+    if (this.disposing) throw new Error('backend is shutting down');
+    let pending = this.workspaceWatches.get(repo.id);
+    if (!pending) {
+      pending = acquireWorkspaceWatch(repo);
+      this.workspaceWatches.set(repo.id, pending);
+    }
+    try {
+      await pending;
+    } catch (error) {
+      if (this.workspaceWatches.get(repo.id) === pending) this.workspaceWatches.delete(repo.id);
+      throw error;
+    }
+    if (this.disposing) throw new Error('backend is shutting down');
+  }
+
+  private async releaseWorkspaceWatch(repoId: string): Promise<void> {
+    const pending = this.workspaceWatches.get(repoId);
+    if (!pending) return;
+    this.workspaceWatches.delete(repoId);
+    await (await pending).release();
+  }
+
+  /** Admit a callback through the same prepared, pinned read scope as tool dispatch. */
+  async withPreparedRepoRead<T>(
     repo: RepoHandle,
-    method: string,
-    params: NormalizedToolParams,
-    handler: RepoToolHandler,
-  ): Promise<unknown> {
-    const invoke = () => handler(repo, params);
-    let result: unknown;
-    let preparationNote: string | undefined;
-    if (UNGATED_REPO_TOOLS.has(method) || getReadRequestContext()?.repoId === repo.id) {
-      result = await invoke();
-    } else {
+    options: { needsRelationships: boolean; wantsWorkspaceGraph?: boolean },
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const endUse = this.trackRepoUse(repo.id);
+    try {
+      if (getReadRequestContext()?.repoId === repo.id) return await operation();
       const deadline = performance.now() + WORKSPACE_PREPARATION_DEADLINE_MS;
+      const signal = this.operationContext.getStore()?.signal;
       let snapshot: OverlaySnapshot;
       try {
         snapshot = await prepareWorkspaceRead({
           repo,
-          needsRelationships: RELATIONSHIP_TOOLS.has(method),
-          wantsWorkspaceGraph: WORKSPACE_GRAPH_TOOLS.has(method),
+          needsRelationships: options.needsRelationships,
+          wantsWorkspaceGraph: options.wantsWorkspaceGraph,
           deadline,
+          signal,
+          beforeSnapshot: () => this.retainWorkspaceWatch(repo),
         });
       } catch (error) {
         throw workspacePreparationError(error);
       }
-      preparationNote = snapshot.preparationNote;
       // withPinnedOverlay owns the actual generation lease and releases it on exit.
       // Keep the request hook idempotent for downstream preparation ownership.
       let released = false;
@@ -2188,19 +2248,20 @@ export class LocalBackend implements BackendPort {
         repoId: repo.id,
         snapshot,
         deadline,
+        signal,
         async release() {
           if (released) return;
           released = true;
         },
       };
       try {
-        result = await readRequestContext.run(context, async () => {
-          if (!snapshot.usable) return invoke();
+        return await readRequestContext.run(context, async () => {
+          if (!snapshot.usable) return operation();
           let enteredHandler = false;
           try {
             return await withPinnedOverlay(repo, snapshot, () => {
               enteredHandler = true;
-              return invoke();
+              return operation();
             });
           } catch (error) {
             if (
@@ -2215,7 +2276,32 @@ export class LocalBackend implements BackendPort {
       } finally {
         await context.release();
       }
+    } finally {
+      endUse();
     }
+  }
+
+  private async dispatchTrackedRepoTool(
+    repo: RepoHandle,
+    method: string,
+    params: NormalizedToolParams,
+    handler: RepoToolHandler,
+  ): Promise<unknown> {
+    const invoke = () => handler(repo, params);
+    let preparationNote: string | undefined;
+    let result = UNGATED_REPO_TOOLS.has(method)
+      ? await invoke()
+      : await this.withPreparedRepoRead(
+          repo,
+          {
+            needsRelationships: RELATIONSHIP_TOOLS.has(method),
+            wantsWorkspaceGraph: WORKSPACE_GRAPH_TOOLS.has(method),
+          },
+          async () => {
+            preparationNote = getReadRequestContext()?.snapshot.preparationNote;
+            return invoke();
+          },
+        );
     if (preparationNote && isObjectResponse(result)) {
       const existing = (result as { warnings?: unknown }).warnings;
       result = {
@@ -2876,7 +2962,7 @@ export class LocalBackend implements BackendPort {
 
     const repo = this.repos.get(repoId);
     if (!repo) return null;
-    if (process.env.ONTOINDEX_AUTO_WORKSPACE === '1') {
+    if (isAutomaticWorkspaceEnabled()) {
       // Same gate and pinned workspace generation as the public `impact` tool.
       try {
         const routed = (await this.dispatchRepoTool('impact', {
@@ -3203,6 +3289,10 @@ export class LocalBackend implements BackendPort {
     this.disposing = true;
     if (this.idleTimer) clearInterval(this.idleTimer);
     this.idleTimer = undefined;
+    const watchReleases = await Promise.allSettled([
+      ...[...this.workspaceWatches.keys()].map((id) => this.releaseWorkspaceWatch(id)),
+      ...this.watchCleanup,
+    ]);
     await Promise.allSettled([
       ...this.operations,
       ...this.analysisLocks.values(),
@@ -3221,6 +3311,12 @@ export class LocalBackend implements BackendPort {
     this.analysisLocks.clear();
     this.lastStalenessCheck.clear();
     this.reinitPromises.clear();
+    const watchErrors = [
+      ...this.watchCleanupErrors,
+      ...watchReleases.flatMap((result) => (result.status === 'rejected' ? [result.reason] : [])),
+    ];
+    if (watchErrors.length)
+      throw new AggregateError(watchErrors, 'Workspace watcher cleanup failed');
   }
 
   async disconnect(): Promise<void> {

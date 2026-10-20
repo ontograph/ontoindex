@@ -43,6 +43,10 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
 }));
 
+vi.mock('../../src/mcp/super/diagnose.js', () => ({
+  gnDiagnose: vi.fn().mockResolvedValue({ misconfiguration: { status: 'ok' } }),
+}));
+
 // Also mock the search modules to avoid loading onnxruntime
 vi.mock('../../src/core/search/bm25-index.js', () => ({
   searchFTSFromLbug: vi.fn().mockResolvedValue([]),
@@ -80,6 +84,7 @@ vi.mock('../../src/mcp/local/local-backend-repo-runtime.js', async (importOrigin
 });
 
 import { LocalBackend, getReadRequestContext } from '../../src/mcp/local/local-backend.js';
+import { gnDiagnose } from '../../src/mcp/super/diagnose.js';
 import {
   prepareWorkspaceRead,
   WorkspacePreparationError,
@@ -178,6 +183,53 @@ describe('request workspace gate', () => {
     await backend.init();
   });
 
+  it.each([false, true])(
+    'shares direct prepared callbacks and releases on failure=%s',
+    async (fails) => {
+      const repo = await backend.resolveRepo();
+      vi.mocked(prepareWorkspaceRead).mockResolvedValue({
+        ...cleanSnapshot(),
+        usable: true,
+        generation: 'direct',
+      });
+      let release!: ReturnType<typeof vi.spyOn>;
+      const operation = vi.fn(async () => {
+        const context = getReadRequestContext()!;
+        release = vi.spyOn(context, 'release');
+        return backend.withPreparedRepoRead(repo, { needsRelationships: true }, async () => {
+          expect(getReadRequestContext()).toBe(context);
+          if (fails) throw new Error('direct failure');
+          return 'direct';
+        });
+      });
+      const result = backend.withPreparedRepoRead(
+        repo,
+        { needsRelationships: true, wantsWorkspaceGraph: true },
+        operation,
+      );
+      if (fails) await expect(result).rejects.toThrow('direct failure');
+      else await expect(result).resolves.toBe('direct');
+      expect(operation).toHaveBeenCalledOnce();
+      expect(prepareWorkspaceRead).toHaveBeenCalledOnce();
+      expect(withPinnedOverlay).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+      expect(getReadRequestContext()).toBeUndefined();
+    },
+  );
+
+  it('rejects direct callbacks before entry when preparation fails', async () => {
+    const repo = await backend.resolveRepo();
+    vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(new Error('private-path'));
+    const operation = vi.fn(async () => 'unreachable');
+    await expect(
+      backend.withPreparedRepoRead(repo, { needsRelationships: true }, operation),
+    ).rejects.toMatchObject({
+      code: 'workspace_preparation_failed',
+      message: 'workspace_preparation_failed',
+    });
+    expect(operation).not.toHaveBeenCalled();
+  });
+
   it('gates nested reads once and shares the context and fixed deadline', async () => {
     let outer: ReturnType<typeof getReadRequestContext>;
     const handlers = (backend as any).repoToolHandlers;
@@ -219,6 +271,80 @@ describe('request workspace gate', () => {
     },
   );
 
+  it('inherits operation signals through nested scopes and isolates concurrent requests', async () => {
+    const first = new AbortController();
+    const second = new AbortController();
+    const preparations: Array<{ signal?: AbortSignal; finish(): void }> = [];
+    vi.mocked(prepareWorkspaceRead).mockImplementation(
+      ({ signal }) =>
+        new Promise((resolve) => {
+          preparations.push({ signal, finish: () => resolve(cleanSnapshot()) });
+        }),
+    );
+    const seen: Array<AbortSignal | undefined> = [];
+    (backend as any).repoToolHandlers.overview = async () => {
+      seen.push(getReadRequestContext()?.signal);
+      return backend.withOperation(() => backend.callTool('route_map', {}));
+    };
+    (backend as any).repoToolHandlers.route_map = async () => {
+      seen.push(getReadRequestContext()?.signal);
+      return [];
+    };
+    const firstRequest = backend.withOperation(
+      () => backend.withOperation(() => backend.callTool('overview', {})),
+      { signal: first.signal },
+    );
+    const secondRequest = backend.withOperation(() => backend.callTool('overview', {}), {
+      signal: second.signal,
+    });
+    await vi.waitFor(() => expect(preparations).toHaveLength(2));
+    expect(preparations.map(({ signal }) => signal)).toEqual(
+      expect.arrayContaining([first.signal, second.signal]),
+    );
+    preparations.find(({ signal }) => signal === second.signal)!.finish();
+    await secondRequest;
+    preparations.find(({ signal }) => signal === first.signal)!.finish();
+    await firstRequest;
+    expect(seen).toEqual([second.signal, second.signal, first.signal, first.signal]);
+    const unscopedRequest = backend.callTool('route_map', {});
+    await vi.waitFor(() => expect(preparations).toHaveLength(3));
+    expect(preparations[2].signal).toBeUndefined();
+    preparations[2].finish();
+    await unscopedRequest;
+  });
+
+  it('cancels only the waiting request before invoking its handler', async () => {
+    const cancelled = new AbortController();
+    let finish!: () => void;
+    const building = new Promise<OverlaySnapshot>((resolve) => {
+      finish = () => resolve(cleanSnapshot());
+    });
+    vi.mocked(prepareWorkspaceRead).mockImplementation(
+      ({ signal }) =>
+        new Promise((resolve, reject) => {
+          const onAbort = () => reject(new WorkspacePreparationError('workspace_cancelled'));
+          signal?.addEventListener('abort', onAbort, { once: true });
+          void building.then((snapshot) => {
+            signal?.removeEventListener('abort', onAbort);
+            resolve(snapshot);
+          });
+        }),
+    );
+    const handler = vi.fn(async () => []);
+    (backend as any).repoToolHandlers.overview = handler;
+    const cancelledRequest = backend.withOperation(() => backend.callTool('overview', {}), {
+      signal: cancelled.signal,
+    });
+    const survivingRequest = backend.callTool('overview', {});
+    await vi.waitFor(() => expect(prepareWorkspaceRead).toHaveBeenCalledTimes(2));
+    cancelled.abort();
+    await expect(cancelledRequest).rejects.toMatchObject({ code: 'workspace_cancelled' });
+    expect(handler).not.toHaveBeenCalled();
+    finish();
+    await expect(survivingRequest).resolves.toEqual([]);
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ['context', true],
     ['impact', true],
@@ -241,8 +367,10 @@ describe('request workspace gate', () => {
     expect(prepareWorkspaceRead).toHaveBeenCalledWith({
       repo: expect.objectContaining({ repoPath: MOCK_REPO_ENTRY.path }),
       needsRelationships,
+      beforeSnapshot: expect.any(Function),
       wantsWorkspaceGraph: needsRelationships || method === 'query' || method === 'repomap',
       deadline: expect.any(Number),
+      signal: undefined,
     });
   });
 
@@ -276,7 +404,7 @@ describe('request workspace gate', () => {
     (backend as any).repoToolHandlers.overview = handler;
     await expect(backend.callTool('overview', {})).rejects.toMatchObject({
       code: 'workspace_preparation_failed',
-      message: 'workspace_preparation_failed: capture failed',
+      message: 'workspace_preparation_failed',
     });
     expect(handler).not.toHaveBeenCalled();
   });
@@ -286,15 +414,39 @@ describe('request workspace gate', () => {
     ['workspace_timeout', true],
     ['workspace_cancelled', false],
     ['workspace_build_failed', false],
+    ['workspace_too_large', false],
   ] as const)('preserves preparation code %s and retryability', async (code, retryable) => {
-    vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(new WorkspacePreparationError(code));
+    const original = new WorkspacePreparationError(
+      code,
+      'secret=preparation-token\nsource: private.ts',
+    );
+    vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(original);
     const handler = vi.fn();
     (backend as any).repoToolHandlers.overview = handler;
-    await expect(backend.callTool('overview', {})).rejects.toMatchObject({
+    const failure = await backend.callTool('overview', {}).catch((error: unknown) => error);
+    expect(failure).toMatchObject({
       code,
       retryable,
-      message: expect.stringMatching(/^workspace_preparation_failed:/),
+      message: `workspace_preparation_failed: ${code}`,
+      cause: original,
     });
+    expect(JSON.stringify(failure)).not.toMatch(/preparation-token|private\.ts/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it.each(['Error', 'non-Error'])('bounds unexpected %s preparation failures', async (kind) => {
+    const detail = `secret=preparation-token\nsource: private.ts\n${'x'.repeat(100_000)}`;
+    const original = kind === 'Error' ? new Error(detail) : detail;
+    vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(original);
+    const handler = vi.fn();
+    (backend as any).repoToolHandlers.overview = handler;
+    const failure = await backend.callTool('overview', {}).catch((error: unknown) => error);
+    expect(failure).toMatchObject({
+      code: 'workspace_preparation_failed',
+      message: 'workspace_preparation_failed',
+      cause: original,
+    });
+    expect(JSON.stringify(failure)).toBe('{"code":"workspace_preparation_failed"}');
     expect(handler).not.toHaveBeenCalled();
   });
 
@@ -425,18 +577,21 @@ describe('request workspace gate', () => {
     });
     afterEach(() => vi.unstubAllEnvs());
 
-    it('routes through the gated impact handler when the workspace flag is on', async () => {
-      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
-      const handler = vi.fn(async () => ({ risk: 'LOW', impactedCount: 1, byDepth: {} }));
-      (backend as any).repoToolHandlers.impact = handler;
-      const result = await backend.impactByUid(repoId, 'uid-1', 'downstream', opts);
-      expect(result).toMatchObject({ impactedCount: 1 });
-      expect(handler).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ target_uid: 'uid-1', direction: 'downstream', maxDepth: 3 }),
-      );
-      expect(prepareWorkspaceRead).toHaveBeenCalledOnce();
-    });
+    it.each([undefined, '1'])(
+      'routes through the gated impact handler with activation %s',
+      async (flag) => {
+        vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', flag);
+        const handler = vi.fn(async () => ({ risk: 'LOW', impactedCount: 1, byDepth: {} }));
+        (backend as any).repoToolHandlers.impact = handler;
+        const result = await backend.impactByUid(repoId, 'uid-1', 'downstream', opts);
+        expect(result).toMatchObject({ impactedCount: 1 });
+        expect(handler).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ target_uid: 'uid-1', direction: 'downstream', maxDepth: 3 }),
+        );
+        expect(prepareWorkspaceRead).toHaveBeenCalledOnce();
+      },
+    );
 
     it.each([
       ['error', { error: 'not found' }],
@@ -457,6 +612,7 @@ describe('request workspace gate', () => {
     });
 
     it('does not use the gated handler when the flag is off', async () => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
       const handler = vi.fn();
       (backend as any).repoToolHandlers.impact = handler;
       await backend.impactByUid(repoId, 'uid-1', 'upstream', opts);
@@ -473,15 +629,19 @@ describe('request workspace gate', () => {
         return svc.port[port](repo, params, {});
       };
 
-      it.each(ports)('routes %s through the workspace gate when the flag is on', async (port) => {
-        vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
-        const handler = vi.fn(async () => ({ ok: port }));
-        (backend as any).repoToolHandlers[port] = handler;
-        expect(await call(port)).toMatchObject({ ok: port });
-        expect(prepareWorkspaceRead).toHaveBeenCalledOnce();
-      });
+      it.each(ports)(
+        'routes %s through the workspace gate with default activation',
+        async (port) => {
+          vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', undefined);
+          const handler = vi.fn(async () => ({ ok: port }));
+          (backend as any).repoToolHandlers[port] = handler;
+          expect(await call(port)).toMatchObject({ ok: port });
+          expect(prepareWorkspaceRead).toHaveBeenCalledOnce();
+        },
+      );
 
       it.each(ports)('does not prepare a workspace for %s when the flag is off', async (port) => {
+        vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
         vi.spyOn(backend as any, port).mockResolvedValue({ ok: port });
         expect(await call(port)).toMatchObject({ ok: port });
         expect(prepareWorkspaceRead).not.toHaveBeenCalled();
@@ -619,6 +779,28 @@ describe('LocalBackend.callTool', () => {
     backend = new LocalBackend();
     setupSingleRepo();
     await backend.init();
+  });
+
+  it.each([null, '/tmp/startup-other-project'])(
+    'passes trusted selected repo context to diagnostics with startup project %s',
+    async (projectCwd) => {
+      backend = new LocalBackend({ preferredProjectPath: projectCwd ?? undefined });
+      await backend.init();
+      const params = { repo: MOCK_REPO_ENTRY.name, checkLsp: false };
+      await backend.callTool('gn_diagnose', params);
+      expect(gnDiagnose).toHaveBeenCalledWith(expect.any(String), params, {
+        repoPath: MOCK_REPO_ENTRY.path,
+        projectCwd,
+      });
+    },
+  );
+
+  it('rejects diagnostics outside an explicit repo filter', async () => {
+    await setupMultipleReposWithReadableOther();
+    backend = new LocalBackend({ repoFilter: 'other-project' });
+    await backend.init();
+    await expect(backend.callTool('gn_diagnose', { repo: MOCK_REPO_ENTRY.name })).rejects.toThrow();
+    expect(gnDiagnose).not.toHaveBeenCalled();
   });
 
   it('routes list_repos without needing repo param', async () => {
@@ -1220,6 +1402,17 @@ describe('LocalBackend.callTool', () => {
     (executeParameterized as any).mockResolvedValue([]);
     const result = await backend.callTool('search', { query: 'auth' });
     expect(result).toHaveProperty('processes');
+  });
+
+  it('requires the full workspace graph for the search alias', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    (executeParameterized as any).mockResolvedValue([]);
+    await backend.callTool('search', { query: 'auth' });
+    expect(prepareWorkspaceRead).toHaveBeenCalledWith(
+      expect.objectContaining({
+        wantsWorkspaceGraph: true,
+      }),
+    );
   });
 
   it('dispatches "explore" as alias for context', async () => {

@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { constants } from 'node:fs';
+import { constants, type Stats } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
@@ -581,6 +581,15 @@ async function checkCapturePath(root: string, relativePath: string): Promise<voi
   }
 }
 
+function assertCaptureInputIdentity(relativePath: string, expected: Stats, actual: Stats): void {
+  if (expected.dev !== actual.dev || expected.ino !== actual.ino) {
+    throw new WorkspaceInputCaptureError(
+      'changed-input',
+      `Workspace input identity changed during read: ${relativePath}; retry after writes settle`,
+    );
+  }
+}
+
 /** Category-specific resolver root validation for workspace capture. */
 function checkResolverConfiguration(relativePath: string, content: Buffer): void {
   if (!/^(?:ts|js)config.*\.json$/.test(path.basename(relativePath))) return;
@@ -865,6 +874,7 @@ export async function workspaceConfigurationIdentity(
   for (const relativePath of configs) {
     check();
     await checkCapturePath(root, relativePath);
+    const beforeOpen = await fs.lstat(captureInputPath(root, relativePath));
     const handle = await fs.open(
       captureInputPath(root, relativePath),
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -876,6 +886,7 @@ export async function workspaceConfigurationIdentity(
           'unsupported',
           `Workspace input is not a readable regular file: ${relativePath}`,
         );
+      assertCaptureInputIdentity(relativePath, beforeOpen, stat);
       const fileCap = Math.min(
         getScanMaxFileSizeBytes() ?? 512 * 1024 * 1024,
         512 * 1024 * 1024 - bytes,
@@ -900,6 +911,11 @@ export async function workspaceConfigurationIdentity(
         );
       bytes += length;
       await checkCapturePath(root, relativePath);
+      assertCaptureInputIdentity(
+        relativePath,
+        stat,
+        await fs.lstat(captureInputPath(root, relativePath)),
+      );
       const value = content.subarray(0, length);
       checkResolverConfiguration(relativePath, value);
       entries.push({
@@ -1061,6 +1077,7 @@ export async function captureWorkspaceInputs(
               check();
               await options.hooks?.beforeRead?.(relativePath, attempt);
               await checkCapturePath(root, relativePath);
+              const beforeOpen = await fs.lstat(captureInputPath(root, relativePath));
               const handle = await fs.open(
                 captureInputPath(root, relativePath),
                 constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -1073,6 +1090,7 @@ export async function captureWorkspaceInputs(
                     `Workspace input is not a readable regular file: ${relativePath}`,
                   );
                 }
+                assertCaptureInputIdentity(relativePath, beforeOpen, stat);
                 const fileCap = Math.min(
                   getScanMaxFileSizeBytes() ?? maxTotalBytes,
                   maxTotalBytes - bytes,
@@ -1098,6 +1116,11 @@ export async function captureWorkspaceInputs(
                   );
                 bytes += length;
                 await checkCapturePath(root, relativePath);
+                assertCaptureInputIdentity(
+                  relativePath,
+                  stat,
+                  await fs.lstat(captureInputPath(root, relativePath)),
+                );
                 const value = content.subarray(0, length);
                 if (configs.includes(relativePath)) checkResolverConfiguration(relativePath, value);
                 return {

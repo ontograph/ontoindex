@@ -74,6 +74,7 @@ function setupDefaultMocks() {
     }
     // Co-change
     if (cypher.includes('CO_CHANGED_WITH')) {
+      if (cypher.includes('<-')) return [];
       return [
         { path: 'src/bar.ts', coChangeCount: 8 },
         { path: 'src/baz.ts', coChangeCount: 3 },
@@ -132,6 +133,37 @@ describe('gnExplainModule', () => {
     expect(report.fileSkeleton).toContain('src/foo.ts');
   });
 
+  it('reads scalar file rows and derives source stats despite stale graph offsets', async () => {
+    const filePath = '.vitest-explain-module/scalar-file.ts';
+    await mkdir('.vitest-explain-module', { recursive: true });
+    await writeFile(filePath, ['export function doWork() {', '  return 1;', '}'].join('\n'));
+    setupDefaultMocks();
+    const base = mockExecute.getMockImplementation()!;
+    mockExecute.mockImplementation(async (repoId, cypher, params) => {
+      if (cypher.includes('MATCH (f:File') && cypher.includes('RETURN f')) {
+        expect(cypher).not.toMatch(/RETURN\s+f\s*(?:LIMIT|,|$)/);
+        expect(cypher).not.toMatch(/f\.content/);
+        expect(cypher).toMatch(/RETURN\s+f\.filePath AS filePath\s+LIMIT 1/);
+        return [{ filePath }];
+      }
+      return base(repoId, cypher, params);
+    });
+
+    const report = await gnExplainModule('test-repo', { filePath });
+
+    expect(report.filePath).toBe(filePath);
+    expect(report.readFirstFiles[0]).toEqual({
+      filePath,
+      reason: 'target module file',
+      source: 'module',
+    });
+    expect(report.publicAPI.map((entry) => entry.name)).toEqual(['doWork', 'MyClass']);
+    expect(report.publicAPI.map((entry) => entry.documentation)).toEqual([undefined, undefined]);
+    expect(report.fileStats).toEqual({ lineCount: 3, symbolCount: 5, importCount: 7 });
+    expect(report.recentlyTouched.lastCommitDate).toBe('2024-01-15T12:00:00+00:00');
+    expect(report.warnings).not.toContain('file not in index — run ontoindex analyze');
+  });
+
   it('excludes non-exported symbols from publicAPI', async () => {
     mockSkeleton.mockResolvedValue('');
 
@@ -184,6 +216,100 @@ describe('gnExplainModule', () => {
         report.coChangedFiles[i].coChangeCount,
       );
     }
+  });
+
+  it('merges the bounded directional co-change queries into the global top ten', async () => {
+    setupDefaultMocks();
+    const base = mockExecute.getMockImplementation()!;
+    mockExecute.mockImplementation(async (repoId, cypher, params) => {
+      if (cypher.includes('CO_CHANGED_WITH')) {
+        const incoming = cypher.includes('<-');
+        return Array.from({ length: 10 }, (_, index) => ({
+          path: `src/${incoming ? 'incoming' : 'outgoing'}-${index}.ts`,
+          coChangeCount: 20 - index * 2 - (incoming ? 1 : 0),
+        }));
+      }
+      return base(repoId, cypher, params);
+    });
+
+    const report = await gnExplainModule('test-repo', { filePath: 'src/foo.ts' });
+
+    const coChangeCalls = mockExecute.mock.calls.filter((call) =>
+      call[1].includes('CO_CHANGED_WITH'),
+    );
+    expect(coChangeCalls).toHaveLength(2);
+    expect(coChangeCalls[0][1]).toMatch(/\]->\(other:File\)/);
+    expect(coChangeCalls[1][1]).toMatch(/<-\[r:CodeRelation/);
+    for (const [repoId, cypher, params] of coChangeCalls) {
+      expect(repoId).toBe('test-repo');
+      expect(cypher).toMatch(/ORDER BY r\.confidence DESC\s+LIMIT 10/);
+      expect(params).toEqual({ path: 'src/foo.ts' });
+    }
+    expect(report.coChangedFiles).toEqual(
+      Array.from({ length: 10 }, (_, index) => ({
+        path: `src/${index % 2 === 0 ? 'outgoing' : 'incoming'}-${Math.floor(index / 2)}.ts`,
+        coChangeCount: 20 - index,
+      })),
+    );
+  });
+
+  it('preserves duplicate co-change edges and both occurrences of a self-loop', async () => {
+    setupDefaultMocks();
+    const base = mockExecute.getMockImplementation()!;
+    mockExecute.mockImplementation(async (repoId, cypher, params) => {
+      if (cypher.includes('CO_CHANGED_WITH')) {
+        return [
+          { path: 'src/foo.ts', coChangeCount: 8 },
+          { path: 'src/repeated.ts', coChangeCount: 3 },
+        ];
+      }
+      return base(repoId, cypher, params);
+    });
+
+    const report = await gnExplainModule('test-repo', { filePath: 'src/foo.ts' });
+
+    expect(report.coChangedFiles).toEqual([
+      { path: 'src/foo.ts', coChangeCount: 8 },
+      { path: 'src/foo.ts', coChangeCount: 8 },
+      { path: 'src/repeated.ts', coChangeCount: 3 },
+      { path: 'src/repeated.ts', coChangeCount: 3 },
+    ]);
+  });
+
+  it('ranks null confidence before numbers before converting null to report zero', async () => {
+    setupDefaultMocks();
+    const base = mockExecute.getMockImplementation()!;
+    mockExecute.mockImplementation(async (repoId, cypher, params) => {
+      if (cypher.includes('CO_CHANGED_WITH')) {
+        return cypher.includes('<-')
+          ? [
+              { path: 'src/null.ts', coChangeCount: null },
+              { path: 'src/negative.ts', coChangeCount: -1 },
+            ]
+          : [{ path: 'src/positive.ts', coChangeCount: 10 }];
+      }
+      return base(repoId, cypher, params);
+    });
+
+    const report = await gnExplainModule('test-repo', { filePath: 'src/foo.ts' });
+
+    expect(report.coChangedFiles).toEqual([
+      { path: 'src/null.ts', coChangeCount: 0 },
+      { path: 'src/positive.ts', coChangeCount: 10 },
+      { path: 'src/negative.ts', coChangeCount: -1 },
+    ]);
+  });
+
+  it('skips both co-change queries when includeCoChange is false', async () => {
+    setupDefaultMocks();
+
+    const report = await gnExplainModule('test-repo', {
+      filePath: 'src/foo.ts',
+      includeCoChange: false,
+    });
+
+    expect(report.coChangedFiles).toEqual([]);
+    expect(mockExecute.mock.calls.some((call) => call[1].includes('CO_CHANGED_WITH'))).toBe(false);
   });
 
   it('returns the compact files projection when format is files', async () => {

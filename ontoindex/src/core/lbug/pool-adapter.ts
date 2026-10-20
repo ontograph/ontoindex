@@ -749,7 +749,8 @@ setInterval(() => {
 function createConnection(db: lbug.Database): lbug.Connection {
   silenceStdout();
   try {
-    return new lbug.Connection(db);
+    // Bound per-query native working memory across every pool connection.
+    return new lbug.Connection(db, 4);
   } finally {
     restoreStdout();
   }

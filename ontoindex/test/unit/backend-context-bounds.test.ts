@@ -171,7 +171,7 @@ describe('backend context bounds', () => {
     lbugMocks.executeParameterized.mockImplementation(async (_repo: string, query: string) => {
       if (query.includes('STEP_IN_PROCESS')) throw new Error('process unavailable');
       if (query.includes('EXPLAINED_BY')) throw new Error('concept unavailable');
-      if (query.includes('RETURN n.visibility')) throw new Error('metadata unavailable');
+      if (/RETURN n\s+LIMIT 1/.test(query)) throw new Error('metadata unavailable');
       return [];
     });
 
@@ -187,6 +187,90 @@ describe('backend context bounds', () => {
         'method-metadata-query-failed',
       ]),
     });
+  });
+
+  it.each(['Function', 'Method', 'Constructor'])(
+    'omits unavailable metadata from sparse %s nodes without reporting a failure',
+    async (kind) => {
+      resolveMocks.resolveSymbolCandidates.mockResolvedValue({
+        kind: 'ok',
+        resolvedLabel: kind,
+        symbol: { id: 'sym-1', name: 'login', type: kind, filePath: 'src/auth.ts' },
+      });
+      lbugMocks.executeParameterized.mockImplementation(async (_repo: string, query: string) => {
+        if (/RETURN n\s+LIMIT 1/.test(query))
+          return [{ n: { id: 'sym-1', name: 'login', _label: kind, _id: { offset: 1 } } }];
+        return [];
+      });
+
+      const { context } = await import('../../src/mcp/local/backend-context.js');
+      const result = (await context({ id: 'repo' }, { name: 'login' })) as any;
+
+      expect(result.symbol).not.toHaveProperty('methodMetadata');
+      expect(result.contextCompleteness.missingReasons).not.toContain(
+        'method-metadata-query-failed',
+      );
+      const metadataQuery = lbugMocks.executeParameterized.mock.calls
+        .map((call) => String(call[1]))
+        .find((query) => /RETURN n\s+LIMIT 1/.test(query));
+      expect(metadataQuery).toBeDefined();
+      expect(metadataQuery).not.toContain('n.visibility');
+    },
+  );
+
+  it.each(['named', 'positional'])(
+    'retains known metadata including false and zero and excludes unrelated node fields (%s row)',
+    async (shape) => {
+      const metadata = {
+        visibility: 'public',
+        isStatic: false,
+        isAbstract: false,
+        isFinal: true,
+        isVirtual: false,
+        isOverride: false,
+        isAsync: true,
+        isPartial: false,
+        returnType: 'void',
+        parameterCount: 0,
+        isVariadic: false,
+        requiredParameterCount: 0,
+        parameterTypes: [],
+        annotations: ['exported'],
+      };
+      const node = {
+        ...metadata,
+        id: 'sym-1',
+        name: 'login',
+        _label: 'Function',
+        _id: { offset: 1 },
+        unknownMetadata: 'private',
+      };
+      lbugMocks.executeParameterized.mockImplementation(async (_repo: string, query: string) => {
+        if (/RETURN n\s+LIMIT 1/.test(query)) return [shape === 'named' ? { n: node } : [node]];
+        return [];
+      });
+
+      const { context } = await import('../../src/mcp/local/backend-context.js');
+      const result = (await context({ id: 'repo' }, { name: 'login' })) as any;
+
+      expect(result.symbol.methodMetadata).toStrictEqual(metadata);
+      expect(result.contextCompleteness.missingReasons).not.toContain(
+        'method-metadata-query-failed',
+      );
+    },
+  );
+
+  it('omits null and undefined metadata fields while preserving available fields', async () => {
+    lbugMocks.executeParameterized.mockImplementation(async (_repo: string, query: string) => {
+      if (/RETURN n\s+LIMIT 1/.test(query))
+        return [{ n: { visibility: null, returnType: undefined, isAsync: false } }];
+      return [];
+    });
+
+    const { context } = await import('../../src/mcp/local/backend-context.js');
+    const result = (await context({ id: 'repo' }, { name: 'login' })) as any;
+
+    expect(result.symbol.methodMetadata).toStrictEqual({ isAsync: false });
   });
 
   it('adds context completeness when source was not requested', async () => {

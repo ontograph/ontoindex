@@ -379,7 +379,38 @@ export class GroupService {
             const st = (payload as { status?: string })?.status;
             const sym = (payload as { symbol?: { filePath?: string } })?.symbol;
             if (st === 'found' && !fileMatchesServicePrefix(sym?.filePath, servicePrefix)) {
-              return { repoPath, registryName, payload: {} };
+              const metadata = payload as {
+                source?: unknown;
+                graphImpactAvailable?: unknown;
+                targetContext?: unknown;
+                freshness?: unknown;
+                repoLabel?: unknown;
+                repoPath?: unknown;
+                capabilitiesUsed?: unknown;
+                capabilitiesMissing?: unknown;
+              };
+              return {
+                repoPath,
+                registryName,
+                payload: {
+                  ...(metadata.source !== undefined ? { source: metadata.source } : {}),
+                  ...(metadata.graphImpactAvailable !== undefined
+                    ? { graphImpactAvailable: metadata.graphImpactAvailable }
+                    : {}),
+                  ...(metadata.targetContext !== undefined
+                    ? { targetContext: metadata.targetContext }
+                    : {}),
+                  ...(metadata.freshness !== undefined ? { freshness: metadata.freshness } : {}),
+                  ...(metadata.repoLabel !== undefined ? { repoLabel: metadata.repoLabel } : {}),
+                  ...(metadata.repoPath !== undefined ? { repoPath: metadata.repoPath } : {}),
+                  ...(metadata.capabilitiesUsed !== undefined
+                    ? { capabilitiesUsed: metadata.capabilitiesUsed }
+                    : {}),
+                  ...(metadata.capabilitiesMissing !== undefined
+                    ? { capabilitiesMissing: metadata.capabilitiesMissing }
+                    : {}),
+                },
+              };
             }
           }
 
@@ -457,9 +488,38 @@ export class GroupService {
             max_symbols: (params.max_symbols as number | undefined) ?? 10,
             include_content: (params.include_content as boolean | undefined) ?? false,
           })) as {
+            error?: unknown;
             processes?: Array<Record<string, unknown>>;
             process_symbols?: Array<Record<string, unknown>>;
+            targetContext?: unknown;
+            freshness?: unknown;
+            repoLabel?: unknown;
+            repoPath?: unknown;
+            capabilitiesUsed?: unknown;
+            capabilitiesMissing?: unknown;
           };
+          const metadata = {
+            ...(queryResult.targetContext !== undefined
+              ? { targetContext: queryResult.targetContext }
+              : {}),
+            ...(queryResult.freshness !== undefined ? { freshness: queryResult.freshness } : {}),
+            ...(queryResult.repoLabel !== undefined ? { repoLabel: queryResult.repoLabel } : {}),
+            ...(queryResult.repoPath !== undefined ? { repoPath: queryResult.repoPath } : {}),
+            ...(queryResult.capabilitiesUsed !== undefined
+              ? { capabilitiesUsed: queryResult.capabilitiesUsed }
+              : {}),
+            ...(queryResult.capabilitiesMissing !== undefined
+              ? { capabilitiesMissing: queryResult.capabilitiesMissing }
+              : {}),
+          };
+          if (queryResult.error) {
+            return {
+              repo: repoPath,
+              score: 0,
+              processes: [] as unknown[],
+              metadata: { ...metadata, status: 'unavailable' },
+            };
+          }
           const processes = servicePrefix
             ? filterQueryByServicePrefix(queryResult, servicePrefix).processes
             : queryResult.processes || [];
@@ -468,9 +528,14 @@ export class GroupService {
             _rrf_score: 1 / (idx + 1 + 60),
             _repo: repoPath,
           }));
-          return { repo: repoPath, score: 0, processes: scored as unknown[] };
+          return { repo: repoPath, score: 0, processes: scored as unknown[], metadata };
         } catch {
-          return { repo: repoPath, score: 0, processes: [] as unknown[] };
+          return {
+            repo: repoPath,
+            score: 0,
+            processes: [] as unknown[],
+            metadata: { status: 'unavailable' },
+          };
         }
       },
     );
@@ -483,7 +548,7 @@ export class GroupService {
       group: name,
       query: queryText,
       results: topN,
-      per_repo: perRepo.map((r) => ({ repo: r.repo, count: r.processes.length })),
+      per_repo: perRepo.map((r) => ({ repo: r.repo, count: r.processes.length, ...r.metadata })),
       ...(warnings.length > 0 ? { warnings } : {}),
     };
   }
