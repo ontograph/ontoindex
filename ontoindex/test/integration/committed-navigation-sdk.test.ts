@@ -201,25 +201,36 @@ describe('explicit committed navigation over MCP', () => {
     expect(analysisSpy).not.toHaveBeenCalled();
   });
 
-  it('keeps scoped diff reporting callable without implying accepted symbol scope', async () => {
-    const result = await client.callTool({
-      name: 'gn_verify_diff',
-      arguments: {
-        repo: repoName,
-        scope: 'all',
-        changedFiles: ['src/base.ts'],
-        expectedFiles: ['src/base.ts'],
-        changedSymbols: ['baseline'],
-      },
-    });
-    expect(result.isError, JSON.stringify(result)).not.toBe(true);
-    const payload = payloadOf(result);
-    expect(payload.status).toBe('FAIL');
-    expect(payload.unexpectedChangedFiles).toEqual([]);
-    expect(payload.actual.changedSymbols).toEqual(['baseline']);
-    expect(payload.unexpectedChangedSymbols).toEqual(['baseline']);
-    expect(payload.actual.executedTests).toEqual([]);
-  });
+  it.each([undefined, [], ['baseline']])(
+    'distinguishes symbol expectations %j',
+    async (expectedSymbols) => {
+      const result = await client.callTool({
+        name: 'gn_verify_diff',
+        arguments: {
+          repo: repoName,
+          scope: 'all',
+          changedFiles: ['src/base.ts'],
+          expectedFiles: ['src/base.ts'],
+          changedSymbols: ['baseline'],
+          ...(expectedSymbols === undefined ? {} : { expectedSymbols }),
+        },
+      });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      const payload = payloadOf(result);
+      expect(payload.status).toBe(expectedSymbols?.length === 0 ? 'FAIL' : 'PASS');
+      expect(payload.unexpectedChangedFiles).toEqual([]);
+      expect(payload.actual.changedSymbols).toEqual(['baseline']);
+      expect(payload.unexpectedChangedSymbols).toEqual(
+        expectedSymbols?.length === 0 ? ['baseline'] : [],
+      );
+      expect(payload.skipReasons).toEqual(
+        expectedSymbols === undefined
+          ? ['expectedSymbols not provided; symbol scope was not checked.']
+          : [],
+      );
+      expect(payload.actual.executedTests).toEqual([]);
+    },
+  );
 
   it('rejects unsupported read modes and live enrichment', async () => {
     for (const args of [

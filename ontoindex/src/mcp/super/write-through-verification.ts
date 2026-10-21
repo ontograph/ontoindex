@@ -174,7 +174,10 @@ export async function gnVerifyDiff(
     unexpectedImpactedSymbols: result.unexpectedImpactedSymbols,
     missingRequiredTests: result.missingRequiredTests,
     warnings: actual.warnings,
-    skipReasons: [],
+    skipReasons:
+      params.expectedSymbols === undefined
+        ? ['expectedSymbols not provided; symbol scope was not checked.']
+        : [],
   };
 }
 
@@ -384,13 +387,13 @@ export function evaluateVerifyDiff(input: VerifyDiffEvaluationInput): VerifyDiff
     (file) => !expectedFiles.has(file),
   );
   const unexpectedChangedSymbols = input.actual.changedSymbols.filter(
-    (symbol) => !expectedSymbols.has(symbol),
+    (symbol) => input.expectedSymbols !== undefined && !expectedSymbols.has(symbol),
   );
   const missingRequiredTests = [...expectedTests].filter(
     (test) => !input.actual.executedTests.includes(test),
   );
   const unexpectedImpactedSymbols = input.actual.impactedSymbols.filter(
-    (symbol) => !expectedSymbols.has(symbol),
+    (symbol) => input.expectedSymbols !== undefined && !expectedSymbols.has(symbol),
   );
   const status =
     unexpectedChangedFiles.length > 0 ||

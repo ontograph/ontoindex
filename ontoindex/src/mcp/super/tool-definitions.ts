@@ -1719,7 +1719,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
         expectedSymbols: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Expected changed symbols.',
+          description:
+            'Expected changed symbols. Omitted skips symbol-scope checking with an explicit skip reason; an empty array expects no changed symbols.',
         },
         expectedTests: {
           type: 'array',
