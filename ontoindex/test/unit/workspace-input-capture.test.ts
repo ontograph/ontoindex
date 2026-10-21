@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
+import { getScanMaxFileSizeBytes } from '../../src/core/ingestion/scan-config.js';
 
 import {
   captureWorkspaceInputs,
@@ -65,6 +66,36 @@ afterEach(async () => {
 });
 
 describe('workspace input capture', () => {
+  it('preserves non-parser JSON inputs and their content identity', async () => {
+    const root = await makeRepo();
+    await fs.mkdir(path.join(root, '.memory-bank'));
+    const metadata = '.memory-bank/metadata.json';
+    await fs.writeFile(path.join(root, metadata), '{"value":1}');
+    const first = await capture(root);
+    expect(first.capturedPaths).toContain(metadata);
+    expect(await fs.readFile(path.join(first.captureRoot, metadata), 'utf8')).toBe('{"value":1}');
+    await fs.writeFile(path.join(root, metadata), '{"value":2}');
+    const second = await capture(root);
+    expect(second.manifestDigest).not.toBe(first.manifestDigest);
+  });
+
+  it.each(['metadata.json', 'large.ts', 'tsconfig.json'])(
+    'refuses oversized %s without publishing a partial capture',
+    async (filename) => {
+      const cap = getScanMaxFileSizeBytes();
+      expect(cap).not.toBeNull();
+      const root = await makeRepo();
+      const file = await fs.open(path.join(root, filename), 'w');
+      try {
+        await file.truncate(cap! + 1);
+      } finally {
+        await file.close();
+      }
+      await expect(capture(root)).rejects.toMatchObject({ code: 'limit' });
+      expect(await pendingCaptures(root)).toEqual([]);
+    },
+  );
+
   it('materializes the complete eligible universe with private modes and idempotent cleanup', async () => {
     const root = await makeRepo();
     for (let index = 0; index < 55; index++) {
