@@ -639,23 +639,17 @@ export async function gnDiagnose(
         };
 
         if (freshReport.preCheck.isStale) {
-          // autoAnalyze is refused while the worktree is dirty, because the
-          // analyzer reads working-tree files but publishes under a commit
-          // source identity. Recommending it here regardless of worktree state
-          // advertises a repair that its own precondition guarantees will fail.
           const dirtyFileCount = freshReport.dirtyFileCount;
-          // `null` (git probe failed) and `undefined` (field absent) are both
-          // unproven-clean, and autoAnalyze refuses each of them.
+          // Unknown source status still prevents a trustworthy refresh.
           const worktreeStateUnknown = dirtyFileCount === null || dirtyFileCount === undefined;
-          const worktreeBlocksAutoAnalyze = worktreeStateUnknown || dirtyFileCount > 0;
           recommendations.push({
             severity: 'WARN',
             detail: `Index is stale (indexed ${freshReport.preCheck.indexedCommit} vs current ${freshReport.preCheck.currentCommit})`,
-            fix: worktreeBlocksAutoAnalyze
-              ? worktreeStateUnknown
-                ? 'Worktree status is unavailable, so gn_ensure_fresh({autoAnalyze: true}) will be refused. Restore git status, then refresh.'
-                : `Commit or stash the ${dirtyFileCount} changed file${dirtyFileCount === 1 ? '' : 's'} first; gn_ensure_fresh({autoAnalyze: true}) is refused while the worktree is dirty.`
-              : 'gn_ensure_fresh({autoAnalyze: true})',
+            fix: worktreeStateUnknown
+              ? 'Worktree status is unavailable, so gn_ensure_fresh({autoAnalyze: true}) will be refused. Restore git status, then refresh.'
+              : dirtyFileCount > 0
+                ? 'gn_ensure_fresh({autoAnalyze: true}) supports working-tree analysis; ontoindex analyze --dirty-overlay provides partial file coverage, with current relationships limited to covered files.'
+                : 'gn_ensure_fresh({autoAnalyze: true})',
           });
         }
       }
@@ -691,12 +685,13 @@ export async function gnDiagnose(
             : 'WARN';
       recommendations.push({
         severity,
-        detail:
+        detail: `${
           embeddings.status === 'drifted'
             ? 'Embeddings metadata drift detected'
             : embeddings.status === 'missing'
               ? 'Embeddings not populated'
-              : 'Embedding metadata unavailable',
+              : 'Embedding metadata unavailable'
+        }; optional semantic search is opt-in, and structural navigation does not require embeddings`,
         fix:
           embeddings.repairCommand ??
           (embeddings.status === 'missing'

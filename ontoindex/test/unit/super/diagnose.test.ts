@@ -325,7 +325,7 @@ describe('gnDiagnose', () => {
     expect(warnRec!.fix).toBe('gn_ensure_fresh({autoAnalyze: true})');
   });
 
-  it('does not recommend autoAnalyze while the worktree is dirty', async () => {
+  it('recommends supported working-tree analysis with partial coverage caveats', async () => {
     mockGnEnsureFresh.mockResolvedValue(makeFreshReport({ isStale: true, dirtyFileCount: 266 }));
 
     const report = await gnDiagnose(REPO_ID, {
@@ -336,10 +336,11 @@ describe('gnDiagnose', () => {
 
     const warnRec = report.recommendations.find((r) => r.severity === 'WARN');
     expect(warnRec).toBeDefined();
-    // The refused repair must not be advertised as the fix.
-    expect(warnRec!.fix).not.toBe('gn_ensure_fresh({autoAnalyze: true})');
-    expect(warnRec!.fix).toContain('266 changed files');
-    expect(warnRec!.fix).toMatch(/commit or stash/i);
+    expect(warnRec!.fix).toContain('gn_ensure_fresh({autoAnalyze: true})');
+    expect(warnRec!.fix).toContain('working-tree analysis');
+    expect(warnRec!.fix).toContain('partial file coverage');
+    expect(warnRec!.fix).toContain('current relationships limited to covered files');
+    expect(warnRec!.fix).not.toMatch(/commit or stash|clean the worktree/i);
   });
 
   it('flags unknown worktree status instead of recommending autoAnalyze', async () => {
@@ -497,6 +498,8 @@ describe('gnDiagnose', () => {
     );
     expect(embRec).toBeDefined();
     expect(embRec!.fix).toBe('ontoindex analyze --embeddings');
+    expect(embRec!.detail).toContain('opt-in');
+    expect(embRec!.detail).toContain('structural navigation does not require embeddings');
   });
 
   it('recommends force embeddings when graph is fresh but embeddings are absent', async () => {

@@ -19,6 +19,7 @@ import type {
   SymbolDefinition,
 } from 'ontoindex-shared';
 import { finalizeScopeModel } from '../../../src/core/ingestion/finalize-orchestrator.js';
+import { ScopeRetentionStage } from '../../../src/core/ingestion/pipeline-phases/scope-retention-stage.js';
 import { createSemanticModel } from '../../../src/core/ingestion/model/semantic-model.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
 
@@ -180,6 +181,162 @@ describe('finalizeScopeModel: cross-file imports', () => {
 });
 
 // ─── Integration with MutableSemanticModel ─────────────────────────────────
+
+describe('finalizeScopeModel: retained fixture replay', () => {
+  // These bounded synthetic hooks exercise finalization, not provider completeness.
+  const finalizeFixtures = (files: readonly ParsedFile[]) =>
+    finalizeScopeModel(files, {
+      hooks: {
+        resolveImportTarget: (raw) => (files.some((file) => file.filePath === raw) ? raw : null),
+        expandsWildcardTo: (scope) =>
+          files
+            .find((file) => file.moduleScope === scope)!
+            .localDefs.map((def) => def.qualifiedName!.split('.').at(-1)!),
+      },
+    });
+  const contents = (out: ScopeResolutionIndexes) => ({
+    scopes: out.scopeTree.byId,
+    defs: out.defs.byId,
+    qualifiedNames: out.qualifiedNames.byQualifiedName,
+    moduleScopes: [...out.scopeTree.byId.values()].map((scope) => [
+      scope.filePath,
+      out.moduleScopes.get(scope.filePath),
+    ]),
+    imports: out.imports,
+    bindings: out.bindings,
+    referenceSites: out.referenceSites,
+    sccs: out.sccs,
+    stats: out.stats,
+  });
+  const named = (name: string, targetRaw: string): ParsedImport => ({
+    kind: 'named',
+    localName: name,
+    importedName: name,
+    targetRaw,
+  });
+  const bindings = (out: ScopeResolutionIndexes, file: string, name: string) =>
+    (out.bindings.get(`scope:${file}#module`)?.get(name) ?? []).map((ref) => ({
+      id: ref.def.nodeId,
+      origin: ref.origin,
+    }));
+
+  async function replayAfterMapMutation(makeFiles: () => ParsedFile[]) {
+    const files = makeFiles();
+    const stage = new ScopeRetentionStage(
+      {
+        deadline: Date.now() + 30_000,
+        artifactAllowance: { remainingBytes: 1024 * 1024 },
+      },
+      { maxRecords: 10, batchRecords: 1 },
+    );
+    try {
+      stage.capture(files);
+      stage.recordOutcomes(files.map(({ filePath }) => ({ filePath, status: 'success' })));
+      stage.reconcile(files.map(({ filePath }) => filePath));
+      for (const file of files)
+        for (const scope of file.scopes) {
+          (scope.bindings as Map<string, readonly BindingRef[]>).clear();
+          (scope.typeBindings as Map<string, unknown>).clear();
+        }
+      const replayed: ParsedFile[] = [];
+      for await (const batch of stage.iterate()) replayed.push(...batch);
+      expect(stage.status).toBe('retained');
+      expect(replayed).toEqual(makeFiles());
+      const out = finalizeFixtures(replayed);
+      expect(contents(out)).toEqual(contents(finalizeFixtures(makeFiles())));
+      return out;
+    } finally {
+      await stage.dispose();
+    }
+  }
+
+  function retainedFile(filePath: string, defs: SymbolDefinition[], imports: ParsedImport[] = []) {
+    const scope = mkScope(
+      `scope:${filePath}#module`,
+      null,
+      filePath,
+      Object.fromEntries(
+        defs.map((def) => [def.qualifiedName!, [{ def, origin: 'local' as const }]]),
+      ),
+    );
+    (scope.typeBindings as Map<string, unknown>).set('Declared', {
+      rawName: 'Declared',
+      declaredAtScope: scope.id,
+      source: 'annotation',
+    });
+    return mkFile(filePath, { scopes: [scope], localDefs: defs, parsedImports: imports });
+  }
+
+  it('preserves a two-file cycle and its concrete linked bindings', async () => {
+    const out = await replayAfterMapMutation(() => [
+      retainedFile('a.ts', [mkDef('def:X', 'a.ts', 'a.X')], [named('Y', 'b.ts')]),
+      retainedFile('b.ts', [mkDef('def:Y', 'b.ts', 'b.Y')], [named('X', 'a.ts')]),
+    ]);
+    expect(out.sccs).toHaveLength(1);
+    expect(out.sccs[0]!.isCycle).toBe(true);
+    expect(new Set(out.sccs[0]!.files)).toEqual(new Set(['a.ts', 'b.ts']));
+    expect(out.imports.get('scope:a.ts#module')?.[0]).toMatchObject({
+      targetFile: 'b.ts',
+      targetModuleScope: 'scope:b.ts#module',
+      targetDefId: 'def:Y',
+    });
+    expect(out.imports.get('scope:b.ts#module')?.[0]?.targetDefId).toBe('def:X');
+    expect(bindings(out, 'a.ts', 'Y')).toEqual([{ id: 'def:Y', origin: 'import' }]);
+    expect(bindings(out, 'b.ts', 'X')).toEqual([{ id: 'def:X', origin: 'import' }]);
+    expect(out.stats.linkedEdges).toBe(2);
+    expect(out.stats.unresolvedEdges).toBe(0);
+  });
+
+  it('preserves wildcard expansion and the thin reexport boundary', async () => {
+    const out = await replayAfterMapMutation(() => [
+      retainedFile(
+        'app.ts',
+        [],
+        [named('X', 'barrel.ts'), { kind: 'wildcard', targetRaw: 'leaf.ts' }],
+      ),
+      retainedFile('barrel.ts', [], [{ ...named('X', 'leaf.ts'), kind: 'reexport' }]),
+      retainedFile('leaf.ts', [mkDef('def:X', 'leaf.ts', 'leaf.X')]),
+    ]);
+    // Finalize does not promote reexports into the intermediate localDefs.
+    expect(out.imports.get('scope:app.ts#module')).toEqual([
+      expect.objectContaining({ kind: 'named', targetFile: 'barrel.ts', linkStatus: 'unresolved' }),
+      expect.objectContaining({
+        kind: 'wildcard-expanded',
+        targetFile: 'leaf.ts',
+        targetDefId: 'def:X',
+      }),
+    ]);
+    expect(out.imports.get('scope:barrel.ts#module')?.[0]).toMatchObject({
+      kind: 'reexport',
+      targetDefId: 'def:X',
+      transitiveVia: ['leaf.ts'],
+    });
+    expect(bindings(out, 'app.ts', 'X')).toEqual([{ id: 'def:X', origin: 'wildcard' }]);
+    expect(bindings(out, 'barrel.ts', 'X')).toEqual([{ id: 'def:X', origin: 'reexport' }]);
+    expect(out.sccs).toHaveLength(3);
+    expect(out.sccs.every((scc) => !scc.isCycle)).toBe(true);
+  });
+
+  it('preserves collision buckets and current first-match named export selection', async () => {
+    const out = await replayAfterMapMutation(() => [
+      retainedFile('app.ts', [mkDef('def:local', 'app.ts', 'app.X')], [named('X', 'lib.ts')]),
+      retainedFile('lib.ts', [
+        mkDef('def:first', 'lib.ts', 'lib.X'),
+        mkDef('def:second', 'lib.ts', 'lib.X'),
+      ]),
+    ]);
+    expect(out.qualifiedNames.get('lib.X')).toEqual(['def:first', 'def:second']);
+    expect(bindings(out, 'lib.ts', 'X')).toEqual([
+      { id: 'def:first', origin: 'local' },
+      { id: 'def:second', origin: 'local' },
+    ]);
+    expect(out.imports.get('scope:app.ts#module')?.[0]?.targetDefId).toBe('def:first');
+    expect(bindings(out, 'app.ts', 'X')).toEqual([
+      { id: 'def:local', origin: 'local' },
+      { id: 'def:first', origin: 'import' },
+    ]);
+  });
+});
 
 describe('MutableSemanticModel.attachScopeIndexes', () => {
   it('starts as undefined and accepts a one-shot attach', () => {

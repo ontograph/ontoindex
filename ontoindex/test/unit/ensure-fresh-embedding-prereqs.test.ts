@@ -114,7 +114,7 @@ afterEach(() => {
 describe('gnEnsureFresh embedding prerequisites', () => {
   it('names all missing configuration without exposing environment values', async () => {
     process.env.ONTOINDEX_EMBEDDING_URL = 'http://user:pw@host/';
-    const report = await gnEnsureFresh('repo', {});
+    const report = await gnEnsureFresh('repo', { withEmbeddings: true });
     expect(report.embeddingsStatus.prerequisites).toMatchObject({
       urlConfigured: true,
       modelConfigured: false,
@@ -128,7 +128,7 @@ describe('gnEnsureFresh embedding prerequisites', () => {
   it('explains CLI versus managed repair prerequisites', async () => {
     process.env.ONTOINDEX_EMBEDDING_URL = 'https://host/';
     process.env.ONTOINDEX_EMBEDDING_MODEL = 'embedding-model';
-    const report = await gnEnsureFresh('repo', {});
+    const report = await gnEnsureFresh('repo', { withEmbeddings: true });
     expect(report.embeddingsStatus.prerequisites?.note).toContain('ontoindex analyze --embeddings');
     expect(report.embeddingsStatus.prerequisites?.note).toContain('ONTOINDEX_EMBEDDING_MODEL_HASH');
   });

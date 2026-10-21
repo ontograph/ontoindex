@@ -9,6 +9,7 @@ import type {
   GoModuleConfig,
   CSharpProjectConfig,
   ComposerConfig,
+  ImportConfigObservations,
 } from '../language-config.js';
 import type { SwiftPackageConfig } from '../language-config.js';
 import type { SuffixIndex } from './utils.js';
@@ -29,6 +30,7 @@ export type ImportResult =
 
 /** Bundled language-specific configs loaded once per ingestion run. */
 export interface ImportConfigs {
+  observations?: ImportConfigObservations;
   tsconfigPaths: TsconfigPaths | null;
   goModule: GoModuleConfig | null;
   composerConfig: ComposerConfig | null;

@@ -252,8 +252,8 @@ const REPO_READINESS_NOTES: string[] = [
   'Run gn_diagnose({repo: "<repo>"}) to check index freshness, embeddings, and LSP availability.',
   'Run gn_ensure_fresh({repo: "<repo>"}) before retrieval-heavy operations if the repo was recently edited.',
   'If docs sidecar is missing, stale, or partial, run `ontoindex docs sidecar run markdown` or `ontoindex analyze --markdown-sidecar` before relying on docs evidence.',
-  'If embeddings are missing or stale, re-index with: ontoindex analyze --embeddings',
-  'If the worktree is dirty, commit or stash changes before running ontoindex analyze to avoid partial-graph results.',
+  'Embeddings are opt-in for optional semantic search; structural navigation does not require them. If wanted, run: ontoindex analyze --embeddings',
+  'ontoindex analyze supports dirty working-tree sources. ontoindex analyze --dirty-overlay provides partial file coverage; current relationships are limited to covered files, so verify coverage before relying on them.',
   'If LSP or sidecar features are absent, verify language server configuration and re-run ontoindex analyze.',
 ];
 

@@ -132,8 +132,13 @@ describe('gnHelp — return shape', () => {
         expect.stringContaining('ontoindex docs sidecar run markdown'),
         expect.stringContaining('ontoindex analyze --markdown-sidecar'),
         expect.stringContaining('ontoindex analyze --embeddings'),
+        expect.stringContaining('structural navigation does not require'),
+        expect.stringContaining('opt-in'),
+        expect.stringContaining('partial file coverage'),
+        expect.stringContaining('current relationships are limited to covered files'),
       ]),
     );
+    expect(report.readinessNotes.join(' ')).not.toMatch(/commit or stash/);
   });
 });
 

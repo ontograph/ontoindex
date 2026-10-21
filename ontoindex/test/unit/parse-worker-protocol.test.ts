@@ -35,6 +35,7 @@ describe('parse worker protocol schema', () => {
       constructorBindings: [],
       fileScopeBindings: [],
       parsedFiles: [],
+      scopeExtractionOutcomes: [],
       processedPaths: [],
       parseErrorPaths: [],
       fileTimings: [],
@@ -145,6 +146,40 @@ describe('parse worker protocol schema', () => {
       'error',
       'result',
     ]);
+  });
+
+  it('preserves ordered scope outcomes after merged source arrays are cleared', () => {
+    const target = createEmptyResult();
+    const first = createEmptyResult();
+    const second = createEmptyResult();
+    first.scopeExtractionOutcomes = [{ filePath: 'z.ts', status: 'success' }];
+    second.scopeExtractionOutcomes = [
+      { filePath: 'a.js', status: 'unsupported', reason: 'missing-scope-hook' },
+      { filePath: 'b.ts', status: 'failed', reason: 'scope-extraction-error' },
+      { filePath: 'c.cxx', status: 'failed', reason: 'missing-module-scope' },
+    ];
+
+    mergeParseWorkerResult(target, first);
+    mergeParseWorkerResult(target, second);
+    first.scopeExtractionOutcomes.length = 0;
+    second.scopeExtractionOutcomes.length = 0;
+
+    expect(target.scopeExtractionOutcomes).toEqual([
+      { filePath: 'z.ts', status: 'success' },
+      { filePath: 'a.js', status: 'unsupported', reason: 'missing-scope-hook' },
+      { filePath: 'b.ts', status: 'failed', reason: 'scope-extraction-error' },
+      { filePath: 'c.cxx', status: 'failed', reason: 'missing-module-scope' },
+    ]);
+    expect(target.parsedFiles).toEqual([]);
+  });
+
+  it('accepts legacy results without the optional scope outcome field', () => {
+    const target = createEmptyResult();
+    const legacy = createEmptyResult();
+    delete legacy.scopeExtractionOutcomes;
+
+    expect(() => mergeParseWorkerResult(target, legacy)).not.toThrow();
+    expect(target.scopeExtractionOutcomes).toEqual([]);
   });
 
   it('hydrates path-based inputs from parent-approved repo-relative paths', async () => {

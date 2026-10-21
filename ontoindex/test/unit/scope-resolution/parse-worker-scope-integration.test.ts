@@ -15,10 +15,29 @@
  *      failures must NEVER break legacy parsing on the same file.
  */
 
-import { describe, it, expect } from 'vitest';
-import type { Capture, CaptureMatch } from 'ontoindex-shared';
-import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import {
+  SupportedLanguages,
+  type Capture,
+  type CaptureMatch,
+  type ParsedFile,
+} from 'ontoindex-shared';
+import {
+  extractParsedFile,
+  extractParsedFileOutcome,
+} from '../../../src/core/ingestion/scope-extractor-bridge.js';
 import type { LanguageProvider } from '../../../src/core/ingestion/language-provider.js';
+import * as languageProviders from '../../../src/core/ingestion/languages/index.js';
+import { processParsing } from '../../../src/core/ingestion/parsing-processor.js';
+import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
+import { createASTCache } from '../../../src/core/ingestion/ast-cache.js';
+import { createResolutionContext } from '../../../src/core/ingestion/model/resolution-context.js';
+import type { WorkerPool } from '../../../src/core/ingestion/workers/worker-pool.js';
+import {
+  createEmptyResult,
+  type ParseWorkerResult,
+} from '../../../src/core/ingestion/workers/parse-types.js';
+import type { WorkerDispatchOptions } from '../../../src/core/ingestion/workers/worker-pool.js';
 
 // ─── Capture helpers ────────────────────────────────────────────────────────
 
@@ -33,6 +52,353 @@ const cap = (
 
 const moduleScopeMatch = (): CaptureMatch => ({
   '@scope.module': cap('@scope.module', 1, 0, 100, 0),
+});
+
+describe('processParsing sequential scope artifacts', () => {
+  const caches: ReturnType<typeof createASTCache>[] = [];
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    for (const cache of caches) cache.clear();
+    caches.length = 0;
+  });
+
+  function setup() {
+    const graph = createKnowledgeGraph();
+    const symbols = createResolutionContext().model.symbols;
+    const cache = createASTCache();
+    caches.push(cache);
+    return { graph, symbols, cache };
+  }
+
+  function scopeHook(hook: LanguageProvider['emitScopeCaptures']) {
+    const getProvider = languageProviders.getProvider;
+    vi.spyOn(languageProviders, 'getProvider').mockImplementation((language) => ({
+      ...getProvider(language),
+      emitScopeCaptures: hook,
+    }));
+  }
+
+  function crashingWorkers() {
+    const dispatch = vi.fn().mockRejectedValue(new Error('scope regression worker crash'));
+    const pool: WorkerPool = {
+      size: 1,
+      isolation: 'thread',
+      startupDurationMs: 0,
+      workerStartupDurationsMs: [0],
+      terminate: async () => {},
+      dispatch,
+    };
+    return { pool, dispatch };
+  }
+
+  it.each(['sequential', 'worker fallback'] as const)(
+    'delivers ordered artifacts while preserving legacy graph output in %s mode',
+    async (mode) => {
+      scopeHook(() => [moduleScopeMatch()]);
+      const { graph, symbols, cache } = setup();
+      const files = [
+        { path: 'z-last.ts', content: 'export function firstFunction() {}' },
+        { path: 'a-first.ts', content: 'export function secondFunction() {}' },
+      ];
+      const workers = crashingWorkers();
+      const onArtifacts = vi.fn<(files: readonly ParsedFile[]) => void>();
+      const onParseErrors = vi.fn();
+      const onOutcomes = vi.fn();
+
+      const result = await processParsing(
+        graph,
+        files,
+        '/scope-test',
+        symbols,
+        cache,
+        undefined,
+        mode === 'worker fallback' ? workers.pool : undefined,
+        undefined,
+        undefined,
+        'sequential',
+        onParseErrors,
+        onArtifacts,
+        onOutcomes,
+      );
+
+      expect(result).toBeNull();
+      expect(onArtifacts).toHaveBeenCalledTimes(1);
+      expect(
+        onArtifacts.mock.calls[0]![0].map((file) => ({
+          path: file.filePath,
+          kinds: file.scopes.map((scope) => scope.kind),
+        })),
+      ).toEqual([
+        { path: 'z-last.ts', kinds: ['Module'] },
+        { path: 'a-first.ts', kinds: ['Module'] },
+      ]);
+      expect(onParseErrors).toHaveBeenCalledExactlyOnceWith([]);
+      expect(onOutcomes).toHaveBeenCalledExactlyOnceWith([
+        { filePath: 'z-last.ts', status: 'success' },
+        { filePath: 'a-first.ts', status: 'success' },
+      ]);
+      for (const name of ['firstFunction', 'secondFunction']) {
+        expect(graph.nodes.some((node) => node.properties.name === name)).toBe(true);
+        expect(symbols.lookupCallableByName(name)).not.toHaveLength(0);
+      }
+      expect(workers.dispatch).toHaveBeenCalledTimes(mode === 'worker fallback' ? 1 : 0);
+    },
+  );
+
+  it('passes extracted Vue script bytes to the scope provider', async () => {
+    const script = '\nexport function componentFunction() {}\n';
+    const emit = vi.fn(() => [moduleScopeMatch()]);
+    scopeHook(emit);
+    const { graph, symbols, cache } = setup();
+    const onArtifacts = vi.fn<(files: readonly ParsedFile[]) => void>();
+
+    expect(
+      await processParsing(
+        graph,
+        [
+          {
+            path: 'Component.vue',
+            content: `<template><div /></template>\n<script setup lang="ts">${script}</script>`,
+          },
+        ],
+        '/scope-test',
+        symbols,
+        cache,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'sequential',
+        undefined,
+        onArtifacts,
+      ),
+    ).toBeNull();
+
+    expect(emit).toHaveBeenCalledExactlyOnceWith(script, 'Component.vue');
+    expect(onArtifacts.mock.calls[0]![0].map((file) => file.filePath)).toEqual(['Component.vue']);
+    expect(symbols.lookupCallableByName('componentFunction')).not.toHaveLength(0);
+  });
+
+  it.each(['absent', 'throwing'] as const)(
+    'keeps legacy definitions and emits an empty artifact list when the hook is %s',
+    async (hook) => {
+      scopeHook(
+        hook === 'absent'
+          ? undefined
+          : () => {
+              throw new Error('scope hook failed');
+            },
+      );
+      const { graph, symbols, cache } = setup();
+      const onArtifacts = vi.fn<(files: readonly ParsedFile[]) => void>();
+
+      const result = await processParsing(
+        graph,
+        [{ path: 'legacy.ts', content: 'export function legacyFunction() {}' }],
+        '/scope-test',
+        symbols,
+        cache,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'sequential',
+        undefined,
+        onArtifacts,
+      );
+
+      expect(result).toBeNull();
+      expect(onArtifacts).toHaveBeenCalledExactlyOnceWith([]);
+      expect(graph.nodes.some((node) => node.properties.name === 'legacyFunction')).toBe(true);
+      expect(symbols.lookupCallableByName('legacyFunction')).not.toHaveLength(0);
+    },
+  );
+
+  it('accepts the original signature without an artifact callback', async () => {
+    scopeHook(() => [moduleScopeMatch()]);
+    const { graph, symbols, cache } = setup();
+    const onProgress = vi.fn();
+
+    expect(
+      await processParsing(
+        graph,
+        [{ path: 'legacy.ts', content: 'export function originalSignature() {}' }],
+        symbols,
+        cache,
+        onProgress,
+      ),
+    ).toBeNull();
+
+    expect(onProgress).toHaveBeenCalledWith(1, 1, 'legacy.ts');
+    expect(symbols.lookupCallableByName('originalSignature')).not.toHaveLength(0);
+  });
+
+  it.each(['sequential', 'worker fallback'] as const)(
+    'reports ordered success, unsupported and failed attempts in %s mode',
+    async (mode) => {
+      const getProvider = languageProviders.getProvider;
+      vi.spyOn(languageProviders, 'getProvider').mockImplementation((language) => ({
+        ...getProvider(language),
+        emitScopeCaptures:
+          language === SupportedLanguages.JavaScript
+            ? undefined
+            : (_source, filePath) => {
+                if (filePath === 'failed.ts') throw new Error('scope hook failed');
+                if (filePath.endsWith('.cxx')) return [];
+                return [moduleScopeMatch()];
+              },
+      }));
+      const { graph, symbols, cache } = setup();
+      const workers = crashingWorkers();
+      const onOutcomes = vi.fn();
+      const onArtifacts = vi.fn();
+
+      const result = await processParsing(
+        graph,
+        [
+          { path: 'z-success.ts', content: 'export function successful() {}' },
+          { path: 'unsupported.js', content: 'export function unsupported() {}' },
+          { path: 'failed.ts', content: 'export function failed() {}' },
+          {
+            path: 'sw/source/core/layout/pagechg.cxx',
+            content: 'int nativeFunction() { return 1; }',
+          },
+          { path: 'skipped.txt', content: 'not a supported source file' },
+        ],
+        '/scope-test',
+        symbols,
+        cache,
+        undefined,
+        mode === 'worker fallback' ? workers.pool : undefined,
+        undefined,
+        undefined,
+        'sequential',
+        undefined,
+        onArtifacts,
+        onOutcomes,
+      );
+
+      expect(result).toBeNull();
+      expect(onOutcomes).toHaveBeenCalledExactlyOnceWith([
+        { filePath: 'z-success.ts', status: 'success' },
+        { filePath: 'unsupported.js', status: 'unsupported', reason: 'missing-scope-hook' },
+        { filePath: 'failed.ts', status: 'failed', reason: 'scope-extraction-error' },
+        {
+          filePath: 'sw/source/core/layout/pagechg.cxx',
+          status: 'failed',
+          reason: 'missing-module-scope',
+        },
+      ]);
+      expect(onArtifacts.mock.calls[0]![0].map((file: ParsedFile) => file.filePath)).toEqual([
+        'z-success.ts',
+      ]);
+      for (const name of ['successful', 'unsupported', 'failed']) {
+        expect(symbols.lookupCallableByName(name)).not.toHaveLength(0);
+      }
+      expect(workers.dispatch).toHaveBeenCalledTimes(mode === 'worker fallback' ? 1 : 0);
+    },
+  );
+
+  it.each(['streamed', 'final', 'legacy'] as const)(
+    'retains %s worker outcomes after the worker result is cleared',
+    async (mode) => {
+      const { graph, symbols, cache } = setup();
+      const workerResult = createEmptyResult();
+      const expected = [
+        { filePath: 'z.ts', status: 'success' } as const,
+        { filePath: 'a.ts', status: 'failed', reason: 'scope-extraction-error' } as const,
+      ];
+      workerResult.scopeExtractionOutcomes = expected.slice();
+      if (mode === 'legacy') delete workerResult.scopeExtractionOutcomes;
+      const workers = crashingWorkers();
+      workers.dispatch.mockImplementation(async (...args: unknown[]) => {
+        if (mode !== 'streamed') return [workerResult];
+        const options = args[4] as WorkerDispatchOptions<ParseWorkerResult>;
+        options.onResultPart!(workerResult, {
+          workerIndex: 0,
+          workerChunkSize: 2,
+          workerIsolation: 'thread',
+        });
+        return [createEmptyResult()];
+      });
+      const onOutcomes = vi.fn();
+
+      const result = await processParsing(
+        graph,
+        [{ path: 'z.ts', content: 'export const z = 1;' }],
+        '/scope-test',
+        symbols,
+        cache,
+        undefined,
+        workers.pool,
+        undefined,
+        undefined,
+        'sequential',
+        undefined,
+        undefined,
+        onOutcomes,
+      );
+
+      expect(result).not.toBeNull();
+      expect(result!.scopeExtractionOutcomes).toEqual(mode === 'legacy' ? [] : expected);
+      expect(result!.parsedFiles).toEqual([]);
+      expect(workerResult.scopeExtractionOutcomes).toEqual(mode === 'legacy' ? undefined : []);
+      expect(workers.dispatch).toHaveBeenCalledTimes(1);
+      expect(onOutcomes).not.toHaveBeenCalled();
+    },
+  );
+
+  it('propagates scope outcome callback failures to the caller', async () => {
+    scopeHook(() => [moduleScopeMatch()]);
+    const { graph, symbols, cache } = setup();
+    const failure = new Error('scope outcome sink failed');
+
+    await expect(
+      processParsing(
+        graph,
+        [{ path: 'callback.ts', content: 'export function callbackFunction() {}' }],
+        '/scope-test',
+        symbols,
+        cache,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'sequential',
+        undefined,
+        undefined,
+        () => {
+          throw failure;
+        },
+      ),
+    ).rejects.toBe(failure);
+  });
+
+  it('propagates artifact callback failures to the caller', async () => {
+    scopeHook(() => [moduleScopeMatch()]);
+    const { graph, symbols, cache } = setup();
+    const failure = new Error('artifact sink failed');
+
+    await expect(
+      processParsing(
+        graph,
+        [{ path: 'callback.ts', content: 'export function callbackFunction() {}' }],
+        '/scope-test',
+        symbols,
+        cache,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'sequential',
+        undefined,
+        () => {
+          throw failure;
+        },
+      ),
+    ).rejects.toBe(failure);
+  });
 });
 
 /**
@@ -50,6 +416,105 @@ function fakeProvider(
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
+
+describe('extractParsedFileOutcome', () => {
+  it('returns the extracted artifact after invoking the provider exactly once', () => {
+    const emit = vi.fn(() => [moduleScopeMatch()]);
+    const provider = fakeProvider({ emitScopeCaptures: emit });
+    const onWarn = vi.fn();
+
+    const outcome = extractParsedFileOutcome(provider, 'source text', 'src/file.ts', onWarn);
+
+    expect(emit).toHaveBeenCalledExactlyOnceWith('source text', 'src/file.ts');
+    expect(outcome.status).toBe('success');
+    if (outcome.status !== 'success') throw new Error('Expected a successful extraction');
+    expect(outcome.parsedFile.filePath).toBe('src/file.ts');
+    expect(outcome.parsedFile.scopes.map((scope) => scope.kind)).toEqual(['Module']);
+    expect(onWarn).not.toHaveBeenCalled();
+    expect(extractParsedFile(provider, 'source text', 'src/file.ts', onWarn)).toEqual(
+      outcome.parsedFile,
+    );
+  });
+
+  it.each([
+    {
+      name: 'missing hook',
+      hook: undefined,
+      path: 'a.ts',
+      expected: { status: 'unsupported', reason: 'missing-scope-hook' },
+      warning: undefined,
+    },
+    {
+      name: 'throwing hook',
+      hook: () => {
+        throw new Error('provider boom');
+      },
+      path: 'a.ts',
+      expected: { status: 'failed', reason: 'scope-extraction-error' },
+      warning: 'provider boom',
+    },
+    {
+      name: 'overlapping captures',
+      hook: () => [
+        moduleScopeMatch(),
+        { '@scope.function': cap('@scope.function', 10, 0, 20, 0) },
+        { '@scope.function': cap('@scope.function', 15, 0, 25, 0) },
+      ],
+      path: 'a.ts',
+      expected: { status: 'failed', reason: 'scope-extraction-error' },
+      warning: 'overlap',
+    },
+    {
+      name: 'unexpected missing module',
+      hook: () => [],
+      path: 'a.ts',
+      expected: { status: 'failed', reason: 'scope-extraction-error' },
+      warning: 'ScopeExtractor: no Module scope found',
+    },
+    ...['sw/source/core/layout/pagechg.cxx', 'include/sfx2/objsh.hxx'].map((path) => ({
+      name: `expected missing module in ${path}`,
+      hook: () => [],
+      path,
+      expected: { status: 'failed', reason: 'missing-module-scope' },
+      warning: undefined,
+    })),
+  ])(
+    'classifies $name and preserves legacy return values and warnings',
+    ({ hook, path, expected, warning }) => {
+      const provider = fakeProvider({ emitScopeCaptures: hook });
+      const onWarn = vi.fn();
+      const legacyWarn = vi.fn();
+
+      expect(extractParsedFileOutcome(provider, 'src', path, onWarn)).toEqual(expected);
+      expect(extractParsedFile(provider, 'src', path, legacyWarn)).toBeUndefined();
+      expect(onWarn.mock.calls).toEqual(legacyWarn.mock.calls);
+      if (warning === undefined) {
+        expect(onWarn).not.toHaveBeenCalled();
+      } else {
+        expect(onWarn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(warning));
+        expect(onWarn).toHaveBeenCalledWith(expect.stringContaining(path));
+      }
+    },
+  );
+
+  it.each([
+    ['outcome helper', extractParsedFileOutcome],
+    ['legacy wrapper', extractParsedFile],
+  ] as const)('propagates warning callback failures from the %s', (_name, extract) => {
+    const provider = fakeProvider({
+      emitScopeCaptures: () => {
+        throw new Error('provider boom');
+      },
+    });
+    const failure = new Error('warning sink failed');
+
+    expect(() =>
+      extract(provider, 'src', 'a.ts', () => {
+        throw failure;
+      }),
+    ).toThrow(failure);
+  });
+});
 
 describe('extractParsedFile', () => {
   describe('provider has NOT migrated (no emitScopeCaptures)', () => {

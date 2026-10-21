@@ -184,32 +184,33 @@ function hasDisposableOutput(output: unknown): output is DisposablePhaseOutput {
   );
 }
 
-function disposePhaseResult(
+async function disposePhaseResult(
   result: PhaseResult<unknown> | undefined,
   disposedOutputs: WeakSet<DisposablePhaseOutput>,
-): void {
+): Promise<void> {
   if (!result || !hasDisposableOutput(result.output)) return;
   if (disposedOutputs.has(result.output)) return;
   disposedOutputs.add(result.output);
-  try {
-    result.output.dispose();
-  } catch (err) {
-    if (isDev) {
-      console.warn(
-        `Phase '${result.phaseName}' output dispose failed:`,
-        err instanceof Error ? err.message : String(err),
-      );
-    }
-  }
+  await result.output.dispose();
 }
 
-function disposeCompletedResults(
+async function disposeCompletedResults(
   results: ReadonlyMap<string, PhaseResult<unknown>>,
   disposedOutputs: WeakSet<DisposablePhaseOutput>,
-): void {
+): Promise<void> {
+  let failed = false;
+  let firstError: unknown;
   for (const result of results.values()) {
-    disposePhaseResult(result, disposedOutputs);
+    try {
+      await disposePhaseResult(result, disposedOutputs);
+    } catch (err) {
+      if (!failed) {
+        failed = true;
+        firstError = err;
+      }
+    }
   }
+  if (failed) throw firstError;
 }
 
 function countRemainingDependents(phases: readonly PipelinePhase[]): Map<string, number> {
@@ -298,7 +299,9 @@ export async function runPipeline(
         // Swallow handler errors — preserving the original cause is more important.
       }
 
-      disposeCompletedResults(results, disposedOutputs);
+      await disposeCompletedResults(results, disposedOutputs).catch(() => {
+        // The phase failure remains primary after all cleanup has settled.
+      });
       throw wrapped;
     }
     const durationMs = Date.now() - start;
@@ -314,7 +317,14 @@ export async function runPipeline(
       const remaining = (remainingDependents.get(depName) ?? 0) - 1;
       remainingDependents.set(depName, remaining);
       if (remaining === 0) {
-        disposePhaseResult(results.get(depName), disposedOutputs);
+        try {
+          await disposePhaseResult(results.get(depName), disposedOutputs);
+        } catch (err) {
+          await disposeCompletedResults(results, disposedOutputs).catch(() => {
+            // Preserve the first cleanup failure after attempting every output.
+          });
+          throw err;
+        }
       }
     }
 

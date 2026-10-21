@@ -67,7 +67,7 @@ export interface ParseOutput {
    * Releases large parse-owned collections once all parse consumers have run.
    * Scalar summary fields stay readable in the final phase-results map.
    */
-  dispose?(): void;
+  dispose?(): void | Promise<void>;
   /** Releases route/fetch extraction arrays once the routes phase has copied/consumed them. */
   releaseRouteExtractionData?(): void;
   /** Releases tool-definition extraction arrays once the tools phase has consumed them. */
@@ -91,10 +91,8 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<ParseOutput> {
-    const { scannedFiles, allPaths, totalFiles } = getPhaseOutput<StructureOutput>(
-      deps,
-      'structure',
-    );
+    const { scannedFiles, allPaths, totalFiles, skippedLargeFiles } =
+      getPhaseOutput<StructureOutput>(deps, 'structure');
 
     let result: Awaited<ReturnType<typeof runChunkedParseAndResolve>>;
     try {
@@ -107,6 +105,7 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
         ctx.pipelineStart,
         ctx.onProgress,
         ctx.options,
+        skippedLargeFiles,
       );
     } finally {
       scannedFiles.length = 0;
@@ -127,8 +126,49 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
       result.allORMQueries.length = 0;
     };
 
+    const { scopeRetention, ...parseResult } = result;
+    const releaseFailedResult = () => {
+      for (const cleanup of [
+        releaseRouteExtractionData,
+        releaseToolDefinitions,
+        releaseORMQueries,
+        () => clearExportedTypeMap(result.exportedTypeMap),
+        () => result.resolutionContext.clear(),
+        () => result.bindingAccumulator.dispose(),
+        () => {
+          allPathsSnapshot.length = 0;
+          (allPathSetSnapshot as Set<string>).clear();
+        },
+      ]) {
+        try {
+          cleanup();
+        } catch {
+          /* Preserve the primary failure. */
+        }
+      }
+    };
+    if (scopeRetention) {
+      let failed = false;
+      try {
+        await ctx.options?.scopeRetention?.consume(scopeRetention);
+      } catch (error) {
+        failed = true;
+        releaseFailedResult();
+        throw error;
+      } finally {
+        try {
+          await scopeRetention.dispose();
+        } catch (error) {
+          if (!failed) {
+            releaseFailedResult();
+            throw error;
+          }
+        }
+      }
+    }
+
     return {
-      ...result,
+      ...parseResult,
       allPaths: allPathsSnapshot,
       allPathSet: allPathSetSnapshot,
       totalFiles,

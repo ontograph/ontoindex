@@ -45,6 +45,12 @@ import {
 } from './pipeline-phases/index.js';
 
 export interface PipelineOptions {
+  /** Consume bounded observed scope inputs within parse ownership; never a complete replay seed. */
+  scopeRetention?: import('./pipeline-phases/scope-retention-stage.js').ScopeRetentionRequest & {
+    consume(
+      handle: import('./pipeline-phases/scope-retention-stage.js').ScopeRetentionHandle,
+    ): Promise<void>;
+  };
   /** Read inputs from an isolated capture while retaining the repository identity. */
   capturedWorkspace?: { captureRoot: string; canonicalRepoPath: string };
   /** Selects the ingestion phase set. Defaults to the full index profile. */

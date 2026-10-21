@@ -273,12 +273,14 @@ describe('deriveRuntimeHealth', () => {
       freshnessState: 'dirty',
       degradedReason:
         'committed index is current, but uncommitted files are not represented in the graph',
-      repairCommand: 'commit, stash, or clean the worktree, then rerun ontoindex analyze',
+      repairCommand:
+        'ontoindex analyze supports working-tree sources; ontoindex analyze --dirty-overlay provides partial file coverage, with current relationships limited to covered files',
       repairAction: {
         tool: 'ontoindex',
         command: 'analyze',
         args: [],
-        reason: 'analyze after the worktree is clean',
+        reason:
+          'analyze working-tree sources; verify partial overlay coverage before relying on current relationships',
       },
     });
   });

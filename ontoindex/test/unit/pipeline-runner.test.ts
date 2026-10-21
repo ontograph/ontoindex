@@ -17,6 +17,14 @@ function makeCtx(): PipelineContext {
   };
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 describe('runPipeline', () => {
   it('executes phases in dependency order', async () => {
     const order: string[] = [];
@@ -421,6 +429,278 @@ describe('runPipeline', () => {
     );
 
     expect(disposeCalls).toBe(1);
+  });
+
+  it.each([false, true])(
+    'awaits last-consumer disposal before completion (next phase: %s)',
+    async (hasNextPhase) => {
+      const entered = deferred();
+      const release = deferred();
+      const events: string[] = [];
+      const output = {
+        async dispose() {
+          events.push('dispose-start');
+          entered.resolve();
+          await release.promise;
+          events.push('dispose-end');
+        },
+      };
+      const phases: PipelinePhase[] = [
+        {
+          name: 'source',
+          deps: [],
+          async execute() {
+            return output;
+          },
+        },
+        {
+          name: 'consumer',
+          deps: ['source'],
+          async execute() {
+            return 'consumed';
+          },
+        },
+      ];
+      if (hasNextPhase) {
+        phases.push({
+          name: 'next',
+          deps: ['consumer'],
+          async execute() {
+            events.push('next');
+          },
+        });
+      }
+      const completed = runPipeline(phases, makeCtx()).then(
+        (results) => {
+          events.push('returned');
+          return { results };
+        },
+        (error: unknown) => ({ error }),
+      );
+      try {
+        await Promise.race([entered.promise, completed]);
+        expect(events).toEqual(['dispose-start']);
+      } finally {
+        release.resolve();
+        await completed;
+      }
+      expect(await completed).toHaveProperty('results');
+      expect(events).toEqual([
+        'dispose-start',
+        'dispose-end',
+        ...(hasNextPhase ? ['next'] : []),
+        'returned',
+      ]);
+    },
+  );
+
+  it.each([new Error('primary failure'), undefined])(
+    'preserves phase cause %s while awaiting all cleanup failures',
+    async (primary) => {
+      const entered = deferred();
+      const release = deferred();
+      const events: string[] = [];
+      let sharedCalls = 0;
+      const shared = {
+        dispose() {
+          sharedCalls++;
+          events.push('sync');
+          throw undefined;
+        },
+      };
+      const asynchronous = {
+        async dispose() {
+          events.push('async-start');
+          entered.resolve();
+          await release.promise;
+          events.push('async-end');
+          throw new Error('cleanup failed');
+        },
+      };
+      const last = {
+        dispose() {
+          events.push('last');
+        },
+      };
+      const phases: PipelinePhase[] = [
+        {
+          name: 'shared-a',
+          deps: [],
+          async execute() {
+            return shared;
+          },
+        },
+        {
+          name: 'shared-b',
+          deps: [],
+          async execute() {
+            return shared;
+          },
+        },
+        {
+          name: 'async',
+          deps: [],
+          async execute() {
+            return asynchronous;
+          },
+        },
+        {
+          name: 'last',
+          deps: [],
+          async execute() {
+            return last;
+          },
+        },
+        {
+          name: 'failing',
+          deps: ['shared-a', 'shared-b', 'async', 'last'],
+          async execute() {
+            throw primary;
+          },
+        },
+      ];
+      const completed = runPipeline(phases, makeCtx()).then(
+        () => {
+          events.push('returned');
+          return { error: null };
+        },
+        (error: unknown) => {
+          events.push('rejected');
+          return { error };
+        },
+      );
+      try {
+        await Promise.race([entered.promise, completed]);
+        expect(events).toEqual(['sync', 'async-start']);
+      } finally {
+        release.resolve();
+        await completed;
+      }
+      const { error } = await completed;
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(
+        `Phase 'failing' failed: ${primary instanceof Error ? primary.message : String(primary)}`,
+      );
+      expect(Object.prototype.hasOwnProperty.call(error, 'cause')).toBe(true);
+      expect((error as Error).cause).toBe(primary);
+      expect(events).toEqual(['sync', 'async-start', 'async-end', 'last', 'rejected']);
+      expect(sharedCalls).toBe(1);
+    },
+  );
+
+  it.each([false, true])(
+    'surfaces cleanup-only failures after remaining cleanup (async undefined: %s)',
+    async (asyncUndefined) => {
+      const entered = deferred();
+      const release = deferred();
+      const failure = asyncUndefined ? undefined : new Error('cleanup failed');
+      const events: string[] = [];
+      let disposeCalls = 0;
+      const first = {
+        dispose() {
+          disposeCalls++;
+          events.push('first');
+          if (asyncUndefined) return Promise.reject(failure);
+          throw failure;
+        },
+      };
+      const remaining = {
+        async dispose() {
+          events.push('remaining-start');
+          entered.resolve();
+          await release.promise;
+          events.push('remaining-end');
+          throw new Error('secondary cleanup failure');
+        },
+      };
+      const terminal = {
+        dispose() {
+          events.push('terminal');
+        },
+      };
+      const phases: PipelinePhase[] = [
+        {
+          name: 'first',
+          deps: [],
+          async execute() {
+            return first;
+          },
+        },
+        {
+          name: 'remaining',
+          deps: [],
+          async execute() {
+            return remaining;
+          },
+        },
+        {
+          name: 'consumer',
+          deps: ['first', 'remaining'],
+          async execute() {
+            return terminal;
+          },
+        },
+        {
+          name: 'unreached',
+          deps: ['consumer'],
+          async execute() {
+            events.push('unreached');
+          },
+        },
+      ];
+      const completed = runPipeline(phases, makeCtx()).then(
+        () => {
+          events.push('returned');
+          return { rejected: false, error: null };
+        },
+        (error: unknown) => {
+          events.push('rejected');
+          return { rejected: true, error };
+        },
+      );
+      try {
+        await Promise.race([entered.promise, completed]);
+        expect(events).toEqual(['first', 'remaining-start']);
+      } finally {
+        release.resolve();
+        await completed;
+      }
+      expect(await completed).toEqual({ rejected: true, error: failure });
+      expect(events).toEqual(['first', 'remaining-start', 'remaining-end', 'terminal', 'rejected']);
+      expect(disposeCalls).toBe(1);
+    },
+  );
+
+  it('leaves successful terminal outputs readable and owned by the caller', async () => {
+    let disposeCalls = 0;
+    const output = {
+      value: 'retained',
+      async dispose() {
+        disposeCalls++;
+        this.value = 'disposed';
+      },
+    };
+    const phases: PipelinePhase[] = [
+      {
+        name: 'terminal-a',
+        deps: [],
+        async execute() {
+          return output;
+        },
+      },
+      {
+        name: 'terminal-b',
+        deps: [],
+        async execute() {
+          return output;
+        },
+      },
+    ];
+    const results = await runPipeline(phases, makeCtx());
+    expect(results.get('terminal-a')?.output).toBe(output);
+    expect(results.get('terminal-b')?.output).toBe(output);
+    expect(output.value).toBe('retained');
+    expect(disposeCalls).toBe(0);
   });
 
   it('wraps phase Error with phase name and preserves cause', async () => {
