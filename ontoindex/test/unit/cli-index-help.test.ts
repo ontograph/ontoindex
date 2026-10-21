@@ -326,6 +326,7 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('--goal <text>');
     expect(result.stdout).toContain('--content');
     expect(result.stdout).toContain('--typed');
+    expect(result.stdout).toContain('--read-mode <mode>');
     expect(result.stdout).toContain('--consume-enrichment-facts');
     expect(result.stdout).toContain('--include-passive-related-facts');
     expect(result.stdout).toContain('--include-markdown-context');
@@ -340,6 +341,7 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('context [options] [name]');
     expect(result.stdout).toContain('--uid <uid>');
     expect(result.stdout).toContain('--file <path>');
+    expect(result.stdout).toContain('--read-mode <mode>');
   });
 
   it('impact help keeps repo and include-tests flags', () => {
@@ -349,7 +351,25 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('--depth <n>');
     expect(result.stdout).toContain('--include-tests');
     expect(result.stdout).toContain('--repo <name>');
+    expect(result.stdout).toContain('--uid <uid>');
+    expect(result.stdout).toContain('--read-mode <mode>');
   });
+
+  it.each(['query', 'context', 'impact'])(
+    '%s rejects invalid read mode before loading the backend',
+    (command) => {
+      const result = spawnSync(
+        process.execPath,
+        ['--import', 'tsx', cliEntry, command, 'symbol', '--read-mode', 'workspace'],
+        { cwd: repoRoot, encoding: 'utf8' },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Allowed choices are committed');
+      expect(result.stderr).not.toContain('No indexed repositories found');
+      expect(result.stderr).not.toContain('tree-sitter-kotlin');
+    },
+  );
 
   it('detect-changes help exposes compare scope and base-ref flags', () => {
     const result = runHelp('detect-changes');

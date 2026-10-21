@@ -32,6 +32,41 @@ async function getBackend(): Promise<LocalBackend> {
   return _backend;
 }
 
+async function callNavigationTool(
+  name: 'query' | 'context' | 'impact',
+  params: Record<string, unknown>,
+): Promise<unknown> {
+  if (params.read_mode !== undefined) {
+    if (
+      params.read_mode !== 'committed' ||
+      typeof params.repo !== 'string' ||
+      !params.repo.trim() ||
+      params.repo.startsWith('@')
+    ) {
+      throw new Error('Committed reads require an explicit single repository (--repo <name>).');
+    }
+    if (
+      params.consume_enrichment_facts === true ||
+      params.include_passive_related_facts === true ||
+      params.include_markdown_context === true ||
+      params.include_markdown_ppr === true
+    ) {
+      throw new Error('Committed reads do not support live or external enrichment.');
+    }
+  }
+  const backend = await getBackend();
+  if (params.read_mode === 'committed') {
+    const repo = await backend.resolveRepo(params.repo as string);
+    await backend.ensureRepoInitialized(repo.id);
+    return backend.withPreparedRepoRead(
+      repo,
+      { needsRelationships: true, readMode: 'committed' },
+      () => backend.callTool(name, params),
+    );
+  }
+  return backend.callTool(name, params);
+}
+
 export async function disposeBackend(): Promise<void> {
   try {
     await _backend?.dispose();
@@ -120,6 +155,7 @@ export async function queryCommand(
     includePath?: string[];
     excludePath?: string[];
     typed?: boolean;
+    readMode?: 'committed';
     consumeEnrichmentFacts?: boolean;
     includePassiveRelatedFacts?: boolean;
     includeMarkdownContext?: boolean;
@@ -133,7 +169,6 @@ export async function queryCommand(
 
   const query = options?.typed ? parseTypedQueryDocument(queryText) : queryText;
   try {
-    const backend = await getBackend();
     const params: Record<string, unknown> = {
       task_context: options?.context,
       goal: options?.goal,
@@ -143,6 +178,7 @@ export async function queryCommand(
       repo: options?.repo,
     };
     if (options?.includePath?.length) params.include_paths = options.includePath;
+    if (options?.readMode !== undefined) params.read_mode = options.readMode;
     if (options?.excludePath?.length) params.exclude_paths = options.excludePath;
     if (options?.typed) {
       params.typedQuery = query;
@@ -161,7 +197,7 @@ export async function queryCommand(
     if (options?.includeMarkdownPpr !== undefined) {
       params.include_markdown_ppr = options.includeMarkdownPpr;
     }
-    const result = await backend.callTool('query', params);
+    const result = await callNavigationTool('query', params);
     output(result);
   } finally {
     await disposeBackend();
@@ -174,6 +210,7 @@ export async function contextCommand(
     repo?: string;
     file?: string;
     uid?: string;
+    readMode?: 'committed';
     content?: boolean;
   },
 ): Promise<void> {
@@ -183,13 +220,13 @@ export async function contextCommand(
   }
 
   try {
-    const backend = await getBackend();
-    const result = await backend.callTool('context', {
+    const result = await callNavigationTool('context', {
       name: name || undefined,
       uid: options?.uid,
       file_path: options?.file,
       include_content: options?.content ?? false,
       repo: options?.repo,
+      ...(options?.readMode !== undefined ? { read_mode: options.readMode } : {}),
     });
     output(result);
   } finally {
@@ -204,6 +241,8 @@ export async function impactCommand(
     repo?: string;
     depth?: string;
     includeTests?: boolean;
+    readMode?: 'committed';
+    uid?: string;
   },
 ): Promise<void> {
   if (!target?.trim()) {
@@ -213,13 +252,14 @@ export async function impactCommand(
 
   try {
     try {
-      const backend = await getBackend();
-      const result = await backend.callTool('impact', {
+      const result = await callNavigationTool('impact', {
         target,
         direction: options?.direction || 'upstream',
         maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
         includeTests: options?.includeTests ?? false,
         repo: options?.repo,
+        ...(options?.readMode !== undefined ? { read_mode: options.readMode } : {}),
+        ...(options?.uid !== undefined ? { target_uid: options.uid } : {}),
       });
       output(result);
     } finally {
@@ -233,7 +273,10 @@ export async function impactCommand(
         (err instanceof Error ? err.message : String(err)) || 'Impact analysis failed unexpectedly',
       target: { name: target },
       direction: options?.direction || 'upstream',
-      suggestion: 'Try reducing --depth or using ontoindex context <symbol> as a fallback',
+      suggestion:
+        thrownCode(err) === 'workspace_too_large'
+          ? 'Explicitly select ontoindex impact <symbol> --repo <name> --read-mode committed; uncommitted changes are excluded'
+          : 'Try reducing --depth or using ontoindex context <symbol> as a fallback',
     });
     process.exit(1);
   }
