@@ -69,3 +69,98 @@ describe('MCP resource protocol errors through the SDK', () => {
     }
   });
 });
+
+describe('systems audit arguments through the SDK', () => {
+  it('preserves equivalent fault simulation results for target and targetCall', async () => {
+    const f = await fixture({
+      resolveRepo: vi.fn().mockResolvedValue({ id: 'fixture', name: 'fixture', repoPath: '.' }),
+    });
+    try {
+      const args = {
+        sourceText: `
+          int fd = pidfd_open(pid, 0);
+          if (fd == -1) { return; }
+          state = ready;
+        `,
+        returnValue: '-1',
+      };
+      const reports = [];
+      for (const alias of ['target', 'targetCall']) {
+        const response = await f.client.callTool({
+          name: 'gn_simulate_fault',
+          arguments: { ...args, [alias]: 'pidfd_open' },
+        });
+        expect(response.isError).not.toBe(true);
+        const content = response.content as Array<{ type: string; text: string }>;
+        const report = JSON.parse(content[0].text.split('\n\n---\n')[0]);
+        expect(report).toMatchObject({
+          analyzerId: 'gn_simulate_fault',
+          targetCall: 'pidfd_open',
+          returnValue: '-1',
+          targetResultSymbols: ['fd'],
+        });
+        expect(report.earlyReturns.length).toBeGreaterThan(0);
+        reports.push(report);
+      }
+      expect(reports[0]).toEqual(reports[1]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('reports unresolved boundary evidence for a resource and start without facts', async () => {
+    const f = await fixture({
+      resolveRepo: vi.fn().mockResolvedValue({ id: 'fixture', name: 'fixture', repoPath: '.' }),
+    });
+    try {
+      const response = await f.client.callTool({
+        name: 'gn_trace_boundary',
+        arguments: { resource: 'fd:handoff', start: 'p1', facts: [] },
+      });
+      expect(response.isError).not.toBe(true);
+      const content = response.content as Array<{ type: string; text: string }>;
+      const report = JSON.parse(content[0].text.split('\n\n---\n')[0]);
+      expect(report).toMatchObject({
+        tool: 'gn_trace_boundary',
+        status: 'unresolved',
+        segments: [],
+        systemsEvidence: [],
+        findings: [],
+      });
+      expect(report.skipReasons).toContain('no-matching-boundary-evidence');
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('reuses the supplied evidence testFile for test suggestions', async () => {
+    const f = await fixture({
+      resolveRepo: vi.fn().mockResolvedValue({ id: 'fixture', name: 'fixture', repoPath: '.' }),
+    });
+    try {
+      const response = await f.client.callTool({
+        name: 'gn_test_suggestions',
+        arguments: {
+          symbol: 'SidecarManager::_spawn',
+          risk: 'fd-leak-across-fork',
+          targetedCoverage: 'found',
+          evidence: [{ testFile: 'test/from-target-report.test.ts' }],
+        },
+      });
+      expect(response.isError).not.toBe(true);
+      const content = response.content as Array<{ type: string; text: string }>;
+      const report = JSON.parse(content[0].text.split('\n\n---\n')[0]);
+      expect(report.suggestions).toEqual([
+        expect.objectContaining({
+          file: 'test/from-target-report.test.ts',
+          target: 'SidecarManager::_spawn',
+          case: expect.stringContaining('fd_leak_across_fork'),
+          required: true,
+        }),
+      ]);
+      expect(report.warnings).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+});

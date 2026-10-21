@@ -190,6 +190,118 @@ export interface ResolutionContext {
   clear(): void;
 }
 
+type ImportResolutionState = Pick<
+  ResolutionContext,
+  'importMap' | 'packageMap' | 'namedImportMap' | 'moduleAliasMap'
+>;
+
+/** Import maps only; this is not a complete semantic model or resolution seed. */
+export interface ImportResolutionStateSnapshotV1 {
+  version: 1;
+  importMap: [string, string[]][];
+  packageMap: [string, string[]][];
+  namedImportMap: [string, [string, NamedImportBinding][]][];
+  moduleAliasMap: [string, [string, string][]][];
+}
+
+/** Copy import state without retaining any mutable containers or bindings. */
+export function snapshotImportResolutionState(
+  ctx: ImportResolutionState,
+): ImportResolutionStateSnapshotV1 {
+  return {
+    version: 1,
+    importMap: Array.from(ctx.importMap, ([file, paths]) => [file, [...paths]]),
+    packageMap: Array.from(ctx.packageMap, ([file, paths]) => [file, [...paths]]),
+    namedImportMap: Array.from(ctx.namedImportMap, ([file, bindings]) => [
+      file,
+      Array.from(bindings, ([name, binding]) => [
+        name,
+        {
+          sourcePath: binding.sourcePath,
+          exportedName: binding.exportedName,
+        },
+      ]),
+    ]),
+    moduleAliasMap: Array.from(ctx.moduleAliasMap, ([file, aliases]) => [
+      file,
+      Array.from(aliases, ([name, path]) => [name, path]),
+    ]),
+  };
+}
+
+function importStateEntries(value: unknown): [string, unknown][] {
+  if (!Array.isArray(value)) throw new Error('Invalid import resolution state: expected entries');
+  const entries: [string, unknown][] = [];
+  const keys = new Set<string>();
+  for (const entry of value) {
+    if (
+      !Array.isArray(entry) ||
+      entry.length !== 2 ||
+      typeof entry[0] !== 'string' ||
+      keys.has(entry[0])
+    ) {
+      throw new Error('Invalid import resolution state: malformed or duplicate entry');
+    }
+    keys.add(entry[0]);
+    entries.push([entry[0], entry[1]]);
+  }
+  return entries;
+}
+
+function restoreImportStatePathMap(value: unknown): Map<string, Set<string>> {
+  const result = new Map<string, Set<string>>();
+  for (const [file, paths] of importStateEntries(value)) {
+    if (!Array.isArray(paths)) throw new Error('Invalid import resolution state: expected paths');
+    const restoredPaths = new Set<string>();
+    for (const path of paths) {
+      if (typeof path !== 'string' || restoredPaths.has(path)) {
+        throw new Error('Invalid import resolution state: malformed or duplicate path');
+      }
+      restoredPaths.add(path);
+    }
+    result.set(file, restoredPaths);
+  }
+  return result;
+}
+
+/** Validate and restore fresh import maps, without fabricating a context or model. */
+export function restoreImportResolutionState(snapshot: unknown): ImportResolutionState {
+  if (typeof snapshot !== 'object' || snapshot === null || Array.isArray(snapshot)) {
+    throw new Error('Invalid import resolution state: expected snapshot');
+  }
+  const state = snapshot as Record<string, unknown>;
+  if (state.version !== 1) throw new Error('Invalid import resolution state: unsupported version');
+
+  const importMap = restoreImportStatePathMap(state.importMap);
+  const packageMap = restoreImportStatePathMap(state.packageMap);
+  const namedImportMap: NamedImportMap = new Map();
+  for (const [file, entries] of importStateEntries(state.namedImportMap)) {
+    const bindings = new Map<string, NamedImportBinding>();
+    for (const [name, value] of importStateEntries(entries)) {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        throw new Error('Invalid import resolution state: expected named binding');
+      }
+      const binding = value as Record<string, unknown>;
+      if (typeof binding.sourcePath !== 'string' || typeof binding.exportedName !== 'string') {
+        throw new Error('Invalid import resolution state: malformed named binding');
+      }
+      bindings.set(name, { sourcePath: binding.sourcePath, exportedName: binding.exportedName });
+    }
+    namedImportMap.set(file, bindings);
+  }
+  const moduleAliasMap: ModuleAliasMap = new Map();
+  for (const [file, entries] of importStateEntries(state.moduleAliasMap)) {
+    const aliases = new Map<string, string>();
+    for (const [name, path] of importStateEntries(entries)) {
+      if (typeof path !== 'string')
+        throw new Error('Invalid import resolution state: expected alias path');
+      aliases.set(name, path);
+    }
+    moduleAliasMap.set(file, aliases);
+  }
+  return { importMap, packageMap, namedImportMap, moduleAliasMap };
+}
+
 export const createResolutionContext = (): ResolutionContext => {
   const model = createSemanticModel();
   const symbols = model.symbols;
