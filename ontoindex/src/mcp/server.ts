@@ -140,7 +140,11 @@ function readRepoIdentity(value: unknown): RepoIdentity | null {
   return repoLabel && repoPath ? { repoLabel, repoPath } : null;
 }
 
-function formatToolCallErrorMessage(error: unknown, repo?: RepoIdentity | null): string {
+function formatToolCallErrorMessage(
+  error: unknown,
+  repo?: RepoIdentity | null,
+  committedFallbackAvailable = false,
+): string {
   const message = error instanceof Error ? error.message : String(error);
   const candidate =
     error !== null && typeof error === 'object' ? (error as Record<string, unknown>) : undefined;
@@ -155,6 +159,22 @@ function formatToolCallErrorMessage(error: unknown, repo?: RepoIdentity | null):
     ].includes(candidate.code)
       ? candidate.code
       : undefined;
+  const diagnostic = candidate?.diagnostics as Record<string, unknown> | undefined;
+  const diagnostics =
+    code === 'workspace_too_large' &&
+    diagnostic &&
+    typeof diagnostic === 'object' &&
+    Number.isSafeInteger(diagnostic.observedIndexedFiles) &&
+    (diagnostic.observedIndexedFiles as number) >= 0 &&
+    Number.isSafeInteger(diagnostic.maxIndexedFiles) &&
+    (diagnostic.maxIndexedFiles as number) > 0 &&
+    diagnostic.requiredCapability === 'workspace-graph'
+      ? {
+          observedIndexedFiles: diagnostic.observedIndexedFiles,
+          maxIndexedFiles: diagnostic.maxIndexedFiles,
+          requiredCapability: 'workspace-graph',
+        }
+      : undefined;
   return boundMcpErrorText(
     (boundedMessage) =>
       repo || code
@@ -163,6 +183,16 @@ function formatToolCallErrorMessage(error: unknown, repo?: RepoIdentity | null):
               error: boundedMessage,
               ...(repo ? { repoLabel: repo.repoLabel, repoPath: repo.repoPath } : {}),
               ...(code ? { code } : {}),
+              ...(diagnostics ? { diagnostics } : {}),
+              ...(code === 'workspace_too_large' && committedFallbackAvailable
+                ? {
+                    remediation: {
+                      read_mode: 'committed',
+                      message:
+                        'Explicitly set read_mode="committed" to query the indexed commit. Uncommitted source changes, manual overlays and live enrichment are excluded. Do not automatically retry or reindex.',
+                    },
+                  }
+                : {}),
               ...(code && typeof candidate?.retryable === 'boolean'
                 ? { retryable: candidate.retryable }
                 : {}),
@@ -191,6 +221,15 @@ export function getNextStepHint(
   const repo = args?.repo;
   const repoParam = repo ? `, repo: "${repo}"` : '';
   const repoPath = repo || '{name}';
+  if (args?.read_mode === 'committed') {
+    const committedParam = `${repoParam}, read_mode: "committed"`;
+    if (toolName === 'search' && args.action === 'semantic') {
+      return `\n\n---\n**Next:** Use inspect({action: "context", uid: "<result_uid>"${committedParam}}) to inspect an indexed result. Uncommitted source and live enrichment remain excluded.`;
+    }
+    if (toolName === 'inspect' && args.action === 'context') {
+      return `\n\n---\n**Next:** Use impact({action: "symbol", target_uid: "<result_uid>", direction: "upstream"${committedParam}}) to inspect committed dependents.`;
+    }
+  }
 
   switch (toolName) {
     case 'list_repos':
@@ -540,7 +579,24 @@ export function createMCPServer(
       tools: activeTools.map((tool) => ({
         name: tool.name,
         description: tool.description,
-        inputSchema: relaxSchemaForClient(withResponseCursor(tool.inputSchema)),
+        inputSchema: relaxSchemaForClient(
+          withResponseCursor(
+            ['gn_explore', 'inspect', 'impact', 'search'].includes(tool.name)
+              ? {
+                  ...tool.inputSchema,
+                  properties: {
+                    ...(tool.inputSchema as any).properties,
+                    read_mode: {
+                      type: 'string',
+                      enum: ['committed'],
+                      description:
+                        'Explicit indexed-commit view; excludes uncommitted source and live enrichment. Supported for explore, inspect/context, impact/symbol and search/semantic.',
+                    },
+                  },
+                }
+              : tool.inputSchema,
+          ),
+        ),
       })),
     })),
   );
@@ -562,11 +618,51 @@ export function createMCPServer(
         const { name, arguments: args } = request.params;
         const typedArgs = (args ?? {}) as Record<string, unknown>;
         let repoIdentity: RepoIdentity | null = null;
+        const supportedCommittedRead =
+          name === 'gn_explore' ||
+          (name === 'inspect' && typedArgs.action === 'context') ||
+          (name === 'impact' && typedArgs.action === 'symbol') ||
+          (name === 'search' && typedArgs.action === 'semantic');
+        const committedFallbackAvailable =
+          supportedCommittedRead &&
+          !options.full &&
+          typedArgs.read_mode === undefined &&
+          typeof typedArgs.repo === 'string' &&
+          typedArgs.repo.trim().length > 0 &&
+          !typedArgs.repo.startsWith('@') &&
+          typedArgs.include_lsp_refs !== true &&
+          typedArgs.consume_enrichment_facts !== true &&
+          typedArgs.include_passive_related_facts !== true &&
+          typedArgs.include_markdown_context !== true &&
+          (!typedArgs.retrieval_policy || typedArgs.retrieval_policy === 'graph-only');
 
         try {
           const oversized = findOversizedArgument(typedArgs);
           if (oversized) throw new Error(`Invalid arguments for ${name}: ${oversized}`);
           const responseBudgetBytes = validateResponseBudget(typedArgs.response_budget_bytes);
+          const committedRead = typedArgs.read_mode !== undefined;
+          if (committedRead) {
+            if (
+              typedArgs.read_mode !== 'committed' ||
+              !supportedCommittedRead ||
+              options.full ||
+              typeof typedArgs.repo !== 'string' ||
+              typedArgs.repo.startsWith('@')
+            ) {
+              throw new Error(
+                'read_mode=committed requires an explicit single repository and a supported navigation operation.',
+              );
+            }
+            if (
+              typedArgs.include_lsp_refs === true ||
+              typedArgs.consume_enrichment_facts === true ||
+              typedArgs.include_passive_related_facts === true ||
+              typedArgs.include_markdown_context === true ||
+              (typedArgs.retrieval_policy && typedArgs.retrieval_policy !== 'graph-only')
+            ) {
+              throw new Error('Committed reads do not support live or external enrichment.');
+            }
+          }
           if (options.transport === 'http' && name === 'gn_quality_mode') {
             throw new Error(
               'gn_quality_mode is unavailable over HTTP because it changes process-wide configuration.',
@@ -584,60 +680,78 @@ export function createMCPServer(
             return { content: [{ type: 'text', text: page.text }] };
           }
 
-          let result: unknown;
-          if (!options.full && SUPER_NAMES.has(name as SuperTool)) {
-            if (isRepoOptionalSuperToolName(name)) {
-              result = await dispatchLazySuper(name as SuperTool, typedArgs, '');
-            } else {
-              const repo = await backend.resolveRepo(typedArgs.repo as string | undefined);
-              repoIdentity = {
-                repoLabel: repo.name ?? repo.id,
-                repoPath: repo.repoPath,
-              };
-              if (GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool)) {
-                await backend.ensureRepoInitialized(repo.id);
-              }
-              const preparedRead =
-                WORKSPACE_READ_SUPER_TOOLS.has(name as SuperTool) &&
-                typeof backend.withPreparedRepoRead === 'function';
-              const preparedAutoRead = preparedRead && isAutomaticWorkspaceEnabled();
-              const operation = () =>
-                dispatchLazySuper(
-                  name as SuperTool,
-                  typedArgs,
-                  repo.id,
-                  name === 'gn_safe_refactor'
-                    ? {
-                        repoPath: repo.repoPath,
-                        callTool: backend.callTool.bind(backend),
-                      }
-                    : undefined,
-                  name === 'gn_diagnose'
-                    ? { repoPath: repo.repoPath, projectCwd: options.projectCwd ?? null }
-                    : name === 'gn_audit_logic'
-                      ? { repoPath: repo.repoPath }
+          const execute = async () => {
+            let result: unknown;
+            if (!options.full && SUPER_NAMES.has(name as SuperTool)) {
+              if (isRepoOptionalSuperToolName(name)) {
+                result = await dispatchLazySuper(name as SuperTool, typedArgs, '');
+              } else {
+                const repo = await backend.resolveRepo(typedArgs.repo as string | undefined);
+                repoIdentity = {
+                  repoLabel: repo.name ?? repo.id,
+                  repoPath: repo.repoPath,
+                };
+                if (GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool)) {
+                  await backend.ensureRepoInitialized(repo.id);
+                }
+                const preparedRead =
+                  WORKSPACE_READ_SUPER_TOOLS.has(name as SuperTool) &&
+                  typeof backend.withPreparedRepoRead === 'function';
+                const preparedAutoRead = preparedRead && isAutomaticWorkspaceEnabled();
+                const operation = () =>
+                  dispatchLazySuper(
+                    name as SuperTool,
+                    typedArgs,
+                    repo.id,
+                    name === 'gn_safe_refactor'
+                      ? {
+                          repoPath: repo.repoPath,
+                          callTool: backend.callTool.bind(backend),
+                        }
                       : undefined,
+                    name === 'gn_diagnose'
+                      ? { repoPath: repo.repoPath, projectCwd: options.projectCwd ?? null }
+                      : name === 'gn_audit_logic'
+                        ? { repoPath: repo.repoPath }
+                        : undefined,
+                  );
+                const superResult = preparedRead
+                  ? await backend.withPreparedRepoRead(
+                      repo,
+                      { needsRelationships: true, wantsWorkspaceGraph: true },
+                      operation,
+                    )
+                  : await operation();
+                result = attachRepoScopeIdentity(
+                  GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool) &&
+                    !preparedAutoRead &&
+                    !committedRead
+                    ? ((await backend.withCommittedGraphNotice?.(superResult, repo)) ?? superResult)
+                    : superResult,
+                  repo,
                 );
-              const superResult = preparedRead
-                ? await backend.withPreparedRepoRead(
-                    repo,
-                    { needsRelationships: true, wantsWorkspaceGraph: true },
-                    operation,
-                  )
-                : await operation();
-              result = attachRepoScopeIdentity(
-                GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool) && !preparedAutoRead
-                  ? ((await backend.withCommittedGraphNotice?.(superResult, repo)) ?? superResult)
-                  : superResult,
-                repo,
-              );
+              }
+            } else if (!options.full && FACADE_NAMES.has(name)) {
+              const action = typedArgs.action as string;
+              if (!action) throw new Error(`Tool "${name}" requires an "action" parameter.`);
+              result = await dispatchFacade(name as FacadeTool, action, typedArgs, backend);
+            } else {
+              result = await backend.callTool(name, typedArgs);
             }
-          } else if (!options.full && FACADE_NAMES.has(name)) {
-            const action = typedArgs.action as string;
-            if (!action) throw new Error(`Tool "${name}" requires an "action" parameter.`);
-            result = await dispatchFacade(name as FacadeTool, action, typedArgs, backend);
+            return result;
+          };
+          let result: unknown;
+          if (committedRead) {
+            const repo = await backend.resolveRepo(typedArgs.repo as string);
+            repoIdentity = { repoLabel: repo.name ?? repo.id, repoPath: repo.repoPath };
+            await backend.ensureRepoInitialized(repo.id);
+            result = await backend.withPreparedRepoRead(
+              repo,
+              { needsRelationships: true, readMode: 'committed' },
+              execute,
+            );
           } else {
-            result = await backend.callTool(name, typedArgs);
+            result = await execute();
           }
           const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
           const hint = responseBudgetBytes === undefined ? getNextStepHint(name, typedArgs) : '';
@@ -657,7 +771,14 @@ export function createMCPServer(
           const scopedRepoIdentity = repoIdentity ?? readRepoIdentity(error);
           return {
             content: [
-              { type: 'text', text: formatToolCallErrorMessage(error, scopedRepoIdentity) },
+              {
+                type: 'text',
+                text: formatToolCallErrorMessage(
+                  error,
+                  scopedRepoIdentity,
+                  committedFallbackAvailable,
+                ),
+              },
             ],
             isError: true,
           };

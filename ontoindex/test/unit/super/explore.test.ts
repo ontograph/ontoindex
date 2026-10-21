@@ -352,6 +352,28 @@ describe('gn_explore', () => {
     });
   });
 
+  it('preserves committed mode in UID examples, task packs and files next calls', async () => {
+    mockBackendQuery.mockResolvedValue(makeDefaultQueryResult(6));
+    const report = await gnExplore('test-repo', {
+      query: 'search flow',
+      depth: 'deep',
+      profile: 'task-pack',
+      read_mode: 'committed',
+    });
+    for (const symbol of report.topSymbols) {
+      expect(symbol.retryExamples?.inspect).toContain('read_mode: "committed"');
+      expect(symbol.retryExamples?.impact).toContain('read_mode: "committed"');
+    }
+    expect(report.taskPack?.nextCalls.length).toBeGreaterThan(0);
+    for (const call of report.taskPack!.nextCalls) expect(call).toContain('read_mode: "committed"');
+    const files = await gnExplore('test-repo', {
+      query: 'search flow',
+      format: 'files',
+      read_mode: 'committed',
+    });
+    for (const call of files.nextCalls!) expect(call).toContain('read_mode: "committed"');
+  });
+
   it('adds a bounded taskPack only when requested', async () => {
     mockBackendQuery.mockResolvedValue(makeDefaultQueryResult(6));
 

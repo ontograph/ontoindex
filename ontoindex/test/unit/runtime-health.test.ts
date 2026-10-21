@@ -306,6 +306,11 @@ describe('deriveRuntimeHealth', () => {
         'committed index is current, but uncommitted files are not represented in the graph',
       );
       expect(health.committedFreshness).toBe('fresh');
+      expect(health.workspaceReadiness).toEqual({
+        state: 'not-checked',
+        dirtyCoverageScope: 'symbol-overlay-eligibility',
+        preparationChecked: false,
+      });
       expect(health.dirtyCoverage).toEqual({
         state: 'coverable',
         dirtySourceFiles: 1,

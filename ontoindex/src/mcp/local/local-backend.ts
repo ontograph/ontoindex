@@ -17,6 +17,8 @@ import {
   isAutomaticWorkspaceEnabled,
   evictOverlayState,
   withPinnedOverlay,
+  withCommittedRead,
+  getOverlaySnapshot,
   type OverlaySnapshot,
 } from './backend-overlay.js';
 import { RepoHandle, BackendPort } from 'ontoindex-shared';
@@ -27,6 +29,7 @@ import {
   isLbugReady,
   isLbugDbPathReady,
   getLbugDbPath,
+  withPinnedGeneration,
 } from '../../core/lbug/pool-adapter.js';
 export { isWriteQuery } from '../../core/lbug/pool-adapter.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
@@ -36,6 +39,8 @@ export { isWriteQuery } from '../../core/lbug/pool-adapter.js';
 import {
   listRegisteredRepos,
   resolveActiveIndexGeneration,
+  readActiveGenerationMeta,
+  acquireIndexGenerationPin,
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
 import {
@@ -1271,6 +1276,15 @@ function workspacePreparationError(error: unknown): Error & { code: string; retr
       {
         code: error.code,
         retryable: error.code === 'workspace_busy' || error.code === 'workspace_timeout',
+        ...(error.code === 'workspace_too_large' && error.diagnostics
+          ? {
+              diagnostics: {
+                observedIndexedFiles: error.diagnostics.observedIndexedFiles,
+                maxIndexedFiles: error.diagnostics.maxIndexedFiles,
+                requiredCapability: error.diagnostics.requiredCapability,
+              },
+            }
+          : {}),
       },
     );
   }
@@ -2220,12 +2234,69 @@ export class LocalBackend implements BackendPort {
   /** Admit a callback through the same prepared, pinned read scope as tool dispatch. */
   async withPreparedRepoRead<T>(
     repo: RepoHandle,
-    options: { needsRelationships: boolean; wantsWorkspaceGraph?: boolean },
+    options: { needsRelationships: boolean; wantsWorkspaceGraph?: boolean; readMode?: 'committed' },
     operation: () => Promise<T>,
   ): Promise<T> {
     const endUse = this.trackRepoUse(repo.id);
     try {
       if (getReadRequestContext()?.repoId === repo.id) return await operation();
+      if (options.readMode === 'committed') {
+        const selected = await readActiveGenerationMeta(repo.storagePath);
+        if (!selected.meta?.lastCommit || selected.authority === 'untrusted') {
+          throw new Error('Committed read unavailable: indexed commit identity is unknown.');
+        }
+        const databasePath =
+          selected.activeGeneration?.lbugPath ?? path.join(repo.storagePath, 'lbug');
+        const pin = await acquireIndexGenerationPin(databasePath);
+        try {
+          return await withPinnedGeneration(repo.id, pin.dbPath, () =>
+            withCommittedRead(
+              repo.id,
+              selected.activeGeneration?.generationId ?? selected.meta!.lastCommit!,
+              async () => {
+                const snapshot = await getOverlaySnapshot(repo);
+                return readRequestContext.run(
+                  {
+                    repoId: repo.id,
+                    snapshot,
+                    deadline: Infinity,
+                    signal: this.operationContext.getStore()?.signal,
+                    async release() {},
+                  },
+                  async () => {
+                    const result = await operation();
+                    if (!result || typeof result !== 'object' || Array.isArray(result)) {
+                      throw new Error('Committed read requires a structured result.');
+                    }
+                    return {
+                      ...result,
+                      readContext: {
+                        mode: 'committed',
+                        indexedCommit: selected.meta!.lastCommit,
+                        generation: selected.activeGeneration?.generationId ?? null,
+                        workingTreeIncluded: false,
+                        excludedEvidence: [
+                          'uncommitted source changes',
+                          'manual overlays',
+                          'live LSP references',
+                        ],
+                      },
+                      warnings: [
+                        ...(Array.isArray((result as any).warnings)
+                          ? (result as any).warnings
+                          : []),
+                        'Explicit committed-index read: uncommitted source changes and live enrichment are excluded.',
+                      ],
+                    } as T;
+                  },
+                );
+              },
+            ),
+          );
+        } finally {
+          await pin.release();
+        }
+      }
       const deadline = performance.now() + WORKSPACE_PREPARATION_DEADLINE_MS;
       const signal = this.operationContext.getStore()?.signal;
       let snapshot: OverlaySnapshot;

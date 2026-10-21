@@ -90,6 +90,11 @@ export interface RuntimeHealthSnapshot {
   };
   /** Whether stored metadata reports at least one embedding vector. */
   embeddingsAvailable?: boolean | null;
+  workspaceReadiness?: {
+    state: 'not-checked';
+    dirtyCoverageScope: 'symbol-overlay-eligibility';
+    preparationChecked: false;
+  };
   degradedReason: string | null;
   repairCommand: string;
   repairAction?: RuntimeRepairAction;
@@ -176,6 +181,11 @@ export async function readRuntimeHealth(
           : 'stale'
         : 'unknown',
     dirtyCoverage,
+    workspaceReadiness: {
+      state: 'not-checked',
+      dirtyCoverageScope: 'symbol-overlay-eligibility',
+      preparationChecked: false,
+    },
     embeddingsAvailable:
       typeof meta?.stats?.embeddings === 'number' && Number.isFinite(meta.stats.embeddings)
         ? meta.stats.embeddings > 0

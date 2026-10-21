@@ -171,9 +171,82 @@ describe('MCP server tool-call errors', () => {
         ...(scoped ? { repoLabel: 'fixture', repoPath: '/repo/fixture' } : {}),
         code,
         retryable,
+        ...(scoped && code === 'workspace_too_large'
+          ? {
+              remediation: {
+                read_mode: 'committed',
+                message:
+                  'Explicitly set read_mode="committed" to query the indexed commit. Uncommitted source changes, manual overlays and live enrichment are excluded. Do not automatically retry or reindex.',
+              },
+            }
+          : {}),
       });
     },
   );
+
+  it.each([
+    { name: 'inspect', arguments: { repo: 'fixture', action: 'shape' } },
+    { name: 'impact', arguments: { repo: 'fixture', action: 'batch' } },
+    { name: 'search', arguments: { repo: 'fixture', action: 'cypher' } },
+    { name: 'gn_explore', arguments: {} },
+  ])('omits fallback advice for unsupported $name $arguments', async (params) => {
+    const error = Object.assign(new Error('workspace unavailable'), {
+      code: 'workspace_too_large',
+      retryable: false,
+    });
+    const { backend, handler } = await createHarness({
+      dispatchError: error,
+      callToolError: error,
+    });
+    const response = await handler({ params });
+    expect(response.isError).toBe(true);
+    expect(readErrorPayload(response.content[0].text)).not.toHaveProperty('remediation');
+    expect(backend.callTool.mock.calls.length).toBeLessThanOrEqual(1);
+  });
+
+  it.each([true, false])('filters size diagnostics with scoped=%s', async (scoped) => {
+    const diagnostics = {
+      observedIndexedFiles: 5000,
+      maxIndexedFiles: 1600,
+      requiredCapability: 'workspace-graph',
+    };
+    const error = Object.assign(new Error('workspace unavailable'), {
+      code: 'workspace_too_large',
+      retryable: false,
+      diagnostics: { ...diagnostics, privatePath: '/private/workspace', token: 'private-token' },
+    });
+    const { handler } = await createHarness(
+      scoped ? { dispatchError: error } : { callToolError: error },
+    );
+    const response = await handler({
+      params: scoped
+        ? { name: 'gn_explore', arguments: { repo: 'fixture' } }
+        : { name: 'list_repos', arguments: {} },
+    });
+    expect(response.isError).toBe(true);
+    expect(readErrorPayload(response.content[0].text).diagnostics).toEqual(diagnostics);
+    expect(response.content[0].text).not.toMatch(/private-token|private\/workspace/);
+  });
+
+  it.each([
+    null,
+    {},
+    { observedIndexedFiles: -1, maxIndexedFiles: 1600, requiredCapability: 'workspace-graph' },
+    {
+      observedIndexedFiles: 5000,
+      maxIndexedFiles: Infinity,
+      requiredCapability: 'workspace-graph',
+    },
+    { observedIndexedFiles: 5000, maxIndexedFiles: 1600, requiredCapability: '/private/workspace' },
+  ])('omits malformed size diagnostics %j', async (diagnostics) => {
+    const error = Object.assign(new Error('workspace unavailable'), {
+      code: 'workspace_too_large',
+      diagnostics,
+    });
+    const { handler } = await createHarness({ callToolError: error });
+    const response = await handler({ params: { name: 'list_repos', arguments: {} } });
+    expect(readErrorPayload(response.content[0].text)).not.toHaveProperty('diagnostics');
+  });
 
   it.each([undefined, 'workspace_unknown', 42, null, {}])(
     'ignores unknown or malformed code %j and its retryable field',

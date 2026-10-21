@@ -47,6 +47,11 @@ export class WorkspacePreparationError extends Error {
       | 'workspace_cancelled',
     message: string = code,
     options?: ErrorOptions,
+    public readonly diagnostics?: {
+      observedIndexedFiles: number;
+      maxIndexedFiles: number;
+      requiredCapability: 'workspace-graph';
+    },
   ) {
     super(message, options);
     this.name = 'WorkspacePreparationError';
@@ -378,6 +383,12 @@ export async function prepareWorkspaceRead(options: {
       throw new WorkspacePreparationError(
         'workspace_too_large',
         `Repository has ${fileCount} indexed files (limit ${maxFiles}); a full workspace graph build is refused. Run \`ontoindex analyze\` or raise ONTOINDEX_WORKSPACE_MAX_FILES.`,
+        undefined,
+        {
+          observedIndexedFiles: fileCount,
+          maxIndexedFiles: maxFiles,
+          requiredCapability: 'workspace-graph',
+        },
       );
     }
     const identity = JSON.stringify([

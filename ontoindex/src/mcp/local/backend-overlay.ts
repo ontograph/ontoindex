@@ -137,6 +137,22 @@ const EMPTY: OverlaySnapshot = {
   tombstones: new Set(),
 };
 
+const committedRead = new AsyncLocalStorage<{ repoId: string; generation: string }>();
+
+export function getCommittedRead(repoId: string): { generation: string } | undefined {
+  const current = committedRead.getStore();
+  return current?.repoId === repoId ? current : undefined;
+}
+
+/** Select the committed view for this repository without changing concurrent requests. */
+export function withCommittedRead<T>(
+  repoId: string,
+  generation: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return committedRead.run({ repoId, generation }, operation);
+}
+
 const SNAPSHOT_TTL_MS = 2_000;
 const MAX_SNAPSHOTS = 64;
 const snapshotCache = new Map<
@@ -211,6 +227,7 @@ export const overlayRepoId = (repoId: string): string => `${repoId}::overlay`;
  * the changed files alone, so reading it as the whole graph would drop every clean file.
  */
 export function workspaceGraphPoolId(repoId: string): string {
+  if (getCommittedRead(repoId)) return repoId;
   // Opt-in only: a working-tree graph left on disk must not change flag-off behavior.
   if (!isAutomaticWorkspaceEnabled()) return repoId;
   const pinned = pinnedOverlay.getStore();
@@ -221,11 +238,13 @@ export function workspaceGraphPoolId(repoId: string): string {
 
 /** True when the current request holds a pinned overlay generation for this repository. */
 export function hasPinnedOverlay(repoId: string): boolean {
+  if (getCommittedRead(repoId)) return false;
   return pinnedOverlay.getStore()?.repoId === repoId;
 }
 
 /** Snapshot admitted for this request, without re-reading overlay CURRENT. */
 export function getPinnedOverlaySnapshot(repoId: string): OverlaySnapshot | undefined {
+  if (getCommittedRead(repoId)) return EMPTY;
   const pinned = pinnedOverlay.getStore();
   return pinned?.repoId === repoId ? pinned.snapshot : undefined;
 }
@@ -595,6 +614,7 @@ async function computeSnapshot(
 
 /** Cached for a short TTL so one tool call (and bursts of calls) share one git probe. */
 export function getOverlaySnapshot(repo: OverlayRepo): Promise<OverlaySnapshot> {
+  if (getCommittedRead(repo.id)) return Promise.resolve(EMPTY);
   // One snapshot per response: a request that already pinned a generation reads through it.
   // Re-probing here repeats the dirty plan and the configuration walk for every nested reader.
   if (isAutomaticWorkspaceEnabled()) {

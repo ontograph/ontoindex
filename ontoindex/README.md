@@ -191,6 +191,21 @@ ontoindex mcp --project /path/to/target/repo
 
 ## Working with uncommitted code
 
+For an explicit view of the indexed commit, add `read_mode: "committed"` and an
+explicit repository to MCP `gn_explore`, `inspect/context`, `impact/symbol`, or
+`search/semantic`. This bypasses workspace preparation and excludes uncommitted
+source, manual overlays and live LSP references. Responses include `readContext`
+with indexed commit and generation. Live or external enrichment options and
+repository groups are rejected. Omission retains automatic workspace reads.
+Repeat the same mode when following a pagination cursor.
+
+Freshness `dirtyCoverage` describes symbol-overlay eligibility.
+`workspaceReadiness.preparationChecked: false` means graph preparation has not
+been checked. Size diagnostics use the file count stored in index metadata,
+not an independently recounted filesystem total. Choose committed evidence when
+current-worktree coverage is unnecessary. Increasing `ONTOINDEX_WORKSPACE_MAX_FILES`
+permits more expensive full graph builds and requires suitable host resources.
+
 Automatic reads capture eligible files from disk and pin one immutable generation
 for graph queries and source enrichment. Matching generations are reused. The
 capture is verified within finite retries; it is not an atomic filesystem

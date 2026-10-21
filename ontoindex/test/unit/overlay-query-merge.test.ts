@@ -95,6 +95,32 @@ const options = {
 };
 
 describe('query dirty-overlay merge', () => {
+  it('bounds definitions on ordinary and cached responses and separates limit cache keys', async () => {
+    vi.mocked(bm25Search).mockResolvedValue({
+      results: Array.from({ length: 25 }, (_, index) => ({
+        ...clean,
+        nodeId: `Function:src/clean.ts:Cache${index}`,
+        name: `Cache${index}`,
+      })),
+      ftsUsed: true,
+    });
+    const result = await query(repo, { ...options, limit: 3, structured_output: true });
+    expect(result.definitions).toHaveLength(3);
+    const cacheWrite = vi.mocked(SemanticRetrievalCache.prototype.set).mock.calls[0];
+    expect(cacheWrite).toBeDefined();
+    vi.mocked(SemanticRetrievalCache.prototype.lookup).mockResolvedValue({
+      status: 'hit',
+      ageMs: 1,
+      result: { ...cacheWrite[1], timestamp: 100 },
+    });
+    const hit = await query(repo, { ...options, limit: 3, structured_output: true });
+    expect(hit.definitions).toHaveLength(3);
+    expect(hit.structured_retrieval.capabilityState.cacheHit).toBe(true);
+    await query(repo, { ...options, limit: 5, structured_output: true });
+    const lookups = vi.mocked(SemanticRetrievalCache.prototype.lookup).mock.calls;
+    expect(lookups[0][0]).toBe(lookups[1][0]);
+    expect(lookups[2][0]).not.toBe(lookups[0][0]);
+  });
   beforeEach(() => {
     vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
     vi.resetAllMocks();

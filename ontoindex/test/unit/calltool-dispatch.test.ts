@@ -434,6 +434,27 @@ describe('request workspace gate', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  it('preserves safe size diagnostics without exposing private preparation text', async () => {
+    const diagnostics = {
+      observedIndexedFiles: 5000,
+      maxIndexedFiles: 1600,
+      requiredCapability: 'workspace-graph' as const,
+    };
+    const original = new WorkspacePreparationError(
+      'workspace_too_large',
+      'secret=preparation-token source: private.ts',
+      undefined,
+      { ...diagnostics, privatePath: 'private.ts' } as typeof diagnostics,
+    );
+    vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(original);
+    const handler = vi.fn();
+    (backend as any).repoToolHandlers.overview = handler;
+    const failure = await backend.callTool('overview', {}).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: 'workspace_too_large', retryable: false, diagnostics });
+    expect(JSON.stringify(failure)).not.toMatch(/preparation-token|private\.ts/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it.each(['Error', 'non-Error'])('bounds unexpected %s preparation failures', async (kind) => {
     const detail = `secret=preparation-token\nsource: private.ts\n${'x'.repeat(100_000)}`;
     const original = kind === 'Error' ? new Error(detail) : detail;

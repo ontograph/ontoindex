@@ -24,6 +24,23 @@ afterEach(async () => {
 });
 
 describe('pageMcpResponse', () => {
+  it('binds committed-view cursors to the original mode', async () => {
+    const args = { repo: 'fixture', read_mode: 'committed' };
+    const first = await pageMcpResponse({
+      tool: 'gn_explore',
+      args,
+      text: JSON.stringify({ topSymbols: ['x'.repeat(5000)] }),
+      maxBytes: 1500,
+    });
+    const cursor = (JSON.parse(first.text) as ResponsePageEnvelope).responsePage.nextCursor!;
+    expect(cursor).toBeDefined();
+    await expect(
+      pageMcpResponse({ tool: 'gn_explore', args: { repo: 'fixture' }, cursor, maxBytes: 1500 }),
+    ).rejects.toThrow();
+    expect(
+      (await pageMcpResponse({ tool: 'gn_explore', args, cursor, maxBytes: 1500 })).paged,
+    ).toBe(true);
+  });
   it('validates an opt-in budget as a positive safe integer', () => {
     expect(validateResponseBudget(undefined)).toBeUndefined();
     expect(validateResponseBudget(1024)).toBe(1024);

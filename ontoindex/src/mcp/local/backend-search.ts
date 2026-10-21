@@ -52,6 +52,7 @@ import { RepoHandle } from './tool-params.js';
 import {
   isAutomaticWorkspaceEnabled,
   getOverlaySnapshot,
+  getCommittedRead,
   hasPinnedOverlay,
   isDirtyPath,
   isOverlayReplacedPath,
@@ -1642,6 +1643,7 @@ export async function query(
   }
 
   const processLimit = params.limit || 5;
+  const definitionLimit = Math.min(params.limit ?? 20, 20);
   const maxSymbolsPerProcess = params.max_symbols || 10;
   const includeContent = params.include_content ?? false;
   const skeletonDefault = process.env.ONTOINDEX_SKELETON_DEFAULT !== '0';
@@ -1673,8 +1675,10 @@ export async function query(
   ) {
     throw new Error(overlaySnapshot?.reason ?? 'Workspace snapshot unavailable');
   }
-  const snapshotIdentity =
-    automaticWorkspace && overlaySnapshot?.usable
+  const committed = getCommittedRead(repo.id);
+  const snapshotIdentity = committed
+    ? `committed:${committed.generation}`
+    : automaticWorkspace && overlaySnapshot?.usable
       ? JSON.stringify([
           overlaySnapshot.generation,
           overlaySnapshot.capability,
@@ -1734,6 +1738,7 @@ export async function query(
     query: searchQuery,
     retrievalPolicy: params.retrieval_policy,
     capabilities: [
+      `result-limits:${processLimit}:${maxSymbolsPerProcess}:${definitionLimit}`,
       ...(intentEnsembleEnabled ? ['intent-ensemble'] : []),
       ...(params.include_citations ? ['citations'] : []),
       ...(params.include_lsp_refs ? ['lsp-refs'] : []),
@@ -1770,7 +1775,7 @@ export async function query(
       const cacheHitResult = {
         processes: [],
         process_symbols: [],
-        definitions: definitionsForCachedCandidates(filteredCandidates),
+        definitions: definitionsForCachedCandidates(filteredCandidates).slice(0, definitionLimit),
         timing: cached.diagnostics.timing || {},
         query_intent: queryIntent,
         structured_retrieval: {
@@ -2392,7 +2397,7 @@ export async function query(
   // LSP find-references enrichment (Pillar 2 / W1c-pivot)
   // Gate: ONTOINDEX_LSP_REFERENCES=1 (default off — consistent with v8 env-gate pattern).
   // Best-effort: never blocks query, never alters RRF ranking.
-  if (params.include_lsp_refs ?? process.env.ONTOINDEX_LSP_REFERENCES === '1') {
+  if (!committed && (params.include_lsp_refs ?? process.env.ONTOINDEX_LSP_REFERENCES === '1')) {
     timer.start('lsp');
     const topEntry = mergedRaw[0];
     const topResult = topEntry?.[1]?.data;
@@ -2564,7 +2569,7 @@ export async function query(
   const result = {
     processes,
     process_symbols: dedupedSymbols,
-    definitions: definitions.slice(0, 20),
+    definitions: definitions.slice(0, definitionLimit),
     timing,
     query_intent: queryIntent,
     ...(abstentionEnabled ? { abstained: false as const } : {}),

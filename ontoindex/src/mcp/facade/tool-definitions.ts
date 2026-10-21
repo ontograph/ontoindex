@@ -159,7 +159,8 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
         },
         limit: {
           type: 'number',
-          description: 'Maximum semantic processes/results to return.',
+          description:
+            'Maximum semantic processes and definitions to return per family. Definitions retain a ceiling of 20; max_symbols bounds symbols per process.',
           default: 5,
           minimum: 1,
           maximum: 100,

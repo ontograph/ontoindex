@@ -800,6 +800,11 @@ describe('workspace read preparation', () => {
     f.dependencies.getSnapshot.mockResolvedValue(f.dirty);
     await expect(prepareWorkspaceRead(f.options)).rejects.toMatchObject({
       code: 'workspace_too_large',
+      diagnostics: {
+        observedIndexedFiles: 5000,
+        maxIndexedFiles: 1600,
+        requiredCapability: 'workspace-graph',
+      },
     });
     expect(f.dependencies.acquireLock).not.toHaveBeenCalled();
     vi.stubEnv('ONTOINDEX_WORKSPACE_MAX_FILES', '9000');

@@ -21,6 +21,7 @@ import {
 import { resolveSymbolCandidates, toSymbolIdentity } from './backend-symbol-resolution.js';
 import {
   isAutomaticWorkspaceEnabled,
+  getCommittedRead,
   getOverlaySnapshot,
   queryOverlay,
   isAuthoritativePath,
@@ -336,7 +337,11 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
     }
   }
 
-  if (!automaticWorkspace && (outcome?.kind !== 'ok' || outcome.symbol.source !== 'overlay')) {
+  if (
+    !getCommittedRead(repo.id) &&
+    !automaticWorkspace &&
+    (outcome?.kind !== 'ok' || outcome.symbol.source !== 'overlay')
+  ) {
     const sourceFallback = await resolveSourceOnly(repo, params);
     if (sourceFallback?.kind === 'found') return sourceOnlyImpact(sourceFallback, direction);
     if (sourceFallback?.kind === 'unavailable') {

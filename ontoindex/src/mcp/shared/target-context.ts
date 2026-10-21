@@ -1,6 +1,10 @@
 import path from 'node:path';
 import { getPinnedGenerationDir } from '../../core/lbug/pool-adapter.js';
-import { getPinnedOverlaySnapshot, type OverlaySnapshot } from '../local/backend-overlay.js';
+import {
+  getPinnedOverlaySnapshot,
+  getCommittedRead,
+  type OverlaySnapshot,
+} from '../local/backend-overlay.js';
 import { createHash } from 'node:crypto';
 
 import { execFileText } from '../../core/process/exec-file.js';
@@ -421,7 +425,9 @@ export async function resolveTargetContext(
     ...(scopePaths.length > 0 ? { scopePaths } : {}),
     ...(scopedDirtyWorkspace ? { scopedDirtyWorkspace } : {}),
     changedSinceIndex,
-    snapshotMode: resolveSnapshotMode(targetRef, dirtyWorktree),
+    snapshotMode: getCommittedRead(repoId)
+      ? 'committed-head'
+      : resolveSnapshotMode(targetRef, dirtyWorktree),
     scopeConfidence:
       graphAuthority?.state === 'authoritative' && admittedWorkspace ? 'high' : confidence.value,
     scopeConfidenceReason:
