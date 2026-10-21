@@ -18,6 +18,34 @@ vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => ({
 }));
 
 describe('backend state retention', () => {
+  it.each([undefined, 'readiness', 'context', 'drift'])(
+    'gates docs action %s according to its graph requirements',
+    async (action) => {
+      const backend = new LocalBackend() as any;
+      const handler = vi.fn().mockResolvedValue({ status: 'unavailable' });
+      const prepare = vi
+        .spyOn(backend, 'withPreparedRepoRead')
+        .mockRejectedValue(new Error('workspace_too_large'));
+      try {
+        const request = backend.dispatchTrackedRepoTool(
+          { id: 'docs-test' },
+          'docs',
+          { action },
+          handler,
+        );
+        if (action === undefined || action === 'readiness') {
+          expect(await request).toMatchObject({ status: 'unavailable' });
+          expect(prepare).not.toHaveBeenCalled();
+          expect(handler).toHaveBeenCalledOnce();
+        } else {
+          await expect(request).rejects.toThrow('workspace_too_large');
+          expect(handler).not.toHaveBeenCalled();
+        }
+      } finally {
+        await backend.dispose();
+      }
+    },
+  );
   it('cancels one watcher startup waiter while another survives and releases once', async () => {
     vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
     const release = vi.fn().mockResolvedValue(undefined);

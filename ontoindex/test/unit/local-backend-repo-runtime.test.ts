@@ -794,6 +794,24 @@ describe('workspace read preparation', () => {
       }
     },
   );
+  it('admits a full graph build exactly at the indexed-file limit', async () => {
+    const f = fixture();
+    vi.stubEnv('ONTOINDEX_WORKSPACE_MAX_FILES', '1600');
+    f.dependencies.baseFileCount.mockResolvedValue(1600);
+    expect(await prepareWorkspaceRead(f.options)).toBe(f.ready);
+    expect(f.dependencies.acquireLock).toHaveBeenCalledOnce();
+    expect(f.dependencies.buildWorkspaceGraph).toHaveBeenCalledOnce();
+    expect(f.release).toHaveBeenCalledOnce();
+  });
+  it('reuses a matching complete workspace graph above the admission limit without rebuilding', async () => {
+    const f = fixture();
+    f.dependencies.getSnapshot.mockReset().mockResolvedValue(f.ready);
+    f.dependencies.baseFileCount.mockResolvedValue(7001);
+    expect(await prepareWorkspaceRead(f.options)).toBe(f.ready);
+    expect(f.dependencies.baseFileCount).not.toHaveBeenCalled();
+    expect(f.dependencies.acquireLock).not.toHaveBeenCalled();
+    expect(f.dependencies.buildWorkspaceGraph).not.toHaveBeenCalled();
+  });
   it('refuses a build for a repository above the file limit without taking the lock', async () => {
     const f = fixture();
     f.dependencies.baseFileCount.mockResolvedValue(5000);
@@ -807,6 +825,7 @@ describe('workspace read preparation', () => {
       },
     });
     expect(f.dependencies.acquireLock).not.toHaveBeenCalled();
+    expect(f.dependencies.buildWorkspaceGraph).not.toHaveBeenCalled();
     vi.stubEnv('ONTOINDEX_WORKSPACE_MAX_FILES', '9000');
     f.dependencies.getSnapshot
       .mockReset()

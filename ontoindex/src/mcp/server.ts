@@ -394,8 +394,13 @@ async function dispatchLazySuper(
   repoId: string,
   backend?: import('./super/safe-refactor.js').RefactorBackend,
   context?: { repoPath: string; projectCwd?: string | null },
+  readBackend?: Pick<
+    LocalBackend,
+    'resolveRepo' | 'ensureRepoInitialized' | 'withPreparedRepoRead'
+  >,
 ): Promise<unknown> {
   const { dispatchSuper } = await import('./super/dispatch.js');
+  if (readBackend) return dispatchSuper(name, params, repoId, backend, context, readBackend);
   if (context) return dispatchSuper(name, params, repoId, backend, context);
   return backend
     ? dispatchSuper(name, params, repoId, backend)
@@ -691,11 +696,15 @@ export function createMCPServer(
                   repoLabel: repo.name ?? repo.id,
                   repoPath: repo.repoPath,
                 };
-                if (GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool)) {
+                const docsReadiness =
+                  name === 'gn_docs' &&
+                  (typedArgs.action === undefined || typedArgs.action === 'readiness');
+                if (GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool) && !docsReadiness) {
                   await backend.ensureRepoInitialized(repo.id);
                 }
                 const preparedRead =
                   WORKSPACE_READ_SUPER_TOOLS.has(name as SuperTool) &&
+                  !docsReadiness &&
                   typeof backend.withPreparedRepoRead === 'function';
                 const preparedAutoRead = preparedRead && isAutomaticWorkspaceEnabled();
                 const operation = () =>
@@ -714,6 +723,7 @@ export function createMCPServer(
                       : name === 'gn_audit_logic'
                         ? { repoPath: repo.repoPath }
                         : undefined,
+                    name === 'gn_test_gap' ? backend : undefined,
                   );
                 const superResult = preparedRead
                   ? await backend.withPreparedRepoRead(
@@ -724,6 +734,7 @@ export function createMCPServer(
                   : await operation();
                 result = attachRepoScopeIdentity(
                   GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool) &&
+                    !docsReadiness &&
                     !preparedAutoRead &&
                     !committedRead
                     ? ((await backend.withCommittedGraphNotice?.(superResult, repo)) ?? superResult)

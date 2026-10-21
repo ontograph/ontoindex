@@ -434,7 +434,7 @@ describe('MCP Docs Facade Integration', () => {
       authority: 'advisory',
     });
     expect(result.nextAction).toBe(
-      'Markdown docs sidecar is missing; run `ontoindex docs refresh` or `ontoindex analyze --markdown-sidecar` before relying on this report.',
+      'Markdown docs sidecar is missing; run `ontoindex docs sidecar run markdown` or `ontoindex analyze --markdown-sidecar` before relying on this report.',
     );
   });
 
@@ -453,7 +453,7 @@ describe('MCP Docs Facade Integration', () => {
     });
     expect(result.docsEvidence[0]).toMatchObject({ freshness: 'stale' });
     expect(result.nextAction).toBe(
-      'Run `ontoindex docs refresh` (or `ontoindex analyze --markdown-sidecar`) before using this report for write decisions.',
+      'Run `ontoindex docs sidecar run markdown` (or `ontoindex analyze --markdown-sidecar`) before using this report for write decisions.',
     );
   });
 

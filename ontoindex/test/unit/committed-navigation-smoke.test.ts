@@ -5,6 +5,7 @@ import {
   parseArgs,
   payloadOf,
   runSmoke,
+  recordServerIdentity,
 } from '../../scripts/committed-navigation-smoke.mjs';
 
 const options = { repoLabel: 'fixture', symbol: 'baseline', file: 'src/base.ts', timeout: 30000 };
@@ -15,7 +16,13 @@ const wrap = (payload: unknown, isError = false) => ({
 });
 
 function fixture(
-  overrides: { stale?: boolean; wrongRepo?: boolean; excessive?: boolean; refused?: boolean } = {},
+  overrides: {
+    stale?: boolean;
+    wrongRepo?: boolean;
+    excessive?: boolean;
+    refused?: boolean;
+    refusalCode?: string;
+  } = {},
 ) {
   const calls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
   const client = {
@@ -46,7 +53,7 @@ function fixture(
         return wrap(
           {
             error: 'workspace_preparation_failed: workspace_too_large',
-            code: 'workspace_too_large',
+            code: overrides.refusalCode ?? 'workspace_too_large',
             retryable: false,
             remediation: { read_mode: 'committed' },
           },
@@ -77,10 +84,44 @@ function fixture(
 }
 
 describe('installed committed-navigation smoke', () => {
+  it('records advertised server identity alongside artifact provenance', () => {
+    const manifest = { cliVersion: 'rc.8', cliSha256: 'artifact-hash' };
+    expect(
+      recordServerIdentity(manifest, {
+        getServerVersion: () => ({ name: 'ontoindex', version: 'rc.3' }),
+      }),
+    ).toEqual({
+      ...manifest,
+      serverInfo: { name: 'ontoindex', version: 'rc.3' },
+    });
+    expect(recordServerIdentity(manifest, { getServerVersion: () => undefined })).toEqual({
+      ...manifest,
+      serverInfo: null,
+    });
+    expect(manifest).not.toHaveProperty('serverInfo');
+  });
   it('parses JSON before a generated continuation and refuses partial evidence', () => {
     expect(payloadOf(wrap({ status: 'found' }))).toEqual({ status: 'found' });
     expect(classifyResult(wrap({ truncated: true })).kind).toBe('partial');
     expect(() => payloadOf({ content: [{ type: 'text', text: '{"truncated":' }] })).toThrow();
+  });
+
+  it.each([false, true])('keeps errors visible despite truncation (isError=%s)', (isError) => {
+    const error = {
+      error: 'workspace_preparation_failed: workspace_too_large',
+      code: 'workspace_too_large',
+      retryable: false,
+      remediation: { read_mode: 'committed' },
+    };
+    for (const marker of [
+      { truncated: true },
+      { detailTruncated: true },
+      { response_cursor: 'next' },
+      { nextCursor: 'next' },
+    ]) {
+      expect(classifyResult(wrap({ ...error, ...marker }, isError)).kind).toBe('error');
+    }
+    expect(classifyResult(wrap({ truncated: true }, true)).kind).toBe('error');
   });
 
   it.each([{ stale: true }, { wrongRepo: true }])(
@@ -120,6 +161,19 @@ describe('installed committed-navigation smoke', () => {
     const result = await runSmoke(options, { ...fake, head: 'head', repoPath: '/repo' });
     expect(result.contractPassed).toBe(false);
     expect(result.checks).toContainEqual({ name: 'semantic limit is respected', pass: false });
+  });
+
+  it('rejects unrelated nonretryable errors with forged committed remediation', async () => {
+    const fake = fixture({ refused: true, refusalCode: 'query_failed' });
+    const result = await runSmoke(options, { ...fake, head: 'head', repoPath: '/repo' });
+    expect(result.contractPassed).toBe(false);
+    expect(result.workspace).toEqual(
+      ['gn_explore', 'search', 'inspect', 'impact'].map((name) => ({
+        name,
+        classification: 'error',
+        code: 'query_failed',
+      })),
+    );
   });
 
   it('requires explicit installed CLI and evidence location and caps timeout', () => {

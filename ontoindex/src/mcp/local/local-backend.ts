@@ -2360,19 +2360,22 @@ export class LocalBackend implements BackendPort {
   ): Promise<unknown> {
     const invoke = () => handler(repo, params);
     let preparationNote: string | undefined;
-    let result = UNGATED_REPO_TOOLS.has(method)
-      ? await invoke()
-      : await this.withPreparedRepoRead(
-          repo,
-          {
-            needsRelationships: RELATIONSHIP_TOOLS.has(method),
-            wantsWorkspaceGraph: WORKSPACE_GRAPH_TOOLS.has(method),
-          },
-          async () => {
-            preparationNote = getReadRequestContext()?.snapshot.preparationNote;
-            return invoke();
-          },
-        );
+    const metadataOnlyReadiness =
+      method === 'docs' && (params.action === undefined || params.action === 'readiness');
+    let result =
+      UNGATED_REPO_TOOLS.has(method) || metadataOnlyReadiness
+        ? await invoke()
+        : await this.withPreparedRepoRead(
+            repo,
+            {
+              needsRelationships: RELATIONSHIP_TOOLS.has(method),
+              wantsWorkspaceGraph: WORKSPACE_GRAPH_TOOLS.has(method),
+            },
+            async () => {
+              preparationNote = getReadRequestContext()?.snapshot.preparationNote;
+              return invoke();
+            },
+          );
     if (preparationNote && isObjectResponse(result)) {
       const existing = (result as { warnings?: unknown }).warnings;
       result = {

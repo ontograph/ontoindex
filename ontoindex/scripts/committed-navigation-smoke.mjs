@@ -44,16 +44,30 @@ export function payloadOf(result) {
 
 export function classifyResult(result) {
   const payload = payloadOf(result);
-  if (
+  const partial = Boolean(
     payload.truncated === true ||
     payload.detailTruncated === true ||
     payload.response_cursor ||
-    payload.nextCursor
-  )
-    return { kind: 'partial', payload };
+    payload.nextCursor,
+  );
   if (result.isError || payload.error)
-    return { kind: payload.retryable === false ? 'refused' : 'error', payload };
+    return {
+      kind:
+        !partial && payload.code === 'workspace_too_large' && payload.retryable === false
+          ? 'refused'
+          : 'error',
+      payload,
+    };
+  if (partial) return { kind: 'partial', payload };
   return { kind: 'ok', payload };
+}
+
+export function recordServerIdentity(manifest, client) {
+  const server = client.getServerVersion();
+  return {
+    ...manifest,
+    serverInfo: server ? { name: server.name, version: server.version } : null,
+  };
 }
 
 // One attempt per request; explicit committed reads are a separate requested mode.
@@ -253,7 +267,7 @@ async function main() {
       execFileSync('git', ['-C', repoPath, ...args], { encoding: 'utf8', timeout: 10000 });
     const head = git('rev-parse', 'HEAD').trim();
     const status = git('status', '--porcelain=v1', '-z').split('\0').filter(Boolean);
-    save('manifest.json', {
+    const manifest = {
       version: 1,
       options,
       repoPath,
@@ -267,7 +281,8 @@ async function main() {
         timeout: 10000,
       }).trim(),
       nodeVersion: process.version,
-    });
+    };
+    save('manifest.json', manifest);
     const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
     const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
     const transport = new StdioClientTransport({
@@ -280,6 +295,7 @@ async function main() {
     transport.stderr?.pipe(stderr);
     client = new Client({ name: 'committed-navigation-smoke', version: '1' });
     await client.connect(transport, { timeout: options.timeout });
+    save('manifest.json', recordServerIdentity(manifest, client));
     summary = await runSmoke(options, {
       client,
       head,

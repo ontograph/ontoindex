@@ -114,6 +114,60 @@ describe('explicit committed navigation over MCP', () => {
   const payloadOf = (result: { content?: unknown }) =>
     JSON.parse((result.content as Array<{ text: string }>)[0].text.split('\n\n---')[0]);
 
+  it.each(['gn_test_gap', 'audit'])(
+    'initializes cold target reads through %s and preserves absolute-path identity',
+    async (name) => {
+      for (const target of [
+        { symbol: 'baseline' },
+        { filePath: 'src/base.ts' },
+        { query: 'baseline' },
+      ]) {
+        const result = await client.callTool({
+          name,
+          arguments: {
+            repo: path.join(root, 'repo'),
+            ...(name === 'audit' ? { action: 'test_gap' } : {}),
+            ...target,
+          },
+        });
+        expect(result.isError).not.toBe(true);
+        const payload = payloadOf(result);
+        expect(payload.mode).toBe('target');
+        if ('query' in target) {
+          // This fixture deliberately has no embeddings; unavailable semantic evidence
+          // must remain unknown rather than fabricate a matching symbol.
+          expect(payload.resolvedSymbols).toEqual([]);
+          expect(payload.targetedCoverage).toBe('unknown');
+        } else {
+          expect(payload.resolvedSymbols).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ name: 'baseline', filePath: 'src/base.ts' }),
+            ]),
+          );
+        }
+        expect(payload).not.toHaveProperty('readContext');
+        expect(JSON.stringify(payload)).not.toContain('not initialized');
+        expect(analysisSpy).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each(['gn_docs', 'docs'])(
+    'reaches missing-sidecar readiness through %s above the workspace cap',
+    async (name) => {
+      const result = await client.callTool({
+        name,
+        arguments: { repo: repoName, action: 'readiness' },
+      });
+      expect(result.isError).not.toBe(true);
+      const payload = payloadOf(result);
+      expect(payload.report).toBe('docs-readiness');
+      expect(JSON.stringify(payload)).toContain('sidecar is missing');
+      expect(JSON.stringify(payload)).not.toContain('workspace_preparation_failed');
+      expect(analysisSpy).not.toHaveBeenCalled();
+    },
+  );
+
   it('reports committed freshness without promising workspace-graph readiness', async () => {
     const result = await client.callTool({
       name: 'gn_ensure_fresh',

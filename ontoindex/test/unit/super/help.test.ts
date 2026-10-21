@@ -129,7 +129,7 @@ describe('gnHelp — return shape', () => {
     const report = gnHelp({ repo: 'repo:test' });
     expect(report.readinessNotes).toEqual(
       expect.arrayContaining([
-        expect.stringContaining('ontoindex docs refresh'),
+        expect.stringContaining('ontoindex docs sidecar run markdown'),
         expect.stringContaining('ontoindex analyze --markdown-sidecar'),
         expect.stringContaining('ontoindex analyze --embeddings'),
       ]),

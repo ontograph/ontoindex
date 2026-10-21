@@ -14,7 +14,6 @@ import {
   queryOverlay,
   resetOverlaySnapshotCache,
 } from '../../src/mcp/local/backend-overlay.js';
-import { buildTestGraph } from '../helpers/test-graph.js';
 
 async function hashes(root: string): Promise<Record<string, string>> {
   const result: Record<string, string> = {};
@@ -83,11 +82,19 @@ it('publishes a partial captured workspace graph with parse-error paths without 
     );
     await fs.writeFile(
       path.join(repo, 'src/callee.ts'),
-      'export function callee() { return 1; }\n',
+      "import { deletedSymbol } from './deleted';\nexport function callee() { return deletedSymbol(); }\n",
     );
     await fs.writeFile(
       path.join(repo, 'src/deleted.ts'),
       'export function deletedSymbol() { return 0; }\n',
+    );
+    await fs.writeFile(
+      path.join(repo, 'src/renamed.ts'),
+      'export function retained() { return 3; }\n',
+    );
+    await fs.writeFile(
+      path.join(repo, 'src/importer.ts'),
+      "import { retained } from './renamed';\nexport function importer() { return retained(); }\n",
     );
     git('init', '-q');
     git('add', '.');
@@ -101,10 +108,15 @@ it('publishes a partial captured workspace graph with parse-error paths without 
       'baseline',
     );
     const { storagePath } = repoManager.getStoragePaths(repo);
+    const baselineGraph = await runPipelineFromRepo(repo, () => {}, {
+      skipWorkers: true,
+      profile: 'full',
+      capturedWorkspace: { captureRoot: repo, canonicalRepoPath: await fs.realpath(repo) },
+    });
     const baseline = await repoManager.createIndexGeneration(storagePath, 'baseline');
     await initLbug(baseline.lbugPath, { maxDBSize: 2 ** 32 });
     try {
-      await loadGraphToLbug(buildTestGraph([], []), repo, baseline.generationPath);
+      await loadGraphToLbug(baselineGraph.graph, repo, baseline.generationPath);
     } finally {
       await closeLbug();
     }
@@ -116,6 +128,14 @@ it('publishes a partial captured workspace graph with parse-error paths without 
       }),
     );
     const active = await repoManager.activateIndexGeneration(storagePath, baseline);
+    const baselineStored = await readGraph(active.lbugPath);
+    expect(baselineStored.edges).toContain(
+      JSON.stringify([
+        'Function:src/callee.ts:callee',
+        'Function:src/deleted.ts:deletedSymbol',
+        'CALLS',
+      ]),
+    );
     await fs.writeFile(
       path.join(active.generationPath, 'embeddings.sentinel'),
       'committed embeddings\n',
@@ -125,6 +145,11 @@ it('publishes a partial captured workspace graph with parse-error paths without 
       'export function callee() { return newSymbol(); }\nexport function newSymbol() { return 2; }\n',
     );
     await fs.unlink(path.join(repo, 'src/deleted.ts'));
+    git('mv', 'src/renamed.ts', 'src/moved.ts');
+    await fs.writeFile(
+      path.join(repo, 'src/importer.ts'),
+      "import { retained } from './moved';\nexport function importer() { return retained(); }\n",
+    );
     await fs.writeFile(path.join(repo, 'src/broken.ts'), 'export function broken( {\n');
     await fs.mkdir(copy);
     await fs.cp(path.join(repo, 'src'), path.join(copy, 'src'), { recursive: true });
@@ -171,6 +196,21 @@ it('publishes a partial captured workspace graph with parse-error paths without 
     const graph = await readGraph(path.join(published, 'lbug'));
     expect(graph.nodes).toContain('Function:src/callee.ts:newSymbol');
     expect(graph.nodes.some((id) => id.includes('deleted'))).toBe(false);
+    expect(graph.nodes.some((id) => id.includes('src/renamed.ts'))).toBe(false);
+    expect(graph.edges).toContain(
+      JSON.stringify([
+        'Function:src/importer.ts:importer',
+        'Function:src/moved.ts:retained',
+        'CALLS',
+      ]),
+    );
+    expect(graph.edges).toContain(
+      JSON.stringify([
+        'Function:src/callee.ts:callee',
+        'Function:src/callee.ts:newSymbol',
+        'CALLS',
+      ]),
+    );
     expect(graph.edges).toContain(
       JSON.stringify(['Function:src/caller.ts:caller', 'Function:src/callee.ts:callee', 'CALLS']),
     );
@@ -182,8 +222,15 @@ it('publishes a partial captured workspace graph with parse-error paths without 
       coverage: 'partial',
       parseErrorCount: 1,
       parseErrorFiles: ['src/broken.ts'],
-      dirtyPaths: ['src/broken.ts', 'src/callee.ts', 'src/deleted.ts'],
-      tombstones: ['src/deleted.ts'],
+      dirtyPaths: [
+        'src/broken.ts',
+        'src/callee.ts',
+        'src/deleted.ts',
+        'src/importer.ts',
+        'src/moved.ts',
+        'src/renamed.ts',
+      ],
+      tombstones: ['src/deleted.ts', 'src/renamed.ts'],
       inputs: { 'src/callee.ts': expect.stringMatching(/^[a-f0-9]{64}$/) },
     });
     for (const key of ['captureAndInventoryMs', 'pipelineMs', 'storageLoadMs', 'ftsMs']) {
