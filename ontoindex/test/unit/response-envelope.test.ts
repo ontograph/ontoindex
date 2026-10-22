@@ -365,6 +365,84 @@ describe('response envelope Git context freshness', () => {
     policy: { status: 'unknown' },
     warnings: [],
   };
+  it.each([
+    ['ok', false, 'dirty', false],
+    ['success', false, 'dirty', false],
+    ['ok', true, 'dirty', true],
+    ['error', false, 'dirty', true],
+    ['ok', false, 'untrusted', true],
+  ] as const)(
+    'keeps runtime advice for status=%s diagnostics=%s runtime=%s',
+    (status, diagnosticsRequested, freshnessState, retained) => {
+      const targetContext: TargetContext = {
+        ...knownContext,
+        dirtyWorktree: true,
+        graphAuthority: {
+          state: 'authoritative',
+          reason: 'validated workspace',
+          capability: 'workspace-graph',
+          generationId: 'workspace-1',
+          manifestDigest: 'digest',
+          coverage: 'complete',
+        },
+      };
+      const envelope = createEnvelopeFromLegacy({
+        legacy: { version: 1, findings: [] },
+        tool: 'fixture',
+        status,
+        diagnosticsRequested,
+        targetContext,
+        runtimeHealth: {
+          freshnessState,
+          degradedReason: 'runtime reason',
+          repairCommand: 'ontoindex analyze',
+          repairAction: {
+            tool: 'ontoindex',
+            command: 'analyze',
+            args: [],
+            reason: 'runtime reason',
+          },
+        },
+      });
+      expect(envelope.targetContext).toBe(targetContext);
+      expect(envelope.freshness.runtimeHealthState).toBe(freshnessState);
+      expect(envelope.freshness.runtimeRepairCommand).toBe(
+        retained ? 'ontoindex analyze' : undefined,
+      );
+    },
+  );
+
+  it.each(['gn_diagnose', 'gn_ensure_fresh'])(
+    'preserves dirty repair advice for %s without an explicit diagnostic option',
+    (tool) => {
+      const targetContext: TargetContext = {
+        ...knownContext,
+        dirtyWorktree: true,
+        graphAuthority: {
+          state: 'authoritative',
+          reason: 'validated workspace',
+          capability: 'workspace-graph',
+          generationId: 'workspace-1',
+          manifestDigest: 'digest',
+          coverage: 'complete',
+        },
+      };
+      const envelope = createEnvelopeFromLegacy({
+        legacy: { version: 1 },
+        tool,
+        status: 'ok',
+        targetContext,
+        runtimeHealth: {
+          freshnessState: 'dirty',
+          degradedReason: 'dirty reason',
+          repairCommand: 'ontoindex analyze',
+        },
+      });
+      expect(envelope.freshness.runtimeHealthState).toBe('dirty');
+      expect(envelope.freshness.runtimeRepairCommand).toBe('ontoindex analyze');
+    },
+  );
+
   const unknownCases: [string, Partial<TargetContext>][] = [
     ['missing current commit', { currentHead: undefined }],
     ['missing target commit', { targetHead: undefined }],

@@ -50,9 +50,13 @@ import type {
 } from '../../core/search/typed-query-document.js';
 import { RepoHandle } from './tool-params.js';
 import {
+  isAutomaticWorkspaceEnabled,
   getOverlaySnapshot,
+  getCommittedRead,
+  hasPinnedOverlay,
   isDirtyPath,
   isOverlayReplacedPath,
+  overlayRepoId,
   queryOverlay,
 } from './backend-overlay.js';
 import type { OverlaySnapshot } from './backend-overlay.js';
@@ -1639,6 +1643,7 @@ export async function query(
   }
 
   const processLimit = params.limit || 5;
+  const definitionLimit = Math.min(params.limit ?? 20, 20);
   const maxSymbolsPerProcess = params.max_symbols || 10;
   const includeContent = params.include_content ?? false;
   const skeletonDefault = process.env.ONTOINDEX_SKELETON_DEFAULT !== '0';
@@ -1654,13 +1659,52 @@ export async function query(
   const searchLimit = processLimit * maxSymbolsPerProcess;
   let overlaySnapshot: OverlaySnapshot | undefined;
   let overlayWarning: string | undefined;
+  const automaticWorkspace = isAutomaticWorkspaceEnabled();
   try {
     overlaySnapshot = await getOverlaySnapshot(repo);
   } catch (err) {
+    if (automaticWorkspace) throw err;
     overlayWarning = `Overlay unavailable; using base results: ${err instanceof Error ? err.message : String(err)}`;
   }
-  // HEAD-keyed cached results cannot describe an overlay generation.
-  const bypassStructuredCache = overlaySnapshot?.usable === true || !!overlayWarning;
+  if (
+    automaticWorkspace &&
+    (!overlaySnapshot ||
+      (!overlaySnapshot.usable &&
+        (overlaySnapshot.dirtyPaths.size > 0 || (overlaySnapshot.configPaths?.size ?? 0) > 0)) ||
+      (overlaySnapshot.usable && !overlaySnapshot.generation))
+  ) {
+    throw new Error(overlaySnapshot?.reason ?? 'Workspace snapshot unavailable');
+  }
+  const committed = getCommittedRead(repo.id);
+  const snapshotIdentity = committed
+    ? `committed:${committed.generation}`
+    : automaticWorkspace && overlaySnapshot?.usable
+      ? JSON.stringify([
+          overlaySnapshot.generation,
+          overlaySnapshot.capability,
+          overlaySnapshot.coverage,
+        ])
+      : undefined;
+  // Candidate-only cache entries cannot satisfy overlay enrichment requests.
+  const bypassStructuredCache =
+    !!overlayWarning ||
+    (overlaySnapshot?.usable === true &&
+      (!snapshotIdentity ||
+        includeContent ||
+        (params.include_skeleton ?? skeletonDefault) ||
+        params.include_citations === true ||
+        (params.include_lsp_refs ?? process.env.ONTOINDEX_LSP_REFERENCES === '1')));
+  // A pinned workspace generation with full-text indexes ranks the whole working tree. The
+  // overlay pool id resolves to that pinned generation, so ranking and enrichment read it
+  // instead of the committed index. Typed queries keep the dirty-file merge.
+  const workspaceLane =
+    isAutomaticWorkspaceEnabled() &&
+    searchInput.mode !== 'typed' &&
+    overlaySnapshot?.usable === true &&
+    overlaySnapshot.capability === 'workspace-graph' &&
+    (overlaySnapshot.ftsIndexes?.length ?? 0) > 0 &&
+    hasPinnedOverlay(repo.id);
+  const graphId = workspaceLane ? overlayRepoId(repo.id) : repo.id;
 
   // ONTOINDEX_INTENT_ENSEMBLE=1 activates per-intent weighted-RRF (v13 P1 W1b-step-1).
   // Default OFF — existing v12 RRF code path runs unchanged for all production users.
@@ -1694,6 +1738,7 @@ export async function query(
     query: searchQuery,
     retrievalPolicy: params.retrieval_policy,
     capabilities: [
+      `result-limits:${processLimit}:${maxSymbolsPerProcess}:${definitionLimit}`,
       ...(intentEnsembleEnabled ? ['intent-ensemble'] : []),
       ...(params.include_citations ? ['citations'] : []),
       ...(params.include_lsp_refs ? ['lsp-refs'] : []),
@@ -1702,6 +1747,7 @@ export async function query(
     ],
     indexedHead: repo.lastCommit,
     embeddingModelHash,
+    snapshotIdentity,
     filters: searchInput.mode === 'typed' ? searchInput.document.filters : undefined,
   });
   let cacheStatus: 'hit' | 'miss' | 'stale' | 'expired' | undefined;
@@ -1711,7 +1757,7 @@ export async function query(
     params.retrieval_diagnostics === true ? await buildVectorBackendDiagnostics(repo) : undefined;
 
   if (params.structured_output === true && !bypassStructuredCache) {
-    const cacheLookup = await cache.lookup(cacheKey, repo.lastCommit);
+    const cacheLookup = await cache.lookup(cacheKey, repo.lastCommit, snapshotIdentity);
     cacheStatus = cacheLookup.status;
     cacheAgeMs = cacheLookup.ageMs;
     const cached = cacheLookup.result;
@@ -1729,7 +1775,7 @@ export async function query(
       const cacheHitResult = {
         processes: [],
         process_symbols: [],
-        definitions: definitionsForCachedCandidates(filteredCandidates),
+        definitions: definitionsForCachedCandidates(filteredCandidates).slice(0, definitionLimit),
         timing: cached.diagnostics.timing || {},
         query_intent: queryIntent,
         structured_retrieval: {
@@ -1810,15 +1856,38 @@ export async function query(
     typedCandidateMap = routed.candidateMap;
   } else {
     const [bm25SearchResult, semanticSearchResults] = await Promise.all([
-      timer.time('bm25', bm25SearchImpl(repo, searchQuery, searchLimit)),
-      timer.time('vector', semanticSearchImpl(repo, searchQuery, searchLimit, intentModelOverride)),
+      timer.time(
+        'bm25',
+        workspaceLane
+          ? bm25SearchImpl({ ...repo, id: graphId }, searchQuery, searchLimit, {
+              include: includePaths,
+              exclude: excludePaths,
+            })
+          : bm25SearchImpl(repo, searchQuery, searchLimit),
+      ),
+      workspaceLane
+        ? Promise.resolve([] as Awaited<ReturnType<typeof semanticSearchImpl>>)
+        : timer.time(
+            'vector',
+            semanticSearchImpl(repo, searchQuery, searchLimit, intentModelOverride),
+          ),
     ]);
+    if (workspaceLane) {
+      typedWarnings.push(
+        'Vector search is unavailable on the working-tree graph; results use full-text ranking only.',
+      );
+    }
 
     bm25Results = bm25SearchResult.results as EnrichedSymbolRow[];
     semanticResults = semanticSearchResults as EnrichedSymbolRow[];
     ftsUsed = bm25SearchResult.ftsUsed;
 
-    if (params.retrieval_policy === 'symbol-neighborhood') {
+    if (params.retrieval_policy === 'symbol-neighborhood' && workspaceLane) {
+      // The frontier reads base embeddings and ANN edges; none exist for the working tree.
+      typedWarnings.push(
+        'retrieval_policy symbol-neighborhood is unavailable on the working-tree graph and was ignored.',
+      );
+    } else if (params.retrieval_policy === 'symbol-neighborhood') {
       frontierResult = await timer.time(
         'semantic_frontier',
         runSymbolNeighborhoodFrontierSearch(
@@ -1848,14 +1917,14 @@ export async function query(
       const graphSeeds = bm25Results.slice(0, 10);
       graphResults = await timer.time(
         'graph_traversal',
-        graphTraversalRank(repo.id, graphSeeds, graphEdgeTypes, 2, 50),
+        graphTraversalRank(graphId, graphSeeds, graphEdgeTypes, 2, 50),
       );
     }
   }
 
   let overlayApplied = false;
   if (overlayWarning) typedWarnings.push(overlayWarning);
-  if (overlaySnapshot?.usable) {
+  if (overlaySnapshot?.usable && !workspaceLane) {
     try {
       const terms = [...new Set(searchQuery.toLowerCase().split(/\s+/).filter(Boolean))];
       // Scalar predicates avoid unreliable untyped IN-list scans while retaining
@@ -1879,6 +1948,7 @@ export async function query(
                 ...Object.fromEntries(overlayPaths.map((filePath, i) => [`path${i}`, filePath])),
                 ...Object.fromEntries(terms.map((term, i) => [`term${i}`, term])),
               },
+              overlaySnapshot.generation,
             );
       const overlayRows = overlayRawRows
         .filter((row) => {
@@ -1916,6 +1986,7 @@ export async function query(
       }
       overlayApplied = true;
     } catch (err) {
+      if (automaticWorkspace) throw err;
       typedWarnings.push(
         `Overlay unavailable; using base results: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -2041,7 +2112,7 @@ export async function query(
     let processRows: ProcessLookupRow[] = [];
     try {
       processRows = (await executeParameterized(
-        repo.id,
+        graphId,
         `
         MATCH (n {id: $nodeId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
         RETURN p.id AS pid, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
@@ -2056,7 +2127,7 @@ export async function query(
     let module: string | undefined;
     try {
       const cohesionRows = (await executeParameterized(
-        repo.id,
+        graphId,
         `
         MATCH (n {id: $nodeId})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
         RETURN c.cohesion AS cohesion, c.heuristicLabel AS module
@@ -2076,7 +2147,7 @@ export async function query(
     if (includeContent) {
       try {
         const contentRows = (await executeParameterized(
-          repo.id,
+          graphId,
           `
           MATCH (n {id: $nodeId})
           RETURN n.content AS content
@@ -2094,7 +2165,7 @@ export async function query(
     let citationPath: string | undefined;
     try {
       const citationRows = (await executeParameterized(
-        repo.id,
+        graphId,
         `
         MATCH (m)-[r:CodeRelation]->(n {id: $nodeId})
         WHERE r.type IN ['CALLS', 'IMPORTS']
@@ -2264,7 +2335,7 @@ export async function query(
       Promise.all(
         dedupedSymbols
           .slice(0, TOP_N_FOR_BFS)
-          .map((s) => computeGraphPathWithDiagnostics(repo.id, s.id)),
+          .map((s) => computeGraphPathWithDiagnostics(graphId, s.id)),
       ),
     );
     for (let i = 0; i < TOP_N_FOR_BFS; i++) {
@@ -2311,7 +2382,7 @@ export async function query(
       ).slice(0, 5);
       await Promise.all(
         topFilePaths.map(async (fp) => {
-          const text = await getFileSkeleton(repo.id, fp, skeletonDepth);
+          const text = await getFileSkeleton(graphId, fp, skeletonDepth);
           if (text) skeletons[fp] = text;
         }),
       );
@@ -2326,7 +2397,7 @@ export async function query(
   // LSP find-references enrichment (Pillar 2 / W1c-pivot)
   // Gate: ONTOINDEX_LSP_REFERENCES=1 (default off — consistent with v8 env-gate pattern).
   // Best-effort: never blocks query, never alters RRF ranking.
-  if (params.include_lsp_refs ?? process.env.ONTOINDEX_LSP_REFERENCES === '1') {
+  if (!committed && (params.include_lsp_refs ?? process.env.ONTOINDEX_LSP_REFERENCES === '1')) {
     timer.start('lsp');
     const topEntry = mergedRaw[0];
     const topResult = topEntry?.[1]?.data;
@@ -2486,6 +2557,7 @@ export async function query(
           freshness: structuredRetrieval.capabilityState.freshness,
         },
         indexedHead: repo.lastCommit,
+        snapshotIdentity,
       });
       cacheEvictedEntries = cacheSet.evicted;
       structuredRetrieval.capabilityState.cacheEvictedEntries = cacheEvictedEntries;
@@ -2497,7 +2569,7 @@ export async function query(
   const result = {
     processes,
     process_symbols: dedupedSymbols,
-    definitions: definitions.slice(0, 20),
+    definitions: definitions.slice(0, definitionLimit),
     timing,
     query_intent: queryIntent,
     ...(abstentionEnabled ? { abstained: false as const } : {}),

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { getStoragePaths } from '../../storage/repo-manager.js';
 import { resolveContainedMetadataPath } from '../../mcp/local/path-util.js';
 import { readAnalyzeLock } from '../runtime/runtime-health.js';
+import { acquireNativeFileLock } from '../../native/file-lock.js';
 import {
   ANALYSIS_REQUESTED_CAPABILITIES_VERSION,
   assertValidManagedAnalysisContext,
@@ -765,118 +766,87 @@ async function clearActiveLocked(repoPath: string, expectedId: string): Promise<
 async function withActiveMutationLock<T>(repoPath: string, callback: () => Promise<T>): Promise<T> {
   await resolveContainedMetadataPath(repoPath, jobsDir(repoPath));
   await resolveContainedMetadataPath(repoPath, activePath(repoPath));
-  await resolveContainedMetadataPath(repoPath, `${activeMutationLockPath(repoPath)}.recovery`);
-  await resolveContainedMetadataPath(repoPath, activeMutationLockPath(repoPath));
   const lockPath = activeMutationLockPath(repoPath);
-  const token = randomUUID();
-  const processStartIdentity = await readProcessStartIdentity(process.pid);
-  await acquireActiveMutationLock(lockPath, repoPath, token, processStartIdentity);
+  await resolveContainedMetadataPath(repoPath, lockPath);
+  await resolveContainedMetadataPath(repoPath, `${lockPath}.kernel`);
+  await fs.mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  const kernelLock = await acquireNativeFileLock(`${lockPath}.kernel`, {
+    attempts: ACTIVE_MUTATION_LOCK_MAX_ATTEMPTS,
+    retryDelayMs: ACTIVE_MUTATION_LOCK_RETRY_DELAY_MS,
+  });
   try {
-    return await callback();
+    const token = randomUUID();
+    const processStartIdentity = await readProcessStartIdentity(process.pid);
+    await reconcileLegacyActiveMutationLock(lockPath);
+    await createActiveMutationLock(lockPath, repoPath, token, processStartIdentity);
+    try {
+      return await callback();
+    } finally {
+      await releaseActiveMutationLock(lockPath, token, processStartIdentity);
+    }
   } finally {
-    await releaseActiveMutationLock(lockPath, token, processStartIdentity);
+    kernelLock.release();
   }
 }
 
-async function acquireActiveMutationLock(
-  lockPath: string,
-  repoPath: string,
-  token: string,
-  processStartIdentity: string | null,
-): Promise<void> {
+async function reconcileLegacyActiveMutationLock(lockPath: string): Promise<void> {
   const recoveryPath = `${lockPath}.recovery`;
-  await fs.mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
-  for (let attempt = 0; attempt < ACTIVE_MUTATION_LOCK_MAX_ATTEMPTS; attempt += 1) {
-    if (await hasActiveRecoveryClaim(recoveryPath)) {
-      if (attempt + 1 < ACTIVE_MUTATION_LOCK_MAX_ATTEMPTS) {
-        await delay(ACTIVE_MUTATION_LOCK_RETRY_DELAY_MS);
-        continue;
-      }
-      break;
-    }
+  const stalePaths: string[] = [];
+  const entries = await fs.readdir(path.dirname(lockPath));
+  for (const entry of entries) {
+    if (!entry.startsWith(`${path.basename(recoveryPath)}.claim.`)) continue;
+    const claimPath = path.join(path.dirname(lockPath), entry);
+    const claim = await readActiveMutationLock(claimPath);
+    const owner = parseRecoveryClaimOwner(entry, `${path.basename(recoveryPath)}.claim.`);
+    if (!claim || !owner)
+      throw new Error(`Cannot safely validate analysis lock recovery claim: ${claimPath}`);
+    const active = await isActiveMutationLockOwnerActive(owner);
+    if (active === null)
+      throw new Error(`Cannot safely validate analysis lock recovery claim: ${claimPath}`);
+    if (active)
+      throw new Error(`Analysis lock recovery claim is owned by a live process: ${claimPath}`);
+    stalePaths.push(claimPath);
+  }
+  if (await pathExists(recoveryPath)) {
     const recovery = await readActiveMutationLock(recoveryPath);
-    if (recovery) {
-      const recoveryOwnerActive = await isActiveMutationLockOwnerActive(recovery);
-      if (recoveryOwnerActive === false) {
-        if (await reclaimStaleRecoveryOwner(recoveryPath, recovery, processStartIdentity)) {
-          continue;
-        }
-      } else if (recoveryOwnerActive === null) {
-        throw new Error(`Cannot safely validate analysis lock recovery owner: ${recoveryPath}`);
-      }
-      if (attempt + 1 < ACTIVE_MUTATION_LOCK_MAX_ATTEMPTS) {
-        await delay(ACTIVE_MUTATION_LOCK_RETRY_DELAY_MS);
-        continue;
-      }
-      break;
-    }
-    if (await pathExists(recoveryPath)) {
+    if (!recovery)
       throw new Error(
         `Cannot safely recover malformed analysis lock recovery owner: ${recoveryPath}`,
       );
-    }
-    if (await hasActiveRecoveryClaim(recoveryPath)) continue;
-
-    try {
-      await createActiveMutationLock(lockPath, repoPath, token, processStartIdentity);
-      return;
-    } catch (error: unknown) {
-      if (!isNodeError(error) || error.code !== 'EEXIST') throw error;
-    }
-
-    const existing = await readActiveMutationLock(lockPath);
-    if (!existing) {
-      if (!(await pathExists(lockPath))) {
-        await delay(ACTIVE_MUTATION_LOCK_RETRY_DELAY_MS);
-        continue;
-      }
+    const active = await isActiveMutationLockOwnerActive(recovery);
+    if (active === null)
+      throw new Error(`Cannot safely validate analysis lock recovery owner: ${recoveryPath}`);
+    if (active)
+      throw new Error(`Analysis lock recovery owner is owned by a live process: ${recoveryPath}`);
+    stalePaths.push(recoveryPath);
+  }
+  if (await pathExists(lockPath)) {
+    const legacy = await readActiveMutationLock(lockPath);
+    if (!legacy)
       throw new Error(`Cannot safely recover malformed analysis active mutation lock: ${lockPath}`);
-    }
-    const ownerActive = await isActiveMutationLockOwnerActive(existing);
-    if (ownerActive === false) {
-      const recoveryToken = randomUUID();
-      let recoveryAcquired = false;
-      try {
-        await createActiveMutationLock(recoveryPath, repoPath, recoveryToken, processStartIdentity);
-        recoveryAcquired = true;
-      } catch (error: unknown) {
-        if (!isNodeError(error) || error.code !== 'EEXIST') throw error;
-      }
-      if (recoveryAcquired) {
-        try {
-          const current = await readActiveMutationLock(lockPath);
-          if (!current) {
-            if (await pathExists(lockPath)) {
-              throw new Error(
-                `Cannot safely recover malformed analysis active mutation lock: ${lockPath}`,
-              );
-            }
-            await createActiveMutationLock(lockPath, repoPath, token, processStartIdentity);
-            return;
-          }
-          const currentOwnerActive = await isActiveMutationLockOwnerActive(current);
-          if (currentOwnerActive === null) {
-            throw new Error(`Cannot safely recover analysis active mutation lock: ${lockPath}`);
-          }
-          if (currentOwnerActive === true) continue;
-          if (!(await removeActiveMutationLockIfOwner(lockPath, current))) {
-            throw new Error(`Cannot safely recover analysis active mutation lock: ${lockPath}`);
-          }
-          await createActiveMutationLock(lockPath, repoPath, token, processStartIdentity);
-          return;
-        } finally {
-          await releaseActiveMutationLock(recoveryPath, recoveryToken, processStartIdentity);
-        }
-      }
-    } else if (ownerActive === null) {
+    const active = await isActiveMutationLockOwnerActive(legacy);
+    if (active === null)
       throw new Error(`Cannot safely validate analysis active mutation lock: ${lockPath}`);
-    }
-
-    if (attempt + 1 < ACTIVE_MUTATION_LOCK_MAX_ATTEMPTS) {
-      await delay(ACTIVE_MUTATION_LOCK_RETRY_DELAY_MS);
+    if (active)
+      throw new Error(`Analysis active mutation lock is owned by a live process: ${lockPath}`);
+    stalePaths.push(lockPath);
+  }
+  // The lifetime kernel lock excludes every compliant publisher of this namespace.
+  for (const entry of entries) {
+    if (
+      !/^active\.mutation\.lock\.[1-9][0-9]*\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp$/i.test(
+        entry,
+      )
+    )
+      continue;
+    const stagingPath = path.join(path.dirname(lockPath), entry);
+    try {
+      if ((await fs.lstat(stagingPath)).isFile()) await fs.unlink(stagingPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
   }
-  throw new Error(`Timed out acquiring analysis active mutation lock: ${lockPath}`);
+  for (const stalePath of stalePaths) await fs.rm(stalePath);
 }
 
 async function createActiveMutationLock(
@@ -942,73 +912,6 @@ async function removeActiveMutationLockIfOwner(
   return true;
 }
 
-async function reclaimStaleRecoveryOwner(
-  recoveryPath: string,
-  expected: ActiveMutationLockRecord,
-  processStartIdentity: string | null,
-): Promise<boolean> {
-  const claimPath = `${recoveryPath}.claim.${process.pid}.${encodeRecoveryClaimIdentity(processStartIdentity)}.${randomUUID()}`;
-  try {
-    await fs.rename(recoveryPath, claimPath);
-  } catch (error: unknown) {
-    if (isNodeError(error) && error.code === 'ENOENT') return false;
-    throw error;
-  }
-
-  const claimed = await readActiveMutationLock(claimPath);
-  if (!claimed) {
-    throw new Error(`Cannot safely recover malformed analysis lock recovery claim: ${claimPath}`);
-  }
-  if (!sameActiveMutationLockOwner(claimed, expected)) {
-    try {
-      await fs.link(claimPath, recoveryPath);
-    } catch (error: unknown) {
-      if (!isNodeError(error) || error.code !== 'EEXIST') throw error;
-    }
-    await fs.rm(claimPath, { force: true });
-    return false;
-  }
-  await fs.rm(claimPath, { force: true });
-  return true;
-}
-
-async function hasActiveRecoveryClaim(recoveryPath: string): Promise<boolean> {
-  const directory = path.dirname(recoveryPath);
-  const prefix = `${path.basename(recoveryPath)}.claim.`;
-  const entries = await fs.readdir(directory).catch((error: unknown) => {
-    if (isNodeError(error) && error.code === 'ENOENT') return [];
-    throw error;
-  });
-  for (const entry of entries) {
-    if (!entry.startsWith(prefix)) continue;
-    const claimPath = path.join(directory, entry);
-    const claim = await readActiveMutationLock(claimPath);
-    if (!claim) {
-      throw new Error(`Cannot safely recover malformed analysis lock recovery claim: ${claimPath}`);
-    }
-    const claimOwner = parseRecoveryClaimOwner(entry, prefix);
-    if (!claimOwner) {
-      throw new Error(`Cannot safely validate analysis lock recovery claim owner: ${claimPath}`);
-    }
-    const ownerActive = await isActiveMutationLockOwnerActive(claimOwner);
-    if (ownerActive === false) {
-      await fs.rm(claimPath, { force: true });
-      continue;
-    }
-    if (ownerActive === null) {
-      throw new Error(`Cannot safely validate analysis lock recovery claim: ${claimPath}`);
-    }
-    return true;
-  }
-  return false;
-}
-
-function encodeRecoveryClaimIdentity(processStartIdentity: string | null): string {
-  return processStartIdentity
-    ? Buffer.from(processStartIdentity, 'utf8').toString('hex')
-    : 'unavailable';
-}
-
 function parseRecoveryClaimOwner(entry: string, prefix: string): ActiveMutationLockRecord | null {
   const [pidRaw, identityRaw, token] = entry.slice(prefix.length).split('.', 3);
   const pid = Number(pidRaw);
@@ -1027,17 +930,6 @@ function parseRecoveryClaimOwner(entry: string, prefix: string): ActiveMutationL
     acquiredAt: '',
     repoPath: '',
   };
-}
-
-function sameActiveMutationLockOwner(
-  left: ActiveMutationLockRecord,
-  right: ActiveMutationLockRecord,
-): boolean {
-  return (
-    left.token === right.token &&
-    left.pid === right.pid &&
-    left.processStartIdentity === right.processStartIdentity
-  );
 }
 
 async function readActiveMutationLock(lockPath: string): Promise<ActiveMutationLockRecord | null> {
@@ -1074,7 +966,8 @@ async function isActiveMutationLockOwnerActive(
     process.kill(record.pid, 0);
   } catch (error: unknown) {
     if (isNodeError(error) && error.code === 'EPERM') return null;
-    return false;
+    if (isNodeError(error) && error.code === 'ESRCH') return false;
+    return null;
   }
   if (!record.processStartIdentity) return true;
   const currentIdentity = await readProcessStartIdentity(record.pid);
@@ -1245,10 +1138,6 @@ function digest(value: string): string {
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && 'code' in error;
-}
-
-async function delay(milliseconds: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function pathExists(filePath: string): Promise<boolean> {

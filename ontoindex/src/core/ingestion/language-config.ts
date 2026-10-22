@@ -1,5 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { createHash } from 'crypto';
+import type { Dirent } from 'fs';
 import type { ImportConfigs } from './import-resolvers/types.js';
 
 import { isDev } from './utils/env.js';
@@ -7,6 +9,193 @@ import { isDev } from './utils/env.js';
 // ============================================================================
 // LANGUAGE-SPECIFIC CONFIG TYPES
 // ============================================================================
+
+type ObservationStatus = 'present' | 'absent' | 'failed';
+type ObservedEntry = Readonly<{ name: string; kind: 'file' | 'directory' | 'symlink' | 'other' }>;
+export type ImportConfigObservation =
+  | Readonly<{
+      kind: 'file';
+      path: string;
+      status: ObservationStatus;
+      sha256?: string;
+      byteLength?: number;
+      errorCode?: string;
+    }>
+  | Readonly<{ kind: 'parse-error'; path: string }>
+  | Readonly<{
+      kind: 'directory';
+      path: string;
+      status: ObservationStatus;
+      entries?: readonly ObservedEntry[];
+      errorCode?: string;
+    }>
+  | Readonly<{
+      kind: 'traversal';
+      path: '.';
+      maxDepth: 5;
+      maxDirs: 100;
+      dirsScanned: number;
+      depthLimited: boolean;
+      directoryLimited: boolean;
+    }>;
+
+/** Evidence of loader reads, not an atomic filesystem snapshot or replay identity. */
+export interface ImportConfigObservations {
+  readonly version: 1;
+  readonly complete: boolean;
+  readonly digest: string | null;
+  readonly records: readonly ImportConfigObservation[];
+  readonly issues: readonly string[];
+}
+
+/** Bounds apply only to retained observation metadata, not existing loader reads. */
+class ConfigObservationRecorder {
+  private readonly records: ImportConfigObservation[] = [];
+  private readonly issues = new Set<string>();
+  private bytes = 0;
+  private directoryEntries = 0;
+  constructor(private readonly repoRoot: string) {}
+
+  relative(filename: string): string {
+    return path.relative(this.repoRoot, filename).replace(/\\/g, '/') || '.';
+  }
+
+  incomplete(issue: string): void {
+    this.issues.add(issue);
+  }
+
+  private room(minimumBytes: number): boolean {
+    if (this.records.length >= 4096) {
+      this.incomplete('capture-record-limit');
+      return false;
+    }
+    if (this.bytes + minimumBytes > 1024 * 1024) {
+      this.incomplete('capture-byte-limit');
+      return false;
+    }
+    return true;
+  }
+
+  add(record: ImportConfigObservation): void {
+    // JSON escaping can expand one input byte to six output bytes.
+    if (!this.room(Buffer.byteLength(record.path) * 6 + 128)) return;
+    const size = Buffer.byteLength(JSON.stringify(record));
+    if (!this.room(size)) return;
+    this.bytes += size;
+    this.records.push(Object.freeze(record));
+  }
+
+  failure(kind: 'file' | 'directory', filename: string, error: unknown): void {
+    const code = (error as { code?: unknown } | null)?.code;
+    const errorCode =
+      typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,31}$/.test(code) ? code : 'UNKNOWN';
+    const status = errorCode === 'ENOENT' ? 'absent' : 'failed';
+    if (status === 'failed') this.incomplete('read-failed');
+    this.add({ kind, path: this.relative(filename), status, errorCode });
+  }
+
+  parseError(filename: string): void {
+    this.incomplete('parse-error');
+    this.add({ kind: 'parse-error', path: this.relative(filename) });
+  }
+
+  directory(filename: string, entries: Dirent[]): void {
+    const relativePath = this.relative(filename);
+    const pathBudget = Buffer.byteLength(relativePath) * 6 + 128;
+    if (!this.room(pathBudget)) return;
+    const captured: ObservedEntry[] = [];
+    let entryBytes = 0;
+    for (const entry of entries) {
+      if (this.directoryEntries >= 10000) {
+        this.incomplete('capture-directory-entry-limit');
+        break;
+      }
+      // Check raw name size before JSON encoding or retaining another entry.
+      if (
+        this.bytes + entryBytes + pathBudget + Buffer.byteLength(entry.name) * 6 + 128 >
+        1024 * 1024
+      ) {
+        this.incomplete('capture-byte-limit');
+        break;
+      }
+      const kind = entry.isFile()
+        ? 'file'
+        : entry.isDirectory()
+          ? 'directory'
+          : entry.isSymbolicLink()
+            ? 'symlink'
+            : 'other';
+      const observed = { name: entry.name, kind } as const;
+      const size = Buffer.byteLength(JSON.stringify(observed)) + 1;
+      if (this.bytes + entryBytes + size + pathBudget > 1024 * 1024) {
+        this.incomplete('capture-byte-limit');
+        break;
+      }
+      captured.push(Object.freeze(observed));
+      entryBytes += size;
+      this.directoryEntries++;
+    }
+    this.add({
+      kind: 'directory',
+      path: relativePath,
+      status: 'present',
+      entries: Object.freeze(captured),
+    });
+  }
+
+  snapshot(): ImportConfigObservations {
+    const records = Object.freeze([...this.records]);
+    const issues = Object.freeze([...this.issues]);
+    const complete = issues.length === 0;
+    return Object.freeze({
+      version: 1,
+      complete,
+      digest: complete
+        ? createHash('sha256')
+            .update(JSON.stringify({ version: 1, records }))
+            .digest('hex')
+        : null,
+      records,
+      issues,
+    });
+  }
+}
+
+async function readConfigFile(
+  filename: string,
+  observations?: ConfigObservationRecorder,
+): Promise<string> {
+  let bytes: Buffer;
+  try {
+    bytes = await fs.readFile(filename);
+  } catch (error) {
+    observations?.failure('file', filename, error);
+    throw error;
+  }
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  observations?.add({
+    kind: 'file',
+    path: observations.relative(filename),
+    status: 'present',
+    sha256,
+    byteLength: bytes.byteLength,
+  });
+  return bytes.toString('utf-8');
+}
+
+async function readConfigDirectory(
+  filename: string,
+  observations?: ConfigObservationRecorder,
+): Promise<Dirent[]> {
+  try {
+    const entries = await fs.readdir(filename, { withFileTypes: true });
+    observations?.directory(filename, entries);
+    return entries;
+  } catch (error) {
+    observations?.failure('directory', filename, error);
+    throw error;
+  }
+}
 
 /** TypeScript path alias config parsed from tsconfig.json */
 export interface TsconfigPaths {
@@ -53,13 +242,18 @@ export interface SwiftPackageConfig {
  * Parse tsconfig.json to extract path aliases.
  * Tries tsconfig.json, tsconfig.app.json, tsconfig.base.json in order.
  */
-export async function loadTsconfigPaths(repoRoot: string): Promise<TsconfigPaths | null> {
+export async function loadTsconfigPaths(
+  repoRoot: string,
+  observations?: ConfigObservationRecorder,
+): Promise<TsconfigPaths | null> {
   const candidates = ['tsconfig.json', 'tsconfig.app.json', 'tsconfig.base.json'];
 
   for (const filename of candidates) {
+    const tsconfigPath = path.join(repoRoot, filename);
+    let read = false;
     try {
-      const tsconfigPath = path.join(repoRoot, filename);
-      const raw = await fs.readFile(tsconfigPath, 'utf-8');
+      const raw = await readConfigFile(tsconfigPath, observations);
+      read = true;
       // Strip JSON comments (// and /* */ style) for robustness
       const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
       const tsconfig = JSON.parse(stripped);
@@ -87,6 +281,7 @@ export async function loadTsconfigPaths(repoRoot: string): Promise<TsconfigPaths
         return { aliases, baseUrl };
       }
     } catch {
+      if (read) observations?.parseError(tsconfigPath);
       // File doesn't exist or isn't valid JSON - try next
     }
   }
@@ -97,10 +292,13 @@ export async function loadTsconfigPaths(repoRoot: string): Promise<TsconfigPaths
 /**
  * Parse go.mod to extract module path.
  */
-export async function loadGoModulePath(repoRoot: string): Promise<GoModuleConfig | null> {
+export async function loadGoModulePath(
+  repoRoot: string,
+  observations?: ConfigObservationRecorder,
+): Promise<GoModuleConfig | null> {
   try {
     const goModPath = path.join(repoRoot, 'go.mod');
-    const content = await fs.readFile(goModPath, 'utf-8');
+    const content = await readConfigFile(goModPath, observations);
     const match = content.match(/^module\s+(\S+)/m);
     if (match) {
       if (isDev) {
@@ -115,10 +313,15 @@ export async function loadGoModulePath(repoRoot: string): Promise<GoModuleConfig
 }
 
 /** Parse composer.json to extract PSR-4 autoload mappings (including autoload-dev). */
-export async function loadComposerConfig(repoRoot: string): Promise<ComposerConfig | null> {
+export async function loadComposerConfig(
+  repoRoot: string,
+  observations?: ConfigObservationRecorder,
+): Promise<ComposerConfig | null> {
+  const composerPath = path.join(repoRoot, 'composer.json');
+  let read = false;
   try {
-    const composerPath = path.join(repoRoot, 'composer.json');
-    const raw = await fs.readFile(composerPath, 'utf-8');
+    const raw = await readConfigFile(composerPath, observations);
+    read = true;
     const composer = JSON.parse(raw);
     const psr4Raw = composer.autoload?.['psr-4'] ?? {};
     const psr4Dev = composer['autoload-dev']?.['psr-4'] ?? {};
@@ -136,6 +339,7 @@ export async function loadComposerConfig(repoRoot: string): Promise<ComposerConf
     }
     return { psr4 };
   } catch {
+    if (read) observations?.parseError(composerPath);
     return null;
   }
 }
@@ -144,21 +348,25 @@ export async function loadComposerConfig(repoRoot: string): Promise<ComposerConf
  * Parse .csproj files to extract RootNamespace.
  * Scans the repo root for .csproj files and returns configs for each.
  */
-export async function loadCSharpProjectConfig(repoRoot: string): Promise<CSharpProjectConfig[]> {
+export async function loadCSharpProjectConfig(
+  repoRoot: string,
+  observations?: ConfigObservationRecorder,
+): Promise<CSharpProjectConfig[]> {
   const configs: CSharpProjectConfig[] = [];
   // BFS scan for .csproj files up to 5 levels deep, cap at 100 dirs to avoid runaway scanning
   const scanQueue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
   const maxDepth = 5;
   const maxDirs = 100;
   let dirsScanned = 0;
+  let depthLimited = false;
 
   while (scanQueue.length > 0 && dirsScanned < maxDirs) {
     const { dir, depth } = scanQueue.shift()!;
     dirsScanned++;
     try {
-      const entries = await fs.readdir(dir, { withFileTypes: true });
+      const entries = await readConfigDirectory(dir, observations);
       for (const entry of entries) {
-        if (entry.isDirectory() && depth < maxDepth) {
+        if (entry.isDirectory()) {
           // Skip common non-project directories
           if (
             entry.name === 'node_modules' ||
@@ -167,12 +375,14 @@ export async function loadCSharpProjectConfig(repoRoot: string): Promise<CSharpP
             entry.name === 'obj'
           )
             continue;
-          scanQueue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+          if (depth < maxDepth)
+            scanQueue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+          else depthLimited = true;
         }
         if (entry.isFile() && entry.name.endsWith('.csproj')) {
           try {
             const csprojPath = path.join(dir, entry.name);
-            const content = await fs.readFile(csprojPath, 'utf-8');
+            const content = await readConfigFile(csprojPath, observations);
             const nsMatch = content.match(/<RootNamespace>\s*([^<]+)\s*<\/RootNamespace>/);
             const rootNamespace = nsMatch ? nsMatch[1].trim() : entry.name.replace(/\.csproj$/, '');
             const projectDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
@@ -191,10 +401,25 @@ export async function loadCSharpProjectConfig(repoRoot: string): Promise<CSharpP
       // Can't read directory
     }
   }
+  const directoryLimited = scanQueue.length > 0;
+  if (depthLimited) observations?.incomplete('depth-limit');
+  if (directoryLimited) observations?.incomplete('directory-limit');
+  observations?.add({
+    kind: 'traversal',
+    path: '.',
+    maxDepth: 5,
+    maxDirs: 100,
+    dirsScanned,
+    depthLimited,
+    directoryLimited,
+  });
   return configs;
 }
 
-export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPackageConfig | null> {
+export async function loadSwiftPackageConfig(
+  repoRoot: string,
+  observations?: ConfigObservationRecorder,
+): Promise<SwiftPackageConfig | null> {
   // Swift imports are module-name based (e.g., `import SiuperModel`)
   // SPM convention: Sources/<TargetName>/ or Package/Sources/<TargetName>/
   // We scan for these directories to build a target map
@@ -204,7 +429,7 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
   for (const sourceDir of sourceDirs) {
     try {
       const fullPath = path.join(repoRoot, sourceDir);
-      const entries = await fs.readdir(fullPath, { withFileTypes: true });
+      const entries = await readConfigDirectory(fullPath, observations);
       for (const entry of entries) {
         if (entry.isDirectory()) {
           targets.set(entry.name, sourceDir + '/' + entry.name);
@@ -230,11 +455,13 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
 
 /** Load all language-specific configs once for an ingestion run. */
 export async function loadImportConfigs(repoRoot: string): Promise<ImportConfigs> {
+  const observations = new ConfigObservationRecorder(repoRoot);
   return {
-    tsconfigPaths: await loadTsconfigPaths(repoRoot),
-    goModule: await loadGoModulePath(repoRoot),
-    composerConfig: await loadComposerConfig(repoRoot),
-    swiftPackageConfig: await loadSwiftPackageConfig(repoRoot),
-    csharpConfigs: await loadCSharpProjectConfig(repoRoot),
+    tsconfigPaths: await loadTsconfigPaths(repoRoot, observations),
+    goModule: await loadGoModulePath(repoRoot, observations),
+    composerConfig: await loadComposerConfig(repoRoot, observations),
+    swiftPackageConfig: await loadSwiftPackageConfig(repoRoot, observations),
+    csharpConfigs: await loadCSharpProjectConfig(repoRoot, observations),
+    observations: observations.snapshot(),
   };
 }

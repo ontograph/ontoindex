@@ -43,6 +43,36 @@ function withGitRepo(test: (repoPath: string) => Promise<void>): () => Promise<v
 
 describe('dirty overlay planner', () => {
   it(
+    'reports a configuration-only edit as configPaths and leaves the source set empty',
+    withGitRepo(async (repoDir) => {
+      writeFile(repoDir, 'src/a.ts', 'export const a = 1;\n');
+      writeFile(repoDir, 'tsconfig.json', '{"compilerOptions":{}}\n');
+      writeFile(repoDir, 'package.json', '{"name":"x"}\n');
+      commitFiles(repoDir);
+      writeFile(repoDir, 'tsconfig.json', '{"compilerOptions":{}}\n\n');
+      writeFile(repoDir, 'package.json', '{"name":"y"}\n');
+
+      const plan = await planDirtyOverlay(repoDir);
+
+      expect(plan.configPaths).toEqual(['package.json', 'tsconfig.json']);
+      expect(plan.allDirtyPaths).toEqual([]);
+      expect(plan.includePaths).toEqual([]);
+    }),
+  );
+
+  it(
+    'does not report an ignored configuration file',
+    withGitRepo(async (repoDir) => {
+      writeFile(repoDir, '.ontoindexignore', 'vendor/**\n');
+      writeFile(repoDir, 'vendor/tsconfig.json', '{}\n');
+      commitFiles(repoDir);
+      writeFile(repoDir, 'vendor/tsconfig.json', '{"a":1}\n');
+
+      expect((await planDirtyOverlay(repoDir)).configPaths).toEqual([]);
+    }),
+  );
+
+  it(
     'skips dirty sources matching .ontoindexignore',
     withGitRepo(async (repoDir) => {
       writeFile(repoDir, '.ontoindexignore', 'src/private/**\n');
@@ -266,6 +296,7 @@ describe('dirty overlay planner', () => {
         tombstones: ['deleted.py', 'rename-old.js'],
         tooMany: false,
         skipped: ['rename-non-source.txt', 'renamed-non-source.txt'],
+        configPaths: [],
       });
     }),
   );

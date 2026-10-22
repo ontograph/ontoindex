@@ -8,8 +8,9 @@
  * scans backward through the sorted prefix and returns the first entry
  * whose range contains the query position.
  *
- * **Why this works.** `ScopeTree`'s invariants (parent strictly contains
- * child; siblings don't overlap) guarantee that the scopes containing a
+ * **Why this works.** `ScopeTree`'s invariants (parent contains child;
+ * only a root module may share a child's range; siblings don't overlap)
+ * guarantee that the scopes containing a
  * given point form an **ancestor chain**. When scanning backward through
  * entries sorted by start position ASC, the first scope we find that
  * contains the query is the innermost one — any deeper-starting scope
@@ -74,7 +75,7 @@ export function buildPositionIndex(scopes: readonly Scope[]): PositionIndex {
       bucket = [];
       entriesByFile.set(scope.filePath, bucket);
     }
-    bucket.push({ id: scope.id, range: scope.range });
+    bucket.push({ id: scope.id, range: scope.range, kind: scope.kind });
   }
 
   for (const bucket of entriesByFile.values()) {
@@ -89,6 +90,7 @@ export function buildPositionIndex(scopes: readonly Scope[]): PositionIndex {
 interface Entry {
   readonly id: ScopeId;
   readonly range: Range;
+  readonly kind: Scope['kind'];
 }
 
 /**
@@ -96,13 +98,14 @@ interface Entry {
  * larger (outer) scopes appear before their smaller (inner) co-starting
  * siblings in the array. Makes the backward-scan contract crisp: the
  * first containing hit from the end of the scanned prefix is the
- * innermost scope.
+ * innermost scope. Equal-range modules precede their non-module children.
  */
 function compareEntry(a: Entry, b: Entry): number {
   if (a.range.startLine !== b.range.startLine) return a.range.startLine - b.range.startLine;
   if (a.range.startCol !== b.range.startCol) return a.range.startCol - b.range.startCol;
   if (a.range.endLine !== b.range.endLine) return b.range.endLine - a.range.endLine;
-  return b.range.endCol - a.range.endCol;
+  if (a.range.endCol !== b.range.endCol) return b.range.endCol - a.range.endCol;
+  return Number(b.kind === 'Module') - Number(a.kind === 'Module');
 }
 
 /** Whether `(line, col)` is at or after `range`'s start. */

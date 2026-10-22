@@ -8,6 +8,10 @@ on:
     branches: [master]
     paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   workflow_call:
+    inputs:
+      linux_only:
+        type: boolean
+        default: false
 
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 # Hardcoded `CI-` prefix (not `${{ github.workflow }}`) because this workflow is
@@ -41,6 +45,8 @@ jobs:
 
   tests:
     uses: ./.github/workflows/ci-tests.yml
+    with:
+      linux_only: ${{ inputs.linux_only }}
     permissions:
       contents: read
 

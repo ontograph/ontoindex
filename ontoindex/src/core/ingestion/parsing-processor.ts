@@ -40,6 +40,7 @@ import {
 } from './utils/method-props.js';
 import type { LanguageProvider } from './language-provider.js';
 import type { ParsedFile } from 'ontoindex-shared';
+import { extractParsedFileOutcome, type ScopeExtractionRecord } from './scope-extractor-bridge.js';
 import {
   WorkerPool,
   type WorkerResultEvent,
@@ -344,6 +345,7 @@ interface WorkerExtractedData {
   constructorBindings: FileConstructorBindings[];
   fileScopeBindings: FileScopeBindings[];
   fileTimings: ParseFileTiming[];
+  parseErrorPaths: string[];
   extractorTimings: ParseExtractorTiming[];
   degraded?: {
     reason: string;
@@ -361,6 +363,8 @@ interface WorkerExtractedData {
    * finalize-orchestrator.
    */
   parsedFiles: ParsedFile[];
+  /** Attempted scope extractions only; missing fields/records mean unavailable evidence. */
+  scopeExtractionOutcomes?: ScopeExtractionRecord[];
 }
 
 interface WorkerGraphMutationBuffer {
@@ -382,8 +386,10 @@ const createEmptyWorkerExtractedData = (): WorkerExtractedData => ({
   constructorBindings: [],
   fileScopeBindings: [],
   fileTimings: [],
+  parseErrorPaths: [],
   extractorTimings: [],
   parsedFiles: [],
+  scopeExtractionOutcomes: [],
 });
 
 const createEmptyWorkerGraphMutationBuffer = (): WorkerGraphMutationBuffer => ({
@@ -430,8 +436,13 @@ const appendWorkerExtractedData = (
   for (const item of src.constructorBindings) target.constructorBindings.push(item);
   for (const item of src.fileScopeBindings) target.fileScopeBindings.push(item);
   for (const item of src.fileTimings) target.fileTimings.push(item);
+  for (const item of src.parseErrorPaths) target.parseErrorPaths.push(item);
   for (const item of src.extractorTimings) target.extractorTimings.push(item);
   for (const item of src.parsedFiles) target.parsedFiles.push(item);
+  if (src.scopeExtractionOutcomes) {
+    target.scopeExtractionOutcomes ??= [];
+    for (const outcome of src.scopeExtractionOutcomes) target.scopeExtractionOutcomes.push(outcome);
+  }
   if (src.degraded) {
     const existing = target.degraded;
     target.degraded = {
@@ -522,6 +533,15 @@ const mergeWorkerChunkResults = (
     if (result.parsedFiles) {
       for (const item of result.parsedFiles) extracted.parsedFiles.push(item);
     }
+    if (result.scopeExtractionOutcomes) {
+      extracted.scopeExtractionOutcomes ??= [];
+      for (const outcome of result.scopeExtractionOutcomes) {
+        extracted.scopeExtractionOutcomes.push(outcome);
+      }
+    }
+    if (result.parseErrorPaths) {
+      for (const item of result.parseErrorPaths) extracted.parseErrorPaths.push(item);
+    }
     if (result.fileTimings) {
       for (const item of result.fileTimings) extracted.fileTimings.push(item);
     }
@@ -600,8 +620,10 @@ const clearParseWorkerResult = (result: ParseWorkerResult): void => {
   result.constructorBindings.length = 0;
   result.fileScopeBindings.length = 0;
   result.parsedFiles.length = 0;
+  if (result.scopeExtractionOutcomes) result.scopeExtractionOutcomes.length = 0;
   result.processedPaths.length = 0;
   result.fileTimings.length = 0;
+  result.parseErrorPaths.length = 0;
   result.extractorTimings.length = 0;
   result.skippedLanguages = {};
   result.fileCount = 0;
@@ -932,6 +954,8 @@ type SequentialTypeEnv = ReturnType<typeof buildTypeEnv>;
 
 interface PreparedSequentialFile {
   file: { path: string; content: string };
+  parseContent: string;
+  rootNode: SyntaxNode;
   language: SupportedLanguages;
   lineOffset: number;
   isVueSetup: boolean;
@@ -953,6 +977,7 @@ const prepareSequentialFile = async (
   file: { path: string; content: string },
   astCache: ASTCache,
   skippedLanguages: Map<string, number>,
+  parseErrorPaths: string[],
 ): Promise<PreparedSequentialFile | null> => {
   // Extension/basename wins; extensionless scripts fall back to the bounded
   // first-line shebang so sequential parsing matches parent/worker decisions.
@@ -993,6 +1018,8 @@ const prepareSequentialFile = async (
     return null;
   }
 
+  if (tree.rootNode.hasError) parseErrorPaths.push(file.path);
+
   const maxAstNodes = getParseMaxAstNodes();
   const astNodeCount = tree.rootNode.descendantCount + 1;
   if (maxAstNodes !== null && astNodeCount > maxAstNodes) {
@@ -1021,6 +1048,8 @@ const prepareSequentialFile = async (
 
     return {
       file,
+      parseContent,
+      rootNode: tree.rootNode,
       language,
       lineOffset,
       isVueSetup,
@@ -1465,7 +1494,13 @@ const processSequentialFiles = async (
 
     if (i % 20 === 0) await yieldToEventLoop();
 
-    const preparedFile = await prepareSequentialFile(parser, file, astCache, skippedLanguages);
+    const preparedFile = await prepareSequentialFile(
+      parser,
+      file,
+      astCache,
+      skippedLanguages,
+      combinedData.parseErrorPaths,
+    );
     if (!preparedFile) {
       // Lightweight fallback for oversized or unparseable files
       const language = getLanguageFromFilename(file.path) ?? getLanguageFromShebang(file.content);
@@ -1477,6 +1512,22 @@ const processSequentialFiles = async (
         );
       }
       continue;
+    }
+    // Skipped/preparation failures above have no outcome; inventory reconciliation
+    // must retain that absence as unavailable evidence.
+    const outcome = extractParsedFileOutcome(
+      preparedFile.provider,
+      preparedFile.parseContent,
+      file.path,
+      undefined,
+      preparedFile.rootNode,
+    );
+    combinedData.scopeExtractionOutcomes ??= [];
+    if (outcome.status === 'success') {
+      combinedData.scopeExtractionOutcomes.push({ filePath: file.path, status: 'success' });
+      combinedData.parsedFiles.push(outcome.parsedFile);
+    } else {
+      combinedData.scopeExtractionOutcomes.push({ filePath: file.path, ...outcome });
     }
     processSequentialFileMatches(
       graph,
@@ -1528,6 +1579,11 @@ export const processParsing = async (
   onSubBatchStart?: WorkerSubBatchStartCallback,
   onWorkerResult?: WorkerResultCallback,
   workerFailureMode: ParseWorkerRetryPolicy = PARSE_WORKER_RETRY_POLICY_SEQUENTIAL,
+  onSequentialParseErrors?: (paths: string[]) => void,
+  /** Synchronously transfers transient artifacts; clone to retain. Does not guarantee completeness. */
+  onSequentialParsedFiles?: (files: readonly ParsedFile[]) => void,
+  /** Attempted scope extractions only; absence does not guarantee completeness. Clone to retain. */
+  onSequentialScopeOutcomes?: (outcomes: readonly ScopeExtractionRecord[]) => void,
 ): Promise<WorkerExtractedData | null> => {
   const legacySignature = typeof repoPathOrSymbolTable !== 'string';
   const repoPath = legacySignature ? '' : repoPathOrSymbolTable;
@@ -1585,6 +1641,15 @@ export const processParsing = async (
 
   // Fallback: sequential parsing mutates the graph/symbol table directly and
   // intentionally has no worker-extracted data for parse-impl to consume.
-  await processParsingSequential(graph, files, symbolTable, astCache, onFileProgress);
+  const sequentialData = await processParsingSequential(
+    graph,
+    files,
+    symbolTable,
+    astCache,
+    onFileProgress,
+  );
+  onSequentialParseErrors?.(sequentialData.parseErrorPaths);
+  onSequentialParsedFiles?.(sequentialData.parsedFiles);
+  onSequentialScopeOutcomes?.(sequentialData.scopeExtractionOutcomes ?? []);
   return null;
 };

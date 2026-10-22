@@ -19,7 +19,13 @@ import {
   type ImpactKernelRawCounts,
 } from '../../core/impact/impact-kernel.js';
 import { resolveSymbolCandidates, toSymbolIdentity } from './backend-symbol-resolution.js';
-import { getOverlaySnapshot } from './backend-overlay.js';
+import {
+  isAutomaticWorkspaceEnabled,
+  getCommittedRead,
+  getOverlaySnapshot,
+  queryOverlay,
+  isAuthoritativePath,
+} from './backend-overlay.js';
 
 interface ImpactRepoHandle {
   id: string;
@@ -98,6 +104,7 @@ interface ImpactBaseResult {
   resolutionReason?: ResolutionReason;
   resolutionStatus?: 'graph' | 'source-only';
   graphImpactAvailable?: boolean;
+  source?: 'overlay' | 'workspace-graph';
 }
 
 interface ImpactErrorResult extends ImpactBaseResult {
@@ -299,12 +306,24 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
   let outcome: Awaited<ReturnType<typeof resolveSymbolCandidates>> | undefined;
   let dirtyPaths: ReadonlySet<string> | undefined;
   let tombstones: ReadonlySet<string> | undefined;
+  const automaticWorkspace = isAutomaticWorkspaceEnabled();
   if (repo.repoPath && repo.storagePath) {
     const snapshot = await getOverlaySnapshot({
       id: repo.id,
       repoPath: repo.repoPath,
       storagePath: repo.storagePath,
-    }).catch(() => undefined);
+    }).catch((error) => {
+      if (automaticWorkspace) throw error;
+      return undefined;
+    });
+    if (
+      automaticWorkspace &&
+      snapshot &&
+      !snapshot.usable &&
+      (snapshot.dirtyPaths.size > 0 || (snapshot.configPaths?.size ?? 0) > 0)
+    ) {
+      throw new Error(snapshot.reason ?? 'Automatic workspace snapshot is unavailable');
+    }
     dirtyPaths = snapshot?.dirtyPaths;
     tombstones = snapshot?.tombstones;
     if (snapshot?.usable) {
@@ -313,11 +332,16 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
         repo,
         { uid: params.target_uid ?? params.nodeId, name: target },
         { file_path: params.file_path, kind: params.kind },
+        { snapshot },
       );
     }
   }
 
-  if (outcome?.kind !== 'ok' || outcome.symbol.source !== 'overlay') {
+  if (
+    !getCommittedRead(repo.id) &&
+    !automaticWorkspace &&
+    (outcome?.kind !== 'ok' || outcome.symbol.source !== 'overlay')
+  ) {
     const sourceFallback = await resolveSourceOnly(repo, params);
     if (sourceFallback?.kind === 'found') return sourceOnlyImpact(sourceFallback, direction);
     if (sourceFallback?.kind === 'unavailable') {
@@ -380,7 +404,19 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
   const symType = outcome.resolvedLabel || outcome.symbol.type || '';
 
   throwIfAborted(params.signal);
-  if (outcome.symbol.source === 'overlay') {
+  const workspaceSnapshot =
+    outcome.symbol.graph === 'workspace-graph' ? outcome.snapshot : undefined;
+  if (workspaceSnapshot && !isAuthoritativePath(workspaceSnapshot, sym.filePath)) {
+    return {
+      ...unknownImpact(
+        params,
+        'source-parse-failed',
+        'The target file failed to parse; an empty result is not proof of zero impact.',
+      ),
+      source: 'workspace-graph',
+    };
+  }
+  if (outcome.symbol.source === 'overlay' && !workspaceSnapshot) {
     return {
       target: {
         ...sym,
@@ -405,10 +441,24 @@ async function impactImpl(repo: ImpactRepoHandle, params: ImpactParams): Promise
     relationTypes,
     includeTests,
     minConfidence,
-    dirtyPaths,
+    dirtyPaths: workspaceSnapshot ? undefined : dirtyPaths,
+    query:
+      workspaceSnapshot && repo.repoPath && repo.storagePath
+        ? (cypher, queryParams) =>
+            queryOverlay(
+              { id: repo.id, repoPath: repo.repoPath!, storagePath: repo.storagePath! },
+              cypher,
+              queryParams,
+              workspaceSnapshot.generation,
+            )
+        : undefined,
     signal: params.signal,
   });
-  if (repo.repoPath && dirtyPaths?.size) {
+  if (workspaceSnapshot) {
+    result.source = 'workspace-graph';
+    result.graphImpactAvailable = true;
+  }
+  if (!automaticWorkspace && !workspaceSnapshot && repo.repoPath && dirtyPaths?.size) {
     const candidates = new Set(
       [...dirtyPaths].filter(
         (filePath) =>
@@ -596,9 +646,14 @@ export async function runImpactBFS(
     includeTests: boolean;
     minConfidence: number;
     dirtyPaths?: ReadonlySet<string>;
+    query?: (cypher: string, params: Record<string, unknown>) => Promise<unknown[]>;
     signal?: AbortSignal;
   },
 ): Promise<ImpactSuccessResult> {
+  const query =
+    opts.query ??
+    ((cypher: string, params: Record<string, unknown>) =>
+      executeParameterized(repo.id, cypher, params));
   const symId = String(rowValueOr(sym, 'id', 0) || '');
   const kernel = await runImpactKernel(
     repo,
@@ -615,6 +670,7 @@ export async function runImpactBFS(
       includeTests: opts.includeTests,
       minConfidence: opts.minConfidence,
       dirtyPaths: opts.dirtyPaths,
+      query: opts.query,
       signal: opts.signal,
     },
   );
@@ -655,8 +711,7 @@ export async function runImpactBFS(
       const ids = chunk.map((item) => String(item.id ?? ''));
 
       try {
-        const rows = (await executeParameterized(
-          repo.id,
+        const rows = (await query(
           `
           MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
           WHERE s.id IN $ids
@@ -721,8 +776,7 @@ export async function runImpactBFS(
       try {
         const pIds = Array.from(processesMissingMinStep);
         const allImpactedIds = impacted.map((it) => String(it.id ?? ''));
-        const missingRows = (await executeParameterized(
-          repo.id,
+        const missingRows = (await query(
           `
           MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
           WHERE p.id IN $pIds AND s.id IN $ids
@@ -768,8 +822,7 @@ export async function runImpactBFS(
     const runModuleChunk = async (idsChunk: string[]) => {
       if (!idsChunk || idsChunk.length === 0) return;
       try {
-        const rows = (await executeParameterized(
-          repo.id,
+        const rows = (await query(
           `
           MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
           WHERE s.id IN $ids
@@ -801,8 +854,7 @@ export async function runImpactBFS(
     const runDirectModuleChunk = async (idsChunk: string[]) => {
       if (!idsChunk || idsChunk.length === 0) return;
       try {
-        const rows = (await executeParameterized(
-          repo.id,
+        const rows = (await query(
           `
           MATCH (s)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
           WHERE s.id IN $ids

@@ -1,7 +1,78 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { buildImportResolutionContext } from '../../src/core/ingestion/import-processor.js';
-import type { ImportResolutionContext } from '../../src/core/ingestion/import-resolvers/types.js';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import {
+  buildImportResolutionContext,
+  processImports,
+  processImportsFromExtracted,
+} from '../../src/core/ingestion/import-processor.js';
+import type {
+  ImportConfigs,
+  ImportResolutionContext,
+} from '../../src/core/ingestion/import-resolvers/types.js';
 import { createResolutionContext } from '../../src/core/ingestion/model/resolution-context.js';
+import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
+import * as languageConfig from '../../src/core/ingestion/language-config.js';
+import { SupportedLanguages } from 'ontoindex-shared';
+
+describe('import configuration ownership', () => {
+  const configs: ImportConfigs = {
+    tsconfigPaths: { aliases: new Map([['@/', 'original/']]), baseUrl: '.' },
+    goModule: null,
+    composerConfig: null,
+    swiftPackageConfig: null,
+    csharpConfigs: [],
+  };
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each(['sequential', 'extracted'] as const)(
+    'uses supplied configs without loading them in the %s path',
+    async (mode) => {
+      const loader = vi
+        .spyOn(languageConfig, 'loadImportConfigs')
+        .mockRejectedValue(new Error('unexpected config reload'));
+      const graph = createKnowledgeGraph();
+      const ctx = createResolutionContext();
+      if (mode === 'sequential') {
+        await processImports(graph, [], createASTCache(0), ctx, undefined, '/unused', [], configs);
+      } else {
+        await processImportsFromExtracted(
+          graph,
+          [{ path: 'original/value.ts' }],
+          [
+            {
+              filePath: 'entry.ts',
+              rawImportPath: '@/value',
+              language: SupportedLanguages.TypeScript,
+            },
+          ],
+          ctx,
+          undefined,
+          '/unused',
+          undefined,
+          configs,
+        );
+        expect(ctx.importMap.get('entry.ts')).toEqual(new Set(['original/value.ts']));
+      }
+      expect(loader).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['sequential', 'extracted'] as const)(
+    'loads configs for standalone %s calls',
+    async (mode) => {
+      const loader = vi.spyOn(languageConfig, 'loadImportConfigs').mockResolvedValue(configs);
+      const graph = createKnowledgeGraph();
+      const ctx = createResolutionContext();
+      if (mode === 'sequential') {
+        await processImports(graph, [], createASTCache(0), ctx, undefined, '/standalone');
+      } else {
+        await processImportsFromExtracted(graph, [], [], ctx, undefined, '/standalone');
+      }
+      expect(loader).toHaveBeenCalledExactlyOnceWith('/standalone');
+    },
+  );
+});
 
 describe('ResolutionContext.importMap', () => {
   it('creates an empty Map', () => {

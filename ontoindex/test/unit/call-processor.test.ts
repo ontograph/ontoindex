@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import Parser from 'tree-sitter';
 import {
   processCalls,
   processCallsFromExtracted,
@@ -7,6 +8,7 @@ import {
   buildImportedReturnTypeMaps,
   extractConsumerAccessedKeys,
   processNextjsFetchRoutes,
+  type CallQueryCache,
 } from '../../src/core/ingestion/call-processor.js';
 import { buildHeritageMap } from '../../src/core/ingestion/model/heritage-map.js';
 import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
@@ -1454,6 +1456,119 @@ describe('processCallsFromExtracted', () => {
     // last-write-wins would give both calls the same receiver type)
     expect(rels[0].sourceId).toBe('Function:src/index.ts:processUser');
     expect(rels[1].sourceId).toBe('Function:src/index.ts:processRepo');
+  });
+});
+
+describe('processCalls — compiled query reuse', () => {
+  it('reuses queries per grammar within an invocation or shared pass and preserves calls and heritage', async () => {
+    const files = ['first.ts', 'first.tsx', 'second.ts', 'second.tsx'].map((name, index) => ({
+      path: `src/${name}`,
+      content: `
+function helper() {}
+function main() { helper(); }
+class Child${index} extends Base {}
+`,
+    }));
+    const setup = () => {
+      const graph = createKnowledgeGraph();
+      const ctx = createResolutionContext();
+      for (const file of files) {
+        ctx.model.symbols.add(file.path, 'helper', `Function:${file.path}:helper`, 'Function');
+      }
+      return { graph, ctx };
+    };
+    const RealQuery = Parser.Query;
+    const querySpy = vi.spyOn(Parser, 'Query').mockImplementation(function (language, source) {
+      return new RealQuery(language, source);
+    });
+
+    try {
+      const combined = setup();
+      const combinedHeritage = await processCalls(
+        combined.graph,
+        files,
+        createASTCache(),
+        combined.ctx,
+      );
+
+      expect(querySpy).toHaveBeenCalledTimes(2);
+      const [typescriptQuery, tsxQuery] = querySpy.mock.calls;
+      expect(typescriptQuery[0]).not.toBe(tsxQuery[0]);
+      expect(typescriptQuery[1]).toBe(tsxQuery[1]);
+      expect(
+        combined.graph.relationships.filter((relationship) => relationship.type === 'CALLS'),
+      ).toHaveLength(files.length);
+      // This return value contains call-based heritage (for example Ruby
+      // include); TypeScript class heritage is consumed through parentMap.
+      expect(combinedHeritage).toEqual([]);
+
+      const repeated = setup();
+      const repeatedHeritage = await processCalls(
+        repeated.graph,
+        files,
+        createASTCache(),
+        repeated.ctx,
+      );
+
+      expect(querySpy).toHaveBeenCalledTimes(4);
+      expect(querySpy.mock.calls.slice(2)).toEqual([typescriptQuery, tsxQuery]);
+      expect(repeated.graph.relationships).toEqual(combined.graph.relationships);
+      expect(repeatedHeritage).toEqual(combinedHeritage);
+
+      const separate = setup();
+      const separateHeritage: ExtractedHeritage[] = [];
+      const sharedCache: CallQueryCache = new Map();
+      for (const file of files) {
+        separateHeritage.push(
+          ...(await processCalls(
+            separate.graph,
+            [file],
+            createASTCache(),
+            separate.ctx,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            sharedCache,
+          )),
+        );
+      }
+      expect(querySpy).toHaveBeenCalledTimes(6);
+      expect(querySpy.mock.calls.slice(4)).toEqual([typescriptQuery, tsxQuery]);
+      expect(separate.graph.relationships).toEqual(combined.graph.relationships);
+      expect(separateHeritage).toEqual(combinedHeritage);
+
+      const nextPass = setup();
+      const nextPassHeritage: ExtractedHeritage[] = [];
+      const nextPassCache: CallQueryCache = new Map();
+      for (const file of files) {
+        nextPassHeritage.push(
+          ...(await processCalls(
+            nextPass.graph,
+            [file],
+            createASTCache(),
+            nextPass.ctx,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            nextPassCache,
+          )),
+        );
+      }
+      expect(querySpy).toHaveBeenCalledTimes(8);
+      expect(querySpy.mock.calls.slice(6)).toEqual([typescriptQuery, tsxQuery]);
+      expect(nextPass.graph.relationships).toEqual(combined.graph.relationships);
+      expect(nextPassHeritage).toEqual(combinedHeritage);
+    } finally {
+      querySpy.mockRestore();
+    }
   });
 });
 

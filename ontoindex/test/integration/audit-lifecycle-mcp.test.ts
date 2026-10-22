@@ -1,14 +1,106 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { LocalAuditEventStore } from '../../src/core/audit-lifecycle/audit-event-store.js';
 import { dispatchSuper, SUPER_NAMES } from '../../src/mcp/super/dispatch.js';
 import { ONTOINDEX_SUPER_TOOLS } from '../../src/mcp/super/tool-definitions.js';
+import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { createMCPServer } from '../../src/mcp/server.js';
+import { registerRepo, saveMeta } from '../../src/storage/repo-manager.js';
 
 describe('audit lifecycle MCP integration', () => {
+  it('bundles and dispatches a cold verified session over the SDK, then refuses HEAD drift', async () => {
+    const repo = initRepo();
+    const home = mkdtempSync(path.join(tmpdir(), 'gn-audit-sdk-home-'));
+    const backend = new LocalBackend();
+    const server = createMCPServer(backend);
+    const client = new Client({ name: 'audit-lifecycle-sdk', version: '1' });
+    const sessionId = 'session-sdk';
+    try {
+      vi.stubEnv('ONTOINDEX_HOME', home);
+      writeFileSync(path.join(home, 'registry.json'), '[]\n');
+      const meta = {
+        repoPath: repo,
+        lastCommit: head(repo),
+        indexedAt: '2026-05-17T00:00:00.000Z',
+        capabilities: { symbols: false, impact: 'degraded' as const, processes: false },
+      };
+      // Lifecycle operations need repository identity, without an initialized graph.
+      await saveMeta(path.join(repo, '.ontoindex'), meta);
+      await registerRepo(repo, meta, { name: 'audit-lifecycle-sdk' });
+      await seedManagerSession(repo, sessionId, ['finding-sdk']);
+      await backend.init();
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+
+      const call = async (name: string, args: Record<string, unknown> = {}) => {
+        const response = await client.callTool({
+          name,
+          arguments: { repo, session: sessionId, response_budget_bytes: 30000, ...args },
+        });
+        const text = (response.content as Array<{ type: string; text?: string }>)
+          .filter((block) => block.type === 'text')
+          .map((block) => block.text ?? '')
+          .join('\n');
+        return { response, report: JSON.parse(text) as Record<string, any> };
+      };
+
+      const lock = await call('gn_audit_session_lock', { action: 'create' });
+      expect(lock.response.isError).not.toBe(true);
+      expect(lock.report.lock.sessionId).toBe(sessionId);
+      const bundled = await call('gn_audit_session_bundle', { strategy: 'root-cause' });
+      expect(bundled.response.isError).not.toBe(true);
+      expect(bundled.report.ok).toBe(true);
+      expect(bundled.report.bundle.bundles).toHaveLength(1);
+      const bundleId = bundled.report.bundle.bundles[0].id;
+      const dispatched = await call('gn_audit_session_dispatch', { bundleId });
+      expect(dispatched.response.isError).not.toBe(true);
+      expect(dispatched.report.ok).toBe(true);
+      expect(dispatched.report.dispatch.prompt.length).toBeGreaterThan(0);
+      const store = new LocalAuditEventStore(repo);
+      const dispatchEvents = (await store.load()).events.filter(
+        (event) => event.type === 'BundleDispatched',
+      );
+      expect(dispatchEvents).toHaveLength(1);
+
+      writeFileSync(path.join(repo, 'src/app.ts'), 'export function run() { return 2; }\n');
+      execFileSync('git', ['add', 'src/app.ts'], { cwd: repo });
+      execFileSync('git', ['commit', '-m', 'drift'], { cwd: repo, stdio: 'pipe' });
+      for (const name of ['gn_audit_session_bundle', 'gn_audit_session_dispatch']) {
+        const stale = await call(name, { bundleId });
+        expect(stale.response.isError).toBe(true);
+        expect(stale.report).toMatchObject({ ok: false, code: 'STALE_SESSION' });
+        expect(stale.report.prompt).toBeUndefined();
+        expect(stale.report.dispatch).toBeUndefined();
+      }
+      expect(
+        (await store.load()).events.filter((event) => event.type === 'BundleDispatched'),
+      ).toEqual(dispatchEvents);
+    } finally {
+      try {
+        await client.close();
+      } finally {
+        try {
+          await server.close();
+        } finally {
+          try {
+            await backend.disconnect();
+          } finally {
+            vi.unstubAllEnvs();
+            rmSync(home, { recursive: true, force: true });
+            rmSync(repo, { recursive: true, force: true });
+          }
+        }
+      }
+    }
+  });
+
   it('registers audit lifecycle super-functions in definitions and dispatch', () => {
     const names = new Set(ONTOINDEX_SUPER_TOOLS.map((tool) => tool.name));
 

@@ -1,5 +1,6 @@
 import ignore, { type Ignore } from 'ignore';
 import fs from 'fs/promises';
+import { constants as fsConstants } from 'fs';
 import nodePath from 'path';
 import type { Path } from 'path-scurry';
 
@@ -484,6 +485,22 @@ interface IgnoreOptions {
   noGitignore?: boolean;
 }
 
+/**
+ * Read an ignore file without ever blocking: O_NONBLOCK makes open() on a FIFO return at once,
+ * and only regular files are read. Symlinks are still followed, as before.
+ */
+const readIgnoreFile = async (filePath: string): Promise<string> => {
+  const handle = await fs.open(filePath, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+  try {
+    if (!(await handle.stat()).isFile()) {
+      throw Object.assign(new Error('not a regular file'), { code: 'ENOTREG' });
+    }
+    return await handle.readFile('utf-8');
+  } finally {
+    await handle.close();
+  }
+};
+
 export const loadIgnoreRules = async (
   repoPath: string,
   options?: IgnoreOptions,
@@ -497,7 +514,7 @@ export const loadIgnoreRules = async (
 
   for (const filename of filenames) {
     try {
-      const content = await fs.readFile(nodePath.join(repoPath, filename), 'utf-8');
+      const content = await readIgnoreFile(nodePath.join(repoPath, filename));
       ig.add(content);
       hasRules = true;
     } catch (err: unknown) {
@@ -521,7 +538,7 @@ const loadNamedIgnoreRules = async (
 
   for (const filename of filenames) {
     try {
-      const content = await fs.readFile(nodePath.join(repoPath, filename), 'utf-8');
+      const content = await readIgnoreFile(nodePath.join(repoPath, filename));
       const ig = ignore().add(content);
       rules.push({ source: filename as '.gitignore' | '.ontoindexignore', ignore: ig });
     } catch (err: unknown) {

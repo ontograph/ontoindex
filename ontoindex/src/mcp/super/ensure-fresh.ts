@@ -692,7 +692,7 @@ async function buildEnsureFreshReport(
     withEmbeddings: params.withEmbeddings,
   });
   const embeddingsRepairRequired = embeddingsStatus.required && embeddingsStatus.status !== 'ok';
-  if (embeddingsStatus.status === 'missing' || embeddingsRepairRequired) {
+  if (embeddingsRepairRequired) {
     const urlConfigured = Boolean(process.env.ONTOINDEX_EMBEDDING_URL?.trim());
     const modelConfigured = Boolean(process.env.ONTOINDEX_EMBEDDING_MODEL?.trim());
     const modelHashConfigured = Boolean(process.env.ONTOINDEX_EMBEDDING_MODEL_HASH?.trim());
@@ -731,7 +731,10 @@ async function buildEnsureFreshReport(
       'For multi-agent sessions, let one coordinator run analyze; workers should continue with explicit stale-index consent or git-only workflows.',
     );
   }
-  if (embeddingsStatus.status !== 'ok') {
+  if (
+    embeddingsStatus.status !== 'ok' &&
+    (embeddingsStatus.status !== 'missing' || embeddingsRepairRequired)
+  ) {
     recommendations.push(
       embeddingsStatus.repairCommand ??
         'Embeddings not populated. Stop MCP processes first to release DB lock, then run: ontoindex analyze --embeddings',
@@ -751,7 +754,7 @@ async function buildEnsureFreshReport(
       reasonCode: 'WORKTREE_STATUS_UNAVAILABLE',
       message: 'Worktree status is unavailable; analysis cannot be submitted safely.',
     };
-    recommendations.push('Confirm the repository worktree is clean before retrying autoAnalyze.');
+    recommendations.push('Restore the git worktree status probe before retrying autoAnalyze.');
   } else if (
     params.autoAnalyze === true &&
     params.withEmbeddings === true &&

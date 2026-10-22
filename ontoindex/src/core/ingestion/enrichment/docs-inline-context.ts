@@ -199,11 +199,11 @@ function nextCheckLines(
   const checks = new Set<string>();
   if (states.has('stale'))
     checks.add(
-      'run `ontoindex docs refresh` (or `ontoindex analyze --markdown-sidecar`) before trusting evidence',
+      'run `ontoindex docs sidecar run markdown` (or `ontoindex analyze --markdown-sidecar`) before trusting evidence',
     );
   if (states.has('partial'))
     checks.add(
-      'run `ontoindex docs refresh` (or `ontoindex analyze --markdown-sidecar`) before relying on incomplete docs coverage',
+      'run `ontoindex docs sidecar run markdown` (or `ontoindex analyze --markdown-sidecar`) before relying on incomplete docs coverage',
     );
   if (states.has('ambiguous'))
     checks.add('add explicit docs/code anchors for ambiguous identities');

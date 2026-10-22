@@ -291,6 +291,14 @@ describe('gnPreCommitAudit', () => {
 
     expect(report.verdict).toBe('READY');
     expect(report.changedFiles).toHaveLength(0);
+    expect(report.evaluation).toEqual({
+      status: 'skipped',
+      scope: 'staged',
+      includePaths: [],
+      evaluatedPathCount: 0,
+      graphValidated: false,
+    });
+    expect(report.capabilitiesUsed).not.toContain('graph-symbol-audit');
     expect(report.reasoning).toContain('No staged changes');
     expect(mockExecute).not.toHaveBeenCalled();
     expect(report.preCommitChecklist.find((c) => c.check === 'staged diff non-empty')!.passed).toBe(
@@ -299,6 +307,120 @@ describe('gnPreCommitAudit', () => {
     expect(report.preCommitChecklist.find((c) => c.check === 'staged diff non-empty')!.state).toBe(
       'SKIPPED',
     );
+  });
+
+  it('reports completed graph validation independently of a risk-driven verdict', async () => {
+    setupGitDiff('src/core/engine.ts\n');
+    setupGraphMocks({
+      symbolRows: [{ id: 'Class:src/core/engine.ts:Engine', name: 'Engine', kind: 'Class' }],
+      upstreamCount: 75,
+    });
+
+    const report = await gnPreCommitAudit(REPO_ID, {
+      scope: 'all',
+      includePaths: ['src'],
+    });
+
+    expect(report.verdict).toBe('DO-NOT-COMMIT');
+    expect(report.evaluation).toEqual({
+      status: 'completed',
+      scope: 'all',
+      includePaths: ['src'],
+      evaluatedPathCount: 1,
+      graphValidated: true,
+    });
+  });
+
+  it.each(['review', 'degraded'] as const)(
+    'marks an empty %s audit skipped without validating the graph',
+    async (state) => {
+      const context = await mockResolveTargetContext({ repo: REPO_ID });
+      mockResolveTargetContext.mockResolvedValue({
+        ...context,
+        graphAuthority: {
+          state,
+          reason: 'required graph evidence unavailable',
+          coverage: 'unknown',
+        },
+      });
+      setupGitDiff('');
+
+      const report = await gnPreCommitAudit(REPO_ID, {});
+
+      expect(report.verdict).toBe('READY');
+      expect(report.status).toBe('degraded');
+      expect(report.evaluation).toEqual({
+        status: 'skipped',
+        scope: 'staged',
+        includePaths: [],
+        evaluatedPathCount: 0,
+        graphValidated: false,
+      });
+      expect(mockExecute).not.toHaveBeenCalled();
+    },
+  );
+
+  it('marks a failed changed-path scan incomplete', async () => {
+    mockExecFileText.mockRejectedValue(new Error('git scan failed'));
+
+    const report = await gnPreCommitAudit(REPO_ID, {});
+
+    expect(report.evaluation.status).toBe('incomplete');
+    expect(report.evaluation.graphValidated).toBe(false);
+    expect(report.evaluation.evaluatedPathCount).toBe(0);
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+
+  it('reports nonempty degraded graph review as incomplete', async () => {
+    setupGitDiff('src/foo.ts\n');
+    setupGraphMocks();
+    mockExecute.mockImplementation(async (_repoId: string, cypher: string) => {
+      if (cypher.includes("type: 'DEFINES'")) throw new Error('graph unavailable');
+      return [];
+    });
+
+    const report = await gnPreCommitAudit(REPO_ID, { scope: 'unstaged' });
+
+    expect(report.verdict).toBe('REVIEW');
+    expect(report.evaluation).toEqual({
+      status: 'incomplete',
+      scope: 'unstaged',
+      includePaths: [],
+      evaluatedPathCount: 1,
+      graphValidated: false,
+    });
+  });
+
+  it('marks unresolved repository evaluation incomplete without claiming graph validation', async () => {
+    mockResolveTargetContext.mockResolvedValue({
+      version: 1,
+      status: 'not-found',
+      targetRef: 'HEAD',
+      dirtyWorktree: null,
+      changedSinceIndex: null,
+      snapshotMode: 'unknown',
+      qualityMode: 'balanced',
+      embeddings: { status: 'unknown' },
+      lsp: { status: 'unknown' },
+      sidecar: { status: 'unknown' },
+      policy: { status: 'unknown' },
+      action: 'repository unavailable',
+      warnings: [],
+    });
+
+    const report = await gnPreCommitAudit(REPO_ID, {
+      scope: 'branch',
+      includePaths: ['src'],
+    });
+
+    expect(report.evaluation).toEqual({
+      status: 'incomplete',
+      scope: 'branch',
+      includePaths: ['src'],
+      evaluatedPathCount: 0,
+      graphValidated: false,
+    });
+    expect(report.capabilitiesUsed).not.toContain('git-diff');
   });
 
   it('does not execute git when the explicit repository cannot be resolved', async () => {
@@ -646,6 +768,68 @@ describe('gnPreCommitAudit', () => {
     expect(
       report.preCommitChecklist.find((c) => c.check === 'changed file scan complete')!.passed,
     ).toBe(false);
+  });
+
+  it.each([50, 51])('reports symbol scan completeness for %i file symbols', async (count) => {
+    setupGitDiff('src/foo.ts\n');
+    setupGraphMocks({
+      symbolRows: Array.from({ length: count }, (_, i) => ({
+        id: `Function:src/foo.ts:work${i}`,
+        name: `work${i}`,
+      })),
+      upstreamCount: 0,
+    });
+
+    const report = await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
+
+    expect(
+      mockExecute.mock.calls.find((call) => call[1].includes("type: 'DEFINES'"))?.[1],
+    ).toContain('LIMIT 51');
+    expect(report.changedFiles[0].changedSymbols).toHaveLength(50);
+    expect(report.verdict).toBe(count === 50 ? 'READY' : 'REVIEW');
+    expect(report.evaluation.graphValidated).toBe(count === 50);
+    expect(report.evaluation.status).toBe(count === 50 ? 'completed' : 'incomplete');
+    expect(report.warnings.includes('Symbol scan for src/foo.ts capped at 50 symbols')).toBe(
+      count > 50,
+    );
+  });
+
+  it('detects symbol overflow before filtering changed hunks and excludes the sentinel', async () => {
+    setupGitDiff('src/foo.ts\n', '', '+++ b/src/foo.ts\n@@ -100 +100 @@\n');
+    setupGraphMocks({
+      symbolRows: Array.from({ length: 51 }, (_, i) => ({
+        id: `Function:src/foo.ts:work${i}`,
+        name: `work${i}`,
+        startLine: i === 50 ? 100 : 1,
+        endLine: i === 50 ? 100 : 1,
+      })),
+      upstreamCount: 0,
+    });
+
+    const report = await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
+
+    expect(report.changedFiles[0].changedSymbols).toEqual([]);
+    expect(report.verdict).toBe('REVIEW');
+    expect(report.evaluation.graphValidated).toBe(false);
+    expect(report.evaluation.status).toBe('incomplete');
+    expect(report.warnings).toContain('Symbol scan for src/foo.ts capped at 50 symbols');
+  });
+
+  it('preserves DO-NOT-COMMIT when a capped symbol scan finds HIGH risk', async () => {
+    setupGitDiff('src/foo.ts\n');
+    setupGraphMocks({
+      symbolRows: Array.from({ length: 51 }, (_, i) => ({
+        id: `Function:src/foo.ts:work${i}`,
+        name: `work${i}`,
+      })),
+      upstreamCount: 75,
+    });
+
+    const report = await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
+
+    expect(report.verdict).toBe('DO-NOT-COMMIT');
+    expect(report.evaluation.graphValidated).toBe(false);
+    expect(report.evaluation.status).toBe('incomplete');
   });
 
   it('returns REVIEW when graph symbol lookup fails', async () => {

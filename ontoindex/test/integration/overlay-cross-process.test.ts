@@ -50,22 +50,31 @@ describe('cross-process overlay generation immutability', () => {
   async function runChildAnalyze() {
     const child = spawn(
       process.execPath,
-      ['--import', tsxImportUrl, cliEntry, 'analyze', root, '--dirty-overlay'],
+      [
+        '--max-old-space-size=8192',
+        '--import',
+        tsxImportUrl,
+        cliEntry,
+        'analyze',
+        root,
+        '--dirty-overlay',
+      ],
       {
         cwd: root,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, NODE_OPTIONS: '--max-old-space-size=8192' },
         timeout: 90_000,
       },
     );
-    let output = '';
-    child.stdout.setEncoding('utf8').on('data', (chunk: string) => (output += chunk));
-    child.stderr.setEncoding('utf8').on('data', (chunk: string) => (output += chunk));
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => (stdout += chunk));
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => (stderr += chunk));
     const exitCode = await new Promise<number | null>((resolve, reject) => {
       child.once('error', reject);
       child.once('close', resolve);
     });
-    expect(exitCode, output).toBe(0);
+    expect(exitCode, stdout + stderr).toBe(0);
+    return { pid: child.pid, stderr };
   }
 
   afterEach(async () => {
@@ -120,7 +129,18 @@ describe('cross-process overlay generation immutability', () => {
 
     await expect(queryOverlay(repo, cypher)).resolves.toEqual([{ name: 'gen1' }]);
     await fs.writeFile(path.join(root, 'source.ts'), 'export function gen2() {}\n');
-    await runChildAnalyze();
+    const preloadPath = path.join(repo.storagePath, 'inherited-preload.cjs');
+    await fs.writeFile(
+      preloadPath,
+      "process.stderr.write('overlay-preload:' + process.pid + ':' + process.argv[1] + '\\n');\n",
+    );
+    vi.stubEnv('NODE_OPTIONS', `--require=${JSON.stringify(preloadPath)}`);
+    try {
+      const child = await runChildAnalyze();
+      expect(child.stderr).toContain(`overlay-preload:${child.pid}:${cliEntry}\n`);
+    } finally {
+      vi.unstubAllEnvs();
+    }
 
     const secondPath = await resolveOverlayDbPath(repo.storagePath);
     const secondCurrent = await fs.readFile(

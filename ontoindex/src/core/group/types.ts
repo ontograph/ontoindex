@@ -166,6 +166,14 @@ export interface CrossRepoImpact {
   };
   by_depth: Record<string, unknown[]>;
   affected_processes: string[];
+  source?: unknown;
+  graphImpactAvailable?: unknown;
+  targetContext?: unknown;
+  freshness?: unknown;
+  repoLabel?: unknown;
+  repoPath?: unknown;
+  capabilitiesUsed?: unknown;
+  capabilitiesMissing?: unknown;
 }
 
 export interface OutOfScopeLink {

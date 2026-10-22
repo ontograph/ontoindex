@@ -387,7 +387,131 @@ describe('GroupService', () => {
         expect(result.group).toBe('test-group');
         expect(result.query).toBe('auth flow');
         expect(result.results.length).toBeGreaterThan(0);
-        expect(result.per_repo).toHaveLength(2);
+        expect(result.per_repo).toEqual([
+          { repo: 'app/backend', count: 1 },
+          { repo: 'app/frontend', count: 1 },
+        ]);
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('retains distinct member provenance without changing RRF ranking or the group limit', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('ONTOINDEX_HOME', tmpDir);
+        const backendMetadata = {
+          repoLabel: 'test-backend',
+          repoPath: '/tmp/backend',
+          targetContext: { targetHead: 'backend-head', indexedCommit: 'backend-index' },
+          freshness: { status: 'stale', actionable: true, reason: 'backend changed' },
+          capabilitiesUsed: ['symbols'],
+          capabilitiesMissing: ['embeddings'],
+        };
+        const frontendMetadata = {
+          repoLabel: 'test-frontend',
+          repoPath: '/tmp/frontend',
+          targetContext: { targetHead: 'frontend-head', indexedCommit: 'frontend-head' },
+          freshness: { status: 'fresh', actionable: false, reason: 'heads match' },
+          capabilitiesUsed: ['symbols', 'embeddings'],
+          capabilitiesMissing: [],
+        };
+        const port = makePort({
+          query: vi.fn(async (repo) => ({
+            ...(repo.name === 'test-backend' ? backendMetadata : frontendMetadata),
+            processes: [
+              { name: `${repo.name}-first`, score: 0.01 },
+              { name: `${repo.name}-second`, score: 0.99 },
+            ],
+            process_symbols: [{ name: 'member-only-symbol' }],
+            diagnostics: { internal: 'member-only-diagnostic' },
+          })),
+        });
+        const result = (await new GroupService(port).groupQuery({
+          name: 'test-group',
+          query: 'auth flow',
+          limit: 3,
+        })) as { per_repo: unknown[]; results: unknown[] };
+
+        expect(result.per_repo).toEqual([
+          { repo: 'app/backend', count: 2, ...backendMetadata },
+          { repo: 'app/frontend', count: 2, ...frontendMetadata },
+        ]);
+        expect(result.results).toEqual([
+          { name: 'test-backend-first', score: 0.01, _repo: 'app/backend', _rrf_score: 1 / 61 },
+          { name: 'test-frontend-first', score: 0.01, _repo: 'app/frontend', _rrf_score: 1 / 61 },
+          { name: 'test-backend-second', score: 0.99, _repo: 'app/backend', _rrf_score: 1 / 62 },
+        ]);
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('retains metadata for an empty successful member and omits absent legacy metadata', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('ONTOINDEX_HOME', tmpDir);
+        const metadata = {
+          repoLabel: 'test-backend',
+          repoPath: '/tmp/backend',
+          targetContext: { targetHead: 'backend-head' },
+          freshness: { status: 'fresh', actionable: false, reason: 'heads match' },
+          capabilitiesUsed: [],
+          capabilitiesMissing: ['embeddings'],
+        };
+        const port = makePort({
+          query: vi.fn(async (repo) =>
+            repo.name === 'test-backend'
+              ? { processes: [], ...metadata }
+              : { processes: [{ name: 'legacy-process' }] },
+          ),
+        });
+        const result = (await new GroupService(port).groupQuery({
+          name: 'test-group',
+          query: 'auth flow',
+        })) as { per_repo: unknown[] };
+
+        expect(result.per_repo).toEqual([
+          { repo: 'app/backend', count: 0, ...metadata },
+          { repo: 'app/frontend', count: 1 },
+        ]);
+        expect(Object.keys(result.per_repo[1] as object).sort()).toEqual(['count', 'repo']);
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('marks returned member errors unavailable without exposing error text or results', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('ONTOINDEX_HOME', tmpDir);
+        const port = makePort({
+          query: vi.fn(async (repo) =>
+            repo.name === 'test-backend'
+              ? {
+                  error: 'private backend failure',
+                  processes: [{ name: 'invalid' }],
+                  repoLabel: 'test-backend',
+                }
+              : { processes: [{ name: 'valid' }] },
+          ),
+        });
+        const result = (await new GroupService(port).groupQuery({
+          name: 'test-group',
+          query: 'test',
+        })) as {
+          per_repo: unknown[];
+          results: Array<{ name: string }>;
+        };
+        expect(result.per_repo).toEqual([
+          { repo: 'app/backend', count: 0, repoLabel: 'test-backend', status: 'unavailable' },
+          { repo: 'app/frontend', count: 1 },
+        ]);
+        expect(result.results.map((row) => row.name)).toEqual(['valid']);
+        expect(JSON.stringify(result)).not.toContain('private backend failure');
       } finally {
         vi.unstubAllEnvs();
         cleanup();
@@ -412,8 +536,11 @@ describe('GroupService', () => {
           per_repo: Array<{ repo: string; count: number }>;
         };
 
-        const backendRepo = result.per_repo.find((r) => r.repo === 'app/backend');
-        expect(backendRepo?.count).toBe(0);
+        expect(result.per_repo).toEqual([
+          { repo: 'app/backend', count: 0, status: 'unavailable' },
+          { repo: 'app/frontend', count: 1 },
+        ]);
+        expect(JSON.stringify(result)).not.toContain('not indexed');
       } finally {
         vi.unstubAllEnvs();
         cleanup();
@@ -586,6 +713,65 @@ repos:
           service: 'services/auth',
         });
         expect(r.results.every((x) => Object.keys(x.payload as object).length === 0)).toBe(true);
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('retains only filtered member metadata and leaves matching member context intact', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('ONTOINDEX_HOME', tmpDir);
+        const backendMetadata = {
+          targetContext: { targetHead: 'backend-head', indexedCommit: 'backend-index' },
+          source: 'workspace-graph',
+          graphImpactAvailable: false,
+          freshness: { status: 'stale', actionable: true, reason: 'backend changed' },
+          repoLabel: 'test-backend',
+          repoPath: '/tmp/backend',
+          capabilitiesUsed: ['symbols'],
+          capabilitiesMissing: ['embeddings'],
+        };
+        const frontendPayload = {
+          targetContext: { targetHead: 'frontend-head', indexedCommit: 'frontend-head' },
+          freshness: { status: 'fresh', actionable: false, reason: 'heads match' },
+          repoLabel: 'test-frontend',
+          repoPath: '/tmp/frontend',
+          capabilitiesUsed: ['symbols', 'embeddings'],
+          capabilitiesMissing: [],
+          status: 'found',
+          symbol: { filePath: 'services/auth/login.ts', uid: 'frontend-symbol', name: 'MySym' },
+          relationships: { callers: ['frontend-caller'] },
+          content: 'frontend source',
+          diagnostics: { internal: 'frontend diagnostic' },
+        };
+        const port = makePort({
+          context: vi.fn(async (repo) =>
+            repo.name === 'test-backend'
+              ? {
+                  ...backendMetadata,
+                  status: 'found',
+                  symbol: { filePath: 'other/path/x.ts', uid: 'backend-symbol', name: 'MySym' },
+                  relationships: { callers: ['backend-caller'] },
+                  content: 'backend source',
+                  diagnostics: { internal: 'backend diagnostic' },
+                }
+              : frontendPayload,
+          ),
+        });
+        const result = await new GroupService(port).groupContext({
+          name: 'test-group',
+          target: 'MySym',
+          service: 'services/auth',
+          include_content: true,
+        });
+
+        expect(result.results).toEqual([
+          { repoPath: 'app/backend', registryName: 'test-backend', payload: backendMetadata },
+          { repoPath: 'app/frontend', registryName: 'test-frontend', payload: frontendPayload },
+        ]);
+        expect(result.results[1].payload).toBe(frontendPayload);
       } finally {
         vi.unstubAllEnvs();
         cleanup();

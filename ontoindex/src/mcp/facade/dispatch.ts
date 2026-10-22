@@ -65,10 +65,13 @@ export async function dispatchFacade(
     const repo = await backend.resolveRepo(typeof args.repo === 'string' ? args.repo : undefined);
     const { dispatchSuper } = await import('../super/dispatch.js');
     try {
+      const superResult = await (superTool === 'gn_audit_logic'
+        ? dispatchSuper(superTool, args, repo.id, undefined, { repoPath: repo.repoPath })
+        : superTool === 'gn_test_gap'
+          ? dispatchSuper(superTool, args, repo.id, undefined, undefined, backend)
+          : dispatchSuper(superTool, args, repo.id));
       return attachRepoScopeIdentity(
-        await (superTool === 'gn_audit_logic'
-          ? dispatchSuper(superTool, args, repo.id, undefined, { repoPath: repo.repoPath })
-          : dispatchSuper(superTool, args, repo.id)),
+        (await backend.withCommittedGraphNotice?.(superResult, repo)) ?? superResult,
         repo,
       );
     } catch (error) {

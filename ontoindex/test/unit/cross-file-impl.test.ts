@@ -162,6 +162,50 @@ describe('runCrossFileBindingPropagation', () => {
     }
   });
 
+  it('shares a query cache across candidates and creates a fresh cache for each propagation pass', async () => {
+    const graph = createKnowledgeGraph();
+    const ctx = createResolutionContext();
+    const exportedTypeMap: ExportedTypeMap = new Map([
+      ['upstream.ts', new Map([['User', 'User']])],
+    ]);
+    const candidates = ['first.ts', 'second.ts'];
+    ctx.importMap.set('upstream.ts', new Set());
+    for (const file of candidates) {
+      ctx.namedImportMap.set(
+        file,
+        new Map([['User', { sourcePath: 'upstream.ts', exportedName: 'User' }]]),
+      );
+      ctx.importMap.set(file, new Set(['upstream.ts']));
+    }
+    const propagate = () =>
+      runCrossFileBindingPropagation(
+        graph,
+        ctx,
+        exportedTypeMap,
+        new Set(['upstream.ts', ...candidates]),
+        3,
+        '/repo',
+        Date.now(),
+        () => {},
+      );
+
+    expect(await propagate()).toBe(2);
+    expect(processCallsMock).toHaveBeenCalledTimes(2);
+    expect(processCallsMock.mock.calls.map((call) => call[1].map((file) => file.path))).toEqual(
+      candidates.map((file) => [file]),
+    );
+    const firstCache = processCallsMock.mock.calls[0][11];
+    expect(firstCache).toBeInstanceOf(Map);
+    expect(processCallsMock.mock.calls[1][11]).toBe(firstCache);
+
+    expect(await propagate()).toBe(2);
+    expect(processCallsMock).toHaveBeenCalledTimes(4);
+    const secondCache = processCallsMock.mock.calls[2][11];
+    expect(secondCache).toBeInstanceOf(Map);
+    expect(secondCache).not.toBe(firstCache);
+    expect(processCallsMock.mock.calls[3][11]).toBe(secondCache);
+  });
+
   it('caps processing at MAX_CROSS_FILE_REPROCESS (2000)', async () => {
     const graph = createKnowledgeGraph();
     const ctx = createResolutionContext();

@@ -8,6 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { buildPositionIndex, buildScopeTree } from 'ontoindex-shared';
 import type {
   Capture,
   CaptureMatch,
@@ -18,6 +19,7 @@ import type {
   ScopeKind,
 } from 'ontoindex-shared';
 import { extract, type ScopeExtractorHooks } from '../../../src/core/ingestion/scope-extractor.js';
+import type { LocalBindingCandidate } from '../../../src/core/ingestion/language-provider.js';
 
 // ─── Synthetic-capture helpers ──────────────────────────────────────────────
 
@@ -104,6 +106,38 @@ function mockProvider(hooks: Partial<ScopeExtractorHooks> = {}): ScopeExtractorH
 // ─── §Pass 1: scope tree construction ──────────────────────────────────────
 
 describe('Pass 1: scope tree', () => {
+  for (const kind of ['function', 'class'] as const) {
+    for (const end of [
+      { line: 10, col: 5 },
+      { line: 1, col: 0 },
+    ]) {
+      it(`retains a whole-file ${kind} under its Module ending at ${end.line}:${end.col}`, () => {
+        const moduleMatch = scopeMatch('module', 1, 0, end.line, end.col);
+        const childMatch = scopeMatch(kind, 1, 0, end.line, end.col);
+        const range = { startLine: 1, startCol: 0, endLine: end.line, endCol: end.col };
+        for (const matches of [
+          [moduleMatch, childMatch],
+          [childMatch, moduleMatch],
+        ]) {
+          const result = extract(matches, 'a.ts', mockProvider());
+          const mod = result.scopes.find((scope) => scope.kind === 'Module')!;
+          const child = result.scopes.find((scope) => scope.kind !== 'Module')!;
+          expect(result.scopes).toHaveLength(2);
+          expect(result.moduleScope).toBe(mod.id);
+          expect(mod.parent).toBeNull();
+          expect(child.parent).toBe(mod.id);
+          expect(mod.range).toEqual(range);
+          expect(child.range).toEqual(range);
+          const tree = buildScopeTree(result.scopes);
+          expect(tree.getParent(child.id)).toBe(mod);
+          const index = buildPositionIndex(result.scopes);
+          expect(index.atPosition('a.ts', 1, 0)).toBe(child.id);
+          expect(index.atPosition('a.ts', end.line, end.col)).toBe(child.id);
+        }
+      });
+    }
+  }
+
   it('creates a single Module scope from one @scope.module match', () => {
     const result = extract([scopeMatch('module', 1, 0, 100, 0)], 'a.ts', mockProvider());
     expect(result.scopes).toHaveLength(1);
@@ -204,6 +238,34 @@ describe('Pass 1: scope tree', () => {
     ).toThrow(/overlap/i);
   });
 
+  it('rejects equal-range non-Module scopes inside a larger Module', () => {
+    expect(() =>
+      extract(
+        [
+          scopeMatch('module', 1, 0, 100, 0),
+          scopeMatch('class', 5, 0, 20, 0),
+          scopeMatch('function', 5, 0, 20, 0),
+        ],
+        'a.ts',
+        mockProvider(),
+      ),
+    ).toThrow(/overlap/i);
+  });
+
+  it('rejects multiple children sharing the whole Module range', () => {
+    expect(() =>
+      extract(
+        [
+          scopeMatch('module', 1, 0, 10, 0),
+          scopeMatch('class', 1, 0, 10, 0),
+          scopeMatch('function', 1, 0, 10, 0),
+        ],
+        'a.ts',
+        mockProvider(),
+      ),
+    ).toThrow(/overlap/i);
+  });
+
   it('throws when no Module scope is present', () => {
     expect(() => extract([scopeMatch('function', 1, 0, 10, 0)], 'a.ts', mockProvider())).toThrow(
       /Module/,
@@ -214,6 +276,94 @@ describe('Pass 1: scope tree', () => {
 // ─── §Pass 2: declarations + local bindings ────────────────────────────────
 
 describe('Pass 2: declarations + local bindings', () => {
+  for (const hook of [undefined, () => null]) {
+    it(`preserves all same-name bindings when selection is ${hook === undefined ? 'absent' : 'null'}`, () => {
+      const result = extract(
+        [
+          scopeMatch('module', 1, 0, 100, 0),
+          declMatch('variable', 'x', 5, 0, 5, 1),
+          declMatch('variable', 'x', 10, 0, 10, 1),
+        ],
+        'a.ts',
+        mockProvider(hook === undefined ? {} : { selectLocalBindings: hook }),
+      );
+      expect(result.scopes[0]!.bindings.get('x')).toEqual(
+        result.localDefs.map((def) => ({ def, origin: 'local' })),
+      );
+      expect(result.scopes[0]!.ownedDefs).toEqual(result.localDefs);
+    });
+  }
+
+  it('selects complete candidate groups by host and name while preserving structural ownership', () => {
+    const first = declMatch('variable', 'x', 15, 0, 15, 1);
+    const second = declMatch('variable', 'x', 35, 0, 35, 1);
+    const otherName = declMatch('variable', 'y', 40, 0, 40, 1);
+    const moduleDecl = declMatch('variable', 'x', 80, 0, 80, 1);
+    const groups: (readonly LocalBindingCandidate[])[] = [];
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 100, 0),
+        scopeMatch('function', 10, 0, 50, 0),
+        scopeMatch('block', 12, 0, 20, 0),
+        first,
+        second,
+        otherName,
+        moduleDecl,
+      ],
+      'a.ts',
+      mockProvider({
+        bindingScopeFor: (_match, innermost, tree) =>
+          innermost.kind === 'Block' ? tree.getParent(innermost.id)!.id : null,
+        selectLocalBindings: (candidates, host, tree) => {
+          groups.push(candidates);
+          expect(host).toBe(tree.getScope(host.id));
+          expect(host.bindings.size).toBe(0);
+          expect(host.ownedDefs).toEqual([]);
+          expect(host.typeBindings.size).toBe(0);
+          return [candidates[candidates.length - 1]!];
+        },
+      }),
+    );
+    expect(groups.map((group) => group.map(({ match }) => match))).toEqual([
+      [first, second],
+      [otherName],
+      [moduleDecl],
+    ]);
+    const fn = result.scopes.find((scope) => scope.kind === 'Function')!;
+    const block = result.scopes.find((scope) => scope.kind === 'Block')!;
+    const mod = result.scopes.find((scope) => scope.kind === 'Module')!;
+    expect(result.localDefs).toHaveLength(4);
+    expect(block.ownedDefs).toEqual([result.localDefs[0]]);
+    expect(fn.ownedDefs).toEqual([result.localDefs[1], result.localDefs[2]]);
+    expect(mod.ownedDefs).toEqual([result.localDefs[3]]);
+    expect(fn.bindings.get('x')).toEqual([{ def: result.localDefs[1], origin: 'local' }]);
+    expect(fn.bindings.get('y')).toEqual([{ def: result.localDefs[2], origin: 'local' }]);
+    expect(mod.bindings.get('x')).toEqual([{ def: result.localDefs[3], origin: 'local' }]);
+    expect(block.bindings.size).toBe(0);
+  });
+
+  for (const [label, selection] of [
+    ['empty', () => []],
+    ['non-array', () => ({})],
+    ['undefined', () => undefined],
+    ['copied candidate', (candidates: readonly LocalBindingCandidate[]) => [{ ...candidates[0]! }]],
+    ['duplicate', (candidates: readonly LocalBindingCandidate[]) => [candidates[0], candidates[0]]],
+  ] as const) {
+    it(`rejects a ${label} local binding selection`, () => {
+      expect(() =>
+        extract(
+          [scopeMatch('module', 1, 0, 100, 0), declMatch('variable', 'x', 5, 0, 5, 1)],
+          'a.ts',
+          mockProvider({
+            selectLocalBindings: selection as NonNullable<
+              ScopeExtractorHooks['selectLocalBindings']
+            >,
+          }),
+        ),
+      ).toThrow(/ScopeExtractor: selectLocalBindings/);
+    });
+  }
+
   it('attaches a Class declaration to its enclosing Module scope', () => {
     const result = extract(
       [
@@ -475,6 +625,137 @@ describe('Pass 5: reference sites', () => {
 });
 
 // ─── §End-to-end fixture ──────────────────────────────────────────────────
+
+describe('explicit exports after extraction', () => {
+  it('omits exports without a hook and preserves an explicitly empty export map', () => {
+    const matches = [scopeMatch('module', 1, 0, 100, 0)];
+    const legacy = extract(matches, 'a.ts', mockProvider());
+    const explicit = extract(matches, 'a.ts', mockProvider({ interpretExports: () => new Map() }));
+
+    expect(legacy).not.toHaveProperty('exports');
+    expect(explicit).toHaveProperty('exports', new Map());
+  });
+
+  it('receives original matches and completed context after all five passes', () => {
+    const matches = [
+      scopeMatch('module', 1, 0, 100, 0),
+      declMatch('variable', 'value', 2, 0, 2, 5),
+      importMatch(3, 0, 3, 20),
+      typeBindingMatch(4, 0, 4, 10),
+      refMatch('call', 'value', 5, 0, 5, 5),
+    ];
+    const calls: string[] = [];
+    let seenContext: Parameters<NonNullable<ScopeExtractorHooks['interpretExports']>>[1];
+    const result = extract(
+      matches,
+      'a.ts',
+      mockProvider({
+        interpretImport: () => {
+          calls.push('imports');
+          return { kind: 'named', localName: 'T', importedName: 'T', targetRaw: './types' };
+        },
+        interpretTypeBinding: () => {
+          calls.push('types');
+          return { boundName: 'value', rawTypeName: 'T', source: 'parameter-annotation' };
+        },
+        classifyCallForm: () => {
+          calls.push('references');
+          return 'free';
+        },
+        interpretExports: (captures, context) => {
+          calls.push('exports');
+          expect(captures).toBe(matches);
+          expect(context.filePath).toBe('a.ts');
+          const module = context.scopes.find((scope) => scope.id === context.moduleScope)!;
+          expect(module.bindings.get('value')?.[0]?.def).toBe(context.localDefs[0]);
+          expect(module.ownedDefs).toEqual(context.localDefs);
+          expect(module.typeBindings.get('value')?.rawName).toBe('T');
+          seenContext = context;
+          return new Map([['value', context.localDefs[0]!.nodeId]]);
+        },
+      }),
+    );
+
+    expect(calls).toEqual(['imports', 'types', 'references', 'exports']);
+    expect(seenContext!).toMatchObject({
+      filePath: result.filePath,
+      moduleScope: result.moduleScope,
+      scopes: result.scopes,
+      localDefs: result.localDefs,
+    });
+    expect(result.parsedImports).toHaveLength(1);
+    expect(result.referenceSites).toHaveLength(1);
+  });
+
+  it('exports aliases of the module binding without changing identities or private definitions', () => {
+    const matches = [
+      scopeMatch('module', 1, 0, 100, 0),
+      scopeMatch('function', 10, 0, 30, 0),
+      declMatch('variable', 'value', 12, 0, 12, 5),
+      declMatch('variable', 'value', 2, 0, 2, 5),
+      declMatch('variable', 'privateValue', 4, 0, 4, 12),
+    ];
+    const baseline = extract(matches, 'a.ts', mockProvider());
+    const providerExports = new Map<string, string>();
+    const result = extract(
+      matches,
+      'a.ts',
+      mockProvider({
+        interpretExports: (_captures, context) => {
+          const module = context.scopes.find((scope) => scope.id === context.moduleScope)!;
+          const id = module.bindings.get('value')![0]!.def.nodeId;
+          for (const name of ['renamed', 'default', '']) providerExports.set(name, id);
+          return providerExports;
+        },
+      }),
+    );
+    const moduleId = baseline.scopes
+      .find((scope) => scope.id === baseline.moduleScope)!
+      .bindings.get('value')![0]!.def.nodeId;
+    expect(moduleId).not.toBe(baseline.localDefs[0]!.nodeId);
+    expect(result.exports).toEqual(
+      new Map([
+        ['renamed', moduleId],
+        ['default', moduleId],
+        ['', moduleId],
+      ]),
+    );
+    expect(result.localDefs).toEqual(baseline.localDefs);
+    expect(result.scopes).toEqual(baseline.scopes);
+    expect(result.exports).not.toBe(providerExports);
+
+    providerExports.clear();
+    providerExports.set('later', moduleId);
+    expect([...result.exports!]).toEqual([
+      ['renamed', moduleId],
+      ['default', moduleId],
+      ['', moduleId],
+    ]);
+  });
+
+  it.each([
+    ['unknown local ID', () => new Map([['value', 'foreign-definition']])],
+    ['nonstring name', (id: string) => new Map([[42, id]])],
+    ['nonstring ID', () => new Map([['value', 42]])],
+    ['plain object', (id: string) => ({ value: id })],
+    ['entry array', (id: string) => [['value', id]]],
+    ['undefined', () => undefined],
+    ['null', () => null],
+  ])('rejects %s returned by an implemented hook', (_name, invalid) => {
+    const interpretExports = ((_captures, context) =>
+      invalid(context.localDefs[0]!.nodeId)) as NonNullable<
+      ScopeExtractorHooks['interpretExports']
+    >;
+
+    expect(() =>
+      extract(
+        [scopeMatch('module', 1, 0, 100, 0), declMatch('variable', 'value', 2, 0, 2, 5)],
+        'a.ts',
+        mockProvider({ interpretExports }),
+      ),
+    ).toThrow();
+  });
+});
 
 describe('end-to-end fixture (all 5 passes together)', () => {
   it('produces a well-formed ParsedFile from a representative multi-pass input', () => {

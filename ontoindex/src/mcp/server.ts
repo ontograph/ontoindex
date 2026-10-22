@@ -1,3 +1,4 @@
+import { isAutomaticWorkspaceEnabled } from './local/backend-overlay.js';
 /**
  * MCP Server (Multi-Repo)
  *
@@ -51,6 +52,7 @@ import {
   boundMcpErrorText,
   MCP_RESPONSE_MAX_BYTES,
   pageMcpResponse,
+  validateResponseBudget,
 } from './shared/response-pages.js';
 
 const MAX_PROMPT_ARGUMENT_BYTES = 4096;
@@ -97,6 +99,17 @@ const GRAPH_BACKED_SUPER_TOOLS = new Set<SuperTool>([
   'gn_docs',
 ]);
 
+const WORKSPACE_READ_SUPER_TOOLS = new Set<SuperTool>([
+  'gn_explore',
+  'gn_explain_module',
+  'gn_find_related',
+  'gn_graph_walk',
+  'gn_safe_edit_check',
+  'gn_can_delete',
+  'gn_propose_location',
+  'gn_docs',
+]);
+
 interface StackLike {
   stack?: unknown;
 }
@@ -127,13 +140,63 @@ function readRepoIdentity(value: unknown): RepoIdentity | null {
   return repoLabel && repoPath ? { repoLabel, repoPath } : null;
 }
 
-function formatToolCallErrorMessage(error: unknown, repo?: RepoIdentity | null): string {
+function formatToolCallErrorMessage(
+  error: unknown,
+  repo?: RepoIdentity | null,
+  committedFallbackAvailable = false,
+): string {
   const message = error instanceof Error ? error.message : String(error);
+  const candidate =
+    error !== null && typeof error === 'object' ? (error as Record<string, unknown>) : undefined;
+  const code =
+    typeof candidate?.code === 'string' &&
+    [
+      'workspace_busy',
+      'workspace_build_failed',
+      'workspace_too_large',
+      'workspace_timeout',
+      'workspace_cancelled',
+    ].includes(candidate.code)
+      ? candidate.code
+      : undefined;
+  const diagnostic = candidate?.diagnostics as Record<string, unknown> | undefined;
+  const diagnostics =
+    code === 'workspace_too_large' &&
+    diagnostic &&
+    typeof diagnostic === 'object' &&
+    Number.isSafeInteger(diagnostic.observedIndexedFiles) &&
+    (diagnostic.observedIndexedFiles as number) >= 0 &&
+    Number.isSafeInteger(diagnostic.maxIndexedFiles) &&
+    (diagnostic.maxIndexedFiles as number) > 0 &&
+    diagnostic.requiredCapability === 'workspace-graph'
+      ? {
+          observedIndexedFiles: diagnostic.observedIndexedFiles,
+          maxIndexedFiles: diagnostic.maxIndexedFiles,
+          requiredCapability: 'workspace-graph',
+        }
+      : undefined;
   return boundMcpErrorText(
     (boundedMessage) =>
-      repo
+      repo || code
         ? JSON.stringify(
-            { error: boundedMessage, repoLabel: repo.repoLabel, repoPath: repo.repoPath },
+            {
+              error: boundedMessage,
+              ...(repo ? { repoLabel: repo.repoLabel, repoPath: repo.repoPath } : {}),
+              ...(code ? { code } : {}),
+              ...(diagnostics ? { diagnostics } : {}),
+              ...(code === 'workspace_too_large' && committedFallbackAvailable
+                ? {
+                    remediation: {
+                      read_mode: 'committed',
+                      message:
+                        'Explicitly set read_mode="committed" to query the indexed commit. Uncommitted source changes, manual overlays and live enrichment are excluded. Do not automatically retry or reindex.',
+                    },
+                  }
+                : {}),
+              ...(code && typeof candidate?.retryable === 'boolean'
+                ? { retryable: candidate.retryable }
+                : {}),
+            },
             null,
             2,
           )
@@ -158,6 +221,15 @@ export function getNextStepHint(
   const repo = args?.repo;
   const repoParam = repo ? `, repo: "${repo}"` : '';
   const repoPath = repo || '{name}';
+  if (args?.read_mode === 'committed') {
+    const committedParam = `${repoParam}, read_mode: "committed"`;
+    if (toolName === 'search' && args.action === 'semantic') {
+      return `\n\n---\n**Next:** Use inspect({action: "context", uid: "<result_uid>"${committedParam}}) to inspect an indexed result. Uncommitted source and live enrichment remain excluded.`;
+    }
+    if (toolName === 'inspect' && args.action === 'context') {
+      return `\n\n---\n**Next:** Use impact({action: "symbol", target_uid: "<result_uid>", direction: "upstream"${committedParam}}) to inspect committed dependents.`;
+    }
+  }
 
   switch (toolName) {
     case 'list_repos':
@@ -322,8 +394,13 @@ async function dispatchLazySuper(
   repoId: string,
   backend?: import('./super/safe-refactor.js').RefactorBackend,
   context?: { repoPath: string; projectCwd?: string | null },
+  readBackend?: Pick<
+    LocalBackend,
+    'resolveRepo' | 'ensureRepoInitialized' | 'withPreparedRepoRead'
+  >,
 ): Promise<unknown> {
   const { dispatchSuper } = await import('./super/dispatch.js');
+  if (readBackend) return dispatchSuper(name, params, repoId, backend, context, readBackend);
   if (context) return dispatchSuper(name, params, repoId, backend, context);
   return backend
     ? dispatchSuper(name, params, repoId, backend)
@@ -357,10 +434,15 @@ export function createMCPServer(
   const activeRequests = new Set<Promise<unknown>>();
   let closing = false;
   let closePromise: Promise<void> | undefined;
-  function trackRequest<T>(operation: () => Promise<T>): Promise<T> {
+  function trackRequest<T>(
+    operation: () => Promise<T>,
+    options?: { signal?: AbortSignal },
+  ): Promise<T> {
     if (closing) return Promise.reject(new McpError(ErrorCode.InternalError, 'Server is closing.'));
     const pending = Promise.resolve().then(() =>
-      typeof backend.withOperation === 'function' ? backend.withOperation(operation) : operation(),
+      typeof backend.withOperation === 'function'
+        ? backend.withOperation(operation, options)
+        : operation(),
     );
     activeRequests.add(pending);
     void pending.then(
@@ -502,7 +584,24 @@ export function createMCPServer(
       tools: activeTools.map((tool) => ({
         name: tool.name,
         description: tool.description,
-        inputSchema: relaxSchemaForClient(withResponseCursor(tool.inputSchema)),
+        inputSchema: relaxSchemaForClient(
+          withResponseCursor(
+            ['gn_explore', 'inspect', 'impact', 'search'].includes(tool.name)
+              ? {
+                  ...tool.inputSchema,
+                  properties: {
+                    ...(tool.inputSchema as any).properties,
+                    read_mode: {
+                      type: 'string',
+                      enum: ['committed'],
+                      description:
+                        'Explicit indexed-commit view; excludes uncommitted source and live enrichment. Supported for explore, inspect/context, impact/symbol and search/semantic.',
+                    },
+                  },
+                }
+              : tool.inputSchema,
+          ),
+        ),
       })),
     })),
   );
@@ -518,91 +617,186 @@ export function createMCPServer(
     'manage',
     'docs',
   ]);
-  server.setRequestHandler(CallToolRequestSchema, (request) =>
-    trackRequest(async () => {
-      const { name, arguments: args } = request.params;
-      const typedArgs = (args ?? {}) as Record<string, unknown>;
-      let repoIdentity: RepoIdentity | null = null;
+  server.setRequestHandler(CallToolRequestSchema, (request, extra) =>
+    trackRequest(
+      async () => {
+        const { name, arguments: args } = request.params;
+        const typedArgs = (args ?? {}) as Record<string, unknown>;
+        let repoIdentity: RepoIdentity | null = null;
+        const supportedCommittedRead =
+          name === 'gn_explore' ||
+          (name === 'inspect' && typedArgs.action === 'context') ||
+          (name === 'impact' && typedArgs.action === 'symbol') ||
+          (name === 'search' && typedArgs.action === 'semantic');
+        const committedFallbackAvailable =
+          supportedCommittedRead &&
+          !options.full &&
+          typedArgs.read_mode === undefined &&
+          typeof typedArgs.repo === 'string' &&
+          typedArgs.repo.trim().length > 0 &&
+          !typedArgs.repo.startsWith('@') &&
+          typedArgs.include_lsp_refs !== true &&
+          typedArgs.consume_enrichment_facts !== true &&
+          typedArgs.include_passive_related_facts !== true &&
+          typedArgs.include_markdown_context !== true &&
+          (!typedArgs.retrieval_policy || typedArgs.retrieval_policy === 'graph-only');
 
-      try {
-        const oversized = findOversizedArgument(typedArgs);
-        if (oversized) throw new Error(`Invalid arguments for ${name}: ${oversized}`);
-        if (options.transport === 'http' && name === 'gn_quality_mode') {
-          throw new Error(
-            'gn_quality_mode is unavailable over HTTP because it changes process-wide configuration.',
-          );
-        }
-        const responseCursor =
-          typeof typedArgs.response_cursor === 'string' ? typedArgs.response_cursor : undefined;
-        if (responseCursor) {
+        try {
+          const oversized = findOversizedArgument(typedArgs);
+          if (oversized) throw new Error(`Invalid arguments for ${name}: ${oversized}`);
+          const responseBudgetBytes = validateResponseBudget(typedArgs.response_budget_bytes);
+          const committedRead = typedArgs.read_mode !== undefined;
+          if (committedRead) {
+            if (
+              typedArgs.read_mode !== 'committed' ||
+              !supportedCommittedRead ||
+              options.full ||
+              typeof typedArgs.repo !== 'string' ||
+              typedArgs.repo.startsWith('@')
+            ) {
+              throw new Error(
+                'read_mode=committed requires an explicit single repository and a supported navigation operation.',
+              );
+            }
+            if (
+              typedArgs.include_lsp_refs === true ||
+              typedArgs.consume_enrichment_facts === true ||
+              typedArgs.include_passive_related_facts === true ||
+              typedArgs.include_markdown_context === true ||
+              (typedArgs.retrieval_policy && typedArgs.retrieval_policy !== 'graph-only')
+            ) {
+              throw new Error('Committed reads do not support live or external enrichment.');
+            }
+          }
+          if (options.transport === 'http' && name === 'gn_quality_mode') {
+            throw new Error(
+              'gn_quality_mode is unavailable over HTTP because it changes process-wide configuration.',
+            );
+          }
+          const responseCursor =
+            typeof typedArgs.response_cursor === 'string' ? typedArgs.response_cursor : undefined;
+          if (responseCursor) {
+            const page = await pageMcpResponse({
+              tool: name,
+              args: typedArgs,
+              cursor: responseCursor,
+              responseBudgetBytes,
+            });
+            return { content: [{ type: 'text', text: page.text }] };
+          }
+
+          const execute = async () => {
+            let result: unknown;
+            if (!options.full && SUPER_NAMES.has(name as SuperTool)) {
+              if (isRepoOptionalSuperToolName(name)) {
+                result = await dispatchLazySuper(name as SuperTool, typedArgs, '');
+              } else {
+                const repo = await backend.resolveRepo(typedArgs.repo as string | undefined);
+                repoIdentity = {
+                  repoLabel: repo.name ?? repo.id,
+                  repoPath: repo.repoPath,
+                };
+                const docsReadiness =
+                  name === 'gn_docs' &&
+                  (typedArgs.action === undefined || typedArgs.action === 'readiness');
+                if (GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool) && !docsReadiness) {
+                  await backend.ensureRepoInitialized(repo.id);
+                }
+                const preparedRead =
+                  WORKSPACE_READ_SUPER_TOOLS.has(name as SuperTool) &&
+                  !docsReadiness &&
+                  typeof backend.withPreparedRepoRead === 'function';
+                const preparedAutoRead = preparedRead && isAutomaticWorkspaceEnabled();
+                const operation = () =>
+                  dispatchLazySuper(
+                    name as SuperTool,
+                    typedArgs,
+                    repo.id,
+                    name === 'gn_safe_refactor'
+                      ? {
+                          repoPath: repo.repoPath,
+                          callTool: backend.callTool.bind(backend),
+                        }
+                      : undefined,
+                    name === 'gn_diagnose'
+                      ? { repoPath: repo.repoPath, projectCwd: options.projectCwd ?? null }
+                      : name === 'gn_audit_logic'
+                        ? { repoPath: repo.repoPath }
+                        : undefined,
+                    name === 'gn_test_gap' ? backend : undefined,
+                  );
+                const superResult = preparedRead
+                  ? await backend.withPreparedRepoRead(
+                      repo,
+                      { needsRelationships: true, wantsWorkspaceGraph: true },
+                      operation,
+                    )
+                  : await operation();
+                result = attachRepoScopeIdentity(
+                  GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool) &&
+                    !docsReadiness &&
+                    !preparedAutoRead &&
+                    !committedRead
+                    ? ((await backend.withCommittedGraphNotice?.(superResult, repo)) ?? superResult)
+                    : superResult,
+                  repo,
+                );
+              }
+            } else if (!options.full && FACADE_NAMES.has(name)) {
+              const action = typedArgs.action as string;
+              if (!action) throw new Error(`Tool "${name}" requires an "action" parameter.`);
+              result = await dispatchFacade(name as FacadeTool, action, typedArgs, backend);
+            } else {
+              result = await backend.callTool(name, typedArgs);
+            }
+            return result;
+          };
+          let result: unknown;
+          if (committedRead) {
+            const repo = await backend.resolveRepo(typedArgs.repo as string);
+            repoIdentity = { repoLabel: repo.name ?? repo.id, repoPath: repo.repoPath };
+            await backend.ensureRepoInitialized(repo.id);
+            result = await backend.withPreparedRepoRead(
+              repo,
+              { needsRelationships: true, readMode: 'committed' },
+              execute,
+            );
+          } else {
+            result = await execute();
+          }
+          const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+          const hint = responseBudgetBytes === undefined ? getNextStepHint(name, typedArgs) : '';
           const page = await pageMcpResponse({
             tool: name,
             args: typedArgs,
-            cursor: responseCursor,
+            text: resultText + hint,
+            identityText: resultText,
+            responseBudgetBytes,
+            isError: isMarkedInvocationError(result),
           });
-          return { content: [{ type: 'text', text: page.text }] };
+          return {
+            content: [{ type: 'text', text: page.text }],
+            ...(isMarkedInvocationError(result) ? { isError: true } : {}),
+          };
+        } catch (error) {
+          const scopedRepoIdentity = repoIdentity ?? readRepoIdentity(error);
+          return {
+            content: [
+              {
+                type: 'text',
+                text: formatToolCallErrorMessage(
+                  error,
+                  scopedRepoIdentity,
+                  committedFallbackAvailable,
+                ),
+              },
+            ],
+            isError: true,
+          };
         }
-
-        let result: unknown;
-        if (!options.full && SUPER_NAMES.has(name as SuperTool)) {
-          if (isRepoOptionalSuperToolName(name)) {
-            result = await dispatchLazySuper(name as SuperTool, typedArgs, '');
-          } else {
-            const repo = await backend.resolveRepo(typedArgs.repo as string | undefined);
-            repoIdentity = {
-              repoLabel: repo.name ?? repo.id,
-              repoPath: repo.repoPath,
-            };
-            if (GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool)) {
-              await backend.ensureRepoInitialized(repo.id);
-            }
-            result = attachRepoScopeIdentity(
-              await dispatchLazySuper(
-                name as SuperTool,
-                typedArgs,
-                repo.id,
-                name === 'gn_safe_refactor'
-                  ? {
-                      repoPath: repo.repoPath,
-                      callTool: backend.callTool.bind(backend),
-                    }
-                  : undefined,
-                name === 'gn_diagnose'
-                  ? { repoPath: repo.repoPath, projectCwd: options.projectCwd ?? null }
-                  : name === 'gn_audit_logic'
-                    ? { repoPath: repo.repoPath }
-                    : undefined,
-              ),
-              repo,
-            );
-          }
-        } else if (!options.full && FACADE_NAMES.has(name)) {
-          const action = typedArgs.action as string;
-          if (!action) throw new Error(`Tool "${name}" requires an "action" parameter.`);
-          result = await dispatchFacade(name as FacadeTool, action, typedArgs, backend);
-        } else {
-          result = await backend.callTool(name, typedArgs);
-        }
-        const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-        const hint = getNextStepHint(name, typedArgs);
-        const page = await pageMcpResponse({
-          tool: name,
-          args: typedArgs,
-          text: resultText + hint,
-          identityText: resultText,
-        });
-        return {
-          content: [{ type: 'text', text: page.text }],
-          ...(isMarkedInvocationError(result) ? { isError: true } : {}),
-        };
-      } catch (error) {
-        const scopedRepoIdentity = repoIdentity ?? readRepoIdentity(error);
-        return {
-          content: [{ type: 'text', text: formatToolCallErrorMessage(error, scopedRepoIdentity) }],
-          isError: true,
-        };
-      }
-    }),
+      },
+      { signal: extra?.signal },
+    ),
   );
 
   // Handle list prompts request
@@ -728,6 +922,11 @@ function withResponseCursor(schema: any): any {
         description:
           'Opaque continuation cursor returned by a truncated response. Repeat the same tool request with this value to read the next immutable UTF-8 JSON-text page.',
       },
+      response_budget_bytes: {
+        type: 'integer',
+        description:
+          'Optional positive safe-integer logical response budget in serialized MCP bytes.',
+      },
     },
   };
 }
@@ -765,16 +964,24 @@ export async function startMCPServer(
     // Repeated signals do not cut cleanup short; the grace deadline is the only bound.
     if (shuttingDown) return;
     shuttingDown = true;
-    await withShutdownGrace(
+    const completed = await withShutdownGrace(
       (async () => {
-        try {
-          await server.close();
-        } catch {}
-        try {
-          await backend.dispose();
-        } catch {}
+        // close fences admission synchronously; disposal cancels builders that
+        // admitted readers may be waiting on, so both must drain together.
+        const closing = (async () => server.close())();
+        const disposing = (async () => backend.dispose())();
+        const results = await Promise.allSettled([closing, disposing]);
+        for (const [index, result] of results.entries()) {
+          if (result.status === 'rejected') {
+            shutdownExitCode = 1;
+            process.stderr.write(
+              `[ontoindex:mcp] ${index === 0 ? 'server close' : 'backend disposal'} failed: ${boundMcpErrorText((message) => message, String(result.reason))}\n`,
+            );
+          }
+        }
       })(),
     );
+    if (!completed) shutdownExitCode = 1;
     process.exit(shutdownExitCode);
   };
 

@@ -8,11 +8,14 @@
  * Uses hand-crafted Cypher seed data that represents what the pipeline
  * would produce for a Next.js project with API routes and consumers.
  */
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import { API_IMPACT_SEED_DATA, API_IMPACT_FTS_INDEXES } from '../fixtures/api-impact-seed.js';
+
+beforeAll(() => vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0'));
+afterAll(() => vi.unstubAllEnvs());
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/storage/repo-manager.js')>()),

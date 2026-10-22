@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
+mod file_lock;
 pub mod heritage;
 
 fn write_line(out: &mut impl Write, line: &str) -> std::io::Result<()> {

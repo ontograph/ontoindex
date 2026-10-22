@@ -4,7 +4,7 @@
     {
       "name": "gn_explore",
       "kind": "super",
-      "description": "Concept-level discovery: given a free-text query, returns a structured ExploreReport with top processes, top symbols (with optional skeletons and citation paths), cluster info, and suggested entry points.\n\nUse as the first tool when exploring an unfamiliar concept or feature area.",
+      "description": "Concept-level discovery: given a free-text query, returns a structured ExploreReport with top processes, top symbols (with optional skeletons and citation paths), cluster info, and suggested entry points.\n\nUse as the first tool when exploring an unfamiliar concept or feature area. Graph results use the committed index and exclude uncommitted changes.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -67,7 +67,7 @@
     {
       "name": "gn_explain_module",
       "kind": "super",
-      "description": "File/module overview: given a file path, returns exported symbols, cluster membership, co-changed files, last-commit date, and file stats — all in one call.\n\nUse when you need to understand what a file does and how it fits into the codebase.",
+      "description": "File/module overview: given a file path, returns exported symbols, cluster membership, co-changed files, last-commit date, and file stats — all in one call.\n\nUse when you need to understand what a file does and how it fits into the codebase. Graph results use the committed index and exclude uncommitted changes.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -123,7 +123,7 @@
     {
       "name": "gn_find_related",
       "kind": "super",
-      "description": "Symbol-level neighborhood: given a symbol name or canonical nodeId, returns callers, callees, co-changed files, cluster siblings, and optionally cross-repo references.\n\nUse to explore the blast radius or call graph around a specific function or class.",
+      "description": "Symbol-level neighborhood: given a symbol name or canonical nodeId, returns callers, callees, co-changed files, cluster siblings, and optionally cross-repo references.\n\nUse to explore the blast radius or call graph around a specific function or class. Graph results use the committed index and exclude uncommitted changes.",
       "inputSchema": {
         "type": "object",
         "properties": {

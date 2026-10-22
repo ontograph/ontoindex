@@ -79,6 +79,27 @@ describe('buildScopeTree', () => {
       expect(tree.getAncestors('scope:m')).toEqual([]);
     });
 
+    for (const kind of ['Function', 'Class'] as const) {
+      for (const range of [r(1, 0, 10, 5), r(1, 0, 1, 0)]) {
+        it(`keeps an equal-range ${kind} under the root Module at ${JSON.stringify(range)}`, () => {
+          const mod = mkScope({ id: 'scope:m', parent: null, kind: 'Module', range });
+          const child = mkScope({ id: 'scope:child', parent: mod.id, kind, range });
+          for (const scopes of [
+            [mod, child],
+            [child, mod],
+          ]) {
+            const tree = buildScopeTree(scopes);
+            expect(tree.getParent(mod.id)).toBeUndefined();
+            expect(tree.getParent(child.id)).toBe(mod);
+            expect(tree.getChildren(mod.id)).toEqual([child.id]);
+            expect(tree.getAncestors(child.id)).toEqual([mod.id]);
+            expect(tree.getScope(mod.id)!.range).toEqual(range);
+            expect(tree.getScope(child.id)!.range).toEqual(range);
+          }
+        });
+      }
+    }
+
     it('tracks parent/children for a nested module → class → function tree', () => {
       const mod = mkScope({ id: 'scope:m', parent: null, kind: 'Module', range: r(1, 0, 50, 0) });
       const cls = mkScope({
@@ -225,16 +246,50 @@ describe('buildScopeTree', () => {
       expect(() => buildScopeTree([mod, fn])).toThrowError(/strictly contain/i);
     });
 
-    it('rejects child ranges identical to the parent (not strictly contained)', () => {
-      const mod = mkScope({ id: 'scope:m', parent: null, kind: 'Module', range: r(1, 0, 10, 0) });
+    it('rejects child ranges identical to a non-Module parent', () => {
+      const mod = mkScope({ id: 'scope:m', parent: null, kind: 'Module', range: r(1, 0, 100, 0) });
+      const cls = mkScope({ id: 'scope:c', parent: mod.id, kind: 'Class', range: r(1, 0, 10, 0) });
       const fn = mkScope({
         id: 'scope:f',
-        parent: 'scope:m',
+        parent: cls.id,
         kind: 'Function',
         range: r(1, 0, 10, 0),
       });
-      expect(() => buildScopeTree([mod, fn])).toThrowError(ScopeTreeInvariantError);
+      expect(() => buildScopeTree([mod, cls, fn])).toThrowError(ScopeTreeInvariantError);
     });
+
+    it('rejects an equal-range Module child of a root Module', () => {
+      const range = r(1, 0, 10, 0);
+      const mod = mkScope({ id: 'scope:m', parent: null, kind: 'Module', range });
+      const child = mkScope({ id: 'scope:child', parent: mod.id, kind: 'Module', range });
+      expect(() => buildScopeTree([mod, child])).toThrowError(ScopeTreeInvariantError);
+    });
+
+    it('rejects equal ranges beneath a non-root Module', () => {
+      const root = mkScope({
+        id: 'scope:root',
+        parent: null,
+        kind: 'Module',
+        range: r(1, 0, 100, 0),
+      });
+      const mod = mkScope({
+        id: 'scope:m',
+        parent: root.id,
+        kind: 'Module',
+        range: r(5, 0, 10, 0),
+      });
+      const fn = mkScope({ id: 'scope:f', parent: mod.id, kind: 'Function', range: mod.range });
+      expect(() => buildScopeTree([root, mod, fn])).toThrowError(ScopeTreeInvariantError);
+    });
+
+    for (const range of [r(1, 0, 10, 0), r(1, 0, 1, 0)]) {
+      it(`rejects equal-range siblings under a root Module at ${JSON.stringify(range)}`, () => {
+        const mod = mkScope({ id: 'scope:m', parent: null, kind: 'Module', range });
+        const fn = mkScope({ id: 'scope:f', parent: mod.id, kind: 'Function', range });
+        const cls = mkScope({ id: 'scope:c', parent: mod.id, kind: 'Class', range });
+        expect(() => buildScopeTree([mod, fn, cls])).toThrowError(ScopeTreeInvariantError);
+      });
+    }
 
     it('throws when sibling ranges overlap', () => {
       const mod = mkScope({ id: 'scope:m', parent: null, kind: 'Module', range: r(1, 0, 100, 0) });

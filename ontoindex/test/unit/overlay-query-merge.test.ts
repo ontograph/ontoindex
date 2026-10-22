@@ -95,7 +95,34 @@ const options = {
 };
 
 describe('query dirty-overlay merge', () => {
+  it('bounds definitions on ordinary and cached responses and separates limit cache keys', async () => {
+    vi.mocked(bm25Search).mockResolvedValue({
+      results: Array.from({ length: 25 }, (_, index) => ({
+        ...clean,
+        nodeId: `Function:src/clean.ts:Cache${index}`,
+        name: `Cache${index}`,
+      })),
+      ftsUsed: true,
+    });
+    const result = await query(repo, { ...options, limit: 3, structured_output: true });
+    expect(result.definitions).toHaveLength(3);
+    const cacheWrite = vi.mocked(SemanticRetrievalCache.prototype.set).mock.calls[0];
+    expect(cacheWrite).toBeDefined();
+    vi.mocked(SemanticRetrievalCache.prototype.lookup).mockResolvedValue({
+      status: 'hit',
+      ageMs: 1,
+      result: { ...cacheWrite[1], timestamp: 100 },
+    });
+    const hit = await query(repo, { ...options, limit: 3, structured_output: true });
+    expect(hit.definitions).toHaveLength(3);
+    expect(hit.structured_retrieval.capabilityState.cacheHit).toBe(true);
+    await query(repo, { ...options, limit: 5, structured_output: true });
+    const lookups = vi.mocked(SemanticRetrievalCache.prototype.lookup).mock.calls;
+    expect(lookups[0][0]).toBe(lookups[1][0]);
+    expect(lookups[2][0]).not.toBe(lookups[0][0]);
+  });
   beforeEach(() => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
     vi.resetAllMocks();
     // Hold timing constant so equality checks cover the whole serialized response.
     vi.spyOn(performance, 'now').mockReturnValue(100);
@@ -128,7 +155,10 @@ describe('query dirty-overlay merge', () => {
       warnings: [],
     } as Awaited<ReturnType<typeof resolveTargetContext>>);
   });
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
 
   it.each([false, true])(
     'replaces dirty base symbols before ranking (ensemble=%s)',
@@ -156,11 +186,16 @@ describe('query dirty-overlay merge', () => {
       expect(executeParameterized).not.toHaveBeenCalledWith(repo.id, expect.any(String), {
         nodeId: stale.nodeId,
       });
-      expect(queryOverlay).toHaveBeenCalledWith(repo, expect.not.stringContaining('IN $paths'), {
-        path0: 'src/dirty.ts',
-        limit: 50,
-        term0: 'cachestore',
-      });
+      expect(queryOverlay).toHaveBeenCalledWith(
+        repo,
+        expect.not.stringContaining('IN $paths'),
+        {
+          path0: 'src/dirty.ts',
+          limit: 50,
+          term0: 'cachestore',
+        },
+        undefined,
+      );
       expect(vi.mocked(queryOverlay).mock.calls[0][1]).toContain('n.filePath = $path0');
       expect(vi.mocked(queryOverlay).mock.calls[0][1]).toContain('LIMIT $limit');
       expect(SemanticRetrievalCache.prototype.lookup).not.toHaveBeenCalled();
@@ -231,12 +266,17 @@ describe('query dirty-overlay merge', () => {
     expect(json).toContain('CacheStore0');
     expect(json).not.toContain('Outside');
     expect(result.definitions).toHaveLength(20);
-    expect(queryOverlay).toHaveBeenCalledWith(repo, expect.any(String), {
-      path0: 'src/dirty.ts',
-      path1: 'src/other.ts',
-      limit: 50,
-      term0: 'cachestore',
-    });
+    expect(queryOverlay).toHaveBeenCalledWith(
+      repo,
+      expect.any(String),
+      {
+        path0: 'src/dirty.ts',
+        path1: 'src/other.ts',
+        limit: 50,
+        term0: 'cachestore',
+      },
+      undefined,
+    );
     expect(vi.mocked(queryOverlay).mock.calls[0][1]).toContain('n.filePath = $path0');
     expect(vi.mocked(queryOverlay).mock.calls[0][1]).toContain('n.filePath = $path1');
     expect(vi.mocked(queryOverlay).mock.calls[0][1]).toContain('LIMIT $limit');
@@ -365,4 +405,81 @@ describe('query dirty-overlay merge', () => {
       expect(SemanticRetrievalCache.prototype.set).not.toHaveBeenCalled();
     },
   );
+
+  it('reuses only the same automatic workspace generation', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    const selected = {
+      ...snapshot(true),
+      generation: 'generation-a',
+      capability: 'symbols' as const,
+      coverage: 'complete' as const,
+    };
+    vi.mocked(getOverlaySnapshot).mockResolvedValue(selected);
+    await query(repo, { ...options, structured_output: true });
+    const cached = vi.mocked(SemanticRetrievalCache.prototype.set).mock.calls[0][1];
+    const identity = JSON.stringify(['generation-a', 'symbols', 'complete']);
+    expect(cached.snapshotIdentity).toBe(identity);
+    expect(queryOverlay).toHaveBeenCalledWith(
+      repo,
+      expect.any(String),
+      expect.any(Object),
+      'generation-a',
+    );
+    vi.mocked(SemanticRetrievalCache.prototype.lookup).mockImplementation(
+      async (_key, _head, requested) =>
+        requested === cached.snapshotIdentity
+          ? { status: 'hit', ageMs: 25, result: { ...cached, timestamp: 100 } }
+          : { status: 'miss', result: null },
+    );
+    const hit = await query(repo, { ...options, structured_output: true });
+    expect(hit.structured_retrieval.capabilityState.cacheHit).toBe(true);
+    vi.mocked(getOverlaySnapshot).mockResolvedValue({ ...selected, generation: 'generation-b' });
+    await query(repo, { ...options, structured_output: true });
+    const keys = vi.mocked(SemanticRetrievalCache.prototype.lookup).mock.calls.map(([key]) => key);
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[2]).not.toBe(keys[0]);
+    expect(bm25Search).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['snapshot', 'dirty', 'config', 'generation', 'query'])(
+    'rejects automatic workspace %s failure before returning base success',
+    async (failure) => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+      vi.mocked(getOverlaySnapshot).mockResolvedValue({
+        ...snapshot(true),
+        generation: 'generation-a',
+      });
+      if (failure === 'snapshot')
+        vi.mocked(getOverlaySnapshot).mockRejectedValue(new Error('snapshot failed'));
+      if (failure === 'dirty') vi.mocked(getOverlaySnapshot).mockResolvedValue(snapshot(false));
+      if (failure === 'config')
+        vi.mocked(getOverlaySnapshot).mockResolvedValue({
+          ...snapshot(false, []),
+          configPaths: new Set(['tsconfig.json']),
+        });
+      if (failure === 'generation') vi.mocked(getOverlaySnapshot).mockResolvedValue(snapshot(true));
+      if (failure === 'query')
+        vi.mocked(queryOverlay).mockRejectedValue(new Error('overlay failed'));
+      await expect(query(repo, { ...options, structured_output: true })).rejects.toThrow();
+      expect(SemanticRetrievalCache.prototype.set).not.toHaveBeenCalled();
+      if (failure !== 'query')
+        expect(SemanticRetrievalCache.prototype.lookup).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { include_content: true },
+    { include_skeleton: true },
+    { include_citations: true },
+    { include_lsp_refs: true },
+  ])('bypasses candidate-only automatic cache for enrichment %j', async (enrichment) => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    vi.mocked(getOverlaySnapshot).mockResolvedValue({
+      ...snapshot(true),
+      generation: 'generation-a',
+    });
+    await query(repo, { ...options, ...enrichment, structured_output: true });
+    expect(SemanticRetrievalCache.prototype.lookup).not.toHaveBeenCalled();
+    expect(SemanticRetrievalCache.prototype.set).not.toHaveBeenCalled();
+  });
 });

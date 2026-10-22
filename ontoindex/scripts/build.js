@@ -21,6 +21,14 @@ const DIST = path.join(ROOT, 'dist');
 const SHARED_DEST = path.join(DIST, '_shared');
 const DIST_SUPER_DISPATCH = path.join(DIST, 'mcp', 'super', 'dispatch.js');
 const LADYBUG_EXTENSIONS_VERSION = 'v0.17.0';
+const NATIVE_ROOT = path.resolve(ROOT, '..', 'ontoindex-native');
+const NATIVE_ARTIFACTS = ['index.cjs', 'native.cjs', 'native/ontoindex_native.node'];
+for (const artifact of NATIVE_ARTIFACTS) {
+  const source = path.join(NATIVE_ROOT, artifact);
+  if (!fs.statSync(source).isFile()) {
+    throw new Error(`Missing native build artifact: ${source}`);
+  }
+}
 fs.rmSync(DIST, { recursive: true, force: true });
 fs.rmSync(path.join(ROOT, 'tsconfig.tsbuildinfo'), { force: true });
 fs.rmSync(path.join(SHARED_ROOT, 'dist'), { recursive: true, force: true });
@@ -33,6 +41,13 @@ execSync('npx tsc', { cwd: SHARED_ROOT, stdio: 'inherit' });
 // ── 2. Build ontoindex ──────────────────────────────────────────────
 console.log('[build] compiling ontoindex...');
 execSync('npx tsc', { cwd: ROOT, stdio: 'inherit' });
+
+console.log('[build] copying native addon into dist/native/addon...');
+for (const artifact of NATIVE_ARTIFACTS) {
+  const dest = path.join(DIST, 'native', 'addon', artifact);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(path.join(NATIVE_ROOT, artifact), dest);
+}
 
 // ── 3. Copy shared dist ────────────────────────────────────────────
 console.log('[build] copying shared module into dist/_shared...');

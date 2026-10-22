@@ -4,12 +4,23 @@
  * Provides tool implementations using local .ontoindex/ indexes.
  * Supports multiple indexed repositories via a global registry.
  * LadybugDB connections are opened lazily per repo on first query.
+ * Automatic workspace reads prepare dirty workspace graphs at the read gate;
+ * setting ONTOINDEX_AUTO_WORKSPACE=0 preserves legacy overlay snapshot behavior.
  */
 
 import path from 'path';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { performance } from 'node:perf_hooks';
 import { canonicalRepoId, registryRepoIds } from '../shared/target-context.js';
 import fs from 'fs/promises';
-import { evictOverlayState } from './backend-overlay.js';
+import {
+  isAutomaticWorkspaceEnabled,
+  evictOverlayState,
+  withPinnedOverlay,
+  withCommittedRead,
+  getOverlaySnapshot,
+  type OverlaySnapshot,
+} from './backend-overlay.js';
 import { RepoHandle, BackendPort } from 'ontoindex-shared';
 import { recordToolCall } from './tool-telemetry.js';
 import {
@@ -18,6 +29,7 @@ import {
   isLbugReady,
   isLbugDbPathReady,
   getLbugDbPath,
+  withPinnedGeneration,
 } from '../../core/lbug/pool-adapter.js';
 export { isWriteQuery } from '../../core/lbug/pool-adapter.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
@@ -27,6 +39,8 @@ export { isWriteQuery } from '../../core/lbug/pool-adapter.js';
 import {
   listRegisteredRepos,
   resolveActiveIndexGeneration,
+  readActiveGenerationMeta,
+  acquireIndexGenerationPin,
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
 import {
@@ -123,11 +137,19 @@ import {
   moveSymbolByUid as moveSymbolByUidImpl,
 } from './backend-symbol-mutations.js';
 import { canonicalize } from './path-util.js';
+import { RepoIdleTracker } from './repo-idle-tracker.js';
 import { normalizeLimit } from './tool-utils.js';
 import {
   buildAvailableRepoLabels,
+  acquireWorkspaceWatch,
+  committedGraphNotice,
   ensureRepoInitialized,
+  forgetWorkspaceRuntime,
+  hasWorkspaceBuild,
+  prepareWorkspaceRead,
+  WORKSPACE_PREPARATION_DEADLINE_MS,
   resolveRepoFromHandles,
+  WorkspacePreparationError,
 } from './local-backend-repo-runtime.js';
 import {
   formatRepoResolutionError,
@@ -1196,6 +1218,81 @@ const REPO_AGNOSTIC_TOOL_NAMES = [
 
 const REPO_AGNOSTIC_TOOL_METHODS = new Set<string>(REPO_AGNOSTIC_TOOL_NAMES);
 
+export interface ReadRequestContext {
+  repoId: string;
+  snapshot: OverlaySnapshot;
+  deadline: number;
+  signal?: AbortSignal;
+  release(): Promise<void>;
+}
+
+const readRequestContext = new AsyncLocalStorage<ReadRequestContext>();
+
+export function getReadRequestContext(): ReadRequestContext | undefined {
+  return readRequestContext.getStore();
+}
+
+// These operations retain their existing diagnosis, history, and mutation guards.
+const UNGATED_REPO_TOOLS = new Set([
+  'gn_diagnose', // Diagnosis must remain available when preparation fails.
+  'analysis_catalog', // Reports available analysis metadata.
+  'session', // Persists session state rather than reading the graph.
+  'detect_changes',
+  'graph_diff', // Preserve explicitly selected Git references.
+  'audit_rerun', // Audit lifecycle owns its own freshness and mutation guards.
+  'rename',
+  'rename_symbol', // Rename preview/apply shares mutation guards.
+  'sandbox',
+  'replace_symbol',
+  'update_symbol_body',
+  'extract_function',
+  'move_symbol', // Mutation owners.
+]);
+
+const RELATIONSHIP_TOOLS = new Set([
+  'context',
+  'impact',
+  'impact_batch',
+  'api_impact',
+  'cycle_detect',
+  'coupling_matrix',
+  'boundary_violations',
+  'hotspot_analysis',
+  'dead_code',
+  'tech_debt',
+  'audit_report',
+  'ipc_trace',
+  'evidence_pack',
+]);
+
+// Plain search ranks on the working-tree graph once one exists, so it asks for the build too.
+// Unlike RELATIONSHIP_TOOLS it degrades to the committed index when the build is refused.
+const WORKSPACE_GRAPH_TOOLS = new Set([...RELATIONSHIP_TOOLS, 'query', 'repomap', 'search']);
+
+function workspacePreparationError(error: unknown): Error & { code: string; retryable?: boolean } {
+  if (error instanceof WorkspacePreparationError) {
+    return Object.assign(
+      new Error(`workspace_preparation_failed: ${error.code}`, { cause: error }),
+      {
+        code: error.code,
+        retryable: error.code === 'workspace_busy' || error.code === 'workspace_timeout',
+        ...(error.code === 'workspace_too_large' && error.diagnostics
+          ? {
+              diagnostics: {
+                observedIndexedFiles: error.diagnostics.observedIndexedFiles,
+                maxIndexedFiles: error.diagnostics.maxIndexedFiles,
+                requiredCapability: error.diagnostics.requiredCapability,
+              },
+            }
+          : {}),
+      },
+    );
+  }
+  return Object.assign(new Error('workspace_preparation_failed', { cause: error }), {
+    code: 'workspace_preparation_failed',
+  });
+}
+
 function isRepoAgnosticToolName(method: string): method is RepoAgnosticToolName {
   return REPO_AGNOSTIC_TOOL_METHODS.has(method);
 }
@@ -1265,6 +1362,7 @@ const KNOWN_METHODS = new Set<string>([
  * caller that forgets to pass options can never mutate an index.
  */
 interface LocalBackendOptions {
+  readonly watchWorkspace?: boolean;
   readonly confirmWrites?: boolean;
   readonly repoFilter?: string;
   readonly preferredProjectPath?: string;
@@ -1276,12 +1374,19 @@ export class LocalBackend implements BackendPort {
   private initializedRepos: Set<string> = new Set();
   private reinitPromises: Map<string, Promise<void>> = new Map();
   private lastStalenessCheck: Map<string, number> = new Map();
+  private repoIdle = new RepoIdleTracker();
+  private idleTimer: NodeJS.Timeout | undefined;
   private initPromise: Promise<boolean> | null = null;
   private groupToolSvc: GroupService | null = null;
   private analysisLocks: Map<string, Promise<void>> = new Map();
   private removingRepo = false;
   private disposing = false;
   private operations = new Set<Promise<unknown>>();
+  private workspaceWatches = new Map<string, Promise<{ release(): Promise<void> }>>();
+  private watchCleanup = new Set<Promise<void>>();
+  private watchCleanupErrors: unknown[] = [];
+  private readonly watchWorkspace: boolean;
+  private operationContext = new AsyncLocalStorage<{ signal?: AbortSignal }>();
   private readonly confirmWrites: boolean;
   private readonly repoFilter?: string;
   private readonly preferredProjectPath?: string;
@@ -1289,6 +1394,7 @@ export class LocalBackend implements BackendPort {
   private readonly repoToolHandlers: Record<string, RepoToolHandler>;
 
   constructor(options: LocalBackendOptions = {}) {
+    this.watchWorkspace = options.watchWorkspace === true;
     this.confirmWrites = options.confirmWrites === true;
     this.repoFilter = options.repoFilter?.trim() || undefined;
     this.preferredProjectPath = options.preferredProjectPath
@@ -1326,7 +1432,10 @@ export class LocalBackend implements BackendPort {
       },
       gn_diagnose: async (repo, params) => {
         const { gnDiagnose } = await import('../super/diagnose.js');
-        return gnDiagnose(repo.id, params as any);
+        return gnDiagnose(repo.id, params as any, {
+          repoPath: repo.repoPath,
+          projectCwd: this.preferredProjectPath ?? null,
+        });
       },
       detect_changes: async (repo, params) => {
         await this.ensureInitialized(repo.id);
@@ -1445,11 +1554,27 @@ export class LocalBackend implements BackendPort {
     if (!this.groupToolSvc) {
       const port: GroupToolPort = {
         resolveRepo: (p) => this.resolveRepo(p),
+        // With the workspace flag on, group fan-out must use the same gate and pinned generation
+        // as the public tools; flag off keeps the direct handlers.
         impact: (r, p, options) =>
-          this.withOperation(() => this.impact(r as RepoHandle, { ...p, signal: options?.signal })),
-        query: (r, p) => this.withOperation(() => this.query(r as RepoHandle, p)),
+          this.withOperation(() =>
+            isAutomaticWorkspaceEnabled()
+              ? this.dispatchRepoTool('impact', { ...p, repo: r.id, signal: options?.signal })
+              : this.impact(r as RepoHandle, { ...p, signal: options?.signal }),
+          ),
+        query: (r, p) =>
+          this.withOperation(() =>
+            isAutomaticWorkspaceEnabled()
+              ? this.dispatchRepoTool('query', { ...p, repo: r.id })
+              : this.query(r as RepoHandle, p),
+          ),
         impactByUid: (id, uid, d, o) => this.withOperation(() => this.impactByUid(id, uid, d, o)),
-        context: (r, p) => this.withOperation(() => this.context(r as RepoHandle, p)),
+        context: (r, p) =>
+          this.withOperation(() =>
+            isAutomaticWorkspaceEnabled()
+              ? this.dispatchRepoTool('context', { ...p, repo: r.id })
+              : this.context(r as RepoHandle, p),
+          ),
       };
       this.groupToolSvc = new GroupService(port);
     }
@@ -1475,10 +1600,11 @@ export class LocalBackend implements BackendPort {
   }
 
   /** Admit work before yielding so removal cannot miss an accepted operation. */
-  withOperation<T>(fn: () => Promise<T>): Promise<T> {
+  withOperation<T>(fn: () => Promise<T>, options?: { signal?: AbortSignal }): Promise<T> {
     if (this.disposing) throw new Error('backend is shutting down');
     this.assertAvailable();
-    const operation = Promise.resolve().then(fn);
+    const context = options ?? this.operationContext.getStore() ?? {};
+    const operation = Promise.resolve().then(() => this.operationContext.run(context, fn));
     this.operations.add(operation);
     void operation.then(
       () => {
@@ -1532,6 +1658,7 @@ export class LocalBackend implements BackendPort {
         ids.add(handle.id);
     }
     for (const repoId of ids) {
+      await this.releaseWorkspaceWatch(repoId);
       await this.withRepoLock(repoId, () => closeLbug(repoId));
       this.initializedRepos.delete(repoId);
       this.lastStalenessCheck.delete(repoId);
@@ -1677,6 +1804,11 @@ export class LocalBackend implements BackendPort {
     }
 
     this.throwIfInitAborted(signal);
+    for (const id of this.workspaceWatches.keys()) {
+      const previous = this.repos.get(id);
+      const fresh = freshRepos.get(id);
+      if (!fresh || previous?.repoPath !== fresh.repoPath) await this.releaseWorkspaceWatch(id);
+    }
     this.repos = freshRepos;
     this.contextCache = freshContextCache;
     logStartupTrace(`refresh repos: cache updated with ${freshRepos.size} repo(s)`, startedAt);
@@ -1695,8 +1827,62 @@ export class LocalBackend implements BackendPort {
     logStartupTrace('refresh repos: complete', startedAt);
   }
 
+  /** Start the idle sweep on first use. Only the automatic workspace route holds runtime state. */
+  private trackRepoUse(repoId: string): () => void {
+    if (!isAutomaticWorkspaceEnabled() || this.disposing) return () => {};
+    this.repoIdle.begin(repoId);
+    if (!this.idleTimer) {
+      this.idleTimer = setInterval(() => void this.evictIdleRepos(), 15_000);
+      this.idleTimer.unref();
+    }
+    let ended = false;
+    return () => {
+      if (ended) return;
+      ended = true;
+      this.repoIdle.end(repoId);
+    };
+  }
+
+  /** Release runtime state of repos idle for 60 s, or beyond the eight most recent idle ones. */
+  async evictIdleRepos(): Promise<string[]> {
+    const evicted: string[] = [];
+    for (const id of this.repoIdle.candidates()) {
+      if (this.disposing || this.removingRepo) break;
+      if (this.analysisLocks.has(id) || this.reinitPromises.has(id) || hasWorkspaceBuild(id)) {
+        continue;
+      }
+      try {
+        await this.withRepoLock(id, async () => {
+          // Recheck under the repo lock: a request may have arrived while we waited.
+          if (!this.repoIdle.candidates().includes(id) || hasWorkspaceBuild(id)) return;
+          await this.releaseWorkspaceWatch(id);
+          this.initializedRepos.delete(id);
+          this.lastStalenessCheck.delete(id);
+          forgetWorkspaceRuntime(id);
+          evictOverlayState(id);
+          await closeLbug(id);
+          this.repoIdle.forget(id);
+          evicted.push(id);
+        });
+      } catch (error) {
+        console.error(`Failed to evict idle repository ${id}:`, error);
+      }
+    }
+    return evicted;
+  }
+
   private pruneRetiredRepoState(): void {
     if (this.operations.size > 0) return;
+    for (const id of this.workspaceWatches.keys()) {
+      if (this.repos.has(id)) continue;
+      const cleanup = this.releaseWorkspaceWatch(id);
+      this.watchCleanup.add(cleanup);
+      void cleanup
+        .catch((error) => this.watchCleanupErrors.push(error))
+        .finally(() => {
+          this.watchCleanup.delete(cleanup);
+        });
+    }
     for (const id of new Set([...this.initializedRepos, ...this.lastStalenessCheck.keys()])) {
       if (this.repos.has(id) || this.analysisLocks.has(id) || this.reinitPromises.has(id)) continue;
       this.initializedRepos.delete(id);
@@ -1868,6 +2054,20 @@ export class LocalBackend implements BackendPort {
     return this.ensureInitialized(repoId);
   }
 
+  /** Add a notice to a result from a tool that reads the committed graph directly. */
+  async withCommittedGraphNotice<T>(result: T, repo: RepoHandle): Promise<T> {
+    const notice = await committedGraphNotice(repo);
+    if (!notice || !result || typeof result !== 'object' || Array.isArray(result)) return result;
+    const record = result as Record<string, unknown>;
+    const warnings = Array.isArray(record.warnings) ? record.warnings : [];
+    return { ...record, warnings: [...warnings, notice] } as T;
+  }
+
+  /** Committed-graph notice for a resource read, or undefined when nothing is uncommitted. */
+  async committedGraphNoticeFor(repoParam?: string): Promise<string | undefined> {
+    return committedGraphNotice(await this.resolveRepo(repoParam));
+  }
+
   // ─── Public Getters ──────────────────────────────────────────────
 
   /**
@@ -1999,7 +2199,190 @@ export class LocalBackend implements BackendPort {
     const repo = await this.resolveRepo(this.getRepoParam(params));
     const handler = this.repoToolHandlers[method];
     if (!handler) throw new Error(`Unknown tool: ${method}`);
-    const result = await handler(repo, params);
+    const endUse = this.trackRepoUse(repo.id);
+    try {
+      return await this.dispatchTrackedRepoTool(repo, method, params, handler);
+    } finally {
+      endUse();
+    }
+  }
+
+  private async retainWorkspaceWatch(repo: RepoHandle): Promise<void> {
+    if (!this.watchWorkspace || !isAutomaticWorkspaceEnabled()) return;
+    if (this.disposing) throw new Error('backend is shutting down');
+    let pending = this.workspaceWatches.get(repo.id);
+    if (!pending) {
+      pending = acquireWorkspaceWatch(repo);
+      this.workspaceWatches.set(repo.id, pending);
+    }
+    try {
+      await pending;
+    } catch (error) {
+      if (this.workspaceWatches.get(repo.id) === pending) this.workspaceWatches.delete(repo.id);
+      throw error;
+    }
+    if (this.disposing) throw new Error('backend is shutting down');
+  }
+
+  private async releaseWorkspaceWatch(repoId: string): Promise<void> {
+    const pending = this.workspaceWatches.get(repoId);
+    if (!pending) return;
+    this.workspaceWatches.delete(repoId);
+    await (await pending).release();
+  }
+
+  /** Admit a callback through the same prepared, pinned read scope as tool dispatch. */
+  async withPreparedRepoRead<T>(
+    repo: RepoHandle,
+    options: { needsRelationships: boolean; wantsWorkspaceGraph?: boolean; readMode?: 'committed' },
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const endUse = this.trackRepoUse(repo.id);
+    try {
+      if (getReadRequestContext()?.repoId === repo.id) return await operation();
+      if (options.readMode === 'committed') {
+        const selected = await readActiveGenerationMeta(repo.storagePath);
+        if (!selected.meta?.lastCommit || selected.authority === 'untrusted') {
+          throw new Error('Committed read unavailable: indexed commit identity is unknown.');
+        }
+        const databasePath =
+          selected.activeGeneration?.lbugPath ?? path.join(repo.storagePath, 'lbug');
+        const pin = await acquireIndexGenerationPin(databasePath);
+        try {
+          return await withPinnedGeneration(repo.id, pin.dbPath, () =>
+            withCommittedRead(
+              repo.id,
+              selected.activeGeneration?.generationId ?? selected.meta!.lastCommit!,
+              async () => {
+                const snapshot = await getOverlaySnapshot(repo);
+                return readRequestContext.run(
+                  {
+                    repoId: repo.id,
+                    snapshot,
+                    deadline: Infinity,
+                    signal: this.operationContext.getStore()?.signal,
+                    async release() {},
+                  },
+                  async () => {
+                    const result = await operation();
+                    if (!result || typeof result !== 'object' || Array.isArray(result)) {
+                      throw new Error('Committed read requires a structured result.');
+                    }
+                    return {
+                      ...result,
+                      readContext: {
+                        mode: 'committed',
+                        indexedCommit: selected.meta!.lastCommit,
+                        generation: selected.activeGeneration?.generationId ?? null,
+                        workingTreeIncluded: false,
+                        excludedEvidence: [
+                          'uncommitted source changes',
+                          'manual overlays',
+                          'live LSP references',
+                        ],
+                      },
+                      warnings: [
+                        ...(Array.isArray((result as any).warnings)
+                          ? (result as any).warnings
+                          : []),
+                        'Explicit committed-index read: uncommitted source changes and live enrichment are excluded.',
+                      ],
+                    } as T;
+                  },
+                );
+              },
+            ),
+          );
+        } finally {
+          await pin.release();
+        }
+      }
+      const deadline = performance.now() + WORKSPACE_PREPARATION_DEADLINE_MS;
+      const signal = this.operationContext.getStore()?.signal;
+      let snapshot: OverlaySnapshot;
+      try {
+        snapshot = await prepareWorkspaceRead({
+          repo,
+          needsRelationships: options.needsRelationships,
+          wantsWorkspaceGraph: options.wantsWorkspaceGraph,
+          deadline,
+          signal,
+          beforeSnapshot: () => this.retainWorkspaceWatch(repo),
+        });
+      } catch (error) {
+        throw workspacePreparationError(error);
+      }
+      // withPinnedOverlay owns the actual generation lease and releases it on exit.
+      // Keep the request hook idempotent for downstream preparation ownership.
+      let released = false;
+      const context: ReadRequestContext = {
+        repoId: repo.id,
+        snapshot,
+        deadline,
+        signal,
+        async release() {
+          if (released) return;
+          released = true;
+        },
+      };
+      try {
+        return await readRequestContext.run(context, async () => {
+          if (!snapshot.usable) return operation();
+          let enteredHandler = false;
+          try {
+            return await withPinnedOverlay(repo, snapshot, () => {
+              enteredHandler = true;
+              return operation();
+            });
+          } catch (error) {
+            if (
+              !enteredHandler &&
+              errorMessage(error).includes('overlay generation no longer available')
+            ) {
+              throw workspacePreparationError(error);
+            }
+            throw error;
+          }
+        });
+      } finally {
+        await context.release();
+      }
+    } finally {
+      endUse();
+    }
+  }
+
+  private async dispatchTrackedRepoTool(
+    repo: RepoHandle,
+    method: string,
+    params: NormalizedToolParams,
+    handler: RepoToolHandler,
+  ): Promise<unknown> {
+    const invoke = () => handler(repo, params);
+    let preparationNote: string | undefined;
+    const metadataOnlyReadiness =
+      method === 'docs' && (params.action === undefined || params.action === 'readiness');
+    let result =
+      UNGATED_REPO_TOOLS.has(method) || metadataOnlyReadiness
+        ? await invoke()
+        : await this.withPreparedRepoRead(
+            repo,
+            {
+              needsRelationships: RELATIONSHIP_TOOLS.has(method),
+              wantsWorkspaceGraph: WORKSPACE_GRAPH_TOOLS.has(method),
+            },
+            async () => {
+              preparationNote = getReadRequestContext()?.snapshot.preparationNote;
+              return invoke();
+            },
+          );
+    if (preparationNote && isObjectResponse(result)) {
+      const existing = (result as { warnings?: unknown }).warnings;
+      result = {
+        ...(result as Record<string, unknown>),
+        warnings: [...(Array.isArray(existing) ? existing : []), preparationNote],
+      };
+    }
     if (method !== 'query' && method !== 'context' && method !== 'impact') {
       return isObjectResponse(result) ? attachRepoScopeIdentity(result, repo) : result;
     }
@@ -2653,6 +3036,25 @@ export class LocalBackend implements BackendPort {
 
     const repo = this.repos.get(repoId);
     if (!repo) return null;
+    if (isAutomaticWorkspaceEnabled()) {
+      // Same gate and pinned workspace generation as the public `impact` tool.
+      try {
+        const routed = (await this.dispatchRepoTool('impact', {
+          repo: repoId,
+          target: uid,
+          target_uid: uid,
+          direction: direction === 'downstream' ? 'downstream' : 'upstream',
+          maxDepth: opts.maxDepth,
+          relationTypes: opts.relationTypes,
+          minConfidence: opts.minConfidence,
+          includeTests: opts.includeTests,
+        })) as Record<string, unknown> | null;
+        if (!routed || 'error' in routed || routed.status === 'ambiguous') return null;
+        return routed as unknown as ImpactByUidResult;
+      } catch {
+        return null;
+      }
+    }
     return impactByUidImpl(repo, uid, direction, opts);
   }
 
@@ -2959,6 +3361,12 @@ export class LocalBackend implements BackendPort {
 
   async dispose(): Promise<void> {
     this.disposing = true;
+    if (this.idleTimer) clearInterval(this.idleTimer);
+    this.idleTimer = undefined;
+    const watchReleases = await Promise.allSettled([
+      ...[...this.workspaceWatches.keys()].map((id) => this.releaseWorkspaceWatch(id)),
+      ...this.watchCleanup,
+    ]);
     await Promise.allSettled([
       ...this.operations,
       ...this.analysisLocks.values(),
@@ -2977,6 +3385,12 @@ export class LocalBackend implements BackendPort {
     this.analysisLocks.clear();
     this.lastStalenessCheck.clear();
     this.reinitPromises.clear();
+    const watchErrors = [
+      ...this.watchCleanupErrors,
+      ...watchReleases.flatMap((result) => (result.status === 'rejected' ? [result.reason] : [])),
+    ];
+    if (watchErrors.length)
+      throw new AggregateError(watchErrors, 'Workspace watcher cleanup failed');
   }
 
   async disconnect(): Promise<void> {

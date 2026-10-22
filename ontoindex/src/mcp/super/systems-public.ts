@@ -302,7 +302,7 @@ export async function gnTestSuggestions(
 ): Promise<Record<string, unknown>> {
   const symbol = params.symbol ?? 'auditedSymbol';
   const targetedTests = collectTargetedTests(params);
-  const suggestedFile = targetedTests[0] ?? params.path ?? inferTestPath(symbol);
+  const suggestedFile = targetedTests[0] ?? (params.path?.trim() ? params.path : null);
   const safeName = symbol
     .split(/::|\.|\/|\\/g)
     .filter(Boolean)
@@ -321,11 +321,18 @@ export async function gnTestSuggestions(
         case: `test_${safeName}_${normalizeCase(risk)}`,
         target: symbol,
         assertion: `Assert the ${risk} invariant remains true for ${symbol}.`,
-        required: true,
+        required: false,
       },
     ],
-    warnings: [],
-    skipReasons: [],
+    warnings: [
+      'Suggestions are advisory; supplied test paths and coverage are not independently verified.',
+      ...(suggestedFile === null
+        ? [
+            'No test path supplied; provide path or evidence[].testFile to locate this advisory suggestion.',
+          ]
+        : []),
+    ],
+    skipReasons: suggestedFile === null ? ['test file unavailable: no supplied test path'] : [],
   };
   if (params.legacyResponse !== false) {
     return report;
@@ -446,15 +453,6 @@ function normalizeExpr(value: string): string {
   return value.replace(/\s+/g, '').replace(/;$/u, '');
 }
 
-function inferTestPath(symbol: string): string {
-  const leaf =
-    symbol
-      .split(/::|\.|\//g)
-      .filter(Boolean)
-      .at(-1) ?? 'Audit';
-  return `test/Unit${leaf.replace(/[^A-Za-z0-9]/g, '')}.cpp`;
-}
-
 function normalizeCase(value: string): string {
   return (
     value
@@ -496,14 +494,14 @@ function collectEvidenceTests(evidence: readonly unknown[] | undefined): string[
   return evidence.flatMap((item) => {
     if (typeof item !== 'object' || item === null) return [];
     const testFile = (item as { testFile?: unknown }).testFile;
-    return typeof testFile === 'string' && testFile.trim().length > 0 ? [testFile.trim()] : [];
+    return typeof testFile === 'string' && testFile.trim().length > 0 ? [testFile] : [];
   });
 }
 
 function normalizeStrings(values: readonly unknown[] | undefined): string[] {
   if (values === undefined) return [];
   return values.flatMap((value) =>
-    typeof value === 'string' ? [value.trim()].filter((item) => item.length > 0) : [],
+    typeof value === 'string' && value.trim().length > 0 ? [value] : [],
   );
 }
 

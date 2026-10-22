@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   runImpactKernel,
   type RunImpactKernelOptions,
@@ -30,6 +30,9 @@ const repo = { id: 'repo', name: 'repo', repoPath: '/repo', storagePath: '/store
 const target = { id: 'target', name: 'target', type: 'Function', filePath: 'src/target.ts' };
 const options: RunImpactKernelOptions = { direction: 'upstream', maxDepth: 3 };
 const query = vi.mocked(poolAdapter.executeParameterized);
+
+beforeEach(() => vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0'));
+afterEach(() => vi.unstubAllEnvs());
 
 function row(id: string, filePath = `src/${id}.ts`) {
   return { id, name: id, type: 'Function', filePath, relType: 'CALLS', confidence: 0.95 };

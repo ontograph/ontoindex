@@ -34,7 +34,8 @@ export default defineConfig({
     // it's a vitest forks + native addon interaction where destructors run in
     // arbitrary order at exit. Tests themselves pass; only the exit crashes.
     // TODO: remove once LadybugDB fixes all N-API destructor ordering issues.
-    dangerouslyIgnoreUnhandledErrors: true,
+    // Keep Linux strict so unhandled errors fail the run.
+    dangerouslyIgnoreUnhandledErrors: process.platform !== 'linux',
 
     // Coverage stays at root (not supported in project configs)
     coverage: {

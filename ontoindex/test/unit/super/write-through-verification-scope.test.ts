@@ -15,11 +15,48 @@ vi.mock('../../../src/core/impact/impact-kernel.js', async () => ({
   )),
   runImpactKernel,
 }));
-const { collectVerificationDiff } =
+const { collectVerificationDiff, evaluateVerifyDiff } =
   await import('../../../src/mcp/super/write-through-verification.js');
 const repo = { id: 'scope', repoPath: '/repo' };
 const selected = { id: 'selected-id', name: 'selected', filePath: 'src/selected.ts' };
 const unrelated = { id: 'unrelated-id', name: 'unrelated', filePath: 'src/selected.ts.extra' };
+
+describe('evaluateVerifyDiff symbol expectations', () => {
+  const actual = {
+    changedFiles: ['src/selected.ts'],
+    changedSymbols: ['selected'],
+    impactedSymbols: ['outsideCaller'],
+    executedTests: [],
+    symbolRecords: [],
+    warnings: [],
+  };
+  it.each([
+    [undefined, 'PASS', [], []],
+    [[], 'FAIL', ['selected'], ['outsideCaller']],
+    [['selected'], 'PASS', [], ['outsideCaller']],
+    [['other'], 'FAIL', ['selected'], ['outsideCaller']],
+  ] as const)('evaluates expectations %j', (expectedSymbols, status, changed, impacted) => {
+    expect(
+      evaluateVerifyDiff({ expectedFiles: actual.changedFiles, expectedSymbols, actual }),
+    ).toEqual({
+      status,
+      unexpectedChangedFiles: [],
+      unexpectedChangedSymbols: changed,
+      unexpectedImpactedSymbols: impacted,
+      missingRequiredTests: [],
+    });
+  });
+  it('keeps file and required-test checks strict when symbols are omitted', () => {
+    expect(
+      evaluateVerifyDiff({ expectedFiles: [], expectedTests: ['required'], actual }),
+    ).toMatchObject({
+      status: 'FAIL',
+      unexpectedChangedFiles: actual.changedFiles,
+      missingRequiredTests: ['required'],
+      unexpectedChangedSymbols: [],
+    });
+  });
+});
 
 describe('collectVerificationDiff changedFiles scope', () => {
   beforeEach(() => {

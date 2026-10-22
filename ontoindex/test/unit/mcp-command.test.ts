@@ -180,6 +180,7 @@ describe('mcpCommand', () => {
     await mcpCommand();
 
     expect(LocalBackend).toHaveBeenCalledWith({
+      watchWorkspace: true,
       repoFilter: undefined,
       preferredProjectPath: resolvedPath('/opt/demodb/_workfolder/OntoIndex'),
     });
@@ -198,6 +199,7 @@ describe('mcpCommand', () => {
     await mcpCommand({ project: '/project/explicit-target' });
 
     expect(LocalBackend).toHaveBeenCalledWith({
+      watchWorkspace: true,
       repoFilter: undefined,
       preferredProjectPath: resolvedPath('/project/explicit-target'),
     });
@@ -219,6 +221,7 @@ describe('mcpCommand', () => {
     await mcpCommand();
 
     expect(LocalBackend).toHaveBeenCalledWith({
+      watchWorkspace: true,
       repoFilter: undefined,
       preferredProjectPath: resolvedPath('/project/from-env'),
     });
@@ -328,6 +331,7 @@ describe('mcpCommand', () => {
     await mcpCommand({ repo: 'only-this-repo' });
 
     expect(LocalBackend).toHaveBeenCalledWith({
+      watchWorkspace: true,
       repoFilter: 'only-this-repo',
       preferredProjectPath: resolvedPath('/target/repo'),
     });
@@ -340,6 +344,7 @@ describe('mcpCommand', () => {
     await mcpCommand({ repo: 'only-this-repo', project: '/target/repo' });
 
     expect(LocalBackend).toHaveBeenCalledWith({
+      watchWorkspace: true,
       repoFilter: 'only-this-repo',
       preferredProjectPath: resolvedPath('/target/repo'),
     });

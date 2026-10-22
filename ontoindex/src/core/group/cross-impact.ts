@@ -652,6 +652,7 @@ export async function runGroupImpact(
         continue;
       }
 
+      const metadata = fan as Partial<CrossRepoImpact>;
       cross.push({
         repo: regName,
         repo_path: n.neighborRepo,
@@ -663,6 +664,20 @@ export async function runGroupImpact(
         },
         by_depth: ((fan as { byDepth?: unknown }).byDepth ?? {}) as Record<string, unknown[]>,
         affected_processes: extractProcessNames(fan),
+        ...(metadata.source !== undefined ? { source: metadata.source } : {}),
+        ...(metadata.graphImpactAvailable !== undefined
+          ? { graphImpactAvailable: metadata.graphImpactAvailable }
+          : {}),
+        ...(metadata.targetContext !== undefined ? { targetContext: metadata.targetContext } : {}),
+        ...(metadata.freshness !== undefined ? { freshness: metadata.freshness } : {}),
+        ...(metadata.repoLabel !== undefined ? { repoLabel: metadata.repoLabel } : {}),
+        ...(metadata.repoPath !== undefined ? { repoPath: metadata.repoPath } : {}),
+        ...(metadata.capabilitiesUsed !== undefined
+          ? { capabilitiesUsed: metadata.capabilitiesUsed }
+          : {}),
+        ...(metadata.capabilitiesMissing !== undefined
+          ? { capabilitiesMissing: metadata.capabilitiesMissing }
+          : {}),
       });
     }
   } finally {
