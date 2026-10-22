@@ -430,7 +430,8 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'manage',
-    description: 'Manage OntoIndex sessions and internal route maps.',
+    description:
+      'Manage OntoIndex sessions and internal route maps. For action "session", "list" requires session_id and lists keys within that session; "get" requires session_id/key; "set" requires session_id/key/value. Session fields are not required for action "route_map".',
     inputSchema: {
       type: 'object',
       properties: {
@@ -444,6 +445,20 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
           enum: ['get', 'set', 'list'],
           description: 'Required for action "session": use "get", "set", or "list".',
         },
+        session_id: {
+          type: 'string',
+          description:
+            'Required for action "session" with every operation. Must not contain "/" or "\\".',
+        },
+        key: {
+          type: 'string',
+          description: 'Required for action "session" with operation "get" or "set".',
+        },
+        value: {
+          type: 'string',
+          description: 'Value to store. Required for action "session" with operation "set".',
+        },
+        repo: repoProperty,
       },
       required: ['action'],
       additionalProperties: true,

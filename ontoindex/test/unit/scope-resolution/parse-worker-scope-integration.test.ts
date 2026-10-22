@@ -16,6 +16,7 @@
  */
 
 import { afterEach, describe, it, expect, vi } from 'vitest';
+import Parser, { type SyntaxNode } from 'tree-sitter';
 import {
   SupportedLanguages,
   type Capture,
@@ -95,8 +96,17 @@ describe('processParsing sequential scope artifacts', () => {
   it.each(['sequential', 'worker fallback'] as const)(
     'delivers ordered artifacts while preserving legacy graph output in %s mode',
     async (mode) => {
-      scopeHook(() => [moduleScopeMatch()]);
+      const parse = vi.spyOn(Parser.prototype, 'parse');
       const { graph, symbols, cache } = setup();
+      const borrowedRoots: { path: string; text: string | undefined; cached: boolean }[] = [];
+      scopeHook((_source, path, root) => {
+        borrowedRoots.push({
+          path,
+          text: root?.text,
+          cached: root !== undefined && root === cache.get(path)?.rootNode,
+        });
+        return [moduleScopeMatch()];
+      });
       const files = [
         { path: 'z-last.ts', content: 'export function firstFunction() {}' },
         { path: 'a-first.ts', content: 'export function secondFunction() {}' },
@@ -123,6 +133,10 @@ describe('processParsing sequential scope artifacts', () => {
       );
 
       expect(result).toBeNull();
+      expect(parse).toHaveBeenCalledTimes(files.length);
+      expect(borrowedRoots).toEqual(
+        files.map((file) => ({ path: file.path, text: file.content, cached: true })),
+      );
       expect(onArtifacts).toHaveBeenCalledTimes(1);
       expect(
         onArtifacts.mock.calls[0]![0].map((file) => ({
@@ -146,39 +160,61 @@ describe('processParsing sequential scope artifacts', () => {
     },
   );
 
-  it('passes extracted Vue script bytes to the scope provider', async () => {
-    const script = '\nexport function componentFunction() {}\n';
-    const emit = vi.fn(() => [moduleScopeMatch()]);
-    scopeHook(emit);
-    const { graph, symbols, cache } = setup();
-    const onArtifacts = vi.fn<(files: readonly ParsedFile[]) => void>();
+  it.each(['sequential', 'worker fallback'] as const)(
+    'passes the live extracted Vue script root to the scope provider in %s mode',
+    async (mode) => {
+      const script = '\nexport function componentFunction() {}\n';
+      const { graph, symbols, cache } = setup();
+      const borrowedRoots: { text: string | undefined; cached: boolean }[] = [];
+      const emit = vi.fn<NonNullable<LanguageProvider['emitScopeCaptures']>>(
+        (_source, path, root) => {
+          borrowedRoots.push({
+            text: root?.text,
+            cached: root !== undefined && root === cache.get(path)?.rootNode,
+          });
+          return [moduleScopeMatch()];
+        },
+      );
+      scopeHook(emit);
+      const workers = crashingWorkers();
+      const onArtifacts = vi.fn<(files: readonly ParsedFile[]) => void>();
 
-    expect(
-      await processParsing(
-        graph,
-        [
-          {
-            path: 'Component.vue',
-            content: `<template><div /></template>\n<script setup lang="ts">${script}</script>`,
-          },
-        ],
-        '/scope-test',
-        symbols,
-        cache,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        'sequential',
-        undefined,
-        onArtifacts,
-      ),
-    ).toBeNull();
+      expect(
+        await processParsing(
+          graph,
+          [
+            {
+              path: 'Component.vue',
+              content: `<template><div /></template>\n<script setup lang="ts">${script}</script>`,
+            },
+          ],
+          '/scope-test',
+          symbols,
+          cache,
+          undefined,
+          mode === 'worker fallback' ? workers.pool : undefined,
+          undefined,
+          undefined,
+          'sequential',
+          undefined,
+          onArtifacts,
+        ),
+      ).toBeNull();
 
-    expect(emit).toHaveBeenCalledExactlyOnceWith(script, 'Component.vue');
-    expect(onArtifacts.mock.calls[0]![0].map((file) => file.filePath)).toEqual(['Component.vue']);
-    expect(symbols.lookupCallableByName('componentFunction')).not.toHaveLength(0);
-  });
+      expect(emit).toHaveBeenCalledExactlyOnceWith(
+        script,
+        'Component.vue',
+        cache.get('Component.vue')!.rootNode,
+      );
+      const root = cache.get('Component.vue')!.rootNode;
+      expect(borrowedRoots).toEqual([
+        { text: script.slice(root.startIndex, root.endIndex), cached: true },
+      ]);
+      expect(onArtifacts.mock.calls[0]![0].map((file) => file.filePath)).toEqual(['Component.vue']);
+      expect(symbols.lookupCallableByName('componentFunction')).not.toHaveLength(0);
+      expect(workers.dispatch).toHaveBeenCalledTimes(mode === 'worker fallback' ? 1 : 0);
+    },
+  );
 
   it.each(['absent', 'throwing'] as const)(
     'keeps legacy definitions and emits an empty artifact list when the hook is %s',
@@ -409,7 +445,10 @@ describe('processParsing sequential scope artifacts', () => {
  */
 function fakeProvider(
   hooks: Partial<
-    Pick<LanguageProvider, 'emitScopeCaptures' | 'shouldCreateScope' | 'resolveScopeKind'>
+    Pick<
+      LanguageProvider,
+      'emitScopeCaptures' | 'shouldCreateScope' | 'resolveScopeKind' | 'interpretExports'
+    >
   >,
 ): LanguageProvider {
   return hooks as unknown as LanguageProvider;
@@ -418,6 +457,71 @@ function fakeProvider(
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
 describe('extractParsedFileOutcome', () => {
+  it('includes explicit exports in a successful bridge artifact', () => {
+    const provider = fakeProvider({
+      emitScopeCaptures: () => [
+        moduleScopeMatch(),
+        {
+          '@declaration.function': cap('@declaration.function', 2, 0, 2, 6),
+          '@declaration.name': cap('@declaration.name', 2, 0, 2, 6, 'render'),
+        },
+      ],
+      interpretExports: (_matches, context) => new Map([['default', context.localDefs[0]!.nodeId]]),
+    });
+    const outcome = extractParsedFileOutcome(provider, 'source text', 'a.ts');
+
+    expect(outcome.status).toBe('success');
+    if (outcome.status !== 'success') throw new Error('Expected a successful extraction');
+    expect(outcome.parsedFile.exports).toEqual(
+      new Map([['default', outcome.parsedFile.localDefs[0]!.nodeId]]),
+    );
+    expect(extractParsedFile(provider, 'source text', 'a.ts')).toEqual(outcome.parsedFile);
+  });
+
+  it.each(['throwing', 'invalid result'] as const)(
+    'preserves failure outcomes and legacy warnings for an export hook with %s',
+    (mode) => {
+      const provider = fakeProvider({
+        emitScopeCaptures: () => [moduleScopeMatch()],
+        interpretExports: () => {
+          if (mode === 'throwing') throw new Error('export hook failed');
+          return new Map([['default', 'foreign-definition']]);
+        },
+      });
+      const onWarn = vi.fn();
+      const legacyWarn = vi.fn();
+
+      expect(extractParsedFileOutcome(provider, 'src', 'a.ts', onWarn)).toEqual({
+        status: 'failed',
+        reason: 'scope-extraction-error',
+      });
+      expect(extractParsedFile(provider, 'src', 'a.ts', legacyWarn)).toBeUndefined();
+      expect(onWarn.mock.calls).toEqual(legacyWarn.mock.calls);
+      expect(onWarn).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('a.ts'));
+      if (mode === 'throwing') {
+        expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('export hook failed'));
+      }
+    },
+  );
+
+  it.each([
+    ['outcome helper', extractParsedFileOutcome],
+    ['legacy wrapper', extractParsedFile],
+  ] as const)('forwards the exact borrowed root through the %s', (_name, extract) => {
+    const root = { text: 'source text' } as SyntaxNode;
+    const emit = vi.fn<NonNullable<LanguageProvider['emitScopeCaptures']>>(() => [
+      moduleScopeMatch(),
+    ]);
+    const provider = fakeProvider({ emitScopeCaptures: emit });
+    const onWarn = vi.fn();
+
+    expect(extract(provider, 'source text', 'src/file.ts', onWarn, root)).toBeDefined();
+
+    expect(emit).toHaveBeenCalledExactlyOnceWith('source text', 'src/file.ts', root);
+    expect(emit.mock.calls[0]![2]).toBe(root);
+    expect(onWarn).not.toHaveBeenCalled();
+  });
+
   it('returns the extracted artifact after invoking the provider exactly once', () => {
     const emit = vi.fn(() => [moduleScopeMatch()]);
     const provider = fakeProvider({ emitScopeCaptures: emit });

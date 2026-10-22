@@ -76,7 +76,7 @@ import type {
   TypeRef,
 } from 'ontoindex-shared';
 import { buildPositionIndex, buildScopeTree, makeScopeId } from 'ontoindex-shared';
-import type { LanguageProvider } from './language-provider.js';
+import type { LanguageProvider, LocalBindingCandidate } from './language-provider.js';
 
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
 
@@ -84,7 +84,7 @@ import type { LanguageProvider } from './language-provider.js';
  * The subset of `LanguageProvider` hooks that `extract()` reads. Declared
  * as its own type so:
  *
- *   - Tests can implement just these six hooks without faking the whole
+ *   - Tests can implement just these hooks without faking the whole
  *     `LanguageProvider` interface (which is ~40 fields including the
  *     legacy-DAG surface).
  *   - The extractor's dependency contract stays explicit — adding a new
@@ -98,7 +98,9 @@ export type ScopeExtractorHooks = Pick<
   | 'shouldCreateScope'
   | 'resolveScopeKind'
   | 'bindingScopeFor'
+  | 'selectLocalBindings'
   | 'interpretImport'
+  | 'interpretExports'
   | 'interpretTypeBinding'
   | 'classifyCallForm'
 >;
@@ -183,15 +185,37 @@ export function extract(
     scopeTree,
   );
 
-  // Freeze Scope drafts into final shape and return.
+  // Supply completed scopes and definitions to the optional export hook.
   const frozenScopes = scopeDrafts.map(draftToScope);
-  return Object.freeze({
+  const context = Object.freeze({
     filePath,
     moduleScope: moduleScope.id,
     scopes: Object.freeze(frozenScopes),
-    parsedImports: Object.freeze(parsedImports.slice()),
     localDefs: Object.freeze(localDefs.slice()),
+  });
+  let exports: ParsedFile['exports'];
+  if (provider.interpretExports !== undefined) {
+    const interpreted = provider.interpretExports(matches, context);
+    if (!(interpreted instanceof Map)) {
+      throw new Error('ScopeExtractor: interpretExports must return a Map.');
+    }
+    const localIds = new Set(localDefs.map((def) => def.nodeId));
+    const detached = new Map<string, string>();
+    for (const [name, target] of interpreted) {
+      if (typeof name !== 'string' || typeof target !== 'string' || !localIds.has(target)) {
+        throw new Error(
+          'ScopeExtractor: interpretExports must map string names to local definition IDs.',
+        );
+      }
+      detached.set(name, target);
+    }
+    exports = detached;
+  }
+  return Object.freeze({
+    ...context,
+    parsedImports: Object.freeze(parsedImports.slice()),
     referenceSites: Object.freeze(referenceSites.slice()),
+    ...(exports !== undefined ? { exports } : {}),
   });
 }
 
@@ -337,20 +361,29 @@ function pass1BuildScopes(
   }
 
   // Sort by (startLine, startCol) ASC, (endLine, endCol) DESC so outer
-  // scopes appear before their children for parent-resolution.
+  // scopes appear before their children for parent-resolution. On equal
+  // ranges, the module must precede its whole-file child.
   candidates.sort((a, b) => {
     if (a.range.startLine !== b.range.startLine) return a.range.startLine - b.range.startLine;
     if (a.range.startCol !== b.range.startCol) return a.range.startCol - b.range.startCol;
     if (a.range.endLine !== b.range.endLine) return b.range.endLine - a.range.endLine;
-    return b.range.endCol - a.range.endCol;
+    if (a.range.endCol !== b.range.endCol) return b.range.endCol - a.range.endCol;
+    return Number(b.kind === 'Module') - Number(a.kind === 'Module');
   });
 
   const drafts: ScopeDraft[] = [];
   const stack: Candidate[] = []; // enclosing real scopes, outermost at [0]
 
   for (const cand of candidates) {
-    // Pop the stack until the top strictly contains this candidate.
-    while (stack.length > 0 && !rangeStrictlyContains(stack[stack.length - 1]!.range, cand.range)) {
+    // Only a root module may share its exact range with a non-module child.
+    while (
+      stack.length > 0 &&
+      !rangeStrictlyContains(
+        stack[stack.length - 1]!.range,
+        cand.range,
+        stack.length === 1 && stack[0]!.kind === 'Module' && cand.kind !== 'Module',
+      )
+    ) {
       stack.pop();
     }
 
@@ -428,6 +461,7 @@ function pass2AttachDeclarations(
 ): void {
   const draftById = new Map<ScopeId, ScopeDraft>();
   for (const d of drafts) draftById.set(d.id, d);
+  const candidatesByHost = new Map<ScopeId, Map<string, LocalBindingCandidate[]>>();
 
   for (const match of matches) {
     const anchor = anchorCaptureFor(match, '@declaration.');
@@ -472,9 +506,49 @@ function pass2AttachDeclarations(
     const nameKey = deriveDeclarationName(match, def);
     if (nameKey === undefined) continue;
 
-    const existing = bindingHost.bindings.get(nameKey) ?? [];
-    existing.push({ def, origin: 'local' });
-    bindingHost.bindings.set(nameKey, existing);
+    let byName = candidatesByHost.get(bindingHost.id);
+    if (byName === undefined) {
+      byName = new Map();
+      candidatesByHost.set(bindingHost.id, byName);
+    }
+    const candidates = byName.get(nameKey) ?? [];
+    candidates.push(Object.freeze({ match, def }));
+    byName.set(nameKey, candidates);
+  }
+
+  for (const [hostId, byName] of candidatesByHost) {
+    const host = draftById.get(hostId)!;
+    for (const [name, candidates] of byName) {
+      const selected =
+        provider.selectLocalBindings === undefined
+          ? null
+          : provider.selectLocalBindings(
+              Object.freeze(candidates),
+              scopeTree.getScope(hostId)!,
+              scopeTree,
+            );
+      if (selected !== null) {
+        const allowed = new Set(candidates);
+        const seen = new Set<LocalBindingCandidate>();
+        if (!Array.isArray(selected) || selected.length === 0) {
+          throw new Error(
+            'ScopeExtractor: selectLocalBindings must return null or a nonempty candidate array.',
+          );
+        }
+        for (const candidate of selected) {
+          if (!allowed.has(candidate) || seen.has(candidate)) {
+            throw new Error(
+              'ScopeExtractor: selectLocalBindings must return a duplicate-free subset of the supplied candidates.',
+            );
+          }
+          seen.add(candidate);
+        }
+      }
+      host.bindings.set(
+        name,
+        (selected ?? candidates).map(({ def }) => ({ def, origin: 'local' })),
+      );
+    }
   }
 }
 
@@ -753,14 +827,14 @@ function extractArity(match: CaptureMatch): number | undefined {
 
 // ─── Internal: range + capture utilities ───────────────────────────────────
 
-function rangeStrictlyContains(outer: Range, inner: Range): boolean {
+function rangeStrictlyContains(outer: Range, inner: Range, allowEqual = false): boolean {
   if (
     outer.startLine === inner.startLine &&
     outer.startCol === inner.startCol &&
     outer.endLine === inner.endLine &&
     outer.endCol === inner.endCol
   ) {
-    return false;
+    return allowEqual;
   }
   const startsBefore =
     outer.startLine < inner.startLine ||

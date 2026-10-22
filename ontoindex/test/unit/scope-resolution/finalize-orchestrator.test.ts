@@ -4,14 +4,14 @@
  * Covers empty-input, single-file, multi-file-with-imports, and the
  * `MutableSemanticModel.attachScopeIndexes` one-shot contract.
  *
- * Builds synthetic `ParsedFile` inputs directly — the orchestrator is
- * below the extraction layer and independent of tree-sitter, so the
- * tests don't need a real parser.
+ * Uses synthetic ParsedFiles and capture matches through the extractor,
+ * without requiring a real parser.
  */
 
 import { describe, it, expect } from 'vitest';
 import type {
   BindingRef,
+  CaptureMatch,
   ParsedFile,
   ParsedImport,
   Scope,
@@ -19,6 +19,7 @@ import type {
   SymbolDefinition,
 } from 'ontoindex-shared';
 import { finalizeScopeModel } from '../../../src/core/ingestion/finalize-orchestrator.js';
+import { extract } from '../../../src/core/ingestion/scope-extractor.js';
 import { ScopeRetentionStage } from '../../../src/core/ingestion/pipeline-phases/scope-retention-stage.js';
 import { createSemanticModel } from '../../../src/core/ingestion/model/semantic-model.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
@@ -49,6 +50,7 @@ const mkFile = (filePath: string, overrides: Partial<ParsedFile> = {}): ParsedFi
   parsedImports: overrides.parsedImports ?? [],
   localDefs: overrides.localDefs ?? [],
   referenceSites: overrides.referenceSites ?? [],
+  ...(Object.hasOwn(overrides, 'exports') ? { exports: overrides.exports } : {}),
 });
 
 const mkDef = (nodeId: string, filePath: string, qname: string): SymbolDefinition => ({
@@ -57,6 +59,64 @@ const mkDef = (nodeId: string, filePath: string, qname: string): SymbolDefinitio
   type: 'Class',
   qualifiedName: qname,
 });
+
+function extractedBindingsFixture(): ParsedFile {
+  const capture = (name: string, text: string, startLine: number, endLine = startLine) => ({
+    name,
+    text,
+    range: { startLine, startCol: 0, endLine, endCol: 1 },
+  });
+  const declaration = (name: string, line: number, qualifiedName: string): CaptureMatch => ({
+    '@declaration.variable': capture('@declaration.variable', name, line),
+    '@declaration.name': capture('@declaration.name', name, line),
+    '@declaration.qualified_name': capture('@declaration.qualified_name', qualifiedName, line),
+  });
+  return extract(
+    [
+      { '@scope.module': capture('@scope.module', '', 1, 100) },
+      { '@scope.function': capture('@scope.function', '', 10, 30) },
+      declaration('X', 2, 'fixture.X'),
+      declaration('X', 12, 'fixture.fn.X'),
+      declaration('secret', 13, 'fixture.fn.secret'),
+      declaration('hoisted', 14, 'fixture.fn.hoisted'),
+      declaration('Alias', 3, 'fixture.Internal'),
+    ],
+    'fixture.ts',
+    {
+      bindingScopeFor(match, _innermost, tree) {
+        if (match['@declaration.name']?.text !== 'hoisted') return null;
+        return [...tree.byId.values()].find((scope) => scope.kind === 'Module')!.id;
+      },
+    },
+  );
+}
+
+function expectExtractedBindings(out: ScopeResolutionIndexes, file: ParsedFile) {
+  const module = file.scopes.find((scope) => scope.id === file.moduleScope)!;
+  const fn = file.scopes.find((scope) => scope.kind === 'Function')!;
+  const ids = (scope: ScopeId, name: string) =>
+    (out.bindings.get(scope)?.get(name) ?? []).map((ref) => ref.def.qualifiedName);
+  expect(ids(module.id, 'X')).toEqual(['fixture.X']);
+  expect(ids(module.id, 'secret')).toEqual([]);
+  expect(ids(module.id, 'hoisted')).toEqual(['fixture.fn.hoisted']);
+  expect(ids(module.id, 'Alias')).toEqual(['fixture.Internal']);
+  expect(ids(module.id, 'Internal')).toEqual([]);
+  expect(out.scopeTree.byId.get(fn.id)?.bindings).toEqual(fn.bindings);
+  expect(fn.bindings.get('X')?.map((ref) => ref.def.qualifiedName)).toEqual(['fixture.fn.X']);
+  expect(fn.bindings.get('secret')?.map((ref) => ref.def.qualifiedName)).toEqual([
+    'fixture.fn.secret',
+  ]);
+  expect(fn.bindings.has('hoisted')).toBe(false);
+  expect(fn.ownedDefs.map((def) => def.qualifiedName)).toEqual([
+    'fixture.fn.X',
+    'fixture.fn.secret',
+    'fixture.fn.hoisted',
+  ]);
+  expect([...out.defs.byId.values()]).toEqual(file.localDefs);
+  for (const def of file.localDefs) {
+    expect(out.qualifiedNames.get(def.qualifiedName!)).toEqual([def.nodeId]);
+  }
+}
 
 // ─── Empty input ───────────────────────────────────────────────────────────
 
@@ -80,6 +140,32 @@ describe('finalizeScopeModel: empty input', () => {
 // ─── Single file ───────────────────────────────────────────────────────────
 
 describe('finalizeScopeModel: single file', () => {
+  it('uses extracted module bindings while retaining nested definitions and function bindings', () => {
+    const file = extractedBindingsFixture();
+    const before = file.scopes.map((scope) => [...scope.bindings]);
+    const out = finalizeScopeModel([file]);
+    expectExtractedBindings(out, file);
+    expect(file.scopes.map((scope) => [...scope.bindings])).toEqual(before);
+  });
+
+  it('honors an empty module binding map and falls back only when the module scope is absent', () => {
+    const hidden = mkDef('def:hidden', 'empty.ts', 'empty.fn.hidden');
+    const explicit = mkFile('empty.ts', { localDefs: [hidden] });
+    const legacy = mkFile('legacy.ts', {
+      scopes: [],
+      localDefs: [mkDef('def:legacy', 'legacy.ts', 'legacy.X')],
+    });
+    const out = finalizeScopeModel([explicit, legacy]);
+    expect([...out.bindings.get(explicit.moduleScope)!]).toEqual([]);
+    expect(
+      out.bindings
+        .get(legacy.moduleScope)
+        ?.get('X')
+        ?.map((ref) => ref.def.nodeId),
+    ).toEqual(['def:legacy']);
+    expect(out.defs.get('def:hidden')).toBe(hidden);
+  });
+
   it('builds all per-file indexes from a single ParsedFile', () => {
     const userClass = mkDef('def:User', 'models.ts', 'models.User');
     const file = mkFile('models.ts', {
@@ -233,11 +319,13 @@ describe('finalizeScopeModel: retained fixture replay', () => {
       stage.capture(files);
       stage.recordOutcomes(files.map(({ filePath }) => ({ filePath, status: 'success' })));
       stage.reconcile(files.map(({ filePath }) => filePath));
-      for (const file of files)
+      for (const file of files) {
+        (file.exports as Map<string, string> | undefined)?.clear();
         for (const scope of file.scopes) {
           (scope.bindings as Map<string, readonly BindingRef[]>).clear();
           (scope.typeBindings as Map<string, unknown>).clear();
         }
+      }
       const replayed: ParsedFile[] = [];
       for await (const batch of stage.iterate()) replayed.push(...batch);
       expect(stage.status).toBe('retained');
@@ -251,14 +339,12 @@ describe('finalizeScopeModel: retained fixture replay', () => {
   }
 
   function retainedFile(filePath: string, defs: SymbolDefinition[], imports: ParsedImport[] = []) {
-    const scope = mkScope(
-      `scope:${filePath}#module`,
-      null,
-      filePath,
-      Object.fromEntries(
-        defs.map((def) => [def.qualifiedName!, [{ def, origin: 'local' as const }]]),
-      ),
-    );
+    const localBindings: Record<string, BindingRef[]> = {};
+    for (const def of defs) {
+      const name = def.qualifiedName!.split('.').at(-1)!;
+      (localBindings[name] ??= []).push({ def, origin: 'local' });
+    }
+    const scope = mkScope(`scope:${filePath}#module`, null, filePath, localBindings);
     (scope.typeBindings as Map<string, unknown>).set('Declared', {
       rawName: 'Declared',
       declaredAtScope: scope.id,
@@ -266,6 +352,67 @@ describe('finalizeScopeModel: retained fixture replay', () => {
     });
     return mkFile(filePath, { scopes: [scope], localDefs: defs, parsedImports: imports });
   }
+
+  it('replays extracted shadowing, nested-only locals and hoisted bindings unchanged', async () => {
+    const out = await replayAfterMapMutation(() => [extractedBindingsFixture()]);
+    expectExtractedBindings(out, extractedBindingsFixture());
+  });
+
+  it('retains legacy, empty and aliased exports while preserving every local definition', async () => {
+    const out = await replayAfterMapMutation(() => {
+      const hidden = retainedFile('hidden.ts', [mkDef('def:Hidden', 'hidden.ts', 'hidden.Hidden')]);
+      const aliased = retainedFile('aliased.ts', [
+        mkDef('def:Original', 'aliased.ts', 'aliased.Original'),
+        mkDef('def:Private', 'aliased.ts', 'aliased.Private'),
+      ]);
+      return [
+        retainedFile(
+          'app.ts',
+          [],
+          [
+            named('Legacy', 'legacy.ts'),
+            named('Hidden', 'hidden.ts'),
+            named('PublicAlias', 'aliased.ts'),
+            named('Private', 'aliased.ts'),
+          ],
+        ),
+        retainedFile('legacy.ts', [mkDef('def:Legacy', 'legacy.ts', 'legacy.Legacy')]),
+        mkFile(hidden.filePath, { ...hidden, exports: new Map() }),
+        mkFile(aliased.filePath, {
+          ...aliased,
+          exports: new Map([['PublicAlias', 'def:Original']]),
+        }),
+      ];
+    });
+    expect(out.imports.get('scope:app.ts#module')).toEqual([
+      expect.objectContaining({ targetFile: 'legacy.ts', targetDefId: 'def:Legacy' }),
+      expect.objectContaining({ targetFile: 'hidden.ts', linkStatus: 'unresolved' }),
+      expect.objectContaining({ targetFile: 'aliased.ts', targetDefId: 'def:Original' }),
+      expect.objectContaining({ targetFile: 'aliased.ts', linkStatus: 'unresolved' }),
+    ]);
+    expect(bindings(out, 'app.ts', 'Legacy')).toEqual([{ id: 'def:Legacy', origin: 'import' }]);
+    expect(bindings(out, 'app.ts', 'PublicAlias')).toEqual([
+      { id: 'def:Original', origin: 'import' },
+    ]);
+    expect(bindings(out, 'app.ts', 'Hidden')).toEqual([]);
+    expect(bindings(out, 'app.ts', 'Private')).toEqual([]);
+    expect([...out.defs.byId.keys()]).toEqual([
+      'def:Legacy',
+      'def:Hidden',
+      'def:Original',
+      'def:Private',
+    ]);
+    expect(bindings(out, 'hidden.ts', 'Hidden')).toEqual([{ id: 'def:Hidden', origin: 'local' }]);
+    expect(bindings(out, 'aliased.ts', 'Original')).toEqual([
+      { id: 'def:Original', origin: 'local' },
+    ]);
+    expect(bindings(out, 'aliased.ts', 'Private')).toEqual([
+      { id: 'def:Private', origin: 'local' },
+    ]);
+    expect(out.qualifiedNames.get('aliased.Private')).toEqual(['def:Private']);
+    expect(out.stats.linkedEdges).toBe(2);
+    expect(out.stats.unresolvedEdges).toBe(2);
+  });
 
   it('preserves a two-file cycle and its concrete linked bindings', async () => {
     const out = await replayAfterMapMutation(() => [

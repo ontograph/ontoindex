@@ -373,6 +373,75 @@ describe('scope retention consumed input evidence', () => {
 });
 
 describe('scope retention codec', () => {
+  it.each(['absent', 'undefined', 'empty', 'populated'] as const)(
+    'round trips %s export metadata without collapsing presence or order',
+    (state) => {
+      const input = fixture();
+      if (state !== 'absent')
+        input.exports =
+          state === 'undefined'
+            ? undefined
+            : new Map(
+                state === 'empty'
+                  ? []
+                  : [
+                      ['PublicZ', 'def:z'],
+                      ['PublicA', 'def:a'],
+                    ],
+              );
+      const output = decodeParsedFileRecord(encodeParsedFileRecord(input));
+      expect(output).toEqual(input);
+      expect(Object.hasOwn(output, 'exports')).toBe(state !== 'absent');
+      if (state === 'populated') {
+        expect([...output.exports!]).toEqual([
+          ['PublicZ', 'def:z'],
+          ['PublicA', 'def:a'],
+        ]);
+        (input.exports as Map<string, string>).clear();
+        expect(output.exports!.size).toBe(2);
+      }
+    },
+  );
+
+  it('includes export names and definition IDs in the exact byte allowance', () => {
+    const input = fixture();
+    const withoutExports = Buffer.byteLength(encodeParsedFileRecord(input), 'utf8');
+    input.exports = new Map([['é😀\\"\n', 'def:é😀']]);
+    const encoded = encodeParsedFileRecord(input);
+    const bytes = Buffer.byteLength(encoded, 'utf8');
+    expect(bytes).toBeGreaterThan(withoutExports);
+    expect(encodeParsedFileRecord(input, bytes)).toBe(encoded);
+    expect(() => encodeParsedFileRecord(input, bytes - 1)).toThrow(ParsedFileRecordError);
+    expect(() => encodeParsedFileRecord(input, withoutExports)).toThrow(ParsedFileRecordError);
+  });
+
+  it.each([
+    { $map: [[1, 'def:X']] },
+    { $map: [['X', 1]] },
+    {
+      $map: [
+        ['X', 'def:X'],
+        ['X', 'def:Y'],
+      ],
+    },
+    { $map: [['X']] },
+    { $map: 'invalid' },
+    { $map: [['X', 'def:X']], extra: true },
+  ])('rejects malformed export map tags on replay: %j', (exports) => {
+    const wire = JSON.parse(encodeParsedFileRecord(fixture()));
+    wire.parsedFile.exports = exports;
+    expect(() => decodeParsedFileRecord(JSON.stringify(wire))).toThrow(ParsedFileRecordError);
+  });
+
+  it.each([new Map([[1, 'def:X']]), new Map([['X', 1]])])(
+    'rejects malformed export keys or values during capture: %j',
+    (exports) => {
+      expect(() => encodeParsedFileRecord({ ...fixture(), exports })).toThrow(
+        ParsedFileRecordError,
+      );
+    },
+  );
+
   it('round trips ordered nested Maps, arrays and UTF-8 facts with isolated ownership', () => {
     const input = fixture();
     const restored = decodeParsedFileRecord(encodeParsedFileRecord(input));

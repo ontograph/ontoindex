@@ -23,6 +23,7 @@
 import type { ParsedFile } from 'ontoindex-shared';
 import { extract as extractScope } from './scope-extractor.js';
 import type { LanguageProvider } from './language-provider.js';
+import type { SyntaxNode } from './utils/ast-helpers.js';
 
 /** Callback used to report scope-extraction warnings to the host (worker or direct). */
 type ScopeBridgeWarn = (message: string) => void;
@@ -52,8 +53,9 @@ export function extractParsedFile(
   sourceText: string,
   filePath: string,
   onWarn?: ScopeBridgeWarn,
+  rootNode?: SyntaxNode,
 ): ParsedFile | undefined {
-  const outcome = extractParsedFileOutcome(provider, sourceText, filePath, onWarn);
+  const outcome = extractParsedFileOutcome(provider, sourceText, filePath, onWarn, rootNode);
   return outcome.status === 'success' ? outcome.parsedFile : undefined;
 }
 
@@ -63,12 +65,16 @@ export function extractParsedFileOutcome(
   sourceText: string,
   filePath: string,
   onWarn?: ScopeBridgeWarn,
+  rootNode?: SyntaxNode,
 ): ScopeExtractionOutcome {
   if (provider.emitScopeCaptures === undefined) {
     return { status: 'unsupported', reason: 'missing-scope-hook' };
   }
   try {
-    const captures = provider.emitScopeCaptures(sourceText, filePath);
+    const captures =
+      rootNode === undefined
+        ? provider.emitScopeCaptures(sourceText, filePath)
+        : provider.emitScopeCaptures(sourceText, filePath, rootNode);
     return { status: 'success', parsedFile: extractScope(captures, filePath, provider) };
   } catch (err) {
     if (isExpectedCppNoModuleScopeMiss(err, filePath)) {

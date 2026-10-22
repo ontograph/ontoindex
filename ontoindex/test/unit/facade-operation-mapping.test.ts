@@ -4,16 +4,20 @@ import { ONTOINDEX_FACADE_TOOLS } from '../../src/mcp/facade/tool-definitions.js
 import type { LocalBackend } from '../../src/mcp/local/local-backend.js';
 
 describe('facade operation mapping', () => {
-  it.each(['get', 'set', 'list'])(
-    'maps session operation %s to the backend action',
-    async (operation) => {
+  it.each([
+    { operation: 'get', fields: { session_id: 'x', key: 'plan', repo: 'fixture' } },
+    { operation: 'set', fields: { session_id: 'x', key: 'plan', value: 'next', repo: 'fixture' } },
+    { operation: 'list', fields: { session_id: 'x', repo: 'fixture' } },
+  ])(
+    'maps session operation $operation and forwards its fields to the backend',
+    async ({ operation, fields }) => {
       const callTool = vi.fn(async () => ({ ok: true }));
-      const args = { action: 'session', operation, session_id: 'x' };
+      const args = { action: 'session', operation, ...fields };
 
       await dispatchFacade('manage', 'session', args, { callTool } as unknown as LocalBackend);
 
-      expect(callTool).toHaveBeenCalledWith('session', { action: operation, session_id: 'x' });
-      expect(args).toEqual({ action: 'session', operation, session_id: 'x' });
+      expect(callTool).toHaveBeenCalledWith('session', { action: operation, ...fields });
+      expect(args).toEqual({ action: 'session', operation, ...fields });
     },
   );
 
@@ -59,13 +63,33 @@ describe('facade operation mapping', () => {
     },
   );
 
-  it('preserves unrelated facade actions', async () => {
-    const callTool = vi.fn(async () => ({ ok: true }));
-    const args = { action: 'route_map', operation: 'list' };
+  it.each([{ action: 'route_map' }, { action: 'route_map', operation: 'list' }])(
+    'preserves unrelated facade arguments %j',
+    async (args) => {
+      const callTool = vi.fn(async () => ({ ok: true }));
 
-    await dispatchFacade('manage', 'route_map', args, { callTool } as unknown as LocalBackend);
+      await dispatchFacade('manage', 'route_map', args, { callTool } as unknown as LocalBackend);
 
-    expect(callTool).toHaveBeenCalledWith('route_map', args);
+      expect(callTool).toHaveBeenCalledWith('route_map', args);
+    },
+  );
+
+  it('advertises the existing session-key contract without requiring session fields for route_map', () => {
+    const tool = ONTOINDEX_FACADE_TOOLS.find((entry) => entry.name === 'manage')!;
+
+    expect(tool.inputSchema.properties).toMatchObject({
+      session_id: { type: 'string' },
+      key: { type: 'string' },
+      value: { type: 'string' },
+      repo: { type: 'string' },
+    });
+    expect(tool.description).toContain(
+      '"list" requires session_id and lists keys within that session',
+    );
+    expect(tool.description).toContain('"get" requires session_id/key');
+    expect(tool.description).toContain('"set" requires session_id/key/value');
+    expect(tool.description).toContain('Session fields are not required for action "route_map"');
+    expect(tool.inputSchema.required).toEqual(['action']);
   });
 
   it.each([

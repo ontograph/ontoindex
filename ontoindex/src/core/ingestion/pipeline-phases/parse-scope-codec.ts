@@ -38,6 +38,7 @@ const schemas: Record<string, Shape> = {
     scopes: 'scopes',
     parsedImports: 'imports',
     localDefs: 'definitions',
+    'exports?': 'export-map',
     referenceSites: 'references',
   },
   scope: {
@@ -211,7 +212,7 @@ export function encodeParsedFileRecord(value: unknown, maxBytes = 256 * 1024): s
       return fail('invalid-object-or-cycle');
     ancestors.add(input);
     try {
-      if (shape === 'binding-map' || shape === 'type-map') {
+      if (shape === 'binding-map' || shape === 'type-map' || shape === 'export-map') {
         if (Object.getPrototypeOf(input) !== Map.prototype) fail('invalid-map');
         const map = input as Map<unknown, unknown>;
         if (map.size > maxBytes / 4) fail('record-byte-limit');
@@ -224,7 +225,11 @@ export function encodeParsedFileRecord(value: unknown, maxBytes = 256 * 1024): s
           emit('[');
           visit(key, 'string', depth + 1);
           emit(',');
-          visit(entry, shape === 'binding-map' ? 'bindings' : 'type', depth + 1);
+          visit(
+            entry,
+            shape === 'binding-map' ? 'bindings' : shape === 'type-map' ? 'type' : 'string',
+            depth + 1,
+          );
           emit(']');
         }
         emit(']}');

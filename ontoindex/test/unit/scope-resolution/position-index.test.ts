@@ -91,6 +91,27 @@ describe('buildPositionIndex', () => {
   });
 
   describe('innermost-containing wins', () => {
+    for (const kind of ['Function', 'Class'] as const) {
+      for (const range of [r(1, 0, 10, 5), r(1, 0, 1, 0)]) {
+        it(`prefers the equal-range ${kind} over its root Module at ${JSON.stringify(range)}`, () => {
+          const mod = mkScope('scope:mod', 'a.ts', 'Module', range);
+          const child = mkScope('scope:child', 'a.ts', kind, range, mod.id);
+          for (const scopes of [
+            [mod, child],
+            [child, mod],
+          ]) {
+            const idx = buildPositionIndex(scopes);
+            expect(idx.size).toBe(2);
+            expect(idx.atPosition('a.ts', range.startLine, range.startCol)).toBe(child.id);
+            expect(idx.atPosition('a.ts', range.endLine, range.endCol)).toBe(child.id);
+            expect(idx.atPosition('a.ts', range.endLine, range.endCol + 1)).toBeUndefined();
+            expect(mod.range).toEqual(range);
+            expect(child.range).toEqual(range);
+          }
+        });
+      }
+    }
+
     it('picks the innermost of nested scopes', () => {
       // Module[1..100] ⊃ Class[5..80] ⊃ Function[10..60] ⊃ Block[20..50]
       const idx = buildPositionIndex([

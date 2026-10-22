@@ -955,6 +955,7 @@ type SequentialTypeEnv = ReturnType<typeof buildTypeEnv>;
 interface PreparedSequentialFile {
   file: { path: string; content: string };
   parseContent: string;
+  rootNode: SyntaxNode;
   language: SupportedLanguages;
   lineOffset: number;
   isVueSetup: boolean;
@@ -1048,6 +1049,7 @@ const prepareSequentialFile = async (
     return {
       file,
       parseContent,
+      rootNode: tree.rootNode,
       language,
       lineOffset,
       isVueSetup,
@@ -1517,6 +1519,8 @@ const processSequentialFiles = async (
       preparedFile.provider,
       preparedFile.parseContent,
       file.path,
+      undefined,
+      preparedFile.rootNode,
     );
     combinedData.scopeExtractionOutcomes ??= [];
     if (outcome.status === 'success') {

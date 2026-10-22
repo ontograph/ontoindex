@@ -1283,10 +1283,17 @@ const appendParsedFileArtifact = (
   provider: LanguageProvider,
   parseContent: string,
   result: ParseWorkerResult,
+  rootNode: SyntaxNode,
 ): void => {
   // Skipped files and preparation failures never reach this attempt; inventory
   // reconciliation must treat their absent records as unavailable evidence.
-  const outcome = extractParsedFileOutcome(provider, parseContent, filePath, emitWorkerWarning);
+  const outcome = extractParsedFileOutcome(
+    provider,
+    parseContent,
+    filePath,
+    emitWorkerWarning,
+    rootNode,
+  );
   result.scopeExtractionOutcomes ??= [];
   if (outcome.status === 'success') {
     result.scopeExtractionOutcomes.push({ filePath, status: 'success' });
@@ -2226,7 +2233,13 @@ const processPreparedWorkerFile = (
     onFileProcessed?.(file.path);
 
     timeFamily('scope-artifact', () =>
-      appendParsedFileArtifact(file.path, fileContext.provider, fileContext.parseContent, result),
+      appendParsedFileArtifact(
+        file.path,
+        fileContext.provider,
+        fileContext.parseContent,
+        result,
+        fileContext.tree.rootNode,
+      ),
     );
     const fileState = timeFamily('type-env', () =>
       createFileProcessingState(file, language, fileContext),
