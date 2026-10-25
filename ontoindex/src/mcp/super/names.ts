@@ -1,4 +1,6 @@
 import { getRegisteredSuperToolNames } from '../shared/tool-registry.js';
+import type { RepoHandle } from 'ontoindex-shared';
+import type { LocalBackend } from '../local/local-backend.js';
 
 export type SuperTool =
   | 'gn_explore'
@@ -57,3 +59,61 @@ export type SuperTool =
   | 'gn_graph_walk';
 
 export const SUPER_NAMES = new Set<SuperTool>([...(getRegisteredSuperToolNames() as SuperTool[])]);
+
+const GRAPH_BACKED_SUPER_TOOLS = new Set<SuperTool>([
+  'gn_explore',
+  'gn_explain_module',
+  'gn_find_related',
+  'gn_graph_walk',
+  'gn_safe_edit_check',
+  'gn_can_delete',
+  'gn_pre_commit_audit',
+  'gn_safe_refactor',
+  'gn_diff_impact',
+  'gn_review_diff',
+  'gn_propose_location',
+  'gn_docs',
+]);
+
+const WORKSPACE_READ_SUPER_TOOLS = new Set<SuperTool>([
+  'gn_explore',
+  'gn_explain_module',
+  'gn_find_related',
+  'gn_graph_walk',
+  'gn_safe_edit_check',
+  'gn_can_delete',
+  'gn_propose_location',
+  'gn_docs',
+]);
+
+/** Share graph admission and notices across direct and facade super-tool dispatch. */
+export async function withPreparedSuperRead<T>(
+  name: SuperTool,
+  args: Record<string, unknown>,
+  repo: RepoHandle,
+  backend: Pick<
+    LocalBackend,
+    'ensureRepoInitialized' | 'withPreparedRepoRead' | 'withCommittedGraphNotice'
+  >,
+  options: { automaticWorkspace: boolean; committedRead: boolean },
+  operation: () => Promise<T>,
+): Promise<T> {
+  const docsReadiness =
+    name === 'gn_docs' && (args.action === undefined || args.action === 'readiness');
+  const graphRead = GRAPH_BACKED_SUPER_TOOLS.has(name) && !docsReadiness;
+  if (graphRead) await backend.ensureRepoInitialized(repo.id);
+  const preparedRead =
+    WORKSPACE_READ_SUPER_TOOLS.has(name) &&
+    !docsReadiness &&
+    typeof backend.withPreparedRepoRead === 'function';
+  const result = preparedRead
+    ? await backend.withPreparedRepoRead(
+        repo,
+        { needsRelationships: true, wantsWorkspaceGraph: true },
+        operation,
+      )
+    : await operation();
+  return graphRead && !(preparedRead && options.automaticWorkspace) && !options.committedRead
+    ? ((await backend.withCommittedGraphNotice?.(result, repo)) ?? result)
+    : result;
+}

@@ -32,7 +32,7 @@ export const ALL_MCP_STARTUP_PROFILES: readonly McpStartupProfile[] = [
   'public-full',
 ];
 
-export const DEFAULT_MCP_STARTUP_PROFILE: McpStartupProfile = 'public-full';
+export const DEFAULT_MCP_STARTUP_PROFILE: McpStartupProfile = 'core';
 export const MCP_STARTUP_PROFILE_ENV = 'ONTOINDEX_MCP_STARTUP_PROFILE';
 
 export interface McpStartupProfileToolReport {
@@ -838,6 +838,8 @@ const TOOL_METADATA_LIST: ToolContractMetadata[] = [
       { action: 'packs', contractStatus: 'stable', structuredOutput: false },
       { action: 'groups', contractStatus: 'stable', structuredOutput: false },
       { action: 'sync', contractStatus: 'stable', structuredOutput: false },
+      { action: 'help', contractStatus: 'stable', structuredOutput: true },
+      { action: 'tool_contract', contractStatus: 'stable', structuredOutput: true },
     ],
   },
   {
@@ -871,6 +873,11 @@ const TOOL_METADATA_LIST: ToolContractMetadata[] = [
       { action: 'evidence', contractStatus: 'stable', structuredOutput: false },
       { action: 'shape', contractStatus: 'stable', structuredOutput: false },
       { action: 'ipc', contractStatus: 'stable', structuredOutput: false },
+      { action: 'graph_walk', contractStatus: 'stable', structuredOutput: true },
+      { action: 'propose_location', contractStatus: 'stable', structuredOutput: true },
+      { action: 'explore', contractStatus: 'stable', structuredOutput: true },
+      { action: 'module', contractStatus: 'stable', structuredOutput: true },
+      { action: 'related', contractStatus: 'stable', structuredOutput: true },
     ],
   },
   {
@@ -888,6 +895,7 @@ const TOOL_METADATA_LIST: ToolContractMetadata[] = [
       { action: 'batch', contractStatus: 'stable', structuredOutput: true },
       { action: 'route', contractStatus: 'stable', structuredOutput: true },
       { action: 'diff', contractStatus: 'stable', structuredOutput: true },
+      { action: 'diff_impact', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'pr-review' },
     ],
   },
   {
@@ -912,6 +920,18 @@ const TOOL_METADATA_LIST: ToolContractMetadata[] = [
         contractStatus: 'stable',
         structuredOutput: true,
         dispatchCategory: 'audit',
+      },
+      {
+        action: 'safe_edit_check',
+        contractStatus: 'stable',
+        structuredOutput: true,
+        dispatchCategory: 'safety',
+      },
+      {
+        action: 'can_delete',
+        contractStatus: 'stable',
+        structuredOutput: true,
+        dispatchCategory: 'safety',
       },
       {
         action: 'tech_debt',
@@ -991,11 +1011,33 @@ const TOOL_METADATA_LIST: ToolContractMetadata[] = [
         structuredOutput: true,
         dispatchCategory: 'audit',
       },
+      { action: 'bundle', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'audit' },
+      { action: 'pre_commit_audit', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'safety' },
+      { action: 'review_diff', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'pr-review' },
+      { action: 'ingest', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'audit' },
+      { action: 'verify', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'audit' },
+      { action: 'tombstone_create', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'audit' },
+      { action: 'bundle_conflicts', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'audit' },
+      { action: 'dedupe', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'audit' },
+      { action: 'diff', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'audit' },
+      { action: 'dispatch_prompt', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'audit' },
+      { action: 'export', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'audit' },
+      { action: 'fix_history', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'audit' },
+      { action: 'lint', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'audit' },
+      { action: 'pr_marker_scan', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'audit' },
+      { action: 'replay', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'audit' },
+      { action: 'scope_guard', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'audit' },
       {
         action: 'session_start',
         contractStatus: 'stable',
         structuredOutput: true,
         dispatchCategory: 'lifecycle',
+      },
+      {
+        action: 'session_lock',
+        contractStatus: 'stable',
+        structuredOutput: true,
+        dispatchCategory: 'audit',
       },
       {
         action: 'session_verify',
@@ -1133,6 +1175,7 @@ const TOOL_METADATA_LIST: ToolContractMetadata[] = [
       { action: 'rename', contractStatus: 'stable', structuredOutput: false },
       { action: 'replace', contractStatus: 'stable', structuredOutput: false },
       { action: 'sandbox', contractStatus: 'stable', structuredOutput: false },
+      { action: 'safe_refactor', contractStatus: 'stable', structuredOutput: false },
     ],
   },
   {
@@ -1148,6 +1191,10 @@ const TOOL_METADATA_LIST: ToolContractMetadata[] = [
     actions: [
       { action: 'session', contractStatus: 'stable', structuredOutput: false },
       { action: 'route_map', contractStatus: 'stable', structuredOutput: false },
+      { action: 'analyze_job', contractStatus: 'stable', structuredOutput: true },
+      { action: 'ensure_fresh', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'lifecycle' },
+      { action: 'diagnose', contractStatus: 'stable', structuredOutput: true, dispatchCategory: 'self-help' },
+      { action: 'quality_mode', contractStatus: 'stable', structuredOutput: false, dispatchCategory: 'lifecycle' },
     ],
   },
   {
@@ -1340,7 +1387,7 @@ export function getHiddenStartupProfileToolNames(options: ToolNameOptions = {}):
     getPublicToolRegistry({
       includeFacades,
       mode: options.mode,
-      startupProfile: options.startupProfile,
+      startupProfile: options.startupProfile ?? DEFAULT_MCP_STARTUP_PROFILE,
     }).map((entry) => entry.name),
   );
 
@@ -1394,6 +1441,7 @@ export function getCallableToolNames(options: ToolNameOptions = {}): string[] {
     getPublicToolRegistry({
       includeFacades: options.includeFacades === true,
       mode: options.mode,
+      startupProfile: 'public-full',
     }).map((entry) => entry.name),
   );
 }
@@ -1459,24 +1507,26 @@ function filterToolRegistryByStartupProfile(
   entries: PublicToolRegistryEntry[],
   profile: McpStartupProfile | undefined,
 ): PublicToolRegistryEntry[] {
-  const startupProfile = profile ?? DEFAULT_MCP_STARTUP_PROFILE;
-  if (startupProfile === 'public-full') {
+  // No profile means the full public frontier; only advertisement callers pass the env profile.
+  if (profile === undefined || profile === 'public-full') {
     return entries;
   }
-  return entries.filter((entry) => isDiscoverableInStartupProfile(entry, startupProfile));
+  return entries.filter((entry) => isDiscoverableInStartupProfile(entry, profile));
 }
 
 function isDiscoverableInStartupProfile(
   entry: PublicToolRegistryEntry,
   profile: McpStartupProfile,
 ): boolean {
+  if (profile === 'core') {
+    return entry.kind === 'facade';
+  }
+
   if (isCoreStartupProfileEntry(entry)) {
     return true;
   }
 
   switch (profile) {
-    case 'core':
-      return false;
     case 'query':
       return isToolDiscoverableInMode(entry.name, 'query-projects');
     case 'audit':
