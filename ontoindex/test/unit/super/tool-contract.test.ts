@@ -113,7 +113,10 @@ describe('gnToolContract — ADR27 startup-profile metadata', () => {
   it('reports default core compatibility with hidden callable tools', () => {
     delete process.env.ONTOINDEX_MCP_STARTUP_PROFILE;
     const report = gnToolContract({ includeFacades: true });
-    const fullPublic = getPublicToolRegistry({ includeFacades: true, startupProfile: 'public-full' });
+    const fullPublic = getPublicToolRegistry({
+      includeFacades: true,
+      startupProfile: 'public-full',
+    });
     const advertised = getPublicToolRegistry({ includeFacades: true, startupProfile: 'core' })
       .map((entry) => entry.name)
       .sort();

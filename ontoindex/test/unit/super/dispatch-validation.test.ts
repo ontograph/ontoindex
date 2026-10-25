@@ -60,11 +60,10 @@ describe('audit marker scan dispatch parity', () => {
     const backend = {
       resolveRepo: async () => ({ id: 'fixture', repoPath: '/tmp/marker-scan-fixture' }),
     } as unknown as LocalBackend;
-    const direct = (await dispatchSuper(
-      'gn_audit_pr_marker_scan',
-      args,
-      'fixture',
-    )) as Record<string, unknown>;
+    const direct = (await dispatchSuper('gn_audit_pr_marker_scan', args, 'fixture')) as Record<
+      string,
+      unknown
+    >;
     const facade = await dispatchFacade('audit', 'pr_marker_scan', args, backend);
 
     expect(direct).toMatchObject({
@@ -133,7 +132,12 @@ describe('super argument validation', () => {
     ['module', 'gn_explain_module', { filePath: 'x', recentTouchDays: 'bad' }, 'recentTouchDays'],
     ['related', 'gn_find_related', {}, 'symbol'],
     ['related', 'gn_find_related', { symbol: 1 }, 'symbol'],
-    ['related', 'gn_find_related', { symbol: 'x', maxItemsPerCategory: 'bad' }, 'maxItemsPerCategory'],
+    [
+      'related',
+      'gn_find_related',
+      { symbol: 'x', maxItemsPerCategory: 'bad' },
+      'maxItemsPerCategory',
+    ],
   ] as const)(
     'rejects invalid inspect/%s arguments through both dispatchers: %j',
     async (action, name, params, field) => {
@@ -154,34 +158,76 @@ describe('super argument validation', () => {
     [{ symbol: 'parseToken', force: 'false' }, 'force: expected boolean'],
     [{ symbol: 'parseToken', docsEvidence: 'false' }, 'docsEvidence: expected boolean'],
     [{ symbol: 'parseToken', legacyResponse: 'false' }, 'legacyResponse: expected boolean'],
-  ] as const)('rejects invalid audit/safe_edit_check arguments through both dispatchers: %j', async (params, issue) => {
-    const callTool = vi.fn();
-    const backend = {
-      resolveRepo: async () => ({ id: 'fixture' }),
-      ensureRepoInitialized: vi.fn(async () => {}),
-      withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => operation()),
-      callTool,
-    } as unknown as LocalBackend;
-    const expected = `Invalid arguments for gn_safe_edit_check: ${issue}`;
-    await expect(dispatchSuper('gn_safe_edit_check', params, 'fixture')).rejects.toThrow(expected);
-    await expect(dispatchFacade('audit', 'safe_edit_check', params, backend)).rejects.toThrow(expected);
-    expect(callTool).not.toHaveBeenCalled();
-  });
+  ] as const)(
+    'rejects invalid audit/safe_edit_check arguments through both dispatchers: %j',
+    async (params, issue) => {
+      const callTool = vi.fn();
+      const backend = {
+        resolveRepo: async () => ({ id: 'fixture' }),
+        ensureRepoInitialized: vi.fn(async () => {}),
+        withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => operation()),
+        callTool,
+      } as unknown as LocalBackend;
+      const expected = `Invalid arguments for gn_safe_edit_check: ${issue}`;
+      await expect(dispatchSuper('gn_safe_edit_check', params, 'fixture')).rejects.toThrow(
+        expected,
+      );
+      await expect(dispatchFacade('audit', 'safe_edit_check', params, backend)).rejects.toThrow(
+        expected,
+      );
+      expect(callTool).not.toHaveBeenCalled();
+    },
+  );
   it.each([
     ['dedupe', 'gn_audit_dedupe', {}, 'session or sessionId: Required'],
     ['dedupe', 'gn_audit_dedupe', { sessionId: 1 }, 'sessionId: expected string'],
-    ['dedupe', 'gn_audit_dedupe', { session: 'a', strategy: 'invalid' }, 'strategy: expected one of'],
+    [
+      'dedupe',
+      'gn_audit_dedupe',
+      { session: 'a', strategy: 'invalid' },
+      'strategy: expected one of',
+    ],
     ['bundle', 'gn_audit_bundle', {}, 'session or sessionId: Required'],
     ['bundle', 'gn_audit_bundle', { sessionId: 1 }, 'sessionId: expected string'],
-    ['bundle', 'gn_audit_bundle', { session: 'a', strategy: 'invalid' }, 'strategy: expected one of'],
+    [
+      'bundle',
+      'gn_audit_bundle',
+      { session: 'a', strategy: 'invalid' },
+      'strategy: expected one of',
+    ],
     ['bundle', 'gn_audit_bundle', { session: 'a', persist: 'false' }, 'persist: expected boolean'],
     ['dispatch_prompt', 'gn_dispatch_prompt', {}, 'session or sessionId: Required'],
     ['dispatch_prompt', 'gn_dispatch_prompt', { sessionId: 1 }, 'sessionId: expected string'],
-    ['dispatch_prompt', 'gn_dispatch_prompt', { session: 'a', bundleId: 1 }, 'bundleId: expected string'],
-    ['dispatch_prompt', 'gn_dispatch_prompt', { session: 'a', redactionMode: 'invalid' }, 'redactionMode: expected one of'],
-    ['dispatch_prompt', 'gn_dispatch_prompt', { session: 'a', forbidUnverifiedFindings: 'false' }, 'forbidUnverifiedFindings: expected boolean'],
-    ['dispatch_prompt', 'gn_dispatch_prompt', { session: 'a', allowRuntimeOnlyFindings: 'false' }, 'allowRuntimeOnlyFindings: expected boolean'],
-    ['dispatch_prompt', 'gn_dispatch_prompt', { session: 'a', persist: 'false' }, 'persist: expected boolean'],
+    [
+      'dispatch_prompt',
+      'gn_dispatch_prompt',
+      { session: 'a', bundleId: 1 },
+      'bundleId: expected string',
+    ],
+    [
+      'dispatch_prompt',
+      'gn_dispatch_prompt',
+      { session: 'a', redactionMode: 'invalid' },
+      'redactionMode: expected one of',
+    ],
+    [
+      'dispatch_prompt',
+      'gn_dispatch_prompt',
+      { session: 'a', forbidUnverifiedFindings: 'false' },
+      'forbidUnverifiedFindings: expected boolean',
+    ],
+    [
+      'dispatch_prompt',
+      'gn_dispatch_prompt',
+      { session: 'a', allowRuntimeOnlyFindings: 'false' },
+      'allowRuntimeOnlyFindings: expected boolean',
+    ],
+    [
+      'dispatch_prompt',
+      'gn_dispatch_prompt',
+      { session: 'a', persist: 'false' },
+      'persist: expected boolean',
+    ],
     ['diff', 'gn_audit_diff', { sessionB: 'b' }, 'sessionA: Required'],
     ['diff', 'gn_audit_diff', { sessionA: 'a' }, 'sessionB: Required'],
     ['diff', 'gn_audit_diff', { sessionA: 1, sessionB: 'b' }, 'sessionA: expected string'],
@@ -194,15 +240,50 @@ describe('super argument validation', () => {
     ['replay', 'gn_audit_replay', { session: 'a', targetHead: 1 }, 'targetHead: expected string'],
     ['fix_history', 'gn_fix_history', { path: 'fixture.ts' }, 'targetHead: Required'],
     ['fix_history', 'gn_fix_history', { targetHead: 'HEAD' }, 'path: Required'],
-    ['fix_history', 'gn_fix_history', { targetHead: 1, path: 'fixture.ts' }, 'targetHead: expected string'],
+    [
+      'fix_history',
+      'gn_fix_history',
+      { targetHead: 1, path: 'fixture.ts' },
+      'targetHead: expected string',
+    ],
     ['fix_history', 'gn_fix_history', { targetHead: 'HEAD', path: 1 }, 'path: expected string'],
-    ['fix_history', 'gn_fix_history', { targetHead: 'HEAD', path: 'fixture.ts', patterns: 'fix' }, 'patterns: expected array'],
-    ['fix_history', 'gn_fix_history', { targetHead: 'HEAD', path: 'fixture.ts', patterns: [1] }, 'patterns[0]: expected string'],
+    [
+      'fix_history',
+      'gn_fix_history',
+      { targetHead: 'HEAD', path: 'fixture.ts', patterns: 'fix' },
+      'patterns: expected array',
+    ],
+    [
+      'fix_history',
+      'gn_fix_history',
+      { targetHead: 'HEAD', path: 'fixture.ts', patterns: [1] },
+      'patterns[0]: expected string',
+    ],
     ['pr_marker_scan', 'gn_audit_pr_marker_scan', {}, 'evidenceLine: Required'],
-    ['pr_marker_scan', 'gn_audit_pr_marker_scan', { evidenceLine: '1' }, 'evidenceLine: expected number'],
-    ['pr_marker_scan', 'gn_audit_pr_marker_scan', { evidenceLine: NaN }, 'evidenceLine: expected number'],
-    ['pr_marker_scan', 'gn_audit_pr_marker_scan', { evidenceLine: Infinity }, 'evidenceLine: expected number'],
-    ['pr_marker_scan', 'gn_audit_pr_marker_scan', { evidenceLine: 1, sourceText: 1 }, 'sourceText: expected string'],
+    [
+      'pr_marker_scan',
+      'gn_audit_pr_marker_scan',
+      { evidenceLine: '1' },
+      'evidenceLine: expected number',
+    ],
+    [
+      'pr_marker_scan',
+      'gn_audit_pr_marker_scan',
+      { evidenceLine: NaN },
+      'evidenceLine: expected number',
+    ],
+    [
+      'pr_marker_scan',
+      'gn_audit_pr_marker_scan',
+      { evidenceLine: Infinity },
+      'evidenceLine: expected number',
+    ],
+    [
+      'pr_marker_scan',
+      'gn_audit_pr_marker_scan',
+      { evidenceLine: 1, sourceText: 1 },
+      'sourceText: expected string',
+    ],
     ['lint', 'gn_audit_lint', { scope: 'invalid' }, 'scope: expected one of'],
     ['lint', 'gn_audit_lint', { cursor: 1 }, 'cursor: expected string'],
     ['lint', 'gn_audit_lint', { session: 1 }, 'session: expected string'],

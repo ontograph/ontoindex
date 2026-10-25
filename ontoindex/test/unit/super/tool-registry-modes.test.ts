@@ -45,7 +45,10 @@ describe('tool-registry — static parity (SERENA-REV1)', () => {
   });
 
   it('getPublicToolRegistry({ includeFacades: false }) returns only super tools', () => {
-    const registry = getPublicToolRegistry({ includeFacades: false, startupProfile: 'public-full' });
+    const registry = getPublicToolRegistry({
+      includeFacades: false,
+      startupProfile: 'public-full',
+    });
     expect(registry).toHaveLength(ONTOINDEX_SUPER_TOOLS.length);
     expect(registry.every((e) => e.kind === 'super')).toBe(true);
   });
@@ -254,7 +257,9 @@ describe('tool-registry — query-projects mode (SERENA-D5)', () => {
 
   it('all QUERY_PROJECTS_TOOL_NAMES members appear in public registry', () => {
     const publicNames = new Set(
-      getPublicToolRegistry({ includeFacades: true, startupProfile: 'public-full' }).map((e) => e.name),
+      getPublicToolRegistry({ includeFacades: true, startupProfile: 'public-full' }).map(
+        (e) => e.name,
+      ),
     );
     for (const name of QUERY_PROJECTS_TOOL_NAMES) {
       expect(publicNames.has(name)).toBe(true);
@@ -262,7 +267,10 @@ describe('tool-registry — query-projects mode (SERENA-D5)', () => {
   });
 
   it('query-projects getPublicToolRegistry is a strict subset of unfiltered', () => {
-    const unfiltered = getPublicToolRegistry({ includeFacades: true, startupProfile: 'public-full' });
+    const unfiltered = getPublicToolRegistry({
+      includeFacades: true,
+      startupProfile: 'public-full',
+    });
     const qp = getPublicToolRegistry({
       includeFacades: true,
       mode: 'query-projects',
@@ -300,11 +308,15 @@ describe('tool-registry — MCP startup profiles (ADR 0027)', () => {
         [MCP_STARTUP_PROFILE_ENV]: 'definitely-invalid',
       }),
     ).toBe('core');
-    expect(getMcpStartupProfileFromEnv({ [MCP_STARTUP_PROFILE_ENV]: 'public-full' })).toBe('public-full');
+    expect(getMcpStartupProfileFromEnv({ [MCP_STARTUP_PROFILE_ENV]: 'public-full' })).toBe(
+      'public-full',
+    );
   });
 
   it('keeps the full frontier for inventory callers and reports core as the startup default', () => {
-    expect(getPublicToolRegistry()).toEqual(getPublicToolRegistry({ startupProfile: 'public-full' }));
+    expect(getPublicToolRegistry()).toEqual(
+      getPublicToolRegistry({ startupProfile: 'public-full' }),
+    );
     expect(getPublicToolDefinitions()).toEqual(
       getPublicToolDefinitions({ startupProfile: 'public-full' }),
     );
@@ -356,16 +368,19 @@ describe('tool-registry — MCP startup profiles (ADR 0027)', () => {
   it.each(['query', 'audit', 'refactor', 'systems'] as const)(
     '%s keeps the legacy startup basics advertised',
     (startupProfile) => {
-      const names = getPublicToolRegistry({ includeFacades: true, startupProfile })
-        .map((entry) => entry.name);
-      expect(names).toEqual(expect.arrayContaining([
-        'gn_analyze_job',
-        'gn_diagnose',
-        'gn_ensure_fresh',
-        'gn_help',
-        'gn_quality_mode',
-        'gn_tool_contract',
-      ]));
+      const names = getPublicToolRegistry({ includeFacades: true, startupProfile }).map(
+        (entry) => entry.name,
+      );
+      expect(names).toEqual(
+        expect.arrayContaining([
+          'gn_analyze_job',
+          'gn_diagnose',
+          'gn_ensure_fresh',
+          'gn_help',
+          'gn_quality_mode',
+          'gn_tool_contract',
+        ]),
+      );
     },
   );
 

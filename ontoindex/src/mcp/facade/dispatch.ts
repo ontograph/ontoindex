@@ -212,8 +212,15 @@ function normalizeFacadeArgs(
   }
   if (tool === 'audit' && action === 'session_lock') {
     const lockAction = normalized.lock_action;
-    if (lockAction !== undefined && lockAction !== 'create' && lockAction !== 'load' && lockAction !== 'validate') {
-      throw new Error('audit(action: "session_lock") requires lock_action: "create" | "load" | "validate" when supplied.');
+    if (
+      lockAction !== undefined &&
+      lockAction !== 'create' &&
+      lockAction !== 'load' &&
+      lockAction !== 'validate'
+    ) {
+      throw new Error(
+        'audit(action: "session_lock") requires lock_action: "create" | "load" | "validate" when supplied.',
+      );
     }
     if (lockAction === undefined) delete normalized.action;
     else normalized.action = lockAction;
@@ -225,7 +232,9 @@ function normalizeFacadeArgs(
   if (tool === 'inspect' && action === 'graph_walk') {
     const walkAction = normalized.walk_action;
     if (walkAction !== 'start' && walkAction !== 'step' && walkAction !== 'status') {
-      throw new Error('inspect(action: "graph_walk") requires walk_action: "start" | "step" | "status".');
+      throw new Error(
+        'inspect(action: "graph_walk") requires walk_action: "start" | "step" | "status".',
+      );
     }
     normalized.action = walkAction;
     delete normalized.walk_action;
@@ -308,7 +317,12 @@ function normalizeFacadeArgs(
     // Discovery handlers own limits; preserve extras on existing discovery actions.
     if (tool === 'discover') break;
     if (tool === 'inspect' && key === 'depth' && action === 'explore') continue;
-    if (schema.type !== 'number' && schema.type !== 'integer' && !(tool === 'inspect' && key === 'depth')) continue;
+    if (
+      schema.type !== 'number' &&
+      schema.type !== 'integer' &&
+      !(tool === 'inspect' && key === 'depth')
+    )
+      continue;
     const value = normalized[key];
     if (typeof value !== 'number' || !Number.isFinite(value)) {
       delete normalized[key];

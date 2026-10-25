@@ -222,19 +222,53 @@ describe('MCP Facade Integration (M-1)', () => {
 
   it.each([
     { options: {}, expectedRange: '--cached', expectedPaths: ['src/alpha.ts', 'src/beta.ts'] },
-    { options: { scope: 'commit-range', commitRange: 'HEAD~1..HEAD', includePaths: ['src/alpha.ts'], includeReviewers: false, profile: 'pr-pack' }, expectedRange: `${'a'.repeat(40)}..${'b'.repeat(40)}`, expectedPaths: ['src/alpha.ts'] },
-  ])('impact diff_impact matches the real super report: %j', async ({ options, expectedRange, expectedPaths }) => {
-    const backend = createFacadeBackend();
-    const direct = await superDispatch.dispatchSuper('gn_diff_impact', options, 'fixture') as Record<string, any>;
-    // Compare independent requests with the same process-local evidence history.
-    resetEvidenceReadLedgerForTests();
-    const facade = await dispatchFacade('impact', 'diff_impact', { action: 'diff_impact', repo: 'fixture', ...options }, backend) as Record<string, any>;
-    expect(facade).toMatchObject(direct);
-    expect(facade).toMatchObject({ commitRange: expectedRange, totalSymbolsChanged: 1, basedOnReads: { graph_evidence: 1 } });
-    expect(execFileTextMock).toHaveBeenCalledWith('git', ['diff', expectedRange, '--name-only'], expect.objectContaining({ cwd: '/tmp/fixture-repo' }));
-    expect(diffReviewMocks.buildDiffReview).toHaveBeenCalledWith('fixture', expectedPaths, expect.any(Map));
-    expect(backend.callTool).not.toHaveBeenCalled();
-  });
+    {
+      options: {
+        scope: 'commit-range',
+        commitRange: 'HEAD~1..HEAD',
+        includePaths: ['src/alpha.ts'],
+        includeReviewers: false,
+        profile: 'pr-pack',
+      },
+      expectedRange: `${'a'.repeat(40)}..${'b'.repeat(40)}`,
+      expectedPaths: ['src/alpha.ts'],
+    },
+  ])(
+    'impact diff_impact matches the real super report: %j',
+    async ({ options, expectedRange, expectedPaths }) => {
+      const backend = createFacadeBackend();
+      const direct = (await superDispatch.dispatchSuper(
+        'gn_diff_impact',
+        options,
+        'fixture',
+      )) as Record<string, any>;
+      // Compare independent requests with the same process-local evidence history.
+      resetEvidenceReadLedgerForTests();
+      const facade = (await dispatchFacade(
+        'impact',
+        'diff_impact',
+        { action: 'diff_impact', repo: 'fixture', ...options },
+        backend,
+      )) as Record<string, any>;
+      expect(facade).toMatchObject(direct);
+      expect(facade).toMatchObject({
+        commitRange: expectedRange,
+        totalSymbolsChanged: 1,
+        basedOnReads: { graph_evidence: 1 },
+      });
+      expect(execFileTextMock).toHaveBeenCalledWith(
+        'git',
+        ['diff', expectedRange, '--name-only'],
+        expect.objectContaining({ cwd: '/tmp/fixture-repo' }),
+      );
+      expect(diffReviewMocks.buildDiffReview).toHaveBeenCalledWith(
+        'fixture',
+        expectedPaths,
+        expect.any(Map),
+      );
+      expect(backend.callTool).not.toHaveBeenCalled();
+    },
+  );
 
   it('search(action="semantic") exposes exactly one typed structured shape', () => {
     const searchTool = ONTOINDEX_FACADE_TOOLS.find((tool) => tool.name === 'search')!;
@@ -422,9 +456,7 @@ describe('MCP Facade Integration (M-1)', () => {
         maxIssues: 1,
         persist: false,
       };
-      const direct = (await superDispatch.dispatchSuper(
-        'gn_audit_lint', params, 'fixture',
-      )) as any;
+      const direct = (await superDispatch.dispatchSuper('gn_audit_lint', params, 'fixture')) as any;
       const facade = (await dispatchFacade('audit', 'lint', params, backend)) as any;
 
       expect(facade).toEqual(direct);
@@ -446,9 +478,7 @@ describe('MCP Facade Integration (M-1)', () => {
         maxIssues: 50,
         cursor: facade.responseContract.nextCursor,
       };
-      const directNext = await superDispatch.dispatchSuper(
-        'gn_audit_lint', nextParams, 'fixture',
-      );
+      const directNext = await superDispatch.dispatchSuper('gn_audit_lint', nextParams, 'fixture');
       const facadeNext = await dispatchFacade('audit', 'lint', nextParams, backend);
 
       expect(facadeNext).toEqual(directNext);
@@ -534,16 +564,40 @@ describe('MCP Facade Integration (M-1)', () => {
   it.each([
     { options: {}, expectedRange: '--cached' },
     { options: { scope: 'commit-range' }, expectedRange: '--cached' },
-    { options: { scope: 'commit-range', commitRange: 'HEAD~1..HEAD', includePaths: ['src/alpha.ts'] }, expectedRange: `${'a'.repeat(40)}..${'b'.repeat(40)}` },
+    {
+      options: {
+        scope: 'commit-range',
+        commitRange: 'HEAD~1..HEAD',
+        includePaths: ['src/alpha.ts'],
+      },
+      expectedRange: `${'a'.repeat(40)}..${'b'.repeat(40)}`,
+    },
   ])('audit review matches the real super envelope: %j', async ({ options, expectedRange }) => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(1700000000000);
     try {
       const backend = createFacadeBackend();
-      const direct = await superDispatch.dispatchSuper('gn_review_diff', options, 'fixture') as Record<string, any>;
-      const facade = await dispatchFacade('audit', 'review_diff', { action: 'review_diff', repo: 'fixture', ...options }, backend) as Record<string, any>;
+      const direct = (await superDispatch.dispatchSuper(
+        'gn_review_diff',
+        options,
+        'fixture',
+      )) as Record<string, any>;
+      const facade = (await dispatchFacade(
+        'audit',
+        'review_diff',
+        { action: 'review_diff', repo: 'fixture', ...options },
+        backend,
+      )) as Record<string, any>;
       expect(facade).toMatchObject(direct);
-      expect(facade).toMatchObject({ envelopeVersion: '1', tool: 'gn_review_diff', results: { resolvedRange: expectedRange } });
-      expect(execFileTextMock).toHaveBeenCalledWith('git', ['diff', expectedRange, '--name-only'], expect.objectContaining({ cwd: '/tmp/fixture-repo' }));
+      expect(facade).toMatchObject({
+        envelopeVersion: '1',
+        tool: 'gn_review_diff',
+        results: { resolvedRange: expectedRange },
+      });
+      expect(execFileTextMock).toHaveBeenCalledWith(
+        'git',
+        ['diff', expectedRange, '--name-only'],
+        expect.objectContaining({ cwd: '/tmp/fixture-repo' }),
+      );
       expect(diffReviewMocks.buildDiffReview).toHaveBeenCalled();
       expect(backend.callTool).not.toHaveBeenCalled();
     } finally {
@@ -553,8 +607,12 @@ describe('MCP Facade Integration (M-1)', () => {
 
   it('audit review preserves super scope validation without legacy fallback', async () => {
     const backend = createFacadeBackend();
-    await expect(superDispatch.dispatchSuper('gn_review_diff', { scope: 'unstaged' }, 'fixture')).rejects.toThrow(/scope/);
-    await expect(dispatchFacade('audit', 'review_diff', { scope: 'unstaged' }, backend)).rejects.toThrow(/scope/);
+    await expect(
+      superDispatch.dispatchSuper('gn_review_diff', { scope: 'unstaged' }, 'fixture'),
+    ).rejects.toThrow(/scope/);
+    await expect(
+      dispatchFacade('audit', 'review_diff', { scope: 'unstaged' }, backend),
+    ).rejects.toThrow(/scope/);
     expect(backend.callTool).not.toHaveBeenCalled();
   });
 
