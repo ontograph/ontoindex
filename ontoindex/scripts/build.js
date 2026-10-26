@@ -8,7 +8,7 @@
  *  3. Copy ontoindex-shared/dist to dist/_shared
  *  4. Rewrite bare 'ontoindex-shared' specifiers to relative paths
  */
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,14 @@ const DIST_SUPER_DISPATCH = path.join(DIST, 'mcp', 'super', 'dispatch.js');
 const LADYBUG_EXTENSIONS_VERSION = 'v0.17.0';
 const NATIVE_ROOT = path.resolve(ROOT, '..', 'ontoindex-native');
 const NATIVE_ARTIFACTS = ['index.cjs', 'native.cjs', 'native/ontoindex_native.node'];
+if (process.platform === 'linux') {
+  console.log('[build] compiling ontoindex-native...');
+  execFileSync('npm', ['run', 'build'], {
+    cwd: NATIVE_ROOT,
+    stdio: 'inherit',
+    env: { ...process.env, CARGO_BUILD_JOBS: '4' },
+  });
+}
 for (const artifact of NATIVE_ARTIFACTS) {
   const source = path.join(NATIVE_ROOT, artifact);
   if (!fs.statSync(source).isFile()) {
