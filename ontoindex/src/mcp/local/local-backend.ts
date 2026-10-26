@@ -2202,7 +2202,7 @@ export class LocalBackend implements BackendPort {
   private async dispatchRepoTool(method: string, params: NormalizedToolParams): Promise<unknown> {
     const repo = await this.resolveRepo(this.getRepoParam(params));
     const handler = this.repoToolHandlers.get(method);
-    if (!handler) throw new Error(`Unknown tool: ${method}`);
+    if (typeof handler !== 'function') throw new Error(`Unknown tool: ${method}`);
     const endUse = this.trackRepoUse(repo.id);
     try {
       return await this.dispatchTrackedRepoTool(repo, method, params, handler);
@@ -2362,8 +2362,10 @@ export class LocalBackend implements BackendPort {
     params: NormalizedToolParams,
     handler: RepoToolHandler,
   ): Promise<unknown> {
-    if (typeof handler !== 'function') throw new Error(`Unknown tool: ${method}`);
-    const invoke = () => handler(repo, params);
+    const invoke = () => {
+      if (typeof handler !== 'function') throw new Error(`Unknown tool: ${method}`);
+      return handler(repo, params);
+    };
     let preparationNote: string | undefined;
     const metadataOnlyReadiness =
       method === 'docs' && (params.action === undefined || params.action === 'readiness');
