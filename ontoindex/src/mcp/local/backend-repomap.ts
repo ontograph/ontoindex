@@ -1,4 +1,5 @@
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { workspaceGraphPoolId } from './backend-overlay.js';
 import { personalizedPageRank, buildFullAdjacency } from '../../core/graph/pagerank.js';
 import { compressSymbol } from '../../core/graph/repomap-compressor.js';
 import { estimateTokens } from '../../core/wiki/llm-client.js';
@@ -166,7 +167,7 @@ function dedupeIds(ids: string[]): string[] {
 
 async function resolveRepomapFocusRows(repo: RepoHandle, item: string): Promise<RepomapNodeRow[]> {
   const fileRowsRaw = await executeParameterized(
-    repo.id,
+    workspaceGraphPoolId(repo.id),
     `
     MATCH (n)
     WHERE n.filePath = $item
@@ -178,13 +179,13 @@ async function resolveRepomapFocusRows(repo: RepoHandle, item: string): Promise<
   );
   if (fileRowsRaw.length > 0) {
     const fileRows = fileRowsRaw.map(normalizeRepomapRow);
-    await enrichCandidateLabels(repo, fileRows);
+    await enrichCandidateLabels({ ...repo, id: workspaceGraphPoolId(repo.id) }, fileRows);
     const symbolRows = fileRows.filter((row) => row.type !== 'File' && row.type !== 'Folder');
     return (symbolRows.length > 0 ? symbolRows : fileRows).sort(sortRepomapRows);
   }
 
   const symbolRowsRaw = await executeParameterized(
-    repo.id,
+    workspaceGraphPoolId(repo.id),
     `
     MATCH (n)
     WHERE n.id = $item OR n.name = $item
@@ -197,7 +198,7 @@ async function resolveRepomapFocusRows(repo: RepoHandle, item: string): Promise<
   if (symbolRowsRaw.length === 0) return [];
 
   const symbolRows = symbolRowsRaw.map(normalizeRepomapRow);
-  await enrichCandidateLabels(repo, symbolRows);
+  await enrichCandidateLabels({ ...repo, id: workspaceGraphPoolId(repo.id) }, symbolRows);
   return symbolRows.sort(sortRepomapRows);
 }
 
@@ -298,7 +299,7 @@ export async function runRepomap(repo: RepoHandle, params: RepomapParams): Promi
   }
 
   const relRows = await executeParameterized<RepomapRelationshipRow>(
-    repo.id,
+    workspaceGraphPoolId(repo.id),
     `
     MATCH (s)-[r:CodeRelation]->(t)
     WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS']
@@ -322,7 +323,7 @@ export async function runRepomap(repo: RepoHandle, params: RepomapParams): Promi
 
   // Step 5: Fetch metadata in bulk (up to some reasonable limit to keep query fast)
   const metaRows: RepomapRawRow[] = await executeParameterized(
-    repo.id,
+    workspaceGraphPoolId(repo.id),
     `
     MATCH (n)
     WHERE n.id IN $nodeIds
@@ -332,7 +333,7 @@ export async function runRepomap(repo: RepoHandle, params: RepomapParams): Promi
     { nodeIds: rankedNodeIds.slice(0, META_FETCH_LIMIT) },
   );
   const normalizedMetaRows = metaRows.map(normalizeRepomapRow);
-  await enrichCandidateLabels(repo, normalizedMetaRows);
+  await enrichCandidateLabels({ ...repo, id: workspaceGraphPoolId(repo.id) }, normalizedMetaRows);
 
   const metaMap = new Map<string, RepomapNodeRow>();
   for (const row of normalizedMetaRows) metaMap.set(row.id, row);

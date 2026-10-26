@@ -25,6 +25,7 @@ export interface StructureOutput {
    */
   allPathSet: ReadonlySet<string>;
   totalFiles: number;
+  skippedLargeFiles?: { path: string; size: number }[];
   dispose?(): void;
 }
 
@@ -36,7 +37,10 @@ export const structurePhase: PipelinePhase<StructureOutput> = {
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<StructureOutput> {
-    const { scannedFiles, allPaths, totalFiles } = getPhaseOutput<ScanOutput>(deps, 'scan');
+    const { scannedFiles, allPaths, totalFiles, skippedLargeFiles } = getPhaseOutput<ScanOutput>(
+      deps,
+      'scan',
+    );
 
     ctx.onProgress({
       phase: 'structure',
@@ -58,6 +62,7 @@ export const structurePhase: PipelinePhase<StructureOutput> = {
     // can all reuse it instead of re-materializing `new Set(allPaths)` each.
     const scannedFilesSnapshot = scannedFiles.map((file) => ({ ...file }));
     const allPathsSnapshot = [...allPaths];
+    const skippedLargeFilesSnapshot = skippedLargeFiles?.map((file) => ({ ...file })) ?? [];
     const allPathSet: ReadonlySet<string> = new Set(allPathsSnapshot);
 
     return {
@@ -65,8 +70,10 @@ export const structurePhase: PipelinePhase<StructureOutput> = {
       allPaths: allPathsSnapshot,
       allPathSet,
       totalFiles,
+      skippedLargeFiles: skippedLargeFilesSnapshot,
       dispose: () => {
         scannedFilesSnapshot.length = 0;
+        skippedLargeFilesSnapshot.length = 0;
         allPathsSnapshot.length = 0;
         (allPathSet as Set<string>).clear();
       },

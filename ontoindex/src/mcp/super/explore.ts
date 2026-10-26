@@ -28,6 +28,7 @@ import {
 export type IntentLabel = Intent;
 
 export interface ExploreParams {
+  read_mode?: 'committed';
   query: string;
   depth?: 'shallow' | 'balanced' | 'deep'; // default: 'balanced'
   qualityMode?: 'fast' | 'balanced' | 'thorough'; // default: 'balanced'
@@ -160,10 +161,16 @@ function rowString(row: QueryRow, key: string, index: number): string {
   return (rowValue(row, key, index) ?? '') as string;
 }
 
-function retryExamples(repoId: string, nodeId: string, name: string): SymbolRetryExamples {
+function retryExamples(
+  repoId: string,
+  nodeId: string,
+  name: string,
+  readMode?: 'committed',
+): SymbolRetryExamples {
+  const mode = readMode === 'committed' ? ', read_mode: "committed"' : '';
   return {
-    inspect: `inspect({ action: "context", repo: "${repoId}", uid: "${nodeId}" })`,
-    impact: `impact({ action: "symbol", repo: "${repoId}", target_uid: "${nodeId}", target: "${name}" })`,
+    inspect: `inspect({ action: "context", repo: "${repoId}", uid: "${nodeId}"${mode} })`,
+    impact: `impact({ action: "symbol", repo: "${repoId}", target_uid: "${nodeId}", target: "${name}"${mode} })`,
   };
 }
 
@@ -180,13 +187,15 @@ function buildNextCalls(
   repoId: string,
   query: string,
   firstSymbol?: ExploreNextCallSymbol,
+  readMode?: 'committed',
 ): string[] {
+  const mode = readMode === 'committed' ? ', read_mode: "committed"' : '';
   return firstSymbol
     ? [
-        `inspect({ action: "context", repo: "${repoId}", uid: "${firstSymbol.nodeId}" })`,
-        `impact({ action: "symbol", repo: "${repoId}", target_uid: "${firstSymbol.nodeId}", target: "${firstSymbol.name}" })`,
+        `inspect({ action: "context", repo: "${repoId}", uid: "${firstSymbol.nodeId}"${mode} })`,
+        `impact({ action: "symbol", repo: "${repoId}", target_uid: "${firstSymbol.nodeId}", target: "${firstSymbol.name}"${mode} })`,
       ]
-    : [`gn_explore({ repo: "${repoId}", query: "${query}", depth: "deep" })`];
+    : [`gn_explore({ repo: "${repoId}", query: "${query}", depth: "deep"${mode} })`];
 }
 
 function buildTaskPack(
@@ -195,6 +204,7 @@ function buildTaskPack(
   intent: IntentLabel,
   symbols: ExploreReport['topSymbols'],
   warnings: string[],
+  readMode?: 'committed',
 ): ExploreTaskPack {
   const topSymbols = symbols.slice(0, TASK_PACK_TOP_SYMBOLS).map((sym) => ({
     nodeId: sym.nodeId,
@@ -211,7 +221,7 @@ function buildTaskPack(
   const readFirstProjection = projectReadFirstFiles(buildReadFirstFacts(topSymbols), {
     maxFiles: TASK_PACK_READ_FIRST_MAX_FILES,
   });
-  const nextCalls = buildNextCalls(repoId, query, firstSymbol);
+  const nextCalls = buildNextCalls(repoId, query, firstSymbol, readMode);
 
   return {
     query,
@@ -254,7 +264,7 @@ async function fetchCluster(
     const rows = await executeParameterized(
       repoId,
       `MATCH (n {id: $nodeId})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-       RETURN c.heuristicLabel AS name, c.role AS role
+       RETURN c.heuristicLabel AS name
        LIMIT 1`,
       { nodeId },
     );
@@ -262,7 +272,7 @@ async function fetchCluster(
     const row = rows[0] as QueryRow;
     return {
       name: rowString(row, 'name', 0),
-      role: rowString(row, 'role', 1),
+      role: '',
     };
   } catch {
     return null;
@@ -274,8 +284,8 @@ async function fetchCoChangedFiles(repoId: string, filePath: string): Promise<st
     const rows = await executeParameterized(
       repoId,
       `MATCH (f:File {filePath: $path})-[r:CodeRelation {type: 'CO_CHANGED_WITH'}]-(other:File)
-       RETURN other.filePath AS otherPath, r.count AS cnt
-       ORDER BY r.count DESC
+       RETURN other.filePath AS otherPath, r.confidence AS cnt
+       ORDER BY r.confidence DESC
        LIMIT 5`,
       { path: filePath },
     );
@@ -387,7 +397,7 @@ export async function gnExplore(
     name: (sym.name ?? '') as string,
     filePath: (sym.filePath ?? '') as string,
   }));
-  const nextCalls = buildNextCalls(repoId, params.query, topSymbolSummaries[0]);
+  const nextCalls = buildNextCalls(repoId, params.query, topSymbolSummaries[0], params.read_mode);
   const readFirstProjection = projectReadFirstFiles(buildReadFirstFacts(topSymbolSummaries), {
     maxFiles: TASK_PACK_READ_FIRST_MAX_FILES,
   });
@@ -460,7 +470,7 @@ export async function gnExplore(
         cluster,
         ...(citations !== undefined ? { citations } : {}),
         coChangedFiles,
-        ...(nodeId ? { retryExamples: retryExamples(repoId, nodeId, name) } : {}),
+        ...(nodeId ? { retryExamples: retryExamples(repoId, nodeId, name, params.read_mode) } : {}),
       };
     },
   );
@@ -549,6 +559,7 @@ export async function gnExplore(
             classification.intent,
             enrichedSymbols,
             warnings,
+            params.read_mode,
           ),
         }
       : {}),

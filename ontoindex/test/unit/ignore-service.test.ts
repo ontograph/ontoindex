@@ -3,6 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import { glob } from 'glob';
+import { execFileSync } from 'node:child_process';
 import {
   shouldIgnorePath,
   isHardcodedIgnoredDirectory,
@@ -282,6 +283,22 @@ describe('loadIgnoreRules', () => {
   it('returns null when no ignore files exist', async () => {
     const result = await loadIgnoreRules(tmpDir);
     expect(result).toBeNull();
+  });
+
+  it('does not block on a FIFO ignore file', async () => {
+    const fifo = path.join(tmpDir, '.gitignore');
+    execFileSync('mkfifo', [fifo]);
+    try {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const result = await Promise.race([
+        loadIgnoreRules(tmpDir),
+        new Promise<'blocked'>((resolve) => setTimeout(() => resolve('blocked'), 2000)),
+      ]);
+      warn.mockRestore();
+      expect(result).toBeNull();
+    } finally {
+      await fs.rm(fifo, { force: true });
+    }
   });
 
   it('parses .gitignore file', async () => {

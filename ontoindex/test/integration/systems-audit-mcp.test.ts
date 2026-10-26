@@ -187,37 +187,115 @@ describe('systems audit MCP MVP modules', () => {
     expect(targetedSuggestion.suggestions[0].file).toBe('test/sidecar-manager.test.ts');
   });
 
+  it.each([undefined, '', '  \t  '])(
+    'keeps a bare Rust symbol advisory without inventing a test path (%j)',
+    async (path) => {
+      const report = (await dispatchSuper(
+        'gn_test_suggestions',
+        {
+          symbol: 'codex_core::run',
+          risk: 'caller-transaction',
+          ...(path === undefined ? {} : { path }),
+        },
+        'fixture',
+      )) as Record<string, any>;
+
+      expect(report.suggestions).toEqual([
+        {
+          file: null,
+          case: 'test_codex_core_run_caller_transaction',
+          target: 'codex_core::run',
+          assertion: 'Assert the caller-transaction invariant remains true for codex_core::run.',
+          required: false,
+        },
+      ]);
+      expect(report.warnings).toEqual([
+        'Suggestions are advisory; supplied test paths and coverage are not independently verified.',
+        'No test path supplied; provide path or evidence[].testFile to locate this advisory suggestion.',
+      ]);
+      expect(report.skipReasons).toEqual(['test file unavailable: no supplied test path']);
+    },
+  );
+
+  it('preserves an explicit test path and keeps the suggestion advisory', async () => {
+    const report = (await dispatchSuper(
+      'gn_test_suggestions',
+      { symbol: 'unknown', path: ' ./tests/Rust Tests.rs ' },
+      'fixture',
+    )) as Record<string, any>;
+
+    expect(report.suggestions[0]).toMatchObject({
+      file: ' ./tests/Rust Tests.rs ',
+      required: false,
+    });
+    expect(report.warnings).toEqual([
+      'Suggestions are advisory; supplied test paths and coverage are not independently verified.',
+    ]);
+    expect(report.skipReasons).toEqual([]);
+  });
+
+  it('retains missing-path uncertainty in both legacy and envelope responses', async () => {
+    const params = { symbol: 'unknown' };
+    const legacy = (await dispatchSuper('gn_test_suggestions', params, 'fixture')) as Record<
+      string,
+      any
+    >;
+    const envelope = (await dispatchSuper(
+      'gn_test_suggestions',
+      { ...params, legacyResponse: false },
+      'fixture',
+    )) as Record<string, any>;
+
+    expect(envelope).toMatchObject({
+      envelopeVersion: '1',
+      tool: 'gn_test_suggestions',
+      results: {
+        suggestions: legacy.suggestions,
+        skipReasons: legacy.skipReasons,
+      },
+    });
+    expect(envelope.warnings).toEqual(expect.arrayContaining(legacy.warnings));
+    expect(legacy.warnings).toHaveLength(2);
+    expect(envelope.evidence).toEqual(legacy.suggestions);
+  });
+
   it('prefers gn_test_gap evidence testFile when given the target report shape', async () => {
     const targetedSuggestion = (await dispatchSuper(
       'gn_test_suggestions',
       {
         symbol: 'SidecarManager::_spawn',
         risk: 'fd-leak-across-fork',
+        path: 'test/explicit.test.ts',
         targetedCoverage: {
           targetedCoverage: 'found',
           linkedTests: ['test/legacy-linked.test.ts'],
           executedTests: ['test/legacy-executed.test.ts'],
           evidence: [
-            { testFile: 'test/sidecar-manager.test.ts' },
+            { testFile: ' ./test/sidecar-manager.test.ts ' },
             { testFile: 'test/secondary.test.ts' },
           ],
         },
       },
       'fixture',
     )) as Record<string, any>;
-    expect(targetedSuggestion.suggestions[0].file).toBe('test/sidecar-manager.test.ts');
+    expect(targetedSuggestion.suggestions[0]).toMatchObject({
+      file: ' ./test/sidecar-manager.test.ts ',
+      required: false,
+    });
 
     const topLevelReportSuggestion = (await dispatchSuper(
       'gn_test_suggestions',
       {
         symbol: 'SidecarManager::_spawn',
         risk: 'fd-leak-across-fork',
+        path: 'test/explicit.test.ts',
         targetedCoverage: 'found',
         evidence: [{ testFile: 'test/from-target-report.test.ts' }],
       },
       'fixture',
     )) as Record<string, any>;
     expect(topLevelReportSuggestion.suggestions[0].file).toBe('test/from-target-report.test.ts');
+    expect(topLevelReportSuggestion.suggestions[0].required).toBe(false);
   });
 
   it('gn_resource_trace accepts an absolute path under the repo root', async () => {

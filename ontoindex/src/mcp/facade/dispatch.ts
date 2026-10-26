@@ -1,5 +1,6 @@
 import type { LocalBackend } from '../local/local-backend.js';
-import type { SuperTool } from '../super/names.js';
+import { withPreparedSuperRead, type SuperTool } from '../super/names.js';
+import { isAutomaticWorkspaceEnabled } from '../local/backend-overlay.js';
 import { ONTOINDEX_FACADE_TOOLS } from './tool-definitions.js';
 import { parseTypedQueryDocument } from '../../core/search/typed-query-document.js';
 import { getMcpStartupProfileFromEnv, getPublicToolRegistry } from '../shared/tool-registry.js';
@@ -62,15 +63,35 @@ export async function dispatchFacade(
 
   const superTool = getAuditFacadeSuperTool(tool, action);
   if (superTool) {
+    if (superTool === 'gn_ensure_fresh') {
+      const { dispatchSuper } = await import('../super/dispatch.js');
+      return dispatchSuper(superTool, args, typeof args.repo === 'string' ? args.repo : '');
+    }
     const repo = await backend.resolveRepo(typeof args.repo === 'string' ? args.repo : undefined);
     const { dispatchSuper } = await import('../super/dispatch.js');
     try {
-      return attachRepoScopeIdentity(
-        await (superTool === 'gn_audit_logic'
-          ? dispatchSuper(superTool, args, repo.id, undefined, { repoPath: repo.repoPath })
-          : dispatchSuper(superTool, args, repo.id)),
+      const superResult = await withPreparedSuperRead(
+        superTool,
+        args,
         repo,
+        backend,
+        {
+          automaticWorkspace: isAutomaticWorkspaceEnabled(),
+          committedRead: args.read_mode === 'committed',
+        },
+        () =>
+          superTool === 'gn_audit_logic'
+            ? dispatchSuper(superTool, args, repo.id, undefined, { repoPath: repo.repoPath })
+            : superTool === 'gn_test_gap' || superTool === 'gn_verify_diff'
+              ? dispatchSuper(superTool, args, repo.id, undefined, undefined, backend)
+              : superTool === 'gn_safe_refactor'
+                ? dispatchSuper(superTool, args, repo.id, {
+                    repoPath: repo.repoPath,
+                    callTool: backend.callTool.bind(backend),
+                  })
+                : dispatchSuper(superTool, args, repo.id),
       );
+      return attachRepoScopeIdentity(superResult, repo);
     } catch (error) {
       throw attachRepoScopeIdentityToError(
         error instanceof Error ? error : new Error(String(error)),
@@ -84,10 +105,57 @@ export async function dispatchFacade(
 }
 
 function getAuditFacadeSuperTool(tool: FacadeTool, action: string): SuperTool | null {
+  if (tool === 'impact' && action === 'diff_impact') return 'gn_diff_impact';
+  if (tool === 'refactor' && action === 'safe_refactor') return 'gn_safe_refactor';
+  if (tool === 'inspect' && action === 'module') return 'gn_explain_module';
+  if (tool === 'inspect' && action === 'related') return 'gn_find_related';
+  if (tool === 'inspect' && action === 'explore') return 'gn_explore';
+  if (tool === 'manage' && action === 'ensure_fresh') return 'gn_ensure_fresh';
+  if (tool === 'manage' && action === 'analyze_job') return 'gn_analyze_job';
+  if (tool === 'inspect' && action === 'graph_walk') return 'gn_graph_walk';
+  if (tool === 'inspect' && action === 'propose_location') return 'gn_propose_location';
   if (tool !== 'audit') return null;
   switch (action) {
+    case 'review_diff':
+      return 'gn_review_diff';
+    case 'pre_commit_audit':
+      return 'gn_pre_commit_audit';
+    case 'ingest':
+      return 'gn_audit_ingest';
+    case 'verify':
+      return 'gn_audit_verify';
+    case 'tombstone_create':
+      return 'gn_audit_tombstone_create';
+    case 'safe_edit_check':
+      return 'gn_safe_edit_check';
+    case 'can_delete':
+      return 'gn_can_delete';
+    case 'dedupe':
+      return 'gn_audit_dedupe';
+    case 'lint':
+      return 'gn_audit_lint';
+    case 'bundle':
+      return 'gn_audit_bundle';
+    case 'bundle_conflicts':
+      return 'gn_bundle_conflicts';
+    case 'scope_guard':
+      return 'gn_scope_guard';
+    case 'dispatch_prompt':
+      return 'gn_dispatch_prompt';
+    case 'diff':
+      return 'gn_audit_diff';
+    case 'export':
+      return 'gn_audit_export';
+    case 'replay':
+      return 'gn_audit_replay';
+    case 'pr_marker_scan':
+      return 'gn_audit_pr_marker_scan';
+    case 'fix_history':
+      return 'gn_fix_history';
     case 'session_start':
       return 'gn_audit_session_start';
+    case 'session_lock':
+      return 'gn_audit_session_lock';
     case 'session_verify':
       return 'gn_audit_session_verify';
     case 'session_dedupe':
@@ -139,6 +207,52 @@ function normalizeFacadeArgs(
   args: Record<string, unknown>,
 ): Record<string, unknown> {
   const normalized = { ...args };
+  if (normalized.lock_action !== undefined && (tool !== 'audit' || action !== 'session_lock')) {
+    throw new Error('lock_action is only supported for audit(action: "session_lock").');
+  }
+  if (tool === 'audit' && action === 'session_lock') {
+    const lockAction = normalized.lock_action;
+    if (
+      lockAction !== undefined &&
+      lockAction !== 'create' &&
+      lockAction !== 'load' &&
+      lockAction !== 'validate'
+    ) {
+      throw new Error(
+        'audit(action: "session_lock") requires lock_action: "create" | "load" | "validate" when supplied.',
+      );
+    }
+    if (lockAction === undefined) delete normalized.action;
+    else normalized.action = lockAction;
+    delete normalized.lock_action;
+  }
+  if (normalized.walk_action !== undefined && (tool !== 'inspect' || action !== 'graph_walk')) {
+    throw new Error('walk_action is only supported for inspect(action: "graph_walk").');
+  }
+  if (tool === 'inspect' && action === 'graph_walk') {
+    const walkAction = normalized.walk_action;
+    if (walkAction !== 'start' && walkAction !== 'step' && walkAction !== 'status') {
+      throw new Error(
+        'inspect(action: "graph_walk") requires walk_action: "start" | "step" | "status".',
+      );
+    }
+    normalized.action = walkAction;
+    delete normalized.walk_action;
+  }
+  if (normalized.job_action !== undefined && (tool !== 'manage' || action !== 'analyze_job')) {
+    throw new Error('job_action is only supported for manage(action: "analyze_job").');
+  }
+  if (tool === 'manage' && action === 'analyze_job') {
+    const jobAction = normalized.job_action === undefined ? 'status' : normalized.job_action;
+    if (jobAction !== 'status' && jobAction !== 'cancel') {
+      throw new Error('manage(action: "analyze_job") requires job_action: "status" | "cancel".');
+    }
+    if (typeof normalized.jobId !== 'string' || normalized.jobId.length === 0) {
+      throw new Error('manage(action: "analyze_job") requires jobId.');
+    }
+    normalized.action = jobAction;
+    delete normalized.job_action;
+  }
   const target = typeof normalized.target === 'string' ? normalized.target : undefined;
 
   if (tool === 'manage' && action === 'session') {
@@ -194,10 +308,21 @@ function normalizeFacadeArgs(
     normalized.action = action;
   }
 
+  // Super handlers own validation and bounds for their arguments.
+  if (getAuditFacadeSuperTool(tool, action)) return normalized;
+
   const properties = ONTOINDEX_FACADE_TOOLS.find((definition) => definition.name === tool)
     ?.inputSchema.properties;
   for (const [key, schema] of Object.entries(properties ?? {})) {
-    if (schema.type !== 'number' && schema.type !== 'integer') continue;
+    // Discovery handlers own limits; preserve extras on existing discovery actions.
+    if (tool === 'discover') break;
+    if (tool === 'inspect' && key === 'depth' && action === 'explore') continue;
+    if (
+      schema.type !== 'number' &&
+      schema.type !== 'integer' &&
+      !(tool === 'inspect' && key === 'depth')
+    )
+      continue;
     const value = normalized[key];
     if (typeof value !== 'number' || !Number.isFinite(value)) {
       delete normalized[key];
@@ -219,6 +344,10 @@ function getInternalMethod(tool: FacadeTool, action: string): string {
   switch (tool) {
     case 'discover':
       switch (action) {
+        case 'help':
+          return 'gn_help';
+        case 'tool_contract':
+          return 'gn_tool_contract';
         case 'repos':
           return 'list_repos';
         case 'routes':
@@ -331,6 +460,10 @@ function getInternalMethod(tool: FacadeTool, action: string): string {
 
     case 'manage':
       switch (action) {
+        case 'quality_mode':
+          return 'gn_quality_mode';
+        case 'diagnose':
+          return 'gn_diagnose';
         case 'session':
           return 'session';
         case 'route_map':

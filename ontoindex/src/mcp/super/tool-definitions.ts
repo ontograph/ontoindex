@@ -51,7 +51,7 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
   {
     name: 'gn_explore',
     description:
-      'Concept-level discovery: given a free-text query, returns a structured ExploreReport with top processes, top symbols (with optional skeletons and citation paths), cluster info, and suggested entry points.\n\nUse as the first tool when exploring an unfamiliar concept or feature area.',
+      'Concept-level discovery: given a free-text query, returns a structured ExploreReport with top processes, top symbols (with optional skeletons and citation paths), cluster info, and suggested entry points.\n\nUse as the first tool when exploring an unfamiliar concept or feature area. Graph results use the committed index and exclude uncommitted changes.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -106,7 +106,7 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
   {
     name: 'gn_explain_module',
     description:
-      'File/module overview: given a file path, returns exported symbols, cluster membership, co-changed files, last-commit date, and file stats — all in one call.\n\nUse when you need to understand what a file does and how it fits into the codebase.',
+      'File/module overview: given a file path, returns exported symbols, cluster membership, co-changed files, last-commit date, and file stats — all in one call.\n\nUse when you need to understand what a file does and how it fits into the codebase. Graph results use the committed index and exclude uncommitted changes.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -153,7 +153,7 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
   {
     name: 'gn_find_related',
     description:
-      'Symbol-level neighborhood: given a symbol name or canonical nodeId, returns callers, callees, co-changed files, cluster siblings, and optionally cross-repo references.\n\nUse to explore the blast radius or call graph around a specific function or class.',
+      'Symbol-level neighborhood: given a symbol name or canonical nodeId, returns callers, callees, co-changed files, cluster siblings, and optionally cross-repo references.\n\nUse to explore the blast radius or call graph around a specific function or class. Graph results use the committed index and exclude uncommitted changes.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1719,7 +1719,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
         expectedSymbols: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Expected changed symbols.',
+          description:
+            'Expected changed symbols. Omitted skips symbol-scope checking with an explicit skip reason; an empty array expects no changed symbols.',
         },
         expectedTests: {
           type: 'array',

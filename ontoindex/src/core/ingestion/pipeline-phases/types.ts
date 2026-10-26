@@ -55,7 +55,7 @@ export interface PhaseResult<T> {
  * inspect and only release bulk collections, caches, or handles.
  */
 export interface DisposablePhaseOutput {
-  dispose(): void;
+  dispose(): void | Promise<void>;
 }
 
 // ── Phase definition ───────────────────────────────────────────────────────

@@ -42,7 +42,7 @@ describe('status formatting', () => {
 
   it('describes semantic search availability without vague storage language', () => {
     expect(formatSemanticSearchStatus()).toBe(
-      'Semantic search: absent (no index metadata yet; run ontoindex analyze --embeddings to populate)',
+      'Semantic search: absent (no index metadata yet; opt in with ontoindex analyze --embeddings; structural navigation does not require embeddings)',
     );
 
     expect(
@@ -57,7 +57,7 @@ describe('status formatting', () => {
         stats: { embeddings: 0 },
       }),
     ).toBe(
-      'Semantic search: absent (symbols-only index; run ontoindex analyze --embeddings to populate)',
+      'Semantic search: absent (symbols-only index; opt in with ontoindex analyze --embeddings; structural navigation does not require embeddings)',
     );
   });
 
@@ -470,7 +470,7 @@ describe('status command behavior', () => {
       expect.arrayContaining(['Repository not indexed.', 'Run: ontoindex analyze']),
     );
     expect(logSpy.mock.calls.map(([line]) => line)).toContain(
-      'Semantic search: absent (no index metadata yet; run ontoindex analyze --embeddings to populate)',
+      'Semantic search: absent (no index metadata yet; opt in with ontoindex analyze --embeddings; structural navigation does not require embeddings)',
     );
   });
 
@@ -662,7 +662,7 @@ describe('status command behavior', () => {
     expect(logSpy.mock.calls.map(([line]) => line)).toEqual(
       expect.arrayContaining([
         'Repository has a stale KuzuDB index from a previous version.',
-        'Semantic search: absent (stale KuzuDB index; rebuild with ontoindex analyze --embeddings)',
+        'Semantic search: absent (stale KuzuDB index; rebuild with ontoindex analyze; optional semantic search is opt-in with --embeddings)',
         'Run: ontoindex analyze   (rebuilds the index with LadybugDB)',
       ]),
     );
@@ -687,11 +687,11 @@ describe('status command behavior', () => {
     await statusCommand({ repo: repoPath });
 
     expect(logSpy.mock.calls.map(([line]) => line)).toContain(
-      'Semantic search: absent (symbols-only index; run ontoindex analyze --embeddings to populate)',
+      'Semantic search: absent (symbols-only index; opt in with ontoindex analyze --embeddings; structural navigation does not require embeddings)',
     );
   });
 
-  it.each(['untrusted', 'stale', 'degraded'] as const)(
+  it.each(['untrusted', 'stale', 'degraded', 'dirty'] as const)(
     'keeps diagnostics consistent with %s runtime health',
     async (freshnessState) => {
       const { statusCommand } = await importStatus();
@@ -751,6 +751,13 @@ describe('status command behavior', () => {
         ]),
       );
       expect(lines).not.toContain('Graph index: clean');
+      if (freshnessState === 'dirty') {
+        const status = lines.find((line) => line.startsWith('Status:'));
+        expect(status).toContain('ontoindex analyze supports working-tree sources');
+        expect(status).toContain('partial coverage');
+        expect(status).toContain('current relationships limited to covered files');
+        expect(status).not.toMatch(/commit, stash, or clean/);
+      }
     },
   );
 

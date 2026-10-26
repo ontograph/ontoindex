@@ -60,6 +60,96 @@ describe('resolveTargetContext', () => {
     coverage: 'complete' as const,
   };
 
+  it.each([
+    ['complete', CURRENT_COMMIT, 'authoritative'],
+    ['partial', CURRENT_COMMIT, 'degraded'],
+    ['complete', 'older-captured-head', 'review'],
+    ['complete', undefined, 'review'],
+  ] as const)(
+    'projects admitted %s workspace at %s without probing CURRENT or source bytes',
+    async (coverage, capturedHead, state) => {
+      const { resolveTargetContext } = await loadActualResolver();
+      const forbidden = vi.fn(async () => {
+        throw new Error('must not probe admitted workspace');
+      });
+      const getter = vi.fn(() => ({
+        usable: true,
+        capability: 'workspace-graph' as const,
+        coverage,
+        reason: null,
+        generation: 'workspace-1',
+        manifestDigest: 'validated-digest',
+        currentHead: capturedHead,
+        baseGenerationId: 'base-1',
+        baseCommit: CURRENT_COMMIT,
+        dirtyPaths: new Set(['src/a.ts']),
+        parseErrorPaths: new Set<string>(),
+        overlayPaths: new Set(['src/a.ts']),
+        uncoveredPaths: new Set<string>(),
+        tombstones: new Set<string>(),
+      }));
+      const context = await resolveTargetContext(
+        {
+          repo: REPO_ID,
+          verifyGraphAuthority: true,
+          requiredGraphCapabilities: ['impact', 'processes'],
+        },
+        {
+          readRegistry: async () => [registryEntry],
+          execGit: execGitFor(CURRENT_COMMIT, ' M src/a.ts\n'),
+          getPinnedOverlaySnapshot: getter,
+          readActiveGenerationMeta: forbidden,
+          computeSourceManifest: forbidden,
+        },
+      );
+      expect(getter).toHaveBeenCalledWith(REPO_ID);
+      expect(forbidden).not.toHaveBeenCalled();
+      expect(context.graphAuthority).toMatchObject({
+        state,
+        generationId: 'workspace-1',
+        manifestDigest: 'validated-digest',
+        capability: 'workspace-graph',
+      });
+      expect(context.dirtyWorktree).toBe(true);
+      if (state === 'authoritative') expect(context.repairCommand).toBeUndefined();
+    },
+  );
+
+  it.each(['error', 'non-error'])('does not expose %s manifest failures', async (kind) => {
+    const { resolveTargetContext } = await loadActualResolver();
+    const privateText = `SYNTHETIC_SECRET\nSYNTHETIC_SOURCE_${'x'.repeat(8192)}`;
+    const context = await resolveTargetContext(
+      { repo: REPO_ID, verifyGraphAuthority: true },
+      {
+        readRegistry: async () => [registryEntry],
+        execGit: execGitFor(CURRENT_COMMIT),
+        loadMeta: async () => ({
+          repoPath: '.',
+          lastCommit: CURRENT_COMMIT,
+          indexedAt: 'graph-index-1',
+          generationId: 'generation-1',
+          sourceManifest: manifest,
+        }),
+        resolveActiveIndexGeneration: async () => ({
+          generationId: 'generation-1',
+          generationPath: '/repo/test-repo/.ontoindex/generations/generation-1',
+          lbugPath: '/repo/test-repo/.ontoindex/generations/generation-1/lbug',
+          metaPath: '/repo/test-repo/.ontoindex/generations/generation-1/meta.json',
+          snapshotPath: '/repo/test-repo/.ontoindex/generations/generation-1/snapshot.json',
+        }),
+        computeSourceManifest: async () => {
+          throw kind === 'error' ? new Error(privateText) : privateText;
+        },
+      },
+    );
+    expect(context.graphAuthority).toMatchObject({
+      state: 'degraded',
+      reason: 'source manifest unavailable',
+      coverage: 'complete',
+    });
+    expect(JSON.stringify(context)).not.toContain('SYNTHETIC_');
+  });
+
   it('resolves fresh target/current/index context', async () => {
     const { resolveTargetContext } = await loadActualResolver();
 
@@ -125,6 +215,84 @@ describe('resolveTargetContext', () => {
     expect(context.changedSinceIndex).toBe(true);
     expect(context.dirtyWorkspace?.state).toBe('stale-index');
   });
+
+  it.each([
+    {
+      name: 'clean with missing current HEAD',
+      head: '',
+      indexedHead: CURRENT_COMMIT,
+      status: '',
+      expected: null,
+    },
+    {
+      name: 'clean with missing indexed HEAD',
+      head: CURRENT_COMMIT,
+      indexedHead: '',
+      status: '',
+      expected: null,
+    },
+    {
+      name: 'clean with both HEADs missing',
+      head: '',
+      indexedHead: '',
+      status: '',
+      expected: null,
+    },
+    {
+      name: 'unknown status with aligned HEADs',
+      head: CURRENT_COMMIT,
+      indexedHead: CURRENT_COMMIT,
+      status: null,
+      expected: null,
+    },
+    {
+      name: 'unknown status with changed HEAD',
+      head: 'head-2',
+      indexedHead: CURRENT_COMMIT,
+      status: null,
+      expected: true,
+    },
+    {
+      name: 'dirty with missing current HEAD',
+      head: '',
+      indexedHead: CURRENT_COMMIT,
+      status: ' M src/file.ts\n',
+      expected: true,
+    },
+    {
+      name: 'dirty with missing indexed HEAD',
+      head: CURRENT_COMMIT,
+      indexedHead: '',
+      status: ' M src/file.ts\n',
+      expected: true,
+    },
+    {
+      name: 'clean with aligned HEADs',
+      head: CURRENT_COMMIT,
+      indexedHead: CURRENT_COMMIT,
+      status: '',
+      expected: false,
+    },
+  ])(
+    'preserves changedSinceIndex certainty: $name',
+    async ({ head, indexedHead, status, expected }) => {
+      const { resolveTargetContext } = await loadActualResolver();
+      const execGit = execGitFor(head, status ?? '');
+
+      const context = await resolveTargetContext(
+        { repo: REPO_ID },
+        {
+          readRegistry: async () => [{ ...registryEntry, lastCommit: indexedHead }],
+          execGit: async (cwd, args) => {
+            if (status === null && args[0] === 'status') throw new Error('status unavailable');
+            return execGit(cwd, args);
+          },
+        },
+      );
+
+      expect(context.changedSinceIndex).toBe(expected);
+    },
+  );
 
   it('uses active generation metadata when the registry commit lags', async () => {
     const { resolveTargetContext } = await loadActualResolver();

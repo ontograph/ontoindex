@@ -1027,7 +1027,8 @@ export const loadGraphToLbug = async (
       if (failedPairEdges > 1000) {
         throw new Error(
           `Bulk edge COPY failed for ${failedPairEdges} edges. Individual insert fallback is disabled for sets > 1000 to prevent extreme slowdown. ` +
-            'Check your schema label-pairs or reduce the number of missing relationships.',
+            'Check your schema label-pairs or reduce the number of missing relationships.' +
+            (warnings.length > 0 ? ` Failed pairs: ${warnings.slice(0, 5).join('; ')}` : ''),
         );
       }
 

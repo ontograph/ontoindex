@@ -108,6 +108,8 @@ jobs:
     needs: guard
     if: needs.guard.outputs.should_run == 'true'
     uses: ./.github/workflows/ci.yml
+    with:
+      linux_only: true
     permissions:
       contents: read
     secrets: inherit
@@ -350,29 +352,9 @@ jobs:
           RELEASE_TAG: ${{ steps.version.outputs.vtag }}
           GITHUB_TOKEN: ${{ github.token }}
 
-  # ── Build & push RC Docker images ────────────────────────────────────
-  # Calls docker.yml as a reusable workflow so that the build, signing, and
-  # attestation logic stays in one place. The publish job exposes `vtag`
-  # (e.g. `v1.2.3-rc.1`) as an output so we can pass it as the tag input.
-  # RC images are signed with Cosign keyless signing; the OIDC identity
-  # will be `docker.yml@refs/heads/master` (the caller's ref) rather than a
-  # tag ref — see README.md § Docker for the correct verify command for RCs.
-  docker:
-    name: Build & Push RC Docker images
-    needs: [guard, publish]
-    if: needs.guard.outputs.should_run == 'true' && needs.publish.outputs.vtag != ''
-    uses: ./.github/workflows/docker.yml
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-      attestations: write
-    with:
-      tag: ${{ needs.publish.outputs.vtag }}
-
   finalize:
     name: Mark verified release candidate complete
-    needs: [guard, publish, docker]
+    needs: [guard, publish]
     if: needs.guard.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5

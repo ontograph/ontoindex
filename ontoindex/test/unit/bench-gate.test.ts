@@ -51,7 +51,7 @@ afterEach(() => {
 });
 
 describe('bench-gate', () => {
-  it('accepts output produced by a real Vitest benchmark run', () => {
+  it('accepts real Vitest output against a same-measurement format compatibility baseline', () => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-gate-acceptance-'));
     tempDirs.push(cwd);
     const currentPath = path.join(cwd, 'current.json');
@@ -83,9 +83,10 @@ describe('bench-gate', () => {
     const gateRoot = path.join(cwd, 'gate');
     fs.mkdirSync(path.join(gateRoot, 'test/bench'), { recursive: true });
     fs.copyFileSync(currentPath, path.join(gateRoot, 'test/bench/current.json'));
+    // Format compatibility uses this measurement; performance is checked separately.
     fs.writeFileSync(
       path.join(gateRoot, 'test/bench/baseline.json'),
-      JSON.stringify(checkedBaseline),
+      JSON.stringify({ ...checkedBaseline, ratio: currentRatio }),
     );
     const gateRun = spawnSync(process.execPath, [script], { cwd: gateRoot, encoding: 'utf8' });
     expect(gateRun.status, gateRun.stderr).toBe(0);

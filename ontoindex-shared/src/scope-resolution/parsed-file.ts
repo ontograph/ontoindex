@@ -19,6 +19,9 @@
  *                          superset of every `Scope.ownedDefs` union.
  *                          Listed separately so `finalize` can dedup-index
  *                          without re-walking scopes.
+ *   - `exports`          — optional exported-name to def-id surface; an empty
+ *                          map exports nothing, while absence or `undefined`
+ *                          retains finalize's legacy simple-name lookup.
  *   - `referenceSites`   — pre-resolution usage facts; populated by the
  *                          resolution phase into `ReferenceIndex`.
  *
@@ -34,12 +37,12 @@
  *
  * `FinalizeFile` (defined in `./finalize-algorithm.ts`) is a structural
  * subset of `ParsedFile` — `filePath`, `moduleScope`, `parsedImports`,
- * `localDefs`. A `ParsedFile` is trivially convertible to a `FinalizeFile`
- * by picking those four fields, so the finalize orchestrator threads
+ * `localDefs`, and optional `exports`. A `ParsedFile` is convertible to a
+ * `FinalizeFile` by picking those fields, so the finalize orchestrator threads
  * ParsedFile through to the shared algorithm without shape-shifting.
  */
 
-import type { Scope, ScopeId } from './types.js';
+import type { DefId, Scope, ScopeId } from './types.js';
 import type { ParsedImport } from './types.js';
 import type { SymbolDefinition } from './symbol-definition.js';
 import type { ReferenceSite } from './reference-site.js';
@@ -61,5 +64,11 @@ export interface ParsedFile {
    * pre-flattened for O(N) consumption by finalize.
    */
   readonly localDefs: readonly SymbolDefinition[];
+  /**
+   * Exported names mapped to ids in `localDefs`, including aliases. An empty
+   * map exports nothing; absence or `undefined` retains legacy simple-name
+   * lookup. This surface never replaces or filters `localDefs`.
+   */
+  readonly exports?: ReadonlyMap<string, DefId>;
   readonly referenceSites: readonly ReferenceSite[];
 }

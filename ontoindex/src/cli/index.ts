@@ -3,7 +3,7 @@
 // Heap re-spawn removed — only analyze.ts needs the 8GB heap (via its own ensureHeap()).
 // Removing it from here improves MCP server startup time significantly.
 
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { createRequire } from 'node:module';
 import { createLazyAction } from './lazy-action.js';
 import { registerGroupCommands } from './group.js';
@@ -420,6 +420,11 @@ program
 program
   .command('query <search_query>')
   .description('Search the knowledge graph for execution flows related to a concept')
+  .addOption(
+    new Option('--read-mode <mode>', 'Read the indexed commit only; requires --repo').choices([
+      'committed',
+    ]),
+  )
   .option('-r, --repo <name>', 'Target repository (omit if only one indexed)')
   .option('-c, --context <text>', 'Task context to improve ranking')
   .option('-g, --goal <text>', 'What you want to find')
@@ -457,6 +462,11 @@ program
 program
   .command('context [name]')
   .description('360-degree view of a code symbol: callers, callees, processes')
+  .addOption(
+    new Option('--read-mode <mode>', 'Read the indexed commit only; requires --repo').choices([
+      'committed',
+    ]),
+  )
   .option('-r, --repo <name>', 'Target repository')
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-f, --file <path>', 'File path to disambiguate common names')
@@ -466,6 +476,12 @@ program
 program
   .command('impact <target>')
   .description('Blast radius analysis: what breaks if you change a symbol')
+  .addOption(
+    new Option('--read-mode <mode>', 'Read the indexed commit only; requires --repo').choices([
+      'committed',
+    ]),
+  )
+  .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-d, --direction <dir>', 'upstream (dependants) or downstream (dependencies)', 'upstream')
   .option('-r, --repo <name>', 'Target repository')
   .option('--depth <n>', 'Max relationship depth (default: 3)')

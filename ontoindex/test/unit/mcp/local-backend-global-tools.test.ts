@@ -102,7 +102,11 @@ describe('LocalBackend repo-agnostic tool dispatch', () => {
   it('routes gn_diagnose through repo resolution', async () => {
     const result = await backend.callTool('gn_diagnose', { repo: 'repo-1' });
     expect(result).toBeDefined();
-    expect(gnDiagnose).toHaveBeenCalledWith('repo-1', { repo: 'repo-1' });
+    expect(gnDiagnose).toHaveBeenCalledWith(
+      'repo-1',
+      { repo: 'repo-1' },
+      { repoPath: '/path/1', projectCwd: null },
+    );
     // gn_diagnose returns a report
   });
 

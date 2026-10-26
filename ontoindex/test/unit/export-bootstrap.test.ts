@@ -281,6 +281,42 @@ describe('bootstrap export and hydrate', () => {
       lastCommit: 'prior-commit',
       generationId: 'prior-generation',
     });
+    await expect(fs.access(path.join(restoredPaths.storagePath, 'analyze.lock'))).rejects.toThrow();
+  });
+
+  it('refuses forced hydration while another analyze lock is held without removing it', async () => {
+    const restoredPaths = getStoragePaths(restoreHandle.dbPath);
+    const prior = await createIndexGeneration(restoredPaths.storagePath, 'prior-generation');
+    await fs.writeFile(prior.lbugPath, Buffer.from('prior lbug', 'utf8'));
+    await saveMeta(prior.generationPath, {
+      repoPath: '.',
+      lastCommit: 'prior-commit',
+      indexedAt: '2026-01-01T00:00:00.000Z',
+      generationId: prior.generationId,
+      stats: { files: 1, nodes: 1, edges: 1, embeddings: 0 },
+    });
+    await activateIndexGeneration(restoredPaths.storagePath, prior);
+    await exportBootstrapCommand({ repo: repoHandle.dbPath, out: artifactPath });
+    const lock = await (
+      await import('../../src/cli/analyze.js')
+    ).acquireAnalyzeLock(restoreHandle.dbPath);
+
+    try {
+      await expect(
+        exportBootstrapHydrateCommand(artifactPath, {
+          repo: restoreHandle.dbPath,
+          force: true,
+        }),
+      ).rejects.toThrow(/analyze is already running/i);
+      await expect(fs.access(lock.path)).resolves.toBeUndefined();
+      await expect(resolveActiveIndexGeneration(restoredPaths.storagePath)).resolves.toMatchObject({
+        generationId: 'prior-generation',
+      });
+      await expect(fs.readFile(restoredPaths.lbugPath, 'utf8')).resolves.toBe('prior lbug');
+    } finally {
+      await lock.release();
+    }
+    await expect(fs.access(lock.path)).rejects.toThrow();
   });
 
   it('keeps the activated generation when post-activation bookkeeping fails', async () => {

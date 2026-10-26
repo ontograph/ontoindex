@@ -34,6 +34,7 @@ describe('SemanticRetrievalCache', () => {
       capabilities: ['bm25', 'vector'], // sorted order
     });
     expect(key1).toBe(key2);
+    expect(key1).toBe('0752d368510c5464d7df18297e239ec5c5b55f6983b43173672389f4dc6b6c1d');
     expect(typeof key1).toBe('string');
     expect(key1.length).toBe(64);
   });
@@ -110,6 +111,68 @@ describe('SemanticRetrievalCache', () => {
       indexedHead: head,
     });
     expect(retrieved?.timestamp).toBeLessThanOrEqual(Date.now());
+  });
+
+  it('isolates snapshot identities and legacy entries in both directions', async () => {
+    const params = { query: 'query', capabilities: ['symbols'], indexedHead: 'head' };
+    const key = SemanticRetrievalCache.computeKey({ ...params, snapshotIdentity: 'snapshot-a' });
+    expect(key).not.toBe(
+      SemanticRetrievalCache.computeKey({ ...params, snapshotIdentity: 'snapshot-b' }),
+    );
+    const cache = new SemanticRetrievalCache(repoPath);
+    await cache.set(key, { ...entry(), snapshotIdentity: 'snapshot-a' });
+    await expect(cache.get(key, 'head', 'snapshot-a')).resolves.toMatchObject({
+      snapshotIdentity: 'snapshot-a',
+    });
+    await expect(cache.lookup(key, 'head', 'snapshot-b')).resolves.toMatchObject({
+      status: 'stale',
+      result: null,
+    });
+    await expect(cache.lookup(key, 'head')).resolves.toMatchObject({
+      status: 'stale',
+      result: null,
+    });
+    await cache.set('legacy', entry());
+    await expect(cache.lookup('legacy', 'head', 'snapshot-a')).resolves.toMatchObject({
+      status: 'stale',
+      result: null,
+    });
+  });
+
+  it('rejects malformed snapshot identities', async () => {
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(
+      join(cacheDir, 'malformed.json'),
+      JSON.stringify({ ...entry(), timestamp: Date.now(), snapshotIdentity: 42 }),
+    );
+    const cache = new SemanticRetrievalCache(repoPath);
+    await expect(cache.lookup('malformed', 'head')).resolves.toEqual({
+      status: 'miss',
+      result: null,
+    });
+  });
+
+  it('preserves TTL and count and byte eviction for snapshot entries', async () => {
+    let now = 1_000;
+    const snapshotEntry = { ...entry(), snapshotIdentity: 'snapshot-a' };
+    const bytes = Buffer.byteLength(JSON.stringify({ ...snapshotEntry, timestamp: now }));
+    for (const limits of [{ maxEntries: 1 }, { maxBytes: bytes }]) {
+      const cache = new SemanticRetrievalCache(repoPath, { ...limits, ttlMs: 100, now: () => now });
+      await cache.set('old', snapshotEntry);
+      now += 1;
+      expect((await cache.set('new', snapshotEntry)).evicted).toBe(1);
+      await expect(cache.lookup('old', 'head', 'snapshot-a')).resolves.toMatchObject({
+        status: 'miss',
+      });
+      await expect(cache.lookup('new', 'head', 'snapshot-a')).resolves.toMatchObject({
+        status: 'hit',
+      });
+      now += 101;
+      await expect(cache.lookup('new', 'head', 'snapshot-a')).resolves.toMatchObject({
+        status: 'expired',
+        result: null,
+      });
+    }
   });
 
   it('atomically replaces an existing entry without leaving temporary files', async () => {

@@ -40,7 +40,9 @@ import {
 import type { PipelineProfile } from '../core/ingestion/pipeline.js';
 import type { EmbeddingLifecycleSummary } from '../core/run-analyze.js';
 import { resolveOverlayDbPath } from '../mcp/local/backend-overlay.js';
+import { assertWorkspaceBuildAdmission } from '../mcp/local/workspace-build-supervisor.js';
 import { parseManagedAnalysisContextFromEnv } from '../core/analysis/analysis-publication-receipt.js';
+import { acquireNativeFileLock } from '../native/file-lock.js';
 
 const HEAP_MB = 8192;
 const HEAP_FLAG = `--max-old-space-size=${HEAP_MB}`;
@@ -150,12 +152,12 @@ interface AnalyzeLock {
   release: () => Promise<void>;
 }
 
-function isProcessAlive(pid: number): boolean {
+function isProcessAlive(pid: number): boolean | null {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return getErrorCode(error) === 'ESRCH' ? false : null;
   }
 }
 
@@ -174,9 +176,19 @@ async function readProcessStartIdentity(pid: number): Promise<string | null> {
 }
 
 async function isAnalyzeLockOwnerActive(record: AnalyzeLockRecord): Promise<boolean | null> {
-  const pid = typeof record.pid === 'number' ? record.pid : null;
+  if (record.token !== undefined && typeof record.token !== 'string') return null;
+  if (
+    record.processStartIdentity !== undefined &&
+    (typeof record.processStartIdentity !== 'string' || !record.processStartIdentity)
+  )
+    return null;
+  const pid =
+    typeof record.pid === 'number' && Number.isSafeInteger(record.pid) && record.pid > 0
+      ? record.pid
+      : null;
   if (pid === null) return null;
-  if (!isProcessAlive(pid)) return false;
+  const alive = isProcessAlive(pid);
+  if (alive !== true) return alive;
 
   const recordedIdentity =
     typeof record.processStartIdentity === 'string' ? record.processStartIdentity : null;
@@ -238,25 +250,32 @@ async function createAnalyzeLockFile(
   processStartIdentity: string | null,
   repoPath: string,
 ): Promise<AnalyzeLock> {
-  const handle = await fs.open(lockPath, 'wx');
+  const temporaryPath = `${lockPath}.${token}.tmp`;
+  const handle = await fs.open(temporaryPath, 'wx', 0o600);
   try {
-    await handle.writeFile(
-      JSON.stringify(
-        {
-          pid: process.pid,
-          token,
-          startedAt: new Date().toISOString(),
-          ...(processStartIdentity ? { processStartIdentity } : {}),
-          repoPath,
-          command: process.argv.join(' '),
-        },
-        null,
-        2,
-      ),
-      'utf-8',
-    );
+    try {
+      await handle.writeFile(
+        JSON.stringify(
+          {
+            pid: process.pid,
+            token,
+            startedAt: new Date().toISOString(),
+            ...(processStartIdentity ? { processStartIdentity } : {}),
+            repoPath,
+            command: process.argv.join(' '),
+          },
+          null,
+          2,
+        ),
+        'utf-8',
+      );
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await fs.link(temporaryPath, lockPath);
   } finally {
-    await handle.close();
+    await fs.unlink(temporaryPath).catch(() => {});
   }
   let released = false;
   return {
@@ -274,67 +293,107 @@ export async function acquireAnalyzeLock(repoPath: string): Promise<AnalyzeLock>
   await fs.mkdir(storagePath, { recursive: true });
   const lockPath = path.join(storagePath, 'analyze.lock');
   const recoveryLockPath = `${lockPath}.recovery`;
-  const token = randomUUID();
-  const processStartIdentity = await readProcessStartIdentity(process.pid);
-
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      return await createAnalyzeLockFile(lockPath, token, processStartIdentity, repoPath);
-    } catch (err: unknown) {
-      if (getErrorCode(err) !== 'EEXIST') throw err;
-
-      let existing: AnalyzeLockRecord | null = null;
-      let existingContents = '';
+  const nativeLock = await acquireNativeFileLock(`${lockPath}.kernel`);
+  let lock: AnalyzeLock | undefined;
+  let transferred = false;
+  try {
+    // The permanent kernel lock serializes both legacy diagnostics and publication.
+    // Validate both records before removing either or publishing a new owner.
+    const stale: Array<{ path: string; record: AnalyzeLockRecord; contents: string }> = [];
+    for (const diagnosticPath of [recoveryLockPath, lockPath]) {
+      let contents: string;
       try {
-        existingContents = await fs.readFile(lockPath, 'utf-8');
-        existing = parseAnalyzeLockRecord(existingContents);
-      } catch {}
-
-      const pid = typeof existing?.pid === 'number' ? existing.pid : null;
-      const ownerActive = existing ? await isAnalyzeLockOwnerActive(existing) : null;
-      if (pid !== null && ownerActive === false) {
-        let recoveryHandle;
-        try {
-          recoveryHandle = await fs.open(recoveryLockPath, 'wx');
-        } catch (recoveryError: unknown) {
-          if (getErrorCode(recoveryError) === 'EEXIST') {
-            throw new Error(`Another process is recovering the analyze lock. Lock: ${lockPath}`);
-          }
-          throw recoveryError;
-        }
-
-        try {
-          existingContents = await fs.readFile(lockPath, 'utf-8');
-          existing = parseAnalyzeLockRecord(existingContents);
-          const currentPid = typeof existing?.pid === 'number' ? existing.pid : null;
-          const currentOwnerActive = existing ? await isAnalyzeLockOwnerActive(existing) : null;
-          if (currentPid === null || currentOwnerActive !== false) {
-            throw new Error(`Cannot safely recover for this repo. Lock: ${lockPath}`);
-          }
-          const currentToken = existing?.token;
-          const staleToken = typeof currentToken === 'string' ? currentToken : undefined;
-          await archiveStaleAnalyzeDiagnostics(storagePath, existingContents, staleToken);
-          if (!(await removeAnalyzeLockIfOwner(lockPath, currentPid, staleToken))) {
-            throw new Error(`Cannot safely recover for this repo. Lock: ${lockPath}`);
-          }
-          return await createAnalyzeLockFile(lockPath, token, processStartIdentity, repoPath);
-        } finally {
-          await recoveryHandle.close();
-          await fs.unlink(recoveryLockPath).catch(() => {});
-        }
+        contents = await fs.readFile(diagnosticPath, 'utf-8');
+      } catch (error) {
+        if (getErrorCode(error) === 'ENOENT') continue;
+        throw new Error(`Cannot safely recover for this repo. Lock: ${diagnosticPath}`, {
+          cause: error,
+        });
       }
-
-      const owner = pid !== null ? `PID ${pid}` : 'another process';
-      const startedAt =
-        typeof existing?.startedAt === 'string' ? ` since ${existing.startedAt}` : '';
+      let record: AnalyzeLockRecord | null = null;
+      try {
+        record = parseAnalyzeLockRecord(contents);
+      } catch {}
+      const active = record ? await isAnalyzeLockOwnerActive(record) : null;
+      if (active !== false) {
+        const owner =
+          record && typeof record.pid === 'number' ? `PID ${record.pid}` : 'another process';
+        throw new Error(
+          `${diagnosticPath === recoveryLockPath ? 'Another process is recovering the analyze lock. ' : ''}` +
+            `${active === null ? 'Cannot safely recover' : 'OntoIndex analyze is already running'} for this repo (${owner}). Lock: ${diagnosticPath}`,
+        );
+      }
+      stale.push({ path: diagnosticPath, record: record!, contents });
+    }
+    // Only the kernel-lock holder can publish staging files; earlier holders are gone.
+    for (const name of await fs.readdir(storagePath)) {
+      if (
+        !/^analyze\.lock\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp$/i.test(
+          name,
+        )
+      )
+        continue;
+      const stagingPath = path.join(storagePath, name);
+      try {
+        if ((await fs.lstat(stagingPath)).isFile()) await fs.unlink(stagingPath);
+      } catch (error) {
+        if (getErrorCode(error) !== 'ENOENT') throw error;
+      }
+    }
+    for (const diagnostic of stale) {
+      const staleToken =
+        typeof diagnostic.record.token === 'string' ? diagnostic.record.token : undefined;
+      if (diagnostic.path === lockPath) {
+        await archiveStaleAnalyzeDiagnostics(storagePath, diagnostic.contents, staleToken);
+      }
+      if (
+        !(await removeAnalyzeLockIfOwner(
+          diagnostic.path,
+          diagnostic.record.pid as number,
+          staleToken,
+        ))
+      ) {
+        throw new Error(`Cannot safely recover for this repo. Lock: ${diagnostic.path}`);
+      }
+    }
+    lock = await createAnalyzeLockFile(
+      lockPath,
+      randomUUID(),
+      await readProcessStartIdentity(process.pid),
+      repoPath,
+    );
+    try {
+      await assertWorkspaceBuildAdmission(storagePath);
+    } catch (error) {
       throw new Error(
-        `${ownerActive === null ? 'Cannot safely recover' : 'OntoIndex analyze is already running'} for this repo (${owner}${startedAt}). ` +
-          `Lock: ${lockPath}`,
+        `Cannot safely recover workspace build for this repo. Inspect ${storagePath} before retrying.`,
+        { cause: error },
       );
     }
+    const diagnosticLock = lock;
+    let release: Promise<void> | undefined;
+    const result: AnalyzeLock = {
+      path: lockPath,
+      release: () =>
+        (release ??= (async () => {
+          try {
+            await diagnosticLock.release();
+          } finally {
+            await nativeLock.release();
+          }
+        })()),
+    };
+    transferred = true;
+    return result;
+  } finally {
+    if (!transferred) {
+      try {
+        await lock?.release();
+      } finally {
+        await nativeLock.release();
+      }
+    }
   }
-
-  throw new Error(`Could not acquire analyze lock for ${repoPath}`);
 }
 
 interface AnalyzeOptions {

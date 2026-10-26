@@ -667,6 +667,33 @@ describe('gnEnsureFresh', () => {
     expect(report.actionsTaken[0]).toContain('analyze --force --embeddings');
   });
 
+  it.each([undefined, false])(
+    'does not require repair or submit analysis for optional missing embeddings (%s)',
+    async (withEmbeddings) => {
+      setupExecFile({ currentCommit: CURRENT_COMMIT });
+      mockReadFileSync.mockReturnValue(
+        makeRegistry({ lastCommit: CURRENT_COMMIT, embeddings: 0 }) as any,
+      );
+      mockLoadMeta.mockResolvedValue(makeMeta({ embeddings: 0 }) as any);
+      delete process.env.ONTOINDEX_EMBEDDING_MODEL_HASH;
+
+      const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true, withEmbeddings });
+
+      expect(report.embeddingsStatus).toMatchObject({
+        count: 0,
+        status: 'missing',
+        required: false,
+        repairCommand: 'ontoindex analyze --force --embeddings',
+      });
+      expect(report.embeddingsStatus).not.toHaveProperty('prerequisites');
+      expect(report.recommendations.some((r) => r.includes('--embeddings'))).toBe(false);
+      expect(report.analysisSubmission).toEqual({ status: 'not-needed' });
+      expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+      expect(mockComputeSourceManifest).not.toHaveBeenCalled();
+      expect(report.actionsTaken).toHaveLength(0);
+    },
+  );
+
   it('does not submit analysis when HEAD and requested embeddings are already satisfied', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT });
     mockReadFileSync.mockReturnValue(
@@ -731,6 +758,10 @@ describe('gnEnsureFresh', () => {
       status: 'blocked',
       reasonCode: 'WORKTREE_STATUS_UNAVAILABLE',
     });
+    expect(report.recommendations).toContain(
+      'Restore the git worktree status probe before retrying autoAnalyze.',
+    );
+    expect(report.recommendations.some((r) => r.includes('worktree is clean'))).toBe(false);
   });
 
   it.each(['', 'not-a-commit'])(
@@ -824,6 +855,7 @@ describe('gnEnsureFresh', () => {
     expect(report.embeddingsStatus.status).toBe('drifted');
     expect(report.embeddingsStatus.reason).toContain('stored-hash');
     expect(report.embeddingsStatus.repairCommand).toBe('ontoindex analyze --force --embeddings');
+    expect(report.recommendations).toContain('ontoindex analyze --force --embeddings');
   });
 
   it('keeps embeddingsStatus.ok when embeddings exist and the runtime hash is unset', async () => {

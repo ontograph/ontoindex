@@ -4,7 +4,11 @@
  * Verifies that all tools accepting file paths (context, rename, replace_symbol, sandbox)
  * are secured against path traversal using canonicalize().
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
+
+// Mocked graph fixtures have no real Git workspace to build.
+beforeAll(() => vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0'));
+afterAll(() => vi.unstubAllEnvs());
 
 const { lbugMocks } = vi.hoisted(() => ({
   lbugMocks: {

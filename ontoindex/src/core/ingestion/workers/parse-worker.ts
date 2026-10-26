@@ -114,7 +114,7 @@ import {
   buildCollisionGroups,
 } from '../utils/method-props.js';
 import type { LanguageProvider } from '../language-provider.js';
-import { extractParsedFile } from '../scope-extractor-bridge.js';
+import { extractParsedFileOutcome } from '../scope-extractor-bridge.js';
 import { extractLaravelRoutes } from './route-extractor.js';
 import { extractORMQueries } from './orm-extractor.js';
 
@@ -852,8 +852,10 @@ const processBatch = async (
     constructorBindings: [],
     fileScopeBindings: [],
     parsedFiles: [],
+    scopeExtractionOutcomes: [],
     processedPaths: [],
     fileTimings: [],
+    parseErrorPaths: [],
     extractorTimings: [],
     skippedLanguages: {},
     fileCount: 0,
@@ -1212,6 +1214,7 @@ const prepareFileContext = (
   file: HydratedParseWorkerInput,
   language: SupportedLanguages,
   query: Parser.Query,
+  parseErrorPaths: string[],
 ): PreparedFileContext | null => {
   if (file.content.length > TREE_SITTER_MAX_BUFFER) return null;
 
@@ -1240,6 +1243,8 @@ const prepareFileContext = (
     );
     return null;
   }
+
+  if (tree.rootNode.hasError) parseErrorPaths.push(file.path);
 
   const maxAstNodes = getParseMaxAstNodes();
   const astNodeCount = tree.rootNode.descendantCount + 1;
@@ -1278,15 +1283,24 @@ const appendParsedFileArtifact = (
   provider: LanguageProvider,
   parseContent: string,
   result: ParseWorkerResult,
+  rootNode: SyntaxNode,
 ): void => {
-  // RFC #909 Ring 2: produce a `ParsedFile` for the new scope-based
-  // resolution pipeline. No-op (returns undefined) for every language
-  // today — only fires once a provider implements `emitScopeCaptures`.
-  // Runs BEFORE legacy extraction and its result is independent: a
-  // failure here is caught inside `extractParsedFile` and does NOT
-  // affect the legacy DAG path that follows.
-  const parsedFile = extractParsedFile(provider, parseContent, filePath, emitWorkerWarning);
-  if (parsedFile !== undefined) result.parsedFiles.push(parsedFile);
+  // Skipped files and preparation failures never reach this attempt; inventory
+  // reconciliation must treat their absent records as unavailable evidence.
+  const outcome = extractParsedFileOutcome(
+    provider,
+    parseContent,
+    filePath,
+    emitWorkerWarning,
+    rootNode,
+  );
+  result.scopeExtractionOutcomes ??= [];
+  if (outcome.status === 'success') {
+    result.scopeExtractionOutcomes.push({ filePath, status: 'success' });
+    result.parsedFiles.push(outcome.parsedFile);
+  } else {
+    result.scopeExtractionOutcomes.push({ filePath, ...outcome });
+  }
 };
 
 const createFileProcessingState = (
@@ -2199,7 +2213,9 @@ const processPreparedWorkerFile = (
 
   try {
     onFileStart?.(file.path);
-    const fileContext = timeFamily('prepare', () => prepareFileContext(file, language, query));
+    const fileContext = timeFamily('prepare', () =>
+      prepareFileContext(file, language, query, result.parseErrorPaths),
+    );
     if (!fileContext) {
       // Lightweight fallback for oversized or unparseable files
       const native = isNativeEnabled();
@@ -2217,7 +2233,13 @@ const processPreparedWorkerFile = (
     onFileProcessed?.(file.path);
 
     timeFamily('scope-artifact', () =>
-      appendParsedFileArtifact(file.path, fileContext.provider, fileContext.parseContent, result),
+      appendParsedFileArtifact(
+        file.path,
+        fileContext.provider,
+        fileContext.parseContent,
+        result,
+        fileContext.tree.rootNode,
+      ),
     );
     const fileState = timeFamily('type-env', () =>
       createFileProcessingState(file, language, fileContext),

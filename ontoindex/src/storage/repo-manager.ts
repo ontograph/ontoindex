@@ -848,6 +848,96 @@ const readerPinIsDead = (pid: number, pinMtimeMs: number): boolean => {
   }
 };
 
+export const OVERLAY_ARTIFACT_BUDGET_BYTES = 2 * 1024 ** 3;
+
+/** Overlay readers and pruning share the existing per-repository publication lock. */
+export async function acquireOverlayGenerationPin(
+  generationDir: string,
+): Promise<{ release(): Promise<void> }> {
+  const storagePath = path.dirname(path.dirname(generationDir));
+  return withGenerationPointerLock(storagePath, async () => {
+    const stat = await fs.lstat(generationDir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Invalid overlay generation');
+    const marker = path.join(
+      generationDir,
+      `.reader-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    await fs.writeFile(marker, '', { flag: 'wx', mode: 0o600 });
+    return {
+      release: async () => {
+        await fs.rm(marker, { force: true });
+      },
+    };
+  });
+}
+
+export async function overlayGenerationIsPinned(generationDir: string): Promise<boolean> {
+  try {
+    for (const name of await fs.readdir(generationDir)) {
+      if (!name.startsWith('.reader-')) continue;
+      const pin = /^\.reader-(\d+)-[a-z0-9]+$/.exec(name);
+      const stat = await fs.lstat(path.join(generationDir, name));
+      if (
+        !pin ||
+        !stat.isFile() ||
+        stat.isSymbolicLink() ||
+        !readerPinIsDead(Number(pin[1]), stat.mtimeMs)
+      )
+        return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** Bounds traversal as well as bytes; uncertainty refuses admission. Never follows symlinks. */
+export async function overlayArtifactBytes(overlayPath: string): Promise<number> {
+  let bytes = 0;
+  let entries = 0;
+  const pending = [overlayPath];
+  while (pending.length) {
+    const directory = pending.pop()!;
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      if (++entries > 100_000) return Infinity;
+      const target = path.join(directory, entry.name);
+      const stat = await fs.lstat(target);
+      if (stat.isSymbolicLink()) continue;
+      if (stat.isDirectory()) pending.push(target);
+      else if (stat.isFile()) bytes += stat.size;
+    }
+  }
+  return bytes;
+}
+
+export async function pruneOverlayGenerations(
+  overlayPath: string,
+  currentId: string,
+): Promise<boolean> {
+  return withGenerationPointerLock(path.dirname(overlayPath), async () => {
+    let failed = false;
+    const generations = [];
+    for (const entry of await fs.readdir(overlayPath, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^\d+-\d+-[a-z0-9]+$/.test(entry.name)) continue;
+      const dir = path.join(overlayPath, entry.name);
+      generations.push({ name: entry.name, dir, mtime: (await fs.stat(dir)).mtimeMs });
+    }
+    generations.sort((a, b) =>
+      a.name === currentId ? -1 : b.name === currentId ? 1 : b.mtime - a.mtime,
+    );
+    for (const generation of generations.slice(3)) {
+      if (await overlayGenerationIsPinned(generation.dir)) {
+        failed = true;
+        continue;
+      }
+      await fs.rm(generation.dir, { recursive: true, force: true }).catch(() => {
+        failed = true;
+      });
+    }
+    return failed;
+  });
+}
+
 async function markManagedGenerationLocked(
   storagePath: string,
   generationPath: string,

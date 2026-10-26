@@ -21,6 +21,7 @@ import type {
   ImportResult,
   ResolveCtx,
   ImportResolutionContext,
+  ImportConfigs,
 } from './import-resolvers/types.js';
 import type { NamedBinding } from './named-bindings/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
@@ -409,6 +410,7 @@ export const processImports = async (
   onProgress?: (current: number, total: number) => void,
   repoRoot?: string,
   allPaths?: string[],
+  suppliedConfigs?: ImportConfigs,
 ) => {
   const importMap = ctx.importMap;
   const packageMap = ctx.packageMap;
@@ -430,7 +432,7 @@ export const processImports = async (
   let totalImportsFound = 0;
 
   // Load language-specific configs once before the file loop
-  const configs = await loadImportConfigs(repoRoot || '');
+  const configs = suppliedConfigs ?? (await loadImportConfigs(repoRoot || ''));
   const resolveCtx: ResolveCtx = {
     allFilePaths,
     allFileList,
@@ -492,6 +494,7 @@ export const processImportsFromExtracted = async (
   onProgress?: (current: number, total: number) => void,
   repoRoot?: string,
   prebuiltCtx?: ImportResolutionContext,
+  suppliedConfigs?: ImportConfigs,
 ) => {
   const importMap = ctx.importMap;
   const packageMap = ctx.packageMap;
@@ -502,7 +505,7 @@ export const processImportsFromExtracted = async (
 
   let totalImportsFound = 0;
 
-  const configs = await loadImportConfigs(repoRoot || '');
+  const configs = suppliedConfigs ?? (await loadImportConfigs(repoRoot || ''));
   const resolveCtx: ResolveCtx = {
     allFilePaths,
     allFileList,

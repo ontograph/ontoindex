@@ -4,6 +4,10 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../../../src/mcp/local/backend-overlay.js', () => ({
+  getPinnedOverlaySnapshot: vi.fn(),
+}));
+
 vi.mock('../../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn(),
 }));
@@ -15,6 +19,7 @@ vi.mock('../../../src/storage/git.js', () => ({
 import { listRegisteredRepos } from '../../../src/storage/repo-manager.js';
 import { collectAdvisoryDocsEvidence } from '../../../src/mcp/super/docs-evidence.js';
 import { gnDocs } from '../../../src/mcp/super/docs.js';
+import { getPinnedOverlaySnapshot } from '../../../src/mcp/local/backend-overlay.js';
 
 const mockListRegisteredRepos = vi.mocked(listRegisteredRepos);
 const tmpDirs: string[] = [];
@@ -241,6 +246,7 @@ describe('collectAdvisoryDocsEvidence', () => {
   );
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getPinnedOverlaySnapshot).mockReturnValue(undefined);
   });
 
   afterEach(async () => {
@@ -313,6 +319,30 @@ describe('collectAdvisoryDocsEvidence', () => {
     expect(report.limits.truncated).toBe(false);
   });
 
+  it('rejects docs continuation when only the admitted graph generation changes', async () => {
+    const repo = await createRepo();
+    await writeSidecarStore(repo.storagePath, traceState(['REQ-1', 'REQ-2']));
+    const snapshot = { generation: 'a', capability: 'workspace-graph', coverage: 'complete' };
+    vi.mocked(getPinnedOverlaySnapshot).mockReturnValue(snapshot as any);
+    const first = await gnDocs('test-repo', { action: 'trace', maxItems: 1 });
+    if (!('cursor' in first) || !first.cursor?.next) throw new Error('expected next cursor');
+    await expect(
+      gnDocs('test-repo', {
+        action: 'trace',
+        maxItems: 1,
+        cursor: first.cursor.next,
+      }),
+    ).resolves.toBeDefined();
+    vi.mocked(getPinnedOverlaySnapshot).mockReturnValue({ ...snapshot, generation: 'b' } as any);
+    await expect(
+      gnDocs('test-repo', {
+        action: 'trace',
+        maxItems: 1,
+        cursor: first.cursor.next,
+      }),
+    ).rejects.toMatchObject({ code: 'restart_required', retryable: false });
+  });
+
   it('paginates docs trace output with deterministic cursors', async () => {
     const repo = await createRepo();
     await writeSidecarStore(repo.storagePath, traceState(['REQ-1', 'REQ-2', 'REQ-3']));
@@ -341,6 +371,7 @@ describe('collectAdvisoryDocsEvidence', () => {
       total: 3,
       hasMore: true,
     });
+    expect(firstPage.cursor?.next).toMatch(/^gn-page-v2:1:1:[a-f0-9]{64}$/);
 
     const secondPage = await gnDocs('test-repo', {
       action: 'trace',
@@ -362,6 +393,86 @@ describe('collectAdvisoryDocsEvidence', () => {
       total: 3,
       hasMore: true,
     });
+  });
+
+  it('rejects a docs cursor after an unreturned item changes without changing source length', async () => {
+    const repo = await createRepo();
+    const original = traceState(['REQ-1', 'REQ-2', 'REQ-3']);
+    await writeSidecarStore(repo.storagePath, original);
+    const first = await gnDocs('test-repo', { action: 'trace', maxItems: 1 });
+    if (!('cursor' in first) || !first.cursor?.next) throw new Error('expected next cursor');
+
+    const changed = JSON.stringify(original).replace('Title REQ-2', 'Other REQ-2');
+    expect(changed.length).toBe(JSON.stringify(original).length);
+    await writeSidecarStore(repo.storagePath, JSON.parse(changed));
+    const fresh = await gnDocs('test-repo', { action: 'trace', maxItems: 1 });
+    if (!('docsEvidence' in first) || !('docsEvidence' in fresh))
+      throw new Error('expected full reports');
+    expect(fresh.docsEvidence).toEqual(first.docsEvidence);
+    expect(fresh.cursor?.next).not.toBe(first.cursor.next);
+    await expect(
+      gnDocs('test-repo', { action: 'trace', maxItems: 1, cursor: first.cursor.next }),
+    ).rejects.toThrow(/restart pagination/i);
+  });
+
+  it('rejects a docs cursor after the source order changes evidence associations', async () => {
+    const repo = await createRepo();
+    await writeSidecarStore(repo.storagePath, traceState(['REQ-1', 'REQ-2', 'REQ-3']));
+    const first = await gnDocs('test-repo', { action: 'trace', maxItems: 1 });
+    const original = await gnDocs('test-repo', { action: 'trace', maxItems: 5 });
+    if (!('cursor' in first) || !first.cursor?.next) throw new Error('expected next cursor');
+
+    await writeSidecarStore(repo.storagePath, traceState(['REQ-3', 'REQ-2', 'REQ-1']));
+    const reordered = await gnDocs('test-repo', { action: 'trace', maxItems: 5 });
+    if (!('docsEvidence' in original) || !('docsEvidence' in reordered))
+      throw new Error('expected full reports');
+    expect(reordered.docsEvidence).not.toEqual(original.docsEvidence);
+    await expect(
+      gnDocs('test-repo', { action: 'trace', maxItems: 1, cursor: first.cursor.next }),
+    ).rejects.toThrow(/restart pagination/i);
+  });
+
+  it.each([{ id: 'REQ-2' }, { action: 'context' as const }])(
+    'rejects a docs cursor when request semantics change: %j',
+    async (changedParams) => {
+      const repo = await createRepo();
+      await writeSidecarStore(repo.storagePath, traceState(['REQ-1', 'REQ-2', 'REQ-3']));
+      const first = await gnDocs('test-repo', { action: 'trace', maxItems: 1 });
+      if (!('cursor' in first) || !first.cursor?.next) throw new Error('expected next cursor');
+
+      await expect(
+        gnDocs('test-repo', {
+          action: 'trace',
+          maxItems: 1,
+          cursor: first.cursor.next,
+          ...changedParams,
+        }),
+      ).rejects.toThrow(/restart pagination/i);
+    },
+  );
+
+  it('rejects an unbound v1 docs cursor', async () => {
+    const repo = await createRepo();
+    await writeSidecarStore(repo.storagePath, traceState(['REQ-1', 'REQ-2', 'REQ-3']));
+
+    await expect(
+      gnDocs('test-repo', { action: 'trace', maxItems: 1, cursor: 'gn-page-v1:1:1' }),
+    ).rejects.toThrow(/restart pagination/i);
+  });
+
+  it('rejects a docs cursor from another repository with identical sidecar contents', async () => {
+    const firstRepo = await createRepo();
+    const secondRepo = { ...(await createRepo()), name: 'second-repo' };
+    mockListRegisteredRepos.mockResolvedValue([firstRepo, secondRepo]);
+    const contents = traceState(['REQ-1', 'REQ-2', 'REQ-3']);
+    await writeSidecarStore(firstRepo.storagePath, contents);
+    await writeSidecarStore(secondRepo.storagePath, contents);
+    const first = await gnDocs('test-repo', { action: 'trace', maxItems: 1 });
+    if (!('cursor' in first) || !first.cursor?.next) throw new Error('expected next cursor');
+
+    await expect(
+      gnDocs('second-repo', { action: 'trace', maxItems: 1, cursor: first.cursor.next }),
+    ).rejects.toThrow(/restart pagination/i);
   });
 
   it('supports summary and minimal docs trace modes', async () => {

@@ -3,6 +3,17 @@ import { getNextStepHint } from '../../src/mcp/server.js';
 import { ONTOINDEX_TOOLS } from '../../src/mcp/tools.js';
 
 describe('MCP Next-Step Hints', () => {
+  it('keeps committed navigation explicit without offering live enrichment', () => {
+    for (const [tool, action] of [
+      ['search', 'semantic'],
+      ['inspect', 'context'],
+    ]) {
+      const hint = getNextStepHint(tool, { action, repo: 'fixture', read_mode: 'committed' });
+      expect(hint).toContain('read_mode: "committed"');
+      expect(hint).toContain('repo: "fixture"');
+      expect(hint).not.toContain('consume_enrichment_facts: true');
+    }
+  });
   it('provides a non-empty hint for every tool in ONTOINDEX_TOOLS', () => {
     for (const tool of ONTOINDEX_TOOLS) {
       const hint = getNextStepHint(tool.name, {});

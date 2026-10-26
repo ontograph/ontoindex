@@ -110,22 +110,40 @@ describe('gnToolContract — ADR26 classification metadata', () => {
 });
 
 describe('gnToolContract — ADR27 startup-profile metadata', () => {
-  it('reports default public-full compatibility without hidden callable tools', () => {
+  it('reports default core compatibility with hidden callable tools', () => {
     delete process.env.ONTOINDEX_MCP_STARTUP_PROFILE;
     const report = gnToolContract({ includeFacades: true });
-    const fullPublicCount = getPublicToolRegistry({ includeFacades: true }).length;
+    const fullPublic = getPublicToolRegistry({
+      includeFacades: true,
+      startupProfile: 'public-full',
+    });
+    const advertised = getPublicToolRegistry({ includeFacades: true, startupProfile: 'core' })
+      .map((entry) => entry.name)
+      .sort();
+    const hiddenButCallable = fullPublic
+      .map((entry) => entry.name)
+      .filter((name) => !advertised.includes(name))
+      .sort();
 
     expect(report.startupProfile).toMatchObject({
-      activeProfile: 'public-full',
+      activeProfile: 'core',
       source: 'default',
-      advertisedCount: fullPublicCount,
-      hiddenButCallableCount: 0,
-      fullPublicCount,
+      advertisedCount: advertised.length,
+      hiddenButCallableCount: hiddenButCallable.length,
+      fullPublicCount: fullPublic.length,
       facadesIncluded: true,
       enforcementMode: 'advertise_only',
-      compatibilityMode: false,
+      compatibilityMode: true,
     });
-    expect(report.startupProfile.advertised).toEqual(report.callable);
+    expect(report.startupProfile.advertised).toEqual(advertised);
+    expect(advertised).toHaveLength(8);
+    expect(advertised.some((name) => name.startsWith('gn_'))).toBe(false);
+    expect(report.startupProfile.hiddenButCallableCount).toBe(54);
+    expect(report.callable).toHaveLength(62);
+    expect(report.callable).toEqual(expect.arrayContaining(['gn_help', 'gn_tool_contract']));
+    expect(report.startupProfile.hiddenButCallable).toEqual(hiddenButCallable);
+    expect(hiddenButCallable.length).toBeGreaterThan(0);
+    expect(report.callable).toEqual(expect.arrayContaining(hiddenButCallable));
   });
 
   it('reports hidden-but-callable names and counts for advertise-only profiles', () => {
@@ -153,13 +171,58 @@ describe('gnToolContract — ADR27 startup-profile metadata', () => {
   });
 });
 
+describe('gnToolContract — facade action inventory', () => {
+  it('matches expanded facade schema actions and records structured output metadata', () => {
+    const report = gnToolContract({ includeFacades: true });
+    const registry = getPublicToolRegistry({ includeFacades: true });
+
+    expect(report.facadeActionDrift).toEqual([]);
+    const addedActions = {
+      discover: ['help', 'tool_contract'],
+      inspect: ['graph_walk', 'propose_location', 'explore', 'module', 'related'],
+      audit: [
+        'safe_edit_check',
+        'can_delete',
+        'bundle',
+        'ingest',
+        'verify',
+        'bundle_conflicts',
+        'dedupe',
+        'diff',
+        'dispatch_prompt',
+        'export',
+        'fix_history',
+        'lint',
+        'pr_marker_scan',
+        'replay',
+        'scope_guard',
+      ],
+      manage: ['analyze_job', 'ensure_fresh', 'diagnose', 'quality_mode'],
+    } as const;
+
+    for (const [facade, actions] of Object.entries(addedActions)) {
+      const metadata = registry.find((entry) => entry.name === facade);
+      expect(metadata).toBeDefined();
+      for (const action of actions) {
+        expect(metadata?.actions).toContainEqual(
+          expect.objectContaining({
+            action,
+            contractStatus: 'stable',
+            structuredOutput: action !== 'quality_mode',
+          }),
+        );
+      }
+    }
+  });
+});
+
 describe('gnToolContract — visible frontier', () => {
   it('includes an explicit internal vs host-visible frontier summary with caveat text', () => {
     const report = gnToolContract({ includeFacades: true });
 
     expect(report.visibleFrontier).toMatchObject({
       mode: 'default',
-      activeStartupProfile: 'public-full',
+      activeStartupProfile: 'core',
       hostVisible: expect.any(Array),
       clientVisible: expect.any(Array),
       internalCallable: expect.any(Array),
@@ -179,7 +242,11 @@ describe('gnToolContract — visible frontier', () => {
     );
     expect(report.visibleFrontier.clientVisible).toEqual(report.visibleFrontier.hostVisible);
     expect(report.visibleFrontier.hostVisible).toEqual(report.startupProfile.advertised);
-    expect(report.visibleFrontier.compatibilityTools.length).toBeGreaterThan(0);
+    expect(report.visibleFrontier.compatibilityTools).toEqual([]);
+    process.env.ONTOINDEX_MCP_STARTUP_PROFILE = 'public-full';
+    expect(gnToolContract({ includeFacades: true }).visibleFrontier.compatibilityTools).toEqual(
+      expect.arrayContaining(['gn_help', 'gn_tool_contract']),
+    );
     for (const tool of report.visibleFrontier.hostVisible) {
       expect(report.visibleFrontier.internalCallable).toContain(tool);
     }

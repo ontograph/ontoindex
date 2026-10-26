@@ -13,6 +13,7 @@
  */
 
 import type { SuperTool } from './names.js';
+import type { LocalBackend } from '../local/local-backend.js';
 import { resolveMaxArgChars } from '../shared/arg-limits.js';
 import { ONTOINDEX_SUPER_TOOLS } from './tool-definitions.js';
 import type { ExploreParams } from './explore.js';
@@ -201,6 +202,10 @@ export async function dispatchSuper(
   repoId: string,
   backend?: RefactorBackend,
   context?: { repoPath: string; projectCwd?: string | null },
+  readBackend?: Pick<
+    LocalBackend,
+    'resolveRepo' | 'ensureRepoInitialized' | 'withPreparedRepoRead'
+  >,
 ): Promise<unknown> {
   validateSuperParams(name, params);
   params = clampSuperParams(name, params);
@@ -459,14 +464,36 @@ export async function dispatchSuper(
       return gnSimulateFault(repoId, params as unknown as SimulateFaultMcpParams);
     }
 
-    case 'gn_verify_diff': {
-      const { gnVerifyDiff } = await import('./write-through-verification.js');
-      return gnVerifyDiff(repoId, params as unknown as VerifyDiffParams);
-    }
-
+    case 'gn_verify_diff':
     case 'gn_test_gap': {
-      const { gnTestGap } = await import('./write-through-verification.js');
-      return gnTestGap(repoId, params as unknown as TestGapParams);
+      const { gnVerifyDiff, gnTestGap } = await import('./write-through-verification.js');
+      const handler = name === 'gn_verify_diff' ? gnVerifyDiff : gnTestGap;
+      const needsGraph =
+        (name === 'gn_test_gap' && Boolean(params.symbol || params.filePath || params.query)) ||
+        (params.changedSymbols === undefined &&
+          (params.changedFiles === undefined ||
+            (Array.isArray(params.changedFiles) && params.changedFiles.length > 0)));
+      if (readBackend && needsGraph) {
+        const repo = await readBackend.resolveRepo(
+          typeof params.repo === 'string' ? params.repo : repoId || undefined,
+        );
+        await readBackend.ensureRepoInitialized(repo.id);
+        let result: unknown;
+        // Keep the report's mixed evidence classes instead of blanket read provenance.
+        await readBackend.withPreparedRepoRead(
+          repo,
+          { needsRelationships: true, readMode: 'committed' },
+          async () => {
+            result = await handler(repo.id, {
+              ...params,
+              repo: repo.id,
+            } as unknown as VerifyDiffParams & TestGapParams);
+            return result;
+          },
+        );
+        return result;
+      }
+      return handler(repoId, params as unknown as VerifyDiffParams & TestGapParams);
     }
 
     case 'gn_worker_scope_review': {

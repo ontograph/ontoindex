@@ -4,6 +4,17 @@ import { resolveRcVersion } from '../../scripts/resolve-rc-version.mjs';
 const headSha = 'abc123';
 
 describe('resolveRcVersion', () => {
+  it('reserves GitHub-only candidate versions when npm has no package', () => {
+    expect(
+      resolveRcVersion({
+        latestVersion: '2.3.4',
+        publishedVersions: [],
+        gitTags: ['github-release/2.3.4', 'github-release/2.3.5-rc.1'],
+        headSha,
+      }),
+    ).toMatchObject({ rcVersion: '2.3.5-rc.2', resume: false });
+  });
+
   it('continues from remote tags when npm has no release candidates', () => {
     expect(
       resolveRcVersion({

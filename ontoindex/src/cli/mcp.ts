@@ -104,6 +104,7 @@ export const mcpCommand = async (
   console.error(`OntoIndex: MCP target repo filter: ${formatRepoFilterLabel(repoFilter)}`);
 
   const backend = new LocalBackend({
+    watchWorkspace: true,
     repoFilter,
     preferredProjectPath: targetProjectPath,
     ...(options.confirmWrites === true && { confirmWrites: true }),

@@ -35,7 +35,10 @@ function normalizeVersions(value) {
 function directReleaseVersions(tags) {
   return tags
     .map(
-      (tag) => /^v(.+)$/.exec(tag)?.[1] ?? /^rc-(?:pending|complete)\/[^/]+\/v(.+)$/.exec(tag)?.[1],
+      (tag) =>
+        /^v(.+)$/.exec(tag)?.[1] ??
+        /^github-release\/(.+)$/.exec(tag)?.[1] ??
+        /^rc-(?:pending|complete)\/[^/]+\/v(.+)$/.exec(tag)?.[1],
     )
     .filter((version) => typeof version === 'string');
 }

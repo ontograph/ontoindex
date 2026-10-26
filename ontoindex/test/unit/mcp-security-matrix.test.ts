@@ -4,9 +4,13 @@
  * Parametric per-tool test that submits "../../etc/passwd" to any
  * argument that accepts a file path, asserting rejection.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
 import { ONTOINDEX_TOOLS } from '../../src/mcp/tools.js';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+
+// Mocked graph fixtures have no real Git workspace to build.
+beforeAll(() => vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0'));
+afterAll(() => vi.unstubAllEnvs());
 
 // Mock DB and RepoManager to avoid side effects
 vi.mock('../../src/core/lbug/pool-adapter.js', () => ({

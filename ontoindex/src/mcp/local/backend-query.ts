@@ -250,11 +250,12 @@ export async function bm25Search(
   repo: QueryRepoHandle,
   query: string,
   limit: number,
+  scope?: import('../../core/search/bm25-index.js').FTSPathScope,
 ): Promise<{ results: SymbolSearchResult[]; ftsUsed: boolean }> {
   const { searchFTSFromLbug } = await import('../../core/search/bm25-index.js');
   let bm25Results;
   try {
-    bm25Results = await searchFTSFromLbug(query, limit, repo.id);
+    bm25Results = await searchFTSFromLbug(query, limit, repo.id, scope);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('OntoIndex: BM25/FTS search failed (FTS indexes may not exist) -', msg);

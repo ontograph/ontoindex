@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   runImpactKernel,
   type RunImpactKernelOptions,
@@ -30,6 +30,9 @@ const repo = { id: 'repo', name: 'repo', repoPath: '/repo', storagePath: '/store
 const target = { id: 'target', name: 'target', type: 'Function', filePath: 'src/target.ts' };
 const options: RunImpactKernelOptions = { direction: 'upstream', maxDepth: 3 };
 const query = vi.mocked(poolAdapter.executeParameterized);
+
+beforeEach(() => vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0'));
+afterEach(() => vi.unstubAllEnvs());
 
 function row(id: string, filePath = `src/${id}.ts`) {
   return { id, name: id, type: 'Function', filePath, relType: 'CALLS', confidence: 0.95 };
@@ -193,6 +196,56 @@ describe('impact kernel dirty traversal boundaries', () => {
 });
 
 describe('bounded dirty mentions', () => {
+  it('matches the clean baseline without opening any file when no dirty source files exist', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'impact-clean-'));
+    const openSpy = vi.spyOn(fs, 'open');
+    try {
+      await fs.writeFile(path.join(root, 'notes.txt'), 'target();');
+      const cleanBaseline = await findDirtyMentions(root, new Set(), 'target');
+      const result = await findDirtyMentions(root, new Set(['notes.txt']), 'target');
+
+      expect(result).toEqual(cleanBaseline);
+      expect(openSpy).not.toHaveBeenCalled();
+    } finally {
+      openSpy.mockRestore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('opens and reads no more than the dirty-file and byte bounds', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'impact-bounded-'));
+    const readLengths: number[] = [];
+    const originalOpen = fs.open;
+    const openSpy = vi.spyOn(fs, 'open');
+    openSpy.mockImplementation((...args: any[]) =>
+      originalOpen(...args).then((handle) => {
+        const originalRead = handle.read.bind(handle);
+        handle.read = (async (...readArgs: any[]) => {
+          readLengths.push(Number(readArgs[2]));
+          return originalRead(...readArgs);
+        }) as typeof handle.read;
+        return handle;
+      }),
+    );
+    try {
+      const dirtyPaths = new Set<string>();
+      for (let i = 0; i < 50; i++) {
+        const filePath = `dirty-${i}.ts`;
+        dirtyPaths.add(filePath);
+        await fs.writeFile(path.join(root, filePath), 'target();');
+      }
+
+      await findDirtyMentions(root, dirtyPaths, 'target');
+
+      expect(openSpy.mock.calls.length).toBeLessThanOrEqual(50);
+      expect(readLengths.length).toBeLessThanOrEqual(50);
+      expect(readLengths.every((length) => length <= DIRTY_MENTION_MAX_BYTES)).toBe(true);
+    } finally {
+      openSpy.mockRestore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('matches whole names, ignores missing/non-source/oversize files and enforces the file cap', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'impact-dirty-'));
     try {

@@ -109,6 +109,59 @@ describe('MCP Docs Facade Integration', () => {
     });
   });
 
+  it('binds drift cursors to same-count graph and docs evidence beyond the first page', async () => {
+    const repo = await tempRepoHandle();
+    await writeSidecar(repo, [apiSpec('GET', '/v1/items')]);
+    // Inject graph rows through the existing pool adapter mock.
+    const graphRows = [
+      { path: '/a', sourceFile: 'src/a.ts', handler: 'route:/a' },
+      { path: '/z', sourceFile: 'src/z.ts', handler: 'route:/z' },
+    ];
+    lbugMocks.executeParameterized.mockResolvedValue(graphRows);
+
+    const first = await runDocsMcpAction(repo, { action: 'drift', maxItems: 1 });
+    expect(first.docsEvidence).toHaveLength(1);
+    expect(first.cursor).toMatchObject({ offset: 0, pageSize: 1, total: 3 });
+    expect(first.cursor?.next).toEqual(expect.any(String));
+
+    const continued = await runDocsMcpAction(repo, {
+      action: 'drift',
+      maxItems: 1,
+      cursor: first.cursor?.next,
+    });
+    expect(continued.cursor).toMatchObject({ offset: 1, pageSize: 1, total: 3 });
+    expect(continued.docsEvidence).toEqual([expect.objectContaining({ routeKey: '* /z' })]);
+
+    lbugMocks.executeParameterized.mockResolvedValue([
+      graphRows[0],
+      { ...graphRows[1], sourceFile: 'src/y.ts' },
+    ]);
+    const graphChanged = await runDocsMcpAction(repo, { action: 'drift', maxItems: 1 });
+    expect(graphChanged.docsEvidence).toEqual(first.docsEvidence);
+    expect(graphChanged.cursor).toMatchObject({ offset: 0, pageSize: 1, total: 3 });
+    expect(graphChanged.cursor?.next).not.toBe(first.cursor?.next);
+    await expect(
+      runDocsMcpAction(repo, {
+        action: 'drift',
+        maxItems: 1,
+        cursor: first.cursor?.next,
+      }),
+    ).rejects.toThrow(/restart pagination/i);
+
+    await writeSidecar(repo, [apiSpec('GET', '/v1/other')]);
+    const docsChanged = await runDocsMcpAction(repo, { action: 'drift', maxItems: 1 });
+    expect(docsChanged.docsEvidence).toEqual(graphChanged.docsEvidence);
+    expect(docsChanged.cursor).toMatchObject({ offset: 0, pageSize: 1, total: 3 });
+    expect(docsChanged.cursor?.next).not.toBe(graphChanged.cursor?.next);
+    await expect(
+      runDocsMcpAction(repo, {
+        action: 'drift',
+        maxItems: 1,
+        cursor: graphChanged.cursor?.next,
+      }),
+    ).rejects.toThrow(/restart pagination/i);
+  });
+
   it('does not record speculative ambiguous trace candidates as material reads', async () => {
     const repo = await tempRepoHandle();
     await writeSidecar(repo, [requirement('REQ-1'), resolution('REQ-1', 'ambiguous', 3)]);
@@ -268,14 +321,18 @@ describe('MCP Docs Facade Integration', () => {
 
   it('adds bounded advisory knowledge concepts to docs context without graph promotion', async () => {
     const repo = await tempRepoHandle();
-    await writeSidecar(repo, [requirement('REQ-1'), resolution('REQ-1'), requirement('REQ-2')]);
+    const ids = ['REQ-1', 'REQ-2', 'REQ-3', 'REQ-4'];
+    await writeSidecar(repo, [...ids.map(requirement), resolution('REQ-1')]);
 
-    const firstPage = await runDocsMcpAction(repo, { action: 'context', maxItems: 1 });
-    const secondPage = await runDocsMcpAction(repo, {
-      action: 'context',
-      maxItems: 1,
-      cursor: firstPage.cursor?.next,
-    });
+    const pages = [];
+    let cursor: string | undefined;
+    do {
+      const page = await runDocsMcpAction(repo, { action: 'context', maxItems: 1, cursor });
+      pages.push(page);
+      cursor = page.cursor?.next;
+    } while (cursor);
+    const firstPage = pages[0];
+    const collected = pages.flatMap((page) => page.docsEvidence.map((item) => item.conceptId));
 
     expect(firstPage.report).toBe('docs-context');
     expect(firstPage.docsEvidence).toHaveLength(1);
@@ -284,18 +341,46 @@ describe('MCP Docs Facade Integration', () => {
       evidenceClass: 'docs_evidence',
       authority: 'advisory',
       sourceDocuments: ['docs/requirements.md'],
-      linkedGraphIdentities: expect.arrayContaining([expect.objectContaining({ type: 'symbol' })]),
     });
+    expect(
+      pages
+        .flatMap((page) => page.docsEvidence)
+        .some((item) => item.linkedGraphIdentities?.some((identity) => identity.type === 'symbol')),
+    ).toBe(true);
     expect(firstPage.primaryGraphFacts).toEqual([]);
     expect(firstPage.summary.knowledge).toMatchObject({
-      totalConcepts: 2,
+      totalConcepts: 4,
       emittedConcepts: 2,
       authority: 'advisory',
     });
     expect(firstPage.limits).toMatchObject({ maxItems: 1, emitted: 1, total: 2, truncated: true });
-    expect(firstPage.cursor?.next).toEqual(expect.any(String));
-    expect(secondPage.docsEvidence).toHaveLength(1);
-    expect(secondPage.primaryGraphFacts).toEqual([]);
+    expect(firstPage.cursor?.next).toMatch(/^gn-page-v2:1:1:[a-f0-9]{64}$/);
+    expect(pages).toHaveLength(4);
+    expect(collected).toHaveLength(4);
+    expect(new Set(collected).size).toBe(4);
+    expect(pages.slice(1).every((page) => page.docsEvidence.length === 1)).toBe(true);
+    expect(pages.every((page) => page.primaryGraphFacts.length === 0)).toBe(true);
+
+    await writeSidecar(repo, [
+      requirement('REQ-1'),
+      requirement('REQ-2'),
+      requirement('REQ-3'),
+      {
+        ...requirement('REQ-4'),
+        title: 'Changed REQ-4 title',
+      },
+    ]);
+    await expect(
+      runDocsMcpAction(repo, {
+        action: 'context',
+        maxItems: 1,
+        cursor: firstPage.cursor?.next,
+      }),
+    ).rejects.toThrow(/restart pagination/i);
+
+    const restarted = await runDocsMcpAction(repo, { action: 'context', maxItems: 1 });
+    expect(restarted.docsEvidence).toHaveLength(1);
+    expect(restarted.cursor?.offset).toBe(0);
   });
 
   it('summarizes advisory knowledge concepts for docs context summary responses', async () => {
@@ -349,7 +434,7 @@ describe('MCP Docs Facade Integration', () => {
       authority: 'advisory',
     });
     expect(result.nextAction).toBe(
-      'Markdown docs sidecar is missing; run `ontoindex docs refresh` or `ontoindex analyze --markdown-sidecar` before relying on this report.',
+      'Markdown docs sidecar is missing; run `ontoindex docs sidecar run markdown` or `ontoindex analyze --markdown-sidecar` before relying on this report.',
     );
   });
 
@@ -368,7 +453,7 @@ describe('MCP Docs Facade Integration', () => {
     });
     expect(result.docsEvidence[0]).toMatchObject({ freshness: 'stale' });
     expect(result.nextAction).toBe(
-      'Run `ontoindex docs refresh` (or `ontoindex analyze --markdown-sidecar`) before using this report for write decisions.',
+      'Run `ontoindex docs sidecar run markdown` (or `ontoindex analyze --markdown-sidecar`) before using this report for write decisions.',
     );
   });
 

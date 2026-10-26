@@ -41,7 +41,7 @@ export const formatSemanticSearchStatus = (
 ): string => {
   const embeddings = meta?.stats?.embeddings;
   if (typeof embeddings !== 'number') {
-    return 'Semantic search: absent (no index metadata yet; run ontoindex analyze --embeddings to populate)';
+    return 'Semantic search: absent (no index metadata yet; opt in with ontoindex analyze --embeddings; structural navigation does not require embeddings)';
   }
 
   if (embeddings > 0) {
@@ -53,7 +53,7 @@ export const formatSemanticSearchStatus = (
     meta?.pipelineProfile === 'symbols' ||
     meta?.pipelineProfile === 'huge-repo-symbols';
   const source = isSymbolsOnly ? 'symbols-only index' : '0 embeddings recorded';
-  return `Semantic search: absent (${source}; run ontoindex analyze --embeddings to populate)`;
+  return `Semantic search: absent (${source}; opt in with ontoindex analyze --embeddings; structural navigation does not require embeddings)`;
 };
 
 async function resolveRepoStartPath(repoOpt?: string): Promise<string> {
@@ -115,7 +115,7 @@ export const statusCommand = async (options?: { repo?: string }) => {
     if (await hasKuzuIndex(storagePath)) {
       console.log('Repository has a stale KuzuDB index from a previous version.');
       console.log(
-        'Semantic search: absent (stale KuzuDB index; rebuild with ontoindex analyze --embeddings)',
+        'Semantic search: absent (stale KuzuDB index; rebuild with ontoindex analyze; optional semantic search is opt-in with --embeddings)',
       );
       console.log('Run: ontoindex analyze   (rebuilds the index with LadybugDB)');
     } else {
@@ -131,7 +131,7 @@ export const statusCommand = async (options?: { repo?: string }) => {
         }
       }
       console.log(
-        'Semantic search: absent (no index metadata yet; run ontoindex analyze --embeddings to populate)',
+        'Semantic search: absent (no index metadata yet; opt in with ontoindex analyze --embeddings; structural navigation does not require embeddings)',
       );
       console.log('Run: ontoindex analyze');
     }
@@ -226,7 +226,7 @@ function describeRuntimeStatus(health: Awaited<ReturnType<typeof readRuntimeHeal
     case 'stale':
       return '⚠️ stale (re-run ontoindex analyze)';
     case 'dirty':
-      return '⚠️ dirty worktree (commit, stash, or clean before re-running analyze)';
+      return '⚠️ dirty worktree (ontoindex analyze supports working-tree sources; --dirty-overlay has partial coverage and current relationships limited to covered files)';
     case 'degraded':
       return '⚠️ degraded (runtime artifacts present)';
     case 'untrusted':
