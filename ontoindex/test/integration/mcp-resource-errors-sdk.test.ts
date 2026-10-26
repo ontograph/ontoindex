@@ -155,10 +155,13 @@ describe('systems audit arguments through the SDK', () => {
           file: 'test/from-target-report.test.ts',
           target: 'SidecarManager::_spawn',
           case: expect.stringContaining('fd_leak_across_fork'),
-          required: true,
+          required: false,
         }),
       ]);
-      expect(report.warnings).toEqual([]);
+      expect(report.warnings).toEqual([
+        'Suggestions are advisory; supplied test paths and coverage are not independently verified.',
+      ]);
+      expect(report.skipReasons).toEqual([]);
     } finally {
       await f.close();
     }
