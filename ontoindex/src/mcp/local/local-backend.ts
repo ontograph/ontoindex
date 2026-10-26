@@ -2362,6 +2362,7 @@ export class LocalBackend implements BackendPort {
     params: NormalizedToolParams,
     handler: RepoToolHandler,
   ): Promise<unknown> {
+    if (typeof handler !== 'function') throw new Error(`Unknown tool: ${method}`);
     const invoke = () => handler(repo, params);
     let preparationNote: string | undefined;
     const metadataOnlyReadiness =

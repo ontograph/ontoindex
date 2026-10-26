@@ -18,6 +18,21 @@ vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => ({
 }));
 
 describe('backend state retention', () => {
+  it('rejects a non-callable registry entry before preparation and releases tracked use', async () => {
+    const backend = new LocalBackend() as any;
+    vi.spyOn(backend, 'resolveRepo').mockResolvedValue({ id: 'dispatch-test' });
+    backend.repoToolHandlers.set('overview', {});
+    const prepare = vi.spyOn(backend, 'withPreparedRepoRead');
+    const release = vi.fn();
+    vi.spyOn(backend, 'trackRepoUse').mockReturnValue(release);
+    try {
+      await expect(backend.dispatchRepoTool('overview', {})).rejects.toThrow('Unknown tool');
+      expect(prepare).not.toHaveBeenCalled();
+      expect(release).toHaveBeenCalledOnce();
+    } finally {
+      await backend.dispose();
+    }
+  });
   it.each(['toString', 'constructor', '__proto__'])(
     'rejects unregistered prototype handler %s',
     async (method) => {
