@@ -18,6 +18,20 @@ vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => ({
 }));
 
 describe('backend state retention', () => {
+  it.each(['toString', 'constructor', '__proto__'])(
+    'rejects unregistered prototype handler %s',
+    async (method) => {
+      const backend = new LocalBackend() as any;
+      vi.spyOn(backend, 'resolveRepo').mockResolvedValue({ id: 'dispatch-test' });
+      const prepare = vi.spyOn(backend, 'withPreparedRepoRead');
+      try {
+        await expect(backend.dispatchRepoTool(method, {})).rejects.toThrow('Unknown tool');
+        expect(prepare).not.toHaveBeenCalled();
+      } finally {
+        await backend.dispose();
+      }
+    },
+  );
   it.each([undefined, 'readiness', 'context', 'drift'])(
     'gates docs action %s according to its graph requirements',
     async (action) => {

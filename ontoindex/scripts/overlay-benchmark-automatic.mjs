@@ -154,17 +154,13 @@ export function createCpuScope(root) {
   }
   return {
     path: leaf,
-    wrap: (command, args) => ({
-      command: '/bin/sh',
-      args: [
-        '-c',
-        'printf "%s\\n" "$$" > "$1/cgroup.procs" || exit 125; shift; exec "$@"',
-        'ontoindex-cpu-launcher',
-        leaf,
-        command,
-        ...args,
-      ],
-    }),
+    wrap: (command, args) => {
+      if (command !== process.execPath)
+        throw new Error('CPU scope requires the current Node executable');
+      const preload = new URL('./overlay-cpu-scope-preload.mjs', import.meta.url);
+      preload.searchParams.set('cgroup', leaf);
+      return { command, args: ['--import', preload.href, ...args] };
+    },
     read,
     kill,
     close,
@@ -289,9 +285,13 @@ export async function runSample(
   // The compatible baseline for the clean-gate budget: the same read with the feature off.
   if (flagOff) env.ONTOINDEX_AUTO_WORKSPACE = '0';
   const scope = ctx.cpuCgroupRoot ? createCpuScope(ctx.cpuCgroupRoot) : null;
+  const node = scope?.wrap(process.execPath, [ctx.cli, 'mcp']) ?? {
+    command: process.execPath,
+    args: [ctx.cli, 'mcp'],
+  };
   const launch = {
     command: '/usr/bin/time',
-    args: ['-f', '%x %U %S', '-o', timeFile, process.execPath, ctx.cli, 'mcp'],
+    args: ['-f', '%x %U %S', '-o', timeFile, node.command, ...node.args],
   };
   let timer,
     client,
@@ -325,7 +325,7 @@ export async function runSample(
     stderrText = '';
   try {
     const transport = new StdioClientTransport({
-      ...(scope ? scope.wrap(launch.command, launch.args) : launch),
+      ...launch,
       env,
       cwd: ctx.clone,
       stderr: 'pipe',

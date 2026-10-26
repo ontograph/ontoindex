@@ -28,6 +28,47 @@ import {
 import { evaluateBudgets, summarize } from '../../scripts/overlay-benchmark-stats.mjs';
 
 describe('automatic overlay benchmark', () => {
+  it('joins the CPU scope before main and preserves literal arguments and environment', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ontoindex-preload-'));
+    const procs = join(root, 'cgroup.procs');
+    writeFileSync(procs, '');
+    const preload = new URL('../../scripts/overlay-cpu-scope-preload.mjs', import.meta.url);
+    preload.searchParams.set('cgroup', root);
+    const literal = 'space ; $(never-run) "quoted"';
+    try {
+      const child = spawnSync(
+        process.execPath,
+        [
+          '--import',
+          preload.href,
+          '-e',
+          'const fs=require("node:fs");console.log(JSON.stringify({pid:String(process.pid),joined:fs.readFileSync(process.argv[1],"utf8"),arg:process.argv[2],env:process.env.ONTOINDEX_PRELOAD_FIXTURE}))',
+          procs,
+          literal,
+        ],
+        { encoding: 'utf8', env: { ...process.env, ONTOINDEX_PRELOAD_FIXTURE: 'retained' } },
+      );
+      expect(child.status, child.stderr).toBe(0);
+      const result = JSON.parse(child.stdout);
+      expect(result).toEqual({
+        pid: result.pid,
+        joined: result.pid,
+        arg: literal,
+        env: 'retained',
+      });
+      preload.searchParams.set('cgroup', join(root, 'missing'));
+      const failed = spawnSync(
+        process.execPath,
+        ['--import', preload.href, '-e', 'console.log("main ran")'],
+        { encoding: 'utf8' },
+      );
+      expect(failed.status).not.toBe(0);
+      expect(failed.stdout).toBe('');
+      expect(failed.stderr).toContain('ENOENT');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   it.each([false, true])('retries structured workspace contention with isError=%s', (isError) => {
     expect(
       isRetryableBusyResponse({

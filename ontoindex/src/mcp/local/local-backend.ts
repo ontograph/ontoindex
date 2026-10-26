@@ -1391,7 +1391,7 @@ export class LocalBackend implements BackendPort {
   private readonly repoFilter?: string;
   private readonly preferredProjectPath?: string;
   private readonly globalToolHandlers: Record<RepoAgnosticToolName, GlobalToolHandler>;
-  private readonly repoToolHandlers: Record<string, RepoToolHandler>;
+  private readonly repoToolHandlers: Map<string, RepoToolHandler>;
 
   constructor(options: LocalBackendOptions = {}) {
     this.watchWorkspace = options.watchWorkspace === true;
@@ -1415,135 +1415,139 @@ export class LocalBackend implements BackendPort {
         return gnToolContract(params as any);
       },
     };
-    this.repoToolHandlers = {
-      query: (repo, params) => this.query(repo, params as QueryParams),
-      cypher: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return formatCypherAsMarkdown(await queryCypher(repo, params as CypherParams));
-      },
-      context: (repo, params) => this.context(repo, params as ContextParams),
-      impact: (repo, params) => {
-        const impactParams = params as ImpactParams;
-        return this.impact(repo, {
-          ...impactParams,
-          target: impactParams.target ?? '',
-          direction: impactParams.direction === 'downstream' ? 'downstream' : 'upstream',
-        });
-      },
-      gn_diagnose: async (repo, params) => {
-        const { gnDiagnose } = await import('../super/diagnose.js');
-        return gnDiagnose(repo.id, params as any, {
-          repoPath: repo.repoPath,
-          projectCwd: this.preferredProjectPath ?? null,
-        });
-      },
-      detect_changes: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return detectChangesImpl(repo, params as DetectChangesParams);
-      },
-      cycle_detect: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return runCycleDetect(repo, params as CycleDetectParams);
-      },
-      coupling_matrix: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return runCouplingMatrix(repo, params as CouplingMatrixParams);
-      },
-      migration_progress: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return runMigrationProgress(repo, params as MigrationProgressParams);
-      },
-      boundary_violations: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return runBoundaryViolations(repo, params as BoundaryViolationsParams);
-      },
-      type_coverage: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return runTypeCoverage(repo, params as TypeCoverageParams);
-      },
-      rename: (repo, params) => this.rename(repo, params as RenameParams),
-      rename_symbol: (repo, params) => this.renameByUid(repo, params as RenameByUidParams),
-      search: (repo, params) => this.query(repo, params as QueryParams),
-      explore: (repo, params) => {
-        const contextParams = params as ContextParams;
-        return this.context(repo, { name: contextParams.name, ...contextParams });
-      },
-      overview: (repo, params) => this.overview(repo, params as OverviewParams),
-      route_map: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return routeMapImpl(repo, params as RouteMapParams);
-      },
-      shape_check: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return shapeCheckImpl(repo, params as ShapeCheckParams);
-      },
-      tool_map: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return toolMapImpl(repo, params as ToolMapParams);
-      },
-      api_impact: async (repo, params) => {
-        const apiParams = params as ApiImpactParams;
-        if (apiParams.file) canonicalize(repo.repoPath, apiParams.file);
-        await this.ensureInitialized(repo.id);
-        return apiImpactImpl(repo, apiParams);
-      },
-      repomap: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return runRepomap(repo, params as RepomapParams);
-      },
-      route: (repo, params) => routeTool(repo, params as RouteIntentParams),
-      analysis_catalog: (repo, params) => runAnalysisCatalog(repo, params as AnalysisCatalogParams),
-      session: (repo, params) => manageSession(repo, params as SessionParams),
-      pattern_audit: (repo, params) => runPatternAudit(repo, params as PatternAuditParams),
-      audit_rerun: (repo, params) => runAuditRerun(repo, params as AuditRerunParams),
-      build_residue_audit: (repo, params) =>
-        runBuildResidueAudit(repo, params as BuildResidueAuditParams),
-      cross_doc_drift: (repo, params) => runCrossDocDrift(repo, params as CrossDocDriftParams),
-      evidence_pack: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return runEvidencePack(repo, params as EvidencePackParams);
-      },
-      graph_diff: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return runGraphDiff(repo, params as GraphDiffParams);
-      },
-      hotspot_analysis: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return runHotspotAnalysis(repo, params as HotspotAnalysisParams);
-      },
-      impact_batch: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return runImpactBatch(repo, params as ImpactBatchParams);
-      },
-      tech_debt: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return runTechDebt(repo, params as TechDebtParams);
-      },
-      verification_gap: (repo, params) => runVerificationGap(repo, params as VerificationGapParams),
-      ipc_trace: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return runIpcTrace(repo, params as IpcTraceParams);
-      },
-      requirements_trace: (repo, params) =>
-        runRequirementsTrace(repo, params as RequirementsTraceParams),
-      audit_report: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return runAuditReport(repo, params as AuditReportParams);
-      },
-      dead_code: async (repo, params) => {
-        await this.ensureInitialized(repo.id);
-        return runDeadCode(repo, params as DeadCodeParams);
-      },
-      sandbox: (repo, params) => this.sandbox(repo, params as SandboxParams),
-      replace_symbol: (repo, params) => this.replaceSymbol(repo, params as ReplaceSymbolParams),
-      get_symbol_info: (repo, params) => this.getSymbolInfo(repo, params as GetSymbolInfoParams),
-      update_symbol_body: (repo, params) =>
-        this.updateSymbolBody(repo, params as UpdateSymbolBodyParams),
-      extract_function: (repo, params) =>
-        this.extractFunctionByUid(repo, params as ExtractFunctionParams),
-      move_symbol: (repo, params) => this.moveSymbolByUid(repo, params as MoveSymbolParams),
-      docs: (repo, params) => runDocsMcpAction(repo, params as DocsMcpParams),
-    };
+    this.repoToolHandlers = new Map(
+      Object.entries<RepoToolHandler>({
+        query: (repo, params) => this.query(repo, params as QueryParams),
+        cypher: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return formatCypherAsMarkdown(await queryCypher(repo, params as CypherParams));
+        },
+        context: (repo, params) => this.context(repo, params as ContextParams),
+        impact: (repo, params) => {
+          const impactParams = params as ImpactParams;
+          return this.impact(repo, {
+            ...impactParams,
+            target: impactParams.target ?? '',
+            direction: impactParams.direction === 'downstream' ? 'downstream' : 'upstream',
+          });
+        },
+        gn_diagnose: async (repo, params) => {
+          const { gnDiagnose } = await import('../super/diagnose.js');
+          return gnDiagnose(repo.id, params as any, {
+            repoPath: repo.repoPath,
+            projectCwd: this.preferredProjectPath ?? null,
+          });
+        },
+        detect_changes: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return detectChangesImpl(repo, params as DetectChangesParams);
+        },
+        cycle_detect: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return runCycleDetect(repo, params as CycleDetectParams);
+        },
+        coupling_matrix: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return runCouplingMatrix(repo, params as CouplingMatrixParams);
+        },
+        migration_progress: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return runMigrationProgress(repo, params as MigrationProgressParams);
+        },
+        boundary_violations: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return runBoundaryViolations(repo, params as BoundaryViolationsParams);
+        },
+        type_coverage: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return runTypeCoverage(repo, params as TypeCoverageParams);
+        },
+        rename: (repo, params) => this.rename(repo, params as RenameParams),
+        rename_symbol: (repo, params) => this.renameByUid(repo, params as RenameByUidParams),
+        search: (repo, params) => this.query(repo, params as QueryParams),
+        explore: (repo, params) => {
+          const contextParams = params as ContextParams;
+          return this.context(repo, { name: contextParams.name, ...contextParams });
+        },
+        overview: (repo, params) => this.overview(repo, params as OverviewParams),
+        route_map: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return routeMapImpl(repo, params as RouteMapParams);
+        },
+        shape_check: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return shapeCheckImpl(repo, params as ShapeCheckParams);
+        },
+        tool_map: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return toolMapImpl(repo, params as ToolMapParams);
+        },
+        api_impact: async (repo, params) => {
+          const apiParams = params as ApiImpactParams;
+          if (apiParams.file) canonicalize(repo.repoPath, apiParams.file);
+          await this.ensureInitialized(repo.id);
+          return apiImpactImpl(repo, apiParams);
+        },
+        repomap: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return runRepomap(repo, params as RepomapParams);
+        },
+        route: (repo, params) => routeTool(repo, params as RouteIntentParams),
+        analysis_catalog: (repo, params) =>
+          runAnalysisCatalog(repo, params as AnalysisCatalogParams),
+        session: (repo, params) => manageSession(repo, params as SessionParams),
+        pattern_audit: (repo, params) => runPatternAudit(repo, params as PatternAuditParams),
+        audit_rerun: (repo, params) => runAuditRerun(repo, params as AuditRerunParams),
+        build_residue_audit: (repo, params) =>
+          runBuildResidueAudit(repo, params as BuildResidueAuditParams),
+        cross_doc_drift: (repo, params) => runCrossDocDrift(repo, params as CrossDocDriftParams),
+        evidence_pack: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return runEvidencePack(repo, params as EvidencePackParams);
+        },
+        graph_diff: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return runGraphDiff(repo, params as GraphDiffParams);
+        },
+        hotspot_analysis: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return runHotspotAnalysis(repo, params as HotspotAnalysisParams);
+        },
+        impact_batch: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return runImpactBatch(repo, params as ImpactBatchParams);
+        },
+        tech_debt: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return runTechDebt(repo, params as TechDebtParams);
+        },
+        verification_gap: (repo, params) =>
+          runVerificationGap(repo, params as VerificationGapParams),
+        ipc_trace: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return runIpcTrace(repo, params as IpcTraceParams);
+        },
+        requirements_trace: (repo, params) =>
+          runRequirementsTrace(repo, params as RequirementsTraceParams),
+        audit_report: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return runAuditReport(repo, params as AuditReportParams);
+        },
+        dead_code: async (repo, params) => {
+          await this.ensureInitialized(repo.id);
+          return runDeadCode(repo, params as DeadCodeParams);
+        },
+        sandbox: (repo, params) => this.sandbox(repo, params as SandboxParams),
+        replace_symbol: (repo, params) => this.replaceSymbol(repo, params as ReplaceSymbolParams),
+        get_symbol_info: (repo, params) => this.getSymbolInfo(repo, params as GetSymbolInfoParams),
+        update_symbol_body: (repo, params) =>
+          this.updateSymbolBody(repo, params as UpdateSymbolBodyParams),
+        extract_function: (repo, params) =>
+          this.extractFunctionByUid(repo, params as ExtractFunctionParams),
+        move_symbol: (repo, params) => this.moveSymbolByUid(repo, params as MoveSymbolParams),
+        docs: (repo, params) => runDocsMcpAction(repo, params as DocsMcpParams),
+      }),
+    );
   }
 
   /**
@@ -2197,7 +2201,7 @@ export class LocalBackend implements BackendPort {
 
   private async dispatchRepoTool(method: string, params: NormalizedToolParams): Promise<unknown> {
     const repo = await this.resolveRepo(this.getRepoParam(params));
-    const handler = this.repoToolHandlers[method];
+    const handler = this.repoToolHandlers.get(method);
     if (!handler) throw new Error(`Unknown tool: ${method}`);
     const endUse = this.trackRepoUse(repo.id);
     try {

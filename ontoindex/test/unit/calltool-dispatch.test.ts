@@ -233,15 +233,15 @@ describe('request workspace gate', () => {
   it('gates nested reads once and shares the context and fixed deadline', async () => {
     let outer: ReturnType<typeof getReadRequestContext>;
     const handlers = (backend as any).repoToolHandlers;
-    handlers.overview = async () => {
+    handlers.set('overview', async () => {
       outer = getReadRequestContext();
       return backend.callTool('route_map', {});
-    };
-    handlers.route_map = async () => {
+    });
+    handlers.set('route_map', async () => {
       expect(getReadRequestContext()).toBe(outer);
       expect(outer!.deadline).toBeGreaterThan(performance.now() + 59_000);
       return ['nested'];
-    };
+    });
     expect(await backend.callTool('overview', { timeoutMs: 1 })).toEqual(['nested']);
     expect(getOverlaySnapshot).toHaveBeenCalledTimes(1);
     expect(prepareWorkspaceRead).toHaveBeenCalledTimes(1);
@@ -257,12 +257,12 @@ describe('request workspace gate', () => {
         generation: 'g1',
       });
       let release: ReturnType<typeof vi.spyOn>;
-      (backend as any).repoToolHandlers.overview = async () => {
+      (backend as any).repoToolHandlers.set('overview', async () => {
         release = vi.spyOn(getReadRequestContext()!, 'release');
         expect(withPinnedOverlay).toHaveBeenCalledTimes(1);
         if (fails) throw new Error('handler failed');
         return ['ok'];
-      };
+      });
       const call = backend.callTool('overview', {});
       if (fails) await expect(call).rejects.toThrow('handler failed');
       else expect(await call).toEqual(['ok']);
@@ -282,14 +282,14 @@ describe('request workspace gate', () => {
         }),
     );
     const seen: Array<AbortSignal | undefined> = [];
-    (backend as any).repoToolHandlers.overview = async () => {
+    (backend as any).repoToolHandlers.set('overview', async () => {
       seen.push(getReadRequestContext()?.signal);
       return backend.withOperation(() => backend.callTool('route_map', {}));
-    };
-    (backend as any).repoToolHandlers.route_map = async () => {
+    });
+    (backend as any).repoToolHandlers.set('route_map', async () => {
       seen.push(getReadRequestContext()?.signal);
       return [];
-    };
+    });
     const firstRequest = backend.withOperation(
       () => backend.withOperation(() => backend.callTool('overview', {})),
       { signal: first.signal },
@@ -331,7 +331,7 @@ describe('request workspace gate', () => {
         }),
     );
     const handler = vi.fn(async () => []);
-    (backend as any).repoToolHandlers.overview = handler;
+    (backend as any).repoToolHandlers.set('overview', handler);
     const cancelledRequest = backend.withOperation(() => backend.callTool('overview', {}), {
       signal: cancelled.signal,
     });
@@ -362,7 +362,7 @@ describe('request workspace gate', () => {
     ['query', false],
     ['repomap', false],
   ])('prepares %s with needsRelationships=%s', async (method, needsRelationships) => {
-    (backend as any).repoToolHandlers[method as string] = async () => [];
+    (backend as any).repoToolHandlers.set(method as string, async () => []);
     await (backend as any).dispatchRepoTool(method, {});
     expect(prepareWorkspaceRead).toHaveBeenCalledWith({
       repo: expect.objectContaining({ repoPath: MOCK_REPO_ENTRY.path }),
@@ -390,7 +390,7 @@ describe('request workspace gate', () => {
       'extract_function',
       'move_symbol',
     ]) {
-      (backend as any).repoToolHandlers[method] = async () => [];
+      (backend as any).repoToolHandlers.set(method, async () => []);
       await (backend as any).dispatchRepoTool(method, {});
     }
     await backend.callTool('list_repos', {});
@@ -401,7 +401,7 @@ describe('request workspace gate', () => {
   it('fails preparation with a typed error before running the handler', async () => {
     vi.mocked(getOverlaySnapshot).mockRejectedValueOnce(new Error('capture failed'));
     const handler = vi.fn();
-    (backend as any).repoToolHandlers.overview = handler;
+    (backend as any).repoToolHandlers.set('overview', handler);
     await expect(backend.callTool('overview', {})).rejects.toMatchObject({
       code: 'workspace_preparation_failed',
       message: 'workspace_preparation_failed',
@@ -422,7 +422,7 @@ describe('request workspace gate', () => {
     );
     vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(original);
     const handler = vi.fn();
-    (backend as any).repoToolHandlers.overview = handler;
+    (backend as any).repoToolHandlers.set('overview', handler);
     const failure = await backend.callTool('overview', {}).catch((error: unknown) => error);
     expect(failure).toMatchObject({
       code,
@@ -448,7 +448,7 @@ describe('request workspace gate', () => {
     );
     vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(original);
     const handler = vi.fn();
-    (backend as any).repoToolHandlers.overview = handler;
+    (backend as any).repoToolHandlers.set('overview', handler);
     const failure = await backend.callTool('overview', {}).catch((error: unknown) => error);
     expect(failure).toMatchObject({ code: 'workspace_too_large', retryable: false, diagnostics });
     expect(JSON.stringify(failure)).not.toMatch(/preparation-token|private\.ts/);
@@ -460,7 +460,7 @@ describe('request workspace gate', () => {
     const original = kind === 'Error' ? new Error(detail) : detail;
     vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(original);
     const handler = vi.fn();
-    (backend as any).repoToolHandlers.overview = handler;
+    (backend as any).repoToolHandlers.set('overview', handler);
     const failure = await backend.callTool('overview', {}).catch((error: unknown) => error);
     expect(failure).toMatchObject({
       code: 'workspace_preparation_failed',
@@ -481,7 +481,7 @@ describe('request workspace gate', () => {
       new Error('overlay generation no longer available'),
     );
     const handler = vi.fn();
-    (backend as any).repoToolHandlers.overview = handler;
+    (backend as any).repoToolHandlers.set('overview', handler);
     await expect(backend.callTool('overview', {})).rejects.toMatchObject({
       code: 'workspace_preparation_failed',
     });
@@ -489,7 +489,7 @@ describe('request workspace gate', () => {
   });
 
   it('preserves clean base results without pinning', async () => {
-    (backend as any).repoToolHandlers.overview = async () => ['base'];
+    (backend as any).repoToolHandlers.set('overview', async () => ['base']);
     expect(await backend.callTool('overview', {})).toEqual(['base']);
     expect(withPinnedOverlay).not.toHaveBeenCalled();
   });
@@ -501,7 +501,7 @@ describe('request workspace gate', () => {
     });
     const idleSetup = async () => {
       vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
-      (backend as any).repoToolHandlers.overview = async () => ({ items: [1] });
+      (backend as any).repoToolHandlers.set('overview', async () => ({ items: [1] }));
       await backend.callTool('overview', {});
       return (await backend.resolveRepo(undefined)).id as string;
     };
@@ -529,10 +529,13 @@ describe('request workspace gate', () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
       let finish!: () => void;
-      (backend as any).repoToolHandlers.overview = () =>
-        new Promise((resolve) => {
-          finish = () => resolve({ items: [1] });
-        });
+      (backend as any).repoToolHandlers.set(
+        'overview',
+        () =>
+          new Promise((resolve) => {
+            finish = () => resolve({ items: [1] });
+          }),
+      );
       const running = backend.callTool('overview', {});
       await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
       const id = (await backend.resolveRepo(undefined)).id as string;
@@ -561,7 +564,7 @@ describe('request workspace gate', () => {
     it('does not track repos when the flag is off', async () => {
       vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
       vi.useFakeTimers({ toFake: ['Date'] });
-      (backend as any).repoToolHandlers.overview = async () => ({ items: [1] });
+      (backend as any).repoToolHandlers.set('overview', async () => ({ items: [1] }));
       await backend.callTool('overview', {});
       const id = (await backend.resolveRepo(undefined)).id as string;
       (backend as any).initializedRepos.add(id);
@@ -578,13 +581,16 @@ describe('request workspace gate', () => {
         ...cleanSnapshot(),
         preparationNote: 'Working-tree graph not built (workspace_too_large); test note',
       });
-      (backend as any).repoToolHandlers.overview = async () => ({ items: [1], warnings: ['old'] });
+      (backend as any).repoToolHandlers.set('overview', async () => ({
+        items: [1],
+        warnings: ['old'],
+      }));
       const result = (await backend.callTool('overview', {})) as { warnings: string[] };
       expect(result.warnings).toEqual(['old', expect.stringContaining('workspace_too_large')]);
     });
 
     it('leaves results alone when there is no preparation note', async () => {
-      (backend as any).repoToolHandlers.overview = async () => ({ items: [1] });
+      (backend as any).repoToolHandlers.set('overview', async () => ({ items: [1] }));
       expect(await backend.callTool('overview', {})).toEqual(
         expect.not.objectContaining({ warnings: expect.anything() }),
       );
@@ -603,7 +609,7 @@ describe('request workspace gate', () => {
       async (flag) => {
         vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', flag);
         const handler = vi.fn(async () => ({ risk: 'LOW', impactedCount: 1, byDepth: {} }));
-        (backend as any).repoToolHandlers.impact = handler;
+        (backend as any).repoToolHandlers.set('impact', handler);
         const result = await backend.impactByUid(repoId, 'uid-1', 'downstream', opts);
         expect(result).toMatchObject({ impactedCount: 1 });
         expect(handler).toHaveBeenCalledWith(
@@ -619,7 +625,7 @@ describe('request workspace gate', () => {
       ['ambiguous', { status: 'ambiguous' }],
     ])('returns null for a %s workspace result', async (_name, payload) => {
       vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
-      (backend as any).repoToolHandlers.impact = async () => payload;
+      (backend as any).repoToolHandlers.set('impact', async () => payload);
       expect(await backend.impactByUid(repoId, 'uid-1', 'upstream', opts)).toBeNull();
     });
 
@@ -628,14 +634,14 @@ describe('request workspace gate', () => {
       vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(
         new WorkspacePreparationError('workspace_busy'),
       );
-      (backend as any).repoToolHandlers.impact = vi.fn();
+      (backend as any).repoToolHandlers.set('impact', vi.fn());
       expect(await backend.impactByUid(repoId, 'uid-1', 'upstream', opts)).toBeNull();
     });
 
     it('does not use the gated handler when the flag is off', async () => {
       vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
       const handler = vi.fn();
-      (backend as any).repoToolHandlers.impact = handler;
+      (backend as any).repoToolHandlers.set('impact', handler);
       await backend.impactByUid(repoId, 'uid-1', 'upstream', opts);
       expect(handler).not.toHaveBeenCalled();
       expect(prepareWorkspaceRead).not.toHaveBeenCalled();
@@ -655,7 +661,7 @@ describe('request workspace gate', () => {
         async (port) => {
           vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', undefined);
           const handler = vi.fn(async () => ({ ok: port }));
-          (backend as any).repoToolHandlers[port] = handler;
+          (backend as any).repoToolHandlers.set(port, handler);
           expect(await call(port)).toMatchObject({ ok: port });
           expect(prepareWorkspaceRead).toHaveBeenCalledOnce();
         },

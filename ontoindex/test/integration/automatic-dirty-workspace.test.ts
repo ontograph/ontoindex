@@ -160,11 +160,14 @@ it('replays current workspace mutations through persistent stdio MCP and foregro
     const head = git('rev-parse', 'HEAD').trim();
     if (process.env.ONTOINDEX_TEST_CGROUP_ROOT)
       scope = createCpuScope(process.env.ONTOINDEX_TEST_CGROUP_ROOT);
-    const timed = {
-      command: '/usr/bin/time',
-      args: ['-f', '%x', '-o', exitFile, process.execPath, ...cli, 'mcp'],
+    const node = scope?.wrap(process.execPath, [...cli, 'mcp']) ?? {
+      command: process.execPath,
+      args: [...cli, 'mcp'],
     };
-    const launch = scope?.wrap(timed.command, timed.args) ?? timed;
+    const launch = {
+      command: '/usr/bin/time',
+      args: ['-f', '%x', '-o', exitFile, node.command, ...node.args],
+    };
     transport = new StdioClientTransport({
       ...launch,
       cwd: repo,
