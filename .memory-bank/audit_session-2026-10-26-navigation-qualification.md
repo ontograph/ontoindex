@@ -2806,3 +2806,5 @@ Change (0a838b0): `superviseWorkspaceBuild` option `retryNativeCrash` (set by
 reaping and artifact cleanup, never on timeout/cancel/input_refused/exit code. 11 new tests, 60/60
 in the file. This is mitigation for availability, not a fix of the native fault.
 Open: reproduce under valgrind or core capture; quarantine timed-out lbug handles; lbug upgrade task.
+
+Full suite after round 15 (tests-full-6.log): rc=0, 770 files passed, 17762 tests passed, 0 failed, 1 expected fail, 304 skipped, 1405 s. Supersedes the "rerun pending" note in the 2026-10-28 update.
