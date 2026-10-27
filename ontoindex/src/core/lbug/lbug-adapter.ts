@@ -457,15 +457,23 @@ class LbugQueryTimeoutError extends Error {
   }
 }
 
-const retireTimedOutLbugSession = (): void => {
+const retireTimedOutLbugSession = (pending: unknown): void => {
   const retired = captureLbugSession();
   failedClosePaths.add(retired);
   resetLbugSessionState(true);
 
   // Native getAll() cannot be cancelled. Quarantine the handles immediately so
-  // later calls cannot reuse a connection that may still be busy, then close
-  // them in the background. Keep their identity and pin until both closes succeed.
+  // later calls cannot reuse a connection that may still be busy. Closing a
+  // handle while its native call is running can corrupt native memory, so the
+  // background close starts only after that call settles (a call that never
+  // settles keeps the handles and pin until process restart). Keep their
+  // identity and pin until both closes succeed.
   void (async () => {
+    try {
+      await pending;
+    } catch {
+      // A rejected native call has also finished; teardown may proceed.
+    }
     let closeFailed = false;
     try {
       if (retired.connection) await retired.connection.close();
@@ -507,7 +515,7 @@ async function withLbugNativeTimeout<T>(
     ]);
   } catch (err) {
     if (err instanceof LbugQueryTimeoutError && conn === queryConnection && db === queryDatabase) {
-      retireTimedOutLbugSession();
+      retireTimedOutLbugSession(value);
     }
     throw err;
   }
@@ -538,12 +546,20 @@ async function getAllWithTimeout<TRow extends LbugProjectionRow = LbugProjection
   label: string,
   timeoutMs = GET_ALL_TIMEOUT_MS,
 ): Promise<LbugProjectionRows<TRow>> {
-  let rows;
+  // The result is closed when getAll settles, not when the caller gives up on it: after a
+  // timeout the native read is still running and must not lose its result underneath it.
+  let pending: Promise<unknown>;
   try {
-    rows = await withLbugNativeTimeout(result.getAll(), `${label} getAll`, timeoutMs);
-  } finally {
+    pending = Promise.resolve(result.getAll());
+  } catch (error) {
     closeQueryResults(result);
+    throw error;
   }
+  const rows = await withLbugNativeTimeout(
+    pending.finally(() => closeQueryResults(result)),
+    `${label} getAll`,
+    timeoutMs,
+  );
   return rows as LbugProjectionRows<TRow>;
 }
 
