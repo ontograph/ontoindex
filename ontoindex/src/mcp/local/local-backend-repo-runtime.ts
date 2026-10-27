@@ -178,6 +178,7 @@ export async function buildWorkspaceGraph(
       env: workspaceBuildChildEnv(),
       storagePath: repo.storagePath,
       signal,
+      retryNativeCrash: true,
       timeoutMs:
         Number(process.env.ONTOINDEX_WORKSPACE_BUILD_TIMEOUT_MS) || WORKSPACE_BUILD_TIMEOUT_MS,
     });

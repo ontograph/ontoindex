@@ -68,6 +68,116 @@ describe('superviseWorkspaceBuild', () => {
     const storage = ${JSON.stringify('__STORAGE__')};
   `;
   const withStorage = (body: string) => strand.replace('__STORAGE__', storage) + body;
+  const runRetrying = (
+    script: string,
+    timeoutMs = 10_000,
+    signal?: AbortSignal,
+    onSpawn?: (pid: number) => void,
+  ) =>
+    superviseWorkspaceBuild({
+      command: process.execPath,
+      args: ['-e', script],
+      cwd: storage,
+      storagePath: storage,
+      timeoutMs,
+      signal,
+      onSpawn,
+      reapMs: 3000,
+      retryNativeCrash: true,
+    });
+  const crashOnce = (signalName: string) =>
+    withStorage(`
+      const marker = path.join(storage, 'attempt');
+      if (!fs.existsSync(marker)) {
+        fs.writeFileSync(marker, '1');
+        fs.mkdirSync(path.join(storage, 'overlay', 'half-gen'));
+        process.kill(process.pid, '${signalName}');
+      } else if (fs.existsSync(path.join(storage, 'overlay', 'half-gen'))) {
+        process.exit(1);
+      }`);
+
+  it.each(['SIGABRT', 'SIGSEGV', 'SIGBUS'])(
+    'retries once after %s and publishes the second attempt',
+    async (signalName) => {
+      const onSpawn = vi.fn();
+      await runRetrying(crashOnce(signalName), 10_000, undefined, onSpawn);
+      expect(onSpawn).toHaveBeenCalledTimes(2);
+      expect(onSpawn.mock.calls[0][0]).not.toBe(onSpawn.mock.calls[1][0]);
+      expect((await fs.readdir(path.join(storage, 'overlay'))).sort()).toEqual([
+        'CURRENT',
+        'old-gen',
+      ]);
+      await expect(fs.access(path.join(storage, 'workspace-build.owner.json'))).rejects.toThrow();
+    },
+  );
+
+  it('does not retry a native crash unless the caller opts in', async () => {
+    const onSpawn = vi.fn();
+    const error = (await run(crashOnce('SIGABRT'), 10_000, undefined, onSpawn).catch(
+      (e: unknown) => e,
+    )) as WorkspaceBuildError;
+    expect(error.termination).toEqual({ exitCode: null, signal: 'SIGABRT' });
+    expect(onSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops after one retry when the crash repeats and cleans up', async () => {
+    const onSpawn = vi.fn();
+    const script = withStorage(`
+      fs.mkdirSync(path.join(storage, 'overlay', 'half-gen-' + process.pid));
+      process.kill(process.pid, 'SIGABRT');`);
+    const error = (await runRetrying(script, 10_000, undefined, onSpawn).catch(
+      (e: unknown) => e,
+    )) as WorkspaceBuildError;
+    expect(error.kind).toBe('failed');
+    expect(error.termination).toEqual({ exitCode: null, signal: 'SIGABRT' });
+    expect(onSpawn).toHaveBeenCalledTimes(2);
+    expect((await fs.readdir(path.join(storage, 'overlay'))).sort()).toEqual([
+      'CURRENT',
+      'old-gen',
+    ]);
+    await expect(fs.access(path.join(storage, 'workspace-build.owner.json'))).rejects.toThrow();
+  });
+
+  it('does not retry an ordinary failure, input refusal, or timeout', async () => {
+    for (const [script, timeoutMs] of [
+      ['process.exit(1)', 10_000],
+      ['process.exit(3)', 10_000],
+      ['setInterval(() => {}, 1000)', 500],
+    ] as const) {
+      const onSpawn = vi.fn();
+      await runRetrying(script, timeoutMs, undefined, onSpawn).catch(() => undefined);
+      expect(onSpawn).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('keeps the retry inside the original deadline', async () => {
+    const script = withStorage(`
+      const marker = path.join(storage, 'attempt');
+      if (!fs.existsSync(marker)) {
+        fs.writeFileSync(marker, '1');
+        setTimeout(() => process.kill(process.pid, 'SIGABRT'), 600);
+      } else {
+        setInterval(() => {}, 1000);
+      }`);
+    const started = Date.now();
+    const error = (await runRetrying(script, 1500).catch((e: unknown) => e)) as WorkspaceBuildError;
+    expect(error.kind).toBe('timeout');
+    expect(Date.now() - started).toBeLessThan(3500);
+  });
+
+  it('does not start a retry once the build was cancelled', async () => {
+    const controller = new AbortController();
+    const onSpawn = vi.fn((pid: number) => {
+      void pid;
+      controller.abort();
+    });
+    const script = withStorage(`setTimeout(() => process.kill(process.pid, 'SIGABRT'), 3000);`);
+    const error = (await runRetrying(script, 10_000, controller.signal, onSpawn).catch(
+      (e: unknown) => e,
+    )) as WorkspaceBuildError;
+    expect(error.kind).toBe('cancelled');
+    expect(onSpawn).toHaveBeenCalledTimes(1);
+  });
 
   it('observes the child PID once after recording its owner identity', async () => {
     const onSpawn = vi.fn((pid: number) => {

@@ -40,10 +40,16 @@ export interface SupervisedBuild {
   onSpawn?: (pid: number) => void;
   /** How long to wait for the killed process group to disappear. */
   reapMs?: number;
+  /**
+   * Retry once, within the same deadline, when the child dies from a native crash signal. The
+   * failed attempt is reaped and its artifacts removed before the retry starts.
+   */
+  retryNativeCrash?: boolean;
 }
 
 const STDERR_TAIL_BYTES = 4096;
 const OWNER_MARKER = 'workspace-build.owner.json';
+const NATIVE_CRASH_SIGNALS = new Set<NodeJS.Signals | null>(['SIGABRT', 'SIGSEGV', 'SIGBUS']);
 
 interface OwnerMarker {
   parentPid: number;
@@ -214,12 +220,31 @@ export async function superviseWorkspaceBuild(options: SupervisedBuild): Promise
       } satisfies OwnerMarker),
     );
   await writeMarker();
-  try {
-    await runSupervised(options, before, writeMarker);
-  } catch (error) {
-    if (!(error instanceof WorkspaceBuildError) || error.kind === 'unstoppable') throw error;
-    await fs.rm(markerPath, { force: true });
-    throw error;
+  const deadline = Date.now() + options.timeoutMs;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await runSupervised(
+        attempt === 0 ? options : { ...options, timeoutMs: deadline - Date.now() },
+        before,
+        writeMarker,
+      );
+      break;
+    } catch (error) {
+      if (!(error instanceof WorkspaceBuildError) || error.kind === 'unstoppable') throw error;
+      if (
+        options.retryNativeCrash &&
+        attempt === 0 &&
+        error.kind === 'failed' &&
+        NATIVE_CRASH_SIGNALS.has(error.termination?.signal ?? null) &&
+        !options.signal?.aborted &&
+        deadline - Date.now() > 0
+      ) {
+        // runSupervised already reaped the group and removed this attempt's artifacts.
+        continue;
+      }
+      await fs.rm(markerPath, { force: true });
+      throw error;
+    }
   }
   await fs.rm(markerPath, { force: true });
 }
