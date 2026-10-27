@@ -2732,3 +2732,25 @@ detected. Test fix: force a distinct mtime via `fs.utimes` (6/6 isolated passes 
 Production limitation, NOT fixed: metadata-only change detection can accept the old digest when a
 concurrent same-size writer lands in the same timestamp tick; bounded consistency checks, not an
 atomic snapshot. Decide by threat model whether to harden.
+
+## Round 13 (2026-10-28): commit and C++ one-worker attribution
+
+Committed on branch `wip/scope-retention-ts-admission-20261028` (188d744 on top of 2623820; not pushed,
+500 files; pre-commit hook passed after fixing 5 lint errors in `workspace-build-child.ts` and
+`semantic-model.test.ts`; hook not bypassed). Backup: /opt/d1/tmp/ontoindex-dirty-backup-20261028.
+
+C++ SIGABRT, current dist, 245-file corpus, one worker (ONTOINDEX_MAX_WORKERS=1) through the
+existing supervisor and analyze lock: FIRST current-build reproduction. Run 1: terminated by SIGABRT
+after 43.3 s at file 200/245 (last completed src/models/bailingmoe3.cpp, active
+src/models/gemma3.cpp .. afmoe.cpp), peak RSS 1.68 GiB. It is intermittent: 3 later plain one-worker
+runs completed (16.7, 24.5, 26.9 s) and 9 GDB-wrapped runs (handle SIGABRT stop) completed with no
+abort. No core file (core_pattern routes to apport; ulimit -c was 0 in the supervisor shell).
+So: the abort is NOT specific to multi-worker (it occurs with one worker), and it is timing
+sensitive (GDB and ulimit changes hide it). The owning native addon is still NOT identified. The
+GDB run lists loaded addons: tree-sitter-{javascript,typescript,python,cpp,rust,java,c,go,php,ruby,
+c-sharp,swift}, lbugjs.node, ontoindex_native.node, libvector/libfts lbug extensions, plus the
+tree_sitter_runtime_binding. Next discriminators: loop plain runs under `ulimit -c unlimited` with
+apport bypassed (set core_pattern or run via `prlimit` into a writable dir), then valgrind on a
+reduced subset (src/models/gemma3..afmoe), or MALLOC_CHECK_=3 over many iterations.
+Artifacts: /opt/d1/tmp/ontoindex-cpp-attrib-20261028.
+MCP rebind NOT performed (see final report).
