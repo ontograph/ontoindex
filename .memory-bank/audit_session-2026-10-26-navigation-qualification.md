@@ -2754,3 +2754,33 @@ apport bypassed (set core_pattern or run via `prlimit` into a writable dir), the
 reduced subset (src/models/gemma3..afmoe), or MALLOC_CHECK_=3 over many iterations.
 Artifacts: /opt/d1/tmp/ontoindex-cpp-attrib-20261028.
 MCP rebind NOT performed (see final report).
+
+## Round 14 (2026-10-28): frozen snapshot, MCP rebind, abort tracer
+
+Delivery. Built `dist` from the clean committed tree (2204a4f, 0 dirty files) and made a frozen,
+self-contained runtime copy `/home/er77/.local/opt/ontoindex-2204a4f-20261028` (1.5 GB, 0 symlinks,
+dependency symlinks dereferenced, `SNAPSHOT_COMMIT`, sha256 manifest `...2204a4f-20261028.sha256`,
+15808 files). Fresh-process smoke with the exact `[mcp_servers.ontoindex].env` block from
+config.toml PASSED before switching: CLI 2.3.5-rc.12, tree-sitter-typescript parse, native addon,
+lbug in-memory query, stdio MCP initialize + tools/list (8 tools incl. discover) + discover(repos).
+Switch: only `~/.ontocode/config.toml` line 46 `args[0]`, from
+`/opt/d1/tmp/ontoindex-next4-b64b569/ontoindex/dist/cli/index.js` to
+`/home/er77/.local/opt/ontoindex-2204a4f-20261028/dist/cli/index.js`. Rollback: restore
+`/opt/d1/tmp/ontoindex-cpp-attrib-20261028/config.toml.before-rebind` (or reverse that one line).
+Running MCP sessions keep their old processes until restarted. The CLI target
+(`ontoindex-2.3.5-rc.12-workspace-20261025-rust`) was NOT changed and is a different build than the
+MCP snapshot. Nothing deleted: `ontoindex-next4-b64b569` is retained (rollback + live sessions);
+candidate-obsolete copies under ~/.local/opt need usage checks first (not done).
+
+C++ abort. `/opt/d1/tmp/ontoindex-cpp-attrib-20261028/tracer/abort-trace.so` (LD_PRELOAD SIGABRT
+tracer: backtrace + /proc/self/maps; best effort, glibc backtrace is not guaranteed async-signal-safe;
+tested on main-thread and pthread double-free and node main abort; node workers cannot process.abort()).
+12 one-worker runs of the 245-file corpus against the snapshot with the tracer preloaded: all
+completed (24.3-28.8 s), no abort, no trace. Total since the single reproduction (43 s SIGABRT,
+src/models/gemma3..afmoe active, file 200/245): 24 consecutive clean one-worker runs (3 plain,
+9 GDB, 12 traced). apport started a core for the aborting child but failed to write it
+("could not write"), so no core exists. Frequency is therefore low (about 1 in 25 observed) and the
+owning addon is still unattributed. Untested differences: the aborting run came right after a
+multi-worker benchmark left generations in the corpus `.ontoindex`; stale generation state is a
+candidate. Next: loop with the tracer until it fires (cheap, unattended is not allowed here, so
+foreground only), or valgrind on the reduced file range.
