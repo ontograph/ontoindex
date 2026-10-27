@@ -10,63 +10,93 @@ afterEach(() => {
 });
 
 describe('MCP graph-walk initialization', () => {
-  it.each([false, true])(
-    'prepares lazy graph reads before dispatch (failure: %s)',
-    async (fail) => {
-      vi.resetModules();
-      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
-      const { Server } = await import('@modelcontextprotocol/sdk/server/index.js');
-      const { CallToolRequestSchema } = await import('@modelcontextprotocol/sdk/types.js');
-      const events: string[] = [];
-      const dispatchSuper = vi.fn(async () => {
-        events.push('dispatch');
-        return { walkId: 'prepared-walk' };
-      });
-      vi.doMock('../../src/mcp/super/dispatch.js', () => ({ dispatchSuper }));
-      const handlerSpy = vi.spyOn(Server.prototype, 'setRequestHandler');
-      const { createMCPServer } = await import('../../src/mcp/server.js');
-      const repo = { id: 'repo-1', name: 'fixture', repoPath: '/repo/fixture' };
-      const backend = {
-        callTool: vi.fn(),
-        resolveRepo: vi.fn(async () => repo),
-        ensureRepoInitialized: vi.fn(async () => {
-          events.push('initialize');
-        }),
-        withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => {
-          events.push('prepare');
-          if (fail) throw new Error('workspace blocked');
-          const result = await operation();
+  it.each([
+    { failure: undefined, automatic: '1', notice: false },
+    { failure: undefined, automatic: '0', notice: true },
+    { failure: 'initialize', automatic: '1', notice: false },
+    { failure: 'prepare', automatic: '1', notice: false },
+    { failure: 'dispatch', automatic: '1', notice: false },
+  ])('prepares lazy graph reads before dispatch: %j', async ({ failure, automatic, notice }) => {
+    vi.resetModules();
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', automatic);
+    const { Server } = await import('@modelcontextprotocol/sdk/server/index.js');
+    const { CallToolRequestSchema } = await import('@modelcontextprotocol/sdk/types.js');
+    const events: string[] = [];
+    const dispatchSuper = vi.fn(async () => {
+      events.push('dispatch');
+      if (failure === 'dispatch') throw new Error('dispatch blocked');
+      return { walkId: 'prepared-walk' };
+    });
+    vi.doMock('../../src/mcp/super/dispatch.js', () => ({ dispatchSuper }));
+    const handlerSpy = vi.spyOn(Server.prototype, 'setRequestHandler');
+    const { createMCPServer } = await import('../../src/mcp/server.js');
+    const repo = { id: 'repo-1', name: 'fixture', repoPath: '/repo/fixture' };
+    const backend = {
+      callTool: vi.fn(),
+      resolveRepo: vi.fn(async () => repo),
+      ensureRepoInitialized: vi.fn(async () => {
+        events.push('initialize');
+        if (failure === 'initialize') throw new Error('initialization blocked');
+      }),
+      withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => {
+        events.push('prepare');
+        if (failure === 'prepare') throw new Error('workspace blocked');
+        try {
+          return await operation();
+        } finally {
           events.push('release');
-          return result;
-        }),
-        withCommittedGraphNotice: vi.fn(),
-      };
-      createMCPServer(backend as any);
-      const handler = handlerSpy.mock.calls.find(
-        ([schema]) => schema === CallToolRequestSchema,
-      )?.[1] as any;
-      const response = await handler({
-        params: { name: 'gn_graph_walk', arguments: { repo: 'fixture', action: 'start' } },
-      });
-      expect(backend.withPreparedRepoRead).toHaveBeenCalledWith(
+        }
+      }),
+      withCommittedGraphNotice: vi.fn(async (result) => {
+        events.push('notice');
+        return result;
+      }),
+    };
+    createMCPServer(backend as any);
+    const handler = handlerSpy.mock.calls.find(
+      ([schema]) => schema === CallToolRequestSchema,
+    )?.[1] as any;
+    const response = await handler({
+      params: { name: 'gn_graph_walk', arguments: { repo: 'fixture', action: 'start' } },
+    });
+    if (failure === 'initialize') {
+      expect(backend.withPreparedRepoRead).not.toHaveBeenCalled();
+    } else {
+      expect(backend.withPreparedRepoRead).toHaveBeenCalledExactlyOnceWith(
         repo,
         { needsRelationships: true, wantsWorkspaceGraph: true },
         expect.any(Function),
       );
-      expect(events).toEqual(
-        fail ? ['initialize', 'prepare'] : ['initialize', 'prepare', 'dispatch', 'release'],
+    }
+    expect(events).toEqual(
+      failure === 'initialize'
+        ? ['initialize']
+        : failure === 'prepare'
+          ? ['initialize', 'prepare']
+          : ['initialize', 'prepare', 'dispatch', 'release', ...(notice ? ['notice'] : [])],
+    );
+    expect(dispatchSuper).toHaveBeenCalledTimes(
+      failure === 'initialize' || failure === 'prepare' ? 0 : 1,
+    );
+    expect(response.isError).toBe(failure ? true : undefined);
+    expect(backend.withCommittedGraphNotice).toHaveBeenCalledTimes(notice ? 1 : 0);
+    if (failure)
+      expect(response.content[0].text).toContain(
+        failure === 'initialize'
+          ? 'initialization blocked'
+          : failure === 'prepare'
+            ? 'workspace blocked'
+            : 'dispatch blocked',
       );
-      expect(dispatchSuper).toHaveBeenCalledTimes(fail ? 0 : 1);
-      expect(response.isError).toBe(fail ? true : undefined);
-      expect(backend.withCommittedGraphNotice).not.toHaveBeenCalled();
-    },
-  );
+    expect(response.content[0].text).toContain('fixture');
+  });
 
   it.each([
     ['gn_graph_walk', { action: 'start', seedSymbol: 'dispatchFacade' }],
     ['gn_test_gap', { symbol: 'dispatchFacade' }],
     ['gn_test_gap', { filePath: 'src/mcp/server.ts' }],
     ['gn_test_gap', { query: 'dispatch handlers' }],
+    ['gn_verify_diff', { changedFiles: ['src/mcp/server.ts'] }],
   ])('routes cold repository initialization to the owner for %s %j', async (name, target) => {
     vi.resetModules();
     const { Server } = await import('@modelcontextprotocol/sdk/server/index.js');
@@ -74,8 +104,8 @@ describe('MCP graph-walk initialization', () => {
     let initialized = false;
     const dispatchSuper = vi.fn(
       async (_name, _args, _repoId, _writeBackend, _context, readBackend) => {
-        if (name !== 'gn_test_gap' && !initialized) throw new Error('Graph is not initialized');
-        if (name === 'gn_test_gap') expect(readBackend).toBe(backend);
+        if (name === 'gn_graph_walk' && !initialized) throw new Error('Graph is not initialized');
+        if (name !== 'gn_graph_walk') expect(readBackend).toBe(backend);
         return { walkId: 'walk-1' };
       },
     );
@@ -105,7 +135,7 @@ describe('MCP graph-walk initialization', () => {
 
     expect(response.isError).toBeUndefined();
     expect(backend.resolveRepo).toHaveBeenCalledWith('/repo/fixture');
-    if (name === 'gn_test_gap') {
+    if (name !== 'gn_graph_walk') {
       expect(backend.ensureRepoInitialized).not.toHaveBeenCalled();
       expect(dispatchSuper).toHaveBeenCalledWith(
         name,
@@ -121,7 +151,7 @@ describe('MCP graph-walk initialization', () => {
     }
     expect(backend.callTool).not.toHaveBeenCalled();
     expect(response.content[0].text).toContain('walk-1');
-    if (name === 'gn_test_gap') {
+    if (name !== 'gn_graph_walk') {
       expect(backend.withPreparedRepoRead).not.toHaveBeenCalled();
     }
   });
@@ -159,47 +189,50 @@ describe('MCP graph-walk initialization', () => {
     },
   );
 
-  it('propagates test-gap initialization failures from shared dispatch', async () => {
-    vi.resetModules();
-    const { Server } = await import('@modelcontextprotocol/sdk/server/index.js');
-    const { CallToolRequestSchema } = await import('@modelcontextprotocol/sdk/types.js');
-    const dispatchSuper = vi.fn(
-      async (_name, _args, repoId, _writeBackend, _context, readBackend) => {
-        await readBackend.ensureRepoInitialized(repoId);
-      },
-    );
-    vi.doMock('../../src/mcp/super/dispatch.js', () => ({ dispatchSuper }));
-    const handlerSpy = vi.spyOn(Server.prototype, 'setRequestHandler');
-    const { createMCPServer } = await import('../../src/mcp/server.js');
-    const backend = {
-      callTool: vi.fn(),
-      resolveRepo: vi.fn(async () => ({
-        id: 'repo-1',
-        name: 'fixture',
-        repoPath: '/repo/fixture',
-      })),
-      ensureRepoInitialized: vi.fn(async () => {
-        throw new Error('fixture initialization failed');
-      }),
-    };
-    createMCPServer(backend as any);
-    const handler = handlerSpy.mock.calls.find(
-      ([schema]) => schema === CallToolRequestSchema,
-    )?.[1] as any;
-    const response = await handler({
-      params: { name: 'gn_test_gap', arguments: { repo: 'fixture', symbol: 'baseline' } },
-    });
-    expect(response.isError).toBe(true);
-    expect(response.content[0].text).toContain('fixture initialization failed');
-    expect(dispatchSuper).toHaveBeenCalledWith(
-      'gn_test_gap',
-      { repo: 'fixture', symbol: 'baseline' },
-      'repo-1',
-      undefined,
-      undefined,
-      backend,
-    );
-  });
+  it.each(['gn_test_gap', 'gn_verify_diff'])(
+    'propagates %s initialization failures from shared dispatch',
+    async (name) => {
+      vi.resetModules();
+      const { Server } = await import('@modelcontextprotocol/sdk/server/index.js');
+      const { CallToolRequestSchema } = await import('@modelcontextprotocol/sdk/types.js');
+      const dispatchSuper = vi.fn(
+        async (_name, _args, repoId, _writeBackend, _context, readBackend) => {
+          await readBackend.ensureRepoInitialized(repoId);
+        },
+      );
+      vi.doMock('../../src/mcp/super/dispatch.js', () => ({ dispatchSuper }));
+      const handlerSpy = vi.spyOn(Server.prototype, 'setRequestHandler');
+      const { createMCPServer } = await import('../../src/mcp/server.js');
+      const backend = {
+        callTool: vi.fn(),
+        resolveRepo: vi.fn(async () => ({
+          id: 'repo-1',
+          name: 'fixture',
+          repoPath: '/repo/fixture',
+        })),
+        ensureRepoInitialized: vi.fn(async () => {
+          throw new Error('fixture initialization failed');
+        }),
+      };
+      createMCPServer(backend as any);
+      const handler = handlerSpy.mock.calls.find(
+        ([schema]) => schema === CallToolRequestSchema,
+      )?.[1] as any;
+      const response = await handler({
+        params: { name, arguments: { repo: 'fixture', changedFiles: ['src/baseline.ts'] } },
+      });
+      expect(response.isError).toBe(true);
+      expect(response.content[0].text).toContain('fixture initialization failed');
+      expect(dispatchSuper).toHaveBeenCalledWith(
+        name,
+        { repo: 'fixture', changedFiles: ['src/baseline.ts'] },
+        'repo-1',
+        undefined,
+        undefined,
+        backend,
+      );
+    },
+  );
 
   it('threads the backend write gate through public safe-refactor dispatch', async () => {
     vi.resetModules();

@@ -134,11 +134,43 @@ export async function detectChanges(
     scope?: string;
     base_ref?: string;
     include_paths?: string[];
+    // Internal exact-file selection; include_paths retains its prefix-filter semantics.
+    changed_files?: string[];
   },
 ): Promise<DetectChangesResult> {
   const scope = params.scope || 'unstaged';
   const warnings: string[] = [];
   const includePaths = (params.include_paths ?? []).map(normalizePathPrefix).filter(Boolean);
+  const changedFiles = params.changed_files;
+  if (changedFiles !== undefined) {
+    if (
+      !Array.isArray(changedFiles) ||
+      changedFiles.some(
+        (filePath) =>
+          typeof filePath !== 'string' ||
+          filePath.length === 0 ||
+          filePath.includes('\0') ||
+          filePath.includes('\\') ||
+          /^[A-Za-z]:/.test(filePath) ||
+          filePath.split('/').some((part) => part === '' || part === '.' || part === '..'),
+      )
+    ) {
+      return { error: 'changed_files must contain normalized repository-relative file paths' };
+    }
+    if (changedFiles.length === 0) {
+      return {
+        summary: {
+          changed_count: 0,
+          affected_count: 0,
+          risk_level: 'none',
+          message: 'No changes detected.',
+        },
+        changed_symbols: [],
+        affected_processes: [],
+        warnings,
+      };
+    }
+  }
 
   let diffArgs: string[];
   switch (scope) {
@@ -162,8 +194,34 @@ export async function detectChanges(
       break;
   }
 
+  const selectedFiles = changedFiles === undefined ? undefined : new Set(changedFiles);
+  if (changedFiles !== undefined) {
+    diffArgs.push(
+      '--no-renames',
+      '--',
+      ...changedFiles.map((filePath) => `:(top,literal)${filePath}`),
+    );
+  }
+
   let diffOutput: string;
   try {
+    if (selectedFiles !== undefined) {
+      const selectedDiffPaths = await execGitCapture(repo.repoPath, [
+        ...diffArgs.slice(0, diffArgs.indexOf('--')),
+        '--name-only',
+        '-z',
+        ...diffArgs.slice(diffArgs.indexOf('--')),
+      ]);
+      if (
+        selectedDiffPaths
+          .split('\0')
+          .some((filePath) => filePath !== '' && !selectedFiles.has(filePath))
+      ) {
+        return {
+          error: 'changed_files must select exact files; Git diff included an unselected path',
+        };
+      }
+    }
     diffOutput = await execGitCapture(repo.repoPath, diffArgs);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -175,6 +233,12 @@ export async function detectChanges(
     maxHunksPerFile: MAX_HUNKS_PER_FILE,
     maxTotalHunks: MAX_TOTAL_HUNKS,
   });
+  if (
+    selectedFiles !== undefined &&
+    parsedDiffs.some((fileDiff) => !selectedFiles.has(fileDiff.filePath))
+  ) {
+    return { error: 'changed_files must select exact files; Git diff included an unselected path' };
+  }
   if (parsedDiffs.length > MAX_DIFF_FILES) {
     parsedDiffs.length = MAX_DIFF_FILES;
     warnings.push(`Diff file scan capped at ${MAX_DIFF_FILES} files`);
@@ -255,6 +319,7 @@ export async function detectChanges(
       }
     } catch (e) {
       logQueryError('detect-changes:file-symbols', e);
+      return { error: 'Changed-symbol query failed; diff verification is incomplete.' };
     }
   }
 

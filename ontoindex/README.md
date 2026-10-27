@@ -152,12 +152,12 @@ Your AI agent gets these tools automatically:
 
 ### Managed Freshness Recovery
 
-`gn_ensure_fresh` is the prerequisite and managed-submission surface. With
+`manage({action: 'ensure_fresh', repo})` is the prerequisite and managed-submission surface. With
 `autoAnalyze: true`, it returns a structured submission status and either
 queues or reuses work only when repository, target commit, source manifest,
 requested graph or embedding capabilities, and analysis options match.
 
-Observe a returned job ID with `gn_analyze_job`. Its recovery disposition is
+Observe a returned job ID with `manage({action: 'analyze_job', repo, jobId, job_action: 'status'})`. Its recovery disposition is
 `REFRESH_RUNNING`, `REFRESHED`, `FAILED`, or `FRESHNESS_UNCONFIRMED`.
 `REFRESHED` requires a job-bound publication receipt, the matching active
 generation, and a final freshness check using the original capability
@@ -178,8 +178,9 @@ ontoindex mcp --project /path/to/target/repo
 
 ## Environment Variables
 
+- `ONTOINDEX_MCP_STARTUP_PROFILE` controls the advertised MCP tools. The default `core` profile lists only the 8 facades: `discover`, `search`, `inspect`, `impact`, `audit`, `refactor`, `manage`, and `docs`. Set it to `public-full` to list all 62 tools. Hidden legacy `gn_*` tools remain callable aliases.
 - `ONTOINDEX_ALLOWED_HOSTS` adds trusted HTTP Host authorities for `serve` and `eval-server` (for example `localhost:8080` for a reverse proxy). Use up to 32 comma-separated hostnames or host:port authorities (IPv6 in brackets), each at most 255 characters. Hostnames are case-insensitive; host-only entries accept any port. Wildcards are unsupported; malformed entries are ignored with one stderr warning. Origin policy remains unchanged.
-- `ONTOINDEX_MCP_IDLE_EXIT_MS` optionally exits the stdio MCP server after a period without requests or notifications; accepted values are `60000` through `86400000` milliseconds. Clients that do not restart a stopped stdio server will lose access to its tools, so leave this unset for those clients. The server does not exit while a repository connection pool is open; pools close after 5 minutes without a query. `gn_diagnose` reports `processMemory` for the running server.
+- `ONTOINDEX_MCP_IDLE_EXIT_MS` optionally exits the stdio MCP server after a period without requests or notifications; accepted values are `60000` through `86400000` milliseconds. Clients that do not restart a stopped stdio server will lose access to its tools, so leave this unset for those clients. The server does not exit while a repository connection pool is open; pools close after 5 minutes without a query. `manage({action: 'diagnose', repo})` reports `processMemory` for the running server.
 - `ONTOINDEX_MAX_ARG_CHARS` limits string arguments accepted by MCP tools, REST `/api/search` and `/api/query`, and the eval server. It defaults to `2097152` characters and accepts values from `1024` through `67108864`.
 - `ONTOINDEX_MAX_ARG_ITEMS` limits array arguments across tools; it defaults to `1024` items and accepts values from `1` through `65536`.
 - `ONTOINDEX_MAX_ARG_TOTAL_BYTES` limits the UTF-8 size of serialized arguments; it defaults to the larger of `4194304` bytes or twice the string limit plus `1048576` bytes, and accepts values from `1024` through `134217728`.
@@ -192,7 +193,7 @@ ontoindex mcp --project /path/to/target/repo
 ## Working with uncommitted code
 
 For an explicit view of the indexed commit, add `read_mode: "committed"` and an
-explicit repository to MCP `gn_explore`, `inspect/context`, `impact/symbol`, or
+explicit repository to MCP `inspect/explore`, `inspect/context`, `impact/symbol`, or
 `search/semantic`. This bypasses workspace preparation and excludes uncommitted
 source, manual overlays and live LSP references. Responses include `readContext`
 with indexed commit and generation. Live or external enrichment options and
@@ -369,6 +370,8 @@ bigger cycle) and `N` increments per published rc. Example sequence:
 for the full list; stable `latest` is unaffected.
 
 ## Troubleshooting
+
+npm 11 blocks dependency install scripts; the installer passes `--allow-scripts=ontoindex,tree-sitter,@ladybugdb/core` for global installs, while project-local installs need an `allowScripts` field in `package.json`.
 
 ### `Cannot destructure property 'package' of 'node.target' as it is null`
 

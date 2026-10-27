@@ -37,15 +37,18 @@ import { ONTOINDEX_FACADE_TOOLS } from '../../../src/mcp/facade/tool-definitions
 // ---------------------------------------------------------------------------
 
 describe('tool-registry — static parity (SERENA-REV1)', () => {
-  it('getPublicToolRegistry() with no options returns all super + facade tools', () => {
-    const registry = getPublicToolRegistry();
+  it('getPublicToolRegistry with public-full returns all super + facade tools', () => {
+    const registry = getPublicToolRegistry({ startupProfile: 'public-full' });
     const superCount = ONTOINDEX_SUPER_TOOLS.length;
     const facadeCount = ONTOINDEX_FACADE_TOOLS.length;
     expect(registry).toHaveLength(superCount + facadeCount);
   });
 
   it('getPublicToolRegistry({ includeFacades: false }) returns only super tools', () => {
-    const registry = getPublicToolRegistry({ includeFacades: false });
+    const registry = getPublicToolRegistry({
+      includeFacades: false,
+      startupProfile: 'public-full',
+    });
     expect(registry).toHaveLength(ONTOINDEX_SUPER_TOOLS.length);
     expect(registry.every((e) => e.kind === 'super')).toBe(true);
   });
@@ -253,15 +256,26 @@ describe('tool-registry — query-projects mode (SERENA-D5)', () => {
   });
 
   it('all QUERY_PROJECTS_TOOL_NAMES members appear in public registry', () => {
-    const publicNames = new Set(getPublicToolRegistry({ includeFacades: true }).map((e) => e.name));
+    const publicNames = new Set(
+      getPublicToolRegistry({ includeFacades: true, startupProfile: 'public-full' }).map(
+        (e) => e.name,
+      ),
+    );
     for (const name of QUERY_PROJECTS_TOOL_NAMES) {
       expect(publicNames.has(name)).toBe(true);
     }
   });
 
   it('query-projects getPublicToolRegistry is a strict subset of unfiltered', () => {
-    const unfiltered = getPublicToolRegistry({ includeFacades: true });
-    const qp = getPublicToolRegistry({ includeFacades: true, mode: 'query-projects' });
+    const unfiltered = getPublicToolRegistry({
+      includeFacades: true,
+      startupProfile: 'public-full',
+    });
+    const qp = getPublicToolRegistry({
+      includeFacades: true,
+      mode: 'query-projects',
+      startupProfile: 'public-full',
+    });
     const unfilteredNames = new Set(unfiltered.map((e) => e.name));
     expect(qp.length).toBeGreaterThan(0);
     expect(qp.length).toBeLessThan(unfiltered.length);
@@ -279,38 +293,58 @@ describe('tool-registry — query-projects mode (SERENA-D5)', () => {
 });
 
 describe('tool-registry — MCP startup profiles (ADR 0027)', () => {
-  it('parses valid startup profiles and falls back to public-full for invalid env values', () => {
-    expect(DEFAULT_MCP_STARTUP_PROFILE).toBe('public-full');
+  it('parses valid startup profiles and falls back to core for invalid or unset env values', () => {
+    expect(DEFAULT_MCP_STARTUP_PROFILE).toBe('core');
     expect(parseMcpStartupProfile('core')).toBe('core');
     expect(parseMcpStartupProfile(' QUERY ')).toBe('query');
-    expect(parseMcpStartupProfile('not-a-profile')).toBe('public-full');
-    expect(parseMcpStartupProfile(undefined)).toBe('public-full');
+    expect(parseMcpStartupProfile('public-full')).toBe('public-full');
+    expect(parseMcpStartupProfile('not-a-profile')).toBe('core');
+    expect(parseMcpStartupProfile(undefined)).toBe('core');
+    expect(parseMcpStartupProfile(null)).toBe('core');
+    expect(parseMcpStartupProfile('')).toBe('core');
+    expect(getMcpStartupProfileFromEnv({})).toBe('core');
     expect(
       getMcpStartupProfileFromEnv({
         [MCP_STARTUP_PROFILE_ENV]: 'definitely-invalid',
       }),
-    ).toBe('public-full');
+    ).toBe('core');
+    expect(getMcpStartupProfileFromEnv({ [MCP_STARTUP_PROFILE_ENV]: 'public-full' })).toBe(
+      'public-full',
+    );
+  });
+
+  it('keeps the full frontier for inventory callers and reports core as the startup default', () => {
+    expect(getPublicToolRegistry()).toEqual(
+      getPublicToolRegistry({ startupProfile: 'public-full' }),
+    );
+    expect(getPublicToolDefinitions()).toEqual(
+      getPublicToolDefinitions({ startupProfile: 'public-full' }),
+    );
+    expect(getMcpStartupProfileToolReport().startupProfile).toBe('core');
+    expect(getHiddenStartupProfileToolNames()).toContain('gn_safe_refactor');
   });
 
   it('public-full is identical to the current unfiltered public frontier', () => {
-    const current = getPublicToolRegistry({ includeFacades: true });
+    const current = [...ONTOINDEX_SUPER_TOOLS, ...ONTOINDEX_FACADE_TOOLS];
     const publicFull = getPublicToolRegistry({
       includeFacades: true,
       startupProfile: 'public-full',
     });
-    const currentDefinitions = getPublicToolDefinitions({ includeFacades: true });
+    const currentDefinitions = current;
     const publicFullDefinitions = getPublicToolDefinitions({
       includeFacades: true,
       startupProfile: 'public-full',
     });
 
     expect(publicFull.map((entry) => entry.name)).toEqual(current.map((entry) => entry.name));
+    expect(publicFull).toHaveLength(62);
+    expect(publicFull.filter((entry) => entry.kind === 'super')).toHaveLength(54);
     expect(publicFullDefinitions.map((definition) => definition.name)).toEqual(
       currentDefinitions.map((definition) => definition.name),
     );
   });
 
-  it('core is smaller than public-full and contains only facades plus startup basics', () => {
+  it('core contains exactly the eight facades and no legacy tools', () => {
     const core = getPublicToolRegistry({ includeFacades: true, startupProfile: 'core' });
     const publicFull = getPublicToolRegistry({
       includeFacades: true,
@@ -323,18 +357,32 @@ describe('tool-registry — MCP startup profiles (ADR 0027)', () => {
       .sort();
 
     expect(core.length).toBeLessThan(publicFull.length);
+    expect(core).toHaveLength(8);
+    expect(coreNames.sort()).toEqual(getRegisteredFacadeToolNames());
     for (const name of getRegisteredFacadeToolNames()) {
       expect(coreNames).toContain(name);
     }
-    expect(coreSuperNames).toEqual([
-      'gn_analyze_job',
-      'gn_diagnose',
-      'gn_ensure_fresh',
-      'gn_help',
-      'gn_quality_mode',
-      'gn_tool_contract',
-    ]);
+    expect(coreSuperNames).toEqual([]);
   });
+
+  it.each(['query', 'audit', 'refactor', 'systems'] as const)(
+    '%s keeps the legacy startup basics advertised',
+    (startupProfile) => {
+      const names = getPublicToolRegistry({ includeFacades: true, startupProfile }).map(
+        (entry) => entry.name,
+      );
+      expect(names).toEqual(
+        expect.arrayContaining([
+          'gn_analyze_job',
+          'gn_diagnose',
+          'gn_ensure_fresh',
+          'gn_help',
+          'gn_quality_mode',
+          'gn_tool_contract',
+        ]),
+      );
+    },
+  );
 
   it('query profile reuses query-projects discovery tools without exposing direct write tools', () => {
     const names = getPublicToolRegistry({ includeFacades: true, startupProfile: 'query' }).map(
@@ -401,6 +449,10 @@ describe('tool-registry — MCP startup profiles (ADR 0027)', () => {
     });
 
     expect(coreReport.enforcement).toBe('advertise_only');
+    expect(coreReport.advertisedToolCount).toBe(8);
+    expect(coreReport.fullPublicToolCount).toBe(62);
+    expect(coreReport.hiddenButCallableToolCount).toBe(54);
+    expect(hiddenNames).toEqual(getRegisteredSuperToolNames());
     expect(coreReport.fullPublicToolCount).toBeGreaterThan(coreReport.advertisedToolCount);
     expect(coreReport.hiddenButCallableToolCount).toBe(hiddenNames.length);
     expect(coreReport.hiddenToolNames).toEqual(hiddenNames);

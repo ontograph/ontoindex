@@ -16,7 +16,7 @@
  *      flagging real drift that needs a registration-table fix.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   createSemanticModel,
   restoreSemanticModelRegistrations,
@@ -124,6 +124,308 @@ describe('model.clear() cascade', () => {
     expect(model.methods.lookupMethodByOwner('class:User', 'greet')).toBeUndefined();
     expect(model.symbols.lookupCallableByName('User')).toHaveLength(0);
     expect(Array.from(model.symbols.getFiles())).not.toContain('src/user.ts');
+  });
+});
+
+describe('semantic registration observation', () => {
+  it('observes successful mutations once in order, including duplicates, without local capture', () => {
+    const events: string[] = [];
+    const model: ReturnType<typeof createSemanticModel> = createSemanticModel({
+      onRegistration: (encoded) => {
+        const event = JSON.parse(encoded);
+        if (event.kind === 'symbol.add')
+          expect(model.symbols.lookupExact(event.filePath, event.name)).toBe(event.nodeId);
+        events.push(encoded);
+        return true;
+      },
+    });
+    model.symbols.add('src/é😀.ts', 'User', 'class:User', 'Class');
+    model.symbols.add('src/é😀.ts', 'User', 'class:User', 'Class');
+    model.symbols.add('src/é😀.ts', 'save', 'method:save', 'Function', { ownerId: 'class:User' });
+    expect(events.map((event) => JSON.parse(event))).toEqual([
+      {
+        kind: 'symbol.add',
+        filePath: 'src/é😀.ts',
+        name: 'User',
+        nodeId: 'class:User',
+        type: 'Class',
+      },
+      {
+        kind: 'symbol.add',
+        filePath: 'src/é😀.ts',
+        name: 'User',
+        nodeId: 'class:User',
+        type: 'Class',
+      },
+      {
+        kind: 'symbol.add',
+        filePath: 'src/é😀.ts',
+        name: 'save',
+        nodeId: 'method:save',
+        type: 'Function',
+        metadata: { ownerId: 'class:User' },
+      },
+    ]);
+    expect(model.snapshotRegistrations()).toBeUndefined();
+    const restored = restoreSemanticModelRegistrations({
+      version: 1,
+      events: events.map((event) => JSON.parse(event)),
+    });
+    expect(restored.types.lookupClassByName('User')).toEqual(model.types.lookupClassByName('User'));
+    expect(restored.types.lookupClassByName('User')).toHaveLength(2);
+    expect(restored.symbols.lookupExactAll('src/é😀.ts', 'User')).toHaveLength(1);
+    expect(restored.methods.lookupMethodByName('save')).toEqual(
+      model.methods.lookupMethodByName('save'),
+    );
+  });
+
+  it('replays direct writes, individual clears and full clear in chronological order', () => {
+    const events: string[] = [];
+    const model = createSemanticModel({
+      captureRegistrations: true,
+      onRegistration: (encoded) => {
+        events.push(encoded);
+        return true;
+      },
+    });
+    const def: SymbolDefinition = { nodeId: 'direct:User', filePath: 'direct.ts', type: 'Class' };
+    model.types.registerClass('User', 'direct.User', def);
+    model.types.registerImpl('User', { ...def, nodeId: 'impl:User', type: 'Impl' });
+    model.methods.register('direct:User', 'save', {
+      ...def,
+      nodeId: 'method:save',
+      type: 'Method',
+    });
+    model.fields.register('direct:User', 'id', { ...def, nodeId: 'field:id', type: 'Property' });
+    model.types.clear();
+    model.methods.clear();
+    model.fields.clear();
+    model.symbols.add('old.ts', 'Old', 'class:Old', 'Class');
+    model.clear();
+    expect(model.snapshotRegistrations()).toEqual({ version: 1, events: [] });
+    model.symbols.add('new.ts', 'New', 'class:New', 'Class');
+    model.methods.register('class:New', 'save', { ...def, nodeId: 'new:save', type: 'Method' });
+    expect(events.map((event) => JSON.parse(event).kind)).toEqual([
+      'type.registerClass',
+      'type.registerImpl',
+      'method.register',
+      'field.register',
+      'type.clear',
+      'method.clear',
+      'field.clear',
+      'symbol.add',
+      'model.clear',
+      'symbol.add',
+      'method.register',
+    ]);
+    const restored = restoreSemanticModelRegistrations({
+      version: 1,
+      events: events.map((event) => JSON.parse(event)),
+    });
+    expect([...restored.symbols.getFiles()]).toEqual(['new.ts']);
+    expect(restored.symbols.getStats()).toEqual(model.symbols.getStats());
+    for (const name of ['User', 'Old', 'New'])
+      expect(restored.types.lookupClassByName(name)).toEqual(model.types.lookupClassByName(name));
+    expect(restored.methods.lookupMethodByOwner('direct:User', 'save')).toBeUndefined();
+    expect(restored.fields.lookupFieldByOwner('direct:User', 'id')).toBeUndefined();
+    expect(restored.methods.lookupMethodByOwner('class:New', 'save')).toEqual(
+      model.methods.lookupMethodByOwner('class:New', 'save'),
+    );
+    expect(model.snapshotRegistrations()!.events.map((event) => event.kind)).toEqual([
+      'symbol.add',
+      'method.register',
+    ]);
+  });
+
+  it('detaches encoded observer metadata from producer and replay mutations', () => {
+    const events: string[] = [];
+    const parameterTypes = ['服务😀'];
+    const model = createSemanticModel({
+      onRegistration: (encoded) => {
+        events.push(encoded);
+        return true;
+      },
+    });
+    model.symbols.add('one.ts', 'save', 'method:save', 'Method', {
+      ownerId: 'class:User',
+      parameterTypes,
+    });
+    const encoded = events[0]!;
+    parameterTypes[0] = 'Changed';
+    expect(events[0]).toBe(encoded);
+    const restored = restoreSemanticModelRegistrations({
+      version: 1,
+      events: events.map((event) => JSON.parse(event)),
+    });
+    expect(restored.methods.lookupMethodByOwner('class:User', 'save')!.parameterTypes).toEqual([
+      '服务😀',
+    ]);
+    restored.methods.lookupMethodByOwner('class:User', 'save')!.parameterTypes![0] =
+      'Replay mutation';
+    expect(JSON.parse(events[0]!).metadata.parameterTypes).toEqual(['服务😀']);
+  });
+
+  it.each(['false', 'throw'] as const)(
+    'disables a rejected observer once on %s while preserving mutations and local capture',
+    (failure) => {
+      const observer = vi.fn(() => {
+        if (failure === 'throw') throw new Error('observer failure');
+        return false;
+      });
+      const onRegistrationError = vi.fn(() => {
+        throw new Error('error handler failure');
+      });
+      const model = createSemanticModel({
+        captureRegistrations: true,
+        onRegistration: observer,
+        onRegistrationError,
+      });
+      expect(() => model.symbols.add('old.ts', 'Old', 'class:Old', 'Class')).not.toThrow();
+      model.symbols.add('old.ts', 'Other', 'class:Other', 'Class');
+      expect(model.snapshotRegistrations()!.events).toHaveLength(2);
+      model.clear();
+      expect(model.snapshotRegistrations()).toEqual({ version: 1, events: [] });
+      expect(() => model.symbols.add('new.ts', 'New', 'class:New', 'Class')).not.toThrow();
+      expect(observer).toHaveBeenCalledTimes(1);
+      expect(onRegistrationError).toHaveBeenCalledTimes(1);
+      expect(model.types.lookupClassByName('New')).toHaveLength(1);
+      const restored = restoreSemanticModelRegistrations(model.snapshotRegistrations());
+      expect(restored.types.lookupClassByName('New')).toEqual(model.types.lookupClassByName('New'));
+    },
+  );
+
+  it('disables oversized observation without preventing the legacy mutation or later registrations', () => {
+    const onRegistration = vi.fn(() => true);
+    const onRegistrationError = vi.fn();
+    const model = createSemanticModel({ onRegistration, onRegistrationError });
+    const qualifiedName = '界'.repeat(300_000);
+    expect(() =>
+      model.symbols.add('one.ts', 'Huge', 'class:Huge', 'Class', { qualifiedName }),
+    ).not.toThrow();
+    expect(model.types.lookupClassByQualifiedName(qualifiedName)).toHaveLength(1);
+    expect(() => model.symbols.add('one.ts', 'Next', 'class:Next', 'Class')).not.toThrow();
+    expect(model.types.lookupClassByName('Next')).toHaveLength(1);
+    expect(onRegistration).not.toHaveBeenCalled();
+    expect(onRegistrationError).toHaveBeenCalledTimes(1);
+    expect(model.snapshotRegistrations()).toBeUndefined();
+  });
+
+  it('preserves local registration chronology when an observer writes reentrantly', () => {
+    const onRegistrationError = vi.fn();
+    const onRegistration = vi.fn(() => {
+      model.symbols.add('nested.ts', 'Nested', 'class:Nested', 'Class');
+      return true;
+    });
+    const model: ReturnType<typeof createSemanticModel> = createSemanticModel({
+      captureRegistrations: true,
+      onRegistration,
+      onRegistrationError,
+    });
+    model.symbols.add('outer.ts', 'Outer', 'class:Outer', 'Class');
+    model.symbols.add('later.ts', 'Later', 'class:Later', 'Class');
+    expect(onRegistration).toHaveBeenCalledTimes(1);
+    expect(onRegistrationError).toHaveBeenCalledTimes(1);
+    const snapshot = model.snapshotRegistrations()!;
+    expect(
+      snapshot.events.map((event) => (event.kind === 'symbol.add' ? event.name : event.kind)),
+    ).toEqual(['Outer', 'Nested', 'Later']);
+    const restored = restoreSemanticModelRegistrations(snapshot);
+    for (const name of ['Outer', 'Nested', 'Later'])
+      expect(restored.types.lookupClassByName(name)).toEqual(model.types.lookupClassByName(name));
+    expect(restored.symbols.getStats()).toEqual(model.symbols.getStats());
+  });
+
+  it('disables observation on reentrant full clear and captures only subsequent registrations', () => {
+    const onRegistrationError = vi.fn();
+    const onRegistration = vi.fn(() => {
+      model.clear();
+      model.symbols.add('nested.ts', 'Nested', 'class:Nested', 'Class');
+      return true;
+    });
+    const model: ReturnType<typeof createSemanticModel> = createSemanticModel({
+      captureRegistrations: true,
+      onRegistration,
+      onRegistrationError,
+    });
+    model.symbols.add('outer.ts', 'Outer', 'class:Outer', 'Class');
+    model.symbols.add('later.ts', 'Later', 'class:Later', 'Class');
+    expect(onRegistration).toHaveBeenCalledTimes(1);
+    expect(onRegistrationError).toHaveBeenCalledTimes(1);
+    expect(
+      model
+        .snapshotRegistrations()!
+        .events.map((event) => (event.kind === 'symbol.add' ? event.name : event.kind)),
+    ).toEqual(['Nested', 'Later']);
+    const restored = restoreSemanticModelRegistrations(model.snapshotRegistrations());
+    expect(restored.types.lookupClassByName('Outer')).toEqual([]);
+    expect([...restored.symbols.getFiles()]).toEqual(['nested.ts', 'later.ts']);
+    expect(restored.symbols.getStats()).toEqual(model.symbols.getStats());
+  });
+
+  it('runs rejection error callbacks after committing local capture so callback clear and writes survive', () => {
+    const onRegistration = vi.fn(() => false);
+    const onRegistrationError = vi.fn(() => {
+      expect(model.snapshotRegistrations()!.events).toHaveLength(1);
+      expect(model.types.lookupClassByName('Outer')).toHaveLength(1);
+      model.clear();
+      model.symbols.add('nested.ts', 'Nested', 'class:Nested', 'Class');
+    });
+    const model: ReturnType<typeof createSemanticModel> = createSemanticModel({
+      captureRegistrations: true,
+      onRegistration,
+      onRegistrationError,
+    });
+    model.symbols.add('outer.ts', 'Outer', 'class:Outer', 'Class');
+    model.symbols.add('later.ts', 'Later', 'class:Later', 'Class');
+    expect(onRegistration).toHaveBeenCalledTimes(1);
+    expect(onRegistrationError).toHaveBeenCalledTimes(1);
+    expect(
+      model
+        .snapshotRegistrations()!
+        .events.map((event) => (event.kind === 'symbol.add' ? event.name : event.kind)),
+    ).toEqual(['Nested', 'Later']);
+    const restored = restoreSemanticModelRegistrations(model.snapshotRegistrations());
+    expect(restored.types.lookupClassByName('Outer')).toEqual([]);
+    expect([...restored.symbols.getFiles()]).toEqual(['nested.ts', 'later.ts']);
+    expect(restored.types.lookupClassByName('Nested')).toEqual(
+      model.types.lookupClassByName('Nested'),
+    );
+  });
+
+  it('runs invalid-observation error callbacks after the legacy mutation without losing callback writes', () => {
+    const onRegistration = vi.fn(() => true);
+    const onRegistrationError = vi.fn(() => {
+      expect(model.types.lookupClassByName('Huge')).toHaveLength(1);
+      model.clear();
+      model.symbols.add('nested.ts', 'Nested', 'class:Nested', 'Class');
+    });
+    const model: ReturnType<typeof createSemanticModel> = createSemanticModel({
+      onRegistration,
+      onRegistrationError,
+    });
+    model.symbols.add('outer.ts', 'Huge', 'class:Huge', 'Class', {
+      qualifiedName: 'x'.repeat(300_000),
+    });
+    model.symbols.add('later.ts', 'Later', 'class:Later', 'Class');
+    expect(onRegistration).not.toHaveBeenCalled();
+    expect(onRegistrationError).toHaveBeenCalledTimes(1);
+    expect(model.snapshotRegistrations()).toBeUndefined();
+    expect(model.types.lookupClassByName('Huge')).toEqual([]);
+    expect(model.types.lookupClassByName('Nested')).toHaveLength(1);
+    expect([...model.symbols.getFiles()]).toEqual(['nested.ts', 'later.ts']);
+  });
+
+  it('keeps explicit local capture validation strict even when an observer is configured', () => {
+    const onRegistration = vi.fn(() => true);
+    const model = createSemanticModel({ captureRegistrations: true, onRegistration });
+    expect(() =>
+      model.symbols.add('one.ts', 'Huge', 'class:Huge', 'Class', {
+        qualifiedName: 'x'.repeat(300_000),
+      }),
+    ).toThrow();
+    expect(model.types.lookupClassByName('Huge')).toEqual([]);
+    expect(model.snapshotRegistrations()).toEqual({ version: 1, events: [] });
+    expect(onRegistration).not.toHaveBeenCalled();
   });
 });
 

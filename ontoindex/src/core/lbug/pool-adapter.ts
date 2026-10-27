@@ -20,7 +20,13 @@ import path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import lbug, { type LbugValue } from '@ladybugdb/core';
 import { resolveLocalLbugExtensionPath } from './lbug-adapter.js';
+import {
+  LbugOpenError,
+  classifyLbugOpenDiagnostic as classifyLbugOpenError,
+} from './open-error.js';
 import { acquireIndexGenerationPin, type IndexGenerationPin } from '../../storage/repo-manager.js';
+
+export { classifyLbugOpenDiagnostic as classifyLbugOpenError } from './open-error.js';
 
 export type LbugQueryRow = {
   readonly [field: string]: unknown;
@@ -169,7 +175,10 @@ export async function withPinnedGeneration<T>(
 }
 let admissionTail: Promise<void> = Promise.resolve();
 // Failed opens remain fenced until their retry cooldown expires and cleanup succeeds.
-const failedNativeOpens = new Map<string, { shared: SharedDB; failedAt: number; error: Error }>();
+const failedNativeOpens = new Map<
+  string,
+  { shared: SharedDB; failedAt: number; error: LbugOpenError }
+>();
 const unreleasedPins = new Set<IndexGenerationPin>();
 
 function retainFailedNativeOpen(
@@ -186,7 +195,11 @@ function retainFailedNativeOpen(
   failedNativeOpens.set(dbPath, {
     shared: newSharedDb({ db, generationPin, refCount: 0, ftsLoaded: false, vectorLoaded: false }),
     failedAt: Date.now(),
-    error: new Error(`LadybugDB native initialization failed: ${String(error)}`),
+    error: new LbugOpenError(
+      dbPath,
+      error instanceof LbugOpenError ? error.cause : error,
+      `LadybugDB native initialization failed: ${String(error)}`,
+    ),
   });
 }
 
@@ -508,7 +521,7 @@ async function evictLRU(): Promise<void> {
       await closeSharedDatabase(failed.shared);
       failedNativeOpens.delete(dbPath);
     } catch (error) {
-      failed.error = error instanceof Error ? error : new Error(String(error));
+      failed.error = new LbugOpenError(dbPath, error);
     }
   }
   const occupied = () => pool.size + failedInitShares.size + failedNativeOpens.size;
@@ -955,21 +968,6 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
  * Pool entry is registered LAST so concurrent executeQuery calls see either
  * "not initialized" (and throw) or a fully ready pool — never a half-built one.
  */
-export function classifyLbugOpenError(message: string): 'lock' | 'wal' | 'other' {
-  if (
-    /Could not set lock/i.test(message) ||
-    /\b(file|database|db)\s+lock\b|\block\s+(held|file|conflict)\b/i.test(message) ||
-    /resource temporarily unavailable|\b(EAGAIN|EWOULDBLOCK)\b/i.test(message)
-  )
-    return 'lock';
-  if (
-    /\bwal\b/i.test(message) &&
-    /corrupt|checksum|replay|past the end of the file|truncat/i.test(message)
-  )
-    return 'wal';
-  return 'other';
-}
-
 async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   const generationPin = await acquireIndexGenerationPin(dbPath);
   dbPath = generationPin.dbPath;
@@ -1016,11 +1014,12 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           try {
             await db.init();
           } catch (error) {
+            const openError = new LbugOpenError(dbPath, error);
             const message = error instanceof Error ? error.message : String(error);
             const errorClass = classifyLbugOpenError(message);
             const lockError = errorClass === 'lock';
             if (lockError && attempt === LOCK_RETRY_ATTEMPTS) {
-              retainFailedNativeOpen(dbPath, db, generationPin, error);
+              retainFailedNativeOpen(dbPath, db, generationPin, openError);
               nativeOwnsPin = true;
             } else {
               if ('_initPromise' in db)
@@ -1028,15 +1027,15 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
               try {
                 await db.close();
               } catch {
-                retainFailedNativeOpen(dbPath, db, generationPin, error);
+                retainFailedNativeOpen(dbPath, db, generationPin, openError);
                 nativeOwnsPin = true;
               }
             }
             if (errorClass === 'other' && !nativeOwnsPin) {
-              retainFailedNativeOpen(dbPath, db, generationPin, error);
+              retainFailedNativeOpen(dbPath, db, generationPin, openError);
               nativeOwnsPin = true;
             }
-            throw error;
+            throw openError;
           }
           restoreStdout();
           shared = newSharedDb({
@@ -1051,8 +1050,8 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           break;
         } catch (err: unknown) {
           restoreStdout();
-          lastError = err instanceof Error ? err : new Error(String(err));
-          if (failedNativeOpens.has(dbPath)) throw err;
+          lastError = err instanceof LbugOpenError ? err : new LbugOpenError(dbPath, err);
+          if (failedNativeOpens.has(dbPath)) throw lastError;
           isLockError = classifyLbugOpenError(lastError.message) === 'lock';
           if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
           await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_DELAY_MS * attempt));
@@ -1111,7 +1110,9 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           restoreStdout();
           const cause = error instanceof Error ? error.message : String(error);
           // Recovery also failed — the database is unrecoverable.
-          throw new Error(
+          throw new LbugOpenError(
+            dbPath,
+            error,
             'OntoIndex index unrecoverable due to WAL corruption. ' +
               `Run \`ontoindex clean --force && ontoindex analyze\` to rebuild. Cause: ${cause}`,
           );
@@ -1119,7 +1120,9 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
       }
 
       if (!shared) {
-        throw new Error(
+        throw new LbugOpenError(
+          dbPath,
+          lastError instanceof LbugOpenError ? lastError.cause : lastError,
           `LadybugDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
             `Retry later. (${lastError?.message || 'unknown error'})`,
         );
@@ -1739,7 +1742,7 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
       await closeSharedDatabase(failed.shared);
       failedNativeOpens.delete(dbPath);
     } catch (error) {
-      failed.error = error instanceof Error ? error : new Error(String(error));
+      failed.error = new LbugOpenError(dbPath, error);
     }
   }
   pruneInitializationRoutes();

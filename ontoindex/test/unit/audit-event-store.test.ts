@@ -156,6 +156,70 @@ describe('audit event store', () => {
       freshness: { state: 'fresh' },
       optionalList: [null, 'retained'],
     });
+    const projection = JSON.parse(await fs.readFile(store.projectionPath, 'utf8'));
+    expect(projection).toEqual(
+      buildAuditProjection((await store.load()).events, projection.rebuiltAt),
+    );
+  });
+
+  it.each<{ event: AuditEvent; message: string }>([
+    {
+      event: {
+        id: 'evt-2',
+        type: 'BundleDispatched',
+        occurredAt: '2026-05-17T00:00:01.000Z',
+        sessionId: 'session-1',
+        bundleId: 'missing-bundle',
+        dispatchedAt: '2026-05-17T00:00:01.000Z',
+        metadata: {},
+      },
+      message: 'bundle does not exist in projection: missing-bundle',
+    },
+    {
+      event: {
+        id: 'evt-2',
+        type: 'FindingStatusChanged',
+        occurredAt: '2026-05-17T00:00:01.000Z',
+        sessionId: 'session-1',
+        findingId: 'missing-finding',
+        status: 'OPEN',
+        reason: 'fresh positive evidence',
+      },
+      message: 'finding does not exist in projection: missing-finding',
+    },
+  ])('rejects invalid $event.type without changing persisted state', async ({ event, message }) => {
+    await store.createSession(sessionInput, { id: 'evt-1' });
+    const storeBefore = await fs.readFile(store.eventStorePath);
+    const projectionBefore = await fs.readFile(store.projectionPath);
+
+    await expect(store.appendEvent(event)).rejects.toThrow(message);
+
+    expect(await fs.readFile(store.eventStorePath)).toEqual(storeBefore);
+    expect(await fs.readFile(store.projectionPath)).toEqual(projectionBefore);
+    const state = await store.load();
+    expect(state.integrity).toEqual({ status: 'VALID' });
+    expect(state.events.map((entry) => entry.id)).toEqual(['evt-1']);
+
+    await store.appendEvent({
+      id: event.id,
+      type: 'ScopeGuardEvaluated',
+      occurredAt: event.occurredAt,
+      sessionId: event.sessionId,
+      status: 'PASS',
+      metadata: { changedFiles: [] },
+    });
+
+    const projection = JSON.parse(await fs.readFile(store.projectionPath, 'utf8'));
+    expect(projection.lastEventId).toBe(event.id);
+    expect(projection.scopeGuardEvaluations).toEqual([
+      {
+        id: event.id,
+        sessionId: event.sessionId,
+        status: 'PASS',
+        evaluatedAt: event.occurredAt,
+        metadata: { changedFiles: [] },
+      },
+    ]);
   });
 
   it('appends finding, verification, status, tombstone, bundle, dispatch, lint, and guard events', async () => {

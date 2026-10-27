@@ -14,8 +14,13 @@ suffices. Relationship reads require the complete supported graph of that input 
 Compared twice: watcher-only preparation leaves missed-event and debounce gaps;
 rebuilding a full graph per request wastes work and still needs capture/pins;
 the selected request gate reuses matching generations and coalesces builds.
-A fully incremental relationship engine is deferred because it introduces another
-invalidation problem. All options retain typed failures and existing mutation guards.
+A fully incremental relationship engine proceeds through staged engineering gates.
+The first gate persists a versioned resolution seed with imports, exported bindings,
+model inputs and unresolved callsites, bound to source, parser, configuration and
+base-generation identities. Request integration remains gated on source-owned edge
+replacement, complete dependency closure, derived-data parity, coherent captured
+inputs and cancellation-safe publication. Unsupported inputs and budget overflow
+retain typed refusal. All options retain existing mutation guards.
 Rollback restores the previous activation seam and preserves pinned generations.
 
 ## Input contract
@@ -249,7 +254,7 @@ decided additions to that existing owner; they are not assumed existing APIs.
 | ADW-7e | declared integration+TypeScript commands; independent graph/source/route proof |
 | ADW-7f | declared matrix command; terminal CPU+sampled RSS and frozen protocol comparisons |
 | ADW-8 | named README/dirty-worktree docs and manager readiness record |
-| ADW-8a | prepareWorkspaceRead internal activation default only; no new public setting |
+| ADW-8a | shared uncached backend-overlay activation predicate across existing consumers; absent/1 enables, 0/empty/other disables; no new setting |
 | ADW-8b | automatic-dirty-workspace ordinary-process/no-override proof and TypeScript |
 | ADW-8c | manager closeout and active routers through authenticated state tools |
 
@@ -273,3 +278,214 @@ Staged implementation/proof precedes performance, documentation/readiness, defau
 switch and ordinary no-override MCP/CLI smoke. Preserve unresolved real-time RT-5
 and buffer-pool evidence. No release publication is authorized by this ADR.
 
+## Complete resolution replay gate (2026-10-21)
+
+The accepted four-map import snapshot is a prerequisite, not a complete seed.
+Compare three choices: graph-node reconstruction loses unresolved inputs and
+registration metadata; serialization of live objects captures closures and caches;
+ordered plain input replay through existing owners preserves resolution semantics.
+Select input replay. A second challenge requires sequential, worker and recovery
+parity, original receiver inputs before mutation, scope finalization, exported
+bindings, global ambiguity and explicit source identity.
+
+Implement in this order:
+
+1. Model replay: extend `semantic-model.ts:createSemanticModel`,
+   `symbol-table.ts:SymbolTableWriter.add`, `registration-table.ts`, and
+   `resolution-context.ts` in the existing ingestion model. Preserve ordered
+   complete registration metadata and restore through `model.symbols.add`.
+   Rebuild caches; preserve deep ownership and import-map order. Capture
+   `ParsedFile` inputs for `finalize-orchestrator.ts:finalizeScopeModel`, rather
+   than serializing partially attached scope indexes. Extend existing model,
+   registration, import-resolution and scope-finalizer tests with semantic
+   round trips, overloads, owners, aliases and malformed-input rejection.
+2. Parse retention: extend `pipeline-phases/parse-impl.ts:runChunkedParseAndResolve`
+   and its `JsonlStage`, `parsing-processor.ts`, `workers/parse-types.ts`,
+   `workers/parse-worker.ts`, `call-processor.ts`, `pipeline-phases/parse.ts`
+   and cross-file propagation owners. Retain unresolved calls, assignments,
+   constructor/file bindings, heritage, exports and scope inputs before disposal
+   or receiver-type mutation. Worker, sequential and recovery paths must emit
+   equivalent file-owned records. Existing JSONL drain loads the whole file;
+   bounded record iteration is required before complete replay uses that owner.
+   Transfer an immutable replay handle before phase cleanup, preserving cleanup
+   on success, error and cancellation. Extend worker protocol, fallback, phase
+   lifecycle and cross-file tests with a clean unresolved caller that resolves
+   after a target is added, chunk-order parity and forced fallback.
+3. Seed publication: extend `types/pipeline.ts:PipelineResult`, ingestion
+   pipeline, `core/run-analyze.ts` and existing `storage/repo-manager.ts`
+   generation publication. Bind versioned complete records to source manifest,
+   parser/configuration, base generation/commit and content hashes. Reject
+   incomplete, corrupt or mismatched seeds. Preserve atomic publication, pins,
+   pruning and the previous generation on failure; do not add another store.
+4. Edge parity and activation: prepare a separate packet in existing graph and
+   runtime owners for source-owned replacement and complete dependency closure.
+   Preserve clean incoming callers and deletion/rename behavior. Compare edges,
+   processes, communities and ranking against independent full analysis of the
+   same captured bytes. Unproven closure uses existing bounded full analysis or
+   typed refusal. Activate only after parity and cancellation/publication proof.
+
+Retention admission policy: inclusive 64 MiB serialized UTF-8 including delimiters,
+100,000 records, and 256 KiB per record. Charge against the remaining shared
+artifact allowance; these are refusal thresholds, not measured capacity for
+7,001 files. Read chunks are at most 1 MiB; replay batches at most 1,000 records
+or 1 MiB. Bound fields before encoding or use a bounded encoder; checking after
+JSON.stringify does not bound allocation. Reader buffers do not bound model or
+graph memory. Enforce the absolute request deadline, cancellation and shared
+artifact ceiling before claiming resource bounds. Overflow yields typed incomplete
+evidence and cannot publish a complete seed. Test exact and one-over limits,
+multibyte records, malformed input, cancellation and cleanup of outstanding I/O.
+
+Compared fixed, configurable and input-proportional ceilings: select fixed internal
+ceilings for the initial refusal contract. Configuration adds public surface;
+input proportionality alone lacks a hard limit. Revisit only with measurements.
+Independent review requires a direct-registry mutation audit and complete
+ParsedFile/finalizer input retention before an add-event journal claims completeness.
+Preserve duplicate registration events, original Function plus ownerId metadata,
+array ownership and clear semantics. Capture worker calls before receiver seeding
+mutates them and sequential unresolved calls before they are discarded.
+
+### Frozen implementation packets
+
+MODEL owns `ontoindex/src/core/ingestion/model/semantic-model.ts` and
+`ontoindex/test/unit/model/semantic-model.test.ts`. Choose opt-in chronological
+mutation capture over unique-definition serialization (which loses duplicate
+registration semantics) or a symbols-only journal (which misses exposed direct
+registry writes). Wrap registry registration and individual clear operations
+before constructing the dispatch table. Capture top-level symbol additions and
+full clear, suppressing nested capture during fan-out and cascade clear. Preserve
+original Function/ownerId metadata, order, duplicates and deep-owned mutable
+metadata; replay into a fresh non-recording model. Disabled capture must allocate
+no journal or metadata copies. Full and individual clears retain their distinct
+effects. Scope attachment is outside this registration prerequisite. Cross-index
+JavaScript reference identity is not a replay guarantee. Test duplicate fan-out,
+direct writes, clear order, mutation isolation and malformed/overflow refusal.
+
+SCOPE owns `ontoindex/src/core/ingestion/parsing-processor.ts`,
+`ontoindex/src/core/ingestion/workers/parse-worker.ts`,
+`ontoindex/src/core/ingestion/workers/parse-types.ts`,
+`ontoindex/src/core/ingestion/pipeline-phases/parse-impl.ts` and
+`ontoindex/src/core/ingestion/finalize-orchestrator.ts`. Retain ordered complete
+ParsedFile inputs: filePath, moduleScope, scopes, parsedImports, localDefs and
+referenceSites including optional nested facts. Encode bindings/typeBindings Maps
+as ordered entries and reconstruct them. Bind workspace inventory, effective
+ImportConfigs and missing/present configuration state to source hashes, provider,
+parser/hook identities and base generation. Rebuild path indexes and caches using
+existing resolvers. Unknown executable hooks, missing providers, extraction errors,
+quarantine or lightweight modes must refuse complete replay. Retained scopes do
+not establish method-dispatch or MRO completeness.
+
+SCOPE validation targets are
+`ontoindex/test/unit/scope-resolution/finalize-orchestrator.test.ts`,
+`ontoindex/test/unit/scope-resolution/import-target-adapter.test.ts`,
+`ontoindex/test/unit/scope-resolution/parse-worker-scope-integration.test.ts`,
+`ontoindex/test/unit/parse-worker-protocol.test.ts` and
+`ontoindex/test/unit/parse-impl-fallback.test.ts`. Require worker, sequential and
+recovery equivalence before disposal, Map/order preservation, cycles, wildcard
+imports, reexports and inventory/config invalidation. Preserve existing resolver
+ambiguity behavior without claiming exhaustive resolution.
+
+#### SCOPE execution refinement (2026-10-22)
+
+Capture configuration observations in the existing language-config and import
+processor owners, at the same loader I/O that supplies effective ImportConfigs.
+Retain present, absent and failed reads separately, content hashes, directory
+membership and iteration order, and traversal errors and limits. CSharp directory
+search and Swift Sources discovery mean a configuration-file hash alone is
+insufficient. Preserve effective configurations reused across parse chunks.
+
+Capture complete ParsedFile inputs before parse-impl clears chunk worker data;
+use the existing parse-stage owner, without a second store or worker codec.
+Sequential parsing now exposes a synchronous transient callback; the retention
+sink must detach nested Maps and objects and record explicit per-file extraction
+outcomes. Empty artifacts cannot certify complete extraction. Apply the frozen
+aggregate, record, read and batch limits before accepting a complete capture.
+
+Freeze asynchronous lifetime ownership in parse.ts and parse-impl before durable
+implementation: transfer each handle once, await cleanup on success, failure and
+cancellation, and preserve the primary error when cleanup also fails. Include
+pipeline.ts and analyze-delta explicitly in a successor write set if plumbing is
+needed; a callback alone does not establish this lifetime contract.
+
+Replay through finalize-orchestrator and import-target-adapter, reconstructing
+ordered Maps, path indexes and existing resolvers. Test cycles, wildcard imports,
+reexports and ambiguity against fresh analysis. Bind source-manifest/configuration
+digests, parser/provider/hook contracts and base generation/commit. Unknown
+identity or extraction state refuses completeness. Scope retention does not prove
+method dispatch or MRO coverage; SEED retains generation-publication ownership.
+
+#### TS/JS local binding identity refinement
+
+Preserve every declaration in localDefs and structural ownedDefs. Add an optional
+post-collection local-binding selector to the existing provider/extractor owners.
+It receives all detached declaration candidates for one host/name and may return
+only a nonempty unique subset of those candidates; invalid selections throw.
+Providers without the hook preserve existing append semantics. Shared BindingRef,
+lookup, finalization and retained formats remain unchanged.
+
+For supported identifier var declarations, detach the exact variable-environment
+range from the AST: function, program, namespace body or class static-block body.
+Validate that range against the extracted scope chain. Preserve nested function
+boundaries. Mark simple parameters explicitly; a matching parameter is canonical,
+otherwise choose the earliest var declaration by numeric source position.
+Unsupported patterns, non-simple parameter environments, catch-name collisions,
+function-name collisions and conflicting lexical declarations must refuse the
+bounded helper rather than invent identity. Provider activation remains gated.
+
+Compared twice: append-and-hoist leaves duplicate candidates; dropping captures
+loses declaration facts; post-collection selection preserves evidence and existing
+wire formats. Grouping is linear in declarations; selection scans each group once.
+Tests must cover capture-order independence, parameter overlap, isolated scopes,
+invalid selections and preserved defaults. Rollback removes the optional hook
+and TS/JS helper together without changing persisted data.
+
+CALLS follows SCOPE because they share parse ownership. It owns
+`ontoindex/src/core/ingestion/pipeline-phases/parse-impl.ts`,
+`ontoindex/src/core/ingestion/pipeline-phases/parse.ts`,
+`ontoindex/src/core/ingestion/pipeline-phases/cross-file-impl.ts` and
+`ontoindex/src/core/ingestion/call-processor.ts`. Capture canonical unresolved
+calls before receiver seeding, together with heritage, exports, assignments and
+constructor bindings in every parse path. Replace whole-file JSONL hydration and
+whole-batch encoding with bounded admission and iteration under the policy above.
+Await outstanding I/O before cleanup and preserve the primary failure. Validation
+targets are `ontoindex/test/unit/parse-impl-fallback.test.ts`,
+`ontoindex/test/unit/parse-phase-lifecycle.test.ts`,
+`ontoindex/test/unit/call-processor.test.ts` and
+`ontoindex/test/unit/cross-file-impl.test.ts`; require pre-mutation fidelity,
+fallback parity, exact/one-over limits, cancellation and cleanup.
+
+SEED follows MODEL, SCOPE and CALLS. It owns
+`ontoindex/src/types/pipeline.ts`, `ontoindex/src/core/ingestion/pipeline.ts`,
+`ontoindex/src/core/run-analyze.ts` and `ontoindex/src/storage/repo-manager.ts`.
+Carry the complete replay handle through the existing immutable generation owner;
+publish only after identity and completeness validation. Existing diagnostic
+checkpoints are not replay seeds. Validate corrupt/incomplete rejection, source
+identity, atomic publication, pins/pruning and preservation of the previous
+generation in `ontoindex/test/unit/run-analyze-snapshot.test.ts`,
+`ontoindex/test/unit/dirty-overlay-build.test.ts`,
+`ontoindex/test/unit/overlay-generations.test.ts` and
+`ontoindex/test/unit/source-manifest.test.ts`.
+
+These packets are sequential where write sets overlap. Each requires an executable
+tracking packet and source/test verification before dispatch. Complete capability
+requires every supported language path to retain all required facts; unsupported
+or unknown extraction paths remain explicitly incomplete. Independent review must
+check the final packet against the production mutation and disposal paths. No
+truncated seed may advertise complete capability.
+Existing tests above are validation targets, not executed replay tests. No cap
+increase or runtime activation is authorized by completion of an early packet.
+
+## ADW-7 disposition: cgroup terminal-window CPU accounting (2026-10-19)
+
+For warm samples, use an owned cgroup v2 leaf scope entered before the measured
+request executes. Take the CPU baseline after preparation and charge terminal
+user+system CPU from that baseline through the final empty-scope snapshot, which
+includes shutdown work. A sample qualifies for the warm CPU gate only when the
+final snapshot, teardown, scope removal, and transport close all succeed. If any
+part is missing, sampled CPU or GNU time is fallback evidence and does not pass
+the warm gate. Cold samples continue to use GNU time.
+
+Keep the budgets unchanged: 55 seconds dirty-cold, 1 CPU-second warm, and 4 GiB
+sampled process-tree RSS. Each contention client has its own scope. Scope identity
+is checked at kill time only; hostile same-user replacement is outside the scope
+of this measurement contract. One warm-terminal sample records an observation but
+does not establish percentile performance.

@@ -1,9 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { SyntaxNode } from 'tree-sitter';
 import { SupportedLanguages, buildScopeTree } from 'ontoindex-shared';
 import type { CaptureMatch, Range, Scope, ScopeKind } from 'ontoindex-shared';
 import { createParserForLanguage } from '../../../src/core/tree-sitter/parser-loader.js';
 import { emitTypeScriptLexicalScopeCaptures } from '../../../src/core/ingestion/languages/typescript-scope-captures.js';
+import { emitTypeScriptCaptures } from '../../../src/core/ingestion/languages/typescript-captures.js';
+import {
+  selectTypeScriptLocalBindings,
+  typeScriptDeclarationBindingScope,
+  typeScriptDeclarationNamespace,
+} from '../../../src/core/ingestion/languages/typescript-declaration-captures.js';
+import { interpretTypeScriptImport } from '../../../src/core/ingestion/languages/typescript-import-captures.js';
+import { interpretTypeScriptExports } from '../../../src/core/ingestion/languages/typescript-export-captures.js';
 import {
   javascriptProvider,
   typescriptProvider,
@@ -271,8 +279,45 @@ describe('borrowed TS/JS lexical scope captures', () => {
     expect(() => emitTypeScriptLexicalScopeCaptures(root.namedChildren[0]!)).toThrow();
   });
 
-  it('keeps production TypeScript and JavaScript providers unsupported for scope replay', () => {
-    expect(typescriptProvider.emitScopeCaptures).toBeUndefined();
-    expect(javascriptProvider.emitScopeCaptures).toBeUndefined();
-  });
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'registers detached borrowed-root captures and interpretation hooks for %s',
+    async (filePath) => {
+      const provider = /\.jsx?$/.test(filePath) ? javascriptProvider : typescriptProvider;
+      expect(provider.bindingScopeFor).toBe(typeScriptDeclarationBindingScope);
+      expect(provider.declarationNamespaceFor).toBe(typeScriptDeclarationNamespace);
+      expect(provider.selectLocalBindings).toBe(selectTypeScriptLocalBindings);
+      expect(provider.interpretImport).toBe(interpretTypeScriptImport);
+      expect(provider.interpretExports).toBe(interpretTypeScriptExports);
+      expect(() => provider.emitScopeCaptures!('', filePath)).toThrow(
+        'TS/JS scope captures require the borrowed root',
+      );
+
+      const source = "import Main from './module';\nexport function local() { Main(); }\nlocal();";
+      const { parser, root } = await parse(source, filePath);
+      const expected = emitTypeScriptCaptures(root);
+      const parseSpy = vi.spyOn(parser, 'parse');
+      let captures: readonly CaptureMatch[];
+      try {
+        captures = provider.emitScopeCaptures!(source, filePath, root);
+        expect(parseSpy).not.toHaveBeenCalled();
+      } finally {
+        parseSpy.mockRestore();
+      }
+      expect(captures).toEqual(expected);
+      expect(extract(captures, filePath, provider)).toEqual(
+        extract(expected, filePath, {
+          bindingScopeFor: typeScriptDeclarationBindingScope,
+          declarationNamespaceFor: typeScriptDeclarationNamespace,
+          selectLocalBindings: selectTypeScriptLocalBindings,
+          interpretImport: interpretTypeScriptImport,
+          interpretExports: interpretTypeScriptExports,
+        }),
+      );
+      const serialized = JSON.stringify(captures);
+      expect(captures).toEqual(JSON.parse(serialized));
+      Object.values(expected[0]!)[0]!.range.startLine = 99;
+      parser.parse('class Replacement {}');
+      expect(JSON.stringify(captures)).toBe(serialized);
+    },
+  );
 });

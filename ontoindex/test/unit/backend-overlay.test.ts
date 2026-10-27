@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import asyncFs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -233,6 +234,8 @@ describe('backend-overlay snapshot', () => {
     publishWorkspaceFixture('degraded');
     expect(await getOverlaySnapshot(handle())).toMatchObject({
       usable: false,
+      capability: 'workspace-graph',
+      coverage: 'degraded',
       reason: expect.stringContaining('coverage is degraded'),
     });
   });
@@ -249,6 +252,89 @@ describe('backend-overlay snapshot', () => {
       reason: expect.stringContaining('stale for src/a.ts'),
     });
   });
+
+  it.each(['valid', 'read failure', 'digest mismatch'] as const)(
+    'hashes inventory in bounded batches and drains started reads: %s',
+    async (outcome) => {
+      for (const name of ['b', 'c', 'd', 'e'])
+        fs.writeFileSync(path.join(repo, `src/${name}.ts`), `export const ${name} = 1;\n`);
+      git(repo, 'add', 'src');
+      git(repo, 'commit', '-qm', 'batched inventory');
+      fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
+      publishWorkspaceFixture();
+      const inputs = new Set(fs.readdirSync(path.join(repo, 'src')).map((name) => `src/${name}`));
+      const started: string[] = [];
+      const pending = new Map<string, (failure?: boolean) => void>();
+      const readFile = asyncFs.readFile;
+      let active = 0;
+      let maximumActive = 0;
+      let releaseImmediately = false;
+      vi.spyOn(asyncFs, 'readFile').mockImplementation((file, options) => {
+        const rel = path.relative(repo, String(file));
+        if (!inputs.has(rel)) return readFile(file, options);
+        started.push(rel);
+        active++;
+        maximumActive = Math.max(maximumActive, active);
+        return new Promise<Buffer>((resolve, reject) => {
+          const release = (failure = false) => {
+            pending.delete(rel);
+            active--;
+            if (failure && outcome === 'read failure') reject(new Error('controlled read failure'));
+            else
+              resolve(
+                failure ? Buffer.from('changed bytes') : fs.readFileSync(path.join(repo, rel)),
+              );
+          };
+          if (releaseImmediately) release();
+          else pending.set(rel, release);
+        });
+      });
+      let settled = false;
+      const snapshotPromise = getOverlaySnapshot(handle()).finally(() => {
+        settled = true;
+      });
+      try {
+        // A bounded wait fails on a sequential implementation; finally releases its blocked read.
+        await vi.waitFor(() => expect(started).toHaveLength(4));
+        expect(active).toBe(4);
+        if (outcome === 'valid') {
+          for (const release of [...pending.values()]) release();
+          await vi.waitFor(() => expect(started).toHaveLength(6));
+          expect(active).toBe(2);
+          // Later overlay validation may reread inputs after the inventory batches.
+          releaseImmediately = true;
+          for (const release of [...pending.values()]) release();
+          expect(await snapshotPromise).toMatchObject({ usable: true, reason: null });
+          expect(new Set(started)).toEqual(inputs);
+        } else {
+          // Complete the later failure first while the earliest inventory input stays pending.
+          pending.get(started[1])!(true);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(settled).toBe(false);
+          expect(active).toBe(3);
+          expect(started).toHaveLength(4);
+          // Only started[1] is corrupt: read-start order follows async lstat completion, so a second
+          // corrupt input would make the reported path depend on scheduling.
+          pending.get(started[0])!();
+          for (const release of [...pending.values()]) release();
+          expect(await snapshotPromise).toMatchObject({
+            usable: false,
+            reason:
+              outcome === 'read failure'
+                ? 'cannot validate workspace graph input inventory; rebuild'
+                : expect.stringContaining(`stale for ${started[1]}`),
+          });
+          expect(started).toHaveLength(4);
+        }
+        expect(maximumActive).toBe(4);
+        expect(active).toBe(0);
+      } finally {
+        releaseImmediately = true;
+        for (const release of [...pending.values()]) release();
+        await snapshotPromise;
+      }
+    },
+  );
 
   it.each(['edited', 'added', 'deleted', 'touched', 'missing inventory'] as const)(
     'checks non-dirty inventory: %s',

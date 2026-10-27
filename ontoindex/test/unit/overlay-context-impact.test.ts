@@ -27,7 +27,10 @@ const { pool, overlay, execFileText } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/core/lbug/pool-adapter.js', () => pool);
-vi.mock('../../src/mcp/local/backend-overlay.js', () => overlay);
+vi.mock('../../src/mcp/local/backend-overlay.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  ...overlay,
+}));
 vi.mock('../../src/core/process/exec-file.js', async (importOriginal) => ({
   ...(await importOriginal()),
   execFileText,

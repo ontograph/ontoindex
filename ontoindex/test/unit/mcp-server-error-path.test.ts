@@ -69,6 +69,8 @@ async function createPublicHandlers(): Promise<{
   list: () => Promise<any>;
 }> {
   vi.resetModules();
+  // The listing assertions inspect legacy gn_* tools, which core hides by default.
+  vi.stubEnv('ONTOINDEX_MCP_STARTUP_PROFILE', 'public-full');
   const { Server } = await import('@modelcontextprotocol/sdk/server/index.js');
   const { CallToolRequestSchema, ListToolsRequestSchema } =
     await import('@modelcontextprotocol/sdk/types.js');
@@ -102,6 +104,7 @@ function readErrorPayload(text: string): Record<string, unknown> {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   vi.doUnmock('../../src/mcp/super/dispatch.js');
 });
 
@@ -171,12 +174,15 @@ describe('MCP server tool-call errors', () => {
         ...(scoped ? { repoLabel: 'fixture', repoPath: '/repo/fixture' } : {}),
         code,
         retryable,
-        ...(scoped && code === 'workspace_too_large'
+        ...(scoped && (code === 'workspace_too_large' || code === 'workspace_build_failed')
           ? {
               remediation: {
                 read_mode: 'committed',
                 message:
-                  'Explicitly set read_mode="committed" to query the indexed commit. Uncommitted source changes, manual overlays and live enrichment are excluded. Do not automatically retry or reindex.',
+                  'Explicitly set read_mode="committed" to query the indexed commit. Uncommitted source changes, manual overlays and live enrichment are excluded. Do not automatically retry or reindex.' +
+                  (code === 'workspace_too_large'
+                    ? ' To prepare a separate bounded workspace graph while preserving the committed index, explicitly run `ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph` in the repository. Rerun this command after workspace inputs change.'
+                    : ''),
               },
             }
           : {}),
@@ -184,14 +190,156 @@ describe('MCP server tool-call errors', () => {
     },
   );
 
+  it('preserves only validated phase diagnostics through MCP errors', async () => {
+    const error = Object.assign(new Error('Working-tree graph build failed.'), {
+      code: 'workspace_build_failed',
+      retryable: false,
+      diagnostics: {
+        phase: 'build',
+        reason: 'build_failed',
+        systemCode: 'ENOSPC',
+        privatePath: '/private/workspace',
+        stderr: 'private stderr',
+      },
+    });
+    const { handler } = await createHarness({ dispatchError: error });
+    const response = await handler({
+      params: { name: 'gn_explore', arguments: { repo: 'fixture' } },
+    });
+    expect(readErrorPayload(response.content[0].text)).toMatchObject({
+      code: 'workspace_build_failed',
+      retryable: false,
+      diagnostics: { phase: 'build', reason: 'build_failed', systemCode: 'ENOSPC' },
+      remediation: { read_mode: 'committed' },
+    });
+    expect(response.content[0].text).not.toMatch(/private\/workspace|private stderr/);
+  });
+
+  it('projects degraded workspace coverage with fixed remediation and no private fields', async () => {
+    const error = Object.assign(new Error('Working-tree graph build failed.'), {
+      code: 'workspace_build_failed',
+      retryable: false,
+      privateMetadata: 'SYNTHETIC_PRIVATE',
+      diagnostics: {
+        phase: 'verification',
+        reason: 'coverage_degraded',
+        privatePath: '/private/workspace',
+        stderr: 'SYNTHETIC_PRIVATE',
+      },
+    });
+    const { handler } = await createHarness({ dispatchError: error });
+    const response = await handler({
+      params: { name: 'gn_explore', arguments: { repo: 'fixture' } },
+    });
+    const payload = readErrorPayload(response.content[0].text);
+    expect(response.isError).toBe(true);
+    expect(payload).toMatchObject({ code: 'workspace_build_failed', retryable: false });
+    expect(payload.diagnostics).toEqual({ phase: 'verification', reason: 'coverage_degraded' });
+    expect(payload.remediation).toEqual({
+      read_mode: 'committed',
+      message:
+        'Explicitly set read_mode="committed" to query the indexed commit. Uncommitted source changes, manual overlays and live enrichment are excluded. Do not automatically retry or reindex. The published workspace graph reports degraded coverage. Inspect the analysis diagnostics and correct the reported issues before explicitly rebuilding.',
+    });
+    expect(response.content[0].text).not.toMatch(
+      /privateMetadata|privatePath|stderr|private\/workspace|SYNTHETIC_PRIVATE/,
+    );
+  });
+
+  it('projects typed input refusals with fixed remediation and no private fields', async () => {
+    const error = Object.assign(new Error('Working-tree graph build failed.'), {
+      code: 'workspace_build_failed',
+      diagnostics: {
+        phase: 'build',
+        reason: 'input_refused',
+        privatePath: '/private/workspace',
+        stderr: 'private stderr',
+      },
+    });
+    const { handler } = await createHarness({ dispatchError: error });
+    const response = await handler({
+      params: { name: 'gn_explore', arguments: { repo: 'fixture' } },
+    });
+    const payload = readErrorPayload(response.content[0].text);
+    expect(payload).toMatchObject({ code: 'workspace_build_failed' });
+    expect(payload.diagnostics).toEqual({ phase: 'build', reason: 'input_refused' });
+    expect(payload.remediation).toEqual({
+      read_mode: 'committed',
+      message:
+        'Explicitly set read_mode="committed" to query the indexed commit. Uncommitted source changes, manual overlays and live enrichment are excluded. Do not automatically retry or reindex. The working tree contains an input the workspace capture refuses, such as a tracked symlink or a file over the scan cap; exclude it with .ontoindexignore where allowed or run ontoindex analyze.',
+    });
+    expect(payload).not.toHaveProperty('privatePath');
+    expect(response.content[0].text).not.toMatch(/privatePath|private\/workspace|private stderr/);
+  });
+
   it.each([
-    { name: 'inspect', arguments: { repo: 'fixture', action: 'shape' } },
-    { name: 'impact', arguments: { repo: 'fixture', action: 'batch' } },
-    { name: 'search', arguments: { repo: 'fixture', action: 'cypher' } },
-    { name: 'gn_explore', arguments: {} },
-  ])('omits fallback advice for unsupported $name $arguments', async (params) => {
+    null,
+    {},
+    { phase: '/private/source', reason: 'build_failed' },
+    { phase: 'build', reason: 'SYNTHETIC_PRIVATE' },
+    { phase: ['build'], reason: 'build_failed' },
+  ])('omits malformed build diagnostics %j', async (diagnostics) => {
+    const { handler } = await createHarness({
+      dispatchError: Object.assign(new Error('workspace unavailable'), {
+        code: 'workspace_build_failed',
+        retryable: false,
+        diagnostics,
+      }),
+    });
+    const response = await handler({
+      params: { name: 'gn_explore', arguments: { repo: 'fixture' } },
+    });
+    const payload = readErrorPayload(response.content[0].text);
+    expect(payload).not.toHaveProperty('diagnostics');
+    expect(payload).toMatchObject({ retryable: false, remediation: { read_mode: 'committed' } });
+    expect(response.content[0].text).not.toMatch(/SYNTHETIC_PRIVATE|private\/source/);
+  });
+
+  it.each(['UNKNOWN', '/private/source', ['EIO'], null])(
+    'omits invalid systemCode %j',
+    async (systemCode) => {
+      const { handler } = await createHarness({
+        dispatchError: Object.assign(new Error('workspace unavailable'), {
+          code: 'workspace_build_failed',
+          retryable: false,
+          diagnostics: { phase: 'recheck', reason: 'snapshot_failed', systemCode },
+        }),
+      });
+      const response = await handler({
+        params: { name: 'gn_explore', arguments: { repo: 'fixture' } },
+      });
+      expect(readErrorPayload(response.content[0].text).diagnostics).toEqual({
+        phase: 'recheck',
+        reason: 'snapshot_failed',
+      });
+    },
+  );
+
+  it.each(['workspace_too_large', 'workspace_timeout'])(
+    'rejects build diagnostics on %s',
+    async (code) => {
+      const { handler } = await createHarness({
+        callToolError: Object.assign(new Error('workspace unavailable'), {
+          code,
+          diagnostics: { phase: 'build', reason: 'build_failed', systemCode: 'EIO' },
+        }),
+      });
+      const response = await handler({ params: { name: 'list_repos', arguments: {} } });
+      expect(readErrorPayload(response.content[0].text)).not.toHaveProperty('diagnostics');
+    },
+  );
+
+  it.each(
+    [
+      { name: 'inspect', arguments: { repo: 'fixture', action: 'shape' } },
+      { name: 'impact', arguments: { repo: 'fixture', action: 'batch' } },
+      { name: 'search', arguments: { repo: 'fixture', action: 'cypher' } },
+      { name: 'gn_explore', arguments: {} },
+    ].flatMap((params) =>
+      ['workspace_build_failed', 'workspace_too_large'].map((code) => ({ params, code })),
+    ),
+  )('omits fallback advice for unsupported $params with $code', async ({ params, code }) => {
     const error = Object.assign(new Error('workspace unavailable'), {
-      code: 'workspace_too_large',
+      code,
       retryable: false,
     });
     const { backend, handler } = await createHarness({
@@ -200,7 +348,9 @@ describe('MCP server tool-call errors', () => {
     });
     const response = await handler({ params });
     expect(response.isError).toBe(true);
-    expect(readErrorPayload(response.content[0].text)).not.toHaveProperty('remediation');
+    const payload = readErrorPayload(response.content[0].text);
+    expect(payload).toMatchObject({ code, retryable: false });
+    expect(payload).not.toHaveProperty('remediation');
     expect(backend.callTool.mock.calls.length).toBeLessThanOrEqual(1);
   });
 
@@ -224,7 +374,18 @@ describe('MCP server tool-call errors', () => {
         : { name: 'list_repos', arguments: {} },
     });
     expect(response.isError).toBe(true);
-    expect(readErrorPayload(response.content[0].text).diagnostics).toEqual(diagnostics);
+    const payload = readErrorPayload(response.content[0].text);
+    expect(payload).toMatchObject({ code: 'workspace_too_large', retryable: false, diagnostics });
+    if (scoped) {
+      expect(payload.remediation).toMatchObject({
+        read_mode: 'committed',
+        message: expect.stringContaining(
+          'ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph',
+        ),
+      });
+    } else {
+      expect(payload).not.toHaveProperty('remediation');
+    }
     expect(response.content[0].text).not.toMatch(/private-token|private\/workspace/);
   });
 

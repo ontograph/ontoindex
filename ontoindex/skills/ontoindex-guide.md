@@ -8,16 +8,16 @@ description: 'Consult for OntoIndex tool families, resource URIs, graph schema, 
 Read [ontoindex-navigation](ontoindex-navigation.md) first; then choose the exploring, debugging, impact-analysis, pr-review, refactoring, or cli recipe skill for the task.
 Pass `repo: '<repo>'` in every tool call.
 
-| Family              | Tools and actions                                                                          |
-| ------------------- | ------------------------------------------------------------------------------------------ |
-| Discovery           | `discover`: repos, routes, tools, packs, groups, sync; `gn_help`, `gn_diagnose`            |
-| Retrieval           | `search`: semantic, cypher, repomap; `gn_explore`, `gn_explain_module`                     |
-| Context             | `inspect`: context, evidence, shape, ipc; `gn_find_related`                                |
-| Edit safety         | `impact`: symbol, batch, route, diff; `gn_safe_edit_check`, `gn_can_delete`                |
-| Verification        | `gn_verify_diff`, `gn_review_diff`, `gn_diff_impact`, `gn_test_gap`, `gn_pre_commit_audit` |
-| Index lifecycle     | `gn_ensure_fresh` (coordinate refresh through navigation)                                  |
-| Audits/docs         | `audit`, `docs`                                                                            |
-| Session/refactoring | `manage`; `refactor`: rename (preview only), replace, sandbox                              |
+| Family              | Tools and actions                                                                                                                                                                                    |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Discovery           | `discover`: repos, routes, tools, packs, groups, sync, help, tool_contract; `manage({action: "diagnose", ...})`                                                                                         |
+| Retrieval           | `search`: semantic, cypher, repomap; `inspect({action: "explore", ...})`, `inspect({action: "module", ...})`                                                                                         |
+| Context             | `inspect`: context, evidence, shape, ipc; `inspect({action: "related", ...})`                                                                                                                        |
+| Edit safety         | `impact`: symbol, batch, route, diff; `audit({action: "safe_edit_check", ...})`, `audit({action: "can_delete", ...})`                                                                                |
+| Verification        | `audit({action: "verify_diff", ...})`, `audit({action: "review_diff", ...})`, `impact({action: "diff_impact", ...})`, `audit({action: "test_gap", ...})`, `audit({action: "pre_commit_audit", ...})` |
+| Index lifecycle     | `manage({action: "ensure_fresh", ...})`, `manage({action: "analyze_job", jobId, job_action: "status", ...})` (coordinate refresh through navigation)                                                     |
+| Audits/docs         | `audit`, `docs`                                                                                                                                                                                      |
+| Session/refactoring | `manage`; `refactor`: rename (preview only), replace, sandbox                                                                                                                                        |
 
 Resources: `ontoindex://repos`; `ontoindex://repo/{name}/context`, `/schema`, `/processes`, `/clusters`, and `/process/{processName}` (append each suffix to the repository URI).
 

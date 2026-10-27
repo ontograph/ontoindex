@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import syncFs from 'node:fs';
+import os from 'node:os';
 import path from 'path';
 import { fileURLToPath } from 'node:url';
 import { RepoHandle } from 'ontoindex-shared';
@@ -13,6 +14,83 @@ import {
   selectWorkspaceCapability,
   type OverlaySnapshot,
 } from './backend-overlay.js';
+import { WorkspaceBuildError } from './workspace-build-supervisor.js';
+import {
+  workspaceConfigurationIdentity,
+  WorkspaceInputCaptureError,
+} from '../../core/analyze-delta.js';
+
+export type WorkspacePreparationPhase =
+  | 'planning'
+  | 'lock'
+  | 'recheck'
+  | 'build'
+  | 'release'
+  | 'verification';
+export type WorkspacePreparationReason =
+  | 'planning_failed'
+  | 'lock_failed'
+  | 'snapshot_failed'
+  | 'inputs_changed'
+  | 'build_failed'
+  | 'timeout'
+  | 'cancelled'
+  | 'unstoppable'
+  | 'release_failed'
+  | 'capability_missing'
+  | 'generation_unreadable'
+  | 'input_refused'
+  | 'coverage_degraded';
+export type WorkspaceSystemCode =
+  | 'EACCES'
+  | 'EPERM'
+  | 'ENOSPC'
+  | 'ENOENT'
+  | 'EMFILE'
+  | 'ENFILE'
+  | 'EIO'
+  | 'EROFS';
+export interface WorkspaceFailureDiagnostics {
+  phase: WorkspacePreparationPhase;
+  reason: WorkspacePreparationReason;
+  systemCode?: WorkspaceSystemCode;
+}
+
+const SYSTEM_CODES = new Set<WorkspaceSystemCode>([
+  'EACCES',
+  'EPERM',
+  'ENOSPC',
+  'ENOENT',
+  'EMFILE',
+  'ENFILE',
+  'EIO',
+  'EROFS',
+]);
+function failureDiagnostics(
+  phase: WorkspacePreparationPhase,
+  reason: WorkspacePreparationReason,
+  cause?: unknown,
+): WorkspaceFailureDiagnostics {
+  let code =
+    cause !== null && typeof cause === 'object' ? (cause as { code?: unknown }).code : undefined;
+  if (
+    !(typeof code === 'string' && SYSTEM_CODES.has(code as WorkspaceSystemCode)) &&
+    cause instanceof WorkspaceBuildError
+  ) {
+    const nativeCause = cause.cause;
+    code =
+      nativeCause !== null && typeof nativeCause === 'object'
+        ? (nativeCause as { code?: unknown }).code
+        : undefined;
+  }
+  return {
+    phase,
+    reason,
+    ...(typeof code === 'string' && SYSTEM_CODES.has(code as WorkspaceSystemCode)
+      ? { systemCode: code as WorkspaceSystemCode }
+      : {}),
+  };
+}
 
 export interface WorkspaceReadRepo {
   id: string;
@@ -34,6 +112,7 @@ export interface WorkspacePreparationDependencies {
   evictSnapshot(repoId: string): void;
   /** Committed-index file count, used to refuse builds that cost too much. */
   baseFileCount(repo: WorkspaceReadRepo): Promise<number | undefined>;
+  getInputIdentity: typeof workspaceConfigurationIdentity;
   now(): number;
 }
 
@@ -52,6 +131,7 @@ export class WorkspacePreparationError extends Error {
       maxIndexedFiles: number;
       requiredCapability: 'workspace-graph';
     },
+    public readonly failure?: WorkspaceFailureDiagnostics,
   ) {
     super(message, options);
     this.name = 'WorkspacePreparationError';
@@ -62,48 +142,75 @@ const WORKSPACE_BUILD_TIMEOUT_MS = 120_000;
 /** Each caller has its own wait budget; the shared build may continue for other callers. */
 export const WORKSPACE_PREPARATION_DEADLINE_MS = 60_000;
 
+export function workspaceBuildChildEnv(
+  logicalCpuCount = os.availableParallelism?.() ?? os.cpus().length,
+  env = process.env,
+): NodeJS.ProcessEnv | undefined {
+  const configuredWorkers = Number(env.ONTOINDEX_MAX_WORKERS);
+  if (Number.isInteger(configuredWorkers) && configuredWorkers > 0) return undefined;
+  // On a 10.3k-file clone, 4 workers cut build 77 s -> 60 s (parse 42.6 s -> 28.4 s),
+  // at 4.8 GB RSS; without this setting large repos are forced to a single parse worker.
+  return {
+    ONTOINDEX_MAX_WORKERS: String(Math.min(4, Math.max(1, Math.floor(logicalCpuCount / 2)))),
+  };
+}
+
+export async function buildWorkspaceGraph(
+  repo: WorkspaceReadRepo,
+  signal?: AbortSignal,
+  build?: { workspaceGraph: boolean; includePaths: string[] },
+  requireSupervised = false,
+): Promise<void> {
+  // The build runs in its own process group so a deadline can kill it and return its memory.
+  const child = fileURLToPath(new URL('../../core/workspace-build-child.js', import.meta.url));
+  if (syncFs.existsSync(child)) {
+    const { superviseWorkspaceBuild } = await import('./workspace-build-supervisor.js');
+    await superviseWorkspaceBuild({
+      command: process.execPath,
+      args: [
+        child,
+        repo.repoPath,
+        ...(build?.workspaceGraph === false
+          ? ['--symbols', JSON.stringify(build.includePaths)]
+          : []),
+      ],
+      cwd: repo.repoPath,
+      env: workspaceBuildChildEnv(),
+      storagePath: repo.storagePath,
+      signal,
+      timeoutMs:
+        Number(process.env.ONTOINDEX_WORKSPACE_BUILD_TIMEOUT_MS) || WORKSPACE_BUILD_TIMEOUT_MS,
+    });
+    return;
+  }
+  if (requireSupervised) {
+    throw new Error(
+      'Workspace preparation requires the compiled workspace-build-child.js; build or reinstall OntoIndex first.',
+    );
+  }
+  // Running from TypeScript sources (tests, tsx): no compiled child entry, so build in-process.
+  const { runFullAnalysis } = await import('../../core/run-analyze.js');
+  await runFullAnalysis(
+    repo.repoPath,
+    {
+      ...(build?.workspaceGraph === false
+        ? { dirtyOverlay: true, overlayPaths: build.includePaths }
+        : { workspaceGraph: true }),
+      skipNativeClose: true,
+    },
+    { onProgress() {} },
+  );
+}
+
 const workspaceDependencies: WorkspacePreparationDependencies = {
   getSnapshot: getOverlaySnapshot,
   acquireLock: async (repoPath) =>
     (await import('../../cli/analyze.js')).acquireAnalyzeLock(repoPath),
-  buildWorkspaceGraph: async (repo, signal, build) => {
-    // The build runs in its own process group so a deadline can kill it and return its memory.
-    const child = fileURLToPath(new URL('../../core/workspace-build-child.js', import.meta.url));
-    if (syncFs.existsSync(child)) {
-      const { superviseWorkspaceBuild } = await import('./workspace-build-supervisor.js');
-      await superviseWorkspaceBuild({
-        command: process.execPath,
-        args: [
-          child,
-          repo.repoPath,
-          ...(build?.workspaceGraph === false
-            ? ['--symbols', JSON.stringify(build.includePaths)]
-            : []),
-        ],
-        cwd: repo.repoPath,
-        storagePath: repo.storagePath,
-        signal,
-        timeoutMs:
-          Number(process.env.ONTOINDEX_WORKSPACE_BUILD_TIMEOUT_MS) || WORKSPACE_BUILD_TIMEOUT_MS,
-      });
-      return;
-    }
-    // Running from TypeScript sources (tests, tsx): no compiled child entry, so build in-process.
-    const { runFullAnalysis } = await import('../../core/run-analyze.js');
-    await runFullAnalysis(
-      repo.repoPath,
-      {
-        ...(build?.workspaceGraph === false
-          ? { dirtyOverlay: true, overlayPaths: build.includePaths }
-          : { workspaceGraph: true }),
-        skipNativeClose: true,
-      },
-      { onProgress() {} },
-    );
-  },
+  buildWorkspaceGraph,
   evictSnapshot: evictOverlayState,
   baseFileCount: async (repo) =>
     (await readActiveGenerationMeta(repo.storagePath)).meta?.stats?.files,
+  getInputIdentity: workspaceConfigurationIdentity,
   now: () => Date.now(),
 };
 
@@ -111,11 +218,25 @@ const workspaceDependencies: WorkspacePreparationDependencies = {
 // Builds cost about 33 ms per file (491 files 15 s, 1,225 files 42 s, 2,662 files 90 s on 8 cores), so the
 // ADR's 55 s dirty-cold limit is reached near 1,600 files.
 const DEFAULT_MAX_WORKSPACE_FILES = 1600;
+
+function workspaceMaxFiles(): number {
+  const value = Number(process.env.ONTOINDEX_WORKSPACE_MAX_FILES);
+  return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_MAX_WORKSPACE_FILES;
+}
+
 const FAILED_BUILD_COOLDOWN_MS = 30_000;
 // A held analyze lock usually means the user is running `ontoindex analyze`; recheck soon, not per request.
 const BUSY_LOCK_COOLDOWN_MS = 5_000;
-const failedBuilds = new Map<string, { identity: string; until: number; message: string }>();
-const busyLocks = new Map<string, { until: number; message: string }>();
+const failedBuilds = new Map<
+  string,
+  { identity: string; until: number; message: string; failure: WorkspaceFailureDiagnostics }
+>();
+const busyLocks = new Map<
+  string,
+  { until: number; message: string; failure: WorkspaceFailureDiagnostics }
+>();
+/** Workspace-input identity already given its one automatic repair of an unreadable generation. */
+const unreadableRepairs = new Map<string, string>();
 
 /** True while a working-tree build for this repo is running or queued. */
 export function hasWorkspaceBuild(repoId: string): boolean {
@@ -126,11 +247,13 @@ export function hasWorkspaceBuild(repoId: string): boolean {
 export function forgetWorkspaceRuntime(repoId: string): void {
   failedBuilds.delete(repoId);
   busyLocks.delete(repoId);
+  unreadableRepairs.delete(repoId);
 }
 
 export function resetWorkspaceBuildFailures(): void {
   failedBuilds.clear();
   busyLocks.clear();
+  unreadableRepairs.clear();
 }
 
 /**
@@ -178,6 +301,10 @@ const workspaceWatches = new Map<string, WorkspaceWatch>();
 export async function acquireWorkspaceWatch(
   repo: WorkspaceReadRepo,
 ): Promise<{ release(): Promise<void> }> {
+  const fileCount = await workspaceDependencies.baseFileCount(repo).catch(() => undefined);
+  if (typeof fileCount === 'number' && fileCount > workspaceMaxFiles()) {
+    return { async release() {} };
+  }
   const canonicalPath = await fs.realpath(repo.repoPath);
   let state = workspaceWatches.get(canonicalPath);
   if (state?.stopping) {
@@ -347,12 +474,30 @@ export async function prepareWorkspaceRead(options: {
   assertCallerActive();
   // Bound the entire preparation, including the initial snapshot probe, per caller.
   const work = async () => {
-    await options.beforeSnapshot?.();
-    assertCallerActive();
-    const snapshot = await dependencies.getSnapshot(options.repo);
+    let snapshot: OverlaySnapshot;
+    try {
+      await options.beforeSnapshot?.();
+      assertCallerActive();
+      snapshot = await dependencies.getSnapshot(options.repo);
+    } catch (cause) {
+      if (cause instanceof WorkspacePreparationError) throw cause;
+      throw new WorkspacePreparationError(
+        'workspace_build_failed',
+        undefined,
+        { cause },
+        undefined,
+        failureDiagnostics('planning', 'planning_failed', cause),
+      );
+    }
     assertCallerActive();
     if (snapshot.reason?.startsWith('dirty planning failed:')) {
-      throw new WorkspacePreparationError('workspace_build_failed');
+      throw new WorkspacePreparationError(
+        'workspace_build_failed',
+        undefined,
+        undefined,
+        undefined,
+        failureDiagnostics('planning', 'planning_failed'),
+      );
     }
     const configPaths = snapshot.configPaths ?? new Set<string>();
     const decision = selectWorkspaceCapability({
@@ -375,22 +520,67 @@ export async function prepareWorkspaceRead(options: {
       (workspaceGraph
         ? value.capability === 'workspace-graph' && value.coverage !== 'degraded'
         : value.capability !== 'workspace-graph' || value.coverage !== 'degraded');
-    const maxFiles =
-      Number(process.env.ONTOINDEX_WORKSPACE_MAX_FILES) || DEFAULT_MAX_WORKSPACE_FILES;
-    const fileCount = workspaceGraph ? await dependencies.baseFileCount(options.repo) : undefined;
+    const maxFiles = workspaceMaxFiles();
+    let fileCount: number | undefined;
+    try {
+      fileCount = workspaceGraph ? await dependencies.baseFileCount(options.repo) : undefined;
+    } catch (cause) {
+      throw new WorkspacePreparationError(
+        'workspace_build_failed',
+        undefined,
+        { cause },
+        undefined,
+        failureDiagnostics('planning', 'planning_failed', cause),
+      );
+    }
     assertCallerActive();
     if (fileCount !== undefined && fileCount > maxFiles) {
       throw new WorkspacePreparationError(
         'workspace_too_large',
-        `Repository has ${fileCount} indexed files (limit ${maxFiles}); a full workspace graph build is refused. Run \`ontoindex analyze\` or raise ONTOINDEX_WORKSPACE_MAX_FILES.`,
+        `Repository has ${fileCount} indexed files (limit ${maxFiles}); a full workspace graph build is refused. To prepare a separate bounded workspace graph while preserving the committed index, explicitly run \`ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph\` in the repository. Rerun this command after workspace inputs change.`,
         undefined,
         {
           observedIndexedFiles: fileCount,
           maxIndexedFiles: maxFiles,
           requiredCapability: 'workspace-graph',
         },
+        failureDiagnostics('planning', 'capability_missing'),
       );
     }
+    let inputDigest: string | undefined;
+    try {
+      const inputPaths = [...snapshot.dirtyPaths].filter((item) => !snapshot.tombstones.has(item));
+      const inputs = await dependencies.getInputIdentity(options.repo.repoPath, {
+        inputPaths,
+        ...(workspaceGraph ? {} : { includePaths: inputPaths }),
+        signal: options.signal,
+        deadline,
+      });
+      inputDigest = inputs.inputDigest;
+      if (!inputDigest) throw new Error('Workspace input identity is unavailable');
+    } catch (cause) {
+      assertCallerActive();
+      const reason =
+        cause instanceof WorkspaceInputCaptureError
+          ? cause.code === 'cancelled'
+            ? 'cancelled'
+            : cause.code === 'timeout'
+              ? 'timeout'
+              : 'input_refused'
+          : 'planning_failed';
+      throw new WorkspacePreparationError(
+        reason === 'cancelled'
+          ? 'workspace_cancelled'
+          : reason === 'timeout'
+            ? 'workspace_timeout'
+            : 'workspace_build_failed',
+        undefined,
+        { cause },
+        undefined,
+        failureDiagnostics('planning', reason, cause),
+      );
+    }
+    assertCallerActive();
     const identity = JSON.stringify([
       workspaceGraph,
       snapshot.currentHead,
@@ -399,18 +589,55 @@ export async function prepareWorkspaceRead(options: {
       snapshot.generation,
       snapshot.reason,
       [...snapshot.dirtyPaths].sort(),
+      [...snapshot.tombstones].sort(),
       [...configPaths].sort(),
+      snapshot.repairInputDigest,
+      inputDigest,
+    ]);
+    // Failed output generations and diagnostics must not bypass unchanged-input cooldowns.
+    const failureIdentity = JSON.stringify([
+      workspaceGraph,
+      snapshot.currentHead,
+      snapshot.baseGenerationId,
+      snapshot.baseCommit,
+      [...snapshot.dirtyPaths].sort(),
+      [...snapshot.tombstones].sort(),
+      [...configPaths].sort(),
+      snapshot.repairInputDigest,
+      inputDigest,
     ]);
     const failed = failedBuilds.get(options.repo.id);
-    if (failed && failed.identity === identity && failed.until > dependencies.now()) {
-      throw new WorkspacePreparationError('workspace_build_failed', failed.message);
+    if (failed && failed.identity === failureIdentity && failed.until > dependencies.now()) {
+      throw new WorkspacePreparationError(
+        'workspace_build_failed',
+        failed.message,
+        undefined,
+        undefined,
+        failed.failure,
+      );
     }
     const busy = busyLocks.get(options.repo.id);
     if (busy && busy.until > dependencies.now()) {
-      throw new WorkspacePreparationError('workspace_busy', busy.message);
+      throw new WorkspacePreparationError(
+        'workspace_busy',
+        busy.message,
+        undefined,
+        undefined,
+        busy.failure,
+      );
     }
     assertCallerActive();
     const built = workspaceBuild(options.repo.id, identity, async (signal) => {
+      const failed = failedBuilds.get(options.repo.id);
+      if (failed && failed.identity === failureIdentity && failed.until > dependencies.now()) {
+        throw new WorkspacePreparationError(
+          'workspace_build_failed',
+          failed.message,
+          undefined,
+          undefined,
+          failed.failure,
+        );
+      }
       let lock: Awaited<ReturnType<WorkspacePreparationDependencies['acquireLock']>>;
       try {
         lock = await dependencies.acquireLock(options.repo.repoPath);
@@ -426,29 +653,41 @@ export async function prepareWorkspaceRead(options: {
             : isBusy
               ? 'An analyze lock is held; retry shortly.'
               : 'Working-tree graph lock acquisition failed.';
+        const failure = failureDiagnostics('lock', 'lock_failed', cause);
         if (isBusy) {
           busyLocks.set(options.repo.id, {
             until: dependencies.now() + BUSY_LOCK_COOLDOWN_MS,
             message,
+            failure,
           });
         }
         throw new WorkspacePreparationError(
           isBusy ? 'workspace_busy' : 'workspace_build_failed',
           message,
           { cause },
+          undefined,
+          failure,
         );
       }
       try {
-        if (signal.aborted) {
-          await lock.release();
-          throw new WorkspacePreparationError('workspace_cancelled');
-        }
         // Another server may have finished the same build between the snapshot above and this lock.
         // Re-reading under the lock keeps one writer per dirty tree across processes.
         let adopted: OverlaySnapshot | undefined;
         try {
+          if (signal.aborted) throw new WorkspacePreparationError('workspace_cancelled');
           dependencies.evictSnapshot(options.repo.id);
-          const recheck = await dependencies.getSnapshot(options.repo);
+          let recheck: OverlaySnapshot;
+          try {
+            recheck = await dependencies.getSnapshot(options.repo);
+          } catch (cause) {
+            throw new WorkspacePreparationError(
+              'workspace_build_failed',
+              undefined,
+              { cause },
+              undefined,
+              failureDiagnostics('recheck', 'snapshot_failed', cause),
+            );
+          }
           if (satisfies(recheck)) {
             adopted = recheck;
           } else {
@@ -460,9 +699,36 @@ export async function prepareWorkspaceRead(options: {
                 (recheck.configPaths?.size ?? 0) > 0 ||
                 recheck.dirtyPaths.size > 50)
             ) {
-              throw new Error(
-                'Workspace identity changed before bounded symbols analysis; retry required',
+              throw new WorkspacePreparationError(
+                'workspace_build_failed',
+                'Workspace inputs changed before bounded symbols analysis; retry required.',
+                undefined,
+                undefined,
+                failureDiagnostics('recheck', 'inputs_changed'),
               );
+            }
+            if (recheck.reason?.startsWith('overlay generation unreadable')) {
+              // Generation and diagnostic text change with every rebuild, so they stay out of the key:
+              // one automatic repair per unchanged workspace input, consumed only when a build starts.
+              const repairKey = JSON.stringify([
+                workspaceGraph,
+                recheck.currentHead,
+                recheck.baseGenerationId,
+                recheck.baseCommit,
+                [...recheck.dirtyPaths].sort(),
+                [...(recheck.configPaths ?? [])].sort(),
+                recheck.repairInputDigest,
+              ]);
+              if (unreadableRepairs.get(options.repo.id) === repairKey) {
+                throw new WorkspacePreparationError(
+                  'workspace_build_failed',
+                  'Working-tree graph is unreadable after one automatic repair.',
+                  undefined,
+                  undefined,
+                  failureDiagnostics('planning', 'generation_unreadable'),
+                );
+              }
+              unreadableRepairs.set(options.repo.id, repairKey);
             }
             await dependencies.buildWorkspaceGraph(options.repo, signal, {
               workspaceGraph,
@@ -470,28 +736,111 @@ export async function prepareWorkspaceRead(options: {
             });
           }
         } finally {
-          await lock.release();
+          try {
+            await lock.release();
+          } catch (cause) {
+            throw new WorkspacePreparationError(
+              'workspace_build_failed',
+              'Working-tree graph lock release failed.',
+              { cause },
+              undefined,
+              failureDiagnostics('release', 'release_failed', cause),
+            );
+          }
         }
         if (adopted) return adopted;
         dependencies.evictSnapshot(options.repo.id);
-        const updated = await dependencies.getSnapshot(options.repo);
+        let updated: OverlaySnapshot;
+        try {
+          updated = await dependencies.getSnapshot(options.repo);
+        } catch (cause) {
+          throw new WorkspacePreparationError(
+            'workspace_build_failed',
+            undefined,
+            { cause },
+            undefined,
+            failureDiagnostics('verification', 'snapshot_failed', cause),
+          );
+        }
         if (!satisfies(updated))
-          throw new Error(updated.reason ?? 'Workspace snapshot lacks requested capability');
+          throw new WorkspacePreparationError(
+            'workspace_build_failed',
+            'Working-tree graph lacks the requested capability.',
+            undefined,
+            undefined,
+            failureDiagnostics(
+              'verification',
+              updated.capability === 'workspace-graph' && updated.coverage === 'degraded'
+                ? 'coverage_degraded'
+                : 'capability_missing',
+            ),
+          );
         return updated;
       } catch (cause) {
-        if (signal.aborted)
-          throw new WorkspacePreparationError('workspace_cancelled', undefined, { cause });
+        if (
+          signal.aborted &&
+          !(cause instanceof WorkspacePreparationError && cause.failure?.phase === 'release')
+        )
+          throw new WorkspacePreparationError(
+            'workspace_cancelled',
+            undefined,
+            { cause },
+            undefined,
+            failureDiagnostics('build', 'cancelled'),
+          );
+        if (
+          cause instanceof WorkspacePreparationError &&
+          cause.failure?.reason === 'generation_unreadable'
+        )
+          throw cause;
+        const failure =
+          cause instanceof WorkspacePreparationError && cause.failure
+            ? cause.failure
+            : cause instanceof WorkspaceBuildError
+              ? failureDiagnostics(
+                  'build',
+                  cause.kind === 'timeout'
+                    ? 'timeout'
+                    : cause.kind === 'cancelled'
+                      ? 'cancelled'
+                      : cause.kind === 'unstoppable'
+                        ? 'unstoppable'
+                        : cause.kind === 'input_refused'
+                          ? 'input_refused'
+                          : 'build_failed',
+                  cause,
+                )
+              : failureDiagnostics('build', 'build_failed', cause);
         const message = 'Working-tree graph build failed.';
         failedBuilds.set(options.repo.id, {
-          identity,
+          identity: failureIdentity,
           until: dependencies.now() + FAILED_BUILD_COOLDOWN_MS,
           message,
+          failure,
         });
-        throw new WorkspacePreparationError('workspace_build_failed', message, { cause });
+        throw new WorkspacePreparationError(
+          'workspace_build_failed',
+          message,
+          { cause },
+          undefined,
+          failure,
+        );
       }
     });
     const result = await built;
-    if (!satisfies(result)) throw new WorkspacePreparationError('workspace_build_failed');
+    if (!satisfies(result))
+      throw new WorkspacePreparationError(
+        'workspace_build_failed',
+        undefined,
+        undefined,
+        undefined,
+        failureDiagnostics(
+          'verification',
+          result.capability === 'workspace-graph' && result.coverage === 'degraded'
+            ? 'coverage_degraded'
+            : 'capability_missing',
+        ),
+      );
     return result;
   };
   return new Promise<OverlaySnapshot>((resolve, reject) => {

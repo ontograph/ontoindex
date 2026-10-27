@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   buildAuditBundleProjectionFromEvents,
   buildAuditProjection,
@@ -128,6 +129,15 @@ export async function gnDispatchPrompt(
   });
 
   if (params.persist === undefined || params.persist === true) {
+    if (
+      !projection.bundles.some(
+        (bundle) => bundle.id === selected.id && bundle.sessionId === sessionId,
+      )
+    ) {
+      throw new Error(
+        `bundle must be persisted before dispatch: ${selected.id}; run audit bundle first or set persist:false`,
+      );
+    }
     await new LocalAuditEventStore(repo.repoPath).appendEvent({
       id: `evt-dispatch-${selected.id}-${Date.now()}`,
       type: 'BundleDispatched',
@@ -168,34 +178,35 @@ export async function gnAuditTombstoneCreate(
   params: AuditTombstoneCreateParams,
 ): Promise<Record<string, unknown>> {
   const repo = await resolveAuditRepoHandle(repoId, params.repo);
-  const { sessionId, projection } = await loadAuditProjection(repo.repoPath, params);
-  const session = requireSession(projection.sessions, sessionId);
-  const finding = projection.findings.find(
-    (candidate) => candidate.sessionId === sessionId && candidate.id === params.findingId,
-  );
-  if (finding === undefined) throw new Error(`finding does not exist: ${params.findingId}`);
-
+  const { sessionId, state } = await loadAuditProjection(repo.repoPath, params);
+  const proof = qualifyTombstoneProof(state, sessionId, params);
   const occurredAt = new Date().toISOString();
-  const evidence =
-    params.evidence?.length === undefined || params.evidence.length === 0
-      ? [defaultTombstoneEvidence(session, finding, occurredAt, params.reason)]
-      : params.evidence;
   const tombstone = {
     tombstonedAt: occurredAt,
     reason: params.reason,
     ...(params.invariantId !== undefined ? { invariantId: params.invariantId } : {}),
-    evidence,
+    evidence: proof.evidence,
   };
 
   if (params.persist === undefined || params.persist === true) {
-    await new LocalAuditEventStore(repo.repoPath).appendEvent({
-      id: `evt-tombstone-${params.findingId}-${Date.now()}`,
-      type: 'FindingTombstoned',
-      occurredAt,
-      sessionId,
-      findingId: params.findingId,
-      tombstone,
-    });
+    await new LocalAuditEventStore(repo.repoPath).appendEvent(
+      {
+        id: `evt-tombstone-${params.findingId}-${Date.now()}`,
+        type: 'FindingTombstoned',
+        occurredAt,
+        sessionId,
+        findingId: params.findingId,
+        tombstone,
+      },
+      {
+        precondition: (currentState) => {
+          const currentProof = qualifyTombstoneProof(currentState, sessionId, params);
+          if (!isDeepStrictEqual(currentProof, proof)) {
+            throw new Error('tombstone refused: persisted verification changed before append');
+          }
+        },
+      },
+    );
   }
 
   return {
@@ -459,26 +470,61 @@ function assertNoRuntimeOnlyFindings(findings: readonly AuditSessionFinding[]): 
   }
 }
 
-function defaultTombstoneEvidence(
-  session: AuditStoreSession,
-  finding: AuditSessionFinding,
-  verifiedAt: string,
-  reason: string,
-): AuditSessionEvidence {
-  return {
-    id: `tombstone-proof:${finding.id}`,
-    kind: 'tombstone',
-    targetHead: session.targetHead,
-    graphIndexId: session.graphIndexId,
-    verifierVersion: session.verifierVersion,
-    sidecarStateHash: session.sidecarStateHash,
-    confidence: 1,
-    reasonCodes: ['tombstone-match'],
-    data: {
-      verifiedAt,
-      reason,
-    },
-  };
+function qualifyTombstoneProof(
+  state: AuditEventStoreState,
+  sessionId: string,
+  params: AuditTombstoneCreateParams,
+) {
+  const projection = buildAuditProjection(state.events);
+  const session = requireSession(projection.sessions, sessionId);
+  const finding = projection.findings.find(
+    (candidate) => candidate.sessionId === sessionId && candidate.id === params.findingId,
+  );
+  if (finding === undefined) throw new Error(`finding does not exist: ${params.findingId}`);
+  const verification = finding.verification;
+  if (
+    !['RESOLVED-ALREADY', 'FALSE-POSITIVE'].includes(finding.status) ||
+    verification === undefined ||
+    verification.status !== finding.status ||
+    verification.verifiedAt.trim().length === 0
+  ) {
+    throw new Error('tombstone refused: finding requires persisted resolved verification');
+  }
+  if (
+    (session.staleWarnings?.length ?? 0) > 0 ||
+    (session.snapshot?.staleWarnings.length ?? 0) > 0
+  ) {
+    throw new Error('tombstone refused: session proof is stale');
+  }
+  const qualifyingEvidence = verification.evidence.filter(
+    (evidence) =>
+      ['negative', 'fix-proof'].includes(String(evidence.data?.polarity)) &&
+      evidence.kind !== 'tombstone' &&
+      !evidence.id.startsWith('tombstone-proof:') &&
+      evidence.targetHead === session.targetHead &&
+      evidence.graphIndexId === session.graphIndexId &&
+      evidence.verifierVersion === verification.verifierVersion &&
+      evidence.sourceFresh !== false &&
+      evidence.graphStale !== true &&
+      (evidence.staleWarnings?.length ?? 0) === 0,
+  );
+  if (qualifyingEvidence.length === 0) {
+    throw new Error('tombstone refused: persisted negative or fix-proof evidence is required');
+  }
+  const evidence =
+    params.evidence === undefined
+      ? qualifyingEvidence
+      : params.evidence.map((requested) => {
+          const persisted = qualifyingEvidence.find((item) => isDeepStrictEqual(item, requested));
+          if (persisted === undefined) {
+            throw new Error(
+              'tombstone refused: supplied evidence must match persisted qualifying proof',
+            );
+          }
+          return persisted;
+        });
+  if (evidence.length === 0) throw new Error('tombstone refused: evidence must not be empty');
+  return { status: finding.status, verification, evidence };
 }
 
 function metadataString(value: unknown): string | undefined {

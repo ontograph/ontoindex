@@ -4,6 +4,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runWorkspacePairBenchmark } from './workspace-pair-benchmark.mjs';
+import { startMemorySampling } from './benchmark-memory.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(__dirname, '..');
@@ -15,7 +17,8 @@ const usage = `Usage:
 Options:
   --repo <path>          Repository to benchmark. Defaults to current directory.
   --label <name>         Label used in output filenames. Defaults to repo basename.
-  --mode <mode>          analyze, force-analyze, or status. Defaults to analyze.
+  --mode <mode>          analyze, force-analyze, status, or workspace-pair. Defaults to analyze.
+  --pairs <n>            workspace-pair only: sequential full/capture/replay pairs, 1 through 5.
   --cli <source|built>   Use live TypeScript source or built dist CLI. Defaults to source.
   --write-agents-md      Allow analyze to update AGENTS.md/CLAUDE.md. Defaults to disabled.
   --output-dir <path>    Defaults to docs/plans/benchmarks.
@@ -66,6 +69,7 @@ function parseArgs(argv) {
     writeAgentsMd: false,
     scenarioManifest: null,
     listScenarios: false,
+    pairs: 1,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -79,6 +83,9 @@ function parseArgs(argv) {
         break;
       case '--mode':
         opts.mode = argv[++i];
+        break;
+      case '--pairs':
+        opts.pairs = Number(argv[++i]);
         break;
       case '--cli':
         opts.cli = argv[++i];
@@ -120,14 +127,26 @@ function parseArgs(argv) {
     }
   }
 
-  if (!['analyze', 'force-analyze', 'status'].includes(opts.mode)) {
+  if (!['analyze', 'force-analyze', 'status', 'workspace-pair'].includes(opts.mode)) {
     throw new Error(`Unsupported --mode "${opts.mode}"`);
   }
   if (!['source', 'built'].includes(opts.cli)) {
     throw new Error(`Unsupported --cli "${opts.cli}"`);
   }
-  if (!Number.isFinite(opts.sampleMs) || opts.sampleMs < 100) {
-    throw new Error('--sample-ms must be a number >= 100');
+  if (opts.mode === 'workspace-pair') {
+    if (opts.cli !== 'built') throw new Error('workspace-pair requires --cli built');
+    if (opts.scenarioManifest || opts.listScenarios || opts.writeAgentsMd) {
+      throw new Error('workspace-pair cannot use scenario or agent-file options');
+    }
+    if (!Number.isInteger(opts.pairs) || opts.pairs < 1 || opts.pairs > 5) {
+      throw new Error('--pairs must be an integer from 1 through 5');
+    }
+    if (opts.timeoutMs === 0) opts.timeoutMs = 120000;
+  } else if (argv.includes('--pairs')) {
+    throw new Error('--pairs is only valid with --mode workspace-pair');
+  }
+  if (!Number.isInteger(opts.sampleMs) || opts.sampleMs < 100 || opts.sampleMs > 60000) {
+    throw new Error('--sample-ms must be an integer from 100 through 60000');
   }
   if (!Number.isFinite(opts.timeoutMs) || opts.timeoutMs < 0) {
     throw new Error('--timeout-ms must be a number >= 0');
@@ -584,66 +603,6 @@ function commandFor(opts) {
   };
 }
 
-async function sampleProcessTreeMemory(rootPid) {
-  if (process.platform !== 'linux') return null;
-  const procEntries = await fs.readdir('/proc', { withFileTypes: true }).catch(() => []);
-  const childrenByParent = new Map();
-  const rssByPid = new Map();
-  const commandByPid = new Map();
-
-  await Promise.all(
-    procEntries
-      .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
-      .map(async (entry) => {
-        const pid = Number(entry.name);
-        try {
-          const status = await fs.readFile(`/proc/${pid}/status`, 'utf8');
-          const ppid = Number(status.match(/^PPid:\s+(\d+)/m)?.[1] ?? 0);
-          const rss = Number(status.match(/^VmRSS:\s+(\d+)\s+kB/m)?.[1] ?? 0);
-          const command = status.match(/^Name:\s+(.+)$/m)?.[1]?.trim() ?? '';
-          rssByPid.set(pid, rss);
-          commandByPid.set(pid, command);
-          const children = childrenByParent.get(ppid) ?? [];
-          children.push(pid);
-          childrenByParent.set(ppid, children);
-        } catch {
-          // Process exited between /proc listing and status read.
-        }
-      }),
-  );
-
-  let total = 0;
-  const samples = [];
-  const stack = [rootPid];
-  const seen = new Set();
-  while (stack.length > 0) {
-    const pid = stack.pop();
-    if (!pid || seen.has(pid)) continue;
-    seen.add(pid);
-    const rssKiB = rssByPid.get(pid) ?? 0;
-    total += rssKiB;
-    samples.push({
-      pid,
-      rssKiB,
-      command: commandByPid.get(pid) ?? '',
-      isRoot: pid === rootPid,
-    });
-    stack.push(...(childrenByParent.get(pid) ?? []));
-  }
-
-  const childSamples = samples.filter((sample) => !sample.isRoot);
-  childSamples.sort((a, b) => b.rssKiB - a.rssKiB);
-  return {
-    totalRssKiB: total,
-    rootRssKiB: samples.find((sample) => sample.isRoot)?.rssKiB ?? 0,
-    childRssKiB: childSamples.reduce((sum, sample) => sum + sample.rssKiB, 0),
-    processCount: samples.length,
-    childProcessCount: childSamples.length,
-    maxChildRssKiB: childSamples[0]?.rssKiB ?? 0,
-    topChildProcesses: childSamples.slice(0, 8),
-  };
-}
-
 function terminateChildProcessTree(child, signal) {
   if (!child.pid) return;
 
@@ -664,6 +623,7 @@ function terminateChildProcessTree(child, signal) {
 }
 
 async function runBenchmark(opts) {
+  if (opts.mode === 'workspace-pair') return runWorkspacePairBenchmark(opts);
   const repoCommit = git(['rev-parse', 'HEAD'], opts.repo);
   const repoBranch = git(['rev-parse', '--abbrev-ref', 'HEAD'], opts.repo);
   const runnerCommit = git(['rev-parse', 'HEAD'], workspaceRoot);
@@ -756,7 +716,6 @@ async function runBenchmark(opts) {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  let peakMemory = null;
   let stdout = '';
   let stderr = '';
   let telemetryBuffer = '';
@@ -773,10 +732,7 @@ async function runBenchmark(opts) {
     process.stderr.write(chunk);
   });
 
-  const sampler = setInterval(async () => {
-    const sample = await sampleProcessTreeMemory(child.pid);
-    if (sample !== null) peakMemory = mergePeakMemory(peakMemory, sample);
-  }, opts.sampleMs);
+  const sampler = startMemorySampling(child.pid, { sampleMs: opts.sampleMs });
 
   let timeout;
   let forceTimeout;
@@ -791,12 +747,12 @@ async function runBenchmark(opts) {
     child.on('exit', (code, signal) => resolve({ code, signal }));
   });
   telemetryBuffer = collectTelemetryEvents(`${telemetryBuffer}\n`, telemetry);
-  clearInterval(sampler);
+  const totalWallMs = Math.round(performance.now() - started);
   clearTimeout(timeout);
   clearTimeout(forceTimeout);
 
-  const finalMemory = await sampleProcessTreeMemory(child.pid);
-  if (finalMemory !== null) peakMemory = mergePeakMemory(peakMemory, finalMemory);
+  const memory = await sampler.stop();
+  const peakMemory = memory.peakMemory;
 
   const telemetrySummary = summarizeTelemetry(telemetry);
   const throughput = summarizeThroughput(
@@ -809,7 +765,8 @@ async function runBenchmark(opts) {
     result: exit.code === 0 ? 'success' : 'failure',
     exitCode: exit.code,
     signal: exit.signal,
-    totalWallMs: Math.round(performance.now() - started),
+    totalWallMs,
+    memory,
     peakRssKiB: peakMemory?.totalRssKiB || null,
     peakRootRssKiB: peakMemory?.rootRssKiB || null,
     peakChildRssKiB: peakMemory?.childRssKiB || null,
@@ -823,7 +780,10 @@ async function runBenchmark(opts) {
     stderrTail: stderr,
   };
 
-  const peakRssThreshold = evaluatePeakRssThreshold(record.outcome.peakRssKiB, opts.maxPeakRssMib);
+  const peakRssThreshold = evaluatePeakRssThreshold(
+    memory.failedSamples > 0 ? null : record.outcome.peakRssKiB,
+    opts.maxPeakRssMib,
+  );
   record.outcome.peakRssThreshold = peakRssThreshold;
 
   // Evaluate graph-quality floors before persisting so the JSON/Markdown reports
@@ -884,28 +844,6 @@ function evaluatePeakRssThreshold(peakRssKiB, maxPeakRssMib) {
     maxPeakRssMib,
     peakRssMib: round(peakRssMib, 2),
   };
-}
-
-function mergePeakMemory(current, sample) {
-  if (!current || sample.totalRssKiB > current.totalRssKiB) return sample;
-  return {
-    ...current,
-    rootRssKiB: Math.max(current.rootRssKiB, sample.rootRssKiB),
-    childRssKiB: Math.max(current.childRssKiB, sample.childRssKiB),
-    processCount: Math.max(current.processCount, sample.processCount),
-    childProcessCount: Math.max(current.childProcessCount, sample.childProcessCount),
-    maxChildRssKiB: Math.max(current.maxChildRssKiB, sample.maxChildRssKiB),
-    topChildProcesses: mergeTopChildProcesses(current.topChildProcesses, sample.topChildProcesses),
-  };
-}
-
-function mergeTopChildProcesses(current, next) {
-  const byPid = new Map();
-  for (const sample of [...(current ?? []), ...(next ?? [])]) {
-    const existing = byPid.get(sample.pid);
-    if (!existing || sample.rssKiB > existing.rssKiB) byPid.set(sample.pid, sample);
-  }
-  return [...byPid.values()].sort((a, b) => b.rssKiB - a.rssKiB).slice(0, 8);
 }
 
 function renderMarkdown(record) {

@@ -13,7 +13,7 @@ Locate the failing path and inspect its immediate relationships:
 ```text
 search({action: "semantic", repo: "<repo>", query: "<error or failing behavior>", limit: 5})
 inspect({action: "context", repo: "<repo>", target: "<symbol>", include_content: true})
-gn_find_related({repo: "<repo>", symbol: "<symbol>", includeCallers: true, includeCallees: true})
+inspect({action: "related", repo: "<repo>", symbol: "<symbol>", includeCallers: true, includeCallees: true})
 inspect({action: "evidence", repo: "<repo>", targets: ["<symbol>"], context_lines: 5})
 ```
 

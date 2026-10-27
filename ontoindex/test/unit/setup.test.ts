@@ -595,12 +595,27 @@ describe('setupClaudeCode', () => {
       const guidance = await fs.readFile(path.join(tempHome, dirName, 'ONTOINDEX.md'), 'utf-8');
       expect(guidance).toBe(firstGuidance[index]);
       expect(guidance).toContain('Never claim OntoIndex was used');
-      expect(guidance).toContain('gn_explore');
+      expect(guidance).toContain('inspect({action: "explore", query: "concept"})');
+      expect(guidance).toContain('impact({action: "diff_impact"})');
+      expect(guidance).toContain('audit({action: "review_diff"})');
+      expect(guidance).toContain('audit({action: "verify_diff"})');
+      const coreTools = new Set([
+        'gn_help',
+        'gn_tool_contract',
+        'gn_diagnose',
+        'gn_ensure_fresh',
+        'gn_analyze_job',
+        'gn_quality_mode',
+      ]);
+      const hiddenTools = (guidance.match(/\bgn_[a-z_]+\b/g) ?? []).filter(
+        (name) => !coreTools.has(name),
+      );
+      expect(hiddenTools).toEqual([]);
       // Concise ordered ladder: explore/search -> inspect -> impact -> verify-diff.
       const explore = guidance.indexOf('1. Explore/search');
       const inspect = guidance.indexOf('2. Inspect/context');
       const impact = guidance.indexOf('3. Impact before edits');
-      const verify = guidance.indexOf('4. gn_verify_diff before commit');
+      const verify = guidance.indexOf('4. Verify diff before commit');
       expect(explore).toBeGreaterThan(-1);
       expect(inspect).toBeGreaterThan(explore);
       expect(impact).toBeGreaterThan(inspect);

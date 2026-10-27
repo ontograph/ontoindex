@@ -32,6 +32,7 @@ import {
   withPinnedGeneration,
 } from '../../core/lbug/pool-adapter.js';
 export { isWriteQuery } from '../../core/lbug/pool-adapter.js';
+import { LbugOpenError } from '../../core/lbug/open-error.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
 // git utilities available if needed
@@ -1276,6 +1277,15 @@ function workspacePreparationError(error: unknown): Error & { code: string; retr
       {
         code: error.code,
         retryable: error.code === 'workspace_busy' || error.code === 'workspace_timeout',
+        ...(error.code === 'workspace_build_failed' && error.failure
+          ? {
+              diagnostics: {
+                phase: error.failure.phase,
+                reason: error.failure.reason,
+                ...(error.failure.systemCode ? { systemCode: error.failure.systemCode } : {}),
+              },
+            }
+          : {}),
         ...(error.code === 'workspace_too_large' && error.diagnostics
           ? {
               diagnostics: {
@@ -2337,7 +2347,8 @@ export class LocalBackend implements BackendPort {
           } catch (error) {
             if (
               !enteredHandler &&
-              errorMessage(error).includes('overlay generation no longer available')
+              (error instanceof LbugOpenError ||
+                errorMessage(error).includes('overlay generation no longer available'))
             ) {
               throw workspacePreparationError(error);
             }

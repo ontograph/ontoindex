@@ -407,17 +407,24 @@ export const processHeritageFromExtracted = async (
 export async function extractExtractedHeritageFromFiles(
   files: { path: string; content: string }[],
   astCache: ASTCache,
+  onIncomplete?: () => void,
 ): Promise<ExtractedHeritage[]> {
   const parser = await loadParser();
   const out: ExtractedHeritage[] = [];
 
   for (const file of files) {
     const language = getLanguageFromFilename(file.path);
-    if (!language || !isLanguageAvailable(language)) continue;
+    if (!language || !isLanguageAvailable(language)) {
+      onIncomplete?.();
+      continue;
+    }
 
     const provider = getProvider(language);
     const queryStr = provider.treeSitterQueries;
-    if (!queryStr) continue;
+    if (!queryStr) {
+      onIncomplete?.();
+      continue;
+    }
 
     await loadLanguage(language, file.path);
 
@@ -428,6 +435,7 @@ export async function extractExtractedHeritageFromFiles(
           bufferSize: getTreeSitterBufferSize(file.content.length),
         });
       } catch {
+        onIncomplete?.();
         continue;
       }
       astCache.set(file.path, tree);
@@ -439,6 +447,7 @@ export async function extractExtractedHeritageFromFiles(
       const query = new Parser.Query(lang, queryStr);
       matches = query.matches(tree.rootNode);
     } catch {
+      onIncomplete?.();
       continue;
     }
 

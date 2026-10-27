@@ -8,7 +8,7 @@
  */
 import fs from 'node:fs/promises';
 import { readFileSync, realpathSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { getCurrentCommit } from '../../storage/git.js';
@@ -25,6 +25,8 @@ import {
   withPinnedGeneration,
 } from '../../core/lbug/pool-adapter.js';
 import { walkRepositoryPaths } from '../../core/ingestion/filesystem-walker.js';
+import { LbugOpenError } from '../../core/lbug/open-error.js';
+import { digestDatabaseFile } from '../../core/lbug/database-digest.js';
 import {
   acquireOverlayGenerationPin,
   readActiveGenerationMeta,
@@ -71,6 +73,8 @@ export interface OverlaySnapshot {
   /** Overlay generation whose identity this snapshot validated; queries must read the same one. */
   generation?: string;
   manifestDigest?: string;
+  /** Validated current input content, independent of publication or database identity. */
+  repairInputDigest?: string;
   baseGenerationId?: string | null;
   baseCommit?: string | null;
   currentHead?: string | null;
@@ -169,6 +173,7 @@ const snapshotCache = new Map<
   }
 >();
 const overlayFileIdentities = new Map<string, string>();
+const verifiedDatabaseDigests = new Map<string, { identity: string; sha256: string }>();
 const overlayQueries = new Map<string, Promise<unknown>>();
 const pinnedOverlay = new AsyncLocalStorage<{
   repoId: string;
@@ -214,6 +219,42 @@ export async function withPinnedOverlay<T>(
     return await (isAutomaticWorkspaceEnabled() && snapshot.capability === 'workspace-graph'
       ? withPinnedGeneration(repo.id, dbPath, runOverlay)
       : runOverlay());
+  } catch (error) {
+    // Only a typed native failure for this admitted database can quarantine it.
+    let cause: unknown = error;
+    for (let depth = 0; depth <= 3; depth++) {
+      if (
+        cause instanceof LbugOpenError &&
+        path.resolve(cause.dbPath) === path.resolve(dbPath) &&
+        (cause.kind === 'corrupt' || cause.kind === 'incompatible')
+      ) {
+        snapshotCache.delete(repo.id);
+        const markerPath = path.join(path.dirname(dbPath), 'READ_FAILURE.json');
+        const temporaryPath = `${markerPath}.${randomUUID()}.tmp`;
+        try {
+          const { dev, ino, size, mtimeMs } = await fs.stat(dbPath);
+          await fs.writeFile(
+            temporaryPath,
+            JSON.stringify({
+              version: 1,
+              generation,
+              databaseIdentity: { dev, ino, size, mtimeMs },
+              reason: `native_open_${cause.kind}`,
+            }),
+            { flag: 'wx' },
+          );
+          await fs.rename(temporaryPath, markerPath);
+        } catch {
+          // Persist diagnostics best-effort without replacing the original read failure.
+        } finally {
+          await fs.unlink(temporaryPath).catch(() => {});
+        }
+        break;
+      }
+      if (typeof cause !== 'object' || cause === null || !('cause' in cause)) break;
+      cause = cause.cause;
+    }
+    throw error;
   } finally {
     await marker.release().catch(() => {});
   }
@@ -362,6 +403,7 @@ async function computeSnapshot(
     dirtyPaths?: string[];
     tombstones?: string[];
     head?: string | null;
+    databaseDigest?: unknown;
   };
   try {
     recordedBase = JSON.parse(
@@ -400,6 +442,43 @@ async function computeSnapshot(
   const workspaceGraph = recordedBase.capability === 'workspace-graph';
   if (automatic && (currentHead === null || recordedBase.head !== currentHead)) {
     return { ...base, usable: false, reason: 'overlay HEAD identity differs; rebuild required' };
+  }
+  if ('databaseDigest' in recordedBase) {
+    try {
+      const digest = recordedBase.databaseDigest;
+      if (
+        typeof digest !== 'object' ||
+        digest === null ||
+        !('sha256' in digest) ||
+        typeof digest.sha256 !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(digest.sha256) ||
+        !('size' in digest) ||
+        typeof digest.size !== 'number' ||
+        !Number.isInteger(digest.size) ||
+        digest.size < 0
+      ) {
+        throw new Error('malformed database digest');
+      }
+      const { dev, ino, size, mtimeMs } = await fs.stat(dbPath);
+      if (size !== digest.size) throw new Error('database size mismatch');
+      const identity = `${dev}:${ino}:${size}:${mtimeMs}`;
+      const verified = verifiedDatabaseDigests.get(dbPath);
+      const sha256 =
+        verified?.identity === identity
+          ? verified.sha256
+          : (await digestDatabaseFile(dbPath)).sha256;
+      if (sha256 !== digest.sha256) throw new Error('database digest mismatch');
+      verifiedDatabaseDigests.set(dbPath, { identity, sha256 });
+      while (verifiedDatabaseDigests.size > 16)
+        verifiedDatabaseDigests.delete(verifiedDatabaseDigests.keys().next().value!);
+    } catch {
+      return {
+        ...base,
+        usable: false,
+        reason:
+          'overlay database failed integrity check; rebuild: ontoindex analyze --dirty-overlay',
+      };
+    }
   }
   if (workspaceGraph && !isAutomaticWorkspaceEnabled()) {
     // A persisted working-tree graph is invisible to every reader unless the feature is on.
@@ -459,6 +538,8 @@ async function computeSnapshot(
   }
   // Content identity, not mtime: the overlay is reusable only for the exact bytes it was built from.
   const inputs = (recordedBase as { inputs?: Record<string, string> }).inputs;
+  const validatedInputs = new Map<string, string>();
+  let validatedConfiguration: { configurationDigest: string; parserIdentity: string } | undefined;
   if (
     (typeof (recordedBase as { manifestDigest?: unknown }).manifestDigest !== 'string' ||
       !(recordedBase as { manifestDigest?: string }).manifestDigest?.trim()) &&
@@ -513,6 +594,7 @@ async function computeSnapshot(
         reason: 'overlay parser identity changed; rebuild: ontoindex analyze --dirty-overlay',
       };
     }
+    validatedConfiguration = identity;
   }
   if (workspaceGraph) {
     const inventory = (
@@ -551,32 +633,49 @@ async function computeSnapshot(
           usable: false,
           reason: `workspace graph input paths changed: ${changedPaths.slice(0, 5).join(', ')}; rebuild`,
         };
-      for (const rel of current) {
-        const recorded = inventory[rel];
-        if (!Array.isArray(recorded) || recorded.length !== 4 || typeof recorded[3] !== 'string') {
-          return {
-            ...base,
-            usable: false,
-            reason: `workspace graph has malformed inventory for ${rel}; rebuild`,
-          };
+      const currentPaths = [...current];
+      for (let offset = 0; offset < currentPaths.length; offset += 4) {
+        const results = await Promise.allSettled(
+          currentPaths.slice(offset, offset + 4).map(async (rel) => {
+            const recorded = inventory[rel];
+            if (
+              !Array.isArray(recorded) ||
+              recorded.length !== 4 ||
+              typeof recorded[3] !== 'string'
+            ) {
+              return {
+                rel,
+                digest: null,
+                reason: `workspace graph has malformed inventory for ${rel}; rebuild`,
+              };
+            }
+            const stat = await fs.lstat(path.join(repo.repoPath, rel));
+            if (!stat.isFile())
+              return {
+                rel,
+                digest: null,
+                reason: `workspace graph input is not a regular file: ${rel}; rebuild`,
+              };
+            // Metadata can be preserved across byte changes, so every input needs a digest.
+            const digest = createHash('sha256')
+              .update(await fs.readFile(path.join(repo.repoPath, rel)))
+              .digest('hex');
+            return {
+              rel,
+              digest,
+              reason:
+                digest !== recorded[3]
+                  ? `overlay is stale for ${rel}; rebuild: ontoindex analyze --dirty-overlay`
+                  : null,
+            };
+          }),
+        );
+        for (const result of results) {
+          if (result.status === 'rejected') throw result.reason;
+          const { rel, digest, reason } = result.value;
+          if (digest !== null) validatedInputs.set(rel, digest);
+          if (reason) return { ...base, usable: false, reason };
         }
-        const stat = await fs.lstat(path.join(repo.repoPath, rel));
-        if (!stat.isFile())
-          return {
-            ...base,
-            usable: false,
-            reason: `workspace graph input is not a regular file: ${rel}; rebuild`,
-          };
-        // Metadata can be preserved across byte changes, so every input needs a digest.
-        const digest = createHash('sha256')
-          .update(await fs.readFile(path.join(repo.repoPath, rel)))
-          .digest('hex');
-        if (digest !== recorded[3])
-          return {
-            ...base,
-            usable: false,
-            reason: `overlay is stale for ${rel}; rebuild: ontoindex analyze --dirty-overlay`,
-          };
       }
     } catch {
       return {
@@ -591,6 +690,7 @@ async function computeSnapshot(
       const digest = createHash('sha256')
         .update(await fs.readFile(path.join(repo.repoPath, rel)))
         .digest('hex');
+      validatedInputs.set(rel, digest);
       if (inputs?.[rel] !== digest) {
         return {
           ...base,
@@ -601,6 +701,55 @@ async function computeSnapshot(
     } catch {
       return { ...base, usable: false, reason: `cannot read ${rel}` };
     }
+  }
+  try {
+    const failure = JSON.parse(
+      await fs.readFile(path.join(path.dirname(dbPath), 'READ_FAILURE.json'), 'utf8'),
+    );
+    if (
+      failure?.version === 1 &&
+      failure.generation === base.generation &&
+      (failure.reason === 'native_open_corrupt' || failure.reason === 'native_open_incompatible')
+    ) {
+      const { dev, ino, size, mtimeMs } = await fs.stat(dbPath);
+      const recorded = failure.databaseIdentity;
+      if (
+        recorded?.dev === dev &&
+        recorded.ino === ino &&
+        recorded.size === size &&
+        recorded.mtimeMs === mtimeMs
+      ) {
+        return {
+          ...base,
+          usable: false,
+          ...(validatedConfiguration
+            ? {
+                repairInputDigest: createHash('sha256')
+                  .update(
+                    JSON.stringify([
+                      'ontoindex-overlay-repair-input-v1',
+                      base.capability ?? 'symbols',
+                      validatedConfiguration.configurationDigest,
+                      validatedConfiguration.parserIdentity,
+                      [...validatedInputs].sort(([left], [right]) =>
+                        left < right ? -1 : left > right ? 1 : 0,
+                      ),
+                      [...dirtyPaths].sort(),
+                      [...overlayPaths].sort(),
+                      [...uncoveredPaths].sort(),
+                      [...tombstones].sort(),
+                      [...configPaths].sort(),
+                    ]),
+                  )
+                  .digest('hex'),
+              }
+            : {}),
+          reason: `overlay generation unreadable (${failure.reason}); rebuild required`,
+        };
+      }
+    }
+  } catch {
+    // A missing, malformed, or unreadable diagnostic cannot quarantine a database.
   }
   return {
     ...base,
@@ -679,6 +828,7 @@ export function evictOverlayState(repoKey: string): void {
 
 export function resetOverlaySnapshotCache(): void {
   snapshotCache.clear();
+  verifiedDatabaseDigests.clear();
 }
 
 /** Callers must not present an empty caller/impact answer as authoritative for a non-authoritative path. */

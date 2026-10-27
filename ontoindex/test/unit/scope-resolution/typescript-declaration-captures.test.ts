@@ -4,6 +4,7 @@ import { SupportedLanguages, buildScopeTree } from 'ontoindex-shared';
 import type { CaptureMatch, ParsedFile, Range, Scope } from 'ontoindex-shared';
 import { createParserForLanguage } from '../../../src/core/tree-sitter/parser-loader.js';
 import {
+  emitTypeScriptCatchBindingCaptures,
   emitTypeScriptDeclarationCaptures,
   emitTypeScriptLexicalBindingCaptures,
   emitTypeScriptParameterBindingCaptures,
@@ -11,13 +12,16 @@ import {
   emitTypeScriptVarBindingCapturesForFile,
   selectTypeScriptLocalBindings,
   typeScriptDeclarationBindingScope,
+  typeScriptAnnotationType,
 } from '../../../src/core/ingestion/languages/typescript-declaration-captures.js';
 import { emitTypeScriptLexicalScopeCaptures } from '../../../src/core/ingestion/languages/typescript-scope-captures.js';
+import { emitTypeScriptCaptures } from '../../../src/core/ingestion/languages/typescript-captures.js';
 import {
   emitTypeScriptImportCaptures,
   interpretTypeScriptImport,
 } from '../../../src/core/ingestion/languages/typescript-import-captures.js';
 import { extract } from '../../../src/core/ingestion/scope-extractor.js';
+import { ScopeUnsupportedSyntaxError } from '../../../src/core/ingestion/scope-unsupported-syntax.js';
 
 const nodeTypes = [
   'function_declaration',
@@ -96,6 +100,35 @@ function assertBinding(result: ParsedFile, name: string, owner: Scope, host: Sco
 }
 
 describe('borrowed TS/JS declaration captures', () => {
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'detaches exact enum anchors without class placement in %s',
+    async (filePath) => {
+      const { parser, root } = await parse('/* 😀 */ enum café { Ready = "ready" }', filePath);
+      expect(root.hasError).toBe(false);
+      const node = root.descendantsOfType('enum_declaration')[0]!;
+      const name = node.childForFieldName('name')!;
+      const captures = emitTypeScriptDeclarationCaptures(node);
+      const fresh = emitTypeScriptDeclarationCaptures(node);
+      expect(captures).toEqual([
+        {
+          '@declaration.enum': { name: '@declaration.enum', text: '', range: rangeOf(node) },
+          '@declaration.name': { name: '@declaration.name', text: 'café', range: rangeOf(name) },
+        },
+      ]);
+      expect(captures).toEqual(fresh);
+      for (const [key, capture] of Object.entries(captures[0]!)) {
+        expect(Object.keys(capture).sort()).toEqual(['name', 'range', 'text']);
+        expect(capture.range).not.toBe(fresh[0]![key]!.range);
+      }
+      const saved = JSON.stringify(captures);
+      parser.parse('class Replacement {}');
+      expect(JSON.stringify(captures)).toBe(saved);
+      expect(structuredClone(captures)).toEqual(captures);
+      captures[0]!['@declaration.name']!.range.startLine = 99;
+      expect(JSON.stringify(fresh)).toBe(saved);
+    },
+  );
+
   it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
     'composes declarations, lexical scopes and imports with the real %s grammar',
     async (filePath) => {
@@ -279,6 +312,40 @@ describe('borrowed TS/JS declaration captures', () => {
     expect(new Set(first.localDefs.map((def) => def.nodeId)).size).toBe(2);
   });
 
+  it('refuses forged callable markers', async () => {
+    const { root } = await parse('const victim = 0;\nfunction outer() { const f = () => 1; }');
+    const captures = [...emitTypeScriptLexicalScopeCaptures(root), ...emitTypeScriptCaptures(root)];
+    const lexical = extract(emitTypeScriptLexicalScopeCaptures(root), 'fixture.ts', hooks);
+    const tree = buildScopeTree(lexical.scopes);
+    const callable = captures.find((match) => match['@typescript.callable_binding'])!;
+    const owner = lexical.scopes.find(
+      (scope) =>
+        JSON.stringify(scope.range) === JSON.stringify(callable['@declaration.function']!.range),
+    )!;
+    expect(typeScriptDeclarationBindingScope(callable, owner, tree)).toBe(owner.parent);
+    const noScope = { ...callable };
+    delete noScope['@typescript.binding_scope'];
+    expect(() => typeScriptDeclarationBindingScope(noScope, owner, tree)).toThrow();
+    const victim = root.namedChildren[0]!.namedChildren[0]!.childForFieldName('name')!;
+    const relocated = {
+      ...callable,
+      '@declaration.name': { ...callable['@declaration.name']!, range: rangeOf(victim) },
+      '@typescript.binding_scope': {
+        ...callable['@typescript.binding_scope']!,
+        range: rangeOf(victim),
+      },
+      '@typescript.callable_binding': {
+        ...callable['@typescript.callable_binding']!,
+        range: {
+          ...rangeOf(victim),
+          endLine: callable['@declaration.function']!.range.endLine,
+          endCol: callable['@declaration.function']!.range.endCol,
+        },
+      },
+    };
+    expect(() => typeScriptDeclarationBindingScope(relocated, owner, tree)).toThrow();
+  });
+
   it('delegates unrelated matches and refuses malformed declaration metadata', async () => {
     const { root } = await parse('function complete() {}');
     const lexical = extract(emitTypeScriptLexicalScopeCaptures(root), 'fixture.ts', hooks);
@@ -331,7 +398,6 @@ describe('borrowed TS/JS declaration captures', () => {
 
   it.each([
     'const value = 1;',
-    'interface Shape {}',
     'function overloaded(): void;',
     String.raw`function esc\u0061ped() {}`,
     'function broken( {',
@@ -343,6 +409,78 @@ describe('borrowed TS/JS declaration captures', () => {
 });
 
 describe('borrowed TS/JS parameter binding captures', () => {
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'detaches trailing empty-object defaults in every Function form in %s',
+    async (filePath) => {
+      const typed = /\.tsx?$/.test(filePath);
+      const parameters = `required, café${typed ? ': Options' : ''} /* before */ = /* value */ { /* empty */ }, last = {}`;
+      const source = [
+        `function declaration(${parameters}) {}`,
+        `function* generatorDeclaration(${parameters}) {}`,
+        `const expression = function named(${parameters}) {};`,
+        `const generatorExpression = function* namedGenerator(${parameters}) {};`,
+        `const arrow = (${parameters}) => café;`,
+        `const object = { method(${parameters}) {} };`,
+        `class Owner { method(${parameters}) {} }`,
+      ].join('\n');
+      const { parser, root } = await parse(source, filePath);
+      expect(root.hasError, source).toBe(false);
+      const owners = root.descendantsOfType(parameterOwnerTypes).filter((node) => node.isNamed);
+      expect(owners).toHaveLength(7);
+      const captures = owners.flatMap(emitTypeScriptParameterBindingCaptures);
+      const fresh = owners.flatMap(emitTypeScriptParameterBindingCaptures);
+      const saved = JSON.stringify(captures);
+      expect(captures).toEqual(fresh);
+      const result = extract(
+        [...emitTypeScriptLexicalScopeCaptures(root), ...captures],
+        filePath,
+        hooks,
+      );
+      for (const [index, node] of owners.entries()) {
+        const owner = scopeFor(result, node);
+        expect(owner.kind).toBe('Function');
+        expect(owner.ownedDefs.map((def) => def.qualifiedName)).toEqual([
+          'required',
+          'café',
+          'last',
+        ]);
+        for (const def of owner.ownedDefs) {
+          expect(owner.bindings.get(def.qualifiedName!)).toEqual([{ def, origin: 'local' }]);
+          for (const scope of result.scopes.filter((scope) => scope.id !== owner.id)) {
+            expect(scope.ownedDefs).not.toContainEqual(def);
+            expect(scope.bindings.get(def.qualifiedName!) ?? []).not.toContainEqual({
+              def,
+              origin: 'local',
+            });
+          }
+        }
+        const matches = captures.slice(index * 3, index * 3 + 3);
+        expect(matches.map((match) => match['@typescript.annotation']?.text)).toEqual([
+          undefined,
+          typed ? 'Options' : undefined,
+          undefined,
+        ]);
+        const names = node
+          .childForFieldName('parameters')!
+          .descendantsOfType('identifier')
+          .filter((name) => ['required', 'café', 'last'].includes(name.text));
+        expect(matches.map((match) => match['@declaration.name'])).toEqual(
+          names.map((name) => ({
+            name: '@declaration.name',
+            text: name.text,
+            range: rangeOf(name),
+          })),
+        );
+      }
+      expect(result.referenceSites).toEqual([]);
+      parser.parse('function replacement(other) {}');
+      expect(JSON.stringify(captures)).toBe(saved);
+      expect(structuredClone(captures)).toEqual(captures);
+      captures[0]!['@declaration.name']!.range.startLine = 99;
+      expect(JSON.stringify(fresh)).toBe(saved);
+    },
+  );
+
   it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
     'owns simple parameters in all six Function forms in %s',
     async (filePath) => {
@@ -401,11 +539,16 @@ describe('borrowed TS/JS parameter binding captures', () => {
       expect(first).toHaveLength(2);
       expect(first).toEqual(second);
       expect(first).toEqual(JSON.parse(serialized));
+      expect(first.map((match) => match['@typescript.annotation']?.text)).toEqual([
+        'string',
+        'number',
+      ]);
       for (const [index, match] of first.entries()) {
         const name = names[index]!;
         expect(Object.keys(match).sort()).toEqual([
           '@declaration.name',
           '@declaration.variable',
+          '@typescript.annotation',
           '@typescript.binding_kind',
         ]);
         expect(match['@declaration.variable']).toEqual({
@@ -439,6 +582,20 @@ describe('borrowed TS/JS parameter binding captures', () => {
       first[0]!['@declaration.name']!.range.startLine = 99;
       expect(JSON.stringify(second)).toBe(serialized);
       expect(first[0]!['@declaration.variable']!.range.startLine).toBe(1);
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'does not confuse a nested function var with the default parameter environment in %s',
+    async (filePath) => {
+      const { root } = await parse(
+        'function outer(options = {}) { function inner() { var local; } }',
+        filePath,
+      );
+      expect(root.hasError).toBe(false);
+      const owner = root.descendantsOfType('function_declaration')[0]!;
+      const captures = emitTypeScriptParameterBindingCaptures(owner);
+      expect(captures.map((match) => match['@declaration.name']!.text)).toEqual(['options']);
     },
   );
 
@@ -485,11 +642,25 @@ describe('borrowed TS/JS parameter binding captures', () => {
     },
   );
 
+  it('keeps var for-in capture helper restricted to var declarations', async () => {
+    const { root } = await parse('for (let item of items) {}');
+    const loop = root.descendantsOfType('for_in_statement')[0]!;
+    expect(() => emitTypeScriptVarBindingCaptures(loop)).toThrow();
+  });
+
   it.each([
     'function fn(valid, invalid = 1) {}',
+    'function fn(valid, invalid = { value: 1 }) {}',
+    'function fn(valid, invalid = { ...other }) {}',
+    'function fn(valid, invalid = other) {}',
+    'function fn(valid, invalid = []) {}',
+    'function fn(valid = {}, required) {}',
+    'function fn(valid, valid = {}) {}',
+    'function fn(valid, invalid? = {}) {}',
+    'function fn(valid, invalid: Options = {) {}',
     'function fn(valid, ...invalid) {}',
-    'function fn(valid, { invalid }) {}',
-    'function fn(valid, [invalid]) {}',
+    'function fn(valid, { invalid: { nested } }) {}',
+    'function fn(valid, [[invalid]]) {}',
     'function fn(valid, valid) {}',
     'function fn(this: object, valid: string) {}',
     'class C { constructor(public valid: string) {} }',
@@ -499,6 +670,11 @@ describe('borrowed TS/JS parameter binding captures', () => {
   ])('rejects an unsupported signature atomically: %s', async (source) => {
     const { root } = await parse(source);
     const owners = root.descendantsOfType(parameterOwnerTypes).filter((node) => node.isNamed);
+    if (source === 'function fn(valid, invalid? = {}) {}' && owners.length === 0) {
+      expect(root.hasError).toBe(true);
+      expect(() => emitTypeScriptCaptures(root)).toThrow(ScopeUnsupportedSyntaxError);
+      return;
+    }
     expect(owners.length).toBeGreaterThan(0);
     for (const owner of owners)
       expect(() => emitTypeScriptParameterBindingCaptures(owner)).toThrow();
@@ -525,6 +701,81 @@ describe('borrowed TS/JS parameter binding captures', () => {
 });
 
 describe('borrowed TS/JS lexical binding captures', () => {
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'detaches each flat array binding at its identifier range in %s',
+    async (filePath) => {
+      const { parser, root } = await parse(
+        [
+          '/* 😀 */ let [/* first */ café,',
+          '  λ, /* trailing */] = input, ordinary = 1, [last] = other;',
+        ].join('\n'),
+        filePath,
+      );
+      expect(root.hasError).toBe(false);
+      const first = lexicalBindingMatches(root);
+      const second = lexicalBindingMatches(root);
+      const names = root
+        .descendantsOfType('identifier')
+        .filter((node) => ['café', 'λ', 'ordinary', 'last'].includes(node.text));
+      expect(first.map((match) => match['@declaration.name']!.text)).toEqual([
+        'café',
+        'λ',
+        'ordinary',
+        'last',
+      ]);
+      for (const [index, name] of names.entries()) {
+        expect(first[index]).toEqual({
+          '@declaration.variable': {
+            name: '@declaration.variable',
+            text: '',
+            range: rangeOf(name),
+          },
+          '@declaration.name': { name: '@declaration.name', text: name.text, range: rangeOf(name) },
+        });
+        expect(first[index]!['@declaration.variable']!.range).not.toBe(
+          first[index]!['@declaration.name']!.range,
+        );
+        expect(first[index]!['@declaration.name']!.range).not.toBe(
+          second[index]!['@declaration.name']!.range,
+        );
+      }
+      const saved = JSON.stringify(first);
+      parser.parse('const replacement = 0;');
+      expect(JSON.stringify(first)).toBe(saved);
+      expect(structuredClone(first)).toEqual(JSON.parse(saved));
+      first[0]!['@declaration.name']!.range.startLine = 99;
+      expect(JSON.stringify(second)).toBe(saved);
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'refuses invalid flat array declarations atomically in %s',
+    async (filePath) => {
+      for (const declaration of [
+        'const [] = input;',
+        'let [,value] = input;',
+        'const [value,,] = input;',
+        'let [[value]] = input;',
+        'const [{value}] = input;',
+        'let [value = fallback] = input;',
+        'const [...value] = input;',
+        'let [value, value] = input;',
+        'let [value], ordinary = 1;',
+        String.raw`let [esc\u0061ped] = input;`,
+        ...(/\.tsx?$/.test(filePath)
+          ? ['let [value]: [A] = input;', 'const [value]: A[] = input;']
+          : []),
+      ]) {
+        const { root } = await parse(declaration, filePath);
+        let captures: CaptureMatch[] | undefined;
+        expect(() => {
+          captures = lexicalBindingMatches(root);
+        }, declaration).toThrow(ScopeUnsupportedSyntaxError);
+        expect(captures, declaration).toBeUndefined();
+      }
+    },
+  );
+
   it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
     'composes lexical bindings, initializer scopes and imports in %s',
     async (filePath) => {
@@ -608,7 +859,7 @@ describe('borrowed TS/JS lexical binding captures', () => {
   );
 
   it.each(['fixture.ts', 'fixture.tsx'])(
-    'accepts annotations without inventing type bindings in %s',
+    'detaches validated annotations as metadata for the composer in %s',
     async (filePath) => {
       const { root } = await parse('let value: number; const label: string = "text";', filePath);
       expect(root.hasError).toBe(false);
@@ -622,6 +873,267 @@ describe('borrowed TS/JS lexical binding captures', () => {
       assertBinding(result, 'value', module, module);
       assertBinding(result, 'label', module, module);
       expect(result.scopes.every((scope) => scope.typeBindings.size === 0)).toBe(true);
+      expect(
+        lexicalBindingMatches(root).map((match) => match['@typescript.annotation']?.text),
+      ).toEqual(['number', 'string']);
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'reports exact unsupported function annotation evidence without source text in %s',
+    async (filePath) => {
+      const admitted = await parse('let value: () => SecretType;', filePath);
+      expect(
+        typeScriptAnnotationType(admitted.root.descendantsOfType('type_annotation')[0]!).text,
+      ).toBe('() => SecretType');
+      expect(lexicalBindingMatches(admitted.root)[0]!['@typescript.annotation']!.text).toBe(
+        '() => SecretType',
+      );
+      const { root } = await parse('\n  let value: <T>() => SecretType;', filePath);
+      expect(root.hasError).toBe(false);
+      const annotation = root.descendantsOfType('type_annotation')[0]!;
+      const functionType = root.descendantsOfType('function_type')[0]!;
+      expect(functionType.startPosition).toEqual({ row: 1, column: 13 });
+      for (const refuse of [
+        () => typeScriptAnnotationType(annotation),
+        () => lexicalBindingMatches(root),
+      ]) {
+        expect(refuse).toThrow(ScopeUnsupportedSyntaxError);
+        expect(refuse).toThrowError(
+          new ScopeUnsupportedSyntaxError(
+            'TS/JS declaration captures require supported named syntax and an exact lexical scope [node=function_type at=2:14]',
+          ),
+        );
+      }
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'retains exact recursive composite annotation captures in %s',
+    async (filePath) => {
+      for (const text of [
+        'A | B | null',
+        'A<B>',
+        'A[]',
+        'readonly Models.User[]',
+        'Map<string, Array<Models.User | null>>',
+        'ReadonlyArray<readonly Models.User[][]>',
+        'A /* preserved */ | B',
+        'Map< /* argument */ string, Models.User[]>',
+        '[]',
+        '[A]',
+        '[A,]',
+        '[A, B]',
+        'readonly [A, B[]]',
+        'Map<string, [A, readonly [B | null, Array<A[]>]]>',
+      ]) {
+        const { parser, root } = await parse(`let value: ${text};`, filePath);
+        expect(root.hasError, text).toBe(false);
+        const annotation = root.descendantsOfType('type_annotation')[0]!;
+        expect(typeScriptAnnotationType(annotation).text, text).toBe(text);
+        const captures = structuredClone(lexicalBindingMatches(root));
+        parser.parse('let replacement: string;');
+        expect(
+          captures.map((match) => match['@typescript.annotation']?.text),
+          text,
+        ).toEqual([text]);
+      }
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'accepts lookup types as opaque annotation metadata in %s',
+    async (filePath) => {
+      const texts = [
+        "NonNullable<FinalizeOutput['lookupExport']>",
+        "LookupParams['lexicalNamespace']",
+        "ReadonlySet<BindingRef['origin']>",
+        "A[B['key']]",
+        "A['x']['y']",
+        "A /* base */ [ /* key */ 'x' ]",
+        "Array<LookupParams['lexicalNamespace'] | null>",
+      ];
+      for (const text of texts) {
+        const { parser, root } = await parse(`let value: ${text};`, filePath);
+        expect(root.hasError, text).toBe(false);
+        const annotation = root.descendantsOfType('type_annotation')[0]!;
+        const type = typeScriptAnnotationType(annotation);
+        expect(type.text, text).toBe(text);
+        const captures = structuredClone(lexicalBindingMatches(root));
+        expect(captures[0]!['@typescript.annotation']?.text, text).toBe(text);
+        expect(captures[0]!['@typescript.annotation']?.range, text).toEqual(rangeOf(type));
+        const result = extract(
+          [...emitTypeScriptLexicalScopeCaptures(root), ...lexicalBindingMatches(root)],
+          filePath,
+          hooks,
+        );
+        expect(result.referenceSites, text).toEqual([]);
+        expect(
+          result.scopes.every((scope) => scope.typeBindings.size === 0),
+          text,
+        ).toBe(true);
+        parser.parse('let replacement: string;');
+        expect(captures[0]!['@typescript.annotation']?.text, text).toBe(text);
+      }
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'rejects unsupported nested annotations through the shared validator in %s',
+    async (filePath) => {
+      for (const text of [
+        '<T>() => A',
+        '{ key(): A }',
+        'typeof value',
+        '[label: A, B]',
+        'unique symbol',
+        'Array<<T>() => A>',
+        'Array<{ key(): A }>',
+        'A | typeof value',
+        'readonly [A, B?]',
+        '[...A[]]',
+        '[A, ...B[]]',
+        'A & B',
+        'Array<A & B>',
+        'Array<+1>',
+        '[<T>() => A]',
+        '[{ key(): A }]',
+        '[typeof value]',
+        '[A & B]',
+        'Array<[A?]>',
+        'A[keyof B]',
+        'A[typeof value]',
+        'A[<T>() => B]',
+        'A[{ x(): B }]',
+        "{ x(): B }['x']",
+      ]) {
+        const { root } = await parse(`let value: ${text};`, filePath);
+        expect(root.hasError, text).toBe(false);
+        const annotation = root.descendantsOfType('type_annotation')[0]!;
+        expect(() => typeScriptAnnotationType(annotation), text).toThrow();
+        expect(() => lexicalBindingMatches(root), text).toThrow();
+      }
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'rejects damaged lookup annotations atomically in %s',
+    async (filePath) => {
+      for (const text of ['A[', "A['key'", "A['key']]", "A[B['key']", 'A[Key, Other]']) {
+        const { root } = await parse(
+          `let before: string; let value: ${text}; let after: string;`,
+          filePath,
+        );
+        expect(root.hasError, text).toBe(true);
+        expect(() => emitTypeScriptCaptures(root), text).toThrow(ScopeUnsupportedSyntaxError);
+      }
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'rejects damaged and sparse tuple annotations atomically in %s',
+    async (filePath) => {
+      for (const text of ['[,]', '[A,,B]', '[A,,]', '[A', '[A B]', '[A, B]]']) {
+        const { root } = await parse(
+          `let before: string; let value: ${text}; let after: string;`,
+          filePath,
+        );
+        const annotation = root
+          .descendantsOfType('type_annotation')
+          .find((node) => node.text.includes('['));
+        if (!root.hasError && annotation)
+          expect(() => typeScriptAnnotationType(annotation), text).toThrow(
+            ScopeUnsupportedSyntaxError,
+          );
+        expect(() => emitTypeScriptCaptures(root), text).toThrow(ScopeUnsupportedSyntaxError);
+      }
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'preserves exact literal annotation metadata in %s',
+    async (filePath) => {
+      for (const text of [
+        '"literal"',
+        "'single'",
+        '"escaped\\n\\u0041"',
+        '""',
+        '0',
+        '1.5',
+        '0xff',
+        '1e3',
+        '1n',
+        '-42',
+        '-1.5',
+        '-0xff',
+        '-1n',
+        'true',
+        'false',
+        'null',
+        'undefined',
+        '"ready" | false | -1 | null',
+        'Array<"literal">',
+        'Map<"key", Array<true | -2 | undefined>>',
+        '- /* preserved */ 42',
+      ]) {
+        const { parser, root } = await parse(`let value: ${text};`, filePath);
+        expect(root.hasError, text).toBe(false);
+        const annotation = root.descendantsOfType('type_annotation')[0]!;
+        expect(typeScriptAnnotationType(annotation).text, text).toBe(text);
+        const captures = structuredClone(lexicalBindingMatches(root));
+        expect(Object.keys(captures[0]!).sort(), text).toEqual([
+          '@declaration.name',
+          '@declaration.variable',
+          '@typescript.annotation',
+        ]);
+        parser.parse('let replacement: string;');
+        expect(captures[0]!['@typescript.annotation']?.text, text).toBe(text);
+      }
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'rejects damaged literal annotations atomically in %s',
+    async (filePath) => {
+      for (const text of [
+        '"unterminated',
+        '"\\uZZZZ"',
+        'Array<"unterminated>',
+        '-true',
+        '--1',
+        '-',
+      ]) {
+        const { root } = await parse(`let value: ${text};`, filePath);
+        expect(root.hasError, text).toBe(true);
+        expect(() => emitTypeScriptCaptures(root), text).toThrow(ScopeUnsupportedSyntaxError);
+      }
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'rejects malformed composite annotations atomically in %s',
+    async (filePath) => {
+      for (const text of ['Array<>', 'Array<A,,B>', 'Array<A', 'A |', 'A[']) {
+        const { root } = await parse(`let value: ${text};`, filePath);
+        expect(() => lexicalBindingMatches(root), text).toThrow();
+      }
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'rejects var collisions through ambient and export wrappers in %s',
+    async (filePath) => {
+      for (const source of [
+        'declare let value: A; var value;',
+        'var value; declare const value: A;',
+        'export declare let value: A; var value;',
+        'var value; export declare const value: A;',
+        'declare const value: A; { var value; }',
+      ]) {
+        const { root } = await parse(source, filePath);
+        expect(root.hasError, source).toBe(false);
+        expect(() => emitTypeScriptVarBindingCapturesForFile(root), source).toThrow();
+      }
     },
   );
 
@@ -669,14 +1181,12 @@ describe('borrowed TS/JS lexical binding captures', () => {
   it.each([
     'var value = 1;',
     'const { value } = input;',
-    'let [value] = input;',
+    'let [[value]] = input;',
     'const valid = 1, { invalid } = input;',
-    'let valid = 1, [invalid] = input;',
+    'let valid = 1, [[invalid]] = input;',
     'let value = ;',
     'const = 1;',
     String.raw`let esc\u0061ped = 1;`,
-    'for (let value in input) {}',
-    'for (const value of input) {}',
     'function fn(parameter) {}',
   ])('refuses unsupported statements as a whole: %s', async (source) => {
     const { root } = await parse(source);
@@ -686,6 +1196,404 @@ describe('borrowed TS/JS lexical binding captures', () => {
       .descendantsOfType('formal_parameters')
       .filter((node) => node.isNamed)) {
       expect(() => emitTypeScriptLexicalBindingCaptures(parameters)).toThrow();
+    }
+  });
+
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'detaches flat const for-of patterns into loop bindings in %s',
+    async (filePath) => {
+      for (const [pattern, names] of [
+        ['[key, value]', ['key', 'value']],
+        ['{ field, other: alias }', ['field', 'alias']],
+        ['[/* comment */ café, λ,]', ['café', 'λ']],
+        ['{ /* comment */ field, other: alias, }', ['field', 'alias']],
+      ] as const) {
+        const { parser, root } = await parse(
+          `function run(entries) { for (const ${pattern} of entries) { let ${names[0]}; use(${names[0]}, ${names[1]}); } }`,
+          filePath,
+        );
+        expect(root.hasError, pattern).toBe(false);
+        const loop = root.descendantsOfType('for_in_statement')[0]!;
+        const left = loop.childForFieldName('left')!;
+        const bindingNodes = left.descendantsOfType([
+          'identifier',
+          'shorthand_property_identifier_pattern',
+        ]);
+        const captures = emitTypeScriptLexicalBindingCaptures(loop);
+        const fresh = emitTypeScriptLexicalBindingCaptures(loop);
+        const serialized = JSON.stringify(captures);
+        expect(captures.map((match) => match['@declaration.name']!.text)).toEqual(names);
+        expect(captures.map((match) => match['@declaration.name']!.range)).toEqual(
+          bindingNodes.map(rangeOf),
+        );
+        const result = extract(emitTypeScriptCaptures(root), filePath, hooks);
+        const loopScope = scopeFor(result, loop);
+        const bodyScope = scopeFor(result, loop.childForFieldName('body')!);
+        expect([...loopScope.bindings.keys()]).toEqual(names);
+        expect(bodyScope.parent).toBe(loopScope.id);
+        expect(bodyScope.bindings.get(names[0])![0]!.def.nodeId).not.toBe(
+          loopScope.bindings.get(names[0])![0]!.def.nodeId,
+        );
+        expect(result.referenceSites.map((site) => site.name)).toEqual([
+          'entries',
+          'use',
+          names[0],
+          names[1],
+        ]);
+        const rhsSites = result.referenceSites.filter((site) => site.name === 'entries');
+        expect(rhsSites).toHaveLength(1);
+        expect(rhsSites[0]!.atRange).toEqual(rangeOf(loop.childForFieldName('right')!));
+        parser.parse('const replacement = 0;');
+        expect(JSON.stringify(captures)).toBe(serialized);
+        captures[0]!['@declaration.name']!.range.startLine = 99;
+        expect(JSON.stringify(fresh)).toBe(serialized);
+        expect(captures[0]!['@declaration.variable']!.range.startLine).not.toBe(99);
+      }
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'checks var collisions against actual flat loop binding names in %s',
+    async (filePath) => {
+      for (const [pattern, collisions, allowed] of [
+        ['[key, value]', ['key', 'value'], ['other']],
+        ['{ field, other: alias }', ['field', 'alias'], ['other', 'unrelated']],
+      ] as const) {
+        for (const name of [...collisions, ...allowed]) {
+          const { root } = await parse(
+            `function run(entries) { for (const ${pattern} of entries) { { var ${name}; } } }`,
+            filePath,
+          );
+          expect(root.hasError).toBe(false);
+          const declaration = root.descendantsOfType('variable_declaration')[0]!;
+          if ((collisions as readonly string[]).includes(name)) {
+            expect(() => emitTypeScriptVarBindingCaptures(declaration), name).toThrow(
+              ScopeUnsupportedSyntaxError,
+            );
+          } else {
+            expect(
+              emitTypeScriptVarBindingCaptures(declaration)[0]!['@declaration.name']!.text,
+            ).toBe(name);
+          }
+        }
+      }
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'refuses unsupported loop binding patterns atomically in %s',
+    async (filePath) => {
+      for (const header of [
+        'const [] of entries',
+        'const {} of entries',
+        'const [key,, value] of entries',
+        'const [,key] of entries',
+        'const [key, ...value] of entries',
+        'const [key = fallback] of entries',
+        'const [[key]] of entries',
+        'const [{key}] of entries',
+        'const [key, key] of entries',
+        'const {field, other: field} of entries',
+        'const {field = fallback} of entries',
+        'const {other: alias = fallback} of entries',
+        'const {...field} of entries',
+        'const {other: {field}} of entries',
+        'const {[field]: alias} of entries',
+        'const {"field": alias} of entries',
+        'let [key, value] of entries',
+        'var [key, value] of entries',
+        'let {field} of entries',
+        'var {field} of entries',
+        'const [key, value] in entries',
+        'const {field} in entries',
+        'const [key, of entries',
+        'const {field:} of entries',
+      ]) {
+        const { root } = await parse(`function run(entries) { for (${header}) {} }`, filePath);
+        let captures: CaptureMatch[] | undefined;
+        expect(() => {
+          captures = emitTypeScriptCaptures(root);
+        }, header).toThrow(ScopeUnsupportedSyntaxError);
+        expect(captures, header).toBeUndefined();
+        for (const loop of root.descendantsOfType('for_in_statement')) {
+          expect(() => emitTypeScriptLexicalBindingCaptures(loop), header).toThrow(
+            ScopeUnsupportedSyntaxError,
+          );
+        }
+      }
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'captures lexical loop bindings separately from body shadowing in %s',
+    async (filePath) => {
+      const { root } = await parse(
+        'let item; for (let item of items) { let item; { let item; use(item); } } for (const key in object) { use(key); }',
+        filePath,
+      );
+      expect(root.hasError).toBe(false);
+      const loops = root.descendantsOfType('for_in_statement');
+      const matches = loops.flatMap(emitTypeScriptLexicalBindingCaptures);
+      expect(matches).toHaveLength(2);
+      const parsed = extract(
+        [...emitTypeScriptLexicalScopeCaptures(root), ...lexicalBindingMatches(root), ...matches],
+        filePath,
+        hooks,
+      );
+      const [ofLoop, inLoop] = loops;
+      const loopScope = scopeFor(parsed, ofLoop!);
+      const bodyScope = scopeFor(parsed, ofLoop!.childForFieldName('body')!);
+      expect(loopScope.parent).toBe(parsed.moduleScope);
+      expect(bodyScope.parent).toBe(loopScope.id);
+      expect(loopScope.bindings.get('item')).toHaveLength(1);
+      expect(bodyScope.bindings.get('item')).toHaveLength(1);
+      expect(loopScope.bindings.get('item')![0]!.def.nodeId).not.toBe(
+        bodyScope.bindings.get('item')![0]!.def.nodeId,
+      );
+      const nestedBlock = ofLoop!.descendantsOfType('statement_block').at(-1)!;
+      const nestedScope = scopeFor(parsed, nestedBlock);
+      expect(nestedScope.bindings.get('item')![0]!.def.nodeId).not.toBe(
+        loopScope.bindings.get('item')![0]!.def.nodeId,
+      );
+      const secondLoopScope = scopeFor(parsed, inLoop!);
+      expect(secondLoopScope.bindings.get('key')).toHaveLength(1);
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'keeps unbraced lexical loop bindings in loop scopes and var in its host in %s',
+    async (filePath) => {
+      const { root } = await parse(
+        'function run(entries) { for (let item of entries) consume(item); for (const key in entries) consume(key); for (var value of entries) consume(value); }',
+        filePath,
+      );
+      expect(root.hasError).toBe(false);
+      const loops = root.descendantsOfType('for_in_statement');
+      const lexicalLoops = loops.filter((loop) => loop.childForFieldName('kind')?.type !== 'var');
+      const result = extract(
+        [
+          ...emitTypeScriptLexicalScopeCaptures(root),
+          ...lexicalBindingMatches(root),
+          ...lexicalLoops.flatMap(emitTypeScriptLexicalBindingCaptures),
+          ...root
+            .descendantsOfType('variable_declaration')
+            .flatMap(emitTypeScriptVarBindingCaptures),
+          ...loops
+            .filter((loop) => loop.childForFieldName('kind')?.type === 'var')
+            .flatMap(emitTypeScriptVarBindingCaptures),
+        ],
+        filePath,
+        hooks,
+      );
+      const loopScopes = loops.map((loop) => scopeFor(result, loop));
+      const functionBody = root
+        .descendantsOfType('function_declaration')[0]!
+        .childForFieldName('body')!;
+      const functionBodyScope = scopeFor(result, functionBody);
+      expect(loopScopes.map(({ parent }) => parent)).toEqual(Array(3).fill(functionBodyScope.id));
+      expect(result.scopes.filter(({ kind }) => kind === 'Block')).toHaveLength(4);
+      expect(loopScopes[0]!.bindings.get('item')).toHaveLength(1);
+      expect(loopScopes[1]!.bindings.get('key')).toHaveLength(1);
+      expect(loopScopes[2]!.bindings.has('value')).toBe(false);
+      expect(
+        result.scopes.find(({ kind }) => kind === 'Function')!.bindings.get('value'),
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'rejects lexical loop collisions with var declarations in %s',
+    async (filePath) => {
+      const { root } = await parse(
+        'function run(items) { for (let item of items) { var item; } }',
+        filePath,
+      );
+      expect(root.hasError).toBe(false);
+      const declaration = root.descendantsOfType('variable_declaration')[0]!;
+      expect(() => emitTypeScriptVarBindingCaptures(declaration)).toThrow();
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'hoists var loop bindings to the function scope in %s',
+    async (filePath) => {
+      const { root } = await parse(
+        'function run(items) { for (var item of items) { use(item); } }',
+        filePath,
+      );
+      expect(root.hasError).toBe(false);
+      const result = extract(
+        [
+          ...emitTypeScriptLexicalScopeCaptures(root),
+          ...root
+            .descendantsOfType('variable_declaration')
+            .flatMap(emitTypeScriptVarBindingCaptures),
+          ...root.descendantsOfType('for_in_statement').flatMap(emitTypeScriptVarBindingCaptures),
+        ],
+        filePath,
+        hooks,
+      );
+      const fn = scopeFor(result, root.descendantsOfType('function_declaration')[0]!);
+      const loop = scopeFor(result, root.descendantsOfType('for_in_statement')[0]!);
+      expect(fn.bindings.get('item')).toHaveLength(1);
+      expect(loop.bindings.has('item')).toBe(false);
+    },
+  );
+});
+
+describe('borrowed TS/JS catch binding captures', () => {
+  function catchMatches(root: SyntaxNode): CaptureMatch[] {
+    if (root.hasError) throw new Error('TS/JS catch captures require a valid parse tree');
+    return root.descendantsOfType('catch_clause').flatMap(emitTypeScriptCatchBindingCaptures);
+  }
+
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'keeps nested and sibling catches distinct from outer and body bindings in %s',
+    async (filePath) => {
+      const { root } = await parse(
+        [
+          'let error;',
+          'try {} catch (error) {',
+          '  let local; { let error; }',
+          '  try {} catch (error) {}',
+          '}',
+          'try {} catch (error) {}',
+        ].join('\n'),
+        filePath,
+      );
+      expect(root.hasError).toBe(false);
+      const matches = catchMatches(root);
+      const scopes = emitTypeScriptLexicalScopeCaptures(root);
+      const bindings = [...lexicalBindingMatches(root), ...matches];
+      const first = extract([...scopes, ...bindings], filePath, hooks);
+      const second = extract([...scopes, ...[...bindings].reverse()], filePath, hooks);
+      const catches = root.descendantsOfType('catch_clause');
+      expect(matches).toHaveLength(3);
+      expect(first.localDefs).toHaveLength(6);
+      const catchIds = catches.map((node) => {
+        const owner = scopeFor(first, node);
+        const body = scopeFor(first, node.childForFieldName('body')!);
+        expect(owner.kind).toBe('Block');
+        expect(body.parent).toBe(owner.id);
+        expect(body.bindings.has('error')).toBe(false);
+        expect(owner.bindings.get('error')).toHaveLength(1);
+        const def = owner.bindings.get('error')![0]!.def;
+        expect(owner.ownedDefs).toContainEqual(def);
+        expect(first.localDefs).toContainEqual(def);
+        expect(scopeFor(second, node).bindings.get('error')![0]!.def.nodeId).toBe(def.nodeId);
+        return def.nodeId;
+      });
+      expect(new Set(catchIds).size).toBe(3);
+      const module = first.scopes.find((scope) => scope.kind === 'Module')!;
+      expect(module.bindings.get('error')).toHaveLength(1);
+      expect(catchIds).not.toContain(module.bindings.get('error')![0]!.def.nodeId);
+      expect(first.scopes.filter((scope) => scope.bindings.has('error'))).toHaveLength(5);
+      expect(first.scopes.every((scope) => scope.typeBindings.size === 0)).toBe(true);
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'allows import and parameter shadows and optional catch binding in %s',
+    async (filePath) => {
+      const { root } = await parse(
+        "import error from './module'; function outer(error) { try {} catch (error) {} } try {} catch {}",
+        filePath,
+      );
+      expect(root.hasError).toBe(false);
+      const catches = root.descendantsOfType('catch_clause');
+      expect(emitTypeScriptCatchBindingCaptures(catches[1]!)).toEqual([]);
+      const result = extract(
+        [
+          ...emitTypeScriptLexicalScopeCaptures(root),
+          ...root.descendantsOfType('import_statement').flatMap(emitTypeScriptImportCaptures),
+          ...root
+            .descendantsOfType(parameterOwnerTypes)
+            .flatMap(emitTypeScriptParameterBindingCaptures),
+          ...catchMatches(root),
+        ],
+        filePath,
+        hooks,
+      );
+      const owner = scopeFor(result, catches[0]!);
+      expect(owner.bindings.get('error')).toHaveLength(1);
+      expect(result.localDefs).toHaveLength(2);
+      expect(scopeFor(result, catches[1]!).ownedDefs).toEqual([]);
+      expect(result.scopes.filter((scope) => scope.bindings.has('error'))).toHaveLength(2);
+      expect(result.parsedImports).toHaveLength(1);
+    },
+  );
+
+  it('detaches native Unicode names and independent ranges across parser reuse', async () => {
+    const { parser, root } = await parse('/* 😀 */ try {} catch (café) {} try {} catch (λ) {}');
+    const first = catchMatches(root);
+    const second = catchMatches(root);
+    const serialized = JSON.stringify(first);
+    expect(first).toEqual(second);
+    expect(first).toEqual(JSON.parse(serialized));
+    for (const [index, node] of root.descendantsOfType('catch_clause').entries()) {
+      const name = node.childForFieldName('parameter')!;
+      const match = first[index]!;
+      expect(Object.keys(match).sort()).toEqual(['@declaration.name', '@declaration.variable']);
+      expect(match['@declaration.variable']).toEqual({
+        name: '@declaration.variable',
+        text: '',
+        range: rangeOf(name),
+      });
+      expect(match['@declaration.name']).toEqual({
+        name: '@declaration.name',
+        text: name.text,
+        range: rangeOf(name),
+      });
+      for (const [key, value] of Object.entries(match)) {
+        expect(Object.keys(value).sort()).toEqual(['name', 'range', 'text']);
+        expect(Object.getPrototypeOf(value)).toBe(Object.prototype);
+        expect(value).not.toBe(second[index]![key]);
+        expect(value.range).not.toBe(second[index]![key]!.range);
+      }
+    }
+    parser.parse('try {} catch (replacement) {}');
+    expect(JSON.stringify(first)).toBe(serialized);
+    first[0]!['@declaration.name']!.range.startLine = 99;
+    expect(JSON.stringify(second)).toBe(serialized);
+    expect(first[0]!['@declaration.variable']!.range.startLine).toBe(1);
+  });
+
+  it.each([
+    'try {} catch ({ error }) {}',
+    'try {} catch ([error]) {}',
+    'try {} catch (error: Error) {}',
+    String.raw`try {} catch (err\u006fr) {}`,
+    'try {} catch (error) { let error; }',
+    'try {} catch (error) { const error = 1; }',
+    'try {} catch (error) { class error {} }',
+    'try {} catch (error) { function error() {} }',
+    'try {} catch (error) { function* error() {} }',
+    'try {} catch (error) { let valid; const { other } = source; }',
+    'try {} catch (error) { let valid; let broken = ; }',
+  ])('refuses unsupported syntax or direct body conflicts atomically: %s', async (source) => {
+    const { root } = await parse(source);
+    const clauses = root.descendantsOfType('catch_clause');
+    expect(clauses).toHaveLength(1);
+    expect(() => emitTypeScriptCatchBindingCaptures(clauses[0]!)).toThrow();
+    expect(() => catchMatches(root)).toThrow();
+    expect(() => emitTypeScriptCatchBindingCaptures(root)).toThrow();
+  });
+
+  it('rejects an empty catch parameter when the parser produces no catch clause', async () => {
+    const { root } = await parse('try {} catch () {}');
+    expect(root.hasError).toBe(true);
+    expect(root.descendantsOfType('catch_clause')).toHaveLength(0);
+    expect(() => catchMatches(root)).toThrow();
+  });
+
+  it('refuses wrong borrowed node kinds', async () => {
+    const { root } = await parse('function unrelated(error) {} try {} catch (error) {}');
+    for (const node of root.descendantsOfType([
+      'function_declaration',
+      'statement_block',
+      'identifier',
+    ])) {
+      expect(() => emitTypeScriptCatchBindingCaptures(node)).toThrow();
     }
   });
 });
@@ -839,7 +1747,7 @@ describe('borrowed TS/JS var binding captures', () => {
     'for (let value of input) {}',
     'function fn(value = 1) { var other; }',
     'function fn(...values) { var other; }',
-    'function fn({value}) { var other; }',
+    'function fn({value = 1}) { var other; }',
     'try {} catch (value) { var value; }',
     'try {} catch ({ value }) { var other; }',
     'const fn = function value() { var value; };',
@@ -867,6 +1775,61 @@ describe('borrowed TS/JS var binding captures', () => {
       ),
     ).toThrow();
   });
+
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'refuses exported declaration collisions in both orders in %s',
+    async (filePath) => {
+      for (const declaration of [
+        'export const value = 1;',
+        'export let value;',
+        'export class value {}',
+        'export function value() {}',
+        'export default class value {}',
+        'export default function value() {}',
+      ]) {
+        for (const source of [`var value; ${declaration}`, `${declaration} var value;`]) {
+          const { root } = await parse(source, filePath);
+          expect(root.hasError, source).toBe(false);
+          expect(
+            root.descendantsOfType('export_statement')[0]!.childForFieldName('declaration'),
+          ).not.toBeNull();
+          expect(() => varMatches(root), source).toThrow();
+          expect(() => emitTypeScriptVarBindingCapturesForFile(root), source).toThrow();
+        }
+      }
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'preserves exported lexical refusal and unrelated binding parity in %s',
+    async (filePath) => {
+      for (const declaration of [
+        'export const { other } = input;',
+        'export let [[other]] = input;',
+      ]) {
+        for (const source of [`var value; ${declaration}`, `${declaration} var value;`]) {
+          const { root } = await parse(source, filePath);
+          expect(root.hasError, source).toBe(false);
+          expect(() => varMatches(root), source).toThrow();
+          expect(() => emitTypeScriptVarBindingCapturesForFile(root), source).toThrow();
+        }
+      }
+      for (const source of [
+        'var value; export const other = 1; export let another; export class Other {} export function anotherFunction() {}',
+        'export const value = 1; function nested() { var value; }',
+        'export class value {} export function nested() { var value; }',
+        'export default function value() { var other; }',
+        'var value; export { value };',
+        'var value; export { other as value } from "./other";',
+      ]) {
+        const { root } = await parse(source, filePath);
+        expect(root.hasError, source).toBe(false);
+        const matches = varMatches(root);
+        expect(matches, source).toHaveLength(1);
+        expect(emitTypeScriptVarBindingCapturesForFile(root), source).toEqual(matches);
+      }
+    },
+  );
 });
 
 describe('file-batch TS/JS var binding captures', () => {
@@ -975,7 +1938,7 @@ describe('file-batch TS/JS var binding captures', () => {
   it.each([
     'function visited(value = 1) { var other; }',
     'function visited(...values) { var other; }',
-    'function visited({ value }) { var other; }',
+    'function visited({ value = 1 }) { var other; }',
     'function visited() { const { unrelated } = source; var other; }',
     'const { unrelated } = source; var other;',
   ])('preserves refusal in a visited environment: %s', async (source) => {

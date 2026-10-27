@@ -1,7 +1,7 @@
 import type Parser from 'tree-sitter';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { SupportedLanguages, type NodeLabel, type ParsedFile } from 'ontoindex-shared';
+import { SupportedLanguages, type NodeLabel, type ParsedFile, type Range } from 'ontoindex-shared';
 import type { MixedChainStep } from '../utils/call-analysis.js';
 import type { ScopeExtractionRecord } from '../scope-extractor-bridge.js';
 import type { ConstructorBinding } from '../type-env.js';
@@ -83,6 +83,8 @@ export interface ExtractedImport {
   filePath: string;
   rawImportPath: string;
   language: SupportedLanguages;
+  /** Unconditional external modules declared beside a root-scope Rust import. */
+  rustDeclaredModules?: string[];
   /** Named bindings from the import (e.g., import {User as U} → [{local:'U', exported:'User'}]) */
   namedBindings?: NamedBinding[];
 }
@@ -90,6 +92,8 @@ export interface ExtractedImport {
 export interface ExtractedCall {
   filePath: string;
   calledName: string;
+  /** Whole AST call range, matching ReferenceSite.atRange; absent for aggregate/older seeds. */
+  atRange?: Range;
   /** generateId of enclosing function, or generateId('File', filePath) for top-level */
   sourceId: string;
   /** From call AST; omitted for some seeds (e.g. Java `::`) so arity filter is skipped */
@@ -328,6 +332,7 @@ export interface ParseWorkerDiagnostics {
 }
 
 export type WorkerIncomingMessage =
+  | { type: 'shutdown' }
   | { type: 'sub-batch'; files: ParseWorkerInput[]; diagnostics?: ParseWorkerDiagnostics }
   | { type: 'flush'; diagnostics?: ParseWorkerDiagnostics }
   | ParseWorkerInput[];

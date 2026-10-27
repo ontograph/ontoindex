@@ -23,8 +23,8 @@ export function computeCoupling(commits: readonly CouplingCommitRecord[]): Hotsp
     for (const file of unique) {
       fileCommits.set(file, (fileCommits.get(file) ?? 0) + 1);
     }
-    for (let i = 0; i < unique.length; i++) {
-      for (let j = i + 1; j < unique.length; j++) {
+    for (let i = 0; unique.length > i; i++) {
+      for (let j = i + 1; unique.length > j; j++) {
         const key = `${unique[i]}\x00${unique[j]}`;
         pairCounts.set(key, (pairCounts.get(key) ?? 0) + 1);
         if (pairCounts.size >= MAX_COUPLING_PAIRS) break;

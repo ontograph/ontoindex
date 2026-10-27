@@ -464,14 +464,16 @@ export async function dispatchSuper(
       return gnSimulateFault(repoId, params as unknown as SimulateFaultMcpParams);
     }
 
-    case 'gn_verify_diff': {
-      const { gnVerifyDiff } = await import('./write-through-verification.js');
-      return gnVerifyDiff(repoId, params as unknown as VerifyDiffParams);
-    }
-
+    case 'gn_verify_diff':
     case 'gn_test_gap': {
-      const { gnTestGap } = await import('./write-through-verification.js');
-      if (readBackend) {
+      const { gnVerifyDiff, gnTestGap } = await import('./write-through-verification.js');
+      const handler = name === 'gn_verify_diff' ? gnVerifyDiff : gnTestGap;
+      const needsGraph =
+        (name === 'gn_test_gap' && Boolean(params.symbol || params.filePath || params.query)) ||
+        (params.changedSymbols === undefined &&
+          (params.changedFiles === undefined ||
+            (Array.isArray(params.changedFiles) && params.changedFiles.length > 0)));
+      if (readBackend && needsGraph) {
         const repo = await readBackend.resolveRepo(
           typeof params.repo === 'string' ? params.repo : repoId || undefined,
         );
@@ -482,16 +484,16 @@ export async function dispatchSuper(
           repo,
           { needsRelationships: true, readMode: 'committed' },
           async () => {
-            result = await gnTestGap(repo.id, {
+            result = await handler(repo.id, {
               ...params,
               repo: repo.id,
-            } as unknown as TestGapParams);
+            } as unknown as VerifyDiffParams & TestGapParams);
             return result;
           },
         );
         return result;
       }
-      return gnTestGap(repoId, params as unknown as TestGapParams);
+      return handler(repoId, params as unknown as VerifyDiffParams & TestGapParams);
     }
 
     case 'gn_worker_scope_review': {

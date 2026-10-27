@@ -8,6 +8,29 @@ import {
 } from '../../src/core/ingestion/binding-accumulator.js';
 
 describe('BindingAccumulator', () => {
+  it('iterates file-scope entries lazily without copying or exposing mutable tuples', () => {
+    const acc = new BindingAccumulator();
+    acc.appendFile('a.ts', [
+      { scope: '', varName: 'a', typeName: 'A' },
+      { scope: 'main@0', varName: 'local', typeName: 'Local' },
+      { scope: '', varName: 'b', typeName: 'B' },
+    ]);
+    acc.finalize();
+    const entries = acc.iterateFileScopeEntries('a.ts');
+    const first = entries.next().value!;
+    expect(first).toEqual(['a', 'A']);
+    (first as string[])[1] = 'changed';
+    expect(acc.fileScopeGet('a.ts', 'a')).toBe('A');
+    expect([...acc.iterateFileScopeEntries('missing.ts')]).toEqual([]);
+    expect([...acc.iterateFileScopeEntries('a.ts')]).toEqual([
+      ['a', 'A'],
+      ['b', 'B'],
+    ]);
+    acc.dispose();
+    expect(entries.next().done).toBe(true);
+    expect([...acc.iterateFileScopeEntries('a.ts')]).toEqual([]);
+  });
+
   describe('append + read', () => {
     it('returns entries for a single file', () => {
       const acc = new BindingAccumulator();

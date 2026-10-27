@@ -5,9 +5,7 @@
  * The goal is to pin three invariants:
  *
  *   1. When a provider does NOT implement `emitScopeCaptures`, the helper
- *      returns `undefined` silently. This is the state of every language
- *      today — `ParseWorkerResult.parsedFiles` stays empty and the legacy
- *      DAG continues unaffected.
+ *      returns `undefined` silently and the legacy DAG continues unaffected.
  *   2. When a provider DOES implement the hook, the helper threads its
  *      output through `ScopeExtractor.extract` and returns a `ParsedFile`.
  *   3. Exceptions from either the hook or the extractor are caught
@@ -30,15 +28,52 @@ import {
 import type { LanguageProvider } from '../../../src/core/ingestion/language-provider.js';
 import * as languageProviders from '../../../src/core/ingestion/languages/index.js';
 import { processParsing } from '../../../src/core/ingestion/parsing-processor.js';
+import { processCalls } from '../../../src/core/ingestion/call-processor.js';
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 import { createASTCache } from '../../../src/core/ingestion/ast-cache.js';
 import { createResolutionContext } from '../../../src/core/ingestion/model/resolution-context.js';
 import type { WorkerPool } from '../../../src/core/ingestion/workers/worker-pool.js';
 import {
   createEmptyResult,
+  type ExtractedCall,
   type ParseWorkerResult,
 } from '../../../src/core/ingestion/workers/parse-types.js';
 import type { WorkerDispatchOptions } from '../../../src/core/ingestion/workers/worker-pool.js';
+import { createParserForLanguage } from '../../../src/core/tree-sitter/parser-loader.js';
+import { emitTypeScriptCaptures } from '../../../src/core/ingestion/languages/typescript-captures.js';
+import {
+  selectTypeScriptLocalBindings,
+  typeScriptDeclarationBindingScope,
+  typeScriptDeclarationNamespace,
+} from '../../../src/core/ingestion/languages/typescript-declaration-captures.js';
+import { interpretTypeScriptImport } from '../../../src/core/ingestion/languages/typescript-import-captures.js';
+import { interpretTypeScriptExports } from '../../../src/core/ingestion/languages/typescript-export-captures.js';
+import { emitPythonCaptures } from '../../../src/core/ingestion/languages/python-captures.js';
+import { extract } from '../../../src/core/ingestion/scope-extractor.js';
+import { finalizeScopeModel } from '../../../src/core/ingestion/finalize-orchestrator.js';
+import { resolveReferences } from '../../../src/core/ingestion/resolve-references.js';
+import { emitReferencesToGraph } from '../../../src/core/ingestion/emit-references.js';
+
+const tsjsPaths = ['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'];
+const tsjsSource = [
+  "import Main from './module';",
+  'export function run(value) { const local = 1; return value; }',
+  'run(Main);',
+].join('\n');
+
+function tsjsProvider(filePath: string): LanguageProvider {
+  const language = /\.jsx?$/.test(filePath)
+    ? SupportedLanguages.JavaScript
+    : SupportedLanguages.TypeScript;
+  const provider = languageProviders.getProvider(language);
+  expect(provider.emitScopeCaptures).toBeTypeOf('function');
+  expect(provider.bindingScopeFor).toBe(typeScriptDeclarationBindingScope);
+  expect(provider.declarationNamespaceFor).toBe(typeScriptDeclarationNamespace);
+  expect(provider.selectLocalBindings).toBe(selectTypeScriptLocalBindings);
+  expect(provider.interpretImport).toBe(interpretTypeScriptImport);
+  expect(provider.interpretExports).toBe(interpretTypeScriptExports);
+  return provider;
+}
 
 // ─── Capture helpers ────────────────────────────────────────────────────────
 
@@ -54,6 +89,11 @@ const cap = (
 const moduleScopeMatch = (): CaptureMatch => ({
   '@scope.module': cap('@scope.module', 1, 0, 100, 0),
 });
+
+function scopeArtifact(parsedFile: ParsedFile) {
+  const { definitionNodeIds: _mapping, ...scope } = parsedFile;
+  return scope;
+}
 
 describe('processParsing sequential scope artifacts', () => {
   const caches: ReturnType<typeof createASTCache>[] = [];
@@ -72,10 +112,14 @@ describe('processParsing sequential scope artifacts', () => {
     return { graph, symbols, cache };
   }
 
-  function scopeHook(hook: LanguageProvider['emitScopeCaptures']) {
+  function scopeHook(
+    hook: LanguageProvider['emitScopeCaptures'],
+    overrides: Partial<LanguageProvider> = {},
+  ) {
     const getProvider = languageProviders.getProvider;
     vi.spyOn(languageProviders, 'getProvider').mockImplementation((language) => ({
       ...getProvider(language),
+      ...overrides,
       emitScopeCaptures: hook,
     }));
   }
@@ -92,6 +136,643 @@ describe('processParsing sequential scope artifacts', () => {
     };
     return { pool, dispatch };
   }
+
+  it.each(
+    tsjsPaths.flatMap((path) =>
+      (['sequential', 'mock rejection fallback'] as const).map((mode) => ({ path, mode })),
+    ),
+  )('attaches exact supported declaration targets in $path with $mode', async ({ path, mode }) => {
+    tsjsProvider(path);
+    const { graph, symbols, cache } = setup();
+    const content = [
+      'function unique() {}',
+      'export function exposed() {}',
+      'function sameLine() {} class SameLine {}',
+      'export class ExposedClass {}',
+    ].join('\n');
+    const workers = crashingWorkers();
+    const onArtifacts = vi.fn<(files: readonly ParsedFile[]) => void>();
+    const onOutcomes = vi.fn();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(
+      await processParsing(
+        graph,
+        [
+          { path, content },
+          {
+            path: `nested-${path}`,
+            content: 'function outer() { function inner() {} }',
+          },
+        ],
+        '/scope-test',
+        symbols,
+        cache,
+        undefined,
+        mode === 'mock rejection fallback' ? workers.pool : undefined,
+        undefined,
+        undefined,
+        'sequential',
+        undefined,
+        onArtifacts,
+        onOutcomes,
+      ),
+    ).toBeNull();
+    expect(workers.dispatch).toHaveBeenCalledTimes(mode === 'mock rejection fallback' ? 1 : 0);
+    expect(onOutcomes).toHaveBeenCalledExactlyOnceWith([
+      { filePath: path, status: 'success' },
+      { filePath: `nested-${path}`, status: 'failed', reason: 'unsupported-syntax' },
+    ]);
+    expect(onArtifacts).toHaveBeenCalledTimes(1);
+    expect(onArtifacts.mock.calls[0]![0]).toHaveLength(1);
+    const artifact = onArtifacts.mock.calls[0]![0][0]!;
+    const sources = artifact.declarationSources!;
+    expect(sources.map(({ name }) => name)).toEqual([
+      'unique',
+      'exposed',
+      'sameLine',
+      'SameLine',
+      'ExposedClass',
+    ]);
+    const expected = sources.map((source) => {
+      const targets = graph.nodes.filter(
+        (node) =>
+          node.properties.filePath === path &&
+          node.properties.name === source.name &&
+          node.label === source.type,
+      );
+      expect(targets).toHaveLength(1);
+      return { defId: source.defId, nodeId: targets[0]!.id };
+    });
+    expect(artifact.definitionNodeIds).toEqual(expected);
+    for (const mapping of artifact.definitionNodeIds!) {
+      expect(graph.nodes.some((node) => node.id === mapping.nodeId)).toBe(true);
+    }
+  });
+
+  it.each(
+    ['fixture.ts', 'fixture.tsx'].flatMap((path) =>
+      (['sequential', 'worker fallback'] as const).flatMap((mode) =>
+        [false, true].map((ordinary) => ({ path, mode, ordinary })),
+      ),
+    ),
+  )(
+    'retains nominal interface scopes through borrowed roots in $path with $mode (ordinary imports: $ordinary)',
+    async ({ path, mode, ordinary }) => {
+      const { graph, symbols, cache } = setup();
+      const provider = tsjsProvider(path);
+      const emit = provider.emitScopeCaptures!;
+      const borrowedRoots: SyntaxNode[] = [];
+      vi.spyOn(provider, 'emitScopeCaptures').mockImplementation((source, filePath, root) => {
+        expect(root).toBe(cache.get(filePath)?.rootNode);
+        if (!root) throw new Error('Missing borrowed root');
+        borrowedRoots.push(root);
+        return emit(source, filePath, root);
+      });
+      const content = [
+        ...(ordinary
+          ? [
+              'import Main, { Value as Renamed } from "./module";',
+              'import * as types from "./types.js";',
+            ]
+          : []),
+        'import type { Range } from "./types.js";',
+        'export type ReferenceKind = "call" | "read";',
+        'export interface ReferenceSite { readonly name: string; readonly atRange: Range; readonly kind: ReferenceKind; }',
+        'export interface ExtendedSite extends ReferenceSite { resolve(name: string): Promise<unknown>; }',
+      ].join('\n');
+      const files = [{ path, content }];
+      const parse = vi.spyOn(Parser.prototype, 'parse');
+      const workers = crashingWorkers();
+      const onArtifacts = vi.fn<(files: readonly ParsedFile[]) => void>();
+      const onOutcomes = vi.fn();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      await processParsing(
+        graph,
+        files,
+        '/scope-test',
+        symbols,
+        cache,
+        undefined,
+        mode === 'worker fallback' ? workers.pool : undefined,
+        undefined,
+        undefined,
+        'sequential',
+        undefined,
+        onArtifacts,
+        onOutcomes,
+      );
+      expect(parse).toHaveBeenCalledTimes(1);
+      expect(borrowedRoots).toHaveLength(1);
+      expect(workers.dispatch).toHaveBeenCalledTimes(mode === 'worker fallback' ? 1 : 0);
+      const direct = extract(emitTypeScriptCaptures(cache.get(path)!.rootNode), path, provider);
+      expect(onArtifacts).toHaveBeenCalledTimes(1);
+      expect(onArtifacts.mock.calls[0]![0].map(scopeArtifact)).toEqual([direct]);
+      expect(onOutcomes).toHaveBeenCalledExactlyOnceWith([{ filePath: path, status: 'success' }]);
+      expect(direct.scopes.map(({ kind }) => kind)).toEqual(['Module', 'Class', 'Class']);
+      expect(direct.scopes.slice(1).map(({ parent }) => parent)).toEqual([
+        direct.scopes[0]!.id,
+        direct.scopes[0]!.id,
+      ]);
+      expect(direct.localDefs.map(({ qualifiedName, type }) => ({ qualifiedName, type }))).toEqual([
+        { qualifiedName: 'ReferenceKind', type: 'TypeAlias' },
+        { qualifiedName: 'ReferenceSite', type: 'Interface' },
+        { qualifiedName: 'ExtendedSite', type: 'Interface' },
+      ]);
+      expect([...direct.scopes[0]!.bindings]).toEqual(
+        direct.localDefs.map((def) => [
+          def.qualifiedName,
+          [{ def, origin: 'local', namespace: 'type' }],
+        ]),
+      );
+      expect(direct.scopes.slice(1).map((scope) => [...scope.bindings])).toEqual([[], []]);
+      expect(direct.scopes.every((scope) => scope.typeBindings.size === 0)).toBe(true);
+      expect(direct.parsedImports).toEqual([
+        ...(ordinary
+          ? [
+              {
+                kind: 'alias',
+                localName: 'Main',
+                importedName: 'default',
+                alias: 'Main',
+                targetRaw: './module',
+              },
+              {
+                kind: 'alias',
+                localName: 'Renamed',
+                importedName: 'Value',
+                alias: 'Renamed',
+                targetRaw: './module',
+              },
+              {
+                kind: 'namespace',
+                localName: 'types',
+                importedName: './types.js',
+                targetRaw: './types.js',
+              },
+            ]
+          : []),
+        {
+          kind: 'named',
+          localName: 'Range',
+          importedName: 'Range',
+          targetRaw: './types.js',
+          namespace: 'type',
+        },
+      ]);
+      const exports = new Map(direct.localDefs.map((def) => [def.qualifiedName, def.nodeId]));
+      expect(direct.exports).toEqual(exports);
+      expect(direct.exportsByNamespace).toEqual({ type: exports, value: new Map() });
+      expect(direct.referenceSites).toEqual([]);
+      const detached = structuredClone(direct);
+      cache.clear();
+      expect(onArtifacts.mock.calls[0]![0].map(scopeArtifact)).toEqual([detached]);
+      expect(finalizeScopeModel([detached]).scopeTree.byId.size).toBe(3);
+    },
+  );
+
+  it.each(['sequential', 'worker fallback'] as const)(
+    'matches production Python direct extraction and preserves refused legacy calls in %s mode',
+    async (mode) => {
+      const { graph, cache } = setup();
+      const ctx = createResolutionContext();
+      const symbols = ctx.model.symbols;
+      const borrowedRoots: SyntaxNode[] = [];
+      const provider = languageProviders.getProvider(SupportedLanguages.Python);
+      const emit = provider.emitScopeCaptures!;
+      vi.spyOn(provider, 'emitScopeCaptures').mockImplementation((source, path, root) => {
+        expect(root).toBe(cache.get(path)?.rootNode);
+        if (!root) throw new Error('Missing borrowed root');
+        borrowedRoots.push(root);
+        return emit(source, path, root);
+      });
+      const accepted = {
+        path: 'accepted.py',
+        content: 'def target():\n    pass\ndef caller():\n    target()\ncaller()\n',
+      };
+      const refused = {
+        path: 'refused.py',
+        content:
+          'def refusedTarget(value):\n    pass\ndef refusedCaller():\n    refusedTarget(1)\n    missing()\n',
+      };
+      const files = [accepted, refused];
+      const parse = vi.spyOn(Parser.prototype, 'parse');
+      const workers = crashingWorkers();
+      const onArtifacts = vi.fn<(files: readonly ParsedFile[]) => void>();
+      const onOutcomes = vi.fn();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      expect(
+        await processParsing(
+          graph,
+          files,
+          '/scope-test',
+          symbols,
+          cache,
+          undefined,
+          mode === 'worker fallback' ? workers.pool : undefined,
+          undefined,
+          undefined,
+          'sequential',
+          undefined,
+          onArtifacts,
+          onOutcomes,
+        ),
+      ).toBeNull();
+      expect(parse).toHaveBeenCalledTimes(files.length);
+      expect(borrowedRoots).toHaveLength(files.length);
+      expect(workers.dispatch).toHaveBeenCalledTimes(mode === 'worker fallback' ? 1 : 0);
+      const direct = extract(
+        emitPythonCaptures(cache.get(accepted.path)!.rootNode),
+        accepted.path,
+        provider,
+      );
+      expect(onArtifacts).toHaveBeenCalledExactlyOnceWith([direct]);
+      expect(onOutcomes).toHaveBeenCalledExactlyOnceWith([
+        { filePath: accepted.path, status: 'success' },
+        { filePath: refused.path, status: 'failed', reason: 'unsupported-syntax' },
+      ]);
+      expect(direct.localDefs.map(({ qualifiedName }) => qualifiedName)).toEqual([
+        'target',
+        'caller',
+      ]);
+      expect(direct.referenceSites.map(({ name, kind }) => ({ name, kind }))).toEqual([
+        { name: 'target', kind: 'call' },
+        { name: 'caller', kind: 'call' },
+      ]);
+      expect(direct.exports).toEqual(
+        new Map(direct.localDefs.map((def) => [def.qualifiedName, def.nodeId])),
+      );
+      for (const name of ['refusedTarget', 'refusedCaller']) {
+        expect(symbols.lookupCallableByName(name)).toHaveLength(1);
+        expect(graph.nodes.filter((node) => node.properties.name === name)).toHaveLength(1);
+      }
+      const calls: ExtractedCall[] = [];
+      await processCalls(
+        graph,
+        [refused],
+        cache,
+        ctx,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        new Map(),
+        (call) => calls.push(call),
+      );
+      expect(calls.map(({ calledName, argCount }) => ({ calledName, argCount }))).toEqual([
+        { calledName: 'refusedTarget', argCount: 1 },
+        { calledName: 'missing', argCount: 0 },
+      ]);
+      const caller = symbols.lookupCallableByName('refusedCaller')[0]!;
+      const target = symbols.lookupCallableByName('refusedTarget')[0]!;
+      expect(graph.relationships.filter((edge) => edge.type === 'CALLS')).toEqual([
+        expect.objectContaining({ sourceId: caller.nodeId, targetId: target.nodeId }),
+      ]);
+      const detached = structuredClone(onArtifacts.mock.calls[0]![0]);
+      cache.clear();
+      expect(onArtifacts.mock.calls[0]![0]).toEqual(detached);
+      expect(finalizeScopeModel(onArtifacts.mock.calls[0]![0]).scopeTree.byId.size).toBe(
+        direct.scopes.length,
+      );
+    },
+  );
+
+  it.each(
+    tsjsPaths.flatMap((path) =>
+      (['sequential', 'mock rejection fallback'] as const).map((mode) => ({ path, mode })),
+    ),
+  )(
+    'uses production hooks for canonical vars and catch scopes in $path with $mode',
+    async ({ path, mode }) => {
+      const provider = tsjsProvider(path);
+      const { graph, symbols, cache } = setup();
+      const source = [
+        "import Main from './module';",
+        'export function retained() {}',
+        'var repeated;',
+        'try { var repeated; Main(repeated); }',
+        'catch (error) { recover(error); }',
+        'finally { var repeated; cleanup(repeated); }',
+        'export { repeated as exposed };',
+      ].join('\n');
+      const unsupportedPath = `unsupported-${path}`;
+      const workers = crashingWorkers();
+      const onArtifacts = vi.fn<(files: readonly ParsedFile[]) => void>();
+      const onOutcomes = vi.fn();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      expect(
+        await processParsing(
+          graph,
+          [
+            { path, content: source },
+            {
+              path: unsupportedPath,
+              content: 'export function unsupportedRetained() {}\ndebugger;',
+            },
+          ],
+          '/scope-test',
+          symbols,
+          cache,
+          undefined,
+          mode === 'mock rejection fallback' ? workers.pool : undefined,
+          undefined,
+          undefined,
+          'sequential',
+          undefined,
+          onArtifacts,
+          onOutcomes,
+        ),
+      ).toBeNull();
+
+      const direct = extract(emitTypeScriptCaptures(cache.get(path)!.rootNode), path, provider);
+      expect(onArtifacts).toHaveBeenCalledTimes(1);
+      expect(onArtifacts.mock.calls[0]![0].map(scopeArtifact)).toEqual([direct]);
+      expect(onOutcomes).toHaveBeenCalledExactlyOnceWith([
+        { filePath: path, status: 'success' },
+        { filePath: unsupportedPath, status: 'failed', reason: 'unsupported-syntax' },
+      ]);
+      const module = direct.scopes.find((scope) => scope.id === direct.moduleScope)!;
+      const exceptionBlocks = direct.scopes.filter(
+        (scope) => scope.kind === 'Block' && scope.range.startLine >= 4,
+      );
+      expect(exceptionBlocks).toHaveLength(4);
+      const [attempt, handler, caught, finalizer] = exceptionBlocks;
+      expect([attempt, handler, caught, finalizer].map((scope) => scope!.parent)).toEqual([
+        module.id,
+        module.id,
+        handler!.id,
+        module.id,
+      ]);
+      const repeated = direct.localDefs.filter((def) => def.qualifiedName === 'repeated');
+      expect(repeated).toHaveLength(3);
+      expect(new Set(repeated.map((def) => def.nodeId)).size).toBe(3);
+      expect(module.bindings.get('repeated')!.map(({ def }) => def.nodeId)).toEqual([
+        repeated[0]!.nodeId,
+      ]);
+      expect(handler!.bindings.get('error')!.map(({ def }) => def.qualifiedName)).toEqual([
+        'error',
+      ]);
+      expect(caught!.bindings.has('error')).toBe(false);
+      expect(direct.parsedImports).toEqual([
+        {
+          kind: 'alias',
+          localName: 'Main',
+          importedName: 'default',
+          alias: 'Main',
+          targetRaw: './module',
+        },
+      ]);
+      const retained = direct.localDefs.find((def) => def.qualifiedName === 'retained')!;
+      expect(direct.exports).toEqual(
+        new Map([
+          ['retained', retained.nodeId],
+          ['exposed', repeated[0]!.nodeId],
+        ]),
+      );
+      expect(
+        direct.referenceSites.map(({ name, kind, inScope }) => ({ name, kind, inScope })),
+      ).toEqual([
+        { name: 'Main', kind: 'call', inScope: attempt!.id },
+        { name: 'repeated', kind: 'read', inScope: attempt!.id },
+        { name: 'recover', kind: 'call', inScope: caught!.id },
+        { name: 'error', kind: 'read', inScope: caught!.id },
+        { name: 'cleanup', kind: 'call', inScope: finalizer!.id },
+        { name: 'repeated', kind: 'read', inScope: finalizer!.id },
+      ]);
+      for (const name of ['retained', 'unsupportedRetained']) {
+        expect(symbols.lookupCallableByName(name)).not.toHaveLength(0);
+        expect(graph.nodes.some((node) => node.properties.name === name)).toBe(true);
+      }
+      expect(workers.dispatch).toHaveBeenCalledTimes(mode === 'mock rejection fallback' ? 1 : 0);
+      const detached = structuredClone(onArtifacts.mock.calls[0]![0]);
+      cache.clear();
+      expect(onArtifacts.mock.calls[0]![0]).toEqual(detached);
+      expect(finalizeScopeModel(onArtifacts.mock.calls[0]![0]).scopeTree.byId.size).toBe(
+        direct.scopes.length,
+      );
+    },
+  );
+
+  it.each(
+    tsjsPaths.flatMap((path) =>
+      (['sequential', 'mock rejection fallback'] as const).map((mode) => ({ path, mode })),
+    ),
+  )(
+    'emits direct-extraction CALLS parity after cache disposal for $path in $mode mode',
+    async ({ path, mode }) => {
+      const provider = tsjsProvider(path);
+      const { graph, symbols, cache } = setup();
+      const source = 'function target() {}\nfunction caller() { target(); missing(); }';
+      const workers = crashingWorkers();
+      const onArtifacts = vi.fn<(files: readonly ParsedFile[]) => void>();
+      const onOutcomes = vi.fn();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      expect(
+        await processParsing(
+          graph,
+          [{ path, content: source }],
+          '/scope-test',
+          symbols,
+          cache,
+          undefined,
+          mode === 'mock rejection fallback' ? workers.pool : undefined,
+          undefined,
+          undefined,
+          'sequential',
+          undefined,
+          onArtifacts,
+          onOutcomes,
+        ),
+      ).toBeNull();
+      expect(workers.dispatch).toHaveBeenCalledTimes(mode === 'mock rejection fallback' ? 1 : 0);
+      expect(onArtifacts).toHaveBeenCalledTimes(1);
+      expect(onOutcomes).toHaveBeenCalledExactlyOnceWith([{ filePath: path, status: 'success' }]);
+      const direct = extract(emitTypeScriptCaptures(cache.get(path)!.rootNode), path, provider);
+      const artifacts = onArtifacts.mock.calls[0]![0];
+      expect(artifacts.map(scopeArtifact)).toEqual([direct]);
+      cache.clear();
+
+      const scopes = finalizeScopeModel(artifacts);
+      const resolved = resolveReferences(scopes);
+      expect(resolved.stats).toEqual({
+        totalSites: 2,
+        resolvedSites: 1,
+        unresolvedSites: 1,
+        ambiguousSites: 0,
+        unsupportedSites: 0,
+      });
+      const emitted = createKnowledgeGraph();
+      expect(
+        emitReferencesToGraph({ graph: emitted, scopes, referenceIndex: resolved.referenceIndex }),
+      ).toEqual({
+        edgesEmitted: 1,
+        skippedNoCaller: 0,
+        skippedMissingTarget: 0,
+        scopeNodesEmitted: 0,
+        scopeEdgesEmitted: 0,
+      });
+      const caller = direct.localDefs.find((def) => def.qualifiedName === 'caller')!;
+      const target = direct.localDefs.find((def) => def.qualifiedName === 'target')!;
+      expect(caller).toBeDefined();
+      expect(target).toBeDefined();
+      expect(emitted.relationships).toEqual([
+        expect.objectContaining({
+          sourceId: caller.nodeId,
+          targetId: target.nodeId,
+          type: 'CALLS',
+        }),
+      ]);
+
+      const directScopes = finalizeScopeModel([direct]);
+      const directResolved = resolveReferences(directScopes);
+      const baseline = createKnowledgeGraph();
+      emitReferencesToGraph({
+        graph: baseline,
+        scopes: directScopes,
+        referenceIndex: directResolved.referenceIndex,
+      });
+      expect({ nodes: emitted.nodes, relationships: emitted.relationships }).toEqual({
+        nodes: baseline.nodes,
+        relationships: baseline.relationships,
+      });
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'preserves legacy symbols and calls after complex parameter scope rejection in %s',
+    async (path) => {
+      tsjsProvider(path);
+      const { graph, cache } = setup();
+      const ctx = createResolutionContext();
+      const symbols = ctx.model.symbols;
+      const file = {
+        path,
+        content:
+          'export function target(value: string & number) {}\nexport function caller() { target("retained"); missing("unresolved"); }',
+      };
+      const onArtifacts = vi.fn<(files: readonly ParsedFile[]) => void>();
+      const onOutcomes = vi.fn();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      expect(
+        await processParsing(
+          graph,
+          [file],
+          '/scope-test',
+          symbols,
+          cache,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          'sequential',
+          undefined,
+          onArtifacts,
+          onOutcomes,
+        ),
+      ).toBeNull();
+      expect(onArtifacts).toHaveBeenCalledExactlyOnceWith([]);
+      expect(onOutcomes).toHaveBeenCalledExactlyOnceWith([
+        { filePath: path, status: 'failed', reason: 'unsupported-syntax' },
+      ]);
+      for (const name of ['target', 'caller']) {
+        expect(symbols.lookupCallableByName(name)).toHaveLength(1);
+        expect(graph.nodes.filter((node) => node.properties.name === name)).toHaveLength(1);
+      }
+      expect(cache.get(path)!.rootNode.text).toBe(file.content);
+
+      const calls: ExtractedCall[] = [];
+      await processCalls(
+        graph,
+        [file],
+        cache,
+        ctx,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        new Map(),
+        (call) => calls.push(call),
+      );
+      expect(calls.map(({ calledName, argCount }) => ({ calledName, argCount }))).toEqual([
+        { calledName: 'target', argCount: 1 },
+        { calledName: 'missing', argCount: 1 },
+      ]);
+      const caller = symbols.lookupCallableByName('caller')[0]!;
+      const target = symbols.lookupCallableByName('target')[0]!;
+      expect(graph.relationships.filter((edge) => edge.type === 'CALLS')).toEqual([
+        expect.objectContaining({ sourceId: caller.nodeId, targetId: target.nodeId }),
+      ]);
+    },
+  );
+
+  it.each(['sequential', 'worker fallback'] as const)(
+    'matches real TS/JS direct extraction without reparsing in %s mode',
+    async (mode) => {
+      const provider = tsjsProvider('fixture.ts');
+      const { graph, symbols, cache } = setup();
+      const borrowedRoots: SyntaxNode[] = [];
+      scopeHook((_source, path, root) => {
+        expect(root).toBe(cache.get(path)?.rootNode);
+        if (!root) throw new Error('Missing borrowed root');
+        borrowedRoots.push(root);
+        return emitTypeScriptCaptures(root);
+      });
+      const files = tsjsPaths.map((path) => ({ path, content: tsjsSource }));
+      files.push({
+        path: 'unsupported.ts',
+        content: 'export function retained() {}\ndebugger;',
+      });
+      const parse = vi.spyOn(Parser.prototype, 'parse');
+      const workers = crashingWorkers();
+      const onArtifacts = vi.fn<(files: readonly ParsedFile[]) => void>();
+      const onOutcomes = vi.fn();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      expect(
+        await processParsing(
+          graph,
+          files,
+          '/scope-test',
+          symbols,
+          cache,
+          undefined,
+          mode === 'worker fallback' ? workers.pool : undefined,
+          undefined,
+          undefined,
+          'sequential',
+          undefined,
+          onArtifacts,
+          onOutcomes,
+        ),
+      ).toBeNull();
+
+      expect(parse).toHaveBeenCalledTimes(files.length);
+      expect(borrowedRoots).toHaveLength(files.length);
+      const expected = tsjsPaths.map((path) =>
+        extract(emitTypeScriptCaptures(cache.get(path)!.rootNode), path, provider),
+      );
+      expect(onArtifacts).toHaveBeenCalledTimes(1);
+      expect(onArtifacts.mock.calls[0]![0].map(scopeArtifact)).toEqual(expected);
+      expect(onOutcomes).toHaveBeenCalledExactlyOnceWith([
+        ...tsjsPaths.map((filePath) => ({ filePath, status: 'success' })),
+        { filePath: 'unsupported.ts', status: 'failed', reason: 'unsupported-syntax' },
+      ]);
+      expect(symbols.lookupCallableByName('retained')).not.toHaveLength(0);
+      expect(workers.dispatch).toHaveBeenCalledTimes(mode === 'worker fallback' ? 1 : 0);
+      const detached = structuredClone(expected);
+      cache.clear();
+      expect(onArtifacts.mock.calls[0]![0].map(scopeArtifact)).toEqual(detached);
+    },
+  );
 
   it.each(['sequential', 'worker fallback'] as const)(
     'delivers ordered artifacts while preserving legacy graph output in %s mode',
@@ -455,6 +1136,188 @@ function fakeProvider(
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
+
+describe('production TS/JS provider bridge', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    {
+      name: 'skips a top-level call beside named sibling functions',
+      source: 'function target() {}\nfunction sibling() {}\ntarget();',
+      owners: [
+        ['target', 'Function'],
+        ['sibling', 'Function'],
+      ],
+      referenceScope: 'Module',
+      callerName: undefined,
+    },
+    {
+      name: 'skips a top-level call beside an unrelated module constant',
+      source: 'const unrelated = 1;\nfunction target() {}\ntarget();',
+      owners: [
+        ['unrelated', 'Module'],
+        ['target', 'Function'],
+      ],
+      referenceScope: 'Module',
+      callerName: undefined,
+    },
+    {
+      name: 'skips a top-level block call beside a block-local constant',
+      source: 'function target() {}\n{ const unrelated = 1; target(); }',
+      owners: [
+        ['target', 'Function'],
+        ['unrelated', 'Block'],
+      ],
+      referenceScope: 'Block',
+      callerName: undefined,
+    },
+    {
+      name: 'attributes a nested block call to its enclosing named function',
+      source: 'function target() {}\nfunction caller() { { target(); } }',
+      owners: [
+        ['target', 'Function'],
+        ['caller', 'Function'],
+      ],
+      referenceScope: 'Block',
+      callerName: 'caller',
+    },
+    {
+      name: 'attributes a block call beside a local constant to its enclosing named function',
+      source: 'function target() {}\nfunction caller() { { const unrelated = 1; target(); } }',
+      owners: [
+        ['target', 'Function'],
+        ['caller', 'Function'],
+        ['unrelated', 'Block'],
+      ],
+      referenceScope: 'Block',
+      callerName: 'caller',
+    },
+  ])(
+    '$name with real TypeScript captures',
+    async ({ source, owners, referenceScope, callerName }) => {
+      const path = 'caller-characterization.ts';
+      const provider = tsjsProvider(path);
+      const parser = await createParserForLanguage(provider.id, path);
+      const tree = parser.parse(source);
+      const parsed = extract(emitTypeScriptCaptures(tree.rootNode), path, provider);
+      expect(
+        parsed.scopes.flatMap((scope) =>
+          scope.ownedDefs.map((def) => [def.qualifiedName, scope.kind]),
+        ),
+      ).toEqual(owners);
+      expect(parsed.referenceSites).toHaveLength(1);
+      const site = parsed.referenceSites[0]!;
+      const sourceScope = parsed.scopes.find((scope) => scope.id === site.inScope)!;
+      expect({ name: site.name, kind: site.kind, scopeKind: sourceScope.kind }).toEqual({
+        name: 'target',
+        kind: 'call',
+        scopeKind: referenceScope,
+      });
+      expect(sourceScope.ownedDefs.map((def) => def.qualifiedName)).toEqual(
+        owners.filter(([, kind]) => kind === referenceScope).map(([name]) => name),
+      );
+      if (referenceScope === 'Module') expect(site.inScope).toBe(parsed.moduleScope);
+
+      const scopes = finalizeScopeModel([parsed]);
+      const resolved = resolveReferences(scopes);
+      expect(resolved.stats).toEqual({
+        totalSites: 1,
+        resolvedSites: 1,
+        unresolvedSites: 0,
+        ambiguousSites: 0,
+        unsupportedSites: 0,
+      });
+      const graph = createKnowledgeGraph();
+      expect(
+        emitReferencesToGraph({ graph, scopes, referenceIndex: resolved.referenceIndex }),
+      ).toEqual({
+        edgesEmitted: callerName === undefined ? 0 : 1,
+        skippedNoCaller: callerName === undefined ? 1 : 0,
+        skippedMissingTarget: 0,
+        scopeNodesEmitted: 0,
+        scopeEdgesEmitted: 0,
+      });
+      const target = parsed.localDefs.find((def) => def.qualifiedName === 'target')!;
+      const caller = parsed.localDefs.find((def) => def.qualifiedName === callerName);
+      expect(graph.relationships).toEqual(
+        caller === undefined
+          ? []
+          : [
+              expect.objectContaining({
+                sourceId: caller.nodeId,
+                targetId: target.nodeId,
+                type: 'CALLS',
+              }),
+            ],
+      );
+    },
+  );
+
+  it.each(tsjsPaths)('matches direct extraction and detaches results for %s', async (path) => {
+    const provider = tsjsProvider(path);
+    const parser = await createParserForLanguage(provider.id, path);
+    const parse = vi.spyOn(parser, 'parse');
+    const tree = parser.parse(tsjsSource);
+    const expected = extract(emitTypeScriptCaptures(tree.rootNode), path, provider);
+    const warning = vi.fn();
+
+    const outcome = extractParsedFileOutcome(provider, tsjsSource, path, warning, tree.rootNode);
+
+    expect(outcome).toEqual({ status: 'success', parsedFile: expected });
+    expect(expected.parsedImports).toEqual([
+      {
+        kind: 'alias',
+        localName: 'Main',
+        importedName: 'default',
+        alias: 'Main',
+        targetRaw: './module',
+      },
+    ]);
+    expect(expected.exports).toEqual(new Map([['run', expected.localDefs[0]!.nodeId]]));
+    expect(expected.referenceSites.map((site) => site.name)).toContain('value');
+    expect(expected.referenceSites.map((site) => site.name)).toContain('run');
+    expect(parse).toHaveBeenCalledTimes(1);
+    expect(warning).not.toHaveBeenCalled();
+    const detached = structuredClone(outcome);
+    parser.parse('export function replacement() {}');
+    expect(outcome).toEqual(detached);
+  });
+
+  it.each(tsjsPaths)('fails closed for unsupported whole-file source in %s', async (path) => {
+    const provider = tsjsProvider(path);
+    const parser = await createParserForLanguage(provider.id, path);
+    const source = 'export function retained() {}\ndebugger;';
+    const root = parser.parse(source).rootNode;
+    const parse = vi.spyOn(parser, 'parse');
+    const warning = vi.fn();
+
+    expect(root.hasError).toBe(false);
+    expect(extractParsedFileOutcome(provider, source, path, warning, root)).toEqual({
+      status: 'failed',
+      reason: 'unsupported-syntax',
+    });
+    expect(warning).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(path));
+    expect(parse).not.toHaveBeenCalled();
+  });
+
+  it('requires a borrowed root instead of reparsing when the production hook is called', () => {
+    const provider = tsjsProvider('fixture.ts');
+    const parse = vi.spyOn(Parser.prototype, 'parse');
+    const warning = vi.fn();
+
+    expect(() => provider.emitScopeCaptures!(tsjsSource, 'fixture.ts')).toThrow(
+      'TS/JS scope captures require the borrowed root',
+    );
+    expect(extractParsedFileOutcome(provider, tsjsSource, 'fixture.ts', warning)).toEqual({
+      status: 'failed',
+      reason: 'scope-extraction-error',
+    });
+    expect(warning).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining('TS/JS scope captures require the borrowed root'),
+    );
+    expect(parse).not.toHaveBeenCalled();
+  });
+});
 
 describe('extractParsedFileOutcome', () => {
   it('includes explicit exports in a successful bridge artifact', () => {

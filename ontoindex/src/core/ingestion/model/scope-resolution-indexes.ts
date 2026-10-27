@@ -44,6 +44,7 @@ import type {
   BindingRef,
   DefIndex,
   FinalizedScc,
+  FinalizeOutput,
   FinalizeStats,
   ImportEdge,
   MethodDispatchIndex,
@@ -59,6 +60,7 @@ export interface ScopeResolutionIndexes {
   readonly defs: DefIndex;
   readonly qualifiedNames: QualifiedNameIndex;
   readonly moduleScopes: ModuleScopeIndex;
+  readonly lookupExport?: FinalizeOutput['lookupExport'];
   readonly methodDispatch: MethodDispatchIndex;
   /** Finalized `ImportEdge[]` per module scope. */
   readonly imports: ReadonlyMap<ScopeId, readonly ImportEdge[]>;

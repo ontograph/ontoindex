@@ -5,13 +5,14 @@ import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/pa
 import { getProvider, getProviderForFile, providersWithImplicitWiring } from './languages/index.js';
 import type { CaptureMap, LanguageProvider } from './language-provider.js';
 import { generateId } from '../../lib/utils.js';
-import { getLanguageFromFilename } from 'ontoindex-shared';
+import { getLanguageFromFilename, SupportedLanguages } from 'ontoindex-shared';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import type { ExtractedImport } from './workers/parse-worker.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import { loadImportConfigs } from './language-config.js';
 import { buildSuffixIndex } from './import-resolvers/utils.js';
+import { collectRustDeclaredModules } from './import-resolvers/rust-module-evidence.js';
 import type {
   ResolutionContext,
   ModuleAliasMap,
@@ -274,7 +275,11 @@ const processImportMatch = (
     if (!rawImportPath) return importsFound;
     importsFound++;
 
-    const result = provider.importResolver(rawImportPath, filePath, resolveCtx);
+    const importResolveCtx =
+      provider.id === SupportedLanguages.Rust
+        ? { ...resolveCtx, rustDeclaredModules: collectRustDeclaredModules(importNode) }
+        : resolveCtx;
+    const result = provider.importResolver(rawImportPath, filePath, importResolveCtx);
     const extractor = provider.namedBindingExtractor;
     const bindings = namedImportMap && extractor ? extractor(importNode) : undefined;
     applyImportResult(
@@ -432,7 +437,7 @@ export const processImports = async (
   let totalImportsFound = 0;
 
   // Load language-specific configs once before the file loop
-  const configs = suppliedConfigs ?? (await loadImportConfigs(repoRoot || ''));
+  const configs = suppliedConfigs ?? (await loadImportConfigs(repoRoot || '', allFileList));
   const resolveCtx: ResolveCtx = {
     allFilePaths,
     allFileList,
@@ -505,7 +510,7 @@ export const processImportsFromExtracted = async (
 
   let totalImportsFound = 0;
 
-  const configs = suppliedConfigs ?? (await loadImportConfigs(repoRoot || ''));
+  const configs = suppliedConfigs ?? (await loadImportConfigs(repoRoot || '', allFileList));
   const resolveCtx: ResolveCtx = {
     allFilePaths,
     allFileList,
@@ -544,7 +549,11 @@ export const processImportsFromExtracted = async (
       totalImportsFound++;
 
       const provider = getProvider(imp.language);
-      const result = provider.importResolver(imp.rawImportPath, filePath, resolveCtx);
+      const importResolveCtx =
+        imp.language === SupportedLanguages.Rust
+          ? { ...resolveCtx, rustDeclaredModules: imp.rustDeclaredModules }
+          : resolveCtx;
+      const result = provider.importResolver(imp.rawImportPath, filePath, importResolveCtx);
       applyImportResult(
         result,
         filePath,

@@ -511,9 +511,7 @@ pub fn extract_imports_native(file_path: String, content: String, language_id: S
     let query_str = match language_id.as_str() {
         "javascript" | "typescript" => {
             r#"
-            (import_statement (string (string_fragment) @path))
             (import_statement (string) @path)
-            (export_statement (string (string_fragment) @path))
             (export_statement (string) @path)
             "#
         }
@@ -694,6 +692,48 @@ await fetch("/api/orders/123", { method: "POST" });
         assert_eq!(imports.len(), 2);
         assert_eq!(imports[0].raw_import_path, "./a");
         assert_eq!(imports[1].raw_import_path, "./b");
+    }
+
+    #[test]
+    fn extracts_one_import_record_per_statement() {
+        let cases: &[(&str, &[&str])] = &[
+            (
+                r#"import './side-effect'; import value from "./default"; import { named } from './named'; export { item } from "./reexport"; export * from './all';"#,
+                &["./side-effect", "./default", "./named", "./reexport", "./all"],
+            ),
+            (
+                r#"import './same'; import { item } from './same'; export * from './same';"#,
+                &["./same", "./same", "./same"],
+            ),
+            (r#"import ''; export * from "";"#, &["", ""]),
+            (
+                r#"import "./quo\"ted"; export * from './slash\\path';"#,
+                &[r#"./quo\"ted"#, r#"./slash\\path"#],
+            ),
+        ];
+
+        for language in ["javascript", "typescript"] {
+            for (source, expected_paths) in cases {
+                let imports = extract_imports_native(
+                    "test-source".to_string(),
+                    source.to_string(),
+                    language.to_string(),
+                );
+                let actual: Vec<_> = imports
+                    .iter()
+                    .map(|import| (
+                        import.file_path.as_str(),
+                        import.raw_import_path.as_str(),
+                        import.language.as_str(),
+                    ))
+                    .collect();
+                let expected: Vec<_> = expected_paths
+                    .iter()
+                    .map(|path| ("test-source", *path, language))
+                    .collect();
+                assert_eq!(actual, expected, "{language}: {source}");
+            }
+        }
     }
 
     #[test]

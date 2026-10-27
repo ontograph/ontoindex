@@ -73,6 +73,64 @@ function extractCallCaptures(
 describe('inferCallForm', () => {
   const parser = new Parser();
 
+  describe('node wrapper identity', () => {
+    const tree = {};
+    const callNode = { type: 'call_expression', tree, id: 42 } as SyntaxNode;
+
+    it.each(['parent', 'grandparent'] as const)(
+      'matches a distinct %s wrapper of the same node',
+      (ancestor) => {
+        const wrapper = { type: 'call_expression', tree, id: 42 } as SyntaxNode;
+        const nameNode = {
+          parent: ancestor === 'parent' ? wrapper : { type: 'identifier', parent: wrapper },
+        } as SyntaxNode;
+
+        expect(wrapper).not.toBe(callNode);
+        expect(inferCallForm(callNode, nameNode)).toBe('free');
+      },
+    );
+
+    it.each([
+      ['different trees', { type: 'call_expression', tree: {}, id: 42 }],
+      ['different IDs', { type: 'call_expression', tree, id: 43 }],
+      ['missing tree', { type: 'call_expression', id: 42 }],
+      ['missing ID', { type: 'call_expression', tree }],
+      ['null parent', null],
+    ])('does not match %s', (_description, parent) => {
+      expect(inferCallForm(callNode, { parent } as SyntaxNode)).toBeUndefined();
+      expect(
+        inferCallForm(callNode, {
+          parent: { type: 'identifier', parent },
+        } as SyntaxNode),
+      ).toBeUndefined();
+    });
+
+    it('does not equate wrappers with missing identity fields', () => {
+      expect(
+        inferCallForm(
+          { type: 'call_expression' } as SyntaxNode,
+          { parent: { type: 'call_expression' } } as SyntaxNode,
+        ),
+      ).toBeUndefined();
+    });
+
+    it('preserves reference equality without identity fields', () => {
+      const call = { type: 'call_expression' } as SyntaxNode;
+      expect(inferCallForm(call, { parent: call } as SyntaxNode)).toBe('free');
+    });
+
+    it('preserves member precedence over matching node identity', () => {
+      const parent = { type: 'member_expression', tree, id: 42 } as SyntaxNode;
+      expect(inferCallForm(callNode, { parent } as SyntaxNode)).toBe('member');
+    });
+
+    it('preserves constructor precedence over member access', () => {
+      const call = { type: 'new_expression', tree, id: 42 } as SyntaxNode;
+      const parent = { type: 'member_expression', tree, id: 42 } as SyntaxNode;
+      expect(inferCallForm(call, { parent } as SyntaxNode)).toBe('constructor');
+    });
+  });
+
   describe('TypeScript', () => {
     it('detects free call', () => {
       parser.setLanguage(TypeScript.typescript);

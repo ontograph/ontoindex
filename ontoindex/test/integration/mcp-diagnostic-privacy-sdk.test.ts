@@ -157,7 +157,12 @@ describe('diagnostic privacy over the real MCP SDK', () => {
         const { payload, report } = await diagnose(legacyResponse);
         expect(report.embeddings).toMatchObject({ count: 0, populated: false, status: 'missing' });
         expect(report.recommendations).toEqual(
-          expect.arrayContaining([expect.objectContaining({ detail: 'Embeddings not populated' })]),
+          expect.arrayContaining([
+            expect.objectContaining({
+              severity: 'INFO',
+              detail: expect.stringContaining('Embeddings not populated'),
+            }),
+          ]),
         );
         if (!legacyResponse) {
           expect(payload).toMatchObject({

@@ -230,6 +230,9 @@ export const processCommunities = async (
  */
 const MIN_CONFIDENCE_LARGE = 0.5;
 
+const compareIds = (left: string, right: string): number =>
+  left < right ? -1 : left > right ? 1 : 0;
+
 const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph, isLarge: boolean): GraphInstance => {
   const GraphCtor = Graph as unknown as new (options: {
     type: string;
@@ -252,19 +255,31 @@ const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph, isLarge: boolean):
     nodeDegree.set(rel.targetId, (nodeDegree.get(rel.targetId) || 0) + 1);
   });
 
+  const eligibleNodes: Array<{ id: string; attributes: Attributes }> = [];
   knowledgeGraph.forEachNode((node) => {
     if (!symbolTypes.has(node.label) || !connectedNodes.has(node.id)) return;
     // For large graphs, skip degree-1 nodes — they just become singletons or
     // get absorbed into their single neighbor's community, but cost iteration time.
     if (isLarge && (nodeDegree.get(node.id) || 0) < 2) return;
 
-    graph.addNode(node.id, {
-      name: node.properties.name,
-      filePath: node.properties.filePath,
-      type: node.label,
+    eligibleNodes.push({
+      id: node.id,
+      attributes: {
+        name: node.properties.name,
+        filePath: node.properties.filePath,
+        type: node.label,
+      },
     });
   });
 
+  eligibleNodes.sort((left, right) => compareIds(left.id, right.id));
+  for (const node of eligibleNodes) {
+    graph.addNode(node.id, node.attributes);
+  }
+
+  // Keep degree counts above relationship-based for the existing large-graph
+  // filter, while inserting each undirected pair in a canonical, sorted order.
+  const edgesBySource = new Map<string, Set<string>>();
   knowledgeGraph.forEachRelationship((rel) => {
     if (!clusteringRelTypes.has(rel.type)) return;
     if (isLarge && rel.confidence < MIN_CONFIDENCE_LARGE) return;
@@ -273,11 +288,24 @@ const buildGraphologyGraph = (knowledgeGraph: KnowledgeGraph, isLarge: boolean):
       graph.hasNode(rel.targetId) &&
       rel.sourceId !== rel.targetId
     ) {
-      if (!graph.hasEdge(rel.sourceId, rel.targetId)) {
-        graph.addEdge(rel.sourceId, rel.targetId);
+      const [sourceId, targetId] =
+        compareIds(rel.sourceId, rel.targetId) < 0
+          ? [rel.sourceId, rel.targetId]
+          : [rel.targetId, rel.sourceId];
+      let targets = edgesBySource.get(sourceId);
+      if (!targets) {
+        targets = new Set<string>();
+        edgesBySource.set(sourceId, targets);
       }
+      targets.add(targetId);
     }
   });
+
+  const sourceIds = [...edgesBySource.keys()].sort(compareIds);
+  for (const sourceId of sourceIds) {
+    const targetIds = [...edgesBySource.get(sourceId)!].sort(compareIds);
+    for (const targetId of targetIds) graph.addEdge(sourceId, targetId);
+  }
 
   return graph;
 };

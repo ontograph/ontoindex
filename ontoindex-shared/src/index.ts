@@ -89,7 +89,15 @@ export type { ResolveTypeRefContext } from './scope-resolution/resolve-type-ref.
 
 // ScopeExtractor output contracts (RFC §3.2 Phase 1; Ring 2 PKG #919)
 export type { ParsedFile } from './scope-resolution/parsed-file.js';
-export type { ReferenceSite, ReferenceKind, CallForm } from './scope-resolution/reference-site.js';
+export type {
+  ReferenceSite,
+  NamedReferenceSite,
+  ComputedReadSite,
+  ReferenceKind,
+  CallForm,
+  ExplicitReceiver,
+  ReceiverStep,
+} from './scope-resolution/reference-site.js';
 
 // Method-dispatch materialized view over HeritageMap (RFC §3.1; Ring 2 SHARED #914)
 export { buildMethodDispatchIndex } from './scope-resolution/method-dispatch-index.js';
@@ -113,7 +121,10 @@ export type { StronglyConnectedComponent } from './scope-resolution/scc.js';
 
 // Scope-aware registries + 7-step lookup (RFC §4; Ring 2 SHARED #917)
 export { buildClassRegistry } from './scope-resolution/registries/class-registry.js';
-export type { ClassRegistry } from './scope-resolution/registries/class-registry.js';
+export type {
+  ClassRegistry,
+  ClassLookupOptions,
+} from './scope-resolution/registries/class-registry.js';
 export { buildMethodRegistry } from './scope-resolution/registries/method-registry.js';
 export type {
   MethodRegistry,

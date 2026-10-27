@@ -34,7 +34,7 @@ import { INTERNAL_TOOL_HANDLERS } from './tools.js';
 import { dispatchFacade, type FacadeTool } from './facade/dispatch.js';
 import { attachRepoScopeIdentity } from './shared/response-envelope.js';
 import { isMarkedInvocationError } from './shared/invocation-error.js';
-import { SUPER_NAMES, type SuperTool } from './super/names.js';
+import { SUPER_NAMES, withPreparedSuperRead, type SuperTool } from './super/names.js';
 import {
   getMcpStartupProfileFromEnv,
   getPublicToolDefinitions,
@@ -56,6 +56,18 @@ import {
 } from './shared/response-pages.js';
 
 const MAX_PROMPT_ARGUMENT_BYTES = 4096;
+
+// Explicit because the registry labels discover (sync writes group files) and gn_ensure_fresh (autoAnalyze starts a job) read_only; docs is omitted because it persists a sidecar manifest.
+const READ_ONLY_TOOL_NAMES = new Set([
+  'search',
+  'inspect',
+  'impact',
+  'gn_help',
+  'gn_tool_contract',
+  'gn_explore',
+  'gn_find_related',
+  'gn_explain_module',
+]);
 
 export function getMcpShutdownGraceMs(): number {
   const raw = Number.parseInt(process.env.ONTOINDEX_MCP_SHUTDOWN_GRACE_MS ?? '', 10);
@@ -83,32 +95,6 @@ export async function withShutdownGrace(
     if (timer) clearTimeout(timer);
   }
 }
-
-const GRAPH_BACKED_SUPER_TOOLS = new Set<SuperTool>([
-  'gn_explore',
-  'gn_explain_module',
-  'gn_find_related',
-  'gn_graph_walk',
-  'gn_safe_edit_check',
-  'gn_can_delete',
-  'gn_pre_commit_audit',
-  'gn_safe_refactor',
-  'gn_diff_impact',
-  'gn_review_diff',
-  'gn_propose_location',
-  'gn_docs',
-]);
-
-const WORKSPACE_READ_SUPER_TOOLS = new Set<SuperTool>([
-  'gn_explore',
-  'gn_explain_module',
-  'gn_find_related',
-  'gn_graph_walk',
-  'gn_safe_edit_check',
-  'gn_can_delete',
-  'gn_propose_location',
-  'gn_docs',
-]);
 
 interface StackLike {
   stack?: unknown;
@@ -160,6 +146,24 @@ function formatToolCallErrorMessage(
       ? candidate.code
       : undefined;
   const diagnostic = candidate?.diagnostics as Record<string, unknown> | undefined;
+  const failureDiagnostic = diagnostic;
+  const phases = ['planning', 'lock', 'recheck', 'build', 'release', 'verification'];
+  const reasons = [
+    'planning_failed',
+    'lock_failed',
+    'snapshot_failed',
+    'inputs_changed',
+    'build_failed',
+    'timeout',
+    'cancelled',
+    'unstoppable',
+    'release_failed',
+    'capability_missing',
+    'generation_unreadable',
+    'input_refused',
+    'coverage_degraded',
+  ];
+  const systemCodes = ['EACCES', 'EPERM', 'ENOSPC', 'ENOENT', 'EMFILE', 'ENFILE', 'EIO', 'EROFS'];
   const diagnostics =
     code === 'workspace_too_large' &&
     diagnostic &&
@@ -175,6 +179,21 @@ function formatToolCallErrorMessage(
           requiredCapability: 'workspace-graph',
         }
       : undefined;
+  const failure =
+    code === 'workspace_build_failed' &&
+    failureDiagnostic &&
+    typeof failureDiagnostic === 'object' &&
+    phases.includes(failureDiagnostic.phase as string) &&
+    reasons.includes(failureDiagnostic.reason as string)
+      ? {
+          phase: failureDiagnostic.phase,
+          reason: failureDiagnostic.reason,
+          ...(systemCodes.includes(failureDiagnostic.systemCode as string)
+            ? { systemCode: failureDiagnostic.systemCode }
+            : {}),
+        }
+      : undefined;
+  const safeDiagnostics = diagnostics || failure ? { ...diagnostics, ...failure } : undefined;
   return boundMcpErrorText(
     (boundedMessage) =>
       repo || code
@@ -183,13 +202,23 @@ function formatToolCallErrorMessage(
               error: boundedMessage,
               ...(repo ? { repoLabel: repo.repoLabel, repoPath: repo.repoPath } : {}),
               ...(code ? { code } : {}),
-              ...(diagnostics ? { diagnostics } : {}),
-              ...(code === 'workspace_too_large' && committedFallbackAvailable
+              ...(safeDiagnostics ? { diagnostics: safeDiagnostics } : {}),
+              ...(committedFallbackAvailable &&
+              (code === 'workspace_too_large' || code === 'workspace_build_failed')
                 ? {
                     remediation: {
                       read_mode: 'committed',
                       message:
-                        'Explicitly set read_mode="committed" to query the indexed commit. Uncommitted source changes, manual overlays and live enrichment are excluded. Do not automatically retry or reindex.',
+                        'Explicitly set read_mode="committed" to query the indexed commit. Uncommitted source changes, manual overlays and live enrichment are excluded. Do not automatically retry or reindex.' +
+                        (code === 'workspace_too_large'
+                          ? ' To prepare a separate bounded workspace graph while preserving the committed index, explicitly run `ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph` in the repository. Rerun this command after workspace inputs change.'
+                          : '') +
+                        (failure?.reason === 'input_refused'
+                          ? ' The working tree contains an input the workspace capture refuses, such as a tracked symlink or a file over the scan cap; exclude it with .ontoindexignore where allowed or run ontoindex analyze.'
+                          : '') +
+                        (failure?.reason === 'coverage_degraded'
+                          ? ' The published workspace graph reports degraded coverage. Inspect the analysis diagnostics and correct the reported issues before explicitly rebuilding.'
+                          : ''),
                     },
                   }
                 : {}),
@@ -586,7 +615,16 @@ export function createMCPServer(
         description: tool.description,
         inputSchema: relaxSchemaForClient(
           withResponseCursor(
-            ['gn_explore', 'inspect', 'impact', 'search'].includes(tool.name)
+            [
+              'gn_explore',
+              'gn_find_related',
+              'gn_safe_edit_check',
+              'gn_can_delete',
+              'inspect',
+              'impact',
+              'search',
+              'audit',
+            ].includes(tool.name)
               ? {
                   ...tool.inputSchema,
                   properties: {
@@ -595,13 +633,16 @@ export function createMCPServer(
                       type: 'string',
                       enum: ['committed'],
                       description:
-                        'Explicit indexed-commit view; excludes uncommitted source and live enrichment. Supported for explore, inspect/context, impact/symbol and search/semantic.',
+                        'Explicit indexed-commit view; excludes uncommitted source and live enrichment. Supported for explore, find_related, safe_edit_check, can_delete, inspect/context or related, impact/symbol, search/semantic and audit/safe_edit_check or can_delete.',
                     },
                   },
                 }
               : tool.inputSchema,
           ),
         ),
+        ...(READ_ONLY_TOOL_NAMES.has(tool.name)
+          ? { annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } }
+          : {}),
       })),
     })),
   );
@@ -625,7 +666,15 @@ export function createMCPServer(
         let repoIdentity: RepoIdentity | null = null;
         const supportedCommittedRead =
           name === 'gn_explore' ||
-          (name === 'inspect' && typedArgs.action === 'context') ||
+          name === 'gn_find_related' ||
+          name === 'gn_safe_edit_check' ||
+          name === 'gn_can_delete' ||
+          (name === 'audit' &&
+            (typedArgs.action === 'safe_edit_check' || typedArgs.action === 'can_delete')) ||
+          (name === 'inspect' &&
+            (typedArgs.action === 'context' ||
+              typedArgs.action === 'related' ||
+              typedArgs.action === 'explore')) ||
           (name === 'impact' && typedArgs.action === 'symbol') ||
           (name === 'search' && typedArgs.action === 'semantic');
         const committedFallbackAvailable =
@@ -696,17 +745,6 @@ export function createMCPServer(
                   repoLabel: repo.name ?? repo.id,
                   repoPath: repo.repoPath,
                 };
-                const docsReadiness =
-                  name === 'gn_docs' &&
-                  (typedArgs.action === undefined || typedArgs.action === 'readiness');
-                if (GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool) && !docsReadiness) {
-                  await backend.ensureRepoInitialized(repo.id);
-                }
-                const preparedRead =
-                  WORKSPACE_READ_SUPER_TOOLS.has(name as SuperTool) &&
-                  !docsReadiness &&
-                  typeof backend.withPreparedRepoRead === 'function';
-                const preparedAutoRead = preparedRead && isAutomaticWorkspaceEnabled();
                 const operation = () =>
                   dispatchLazySuper(
                     name as SuperTool,
@@ -723,24 +761,17 @@ export function createMCPServer(
                       : name === 'gn_audit_logic'
                         ? { repoPath: repo.repoPath }
                         : undefined,
-                    name === 'gn_test_gap' ? backend : undefined,
+                    name === 'gn_test_gap' || name === 'gn_verify_diff' ? backend : undefined,
                   );
-                const superResult = preparedRead
-                  ? await backend.withPreparedRepoRead(
-                      repo,
-                      { needsRelationships: true, wantsWorkspaceGraph: true },
-                      operation,
-                    )
-                  : await operation();
-                result = attachRepoScopeIdentity(
-                  GRAPH_BACKED_SUPER_TOOLS.has(name as SuperTool) &&
-                    !docsReadiness &&
-                    !preparedAutoRead &&
-                    !committedRead
-                    ? ((await backend.withCommittedGraphNotice?.(superResult, repo)) ?? superResult)
-                    : superResult,
+                const superResult = await withPreparedSuperRead(
+                  name as SuperTool,
+                  typedArgs,
                   repo,
+                  backend,
+                  { automaticWorkspace: isAutomaticWorkspaceEnabled(), committedRead },
+                  operation,
                 );
+                result = attachRepoScopeIdentity(superResult, repo);
               }
             } else if (!options.full && FACADE_NAMES.has(name)) {
               const action = typedArgs.action as string;

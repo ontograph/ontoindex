@@ -19,7 +19,7 @@ export interface ToolDefinition {
         type: string | string[];
         description?: string;
         default?: unknown;
-        items?: { type: string };
+        items?: { type: string; enum?: string[] };
         enum?: string[];
         minimum?: number;
         maximum?: number;

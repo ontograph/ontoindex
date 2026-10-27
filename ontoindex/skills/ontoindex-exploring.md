@@ -11,9 +11,9 @@ Start with a concept, then inspect the returned symbol identity:
 
 ```text
 search({action: "semantic", repo: "<repo>", query: "<concept>", limit: 5})
-gn_explore({repo: "<repo>", query: "<concept>", depth: "balanced"})
+inspect({action: "explore", repo: "<repo>", query: "<concept>", depth: "balanced"})
 inspect({action: "context", repo: "<repo>", target: "<symbol>", include_content: true})
-gn_find_related({repo: "<repo>", symbol: "<symbol>", maxItemsPerCategory: 10})
+inspect({action: "related", repo: "<repo>", symbol: "<symbol>", maxItemsPerCategory: 10})
 ```
 
 Use returned paths and identities to read current source and resolve ambiguous symbols.

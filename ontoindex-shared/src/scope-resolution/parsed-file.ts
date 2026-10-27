@@ -42,7 +42,7 @@
  * ParsedFile through to the shared algorithm without shape-shifting.
  */
 
-import type { DefId, Scope, ScopeId } from './types.js';
+import type { DefId, Range, Scope, ScopeId } from './types.js';
 import type { ParsedImport } from './types.js';
 import type { SymbolDefinition } from './symbol-definition.js';
 import type { ReferenceSite } from './reference-site.js';
@@ -64,11 +64,28 @@ export interface ParsedFile {
    * pre-flattened for O(N) consumption by finalize.
    */
   readonly localDefs: readonly SymbolDefinition[];
+  /** Declaration anchors in localDefs order; absence means source metadata is unavailable. */
+  readonly declarationSources?: readonly {
+    readonly defId: DefId;
+    readonly range: Range;
+    readonly name: string;
+    readonly type: SymbolDefinition['type'];
+  }[];
+  /** Exact legacy graph correspondence; absence means declaration metadata is unavailable. */
+  readonly definitionNodeIds?: readonly {
+    readonly defId: DefId;
+    readonly nodeId: string;
+  }[];
   /**
    * Exported names mapped to ids in `localDefs`, including aliases. An empty
    * map exports nothing; absence or `undefined` retains legacy simple-name
    * lookup. This surface never replaces or filters `localDefs`.
    */
   readonly exports?: ReadonlyMap<string, DefId>;
+  /** Authoritative type/value surfaces, even when empty; overrides `exports`. */
+  readonly exportsByNamespace?: {
+    readonly type: ReadonlyMap<string, DefId>;
+    readonly value: ReadonlyMap<string, DefId>;
+  };
   readonly referenceSites: readonly ReferenceSite[];
 }

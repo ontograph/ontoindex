@@ -69,6 +69,8 @@ export type WorkerIsolationMode = 'thread' | 'process';
 
 export interface WorkerPoolOptions {
   isolation?: WorkerIsolationMode;
+  /** Let parser threads finish native addon initialization before exiting. */
+  cooperativeShutdown?: boolean;
 }
 
 const boundedEnvInt = (name: string, fallback: number, min: number, max: number): number => {
@@ -270,6 +272,7 @@ const mergeResultPayload = <TResult>(target: TResult | undefined, src: unknown):
 };
 
 type WorkerIncomingMessage =
+  | { type: 'shutdown' }
   | { type: 'flush'; diagnostics?: ParseWorkerDiagnostics }
   | { type: 'sub-batch'; files: unknown[]; diagnostics?: ParseWorkerDiagnostics };
 
@@ -327,7 +330,11 @@ const terminateChild = async (child: ChildProcess): Promise<void> => {
   }
 };
 
-const createWorkerHandle = (workerUrl: URL, isolation: WorkerIsolationMode): WorkerHandle => {
+const createWorkerHandle = (
+  workerUrl: URL,
+  isolation: WorkerIsolationMode,
+  cooperativeShutdown: boolean,
+): WorkerHandle => {
   if (isolation === 'process') {
     const child = fork(fileURLToPath(workerUrl), [], {
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
@@ -393,6 +400,47 @@ const createWorkerHandle = (workerUrl: URL, isolation: WorkerIsolationMode): Wor
   }
 
   const worker = new Worker(workerUrl);
+  let exited = false;
+  let termination: Promise<unknown> | undefined;
+  worker.once('exit', () => {
+    exited = true;
+  });
+  const terminate = (): Promise<unknown> => {
+    if (termination) return termination;
+    if (exited) return (termination = Promise.resolve());
+    if (!cooperativeShutdown) return (termination = worker.terminate());
+    termination = new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        worker.removeListener('exit', onExit);
+        worker.removeListener('error', onError);
+      };
+      const onExit = () => {
+        cleanup();
+        resolve();
+      };
+      // A failing import still exits; retain an error listener until then.
+      const onError = () => {};
+      const timer = setTimeout(() => {
+        worker.terminate().then(onExit, (error) => {
+          cleanup();
+          reject(error);
+        });
+      }, 30_000);
+      worker.once('exit', onExit);
+      worker.on('error', onError);
+      // The message is queued while eager native grammar imports initialize.
+      try {
+        worker.postMessage({ type: 'shutdown' });
+      } catch {
+        worker.terminate().then(onExit, (error) => {
+          cleanup();
+          reject(error);
+        });
+      }
+    });
+    return termination;
+  };
   const messageListeners = new WeakMap<WorkerHandleListener<'message'>, ThreadMessageListener>();
   const errorListeners = new WeakMap<WorkerHandleListener<'error'>, ThreadErrorListener>();
   const exitListeners = new WeakMap<WorkerHandleListener<'exit'>, ThreadExitListener>();
@@ -443,7 +491,7 @@ const createWorkerHandle = (workerUrl: URL, isolation: WorkerIsolationMode): Wor
       return handle;
     },
     postMessage: (message) => worker.postMessage(message),
-    terminate: () => worker.terminate(),
+    terminate,
   };
   return handle;
 };
@@ -469,10 +517,12 @@ export const createWorkerPool = (
   const isolation = options.isolation ?? 'thread';
   const workers: WorkerHandle[] = [];
   const workerStartupDurationsMs: number[] = [];
+  let closed = false;
+  let termination: Promise<void> | undefined;
 
   const spawnWorker = (index: number): WorkerHandle => {
     const started = Date.now();
-    const worker = createWorkerHandle(workerUrl, isolation);
+    const worker = createWorkerHandle(workerUrl, isolation, options.cooperativeShutdown === true);
     workerStartupDurationsMs[index] = Date.now() - started;
     return worker;
   };
@@ -488,6 +538,7 @@ export const createWorkerPool = (
     onWorkerResult?: (event: WorkerResultEvent) => void,
     options: WorkerDispatchOptions<TResult> = {},
   ): Promise<TResult[]> => {
+    if (closed) throw new Error('Worker pool is closed');
     if (items.length === 0) return Promise.resolve([]);
 
     const chunkSize = Math.ceil(items.length / size);
@@ -537,9 +588,6 @@ export const createWorkerPool = (
             if (!settled) {
               settled = true;
               cleanup();
-              // Bug #2: terminate the zombie worker; Bug #6: respawn replacement
-              void worker.terminate();
-              workers[i] = spawnWorker(i);
               reject(
                 new Error(
                   `Worker ${i} timed out after ${WORKER_SUB_BATCH_TIMEOUT_MS / 1000}s${describeFailureContext({ phase: activePhase })}.`,
@@ -712,19 +760,26 @@ export const createWorkerPool = (
     try {
       return await Promise.all(promises);
     } catch (err) {
-      const oldWorkers = workers.splice(0);
-      workerStartupDurationsMs.length = 0;
+      const oldWorkers = workers.slice();
       await Promise.allSettled(oldWorkers.map((worker) => worker.terminate()));
-      for (let i = 0; i < size; i++) {
-        workers.push(spawnWorker(i));
+      if (!closed) {
+        workers.length = 0;
+        workerStartupDurationsMs.length = 0;
+        for (let i = 0; i < size; i++) {
+          workers.push(spawnWorker(i));
+        }
       }
       throw err;
     }
   };
 
-  const terminate = async (): Promise<void> => {
-    await Promise.all(workers.map((w) => w.terminate()));
-    workers.length = 0;
+  const terminate = (): Promise<void> => {
+    if (termination) return termination;
+    closed = true;
+    termination = Promise.all(workers.map((w) => w.terminate())).then(() => {
+      workers.length = 0;
+    });
+    return termination;
   };
 
   return { dispatch, terminate, size, isolation, startupDurationMs, workerStartupDurationsMs };

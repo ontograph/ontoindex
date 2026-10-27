@@ -187,6 +187,7 @@ repos:
 
 it('authenticates a real SDK MCP exchange through createServer middleware', async () => {
   vi.stubEnv('ONTOINDEX_HTTP_TOKEN', 'mcp-api-test-token');
+  vi.stubEnv('ONTOINDEX_MCP_STARTUP_PROFILE', 'public-full');
   vi.spyOn(LocalBackend.prototype, 'init').mockResolvedValue(false);
   const listen = express.application.listen;
   vi.spyOn(express.application, 'listen').mockImplementation(function (...args: unknown[]) {
@@ -222,5 +223,28 @@ it('authenticates a real SDK MCP exchange through createServer middleware', asyn
   await client.connect(transport);
   const listed = await client.listTools();
   expect(listed.tools.some((tool) => tool.name === 'gn_explore')).toBe(true);
+  const contractResult = await client.callTool({
+    name: 'gn_tool_contract',
+    arguments: { includeFacades: true },
+  });
+  expect(contractResult.isError).not.toBe(true);
+  const contractContent = contractResult.content as Array<{ type: string; text?: string }>;
+  expect(contractContent[0].type).toBe('text');
+  const contract = JSON.parse(contractContent[0].text!.split('\n\n---')[0]);
+  expect(contract.version).toBe(1);
+  expect(contract.callable).toEqual(expect.arrayContaining(['discover', 'gn_tool_contract']));
+
+  const discoveryResult = await client.callTool({
+    name: 'discover',
+    arguments: { action: 'tools' },
+  });
+  expect(discoveryResult.isError).not.toBe(true);
+  const discoveryContent = discoveryResult.content as Array<{ type: string; text?: string }>;
+  expect(discoveryContent[0].type).toBe('text');
+  const discovery = JSON.parse(discoveryContent[0].text!.split('\n\n---')[0]);
+  expect(discovery.source).toBe('mcp-frontier');
+  expect(discovery.tools.map((tool: { name: string }) => tool.name)).toEqual(
+    expect.arrayContaining(['search', 'inspect', 'impact']),
+  );
   await transport.terminateSession();
 });

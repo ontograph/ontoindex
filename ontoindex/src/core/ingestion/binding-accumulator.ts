@@ -314,6 +314,16 @@ export class BindingAccumulator {
     return map ? [...map.entries()] : [];
   }
 
+  /** Lazily read detached tuples so bounded consumers can stop without copying a file. */
+  *iterateFileScopeEntries(filePath: string): IterableIterator<readonly [string, string]> {
+    const map = this._fileScopeByFile.get(filePath);
+    if (!map) return;
+    for (const entry of map) {
+      if (this._disposed) return;
+      yield entry;
+    }
+  }
+
   /**
    * O(1) point-lookup for a single file-scope binding by (filePath, name).
    * Returns the typeName if found, `undefined` otherwise.

@@ -39,6 +39,7 @@ import {
   OVERLAY_ARTIFACT_BUDGET_BYTES,
   overlayArtifactBytes,
   pruneOverlayGenerations,
+  acquireOverlayGenerationPin,
   readActiveGenerationMeta,
   saveMeta,
   loadMeta,
@@ -98,6 +99,18 @@ import {
   commitManagedAnalysisPublication,
 } from './analysis/analysis-coordinator.js';
 import { execFileText } from './process/exec-file.js';
+import { digestDatabaseFile } from './lbug/database-digest.js';
+import { syncPath, syncTree } from './durable-publish.js';
+import {
+  workspaceParserIdentity,
+  supervisedWorkspaceParserIdentity,
+} from './tree-sitter/parser-identity.js';
+import type { ScopeRetentionRequest } from './ingestion/pipeline-phases/scope-retention-stage.js';
+import {
+  persistScopeRetentionCandidate,
+  copyScopeRetentionCandidate,
+} from './ingestion/pipeline-phases/scope-retention-candidate.js';
+import { loadScopeRetentionCandidate } from './ingestion/pipeline-phases/scope-retention-candidate-reader.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -110,6 +123,7 @@ interface AnalyzeCallbacks {
 
 export interface RunFullAnalysisDependencies {
   analyzeRuntime?: AnalyzeRuntime;
+  scopeRetention?: ScopeRetentionRequest;
 }
 
 export interface AnalyzeOptions {
@@ -892,6 +906,9 @@ async function runWorkspaceAnalysis(
   const currentTempPath = path.join(overlayPath, `.CURRENT-${generationId}.tmp`);
   await fs.mkdir(generationPath);
   let capture: WorkspaceInputCapture | undefined;
+  let persistedCandidateBytes = 0;
+  let published = false;
+  let replayPin: Awaited<ReturnType<typeof acquireOverlayGenerationPin>> | undefined;
   try {
     const captureStart = performance.now();
     // Build from one verified byte snapshot so the stored manifest identifies the exact inputs.
@@ -967,6 +984,89 @@ async function runWorkspaceAnalysis(
           .map((entry) => [entry.path, entry.digest]),
       ),
     };
+    const retentionCapture = workspaceGraph ? capture : undefined;
+    const retentionRequest = dependencies.scopeRetention;
+    let scopeReplay: PipelineOptions['scopeReplay'];
+    if (
+      retentionRequest &&
+      retentionCapture &&
+      /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(previousCurrent)
+    ) {
+      const checkReplayRequest = () => {
+        if (retentionRequest.signal?.aborted) throw new Error('Workspace replay cancelled');
+        if (!Number.isFinite(retentionRequest.deadline) || Date.now() >= retentionRequest.deadline)
+          throw new Error('Workspace replay deadline');
+      };
+      checkReplayRequest();
+      // Only the supervised child captures a baseline before loading analyzer code.
+      const parserCodeIdentity = await supervisedWorkspaceParserIdentity();
+      checkReplayRequest();
+      if (parserCodeIdentity !== null) {
+        const sourceGenerationPath = path.join(overlayPath, previousCurrent);
+        const expected = {
+          identity: {
+            sourceManifestDigest: retentionCapture.manifestDigest,
+            targetCommit: retentionCapture.head ?? '',
+            baseGenerationId: retentionCapture.baseGenerationId,
+          },
+          parserCodeIdentity,
+        };
+        try {
+          replayPin = await acquireOverlayGenerationPin(sourceGenerationPath);
+          const candidate = await loadScopeRetentionCandidate(
+            sourceGenerationPath,
+            expected,
+            retentionRequest,
+          );
+          checkReplayRequest();
+          scopeReplay = {
+            candidate,
+            request: retentionRequest,
+            preserve: async () => {
+              const before = retentionRequest.artifactAllowance.remainingBytes;
+              try {
+                await copyScopeRetentionCandidate(
+                  sourceGenerationPath,
+                  generationPath,
+                  expected,
+                  retentionRequest,
+                );
+              } finally {
+                persistedCandidateBytes =
+                  before - retentionRequest.artifactAllowance.remainingBytes;
+              }
+            },
+          };
+        } catch {
+          checkReplayRequest();
+          // Missing, stale or corrupt candidates are ordinary full-parse misses.
+        }
+      }
+    }
+    const scopeRetention: PipelineOptions['scopeRetention'] =
+      retentionRequest && retentionCapture
+        ? {
+            ...retentionRequest,
+            consume: async (handle) => {
+              const before = retentionRequest.artifactAllowance.remainingBytes;
+              try {
+                await persistScopeRetentionCandidate(
+                  handle,
+                  generationPath,
+                  {
+                    sourceManifestDigest: retentionCapture.manifestDigest,
+                    targetCommit: retentionCapture.head ?? '',
+                    baseGenerationId: retentionCapture.baseGenerationId,
+                  },
+                  retentionRequest,
+                );
+              } finally {
+                persistedCandidateBytes =
+                  before - retentionRequest.artifactAllowance.remainingBytes;
+              }
+            },
+          }
+        : undefined;
     const pipelineStart = performance.now();
     const pipelineResult: PipelineResult =
       !workspaceGraph && includePaths.length === 0
@@ -981,6 +1081,8 @@ async function runWorkspaceAnalysis(
               ),
             {
               profile: workspaceGraph ? 'full' : 'symbols',
+              ...(scopeRetention ? { scopeRetention } : {}),
+              ...(scopeReplay ? { scopeReplay } : {}),
               ...(workspaceGraph
                 ? {
                     onTelemetry: (
@@ -1061,12 +1163,17 @@ async function runWorkspaceAnalysis(
       }
       ftsDurationMs = performance.now() - ftsStart;
     }
-    await closeLbugForPath(overlayDbPath);
+    // A swallowed native close failure must not be followed by publication of the generation.
+    await closeLbugForPath(overlayDbPath, { strict: true });
+    const databaseDigest = await digestDatabaseFile(overlayDbPath);
     if (workspaceGraph) {
       overlayBase.ftsIndexes = ftsIndexes;
       overlayBase.ftsDurationMs = ftsDurationMs;
       Object.assign(overlayBase, {
         buildTimings: {
+          ...(pipelineResult.parseMode === 'full' || pipelineResult.parseMode === 'retained-replay'
+            ? { parseMode: pipelineResult.parseMode }
+            : {}),
           captureAndInventoryMs,
           pipelineMs,
           storageLoadMs,
@@ -1093,10 +1200,20 @@ async function runWorkspaceAnalysis(
     ) {
       throw new Error('Workspace graph base or HEAD changed during analysis; rebuild required.');
     }
-    await fs.writeFile(path.join(generationPath, 'base.json'), JSON.stringify(overlayBase));
+    await fs.writeFile(
+      path.join(generationPath, 'base.json'),
+      JSON.stringify({ ...overlayBase, databaseDigest }),
+    );
     callbacks.onProgress('done', 100, 'Dirty overlay built; active index unchanged');
     await fs.writeFile(currentTempPath, `${generationId}\n`);
+    await syncTree(generationPath);
+    await syncPath(currentTempPath);
+    if (capture && (await workspaceParserIdentity()) !== capture.parserIdentity) {
+      throw new Error('Workspace parser identity changed during analysis; restart required.');
+    }
     await fs.rename(currentTempPath, path.join(overlayPath, 'CURRENT'));
+    published = true;
+    await syncPath(overlayPath, { bestEffort: true }).catch(() => {});
 
     // Published stores are immutable. A Windows reader may retain a file lock,
     // so pruning is only housekeeping, never a condition of build success.
@@ -1137,10 +1254,21 @@ async function runWorkspaceAnalysis(
     };
   } catch (err) {
     await closeLbugForPath(overlayDbPath).catch(() => {});
-    await fs.rm(currentTempPath, { force: true }).catch(() => {});
-    await fs.rm(generationPath, { recursive: true, force: true }).catch(() => {});
+    if (!published) {
+      await fs.rm(currentTempPath, { force: true }).catch(() => {});
+      await fs
+        .rm(generationPath, { recursive: true, force: true })
+        .then(() => {
+          if (dependencies.scopeRetention) {
+            dependencies.scopeRetention.artifactAllowance.remainingBytes += persistedCandidateBytes;
+            persistedCandidateBytes = 0;
+          }
+        })
+        .catch(() => {});
+    }
     throw err;
   } finally {
+    await replayPin?.release().catch(() => {});
     await capture?.dispose().catch(() => {});
   }
 }
@@ -1288,6 +1416,7 @@ export async function runFullAnalysis(
   if (
     existingMeta &&
     !options.force &&
+    !dependencies.scopeRetention &&
     existingMeta.lastCommit === currentCommit &&
     persistedPipelineProfile(existingMeta) === requestedProfile &&
     sameStringList(existingMeta.includePaths, includePaths) &&
@@ -1347,6 +1476,8 @@ export async function runFullAnalysis(
 
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
   let pipelineResult: PipelineResult;
+  let stagedGeneration: IndexGenerationPaths | null = null;
+  let persistedCandidateBytes = 0;
   const degradedFiles = new Map<string, { reason: string; phase: string; language: string }>();
   const recordDegradedFiles = (
     files?: readonly AnalyzeDegradedFile[],
@@ -1388,6 +1519,34 @@ export async function runFullAnalysis(
     if (includePaths.length > 0) {
       pipelineOptions.includePaths = includePaths;
     }
+    if (dependencies.scopeRetention) {
+      const request = dependencies.scopeRetention;
+      const generation = await createIndexGeneration(
+        storagePath,
+        `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`,
+      );
+      stagedGeneration = generation;
+      pipelineOptions.scopeRetention = {
+        ...request,
+        consume: async (handle) => {
+          const before = request.artifactAllowance.remainingBytes;
+          try {
+            await persistScopeRetentionCandidate(
+              handle,
+              generation.generationPath,
+              {
+                sourceManifestDigest: sourceManifestDigest(inputManifest),
+                targetCommit: currentCommit,
+                baseGenerationId: existingMeta?.generationId ?? null,
+              },
+              request,
+            );
+          } finally {
+            persistedCandidateBytes = before - request.artifactAllowance.remainingBytes;
+          }
+        },
+      };
+    }
 
     pipelineResult = await runAnalysisPipeline(
       repoPath,
@@ -1400,31 +1559,41 @@ export async function runFullAnalysis(
       dependencies.analyzeRuntime,
     );
   } catch (err) {
+    if (stagedGeneration !== null) {
+      await discardIndexGeneration(stagedGeneration)
+        .then(() => {
+          if (dependencies.scopeRetention) {
+            dependencies.scopeRetention.artifactAllowance.remainingBytes += persistedCandidateBytes;
+            persistedCandidateBytes = 0;
+          }
+        })
+        .catch(() => {});
+    }
     partialCheckpoint?.markFailed(err);
     gcTelemetry?.stop();
     throw err;
   }
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
-  progress('lbug', 60, 'Loading into LadybugDB...');
-  emitTelemetry({
-    event: 'phase-start',
-    phaseName: 'lbug',
-    graphNodes: pipelineResult.graph.nodeCount,
-    graphRelationships: pipelineResult.graph.relationshipCount,
-  });
-  const lbugStart = Date.now();
-
-  let stagedGeneration: IndexGenerationPaths | null = await createIndexGeneration(
-    storagePath,
-    `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`,
-  );
-  const generationStoragePath = stagedGeneration.generationPath;
-  const lbugPath = stagedGeneration.lbugPath;
-
-  await initLbug(lbugPath);
   try {
-    // All work after initLbug is wrapped in try/finally to ensure closeLbug()
+    progress('lbug', 60, 'Loading into LadybugDB...');
+    emitTelemetry({
+      event: 'phase-start',
+      phaseName: 'lbug',
+      graphNodes: pipelineResult.graph.nodeCount,
+      graphRelationships: pipelineResult.graph.relationshipCount,
+    });
+    const lbugStart = Date.now();
+
+    stagedGeneration ??= await createIndexGeneration(
+      storagePath,
+      `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    const generationStoragePath = stagedGeneration.generationPath;
+    const lbugPath = stagedGeneration.lbugPath;
+
+    await initLbug(lbugPath);
+    // Initialization and all subsequent work are wrapped in try/finally to ensure closeLbug()
     // is called even if an error occurs — the module-level singleton DB handle
     // must be released to avoid blocking subsequent invocations.
 
@@ -2010,7 +2179,14 @@ export async function runFullAnalysis(
       /* swallow */
     }
     if (stagedGeneration !== null) {
-      await discardIndexGeneration(stagedGeneration).catch(() => {});
+      await discardIndexGeneration(stagedGeneration)
+        .then(() => {
+          if (dependencies.scopeRetention) {
+            dependencies.scopeRetention.artifactAllowance.remainingBytes += persistedCandidateBytes;
+            persistedCandidateBytes = 0;
+          }
+        })
+        .catch(() => {});
     }
     partialCheckpoint?.markFailed(err);
     gcTelemetry?.stop();

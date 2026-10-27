@@ -21,6 +21,77 @@ import type {
 import { extract, type ScopeExtractorHooks } from '../../../src/core/ingestion/scope-extractor.js';
 import type { LocalBindingCandidate } from '../../../src/core/ingestion/language-provider.js';
 
+describe('detached declaration metadata', () => {
+  it('uses the declaration ID owner and preserves zero arity independently of capture order', () => {
+    const owner = cap('@declaration.owner', 2, 0, 6, 1, 'Owner');
+    const method = declMatch('method', 'zero', 3, 2, 3, 20, {
+      '@declaration.owner': owner,
+      '@declaration.parameter_count': cap('@declaration.parameter_count', 3, 2, 3, 20, '0'),
+      '@declaration.required_parameter_count': cap(
+        '@declaration.required_parameter_count',
+        3,
+        2,
+        3,
+        20,
+        '0',
+      ),
+      '@declaration.return_type': cap('@declaration.return_type', 3, 10, 3, 14, 'void'),
+    });
+    const field = declMatch('property', 'value', 4, 2, 4, 15, {
+      '@declaration.owner': owner,
+      '@declaration.declared_type': cap('@declaration.declared_type', 4, 9, 4, 15, 'Value'),
+    });
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 7, 0),
+        scopeMatch('class', 2, 0, 6, 1),
+        method,
+        field,
+        declMatch('class', 'Owner', 2, 0, 6, 1),
+      ],
+      'fixture.ts',
+      {},
+    );
+    const ownerDef = result.localDefs.find((def) => def.type === 'Class')!;
+    expect(result.localDefs[0]).toMatchObject({
+      ownerId: ownerDef.nodeId,
+      parameterCount: 0,
+      requiredParameterCount: 0,
+      returnType: 'void',
+    });
+    expect(result.localDefs[1]).toMatchObject({ ownerId: ownerDef.nodeId, declaredType: 'Value' });
+  });
+
+  it('refuses malformed counts and owner metadata', () => {
+    for (const text of ['-1', '1.5', 'NaN', '9007199254740992']) {
+      expect(() =>
+        extract(
+          [
+            scopeMatch('module', 1, 0, 5, 0),
+            declMatch('function', 'f', 2, 0, 3, 1, {
+              '@declaration.parameter_count': cap('@declaration.parameter_count', 2, 0, 3, 1, text),
+            }),
+          ],
+          'fixture.ts',
+          {},
+        ),
+      ).toThrow(/arity metadata/);
+    }
+    expect(() =>
+      extract(
+        [
+          scopeMatch('module', 1, 0, 5, 0),
+          declMatch('method', 'f', 2, 0, 3, 1, {
+            '@declaration.owner': cap('@declaration.owner', 4, 0, 4, 5, 'Other'),
+          }),
+        ],
+        'fixture.ts',
+        {},
+      ),
+    ).toThrow(/owner metadata/);
+  });
+});
+
 // ─── Synthetic-capture helpers ──────────────────────────────────────────────
 
 const cap = (
@@ -93,6 +164,134 @@ const refMatch = (
 });
 
 // ─── MockProvider ───────────────────────────────────────────────────────────
+describe('computed read metadata', () => {
+  const computed = (): Record<string, Capture> => ({
+    '@reference.read.computed': cap('@reference.read.computed', 3, 2, 3, 12),
+    '@reference.object': cap('@reference.object', 3, 2, 3, 7),
+    '@reference.index': cap('@reference.index', 3, 8, 3, 11),
+  });
+  const extractComputed = (match: CaptureMatch) =>
+    extract(
+      [scopeMatch('module', 1, 0, 8, 0), scopeMatch('block', 2, 0, 6, 0), match],
+      'fixture.ts',
+      {},
+    );
+
+  it('selects the expression scope, emits no name and detaches all ranges', () => {
+    const match = computed();
+    const result = extractComputed(match);
+    const site = result.referenceSites[0]!;
+    expect(result.referenceSites).toEqual([
+      {
+        kind: 'read',
+        atRange: { startLine: 3, startCol: 2, endLine: 3, endCol: 12 },
+        inScope: result.scopes.find((scope) => scope.kind === 'Block')!.id,
+        selection: {
+          kind: 'computed',
+          objectRange: { startLine: 3, startCol: 2, endLine: 3, endCol: 7 },
+          indexRange: { startLine: 3, startCol: 8, endLine: 3, endCol: 11 },
+        },
+      },
+    ]);
+    expect(Object.hasOwn(site, 'name')).toBe(false);
+    expect(site.atRange).not.toBe(match['@reference.read.computed']!.range);
+    expect(site.selection!.objectRange).not.toBe(match['@reference.object']!.range);
+    expect(site.selection!.indexRange).not.toBe(match['@reference.index']!.range);
+    const saved = JSON.stringify(site);
+    for (const capture of Object.values(match)) Object.assign(capture.range, { startLine: 999 });
+    expect(JSON.stringify(site)).toBe(saved);
+  });
+
+  it('accepts multiline containment and object/index subtags before the anchor', () => {
+    const result = extractComputed({
+      '@reference.index': cap('@reference.index', 4, 0, 4, 3),
+      '@reference.object': cap('@reference.object', 3, 2, 3, 7),
+      '@reference.read.computed': cap('@reference.read.computed', 3, 1, 5, 0),
+    });
+    expect(result.referenceSites).toHaveLength(1);
+    expect(result.referenceSites[0]!.selection).toEqual({
+      kind: 'computed',
+      objectRange: { startLine: 3, startCol: 2, endLine: 3, endCol: 7 },
+      indexRange: { startLine: 4, startCol: 0, endLine: 4, endCol: 3 },
+    });
+  });
+
+  it('refuses missing, conflicting, mistagged and nonempty capture metadata', () => {
+    for (const tag of ['@reference.read.computed', '@reference.object', '@reference.index']) {
+      const missing = computed();
+      delete missing[tag];
+      expect(() => extractComputed(missing)).toThrow(/computed read metadata/);
+      for (const change of [{ name: '@reference.read' }, { text: 'value' }]) {
+        const match = computed();
+        match[tag] = { ...match[tag]!, ...change };
+        expect(() => extractComputed(match)).toThrow(/computed read metadata/);
+      }
+    }
+    for (const tag of [
+      '@reference.name',
+      '@reference.receiver',
+      '@reference.arity',
+      '@reference.read',
+      '@reference.call',
+    ]) {
+      expect(() =>
+        extractComputed({ ...computed(), [tag]: cap(tag, 3, 2, 3, 7, 'value') }),
+      ).toThrow(/computed read metadata/);
+    }
+    for (const tag of [
+      '@scope.block',
+      '@declaration.variable',
+      '@import.named',
+      '@type-binding.variable',
+    ]) {
+      const extra = { [tag]: cap(tag, 3, 2, 3, 7) };
+      for (const match of [
+        { ...extra, ...computed() },
+        { ...computed(), ...extra },
+      ]) {
+        expect(() => extractComputed(match)).toThrow(/computed read metadata/);
+      }
+    }
+  });
+
+  it('refuses invalid coordinates, empty ranges, overlaps and missing bracket space', () => {
+    for (const tag of ['@reference.read.computed', '@reference.object', '@reference.index']) {
+      for (const coordinate of ['startLine', 'startCol', 'endLine', 'endCol']) {
+        for (const value of [
+          NaN,
+          Infinity,
+          -Infinity,
+          1.5,
+          Number.MAX_SAFE_INTEGER + 1,
+          -1,
+          -0,
+          ...(coordinate.endsWith('Line') ? [0] : []),
+        ]) {
+          const match = computed();
+          match[tag] = { ...match[tag]!, range: { ...match[tag]!.range, [coordinate]: value } };
+          expect(() => extractComputed(match), `${tag}.${coordinate}=${value}`).toThrow(
+            /computed read metadata/,
+          );
+        }
+      }
+    }
+    for (const [tag, range] of [
+      ['@reference.object', { startLine: 3, startCol: 1, endLine: 3, endCol: 7 }],
+      ['@reference.object', { startLine: 3, startCol: 2, endLine: 3, endCol: 8 }],
+      ['@reference.object', { startLine: 3, startCol: 2, endLine: 3, endCol: 9 }],
+      ['@reference.object', { startLine: 3, startCol: 7, endLine: 3, endCol: 2 }],
+      ['@reference.index', { startLine: 3, startCol: 8, endLine: 3, endCol: 8 }],
+      ['@reference.index', { startLine: 3, startCol: 8, endLine: 3, endCol: 12 }],
+      ['@reference.index', { startLine: 3, startCol: 8, endLine: 4, endCol: 0 }],
+      ['@reference.read.computed', { startLine: 3, startCol: 12, endLine: 3, endCol: 12 }],
+    ] as const) {
+      const match = computed();
+      match[tag] = { ...match[tag]!, range };
+      expect(() => extractComputed(match)).toThrow(/computed read metadata/);
+    }
+  });
+});
+
 //
 // The extractor declares its dependency on a narrow `ScopeExtractorHooks`
 // surface — not the full `LanguageProvider`. Tests implement exactly that
@@ -274,6 +473,186 @@ describe('Pass 1: scope tree', () => {
 });
 
 // ─── §Pass 2: declarations + local bindings ────────────────────────────────
+
+describe('declaration sources', () => {
+  it('retains same-line and nested anchors in localDefs order with exact declaration names', () => {
+    const declarations = [
+      declMatch('method', 'same', 2, 20, 2, 30),
+      declMatch('class', 'Outer', 2, 0, 5, 1),
+      declMatch('method', 'same', 2, 5, 2, 15),
+      declMatch('function', 'inner:with#punctuation', 3, 2, 4, 3, {
+        '@declaration.qualified_name': cap(
+          '@declaration.qualified_name',
+          3,
+          2,
+          4,
+          3,
+          'Outer.alias',
+        ),
+      }),
+    ];
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 6, 0),
+        scopeMatch('class', 2, 0, 5, 1),
+        scopeMatch('function', 3, 2, 4, 3),
+        ...declarations,
+      ],
+      'source.ts',
+      mockProvider(),
+    );
+
+    expect(result.declarationSources).toEqual(
+      declarations.map((match, index) => {
+        const anchor = Object.values(match)[0]!;
+        return {
+          defId: result.localDefs[index]!.nodeId,
+          range: anchor.range,
+          name: match['@declaration.name']!.text,
+          type: result.localDefs[index]!.type,
+        };
+      }),
+    );
+    expect(result.declarationSources![0]!.defId).not.toBe(result.declarationSources![2]!.defId);
+  });
+
+  it('uses kind-specific and anchor names without deriving them from qualified names', () => {
+    const specific = {
+      '@declaration.function': cap('@declaration.function', 2, 0, 2, 10, 'anchor'),
+      '@declaration.function.name': cap('@declaration.function.name', 2, 2, 2, 8, 'specific'),
+      '@declaration.qualified_name': cap('@declaration.qualified_name', 2, 0, 2, 10, 'Other.alias'),
+    };
+    const fallback = {
+      '@declaration.variable': cap('@declaration.variable', 3, 0, 3, 10, 'raw:name'),
+    };
+    const result = extract(
+      [scopeMatch('module', 1, 0, 4, 0), specific, fallback],
+      'source.ts',
+      mockProvider(),
+    );
+    expect(result.declarationSources!.map(({ name }) => name)).toEqual(['specific', 'raw:name']);
+  });
+
+  it('clones anchors before provider hooks and freezes the array, records and ranges', () => {
+    const declaration = declMatch('function', 'original', 2, 1, 3, 4);
+    const anchor = declaration['@declaration.function']!;
+    const result = extract(
+      [scopeMatch('module', 1, 0, 5, 0), declaration],
+      'source.ts',
+      mockProvider({
+        bindingScopeFor: () => {
+          Object.assign(anchor.range, { startLine: 4, startCol: 9 });
+          Object.assign(declaration['@declaration.name']!, { text: 'changed' });
+          return null;
+        },
+      }),
+    );
+    const source = result.declarationSources![0]!;
+    expect(source).toEqual({
+      defId: result.localDefs[0]!.nodeId,
+      range: { startLine: 2, startCol: 1, endLine: 3, endCol: 4 },
+      name: 'original',
+      type: 'Function',
+    });
+    expect(source.range).not.toBe(anchor.range);
+    expect(Object.isFrozen(anchor.range)).toBe(false);
+    expect(Object.isFrozen(result.declarationSources)).toBe(true);
+    expect(Object.isFrozen(source)).toBe(true);
+    expect(Object.isFrozen(source.range)).toBe(true);
+    expect(Reflect.set(source.range, 'startLine', 99)).toBe(false);
+    expect(Reflect.set(source, 'name', 'mutated')).toBe(false);
+    expect(Reflect.set(result.declarationSources!, '0', {})).toBe(false);
+  });
+
+  it('emits an empty frozen array when no declarations are accepted', () => {
+    for (const declarations of [
+      [],
+      [declMatch('unknown', 'ignored', 2, 0, 2, 5), declMatch('function', 'outside', 8, 0, 8, 5)],
+    ]) {
+      const result = extract(
+        [scopeMatch('module', 1, 0, 4, 0), ...declarations],
+        'source.ts',
+        mockProvider(),
+      );
+      expect(result.localDefs).toEqual([]);
+      expect(result.declarationSources).toEqual([]);
+      expect(Object.isFrozen(result.declarationSources)).toBe(true);
+    }
+  });
+});
+
+describe('exact scope declaration ownership', () => {
+  it.each(['function', 'class'] as const)(
+    'uses the full %s declaration range rather than its shared start',
+    (kind) => {
+      const result = extract(
+        [
+          scopeMatch('module', 1, 0, 30, 0),
+          scopeMatch(kind, 2, 1, 20, 3),
+          declMatch(kind, 'shorter', 2, 1, 15, 3),
+          declMatch(kind, 'differentColumn', 2, 1, 20, 2),
+          declMatch(kind, 'exact', 2, 1, 20, 3),
+        ],
+        'owner.ts',
+        mockProvider(),
+      );
+      const owner = result.localDefs[2]!;
+      const ownedScope = result.scopes.find((scope) => scope.kind !== 'Module')!;
+      expect(ownedScope.ownerDefId).toBe(owner.nodeId);
+      expect(result.scopes.find((scope) => scope.kind === 'Module')!.ownerDefId).toBeNull();
+    },
+  );
+
+  it('leaves an anonymous Function owner null despite a nested Function declaration', () => {
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 30, 0),
+        scopeMatch('function', 2, 0, 20, 0),
+        declMatch('function', 'nested', 5, 2, 10, 3),
+      ],
+      'owner.ts',
+      mockProvider(),
+    );
+    const anonymous = result.scopes.find((scope) => scope.kind === 'Function')!;
+    expect(anonymous.ownedDefs.map((def) => def.nodeId)).toEqual([result.localDefs[0]!.nodeId]);
+    expect(anonymous.ownerDefId).toBeNull();
+  });
+
+  it.each(['function', 'class'] as const)(
+    'leaves conflicting same-range %s owners null in either declaration order',
+    (kind) => {
+      const declarations = [
+        declMatch(kind, 'first', 2, 1, 20, 3),
+        declMatch(kind, 'second', 2, 1, 20, 3),
+      ];
+      for (const ordered of [declarations, [...declarations].reverse()]) {
+        const result = extract(
+          [scopeMatch('module', 1, 0, 30, 0), scopeMatch(kind, 2, 1, 20, 3), ...ordered],
+          'owner.ts',
+          mockProvider(),
+        );
+        expect(result.localDefs).toHaveLength(2);
+        expect(result.scopes.find((scope) => scope.kind !== 'Module')!.ownerDefId).toBeNull();
+      }
+    },
+  );
+
+  it('does not assign a callable declaration as a Block owner even at the exact range', () => {
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 30, 0),
+        scopeMatch('block', 2, 1, 20, 3),
+        declMatch('function', 'nested', 2, 1, 20, 3),
+      ],
+      'owner.ts',
+      mockProvider(),
+    );
+    const block = result.scopes.find((scope) => scope.kind === 'Block')!;
+    expect(block.ownedDefs.map((def) => def.nodeId)).toEqual([result.localDefs[0]!.nodeId]);
+    expect(block.ownerDefId).toBeNull();
+    expect(result.scopes.every((scope) => Object.hasOwn(scope, 'ownerDefId'))).toBe(true);
+  });
+});
 
 describe('Pass 2: declarations + local bindings', () => {
   for (const hook of [undefined, () => null]) {
@@ -627,13 +1006,154 @@ describe('Pass 5: reference sites', () => {
 // ─── §End-to-end fixture ──────────────────────────────────────────────────
 
 describe('explicit exports after extraction', () => {
+  it('classifies each local definition once and derives detached namespace exports by ID', () => {
+    const calls: string[] = [];
+    const providerExports = new Map<string, string>();
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 100, 0),
+        declMatch('variable', 'TypeOnly', 2, 0, 2, 8),
+        declMatch('variable', 'ValueOnly', 3, 0, 3, 9),
+        declMatch('class', 'Both', 4, 0, 4, 4),
+      ],
+      'a.ts',
+      mockProvider({
+        declarationNamespaceFor: ({ def }) => {
+          calls.push(def.nodeId);
+          return def.qualifiedName === 'TypeOnly'
+            ? 'type'
+            : def.qualifiedName === 'ValueOnly'
+              ? 'value'
+              : 'both';
+        },
+        interpretExports: (_matches, context) => {
+          for (const def of context.localDefs)
+            providerExports.set(`alias${def.qualifiedName}`, def.nodeId);
+          return providerExports;
+        },
+      }),
+    );
+    const [type, value, both] = result.localDefs;
+    expect(calls).toEqual(result.localDefs.map((def) => def.nodeId));
+    expect([...result.scopes[0]!.bindings.values()].map((refs) => refs[0]!.namespace)).toEqual([
+      'type',
+      'value',
+      'both',
+    ]);
+    expect(result.exportsByNamespace).toEqual({
+      type: new Map([
+        ['aliasTypeOnly', type!.nodeId],
+        ['aliasBoth', both!.nodeId],
+      ]),
+      value: new Map([
+        ['aliasValueOnly', value!.nodeId],
+        ['aliasBoth', both!.nodeId],
+      ]),
+    });
+    expect(result.exports).toEqual(providerExports);
+    providerExports.clear();
+    expect(result.exports).toHaveProperty('size', 3);
+    expect(result.exportsByNamespace!.type.size).toBe(2);
+    expect(result.exportsByNamespace!.value.size).toBe(2);
+    expect(result.exportsByNamespace!.type).not.toBe(result.exportsByNamespace!.value);
+    expect(result.exportsByNamespace!.type).not.toBe(result.exports);
+  });
+
+  it('retains the exact legacy shape without a namespace hook', () => {
+    const matches = [
+      scopeMatch('module', 1, 0, 100, 0),
+      declMatch('variable', 'value', 2, 0, 2, 5),
+    ];
+    const legacy = extract(
+      matches,
+      'a.ts',
+      mockProvider({
+        interpretExports: (_matches, context) => new Map([['value', context.localDefs[0]!.nodeId]]),
+      }),
+    );
+    const unclassified = extract(
+      matches,
+      'a.ts',
+      mockProvider({
+        declarationNamespaceFor: () => undefined,
+      }),
+    );
+    const unclassifiedExport = extract(
+      matches,
+      'a.ts',
+      mockProvider({
+        declarationNamespaceFor: () => undefined,
+        interpretExports: (_matches, context) => new Map([['value', context.localDefs[0]!.nodeId]]),
+      }),
+    );
+    expect(legacy).not.toHaveProperty('exportsByNamespace');
+    expect(legacy.scopes[0]!.bindings.get('value')![0]).toEqual({
+      def: legacy.localDefs[0],
+      origin: 'local',
+    });
+    expect(unclassified.scopes[0]!.bindings).toEqual(legacy.scopes[0]!.bindings);
+    expect(unclassified).not.toHaveProperty('exportsByNamespace');
+    expect(unclassifiedExport.exportsByNamespace).toEqual({
+      type: legacy.exports,
+      value: legacy.exports,
+    });
+  });
+
+  it('classifies exported definitions even when binding selection discards them', () => {
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 100, 0),
+        declMatch('variable', 'same', 2, 0, 2, 5),
+        declMatch('variable', 'same', 3, 0, 3, 5),
+      ],
+      'a.ts',
+      mockProvider({
+        selectLocalBindings: (candidates) => [candidates[1]!],
+        declarationNamespaceFor: ({ match }) =>
+          match['@declaration.variable']!.range.startLine === 2 ? 'type' : 'value',
+        interpretExports: (_matches, context) => new Map([['alias', context.localDefs[0]!.nodeId]]),
+      }),
+    );
+    expect(result.scopes[0]!.bindings.get('same')![0]!.namespace).toBe('value');
+    expect(result.exportsByNamespace).toEqual({
+      type: new Map([['alias', result.localDefs[0]!.nodeId]]),
+      value: new Map(),
+    });
+  });
+
+  it.each([null, '', 'namespace', 0, {}, []])(
+    'rejects invalid namespace classification %j',
+    (invalid) => {
+      const declarationNamespaceFor = (() => invalid) as NonNullable<
+        ScopeExtractorHooks['declarationNamespaceFor']
+      >;
+      expect(() =>
+        extract(
+          [scopeMatch('module', 1, 0, 100, 0), declMatch('variable', 'value', 2, 0, 2, 5)],
+          'a.ts',
+          mockProvider({ declarationNamespaceFor }),
+        ),
+      ).toThrow(/declarationNamespaceFor/);
+    },
+  );
+
   it('omits exports without a hook and preserves an explicitly empty export map', () => {
     const matches = [scopeMatch('module', 1, 0, 100, 0)];
     const legacy = extract(matches, 'a.ts', mockProvider());
     const explicit = extract(matches, 'a.ts', mockProvider({ interpretExports: () => new Map() }));
+    const namespaced = extract(
+      matches,
+      'a.ts',
+      mockProvider({
+        interpretExports: () => new Map(),
+        declarationNamespaceFor: () => 'value',
+      }),
+    );
 
     expect(legacy).not.toHaveProperty('exports');
     expect(explicit).toHaveProperty('exports', new Map());
+    expect(explicit).not.toHaveProperty('exportsByNamespace');
+    expect(namespaced.exportsByNamespace).toEqual({ type: new Map(), value: new Map() });
   });
 
   it('receives original matches and completed context after all five passes', () => {

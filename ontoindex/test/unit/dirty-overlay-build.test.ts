@@ -191,6 +191,12 @@ describe('disposable dirty overlay build', () => {
         baseGenerationId: generation.generationId,
         baseCommit: null,
         head: null,
+        databaseDigest: {
+          sha256: createHash('sha256')
+            .update(await fs.readFile(overlayDbPath!))
+            .digest('hex'),
+          size: (await fs.stat(overlayDbPath!)).size,
+        },
         manifestDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
         configurationDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
         parserIdentity: expect.any(String),

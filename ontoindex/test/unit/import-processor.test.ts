@@ -69,7 +69,8 @@ describe('import configuration ownership', () => {
       } else {
         await processImportsFromExtracted(graph, [], [], ctx, undefined, '/standalone');
       }
-      expect(loader).toHaveBeenCalledExactlyOnceWith('/standalone');
+      // The second argument is the (empty) file inventory used for Cargo discovery.
+      expect(loader).toHaveBeenCalledExactlyOnceWith('/standalone', []);
     },
   );
 });

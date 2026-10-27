@@ -1,15 +1,17 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { constants, type Stats } from 'node:fs';
+import { constants, type Dirent, type Stats } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { globStream } from 'glob';
+import { ANALYSIS_MANIFEST_PATTERNS } from '../analysis-packs/catalog.js';
 import { execFileText } from './process/exec-file.js';
 import { createIgnoreFilter, loadIgnoreRules, shouldIgnorePath } from '../config/ignore-service.js';
 import { getCurrentCommit } from '../storage/git.js';
 import { getStoragePaths, loadMeta, readActiveGenerationMeta } from '../storage/repo-manager.js';
 import { getScanMaxFileSizeBytes } from './ingestion/scan-config.js';
+import { workspaceParserIdentity } from './tree-sitter/parser-identity.js';
+import { removeCaptureOwner, sweepDeadCaptures, writeCaptureOwner } from './capture-owner.js';
 import {
   computeSourceManifest,
   workspaceIgnorePolicyDigest,
@@ -539,7 +541,7 @@ export interface WorkspaceInputCapture {
 }
 
 export const CAPTURE_CONFIGURATION =
-  /^(?:\.gitignore|\.ontoindexignore|(?:ts|js)config(?:\.[^.]+)*\.json|package(?:-lock)?\.json|npm-shrinkwrap\.json|pnpm-workspace\.yaml|go\.(?:mod|sum|work)|composer\.(?:json|lock)|Cargo\.(?:toml|lock)|pyproject\.toml|setup\.(?:cfg|py)|Package\.swift|.*\.csproj)$/;
+  /^(?:\.gitignore|\.ontoindexignore|(?:ts|js)config(?:\.[^.]+)*\.json|package(?:-lock)?\.json|npm-shrinkwrap\.json|pnpm-workspace\.yaml|go\.(?:mod|sum|work)|composer\.(?:json|lock)|Cargo\.(?:toml|lock)|pyproject\.toml|setup\.(?:cfg|py)|compile_commands\.json|CMakeLists\.txt|Package\.swift|.*\.csproj)$/;
 
 function captureInputPath(root: string, relativePath: string): string {
   if (
@@ -714,6 +716,35 @@ async function workspaceConfigurationPaths(
   maxFiles: number,
   maxTotalBytes: number,
 ): Promise<string[]> {
+  // Catalog manifests are consumed independently of source scopes and ignore rules.
+  // Stream the catalog's exact patterns through the same capture safety limits.
+  const catalogPaths: string[] = [];
+  let catalogBytes = 0;
+  for await (const entry of globStream(Object.values(ANALYSIS_MANIFEST_PATTERNS), {
+    cwd: root,
+    nodir: true,
+  })) {
+    check();
+    const relativePath = String(entry);
+    await checkCapturePath(root, relativePath);
+    const stat = await fs.lstat(captureInputPath(root, relativePath));
+    if (!stat.isFile())
+      throw new WorkspaceInputCaptureError(
+        'unsupported',
+        `Workspace capture requires regular input: ${relativePath}`,
+      );
+    catalogBytes += stat.size;
+    if (
+      catalogPaths.length >= maxFiles ||
+      catalogBytes > maxTotalBytes ||
+      (getScanMaxFileSizeBytes() !== null && stat.size > getScanMaxFileSizeBytes()!)
+    )
+      throw new WorkspaceInputCaptureError(
+        'limit',
+        `Workspace input limit exceeded at ${relativePath}`,
+      );
+    catalogPaths.push(relativePath);
+  }
   if (includePaths) {
     const directories = new Set<string>(['.']);
     for (const relativePath of includePaths) {
@@ -732,7 +763,7 @@ async function workspaceConfigurationPaths(
       const { directory, depth } = queue.shift()!;
       directories.add(directory);
       if (depth >= 5) continue;
-      let entries: import('node:fs').Dirent[];
+      let entries: Dirent[];
       try {
         entries = await fs.readdir(path.join(root, directory), { withFileTypes: true });
       } catch {
@@ -787,12 +818,15 @@ async function workspaceConfigurationPaths(
         paths.push(relativePath);
       }
     }
-    return paths.sort();
+    return [...new Set([...paths, ...catalogPaths])].sort();
   }
   const ignore = await createIgnoreFilter(root);
   const paths: string[] = [];
   let files = 0;
   let bytes = 0;
+  const cap = getScanMaxFileSizeBytes();
+  const offenders: { path: string; size: number | null }[] = [];
+  let symlinks = 0;
   // The canonical walker owns eligibility; this pass only rejects unsafe inputs
   // and adds configuration files that its built-in filename policy excludes.
   const filter = {
@@ -808,8 +842,13 @@ async function workspaceConfigurationPaths(
   })) {
     check();
     const relativePath = String(entry);
-    await checkCapturePath(root, relativePath);
     const stat = await fs.lstat(captureInputPath(root, relativePath));
+    if (stat.isSymbolicLink()) {
+      symlinks++;
+      offenders.push({ path: relativePath, size: null });
+      continue;
+    }
+    await checkCapturePath(root, relativePath);
     if (!stat.isDirectory() && !stat.isFile()) {
       throw new WorkspaceInputCaptureError(
         'unsupported',
@@ -817,12 +856,18 @@ async function workspaceConfigurationPaths(
       );
     }
     if (stat.isFile()) {
+      if (++files > maxFiles) {
+        throw new WorkspaceInputCaptureError(
+          'limit',
+          `Workspace input limit exceeded at ${relativePath}`,
+        );
+      }
+      if (cap !== null && stat.size > cap) {
+        offenders.push({ path: relativePath, size: stat.size });
+        continue;
+      }
       bytes += stat.size;
-      if (
-        ++files > maxFiles ||
-        bytes > maxTotalBytes ||
-        (getScanMaxFileSizeBytes() !== null && stat.size > getScanMaxFileSizeBytes()!)
-      ) {
+      if (bytes > maxTotalBytes) {
         throw new WorkspaceInputCaptureError(
           'limit',
           `Workspace input limit exceeded at ${relativePath}`,
@@ -832,33 +877,40 @@ async function workspaceConfigurationPaths(
     if (stat.isFile() && CAPTURE_CONFIGURATION.test(path.basename(relativePath)))
       paths.push(relativePath);
   }
-  return paths.sort();
-}
-
-async function workspaceParserIdentity(): Promise<string> {
-  const files = [
-    new URL('../../package.json', import.meta.url),
-    new URL(
-      `./tree-sitter/parser-loader${path.extname(fileURLToPath(import.meta.url))}`,
-      import.meta.url,
-    ),
-  ];
-  return createHash('sha256')
-    .update(
-      JSON.stringify(
-        await Promise.all(files.map(async (file) => (await fs.readFile(file)).toString('utf8'))),
-      ),
-    )
-    .digest('hex');
+  if (offenders.length > 0) {
+    offenders.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    let samples = offenders
+      .slice(0, 20)
+      .map(({ path, size }) => `${path} (${size === null ? 'symlink' : `${size} bytes`})`)
+      .join('; ');
+    if (offenders.length > 20) samples += `; and ${offenders.length - 20} more`;
+    const capKiB = cap === null ? 'unlimited' : Math.floor(cap / 1024);
+    throw new WorkspaceInputCaptureError(
+      symlinks > 0 ? 'unsupported' : 'limit',
+      `Workspace input refused: ${symlinks} symlink(s) and ${offenders.length - symlinks} file(s) over the ${capKiB} KiB scan cap. Exclude them with .ontoindexignore (resolver configuration files cannot be excluded). Examples: ${samples}`,
+    );
+  }
+  return [...new Set([...paths, ...catalogPaths])].sort();
 }
 
 export async function workspaceConfigurationIdentity(
   repoPath: string,
-  options: { includePaths?: readonly string[]; signal?: AbortSignal } = {},
-): Promise<{ configurationDigest: string; parserIdentity: string }> {
+  options: {
+    includePaths?: readonly string[];
+    inputPaths?: readonly string[];
+    signal?: AbortSignal;
+    deadline?: number;
+  } = {},
+): Promise<{ configurationDigest: string; parserIdentity: string; inputDigest?: string }> {
+  const deadline = Math.min(options.deadline ?? Infinity, performance.now() + 60_000);
   const check = () => {
     if (options.signal?.aborted)
       throw new WorkspaceInputCaptureError('cancelled', 'Workspace input capture was cancelled');
+    if (!(deadline > performance.now()))
+      throw new WorkspaceInputCaptureError(
+        'timeout',
+        'Workspace input identity exceeded its request deadline',
+      );
   };
   check();
   const root = await fs.realpath(repoPath);
@@ -869,9 +921,13 @@ export async function workspaceConfigurationIdentity(
     100_000,
     512 * 1024 * 1024,
   );
+  const configPaths = new Set(configs);
+  const inputPaths = [...new Set([...configs, ...(options.inputPaths ?? [])])].sort();
+  if (inputPaths.length > 100_000)
+    throw new WorkspaceInputCaptureError('limit', 'Workspace input file limit exceeded');
   const entries: CapturedSourceEntry[] = [];
   let bytes = 0;
-  for (const relativePath of configs) {
+  for (const relativePath of inputPaths) {
     check();
     await checkCapturePath(root, relativePath);
     const beforeOpen = await fs.lstat(captureInputPath(root, relativePath));
@@ -917,7 +973,7 @@ export async function workspaceConfigurationIdentity(
         await fs.lstat(captureInputPath(root, relativePath)),
       );
       const value = content.subarray(0, length);
-      checkResolverConfiguration(relativePath, value);
+      if (configPaths.has(relativePath)) checkResolverConfiguration(relativePath, value);
       entries.push({
         path: relativePath,
         byteLength: length,
@@ -929,12 +985,22 @@ export async function workspaceConfigurationIdentity(
     }
   }
   const configurationDigest = workspaceConfigurationDigest(
-    entries,
+    entries.filter((entry) => configPaths.has(entry.path)),
     await workspaceIgnorePolicyDigest(root),
   );
   const parserIdentity = await workspaceParserIdentity();
   check();
-  return { configurationDigest, parserIdentity };
+  return {
+    configurationDigest,
+    parserIdentity,
+    ...(options.inputPaths === undefined
+      ? {}
+      : {
+          inputDigest: createHash('sha256')
+            .update(JSON.stringify([parserIdentity, configurationDigest, entries]))
+            .digest('hex'),
+        }),
+  };
 }
 
 /** Materialize and verify working-file bytes; never use stat timestamps as identity. */
@@ -1025,6 +1091,7 @@ export async function captureWorkspaceInputs(
 
   for (let attempt = 1; attempt <= 2; attempt++) {
     check();
+    await sweepDeadCaptures(captureParent).catch(() => {});
     const captureRoot = await fs.mkdtemp(path.join(captureParent, 'capture-'));
     const owned = await fs.lstat(captureRoot);
     let disposing: Promise<void> | undefined;
@@ -1048,9 +1115,11 @@ export async function captureWorkspaceInputs(
           );
         }
         await fs.rm(captureRoot, { recursive: true, force: true });
+        await removeCaptureOwner(captureRoot);
       })());
     try {
       await fs.chmod(captureRoot, 0o700);
+      await writeCaptureOwner(captureRoot);
       const before = await identity();
       let totalBytes = 0;
       const readManifest = async (

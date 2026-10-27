@@ -10,18 +10,23 @@
  * **Algorithm (strict).** Walk the scope chain from `ref.declaredAtScope`:
  *
  *   1. At each scope, inspect `bindings.get(ref.rawName)`:
+ *      - Skip explicitly value-only bindings before applying shadowing.
  *      - If one of the bindings is a **type-kind** def with a **strict origin**
  *        (`'local' | 'import' | 'namespace' | 'reexport'`), return it.
- *      - If any binding for this name exists at this scope but none qualifies
+ *      - If any namespace-eligible binding exists at this scope but none qualifies
  *        (e.g., a local variable named `User` shadows an outer import of class
  *        `User`), return `null`. The nearer binding shadows; we do NOT fall
  *        through to the global qualified-name index.
  *      - Otherwise continue to the parent scope.
- *   2. If the raw name is a dotted path (e.g., `'models.User'`) and the scope
- *      walk produced no match, consult `QualifiedNameIndex.byQualifiedName`.
+ *   2. With an export callback, resolve exactly one namespace alias hop
+ *      (`'models.User'`) from the declaration scope through explicit type
+ *      exports. A nearer eligible binding claims the alias; unresolved,
+ *      shadowed, or conflicting targets return `null`.
+ *   3. If the raw name is a dotted path and no alias claimed it, consult `QualifiedNameIndex.byQualifiedName`
+ *      only when no explicitly tagged full name or segment prefix claims it.
  *      Only accept **exactly one** type-kind hit — anything ambiguous returns
  *      `null` rather than a guess.
- *   3. Return `null`.
+ *   4. Return `null`.
  *
  * **What `'strict' origins' means.** `'wildcard'` is intentionally excluded.
  * A wildcard-expanded name (`from x import *`) is too loose to use as an
@@ -41,6 +46,9 @@ import type { SymbolDefinition } from './symbol-definition.js';
 import type { BindingRef, ScopeId, ScopeLookup, TypeRef } from './types.js';
 import type { DefIndex } from './def-index.js';
 import type { QualifiedNameIndex } from './qualified-name-index.js';
+import type { FinalizeOutput } from './finalize-algorithm.js';
+import { canUseCanonicalFallback } from './registries/lookup-qualified.js';
+import { lookupNamespaceMember } from './namespace-member.js';
 
 // ─── Public contracts ───────────────────────────────────────────────────────
 
@@ -53,6 +61,7 @@ export interface ResolveTypeRefContext {
   readonly scopes: ScopeLookup;
   readonly defIndex: DefIndex;
   readonly qualifiedNameIndex: QualifiedNameIndex;
+  readonly lookupExport?: FinalizeOutput['lookupExport'];
 }
 
 // ─── Strict policy constants ────────────────────────────────────────────────
@@ -113,25 +122,46 @@ export function resolveTypeRef(ref: TypeRef, ctx: ResolveTypeRefContext): Symbol
 
     const bindings = scope.bindings.get(ref.rawName);
     if (bindings !== undefined && bindings.length > 0) {
-      // At least one binding exists at this scope → it is the shadowing site.
-      // Either one of them qualifies, or the name is shadowed by a non-type.
+      let hasTypeBinding = false;
+      const candidates = new Map<string, SymbolDefinition>();
       for (const binding of bindings) {
+        if (binding.namespace === 'value') continue;
+        hasTypeBinding = true;
         if (!STRICT_ORIGINS.has(binding.origin)) continue;
         if (TYPE_KINDS.has(binding.def.type)) {
-          return binding.def;
+          candidates.set(binding.def.nodeId, binding.def);
         }
       }
-      // Shadowed by a non-type / non-strict-origin binding. Fail fast — no
-      // global fallback, no walk to the parent.
-      return null;
+      // An eligible non-type / non-strict-origin binding shadows here.
+      // A value-only bucket leaves the parent scope available.
+      if (hasTypeBinding) return candidates.size === 1 ? candidates.values().next().value! : null;
     }
 
     currentId = scope.parent;
   }
 
+  // An explicit namespace alias claims its member even when resolution fails.
+  if (ctx.lookupExport !== undefined) {
+    const member = lookupNamespaceMember(
+      ref.rawName,
+      ref.declaredAtScope,
+      'type',
+      ctx.scopes,
+      ctx.defIndex,
+      ctx.lookupExport,
+    );
+    if (member.claimed) {
+      const candidates = member.candidates.filter((def) => TYPE_KINDS.has(def.type));
+      return candidates.length === 1 ? candidates[0]! : null;
+    }
+  }
+
   // Phase 2: dotted fallback via `QualifiedNameIndex`. Only accept a unique
   // type-kind hit; anything ambiguous returns null (strict: no guesses).
-  if (ref.rawName.includes('.')) {
+  if (
+    ref.rawName.includes('.') &&
+    canUseCanonicalFallback(ref.rawName, ref.declaredAtScope, ctx.scopes)
+  ) {
     const candidates = ctx.qualifiedNameIndex.get(ref.rawName);
     let onlyTypeDef: SymbolDefinition | null = null;
     for (const defId of candidates) {

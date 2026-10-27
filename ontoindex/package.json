@@ -81,6 +81,7 @@
     "pandemonium": "^2.4.1",
     "safe-regex": "^2.1.1",
     "seedrandom": "^3.0.5",
+    "smol-toml": "1.9.1",
     "tree-sitter": "file:./vendor/tree-sitter",
     "tree-sitter-c": "file:./vendor/tree-sitter-c",
     "tree-sitter-c-sharp": "file:./vendor/tree-sitter-c-sharp",

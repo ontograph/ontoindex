@@ -12,13 +12,14 @@
  *     `explicitReceiver` and `ownerScopedContributor` knobs are.
  */
 
-import type { Resolution, ScopeId } from '../types.js';
+import type { LookupParams, Resolution, ScopeId } from '../types.js';
 import { lookupCore, type CoreLookupParams } from './lookup-core.js';
 import type { OwnerScopedContributor, RegistryContext } from './context.js';
 import { FIELD_KINDS } from './context.js';
 
 export interface FieldLookupOptions {
-  readonly explicitReceiver?: { readonly name: string };
+  readonly lexicalNamespace?: LookupParams['lexicalNamespace'];
+  readonly explicitReceiver?: LookupParams['explicitReceiver'];
   readonly ownerScopedContributor?: OwnerScopedContributor;
 }
 
@@ -33,6 +34,9 @@ export function buildFieldRegistry(ctx: RegistryContext): FieldRegistry {
         acceptedKinds: FIELD_KINDS,
         useReceiverTypeBinding: true,
         ownerScopedContributor: options.ownerScopedContributor ?? null,
+        ...(options.lexicalNamespace !== undefined
+          ? { lexicalNamespace: options.lexicalNamespace }
+          : {}),
         ...(options.explicitReceiver !== undefined
           ? { explicitReceiver: options.explicitReceiver }
           : {}),

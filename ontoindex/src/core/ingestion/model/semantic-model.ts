@@ -147,7 +147,7 @@ export type SemanticModelRegistrationEvent =
       name: string;
       def: SymbolDefinition;
     }
-  | { kind: 'type.clear' | 'method.clear' | 'field.clear' };
+  | { kind: 'type.clear' | 'method.clear' | 'field.clear' | 'model.clear' };
 
 export interface SemanticModelRegistrationSnapshot {
   version: 1;
@@ -227,7 +227,7 @@ const registrationStringBytes = (value: string): number => {
   return bytes;
 };
 
-const cloneRegistrationEvent = (
+export const cloneRegistrationEvent = (
   input: unknown,
 ): { event: SemanticModelRegistrationEvent; bytes: number } => {
   let bytes = 0;
@@ -337,6 +337,7 @@ const cloneRegistrationEvent = (
     case 'type.clear':
     case 'method.clear':
     case 'field.clear':
+    case 'model.clear':
       shape = { kind: 'string' };
       required = ['kind'];
       break;
@@ -398,6 +399,9 @@ export const restoreSemanticModelRegistrations = (input: unknown): MutableSemant
       case 'field.clear':
         model.fields.clear();
         break;
+      case 'model.clear':
+        model.clear();
+        break;
     }
   }
   return model;
@@ -415,6 +419,8 @@ export const restoreSemanticModelRegistrations = (input: unknown): MutableSemant
 
 export const createSemanticModel = (options?: {
   captureRegistrations?: boolean;
+  onRegistration?: (encodedEvent: string) => boolean;
+  onRegistrationError?: () => void;
 }): MutableSemanticModel => {
   // 1. Create the pure, registry-unaware SymbolTable leaf.
   // rawSymbols is the only handle in the codebase whose type (the
@@ -432,23 +438,73 @@ export const createSemanticModel = (options?: {
     : undefined;
   let registrationBytes = EMPTY_REGISTRATION_BYTES;
   let suppressCapture = false;
-  const capture = <T>(input: SemanticModelRegistrationEvent, mutate: () => T): T => {
-    if (!registrations || suppressCapture) return mutate();
-    if (registrations.length >= MAX_REGISTRATION_EVENTS) return invalidRegistration();
-    const staged = cloneRegistrationEvent(input);
-    const nextBytes = registrationBytes + staged.bytes + (registrations.length ? 1 : 0);
-    if (nextBytes > MAX_REGISTRATION_BYTES) return invalidRegistration();
-    suppressCapture = true;
+  let observer = options?.onRegistration;
+  let deliveringObserver = false;
+  let observerErrorPending = false;
+  const stopObserver = (): void => {
+    if (!observer) return;
+    observer = undefined;
+    observerErrorPending = true;
+  };
+  const notifyObserverError = (): void => {
+    if (!observerErrorPending || suppressCapture || deliveringObserver) return;
+    observerErrorPending = false;
     try {
-      const result = mutate();
-      registrations.push(staged.event);
-      registrationBytes = nextBytes;
-      return result;
-    } finally {
-      suppressCapture = false;
+      options?.onRegistrationError?.();
+    } catch {
+      // Observation must not change legacy mutation behavior.
     }
   };
-  if (registrations) {
+  const encodeObservation = (input: SemanticModelRegistrationEvent): string | undefined => {
+    if (!observer) return undefined;
+    try {
+      return JSON.stringify(cloneRegistrationEvent(input).event);
+    } catch {
+      stopObserver();
+      return undefined;
+    }
+  };
+  const observe = (encoded: string | undefined): void => {
+    if (!observer || encoded === undefined) return;
+    deliveringObserver = true;
+    try {
+      if (observer(encoded) === false) stopObserver();
+    } catch {
+      stopObserver();
+    } finally {
+      deliveringObserver = false;
+      notifyObserverError();
+    }
+  };
+  const capture = <T>(input: SemanticModelRegistrationEvent, mutate: () => T): T => {
+    if (deliveringObserver) stopObserver();
+    if ((!registrations && !observer) || suppressCapture) return mutate();
+    let staged: ReturnType<typeof cloneRegistrationEvent> | undefined;
+    let nextBytes = registrationBytes;
+    if (registrations) {
+      if (registrations.length >= MAX_REGISTRATION_EVENTS) return invalidRegistration();
+      staged = cloneRegistrationEvent(input);
+      nextBytes += staged.bytes + (registrations.length ? 1 : 0);
+      if (nextBytes > MAX_REGISTRATION_BYTES) return invalidRegistration();
+    }
+    const encoded = encodeObservation(staged?.event ?? input);
+    const previousSuppression = suppressCapture;
+    suppressCapture = true;
+    let result: T;
+    try {
+      result = mutate();
+      if (registrations && staged) {
+        registrations.push(staged.event);
+        registrationBytes = nextBytes;
+      }
+    } finally {
+      suppressCapture = previousSuppression;
+      notifyObserverError();
+    }
+    observe(encoded);
+    return result;
+  };
+  if (registrations || observer) {
     const registerClass = types.registerClass;
     types.registerClass = (name, qualifiedName, def) =>
       capture({ kind: 'type.registerClass', name, qualifiedName, def }, () =>
@@ -524,6 +580,8 @@ export const createSemanticModel = (options?: {
   // owner-scoped registries populated while the file/callable indexes go
   // empty (the phantom-resolution failure mode).
   const cascadeClear = (): void => {
+    if (deliveringObserver) stopObserver();
+    const previousSuppression = suppressCapture;
     suppressCapture = true;
     try {
       types.clear();
@@ -534,8 +592,10 @@ export const createSemanticModel = (options?: {
       if (registrations) registrations.length = 0;
       registrationBytes = EMPTY_REGISTRATION_BYTES;
     } finally {
-      suppressCapture = false;
+      suppressCapture = previousSuppression;
+      notifyObserverError();
     }
+    if (!previousSuppression) observe(encodeObservation({ kind: 'model.clear' }));
   };
 
   // Writer-typed facade: exposes reads + add, but NO `clear` field.
@@ -544,12 +604,13 @@ export const createSemanticModel = (options?: {
   // only query should widen their annotation to SymbolTableReader for
   // least-authority clarity.
   const symbols: SymbolTableWriter = {
-    add: registrations
-      ? (filePath, name, nodeId, type, metadata) =>
-          capture({ kind: 'symbol.add', filePath, name, nodeId, type, metadata }, () =>
-            wrappedAdd(filePath, name, nodeId, type, metadata),
-          )
-      : wrappedAdd,
+    add:
+      registrations || observer
+        ? (filePath, name, nodeId, type, metadata) =>
+            capture({ kind: 'symbol.add', filePath, name, nodeId, type, metadata }, () =>
+              wrappedAdd(filePath, name, nodeId, type, metadata),
+            )
+        : wrappedAdd,
     lookupExact: rawSymbols.lookupExact,
     lookupExactFull: rawSymbols.lookupExactFull,
     lookupExactAll: rawSymbols.lookupExactAll,

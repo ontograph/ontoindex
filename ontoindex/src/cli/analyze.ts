@@ -17,6 +17,7 @@ import {
   getStoragePaths,
   getGlobalRegistryPath,
   RegistryNameCollisionError,
+  readActiveGenerationMeta,
 } from '../storage/repo-manager.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import fs from 'fs/promises';
@@ -39,7 +40,14 @@ import {
 } from '../core/indexing/file-scope-preview.js';
 import type { PipelineProfile } from '../core/ingestion/pipeline.js';
 import type { EmbeddingLifecycleSummary } from '../core/run-analyze.js';
-import { resolveOverlayDbPath } from '../mcp/local/backend-overlay.js';
+import {
+  resolveOverlayDbPath,
+  isAutomaticWorkspaceEnabled,
+  getOverlaySnapshot,
+  evictOverlayState,
+  type OverlaySnapshot,
+} from '../mcp/local/backend-overlay.js';
+import { buildWorkspaceGraph } from '../mcp/local/local-backend-repo-runtime.js';
 import { assertWorkspaceBuildAdmission } from '../mcp/local/workspace-build-supervisor.js';
 import { parseManagedAnalysisContextFromEnv } from '../core/analysis/analysis-publication-receipt.js';
 import { acquireNativeFileLock } from '../native/file-lock.js';
@@ -427,6 +435,8 @@ interface AnalyzeOptions {
   experimentalFileDelta?: boolean;
   /** Build a disposable dirty-source graph without changing the active index. */
   dirtyOverlay?: boolean;
+  /** Explicitly prepare the full disposable workspace graph. */
+  workspaceGraph?: boolean;
   /** Preview file scope without writing .ontoindex. */
   dryRun?: boolean;
   /** Explain why one file would be included or skipped. */
@@ -514,7 +524,133 @@ function formatFileScopeExplanation(
   return lines.join('\n');
 }
 
+export async function prepareWorkspaceGraphCommand(
+  repoPath: string,
+  signal?: AbortSignal,
+): Promise<{ snapshot: OverlaySnapshot; reused: boolean; baseCurrent: boolean }> {
+  signal?.throwIfAborted();
+  if (parseManagedAnalysisContextFromEnv()) {
+    throw new Error('--workspace-graph cannot run as a managed analysis job.');
+  }
+  if (!isAutomaticWorkspaceEnabled()) {
+    throw new Error(
+      '--workspace-graph requires automatic workspace consumption (ONTOINDEX_AUTO_WORKSPACE=1).',
+    );
+  }
+  const canonicalPath = await fs.realpath(repoPath);
+  signal?.throwIfAborted();
+  const repo = {
+    id: canonicalPath,
+    repoPath: canonicalPath,
+    storagePath: getStoragePaths(canonicalPath).storagePath,
+  };
+  // Check before taking the lock so an unindexed repository is not initialized by this command.
+  if (!(await readActiveGenerationMeta(repo.storagePath)).meta?.lastCommit) {
+    throw new Error(
+      '--workspace-graph requires an existing committed base; run ontoindex analyze first.',
+    );
+  }
+  signal?.throwIfAborted();
+  const lock = await acquireAnalyzeLock(canonicalPath);
+  try {
+    signal?.throwIfAborted();
+    if (!(await readActiveGenerationMeta(repo.storagePath)).meta?.lastCommit) {
+      throw new Error(
+        '--workspace-graph requires an existing committed base; run ontoindex analyze first.',
+      );
+    }
+    evictOverlayState(repo.id);
+    let snapshot = await getOverlaySnapshot(repo);
+    signal?.throwIfAborted();
+    const baseCurrent =
+      snapshot.dirtyPaths.size === 0 &&
+      (snapshot.configPaths?.size ?? 0) === 0 &&
+      snapshot.baseMatches === true &&
+      !snapshot.headChanged;
+    if (baseCurrent) return { snapshot, reused: true, baseCurrent: true };
+    const ready = (value: OverlaySnapshot) =>
+      value.usable &&
+      value.capability === 'workspace-graph' &&
+      (value.coverage === 'complete' || value.coverage === 'partial');
+    if (ready(snapshot)) return { snapshot, reused: true, baseCurrent: false };
+    // Await the supervisor, including cancellation/reaping, before releasing the analyze lock.
+    await buildWorkspaceGraph(repo, signal, undefined, true);
+    signal?.throwIfAborted();
+    evictOverlayState(repo.id);
+    snapshot = await getOverlaySnapshot(repo);
+    signal?.throwIfAborted();
+    if (!ready(snapshot)) {
+      throw new Error(
+        `Workspace graph verification failed: ${snapshot.reason ?? snapshot.coverage ?? 'full workspace capability missing'}.`,
+      );
+    }
+    return { snapshot, reused: false, baseCurrent: false };
+  } finally {
+    await lock.release();
+  }
+}
+
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
+  if (options?.workspaceGraph) {
+    const controller = new AbortController();
+    let signalExitCode: number | undefined;
+    const interrupt = () => {
+      signalExitCode ??= 130;
+      controller.abort();
+    };
+    const terminate = () => {
+      signalExitCode ??= 143;
+      controller.abort();
+    };
+    process.on('SIGINT', interrupt);
+    process.on('SIGTERM', terminate);
+    try {
+      const incompatible = [
+        'dirtyOverlay',
+        'symbolsOnly',
+        'indexOnly',
+        'hugeRepo',
+        'allowHugeRoot',
+        'largeRepoSafe',
+        'experimentalFileDelta',
+        'embeddings',
+        'annNeighbors',
+        'skills',
+        'skillsTarget',
+        'name',
+        'allowDuplicateName',
+        'markdownSidecar',
+        'skipGit',
+        'dryRun',
+        'explainFile',
+        'force',
+      ] as const;
+      const conflict = incompatible.find(
+        (key) => options[key] !== undefined && options[key] !== false,
+      );
+      if (conflict || options.includePath?.length) {
+        const flag =
+          conflict?.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`) ?? 'include-path';
+        throw new Error(`--workspace-graph cannot be combined with --${flag}.`);
+      }
+      const repoPath = inputPath ? path.resolve(inputPath) : getGitRoot(process.cwd());
+      if (!repoPath) throw new Error('--workspace-graph requires a Git repository path.');
+      const result = await prepareWorkspaceGraphCommand(repoPath, controller.signal);
+      console.log(
+        result.baseCurrent
+          ? 'Committed base is current; no workspace graph preparation is needed.'
+          : `Workspace graph ${result.reused ? 'reused' : 'prepared'}; coverage: ${result.snapshot.coverage}.`,
+      );
+    } catch (error) {
+      console.error(`Workspace graph preparation failed: ${getErrorMessage(error)}`);
+      process.exitCode = signalExitCode ?? 1;
+    } finally {
+      process.off('SIGINT', interrupt);
+      process.off('SIGTERM', terminate);
+      if (signalExitCode !== undefined) process.exitCode = signalExitCode;
+    }
+    return;
+  }
   const managedAnalysis = parseManagedAnalysisContextFromEnv();
   if (ensureHeap()) return;
   if (options?.allowDuplicateName) {

@@ -4,23 +4,56 @@
  * Covers empty-input, single-file, multi-file-with-imports, and the
  * `MutableSemanticModel.attachScopeIndexes` one-shot contract.
  *
- * Uses synthetic ParsedFiles and capture matches through the extractor,
- * without requiring a real parser.
+ * Uses synthetic ParsedFiles and capture matches, plus a real-parser
+ * cross-file fixture through the TS/JS composer and extractor hooks.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  buildFieldRegistry,
+  buildMethodRegistry,
+  lookupCore,
+  resolveTypeRef,
+  SupportedLanguages,
+} from 'ontoindex-shared';
 import type {
   BindingRef,
   CaptureMatch,
+  ImportEdge,
   ParsedFile,
   ParsedImport,
   Scope,
   ScopeId,
   SymbolDefinition,
 } from 'ontoindex-shared';
-import { finalizeScopeModel } from '../../../src/core/ingestion/finalize-orchestrator.js';
+import {
+  buildScopeRegistryContext,
+  finalizeScopeModel,
+} from '../../../src/core/ingestion/finalize-orchestrator.js';
+import {
+  buildImportTargetWorkspace,
+  resolveImportTargetAcrossLanguages,
+} from '../../../src/core/ingestion/import-target-adapter.js';
+import type { ResolveCtx } from '../../../src/core/ingestion/import-resolvers/types.js';
+import { buildSuffixIndex } from '../../../src/core/ingestion/import-resolvers/utils.js';
+import {
+  javascriptProvider,
+  typescriptProvider,
+} from '../../../src/core/ingestion/languages/typescript.js';
 import { extract } from '../../../src/core/ingestion/scope-extractor.js';
+import { createParserForLanguage } from '../../../src/core/tree-sitter/parser-loader.js';
+import { emitTypeScriptCaptures } from '../../../src/core/ingestion/languages/typescript-captures.js';
+import {
+  selectTypeScriptLocalBindings,
+  typeScriptDeclarationBindingScope,
+} from '../../../src/core/ingestion/languages/typescript-declaration-captures.js';
+import { interpretTypeScriptImport } from '../../../src/core/ingestion/languages/typescript-import-captures.js';
+import { interpretTypeScriptExports } from '../../../src/core/ingestion/languages/typescript-export-captures.js';
 import { ScopeRetentionStage } from '../../../src/core/ingestion/pipeline-phases/scope-retention-stage.js';
+import {
+  decodeParsedFileRecord,
+  encodeParsedFileRecord,
+} from '../../../src/core/ingestion/pipeline-phases/parse-scope-codec.js';
 import { createSemanticModel } from '../../../src/core/ingestion/model/semantic-model.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
 
@@ -51,6 +84,9 @@ const mkFile = (filePath: string, overrides: Partial<ParsedFile> = {}): ParsedFi
   localDefs: overrides.localDefs ?? [],
   referenceSites: overrides.referenceSites ?? [],
   ...(Object.hasOwn(overrides, 'exports') ? { exports: overrides.exports } : {}),
+  ...(Object.hasOwn(overrides, 'exportsByNamespace')
+    ? { exportsByNamespace: overrides.exportsByNamespace }
+    : {}),
 });
 
 const mkDef = (nodeId: string, filePath: string, qname: string): SymbolDefinition => ({
@@ -59,6 +95,21 @@ const mkDef = (nodeId: string, filePath: string, qname: string): SymbolDefinitio
   type: 'Class',
   qualifiedName: qname,
 });
+
+async function parseTypeScriptFixture(source: string, filePath: string): Promise<ParsedFile> {
+  const language = /\.jsx?$/.test(filePath)
+    ? SupportedLanguages.JavaScript
+    : SupportedLanguages.TypeScript;
+  const parser = await createParserForLanguage(language, filePath);
+  const root = parser.parse(source).rootNode;
+  expect(root.hasError).toBe(false);
+  return extract(emitTypeScriptCaptures(root), filePath, {
+    bindingScopeFor: typeScriptDeclarationBindingScope,
+    selectLocalBindings: selectTypeScriptLocalBindings,
+    interpretImport: interpretTypeScriptImport,
+    interpretExports: interpretTypeScriptExports,
+  });
+}
 
 function extractedBindingsFixture(): ParsedFile {
   const capture = (name: string, text: string, startLine: number, endLine = startLine) => ({
@@ -117,6 +168,118 @@ function expectExtractedBindings(out: ScopeResolutionIndexes, file: ParsedFile) 
     expect(out.qualifiedNames.get(def.qualifiedName!)).toEqual([def.nodeId]);
   }
 }
+
+describe('finalizeScopeModel: namespace retention', () => {
+  const resolveImportTarget = (targetRaw: string) => (targetRaw === 'lib.ts' ? 'lib.ts' : null);
+  const linkedState = (out: ScopeResolutionIndexes) => ({
+    imports: out.imports,
+    bindings: out.bindings,
+    stats: out.stats,
+    sccs: out.sccs,
+  });
+
+  it('matches direct finalization after retention for distinct identities and a type-only class', () => {
+    const typeDef = { ...mkDef('def:type', 'lib.ts', 'lib.Shared'), type: 'Interface' as const };
+    const valueDef = { ...mkDef('def:value', 'lib.ts', 'lib.Shared'), type: 'Variable' as const };
+    const classDef = mkDef('def:class', 'lib.ts', 'lib.Class');
+    const files = [
+      mkFile('lib.ts', {
+        localDefs: [typeDef, valueDef, classDef],
+        exports: new Map([
+          ['Shared', valueDef.nodeId],
+          ['Class', classDef.nodeId],
+        ]),
+        exportsByNamespace: {
+          type: new Map([
+            ['Shared', typeDef.nodeId],
+            ['Class', classDef.nodeId],
+          ]),
+          value: new Map([
+            ['Shared', valueDef.nodeId],
+            ['Class', classDef.nodeId],
+          ]),
+        },
+      }),
+      mkFile('app.ts', {
+        parsedImports: [
+          { kind: 'named', targetRaw: 'lib.ts', importedName: 'Shared', localName: 'Shared' },
+          {
+            kind: 'named',
+            targetRaw: 'lib.ts',
+            importedName: 'Class',
+            localName: 'Class',
+            namespace: 'type',
+          },
+        ],
+      }),
+    ];
+    const direct = finalizeScopeModel(files, { hooks: { resolveImportTarget } });
+    const retained = finalizeScopeModel(
+      files.map((file) => decodeParsedFileRecord(encodeParsedFileRecord(file))),
+      { hooks: { resolveImportTarget } },
+    );
+    expect(linkedState(retained)).toEqual(linkedState(direct));
+    const bindings = retained.bindings.get('scope:app.ts#module')!;
+    expect(
+      bindings.get('Shared')?.map((binding) => [binding.def.nodeId, binding.namespace]),
+    ).toEqual([
+      ['def:type', 'type'],
+      ['def:value', 'value'],
+    ]);
+    expect(
+      bindings.get('Class')?.map((binding) => [binding.def.nodeId, binding.namespace]),
+    ).toEqual([['def:class', 'type']]);
+    expect(retained.stats.totalEdges).toBe(2);
+    expect(retained.stats.linkedEdges).toBe(2);
+  });
+
+  it.each(['absent', 'undefined', 'empty', 'type-only'] as const)(
+    'forwards %s namespace exports with authoritative empty maps and legacy fallback',
+    (state) => {
+      const def = mkDef('def:class', 'lib.ts', 'lib.Class');
+      const lib = mkFile('lib.ts', {
+        localDefs: [def],
+        exports: new Map([['Class', def.nodeId]]),
+        ...(state === 'absent'
+          ? {}
+          : {
+              exportsByNamespace:
+                state === 'undefined'
+                  ? undefined
+                  : {
+                      type: new Map(state === 'type-only' ? [['Class', def.nodeId]] : []),
+                      value: new Map(),
+                    },
+            }),
+      });
+      const files = [
+        lib,
+        mkFile('app.ts', {
+          parsedImports: [
+            {
+              kind: 'named',
+              targetRaw: 'lib.ts',
+              importedName: 'Class',
+              localName: 'Class',
+              namespace: 'value',
+            },
+          ],
+        }),
+      ];
+      const direct = finalizeScopeModel(files, { hooks: { resolveImportTarget } });
+      const restored = finalizeScopeModel(
+        files.map((file) => decodeParsedFileRecord(encodeParsedFileRecord(file))),
+        { hooks: { resolveImportTarget } },
+      );
+      expect(linkedState(restored)).toEqual(linkedState(direct));
+      const visible = restored.bindings.get('scope:app.ts#module')?.get('Class') ?? [];
+      expect(visible.map((binding) => binding.def.nodeId)).toEqual(
+        state === 'absent' || state === 'undefined' ? ['def:class'] : [],
+      );
+      expect(restored.stats.linkedEdges).toBe(state === 'absent' || state === 'undefined' ? 1 : 0);
+    },
+  );
+});
 
 // ─── Empty input ───────────────────────────────────────────────────────────
 
@@ -199,7 +362,488 @@ describe('finalizeScopeModel: single file', () => {
 
 // ─── Multi-file with cross-file imports ────────────────────────────────────
 
+describe('buildScopeRegistryContext', () => {
+  it.each(['flat', 'namespaced', 'private', 'empty', 'value-only', 'authoritative-empty'] as const)(
+    'resolves namespace receiver types through the finalized %s export surface',
+    (surface) => {
+      const owner = mkDef('def:owner', 'lib.ts', 'lib.Internal');
+      const privateDef = mkDef('def:private', 'lib.ts', 'lib.Private');
+      const collision = mkDef('def:collision', 'unrelated.ts', 'ns.Public');
+      const member = (owner: SymbolDefinition, type: 'Method' | 'Property'): SymbolDefinition => ({
+        nodeId: `${owner.nodeId}:${type}`,
+        filePath: owner.filePath,
+        type,
+        qualifiedName: `${owner.qualifiedName}.${type === 'Method' ? 'save' : 'field'}`,
+        ownerId: owner.nodeId,
+      });
+      const methods = [member(owner, 'Method'), member(collision, 'Method')];
+      const fields = [member(owner, 'Property'), member(collision, 'Property')];
+      const exported = surface === 'flat' || surface === 'namespaced';
+      const lib = mkFile('lib.ts', {
+        localDefs: [owner, privateDef, methods[0]!, fields[0]!],
+        ...(surface === 'private'
+          ? {}
+          : {
+              exports: new Map(surface === 'empty' ? [] : [['Public', owner.nodeId]]),
+            }),
+        ...(['namespaced', 'value-only', 'authoritative-empty'].includes(surface)
+          ? {
+              exportsByNamespace: {
+                type: new Map(surface === 'namespaced' ? [['Public', owner.nodeId]] : []),
+                value: new Map(surface === 'value-only' ? [['Public', owner.nodeId]] : []),
+              },
+            }
+          : {}),
+      });
+      const app = mkFile('app.ts', {
+        parsedImports: [
+          {
+            kind: 'namespace',
+            localName: 'ns',
+            importedName: '*',
+            targetRaw: 'lib.ts',
+            namespace: 'type',
+          },
+        ],
+      });
+      const module = {
+        ...app.scopes[0]!,
+        typeBindings: new Map([
+          [
+            'receiver',
+            {
+              rawName: 'ns.Public',
+              declaredAtScope: app.moduleScope,
+              source: 'annotation' as const,
+            },
+          ],
+        ]),
+      };
+      const indexes = finalizeScopeModel(
+        [
+          { ...app, scopes: [module] },
+          lib,
+          mkFile('unrelated.ts', { localDefs: [collision, methods[1]!, fields[1]!] }),
+        ],
+        { hooks: { resolveImportTarget: () => 'lib.ts' } },
+      );
+      const context = buildScopeRegistryContext(indexes);
+      expect(context.lookupExport).toBe(indexes.lookupExport);
+      expect(indexes.lookupExport?.(lib.moduleScope, 'Public', 'type')).toEqual(
+        exported ? [owner] : [],
+      );
+      expect(indexes.lookupExport?.(lib.moduleScope, 'Private', 'type')).toEqual([]);
+      expect(indexes.lookupExport?.('scope:missing', 'Public', 'type')).toEqual([]);
+      expect(
+        resolveTypeRef(
+          {
+            rawName: 'ns.Public',
+            declaredAtScope: app.moduleScope,
+            source: 'annotation',
+          },
+          {
+            scopes: context.scopes,
+            defIndex: context.defs,
+            qualifiedNameIndex: context.qualifiedNames,
+            lookupExport: context.lookupExport,
+          },
+        ),
+      ).toBe(exported ? owner : null);
+      for (const [registry, name, target] of [
+        [buildMethodRegistry(context), 'save', methods[0]],
+        [buildFieldRegistry(context), 'field', fields[0]],
+      ] as const) {
+        const hits = registry.lookup(name, app.moduleScope, {
+          explicitReceiver: { name: 'receiver' },
+        });
+        expect(hits.map((hit) => hit.def)).toEqual(exported ? [target] : []);
+        if (exported)
+          expect(hits[0]!.evidence.some((item) => item.kind === 'type-binding')).toBe(true);
+      }
+    },
+  );
+
+  it('keeps exported type and value meanings separate', () => {
+    const type = { ...mkDef('def:type', 'lib.ts', 'lib.Shared'), type: 'Interface' as const };
+    const value = { ...mkDef('def:value', 'lib.ts', 'lib.Shared'), type: 'Variable' as const };
+    const lib = mkFile('lib.ts', {
+      localDefs: [type, value],
+      exports: new Map([['Public', value.nodeId]]),
+      exportsByNamespace: {
+        type: new Map([['Public', type.nodeId]]),
+        value: new Map([['Public', value.nodeId]]),
+      },
+    });
+    const indexes = finalizeScopeModel([lib]);
+    expect(indexes.lookupExport?.(lib.moduleScope, 'Public', 'type')).toEqual([type]);
+    expect(indexes.lookupExport?.(lib.moduleScope, 'Public', 'value')).toEqual([value]);
+  });
+
+  it.each(['type', 'value'] as const)(
+    'retains finalized module-only %s namespace imports when guarding qualified lookup',
+    (namespace) => {
+      const conflict = mkDef('def:conflict', 'unrelated.ts', 'ns.Member');
+      const app = mkFile('app.ts', {
+        parsedImports: [
+          {
+            kind: 'namespace',
+            localName: 'ns',
+            importedName: 'lib',
+            targetRaw: 'lib.ts',
+            namespace,
+          },
+        ],
+      });
+      const indexes = finalizeScopeModel(
+        [app, mkFile('lib.ts'), mkFile('unrelated.ts', { localDefs: [conflict] })],
+        { hooks: { resolveImportTarget: () => 'lib.ts' } },
+      );
+      const edges = indexes.imports.get(app.moduleScope)!;
+      expect(edges).toEqual([
+        {
+          kind: 'namespace',
+          localName: 'ns',
+          targetExportedName: 'lib',
+          targetFile: 'lib.ts',
+          targetModuleScope: 'scope:lib.ts#module',
+          namespace,
+        },
+      ]);
+      expect(indexes.bindings.get(app.moduleScope)?.has('ns')).toBe(false);
+
+      const context = buildScopeRegistryContext(indexes);
+      expect(context.scopes.getScope(app.moduleScope)?.imports).toBe(edges);
+      expect(context.qualifiedNames.get('ns.Member')).toEqual([conflict.nodeId]);
+      for (const lexicalNamespace of ['type', 'value'] as const) {
+        expect(
+          lookupCore(
+            'ns.Member',
+            app.moduleScope,
+            {
+              acceptedKinds: ['Class'],
+              lexicalNamespace,
+              useReceiverTypeBinding: false,
+              ownerScopedContributor: null,
+            },
+            context,
+          ),
+        ).toEqual([]);
+      }
+      expect(
+        resolveTypeRef(
+          {
+            rawName: 'ns.Member',
+            declaredAtScope: app.moduleScope,
+            source: 'annotation',
+          },
+          {
+            scopes: context.scopes,
+            defIndex: context.defs,
+            qualifiedNameIndex: context.qualifiedNames,
+          },
+        ),
+      ).toBeNull();
+      expect(indexes.scopeTree.getScope(app.moduleScope)).toBe(app.scopes[0]);
+      expect(app.scopes[0]!.imports).toEqual([]);
+    },
+  );
+
+  it('honors empty finalized imports, preserves absent entries and nested scopes without mutation', () => {
+    const originalImports: readonly ImportEdge[] = Object.freeze([
+      {
+        kind: 'namespace',
+        localName: 'original',
+        targetExportedName: 'lib',
+        targetFile: 'lib.ts',
+        namespace: 'type',
+      },
+    ]);
+    const explicit = Object.freeze({
+      ...mkScope('scope:empty.ts#module', null, 'empty.ts'),
+      imports: originalImports,
+    });
+    const fallback = Object.freeze({
+      ...mkScope('scope:fallback.ts#module', null, 'fallback.ts'),
+      imports: originalImports,
+    });
+    const nested = Object.freeze({
+      ...mkScope('scope:empty.ts#nested', explicit.id, 'empty.ts'),
+      imports: originalImports,
+    });
+    const finalized = finalizeScopeModel([
+      mkFile('empty.ts', { scopes: [explicit, nested] }),
+      mkFile('fallback.ts', { scopes: [fallback] }),
+    ]);
+    const emptyImports: readonly ImportEdge[] = Object.freeze([]);
+    const indexes = {
+      ...finalized,
+      imports: new Map([
+        [explicit.id, emptyImports],
+        [nested.id, emptyImports],
+      ]),
+    };
+    const context = buildScopeRegistryContext(indexes);
+
+    expect(context.scopes.getScope(explicit.id)?.imports).toBe(emptyImports);
+    expect(context.scopes.getScope(fallback.id)?.imports).toBe(originalImports);
+    expect(context.scopes.getScope(nested.id)).toBe(nested);
+    expect(indexes.scopeTree.getScope(explicit.id)).toBe(explicit);
+    expect(explicit.imports).toBe(originalImports);
+    expect(fallback.imports).toBe(originalImports);
+    expect(indexes.imports.has(fallback.id)).toBe(false);
+  });
+
+  it('honors finalized empty bindings, falls back for absent entries, and forwards providers', () => {
+    const callable: SymbolDefinition = {
+      ...mkDef('def:callable', 'fallback.ts', 'fallback.callable'),
+      type: 'Function',
+    };
+    const binding: BindingRef = { def: callable, origin: 'local' };
+    const explicit = mkFile('empty.ts', {
+      scopes: [mkScope('scope:empty.ts#module', null, 'empty.ts', { callable: [binding] })],
+    });
+    const fallback = mkFile('fallback.ts', {
+      scopes: [mkScope('scope:fallback.ts#module', null, 'fallback.ts', { callable: [binding] })],
+      localDefs: [callable],
+    });
+    const finalized = finalizeScopeModel([explicit, fallback]);
+    const emptyBindings = new Map<string, readonly BindingRef[]>();
+    const indexes = {
+      ...finalized,
+      bindings: new Map([[explicit.moduleScope, emptyBindings]]),
+    };
+    const providers = { arityCompatibility: vi.fn(() => 'compatible' as const) };
+    const context = buildScopeRegistryContext(indexes, providers);
+    const registry = buildMethodRegistry(context);
+
+    expect(context.providers).toBe(providers);
+    expect(buildScopeRegistryContext(indexes).providers).toEqual({});
+    expect(context.scopes.getScope(explicit.moduleScope)?.bindings).toBe(emptyBindings);
+    expect(context.scopes.getScope(fallback.moduleScope)?.bindings).toBe(
+      fallback.scopes[0]!.bindings,
+    );
+    expect(registry.lookup('callable', explicit.moduleScope)).toEqual([]);
+    expect(
+      registry.lookup('callable', fallback.moduleScope, { callsite: { arity: 0 } })[0]?.def,
+    ).toBe(callable);
+    expect(providers.arityCompatibility).toHaveBeenCalledWith({ arity: 0 }, callable);
+    expect(indexes.scopeTree.getScope(explicit.moduleScope)).toBe(explicit.scopes[0]);
+    expect(explicit.scopes[0]!.bindings.get('callable')).toEqual([binding]);
+    expect(indexes.bindings.size).toBe(1);
+    expect(indexes.bindings.has(fallback.moduleScope)).toBe(false);
+  });
+});
+
 describe('finalizeScopeModel: cross-file imports', () => {
+  describe.each([
+    { name: 'relative extensionless', targetRaw: './lib', targetStem: 'src/lib' },
+    { name: 'directory index', targetRaw: './lib', targetStem: 'src/lib/index' },
+    { name: 'configured alias', targetRaw: '@/lib', targetStem: 'src/lib' },
+  ])('real resolver seam: $name', ({ targetRaw, targetStem }) => {
+    it.each(['ts', 'tsx', 'js', 'jsx'])(
+      'links only exported %s definitions and preserves local shadowing',
+      async (extension) => {
+        const lib = await parseTypeScriptFixture(
+          'export function Public() {}\nfunction Private() {}',
+          `${targetStem}.${extension}`,
+        );
+        const app = await parseTypeScriptFixture(
+          `import { Public as Alias, Private } from '${targetRaw}';\n` +
+            "import { Unknown } from './missing';\n" +
+            'function owner(Alias) { Alias(); }\nAlias();',
+          `src/app.${extension}`,
+        );
+        const allFileList = [app.filePath, lib.filePath];
+        const ctx: ResolveCtx = {
+          allFilePaths: new Set(allFileList),
+          allFileList,
+          normalizedFileList: allFileList,
+          index: buildSuffixIndex(allFileList, allFileList),
+          resolveCache: new Map(),
+          configs: {
+            tsconfigPaths: targetRaw.startsWith('@/')
+              ? { baseUrl: '.', aliases: new Map([['@/', 'src/']]) }
+              : null,
+            goModule: null,
+            composerConfig: null,
+            swiftPackageConfig: null,
+            csharpConfigs: [],
+          },
+        };
+        const workspaceIndex = buildImportTargetWorkspace(
+          new Map([
+            [SupportedLanguages.TypeScript, typescriptProvider],
+            [SupportedLanguages.JavaScript, javascriptProvider],
+          ]),
+          ctx,
+        );
+        const out = finalizeScopeModel([app, lib], {
+          workspaceIndex,
+          hooks: { resolveImportTarget: resolveImportTargetAcrossLanguages },
+        });
+
+        const publicDef = lib.localDefs.find((def) => def.qualifiedName === 'Public')!;
+        const privateDef = lib.localDefs.find((def) => def.qualifiedName === 'Private')!;
+        expect(publicDef).toBeDefined();
+        expect(privateDef).toBeDefined();
+        const imports = out.imports.get(app.moduleScope)!;
+        expect(imports).toEqual([
+          expect.objectContaining({
+            localName: 'Alias',
+            targetFile: lib.filePath,
+            targetDefId: publicDef.nodeId,
+          }),
+          expect.objectContaining({
+            localName: 'Private',
+            targetFile: lib.filePath,
+            linkStatus: 'unresolved',
+          }),
+          expect.objectContaining({
+            localName: 'Unknown',
+            targetFile: null,
+            linkStatus: 'unresolved',
+          }),
+        ]);
+        expect(imports[0]!.linkStatus).toBeUndefined();
+        expect(imports.slice(1).map((edge) => edge.targetDefId)).toEqual([undefined, undefined]);
+        expect(out.bindings.get(app.moduleScope)?.get('Alias')).toEqual([
+          { def: publicDef, origin: 'import', via: imports[0] },
+        ]);
+        expect(out.bindings.get(app.moduleScope)?.has('Private')).toBe(false);
+        expect(out.bindings.get(app.moduleScope)?.has('Unknown')).toBe(false);
+        expect(out.defs.get(publicDef.nodeId)).toBe(publicDef);
+        expect(out.defs.get(privateDef.nodeId)).toBe(privateDef);
+        const owner = app.scopes.find((scope) => scope.kind === 'Function')!;
+        const parameter = owner.bindings.get('Alias')![0]!;
+        expect(parameter.origin).toBe('local');
+        expect(parameter.def.nodeId).not.toBe(publicDef.nodeId);
+        expect(out.scopeTree.byId.get(owner.id)?.bindings.get('Alias')).toEqual([parameter]);
+        expect(out.scopeTree.byId.get(app.moduleScope)?.bindings.has('Alias')).toBe(false);
+        const structuralScopes = [...out.scopeTree.byId.values()];
+        const originalBindings = structuralScopes.map((scope) => [...scope.bindings]);
+        const registryContext = buildScopeRegistryContext(out);
+        const registry = buildMethodRegistry(registryContext);
+        expect(registryContext.defs).toBe(out.defs);
+        expect(registryContext.qualifiedNames).toBe(out.qualifiedNames);
+        expect(registryContext.moduleScopes).toBe(out.moduleScopes);
+        expect(registryContext.methodDispatch).toBe(out.methodDispatch);
+        const registryModule = registryContext.scopes.getScope(app.moduleScope)!;
+        expect(registryModule).not.toBe(out.scopeTree.getScope(app.moduleScope));
+        expect(registryModule).toBe(registryContext.scopes.byId.get(app.moduleScope));
+        expect(registryModule.bindings).toBe(out.bindings.get(app.moduleScope));
+        expect(registryContext.scopes.getParent(owner.id)).toBe(registryModule);
+        for (const scope of structuralScopes.filter((scope) => scope.kind !== 'Module')) {
+          expect(registryContext.scopes.getScope(scope.id)).toBe(scope);
+        }
+        const aliasSites = out.referenceSites.filter((site) => site.name === 'Alias');
+        expect(aliasSites).toHaveLength(2);
+        for (const site of aliasSites) {
+          expect(site.kind).toBe('call');
+          expect(site.callForm).toBe('free');
+          const resolutions = registry.lookup(site.name, site.inScope, {
+            callsite: { arity: site.arity! },
+          });
+          if (site.inScope === app.moduleScope) {
+            expect(resolutions).toHaveLength(1);
+            expect(resolutions[0]!.def).toBe(publicDef);
+            expect(resolutions[0]!.confidence).toBeGreaterThan(0);
+            expect(resolutions[0]!.evidence).toEqual(
+              expect.arrayContaining([expect.objectContaining({ kind: 'import' })]),
+            );
+          } else {
+            expect(resolutions).toEqual([]);
+          }
+        }
+        expect(registry.lookup('Private', app.moduleScope)).toEqual([]);
+        expect(registry.lookup('Unknown', app.moduleScope)).toEqual([]);
+        expect([...out.scopeTree.byId.values()]).toEqual(structuralScopes);
+        expect(structuralScopes.map((scope) => [...scope.bindings])).toEqual(originalBindings);
+        expect(
+          app.scopes.find((scope) => scope.id === app.moduleScope)?.bindings.has('Alias'),
+        ).toBe(false);
+        expect(out.referenceSites).toEqual(app.referenceSites);
+        expect(out.stats).toMatchObject({
+          totalFiles: 2,
+          totalEdges: 3,
+          linkedEdges: 1,
+          unresolvedEdges: 2,
+        });
+      },
+    );
+  });
+
+  it.each(['ts', 'tsx', 'js', 'jsx'])(
+    'finalizes real %s exports and import aliases while preserving lexical shadowing',
+    async (extension) => {
+      const lib = await parseTypeScriptFixture(
+        'export function Public() {}\nfunction Private() {}',
+        `lib.${extension}`,
+      );
+      const app = await parseTypeScriptFixture(
+        "import { Public as Alias, Private } from './lib';\n" +
+          'function owner(Alias) { Alias(); }\nAlias();\nmissing();',
+        `app.${extension}`,
+      );
+      const publicDef = lib.localDefs.find((def) => def.qualifiedName === 'Public')!;
+      const privateDef = lib.localDefs.find((def) => def.qualifiedName === 'Private')!;
+      expect(publicDef).toBeDefined();
+      expect(privateDef).toBeDefined();
+      expect(lib.exports).toEqual(new Map([['Public', publicDef.nodeId]]));
+      expect(app.exports).toEqual(new Map());
+      expect(app.parsedImports).toHaveLength(2);
+
+      const out = finalizeScopeModel([app, lib], {
+        hooks: { resolveImportTarget: (raw) => (raw === './lib' ? lib.filePath : null) },
+      });
+      const imports = out.imports.get(app.moduleScope)!;
+      expect(imports).toHaveLength(2);
+      const aliasImport = imports.find((edge) => edge.localName === 'Alias')!;
+      expect(aliasImport).toMatchObject({
+        targetFile: lib.filePath,
+        targetDefId: publicDef.nodeId,
+      });
+      expect(aliasImport.linkStatus).toBeUndefined();
+      const privateImport = imports.find((edge) => edge.localName === 'Private')!;
+      expect(privateImport.linkStatus).toBe('unresolved');
+      expect(privateImport.targetDefId).toBeUndefined();
+      expect(out.bindings.get(app.moduleScope)?.get('Alias')).toEqual([
+        { def: publicDef, origin: 'import', via: aliasImport },
+      ]);
+      expect(out.bindings.get(app.moduleScope)?.has('Private')).toBe(false);
+      expect(out.defs.get(publicDef.nodeId)).toBe(publicDef);
+      expect(out.defs.get(privateDef.nodeId)).toBe(privateDef);
+
+      const owner = app.scopes.find((scope) => scope.kind === 'Function')!;
+      const parameter = owner.bindings.get('Alias')![0]!;
+      expect(parameter.origin).toBe('local');
+      expect(parameter.def.nodeId).not.toBe(publicDef.nodeId);
+      expect(out.scopeTree.byId.get(owner.id)?.bindings.get('Alias')).toEqual([parameter]);
+      expect(out.scopeTree.byId.get(app.moduleScope)?.bindings.has('Alias')).toBe(false);
+      const body = app.scopes.find((scope) => scope.kind === 'Block')!;
+      expect(out.scopeTree.byId.get(body.id)?.parent).toBe(owner.id);
+      expect(
+        out.referenceSites.map(({ name, inScope, kind, callForm, arity }) => ({
+          name,
+          inScope,
+          kind,
+          callForm,
+          arity,
+        })),
+      ).toEqual([
+        { name: 'Alias', inScope: body.id, kind: 'call', callForm: 'free', arity: 0 },
+        { name: 'Alias', inScope: app.moduleScope, kind: 'call', callForm: 'free', arity: 0 },
+        { name: 'missing', inScope: app.moduleScope, kind: 'call', callForm: 'free', arity: 0 },
+      ]);
+      expect(out.referenceSites).toEqual(app.referenceSites);
+      expect(out.stats).toMatchObject({
+        totalFiles: 2,
+        totalEdges: 2,
+        linkedEdges: 1,
+        unresolvedEdges: 1,
+      });
+    },
+  );
+
   it('links a named import when the caller provides resolveImportTarget', () => {
     const userClass = mkDef('def:User', 'models.ts', 'models.User');
     const modelsFile = mkFile('models.ts', { localDefs: [userClass] });

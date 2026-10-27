@@ -1,5 +1,16 @@
 # RT-5: read-only overlay read-path spike
 
+## Current-source verification — 2026-10-20
+
+The sections below preserve the historical spike at `24769238dddebda149d934747b6da26f6c2f7336`. This update inspected current source at HEAD `acbcb63830cf51a8fc0537a76f4267e5be758167` with uncommitted code changes; numbered working-tree source, not the commit-based graph, is authority for these observations. OntoIndex context/search was consulted before direct source verification. Historical proposals and unverified experiments below are not assertions of current defects.
+
+- **Query merge:** `ontoindex/src/mcp/local/backend-search.ts:1894-1953` reads matching overlay symbols, marks their provenance, and only after successful reads filters replaced paths from BM25, semantic, graph and locked candidates before interleaving overlay candidates. This is a typed search boundary, not a universal response merger.
+- **Shared identity resolver:** `ontoindex/src/mcp/local/backend-symbol-resolution.ts:183-248` reads a validated/pinned generation, distinguishes `workspace-graph` from symbols-only coverage, applies tombstones, and suppresses replaced base rows. A usable workspace graph replaces base candidate rows rather than treating changed-file symbols as a complete graph.
+- **Context:** `ontoindex/src/mcp/local/backend-context.ts:231-308` passes the snapshot to resolution and selects overlay relationship queries only for a resolved `workspace-graph` identity. Symbols-only identities return overlay content with `graphImpactAvailable: false` and an explicit relationship warning; symbols-only coverage does not prove current callers, callees or impact.
+- **Lifecycle:** `ontoindex/src/mcp/local/backend-overlay.ts:153-202` pins the generation with an on-disk marker and pool lease, releases the marker in `finally`, and returns a workspace graph pool ID only for an opt-in pinned `workspace-graph`, never a symbols-only overlay. `local-backend.ts:2203-2223` wraps handler invocation in that pin. Snapshot/file-identity eviction is implemented at `backend-overlay.ts:619-622`, with removal, idle/retired-state and disposal hooks at `local-backend.ts:1608-1612,1823-1828,1840-1844,3225-3228`. These hooks do not establish one safe merge point for query, context and impact.
+
+Runtime qualification is separate evidence: `.ontoindex/adw-validation/qualification-20261020-retry-r1/matrix.json`, SHA-256 `3340913e92882cbd563edf9c4ef20bfe077716aa26009aae9e00ed26ac7ce3a6`, with acceptance recorded in `.memory-bank/archive/ADW_INDEPENDENT_REVIEW_CONTINUATION_PLAN.md`. This documentation refresh did not rerun the matrix, tests, builds, lock experiments or reindexing, and does not independently qualify current dirty source.
+
 ## Conclusion
 
 Use a small MCP-local overlay reader backed by the existing **read-only connection pool**, and merge at typed symbol boundaries. Do not switch the writer singleton and do not rewrite arbitrary Cypher results. There is a common dispatch/lifecycle owner, but **no single existing merge point safely covers query, context, and impact**.

@@ -322,6 +322,182 @@ Archived in `.memory-bank/archive/AUTOMATIC_DIRTY_WORKSPACE_REVIEW_HISTORY.md`. 
 - **Config and two-client contention workloads added to the benchmark (7c9b475, 037296d); a real duplicate-build race found and fixed.** `--extras config,contention` (default on; `--extras none` and `--sizes none` select subsets). Config edits `ontoindex/tsconfig.json` with whitespace and also edits one source file, because the dirty planner counts source extensions only: a config-only edit is not a dirty path and the read answers from the committed index (verified with a probe: `allDirtyPaths` is empty for a tsconfig-only change). That is a finding about the feature, not the harness: a resolver-config edit alone does not trigger a working-tree graph. Contention starts two real stdio servers together on one dirty clone with no generation; each retries a retryable busy answer every 500 ms; the invariant is exactly one new generation per round, and the runner aborts and writes `contention-<n>.generations.json` otherwise. The first 20-round run aborted at round 11 with two generations: server B probed a dirty snapshot, server A built and released the lock, then B took the lock and built again. Fix (037296d): after acquiring the lock, evict and re-read the snapshot, and adopt a usable complete workspace graph instead of building; the lock is released in a `finally` that also covers the re-read (a challenger found the first version leaked the lock if the re-read threw; a test now covers it, and both new tests fail without their change). Result at 037296d: 20 of 20 rounds had exactly one writer, 40 clients all reported one build, median 106 busy retries per client (about 53 s of polling), cold latency median 63.3 s / p95 72.8 s with the machine at load 13 to 18, peak RSS max 2.26 GB. The invariant checked is one generation per round, not lock exclusivity. The 55 s dirty-cold budget is missed here as in the 1/50 matrix, and contention adds a second process competing for the same cores, so this workload is not a clean latency measurement.
 - **A resolver-config-only edit never triggered a working-tree build; fixed (6358c9d).** The benchmark's config workload exposed it: `planDirtyOverlay` records source-extension files only, so a `tsconfig.json` edit alone gave an empty dirty set, `getOverlaySnapshot` returned the empty snapshot, and `configChanged` in `prepareWorkspaceRead` could never be true for a config-only change. The ADR says resolver and config changes select full analysis. Three fixes were weighed by two read-only sub-agents: (A) a separate `configPaths` field, (B) widening `allDirtyPaths`, (C) a live configuration digest compared on every read. (B) changes flag-off behaviour (symbol suppression, the 50-file bound, watch and status counts); (C) adds a configuration walk and hash to every clean read and rebuilds on a whitespace change either way. Chosen: (A). `DirtyOverlayPlan.configPaths` holds dirty files matching the existing capture pattern with ignore rules applied; `computeSnapshot` returns a non-empty snapshot carrying `configPaths` only when `ONTOINDEX_AUTO_WORKSPACE=1`, so flag-off behaviour is unchanged; `prepareWorkspaceRead` builds when `configPaths` is non-empty and keys the failed-build cooldown on it. A challenger traced the post-build snapshot: the build records source-only dirty paths, so the snapshot validates as usable and complete and a config-only tree does not rebuild on every read, and found no consumer of the old empty-snapshot identity. Residual: the capture pattern includes lockfiles, `.gitignore`, `go.sum` and similar, so one lockfile edit now costs one full build, then reuses it. Six tests (planner, snapshot flag gate, prepare); each of four reverts fails a test. Benchmark at 6358c9d, config edit only: a 3-repetition check at load about 8 had cold 45.7 to 49.2 s and passed every budget; the 20-repetition run at load 11 to 20 had cold median 55.3 s / p95 59.1 s / max 60.3 s (20 builds, peak RSS max 2.27 GB) and warm median 0.42 s / p95 0.51 s (0 builds). So the config path works and warm is well inside the budget, while cold p95 misses the 55 s limit by 4 s under load and meets it on a quiet machine.
 
+## Consolidated Review And Execution Order — 2026-10-18
+
+This review preserves the accepted design, task dependencies and active ADW-2
+lease. Implementation evidence and accepted task completion remain separate.
+Two `gpt-6.1-sol` reviewers at medium effort reviewed evidence and acceptance
+gates. Two `gpt-6-luna` challenge packets were dispatched and cancelled
+without accepted results; this consolidation uses the two completed reviews.
+
+### What worked and what needs correction
+
+- The benchmark rejects native errors and retains raw reference responses.
+  The size-0/51 run completed with exit 0 and 20 samples per phase. Recorded
+  p95 latency was 217.83/53.96 ms for clean cold/warm and
+  52992.12/293.88 ms for size-51 cold/warm. All recorded budget checks passed.
+- The parity run exited 1 before comparison. Its reference request for
+  `buildDefIndex` returned a buffer-pool allocation error. This proves neither
+  graph parity nor a workspace-specific regression. The saved base loop also
+  reports 10 failures in 300 requests; a matched candidate result is still
+  needed before comparative attribution.
+- Performance acceptance remains incomplete: terminal warm CPU, successful
+  same-input parity, matching frozen runtime/input identities across the full
+  matrix and the remaining declared workloads need proof. Partial passing
+  reports cannot be combined into an accepted matrix without those bindings.
+- The memory router and its current/pending projections still describe early
+  implementation progress. Refresh them from accepted evidence after the
+  receipt gate is resolved; do not promote source presence to task completion.
+- ADW-2 retains an active terminal-child lease with no integrated receipt.
+  Later implementation and exploratory measurements have advanced beyond
+  acceptance. Default activation remains downstream of correctness,
+  performance, readiness and ordinary-process smoke gates.
+
+### Alternatives and second challenge
+
+| Issue | Alternatives | Selected path and second-review constraint |
+| --- | --- | --- |
+| Pending acceptance | Original parent harvests and integrates; preserve lease while conducting bounded review; reset lease or infer PASS from historical text | Recover through the original parent. Bounded review may proceed; reset and inferred PASS lack authenticated authority. No duplicate dispatch. |
+| Native allocation error | Retry reference until it succeeds; increase the default pool; diagnose the exact query and use a focused regression | Diagnose first. Retrying masks instability; more memory adds per-process cost without establishing root cause. A base failure does not exclude a candidate regression. |
+| Cold latency | Quiet-host rerun under the existing budget; relax the budget; optimize before measuring a stable reference | Retain 55 seconds, establish the reference pilot, then rerun missing proof with frozen identities. Change the budget only through explicit design adjudication. |
+| Incomplete proof | Accept passing subsets; rerun everything immediately; preserve subsets and run the smallest missing prerequisite first | Preserve subsets, prove reference and parity first. Do not spend another full matrix on a failing instrument. |
+
+These choices preserve public behavior, resource bounds and rollback scope.
+Query changes require OntoIndex impact evidence and a minimal runnable
+regression before implementation; no dependency or parallel runtime is needed.
+
+### Ordered continuation within the existing tasks
+
+1. ADW-2: original dispatching parent harvests the terminal child and integrates
+   its authenticated receipt. If unavailable, retain the current lease and
+   report the exact recovery capability required. Do not hand-edit lease state.
+2. Follow dependency-ready correctness tasks in their existing order. Retain
+   request pinning, configuration invalidation, capture isolation and lifecycle
+   checks. Use at least two `gpt-6.1-sol` medium-effort development/review
+   packets when development becomes eligible, with disjoint ownership and the
+   plan's required authenticated role gates preserved.
+3. Diagnose the reference allocation error before ADW-7e/7f proof: pin runtime
+   and inputs, retain the raw request/response, identify its query owner with
+   OntoIndex and compare three corrections before editing. Prepare any defect
+   outside an existing write set through the manager; do not expand it silently.
+4. Run one same-input parity pilot. Require a visible added caller and equal
+   supported incoming/outgoing edges. A native error stops progression.
+5. ADW-7f: run the declared repeated workloads against frozen candidate and
+   reference identities, including terminal CPU evidence and all predeclared
+   budgets. Keep failed samples and the original thresholds.
+6. ADW-8 through ADW-8c: adjudicate readiness, update documentation and memory
+   projections, then activate, smoke-test without overrides and close out only
+   through the existing gates. Preserve RT-5 attribution and unresolved defects.
+
+Evidence: `.ontoindex/adw-validation/matrix-0-51.json` SHA-256
+`5731d7f3f1e685711defbd5f46588e5eb137d2e2079413e2ccef9669e6604c21`;
+failed reference response
+`.ontoindex/adw-validation/parity.json.raw/parity-reference.response.txt`
+SHA-256 `59c6590b3659191a8bac36db9086e1ec63ab2ac48bc0bb3b695eb731cfc8c70f`.
+These are exploratory evidence, not authenticated task closeout.
+
+Execution this review: tracker validation passed for 34 tasks; the manager
+returned `no_dispatch` for ADW-2's existing terminal-child lease. OntoIndex
+refresh exited 0 and its indexed commit matches HEAD `a6c05e7`; dirty
+documentation remains source-verified. `contextFingerprint` inspection was
+partial (`method-metadata-query-failed`); no source change is justified by that
+partial result. Knowledge handoff: none; the installed manager-loop skill
+already requires original-parent receipt harvesting and forbids fabricated
+integration or duplicate dispatch.
+
+## Restart Validation Review And Bounded Repairs — 2026-10-18
+
+This user-authorized repair review preserves every task, dependency and active
+ADW-2 lease. It supplies implementation evidence, not authenticated acceptance.
+Four initial reviewers used two `gpt-6.1-sol` medium-effort agents and two
+`gpt-6-luna` agents. Four disjoint development packets used `gpt-6.1-sol` at
+medium effort. OntoIndex freshness matched HEAD `acbcb638`; uncommitted changes
+were checked directly.
+
+What worked: live clean/1/50/51-file, configuration, reuse and contention cases
+returned expected evidence; one same-input parity comparison had no differences.
+What failed: the full suite recorded 11,533 passes, five failures and 313 skips;
+four tests assumed the inherited feature flag was unset, and the benchmark
+acceptance mixed format compatibility with historical performance. A passing
+rerun did not establish that the benchmark failure was noise. Cold live reads
+took 67.66–75.59 seconds against the unchanged 55-second budget.
+Forgotten acceptance includes 20 repetitions, terminal warm CPU, complete frozen
+runtime/input identities, a full-suite rerun after repairs and authenticated
+task closeout. The earlier failed parity reference is historical; it does not
+describe the latest successful single comparison.
+
+| Issue | Compared solutions and second challenge | Selected action and outcome |
+| --- | --- | --- |
+| Environment-dependent tests | Explicit off-test values; suite-wide default; launcher-only clearing. Launcher clearing hides test assumptions; suite defaults broaden scope. | Two explicit off-test stubs, preserving on tests and environment restoration. |
+| Benchmark format acceptance | Same-measurement format baseline; exclusive performance job; wider tolerance. Wider tolerance masks regression. Existing Linux benchmark CI already runs the historical gate. | Temporary format fixture uses measured ratio; checked-in baseline, regression fixtures and CI performance gate remain unchanged. |
+| Metadata query failure | Diagnostics only; label-specific projections; return node and filter existing metadata keys. Hardcoded projections drift with schema; hiding the warning is rejected. | Native reproduction proved absent-property binder failure. Node projection plus fixed allowlist preserves false/zero, omits absent fields and retains real query-failure evidence. Returning one node materializes content internally; response excludes it unless requested. |
+| Cold rebuild cost | Stage measurement then existing-owner optimization; reduced graph profile; incremental graph reuse. Reduced profiles and reuse need dependency/coverage proofs. | Added bounded workspace-only build timings through existing phase telemetry; preserved full semantics and budgets. |
+
+Validation: native build exit 0; initial focused suite exit 1 (211 pass, three
+new assertions used the wrong response path); corrected assertions use
+`symbol.methodMetadata`; final six-file suite exit 0, 214/214 pass with
+`ONTOINDEX_AUTO_WORKSPACE=1`. Diff check exit 0. Bounded OntoIndex verification
+PASS for the six changed source/test files and reviewed impacted callers.
+Live isolated profile exit 0; MCP context found `buildDefIndex` without
+`method-metadata-query-failed`. The ad hoc stdin launcher initially failed when
+workers inherited `--input-type=module`; a corrected `.mjs` launcher completed.
+
+Profile evidence: build wall 54.05 s; capture/inventory 1.16 s; pipeline 45.42 s;
+storage 4.21 s; FTS 1.79 s. Pipeline cross-file analysis took 30.19 s and parsing
+14.23 s. This direct build timing is not the earlier end-to-end MCP latency or
+repeated p95 qualification, and does not close the cold-read budget failure.
+
+Consolidated continuation: preserve the validated repairs, then attribute
+cross-file time before editing its shared call processor. Compare amortized
+bounded event-loop yields, grammar-identity query reuse, and parse-artifact reuse.
+Prefer the first measured, semantics-preserving improvement; reject parallel
+file resolution or batching that changes sequential binding propagation. Require
+graph equivalence and focused resolver tests before a live cold pilot, then run
+the existing 20-repetition matrix and full suite. Restore authenticated ADW-2
+integration through the original parent before downstream plan acceptance or
+default activation. No lease or role result was rewritten.
+
+Evidence under `.ontoindex/adw-validation/`: `restart-acbcb638-full.json`,
+`restart-acbcb638-runtime.json`, `review-repairs-final.json`,
+`review-profile.json`, and their logs. The profile used the current built dirty
+candidate with a committed corpus; it is diagnostic evidence, not a frozen
+release comparison. Knowledge handoff: none; existing validation and manager
+rules already cover failed pilots and original-parent receipt harvesting.
+
+## Next Development Iteration Handoff
+
+Authority: user request to preserve the next steps for the next development
+iteration. This handoff records continuation scope; the existing structured
+manager tracking remains dispatch authority and its active lease is unchanged.
+
+1. Resume with the strict manager-loop decision. ADW-2 requires its original
+   parent to harvest and integrate the terminal child receipt. Preserve the
+   lease and distinguish independent diagnostic work from accepted task work.
+2. Measure cross-file analysis overhead in
+   `ontoindex/src/core/ingestion/pipeline-phases/cross-file-impl.ts` and its
+   `processCalls` helper in `ontoindex/src/core/ingestion/call-processor.ts`.
+   Compare bounded yield amortization, compiled-query reuse and parse-artifact
+   reuse; choose only after attribution. Preserve sequential binding propagation,
+   cancellation responsiveness, parser lifetime and graph completeness.
+3. Implement the smallest measured improvement in the existing owner. Use
+   OntoIndex navigation and impact before edits and at least two
+   `gpt-6.1-sol` medium-effort development packets with disjoint scopes.
+4. Verify graph equivalence and focused cross-file/resolver regressions, then
+   run the cold MCP pilot under the unchanged 55-second budget. Preserve failed
+   samples; a single passing profile does not establish p95 qualification.
+5. After a valid pilot, complete the existing 20-repetition performance matrix
+   with frozen runtime/input identities and terminal warm-CPU evidence, then
+   rerun the full suite against the final candidate. Keep historical benchmark
+   CI thresholds unchanged.
+6. Integrate required authenticated results before release acceptance or default
+   activation. Report any remaining receipt, performance or coverage gate.
+
+Resume evidence: `.ontoindex/adw-validation/review-repairs-final.json`
+(214 passed, exit 0), `review-profile.json` (profile and live context, exit 0),
+plus `restart-acbcb638-runtime.json` (single-round parity passed; cold latency
+budgets failed). Current repairs are uncommitted. The broader full suite has
+not been rerun after these repairs.
+
 ## Completed Design Gate
 
 ADW-1 was completed with manager_loop complete-local on 2026-10-17 at revision

@@ -457,6 +457,11 @@ interface LanguageProviderConfig {
     tree: ScopeTree,
   ) => readonly LocalBindingCandidate[] | null;
 
+  /** Classify a local declaration once for bindings and exported aliases.
+   * Undefined retains the declaration's legacy visibility in both namespaces.
+   */
+  readonly declarationNamespaceFor?: (candidate: LocalBindingCandidate) => BindingRef['namespace'];
+
   // ── Finalize phase (cross-file + materialization) ──────────────────
 
   /**

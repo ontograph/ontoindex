@@ -49,6 +49,219 @@ const namespace = (localName: string, targetRaw = './module'): ParsedImport => (
 });
 
 describe('borrowed TS/JS static import captures', () => {
+  it('interprets reexports without conflating aliases and type namespaces with local imports', async () => {
+    const { root } = await parse("import { Value } from './module';");
+    const ordinary = emitTypeScriptImportCaptures(root.namedChildren[0]!)[0]!;
+    const reexport = {
+      ...ordinary,
+      '@import.kind': { ...ordinary['@import.kind']!, text: 'reexport' },
+    };
+    expect(interpretTypeScriptImport(reexport)).toEqual({
+      kind: 'reexport',
+      localName: 'Value',
+      importedName: 'Value',
+      targetRaw: './module',
+    });
+    const typed = {
+      ...reexport,
+      '@import.namespace': {
+        ...ordinary['@import.kind']!,
+        name: '@import.namespace',
+        text: 'type',
+      },
+    };
+    expect(interpretTypeScriptImport(typed)).toEqual({
+      kind: 'reexport',
+      localName: 'Value',
+      importedName: 'Value',
+      targetRaw: './module',
+      namespace: 'type',
+    });
+    const renamed = {
+      ...typed,
+      '@import.binding': { ...typed['@import.binding']!, text: 'Renamed' },
+    };
+    expect(interpretTypeScriptImport(renamed)).toEqual({
+      kind: 'reexport',
+      localName: 'Renamed',
+      importedName: 'Value',
+      alias: 'Renamed',
+      targetRaw: './module',
+      namespace: 'type',
+    });
+    for (const malformed of [
+      {
+        ...ordinary,
+        '@import.kind': { ...ordinary['@import.kind']!, text: 'namespace' },
+        '@import.namespace': typed['@import.namespace'],
+      },
+      { ...typed, '@import.namespace': { ...typed['@import.namespace'], text: 'value' } },
+      { ...typed, '@import.namespace': { ...typed['@import.namespace'], name: '@import.wrong' } },
+      {
+        ...typed,
+        '@import.namespace': {
+          ...typed['@import.namespace'],
+          range: { startLine: 0, startCol: 0, endLine: 1, endCol: 1 },
+        },
+      },
+      { ...reexport, '@import.name': { ...reexport['@import.name']!, text: 'default' } },
+      { ...reexport, '@import.binding': { ...reexport['@import.binding']!, text: 'default' } },
+      { ...reexport, '@import.name': { ...reexport['@import.name']!, text: 'not an identifier' } },
+    ])
+      expect(() => interpretTypeScriptImport(malformed)).toThrow();
+  });
+
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'captures only the default binding beside empty named imports in %s',
+    async (filePath) => {
+      const { root: defaultRoot } = await parse("import Main from './module';", filePath);
+      const defaultCaptures = emitTypeScriptImportCaptures(defaultRoot.namedChildren[0]!);
+      const fields = (matches: typeof defaultCaptures) =>
+        matches.map((match) =>
+          Object.fromEntries(
+            Object.entries(match).map(([key, value]) => [
+              key,
+              {
+                name: value.name,
+                text: value.text,
+              },
+            ]),
+          ),
+        );
+      for (const source of [
+        "import Main, {} from './module';",
+        "/* leading */ import Main, { /* empty */\n // still empty\n } from './module';",
+      ]) {
+        const { parser, root } = await parse(source, filePath);
+        expect(root.hasError, source).toBe(false);
+        const statement = root.namedChildren.find((node) => node.type === 'import_statement')!;
+        const captures = emitTypeScriptImportCaptures(statement);
+        const repeated = emitTypeScriptImportCaptures(statement);
+        const local = statement.descendantsOfType('identifier')[0]!;
+        const moduleSource = statement.childForFieldName('source')!;
+        expect(captures, source).toHaveLength(1);
+        expect(fields(captures), source).toEqual(fields(defaultCaptures));
+        expect(captures[0], source).toEqual({
+          '@import.binding': { name: '@import.binding', text: 'Main', range: rangeOf(local) },
+          '@import.source': {
+            name: '@import.source',
+            text: './module',
+            range: rangeOf(moduleSource),
+          },
+          '@import.name': { name: '@import.name', text: 'default', range: rangeOf(local) },
+          '@import.kind': { name: '@import.kind', text: 'alias', range: rangeOf(local) },
+        });
+        expect(captures.map(interpretTypeScriptImport), source).toEqual([alias('Main', 'default')]);
+        const lexical = emitTypeScriptLexicalScopeCaptures(root);
+        const serialized = JSON.stringify(captures);
+        for (const [key, capture] of Object.entries(captures[0]!)) {
+          expect(Object.getPrototypeOf(capture)).toBe(Object.prototype);
+          expect(Object.getPrototypeOf(capture.range)).toBe(Object.prototype);
+          expect(capture).not.toBe(repeated[0]![key]);
+          expect(capture.range).not.toBe(repeated[0]![key]!.range);
+        }
+        parser.parse('class Replacement {}');
+        expect(JSON.stringify(captures)).toBe(serialized);
+        const result = extract([...lexical, ...JSON.parse(serialized)], filePath, {
+          interpretImport: interpretTypeScriptImport,
+        });
+        expect(result.parsedImports).toEqual([alias('Main', 'default')]);
+        expect(result.localDefs).toEqual([]);
+        expect(result.scopes).toHaveLength(1);
+        expect([...result.scopes[0]!.bindings]).toEqual([]);
+      }
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'accepts runtime default and aliased local bindings named type in %s',
+    async (filePath) => {
+      for (const [source, expected] of [
+        ["import type from './module';", [alias('type', 'default')]],
+        [
+          "import { Value as type, default as typeDefault } from './module';",
+          [alias('type', 'Value'), alias('typeDefault', 'default')],
+        ],
+      ] as const) {
+        const { root } = await parse(source, filePath);
+        expect(root.hasError).toBe(false);
+        const captures = emitTypeScriptImportCaptures(root.namedChildren[0]!);
+        expect(captures.map(interpretTypeScriptImport)).toEqual(expected);
+        for (const [index, binding] of expected.entries()) {
+          const local = root
+            .descendantsOfType('identifier')
+            .find((node) => node.text === binding.localName)!;
+          expect(captures[index]!['@import.binding']!.range).toEqual(rangeOf(local));
+        }
+        const result = extract(
+          [...emitTypeScriptLexicalScopeCaptures(root), ...captures],
+          filePath,
+          { interpretImport: interpretTypeScriptImport },
+        );
+        expect(result.parsedImports).toEqual(expected);
+      }
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'detaches statement type named imports and aliases in %s',
+    async (filePath) => {
+      for (const source of [
+        "import type { A, B as C, type as TypeName } from './module';",
+        "import /* before */ type /* after */ { A, /* alias */ B as C, type as TypeName, } from './module'",
+      ]) {
+        const { parser, root } = await parse(source, filePath);
+        expect(root.hasError, source).toBe(false);
+        const statement = root.namedChildren[0]!;
+        const captures = emitTypeScriptImportCaptures(statement);
+        const repeated = emitTypeScriptImportCaptures(statement);
+        const modifier = statement.children.find((node) => node.type === 'type' && !node.isNamed)!;
+        const expected = [named('A'), alias('C', 'B'), alias('TypeName', 'type')].map(
+          (binding) => ({ ...binding, namespace: 'type' }),
+        );
+        expect(captures.map(interpretTypeScriptImport), source).toEqual(expected);
+        for (const [index, match] of captures.entries()) {
+          expect(match['@import.namespace']).toEqual({
+            name: '@import.namespace',
+            text: 'type',
+            range: rangeOf(modifier),
+          });
+          for (const [key, capture] of Object.entries(match)) {
+            expect(Object.getPrototypeOf(capture)).toBe(Object.prototype);
+            expect(Object.getPrototypeOf(capture.range)).toBe(Object.prototype);
+            expect(capture).not.toBe(repeated[index]![key]);
+            expect(capture.range).not.toBe(repeated[index]![key]!.range);
+          }
+        }
+        expect(captures[0]!['@import.namespace']).not.toBe(captures[1]!['@import.namespace']);
+        const lexical = emitTypeScriptLexicalScopeCaptures(root);
+        const detached = structuredClone(captures);
+        parser.parse('class Replacement {}');
+        expect(captures).toEqual(detached);
+        expect(
+          extract([...lexical, ...detached], filePath, {
+            interpretImport: interpretTypeScriptImport,
+          }).parsedImports,
+        ).toEqual(expected);
+      }
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'rejects grammar-valid typeof modifiers for the whole import in %s',
+    async (filePath) => {
+      for (const source of [
+        "import typeof Main from './module';",
+        "import { Value, typeof Other as Local } from './module';",
+      ]) {
+        const { root } = await parse(source, filePath);
+        expect(root.hasError).toBe(false);
+        expect(root.namedChildren[0]!.type).toBe('import_statement');
+        expect(() => emitTypeScriptImportCaptures(root.namedChildren[0]!), source).toThrow();
+      }
+    },
+  );
+
   it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
     'preserves exact bindings and source order with the real %s grammar',
     async (filePath) => {
@@ -129,6 +342,111 @@ describe('borrowed TS/JS static import captures', () => {
     },
   );
 
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'detaches mixed value and inline type bindings in source order in %s',
+    async (filePath) => {
+      const { parser, root } = await parse(
+        "import Main, { Value, type /* named */ T, type U as Local, type as RuntimeType } from './module';",
+        filePath,
+      );
+      expect(root.hasError).toBe(false);
+      const statement = root.namedChildren[0]!;
+      const captures = emitTypeScriptImportCaptures(statement);
+      const repeated = emitTypeScriptImportCaptures(statement);
+      const expected = [
+        alias('Main', 'default'),
+        named('Value'),
+        { ...named('T'), namespace: 'type' },
+        { ...alias('Local', 'U'), namespace: 'type' },
+        alias('RuntimeType', 'type'),
+      ];
+      expect(captures.map(interpretTypeScriptImport)).toEqual(expected);
+      expect(
+        captures
+          .filter((match) => match['@import.namespace'])
+          .map((match) => match['@import.namespace']),
+      ).toEqual([
+        {
+          name: '@import.namespace',
+          text: 'type',
+          range: { startLine: 1, startCol: 22, endLine: 1, endCol: 26 },
+        },
+        {
+          name: '@import.namespace',
+          text: 'type',
+          range: { startLine: 1, startCol: 42, endLine: 1, endCol: 46 },
+        },
+      ]);
+      for (const [index, binding] of expected.entries()) {
+        const local = root
+          .descendantsOfType('identifier')
+          .find((node) => node.text === binding.localName)!;
+        expect(captures[index]!['@import.binding']!.range).toEqual(rangeOf(local));
+        expect(captures[index]!['@import.namespace']?.text).toBe(
+          'namespace' in binding ? 'type' : undefined,
+        );
+        for (const [key, capture] of Object.entries(captures[index]!)) {
+          expect(Object.getPrototypeOf(capture)).toBe(Object.prototype);
+          expect(Object.getPrototypeOf(capture.range)).toBe(Object.prototype);
+          expect(capture).not.toBe(repeated[index]![key]);
+          expect(capture.range).not.toBe(repeated[index]![key]!.range);
+        }
+      }
+      const detached = JSON.parse(JSON.stringify(captures));
+      const lexical = emitTypeScriptLexicalScopeCaptures(root);
+      parser.parse('class Replacement {}');
+      expect(captures).toEqual(detached);
+      expect(
+        extract([...lexical, ...detached], filePath, {
+          interpretImport: interpretTypeScriptImport,
+        }).parsedImports,
+      ).toEqual(expected);
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'retains all-inline type imports and rejects malformed named and alias metadata in %s',
+    async (filePath) => {
+      const { parser, root } = await parse(
+        "import { type T, type U as Local } from './module';",
+        filePath,
+      );
+      expect(root.hasError).toBe(false);
+      const captures = structuredClone(emitTypeScriptImportCaptures(root.namedChildren[0]!));
+      const lexical = emitTypeScriptLexicalScopeCaptures(root);
+      parser.parse('class Replacement {}');
+      const expected = [
+        { ...named('T'), namespace: 'type' },
+        { ...alias('Local', 'U'), namespace: 'type' },
+      ];
+      expect(captures.map(interpretTypeScriptImport)).toEqual(expected);
+      expect(
+        extract([...lexical, ...captures], filePath, {
+          interpretImport: interpretTypeScriptImport,
+        }).parsedImports,
+      ).toEqual(expected);
+      for (const match of captures) {
+        const metadata = match['@import.namespace']!;
+        for (const malformed of [
+          { ...metadata, name: '@import.wrong' },
+          { ...metadata, text: 'value' },
+          {
+            ...metadata,
+            range: {
+              ...metadata.range,
+              endLine: metadata.range.startLine,
+              endCol: metadata.range.startCol,
+            },
+          },
+        ]) {
+          expect(() =>
+            interpretTypeScriptImport({ ...match, '@import.namespace': malformed }),
+          ).toThrow();
+        }
+      }
+    },
+  );
+
   it('uses native Unicode positions for local bindings', async () => {
     const { root } = await parse('/* 😀 */ import { café as λ } from "./é";');
     expect(root.hasError).toBe(false);
@@ -171,13 +489,24 @@ describe('borrowed TS/JS static import captures', () => {
   });
 
   it.each([
-    "import type { OnlyType } from './module';",
+    "import type {} from './module';",
     "import type DefaultType from './module';",
-    "import { Value, type OnlyType } from './module';",
-    "import Main, { Value, type OnlyType as LocalType } from './module';",
+    "import type * as Types from './module';",
+    "import type Main, { OnlyType } from './module';",
+    "import type type { OnlyType } from './module';",
+    "import type { type OnlyType } from './module';",
+    "import type { type OnlyType as Local } from './module';",
+    "import type { typeof OnlyType } from './module';",
+    "import type { default as Local } from './module';",
+    "import type { 'OnlyType' as Local } from './module';",
+    "import type { OnlyType as } from './module';",
+    "import type { OnlyType } from './module' with { type: 'json' };",
+    "import { Value, type default as LocalType } from './module';",
+    "import { Value, type 'OnlyType' as LocalType } from './module';",
+    "import { Value, type OnlyType as } from './module';",
+    "import { Value, type OnlyType } from './module' with { type: 'json' };",
     "import './module';",
     "import {} from './module';",
-    "import Main, {} from './module';",
     "import Main from './module' with { type: 'json' };",
     "import Main from './module' assert { type: 'json' };",
     String.raw`import Main from './mod\u0075le';`,

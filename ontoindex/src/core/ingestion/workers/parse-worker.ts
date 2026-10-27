@@ -16,6 +16,7 @@ import Ruby from 'tree-sitter-ruby';
 import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'ontoindex-shared';
 import { getProvider } from '../languages/index.js';
+import { collectRustDeclaredModules } from '../import-resolvers/rust-module-evidence.js';
 import {
   exceedsParseMaxAstDepth,
   getParseMaxAstDepth,
@@ -90,7 +91,7 @@ import {
   CLASS_CONTAINER_TYPES,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
-import { extractCallArgTypes } from '../utils/call-analysis.js';
+import { callExpressionRange, extractCallArgTypes } from '../utils/call-analysis.js';
 import { buildTypeEnv } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
@@ -115,7 +116,13 @@ import {
 } from '../utils/method-props.js';
 import type { LanguageProvider } from '../language-provider.js';
 import { extractParsedFileOutcome } from '../scope-extractor-bridge.js';
-import { extractLaravelRoutes } from './route-extractor.js';
+import { createDeclarationCorrespondence } from '../declaration-correspondence.js';
+import {
+  extractLaravelRoutes,
+  captureRouteOrDecorator,
+  associateDefinitionDecorators,
+  type FileDecorators,
+} from './route-extractor.js';
 import { extractORMQueries } from './orm-extractor.js';
 
 const sendToParent = (message: WorkerOutgoingMessage): void => {
@@ -975,66 +982,8 @@ const processBatch = async (
   return result;
 };
 
-// Route extraction constants shared with the remaining in-file extractors.
-const EXPRESS_ROUTE_METHODS = new Set([
-  'get',
-  'post',
-  'put',
-  'delete',
-  'patch',
-  'all',
-  'use',
-  'route',
-]);
-
-// HTTP client methods that are ONLY used by clients, not Express route registration.
-// Methods like get/post/put/delete/patch overlap with Express — those are captured by
-// the express_route handler as route definitions, not consumers. The fetch() global
-// function is captured separately by the route.fetch query.
+// HTTP client methods that do not overlap with route registration.
 const HTTP_CLIENT_ONLY_METHODS = new Set(['head', 'options', 'request', 'ajax']);
-
-// Known HTTP client receivers u2014 skip these, they're API consumers not routes
-const HTTP_CLIENT_RECEIVERS = new Set([
-  'axios',
-  'request',
-  'fetch',
-  'http',
-  'https',
-  'got',
-  'ky',
-  'superagent',
-  'needle',
-  'undici',
-  'apiclient',
-  'client',
-  'httpclient',
-  'api',
-  '$http',
-  'session',
-  'httpservice',
-  'conn',
-]);
-
-// Decorator names that indicate HTTP route handlers (NestJS, Flask, FastAPI, Spring)
-const ROUTE_DECORATOR_NAMES = new Set([
-  'Get',
-  'Post',
-  'Put',
-  'Delete',
-  'Patch',
-  'Route',
-  'get',
-  'post',
-  'put',
-  'delete',
-  'patch',
-  'route',
-  'RequestMapping',
-  'GetMapping',
-  'PostMapping',
-  'PutMapping',
-  'DeleteMapping',
-]);
 
 const appendSupplementalFreeCalls = (
   filePath: string,
@@ -1329,11 +1278,15 @@ const createFileProcessingState = (
   };
 };
 
-const processFileMatches = (state: FileProcessingState, result: ParseWorkerResult): void => {
+const processFileMatches = (
+  state: FileProcessingState,
+  result: ParseWorkerResult,
+  correspondence?: ReturnType<typeof createDeclarationCorrespondence>,
+): void => {
   const { file, language, lineOffset, isVueSetup, matches, provider, typeEnv, callRouter } = state;
 
   // Per-file map: decorator end-line → decorator info, for associating with definitions
-  const fileDecorators = new Map<number, { name: string; arg?: string; isTool?: boolean }>();
+  const fileDecorators: FileDecorators = new Map();
   const knownTypeOwnerHints = collectKnownTypeOwnerHints(matches, provider, file.path);
 
   // Track start indices of definition nodes already processed by higher-priority captures
@@ -1362,6 +1315,9 @@ const processFileMatches = (state: FileProcessingState, result: ParseWorkerResul
         filePath: file.path,
         rawImportPath,
         language: language,
+        ...(language === SupportedLanguages.Rust
+          ? { rustDeclaredModules: collectRustDeclaredModules(captureMap['import']) }
+          : {}),
         ...(namedBindings ? { namedBindings } : {}),
       });
       continue;
@@ -1394,42 +1350,8 @@ const processFileMatches = (state: FileProcessingState, result: ParseWorkerResul
       if (!captureMap['call']) continue;
     }
 
-    // Store decorator metadata for later association with definitions
-    if (captureMap['decorator'] && captureMap['decorator.name']) {
-      const decoratorName = captureMap['decorator.name'].text;
-      const decoratorArg = captureMap['decorator.arg']?.text;
-      const decoratorNode = captureMap['decorator'];
-      // Store by the decorator's end line — the definition follows immediately after
-      fileDecorators.set(decoratorNode.endPosition.row, {
-        name: decoratorName,
-        arg: decoratorArg,
-      });
-
-      if (ROUTE_DECORATOR_NAMES.has(decoratorName)) {
-        const routePath = decoratorArg || '';
-        const method = decoratorName.replace('Mapping', '').toUpperCase();
-        const httpMethod = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(method)
-          ? method
-          : 'GET';
-        result.decoratorRoutes.push({
-          filePath: file.path,
-          routePath,
-          httpMethod,
-          decoratorName,
-          lineNumber: decoratorNode.startPosition.row + lineOffset,
-        });
-      }
-      // MCP/RPC tool detection: @mcp.tool(), @app.tool(), @server.tool()
-      if (decoratorName === 'tool') {
-        // Re-store with isTool flag for the definition handler
-        fileDecorators.set(decoratorNode.endPosition.row, {
-          name: decoratorName,
-          arg: decoratorArg,
-          isTool: true,
-        });
-      }
+    if (captureRouteOrDecorator(captureMap, file.path, lineOffset, fileDecorators, result))
       continue;
-    }
 
     // Extract HTTP consumer URLs: fetch(), axios.get(), $.get(), requests.get(), etc.
     if (captureMap['route.fetch']) {
@@ -1455,69 +1377,6 @@ const processFileMatches = (state: FileProcessingState, result: ParseWorkerResul
           filePath: file.path,
           fetchURL: url,
           lineNumber: captureMap['http_client'].startPosition.row + lineOffset,
-        });
-      }
-      continue;
-    }
-
-    // Express/Hono route registration: app.get('/path', handler)
-    if (
-      captureMap['express_route'] &&
-      captureMap['express_route.method'] &&
-      captureMap['express_route.path']
-    ) {
-      const method = captureMap['express_route.method'].text;
-      const routePath = captureMap['express_route.path'].text;
-      if (EXPRESS_ROUTE_METHODS.has(method) && routePath.startsWith('/')) {
-        // Extract the receiver (the object the method is called on) to filter out
-        // HTTP client calls like axios.get('/api/users') that match the same pattern
-        // as Express route registrations.
-        const callNode = captureMap['express_route'];
-        const funcNode = callNode.childForFieldName?.('function') ?? callNode.children?.[0];
-        // Walk through nested member_expressions and call_expressions to
-        // reach the innermost receiver identifier.  Handles chains like:
-        //   this.httpService.get('/path')   -> member chain    -> 'httpservice'
-        //   getClient().get('/path')         -> call_expression -> 'getclient'
-        //   axios.get('/path')               -> bare identifier -> 'axios'
-        let receiverNode = funcNode?.childForFieldName?.('object') ?? funcNode?.children?.[0];
-        while (
-          receiverNode?.type === 'member_expression' ||
-          receiverNode?.type === 'call_expression'
-        ) {
-          if (receiverNode.type === 'member_expression') {
-            // Drill into the property (rightmost part) of the member expression
-            const propNode = receiverNode.childForFieldName?.('property');
-            if (propNode) {
-              receiverNode = propNode;
-            } else {
-              break;
-            }
-          } else {
-            // call_expression: unwrap to the function being called
-            const innerFunc =
-              receiverNode.childForFieldName?.('function') ?? receiverNode.children?.[0];
-            if (innerFunc && innerFunc !== receiverNode) {
-              receiverNode = innerFunc;
-            } else {
-              break;
-            }
-          }
-        }
-        const receiverText = receiverNode?.text?.toLowerCase() ?? '';
-
-        if (HTTP_CLIENT_RECEIVERS.has(receiverText)) {
-          // This is an HTTP client call, not a route definition — skip it
-          continue;
-        }
-
-        const httpMethod =
-          method === 'all' || method === 'use' || method === 'route' ? 'GET' : method.toUpperCase();
-        result.decoratorRoutes.push({
-          filePath: file.path,
-          routePath,
-          httpMethod,
-          decoratorName: `express.${method}`,
-          lineNumber: captureMap['express_route'].startPosition.row + lineOffset,
         });
       }
       continue;
@@ -1562,8 +1421,10 @@ const processFileMatches = (state: FileProcessingState, result: ParseWorkerResul
             result.calls.push({
               filePath: file.path,
               calledName: langCallSite.calledName,
+              atRange: callExpressionRange(callNode),
               sourceId,
               callForm: langCallSite.callForm,
+              ...(langCallSite.argCount !== undefined ? { argCount: langCallSite.argCount } : {}),
               ...(receiverName !== undefined ? { receiverName } : {}),
               ...(receiverTypeName !== undefined ? { receiverTypeName } : {}),
             });
@@ -1635,6 +1496,7 @@ const processFileMatches = (state: FileProcessingState, result: ParseWorkerResul
                   ? `${propEnclosingInfo.className}.${item.propName}`
                   : item.propName;
                 const nodeId = generateId('Property', `${file.path}:${propQualifiedName}`);
+                correspondence?.observe(nodeId, item.propName, 'Property', captureMap['call']);
                 result.nodes.push({
                   id: nodeId,
                   label: 'Property',
@@ -1743,6 +1605,7 @@ const processFileMatches = (state: FileProcessingState, result: ParseWorkerResul
               result.calls.push({
                 filePath: file.path,
                 calledName: callSite.calledName,
+                atRange: callExpressionRange(callNode),
                 sourceId,
                 ...(callSite.argCount !== undefined ? { argCount: callSite.argCount } : {}),
                 ...(callSite.callForm !== undefined ? { callForm: callSite.callForm } : {}),
@@ -1955,6 +1818,7 @@ const processFileMatches = (state: FileProcessingState, result: ParseWorkerResul
         ? qualifiedOwnerInfo.classFilePath
         : file.path;
     const nodeId = generateId(nodeLabel, `${nodeIdFilePath}:${qualifiedName}${arityTag}`);
+    correspondence?.observe(nodeId, nodeName, nodeLabel, definitionNode ?? nameNode);
     const isSplitCppDefinition = Boolean(
       qualifiedOwnerInfo?.classFilePath && qualifiedOwnerInfo.classFilePath !== file.path,
     );
@@ -1988,39 +1852,15 @@ const processFileMatches = (state: FileProcessingState, result: ParseWorkerResul
       }
     }
 
-    // Decorators appear on lines immediately before their definition; allow up to
-    // MAX_DECORATOR_SCAN_LINES gap for blank lines / multi-line decorator stacks.
-    const MAX_DECORATOR_SCAN_LINES = 5;
-    if (definitionNode) {
-      const defStartLine = definitionNode.startPosition.row;
-      for (
-        let checkLine = defStartLine - 1;
-        checkLine >= Math.max(0, defStartLine - MAX_DECORATOR_SCAN_LINES);
-        checkLine--
-      ) {
-        const dec = fileDecorators.get(checkLine);
-        if (dec) {
-          // Use first (closest) decorator found for framework hint
-          if (!frameworkHint) {
-            frameworkHint = {
-              framework: 'decorator',
-              entryPointMultiplier: 1.2,
-              reason: `@${dec.name}${dec.arg ? `("${dec.arg}")` : ''}`,
-            };
-          }
-          // Emit tool definition if this is a @tool decorator
-          if (dec.isTool) {
-            result.toolDefs.push({
-              filePath: file.path,
-              toolName: nodeName,
-              description: dec.arg || '',
-              lineNumber: definitionNode.startPosition.row + lineOffset,
-            });
-          }
-          fileDecorators.delete(checkLine);
-        }
-      }
-    }
+    frameworkHint = associateDefinitionDecorators(
+      definitionNode,
+      nodeName,
+      file.path,
+      lineOffset,
+      fileDecorators,
+      result,
+      frameworkHint,
+    );
 
     // Property metadata extraction (not needed before nodeId — Properties don't overload)
     if (nodeLabel === 'Property' && definitionNode) {
@@ -2232,6 +2072,10 @@ const processPreparedWorkerFile = (
     result.processedPaths.push(file.path);
     onFileProcessed?.(file.path);
 
+    const parsedFileIndex = result.parsedFiles.length;
+    const correspondence = /\.[cm]?[jt]sx?$/i.test(file.path)
+      ? createDeclarationCorrespondence(file.path)
+      : undefined;
     timeFamily('scope-artifact', () =>
       appendParsedFileArtifact(
         file.path,
@@ -2247,7 +2091,13 @@ const processPreparedWorkerFile = (
     timeFamily('type-env-artifacts', () =>
       appendTypeEnvArtifacts(file.path, fileState.typeEnv, result),
     );
-    timeFamily('query-match-extractors', () => processFileMatches(fileState, result));
+    timeFamily('query-match-extractors', () =>
+      processFileMatches(fileState, result, correspondence),
+    );
+    const parsedFile = result.parsedFiles[parsedFileIndex];
+    if (correspondence && parsedFile?.filePath === file.path) {
+      result.parsedFiles[parsedFileIndex] = correspondence.attach(parsedFile);
+    }
     timeFamily(
       'supplemental-extractors',
       () =>
@@ -2313,6 +2163,10 @@ let cumulativeProcessed = 0;
 
 onParentMessage(async (msg: WorkerIncomingMessage) => {
   try {
+    if (!Array.isArray(msg) && msg.type === 'shutdown') {
+      process.exit(0);
+    }
+
     // Legacy single-message mode (backward compat): array of files
     if (Array.isArray(msg)) {
       activeDiagnostics = undefined;

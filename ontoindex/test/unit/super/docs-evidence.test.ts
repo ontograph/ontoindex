@@ -4,7 +4,8 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../../src/mcp/local/backend-overlay.js', () => ({
+vi.mock('../../../src/mcp/local/backend-overlay.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/mcp/local/backend-overlay.js')>()),
   getPinnedOverlaySnapshot: vi.fn(),
 }));
 

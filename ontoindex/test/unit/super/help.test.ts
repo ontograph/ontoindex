@@ -143,22 +143,34 @@ describe('gnHelp — return shape', () => {
 });
 
 describe('ADR27: gnHelp startup-profile metadata', () => {
-  it('reports public-full as the default compatible startup profile', () => {
+  it('reports core as the default startup profile with hidden callable tools', () => {
     delete process.env.ONTOINDEX_MCP_STARTUP_PROFILE;
     const report = gnHelp();
-    const fullPublicCount = getPublicToolRegistry({ includeFacades: true }).length;
+    const fullPublic = getPublicToolRegistry({
+      includeFacades: true,
+      startupProfile: 'public-full',
+    });
+    const advertised = getPublicToolRegistry({ includeFacades: true, startupProfile: 'core' })
+      .map((entry) => entry.name)
+      .sort();
+    const hiddenButCallable = fullPublic
+      .map((entry) => entry.name)
+      .filter((name) => !advertised.includes(name))
+      .sort();
 
     expect(report.startupProfile).toMatchObject({
-      activeProfile: 'public-full',
+      activeProfile: 'core',
       source: 'default',
-      advertisedCount: fullPublicCount,
-      hiddenButCallableCount: 0,
-      fullPublicCount,
+      advertisedCount: advertised.length,
+      hiddenButCallableCount: hiddenButCallable.length,
+      fullPublicCount: fullPublic.length,
       facadesIncluded: true,
       enforcementMode: 'advertise_only',
-      compatibilityMode: false,
+      compatibilityMode: true,
     });
-    expect(report.startupProfile.hiddenButCallable).toEqual([]);
+    expect(report.startupProfile.advertised).toEqual(advertised);
+    expect(report.startupProfile.hiddenButCallable).toEqual(hiddenButCallable);
+    expect(hiddenButCallable.length).toBeGreaterThan(0);
   });
 
   it('reports hidden-but-callable tools for a smaller startup profile', () => {
@@ -167,7 +179,9 @@ describe('ADR27: gnHelp startup-profile metadata', () => {
 
     expect(report.startupProfile.activeProfile).toBe('core');
     expect(report.startupProfile.source).toBe('env');
-    expect(report.startupProfile.advertised).toContain('gn_help');
+    expect(report.startupProfile.advertised).toHaveLength(8);
+    expect(report.startupProfile.advertised.some((name) => name.startsWith('gn_'))).toBe(false);
+    expect(report.startupProfile.hiddenButCallable).toContain('gn_help');
     expect(report.startupProfile.advertised).toContain('search');
     expect(report.startupProfile.hiddenButCallable).toContain('gn_audit_ingest');
     expect(report.startupProfile.hiddenButCallableCount).toBe(
@@ -180,16 +194,30 @@ describe('ADR27: gnHelp startup-profile metadata', () => {
     expect(report.startupProfile.compatibilityMode).toBe(true);
   });
 
-  it('falls back to public-full for an unknown startup profile value', () => {
+  it('falls back to core for an unknown startup profile value', () => {
     process.env.ONTOINDEX_MCP_STARTUP_PROFILE = 'full';
     const report = gnHelp();
+    const advertised = getPublicToolRegistry({ includeFacades: true, startupProfile: 'core' })
+      .map((entry) => entry.name)
+      .sort();
+    const hiddenButCallable = getPublicToolRegistry({
+      includeFacades: true,
+      startupProfile: 'public-full',
+    })
+      .map((entry) => entry.name)
+      .filter((name) => !advertised.includes(name))
+      .sort();
 
     expect(report.startupProfile).toMatchObject({
-      activeProfile: 'public-full',
+      activeProfile: 'core',
       source: 'env-invalid-default',
       invalidProfile: 'full',
-      hiddenButCallableCount: 0,
+      advertisedCount: advertised.length,
+      hiddenButCallableCount: hiddenButCallable.length,
+      compatibilityMode: true,
     });
+    expect(report.startupProfile.advertised).toEqual(advertised);
+    expect(report.startupProfile.hiddenButCallable).toEqual(hiddenButCallable);
   });
 });
 
@@ -290,8 +318,11 @@ describe('gnHelp — ergonomics review', () => {
         'manage',
       ]),
     );
-    expect(report.compatibilityTools).toContain('gn_help');
-    expect(report.compatibilityTools).toContain('gn_tool_contract');
+    expect(report.compatibilityTools).toEqual([]);
+    process.env.ONTOINDEX_MCP_STARTUP_PROFILE = 'public-full';
+    expect(gnHelp().compatibilityTools).toEqual(
+      expect.arrayContaining(['gn_help', 'gn_tool_contract']),
+    );
   });
 
   it('documents common agent prompts for docs trace, API drift, edit readiness, and setup/help', () => {
@@ -389,6 +420,7 @@ describe('SERENA-REV3: gnToolContract — structural integrity checks', () => {
   });
 
   it('status remains ok when all checks pass and no drift', () => {
+    process.env.ONTOINDEX_MCP_STARTUP_PROFILE = 'public-full';
     const contract = gnToolContract();
     expect(contract.status).toBe('ok');
     expect(contract.warnings).toEqual([]);

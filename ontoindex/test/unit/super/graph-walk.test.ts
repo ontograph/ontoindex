@@ -13,7 +13,8 @@ vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
   getPinnedGenerationDir: vi.fn(),
 }));
 
-vi.mock('../../../src/mcp/local/backend-overlay.js', () => ({
+vi.mock('../../../src/mcp/local/backend-overlay.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/mcp/local/backend-overlay.js')>()),
   getPinnedOverlaySnapshot: vi.fn(),
 }));
 

@@ -29,8 +29,11 @@ import type {
 } from '../workers/parse-worker.js';
 import type { createResolutionContext } from '../model/resolution-context.js';
 import { runChunkedParseAndResolve } from './parse-impl.js';
+import { createKnowledgeGraph } from '../../graph/graph.js';
+import { admitScopeRetentionParseReplay, reconstructScopeRetentionParse } from './parse-replay.js';
 
 export interface ParseOutput {
+  readonly parseMode: 'full' | 'retained-replay';
   /**
    * Read-only snapshot of exported type bindings keyed by file path.
    *
@@ -95,18 +98,102 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
       getPhaseOutput<StructureOutput>(deps, 'structure');
 
     let result: Awaited<ReturnType<typeof runChunkedParseAndResolve>>;
+    let replayed = false;
     try {
-      result = await runChunkedParseAndResolve(
-        ctx.graph,
-        scannedFiles,
-        allPaths,
-        totalFiles,
-        ctx.repoPath,
-        ctx.pipelineStart,
-        ctx.onProgress,
-        ctx.options,
-        skippedLargeFiles,
-      );
+      const replay = ctx.options?.scopeReplay;
+      if (replay && (ctx.options?.profile ?? 'full') === 'full') {
+        const checkRequest = () => {
+          if (replay.request.signal?.aborted)
+            throw new Error('scope-retention-parse-replay: cancelled');
+          if (!Number.isFinite(replay.request.deadline))
+            throw new Error('scope-retention-parse-replay: invalid request');
+          if (Date.now() >= replay.request.deadline)
+            throw new Error('scope-retention-parse-replay: deadline');
+        };
+        const disposeStaged = (
+          staged: Awaited<ReturnType<typeof reconstructScopeRetentionParse>>,
+        ) => {
+          staged.allFetchCalls.length = 0;
+          staged.allExtractedRoutes.length = 0;
+          staged.allDecoratorRoutes.length = 0;
+          staged.allToolDefs.length = 0;
+          staged.allORMQueries.length = 0;
+          clearExportedTypeMap(staged.exportedTypeMap);
+          try {
+            staged.resolutionContext.clear();
+          } catch {
+            /* Preserve the primary failure. */
+          }
+          try {
+            staged.bindingAccumulator.dispose();
+          } catch {
+            /* Preserve the primary failure. */
+          }
+        };
+        checkRequest();
+        let admitted = false;
+        try {
+          await admitScopeRetentionParseReplay(
+            replay.candidate,
+            {
+              repoPath: ctx.repoPath,
+              allPaths,
+              scannedFiles,
+              skippedLargeFiles: skippedLargeFiles ?? [],
+            },
+            replay.request,
+          );
+          admitted = true;
+        } catch {
+          checkRequest();
+        }
+        if (admitted) {
+          const stagedGraph = createKnowledgeGraph();
+          for (const node of ctx.graph.iterNodes()) stagedGraph.addNode(structuredClone(node));
+          for (const edge of ctx.graph.iterRelationships())
+            stagedGraph.addRelationship(structuredClone(edge));
+          let staged: Awaited<ReturnType<typeof reconstructScopeRetentionParse>> | undefined;
+          try {
+            staged = await reconstructScopeRetentionParse(
+              replay.candidate.families,
+              stagedGraph,
+              ctx.onProgress,
+            );
+            checkRequest();
+          } catch {
+            if (staged) disposeStaged(staged);
+            staged = undefined;
+            checkRequest();
+          }
+          if (staged) {
+            // Preservation is the commit boundary: its failures must propagate without parsing.
+            try {
+              await replay.preserve();
+              checkRequest();
+              for (const node of stagedGraph.iterNodes()) ctx.graph.addNode(node);
+              for (const edge of stagedGraph.iterRelationships()) ctx.graph.addRelationship(edge);
+              result = staged;
+              replayed = true;
+            } catch (error) {
+              disposeStaged(staged);
+              throw error;
+            }
+          }
+        }
+      }
+      if (!replayed) {
+        result = await runChunkedParseAndResolve(
+          ctx.graph,
+          scannedFiles,
+          allPaths,
+          totalFiles,
+          ctx.repoPath,
+          ctx.pipelineStart,
+          ctx.onProgress,
+          ctx.options,
+          skippedLargeFiles,
+        );
+      }
     } finally {
       scannedFiles.length = 0;
     }
@@ -169,6 +256,7 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
 
     return {
       ...parseResult,
+      parseMode: replayed ? 'retained-replay' : 'full',
       allPaths: allPathsSnapshot,
       allPathSet: allPathSetSnapshot,
       totalFiles,

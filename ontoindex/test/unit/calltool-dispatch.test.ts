@@ -455,6 +455,41 @@ describe('request workspace gate', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['verification', 'snapshot_failed'],
+    ['build', 'input_refused'],
+  ] as const)(
+    'projects safe %s/%s diagnostics without copying private fields',
+    async (phase, reason) => {
+      const original = new WorkspacePreparationError(
+        'workspace_build_failed',
+        'SYNTHETIC_PRIVATE',
+        undefined,
+        undefined,
+        {
+          phase,
+          reason,
+          systemCode: 'EIO',
+          privatePath: '/private/source',
+          stderr: 'SYNTHETIC_PRIVATE',
+        } as NonNullable<WorkspacePreparationError['failure']>,
+      );
+      vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(original);
+      const handler = vi.fn();
+      (backend as any).repoToolHandlers.overview = handler;
+      const failure = await backend.callTool('overview', {}).catch((error: unknown) => error);
+      expect(failure).toMatchObject({
+        code: 'workspace_build_failed',
+        retryable: false,
+        diagnostics: { phase, reason, systemCode: 'EIO' },
+      });
+      expect(JSON.stringify(failure)).not.toMatch(
+        /SYNTHETIC_PRIVATE|private\/source|failureDiagnostics/,
+      );
+      expect(handler).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(['Error', 'non-Error'])('bounds unexpected %s preparation failures', async (kind) => {
     const detail = `secret=preparation-token\nsource: private.ts\n${'x'.repeat(100_000)}`;
     const original = kind === 'Error' ? new Error(detail) : detail;
@@ -479,6 +514,24 @@ describe('request workspace gate', () => {
     });
     vi.mocked(withPinnedOverlay).mockRejectedValueOnce(
       new Error('overlay generation no longer available'),
+    );
+    const handler = vi.fn();
+    (backend as any).repoToolHandlers.overview = handler;
+    await expect(backend.callTool('overview', {})).rejects.toMatchObject({
+      code: 'workspace_preparation_failed',
+    });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('maps a pre-handler native-open failure to a preparation error without running the handler', async () => {
+    const { LbugOpenError } = await import('../../src/core/lbug/open-error.js');
+    vi.mocked(getOverlaySnapshot).mockResolvedValueOnce({
+      ...cleanSnapshot(),
+      usable: true,
+      generation: 'bad',
+    });
+    vi.mocked(withPinnedOverlay).mockRejectedValueOnce(
+      new LbugOpenError('/db/lbug', new Error('database is corrupt')),
     );
     const handler = vi.fn();
     (backend as any).repoToolHandlers.overview = handler;

@@ -10,6 +10,9 @@
   ],
   "main": "bindings/node",
   "types": "bindings/node",
+  "scripts": {
+    "generate": "node scripts/regenerate.cjs"
+  },
   "keywords": [
     "incremental",
     "parsing",
@@ -18,6 +21,8 @@
     "tsx"
   ],
   "files": [
+    "binding.gyp",
+    "scripts/regenerate.cjs",
     "prebuilds/**",
     "bindings/node/*",
     "queries/*",

@@ -4,6 +4,7 @@ import {
   restoreImportResolutionState,
   snapshotImportResolutionState,
 } from '../../../src/core/ingestion/model/resolution-context.js';
+import { restoreSemanticModelRegistrations } from '../../../src/core/ingestion/model/semantic-model.js';
 
 function populatedContext() {
   const ctx = createResolutionContext();
@@ -35,6 +36,201 @@ function populatedContext() {
 }
 
 describe('import-resolution state snapshots', () => {
+  describe('bounded capture', () => {
+    const generousLimits = { maxBytes: 1_000_000, maxEntries: 1_000 };
+
+    it('keeps the V1 shape, empty file rows, insertion order, and detached bindings', () => {
+      const ctx = populatedContext();
+      const expected = snapshotImportResolutionState(ctx);
+      const bounded = snapshotImportResolutionState(ctx, generousLimits);
+      expect(bounded).toEqual(expected);
+      ctx.importMap.get('src/z.ts')!.clear();
+      ctx.packageMap.get('src/z.ts')!.clear();
+      ctx.namedImportMap.get('src/z.ts')!.get('Alias')!.sourcePath = 'changed.ts';
+      ctx.moduleAliasMap.get('src/z.py')!.clear();
+      expect(bounded).toEqual(expected);
+      bounded.namedImportMap[0]![1][0]![1].exportedName = 'SnapshotOnly';
+      expect(ctx.namedImportMap.get('src/z.ts')!.get('Alias')!.exportedName).toBe('Public');
+    });
+
+    it.each([
+      ['ASCII', 'ordinary/path.ts'],
+      ['escaped characters', 'quote" backslash\\ newline\n tab\t nul\0'],
+      ['Unicode', 'src/é/漢字/😀.ts'],
+      ['lone surrogates', 'src/\ud800/\udfff.ts'],
+    ])('uses exact serialized UTF-8 bytes for %s', (_label, value) => {
+      const ctx = createResolutionContext();
+      ctx.importMap.set(value, new Set([value]));
+      ctx.packageMap.set(value, new Set([value]));
+      ctx.namedImportMap.set(value, new Map([[value, { sourcePath: value, exportedName: value }]]));
+      ctx.moduleAliasMap.set(value, new Map([[value, value]]));
+      const expected = snapshotImportResolutionState(ctx);
+      const bytes = Buffer.byteLength(JSON.stringify(expected), 'utf8');
+      expect(snapshotImportResolutionState(ctx, { ...generousLimits, maxBytes: bytes })).toEqual(
+        expected,
+      );
+      expect(() =>
+        snapshotImportResolutionState(ctx, { ...generousLimits, maxBytes: bytes - 1 }),
+      ).toThrowError(expect.objectContaining({ code: 'IMPORT_STATE_LIMIT' }));
+    });
+
+    it('counts outer file rows and inner members across all four map families', () => {
+      const ctx = populatedContext();
+      // Nine outer file rows plus nine set members or named/alias bindings.
+      expect(snapshotImportResolutionState(ctx, { ...generousLimits, maxEntries: 18 })).toEqual(
+        snapshotImportResolutionState(ctx),
+      );
+      expect(() =>
+        snapshotImportResolutionState(ctx, { ...generousLimits, maxEntries: 17 }),
+      ).toThrowError(expect.objectContaining({ code: 'IMPORT_STATE_LIMIT' }));
+    });
+
+    it('charges empty file rows even when there are no inner members', () => {
+      const ctx = createResolutionContext();
+      for (let i = 0; i < 64; i++) {
+        ctx.importMap.set(`import-${i}`, new Set());
+        ctx.packageMap.set(`package-${i}`, new Set());
+        ctx.namedImportMap.set(`named-${i}`, new Map());
+        ctx.moduleAliasMap.set(`alias-${i}`, new Map());
+      }
+      expect(snapshotImportResolutionState(ctx, { ...generousLimits, maxEntries: 256 })).toEqual(
+        snapshotImportResolutionState(ctx),
+      );
+      expect(() =>
+        snapshotImportResolutionState(ctx, { ...generousLimits, maxEntries: 255 }),
+      ).toThrowError(expect.objectContaining({ code: 'IMPORT_STATE_LIMIT' }));
+    });
+
+    it('allows zero entries for empty state but refuses a zero byte budget', () => {
+      const ctx = createResolutionContext();
+      expect(snapshotImportResolutionState(ctx, { ...generousLimits, maxEntries: 0 })).toEqual(
+        snapshotImportResolutionState(ctx),
+      );
+      expect(() =>
+        snapshotImportResolutionState(ctx, { ...generousLimits, maxBytes: 0 }),
+      ).toThrowError(expect.objectContaining({ code: 'IMPORT_STATE_LIMIT' }));
+    });
+
+    it.each(['maxBytes', 'maxEntries'] as const)(
+      'rejects invalid %s limits with a stable code',
+      (limit) => {
+        for (const value of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+          expect(() =>
+            snapshotImportResolutionState(createResolutionContext(), {
+              ...generousLimits,
+              [limit]: value,
+            }),
+          ).toThrowError(expect.objectContaining({ code: 'IMPORT_STATE_LIMIT' }));
+        }
+      },
+    );
+
+    it('refuses a huge string without invoking user serialization hooks', () => {
+      const ctx = createResolutionContext();
+      let serialized = 0;
+      const binding = {
+        sourcePath: 'x'.repeat(1_000_000),
+        exportedName: 'Export',
+        toJSON() {
+          serialized++;
+          throw new Error('User serialization must not run');
+        },
+      };
+      ctx.namedImportMap.set('a.ts', new Map([['Alias', binding]]));
+      expect(() =>
+        snapshotImportResolutionState(ctx, { ...generousLimits, maxBytes: 256 }),
+      ).toThrowError(expect.objectContaining({ code: 'IMPORT_STATE_LIMIT' }));
+      expect(serialized).toBe(0);
+    });
+
+    it.each(['sourcePath', 'exportedName'] as const)(
+      'refuses a %s getter without invoking it',
+      (field) => {
+        const ctx = createResolutionContext();
+        let reads = 0;
+        const binding = { sourcePath: 'a.ts', exportedName: 'Export' };
+        Object.defineProperty(binding, field, {
+          enumerable: true,
+          get() {
+            reads++;
+            return 'unsafe';
+          },
+        });
+        ctx.namedImportMap.set('a.ts', new Map([['Alias', binding]]));
+        expect(() => snapshotImportResolutionState(ctx, generousLimits)).toThrow();
+        expect(reads).toBe(0);
+      },
+    );
+
+    it('requires own binding fields and fails closed when descriptor inspection throws', () => {
+      const ctx = createResolutionContext();
+      let reads = 0;
+      const inherited = Object.create({
+        get sourcePath() {
+          reads++;
+          return 'a.ts';
+        },
+        exportedName: 'Export',
+      });
+      ctx.namedImportMap.set('a.ts', new Map([['Alias', inherited]]));
+      expect(() => snapshotImportResolutionState(ctx, generousLimits)).toThrow();
+      expect(reads).toBe(0);
+      const proxy = new Proxy(
+        { sourcePath: 'a.ts', exportedName: 'Export' },
+        {
+          getOwnPropertyDescriptor() {
+            throw new Error('Descriptor unavailable');
+          },
+        },
+      );
+      ctx.namedImportMap.get('a.ts')!.set('Alias', proxy);
+      expect(() => snapshotImportResolutionState(ctx, generousLimits)).toThrow();
+    });
+  });
+
+  it('rebuilds aliased resolution from existing model and import snapshots with fresh caches', () => {
+    const original = createResolutionContext({ captureRegistrations: true });
+    original.model.symbols.add('src/model.ts', 'User', 'Class:src/model.ts:User', 'Class');
+    original.importMap.set('src/app.ts', new Set(['src/model.ts']));
+    original.namedImportMap.set(
+      'src/app.ts',
+      new Map([['Alias', { sourcePath: 'src/model.ts', exportedName: 'User' }]]),
+    );
+    original.enableCache('src/app.ts');
+    const expected = original.resolve('Alias', 'src/app.ts');
+    expect(expected?.candidates.map((candidate) => candidate.nodeId)).toEqual([
+      'Class:src/model.ts:User',
+    ]);
+    const registrations = original.model.snapshotRegistrations()!;
+    const imports = snapshotImportResolutionState(original);
+    const model = restoreSemanticModelRegistrations(JSON.parse(JSON.stringify(registrations)));
+    const restored = createResolutionContext({ model, importState: imports });
+    expect(restored.model).toBe(model);
+    expect(restored.model.snapshotRegistrations()).toBeUndefined();
+    expect(restored.getStats().cacheHits).toBe(0);
+    expect(restored.getStats().cacheMisses).toBe(0);
+    original.clear();
+    imports.importMap[0]![1].length = 0;
+    imports.namedImportMap[0]![1][0]![1].sourcePath = 'changed.ts';
+    expect(restored.resolve('Alias', 'src/app.ts')).toEqual(expected);
+    restored.clear();
+    expect(model.symbols.getStats().fileCount).toBe(0);
+    expect(restored.resolve('Alias', 'src/app.ts')).toBeNull();
+  });
+
+  it('keeps capture opt-in and refuses ambiguous ownership or malformed import state', () => {
+    const plain = createResolutionContext();
+    plain.model.symbols.add('a.ts', 'f', 'Function:a.ts:f', 'Function');
+    expect(plain.model.snapshotRegistrations()).toBeUndefined();
+    expect(() =>
+      createResolutionContext({ model: plain.model, captureRegistrations: true }),
+    ).toThrow('Cannot capture registrations');
+    expect(() =>
+      createResolutionContext({ model: plain.model, importState: { version: 2 } as never }),
+    ).toThrow();
+    expect(plain.model.symbols.lookupExactAll('a.ts', 'f')).toHaveLength(1);
+  });
+
   it('round-trips empty state through JSON', () => {
     const snapshot = snapshotImportResolutionState(createResolutionContext());
     expect(snapshot).toEqual({

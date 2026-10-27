@@ -4,6 +4,10 @@ import path from 'path';
 import os from 'os';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { PipelineOptions } from '../../src/core/ingestion/pipeline.js';
+import {
+  ScopeRetentionStage,
+  type ScopeRetentionRequest,
+} from '../../src/core/ingestion/pipeline-phases/scope-retention-stage.js';
 
 const { embeddingPipelineMocks } = vi.hoisted(() => ({
   embeddingPipelineMocks: {
@@ -105,6 +109,7 @@ import {
   executeQuery,
   executeWithReusedStatement,
   getLbugStats,
+  initLbug,
   loadGraphToLbug,
 } from '../../src/core/lbug/lbug-adapter.js';
 import { fetchExistingEmbeddingHashes } from '../../src/core/lbug/lbug-adapter.js';
@@ -112,7 +117,14 @@ import {
   loadSidecarStoreState,
   MARKDOWN_DOCUMENT_ANALYZER_ID,
 } from '../../src/core/ingestion/enrichment/index.js';
-import { addToGitignore, loadMeta, saveMeta } from '../../src/storage/repo-manager.js';
+import {
+  activateIndexGeneration,
+  addToGitignore,
+  createIndexGeneration,
+  loadMeta,
+  registerRepo,
+  saveMeta,
+} from '../../src/storage/repo-manager.js';
 import { getCurrentCommit } from '../../src/storage/git.js';
 import {
   readAnalysisPublicationReceipt,
@@ -184,6 +196,7 @@ describe('runFullAnalysis snapshot persistence', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     repoManagerGenerationMockState.canonicalGenerationId = null;
+    vi.mocked(initLbug).mockReset().mockResolvedValue(undefined);
     createFTSIndexMock.mockReset().mockResolvedValue(undefined);
     embeddingPipelineMocks.runEmbeddingPipeline.mockResolvedValue(undefined);
     embeddingPipelineMocks.batchInsertEmbeddings.mockResolvedValue(undefined);
@@ -1590,6 +1603,247 @@ describe('runFullAnalysis snapshot persistence', () => {
         fs.stat(path.join(repoDir, '.ontoindex', 'analysis-checkpoint.json')),
       ).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('removes staging after database initialization fails and preserves the active generation', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
+    try {
+      const storagePath = path.join(repoDir, '.ontoindex');
+      const previous = await createIndexGeneration(storagePath, 'previous-generation');
+      await fs.writeFile(previous.lbugPath, 'previous graph');
+      await fs.writeFile(previous.metaPath, '{"generationId":"previous-generation"}');
+      await fs.writeFile(previous.snapshotPath, 'previous snapshot');
+      await activateIndexGeneration(storagePath, previous);
+      const currentPath = path.join(storagePath, 'current');
+      const previousTarget = await fs.readlink(currentPath);
+      vi.mocked(createIndexGeneration).mockClear();
+      runPipelineMock.mockResolvedValue({
+        graph: createKnowledgeGraph(),
+        repoPath: repoDir,
+        totalFileCount: 1,
+        communityResult: undefined,
+        processResult: undefined,
+        usedWorkerPool: false,
+      });
+      const initializationError = new Error('database initialization failed');
+      vi.mocked(initLbug).mockRejectedValueOnce(initializationError);
+
+      await expect(runFullAnalysis(repoDir, {}, { onProgress: vi.fn() })).rejects.toBe(
+        initializationError,
+      );
+
+      expect(createIndexGeneration).toHaveBeenCalledTimes(1);
+      const staged = await vi.mocked(createIndexGeneration).mock.results[0].value;
+      expect(initLbug).toHaveBeenCalledWith(staged.lbugPath);
+      await expect(fs.stat(staged.generationPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await fs.readdir(path.join(storagePath, 'generations'))).toEqual([
+        'previous-generation',
+      ]);
+      expect(await fs.readlink(currentPath)).toBe(previousTarget);
+      expect(await fs.readFile(path.join(storagePath, 'lbug'), 'utf8')).toBe('previous graph');
+      expect(await fs.readFile(path.join(storagePath, 'meta.json'), 'utf8')).toBe(
+        '{"generationId":"previous-generation"}',
+      );
+      expect(await fs.readFile(path.join(storagePath, 'snapshot.json'), 'utf8')).toBe(
+        'previous snapshot',
+      );
+      expect(loadGraphToLbugMock).not.toHaveBeenCalled();
+      expect(saveMetaMock).not.toHaveBeenCalled();
+      expect(registerRepo).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'success',
+    'pipeline failure',
+    'database failure',
+    'progress failure',
+    'writer cleanup failure',
+    'opt-out',
+  ])('owns the retained candidate within the index generation: %s', async (outcome) => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-retention-'));
+    const request: ScopeRetentionRequest = {
+      deadline: Date.now() + 60_000,
+      artifactAllowance: { remainingBytes: 4 * 1024 * 1024 },
+    };
+    const initialAllowance = request.artifactAllowance.remainingBytes;
+    const failure = new Error(`retention ${outcome}`);
+    let retainedStage: ScopeRetentionStage | undefined;
+    let restoreWriterFaults: (() => void) | undefined;
+    try {
+      await fs.writeFile(path.join(repoDir, 'one.ts'), 'export const one = 1;');
+      const storagePath = path.join(repoDir, '.ontoindex');
+      const previous = await createIndexGeneration(storagePath, 'previous-retention-generation');
+      await fs.writeFile(previous.lbugPath, 'previous graph');
+      await fs.writeFile(previous.metaPath, '{"generationId":"previous-retention-generation"}');
+      await fs.writeFile(previous.snapshotPath, 'previous snapshot');
+      await activateIndexGeneration(storagePath, previous);
+      const previousTarget = await fs.readlink(path.join(storagePath, 'current'));
+      loadMetaMock.mockResolvedValue({
+        lastCommit: outcome === 'success' ? 'abc123' : 'previous-commit',
+        generationId: previous.generationId,
+        pipelineProfile: 'full',
+        includePaths: [],
+        sourceManifest: await computeSourceManifest(repoDir, {
+          includePaths: [],
+          pipelineProfile: 'full',
+        }),
+        stats: { nodes: 0, edges: 0 },
+      });
+      vi.mocked(createIndexGeneration).mockClear();
+      executeQueryMock.mockResolvedValue([]);
+      const graph = createKnowledgeGraph();
+      const node = {
+        id: 'File:one.ts',
+        label: 'File' as const,
+        properties: { name: 'one.ts', filePath: 'one.ts' },
+      };
+      graph.addNode(node);
+      runPipelineMock.mockImplementation(
+        async (_repoPath: string, _onProgress: unknown, pipelineOptions?: PipelineOptions) => {
+          if (outcome === 'opt-out') {
+            expect(pipelineOptions?.scopeRetention).toBeUndefined();
+            expect(createIndexGeneration).not.toHaveBeenCalled();
+          } else {
+            expect(createIndexGeneration).toHaveBeenCalledTimes(1);
+            const retention = pipelineOptions!.scopeRetention!;
+            const stage = (retainedStage = new ScopeRetentionStage(retention));
+            try {
+              stage.capture([
+                {
+                  filePath: 'one.ts',
+                  moduleScope: 'scope:one.ts',
+                  scopes: [
+                    {
+                      id: 'scope:one.ts',
+                      parent: null,
+                      kind: 'Module',
+                      range: { startLine: 1, startCol: 0, endLine: 1, endCol: 21 },
+                      filePath: 'one.ts',
+                      bindings: new Map(),
+                      typeBindings: new Map(),
+                      ownedDefs: [],
+                      imports: [],
+                    },
+                  ],
+                  parsedImports: [],
+                  localDefs: [],
+                  referenceSites: [],
+                },
+              ]);
+              stage.recordOutcomes([{ filePath: 'one.ts', status: 'success' }]);
+              stage.reconcile(['one.ts']);
+              expect(stage.captureGraphNode(node)).toBe(true);
+              stage.markGraphNodesCaptured();
+              stage.markGraphRelationshipsCaptured();
+              await retention.consume(stage);
+              if (outcome === 'pipeline failure') throw failure;
+            } finally {
+              await stage.dispose();
+            }
+          }
+          return {
+            graph,
+            repoPath: repoDir,
+            totalFileCount: 1,
+            usedWorkerPool: false,
+          };
+        },
+      );
+      if (outcome === 'database failure') vi.mocked(initLbug).mockRejectedValueOnce(failure);
+      if (outcome === 'writer cleanup failure') {
+        const writeFile = fs.writeFile.bind(fs);
+        const rm = fs.rm.bind(fs);
+        const writeSpy = vi.spyOn(fs, 'writeFile').mockImplementation(async (file, ...args) => {
+          if (String(file).endsWith('scope-retention-candidate/manifest.json')) throw failure;
+          return writeFile(file, ...args);
+        });
+        const rmSpy = vi.spyOn(fs, 'rm').mockImplementation(async (file, options) => {
+          if (String(file).endsWith('scope-retention-candidate'))
+            throw new Error('inner cleanup failed');
+          return rm(file, options);
+        });
+        restoreWriterFaults = () => {
+          writeSpy.mockRestore();
+          rmSpy.mockRestore();
+        };
+      }
+      const result = runFullAnalysis(
+        repoDir,
+        {},
+        {
+          onProgress: (phase) => {
+            if (outcome === 'progress failure' && phase === 'lbug') throw failure;
+          },
+        },
+        outcome === 'opt-out' ? {} : { scopeRetention: request },
+      );
+
+      if (outcome.endsWith('failure')) {
+        if (outcome === 'writer cleanup failure') {
+          await expect(result).rejects.toMatchObject({
+            message: 'scope-retention-candidate: cleanup failed',
+            errors: [failure, expect.objectContaining({ message: 'inner cleanup failed' })],
+          });
+        } else {
+          await expect(result).rejects.toBe(failure);
+        }
+        expect(await fs.readlink(path.join(storagePath, 'current'))).toBe(previousTarget);
+        expect(await fs.readdir(path.join(storagePath, 'generations'))).toEqual([
+          'previous-retention-generation',
+        ]);
+        expect(request.artifactAllowance.remainingBytes).toBe(initialAllowance);
+      } else {
+        await result;
+        expect(createIndexGeneration).toHaveBeenCalledTimes(1);
+        const candidatePath = path.join(storagePath, 'current', 'scope-retention-candidate');
+        if (outcome === 'opt-out') {
+          await expect(fs.stat(candidatePath)).rejects.toMatchObject({ code: 'ENOENT' });
+          expect(request.artifactAllowance.remainingBytes).toBe(initialAllowance);
+        } else {
+          const manifest = JSON.parse(
+            await fs.readFile(path.join(candidatePath, 'manifest.json'), 'utf8'),
+          );
+          expect(manifest).toMatchObject({
+            status: 'candidate',
+            seedReady: false,
+            identity: {
+              sourceManifestDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+              targetCommit: 'abc123',
+              baseGenerationId: previous.generationId,
+            },
+            retention: {
+              status: 'retained',
+              graphNodesCaptured: true,
+              graphRelationshipsCaptured: true,
+            },
+            families: expect.arrayContaining([
+              expect.objectContaining({ name: 'graph-nodes', recordCount: 1 }),
+            ]),
+          });
+          expect(manifest.totalRecordCount).toBe(2);
+          expect(request.artifactAllowance.remainingBytes).toBe(
+            initialAllowance - manifest.artifactBytes,
+          );
+          const graphNodes = manifest.families.find(
+            (family: { name: string }) => family.name === 'graph-nodes',
+          );
+          expect(
+            await fs.readFile(path.join(candidatePath, graphNodes.fileName), 'utf8'),
+          ).toContain('File:one.ts');
+        }
+      }
+      if (retainedStage) {
+        expect(retainedStage.status).toBe('incomplete');
+        expect(retainedStage.reasons).toContain('disposed');
+        expect(retainedStage.graphNodeRecordCount).toBe(0);
+      }
+    } finally {
+      restoreWriterFaults?.();
       await fs.rm(repoDir, { recursive: true, force: true });
     }
   });

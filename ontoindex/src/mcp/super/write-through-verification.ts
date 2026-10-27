@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -85,6 +86,8 @@ export interface VerificationDiffReport {
   executedTests: string[];
   symbolRecords: VerificationSymbolRecord[];
   warnings: string[];
+  /** Internal collection state; omitted from the public actual summary. */
+  collectionFailed?: boolean;
 }
 
 export interface VerifyDiffParams {
@@ -174,10 +177,12 @@ export async function gnVerifyDiff(
     unexpectedImpactedSymbols: result.unexpectedImpactedSymbols,
     missingRequiredTests: result.missingRequiredTests,
     warnings: actual.warnings,
-    skipReasons:
-      params.expectedSymbols === undefined
+    skipReasons: [
+      ...(actual.collectionFailed ? ['Diff collection failed; verification is incomplete.'] : []),
+      ...(params.expectedSymbols === undefined
         ? ['expectedSymbols not provided; symbol scope was not checked.']
-        : [],
+        : []),
+    ],
   };
 }
 
@@ -198,6 +203,15 @@ export async function gnTestGap(
   });
   return {
     ...report,
+    ...(actual.collectionFailed
+      ? {
+          status: 'FAIL',
+          skipReasons: [
+            ...(Array.isArray(report.skipReasons) ? report.skipReasons : []),
+            'Diff collection failed; verification is incomplete.',
+          ],
+        }
+      : {}),
     actual: summarizeActual(actual),
     warnings: [...actual.warnings, ...collectWarnings(report)],
   };
@@ -396,6 +410,7 @@ export function evaluateVerifyDiff(input: VerifyDiffEvaluationInput): VerifyDiff
     (symbol) => input.expectedSymbols !== undefined && !expectedSymbols.has(symbol),
   );
   const status =
+    input.actual.collectionFailed ||
     unexpectedChangedFiles.length > 0 ||
     unexpectedChangedSymbols.length > 0 ||
     missingRequiredTests.length > 0
@@ -472,30 +487,45 @@ export async function collectVerificationDiff(
       ? normalizeStrings(params.changedFiles)
       : await listChangedFiles(repo.repoPath, scope, baseRef);
 
+  let collectionFailed = false;
+  const selectedPaths = params.changedFiles === undefined ? undefined : new Set<string>();
+  if (selectedPaths && params.changedSymbols === undefined) {
+    for (const file of changedFiles) {
+      const inputPath = file.replace(/\\/gu, '/');
+      const relativePath = normalizeRepoRelativePath(repo.repoPath, inputPath);
+      if (
+        relativePath === undefined ||
+        path.resolve(repo.repoPath, inputPath) === path.resolve(repo.repoPath)
+      ) {
+        warnings.push(`Changed file selection is not a repository-relative file: ${file}`);
+        collectionFailed = true;
+      } else {
+        selectedPaths.add(relativePath);
+      }
+    }
+  }
+
   let symbolRecords: VerificationSymbolRecord[] = [];
   if (params.changedSymbols !== undefined) {
     symbolRecords = normalizeStrings(params.changedSymbols).map((name) => ({ name }));
     warnings.push(
       'Impacted-symbol and graph-linked test scans were skipped for supplied changedSymbols without graph ids.',
     );
-  } else if (params.changedFiles === undefined || changedFiles.length > 0) {
-    const detectResult = await detectChanges(
-      repo,
-      scope === 'compare' ? { scope, base_ref: baseRef } : { scope },
-    );
+  } else if (!collectionFailed && (params.changedFiles === undefined || changedFiles.length > 0)) {
+    const detectResult = await detectChanges(repo, {
+      scope,
+      ...(scope === 'compare' ? { base_ref: baseRef } : {}),
+      ...(selectedPaths ? { changed_files: [...selectedPaths] } : {}),
+    });
     if ('error' in detectResult) {
       warnings.push(detectResult.error);
+      collectionFailed = true;
     } else {
       symbolRecords = Array.isArray(detectResult.changed_symbols)
         ? detectResult.changed_symbols.map(asSymbolRecord).filter(isDefined)
         : [];
       warnings.push(...normalizeStrings(detectResult.warnings));
-      if (params.changedFiles !== undefined) {
-        const selectedPaths = new Set(
-          changedFiles
-            .map((file) => normalizeRepoRelativePath(repo.repoPath, file.replace(/\\/gu, '/')))
-            .filter(isDefined),
-        );
+      if (selectedPaths) {
         symbolRecords = symbolRecords.filter((record) => {
           if (!record.filePath) {
             warnings.push(
@@ -525,6 +555,7 @@ export async function collectVerificationDiff(
     executedTests: normalizeStrings(params.executedTests),
     symbolRecords,
     warnings,
+    ...(collectionFailed ? { collectionFailed: true } : {}),
   };
 }
 
@@ -801,7 +832,7 @@ async function listTestFiles(repoPath: string, cap: number): Promise<string[]> {
   async function visit(relativeDir: string): Promise<void> {
     if (found.length >= cap) return;
     const absoluteDir = path.join(repoPath, relativeDir);
-    let entries: import('node:fs').Dirent[];
+    let entries: Dirent[];
     try {
       entries = await fs.readdir(absoluteDir, { withFileTypes: true });
     } catch {

@@ -2,12 +2,27 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+export const WORKSPACE_INPUT_REFUSED_EXIT_CODE = 3;
+
+export function workspaceBuildExitCode(error: unknown): number {
+  return typeof error === 'object' &&
+    error !== null &&
+    'name' in error &&
+    error.name === 'WorkspaceInputCaptureError' &&
+    'code' in error &&
+    (error.code === 'limit' || error.code === 'unsupported')
+    ? WORKSPACE_INPUT_REFUSED_EXIT_CODE
+    : 1;
+}
+
 export class WorkspaceBuildError extends Error {
   constructor(
-    public readonly kind: 'timeout' | 'cancelled' | 'failed' | 'unstoppable',
+    public readonly kind: 'timeout' | 'cancelled' | 'failed' | 'unstoppable' | 'input_refused',
     message: string,
+    options?: ErrorOptions,
+    public readonly termination?: { exitCode: number | null; signal: NodeJS.Signals | null },
   ) {
-    super(message);
+    super(message, options);
     this.name = 'WorkspaceBuildError';
   }
 }
@@ -16,10 +31,13 @@ export interface SupervisedBuild {
   command: string;
   args: string[];
   cwd: string;
+  env?: NodeJS.ProcessEnv;
   /** Repository storage directory that owns `overlay/` and `workspace-inputs/`. */
   storagePath: string;
   timeoutMs: number;
   signal?: AbortSignal;
+  /** Observe the child PID after its owner identity and lifecycle handlers are installed. */
+  onSpawn?: (pid: number) => void;
   /** How long to wait for the killed process group to disappear. */
   reapMs?: number;
 }
@@ -215,6 +233,7 @@ async function runSupervised(
     throw new WorkspaceBuildError('cancelled', 'Workspace graph build was cancelled.');
   const child = spawn(options.command, options.args, {
     cwd: options.cwd,
+    env: options.env ? { ...process.env, ...options.env } : process.env,
     detached: true,
     stdio: ['ignore', 'ignore', 'pipe'],
   });
@@ -244,41 +263,59 @@ async function runSupervised(
   };
   options.signal?.addEventListener('abort', abort, { once: true });
   if (options.signal?.aborted) abort();
-  const exited = new Promise<{ code: number | null; timedOut: boolean; error?: Error }>(
-    (resolve) => {
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        try {
-          if (pid) process.kill(-pid, 'SIGKILL');
-        } catch {
-          // The group already exited.
-        }
-      }, options.timeoutMs);
-      child.once('error', (error) => {
-        clearTimeout(timer);
-        clearTimeout(escalationTimer);
-        options.signal?.removeEventListener('abort', abort);
-        resolve({ code: null, timedOut, error });
-      });
-      child.once('exit', (code) => {
-        clearTimeout(timer);
-        clearTimeout(escalationTimer);
-        options.signal?.removeEventListener('abort', abort);
-        resolve({ code, timedOut });
-      });
-    },
-  );
+  const exited = new Promise<{
+    code: number | null;
+    signal?: NodeJS.Signals | null;
+    timedOut: boolean;
+    error?: Error;
+  }>((resolve) => {
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        if (pid) process.kill(-pid, 'SIGKILL');
+      } catch {
+        // The group already exited.
+      }
+    }, options.timeoutMs);
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      clearTimeout(escalationTimer);
+      options.signal?.removeEventListener('abort', abort);
+      resolve({ code: null, timedOut, error });
+    });
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      clearTimeout(escalationTimer);
+      options.signal?.removeEventListener('abort', abort);
+      resolve({ code, signal, timedOut });
+    });
+  });
   let publicationError: unknown;
+  let observerFailure: { cause: unknown } | undefined;
+  let ownerPublished = false;
   if (pid) {
     try {
       await writeMarker(pid);
+      ownerPublished = true;
     } catch (error) {
       publicationError = error;
       try {
         process.kill(-pid, 'SIGKILL');
       } catch {
         /* Already gone. */
+      }
+    }
+    if (ownerPublished) {
+      try {
+        options.onSpawn?.(pid);
+      } catch (cause) {
+        observerFailure = { cause };
+        try {
+          process.kill(-pid, 'SIGKILL');
+        } catch {
+          /* Already gone. */
+        }
       }
     }
   }
@@ -302,11 +339,19 @@ async function runSupervised(
       `Workspace build owner identity could not be recorded. Inspect ${path.join(options.storagePath, OWNER_MARKER)} before retrying.`,
     );
   }
+  if (observerFailure) {
+    await removeNewArtifacts(options.storagePath, before);
+    throw new WorkspaceBuildError('failed', 'Workspace build spawn observer failed.', {
+      cause: observerFailure.cause,
+    });
+  }
   if (cancelled) {
     await removeNewArtifacts(options.storagePath, before);
     throw new WorkspaceBuildError('cancelled', 'Workspace graph build was cancelled and stopped.');
   }
-  if (outcome.error) throw new WorkspaceBuildError('failed', outcome.error.message);
+  if (outcome.error) {
+    throw new WorkspaceBuildError('failed', outcome.error.message, { cause: outcome.error });
+  }
   if (outcome.timedOut) {
     await removeNewArtifacts(options.storagePath, before);
     throw new WorkspaceBuildError(
@@ -316,9 +361,16 @@ async function runSupervised(
   }
   if (outcome.code !== 0) {
     await removeNewArtifacts(options.storagePath, before);
+    const message = outcome.signal
+      ? `Workspace graph build was terminated by signal ${outcome.signal}`
+      : `Workspace graph build exited with code ${outcome.code}`;
     throw new WorkspaceBuildError(
-      'failed',
-      `Workspace graph build exited with code ${outcome.code}${stderrTail ? `: ${stderrTail.trim()}` : ''}`,
+      !outcome.signal && outcome.code === WORKSPACE_INPUT_REFUSED_EXIT_CODE
+        ? 'input_refused'
+        : 'failed',
+      `${message}${stderrTail ? `: ${stderrTail.trim()}` : ''}`,
+      undefined,
+      { exitCode: outcome.code, signal: outcome.signal ?? null },
     );
   }
 }

@@ -84,11 +84,73 @@ describe('createKnowledgeGraph', () => {
     g.addNode(makeNode('fn:a', 'a', 'src/foo.ts'));
     g.addNode(makeNode('fn:b', 'b', 'src/foo.ts'));
     g.addNode(makeNode('fn:c', 'c', 'src/bar.ts'));
+    g.addRelationship(makeRel('fn:a', 'fn:b'));
+    g.addRelationship(makeRel('fn:c', 'fn:a'));
+    g.addRelationship(makeRel('fn:b', 'fn:c'));
 
     const removed = g.removeNodesByFile('src/foo.ts');
     expect(removed).toBe(2);
     expect(g.nodeCount).toBe(1);
     expect(g.getNode('fn:c')).toBeDefined();
+    expect(g.relationshipCount).toBe(0);
+  });
+
+  it('removes multiple files and reports surviving sources once in sorted order', () => {
+    const g = createKnowledgeGraph();
+    g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+    g.addNode(makeNode('fn:b', 'b', 'src/b.ts'));
+    g.addNode(makeNode('fn:z', 'z', 'src/keep.ts'));
+    g.addNode(makeNode('fn:c', 'c', 'src/keep.ts'));
+    g.addRelationship(makeRel('fn:z', 'fn:a'));
+    g.addRelationship(makeRel('fn:z', 'fn:b'));
+    g.addRelationship(makeRel('fn:c', 'fn:b'));
+    g.addRelationship(makeRel('fn:a', 'fn:b'));
+    g.addRelationship(makeRel('fn:b', 'fn:z'));
+    const unrelated = makeRel('fn:c', 'fn:z');
+    g.addRelationship(unrelated);
+
+    expect(g.removeNodesByFiles(new Set(['src/a.ts', 'src/b.ts']))).toEqual({
+      removedNodes: 2,
+      removedRelationships: 5,
+      affectedSourceIds: ['fn:c', 'fn:z'],
+    });
+    expect(g.nodes.map((node) => node.id)).toEqual(['fn:z', 'fn:c']);
+    expect(g.relationships).toEqual([unrelated]);
+  });
+
+  it('leaves nodes and relationships untouched for an empty batch', () => {
+    const g = createKnowledgeGraph();
+    const node = makeNode('fn:a', 'a');
+    const rel = makeRel('fn:a', 'fn:a');
+    g.addNode(node);
+    g.addRelationship(rel);
+
+    expect(g.removeNodesByFiles([])).toEqual({
+      removedNodes: 0,
+      removedRelationships: 0,
+      affectedSourceIds: [],
+    });
+    expect(g.nodes).toEqual([node]);
+    expect(g.relationships).toEqual([rel]);
+  });
+
+  it('tolerates duplicate and unknown file paths', () => {
+    const g = createKnowledgeGraph();
+    g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
+    g.addRelationship(makeRel('fn:a', 'fn:a'));
+
+    expect(g.removeNodesByFiles(['src/a.ts', 'src/a.ts', 'missing.ts'])).toEqual({
+      removedNodes: 1,
+      removedRelationships: 1,
+      affectedSourceIds: [],
+    });
+    expect(g.nodeCount).toBe(0);
+    expect(g.relationshipCount).toBe(0);
+    expect(g.removeNodesByFiles(['src/a.ts'])).toEqual({
+      removedNodes: 0,
+      removedRelationships: 0,
+      affectedSourceIds: [],
+    });
   });
 
   // ─── iterNodes / iterRelationships ─────────────────────────────────

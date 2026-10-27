@@ -14,6 +14,7 @@ import { resolveRegistryEntry } from '../shared/target-context.js';
  */
 
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { nodeKind } from './_helpers/node-kind.js';
 import { execFileText } from '../../core/process/exec-file.js';
 import { getCurrentCommit } from '../../storage/git.js';
 import {
@@ -131,7 +132,7 @@ async function resolveSymbol(repoId: string, symbol: string): Promise<ResolvedSy
         nodeId: rowString(row, 'nodeId', 0),
         name: rowString(row, 'name', 1),
         filePath: rowString(row, 'filePath', 2),
-        kind: rowString(row, 'kind', 3),
+        kind: nodeKind(rowString(row, 'kind', 3), rowString(row, 'nodeId', 0)),
       };
     } catch {
       return null;
@@ -155,7 +156,7 @@ async function resolveSymbol(repoId: string, symbol: string): Promise<ResolvedSy
       nodeId: rowString(row, 'nodeId', 0),
       name: rowString(row, 'name', 1),
       filePath: rowString(row, 'filePath', 2),
-      kind: rowString(row, 'kind', 3),
+      kind: nodeKind(rowString(row, 'kind', 3), rowString(row, 'nodeId', 0)),
       ...(candidates.length > 1 ? { ambiguous: true } : {}),
     };
   } catch {

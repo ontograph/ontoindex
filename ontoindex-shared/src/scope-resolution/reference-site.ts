@@ -50,7 +50,26 @@ export type ReferenceKind =
  */
 export type CallForm = 'free' | 'member' | 'constructor' | 'index';
 
-export interface ReferenceSite {
+/** Detached receiver operations, ordered from the lexical root outwards. */
+export type ReceiverStep =
+  | { readonly kind: 'member'; readonly name: string; readonly range: Range }
+  | { readonly kind: 'call'; readonly arity: number; readonly range: Range };
+
+/**
+ * Unknown retains explicit syntax without resolution.
+ * Chains contain one to 64 steps; call arities are nonnegative integers.
+ */
+export type ExplicitReceiver =
+  | { readonly name: string }
+  | { readonly kind: 'unknown' }
+  | {
+      readonly kind: 'chain';
+      readonly root: { readonly name: string; readonly range: Range };
+      readonly steps: readonly ReceiverStep[];
+    };
+
+export interface NamedReferenceSite {
+  readonly selection?: never;
   /** The name being referenced (e.g., `'save'`, `'User'`, `'count'`). */
   readonly name: string;
   /** Source-text range of this reference. */
@@ -65,10 +84,29 @@ export interface ReferenceSite {
   /** Set when `kind === 'call'`. */
   readonly callForm?: CallForm;
   /**
-   * Explicit receiver for dotted calls (`user.save()` → `{ name: 'user' }`).
-   * Passed through to `Registry.lookup.explicitReceiver`.
+   * Explicit receiver for dotted calls or property reads
+   * (`user.save()` or `user.name` → `{ name: 'user' }`).
+   * Structured chains retain syntax for later receiver resolution.
    */
-  readonly explicitReceiver?: { readonly name: string };
+  readonly explicitReceiver?: ExplicitReceiver;
   /** Argument count at the call site; used by `provider.arityCompatibility`. */
   readonly arity?: number;
 }
+
+/** A selected value whose target cannot yet be resolved; operands are separate sites. */
+export interface ComputedReadSite {
+  readonly kind: 'read';
+  readonly selection: {
+    readonly kind: 'computed';
+    readonly objectRange: Range;
+    readonly indexRange: Range;
+  };
+  readonly atRange: Range;
+  readonly inScope: ScopeId;
+  readonly name?: never;
+  readonly callForm?: never;
+  readonly explicitReceiver?: never;
+  readonly arity?: never;
+}
+
+export type ReferenceSite = NamedReferenceSite | ComputedReadSite;

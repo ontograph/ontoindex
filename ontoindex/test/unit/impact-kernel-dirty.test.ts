@@ -20,7 +20,10 @@ vi.mock('../../src/core/lbug/pool-adapter.js', () => ({
   executeQuery: vi.fn(),
   executeParameterized: vi.fn(),
 }));
-vi.mock('../../src/mcp/local/backend-overlay.js', () => ({ getOverlaySnapshot: vi.fn() }));
+vi.mock('../../src/mcp/local/backend-overlay.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/mcp/local/backend-overlay.js')>()),
+  getOverlaySnapshot: vi.fn(),
+}));
 vi.mock('../../src/mcp/local/backend-symbol-resolution.js', () => ({
   resolveSymbolCandidates: vi.fn(),
   toSymbolIdentity: vi.fn(),

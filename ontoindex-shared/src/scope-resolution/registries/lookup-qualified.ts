@@ -16,13 +16,54 @@
  */
 
 import type { NodeLabel } from '../../graph/types.js';
-import type { Resolution } from '../types.js';
+import type { Resolution, ScopeId, ScopeLookup } from '../types.js';
 import { composeEvidence, confidenceFromEvidence } from './evidence.js';
 import { compareByConfidenceWithTiebreaks, type TieBreakKey } from './tie-breaks.js';
 import type { RegistryContext } from './context.js';
 
 export interface LookupQualifiedParams {
   readonly acceptedKinds: readonly NodeLabel[];
+}
+
+/**
+ * Source spellings may use canonical fallback only when no namespace-tagged
+ * binding, namespace-origin binding, or namespace import claims the full name
+ * or a segment prefix. Tags cannot establish member export visibility; that
+ * requires export-aware traversal.
+ * Internal to resolution: canonical `lookupQualified` deliberately bypasses it.
+ */
+export function canUseCanonicalFallback(
+  name: string,
+  startScope: ScopeId,
+  scopes: ScopeLookup,
+): boolean {
+  const prefixes = new Set([name]);
+  for (let dot = name.indexOf('.'); dot !== -1; dot = name.indexOf('.', dot + 1)) {
+    prefixes.add(name.slice(0, dot));
+  }
+
+  let currentId: ScopeId | null = startScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return false;
+    visited.add(currentId);
+    const scope = scopes.getScope(currentId);
+    if (scope === undefined) return false;
+
+    for (const prefix of prefixes) {
+      if (
+        scope.bindings
+          .get(prefix)
+          ?.some((binding) => binding.namespace !== undefined || binding.origin === 'namespace')
+      )
+        return false;
+    }
+    for (const edge of scope.imports) {
+      if (edge.kind === 'namespace' && prefixes.has(edge.localName)) return false;
+    }
+    currentId = scope.parent;
+  }
+  return true;
 }
 
 /**

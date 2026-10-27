@@ -48,14 +48,18 @@ import {
   getHeritageStrategyForLanguage,
 } from '../heritage-processor.js';
 import { createResolutionContext } from '../model/resolution-context.js';
+import { prepareScopeCallPublication } from '../scope-call-publication.js';
+import { isRegistryPrimary } from '../registry-primary-flag.js';
 import { createASTCache } from '../ast-cache.js';
 import {
   type PipelineProgress,
-  type SupportedLanguages,
+  SupportedLanguages,
+  type ParsedFile,
   getLanguageFromFilename,
 } from 'ontoindex-shared';
 import { readFileContents } from '../filesystem-walker.js';
 import { isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
+import { workspaceParserIdentity } from '../../tree-sitter/parser-identity.js';
 import { createWorkerPool, WORKER_SUB_BATCH_SIZE } from '../workers/worker-pool.js';
 import type { WorkerIsolationMode, WorkerPool } from '../workers/worker-pool.js';
 import type {
@@ -83,6 +87,12 @@ import { synthesizeWildcardImportBindings, needsSynthesis } from './wildcard-syn
 import { extractORMQueriesInline } from './orm-extraction.js';
 import { getActiveORMClientIdentifiers } from '../../../analysis-packs/execution.js';
 import { ScopeRetentionStage, type ScopeRetentionHandle } from './scope-retention-stage.js';
+import {
+  createGraphRetentionFilter,
+  retainableByFile,
+  shouldRetainRegistration,
+} from './scope-retention-registration-filter.js';
+import { getProviderForFile } from '../languages/index.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -360,9 +370,16 @@ export async function runChunkedParseAndResolve(
   usedWorkerPool: boolean;
   scopeRetention?: ScopeRetentionHandle;
 }> {
-  const ctx = createResolutionContext();
-  const symbolTable = ctx.model.symbols;
-
+  const scopeCallLanguages = new Set(
+    [SupportedLanguages.TypeScript, SupportedLanguages.JavaScript].filter(isRegistryPrimary),
+  );
+  const scopeCallFiles: ParsedFile[] | undefined = scopeCallLanguages.size > 0 ? [] : undefined;
+  const collectScopeCallFiles = (files: readonly ParsedFile[]) => {
+    for (const file of files) {
+      const language = getLanguageFromFilename(file.filePath);
+      if (language && scopeCallLanguages.has(language)) scopeCallFiles?.push(file);
+    }
+  };
   // Extension/basename detection wins; the scan-time shebang fallback only
   // supplies a language for extensionless scripts that have none from the path.
   const effectiveScannedLanguage = (f: ScannedFile): SupportedLanguages | null =>
@@ -512,7 +529,10 @@ export async function runChunkedParseAndResolve(
         totalBytes >= LARGE_REPO_SINGLE_WORKER_THRESHOLD_BYTES
           ? 1
           : undefined;
-      workerPool = createWorkerPool(workerUrl, poolSize, { isolation: workerIsolation });
+      workerPool = createWorkerPool(workerUrl, poolSize, {
+        isolation: workerIsolation,
+        cooperativeShutdown: true,
+      });
     } catch (err) {
       console.warn(
         'Worker pool creation failed, using sequential fallback:',
@@ -577,8 +597,52 @@ export async function runChunkedParseAndResolve(
   const scopeRetention = options?.scopeRetention
     ? new ScopeRetentionStage(options.scopeRetention)
     : undefined;
+  const markExtractionProducersIncomplete = () => {
+    for (const family of [
+      'orm-queries',
+      'fetch-calls',
+      'routes',
+      'decorator-routes',
+      'tool-definitions',
+    ] as const)
+      scopeRetention?.markProducerIncomplete(family);
+  };
+  // Keep room for parsed-file artifacts before other retained families consume the ceiling.
+  scopeRetention?.reserveParsedFileRecords(totalParseable);
+  if (
+    skippedLargeFiles.length ||
+    skippedByLang.size ||
+    scannedFiles.filter((file) => effectiveScannedLanguage(file)).length > totalParseable
+  ) {
+    markExtractionProducersIncomplete();
+  }
+  // Unsupported-language files are refused in coverage, so observed inputs only spend the ceiling.
+  // A language that gains a scope hook is captured automatically.
+  const hasScopeHook = (filePath: string) =>
+    getProviderForFile(filePath)?.emitScopeCaptures !== undefined;
+  const ctx = createResolutionContext(
+    scopeRetention
+      ? {
+          onRegistration: (encoded) =>
+            shouldRetainRegistration(encoded, hasScopeHook)
+              ? scopeRetention.captureModelRegistration(encoded)
+              : true,
+          onRegistrationError: () => scopeRetention.markModelRegistrationsIncomplete(),
+        }
+      : undefined,
+  );
+  const symbolTable = ctx.model.symbols;
   let retentionTransferred = false;
   try {
+    if (scopeRetention) {
+      scopeRetention.captureDiscovery(allPaths, scannedFiles, skippedLargeFiles);
+      await scopeRetention.captureAnalysisPacksAbsence(repoPath);
+      try {
+        scopeRetention.captureParserCodeIdentity(await workspaceParserIdentity());
+      } catch {
+        scopeRetention.markParserCodeIdentityUnavailable();
+      }
+    }
     const slowFileTimings: FileTiming[] = [];
     const slowExtractorTimings: ExtractorTiming[] = [];
     let ormClientIdentifiers: Awaited<ReturnType<typeof getActiveORMClientIdentifiers>>;
@@ -595,7 +659,7 @@ export async function runChunkedParseAndResolve(
 
     let workerPhaseFailed = false;
     try {
-      const importConfigs = await loadImportConfigs(repoPath);
+      const importConfigs = await loadImportConfigs(repoPath, allPaths);
       scopeRetention?.captureConfigObservations(importConfigs.observations);
       ormClientIdentifiers = await getActiveORMClientIdentifiers(repoPath);
       for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
@@ -621,6 +685,7 @@ export async function runChunkedParseAndResolve(
         });
 
         if (skipRemainingParseChunksReason) {
+          markExtractionProducersIncomplete();
           for (const filePath of chunkPaths) {
             trackSlowTiming(slowFileTimings, {
               filePath,
@@ -670,6 +735,7 @@ export async function runChunkedParseAndResolve(
           .filter((p) => chunkContents.has(p))
           .map((p) => ({ path: p, content: chunkContents.get(p)! }));
         scopeRetention?.captureParserInputs(chunkFiles);
+        if (chunkFiles.length !== chunkPaths.length) markExtractionProducersIncomplete();
         const chunkFileCount = chunkFiles.length;
 
         const chunkWorkerData = await processParsing(
@@ -748,17 +814,62 @@ export async function runChunkedParseAndResolve(
               parseErrorFiles: paths.slice(0, 100),
             });
           },
-          scopeRetention ? (files) => scopeRetention.capture(files) : undefined,
+          scopeRetention || scopeCallFiles
+            ? (files) => {
+                scopeRetention?.capture(files);
+                if (scopeCallFiles) collectScopeCallFiles(files);
+              }
+            : undefined,
           scopeRetention ? (outcomes) => scopeRetention.recordOutcomes(outcomes) : undefined,
+          async (extractions) => {
+            await settleStageOperations([
+              extractedRouteStage.append(extractions.routes),
+              decoratorRouteStage.append(extractions.decoratorRoutes),
+              toolDefStage.append(extractions.toolDefs),
+            ]);
+          },
         );
+        if (scopeCallFiles && chunkWorkerData) collectScopeCallFiles(chunkWorkerData.parsedFiles);
         if (scopeRetention) {
           if (chunkWorkerData) {
+            scopeRetention.captureCalls(
+              retainableByFile(chunkWorkerData.calls, (call) => call.filePath, hasScopeHook),
+            );
+            scopeRetention.captureHeritage(
+              retainableByFile(
+                chunkWorkerData.heritage,
+                (heritage) => heritage.filePath,
+                hasScopeHook,
+              ),
+            );
+            scopeRetention.captureAssignments(
+              retainableByFile(
+                chunkWorkerData.assignments,
+                (assignment) => assignment.filePath,
+                hasScopeHook,
+              ),
+            );
+            scopeRetention.captureConstructorBindings(
+              retainableByFile(
+                chunkWorkerData.constructorBindings,
+                (bindings) => bindings.filePath,
+                hasScopeHook,
+              ),
+            );
             scopeRetention.capture(chunkWorkerData.parsedFiles);
             scopeRetention.recordOutcomes(chunkWorkerData.scopeExtractionOutcomes ?? []);
           }
           await scopeRetention.flush();
         }
         if (chunkWorkerData) {
+          if (
+            !Array.isArray(chunkWorkerData.ormQueries) ||
+            chunkWorkerData.degraded ||
+            chunkWorkerData.parseErrorPaths.length ||
+            chunkWorkerData.fileTimings.some((timing) => timing.status === 'skipped')
+          ) {
+            markExtractionProducersIncomplete();
+          }
           chunkFiles.length = 0;
           chunkContents.clear();
         }
@@ -964,6 +1075,18 @@ export async function runChunkedParseAndResolve(
         }
       }
 
+      if (scopeCallFiles) {
+        try {
+          ctx.scopeCallPublication = prepareScopeCallPublication(
+            scopeCallFiles,
+            scopeCallLanguages,
+          );
+          ctx.scopeCallPublication?.emit(graph);
+        } finally {
+          scopeCallFiles.length = 0;
+        }
+      }
+
       const fullWorkerHeritageMap =
         deferredWorkerHeritage.length > 0
           ? await buildHeritageMap(deferredWorkerHeritage, ctx, getHeritageStrategyForLanguage)
@@ -1074,8 +1197,16 @@ export async function runChunkedParseAndResolve(
           .filter((p) => chunkContents.has(p))
           .map((p) => ({ path: p, content: chunkContents.get(p)! }));
         scopeRetention?.captureParserInputs(chunkFiles);
+        if (chunkFiles.length !== chunkPaths.length) markExtractionProducersIncomplete();
         astCache = createASTCache(chunkFiles.length);
-        const sequentialHeritage = await extractExtractedHeritageFromFiles(chunkFiles, astCache);
+        const sequentialHeritage = await extractExtractedHeritageFromFiles(
+          chunkFiles,
+          astCache,
+          scopeRetention ? () => scopeRetention.markProducerIncomplete('heritage') : undefined,
+        );
+        scopeRetention?.captureHeritage(
+          retainableByFile(sequentialHeritage, (heritage) => heritage.filePath, hasScopeHook),
+        );
         for (const h of sequentialHeritage) allSequentialHeritage.push(h);
         sequentialHeritage.length = 0;
         chunkFiles.length = 0;
@@ -1096,6 +1227,7 @@ export async function runChunkedParseAndResolve(
           .map((p) => ({ path: p, content: chunkContents.get(p)! }));
         scopeRetention?.captureParserInputs(chunkFiles);
 
+        if (chunkFiles.length !== chunkPaths.length) markExtractionProducersIncomplete();
         astCache = createASTCache(chunkFiles.length);
         const rubyHeritage = await processCalls(
           graph,
@@ -1116,6 +1248,25 @@ export async function runChunkedParseAndResolve(
           undefined,
           sequentialHeritageMap,
           bindingAccumulator,
+          undefined,
+          scopeRetention
+            ? (call) => {
+                if (hasScopeHook(call.filePath)) scopeRetention.captureCalls([call]);
+              }
+            : undefined,
+          scopeRetention
+            ? (assignment) => {
+                if (hasScopeHook(assignment.filePath))
+                  scopeRetention.captureAssignments([assignment]);
+              }
+            : undefined,
+          scopeRetention
+            ? (bindings) => {
+                if (hasScopeHook(bindings.filePath))
+                  scopeRetention.captureConstructorBindings([bindings]);
+              }
+            : undefined,
+          scopeRetention ? () => scopeRetention.markProducerIncomplete('calls') : undefined,
         );
         await processHeritage(graph, chunkFiles, astCache, ctx, (current, total) => {
           onProgress({
@@ -1176,6 +1327,7 @@ export async function runChunkedParseAndResolve(
             );
           }
         } catch (enrichErr) {
+          scopeRetention?.markProducerIncomplete('file-bindings');
           if (isDev) {
             console.warn(
               'Post-fallback finalize/enrich failed during cleanup:',
@@ -1242,6 +1394,83 @@ export async function runChunkedParseAndResolve(
       ]);
 
     if (scopeRetention) {
+      // These observed-input producers have returned successfully, including empty output.
+      // Parsing is finished: release room reserved for parsed files that never emitted a record.
+      scopeRetention.reserveParsedFileRecords(0);
+      scopeRetention.captureORMQueries(allORMQueries);
+      scopeRetention.captureFetchCalls(allFetchCalls);
+      scopeRetention.captureRoutes(allExtractedRoutes);
+      scopeRetention.captureDecoratorRoutes(allDecoratorRoutes);
+      scopeRetention.captureToolDefinitions(allToolDefs);
+      for (const family of [
+        'fetch-calls',
+        'routes',
+        'decorator-routes',
+        'tool-definitions',
+      ] as const)
+        scopeRetention.markProducerCompleted(family);
+      scopeRetention.markProducerCompleted('orm-queries');
+      scopeRetention.markProducerCompleted('calls');
+      scopeRetention.markProducerCompleted('assignments');
+      scopeRetention.markProducerCompleted('constructor-bindings');
+      scopeRetention.markProducerCompleted('model-registrations');
+      scopeRetention.markProducerCompleted('heritage');
+      scopeRetention.captureImportState(ctx);
+      scopeRetention.markProducerCompleted('import-states');
+      const graphFilter = createGraphRetentionFilter(
+        (filePath) => getProviderForFile(filePath) !== null && !hasScopeHook(filePath),
+      );
+      for (const node of graph.iterNodes()) {
+        if (!graphFilter.retainNode(node)) continue;
+        if (!scopeRetention.captureGraphNode(node)) break;
+      }
+      scopeRetention.markGraphNodesCaptured();
+      for (const edge of graph.iterRelationships()) {
+        if (edge.type === 'CALLS' || (edge.type === 'ACCESSES' && edge.reason === 'write'))
+          continue;
+        if (!graphFilter.retainRelationship(edge)) continue;
+        if (!scopeRetention.captureGraphRelationship(edge)) break;
+      }
+      scopeRetention.markGraphRelationshipsCaptured();
+      // Only scope-hook languages spend the observed-input retention ceiling.
+      fileBindings: for (const filePath of bindingAccumulator.files()) {
+        if (!hasScopeHook(filePath)) continue;
+        for (const [varName, typeName] of bindingAccumulator.iterateFileScopeEntries(filePath)) {
+          scopeRetention.captureFileBindings([{ filePath, varName, typeName }]);
+          if (
+            scopeRetention.reasons.some(
+              (reason) =>
+                reason.startsWith('file-binding-') ||
+                reason === 'cancelled' ||
+                reason === 'deadline' ||
+                reason === 'disposed',
+            )
+          )
+            break fileBindings;
+        }
+      }
+      scopeRetention.markProducerCompleted('file-bindings');
+      // Snapshot the final downstream type-export input, distinct from lexical exports.
+      exportedTypes: for (const [filePath, exports] of exportedTypeMap) {
+        if (!hasScopeHook(filePath)) continue;
+        for (const [exportName, typeName] of exports) {
+          scopeRetention.captureExportedTypes([{ filePath, exportName, typeName }]);
+          if (
+            scopeRetention.reasons.some(
+              (reason) =>
+                reason.startsWith('exported-type-') ||
+                reason === 'cancelled' ||
+                reason === 'deadline' ||
+                reason === 'disposed',
+            )
+          )
+            break exportedTypes;
+        }
+      }
+      scopeRetention.markProducerCompleted('exported-types');
+      const scannedLanguages = new Map(
+        scannedFiles.map((file) => [file.path, effectiveScannedLanguage(file)]),
+      );
       scopeRetention.reconcile(
         (function* () {
           const seen = new Set<string>();
@@ -1252,6 +1481,7 @@ export async function runChunkedParseAndResolve(
           };
           for (const filePath of candidates()) {
             if (seen.has(filePath)) continue;
+            if (!(getLanguageFromFilename(filePath) ?? scannedLanguages.get(filePath))) continue;
             yield filePath;
             // Yield the first over-limit member so reconciliation records the refusal.
             if (seen.size >= 100_000) return;
@@ -1259,10 +1489,20 @@ export async function runChunkedParseAndResolve(
           }
         })(),
         (function* () {
-          for (const file of skippedLargeFiles) yield file.path;
+          for (const file of skippedLargeFiles) {
+            if (getLanguageFromFilename(file.path) ?? scannedLanguages.get(file.path))
+              yield file.path;
+          }
         })(),
       );
       await scopeRetention.flush();
+      await scopeRetention.captureAnalysisPacksAbsence(repoPath);
+      try {
+        scopeRetention.captureParserCodeIdentity(await workspaceParserIdentity());
+      } catch {
+        scopeRetention.markParserCodeIdentityUnavailable();
+      }
+      scopeRetention.markProducerCompleted('parsed-files');
     }
     retentionTransferred = true;
     return {

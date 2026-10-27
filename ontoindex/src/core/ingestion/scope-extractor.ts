@@ -63,6 +63,8 @@
 import type {
   BindingRef,
   CaptureMatch,
+  DefId,
+  ExplicitReceiver,
   ImportEdge,
   ParsedFile,
   ParsedImport,
@@ -99,6 +101,7 @@ export type ScopeExtractorHooks = Pick<
   | 'resolveScopeKind'
   | 'bindingScopeFor'
   | 'selectLocalBindings'
+  | 'declarationNamespaceFor'
   | 'interpretImport'
   | 'interpretExports'
   | 'interpretTypeBinding'
@@ -150,14 +153,18 @@ export function extract(
 
   // ── Pass 2: attach declarations + local bindings ────────────────────
   const localDefs: SymbolDefinition[] = [];
+  const declarationSources: NonNullable<ParsedFile['declarationSources']>[number][] = [];
+  const namespaceByDef = new Map<string, BindingRef['namespace']>();
   pass2AttachDeclarations(
     partitioned.declaration,
     scopeDrafts,
     positionIndex,
     localDefs,
+    declarationSources,
     filePath,
     provider,
     scopeTree,
+    namespaceByDef,
   );
 
   // ── Pass 3: collect raw imports ─────────────────────────────────────
@@ -194,6 +201,7 @@ export function extract(
     localDefs: Object.freeze(localDefs.slice()),
   });
   let exports: ParsedFile['exports'];
+  let exportsByNamespace: ParsedFile['exportsByNamespace'];
   if (provider.interpretExports !== undefined) {
     const interpreted = provider.interpretExports(matches, context);
     if (!(interpreted instanceof Map)) {
@@ -210,12 +218,24 @@ export function extract(
       detached.set(name, target);
     }
     exports = detached;
+    if (provider.declarationNamespaceFor !== undefined) {
+      const type = new Map<string, string>();
+      const value = new Map<string, string>();
+      for (const [name, target] of detached) {
+        const namespace = namespaceByDef.get(target);
+        if (namespace !== 'value') type.set(name, target);
+        if (namespace !== 'type') value.set(name, target);
+      }
+      exportsByNamespace = Object.freeze({ type, value });
+    }
   }
   return Object.freeze({
     ...context,
+    declarationSources: Object.freeze(declarationSources),
     parsedImports: Object.freeze(parsedImports.slice()),
     referenceSites: Object.freeze(referenceSites.slice()),
     ...(exports !== undefined ? { exports } : {}),
+    ...(exportsByNamespace !== undefined ? { exportsByNamespace } : {}),
   });
 }
 
@@ -277,6 +297,12 @@ function partitionByTopic(matches: readonly CaptureMatch[]): Partitioned {
 type Topic = 'scope' | 'declaration' | 'import' | 'type-binding' | 'reference' | 'unknown';
 
 function topicOf(match: CaptureMatch): Topic {
+  if (
+    ['@reference.read.computed', '@reference.object', '@reference.index'].some((name) =>
+      Object.hasOwn(match, name),
+    )
+  )
+    return 'reference';
   // The anchor is the capture whose name uses one of the known topic
   // prefixes. For multi-capture matches, ALL captures share the topic;
   // we pick the first matching key for efficiency.
@@ -303,6 +329,7 @@ interface ScopeDraft {
   readonly kind: ScopeKind;
   readonly range: Range;
   readonly filePath: string;
+  ownerDefId?: DefId | null;
   readonly bindings: Map<string, BindingRef[]>;
   readonly ownedDefs: SymbolDefinition[];
   readonly imports: ImportEdge[];
@@ -320,6 +347,7 @@ function draftToScope(draft: ScopeDraft): Scope {
     kind: draft.kind,
     range: draft.range,
     filePath: draft.filePath,
+    ...(draft.ownerDefId !== undefined ? { ownerDefId: draft.ownerDefId } : {}),
     bindings: frozenBindings,
     ownedDefs: Object.freeze(draft.ownedDefs.slice()),
     imports: Object.freeze(draft.imports.slice()),
@@ -441,6 +469,7 @@ function makeDraft(
     kind,
     range,
     filePath,
+    ownerDefId: null,
     bindings: new Map(),
     ownedDefs: [],
     imports: [],
@@ -455,13 +484,16 @@ function pass2AttachDeclarations(
   drafts: readonly ScopeDraft[],
   positionIndex: ReturnType<typeof buildPositionIndex>,
   localDefs: SymbolDefinition[],
+  declarationSources: NonNullable<ParsedFile['declarationSources']>[number][],
   filePath: string,
   provider: ScopeExtractorHooks,
   scopeTree: ReturnType<typeof buildScopeTree>,
+  namespaceByDef: Map<string, BindingRef['namespace']>,
 ): void {
   const draftById = new Map<ScopeId, ScopeDraft>();
   for (const d of drafts) draftById.set(d.id, d);
   const candidatesByHost = new Map<ScopeId, Map<string, LocalBindingCandidate[]>>();
+  const ambiguousOwners = new Set<ScopeId>();
 
   for (const match of matches) {
     const anchor = anchorCaptureFor(match, '@declaration.');
@@ -480,17 +512,58 @@ function pass2AttachDeclarations(
     const innermost = draftById.get(innermostId);
     if (innermost === undefined) continue;
 
-    // Ownership: attach the def to the innermost scope's `ownedDefs` — that
-    // is the structural owner. `def.ownerId` is NOT populated here — the
-    // extractor has no clean path to the parent's own DefId mid-extraction
-    // (the parent declaration may not yet have been processed, or may live
-    // in a different scope entirely). Providers that need `ownerId` should
-    // set it directly from the declaration hook (e.g., derive from the
-    // `@declaration.owner` capture or the parent scope id); otherwise
-    // `finalize` populates method/field `ownerId` via `MethodDispatchIndex`
-    // (#914) in a follow-up pass that sees every def already in place.
+    // Canonical scope IDs include all four range coordinates and the scope kind.
+    const ownerKind =
+      def.type === 'Function' || def.type === 'Method' || def.type === 'Constructor'
+        ? 'Function'
+        : def.type === 'Class' ||
+            def.type === 'Struct' ||
+            def.type === 'Interface' ||
+            def.type === 'Trait' ||
+            def.type === 'Record'
+          ? 'Class'
+          : undefined;
+    if (ownerKind !== undefined) {
+      const owner = draftById.get(makeScopeId({ filePath, range: anchor.range, kind: ownerKind }));
+      if (owner !== undefined && !ambiguousOwners.has(owner.id)) {
+        if (owner.ownerDefId === null || owner.ownerDefId === def.nodeId) {
+          owner.ownerDefId = def.nodeId;
+        } else {
+          owner.ownerDefId = null;
+          // Ambiguity is permanent, even if later captures repeat either ID.
+          ambiguousOwners.add(owner.id);
+        }
+      }
+    }
+
+    // Structural ownership follows the scope; explicit class metadata supplies
+    // the member's ownerId independently of declaration visitation order.
     innermost.ownedDefs.push(def);
     localDefs.push(def);
+    const nameCapture = match['@declaration.name'] ?? match[`${anchor.name}.name`] ?? anchor;
+    declarationSources.push(
+      Object.freeze({
+        defId: def.nodeId,
+        range: Object.freeze({ ...anchor.range }),
+        name: nameCapture.text,
+        type: def.type,
+      }),
+    );
+    const candidate = Object.freeze({ match, def });
+    if (provider.declarationNamespaceFor !== undefined && !namespaceByDef.has(def.nodeId)) {
+      const namespace = provider.declarationNamespaceFor(candidate);
+      if (
+        namespace !== undefined &&
+        namespace !== 'type' &&
+        namespace !== 'value' &&
+        namespace !== 'both'
+      ) {
+        throw new Error(
+          'ScopeExtractor: declarationNamespaceFor must return type, value, both, or undefined.',
+        );
+      }
+      namespaceByDef.set(def.nodeId, namespace);
+    }
 
     // Binding visibility: default to innermost; allow hoisting via
     // `provider.bindingScopeFor`. `draftToScope(innermost)` here is a
@@ -512,7 +585,7 @@ function pass2AttachDeclarations(
       candidatesByHost.set(bindingHost.id, byName);
     }
     const candidates = byName.get(nameKey) ?? [];
-    candidates.push(Object.freeze({ match, def }));
+    candidates.push(candidate);
     byName.set(nameKey, candidates);
   }
 
@@ -546,9 +619,23 @@ function pass2AttachDeclarations(
       }
       host.bindings.set(
         name,
-        (selected ?? candidates).map(({ def }) => ({ def, origin: 'local' })),
+        (selected ?? candidates).map(({ def }) => {
+          const namespace = namespaceByDef.get(def.nodeId);
+          return {
+            def,
+            origin: 'local' as const,
+            ...(namespace !== undefined ? { namespace } : {}),
+          };
+        }),
       );
     }
+  }
+  const classIds = new Set(
+    localDefs.filter((def) => def.type === 'Class').map((def) => def.nodeId),
+  );
+  for (const def of localDefs) {
+    if (def.ownerId && !classIds.has(def.ownerId))
+      throw new Error('ScopeExtractor: declaration owner does not name a captured class');
   }
 }
 
@@ -569,11 +656,48 @@ function buildDefFromDeclarationMatch(
   const qualifiedCap = match['@declaration.qualified_name'];
   const qualifiedName = qualifiedCap?.text;
 
+  const metadata: Partial<SymbolDefinition> = {};
+  for (const [tag, field] of [
+    ['parameter_count', 'parameterCount'],
+    ['required_parameter_count', 'requiredParameterCount'],
+  ] as const) {
+    const value = match[`@declaration.${tag}`];
+    if (!value) continue;
+    if (!/^(0|[1-9]\d*)$/.test(value.text) || !Number.isSafeInteger(Number(value.text)))
+      throw new Error('ScopeExtractor: invalid declaration arity metadata');
+    metadata[field] = Number(value.text);
+  }
+  if (
+    metadata.requiredParameterCount !== undefined &&
+    (metadata.parameterCount === undefined ||
+      metadata.requiredParameterCount > metadata.parameterCount)
+  )
+    throw new Error('ScopeExtractor: invalid required parameter count');
+  for (const [tag, field] of [
+    ['return_type', 'returnType'],
+    ['declared_type', 'declaredType'],
+  ] as const) {
+    const value = match[`@declaration.${tag}`];
+    if (!value) continue;
+    if (!value.text.trim()) throw new Error('ScopeExtractor: empty declaration type metadata');
+    metadata[field] = value.text;
+  }
+  const owner = match['@declaration.owner'];
+  if (owner) {
+    if (
+      !['Method', 'Property'].includes(type) ||
+      !owner.text.trim() ||
+      !rangeStrictlyContains(owner.range, anchor.range)
+    )
+      throw new Error('ScopeExtractor: invalid declaration owner metadata');
+    metadata.ownerId = makeDefId(filePath, owner.range, 'Class', owner.text);
+  }
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
     filePath,
     type,
     ...(qualifiedName !== undefined ? { qualifiedName } : { qualifiedName: nameCap.text }),
+    ...metadata,
   };
 }
 
@@ -723,6 +847,62 @@ function pass5CollectReferences(
   scopeTree: ReturnType<typeof buildScopeTree>,
 ): void {
   for (const match of matches) {
+    const computedTags = [
+      '@reference.read.computed',
+      '@reference.object',
+      '@reference.index',
+    ] as const;
+    if (computedTags.some((tag) => Object.hasOwn(match, tag))) {
+      const invalid = (): never => {
+        throw new Error('ScopeExtractor: invalid computed read metadata');
+      };
+      if (
+        Object.keys(match).length !== 3 ||
+        computedTags.some(
+          (tag) =>
+            !Object.hasOwn(match, tag) || match[tag]?.name !== tag || match[tag]?.text !== '',
+        )
+      )
+        invalid();
+      const ranges = computedTags.map((tag) => match[tag]!.range);
+      const before = (line: number, col: number, otherLine: number, otherCol: number): boolean =>
+        line < otherLine || (line === otherLine && col < otherCol);
+      for (const range of ranges) {
+        if (
+          !range ||
+          !['startLine', 'startCol', 'endLine', 'endCol'].every((key) => {
+            const value = range[key as keyof Range];
+            return (
+              Number.isSafeInteger(value) &&
+              !Object.is(value, -0) &&
+              value >= (key.endsWith('Line') ? 1 : 0)
+            );
+          }) ||
+          !before(range.startLine, range.startCol, range.endLine, range.endCol)
+        )
+          invalid();
+      }
+      const [expression, object, index] = ranges as [Range, Range, Range];
+      if (
+        before(object.startLine, object.startCol, expression.startLine, expression.startCol) ||
+        !before(object.endLine, object.endCol, index.startLine, index.startCol) ||
+        !before(index.endLine, index.endCol, expression.endLine, expression.endCol)
+      )
+        invalid();
+      const inScope = positionIndex.atPosition(filePath, expression.startLine, expression.startCol);
+      if (inScope !== undefined)
+        referenceSites.push({
+          kind: 'read',
+          atRange: { ...expression },
+          inScope,
+          selection: {
+            kind: 'computed' as const,
+            objectRange: { ...object },
+            indexRange: { ...index },
+          },
+        });
+      continue;
+    }
     const anchor = anchorCaptureFor(match, '@reference.');
     if (anchor === undefined) continue;
 
@@ -812,10 +992,10 @@ function classifyCallFormForMatch(
   return 'free';
 }
 
-function extractExplicitReceiver(match: CaptureMatch): { readonly name: string } | undefined {
+function extractExplicitReceiver(match: CaptureMatch): ExplicitReceiver | undefined {
   const cap = match['@reference.receiver'];
   if (cap === undefined) return undefined;
-  return { name: cap.text };
+  return cap.receiver ?? { name: cap.text };
 }
 
 function extractArity(match: CaptureMatch): number | undefined {
@@ -857,6 +1037,11 @@ function rangeStrictlyContains(outer: Range, inner: Range, allowEqual = false): 
 const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@declaration.name',
   '@declaration.qualified_name',
+  '@declaration.owner',
+  '@declaration.parameter_count',
+  '@declaration.required_parameter_count',
+  '@declaration.return_type',
+  '@declaration.declared_type',
   '@import.name',
   '@import.source',
   '@import.alias',
@@ -865,6 +1050,8 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@reference.name',
   '@reference.receiver',
   '@reference.arity',
+  '@reference.object',
+  '@reference.index',
 ]);
 
 /**

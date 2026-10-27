@@ -87,7 +87,13 @@ async function makeRepo(): Promise<string> {
 }
 
 async function pendingCaptures(root: string): Promise<string[]> {
-  return fs.readdir(path.join(root, '.ontoindex/workspace-inputs')).catch(() => []);
+  const entries = await fs.readdir(path.join(root, '.ontoindex/workspace-inputs')).catch(() => []);
+  for (const entry of entries) {
+    if (entry.endsWith('.owner.json') && !entries.includes(entry.slice(0, -'.owner.json'.length))) {
+      throw new Error(`Orphaned capture owner marker: ${entry}`);
+    }
+  }
+  return entries.filter((entry) => !entry.endsWith('.owner.json'));
 }
 
 function observeInput(target: string, editStat?: (stat: Stats, openNumber: number) => Stats) {
@@ -513,8 +519,10 @@ describe.each(readers)('$reader static nonregular input', ({ reader, relativePat
           attempts.mock.calls.filter(([prefix]) => String(prefix).includes('/capture-')),
         ).toHaveLength(reader === 'capture' ? 1 : 0);
         expect(
-          writes.mock.calls.filter(([file]) =>
-            String(file).startsWith(path.join(root, '.ontoindex/workspace-inputs') + path.sep),
+          writes.mock.calls.filter(
+            ([file]) =>
+              String(file).startsWith(path.join(root, '.ontoindex/workspace-inputs') + path.sep) &&
+              !String(file).endsWith('.owner.json'),
           ),
         ).toEqual([]);
         expect(await pendingCaptures(root)).toEqual([path.basename(borrowed.captureRoot)]);

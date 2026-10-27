@@ -1,4 +1,5 @@
 import type { CaptureMatch } from 'ontoindex-shared';
+import { ScopeUnsupportedSyntaxError } from '../scope-unsupported-syntax.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 
 const SCOPE_CAPTURE_NAMES = new Map([
@@ -30,14 +31,18 @@ const SCOPE_CAPTURE_NAMES = new Map([
  */
 export function emitTypeScriptLexicalScopeCaptures(rootNode: SyntaxNode): CaptureMatch[] {
   if (rootNode.type !== 'program' || rootNode.hasError || rootNode.isMissing) {
-    throw new Error('TS/JS lexical scope captures require an error-free program root');
+    throw new ScopeUnsupportedSyntaxError(
+      'TS/JS lexical scope captures require an error-free program root',
+    );
   }
 
   const matches: CaptureMatch[] = [];
   const cursor = rootNode.walk();
   while (true) {
     if (cursor.nodeIsMissing || cursor.nodeType === 'ERROR') {
-      throw new Error('TS/JS lexical scope captures refuse error or missing syntax');
+      throw new ScopeUnsupportedSyntaxError(
+        'TS/JS lexical scope captures refuse error or missing syntax',
+      );
     }
 
     const name = SCOPE_CAPTURE_NAMES.get(cursor.nodeType);

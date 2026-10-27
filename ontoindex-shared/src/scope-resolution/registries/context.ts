@@ -20,6 +20,7 @@ import type { QualifiedNameIndex } from '../qualified-name-index.js';
 import type { ModuleScopeIndex } from '../module-scope-index.js';
 import type { ScopeTree } from '../scope-tree.js';
 import type { MethodDispatchIndex } from '../method-dispatch-index.js';
+import type { FinalizeOutput } from '../finalize-algorithm.js';
 
 // ─── Provider hooks consumed by the registries ─────────────────────────────
 
@@ -67,6 +68,7 @@ export interface RegistryContext {
   readonly defs: DefIndex;
   readonly qualifiedNames: QualifiedNameIndex;
   readonly moduleScopes: ModuleScopeIndex;
+  readonly lookupExport?: FinalizeOutput['lookupExport'];
   /**
    * Method-dispatch index; required for method/field registries that
    * honor `useReceiverTypeBinding`. Omit for class-only lookups.

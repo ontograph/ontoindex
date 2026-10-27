@@ -1,4 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import Parser from 'tree-sitter';
+import { SupportedLanguages } from 'ontoindex-shared';
+import {
+  createParserForLanguage,
+  getLanguageGrammar,
+} from '../../src/core/tree-sitter/parser-loader.js';
 import {
   TYPESCRIPT_QUERIES,
   JAVASCRIPT_QUERIES,
@@ -17,6 +23,29 @@ import {
 
 describe('tree-sitter queries', () => {
   describe('TypeScript queries', () => {
+    it.each(['fixture.ts', 'fixture.tsx'])(
+      'compiles and captures enum declarations with the native %s grammar',
+      async (filePath) => {
+        const parser = await createParserForLanguage(SupportedLanguages.TypeScript, filePath);
+        const query = new Parser.Query(
+          getLanguageGrammar(SupportedLanguages.TypeScript, filePath),
+          TYPESCRIPT_QUERIES,
+        );
+        const tree = parser.parse('export enum Public { Ready = "ready", Done = "done" }');
+        expect(tree.rootNode.hasError).toBe(false);
+        const matches = query
+          .matches(tree.rootNode)
+          .filter((match) => match.captures.some((capture) => capture.name === 'definition.enum'));
+        expect(matches).toHaveLength(1);
+        expect(matches[0]!.captures.map(({ name, node }) => ({ name, text: node.text }))).toEqual(
+          expect.arrayContaining([
+            { name: 'definition.enum', text: 'enum Public { Ready = "ready", Done = "done" }' },
+            { name: 'name', text: 'Public' },
+          ]),
+        );
+      },
+    );
+
     it('captures class declarations', () => {
       expect(TYPESCRIPT_QUERIES).toContain('class_declaration');
       expect(TYPESCRIPT_QUERIES).toContain('@definition.class');
@@ -58,6 +87,20 @@ describe('tree-sitter queries', () => {
   });
 
   describe('JavaScript queries', () => {
+    it('compiles without TypeScript enum syntax or captures', async () => {
+      expect(JAVASCRIPT_QUERIES).not.toContain('enum_declaration');
+      expect(JAVASCRIPT_QUERIES).not.toContain('@definition.enum');
+      const parser = await createParserForLanguage(SupportedLanguages.JavaScript, 'fixture.js');
+      const query = new Parser.Query(
+        getLanguageGrammar(SupportedLanguages.JavaScript),
+        JAVASCRIPT_QUERIES,
+      );
+      const tree = parser.parse('export class Public {}');
+      expect(query.captures(tree.rootNode).some(({ name }) => name === 'definition.class')).toBe(
+        true,
+      );
+    });
+
     it('captures function and class definitions', () => {
       expect(JAVASCRIPT_QUERIES).toContain('@definition.class');
       expect(JAVASCRIPT_QUERIES).toContain('@definition.function');

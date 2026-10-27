@@ -4,6 +4,8 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+- MCP defaults to the `core` startup profile with only the 8 facades advertised; legacy `gn_*` names remain callable aliases, and `ONTOINDEX_MCP_STARTUP_PROFILE=public-full` restores the 62-tool listing.
+- The installer allows the `ontoindex`, `tree-sitter` and `@ladybugdb/core` install scripts on npm 11 for global installs.
 - `gn_diagnose` reports `processMemory` (RSS, heap, native memory, open repository pools, buffer size and idle-exit setting) and recommends `ONTOINDEX_MCP_IDLE_EXIT_MS` when a server holds 400 MB or more of native memory with no open pool.
 - `ONTOINDEX_MCP_IDLE_EXIT_MS` no longer exits the MCP server while a repository connection pool is still open.
 - Impact analysis binds traversal node ids as a query parameter instead of building them into Cypher text, and reports `UNKNOWN` risk (never `LOW`) when a depth query fails.

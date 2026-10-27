@@ -17,6 +17,8 @@ export const TYPESCRIPT_QUERIES = `
 (interface_declaration
   name: (type_identifier) @name) @definition.interface
 
+(enum_declaration name: (identifier) @name) @definition.enum
+
 (function_declaration
   name: (identifier) @name) @definition.function
 

@@ -43,6 +43,10 @@ import { execFileText } from '../../../src/core/process/exec-file.js';
 import { executeParameterized } from '../../../src/core/lbug/pool-adapter.js';
 import { resolveTargetContext } from '../../../src/mcp/shared/target-context.js';
 import { gnPreCommitAudit } from '../../../src/mcp/super/pre-commit-audit.js';
+import { dispatchFacade } from '../../../src/mcp/facade/dispatch.js';
+import { dispatchSuper } from '../../../src/mcp/super/dispatch.js';
+import { resetEvidenceReadLedgerForTests } from '../../../src/core/runtime/evidence-read-ledger.js';
+import type { LocalBackend } from '../../../src/mcp/local/local-backend.js';
 
 const mockExecFileText = vi.mocked(execFileText);
 const mockExecute = vi.mocked(executeParameterized);
@@ -143,6 +147,91 @@ describe('gnPreCommitAudit', () => {
       policy: { status: 'unknown' },
       warnings: [],
     });
+  });
+
+  it.each([
+    { scenario: 'ready', options: {}, verdict: 'READY' },
+    {
+      scenario: 'unexpected symbol',
+      options: { scope: 'unstaged', expectedSymbols: ['otherSymbol'] },
+      verdict: 'REVIEW',
+    },
+    { scenario: 'high risk', options: { scope: 'branch' }, verdict: 'DO-NOT-COMMIT' },
+    {
+      scenario: 'filtered paths',
+      options: { scope: 'all', includePaths: ['src'], docsEvidence: false },
+      verdict: 'READY',
+    },
+    { scenario: 'git failure', options: { scope: 'staged' }, verdict: 'DO-NOT-COMMIT' },
+  ])(
+    'preserves the real $scenario report through the facade',
+    async ({ scenario, options, verdict }) => {
+      setupGitDiff(scenario === 'filtered paths' ? 'src/foo.ts\ndocs/note.md\n' : 'src/foo.ts\n');
+      setupGraphMocks({ upstreamCount: scenario === 'high risk' ? 75 : 3 });
+      if (scenario === 'git failure')
+        mockExecFileText.mockRejectedValue(new Error('git scan failed'));
+      const args = { action: 'pre_commit_audit', repo: REPO_ID, ...options };
+      const original = structuredClone(args);
+      const callTool = vi.fn();
+      const backend = {
+        resolveRepo: vi.fn(async () => ({ id: REPO_ID, repoPath: '/repo' })),
+        ensureRepoInitialized: vi.fn(async () => {}),
+        withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => operation()),
+        withCommittedGraphNotice: vi.fn(async (report) => report),
+        callTool,
+      };
+
+      resetEvidenceReadLedgerForTests();
+      const direct = (await dispatchSuper('gn_pre_commit_audit', args, REPO_ID)) as Awaited<
+        ReturnType<typeof gnPreCommitAudit>
+      >;
+      resetEvidenceReadLedgerForTests();
+      const facade = await dispatchFacade(
+        'audit',
+        'pre_commit_audit',
+        args,
+        backend as unknown as LocalBackend,
+      );
+
+      expect(facade).toEqual(direct);
+      expect(direct.verdict).toBe(verdict);
+      expect(direct).toHaveProperty('basedOnReads');
+      if (scenario === 'unexpected symbol') expect(direct.unexpectedSymbols).toEqual(['doWork']);
+      if (scenario === 'filtered paths') {
+        expect(direct.changedFiles.map((file) => file.path)).toEqual(['src/foo.ts']);
+        expect(direct.warnings).toContain(
+          'Omitted 1 changed file outside includePaths (src): docs/note.md',
+        );
+      }
+      if (scenario === 'git failure') {
+        expect(direct.evaluation.status).toBe('incomplete');
+        expect(direct.warnings).toContain('git changed-path scan failed: git scan failed');
+      }
+      expect(backend.resolveRepo).toHaveBeenCalledExactlyOnceWith(REPO_ID);
+      expect(callTool).not.toHaveBeenCalled();
+      expect(args).toEqual(original);
+    },
+  );
+
+  it('rejects malformed scope through the real super dispatcher before handler IO', async () => {
+    const args = { scope: 'invalid' };
+    const callTool = vi.fn();
+    const backend = {
+      resolveRepo: vi.fn(async () => ({ id: REPO_ID, repoPath: '/repo' })),
+      ensureRepoInitialized: vi.fn(async () => {}),
+      withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => operation()),
+      callTool,
+    };
+    await expect(dispatchSuper('gn_pre_commit_audit', args, REPO_ID)).rejects.toThrow(
+      /scope: expected one of/,
+    );
+    await expect(
+      dispatchFacade('audit', 'pre_commit_audit', args, backend as unknown as LocalBackend),
+    ).rejects.toThrow(/scope: expected one of/);
+    expect(mockResolveTargetContext).not.toHaveBeenCalled();
+    expect(mockExecFileText).not.toHaveBeenCalled();
+    expect(mockExecute).not.toHaveBeenCalled();
+    expect(callTool).not.toHaveBeenCalled();
   });
 
   // ---- Test 1: READY for clean staged diff with no unexpected symbols -----

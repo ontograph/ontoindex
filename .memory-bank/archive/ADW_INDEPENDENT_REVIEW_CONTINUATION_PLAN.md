@@ -1,0 +1,330 @@
+# Independent Review Continuation Plan
+
+Date: 2026-10-19
+Status: Closed
+Authority: User instruction to remove CDR ceremony and proceed open tasks.
+
+## Goal
+
+Complete the three open qualification outcomes while retaining the two completed recovery-verification records and the existing acceptance criteria.
+
+## Evidence And Authority
+
+The original [implementation plan](ADW_INDEPENDENT_REVIEW_IMPLEMENTATION_PLAN.md) and its authenticated receipts remain unchanged. Its 38 accepted tasks supply prerequisites. IQ-6F has an accepted historical blocked dispatch that cannot enter complete-local. This continuation tracks fresh verification of the implemented fixture and the remaining outcomes; it does not mark the original IQ-6F DONE or consume its historical receipt. Original ADW-2 acceptance remains a release/default gate.
+
+## Manager Tracking
+
+```yaml
+manager_loop:
+  authority: true
+  status: closed
+  selection_policy: active_next_task-first
+  active_next_task: null
+  max_in_flight: 1
+  dispatch_mode: none
+  reopen_gate: null
+tasks:
+  IQ-6F:
+    title: Verify implemented kernel crash fixture and retained successor exclusion
+    status: DONE
+    classification: proof-only
+    assurance_profile: full
+    complexity: complex
+    depends_on: []
+    type: test
+    validation_tier: unit-fast
+    impact_risk: high
+    owner_files:
+    - ontoindex/src/cli/analyze.ts
+    - ontoindex/src/core/analysis/analysis-coordinator.ts
+    - ontoindex/test/unit/analyze-lock.test.ts
+    - ontoindex/test/unit/analysis-coordinator.test.ts
+    allowed_write_set: []
+    non_goals:
+    - No ADW lease/status edits, default activation, release, provider calls, new service or unrelated changes.
+    required_validation:
+    - ONTOINDEX_AUTO_WORKSPACE=0 ONTOINDEX_TEST_WORKERS=1 node node_modules/vitest/vitest.mjs run --maxWorkers=1 --no-file-parallelism test/unit/analyze-lock.test.ts test/unit/analysis-coordinator.test.ts
+    - git diff --check
+    expected_evidence:
+    - Pause an owned fixture after lifetime kernel acquisition during recovery and before public identity publication; terminate it, then race two independent successor processes. Retain the stale-main diagnostic setup and archived evidence.
+    - Record exactly-one-writer behavior, bounded recovery, no live-owner displacement and cleanup/reacquisition; cover death before identity write, PID reuse, legacy empty and malformed sentinels.
+    - An orphan sentinel with no main lock does not prove the stale-main-lock recovery failure.
+    rollback:
+    - Revert only this packet; preserve pre-existing dirty changes, live owners and retained failure evidence.
+    stop_conditions:
+    - Acquire the single validation lane before executable checks; stop on conflicting ownership or changing frozen inputs.
+    - Obtain OntoIndex impact before source edits; stop for a bounded manager decision when scope or contract is unresolved.
+    known_blockers: []
+    closeout:
+      role_results:
+        coder-auditor: null
+        coder-manager: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: Proceed open tasks; direct session override and linked continuation retaining historical receipts.
+        validation_summary: Fresh unfiltered analyze-lock and analysis-coordinator suites45/45 passed exit0 in6.64s; source fixture hash47c43668afc8e9e0105b89efa3a2506e06c610924cd98b35db2d1efe29015132 unchanged. Actual SIGKILL before identity publication, exactly one retained successor, release/reacquisition and permanent inode assertions pass. git diff --check exit0.
+    dod_status: pass
+  IQ-6:
+    title: Owned recovery-process death cannot strand successors or admit two writers
+    status: DONE
+    classification: proof-only
+    assurance_profile: full
+    complexity: complex
+    depends_on:
+    - IQ-6F
+    type: debug
+    validation_tier: unit-fast
+    impact_risk: high
+    owner_files:
+    - ontoindex/src/cli/analyze.ts
+    - ontoindex/src/core/analysis/analysis-coordinator.ts
+    - ontoindex/test/unit/analyze-lock.test.ts
+    - ontoindex/test/unit/analysis-coordinator.test.ts
+    - .memory-bank/ADW_INDEPENDENT_REVIEW_AUDIT.md
+    allowed_write_set: []
+    non_goals:
+    - No ADW lease/status edits, default activation, release, provider calls, new service or unrelated changes.
+    required_validation:
+    - ONTOINDEX_AUTO_WORKSPACE=0 ONTOINDEX_TEST_WORKERS=1 node node_modules/vitest/vitest.mjs run --maxWorkers=1 --no-file-parallelism test/unit/analyze-lock.test.ts test/unit/analysis-coordinator.test.ts
+    - git diff --check
+    expected_evidence:
+    - Pause an owned fixture after lifetime kernel acquisition during recovery and before public identity publication; terminate it, then race two independent successor processes. Retain the stale-main diagnostic setup and archived evidence.
+    - Record exactly-one-writer behavior, bounded recovery, no live-owner displacement and cleanup/reacquisition; cover death before identity write, PID reuse, legacy empty and malformed sentinels.
+    - An orphan sentinel with no main lock does not prove the stale-main-lock recovery failure.
+    rollback:
+    - Revert only this packet; preserve pre-existing dirty changes, live owners and retained failure evidence.
+    stop_conditions:
+    - Acquire the single validation lane before executable checks; stop on conflicting ownership or changing frozen inputs.
+    - Obtain OntoIndex impact before source edits; stop for a bounded manager decision when scope or contract is unresolved.
+    known_blockers: []
+    closeout:
+      role_results:
+        coder-debug: null
+        coder-manager: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: Proceed open tasks; direct-session execution with historical state preserved.
+        validation_summary: Independent rerun after fixture verification passed unfiltered analyze-lock and coordinator suites45/45 exit0 in6.54s. SIGKILL releases actual kernel ownership, ready-gated successors produce one retained writer, live diagnostic bytes survive contention, release and reacquisition succeed. PID reuse and legacy empty/malformed regressions pass. Source-only independent review found no substantive defect. git diff --check0.
+    dod_status: pass
+  IQ-11:
+    title: Frozen final candidate passes serialized flag-off and flag-on SDK qualification
+    status: DONE
+    classification: proof-only
+    assurance_profile: full
+    complexity: complex
+    depends_on:
+    - IQ-6
+    type: proof
+    validation_tier: unit-fast
+    impact_risk: medium
+    owner_files:
+    - ontoindex/test/integration/mcp-workspace-mutations-sdk.test.ts
+    - ontoindex/test/integration/mcp-workspace-cancellation-sdk.test.ts
+    - ontoindex/test/integration/mcp-workspace-vector-sdk.test.ts
+    - ontoindex/test/integration/mcp-docs-cursor-sdk.test.ts
+    - ontoindex/test/integration/group-workspace-provenance.test.ts
+    - ontoindex/test/integration/workspace-graph-snapshot.test.ts
+    - ontoindex/test/integration/workspace-graph-search.test.ts
+    - ontoindex/test/integration/lbug-pool-generation-swap.test.ts
+    - .memory-bank/ADW_INDEPENDENT_REVIEW_IMPLEMENTATION_PLAN.md
+    - .memory-bank/ADW_INDEPENDENT_REVIEW_AUDIT.md
+    allowed_write_set: []
+    non_goals:
+    - No ADW lease/status edits, default activation, release, provider calls, new service or unrelated changes.
+    required_validation:
+    - ONTOINDEX_SKIP_EXT_FETCH=1 ONTOINDEX_TEST_WORKERS=1 node scripts/build.js
+    - ONTOINDEX_AUTO_WORKSPACE=0 ONTOINDEX_TEST_WORKERS=1 node node_modules/vitest/vitest.mjs run --maxWorkers=1 --no-file-parallelism
+    - ONTOINDEX_AUTO_WORKSPACE=1 ONTOINDEX_TEST_WORKERS=1 node node_modules/vitest/vitest.mjs run --maxWorkers=1 --no-file-parallelism
+    - git diff --check
+    expected_evidence:
+    - Run one build and then suites serially with global setup, one worker and no file parallelism; retain full stdout/stderr, exit, skips and unhandled/native diagnostics for each flag.
+    - Run real SDK clean/modified/added/deleted/rename/import/config/parse-error routes; reuse/second edit, waiter cancellation, contention, pins, shutdown and pagination; retain request/response identity and no unnecessary clean build.
+    - Compare full-analysis reference against identical bytes with added caller and deleted edge; assert route support honestly, including unsupported vector/group cases.
+    - Verify corrective tasks inserted by IQ-7/IQ-9 and instrument tasks by IQ-10 are dependencies and accepted before launch. No subset/retry substitutes for final full-suite success.
+    rollback:
+    - Revert only this packet; preserve pre-existing dirty changes, live owners and retained failure evidence.
+    stop_conditions:
+    - Acquire the single validation lane before executable checks; stop on conflicting ownership or changing frozen inputs.
+    - Obtain OntoIndex impact before source edits; stop for a bounded manager decision when scope or contract is unresolved.
+    known_blockers: []
+    closeout:
+      role_results:
+        coder-auditor: null
+        coder-manager: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: Proceed open tasks; direct-session execution with historical receipts preserved.
+        validation_summary: Build exit0 rewrote194 imports. Frozen full flag-off session58111 exit0 and flag-on session15463 exit0, each 661 files/11880 tests passed, 1 expected fail, 315 skipped (539.59s and525.19s); logs thread-cap-final-off.log f132037b and thread-cap-final-on.log 71da4875. 4662 candidate and12735 dependency inputs unchanged after both runs. Retained warnings map to deliberate retirement, tarball and WAL fixtures. SDK mutation/parity/cancellation/shutdown/cursor/group/pin coverage verified by two reviewers; limits recorded in audit. IQ-7/IQ-9/IQ-10 DONE in original tracker. git diff --check0.
+    dod_status: pass
+  IQ-12:
+    title: Twenty-repetition matrix meets unchanged latency CPU memory and cleanup budgets
+    status: DONE
+    classification: implementation-ready
+    assurance_profile: full
+    complexity: complex
+    depends_on:
+    - IQ-11
+    type: measurement
+    validation_tier: integration
+    impact_risk: medium
+    owner_files:
+    - ontoindex/scripts/overlay-benchmark-automatic.mjs
+    - .memory-bank/ADR_AUTOMATIC_DIRTY_WORKSPACE.md
+    - .memory-bank/ADW_INDEPENDENT_REVIEW_IMPLEMENTATION_PLAN.md
+    - .memory-bank/ADW_INDEPENDENT_REVIEW_AUDIT.md
+    allowed_write_set: []
+    non_goals:
+    - No ADW lease/status edits, default activation, release, provider calls, new service or unrelated changes.
+    required_validation:
+    - node scripts/overlay-benchmark.mjs --automatic --help
+    - systemd-run --user --wait --pipe --collect --working-directory=/opt/d1/_wrk/ontoindex/ontoindex flock -n /tmp/ontoindex-adw-validation.lock node scripts/overlay-benchmark.mjs --automatic --pilot --cpu-cgroup-root /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service --output ../.ontoindex/adw-validation/independent-pilot.json
+    - systemd-run --user --wait --pipe --collect --working-directory=/opt/d1/_wrk/ontoindex/ontoindex flock -n /tmp/ontoindex-adw-validation.lock node scripts/overlay-benchmark.mjs --automatic --sizes 0,1,50,51 --extras config,contention,parity --repetitions 1 --cpu-cgroup-root /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service --output ../.ontoindex/adw-validation/independent-functional.json
+    - systemd-run --user --wait --pipe --collect --working-directory=/opt/d1/_wrk/ontoindex/ontoindex flock -n /tmp/ontoindex-adw-validation.lock node scripts/overlay-benchmark.mjs --automatic --sizes 0,1,50,51 --extras config,contention,parity --repetitions 20 --cpu-cgroup-root /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service --output ../.ontoindex/adw-validation/independent-matrix.json
+    - git diff --check
+    expected_evidence:
+    - Successful retained pilot gates functional sweep; successful functional sweep gates 20-repetition matrix on unchanged inputs. Stop and diagnose at first invalid gate; preserve failed evidence.
+    - Retain median/p95, terminal CPU, sampled process-tree peak RSS with sampling gaps, artifact bytes, build counts, cleanup, hardware/load and complete runtime/input hashes.
+    - Pass warm p95 <=1s, dirty cold p95 <=55s, RSS <=4GiB, cold CPU <=300s, warm CPU <=1s, artifacts <=2GiB/repo, cleanup <=5s; zero clean/unchanged-warm builds, one contending writer.
+    - If fixes follow any failure, refreeze and rerun impacted proof and final full suites before the new matrix; a one-repetition sweep is functional evidence only.
+    rollback:
+    - Revert only this packet; preserve pre-existing dirty changes, live owners and retained failure evidence.
+    stop_conditions:
+    - Acquire the single validation lane before executable checks; stop on conflicting ownership or changing frozen inputs.
+    - Obtain OntoIndex impact before source edits; stop for a bounded manager decision when scope or contract is unresolved.
+    known_blockers: []
+    closeout:
+      role_results:
+        coder-performance: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: Proceed; direct-session qualification with historical receipts preserved.
+        validation_summary: Retry-r1 build and both full suites exit0; each suite661 files11891 tests passed,1 expected failure315 skipped. Pilot, functional12 workloads and20-repetition matrix exit0 with self-check and all budgets passing. Frozen4662 candidate and12734 immutable dependency inputs unchanged afterward. Evidence .ontoindex/adw-validation/qualification-20261020-retry-r1/; matrix SHA2563340913e92882cbd563edf9c4ef20bfe077716aa26009aae9e00ed26ac7ce3a6. Warm p95 max619.23ms, cold p95 max34831.01ms, sampled RSS max2974216192bytes; warm builds0. git diff --check exit0. Sampling, OS-cache and contention-generation-only caveats remain; original ADW acceptance unchanged.
+    dod_status: pass
+  IQ-13:
+    title: Produce qualified integration handoff while preserving ADW acceptance and opt-in boundaries
+    status: DONE
+    classification: architecture-paperwork
+    assurance_profile: full
+    complexity: complex
+    depends_on:
+    - IQ-12
+    type: closeout
+    validation_tier: unit-fast
+    impact_risk: medium
+    owner_files:
+    - .memory-bank/ADW_INDEPENDENT_REVIEW_IMPLEMENTATION_PLAN.md
+    - .memory-bank/ADW_INDEPENDENT_REVIEW_AUDIT.md
+    - .memory-bank/AUTOMATIC_DIRTY_WORKSPACE_PROJECT_PLAN.md
+    - .memory-bank/MEMORY.md
+    - .memory-bank/project_plan-current.md
+    - .memory-bank/project_pending-tasks.md
+    allowed_write_set:
+    - .memory-bank/ADW_INDEPENDENT_REVIEW_IMPLEMENTATION_PLAN.md
+    - .memory-bank/ADW_INDEPENDENT_REVIEW_AUDIT.md
+    - .memory-bank/MEMORY.md
+    - .memory-bank/project_plan-current.md
+    - .memory-bank/project_pending-tasks.md
+    non_goals:
+    - No ADW lease/status edits, default activation, release, provider calls, new service or unrelated changes.
+    required_validation:
+    - git diff --check
+    expected_evidence:
+    - Publish a compact accepted contract/coverage and residual-risk record for the existing Ontocode MCP owner; external implementation remains a separate inspected scope.
+    - Require original-parent authenticated ADW acceptance before default activation/release readiness; independent qualification never closes the stranded ADW-2 lease.
+    - Report manager status, exact terminal validation exits and blockers; no product default switch or publication in this plan.
+    rollback:
+    - Revert only this packet; preserve pre-existing dirty changes, live owners and retained failure evidence.
+    stop_conditions:
+    - Acquire the single validation lane before executable checks; stop on conflicting ownership or changing frozen inputs.
+    - Obtain OntoIndex impact before source edits; stop for a bounded manager decision when scope or contract is unresolved.
+    known_blockers: []
+    closeout:
+      role_results:
+        coder-manager: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: Proceed; direct-session handoff preserving original acceptance boundaries.
+        validation_summary: Qualified integration handoff published in implementation plan with retained retry-r1 evidence, all terminal exits0, frozen-input checks and matrix SHA2563340913e92882cbd563edf9c4ef20bfe077716aa26009aae9e00ed26ac7ce3a6. Sampling, OS-cache, skipped and unsupported-route risks documented. Original ADW-2 lease and release/default gates unchanged; RT-5 separate. Stale continuation projections removed from active routers. git diff --check exit0 after removing trailing blank lines.
+    dod_status: pass
+```
+
+## Required Traceability
+
+| Requirement ID | ADR/user requirement | Disposition | Task IDs | Validation |
+| --- | --- | --- | --- | --- |
+| IQ-CONT-1 | Crash recovery and independent proof | proof-only | IQ-6F, IQ-6 | Unfiltered recovery suites |
+| IQ-CONT-2 | Full off/on qualification | proof-only | IQ-11 | Complete serialized suites |
+| IQ-CONT-3 | Repeated performance budgets | implementation | IQ-12 | Frozen pilot, functional sweep and20 repetitions |
+| IQ-CONT-4 | Qualified handoff preserves original acceptance | implementation | IQ-13 | Contract and residual-risk record |
+
+## Decisions And Non-Goals
+
+- Preserve original task and receipt state; continuation completion is reported separately.
+- No default activation, release or provider calls.
+- Reuse accepted implementation and existing tests; no duplicate product mechanism.
+
+## IQ-11 Coverage Correction Packet
+
+Attempt1 added real SDK mutation/parity and shutdown assertions. Baseline full
+flag-off and flag-on each passed660 files/11871 tests exit0. Focused run passed
+shutdown but failed the mutation fixture. Correcting its full-tool/facade mode
+exposed a production failure: immediate edit after clean context returned the
+new symbol as missing. Retained logs: sdk-mutations-shutdown.log and
+sdk-mutations-shutdown-r1.log under qualification-20261019.
+
+Cache correction attempt1 owns backend-overlay.ts and backend-overlay.test.ts.
+Refresh settled unusable automatic-workspace snapshots through the existing
+single-flight path. Preserve pinned reads, pending sharing and flag-off TTL.
+Three approaches challenged twice: watchers add state/lifecycle machinery;
+test waits or resets hide stale answers; existing-path refresh fixes the shared
+cause. OntoIndex impact MEDIUM with6 callers; safe-edit flags exported API
+sensitivity. Frozen-clock source/config and concurrent-probe regressions plus
+SDK mutation/shutdown validation gate rebuild and complete final suites.
+Stop on scope expansion or repeated unchanged failure. No threshold changes.
+
+## IQ-11 Native Thread Correction
+
+Correction2/2 addresses native query parallelism in the existing connection
+factory. Cache-disabled diagnostic failed17/19; thread1 and thread4 diagnostics
+at unchanged64MiB each passed19/19. After twice challenging cache reduction,
+thread caps and increased buffers, select4threads; retain existing pool size,
+cache, memory settings and error behavior. Two disjoint sol/medium writers
+implemented factory and constructor regression. Focused84/84 and native build
+exit0; frozen4662inputs unchanged. Full flag-off session58111 completed exit0:
+661 files and11880 tests passed,1 expected failure,315 skipped in539.59s.
+Prelaunch comparison found0 changed inputs. Full flag-on session15463 is active;
+log thread-cap-final-on.log. No acceptance before terminal flag-on evidence.
+Stop on correction2 failure; IQ12/13 and originalADW2 gates remain intact.
+
+## Consolidated Review And Execution
+
+Review2026-10-19: four independent bounded reviewers (two sol/medium, two luna).
+Good: real SDK edit/parity/shutdown coverage, native allocation attribution,
+unchanged64MiB diagnostics, centralized thread cap and prelaunch4662file freeze.
+Weak: directional split alone failed; focused passes were insufficient; repeated
+quiet-run polling added no evidence. Forgotten: complete dependency identity and
+measured cap4 throughput remain unproven. Four threads limits parallelism rather
+than establishing a hard memory ceiling. Original historical trackers remain
+preserved; this continuation is the selected execution authority.
+
+Three options challenged twice: retain current cap4 and qualify/measure (chosen);
+increase buffers (reject absent necessity and aggregate-memory evidence); add
+adaptive thread tuning or comparison matrix (defer until measured failure).
+Source review found no concrete new correctness regression. Avoid production
+edits during frozen qualification; performance acceptance requires measurements.
+
+Sequence: harvest existing15463 flag-on; compare thread-cap-final-inputs.json;
+acceptIQ11 only with both terminal
+successes and explicit skips/diagnostics. Then freeze consumed dependency/native
+inputs before IQ12, binding their hashes and existing candidate manifest to each
+artifact in the existing audit. Run pilot, functional1, matrix20 with existing
+cgroup accounting and unchanged budgets. Inspect every workload budget verdict
+in JSON as well as process exit; any failed or missing verdict blocks the next
+gate. Do not edit benchmark code just to embed hashes during this qualification.
+CloseIQ13 only after accepted matrix, retaining originalADW2 release/default gate.
+Stop after correction2 failure; no identical suite retries. Quiet full-suite
+output is pending evidence; do not infer completion or start overlapping jobs.
+
+## Closeout
+
+All five continuation tasks are DONE through supported completion. Build, both full suites, pilot, functional sweep and20-repetition matrix exited0. Evidence: `.ontoindex/adw-validation/qualification-20261020-retry-r1/`. Sampling gaps reached102ms; parity is selected-symbol evidence, not whole-graph equivalence. Original ADW-2 authenticated acceptance remains separate.

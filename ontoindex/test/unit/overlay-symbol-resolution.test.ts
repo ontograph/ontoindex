@@ -26,11 +26,10 @@ const { pool, overlay } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/core/lbug/pool-adapter.js', () => pool);
-vi.mock('../../src/mcp/local/backend-overlay.js', async (importOriginal) => {
-  const { isAutomaticWorkspaceEnabled } =
-    await importOriginal<typeof import('../../src/mcp/local/backend-overlay.js')>();
-  return { ...overlay, isAutomaticWorkspaceEnabled };
-});
+vi.mock('../../src/mcp/local/backend-overlay.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/mcp/local/backend-overlay.js')>()),
+  ...overlay,
+}));
 
 import { resolveSymbolCandidates } from '../../src/mcp/local/backend-symbol-resolution.js';
 import type { OverlaySnapshot } from '../../src/mcp/local/backend-overlay.js';

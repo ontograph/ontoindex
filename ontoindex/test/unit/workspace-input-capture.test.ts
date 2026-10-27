@@ -1,10 +1,15 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
+import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { SupportedLanguages } from 'ontoindex-shared';
 import { getScanMaxFileSizeBytes } from '../../src/core/ingestion/scan-config.js';
+import { createParserForLanguage } from '../../src/core/tree-sitter/parser-loader.js';
+import { loadAnalysisCatalog } from '../../src/analysis-packs/catalog.js';
 
 import {
   captureWorkspaceInputs,
@@ -19,6 +24,21 @@ import {
 
 const roots: string[] = [];
 const captures: WorkspaceInputCapture[] = [];
+const require = createRequire(import.meta.url);
+const grammars = [
+  ['tree-sitter-javascript', 'JavaScript'],
+  ['tree-sitter-typescript', 'TypeScript'],
+  ['tree-sitter-python', 'Python'],
+  ['tree-sitter-cpp', 'C++'],
+  ['tree-sitter-rust', 'Rust'],
+] as const;
+
+function grammarNativePath(packageName: string): string {
+  const root = path.dirname(require.resolve(`${packageName}/package.json`));
+  return typeof process.versions.bun === 'string'
+    ? path.join(root, 'prebuilds', `${process.platform}-${process.arch}`, `${packageName}.node`)
+    : require(require.resolve('node-gyp-build', { paths: [root] })).path(root);
+}
 
 async function makeRepo(git = false): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-workspace-capture-'));
@@ -66,6 +86,145 @@ afterEach(async () => {
 });
 
 describe('workspace input capture', () => {
+  it.each([undefined, ['src/main.ts']])(
+    'captures ignored catalog manifests independently of source scope %j',
+    async (includePaths) => {
+      const root = await makeRepo();
+      await fs.writeFile(path.join(root, '.gitignore'), 'ontoindex-packs/\n');
+      await fs.writeFile(path.join(root, '.ontoindexignore'), 'ontoindex-packs/\n');
+      const manifests = ['ontoindex-packs/core/model/pack.yml', 'ontoindex-packs/review/suite.yml'];
+      for (const filename of manifests) {
+        await fs.mkdir(path.dirname(path.join(root, filename)), { recursive: true });
+        await fs.writeFile(path.join(root, filename), 'malformed: [');
+      }
+      await fs.writeFile(path.join(root, 'ontoindex-packs/unrelated.yml'), 'ignored');
+      const result = await capture(root, { includePaths });
+      expect(result.capturedPaths).toEqual(expect.arrayContaining(manifests));
+      expect(result.capturedPaths).not.toContain('ontoindex-packs/unrelated.yml');
+      for (const filename of manifests) {
+        expect(await fs.readFile(path.join(result.captureRoot, filename), 'utf8')).toBe(
+          'malformed: [',
+        );
+      }
+      expect((await loadAnalysisCatalog(result.captureRoot)).errors).toEqual(
+        (await loadAnalysisCatalog(root)).errors,
+      );
+    },
+  );
+
+  it('includes catalog membership and bytes in configuration identity, including an empty catalog', async () => {
+    const root = await makeRepo();
+    const options = { includePaths: ['src/main.ts'] };
+    const empty = await workspaceConfigurationIdentity(root, options);
+    const directory = path.join(root, 'ontoindex-packs/core');
+    await fs.mkdir(directory, { recursive: true });
+    const manifest = path.join(directory, 'pack.yml');
+    await fs.writeFile(manifest, 'id: first');
+    const added = await workspaceConfigurationIdentity(root, options);
+    await fs.writeFile(manifest, 'id: other');
+    const mutated = await workspaceConfigurationIdentity(root, options);
+    await fs.rename(manifest, path.join(directory, 'suite.yml'));
+    const renamed = await workspaceConfigurationIdentity(root, options);
+    await fs.rm(path.join(directory, 'suite.yml'));
+    const deleted = await workspaceConfigurationIdentity(root, options);
+    expect(
+      new Set([empty, added, mutated, renamed].map((entry) => entry.configurationDigest)).size,
+    ).toBe(4);
+    expect(deleted.configurationDigest).toBe(empty.configurationDigest);
+  });
+
+  it.each(['add', 'delete', 'mutate', 'rename'])(
+    'rediscovers catalog %s during verification and retries with settled bytes',
+    async (change) => {
+      const root = await makeRepo();
+      const directory = path.join(root, 'ontoindex-packs/core');
+      await fs.mkdir(directory, { recursive: true });
+      const filename = path.join(directory, 'pack.yml');
+      if (change !== 'add') await fs.writeFile(filename, 'id: first');
+      const attempts: number[] = [];
+      const result = await capture(root, {
+        includePaths: ['src/main.ts'],
+        hooks: {
+          afterCopy: async ({ attempt }) => {
+            attempts.push(attempt);
+            if (attempt !== 1) return;
+            if (change === 'delete') await fs.rm(filename);
+            else if (change === 'rename')
+              await fs.rename(filename, path.join(directory, 'suite.yml'));
+            else await fs.writeFile(filename, 'id: other');
+          },
+        },
+      });
+      expect(attempts).toEqual([1, 2]);
+      const relativePath = `ontoindex-packs/core/${change === 'rename' ? 'suite' : 'pack'}.yml`;
+      if (change === 'delete') expect(result.capturedPaths).not.toContain(relativePath);
+      else
+        expect(await fs.readFile(path.join(result.captureRoot, relativePath), 'utf8')).toBe(
+          change === 'rename' ? 'id: first' : 'id: other',
+        );
+    },
+  );
+
+  it.each(['manifest', 'ancestor'])(
+    'refuses an ignored, off-scope catalog symlink at its %s',
+    async (kind) => {
+      const root = await makeRepo();
+      const target = await makeRepo();
+      await fs.writeFile(path.join(root, '.ontoindexignore'), 'ontoindex-packs/\n');
+      await fs.writeFile(path.join(target, 'pack.yml'), 'id: external');
+      if (kind === 'ancestor') {
+        await fs.symlink(target, path.join(root, 'ontoindex-packs'));
+      } else {
+        await fs.mkdir(path.join(root, 'ontoindex-packs/core'), { recursive: true });
+        await fs.symlink(
+          path.join(target, 'pack.yml'),
+          path.join(root, 'ontoindex-packs/core/pack.yml'),
+        );
+      }
+      await expect(capture(root, { includePaths: ['src/main.ts'] })).rejects.toMatchObject({
+        code: 'unsupported',
+      });
+      expect(await pendingCaptures(root)).toEqual([]);
+    },
+  );
+
+  it('applies capture file and byte limits to ignored, off-scope catalog manifests', async () => {
+    const root = await makeRepo();
+    await fs.mkdir(path.join(root, 'ontoindex-packs/core'), { recursive: true });
+    await fs.writeFile(path.join(root, '.ontoindexignore'), 'ontoindex-packs/\n');
+    await fs.writeFile(path.join(root, 'ontoindex-packs/core/pack.yml'), 'id: model');
+    await expect(
+      capture(root, { includePaths: ['src/main.ts'], maxFiles: 1 }),
+    ).rejects.toMatchObject({ code: 'limit' });
+    await expect(
+      capture(root, { includePaths: ['src/main.ts'], maxTotalBytes: 1 }),
+    ).rejects.toMatchObject({ code: 'limit' });
+    const file = await fs.open(path.join(root, 'ontoindex-packs/core/pack.yml'), 'w');
+    try {
+      await file.truncate(getScanMaxFileSizeBytes()! + 1);
+    } finally {
+      await file.close();
+    }
+    await expect(capture(root, { includePaths: ['src/main.ts'] })).rejects.toMatchObject({
+      code: 'limit',
+    });
+    expect(await pendingCaptures(root)).toEqual([]);
+  });
+
+  it('parses the workspace capture module with the production TypeScript grammar', async () => {
+    const source = await fs.readFile(
+      new URL('../../src/core/analyze-delta.ts', import.meta.url),
+      'utf8',
+    );
+    const parser = await createParserForLanguage(SupportedLanguages.TypeScript);
+    const tree = parser.parse(source);
+    try {
+      expect(tree.rootNode.hasError).toBe(false);
+    } finally {
+      if ('delete' in tree && typeof tree.delete === 'function') tree.delete();
+    }
+  });
+
   it('preserves non-parser JSON inputs and their content identity', async () => {
     const root = await makeRepo();
     await fs.mkdir(path.join(root, '.memory-bank'));
@@ -95,6 +254,84 @@ describe('workspace input capture', () => {
       expect(await pendingCaptures(root)).toEqual([]);
     },
   );
+
+  it('reports every symlink and oversized file without publishing a partial capture', async () => {
+    const root = await makeRepo();
+    const cap = getScanMaxFileSizeBytes();
+    expect(cap).not.toBeNull();
+    for (const filename of ['link-a.ts', 'link-b.ts']) {
+      await fs.symlink(path.join(root, 'src/main.ts'), path.join(root, filename));
+    }
+    for (const filename of ['big-a.txt', 'big-b.txt']) {
+      const file = await fs.open(path.join(root, filename), 'w');
+      try {
+        await file.truncate(cap! + 1);
+      } finally {
+        await file.close();
+      }
+    }
+    const error = await capture(root).catch((error: unknown) => error);
+    expect(error).toMatchObject({ code: 'unsupported' });
+    for (const text of [
+      'link-a.ts',
+      'link-b.ts',
+      'big-a.txt',
+      'big-b.txt',
+      '.ontoindexignore',
+      '2 symlink(s)',
+      '2 file(s)',
+    ]) {
+      expect(error).toHaveProperty('message', expect.stringContaining(text));
+    }
+    expect(await pendingCaptures(root)).toEqual([]);
+  });
+
+  it('reports every oversized file with a limit error', async () => {
+    const root = await makeRepo();
+    const cap = getScanMaxFileSizeBytes();
+    expect(cap).not.toBeNull();
+    for (const filename of ['big-a.txt', 'big-b.txt']) {
+      const file = await fs.open(path.join(root, filename), 'w');
+      try {
+        await file.truncate(cap! + 1);
+      } finally {
+        await file.close();
+      }
+    }
+    const error = await capture(root).catch((error: unknown) => error);
+    expect(error).toMatchObject({ code: 'limit' });
+    for (const filename of ['big-a.txt', 'big-b.txt']) {
+      expect(error).toHaveProperty('message', expect.stringContaining(filename));
+    }
+    expect(await pendingCaptures(root)).toEqual([]);
+  });
+
+  it('captures successfully when all symlinks and oversized files are explicitly ignored', async () => {
+    const root = await makeRepo();
+    const cap = getScanMaxFileSizeBytes();
+    expect(cap).not.toBeNull();
+    for (const filename of ['link-a.ts', 'link-b.ts']) {
+      await fs.symlink(path.join(root, 'src/main.ts'), path.join(root, filename));
+    }
+    for (const filename of ['big-a.txt', 'big-b.txt']) {
+      const file = await fs.open(path.join(root, filename), 'w');
+      try {
+        await file.truncate(cap! + 1);
+      } finally {
+        await file.close();
+      }
+    }
+    const ignoredPaths = ['link-a.ts', 'link-b.ts', 'big-a.txt', 'big-b.txt'];
+    await fs.writeFile(
+      path.join(root, '.ontoindexignore'),
+      ignoredPaths.map((filename) => `/${filename}\n`).join(''),
+    );
+    const result = await capture(root);
+    for (const filename of ignoredPaths) {
+      expect(result.capturedPaths).not.toContain(filename);
+    }
+    expect(result.capturedPaths).toContain('src/main.ts');
+  });
 
   it('materializes the complete eligible universe with private modes and idempotent cleanup', async () => {
     const root = await makeRepo();
@@ -351,7 +588,11 @@ describe('workspace input capture', () => {
     expect(await fs.readFile(path.join(result.captureRoot, 'src/main.ts'), 'utf8')).toContain(
       'value = 2',
     );
-    expect(await pendingCaptures(root)).toEqual([path.basename(result.captureRoot)]);
+    // Only the live capture keeps its owner marker; the failed attempt leaves nothing behind.
+    expect(await pendingCaptures(root)).toEqual([
+      path.basename(result.captureRoot),
+      `${path.basename(result.captureRoot)}.owner.json`,
+    ]);
   });
 
   it('rejects after two changed-input attempts and removes owned failures without touching a borrowed tree', async () => {
@@ -372,7 +613,10 @@ describe('workspace input capture', () => {
       }),
     ).rejects.toMatchObject({ code: 'changed-input' });
     expect(attempts).toBe(2);
-    expect(await pendingCaptures(root)).toEqual([path.basename(borrowed.captureRoot)]);
+    expect(await pendingCaptures(root)).toEqual([
+      path.basename(borrowed.captureRoot),
+      `${path.basename(borrowed.captureRoot)}.owner.json`,
+    ]);
   });
 
   it('rejects tampered copied bytes and detects base changes during capture', async () => {
@@ -527,6 +771,243 @@ describe('workspace input capture', () => {
     expect((await workspaceConfigurationIdentity(root, options)).configurationDigest).not.toBe(
       changed.configurationDigest,
     );
+  });
+
+  it('binds optional input identity to source bytes and executable bits without changing configuration identity', async () => {
+    const root = await makeRepo(true);
+    const filename = path.join(root, 'src/main.ts');
+    const options = { includePaths: ['src/main.ts'], inputPaths: ['src/main.ts'] };
+    const configuration = await workspaceConfigurationIdentity(root, {
+      includePaths: options.includePaths,
+    });
+    const before = await workspaceConfigurationIdentity(root, options);
+    const stat = await fs.stat(filename);
+    await fs.writeFile(filename, 'export const value = 2;\n');
+    await fs.utimes(filename, stat.atime, stat.mtime);
+    const changed = await workspaceConfigurationIdentity(root, options);
+    expect(changed.configurationDigest).toBe(configuration.configurationDigest);
+    expect(changed.parserIdentity).toBe(configuration.parserIdentity);
+    expect(changed.inputDigest).not.toBe(before.inputDigest);
+    await fs.chmod(filename, stat.mode ^ 0o100);
+    const executable = await workspaceConfigurationIdentity(root, options);
+    expect(executable.configurationDigest).toBe(configuration.configurationDigest);
+    expect(executable.inputDigest).not.toBe(changed.inputDigest);
+    await expect(fs.stat(path.join(root, '.ontoindex/workspace-inputs'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(
+      workspaceConfigurationIdentity(root, { ...options, deadline: performance.now() - 1 }),
+    ).rejects.toMatchObject({ code: 'timeout' });
+    await fs.chmod(filename, 0);
+    await expect(workspaceConfigurationIdentity(root, options)).rejects.toMatchObject({
+      code: expect.stringMatching(/^(?:EACCES|unsupported)$/),
+    });
+  });
+
+  it.each([
+    'scope-extractor',
+    'languages/typescript-captures',
+    'languages/typescript-declaration-captures',
+    'languages/typescript-import-captures',
+    'languages/typescript-export-captures',
+    'languages/typescript-reference-captures',
+    'languages/python',
+    'languages/python-captures',
+    'languages/c-cpp',
+    'languages/cpp-captures',
+    'languages/rust',
+    'languages/rust-captures',
+    'resolve-references',
+  ])('binds parser identity to %s implementation bytes', async (implementation) => {
+    const root = await makeRepo();
+    const before = await workspaceConfigurationIdentity(root);
+    const extension = path.extname(fileURLToPath(import.meta.url));
+    const implementationPath = fileURLToPath(
+      new URL(`../../src/core/ingestion/${implementation}${extension}`, import.meta.url),
+    );
+    const originalOpen = fs.open;
+    let observed = false;
+    const read = vi
+      .spyOn(fs, 'open')
+      .mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+        const handle = await originalOpen(...args);
+        if (args[0] === implementationPath) {
+          observed = true;
+          const originalRead = handle.read.bind(handle);
+          vi.spyOn(handle, 'read').mockImplementation((async (
+            ...readArgs: Parameters<typeof handle.read>
+          ) => {
+            const result = await originalRead(...readArgs);
+            if (result.bytesRead) result.buffer[0] ^= 1;
+            return result;
+          }) as typeof handle.read);
+        }
+        return handle;
+      });
+    try {
+      const after = await workspaceConfigurationIdentity(root);
+      expect(after.parserIdentity).not.toBe(before.parserIdentity);
+      expect(after.configurationDigest).toBe(before.configurationDigest);
+      const result = await capture(root, { parserIdentity: undefined });
+      expect(result.parserIdentity).toBe(after.parserIdentity);
+      expect(result.configurationDigest).toBe(after.configurationDigest);
+      expect(observed).toBe(true);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it.each([
+    'scope-extractor',
+    'languages/python',
+    'languages/python-captures',
+    'languages/c-cpp',
+    'languages/cpp-captures',
+    'languages/rust',
+    'languages/rust-captures',
+  ])(
+    'rejects missing %s implementation bytes instead of using an identity fallback',
+    async (implementation) => {
+      const root = await makeRepo();
+      const extension = path.extname(fileURLToPath(import.meta.url));
+      const implementationPath = fileURLToPath(
+        new URL(`../../src/core/ingestion/${implementation}${extension}`, import.meta.url),
+      );
+      const originalOpen = fs.open;
+      const missing = Object.assign(new Error('Parser implementation is missing'), {
+        code: 'ENOENT',
+      });
+      const read = vi
+        .spyOn(fs, 'open')
+        .mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+          if (args[0] === implementationPath) throw missing;
+          return originalOpen(...args);
+        });
+      try {
+        await expect(workspaceConfigurationIdentity(root)).rejects.toBe(missing);
+        await expect(capture(root, { parserIdentity: undefined })).rejects.toBe(missing);
+      } finally {
+        read.mockRestore();
+      }
+    },
+  );
+
+  it.each(grammars)(
+    'keeps %s native identity stable and requires restart after a rebuild',
+    async (packageName, languageName) => {
+      const root = await makeRepo();
+      const originalReadFile = fs.readFile;
+      const nativePath = grammarNativePath(packageName);
+      let nativeReads = 0;
+      let changed = false;
+      const read = vi.spyOn(fs, 'readFile').mockImplementation((async (
+        ...args: Parameters<typeof fs.readFile>
+      ) => {
+        const contents = await originalReadFile(...args);
+        if (args[0] === nativePath) {
+          nativeReads++;
+          if (changed) return Buffer.concat([contents as Buffer, Buffer.from('rebuilt grammar')]);
+        }
+        return contents;
+      }) as typeof fs.readFile);
+      try {
+        const before = await workspaceConfigurationIdentity(root);
+        expect(nativeReads).toBeGreaterThan(0);
+        expect(await workspaceConfigurationIdentity(root)).toEqual(before);
+        changed = true;
+        await expect(workspaceConfigurationIdentity(root)).rejects.toThrow(
+          `${languageName} grammar changed; restart`,
+        );
+        await expect(capture(root, { parserIdentity: undefined })).rejects.toThrow(
+          `${languageName} grammar changed; restart`,
+        );
+      } finally {
+        read.mockRestore();
+      }
+    },
+  );
+
+  it.each(grammars)(
+    'rejects missing %s native bytes instead of using an identity fallback',
+    async (packageName) => {
+      const root = await makeRepo();
+      const originalReadFile = fs.readFile;
+      const nativePath = grammarNativePath(packageName);
+      const missing = Object.assign(new Error('Native grammar artifact is missing'), {
+        code: 'ENOENT',
+      });
+      const read = vi.spyOn(fs, 'readFile').mockImplementation((async (
+        ...args: Parameters<typeof fs.readFile>
+      ) => {
+        if (args[0] === nativePath) throw missing;
+        return originalReadFile(...args);
+      }) as typeof fs.readFile);
+      try {
+        await expect(workspaceConfigurationIdentity(root)).rejects.toBe(missing);
+        await expect(capture(root, { parserIdentity: undefined })).rejects.toBe(missing);
+      } finally {
+        read.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    ['tree-sitter-python', 'Python', 'src/node-types.json'],
+    ['tree-sitter-cpp', 'C++', 'src/node-types.json'],
+    ['tree-sitter-rust', 'Rust', 'src/node-types.json'],
+    ['tree-sitter-rust', 'Rust', 'bindings/node/index.js'],
+  ])('binds parser identity to %s %s bytes', async (packageName, languageName, file) => {
+    const root = await makeRepo();
+    const before = await workspaceConfigurationIdentity(root);
+    const grammarRoot = path.dirname(require.resolve(`${packageName}/package.json`));
+    const grammarFile = path.join(grammarRoot, file);
+    const originalReadFile = fs.readFile;
+    const read = vi.spyOn(fs, 'readFile').mockImplementation((async (
+      ...args: Parameters<typeof fs.readFile>
+    ) => {
+      const contents = await originalReadFile(...args);
+      return args[0] === grammarFile
+        ? Buffer.concat([contents as Buffer, Buffer.from(`\nchanged ${languageName} artifact\n`)])
+        : contents;
+    }) as typeof fs.readFile);
+    try {
+      const after = await workspaceConfigurationIdentity(root);
+      expect(after.parserIdentity).not.toBe(before.parserIdentity);
+      expect(after.configurationDigest).toBe(before.configurationDigest);
+      const result = await capture(root, { parserIdentity: undefined });
+      expect(result.parserIdentity).toBe(after.parserIdentity);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it.each([
+    ['tree-sitter-python', 'Python', 'bindings/node/index.js'],
+    ['tree-sitter-python', 'Python', 'src/node-types.json'],
+    ['tree-sitter-cpp', 'C++', 'bindings/node/index.js'],
+    ['tree-sitter-cpp', 'C++', 'src/node-types.json'],
+    ['tree-sitter-rust', 'Rust', 'bindings/node/index.js'],
+    ['tree-sitter-rust', 'Rust', 'src/node-types.json'],
+  ])('rejects missing %s %s bytes', async (packageName, languageName, file) => {
+    const root = await makeRepo();
+    const grammarRoot = path.dirname(require.resolve(`${packageName}/package.json`));
+    const grammarFile = path.join(grammarRoot, file);
+    const originalReadFile = fs.readFile;
+    const missing = Object.assign(new Error(`${languageName} ${file} is missing`), {
+      code: 'ENOENT',
+    });
+    const read = vi.spyOn(fs, 'readFile').mockImplementation((async (
+      ...args: Parameters<typeof fs.readFile>
+    ) => {
+      if (args[0] === grammarFile) throw missing;
+      return originalReadFile(...args);
+    }) as typeof fs.readFile);
+    try {
+      await expect(workspaceConfigurationIdentity(root)).rejects.toBe(missing);
+      await expect(capture(root, { parserIdentity: undefined })).rejects.toBe(missing);
+    } finally {
+      read.mockRestore();
+    }
   });
 
   it('tracks sibling .csproj files the C# resolver scans, in capture and identity', async () => {

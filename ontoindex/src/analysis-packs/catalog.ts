@@ -7,6 +7,10 @@ const _require = createRequire(import.meta.url);
 const yaml = _require('js-yaml') as typeof import('js-yaml');
 
 export const ANALYSIS_PACKS_ROOT = 'ontoindex-packs';
+export const ANALYSIS_MANIFEST_PATTERNS = {
+  pack: `${ANALYSIS_PACKS_ROOT}/**/pack.yml`,
+  suite: `${ANALYSIS_PACKS_ROOT}/**/suite.yml`,
+};
 
 export type AnalysisPackKind = 'library' | 'query' | 'model';
 export type AnalysisTier = 'experimental' | 'stable';
@@ -218,12 +222,12 @@ export async function loadAnalysisCatalog(repoPath: string): Promise<AnalysisCat
   }
 
   const [packPaths, suitePaths] = await Promise.all([
-    glob(`${ANALYSIS_PACKS_ROOT}/**/pack.yml`, {
+    glob(ANALYSIS_MANIFEST_PATTERNS.pack, {
       cwd: repoPath,
       absolute: true,
       nodir: true,
     }),
-    glob(`${ANALYSIS_PACKS_ROOT}/**/suite.yml`, {
+    glob(ANALYSIS_MANIFEST_PATTERNS.suite, {
       cwd: repoPath,
       absolute: true,
       nodir: true,

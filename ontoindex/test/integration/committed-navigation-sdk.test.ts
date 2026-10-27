@@ -17,6 +17,7 @@ describe('explicit committed navigation over MCP', () => {
   let client: Client;
   let server: ReturnType<typeof createMCPServer>;
   let analysisSpy: ReturnType<typeof vi.spyOn>;
+  let committedSha: string;
   const repoName = 'committed-navigation';
   beforeAll(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-committed-sdk-'));
@@ -52,6 +53,7 @@ describe('explicit committed navigation over MCP', () => {
     git('init', '-q');
     git('add', '.');
     git('commit', '-qm', 'baseline');
+    committedSha = git('rev-parse', 'HEAD').toString().trim();
     await runFullAnalysis(
       repo,
       {
@@ -69,6 +71,8 @@ describe('explicit committed navigation over MCP', () => {
       'export function dirtyOnly() { return "DIRTY_MARKER"; }\n',
     );
     vi.stubEnv('ONTOINDEX_WORKSPACE_MAX_FILES', '1');
+    // Legacy gn_* listings are asserted below; core hides them by default.
+    vi.stubEnv('ONTOINDEX_MCP_STARTUP_PROFILE', 'public-full');
     resetOverlaySnapshotCache();
     backend = new LocalBackend();
     await backend.init();
@@ -219,11 +223,33 @@ describe('explicit committed navigation over MCP', () => {
       const text = (result.content as Array<{ text: string }>)[0].text;
       const payload = JSON.parse(text.split('\n\n---')[0]);
       expect(payload.readContext).toMatchObject({ mode: 'committed', workingTreeIncluded: false });
-      expect(payload.readContext.indexedCommit).toMatch(/^[0-9a-f]{40}$/);
+      expect(payload.readContext.indexedCommit).toBe(committedSha);
       expect(text).not.toContain('dirtyOnly');
       expect(text).not.toContain('DIRTY_MARKER');
       expect(text).toContain('baseline');
-      if (call.name === 'inspect') expect(text).toContain('COMMITTED_MARKER');
+      if (call.name === 'inspect') {
+        expect(payload).toMatchObject({
+          status: 'found',
+          symbol: {
+            uid: expect.any(String),
+            name: 'baseline',
+            kind: 'Function',
+            filePath: 'src/base.ts',
+            startLine: 0,
+            endLine: 0,
+          },
+          contextCompleteness: { sourceIncluded: true, truncated: false },
+        });
+        expect(payload.symbol.uid.length).toBeGreaterThan(0);
+        expect(payload.symbol.content).toContain('COMMITTED_MARKER');
+        expect(payload.symbol.content).not.toContain('DIRTY_MARKER');
+        expect(payload.contextCompleteness.missingReasons).not.toContain('source-unavailable');
+        expect(payload.incoming.calls).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ name: 'caller', kind: 'Function', filePath: 'src/base.ts' }),
+          ]),
+        );
+      }
       expect(analysisSpy).not.toHaveBeenCalled();
     },
   );
@@ -240,7 +266,8 @@ describe('explicit committed navigation over MCP', () => {
       },
     });
     expect(result.isError, JSON.stringify(result)).not.toBe(true);
-    const example = payloadOf(result).taskPack.nextCalls[0] as string;
+    const payload = payloadOf(result);
+    const example = payload.taskPack.nextCalls[0] as string;
     expect(example).toMatch(/^inspect\(/);
     const args = Object.fromEntries(
       [...example.matchAll(/(action|repo|uid|read_mode): "([^"]*)"/g)].map((match) => [
@@ -248,10 +275,248 @@ describe('explicit committed navigation over MCP', () => {
         match[2],
       ]),
     );
-    expect(args.read_mode).toBe('committed');
+    expect(args).toMatchObject({ action: 'context', repo: repoName, read_mode: 'committed' });
+    expect(args.uid).toEqual(expect.any(String));
+    expect(args.uid.length).toBeGreaterThan(0);
+    const firstSymbol = payload.taskPack.topSymbols[0];
+    expect(args.uid).toBe(firstSymbol.nodeId);
     const next = await client.callTool({ name: 'inspect', arguments: args });
     expect(next.isError, JSON.stringify(next)).not.toBe(true);
-    expect(payloadOf(next).readContext.workingTreeIncluded).toBe(false);
+    const nextPayload = payloadOf(next);
+    expect(nextPayload).toMatchObject({
+      status: 'found',
+      symbol: { uid: args.uid, name: firstSymbol.name, filePath: firstSymbol.filePath },
+      readContext: {
+        mode: 'committed',
+        indexedCommit: committedSha,
+        generation: payload.readContext.generation,
+        workingTreeIncluded: false,
+      },
+      contextCompleteness: {
+        sourceIncluded: false,
+        truncated: false,
+        missingReasons: ['source-not-requested'],
+      },
+    });
+    expect(nextPayload.symbol).not.toHaveProperty('content');
+    expect(analysisSpy).not.toHaveBeenCalled();
+  });
+
+  it('serves the same committed related symbol through the legacy and facade tools', async () => {
+    const relatedArgs = {
+      repo: repoName,
+      symbol: 'baseline',
+      read_mode: 'committed',
+      includeCoChanged: false,
+      includeCrossRepo: false,
+      maxItemsPerCategory: 3,
+    };
+    const symbols = [];
+    for (const call of [
+      { name: 'gn_find_related', arguments: relatedArgs },
+      { name: 'inspect', arguments: { action: 'related', ...relatedArgs } },
+    ]) {
+      const result = await client.callTool(call);
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      const payload = payloadOf(result);
+      expect(payload.resolvedSymbol).toMatchObject({
+        nodeId: expect.any(String),
+        name: 'baseline',
+        filePath: 'src/base.ts',
+        kind: 'Function',
+      });
+      expect(payload.resolvedSymbol.nodeId.length).toBeGreaterThan(0);
+      expect(payload.readContext).toMatchObject({
+        mode: 'committed',
+        indexedCommit: committedSha,
+        workingTreeIncluded: false,
+      });
+      expect(JSON.stringify(payload)).not.toContain('dirtyOnly');
+      symbols.push(payload.resolvedSymbol);
+      expect(analysisSpy).not.toHaveBeenCalled();
+    }
+    expect(symbols[0]).toEqual(symbols[1]);
+  });
+
+  it('executes hidden legacy related calls with facade parity under the core profile', async () => {
+    const originalProfile = process.env.ONTOINDEX_MCP_STARTUP_PROFILE;
+    let coreServer: ReturnType<typeof createMCPServer> | undefined;
+    let coreClient: Client | undefined;
+    try {
+      process.env.ONTOINDEX_MCP_STARTUP_PROFILE = 'core';
+      coreServer = createMCPServer(backend);
+      coreClient = new Client({ name: `${repoName}-core`, version: '1' });
+      const [left, right] = InMemoryTransport.createLinkedPair();
+      await coreServer.connect(right);
+      await coreClient.connect(left);
+
+      const { tools } = await coreClient.listTools();
+      expect(tools.map((tool) => tool.name)).not.toContain('gn_find_related');
+      expect(tools.map((tool) => tool.name)).toContain('inspect');
+
+      const relatedArgs = {
+        repo: repoName,
+        symbol: 'baseline',
+        read_mode: 'committed',
+        includeCoChanged: false,
+        includeCrossRepo: false,
+        maxItemsPerCategory: 3,
+      };
+      const symbols = [];
+      for (const call of [
+        { name: 'gn_find_related', arguments: relatedArgs },
+        { name: 'inspect', arguments: { action: 'related', ...relatedArgs } },
+      ]) {
+        const result = await coreClient.callTool(call);
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        const payload = payloadOf(result);
+        expect(payload.resolvedSymbol).toMatchObject({
+          nodeId: expect.any(String),
+          name: 'baseline',
+          filePath: 'src/base.ts',
+          kind: 'Function',
+        });
+        expect(payload.resolvedSymbol.nodeId.length).toBeGreaterThan(0);
+        expect(payload.readContext).toMatchObject({
+          mode: 'committed',
+          indexedCommit: committedSha,
+          workingTreeIncluded: false,
+        });
+        expect(JSON.stringify(payload)).not.toContain('dirtyOnly');
+        symbols.push(payload.resolvedSymbol);
+      }
+      expect(symbols[0]).toEqual(symbols[1]);
+      expect(analysisSpy).not.toHaveBeenCalled();
+    } finally {
+      try {
+        const cleanup = await Promise.allSettled([coreClient?.close(), coreServer?.close()]);
+        for (const result of cleanup) {
+          if (result.status === 'rejected') throw result.reason;
+        }
+      } finally {
+        if (originalProfile === undefined) delete process.env.ONTOINDEX_MCP_STARTUP_PROFILE;
+        else process.env.ONTOINDEX_MCP_STARTUP_PROFILE = originalProfile;
+      }
+    }
+  });
+
+  it('serves committed explore through the inspect facade', async () => {
+    const explore = {
+      repo: repoName,
+      query: 'baseline',
+      depth: 'shallow',
+      includeSkeletons: false,
+      read_mode: 'committed',
+    };
+    const results = [];
+    for (const call of [
+      { name: 'gn_explore', arguments: explore },
+      { name: 'inspect', arguments: { action: 'explore', ...explore } },
+    ]) {
+      const result = await client.callTool(call);
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      const payload = payloadOf(result);
+      expect(payload.readContext).toMatchObject({
+        mode: 'committed',
+        indexedCommit: committedSha,
+        workingTreeIncluded: false,
+      });
+      // Equal-score symbols may tie in either order; compare the selected set.
+      results.push(payload.topSymbols.map((symbol: { nodeId: string }) => symbol.nodeId).sort());
+    }
+    expect(results[1]).toEqual(results[0]);
+    expect(results[0].length).toBeGreaterThan(0);
+    expect(analysisSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: 'gn_safe_edit_check', action: 'safe_edit_check' },
+    { name: 'gn_can_delete', action: 'can_delete' },
+  ])(
+    'serves the same committed $action verdict through legacy and audit tools',
+    async ({ name, action }) => {
+      const args = { repo: repoName, symbol: 'baseline', read_mode: 'committed' };
+      const reports = [];
+      for (const call of [
+        { name, arguments: args },
+        { name: 'audit', arguments: { action, ...args } },
+      ]) {
+        const result = await client.callTool(call);
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        const payload = payloadOf(result);
+        expect(payload.symbol).toMatchObject({
+          nodeId: expect.any(String),
+          name: 'baseline',
+          filePath: 'src/base.ts',
+          kind: 'Function',
+        });
+        expect(payload.symbol.nodeId.length).toBeGreaterThan(0);
+        expect(payload.verdict).toEqual(expect.any(String));
+        expect(payload.readContext).toMatchObject({
+          mode: 'committed',
+          indexedCommit: committedSha,
+          workingTreeIncluded: false,
+        });
+        if (action === 'safe_edit_check') {
+          expect(payload.freshness.authoritative).toBe(false);
+          expect(payload.freshness.dirtyFileCount).toBeGreaterThan(0);
+          expect(payload.warnings).toEqual(
+            expect.arrayContaining([expect.stringContaining('Graph is not authoritative')]),
+          );
+        }
+        reports.push({ nodeId: payload.symbol.nodeId, verdict: payload.verdict });
+        expect(analysisSpy).not.toHaveBeenCalled();
+      }
+      expect(reports[1]).toEqual(reports[0]);
+    },
+  );
+
+  it('advertises committed read mode for legacy safety tools and audit', async () => {
+    const { tools } = await client.listTools();
+    for (const name of ['gn_safe_edit_check', 'gn_can_delete', 'audit']) {
+      const tool = tools.find((entry) => entry.name === name);
+      expect(tool, name).toBeDefined();
+      expect(tool!.inputSchema.properties).toHaveProperty('read_mode');
+      expect(tool!.inputSchema.properties!.read_mode).toMatchObject({
+        type: 'string',
+        enum: expect.arrayContaining(['committed']),
+      });
+    }
+  });
+
+  it('advertises read-only annotations only for safe navigation tools', async () => {
+    const { tools } = await client.listTools();
+    const readOnlyTools = new Set([
+      'search',
+      'inspect',
+      'impact',
+      'gn_help',
+      'gn_tool_contract',
+      'gn_explore',
+      'gn_find_related',
+      'gn_explain_module',
+    ]);
+    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(['inspect', 'search']));
+    for (const tool of tools) {
+      if (readOnlyTools.has(tool.name)) {
+        expect(tool.annotations, tool.name).toEqual({
+          readOnlyHint: true,
+          destructiveHint: false,
+          openWorldHint: false,
+        });
+      } else {
+        expect(tool, tool.name).not.toHaveProperty('annotations');
+      }
+    }
+  });
+
+  it('still rejects committed reads for unsupported inspect operations', async () => {
+    const result = await client.callTool({
+      name: 'inspect',
+      arguments: { repo: repoName, action: 'shape', route: '/baseline', read_mode: 'committed' },
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain('supported navigation operation');
     expect(analysisSpy).not.toHaveBeenCalled();
   });
 

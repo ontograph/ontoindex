@@ -1,4 +1,6 @@
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import {
@@ -17,6 +19,8 @@ import {
   type StaleAuditSessionLockResult,
 } from '../../core/audit-lifecycle/index.js';
 import { execFileText } from '../../core/process/exec-file.js';
+import { getStoragePath, readActiveGenerationMeta } from '../../storage/repo-manager.js';
+import { resolveContainedMetadataPath } from '../local/path-util.js';
 import { markInvocationError } from '../shared/invocation-error.js';
 import {
   auditChainError,
@@ -148,10 +152,12 @@ export async function gnAuditSessionLock(
   const sessionId = requiredSession(params);
   const action = params.action ?? 'validate';
   if (action === 'create') {
+    const current = await currentSessionState(repo.repoPath, sessionId, params, true);
     const lock = await createAuditSessionLockFromStore({
       repoRoot: repo.repoPath,
       sessionId,
-      graphHash: params.graphHash,
+      graphIndexId: current.graphIndexId,
+      graphHash: current.graphHash,
       ontoindexVersion: params.ontoindexVersion ?? packageVersion(),
     });
     return { version: 1, action: 'audit-session-lock', operation: 'create', lock };
@@ -338,19 +344,37 @@ export async function gnAuditSessionStart(
 ): Promise<Record<string, unknown>> {
   const repo = await resolveAuditRepoHandle(repoId, params.repo);
   const persisted = params.persist === undefined || params.persist === true;
+  const live = await liveGraphState(repo.repoPath);
+  const targetHead =
+    params.targetRef === undefined
+      ? live.targetHead
+      : (
+          await execFileText(
+            'git',
+            ['-C', repo.repoPath, 'rev-parse', '--verify', `${params.targetRef}^{commit}`],
+            { timeoutMs: 5_000 },
+          )
+        ).trim();
+  requireFreshGraph(live, targetHead);
+  assertLiveValue(params.graphIndexId, live.graphIndexId, 'graphIndexId');
   const ingest = await runAuditIngest(repo.repoPath, {
     sourcePath: params.sourcePath,
     sourceText: params.pastedText,
     targetRef: params.targetRef,
-    graphIndexId: params.graphIndexId,
+    graphIndexId: live.graphIndexId,
     persist: params.persist,
     maxFindings: params.maxFindings,
   });
   const sessionId = requireStringField(ingest.sessionId, 'ingest.sessionId');
+  const current = persisted
+    ? await currentSessionState(repo.repoPath, sessionId, {}, true, live)
+    : null;
   const lock = persisted
     ? await createAuditSessionLockFromStore({
         repoRoot: repo.repoPath,
         sessionId,
+        graphIndexId: current!.graphIndexId,
+        graphHash: current!.graphHash,
         ontoindexVersion: packageVersion(),
       })
     : null;
@@ -636,14 +660,87 @@ async function currentSessionState(
   repoPath: string,
   sessionId: string,
   params: AuditSessionLockParams,
+  requireFresh = false,
+  live = undefined as Awaited<ReturnType<typeof liveGraphState>> | undefined,
 ) {
   const projection = buildAuditProjection((await new LocalAuditEventStore(repoPath).load()).events);
   const session = requireProjectedSession(projection.sessions, sessionId);
-  return {
-    targetHead: params.currentHead ?? (await currentGitHead(repoPath)),
-    graphIndexId: params.graphIndexId ?? session.graphIndexId,
-    graphHash: params.graphHash ?? session.sidecarStateHash,
+  const graph = live ?? (await liveGraphState(repoPath));
+  if (requireFresh) requireFreshGraph(graph, session.targetHead);
+  const current = {
+    targetHead: graph.targetHead,
+    graphIndexId: graph.graphIndexId,
+    graphHash: createHash('sha256')
+      .update(JSON.stringify([graph.metadataDigest, session.sidecarStateHash]))
+      .digest('hex'),
   };
+  assertLiveValue(params.currentHead, current.targetHead, 'currentHead');
+  assertLiveValue(params.graphIndexId, current.graphIndexId, 'graphIndexId');
+  assertLiveValue(params.graphHash, current.graphHash, 'graphHash');
+  return current;
+}
+
+async function liveGraphState(repoPath: string) {
+  try {
+    const canonicalRepo = await fs.realpath(repoPath);
+    const storagePath = await resolveContainedMetadataPath(
+      canonicalRepo,
+      getStoragePath(canonicalRepo),
+    );
+    const pair = await readActiveGenerationMeta(storagePath);
+    if (pair.authority === 'untrusted' || pair.meta === null) {
+      throw new Error(pair.reason ?? 'metadata unavailable');
+    }
+    if (pair.activeGeneration !== null) {
+      await resolveContainedMetadataPath(canonicalRepo, pair.activeGeneration.generationPath);
+      await resolveContainedMetadataPath(canonicalRepo, pair.activeGeneration.metaPath);
+    } else {
+      await resolveContainedMetadataPath(canonicalRepo, path.join(storagePath, 'meta.json'));
+    }
+    const meta = pair.meta;
+    if (
+      typeof meta.repoPath !== 'string' ||
+      !meta.repoPath.trim() ||
+      (await fs.realpath(path.resolve(canonicalRepo, meta.repoPath))) !== canonicalRepo ||
+      typeof meta.lastCommit !== 'string' ||
+      !meta.lastCommit.trim() ||
+      typeof meta.indexedAt !== 'string' ||
+      !meta.indexedAt.trim() ||
+      !Number.isFinite(Date.parse(meta.indexedAt)) ||
+      (meta.generationId !== undefined &&
+        (typeof meta.generationId !== 'string' || !meta.generationId.trim()))
+    ) {
+      throw new Error('malformed or mismatched repository metadata');
+    }
+    // This digest identifies metadata publication, not graph bytes.
+    const metadataDigest = createHash('sha256')
+      .update(
+        JSON.stringify([canonicalRepo, meta.lastCommit, meta.indexedAt, meta.generationId ?? null]),
+      )
+      .digest('hex');
+    return {
+      targetHead: await currentGitHead(canonicalRepo),
+      indexedHead: meta.lastCommit,
+      graphIndexId: meta.generationId ?? `legacy:${metadataDigest}`,
+      metadataDigest,
+    };
+  } catch (error) {
+    throw new Error(
+      `audit live graph metadata unavailable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function requireFreshGraph(graph: Awaited<ReturnType<typeof liveGraphState>>, targetHead: string) {
+  if (graph.indexedHead !== graph.targetHead || targetHead !== graph.targetHead) {
+    throw new Error('audit session requires graph metadata and targetHead matching live HEAD');
+  }
+}
+
+function assertLiveValue(assertion: string | undefined, actual: string, field: string) {
+  if (assertion !== undefined && assertion !== actual) {
+    throw new Error(`${field} does not match live audit session state`);
+  }
 }
 
 function summarizeSessionLockValidation(

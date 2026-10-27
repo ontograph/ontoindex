@@ -21,6 +21,11 @@ function createGraph(overrides: Partial<KnowledgeGraph> = {}): KnowledgeGraph {
     addRelationship: vi.fn(),
     removeNode: vi.fn(() => false),
     removeNodesByFile: vi.fn(() => 0),
+    removeNodesByFiles: vi.fn(() => ({
+      removedNodes: 0,
+      removedRelationships: 0,
+      affectedSourceIds: [],
+    })),
     removeRelationship: vi.fn(() => false),
     ...overrides,
   };

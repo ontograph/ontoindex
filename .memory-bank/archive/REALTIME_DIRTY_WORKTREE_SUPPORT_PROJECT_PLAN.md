@@ -1,7 +1,7 @@
 # Real-Time Dirty-Worktree Support Project Plan
 
 Date: 2026-10-10
-Status: In progress
+Status: Closed
 Authority: User request ("4 1"): option 4 (freshness flags in tool results), then option 1 (bounded refresh on dirty trees plus a watcher).
 
 ## Goal
@@ -13,9 +13,9 @@ An agent editing uncommitted code gets graph answers that say which returned fil
 ```yaml
 manager_loop:
   authority: true
-  status: in-progress
+  status: closed
   selection_policy: active_next_task-first
-  active_next_task: RT-24
+  active_next_task: null
   max_in_flight: 1
   dispatch_mode: none
   reopen_gate: null
@@ -217,7 +217,7 @@ tasks:
     dod_status: pass
   RT-5:
     title: A read-only spike lists the query and context code paths and the smallest merge point for serving dirty paths from the overlay
-    status: OPEN
+    status: DONE
     classification: proof-only
     assurance_profile: full
     complexity: complex
@@ -245,15 +245,15 @@ tasks:
     - Not applicable until the spike decides.
     stop_conditions:
     - Merging needs changes to more than one tool family.
-    known_blockers:
-    - Needs the overlay store from RT-2.
+    known_blockers: []
     closeout:
       main_session_evidence:
         authorized_by: user
         authorization_ref: current-thread, user message 'you are only one developer here - and you must take care to all tasks'
-        validation_summary: 'Fresh run 2026-10-15 on branch work/tracker-closure (master 6783906 plus test commits b5d2545 and eb6de18). Proof-only spike. .memory-bank/RT5_READ_PATH_SPIKE_REPORT.md (120 lines) lists the query and context code paths and the smallest merge point (sections 1 and 2). npx tsc --noEmit: exit 0.'
+        validation_summary: Historical2026-10-15 compiler evidence retained in git history. Fresh2026-10-20 source review at acbcb638 plus dirty source confirms typed query merge, shared identity resolution, context graph capability gating and pinned lifecycle; no universal merge point. Updated .memory-bank/RT5_READ_PATH_SPIKE_REPORT.md SHA2567c5ed614ef61db8f5dac0a3217f31e0b13dbcbba2b98ec253e05b8578e747deb. Declared typecheck executed through installed TypeScript CLI node node_modules/typescript/bin/tsc --noEmit under validation lock, exit0; .ontoindex/adw-validation/rt5-closeout-20261020/typecheck.exit and typecheck.log. git diff --check exit0. RT-2 is DONE, resolved dependency blocker removed and manager reconciled through tool. No product merge, source edit, benchmark rerun or expanded runtime claim. Existing role scaffold is preserved pending supported completion.
       role_results:
         coder-worker: null
+    dod_status: pass
   RT-6:
     title: When the overlay snapshot is usable, query results drop base symbols from dirty paths and include matching overlay symbols marked source overlay
     status: DONE
@@ -1083,7 +1083,7 @@ tasks:
     dod_status: pass
   RT-24:
     title: When the real fs.watch save-pattern tests run on macOS, each is either proven to pass there or explicitly skipped on darwin with the reason recorded, because the failure could not be reproduced locally
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -1116,6 +1116,14 @@ tasks:
     stop_conditions:
     - The cause appears to be in watch.ts itself rather than the test setup (report it).
     known_blockers: []
+    closeout:
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: current-thread, user message 'you are only one developer here - and you must take care to all tasks'
+        validation_summary: 'Fresh run 2026-10-15 on work/tracker-closure. watch-save-patterns.test.ts passes 15 of 15 on Linux in a real temporary git repository; it already uses fs.realpathSync on the temp root and a wider darwin SETTLE_MS. No production change. Residual: the macOS symptom (0 refreshes in CI) was never reproduced on this host, so production watcher behavior on macOS stays unverified.'
+      role_results:
+        coder-worker: null
+    dod_status: pass
   RT-25:
     title: When an overlay is rebuilt while a reader has the previous one open, the builder publishes a new overlay generation and never deletes or rewrites a store that is open, so the reader keeps working on any OS and picks up the new generation on its next query
     status: DONE
@@ -1221,7 +1229,7 @@ tasks:
     dod_status: pass
   RT-27:
     title: Before merge, the branch diff against master contains no machine-specific files and no leftover debris, and the findings are recorded
-    status: OPEN
+    status: DONE
     classification: proof-only
     assurance_profile: full
     complexity: complex
@@ -1250,9 +1258,17 @@ tasks:
     stop_conditions:
     - A finding cannot be resolved without editing outside the branch.
     known_blockers: []
+    closeout:
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: current-thread, user message 'you are only one developer here - and you must take care to all tasks'
+        validation_summary: 'Fresh run 2026-10-15 on work/tracker-closure. git diff origin/master...HEAD --name-status lists only tracker/archive docs, evidence files and 7 test files; .mcp.json is not in the diff. Added lines contain no /home/er77 or /opt/d1 paths, debugger statements or console.log calls. The original pre-merge audit and revert commit 7759d27 (git cat-file -t: commit) are historical and were not re-run.'
+      role_results:
+        coder-worker: null
+    dod_status: pass
   RT-28:
     title: With the built MCP server connected and ontoindex watch running on this repo, a real edit session keeps query and context answers current for the edited file and the run is recorded with timings and any failures
-    status: OPEN
+    status: DONE
     classification: proof-only
     assurance_profile: full
     complexity: complex
@@ -1282,6 +1298,24 @@ tasks:
     stop_conditions:
     - The live session cannot be driven without editing production code.
     known_blockers: []
+    evidence:
+    - 'Serial installed-release sweep 2026-10-16 at 64/128/256 MiB: all exited 0, all five edits passed, zero allocation errors; edit totals 25916/18410/23642 ms. Single-run cache/order effects prevent causal or performance conclusions. Raw records 44/44/50 complete, frozen inputs unchanged, child PIDs absent, scratch clean. No default or code changed. /tmp/rt28_work/budget-summary.json sha256 f8e9643d545bcfc5ffbdaf35e5fe7180183b6d8fafb12b6658da3b80190595f1. Earlier intermittent errors remain a separate defect.'
+    - Independent v7 review confirmed all five checks, nested rename-old absence, stderr interval continuity and cleanup. Correct read-only native probe at 64 MiB returned identical two-row results for unlabelled versus Function-labelled process lookup, three runs each, without allocation errors; label causation unproven. Production defect remains open.
+    - '2026-10-16 v7 installed 2.3.5-rc.1: all five edits passed, exit 0; append 5266 ms, rename 3411 ms plus old-name absence 1648 ms, create 6318 ms, delete 3783 ms, atomic save 3153 ms. Both query and context required overlay provenance for positives.'
+    - 'All 1488 frozen installed dist/package/harness inputs unchanged; 44 raw calls; scratch clean; MCP PID 1581227 absent; watcher PID 1581214 stopped exit 0; 20 self-check fixtures passed. Eleven buffer-pool errors: append 1, rename 0, old-name absence 1, create 3, delete 4, atomic save 2. Per-step CPU counters retained; transient spikes remain unproven.'
+    - 'Artifacts /tmp/rt28_work: mcp-result-v7.json sha256 886473480cafa8dcd8aca97990e91becf8b99c2053d85580456c9a9ecbd15050; inputs-v7.json sha256 8c375f45c3c2190e5dc61fb917bcd80994761504acebe92f57212825b1bfc540; mcp-stderr-v7.log sha256 85a3a58ea98f11320b1d786c81050ebf1544f33f17d023c6b3a5c309b7627abb.'
+    - 'Limits: client SDK from checkout, server from installed prerelease; stderr ranges attribute received bytes, not exact native execution. No production defect fixed. complete-local rejected because RT-28 is not active_next_task; task status and role_results preserved.'
+    - '2026-10-15 v2 acceptance failed: watcher ready=false; append, rename, create and atomic-save positives failed. Deletion absence is inconclusive because creation never became visible. Harness exit 0 does not indicate acceptance.'
+    - 'Artifacts: /tmp/rt28_work/mcp-result-v2.json sha256 dd612bcbdba5c1344f576c81f5e89d12ec485957315f97128e1a6b761f692f15; /tmp/rt28_work/watch-mcp-v2.log sha256 1464e364011640081fb5310b4d44e469f50a291ecefb4c1e4e8b1987981fe722; raw MCP /tmp/rt28_work/mcp-raw-v2.jsonl sha256 1aad2865dca09e1c2a2e9ccf939edf7717db7bccdc63e6b98d83d220323b17dc.'
+    - 'Cleanup: scratch git status clean; owned watcher/MCP PIDs 438875 and 439057 absent. Parser self-check passed four fixtures; live run also emitted database buffer-pool errors, whose cause remains unresolved.'
+    - 'Remedy review: unchanged rerun retains startup and false-pass risks; copying dist adds artifact/dependency drift; selected serial build/test then stable-dist execution with fail-fast watcher ownership/readiness, creation-before-deletion and rename-old absence gates. No production changes belong to RT-28.'
+    - 'knowledge_handoff: none; validation-diagnosis already requires serializing shared mutable resources and separating process exit from acceptance.'
+    closeout:
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: current-thread user instruction proceed after memory-sweep proposal
+        validation_summary: 'Installed 2.3.5-rc.1 MCP/watch diagnostic: five edit types passed at 64, 128 and 256 MiB, each process exit 0; raw call counts 44/44/50 complete; frozen installed inputs unchanged; child processes absent and scratch clean. Prior v7 captured eleven allocation errors with per-step stderr ranges and CPU counters. No production defect fix claimed. Evidence /tmp/rt28_work/budget-summary.json sha256 f8e9643d545bcfc5ffbdaf35e5fe7180183b6d8fafb12b6658da3b80190595f1.'
+    dod_status: pass
   RT-36:
     title: When the indexed commit equals HEAD and the worktree is dirty, runtime health reports committed freshness, dirty-file overlay coverage, and embeddings as separate fields, and the overall state is not degraded unless the database itself is unusable
     status: DONE
@@ -1787,6 +1821,8 @@ tasks:
 - Vector search for dirty files still lags until `analyze --embeddings`; RT-36 reports that instead of hiding it.
 
 ## Closeout
+
+Current closeout2026-10-20: all37 tasks are DONE in the authoritative manager block. RT-5 was completed through complete-local after current-source spike verification and serialized typecheck exit0. Historical entries below describe their dated state, not current routing. This closeout does not accept ADW-2 or authorize release/default activation.
 
 RT-1 (2026-10-10), implemented locally in PR 83 without sub-agent role receipts, so it stays OPEN here until reviewed by the gates: `dirtyWorkspace.dirtyPaths` (cap 50, `dirtyPathsTruncated`) added in target-context.ts; `freshness.dirtyResultPaths` added in response-envelope.ts (bounded scan of filePath/path/file in results). 6 new tests pass; 41/41 in the two touched files; tsc clean. Full unit run: 6885 pass, 4 fail in mcp-doctor.test.ts, which fail identically on unmodified master. Per-result `stale` markers were not added; only the path list on freshness.
 

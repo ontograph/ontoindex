@@ -54,6 +54,8 @@ describe('committed graph discovery over the real MCP SDK', () => {
     await fs.writeFile(path.join(home, 'registry.json'), '[]\n');
     vi.stubEnv('ONTOINDEX_HOME', home);
     vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    // Legacy gn_* listings are asserted below; core hides them by default.
+    vi.stubEnv('ONTOINDEX_MCP_STARTUP_PROFILE', 'public-full');
     await fs.mkdir(path.join(repo, 'src'), { recursive: true });
     await fs.writeFile(path.join(repo, '.gitignore'), '.ontoindex/\n');
     await fs.writeFile(

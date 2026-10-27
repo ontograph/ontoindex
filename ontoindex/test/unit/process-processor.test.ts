@@ -7,6 +7,103 @@ import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { CommunityMembership } from '../../src/core/ingestion/community-processor.js';
 
 describe('processProcesses', () => {
+  it.each<{
+    name: string;
+    edges: [string, string][];
+    config: Partial<ProcessDetectionConfig>;
+    traces: string[][];
+    entryPointsFound: number;
+  }>([
+    {
+      name: 'equal-score entries before candidate and process caps',
+      edges: Array.from({ length: 205 }, (_, i) => [
+        `entry:${String(i).padStart(3, '0')}`,
+        `terminal:${String(i).padStart(3, '0')}`,
+      ]),
+      config: { minSteps: 2, maxProcesses: 2 },
+      traces: [
+        ['entry:000', 'terminal:000'],
+        ['entry:001', 'terminal:001'],
+      ],
+      entryPointsFound: 200,
+    },
+    {
+      name: 'branch selection before the branching cap',
+      edges: [
+        ['entry', 'branch:A'],
+        ['entry', 'branch:a'],
+        ['entry', 'branch:b'],
+        ['branch:A', 'terminal:A'],
+        ['branch:a', 'terminal:a'],
+        ['branch:b', 'terminal:b'],
+      ],
+      config: { maxBranching: 2 },
+      traces: [
+        ['entry', 'branch:A', 'terminal:A'],
+        ['entry', 'branch:a', 'terminal:a'],
+      ],
+      entryPointsFound: 4,
+    },
+    {
+      name: 'equal-length paths sharing endpoints',
+      edges: [
+        ['entry', 'branch:a'],
+        ['entry', 'branch:b'],
+        ['branch:a', 'terminal'],
+        ['branch:b', 'terminal'],
+      ],
+      config: {},
+      traces: [['entry', 'branch:a', 'terminal']],
+      entryPointsFound: 3,
+    },
+  ])(
+    'is insertion-order independent for $name',
+    async ({ edges, config, traces, entryPointsFound }) => {
+      const ids = [...new Set(edges.flat())];
+      const memberships: CommunityMembership[] = ids.map((nodeId, i) => ({
+        nodeId,
+        communityId: `community:${i % 2}`,
+      }));
+      let baseline: Awaited<ReturnType<typeof processProcesses>> | undefined;
+
+      for (const reverseNodes of [false, true]) {
+        for (const reverseEdges of [false, true]) {
+          const graph = createKnowledgeGraph();
+          for (const id of reverseNodes ? [...ids].reverse() : ids) {
+            graph.addNode({
+              id,
+              label: 'Function',
+              properties: {
+                name: 'work',
+                filePath: 'src/flow.ts',
+                startLine: 1,
+                endLine: 5,
+                isExported: true,
+              },
+            });
+          }
+          const relationships = edges.map(([sourceId, targetId], i) => ({
+            id: `call:${i}`,
+            sourceId,
+            targetId,
+            type: 'CALLS' as const,
+            confidence: 0.9,
+            reason: '',
+          }));
+          for (const relationship of reverseEdges ? relationships.reverse() : relationships) {
+            graph.addRelationship(relationship);
+          }
+
+          const result = await processProcesses(graph, memberships, undefined, config);
+          expect(result.processes.map((process) => process.trace)).toEqual(traces);
+          expect(result.stats.entryPointsFound).toBe(entryPointsFound);
+          baseline ??= result;
+          expect(result).toEqual(baseline);
+        }
+      }
+    },
+  );
+
   it('detects no processes in empty graph', async () => {
     const graph = createKnowledgeGraph();
     const result = await processProcesses(graph, []);

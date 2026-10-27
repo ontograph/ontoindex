@@ -13,7 +13,7 @@
  * in `tools/list` but errors on call. Today's `audit/report` gap (backend
  * existed, dispatch said "not implemented yet") was the third such drift.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 
 // Mock the DB layer so backend dispatch reaches the handler without touching disk.
 const { lbugMocks } = vi.hoisted(() => ({
@@ -98,9 +98,34 @@ function enumerateFacadeActions(): ActionPair[] {
 describe('facade completeness — every declared action must reach a backend handler', () => {
   const allPairs = enumerateFacadeActions();
 
+  beforeEach(() => {
+    vi.stubEnv('ONTOINDEX_MCP_STARTUP_PROFILE', 'core');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('discover/tools advertises only the eight facades under core', async () => {
+    const result = (await dispatchFacade('discover', 'tools', {}, new LocalBackend())) as {
+      startupProfile: string;
+      tools: Array<{ name: string }>;
+      compatibilityTools: unknown[];
+    };
+
+    expect(result.startupProfile).toBe('core');
+    expect(result.tools.map((tool) => tool.name).sort()).toEqual(
+      ONTOINDEX_FACADE_TOOLS.map((tool) => tool.name).sort(),
+    );
+    expect(result.tools).toHaveLength(8);
+    expect(result.compatibilityTools).toEqual([]);
+  });
+
   it('discover/tools reports a facade-first frontier without hiding compatibility tools', async () => {
+    vi.stubEnv('ONTOINDEX_MCP_STARTUP_PROFILE', 'public-full');
     const backend = new LocalBackend();
     const result = (await dispatchFacade('discover', 'tools', {}, backend)) as {
+      startupProfile: string;
       version: number;
       targetContext: { scope: string; reason: string };
       count: number;
@@ -112,6 +137,7 @@ describe('facade completeness — every declared action must reach a backend han
       codebaseToolsHint: string;
     };
 
+    expect(result.startupProfile).toBe('public-full');
     expect(result.version).toBe(1);
     expect(result.targetContext).toEqual({
       scope: 'global',

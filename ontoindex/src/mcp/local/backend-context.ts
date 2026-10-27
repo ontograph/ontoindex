@@ -7,6 +7,7 @@ import {
   type OverlaySnapshot,
 } from './backend-overlay.js';
 import { resolveSymbolCandidates, toSymbolIdentity } from './backend-symbol-resolution.js';
+import { nodeKind } from '../super/_helpers/node-kind.js';
 
 const MAX_CONTEXT_PROCESS_ROWS = (() => {
   const raw = Number.parseInt(process.env.ONTOINDEX_CONTEXT_PROCESS_LIMIT ?? '', 10);
@@ -92,11 +93,17 @@ function categorizeRows(rows: ContextRelationshipRow[]): Record<string, unknown[
   const categories: Record<string, unknown[]> = {};
   for (const row of rows) {
     const relType = String(rowValue(row, 'relType', 0) || '').toLowerCase();
+    const uid = rowValue(row, 'uid', 1);
+    const rowKind = rowValue(row, 'kind', 4);
+    const kind =
+      (rowKind === undefined || rowKind === null || rowKind === '') && typeof uid === 'string'
+        ? nodeKind('', uid) || rowKind
+        : rowKind;
     const entry = {
-      uid: rowValue(row, 'uid', 1),
+      uid,
       name: rowValue(row, 'name', 2),
       filePath: rowValue(row, 'filePath', 3),
-      kind: rowValue(row, 'kind', 4),
+      kind,
       ...(rowValue(row, 'source', 5) === 'overlay' ? { source: 'overlay' } : {}),
     };
     if (!categories[relType]) categories[relType] = [];

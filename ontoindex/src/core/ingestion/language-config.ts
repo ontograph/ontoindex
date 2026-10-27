@@ -3,6 +3,7 @@ import path from 'path';
 import { createHash } from 'crypto';
 import type { Dirent } from 'fs';
 import type { ImportConfigs } from './import-resolvers/types.js';
+import { isCargoInventoryPath, rustCargoRoots } from './import-resolvers/rust-cargo.js';
 
 import { isDev } from './utils/env.js';
 
@@ -454,14 +455,67 @@ export async function loadSwiftPackageConfig(
 // ============================================================================
 
 /** Load all language-specific configs once for an ingestion run. */
-export async function loadImportConfigs(repoRoot: string): Promise<ImportConfigs> {
+export async function loadImportConfigs(
+  repoRoot: string,
+  allPaths: readonly string[] = [],
+): Promise<ImportConfigs> {
   const observations = new ConfigObservationRecorder(repoRoot);
+  const inventory = new Set(allPaths.filter(isCargoInventoryPath));
+  // Observe packaging/build inputs only; packaging roots and compile-db semantics
+  // are not implemented by the import resolvers.
+  const observedBasenames = [
+    'pyproject.toml',
+    'setup.cfg',
+    'compile_commands.json',
+    'CMakeLists.txt',
+  ];
+  const observedFiles = [
+    ...new Set([
+      ...observedBasenames,
+      ...[...inventory].filter((filename) =>
+        observedBasenames.includes(path.posix.basename(filename)),
+      ),
+    ]),
+  ].sort();
+  for (const relativePath of observedFiles) {
+    try {
+      await readConfigFile(path.join(repoRoot, relativePath), observations);
+    } catch {
+      // The shared reader records absence or failure without changing resolver output.
+    }
+  }
+  const manifests = [
+    ...new Set([
+      'Cargo.toml',
+      ...[...inventory].filter((filename) => filename.endsWith('/Cargo.toml')),
+    ]),
+  ].sort();
+  let cargoPresent = false;
+  const rustCrateRoots = new Set<string>();
+  for (const manifest of manifests) {
+    const filename = path.join(repoRoot, manifest);
+    let source: string;
+    try {
+      source = await readConfigFile(filename, observations);
+    } catch (error) {
+      if (inventory.has(manifest) || (error as { code?: string })?.code !== 'ENOENT')
+        cargoPresent = true;
+      continue;
+    }
+    cargoPresent = true;
+    try {
+      for (const root of rustCargoRoots(source, manifest, inventory)) rustCrateRoots.add(root);
+    } catch {
+      observations.parseError(filename);
+    }
+  }
   return {
     tsconfigPaths: await loadTsconfigPaths(repoRoot, observations),
     goModule: await loadGoModulePath(repoRoot, observations),
     composerConfig: await loadComposerConfig(repoRoot, observations),
     swiftPackageConfig: await loadSwiftPackageConfig(repoRoot, observations),
     csharpConfigs: await loadCSharpProjectConfig(repoRoot, observations),
+    ...(cargoPresent ? { rustCrateRoots: [...rustCrateRoots].sort() } : {}),
     observations: observations.snapshot(),
   };
 }

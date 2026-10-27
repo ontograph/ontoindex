@@ -19,9 +19,11 @@
  */
 
 import type { SymbolDefinition } from 'ontoindex-shared';
+import { isProxy } from 'node:util/types';
 import type { SymbolTableReader } from './symbol-table.js';
 import type { MutableSemanticModel } from './semantic-model.js';
 import { createSemanticModel } from './semantic-model.js';
+import type { ScopeCallPublication } from '../scope-call-publication.js';
 
 // ---------------------------------------------------------------------------
 // Named-import types — describe how a file imports specific names from a
@@ -172,6 +174,8 @@ export interface ResolutionContext {
   readonly namedImportMap: NamedImportMap;
   /** Module-alias map for Python namespace imports: callerFile → (alias → sourceFile). */
   readonly moduleAliasMap: ModuleAliasMap;
+  /** Exact per-site authority prepared once before calls and retained through refinement. */
+  scopeCallPublication?: ScopeCallPublication;
 
   // --- Per-file cache lifecycle ---
   enableCache(filePath: string): void;
@@ -204,10 +208,17 @@ export interface ImportResolutionStateSnapshotV1 {
   moduleAliasMap: [string, [string, string][]][];
 }
 
-/** Copy import state without retaining any mutable containers or bindings. */
+/**
+ * Copy import state without retaining any mutable containers or bindings.
+ * Optional limits bound serialized JSON UTF-8 bytes and the total number of
+ * per-file entries plus nested members. Invalid bounds or state and overflow
+ * throw an error with code IMPORT_STATE_LIMIT before unbounded copying.
+ */
 export function snapshotImportResolutionState(
   ctx: ImportResolutionState,
+  limits?: { maxBytes: number; maxEntries: number },
 ): ImportResolutionStateSnapshotV1 {
+  if (limits !== undefined) return snapshotBoundedImportResolutionState(ctx, limits);
   return {
     version: 1,
     importMap: Array.from(ctx.importMap, ([file, paths]) => [file, [...paths]]),
@@ -227,6 +238,125 @@ export function snapshotImportResolutionState(
       Array.from(aliases, ([name, path]) => [name, path]),
     ]),
   };
+}
+
+function snapshotBoundedImportResolutionState(
+  ctx: ImportResolutionState,
+  limits: { maxBytes: number; maxEntries: number },
+): ImportResolutionStateSnapshotV1 {
+  const fail = (): never => {
+    throw Object.assign(new Error('Import resolution state exceeds limits or is invalid'), {
+      code: 'IMPORT_STATE_LIMIT',
+    });
+  };
+  // Read data descriptors only: the bounded path must not invoke input getters.
+  const field = (object: unknown, name: string): unknown => {
+    if (typeof object !== 'object' || object === null || isProxy(object)) return fail();
+    const descriptor = Object.getOwnPropertyDescriptor(object, name);
+    if (!descriptor || !('value' in descriptor)) return fail();
+    return descriptor.value;
+  };
+  const maxBytes = field(limits, 'maxBytes');
+  const maxEntries = field(limits, 'maxEntries');
+  if (
+    typeof maxBytes !== 'number' ||
+    !Number.isSafeInteger(maxBytes) ||
+    maxBytes < 0 ||
+    typeof maxEntries !== 'number' ||
+    !Number.isSafeInteger(maxEntries) ||
+    maxEntries < 0
+  )
+    return fail();
+
+  const snapshot: ImportResolutionStateSnapshotV1 = {
+    version: 1,
+    importMap: [],
+    packageMap: [],
+    namedImportMap: [],
+    moduleAliasMap: [],
+  };
+  let remainingBytes = maxBytes;
+  let remainingEntries = maxEntries;
+  const bytes = (count: number): void => {
+    if (count > remainingBytes) fail();
+    remainingBytes -= count;
+  };
+  const entry = (): void => {
+    if (remainingEntries === 0) fail();
+    remainingEntries--;
+  };
+  const string = (value: unknown): string => {
+    if (typeof value !== 'string' || value.length > remainingBytes) return fail();
+    // A string's UTF-16 length is a lower bound on its JSON UTF-8 size.
+    // This precheck bounds the temporary serialization before allocating it.
+    bytes(Buffer.byteLength(JSON.stringify(value), 'utf8'));
+    return value;
+  };
+  bytes(Buffer.byteLength(JSON.stringify(snapshot), 'utf8'));
+  const maps = ['importMap', 'packageMap', 'namedImportMap', 'moduleAliasMap'] as const;
+  for (const key of maps) {
+    const map = field(ctx, key);
+    if (typeof map !== 'object' || map === null || isProxy(map)) fail();
+    // Native iterators bypass user-defined Map/Set iterator overrides and
+    // validate the receiver's internal slots without copying its contents.
+    let outer: MapIterator<[unknown, unknown]>;
+    try {
+      outer = Map.prototype.entries.call(map);
+    } catch {
+      return fail();
+    }
+    let firstFile = true;
+    for (const [file, members] of outer) {
+      entry();
+      bytes(firstFile ? 5 : 6); // [file,[]], with an optional outer comma.
+      firstFile = false;
+      const fileName = string(file);
+      if (typeof members !== 'object' || members === null || isProxy(members)) fail();
+      let firstMember = true;
+      if (key === 'importMap' || key === 'packageMap') {
+        let paths: SetIterator<unknown>;
+        try {
+          paths = Set.prototype.values.call(members);
+        } catch {
+          return fail();
+        }
+        const copied: string[] = [];
+        snapshot[key].push([fileName, copied]);
+        for (const path of paths) {
+          entry();
+          bytes(firstMember ? 0 : 1);
+          firstMember = false;
+          copied.push(string(path));
+        }
+      } else {
+        let bindings: MapIterator<[unknown, unknown]>;
+        try {
+          bindings = Map.prototype.entries.call(members);
+        } catch {
+          return fail();
+        }
+        const copiedBindings: [string, NamedImportBinding][] = [];
+        const copiedAliases: [string, string][] = [];
+        if (key === 'namedImportMap') snapshot.namedImportMap.push([fileName, copiedBindings]);
+        else snapshot.moduleAliasMap.push([fileName, copiedAliases]);
+        for (const [name, value] of bindings) {
+          entry();
+          bytes(firstMember ? 3 : 4); // [name,value], plus comma after the first.
+          firstMember = false;
+          const localName = string(name);
+          if (key === 'namedImportMap') {
+            bytes('{"sourcePath":,"exportedName":}'.length);
+            const sourcePath = string(field(value, 'sourcePath'));
+            const exportedName = string(field(value, 'exportedName'));
+            copiedBindings.push([localName, { sourcePath, exportedName }]);
+          } else {
+            copiedAliases.push([localName, string(value)]);
+          }
+        }
+      }
+    }
+  }
+  return snapshot;
 }
 
 function importStateEntries(value: unknown): [string, unknown][] {
@@ -302,13 +432,36 @@ export function restoreImportResolutionState(snapshot: unknown): ImportResolutio
   return { importMap, packageMap, namedImportMap, moduleAliasMap };
 }
 
-export const createResolutionContext = (): ResolutionContext => {
-  const model = createSemanticModel();
+export const createResolutionContext = (options?: {
+  captureRegistrations?: boolean;
+  onRegistration?: (encodedEvent: string) => boolean;
+  onRegistrationError?: () => void;
+  /** Supplied model becomes owned by the context, including its clear lifecycle. */
+  model?: MutableSemanticModel;
+  importState?: ImportResolutionStateSnapshotV1;
+}): ResolutionContext => {
+  if (options?.model && options.captureRegistrations === true) {
+    throw new Error('Cannot capture registrations when supplying a semantic model');
+  }
+  if (options?.model && (options.onRegistration || options.onRegistrationError)) {
+    throw new Error('Cannot observe registrations when supplying a semantic model');
+  }
+  const imports =
+    options?.importState === undefined
+      ? undefined
+      : restoreImportResolutionState(options.importState);
+  const model =
+    options?.model ??
+    createSemanticModel({
+      captureRegistrations: options?.captureRegistrations,
+      onRegistration: options?.onRegistration,
+      onRegistrationError: options?.onRegistrationError,
+    });
   const symbols = model.symbols;
-  const importMap: ImportMap = new Map();
-  const packageMap: PackageMap = new Map();
-  const namedImportMap: NamedImportMap = new Map();
-  const moduleAliasMap: ModuleAliasMap = new Map();
+  const importMap: ImportMap = imports?.importMap ?? new Map();
+  const packageMap: PackageMap = imports?.packageMap ?? new Map();
+  const namedImportMap: NamedImportMap = imports?.namedImportMap ?? new Map();
+  const moduleAliasMap: ModuleAliasMap = imports?.moduleAliasMap ?? new Map();
 
   // Inverted index: packageDirSuffix → Set<filePath>.
   // Built lazily on first Tier 2b hit — one-time cost of O(totalFiles ×
@@ -537,6 +690,7 @@ export const createResolutionContext = (): ResolutionContext => {
   });
 
   const clear = (): void => {
+    context.scopeCallPublication = undefined;
     model.clear();
     importMap.clear();
     packageMap.clear();
@@ -552,7 +706,7 @@ export const createResolutionContext = (): ResolutionContext => {
     tierMiss = 0;
   };
 
-  return {
+  const context: ResolutionContext = {
     resolve,
     model,
     importMap,
@@ -564,4 +718,5 @@ export const createResolutionContext = (): ResolutionContext => {
     getStats,
     clear,
   };
+  return context;
 };

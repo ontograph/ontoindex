@@ -207,8 +207,10 @@ describe('watch command', () => {
         );
 
         options.head = 'newer';
-        await vi.advanceTimersByTimeAsync(30000);
-        await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(4));
+        await vi.waitFor(async () => {
+          await vi.advanceTimersByTimeAsync(30000);
+          expect(harness.spawn).toHaveBeenCalledTimes(4);
+        });
         for (let attempt = 0; attempt < 3; attempt++) {
           await vi.waitFor(() => expect(harness.spawn).toHaveBeenCalledTimes(attempt + 4));
           harness.child.emit('close', 7, null);

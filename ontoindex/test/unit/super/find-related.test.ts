@@ -177,6 +177,26 @@ describe('gnFindRelated', () => {
     expect(callersCall[2]).toMatchObject({ max: 2 });
   });
 
+  it('orders each related category deterministically before limiting', async () => {
+    mockExecuteParameterized.mockResolvedValueOnce([resolvedRow()]).mockResolvedValue([]);
+
+    await gnFindRelated(REPO_ID, { symbol: 'parseToken' });
+
+    const queries = mockExecuteParameterized.mock.calls.slice(1).map((call) => call[1]);
+    expect(queries).toHaveLength(4);
+    const orderings = [
+      'ORDER BY caller.id, r.type',
+      'ORDER BY callee.id, r.type',
+      'ORDER BY r.confidence DESC, other.filePath',
+      'ORDER BY sibling.id',
+    ];
+    queries.forEach((query, index) => {
+      expect(query).toContain(orderings[index]);
+      expect(query).toContain('LIMIT $max');
+      expect(query.indexOf(orderings[index])).toBeLessThan(query.indexOf('LIMIT $max'));
+    });
+  });
+
   // ---- Test 3: callees include CALLS, REFERENCES, IMPORTS -----------------
 
   it('callees include CALLS, REFERENCES, and IMPORTS relationship kinds', async () => {

@@ -1,10 +1,9 @@
 /**
  * Unit tests for `import-target-adapter` (RFC #909 Ring 2 PKG #922).
  *
- * Exercises the language-dispatching FinalizeHook. We don't need the
- * real per-language resolvers here — mock `ImportResolverFn`s let each
- * branch be tested in isolation. Real-resolver integration is covered
- * by the existing per-language import-resolver test suites.
+ * Exercises FinalizeHook dispatch branches with fake resolvers and checks
+ * production TypeScript/JavaScript providers against in-memory inventories,
+ * configured aliases, and per-workspace resolution caches.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -19,6 +18,11 @@ import type {
   ResolveCtx,
 } from '../../../src/core/ingestion/import-resolvers/types.js';
 import type { LanguageProvider } from '../../../src/core/ingestion/language-provider.js';
+import { buildSuffixIndex } from '../../../src/core/ingestion/import-resolvers/utils.js';
+import {
+  typescriptProvider,
+  javascriptProvider,
+} from '../../../src/core/ingestion/languages/typescript.js';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -148,5 +152,83 @@ describe('resolveImportTargetAcrossLanguages', () => {
     };
     const ws = workspace([[SupportedLanguages.Python, throwingResolver]]);
     expect(resolveImportTargetAcrossLanguages('x', 'a.py', ws)).toBeNull();
+  });
+});
+
+describe('resolveImportTargetAcrossLanguages with production providers', () => {
+  function productionWorkspace(files: string[]): { ws: ImportTargetWorkspace; ctx: ResolveCtx } {
+    const normalizedFileList = files.map((file) => file.replace(/\\/g, '/'));
+    const ctx: ResolveCtx = {
+      allFilePaths: new Set(files),
+      allFileList: files,
+      normalizedFileList,
+      index: buildSuffixIndex(normalizedFileList, files),
+      resolveCache: new Map(),
+      configs: {
+        tsconfigPaths: { baseUrl: '.', aliases: new Map([['@/', 'src/']]) },
+        goModule: null,
+        composerConfig: null,
+        swiftPackageConfig: null,
+        csharpConfigs: [],
+      },
+    };
+    const providers = new Map<SupportedLanguages, LanguageProvider>([
+      [SupportedLanguages.TypeScript, typescriptProvider],
+      [SupportedLanguages.JavaScript, javascriptProvider],
+    ]);
+    return { ws: buildImportTargetWorkspace(providers, ctx), ctx };
+  }
+
+  it.each(['ts', 'tsx', 'js', 'jsx'])(
+    'resolves relative, index, alias, emitted-extension and missing targets from .%s files repeatedly',
+    (extension) => {
+      const fromFile = `src/app.${extension}`;
+      const { ws, ctx } = productionWorkspace([
+        fromFile,
+        'src/value.ts',
+        'src/components/index.tsx',
+        'src/legacy.js',
+        'src/view.jsx',
+      ]);
+      const cases: Array<[string, string | null]> = [
+        ['./value', 'src/value.ts'],
+        ['./components', 'src/components/index.tsx'],
+        ['@/legacy', 'src/legacy.js'],
+        ['./view', 'src/view.jsx'],
+        ['./value.js', 'src/value.ts'],
+        ['@/value.js', 'src/value.ts'],
+        ['./missing', null],
+        ['@/missing', null],
+      ];
+
+      for (const [target, expected] of cases) {
+        expect(resolveImportTargetAcrossLanguages(target, fromFile, ws)).toBe(expected);
+        expect(ctx.resolveCache.has(`${fromFile}::${target}`)).toBe(true);
+        expect(ctx.resolveCache.get(`${fromFile}::${target}`)).toBe(expected);
+        expect(resolveImportTargetAcrossLanguages(target, fromFile, ws)).toBe(expected);
+      }
+      expect(ctx.resolveCache.size).toBe(cases.length);
+    },
+  );
+
+  it('keeps successful and missing resolutions isolated between inventories and caches', () => {
+    const first = productionWorkspace(['src/app.ts', 'src/value.ts']);
+    const second = productionWorkspace(['src/app.ts', 'src/value.js', 'src/later.ts']);
+    expect(first.ctx.resolveCache).not.toBe(second.ctx.resolveCache);
+
+    for (let repeat = 0; repeat < 2; repeat++) {
+      expect(resolveImportTargetAcrossLanguages('./value', 'src/app.ts', first.ws)).toBe(
+        'src/value.ts',
+      );
+      expect(resolveImportTargetAcrossLanguages('./later', 'src/app.ts', first.ws)).toBeNull();
+      expect(resolveImportTargetAcrossLanguages('./value', 'src/app.ts', second.ws)).toBe(
+        'src/value.js',
+      );
+      expect(resolveImportTargetAcrossLanguages('./later', 'src/app.ts', second.ws)).toBe(
+        'src/later.ts',
+      );
+    }
+    expect(first.ctx.resolveCache.get('src/app.ts::./later')).toBeNull();
+    expect(second.ctx.resolveCache.get('src/app.ts::./later')).toBe('src/later.ts');
   });
 });

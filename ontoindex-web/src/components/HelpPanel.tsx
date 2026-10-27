@@ -275,7 +275,7 @@ function TabContent({
             letterSpacing: '0.08em',
           }}
         >
-          Search & filter
+          Search &amp; filter
         </p>
 
         <div
@@ -592,7 +592,7 @@ export const HelpPanel = ({ isOpen, onClose, nodeCount, edgeCount }: HelpPanelPr
             </div>
             <div>
               <h2 style={{ fontSize: 16, fontWeight: 600, color: '#e2e2e8', margin: 0 }}>
-                Help & Reference
+                Help &amp; Reference
               </h2>
               <p style={{ fontSize: 12, color: '#6b7280', margin: 0 }}>
                 OntoIndex — graph explorer
@@ -710,7 +710,7 @@ export const HelpPanel = ({ isOpen, onClose, nodeCount, edgeCount }: HelpPanelPr
             rel="noopener noreferrer"
             style={{ fontSize: 11, color: '#a78bfa', textDecoration: 'none' }}
           >
-            Docs & GitHub ↗
+            Docs &amp; GitHub ↗
           </a>
         </div>
       </div>

@@ -13,8 +13,9 @@
  *      `emitScopeCaptures`. Reports an unsupported outcome; zero work done.
  *   2. Invokes the hook + feeds its output to `ScopeExtractor.extract`.
  *   3. **Catches exceptions from either side.** A failure reports a failed
- *      outcome and emits a warning via `onWarn`, except for an expected
- *      C++ missing-module miss. Exceptions from `onWarn` still propagate.
+ *      outcome, distinguishing unsupported syntax, and emits a warning via
+ *      `onWarn`, except for an expected C++ missing-module miss.
+ *      Exceptions from `onWarn` still propagate.
  *      The compatibility wrapper returns `undefined` for either miss.
  *      Scope-based resolution is the new path under construction — it
  *      must not destabilize the legacy DAG.
@@ -22,6 +23,7 @@
 
 import type { ParsedFile } from 'ontoindex-shared';
 import { extract as extractScope } from './scope-extractor.js';
+import { isScopeUnsupportedSyntax } from './scope-unsupported-syntax.js';
 import type { LanguageProvider } from './language-provider.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 
@@ -31,13 +33,19 @@ type ScopeBridgeWarn = (message: string) => void;
 export type ScopeExtractionOutcome =
   | { status: 'success'; parsedFile: ParsedFile }
   | { status: 'unsupported'; reason: 'missing-scope-hook' }
-  | { status: 'failed'; reason: 'scope-extraction-error' | 'missing-module-scope' };
+  | {
+      status: 'failed';
+      reason: 'scope-extraction-error' | 'missing-module-scope' | 'unsupported-syntax';
+    };
 
 /** Compact evidence for attempted extraction; absent records do not establish completeness. */
 export type ScopeExtractionRecord = { filePath: string } & (
   | { status: 'success' }
   | { status: 'unsupported'; reason: 'missing-scope-hook' }
-  | { status: 'failed'; reason: 'scope-extraction-error' | 'missing-module-scope' }
+  | {
+      status: 'failed';
+      reason: 'scope-extraction-error' | 'missing-module-scope' | 'unsupported-syntax';
+    }
 );
 
 const NO_MODULE_SCOPE_MESSAGE = 'ScopeExtractor: no Module scope found';
@@ -86,6 +94,9 @@ export function extractParsedFileOutcome(
     }`;
     if (onWarn !== undefined) onWarn(message);
     else console.warn(message);
+    if (isScopeUnsupportedSyntax(err)) {
+      return { status: 'failed', reason: 'unsupported-syntax' };
+    }
     return { status: 'failed', reason: 'scope-extraction-error' };
   }
 }

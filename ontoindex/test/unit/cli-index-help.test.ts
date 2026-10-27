@@ -16,7 +16,8 @@ vi.mock('../../src/core/run-analyze.js', () => ({
   runFullAnalysis: vi.fn(),
 }));
 
-vi.mock('../../src/core/analyze-delta.js', () => ({
+vi.mock('../../src/core/analyze-delta.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/analyze-delta.js')>()),
   planExperimentalFileDeltaRefresh: vi.fn(),
 }));
 
@@ -69,6 +70,44 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('--experimental-file-delta');
     expect(result.stdout).toContain('--dry-run');
     expect(result.stdout).toContain('--explain-file <path>');
+    expect(result.stdout).toContain('--workspace-graph');
+  });
+
+  it.each([
+    ['--dirty-overlay'],
+    ['--include-path', 'src'],
+    ['--symbols-only'],
+    ['--index-only'],
+    ['--huge-repo'],
+    ['--allow-huge-root'],
+    ['--large-repo-safe'],
+    ['--experimental-file-delta'],
+    ['--embeddings'],
+    ['--ann-neighbors'],
+    ['--skills'],
+    ['--skills-target', 'claude'],
+    ['--name', 'prebuild-fixture'],
+    ['--allow-duplicate-name'],
+    ['--markdown-sidecar'],
+    ['--skip-git'],
+    ['--dry-run'],
+    ['--explain-file', 'sample.ts'],
+    ['--force'],
+  ])('rejects workspace prebuild with %s before filesystem writes', async (...args) => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-workspace-conflict-'));
+    const sourcePath = path.join(tmpDir, 'sample.ts');
+    const source = 'export const sample = 1;\n';
+    fs.writeFileSync(sourcePath, source);
+    try {
+      const result = runAnalyze([tmpDir, '--workspace-graph', ...args]);
+
+      expect(result.status).toBe(1);
+      expect(`${result.stdout}${result.stderr}`).toContain('--workspace-graph');
+      expect(fs.readdirSync(tmpDir)).toEqual(['sample.ts']);
+      expect(fs.readFileSync(sourcePath, 'utf8')).toBe(source);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it('maps the symbols-only analyze option to the symbols pipeline profile', () => {

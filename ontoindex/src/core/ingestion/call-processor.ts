@@ -3,7 +3,7 @@ import { ASTCache } from './ast-cache.js';
 import type { SymbolDefinition } from 'ontoindex-shared';
 import type { SymbolTableReader, HeritageMap, ExtractedHeritage } from './model/index.js';
 import { CLASS_TYPES, CALL_TARGET_TYPES, lookupMethodByOwnerWithMRO } from './model/index.js';
-import type { DispatchDecision, ReceiverEnriched } from './call-types.js';
+import type { DispatchDecision, ExtractedCallSite, ReceiverEnriched } from './call-types.js';
 
 /** Shorthand for the receiver-source discriminant shared across the DAG. */
 type ReceiverSource = ReceiverEnriched['receiverSource'];
@@ -49,6 +49,7 @@ import {
 import { typeTagForId, constTagForId, buildCollisionGroups } from './utils/method-props.js';
 import type { MethodInfo } from './method-types.js';
 import {
+  callExpressionRange,
   countCallArguments,
   inferCallForm,
   extractReceiverName,
@@ -825,6 +826,7 @@ const collectPendingWriteFromCapture = (
   pendingWrites: PendingWrite[],
   ctx: ResolutionContext,
   provider: ReturnType<typeof getProvider>,
+  onAssignment?: (assignment: ExtractedAssignment) => void,
 ): boolean => {
   const assignmentNode = captureMap['assignment'];
   const receiverNode = captureMap['assignment.receiver'];
@@ -839,6 +841,17 @@ const collectPendingWriteFromCapture = (
 
   if (receiverText && typeEnv) {
     receiverTypeName = typeEnv.lookup(receiverText, assignmentNode);
+  }
+
+  if (onAssignment && receiverText && propertyName) {
+    const enclosing = findEnclosingFunction(assignmentNode, file.path, ctx, provider);
+    onAssignment({
+      filePath: file.path,
+      sourceId: enclosing || generateId('File', file.path),
+      receiverText,
+      propertyName,
+      ...(receiverTypeName ? { receiverTypeName } : {}),
+    });
   }
 
   if (!receiverTypeName && receiverText && receiverIndex.size > 0) {
@@ -863,6 +876,49 @@ const collectPendingWriteFromCapture = (
   return captureMap['call'] === undefined;
 };
 
+const captureSequentialCall = (
+  onCall: (call: ExtractedCall) => void,
+  callSite: ExtractedCallSite,
+  file: SequentialCallInput,
+  provider: ReturnType<typeof getProvider>,
+  callNode: Parser.SyntaxNode,
+  typeEnv: ReturnType<typeof buildTypeEnv>,
+  sourceId: string,
+): void => {
+  let receiverTypeName =
+    callSite.receiverName && typeEnv ? typeEnv.lookup(callSite.receiverName, callNode) : undefined;
+  if (
+    callSite.typeAsReceiverHeuristic &&
+    callSite.receiverName !== undefined &&
+    receiverTypeName === undefined &&
+    callSite.callForm === 'member'
+  ) {
+    const c0 = callSite.receiverName.charCodeAt(0);
+    if (c0 >= 65 && c0 <= 90) receiverTypeName = callSite.receiverName;
+  }
+  const inferLiteralType = provider.typeConfig?.inferLiteralType;
+  const argTypes =
+    inferLiteralType && callSite.argCount !== undefined && callSite.argCount > 0
+      ? extractCallArgTypes(callNode, inferLiteralType, (varName, cn) =>
+          typeEnv?.lookup(varName, cn),
+        )
+      : undefined;
+  onCall({
+    filePath: file.path,
+    calledName: callSite.calledName,
+    sourceId,
+    atRange: callExpressionRange(callNode),
+    ...(callSite.argCount !== undefined ? { argCount: callSite.argCount } : {}),
+    ...(callSite.callForm !== undefined ? { callForm: callSite.callForm } : {}),
+    ...(callSite.receiverName !== undefined ? { receiverName: callSite.receiverName } : {}),
+    ...(receiverTypeName !== undefined ? { receiverTypeName } : {}),
+    ...(callSite.receiverMixedChain !== undefined
+      ? { receiverMixedChain: callSite.receiverMixedChain }
+      : {}),
+    ...(argTypes !== undefined ? { argTypes } : {}),
+  });
+};
+
 const resolveExtractedLanguageCallSite = (
   graph: KnowledgeGraph,
   file: SequentialCallInput,
@@ -872,6 +928,7 @@ const resolveExtractedLanguageCallSite = (
   ctx: ResolutionContext,
   widenCache: WidenCache,
   heritageMap: HeritageMap | undefined,
+  onCall?: (call: ExtractedCall) => void,
 ): boolean => {
   const callExtractor = provider.callExtractor;
   if (!callExtractor) return false;
@@ -896,10 +953,15 @@ const resolveExtractedLanguageCallSite = (
     if (c0 >= 65 && c0 <= 90) receiverTypeName = receiverName;
   }
 
+  if (onCall) {
+    captureSequentialCall(onCall, langCallSite, file, provider, callNode, typeEnv, sourceId);
+  }
+
   const resolved = resolveCallTarget(
     {
       calledName: langCallSite.calledName,
       callForm: langCallSite.callForm,
+      ...(langCallSite.argCount !== undefined ? { argCount: langCallSite.argCount } : {}),
       ...(receiverTypeName !== undefined ? { receiverTypeName } : {}),
       ...(receiverName !== undefined ? { receiverName } : {}),
     },
@@ -922,6 +984,16 @@ const resolveExtractedLanguageCallSite = (
       resolved.filePath,
       process.env,
       ctx.importMap.get(file.path),
+    )
+  )
+    return true;
+
+  if (
+    ctx.scopeCallPublication?.owns(
+      file.path,
+      langCallSite.calledName,
+      callExpressionRange(callNode),
+      langCallSite.callForm,
     )
   )
     return true;
@@ -977,6 +1049,9 @@ const resolvePreparedSequentialFile = (
   pendingWrites: PendingWrite[],
   heritageMap?: HeritageMap,
   bindingAccumulator?: BindingAccumulator,
+  onCall?: (call: ExtractedCall) => void,
+  onAssignment?: (assignment: ExtractedAssignment) => void,
+  onIncomplete?: () => void,
 ): void => {
   const { file, language, provider, tree, matches, parentMap, typeEnv } = preparedFile;
   const callRouter = provider.callRouter;
@@ -997,6 +1072,7 @@ const resolvePreparedSequentialFile = (
           pendingWrites,
           ctx,
           provider,
+          onAssignment,
         )
       ) {
         return;
@@ -1019,6 +1095,7 @@ const resolvePreparedSequentialFile = (
           ctx,
           widenCache,
           heritageMap,
+          onCall,
         )
       ) {
         return;
@@ -1112,6 +1189,18 @@ const resolvePreparedSequentialFile = (
       }
 
       if (provider.isBuiltInName(calledName)) return;
+
+      if (onCall) {
+        const callSite = provider.callExtractor?.extract(callNode, nameNode);
+        if (callSite) {
+          const sourceId =
+            findEnclosingFunction(callNode, file.path, ctx, provider) ||
+            generateId('File', file.path);
+          captureSequentialCall(onCall, callSite, file, provider, callNode, typeEnv, sourceId);
+        } else {
+          onIncomplete?.();
+        }
+      }
 
       // --- DAG stage 2-3: classify-form + infer-receiver (shared defaults) ---
       // These stages run the shared inference chain. Language providers can
@@ -1311,6 +1400,15 @@ const resolvePreparedSequentialFile = (
 
       if (!resolved) return;
       if (
+        ctx.scopeCallPublication?.owns(
+          file.path,
+          calledName,
+          callExpressionRange(callNode),
+          callForm,
+        )
+      )
+        return;
+      if (
         !canPublishCallEdge(
           callForm,
           resolved.reason,
@@ -1381,6 +1479,10 @@ export const processCalls = async (
   heritageMap?: MaybePromiseHeritageMap,
   bindingAccumulator?: BindingAccumulator,
   queryCache: CallQueryCache = new Map(),
+  onCall?: (call: ExtractedCall) => void,
+  onAssignment?: (assignment: ExtractedAssignment) => void,
+  onConstructorBindings?: (bindings: FileConstructorBindings) => void,
+  onIncomplete?: () => void,
 ): Promise<ExtractedHeritage[]> => {
   const resolvedHeritageMap = heritageMap ? await heritageMap : undefined;
   const parser = await loadParser();
@@ -1412,8 +1514,12 @@ export const processCalls = async (
     if (i % 20 === 0) await yieldToEventLoop();
 
     const language = getLanguageFromFilename(file.path);
-    if (!language) continue;
+    if (!language) {
+      onIncomplete?.();
+      continue;
+    }
     if (!isLanguageAvailable(language)) {
+      onIncomplete?.();
       if (skippedByLang) {
         skippedByLang.set(language, (skippedByLang.get(language) ?? 0) + 1);
       }
@@ -1421,8 +1527,12 @@ export const processCalls = async (
     }
 
     const provider = getProvider(language);
+    if (!provider.callExtractor) onIncomplete?.();
     const queryStr = provider.treeSitterQueries;
-    if (!queryStr) continue;
+    if (!queryStr) {
+      onIncomplete?.();
+      continue;
+    }
 
     await loadLanguage(language, file.path);
 
@@ -1433,6 +1543,7 @@ export const processCalls = async (
           bufferSize: getTreeSitterBufferSize(file.content.length),
         });
       } catch (parseError) {
+        onIncomplete?.();
         continue;
       }
       astCache.set(file.path, tree);
@@ -1453,6 +1564,7 @@ export const processCalls = async (
       }
       matches = query.matches(tree.rootNode);
     } catch (queryError) {
+      onIncomplete?.();
       console.warn(`Query error for ${file.path}:`, queryError);
       continue;
     }
@@ -1514,6 +1626,9 @@ export const processCalls = async (
       enclosingFunctionFinder: provider?.enclosingFunctionFinder,
       extractFunctionName: provider?.methodExtractor?.extractFunctionName,
     });
+    if (onConstructorBindings && typeEnv.constructorBindings.length > 0) {
+      onConstructorBindings({ filePath: file.path, bindings: [...typeEnv.constructorBindings] });
+    }
     if (typeEnv && exportedTypeMap) {
       const fileExports = collectExportedBindings(typeEnv, file.path, ctx.model.symbols, graph);
       if (fileExports) exportedTypeMap.set(file.path, fileExports);
@@ -1542,6 +1657,9 @@ export const processCalls = async (
       pendingWrites,
       resolvedHeritageMap,
       bindingAccumulator,
+      onCall,
+      onAssignment,
+      onIncomplete,
     );
   }
 
@@ -2889,7 +3007,27 @@ const buildFileReceiverTypeIndexes = (
   const fileReceiverTypes = new Map<string, ReceiverTypeIndex>();
   if (!constructorBindings) return fileReceiverTypes;
 
+  const bindingsByFile = new Map<string, readonly ConstructorBinding[]>();
+  let copiedFiles: Set<string> | undefined;
   for (const { filePath, bindings } of constructorBindings) {
+    const previous = bindingsByFile.get(filePath);
+    if (!previous) {
+      bindingsByFile.set(filePath, bindings);
+      continue;
+    }
+    let fileBindings: ConstructorBinding[];
+    if (copiedFiles?.has(filePath)) {
+      fileBindings = previous as ConstructorBinding[];
+    } else {
+      fileBindings = [];
+      for (const binding of previous) fileBindings.push(binding);
+      bindingsByFile.set(filePath, fileBindings);
+      (copiedFiles ??= new Set()).add(filePath);
+    }
+    for (const binding of bindings) fileBindings.push(binding);
+  }
+
+  for (const [filePath, bindings] of bindingsByFile) {
     const verified = verifyConstructorBindings(bindings, filePath, ctx, graph, bindingAccumulator);
     if (verified.size > 0) {
       fileReceiverTypes.set(filePath, buildReceiverTypeIndex(verified));
@@ -3030,6 +3168,15 @@ const emitVueTemplateComponentFallback = (
   if (!effectiveCall.filePath.endsWith('.vue') || !effectiveCall.sourceId.startsWith('File:')) {
     return;
   }
+  if (
+    ctx.scopeCallPublication?.owns(
+      effectiveCall.filePath,
+      effectiveCall.calledName,
+      effectiveCall.atRange,
+      effectiveCall.callForm,
+    )
+  )
+    return;
 
   const targetPath = findImportedComponentTargetPath(
     effectiveCall.filePath,
@@ -3066,6 +3213,15 @@ const emitJsxComponentFallback = (
   ) {
     return;
   }
+  if (
+    ctx.scopeCallPublication?.owns(
+      effectiveCall.filePath,
+      effectiveCall.calledName,
+      effectiveCall.atRange,
+      effectiveCall.callForm,
+    )
+  )
+    return;
 
   const targetPath = findImportedComponentTargetPath(
     effectiveCall.filePath,
@@ -3098,6 +3254,15 @@ const emitResolvedCallEdges = (
   ctx: ResolutionContext,
   heritageMap?: HeritageMap,
 ): void => {
+  if (
+    ctx.scopeCallPublication?.owns(
+      effectiveCall.filePath,
+      effectiveCall.calledName,
+      effectiveCall.atRange,
+      effectiveCall.callForm,
+    )
+  )
+    return;
   if (
     !canPublishCallEdge(
       effectiveCall.callForm,

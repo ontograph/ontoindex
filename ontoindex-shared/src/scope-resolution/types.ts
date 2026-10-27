@@ -16,6 +16,7 @@
 
 import type { NodeLabel } from '../graph/types.js';
 import type { SymbolDefinition } from './symbol-definition.js';
+import type { ExplicitReceiver } from './reference-site.js';
 
 // ─── §2.1 Type aliases ──────────────────────────────────────────────────────
 
@@ -57,6 +58,8 @@ export interface Capture {
   readonly range: Range;
   /** The captured source text. */
   readonly text: string;
+  /** Detached receiver syntax for `@reference.receiver`, when available. */
+  readonly receiver?: ExplicitReceiver;
 }
 
 /**
@@ -83,7 +86,10 @@ export type CaptureMatch = Readonly<Record<string, Capture>>;
  * produced when `expandsWildcardTo` materializes a wildcard against target
  * exports — a provider must never emit it at parse time.
  */
-export type ParsedImport =
+export type ParsedImport = {
+  /** Imported lexical meaning; omitted preserves legacy unified visibility. */
+  readonly namespace?: 'type' | 'value' | 'both';
+} &
   /**
    * Per-name import without rename.
    *
@@ -92,97 +98,98 @@ export type ParsedImport =
    *   - TS `import { X } from './foo'` → `{ kind: 'named', localName: 'X', importedName: 'X', targetRaw: './foo' }`
    *   - Java `import foo.bar.X`       → `{ kind: 'named', localName: 'X', importedName: 'X', targetRaw: 'foo.bar' }`
    */
-  | {
-      readonly kind: 'named';
-      readonly localName: string;
-      readonly importedName: string;
-      readonly targetRaw: string;
-    }
-  /**
-   * Per-name import with rename.
-   *
-   * Examples:
-   *   - Python `from foo import X as Y`   → `{ kind: 'alias', localName: 'Y', importedName: 'X', alias: 'Y', targetRaw: 'foo' }`
-   *   - TS `import { X as Y } from './foo'` → `{ kind: 'alias', localName: 'Y', importedName: 'X', alias: 'Y', targetRaw: './foo' }`
-   */
-  | {
-      readonly kind: 'alias';
-      readonly localName: string;
-      readonly importedName: string;
-      readonly alias: string;
-      readonly targetRaw: string;
-    }
-  /**
-   * Qualified module handle, with or without rename. `importedName` is the
-   * module being aliased; `localName` is the scope-visible handle (often the
-   * same unless renamed).
-   *
-   * Examples:
-   *   - Python `import numpy`            → `{ kind: 'namespace', localName: 'numpy', importedName: 'numpy', targetRaw: 'numpy' }`
-   *   - Python `import numpy as np`      → `{ kind: 'namespace', localName: 'np',    importedName: 'numpy', targetRaw: 'numpy' }`
-   *   - TS `import * as np from 'numpy'` → `{ kind: 'namespace', localName: 'np',    importedName: 'numpy', targetRaw: 'numpy' }`
-   *   - Go `import foo "pkg/bar"`        → `{ kind: 'namespace', localName: 'foo',   importedName: 'bar',   targetRaw: 'pkg/bar' }`
-   */
-  | {
-      readonly kind: 'namespace';
-      /** Scope-visible handle (e.g. `np` in `import numpy as np`; `numpy` when unaliased). */
-      readonly localName: string;
-      /** Module being aliased (e.g. `numpy` in `import numpy as np`). */
-      readonly importedName: string;
-      readonly targetRaw: string;
-    }
-  /**
-   * Syntactically-detectable parse-time re-export. Finalize may still produce
-   * `ImportEdge { kind: 'reexport', transitiveVia }` when flattening chains;
-   * this variant preserves the *parse-time* signal so finalize doesn't have
-   * to re-derive it from scratch.
-   *
-   * Examples:
-   *   - TS `export { X } from './y'`       → `{ kind: 'reexport', localName: 'X', importedName: 'X', targetRaw: './y' }`
-   *   - TS `export { X as Y } from './y'`  → `{ kind: 'reexport', localName: 'Y', importedName: 'X', alias: 'Y', targetRaw: './y' }`
-   *   - Rust `pub use foo::bar`            → `{ kind: 'reexport', localName: 'bar', importedName: 'bar', targetRaw: 'foo' }`
-   */
-  | {
-      readonly kind: 'reexport';
-      /** Name as re-exported in the current module. */
-      readonly localName: string;
-      /** Name in the source module. */
-      readonly importedName: string;
-      readonly targetRaw: string;
-      /** Set when the re-export renames the symbol (e.g. `export { X as Y } from './y'`). */
-      readonly alias?: string;
-    }
-  /**
-   * Wildcard import — brings every exported name from the target module into
-   * the importing scope. The finalize algorithm expands this into one
-   * `BindingRef` per exported name via the provider's `expandsWildcardTo`
-   * hook, producing the finalize-only `ImportEdge` kind `'wildcard-expanded'`.
-   *
-   * Examples:
-   *   - Python `from foo import *`   → `{ kind: 'wildcard', targetRaw: 'foo' }`
-   *   - JS `export * from './foo'`   → `{ kind: 'wildcard', targetRaw: './foo' }`
-   *   - Rust `pub use foo::*`         → `{ kind: 'wildcard', targetRaw: 'foo' }`
-   */
-  | {
-      readonly kind: 'wildcard';
-      readonly targetRaw: string;
-    }
-  /**
-   * Runtime-computed target — the import path is not a static literal at
-   * parse time. Providers SHOULD emit the unresolvable expression's source
-   * text as `targetRaw` to aid diagnostics; `null` only when no string form
-   * exists.
-   *
-   * Examples:
-   *   - JS `await import(expr)`                          → `{ kind: 'dynamic-unresolved', localName: '', targetRaw: 'expr' }`
-   *   - Python `importlib.import_module(f'pkg.{name}')`  → `{ kind: 'dynamic-unresolved', localName: '', targetRaw: "f'pkg.{name}'" }`
-   */
-  | {
-      readonly kind: 'dynamic-unresolved';
-      readonly localName: string;
-      /** Source text of the unresolved expression when available; `null` otherwise. */
-      readonly targetRaw: string | null;
-    };
+  (| {
+        readonly kind: 'named';
+        readonly localName: string;
+        readonly importedName: string;
+        readonly targetRaw: string;
+      }
+    /**
+     * Per-name import with rename.
+     *
+     * Examples:
+     *   - Python `from foo import X as Y`   → `{ kind: 'alias', localName: 'Y', importedName: 'X', alias: 'Y', targetRaw: 'foo' }`
+     *   - TS `import { X as Y } from './foo'` → `{ kind: 'alias', localName: 'Y', importedName: 'X', alias: 'Y', targetRaw: './foo' }`
+     */
+    | {
+        readonly kind: 'alias';
+        readonly localName: string;
+        readonly importedName: string;
+        readonly alias: string;
+        readonly targetRaw: string;
+      }
+    /**
+     * Qualified module handle, with or without rename. `importedName` is the
+     * module being aliased; `localName` is the scope-visible handle (often the
+     * same unless renamed).
+     *
+     * Examples:
+     *   - Python `import numpy`            → `{ kind: 'namespace', localName: 'numpy', importedName: 'numpy', targetRaw: 'numpy' }`
+     *   - Python `import numpy as np`      → `{ kind: 'namespace', localName: 'np',    importedName: 'numpy', targetRaw: 'numpy' }`
+     *   - TS `import * as np from 'numpy'` → `{ kind: 'namespace', localName: 'np',    importedName: 'numpy', targetRaw: 'numpy' }`
+     *   - Go `import foo "pkg/bar"`        → `{ kind: 'namespace', localName: 'foo',   importedName: 'bar',   targetRaw: 'pkg/bar' }`
+     */
+    | {
+        readonly kind: 'namespace';
+        /** Scope-visible handle (e.g. `np` in `import numpy as np`; `numpy` when unaliased). */
+        readonly localName: string;
+        /** Module being aliased (e.g. `numpy` in `import numpy as np`). */
+        readonly importedName: string;
+        readonly targetRaw: string;
+      }
+    /**
+     * Syntactically-detectable parse-time re-export. Finalize may still produce
+     * `ImportEdge { kind: 'reexport', transitiveVia }` when flattening chains;
+     * this variant preserves the *parse-time* signal so finalize doesn't have
+     * to re-derive it from scratch.
+     *
+     * Examples:
+     *   - TS `export { X } from './y'`       → `{ kind: 'reexport', localName: 'X', importedName: 'X', targetRaw: './y' }`
+     *   - TS `export { X as Y } from './y'`  → `{ kind: 'reexport', localName: 'Y', importedName: 'X', alias: 'Y', targetRaw: './y' }`
+     *   - Rust `pub use foo::bar`            → `{ kind: 'reexport', localName: 'bar', importedName: 'bar', targetRaw: 'foo' }`
+     */
+    | {
+        readonly kind: 'reexport';
+        /** Name as re-exported in the current module. */
+        readonly localName: string;
+        /** Name in the source module. */
+        readonly importedName: string;
+        readonly targetRaw: string;
+        /** Set when the re-export renames the symbol (e.g. `export { X as Y } from './y'`). */
+        readonly alias?: string;
+      }
+    /**
+     * Wildcard import — brings every exported name from the target module into
+     * the importing scope. The finalize algorithm expands this into one
+     * `BindingRef` per exported name via the provider's `expandsWildcardTo`
+     * hook, producing the finalize-only `ImportEdge` kind `'wildcard-expanded'`.
+     *
+     * Examples:
+     *   - Python `from foo import *`   → `{ kind: 'wildcard', targetRaw: 'foo' }`
+     *   - JS `export * from './foo'`   → `{ kind: 'wildcard', targetRaw: './foo' }`
+     *   - Rust `pub use foo::*`         → `{ kind: 'wildcard', targetRaw: 'foo' }`
+     */
+    | {
+        readonly kind: 'wildcard';
+        readonly targetRaw: string;
+      }
+    /**
+     * Runtime-computed target — the import path is not a static literal at
+     * parse time. Providers SHOULD emit the unresolvable expression's source
+     * text as `targetRaw` to aid diagnostics; `null` only when no string form
+     * exists.
+     *
+     * Examples:
+     *   - JS `await import(expr)`                          → `{ kind: 'dynamic-unresolved', localName: '', targetRaw: 'expr' }`
+     *   - Python `importlib.import_module(f'pkg.{name}')`  → `{ kind: 'dynamic-unresolved', localName: '', targetRaw: "f'pkg.{name}'" }`
+     */
+    | {
+        readonly kind: 'dynamic-unresolved';
+        readonly localName: string;
+        /** Source text of the unresolved expression when available; `null` otherwise. */
+        readonly targetRaw: string | null;
+      }
+  );
 
 /**
  * Provider-interpreted type binding. The provider's `interpretTypeBinding`
@@ -237,6 +244,8 @@ export interface Callsite {
  * bounded-fixpoint linking (RFC §3.2).
  */
 export interface ImportEdge {
+  /** Imported lexical meaning after intersection with the export surface. */
+  readonly namespace?: 'type' | 'value' | 'both';
   /** How this scope sees the imported name (after alias). */
   readonly localName: string;
   /** Exporting file; `null` only when `kind === 'dynamic-unresolved'`. */
@@ -273,6 +282,8 @@ export interface ImportEdge {
 export interface BindingRef {
   readonly def: SymbolDefinition;
   readonly origin: 'local' | 'import' | 'namespace' | 'wildcard' | 'reexport';
+  /** Lexical namespace; omitted preserves legacy unified-name visibility. */
+  readonly namespace?: 'type' | 'value' | 'both';
   /** Non-null for non-local origins; carries the `ImportEdge` that brought the name into this scope. */
   readonly via?: ImportEdge;
 }
@@ -319,6 +330,9 @@ export interface Scope {
   readonly kind: ScopeKind;
   readonly range: Range;
   readonly filePath: string;
+
+  /** Unique exact-range declaration owner; null means none, omitted means legacy data. */
+  readonly ownerDefId?: DefId | null;
 
   /** Names visible from this scope. Provenance preserved via `BindingRef.origin`. */
   readonly bindings: ReadonlyMap<string, readonly BindingRef[]>;
@@ -420,6 +434,8 @@ export type RegistryContributor = unknown;
  */
 export interface LookupParams {
   readonly acceptedKinds: readonly NodeLabel[];
+  /** Filter lexical bindings before shadowing; omitted keeps unified-name lookup. */
+  readonly lexicalNamespace?: 'type' | 'value';
   /** Class lookups: false. Method/Field lookups: true. */
   readonly useReceiverTypeBinding: boolean;
   readonly ownerScopedContributor: RegistryContributor | null;
@@ -428,5 +444,5 @@ export interface LookupParams {
   /** Explicit receiver name (e.g., `'user'` in `user.save()`). When present,
    *  the receiver's type binding at the callsite scope is used; otherwise
    *  the enclosing method's implicit `self`/`this` is consulted. See §4.1. */
-  readonly explicitReceiver?: { readonly name: string };
+  readonly explicitReceiver?: ExplicitReceiver;
 }

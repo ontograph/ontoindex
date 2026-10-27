@@ -80,6 +80,10 @@ program
     '--dirty-overlay',
     'Build a disposable graph of uncommitted source files under .ontoindex/overlay without changing the active index',
   )
+  .option(
+    '--workspace-graph',
+    'Prepare a supervised full workspace graph while preserving the committed index',
+  )
   .option('--markdown-sidecar', 'Queue opt-in Markdown RAG sidecar enrichment after indexing')
   .option(
     '--name <alias>',
@@ -99,6 +103,10 @@ program
       '    ONTOINDEX_WORKER_SUB_BATCH_TIMEOUT_MS, and ONTOINDEX_WORKER_SUB_BATCH_MAX_BYTES',
   )
   .action(async (inputPath, options) => {
+    if (options?.workspaceGraph) {
+      await createLazyAction(() => import('./analyze.js'), 'analyzeCommand')(inputPath, options);
+      return;
+    }
     const applied = applyLargeRepoSafeAnalyzePreset(options);
     if (
       (options?.largeRepoSafe || options?.hugeRepo) &&

@@ -25,7 +25,7 @@ cat << 'EOF'
 
 This codebase is indexed by OntoIndex, providing execution flows, relationships, and semantic search.
 
-**Quick Start:** Call `gn_ensure_fresh({repo, autoAnalyze:false})`, then `search({action:'semantic', repo, query})` for relevant code, `inspect({action:'context', repo, target})` for symbol context, and `impact({action:'symbol', repo, target, direction:'upstream'})` before edits. Use `gn_verify_diff({repo, scope:'all', changedFiles, expectedFiles})` to verify changes and `discover({action:'repos'})` to find indexed repositories.
+**Quick Start:** Call `manage({action:'ensure_fresh', repo, autoAnalyze:false})`, then `search({action:'semantic', repo, query})` for relevant code, `inspect({action:'context', repo, target})` for symbol context, and `impact({action:'symbol', repo, target, direction:'upstream'})` before edits. Use `audit({action: "verify_diff", repo, scope:'all', changedFiles, expectedFiles})` to verify changes and `discover({action:'repos'})` to find indexed repositories.
 
 If the index is stale, report it to the single coordinating session; sub-agents must never reindex.
 
