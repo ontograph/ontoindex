@@ -2808,3 +2808,18 @@ in the file. This is mitigation for availability, not a fix of the native fault.
 Open: reproduce under valgrind or core capture; quarantine timed-out lbug handles; lbug upgrade task.
 
 Full suite after round 15 (tests-full-6.log): rc=0, 770 files passed, 17762 tests passed, 0 failed, 1 expected fail, 304 skipped, 1405 s. Supersedes the "rerun pending" note in the 2026-10-28 update.
+
+## Round 16 (2026-10-28): install cleanup and retry snapshot
+
+Cleanup. Removed five verified-unused copies under `~/.local/opt` (no running process, no map/cwd
+reference, no config, wrapper or symlink reference): `ontoindex-2.3.5-rc.12`, `-core-20261023c`,
+`-workspace-20261024f`, `-workspace-20261025-batched`, `-workspace-20261025-verified`. Root
+filesystem available 24480 MB -> 27049 MB (about 2.5 GB recovered). Retained: CLI target
+`-workspace-20261025-rust`, rollback snapshot `ontoindex-2204a4f-20261028`, and
+`/opt/d1/tmp/ontoindex-next4-b64b569` (13 live MCP sessions still run it).
+Delivery. New frozen snapshot `~/.local/opt/ontoindex-f6ddde9-20261028` (dist byte-identical to the
+built tree at f6ddde9, includes the native-crash retry, 15808-file sha256 manifest, 0 symlinks).
+Fresh-process smoke PASS. `config.toml` line 46 rebound to it (only that line changed); rollback is
+`/opt/d1/tmp/ontoindex-cpp-attrib-20261028/config.toml.before-rebind2`. Real supervisor run with
+`retryNativeCrash` on the 245-file C++ corpus: OK in 25 s (no crash occurred, so the retry path
+itself is proven only by the unit tests).
