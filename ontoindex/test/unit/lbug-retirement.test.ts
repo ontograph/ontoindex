@@ -207,6 +207,29 @@ describe('retired native ownership', () => {
     await adapter.closeLbugForPath(other, { strict: true });
   });
 
+  it('closeLbug waits for an in-flight session operation instead of closing under it', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    await adapter.initLbug(alias);
+    const gate = deferred();
+    state.connections[0].close.mockReturnValue(gate.promise);
+    // A second init for another path holds the session lock while it closes the active handles.
+    const switching = adapter.initLbug(other);
+    await flush();
+    expect(state.connections[0].close).toHaveBeenCalledOnce();
+    let closed = false;
+    const closing = adapter.closeLbug().then(() => {
+      closed = true;
+    });
+    await flush();
+    expect(closed).toBe(false);
+    expect(state.databases).toHaveLength(1);
+    gate.resolve();
+    await switching;
+    await closing;
+    expect(closed).toBe(true);
+    expect(state.connections[1].close).toHaveBeenCalledOnce();
+  });
+
   it('tears down after the timed-out native call rejects, never before', async () => {
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
     await adapter.initLbug(alias);

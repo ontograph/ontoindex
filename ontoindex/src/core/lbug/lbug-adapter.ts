@@ -1814,7 +1814,8 @@ export const fetchExistingEmbeddingHashes = async (
  * session state is reset, for callers that must not publish while a handle may be open.
  */
 export const closeLbug = async (opts?: { strict?: boolean }): Promise<void> => {
-  await closeActiveLbugHandles(true, opts?.strict === true);
+  // Serialized with init/switch/close-for-path so a close cannot run under an in-flight open.
+  await runWithSessionLock(() => closeActiveLbugHandles(true, opts?.strict === true));
 };
 
 export const closeLbugForPath = async (
