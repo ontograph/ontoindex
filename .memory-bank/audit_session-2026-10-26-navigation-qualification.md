@@ -2784,3 +2784,25 @@ owning addon is still unattributed. Untested differences: the aborting run came 
 multi-worker benchmark left generations in the corpus `.ontoindex`; stale generation state is a
 candidate. Next: loop with the tracer until it fires (cheap, unattended is not allowed here, so
 foreground only), or valgrind on the reduced file range.
+
+## Round 15 (2026-10-28): C++ SIGABRT attributed, bounded retry
+
+Attribution. Stale-generation hypothesis confirmed as a trigger context: after two 4-worker
+runs seeded the 245-file C++ corpus, the 4th traced one-worker run aborted (27 s, SIGABRT,
+"free(): double free detected in tcache 2"). Tracer output `tracer/stale-4.trace` resolves to
+`@ladybugdb/core` 0.17.1 `lbugjs.node`: `NodeConnection::Close` -> shared_ptr release ->
+`lbug::main::Connection::~Connection` -> `ClientContext::~ClientContext` -> `free`. The owner is the
+native addon, on `Connection.close()` at the end of the build child. Runtime spy showed the child
+opens exactly one Database/Connection (run-analyze overlay path, `initLbug` then strict
+`closeLbugForPath`). A 30-iteration in-process open/close/GC loop and 8 glibc `malloc.check=3` runs
+did not reproduce (rate ~1 in 25 to 1 in 40, now 2 hits in about 70 runs).
+Review (4 gpt-6.1-sol read-only agents): no double close on the successful overlay path;
+timeout retirement (`lbug-adapter.ts` retireTimedOutLbugSession) can close with in-flight native
+work and `closeLbug()` bypasses `sessionLock`, both unproven here. Upstream 0.18.0 fixes a C API
+destroy double free, not proven to cover NodeConnection; upgrade is a separate validated task
+(extensions pinned to v0.17.0).
+Change (0a838b0): `superviseWorkspaceBuild` option `retryNativeCrash` (set by
+`buildWorkspaceGraph`) retries once on SIGABRT/SIGSEGV/SIGBUS inside the original deadline, after
+reaping and artifact cleanup, never on timeout/cancel/input_refused/exit code. 11 new tests, 60/60
+in the file. This is mitigation for availability, not a fix of the native fault.
+Open: reproduce under valgrind or core capture; quarantine timed-out lbug handles; lbug upgrade task.
