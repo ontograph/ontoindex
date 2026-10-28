@@ -4,6 +4,14 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.6] - 2026-10-28
+
+- Committed-mode errors identify the rejected operation and list supported navigation operations.
+- Response-budget errors report a usable retry size.
+- Verification explains omitted expected files and the coverage limits of checks with no changed production symbols.
+- Tests isolate telemetry, query logs and paged results in temporary storage.
+- Release packages exclude generated native build metadata containing developer machine paths.
+
 ## [2.3.5] - 2026-10-28
 
 - Workspace navigation supports bounded dirty-file overlays, reports covered and uncovered source files, and invalidates overlays after subsequent saves. Committed-index reads remain explicit.
