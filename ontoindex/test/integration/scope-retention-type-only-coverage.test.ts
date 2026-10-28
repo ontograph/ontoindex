@@ -41,8 +41,10 @@ describe('type-only scope retention coverage', () => {
     );
     fs.writeFileSync(
       path.join(directory, 'm.ts'),
-      ['export type M = { n: number };', 'export const { value } = { value: 1 };'].join('\n') +
-        '\n',
+      [
+        'export type M = { n: number };',
+        'export const { value: { nested } } = { value: { nested: 1 } };',
+      ].join('\n') + '\n',
     );
     fs.writeFileSync(
       path.join(directory, 'ordinary.ts'),

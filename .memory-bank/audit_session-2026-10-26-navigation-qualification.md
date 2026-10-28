@@ -2965,3 +2965,29 @@ captures.ts flatBindingNames ~699, emitTypeScriptLexicalBindingCaptures ~805, va
 `this is T` refused; they bind nothing and read nothing. (c) `import.meta`: structural `import . meta` as an unknown
 receiver root; keep `new.target` and `import.meta()` refused. (d) type_query/type_arguments: bounded `typeof ident`
 and call type arguments through `validateTypeScriptType` and `callParts`.
+
+Round 23 delivery (master 830ff7a, PRs #138 and #139 merged). New frozen snapshot
+`~/.local/opt/ontoindex-830ff7a-20261028` (b36fd4c copy with `dist` swapped in; 15,810 files, 0 symlinks, sha256
+manifest alongside; smoke PASS via `snapshot-smoke-830ff7a.py`). One coordinated analyze from that snapshot: 45.5 s,
+48,677 nodes, 78,541 edges, 935 clusters, 300 flows; canary (ensure_fresh, search, impact, context) PASS, indexed =
+HEAD = 830ff7a. Rebound `~/.ontocode/config.toml` line 46 (same inode as `/opt/d2/.ontocode/config.toml`) and the
+`~/.local/bin/ontoindex` symlink. Rollback files in `/opt/d1/tmp/ontoindex-cpp-attrib-20261028/`:
+`config.toml.before-rebind6`, `cli-symlink.before4`. Cleanup: removed `-1d77e34` and `-f6ddde9` (no live process,
+config or symlink reference, no pin in tracking, not symlinks, same filesystem; `/` free 23,048 -> 25,940 MB).
+Retained: `-b36fd4c` (one-step rollback) and `/opt/d1/tmp/ontoindex-next4-b64b569` (29 live MCP processes).
+
+Round 23 admission: object-pattern declarations. `const|let { a, b: c, d = expr, e: f = expr } = init` (also
+exported and inside bodies) is admitted. `flatBindingNames(name, defaults?)` takes an optional collector so default
+expressions are admitted only where the caller traverses them: `validateDeclaration` does, via the new exported
+`typeScriptObjectPatternDefaults`. Parameters, for-of headers and C-style `for` initializers do not pass a collector, so
+`function f({ a = 1 })`, `for (const { a = 1 } of xs)` and `for (let { a = 1 } = o; ;)` stay refused. Still refused:
+rest, nested patterns, computed and string keys, annotations, `declare`, `var`, duplicate names, defaults with
+unsupported syntax. `pair_pattern` values with defaults are `assignment_pattern`; shorthand defaults are
+`object_assignment_pattern` (installed grammar). Old tests that used `const { value } = input` and `{ bad } = {}` as
+"still refused" sentinels now use nested `{ value: { nested } }`. Census: 269 -> 280 of 759. Ranker output for the
+next packet, historical first-refusal upper bounds: type predicates 41 (`typeScriptAnnotationType`, declaration-
+captures.ts:63/70), type-level `typeof` 14 + generic call arguments 13 (declaration-captures.ts:92 `validateTypeScript
+Type`; reference-captures.ts:162 `callParts`, constructor-only restriction), `import.meta` 24 (reference-captures.ts:385
+`emitTypeScriptMemberReadCaptures`), async object-literal `execute` methods 16 (captures.ts:195), class fields 13
+(captures.ts:1353 `validateDeclaration`), receiver assertions 13 (reference-captures.ts:57), typed `catch (e: unknown)` 12,
+JSX 10, call-result spreads 5.

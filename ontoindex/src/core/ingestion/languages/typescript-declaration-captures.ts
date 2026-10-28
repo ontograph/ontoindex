@@ -694,8 +694,45 @@ function validateConstructorHeader(node: SyntaxNode, owner: SyntaxNode): void {
     unsupported(node);
 }
 
-/** Validate flat binding names without treating object property keys as bindings. */
-function flatBindingNames(name: SyntaxNode): SyntaxNode[] {
+/** Return the bound name of `left = right`, recording `right` as a default expression. */
+function bindingWithDefault(
+  node: SyntaxNode,
+  leftType: 'identifier' | 'shorthand_property_identifier_pattern',
+  defaults: SyntaxNode[],
+): SyntaxNode {
+  const left = node.childForFieldName('left');
+  const right = node.childForFieldName('right');
+  const parts = node.children.filter((child) => child.type !== 'comment');
+  if (
+    !node.isNamed ||
+    left?.type !== leftType ||
+    !left.isNamed ||
+    !right?.isNamed ||
+    parts.length !== 3 ||
+    parts[0]!.id !== left.id ||
+    parts[1]!.type !== '=' ||
+    parts[1]!.isNamed ||
+    parts[2]!.id !== right.id ||
+    parts.some((child) => child.hasError || child.isMissing)
+  )
+    unsupported(node);
+  defaults.push(right);
+  return left;
+}
+
+/** Default expressions of an object-pattern declaration, in source order, for reference traversal. */
+export function typeScriptObjectPatternDefaults(name: SyntaxNode): SyntaxNode[] {
+  const defaults: SyntaxNode[] = [];
+  flatBindingNames(name, defaults);
+  return defaults;
+}
+
+/**
+ * Validate flat binding names without treating object property keys as bindings.
+ * Defaults (`{ a = 1 }`, `{ a: b = 1 }`) are admitted only when the caller passes a
+ * collector and then traverses the collected expressions; otherwise they stay refused.
+ */
+function flatBindingNames(name: SyntaxNode, defaults?: SyntaxNode[]): SyntaxNode[] {
   if (!name.isNamed || name.hasError || name.isMissing) unsupported(name);
   if (name.type === 'identifier') {
     if (!IDENTIFIER.test(name.text)) unsupported(name);
@@ -724,8 +761,12 @@ function flatBindingNames(name: SyntaxNode): SyntaxNode[] {
     let binding = part;
     if (object && part.type === 'pair_pattern') {
       const key = part.childForFieldName('key');
-      const value = part.childForFieldName('value');
+      const rawValue = part.childForFieldName('value');
       const pair = part.children.filter((child) => child.type !== 'comment');
+      const value =
+        defaults && rawValue?.type === 'assignment_pattern'
+          ? bindingWithDefault(rawValue, 'identifier', defaults)
+          : rawValue;
       if (
         !part.isNamed ||
         key?.type !== 'property_identifier' ||
@@ -736,11 +777,13 @@ function flatBindingNames(name: SyntaxNode): SyntaxNode[] {
         pair[0]!.id !== key.id ||
         pair[1]!.type !== ':' ||
         pair[1]!.isNamed ||
-        pair[2]!.id !== value.id ||
+        pair[2]!.id !== rawValue?.id ||
         pair.some((child) => child.hasError || child.isMissing)
       )
         unsupported(part);
       binding = value;
+    } else if (defaults && object && part.type === 'object_assignment_pattern') {
+      binding = bindingWithDefault(part, 'shorthand_property_identifier_pattern', defaults);
     } else if (part.type !== (object ? 'shorthand_property_identifier_pattern' : 'identifier')) {
       unsupported(part);
     }
@@ -827,7 +870,7 @@ export function emitTypeScriptLexicalBindingCaptures(node: SyntaxNode): CaptureM
     if (name.type === 'identifier') {
       if (!IDENTIFIER.test(name.text)) unsupported(name);
       names.push(name);
-    } else if (name.type === 'array_pattern') {
+    } else if (name.type === 'array_pattern' || name.type === 'object_pattern') {
       if (
         node.parent?.type === 'ambient_declaration' ||
         (node.parent?.type === 'export_statement' &&
@@ -836,7 +879,7 @@ export function emitTypeScriptLexicalBindingCaptures(node: SyntaxNode): CaptureM
         !declarator.childForFieldName('value')
       )
         unsupported(declarator);
-      names.push(...flatBindingNames(name));
+      names.push(...flatBindingNames(name, name.type === 'object_pattern' ? [] : undefined));
     } else unsupported(name);
     const value = declarator.childForFieldName('value');
     // Mutable bindings remain Variables: an initializer cannot prove later callability.
