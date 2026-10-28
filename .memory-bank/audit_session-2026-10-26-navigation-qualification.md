@@ -2872,3 +2872,14 @@ tree, 15808-file manifest, 0 symlinks, smoke PASS) is now BOTH the MCP target (c
 rollback `/opt/d1/tmp/ontoindex-cpp-attrib-20261028/config.toml.before-rebind4`) and the CLI
 (`~/.local/bin/ontoindex`; previous target in `cli-symlink.before2`). Removed superseded `-6784cee`.
 Retained: `-f6ddde9` (rollback) and `/opt/d1/tmp/ontoindex-next4-b64b569` (live MCP sessions).
+
+Round 19 PR #135 (draft) CI. Four CI-only defects found and fixed: `build.js` did not build the gitignored
+native addon on a fresh Linux checkout; `ci.yml` passed a non-boolean `linux_only` so the `tests` jobs were
+never created on pull requests (now `inputs.linux_only == true`; `release-candidate-workflow.test.ts`
+updated to match, it was the only failing ubuntu test: 14769 passed, 1 failed); the vendored
+tree-sitter-typescript `binding.gyp` has empty targets off Linux and crashed macOS `npm ci` in node-gyp
+(`"gypfile": false`; macOS `npm ci` and build then passed). CodeQL: alert 74 (`local-backend.ts`
+`repoToolHandlers[method]`) is new on this branch and fixed with an own-property lookup. The other open
+alerts predate the branch (git-clone.ts, path-util.ts, lbug-adapter.ts:339, pool-adapter.ts:805, setup.ts:482,
+cross-impact.ts:299) and test-file alerts 73, 75-77 remain; whether CodeQL blocks the merge is the owner's call.
+Merge and undraft need explicit approval.
