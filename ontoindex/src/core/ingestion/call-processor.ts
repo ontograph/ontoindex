@@ -2243,6 +2243,8 @@ const resolveCallTarget = (
       }
       return null; // null-route: type resolved, no candidate matched
     }
+    // An external Rust receiver (e.g. HashMap) cannot own an arbitrary indexed method.
+    if (call.callForm === 'member' && currentFile.endsWith('.rs')) return null;
     return singleCandidate(tiered, call.argCount, call.callForm);
   }
   // Member call with no inferred receiver type — e.g. Python `mod.fn()`
