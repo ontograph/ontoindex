@@ -4,6 +4,14 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.5] - 2026-10-28
+
+- Workspace navigation supports bounded dirty-file overlays, reports covered and uncovered source files, and invalidates overlays after subsequent saves. Committed-index reads remain explicit.
+- TypeScript and JavaScript scope capture supports additional ordinary expressions, async declarations and methods, and flat object-pattern lexical declarations with defaults. Unsupported syntax continues to produce explicit whole-file refusals; coverage is not complete.
+- Native database handle cleanup, generation pinning and process identity checks improve reader lifecycle safety.
+- Answer grounding checks resolve cited paths and symbols against indexed evidence, with a CLI command for document verification.
+- Analyze URL handling and server grep requests enforce bounded inputs.
+
 - MCP defaults to the `core` startup profile with only the 8 facades advertised; legacy `gn_*` names remain callable aliases, and `ONTOINDEX_MCP_STARTUP_PROFILE=public-full` restores the 62-tool listing.
 - The installer allows the `ontoindex`, `tree-sitter` and `@ladybugdb/core` install scripts on npm 11 for global installs.
 - `gn_diagnose` reports `processMemory` (RSS, heap, native memory, open repository pools, buffer size and idle-exit setting) and recommends `ONTOINDEX_MCP_IDLE_EXIT_MS` when a server holds 400 MB or more of native memory with no open pool.
