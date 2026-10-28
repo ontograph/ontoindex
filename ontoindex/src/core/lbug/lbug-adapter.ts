@@ -956,7 +956,7 @@ export const loadGraphToLbug = async (
     finalRelsByPairMeta = new Map();
     if (csvResult.relByPairMeta) {
       for (const [pairKey, rows] of csvResult.relByPairMeta) {
-        const fromToSlug = pairKey.replace('|', '_to_');
+        const fromToSlug = pairKey.replaceAll('|', '_to_');
         finalRelsByPairMeta.set(pairKey, {
           csvPath: path.join(csvDir, `rels_${fromToSlug}.csv`),
           rows,

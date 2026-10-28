@@ -292,11 +292,14 @@ async function safeLocalImpact(
     error: err instanceof Error ? err.message : String(err),
   }));
   const timeoutP = new Promise<'timeout'>((resolve) => {
-    timer = setTimeout(() => {
-      controller.abort(new Error(`Local impact timed out after ${timeoutMs}ms`));
-      void closeLbug(repo.id).catch(() => {});
-      resolve('timeout');
-    }, timeoutMs);
+    timer = setTimeout(
+      () => {
+        controller.abort(new Error(`Local impact timed out after ${timeoutMs}ms`));
+        void closeLbug(repo.id).catch(() => {});
+        resolve('timeout');
+      },
+      Math.min(Math.max(timeoutMs, 0), 3_600_000),
+    );
   });
   const won = await Promise.race([
     impactP.then((v) => ({ tag: 'impact' as const, v })),
