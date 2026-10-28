@@ -2883,3 +2883,14 @@ tree-sitter-typescript `binding.gyp` has empty targets off Linux and crashed mac
 alerts predate the branch (git-clone.ts, path-util.ts, lbug-adapter.ts:339, pool-adapter.ts:805, setup.ts:482,
 cross-impact.ts:299) and test-file alerts 73, 75-77 remain; whether CodeQL blocks the merge is the owner's call.
 Merge and undraft need explicit approval.
+
+Round 19 close-out (PR #135, head 8801379, 17/17 checks pass). Pull-request tests now run Linux only
+(`ci.yml`: `inputs.linux_only == true || github.event_name == 'pull_request'`) because the native file lock
+and parser artifacts are Linux-only; macOS/Windows had 86/291 failures from that, not from regressions.
+`quoteLbugString` moved to `src/core/lbug/quote-string.ts` (escapes backslash before quote; lives outside
+`lbug-adapter.ts` because 20 test files mock that module). Three dirty-overlay tests and two semantic-model
+tests got explicit 120 s / 60 s timeouts: 7-10 s alone, over the 30 s default under parallel coverage load.
+CodeQL: alerts 75-77 dismissed as false positives (test launcher passes the cgroup path as `$1`, never
+interpolated); setup.ts hook quoting, lbug-adapter.ts slug `replaceAll`, and the cross-impact.ts timer bound
+fixed in code (a comparison guard, since CodeQL does not treat `Math.min` as a barrier). 48 older alerts remain.
+Open: lbug double free root cause, Python/C++ semantics, TS gaps, stale index at 2623820, `next4`/`f6ddde9` cleanup.
