@@ -259,14 +259,15 @@ function appendExpressionReferences(
       if (returnType) typeScriptAnnotationType(returnType);
       const parameterNode = parameter ?? parameters;
       const children = current.children.filter((child) => child.type !== 'comment');
-      const arrowIndex = returnType ? 2 : 1;
+      const parameterIndex = children[0]?.type === 'async' && !children[0].isNamed ? 1 : 0;
+      const arrowIndex = parameterIndex + (returnType ? 2 : 1);
       if (
         !parameterNode ||
         (!!parameter && !!parameters) ||
         !body ||
         children.length !== arrowIndex + 2 ||
-        children[0]!.id !== parameterNode.id ||
-        (returnType && children[1]!.id !== returnType.id) ||
+        children[parameterIndex]!.id !== parameterNode.id ||
+        (returnType && children[parameterIndex + 1]!.id !== returnType.id) ||
         children[arrowIndex]!.type !== '=>' ||
         children[arrowIndex]!.isNamed ||
         children[arrowIndex + 1]!.id !== body.id ||

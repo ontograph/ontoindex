@@ -94,6 +94,15 @@ it('/api/grep skips indexed files replaced by external symlinks and allows inter
   expect(await response.json()).toEqual({
     results: [{ filePath: 'link.txt', line: 1, text: 'needle internal' }],
   });
+  const queryCalls = mocks.executeQuery.mock.calls.length;
+  for (const query of ['pattern=needle&pattern=other', 'pattern[value]=needle']) {
+    const invalid = await fetch(`http://127.0.0.1:${address.port}/api/grep?repo=repo&${query}`, {
+      headers: { Authorization: 'Bearer grep-test-token' },
+    });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({ error: 'Missing "pattern" query parameter' });
+  }
+  expect(mocks.executeQuery).toHaveBeenCalledTimes(queryCalls);
   await fs.mkdir(path.join(repo, '.git'));
   await fs.writeFile(path.join(repo, '.git/config'), 'private git config');
   await fs.symlink(path.join(repo, '.git/config'), path.join(repo, 'config-alias'));

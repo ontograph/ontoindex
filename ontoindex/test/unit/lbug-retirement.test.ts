@@ -68,7 +68,10 @@ describe('retired native ownership', () => {
     state.databases.length = 0;
     state.pins.length = 0;
   });
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
 
   it.each(['query', 'getAll'])(
     'blocks pending %s retirement paths, retains the pin, and recovers',
@@ -108,6 +111,7 @@ describe('retired native ownership', () => {
       await flush();
       if (stage === 'getAll') expect(resultClose).toHaveBeenCalledOnce();
       expect(state.connections[0].close).toHaveBeenCalledOnce();
+      expect(state.databases[0].close).not.toHaveBeenCalled();
       connectionClose.resolve();
       await flush();
       expect(state.databases[0].close).toHaveBeenCalledOnce();
@@ -133,6 +137,7 @@ describe('retired native ownership', () => {
     async (failure) => {
       const adapter = await import('../../src/core/lbug/lbug-adapter.js');
       await adapter.initLbug(alias);
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const error = new Error('injected teardown failure');
       if (failure === 'connection') state.connections[0].close.mockRejectedValue(error);
       if (failure === 'database') state.databases[0].close.mockRejectedValue(error);
@@ -145,8 +150,9 @@ describe('retired native ownership', () => {
       expect(state.databases[0].close).not.toHaveBeenCalled();
       native.resolve();
       await flush();
-      expect(state.databases[0].close).toHaveBeenCalledOnce();
+      expect(state.databases[0].close).toHaveBeenCalledTimes(failure === 'connection' ? 0 : 1);
       expect(state.pins[0]).toHaveBeenCalledTimes(failure === 'pin' ? 1 : 0);
+      expect(warning).toHaveBeenCalledTimes(failure === 'connection' ? 1 : 0);
       for (const value of [physical, alias]) {
         await expect(adapter.closeLbugForPath(value, { strict: true })).rejects.toThrow(
           'native close',
@@ -158,8 +164,67 @@ describe('retired native ownership', () => {
       await expect(adapter.closeLbugForPath(alias, { strict: true })).rejects.toThrow(
         'native close',
       );
+      expect(state.connections[0].close).toHaveBeenCalledOnce();
+      expect(state.databases[0].close).toHaveBeenCalledTimes(failure === 'connection' ? 0 : 1);
     },
   );
+
+  it.each([false, true])(
+    'keeps the database and pin quarantined after connection close fails (strict=%s)',
+    async (strict) => {
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      await adapter.initLbug(alias);
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const error = new Error('injected connection close failure');
+      state.connections[0].close.mockRejectedValue(error);
+      if (strict) {
+        await expect(adapter.closeLbug({ strict })).rejects.toBe(error);
+      } else {
+        await adapter.closeLbug({ strict });
+      }
+      expect(adapter.isLbugReady()).toBe(false);
+      expect(state.connections[0].close).toHaveBeenCalledOnce();
+      expect(state.databases[0].close).not.toHaveBeenCalled();
+      expect(state.pins[0]).not.toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledOnce();
+      expect(warning).toHaveBeenCalledWith(
+        '[lbug] Connection close failed; session retained until process restart.',
+      );
+      for (const value of [physical, alias]) {
+        await expect(adapter.initLbug(value)).rejects.toThrow('native close');
+        await expect(adapter.closeLbugForPath(value, { strict: true })).rejects.toThrow(
+          'native close',
+        );
+      }
+      // Both strict and best-effort failure release the session lock for other paths.
+      await adapter.initLbug(other);
+      await adapter.closeLbug({ strict: true });
+      expect(state.databases[0].close).not.toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('awaits connection closure before closing the database and releasing its pin', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    await adapter.initLbug(alias);
+    const connectionClose = deferred();
+    const databaseClose = deferred();
+    state.connections[0].close.mockReturnValue(connectionClose.promise);
+    state.databases[0].close.mockReturnValue(databaseClose.promise);
+    const closing = adapter.closeLbug({ strict: true });
+    await flush();
+    expect(state.connections[0].close).toHaveBeenCalledOnce();
+    expect(state.databases[0].close).not.toHaveBeenCalled();
+    expect(state.pins[0]).not.toHaveBeenCalled();
+    connectionClose.resolve();
+    await flush();
+    expect(state.databases[0].close).toHaveBeenCalledOnce();
+    expect(state.pins[0]).not.toHaveBeenCalled();
+    databaseClose.resolve();
+    await closing;
+    expect(state.pins[0]).toHaveBeenCalledOnce();
+    expect(adapter.isLbugReady()).toBe(false);
+  });
 
   it('an older concurrent timeout leaves the replacement session intact', async () => {
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');

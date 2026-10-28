@@ -1759,8 +1759,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
-      const pattern = req.query.pattern as string;
-      if (!pattern) {
+      const pattern = req.query.pattern;
+      if (typeof pattern !== 'string' || !pattern) {
         res.status(400).json({ error: 'Missing "pattern" query parameter' });
         return;
       }

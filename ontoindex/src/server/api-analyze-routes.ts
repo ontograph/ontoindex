@@ -11,6 +11,7 @@ import {
   cloneOrPull,
   redactGitUrl,
   sweepStaleCloneStaging,
+  MAX_GIT_URL_LENGTH,
 } from './git-clone.js';
 
 let cloneStagingSweepStarted = false;
@@ -141,6 +142,10 @@ export function mountAnalyzeRoutes(
       // Input type validation
       if (repoUrl !== undefined && typeof repoUrl !== 'string') {
         res.status(400).json({ error: '"url" must be a string' });
+        return;
+      }
+      if (repoUrl !== undefined && repoUrl.length > MAX_GIT_URL_LENGTH) {
+        res.status(400).json({ error: '"url" is too long' });
         return;
       }
       if (repoLocalPath !== undefined && typeof repoLocalPath !== 'string') {

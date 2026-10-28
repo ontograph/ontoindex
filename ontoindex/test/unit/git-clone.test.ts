@@ -144,6 +144,34 @@ describe('git-clone', () => {
     expect(redactGitUrl('https://example.com/repo')).toBe('https://example.com/repo');
   });
 
+  it.each([
+    '',
+    'HTTPS://user:secret@example.com/repo',
+    'git+ssh://user@host@other/path',
+    '1abc://token@host',
+    'https://example.com/path@unchanged',
+    'https://user name@host/repo',
+    'https://host?next=https://token@other/repo',
+    'https://user:custom://token@host/repo',
+    'https://@host https://token@other',
+    'https://user\u00a0name@host',
+  ])('preserves legacy URL redaction for %j', (value) => {
+    expect(redactGitUrl(value)).toBe(value.replace(/([a-z][a-z\d+.-]*:\/\/)[^\s/]*@/gi, '$1'));
+  });
+
+  it('handles long slash, scheme and userinfo runs within a generous time bound', () => {
+    const slashes = '/'.repeat(200_000);
+    const letters = 'a'.repeat(200_000);
+    const userinfo = `https://${'@'.repeat(200_000)}example.com/repo`;
+    const started = performance.now();
+    expect(extractRepoName(`https://example.com/repo.git${slashes}`)).toBe('repo');
+    expect(extractRepoName(slashes)).toBe('unknown');
+    expect(redactGitUrl(slashes)).toBe(slashes);
+    expect(redactGitUrl(letters)).toBe(letters);
+    expect(redactGitUrl(userinfo)).toBe('https://example.com/repo');
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
   it('isolates git configuration while retaining TLS and proxy settings', () => {
     const env = gitEnvironment({
       PATH: '/bin',
