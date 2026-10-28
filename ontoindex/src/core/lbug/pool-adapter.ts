@@ -19,7 +19,7 @@ import fs from 'fs/promises';
 import path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import lbug, { type LbugValue } from '@ladybugdb/core';
-import { resolveLocalLbugExtensionPath } from './lbug-adapter.js';
+import { quoteLbugString, resolveLocalLbugExtensionPath } from './lbug-adapter.js';
 import {
   LbugOpenError,
   classifyLbugOpenDiagnostic as classifyLbugOpenError,
@@ -802,7 +802,7 @@ async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): 
         const localFtsPath = await resolveLocalLbugExtensionPath('fts');
         if (localFtsPath) {
           try {
-            const loadQuery = `LOAD EXTENSION '${localFtsPath.replace(/'/g, "\\'")}'`;
+            const loadQuery = `LOAD EXTENSION '${quoteLbugString(localFtsPath)}'`;
             await runStatement(conn, loadQuery);
             shared.ftsLoaded = true;
           } catch {

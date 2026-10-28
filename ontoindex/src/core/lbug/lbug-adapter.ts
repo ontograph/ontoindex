@@ -336,7 +336,8 @@ const getThrownMessage = (err: unknown): string | undefined =>
 const getOptionalThrownMessage = (err: unknown): string | undefined =>
   err == null ? undefined : getThrownMessage(err);
 
-const quoteLbugString = (value: string): string => value.replace(/'/g, "\\'");
+export const quoteLbugString = (value: string): string =>
+  value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
 const LADYBUG_EXTENSIONS_VERSION = 'v0.17.0';
 

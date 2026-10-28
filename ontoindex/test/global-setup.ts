@@ -11,7 +11,7 @@ import path from 'path';
 import lbug from '@ladybugdb/core';
 import type { GlobalSetupContext } from 'vitest/node';
 import { createTempDir } from './helpers/test-db.js';
-import { resolveLocalLbugExtensionPath } from '../src/core/lbug/lbug-adapter.js';
+import { quoteLbugString, resolveLocalLbugExtensionPath } from '../src/core/lbug/lbug-adapter.js';
 import { isUnavailableExtension } from '../src/core/lbug/pool-adapter.js';
 import {
   NODE_SCHEMA_QUERIES,
@@ -63,7 +63,7 @@ export default async function setup({ provide }: GlobalSetupContext) {
       let loaded = false;
       if (localFtsPath) {
         try {
-          await runStatement(`LOAD EXTENSION '${localFtsPath.replace(/'/g, "\\'")}'`);
+          await runStatement(`LOAD EXTENSION '${quoteLbugString(localFtsPath)}'`);
           loaded = true;
         } catch (error) {
           if (!isUnavailableExtension(error)) throw error;
