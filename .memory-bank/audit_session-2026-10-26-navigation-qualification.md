@@ -2930,3 +2930,18 @@ restart; nothing was killed. Observation: the analyze run reported scope-extract
 own TS files (async function declarations, class and method definitions, await, array and call shapes at
 audit-*.ts, pipeline-phases/*.ts, scope-retention-*.test.ts); those files fall back to the legacy path and are the
 next admission targets after async arrows. `.ontoindex` is 4.7 GB; root has 24 GB free.
+
+Round 21 (branch feat/ts-capture-async-unary-admission). Census of this repo's own TS files
+(`/opt/d1/tmp/ontoindex-census-r21/census.mjs`, 759 files in ontoindex/src and ontoindex-web/src): before 198 admitted /
+561 refused. The largest single gap was async function declarations (95 of 117 `function_declaration` refusals, 5 more
+async plus generic), not async arrows. Change in `typescript-captures.ts`: admit one leading anonymous `async` token on
+function declarations and on class methods; admit `await` expressions and as an expression statement; admit unary
+`+ ~ typeof void` and `-` on any operand (`!` already was). Still refused on purpose: `delete`, generics, generators
+(`async function*`), `static`/`get`/`set` methods, default and rest parameters, bare unary statements (`typeof x;`),
+`as const` on anything but a negated number literal, default-exported async functions. Review by four read-only
+`gpt-6.1-sol` agents found the diff fail-closed and found no consumer that assumes `function` is the first token; the
+export emitter still rejects `export default`. Old tests that used `+1`, `-value`, `await key` and `async function` as
+their "still refused" sentinel now use `delete ...` and `async function*`. After: 217 admitted / 542 refused. Remaining
+top refusals: array in calls 56, object_pattern 48, regex 44, type_predicate_annotation 40, binary_expression 30,
+await_expression 26 (await in positions other than a declaration initializer, return or statement), meta_property 24,
+function_declaration 23 (generic and generator). Next: object_pattern, type predicates, regex in calls, meta_property.
