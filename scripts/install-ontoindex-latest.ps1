@@ -471,6 +471,10 @@ $null = Resolve-WgetCommand
 
 $nodeMajor = Get-NodeMajorVersion
 $npmVersion = Get-NpmVersion
+$npmScriptArgs = @()
+if ([int]($npmVersion -split '\.')[0] -ge 11) {
+  $npmScriptArgs = @("--allow-scripts=ontoindex,tree-sitter,@ladybugdb/core")
+}
 if ($nodeMajor -lt 22) {
   throw "OntoIndex supports Node.js 22.12.0 through Node.js 25.x for published installs. Detected Node.js $nodeMajor.x. commander@15 requires Node.js >=22.12.0, and Windows native installs need newer npm/node-gyp. Recommended on Windows: use nvm-windows to install and activate Node.js 22 LTS or newer before retrying."
 }
@@ -527,7 +531,7 @@ try {
     }
 
     Remove-ExistingOntoIndexInstall $defaultPrefix
-    Invoke-Npm (@("install", "-g") + $npmNetworkArgs + @($installSource))
+    Invoke-Npm (@("install", "-g") + $npmNetworkArgs + $npmScriptArgs + @($installSource))
     $binPath = Find-OntoIndexCommand ""
   } catch {
     $globalInstallError = $_.Exception.Message
@@ -536,7 +540,7 @@ try {
     New-Item -ItemType Directory -Force -Path $NpmPrefix | Out-Null
     try {
       Remove-ExistingOntoIndexInstall $NpmPrefix
-      Invoke-Npm (@("install", "-g", "--prefix", $NpmPrefix) + $npmNetworkArgs + @($installSource))
+      Invoke-Npm (@("install", "-g", "--prefix", $NpmPrefix) + $npmNetworkArgs + $npmScriptArgs + @($installSource))
     } catch {
       Write-WindowsRepairInstructions $defaultPrefix
       Write-WindowsRepairInstructions $NpmPrefix

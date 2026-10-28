@@ -642,6 +642,7 @@ function rankingSidecarState() {
 }
 
 beforeEach(() => {
+  vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
   vi.clearAllMocks();
   backendMocks.queryImpl.mockResolvedValue({ definitions: [] });
   backendMocks.contextImpl.mockResolvedValue({ symbol: { name: 'main' } });
@@ -654,7 +655,11 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await Promise.all(tmpDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+  try {
+    await Promise.all(tmpDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });
 
 describe('FC Markdown per-chunk fact cap', () => {

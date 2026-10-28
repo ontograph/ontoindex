@@ -1,0 +1,31 @@
+{
+  ".memory-bank/ADW_INDEPENDENT_REVIEW_IMPLEMENTATION_PLAN.md": {
+    "snapshot": ".memory-bank/recovery/20261020-direct-unblock/ADW_INDEPENDENT_REVIEW_IMPLEMENTATION_PLAN.md",
+    "sha256": "aa0dc08beb781b994a009cdfe6b62e6b0a92bd60b65ed59d92a2de1f9d46049e"
+  },
+  ".memory-bank/AUTOMATIC_DIRTY_WORKSPACE_PROJECT_PLAN.md": {
+    "snapshot": ".memory-bank/recovery/20261020-direct-unblock/AUTOMATIC_DIRTY_WORKSPACE_PROJECT_PLAN.md",
+    "sha256": "a28cfb069941e5bd46f65ac2d34f97c9b63d2c72408c62ec5221f543fbed7151"
+  },
+  "ontoindex/src/core/analyze-delta.ts": {
+    "sha256": "d41004ea68f449a8b0983b861e89269b9bfd755553f35e63224252ea47eef734"
+  },
+  "ontoindex/src/core/indexing/source-manifest.ts": {
+    "sha256": "3a81d8c7c26540d950b37eb65c4e45ed970991278908c5e81aeff6f70d616aaa"
+  },
+  "ontoindex/test/unit/workspace-input-capture.test.ts": {
+    "sha256": "a2b12d7d2e10b023e08a718bf091a97c6f4fc249440a13387df69559a87651bc"
+  },
+  "ontoindex/src/cli/analyze.ts": {
+    "sha256": "305b9141e4268d105cadf1bc7173b5ed1e21a566b6bb6a7e3ba9e982508f256e"
+  },
+  "ontoindex/src/core/analysis/analysis-coordinator.ts": {
+    "sha256": "dd1cc9a71d9af339769b88bbf81466ec576946545dd205791c33394d2677899a"
+  },
+  "ontoindex/test/unit/analyze-lock.test.ts": {
+    "sha256": "47c43668afc8e9e0105b89efa3a2506e06c610924cd98b35db2d1efe29015132"
+  },
+  "ontoindex/test/unit/analysis-coordinator.test.ts": {
+    "sha256": "017b7a3c4a7c3fe6f41f8905b90b47d120ec14a37af87682c7dfbeaa59778869"
+  }
+}

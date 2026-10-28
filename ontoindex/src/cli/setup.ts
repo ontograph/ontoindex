@@ -78,8 +78,8 @@ const ONTOINDEX_AGENT_GUIDANCE = `# OntoIndex
 When the user asks to use OntoIndex, or when code work depends on architecture,
 impact, review, routing, or graph context, use available OntoIndex MCP tools
 before claiming graph-backed analysis. Useful tools include \`search\`, \`inspect\`,
-\`impact\`, \`gn_explore\`, \`gn_diagnose\`, \`gn_diff_impact\`, \`gn_review_diff\`,
-\`gn_verify_diff\`, and related \`gn_*\` tools.
+\`impact\`, \`audit\`, and \`gn_diagnose\`. For diff review, use
+\`audit({action: "review_diff"})\`.
 
 Never claim OntoIndex was used unless an OntoIndex MCP call or \`ontoindex://\`
 resource read actually returned. If only \`rg\`, \`sed\`, shell commands, or local
@@ -93,10 +93,10 @@ inspection is acceptable; do not label it OntoIndex evidence.
 For non-trivial code research/analysis on an indexed repo, use OntoIndex early,
 then verify exact claims from source:
 
-1. Explore/search -> \`gn_explore\` or \`search\`
+1. Explore/search -> \`inspect({action: "explore", query: "concept"})\` or \`search\`
 2. Inspect/context -> \`inspect\` for callers, callees, and execution flows
-3. Impact before edits -> \`impact\` or \`gn_diff_impact\`
-4. gn_verify_diff before commit -> \`gn_verify_diff\` to confirm scope
+3. Impact before edits -> \`impact\` or \`impact({action: "diff_impact"})\`
+4. Verify diff before commit -> \`audit({action: "verify_diff"})\` to confirm scope
 
 The graph index is commit-based. When current HEAD differs from the indexed
 commit, exactly one process must re-analyze before graph-backed claims. Never
@@ -479,7 +479,7 @@ async function installGenericHooks(
     }
 
     const hookPath = path.join(destHooksDir, 'ontoindex-hook.cjs').replace(/\\/g, '/');
-    const hookCmd = `node "${hookPath.replace(/"/g, '\\"')}"`;
+    const hookCmd = `node ${JSON.stringify(hookPath)}`;
 
     const parsedSettings = await readJsonFile(settingsPath);
     // Codex/Ontocode use a top-level hooks object usually, but let's be robust

@@ -157,7 +157,27 @@ export const buildFileReceiverTypeIndexes = (
   const fileReceiverTypes = new Map<string, ReceiverTypeIndex>();
   if (!constructorBindings) return fileReceiverTypes;
 
+  const bindingsByFile = new Map<string, readonly ConstructorBinding[]>();
+  let copiedFiles: Set<string> | undefined;
   for (const { filePath, bindings } of constructorBindings) {
+    const previous = bindingsByFile.get(filePath);
+    if (!previous) {
+      bindingsByFile.set(filePath, bindings);
+      continue;
+    }
+    let fileBindings: ConstructorBinding[];
+    if (copiedFiles?.has(filePath)) {
+      fileBindings = previous as ConstructorBinding[];
+    } else {
+      fileBindings = [];
+      for (const binding of previous) fileBindings.push(binding);
+      bindingsByFile.set(filePath, fileBindings);
+      (copiedFiles ??= new Set()).add(filePath);
+    }
+    for (const binding of bindings) fileBindings.push(binding);
+  }
+
+  for (const [filePath, bindings] of bindingsByFile) {
     const verified = verifyConstructorBindings(bindings, filePath, ctx, graph, bindingAccumulator);
     if (verified.size > 0) {
       fileReceiverTypes.set(filePath, buildReceiverTypeIndex(verified));

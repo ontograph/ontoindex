@@ -1,103 +1,201 @@
-/**
- * Integration Test Harness: replace_symbol Round-trip
- *
- * This test loops over fixtures in ontoindex/test/fixtures/replace-symbol/,
- * calls the replace_symbol tool, and verifies that the resulting code matches
- * the expected output.
- *
- * NOTE: This is initially skipped (.skip) until the senior developer
- * completes the AST-based implementation of the tool handler.
- */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { replaceSymbol } from '../../src/mcp/local/backend-symbol-mutations.js';
+import { resolveSymbolCandidates } from '../../src/mcp/local/backend-symbol-resolution.js';
 
-// Mock the LadybugDB and RepoManager for these integration tests
-// because we are testing the tool's coordination logic and file editing,
-// not the graph database itself.
-vi.mock('../../src/core/lbug/pool-adapter.js', () => ({
-  initLbug: vi.fn().mockResolvedValue(undefined),
-  executeQuery: vi.fn().mockResolvedValue([]),
-  executeParameterized: vi.fn().mockResolvedValue([]),
-  closeLbug: vi.fn().mockResolvedValue(undefined),
-  isLbugReady: vi.fn().mockReturnValue(true),
-  isWriteQuery: vi.fn().mockReturnValue(false),
+// Keep symbol lookup deterministic; parsing, filesystem access and replacement are real.
+vi.mock('../../src/mcp/local/backend-symbol-resolution.js', () => ({
+  resolveSymbolCandidates: vi.fn(),
 }));
 
-vi.mock('../../src/storage/repo-manager.js', () => ({
-  listRegisteredRepos: vi.fn().mockResolvedValue([
-    {
-      name: 'test-repo',
-      path: process.cwd(),
-      storagePath: path.join(process.cwd(), '.ontoindex/test-repo'),
-      indexedAt: new Date().toISOString(),
-      lastCommit: 'HEAD',
-      stats: { files: 10, nodes: 100 },
-    },
-  ]),
-}));
+const fixturesDir = fileURLToPath(new URL('../fixtures/replace-symbol/', import.meta.url));
+const cases = [
+  ['ts-decorator', 'method', 7, 9],
+  ['ts-template-literal', 'template', 1, 7],
+  ['ts-as-const', 'getConst', 1, 6],
+  ['ts-generic', 'identity', 1, 4],
+  ['ts-arrow', 'myArrow', 1, 3],
+  ['ts-class-method', 'myMethod', 2, 5],
+  ['ts-async', 'fetchData', 1, 4],
+  ['ts-overload', 'overload', 3, 8],
+  ['ts-default-export', 'defaultExport', 1, 4],
+  ['ts-mixed', 'second', 5, 8],
+] as const;
 
-import { LocalBackend } from '../../src/mcp/local/local-backend.js';
-
-describe.skip('replace_symbol round-trip fixtures', () => {
-  let backend: LocalBackend;
-  const fixturesDir = path.join(process.cwd(), 'ontoindex/test/fixtures/replace-symbol');
+describe('replace_symbol real filesystem round trips', () => {
+  let repo: { id: string; repoPath: string };
 
   beforeEach(async () => {
-    backend = new LocalBackend({ confirmWrites: true });
-    await backend.init();
+    vi.clearAllMocks();
+    const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'replace-symbol-'));
+    repo = { id: repoPath, repoPath };
+  });
+  afterEach(async () => {
+    await fs.rm(repo.repoPath, { recursive: true, force: true });
   });
 
-  const cases = [
-    'ts-decorator',
-    'ts-template-literal',
-    'ts-as-const',
-    'ts-generic',
-    'ts-arrow',
-    'ts-class-method',
-    'ts-async',
-    'ts-overload',
-    'ts-default-export',
-    'ts-mixed',
-  ];
-
-  it.each(cases)('correctly replaces body for %s', async (caseName) => {
-    const inputPath = path.join(fixturesDir, `${caseName}.in.ts`);
-    const expectedPath = path.join(fixturesDir, `${caseName}.expected.ts`);
-
-    const inputContent = await fs.readFile(inputPath, 'utf-8');
-    const expectedContent = await fs.readFile(expectedPath, 'utf-8');
-
-    // In a real integration test, replace_symbol would:
-    // 1. Look up the symbol via UID in the graph (mocked here or using a real test DB)
-    // 2. Read the source file
-    // 3. Use tree-sitter to find the body boundaries
-    // 4. Splice in the new body
-    // 5. Return the full content (or a diff)
-
-    // For the harness, we simulate the tool call.
-    // The UID format is usually Label:name
-    const uid = `Function:${caseName}`;
-
-    // Note: new_body should be extracted from the expected file for a true round-trip test,
-    // or hardcoded if we know what we put in the fixtures.
-    // Here we assume the fixture creation used a predictable replacement.
-    const newBody = 'return "replaced";';
-
-    const result = await backend.callTool('replace_symbol', {
-      uid,
-      new_body: newBody,
-      dry_run: false,
-      confirm: true,
-      repo: 'test-repo',
+  function resolve(filePath: string, name: string, startLine: number, endLine: number) {
+    vi.mocked(resolveSymbolCandidates).mockResolvedValue({
+      kind: 'ok',
+      resolvedLabel: 'Function',
+      symbol: { id: 'target', type: 'Function', name, filePath, startLine, endLine },
     });
+  }
 
-    expect(result.success).toBe(true);
+  it.each(cases)('replaces only the body in %s', async (fixture, name, start, end) => {
+    const input = await fs.readFile(path.join(fixturesDir, `${fixture}.in.ts`), 'utf8');
+    const expected = await fs.readFile(path.join(fixturesDir, `${fixture}.expected.ts`), 'utf8');
+    const target = path.join(repo.repoPath, 'source.ts');
+    await fs.writeFile(target, input);
+    resolve('source.ts', name, start, end);
+    const new_body = ['ts-arrow', 'ts-generic'].includes(fixture)
+      ? 'return "replaced" as any;'
+      : 'return "replaced";';
+    const params = { uid: 'target', new_body, dry_run: false, confirm: true };
+    expect(
+      await replaceSymbol(repo, { ...params, dry_run: true, confirm: false }, false),
+    ).toMatchObject({ success: true, dry_run: true });
+    expect(await fs.readFile(target, 'utf8')).toBe(input);
+    expect(await replaceSymbol(repo, params, true)).toMatchObject({
+      success: true,
+      dry_run: false,
+    });
+    expect(await fs.readFile(target, 'utf8')).toBe(expected);
+  });
 
-    // After the implementation is ready, we would check the file content on disk
-    // or the returned diff. For now, this harness is the shell.
-    if (result.content) {
-      expect(result.content).toBe(expectedContent);
+  it.each([
+    [
+      'source.js',
+      'function target() {\n  return 1;\n}\n// suffix\n',
+      'return 2;',
+      'function target() {\n  return 2;\n}\n// suffix\n',
+    ],
+    [
+      'source.cpp',
+      'int target() {\n  return 1;\n}\n// suffix\n',
+      'return 2;',
+      'int target() {\n  return 2;\n}\n// suffix\n',
+    ],
+    [
+      'source.rs',
+      'fn target() -> i32 {\n    1\n}\n// suffix\n',
+      '2',
+      'fn target() -> i32 {\n    2\n}\n// suffix\n',
+    ],
+    [
+      'source.py',
+      'def target():\n    return 1\n\n# suffix\n',
+      'if True:\n    return 2\nreturn 3',
+      'def target():\n    if True:\n        return 2\n    return 3\n\n# suffix\n',
+    ],
+    [
+      'source.ts',
+      '// 😀\r\nfunction target() {\r\n  return 1;\r\n}\r\n// suffix\r\n',
+      'return "é";',
+      '// 😀\r\nfunction target() {\r\n  return "é";\r\n}\r\n// suffix\r\n',
+    ],
+  ])('preserves surrounding bytes in %s', async (filePath, input, new_body, expected) => {
+    const target = path.join(repo.repoPath, filePath);
+    await fs.writeFile(target, input);
+    resolve(
+      filePath,
+      'target',
+      input.startsWith('//') ? 2 : 1,
+      filePath.endsWith('.py') ? 2 : input.startsWith('//') ? 4 : 3,
+    );
+    await replaceSymbol(repo, { uid: 'target', new_body, confirm: true }, true);
+    expect(await fs.readFile(target, 'utf8')).toBe(expected);
+  });
+
+  it.each([
+    { body: 'return (;', start: 1, end: 3 },
+    { body: '} function injected() {', start: 1, end: 3 },
+    { body: 'return 2;', start: 2, end: 3 },
+    { body: 'return 2;', start: 1, end: 99 },
+  ])('fails closed for malformed replacement or stale ranges: %j', async ({ body, start, end }) => {
+    const input = 'function target() {\n  return 1;\n}\n';
+    const target = path.join(repo.repoPath, 'source.ts');
+    await fs.writeFile(target, input);
+    resolve('source.ts', 'target', start, end);
+    await expect(
+      replaceSymbol(repo, { uid: 'target', new_body: body, confirm: true }, true),
+    ).rejects.toThrow();
+    expect(await fs.readFile(target, 'utf8')).toBe(input);
+  });
+
+  it('rejects inline Python suites without changing the file', async () => {
+    const input = 'def target(): return 1\n';
+    const target = path.join(repo.repoPath, 'source.py');
+    await fs.writeFile(target, input);
+    resolve('source.py', 'target', 1, 1);
+    await expect(
+      replaceSymbol(repo, { uid: 'target', new_body: 'return 2', confirm: true }, true),
+    ).rejects.toThrow();
+    expect(await fs.readFile(target, 'utf8')).toBe(input);
+  });
+
+  it('rejects an ambiguous symbol resolution', async () => {
+    vi.mocked(resolveSymbolCandidates).mockResolvedValue({ kind: 'ambiguous', candidates: [] });
+    await expect(
+      replaceSymbol(repo, { uid: 'target', new_body: 'return 2;', confirm: true }, true),
+    ).rejects.toThrow(/not found or ambiguous/);
+  });
+
+  it('rejects unsupported languages before writing', async () => {
+    const target = path.join(repo.repoPath, 'source.go');
+    const input = 'func target() int { return 1 }\n';
+    await fs.writeFile(target, input);
+    resolve('source.go', 'target', 1, 1);
+    await expect(
+      replaceSymbol(repo, { uid: 'target', new_body: 'return 2', confirm: true }, true),
+    ).rejects.toThrow(/Unsupported replacement language/);
+    expect(await fs.readFile(target, 'utf8')).toBe(input);
+  });
+
+  it.each([
+    ['source.ts', 'function target() {\n  return 1;\n}\n', 'return `first\nsecond`;'],
+    ['source.py', 'def target():\n    return 1\n', 'return """first\nsecond"""'],
+  ])(
+    'rejects multiline literal formatting that could change values in %s',
+    async (filePath, input, new_body) => {
+      const target = path.join(repo.repoPath, filePath);
+      await fs.writeFile(target, input);
+      resolve(filePath, 'target', 1, filePath.endsWith('.py') ? 2 : 3);
+      for (const dry_run of [true, false]) {
+        await expect(
+          replaceSymbol(repo, { uid: 'target', new_body, confirm: true, dry_run }, true),
+        ).rejects.toThrow(/Multiline string literals|Replacement escapes the callable body/);
+        expect(await fs.readFile(target, 'utf8')).toBe(input);
+      }
+    },
+  );
+
+  it('refuses a source replaced by an outside symlink immediately before opening for write', async () => {
+    const input = 'function target() {\n  return 1;\n}\n';
+    const target = path.join(repo.repoPath, 'source.ts');
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'replace-outside-'));
+    const outside = path.join(outsideDir, 'source.ts');
+    const open = fs.open.bind(fs);
+    await fs.writeFile(target, input);
+    await fs.writeFile(outside, input);
+    resolve('source.ts', 'target', 1, 3);
+    const spy = vi.spyOn(fs, 'open').mockImplementationOnce(async (...args) => {
+      await fs.unlink(target);
+      await fs.symlink(outside, target);
+      return Reflect.apply(open, undefined, args);
+    });
+    try {
+      await expect(
+        replaceSymbol(repo, { uid: 'target', new_body: 'return 2;', confirm: true }, true),
+      ).rejects.toThrow();
+      expect(await fs.readFile(outside, 'utf8')).toBe(input);
+      expect(await fs.readlink(target)).toBe(outside);
+    } finally {
+      spy.mockRestore();
+      await fs.rm(outsideDir, { recursive: true, force: true });
     }
   });
 });

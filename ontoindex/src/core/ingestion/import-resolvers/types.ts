@@ -9,6 +9,7 @@ import type {
   GoModuleConfig,
   CSharpProjectConfig,
   ComposerConfig,
+  ImportConfigObservations,
 } from '../language-config.js';
 import type { SwiftPackageConfig } from '../language-config.js';
 import type { SuffixIndex } from './utils.js';
@@ -29,6 +30,8 @@ export type ImportResult =
 
 /** Bundled language-specific configs loaded once per ingestion run. */
 export interface ImportConfigs {
+  rustCrateRoots?: readonly string[];
+  observations?: ImportConfigObservations;
   tsconfigPaths: TsconfigPaths | null;
   goModule: GoModuleConfig | null;
   composerConfig: ComposerConfig | null;
@@ -48,6 +51,7 @@ export interface ImportResolutionContext {
 /** Full context for import resolution: file lookups + language configs. */
 export interface ResolveCtx extends ImportResolutionContext {
   configs: ImportConfigs;
+  rustDeclaredModules?: readonly string[];
 }
 
 /** Per-language import resolver -- function alias matching ExportChecker/CallRouter pattern. */

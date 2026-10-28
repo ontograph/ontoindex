@@ -12,6 +12,7 @@ import v8 from 'node:v8';
 import {
   processCalls,
   buildImportedReturnTypeMaps,
+  type CallQueryCache,
   type ExportedTypeMap,
 } from '../call-processor.js';
 import type { createResolutionContext } from '../model/resolution-context.js';
@@ -135,6 +136,7 @@ export async function runCrossFileBindingPropagation(
   let crossFileResolved = 0;
   const crossFileStart = Date.now();
   const astCache = createASTCache(AST_CACHE_CAP);
+  const queryCache: CallQueryCache = new Map();
   const fileTimings: CrossFileFileTiming[] = [];
 
   for (const level of levels) {
@@ -216,6 +218,9 @@ export async function runCrossFileBindingPropagation(
         bindings.size > 0 ? bindings : undefined,
         importedReturnTypesMap.size > 0 ? importedReturnTypesMap : undefined,
         importedRawReturnTypesMap.size > 0 ? importedRawReturnTypesMap : undefined,
+        undefined,
+        undefined,
+        queryCache,
       );
       fileTimings.push({
         filePath,

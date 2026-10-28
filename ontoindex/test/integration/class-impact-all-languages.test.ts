@@ -13,10 +13,13 @@
  * All languages share a single DB instance (withTestLbugDB clears+reseeds per
  * file). Node IDs are namespaced by language to avoid collisions.
  */
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
+
+beforeAll(() => vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0'));
+afterAll(() => vi.unstubAllEnvs());
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/storage/repo-manager.js')>()),

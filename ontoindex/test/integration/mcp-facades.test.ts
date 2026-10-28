@@ -1,4 +1,4 @@
-import { beforeEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 
 // ─── Mock pool-adapter ─────────────────────────────────────────────────────
 const { lbugMocks } = vi.hoisted(() => ({
@@ -91,9 +91,17 @@ import { ONTOINDEX_FACADE_TOOLS } from '../../src/mcp/facade/tool-definitions.js
 import * as superDispatch from '../../src/mcp/super/dispatch.js';
 import { ONTOINDEX_SUPER_TOOLS } from '../../src/mcp/super/tool-definitions.js';
 import type { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { resetEvidenceReadLedgerForTests } from '../../src/core/runtime/evidence-read-ledger.js';
 
 describe('MCP Facade Integration (M-1)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
   beforeEach(() => {
+    vi.stubEnv('ONTOINDEX_MCP_STARTUP_PROFILE', 'core');
+    resetEvidenceReadLedgerForTests();
     execFileTextMock.mockReset();
     execFileTextMock.mockImplementation(async (_command: string, args: string[]) => {
       if (args[0] === 'diff' && args.includes('--name-only'))
@@ -154,6 +162,21 @@ describe('MCP Facade Integration (M-1)', () => {
     const result = (await dispatchFacade('discover', 'tools', { repo: 'fixture' }, backend)) as any;
 
     expect(result.source).toBe('mcp-frontier');
+    expect(result.startupProfile).toBe('core');
+    expect(result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual(
+      ONTOINDEX_FACADE_TOOLS.map((tool) => tool.name).sort(),
+    );
+    expect(result.count).toBe(8);
+    expect(result.compatibilityTools).toEqual([]);
+    expect(backend.callTool).not.toHaveBeenCalledWith('tool_map', expect.anything());
+  });
+
+  it('discover(action="tools") includes compatibility tools under public-full', async () => {
+    vi.stubEnv('ONTOINDEX_MCP_STARTUP_PROFILE', 'public-full');
+    const backend = createFacadeBackend();
+    const result = (await dispatchFacade('discover', 'tools', { repo: 'fixture' }, backend)) as any;
+
+    expect(result.startupProfile).toBe('public-full');
     expect(result.tools.map((tool: { name: string }) => tool.name)).toEqual(
       expect.arrayContaining(['search', 'inspect', 'impact', 'gn_verify_diff']),
     );
@@ -196,6 +219,56 @@ describe('MCP Facade Integration (M-1)', () => {
       scope: 'unstaged',
     });
   });
+
+  it.each([
+    { options: {}, expectedRange: '--cached', expectedPaths: ['src/alpha.ts', 'src/beta.ts'] },
+    {
+      options: {
+        scope: 'commit-range',
+        commitRange: 'HEAD~1..HEAD',
+        includePaths: ['src/alpha.ts'],
+        includeReviewers: false,
+        profile: 'pr-pack',
+      },
+      expectedRange: `${'a'.repeat(40)}..${'b'.repeat(40)}`,
+      expectedPaths: ['src/alpha.ts'],
+    },
+  ])(
+    'impact diff_impact matches the real super report: %j',
+    async ({ options, expectedRange, expectedPaths }) => {
+      const backend = createFacadeBackend();
+      const direct = (await superDispatch.dispatchSuper(
+        'gn_diff_impact',
+        options,
+        'fixture',
+      )) as Record<string, any>;
+      // Compare independent requests with the same process-local evidence history.
+      resetEvidenceReadLedgerForTests();
+      const facade = (await dispatchFacade(
+        'impact',
+        'diff_impact',
+        { action: 'diff_impact', repo: 'fixture', ...options },
+        backend,
+      )) as Record<string, any>;
+      expect(facade).toMatchObject(direct);
+      expect(facade).toMatchObject({
+        commitRange: expectedRange,
+        totalSymbolsChanged: 1,
+        basedOnReads: { graph_evidence: 1 },
+      });
+      expect(execFileTextMock).toHaveBeenCalledWith(
+        'git',
+        ['diff', expectedRange, '--name-only'],
+        expect.objectContaining({ cwd: '/tmp/fixture-repo' }),
+      );
+      expect(diffReviewMocks.buildDiffReview).toHaveBeenCalledWith(
+        'fixture',
+        expectedPaths,
+        expect.any(Map),
+      );
+      expect(backend.callTool).not.toHaveBeenCalled();
+    },
+  );
 
   it('search(action="semantic") exposes exactly one typed structured shape', () => {
     const searchTool = ONTOINDEX_FACADE_TOOLS.find((tool) => tool.name === 'search')!;
@@ -348,6 +421,78 @@ describe('MCP Facade Integration (M-1)', () => {
     dispatchSpy.mockRestore();
   });
 
+  it('preserves the real audit lint empty-input result through the facade', async () => {
+    const backend = createFacadeBackend();
+    const params = { repo: 'fixture', persist: false };
+    const direct = await superDispatch.dispatchSuper('gn_audit_lint', params, 'fixture');
+    const facade = await dispatchFacade('audit', 'lint', params, backend);
+
+    expect(facade).toEqual(direct);
+    expect(facade).toMatchObject({
+      action: 'audit-lint',
+      ok: true,
+      exitRecommendation: 'zero',
+      issues: [],
+      skipReasons: ['missing-session-or-findings'],
+      summary: { findings: 0, bundles: 0, issueCount: 0 },
+    });
+    expect(backend.callTool).not.toHaveBeenCalled();
+  });
+
+  it.each(['session', 'sessionId'])(
+    'preserves real audit lint issues and cursor page size with the %s alias',
+    async (sessionKey) => {
+      const backend = createFacadeBackend();
+      const params = {
+        repo: 'fixture',
+        [sessionKey]: 'lint-parity-session',
+        findings: ['A-1', 'B-1'].map((findingId) => ({
+          findingId,
+          status: 'OPEN',
+          rootCauseId: `root-${findingId}`,
+          fingerprint: { location: findingId, claim: findingId, history: findingId },
+        })),
+        bundles: [],
+        maxIssues: 1,
+        persist: false,
+      };
+      const direct = (await superDispatch.dispatchSuper('gn_audit_lint', params, 'fixture')) as any;
+      const facade = (await dispatchFacade('audit', 'lint', params, backend)) as any;
+
+      expect(facade).toEqual(direct);
+      expect(facade).toMatchObject({
+        sessionId: 'lint-parity-session',
+        ok: false,
+        exitRecommendation: 'nonzero',
+        skipReasons: [],
+        summary: { findings: 2, bundles: 0, issueCount: 2 },
+        issues: [{ findingId: 'A-1', ruleId: 'open-requires-fresh-evidence' }],
+        limits: { emitted: 1, total: 2, truncated: true, maxIssues: 1 },
+        cursor: { offset: 0, pageSize: 1, returned: 1, total: 2, hasMore: true },
+      });
+      expect(facade.responseContract.nextCursor).toEqual(expect.any(String));
+      expect(facade.responseContract.nextCursor).toBe(facade.cursor.next);
+
+      const nextParams = {
+        ...params,
+        maxIssues: 50,
+        cursor: facade.responseContract.nextCursor,
+      };
+      const directNext = await superDispatch.dispatchSuper('gn_audit_lint', nextParams, 'fixture');
+      const facadeNext = await dispatchFacade('audit', 'lint', nextParams, backend);
+
+      expect(facadeNext).toEqual(directNext);
+      expect(facadeNext).toMatchObject({
+        sessionId: 'lint-parity-session',
+        issues: [{ findingId: 'B-1', ruleId: 'open-requires-fresh-evidence' }],
+        limits: { emitted: 1, total: 2, truncated: true, maxIssues: 1 },
+        cursor: { offset: 1, pageSize: 1, returned: 1, total: 2, hasMore: false },
+        responseContract: { expandable: false, omittedItems: 0 },
+      });
+      expect(backend.callTool).not.toHaveBeenCalled();
+    },
+  );
+
   it('routes facade audit write-through actions through super-function dispatch', async () => {
     const fakeBackend = {
       resolveRepo: vi.fn(async () => ({ id: 'fixture' })),
@@ -368,6 +513,9 @@ describe('MCP Facade Integration (M-1)', () => {
       'gn_verify_diff',
       { expectedFiles: ['src/foo.ts'], expectedSymbols: ['foo'] },
       'fixture',
+      undefined,
+      undefined,
+      fakeBackend,
     );
     expect(result.tool).toBe('gn_verify_diff');
     expect(fakeBackend.callTool).not.toHaveBeenCalled();
@@ -411,6 +559,61 @@ describe('MCP Facade Integration (M-1)', () => {
   it('gn_review_diff is registered in SUPER_NAMES', () => {
     const { SUPER_NAMES } = superDispatch;
     expect(SUPER_NAMES.has('gn_review_diff' as any)).toBe(true);
+  });
+
+  it.each([
+    { options: {}, expectedRange: '--cached' },
+    { options: { scope: 'commit-range' }, expectedRange: '--cached' },
+    {
+      options: {
+        scope: 'commit-range',
+        commitRange: 'HEAD~1..HEAD',
+        includePaths: ['src/alpha.ts'],
+      },
+      expectedRange: `${'a'.repeat(40)}..${'b'.repeat(40)}`,
+    },
+  ])('audit review matches the real super envelope: %j', async ({ options, expectedRange }) => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1700000000000);
+    try {
+      const backend = createFacadeBackend();
+      const direct = (await superDispatch.dispatchSuper(
+        'gn_review_diff',
+        options,
+        'fixture',
+      )) as Record<string, any>;
+      const facade = (await dispatchFacade(
+        'audit',
+        'review_diff',
+        { action: 'review_diff', repo: 'fixture', ...options },
+        backend,
+      )) as Record<string, any>;
+      expect(facade).toMatchObject(direct);
+      expect(facade).toMatchObject({
+        envelopeVersion: '1',
+        tool: 'gn_review_diff',
+        results: { resolvedRange: expectedRange },
+      });
+      expect(execFileTextMock).toHaveBeenCalledWith(
+        'git',
+        ['diff', expectedRange, '--name-only'],
+        expect.objectContaining({ cwd: '/tmp/fixture-repo' }),
+      );
+      expect(diffReviewMocks.buildDiffReview).toHaveBeenCalled();
+      expect(backend.callTool).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('audit review preserves super scope validation without legacy fallback', async () => {
+    const backend = createFacadeBackend();
+    await expect(
+      superDispatch.dispatchSuper('gn_review_diff', { scope: 'unstaged' }, 'fixture'),
+    ).rejects.toThrow(/scope/);
+    await expect(
+      dispatchFacade('audit', 'review_diff', { scope: 'unstaged' }, backend),
+    ).rejects.toThrow(/scope/);
+    expect(backend.callTool).not.toHaveBeenCalled();
   });
 
   it('gn_review_diff dispatches through dispatchSuper and returns an ADR 0018 envelope', async () => {
@@ -626,6 +829,9 @@ function createFacadeBackend(): LocalBackend & {
   resolveRepo: ReturnType<typeof vi.fn>;
 } {
   return {
+    ensureRepoInitialized: vi.fn(async () => {}),
+    withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => operation()),
+    withCommittedGraphNotice: vi.fn(async (result) => result),
     callTool: vi.fn(async (method: string) => {
       if (method === 'list_repos') return mockRepos;
       if (method === 'audit_report') return { status: 'success', summary: 'Mock audit report' };

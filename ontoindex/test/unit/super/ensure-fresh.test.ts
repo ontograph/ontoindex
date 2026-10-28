@@ -61,6 +61,8 @@ import { EventEmitter } from 'events';
 import { execFile, spawn } from 'child_process';
 import { readFileSync } from 'fs';
 import { gnEnsureFresh, resetFreshnessCache } from '../../../src/mcp/super/ensure-fresh.js';
+import { dispatchFacade } from '../../../src/mcp/facade/dispatch.js';
+import type { LocalBackend } from '../../../src/mcp/local/local-backend.js';
 import { readRuntimeHealth } from '../../../src/core/runtime/runtime-health.js';
 import {
   loadMeta,
@@ -667,6 +669,33 @@ describe('gnEnsureFresh', () => {
     expect(report.actionsTaken[0]).toContain('analyze --force --embeddings');
   });
 
+  it.each([undefined, false])(
+    'does not require repair or submit analysis for optional missing embeddings (%s)',
+    async (withEmbeddings) => {
+      setupExecFile({ currentCommit: CURRENT_COMMIT });
+      mockReadFileSync.mockReturnValue(
+        makeRegistry({ lastCommit: CURRENT_COMMIT, embeddings: 0 }) as any,
+      );
+      mockLoadMeta.mockResolvedValue(makeMeta({ embeddings: 0 }) as any);
+      delete process.env.ONTOINDEX_EMBEDDING_MODEL_HASH;
+
+      const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true, withEmbeddings });
+
+      expect(report.embeddingsStatus).toMatchObject({
+        count: 0,
+        status: 'missing',
+        required: false,
+        repairCommand: 'ontoindex analyze --force --embeddings',
+      });
+      expect(report.embeddingsStatus).not.toHaveProperty('prerequisites');
+      expect(report.recommendations.some((r) => r.includes('--embeddings'))).toBe(false);
+      expect(report.analysisSubmission).toEqual({ status: 'not-needed' });
+      expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+      expect(mockComputeSourceManifest).not.toHaveBeenCalled();
+      expect(report.actionsTaken).toHaveLength(0);
+    },
+  );
+
   it('does not submit analysis when HEAD and requested embeddings are already satisfied', async () => {
     setupExecFile({ currentCommit: CURRENT_COMMIT });
     mockReadFileSync.mockReturnValue(
@@ -731,6 +760,10 @@ describe('gnEnsureFresh', () => {
       status: 'blocked',
       reasonCode: 'WORKTREE_STATUS_UNAVAILABLE',
     });
+    expect(report.recommendations).toContain(
+      'Restore the git worktree status probe before retrying autoAnalyze.',
+    );
+    expect(report.recommendations.some((r) => r.includes('worktree is clean'))).toBe(false);
   });
 
   it.each(['', 'not-a-commit'])(
@@ -824,6 +857,7 @@ describe('gnEnsureFresh', () => {
     expect(report.embeddingsStatus.status).toBe('drifted');
     expect(report.embeddingsStatus.reason).toContain('stored-hash');
     expect(report.embeddingsStatus.repairCommand).toBe('ontoindex analyze --force --embeddings');
+    expect(report.recommendations).toContain('ontoindex analyze --force --embeddings');
   });
 
   it('keeps embeddingsStatus.ok when embeddings exist and the runtime hash is unset', async () => {
@@ -869,6 +903,30 @@ describe('gnEnsureFresh', () => {
       reasonCode: 'REPO_NOT_REGISTERED',
       message: 'Repository is not registered; analysis cannot be submitted.',
     });
+  });
+
+  it('preserves the real unregistered-repo freshness report through the facade', async () => {
+    setupExecFile({ currentCommit: CURRENT_COMMIT });
+    mockReadFileSync.mockReturnValue('[]');
+    const resolveRepo = vi
+      .fn()
+      .mockRejectedValue(new Error('repository resolution must be bypassed'));
+    const backend = { resolveRepo } as unknown as LocalBackend;
+    const params = { repo: REPO_ID, autoAnalyze: true };
+
+    const directReport = await gnEnsureFresh(REPO_ID, params);
+    resetFreshnessCache();
+    const facadeReport = await dispatchFacade('manage', 'ensure_fresh', params, backend);
+
+    expect(directReport.analysisSubmission).toEqual({
+      status: 'blocked',
+      reasonCode: 'REPO_NOT_REGISTERED',
+      message: 'Repository is not registered; analysis cannot be submitted.',
+    });
+    expect(facadeReport).toEqual(directReport);
+    expect(resolveRepo).not.toHaveBeenCalled();
+    expect(mockSubmitAnalysisJob).not.toHaveBeenCalled();
+    expect(mockSpawn).not.toHaveBeenCalled();
   });
 
   // ---- Bonus Test 8: analyze failure → warning, no crash ------------------

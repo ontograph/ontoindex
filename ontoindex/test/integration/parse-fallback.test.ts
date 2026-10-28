@@ -5,7 +5,11 @@
  * the ingestion pipeline correctly falls back to sequential parsing
  * and produces a complete knowledge graph without silent data loss.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   PARSE_WORKER_RECOVERY_WINDOW_SIZE,
   PARSE_WORKER_RETRY_POLICY_QUARANTINE,
@@ -14,11 +18,256 @@ import {
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
 import { createResolutionContext } from '../../src/core/ingestion/model/resolution-context.js';
-import type { WorkerPool } from '../../src/core/ingestion/workers/worker-pool.js';
+import { createWorkerPool, type WorkerPool } from '../../src/core/ingestion/workers/worker-pool.js';
+import { processCalls } from '../../src/core/ingestion/call-processor.js';
+import { ScopeRetentionStage } from '../../src/core/ingestion/pipeline-phases/scope-retention-stage.js';
+import { finalizeScopeModel } from '../../src/core/ingestion/finalize-orchestrator.js';
+import { resolveReferences } from '../../src/core/ingestion/resolve-references.js';
+import { emitReferencesToGraph } from '../../src/core/ingestion/emit-references.js';
+import type { ExtractedCall } from '../../src/core/ingestion/workers/parse-types.js';
+import type { ScopeExtractionRecord } from '../../src/core/ingestion/scope-extractor-bridge.js';
 import { createEmptyResult } from '../../src/core/ingestion/workers/parse-types.js';
-import { SupportedLanguages } from 'ontoindex-shared';
+import { SupportedLanguages, type ParsedFile } from 'ontoindex-shared';
 
 describe('processParsing fallback', () => {
+  it.each([
+    {
+      fixture: 'plain',
+      parameters: '',
+      arguments: '',
+      argCount: 0,
+      argTypes: undefined,
+      scopeRetained: true,
+    },
+    {
+      fixture: 'typed',
+      parameters: 'value: string',
+      arguments: '"resolved"',
+      argCount: 1,
+      argTypes: ['string'],
+      scopeRetained: true,
+    },
+  ])(
+    'retains sequential artifacts and original calls after a real worker protocol error ($fixture)',
+    async ({ parameters, arguments: callArguments, argCount, argTypes, scopeRetained }) => {
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-retention-recovery-'));
+      const workerPath = path.join(directory, 'error-worker.cjs');
+      const graph = createKnowledgeGraph();
+      const ctx = createResolutionContext();
+      const astCache = createASTCache(1);
+      const stage = new ScopeRetentionStage({
+        deadline: Date.now() + 30_000,
+        artifactAllowance: { remainingBytes: 1024 * 1024 },
+      });
+      const files = [
+        {
+          path: 'recovered.ts',
+          content: [
+            `export function target(${parameters}) {}`,
+            `export function caller() { target(${callArguments}); missing("unresolved"); }`,
+          ].join('\n'),
+        },
+      ];
+      const parsedFiles: ParsedFile[] = [];
+      const outcomes: ScopeExtractionRecord[] = [];
+      const onParsedFiles = vi.fn((batch: readonly ParsedFile[]) => {
+        parsedFiles.push(...structuredClone(batch));
+        stage.capture(batch);
+      });
+      const onOutcomes = vi.fn((batch: readonly ScopeExtractionRecord[]) => {
+        outcomes.push(...structuredClone(batch));
+        stage.recordOutcomes(batch);
+      });
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let pool: WorkerPool | undefined;
+      try {
+        // Real thread/dispatch failure; this is a controlled protocol error, not a native crash.
+        await fs.writeFile(
+          workerPath,
+          `
+        const { parentPort } = require('node:worker_threads');
+        parentPort.on('message', (message) => {
+          if (message && message.type === 'sub-batch') {
+            parentPort.postMessage({ type: 'error', error: 'retention recovery fixture' });
+          }
+        });
+      `,
+        );
+        pool = createWorkerPool(pathToFileURL(workerPath), 1, { isolation: 'thread' });
+        const result = await processParsing(
+          graph,
+          files,
+          directory,
+          ctx.model.symbols,
+          astCache,
+          undefined,
+          pool,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          onParsedFiles,
+          onOutcomes,
+        );
+
+        expect(result).toBeNull();
+        expect(warning).toHaveBeenCalledWith(
+          'Worker pool parsing failed, falling back to sequential:',
+          expect.stringContaining('retention recovery fixture'),
+        );
+        expect(onParsedFiles).toHaveBeenCalledTimes(1);
+        expect(onOutcomes).toHaveBeenCalledTimes(1);
+        expect(onParsedFiles).toHaveBeenCalledWith(scopeRetained ? parsedFiles : []);
+        expect(parsedFiles.map((file) => file.filePath)).toEqual(
+          scopeRetained ? ['recovered.ts'] : [],
+        );
+        expect(outcomes).toEqual([
+          scopeRetained
+            ? { filePath: 'recovered.ts', status: 'success' }
+            : { filePath: 'recovered.ts', status: 'failed', reason: 'unsupported-syntax' },
+        ]);
+        for (const name of ['target', 'caller']) {
+          expect(ctx.model.symbols.lookupCallableByName(name)).toHaveLength(1);
+          expect(graph.nodes.filter((node) => node.properties.name === name)).toHaveLength(1);
+        }
+
+        const originalCalls: ExtractedCall[] = [];
+        await processCalls(
+          graph,
+          files,
+          astCache,
+          ctx,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          (call) => {
+            originalCalls.push(structuredClone(call));
+            stage.captureCalls([call]);
+          },
+        );
+        expect(originalCalls.map((call) => call.calledName)).toEqual(['target', 'missing']);
+        expect(originalCalls).toEqual([
+          expect.objectContaining({ calledName: 'target', callForm: 'free', argCount }),
+          expect.objectContaining({
+            calledName: 'missing',
+            callForm: 'free',
+            argCount: 1,
+            argTypes: ['string'],
+          }),
+        ]);
+        expect(originalCalls[0]!.argTypes).toEqual(argTypes);
+        const edges = graph.relationships.filter((edge) => edge.type === 'CALLS');
+        expect(edges).toEqual([
+          expect.objectContaining({
+            sourceId: ctx.model.symbols.lookupCallableByName('caller')[0]!.nodeId,
+            targetId: ctx.model.symbols.lookupCallableByName('target')[0]!.nodeId,
+          }),
+        ]);
+
+        // Scope emission is independent of the legacy CALLS graph asserted above.
+        const graphOutput = (capturedFiles: ParsedFile[]) => {
+          const indexes = finalizeScopeModel(capturedFiles);
+          const resolved = resolveReferences(indexes);
+          const scopeGraph = createKnowledgeGraph();
+          const emitted = emitReferencesToGraph({
+            graph: scopeGraph,
+            scopes: indexes,
+            referenceIndex: resolved.referenceIndex,
+          });
+          return structuredClone({
+            finalizeStats: indexes.stats,
+            resolveStats: resolved.stats,
+            references: {
+              bySourceScope: [...resolved.referenceIndex.bySourceScope].sort(([left], [right]) =>
+                left.localeCompare(right),
+              ),
+              byTargetDef: [...resolved.referenceIndex.byTargetDef].sort(([left], [right]) =>
+                left.localeCompare(right),
+              ),
+            },
+            emitted,
+            nodes: scopeGraph.nodes.sort((left, right) => left.id.localeCompare(right.id)),
+            relationships: scopeGraph.relationships.sort((left, right) =>
+              left.id.localeCompare(right.id),
+            ),
+          });
+        };
+        const capturedFiles = structuredClone(parsedFiles);
+        const capturedCalls = structuredClone(originalCalls);
+        // Build the baseline from original captures before releasing producer storage.
+        const baseline = scopeRetained ? graphOutput(parsedFiles) : undefined;
+        stage.reconcile(files.map((file) => file.path));
+        parsedFiles.length = 0;
+        originalCalls.length = 0;
+        astCache.clear();
+        expect(parsedFiles).toEqual([]);
+        expect(originalCalls).toEqual([]);
+        expect(astCache.stats().size).toBe(0);
+        expect(stage.status).toBe(scopeRetained ? 'retained' : 'incomplete');
+        expect(stage.recordCount).toBe(scopeRetained ? 1 : 0);
+        expect(stage.callRecordCount).toBe(2);
+        expect(stage.seedReady).toBe(false);
+        const replayedFiles: ParsedFile[] = [];
+        for await (const batch of stage.iterate()) replayedFiles.push(...batch);
+        expect(replayedFiles).toEqual(capturedFiles);
+        const replayedCalls: ExtractedCall[] = [];
+        for await (const batch of stage.iterateCalls()) replayedCalls.push(...batch);
+        expect(replayedCalls).toEqual(capturedCalls);
+        if (scopeRetained) {
+          const output = graphOutput(replayedFiles);
+          expect(output).toEqual(baseline);
+          expect(output.finalizeStats.totalFiles).toBe(1);
+          expect(output.resolveStats).toMatchObject({
+            resolvedSites: 1,
+            unresolvedSites: 1,
+            ambiguousSites: 0,
+            unsupportedSites: 0,
+          });
+          expect(output.emitted).toMatchObject({
+            edgesEmitted: 1,
+            skippedNoCaller: 0,
+            skippedMissingTarget: 0,
+          });
+          expect(output.relationships.filter((edge) => edge.type === 'CALLS')).toEqual([
+            expect.objectContaining({
+              sourceId: expect.stringMatching(/^def:recovered\.ts#\d+:\d+:Function:caller$/),
+              targetId: expect.stringMatching(/^def:recovered\.ts#\d+:\d+:Function:target$/),
+            }),
+          ]);
+          expect(
+            output.relationships.filter(
+              (edge) => edge.type === 'CALLS' && edge.targetId.includes('missing'),
+            ),
+          ).toEqual([]);
+        } else {
+          // The typed provider refusal stays incomplete; replay must not invent scope artifacts.
+          expect(replayedFiles).toEqual([]);
+          expect(stage.inventory).toEqual([
+            {
+              filePath: 'recovered.ts',
+              status: 'failed',
+              reason: 'unsupported-syntax',
+            },
+          ]);
+        }
+      } finally {
+        try {
+          await pool?.terminate();
+        } finally {
+          warning.mockRestore();
+          astCache.clear();
+          await stage.dispose();
+          await fs.rm(directory, { recursive: true, force: true });
+        }
+      }
+    },
+  );
+
   it('falls back to sequential parsing when the worker pool throws an error', async () => {
     const graph = createKnowledgeGraph();
     const ctx = createResolutionContext();

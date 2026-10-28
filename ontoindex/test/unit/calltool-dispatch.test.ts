@@ -43,6 +43,10 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
 }));
 
+vi.mock('../../src/mcp/super/diagnose.js', () => ({
+  gnDiagnose: vi.fn().mockResolvedValue({ misconfiguration: { status: 'ok' } }),
+}));
+
 // Also mock the search modules to avoid loading onnxruntime
 vi.mock('../../src/core/search/bm25-index.js', () => ({
   searchFTSFromLbug: vi.fn().mockResolvedValue([]),
@@ -53,7 +57,44 @@ vi.mock('../../src/mcp/core/embedder.js', () => ({
   getEmbeddingDims: vi.fn().mockReturnValue(384),
 }));
 
-import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+vi.mock('../../src/mcp/local/backend-overlay.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/mcp/local/backend-overlay.js')>();
+  return {
+    ...actual,
+    getOverlaySnapshot: vi.fn(async () => ({
+      usable: false,
+      reason: 'no dirty files',
+      dirtyPaths: new Set<string>(),
+      parseErrorPaths: new Set<string>(),
+      overlayPaths: new Set<string>(),
+      uncoveredPaths: new Set<string>(),
+      tombstones: new Set<string>(),
+    })),
+    withPinnedOverlay: vi.fn(async (_repo, _snapshot, fn) => fn()),
+  };
+});
+
+vi.mock('../../src/mcp/local/local-backend-repo-runtime.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../src/mcp/local/local-backend-repo-runtime.js')>();
+  return {
+    ...actual,
+    prepareWorkspaceRead: vi.fn(({ repo }) => getOverlaySnapshot(repo)),
+  };
+});
+
+import { LocalBackend, getReadRequestContext } from '../../src/mcp/local/local-backend.js';
+import { gnDiagnose } from '../../src/mcp/super/diagnose.js';
+import {
+  prepareWorkspaceRead,
+  WorkspacePreparationError,
+} from '../../src/mcp/local/local-backend-repo-runtime.js';
+import * as runtimeModule from '../../src/mcp/local/local-backend-repo-runtime.js';
+import {
+  getOverlaySnapshot,
+  withPinnedOverlay,
+  type OverlaySnapshot,
+} from '../../src/mcp/local/backend-overlay.js';
 import { listRegisteredRepos, cleanupOldKuzuFiles } from '../../src/storage/repo-manager.js';
 import {
   initLbug,
@@ -119,6 +160,569 @@ afterEach(async () => {
 });
 
 // ─── LocalBackend lifecycle ──────────────────────────────────────────
+
+describe('request workspace gate', () => {
+  let backend: LocalBackend;
+  const cleanSnapshot = (): OverlaySnapshot => ({
+    usable: false,
+    reason: 'no dirty files',
+    dirtyPaths: new Set(),
+    parseErrorPaths: new Set(),
+    overlayPaths: new Set(),
+    uncoveredPaths: new Set(),
+    tombstones: new Set(),
+  });
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.mocked(prepareWorkspaceRead).mockImplementation(({ repo }) => getOverlaySnapshot(repo));
+    vi.mocked(getOverlaySnapshot).mockImplementation(async () => cleanSnapshot());
+    vi.mocked(withPinnedOverlay).mockImplementation(async (_repo, _snapshot, fn) => fn());
+    backend = new LocalBackend();
+    setupSingleRepo();
+    await backend.init();
+  });
+
+  it.each([false, true])(
+    'shares direct prepared callbacks and releases on failure=%s',
+    async (fails) => {
+      const repo = await backend.resolveRepo();
+      vi.mocked(prepareWorkspaceRead).mockResolvedValue({
+        ...cleanSnapshot(),
+        usable: true,
+        generation: 'direct',
+      });
+      let release!: ReturnType<typeof vi.spyOn>;
+      const operation = vi.fn(async () => {
+        const context = getReadRequestContext()!;
+        release = vi.spyOn(context, 'release');
+        return backend.withPreparedRepoRead(repo, { needsRelationships: true }, async () => {
+          expect(getReadRequestContext()).toBe(context);
+          if (fails) throw new Error('direct failure');
+          return 'direct';
+        });
+      });
+      const result = backend.withPreparedRepoRead(
+        repo,
+        { needsRelationships: true, wantsWorkspaceGraph: true },
+        operation,
+      );
+      if (fails) await expect(result).rejects.toThrow('direct failure');
+      else await expect(result).resolves.toBe('direct');
+      expect(operation).toHaveBeenCalledOnce();
+      expect(prepareWorkspaceRead).toHaveBeenCalledOnce();
+      expect(withPinnedOverlay).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+      expect(getReadRequestContext()).toBeUndefined();
+    },
+  );
+
+  it('rejects direct callbacks before entry when preparation fails', async () => {
+    const repo = await backend.resolveRepo();
+    vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(new Error('private-path'));
+    const operation = vi.fn(async () => 'unreachable');
+    await expect(
+      backend.withPreparedRepoRead(repo, { needsRelationships: true }, operation),
+    ).rejects.toMatchObject({
+      code: 'workspace_preparation_failed',
+      message: 'workspace_preparation_failed',
+    });
+    expect(operation).not.toHaveBeenCalled();
+  });
+
+  it('gates nested reads once and shares the context and fixed deadline', async () => {
+    let outer: ReturnType<typeof getReadRequestContext>;
+    const handlers = (backend as any).repoToolHandlers;
+    handlers.overview = async () => {
+      outer = getReadRequestContext();
+      return backend.callTool('route_map', {});
+    };
+    handlers.route_map = async () => {
+      expect(getReadRequestContext()).toBe(outer);
+      expect(outer!.deadline).toBeGreaterThan(performance.now() + 59_000);
+      return ['nested'];
+    };
+    expect(await backend.callTool('overview', { timeoutMs: 1 })).toEqual(['nested']);
+    expect(getOverlaySnapshot).toHaveBeenCalledTimes(1);
+    expect(prepareWorkspaceRead).toHaveBeenCalledTimes(1);
+    expect(getReadRequestContext()).toBeUndefined();
+  });
+
+  it.each([false, true])(
+    'pins usable generations and releases on handler error=%s',
+    async (fails) => {
+      vi.mocked(getOverlaySnapshot).mockResolvedValue({
+        ...cleanSnapshot(),
+        usable: true,
+        generation: 'g1',
+      });
+      let release: ReturnType<typeof vi.spyOn>;
+      (backend as any).repoToolHandlers.overview = async () => {
+        release = vi.spyOn(getReadRequestContext()!, 'release');
+        expect(withPinnedOverlay).toHaveBeenCalledTimes(1);
+        if (fails) throw new Error('handler failed');
+        return ['ok'];
+      };
+      const call = backend.callTool('overview', {});
+      if (fails) await expect(call).rejects.toThrow('handler failed');
+      else expect(await call).toEqual(['ok']);
+      expect(release!).toHaveBeenCalledTimes(1);
+      await getReadRequestContext()?.release();
+    },
+  );
+
+  it('inherits operation signals through nested scopes and isolates concurrent requests', async () => {
+    const first = new AbortController();
+    const second = new AbortController();
+    const preparations: Array<{ signal?: AbortSignal; finish(): void }> = [];
+    vi.mocked(prepareWorkspaceRead).mockImplementation(
+      ({ signal }) =>
+        new Promise((resolve) => {
+          preparations.push({ signal, finish: () => resolve(cleanSnapshot()) });
+        }),
+    );
+    const seen: Array<AbortSignal | undefined> = [];
+    (backend as any).repoToolHandlers.overview = async () => {
+      seen.push(getReadRequestContext()?.signal);
+      return backend.withOperation(() => backend.callTool('route_map', {}));
+    };
+    (backend as any).repoToolHandlers.route_map = async () => {
+      seen.push(getReadRequestContext()?.signal);
+      return [];
+    };
+    const firstRequest = backend.withOperation(
+      () => backend.withOperation(() => backend.callTool('overview', {})),
+      { signal: first.signal },
+    );
+    const secondRequest = backend.withOperation(() => backend.callTool('overview', {}), {
+      signal: second.signal,
+    });
+    await vi.waitFor(() => expect(preparations).toHaveLength(2));
+    expect(preparations.map(({ signal }) => signal)).toEqual(
+      expect.arrayContaining([first.signal, second.signal]),
+    );
+    preparations.find(({ signal }) => signal === second.signal)!.finish();
+    await secondRequest;
+    preparations.find(({ signal }) => signal === first.signal)!.finish();
+    await firstRequest;
+    expect(seen).toEqual([second.signal, second.signal, first.signal, first.signal]);
+    const unscopedRequest = backend.callTool('route_map', {});
+    await vi.waitFor(() => expect(preparations).toHaveLength(3));
+    expect(preparations[2].signal).toBeUndefined();
+    preparations[2].finish();
+    await unscopedRequest;
+  });
+
+  it('cancels only the waiting request before invoking its handler', async () => {
+    const cancelled = new AbortController();
+    let finish!: () => void;
+    const building = new Promise<OverlaySnapshot>((resolve) => {
+      finish = () => resolve(cleanSnapshot());
+    });
+    vi.mocked(prepareWorkspaceRead).mockImplementation(
+      ({ signal }) =>
+        new Promise((resolve, reject) => {
+          const onAbort = () => reject(new WorkspacePreparationError('workspace_cancelled'));
+          signal?.addEventListener('abort', onAbort, { once: true });
+          void building.then((snapshot) => {
+            signal?.removeEventListener('abort', onAbort);
+            resolve(snapshot);
+          });
+        }),
+    );
+    const handler = vi.fn(async () => []);
+    (backend as any).repoToolHandlers.overview = handler;
+    const cancelledRequest = backend.withOperation(() => backend.callTool('overview', {}), {
+      signal: cancelled.signal,
+    });
+    const survivingRequest = backend.callTool('overview', {});
+    await vi.waitFor(() => expect(prepareWorkspaceRead).toHaveBeenCalledTimes(2));
+    cancelled.abort();
+    await expect(cancelledRequest).rejects.toMatchObject({ code: 'workspace_cancelled' });
+    expect(handler).not.toHaveBeenCalled();
+    finish();
+    await expect(survivingRequest).resolves.toEqual([]);
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['context', true],
+    ['impact', true],
+    ['impact_batch', true],
+    ['api_impact', true],
+    ['cycle_detect', true],
+    ['coupling_matrix', true],
+    ['boundary_violations', true],
+    ['hotspot_analysis', true],
+    ['dead_code', true],
+    ['tech_debt', true],
+    ['audit_report', true],
+    ['ipc_trace', true],
+    ['evidence_pack', true],
+    ['query', false],
+    ['repomap', false],
+  ])('prepares %s with needsRelationships=%s', async (method, needsRelationships) => {
+    (backend as any).repoToolHandlers[method as string] = async () => [];
+    await (backend as any).dispatchRepoTool(method, {});
+    expect(prepareWorkspaceRead).toHaveBeenCalledWith({
+      repo: expect.objectContaining({ repoPath: MOCK_REPO_ENTRY.path }),
+      needsRelationships,
+      beforeSnapshot: expect.any(Function),
+      wantsWorkspaceGraph: needsRelationships || method === 'query' || method === 'repomap',
+      deadline: expect.any(Number),
+      signal: undefined,
+    });
+  });
+
+  it('keeps diagnostic, history, lifecycle, mutation and global routes ungated', async () => {
+    for (const method of [
+      'gn_diagnose',
+      'analysis_catalog',
+      'session',
+      'detect_changes',
+      'graph_diff',
+      'audit_rerun',
+      'rename',
+      'rename_symbol',
+      'sandbox',
+      'replace_symbol',
+      'update_symbol_body',
+      'extract_function',
+      'move_symbol',
+    ]) {
+      (backend as any).repoToolHandlers[method] = async () => [];
+      await (backend as any).dispatchRepoTool(method, {});
+    }
+    await backend.callTool('list_repos', {});
+    expect(getOverlaySnapshot).not.toHaveBeenCalled();
+    expect(prepareWorkspaceRead).not.toHaveBeenCalled();
+  });
+
+  it('fails preparation with a typed error before running the handler', async () => {
+    vi.mocked(getOverlaySnapshot).mockRejectedValueOnce(new Error('capture failed'));
+    const handler = vi.fn();
+    (backend as any).repoToolHandlers.overview = handler;
+    await expect(backend.callTool('overview', {})).rejects.toMatchObject({
+      code: 'workspace_preparation_failed',
+      message: 'workspace_preparation_failed',
+    });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['workspace_busy', true],
+    ['workspace_timeout', true],
+    ['workspace_cancelled', false],
+    ['workspace_build_failed', false],
+    ['workspace_too_large', false],
+  ] as const)('preserves preparation code %s and retryability', async (code, retryable) => {
+    const original = new WorkspacePreparationError(
+      code,
+      'secret=preparation-token\nsource: private.ts',
+    );
+    vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(original);
+    const handler = vi.fn();
+    (backend as any).repoToolHandlers.overview = handler;
+    const failure = await backend.callTool('overview', {}).catch((error: unknown) => error);
+    expect(failure).toMatchObject({
+      code,
+      retryable,
+      message: `workspace_preparation_failed: ${code}`,
+      cause: original,
+    });
+    expect(JSON.stringify(failure)).not.toMatch(/preparation-token|private\.ts/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('preserves safe size diagnostics without exposing private preparation text', async () => {
+    const diagnostics = {
+      observedIndexedFiles: 5000,
+      maxIndexedFiles: 1600,
+      requiredCapability: 'workspace-graph' as const,
+    };
+    const original = new WorkspacePreparationError(
+      'workspace_too_large',
+      'secret=preparation-token source: private.ts',
+      undefined,
+      { ...diagnostics, privatePath: 'private.ts' } as typeof diagnostics,
+    );
+    vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(original);
+    const handler = vi.fn();
+    (backend as any).repoToolHandlers.overview = handler;
+    const failure = await backend.callTool('overview', {}).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: 'workspace_too_large', retryable: false, diagnostics });
+    expect(JSON.stringify(failure)).not.toMatch(/preparation-token|private\.ts/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['verification', 'snapshot_failed'],
+    ['build', 'input_refused'],
+  ] as const)(
+    'projects safe %s/%s diagnostics without copying private fields',
+    async (phase, reason) => {
+      const original = new WorkspacePreparationError(
+        'workspace_build_failed',
+        'SYNTHETIC_PRIVATE',
+        undefined,
+        undefined,
+        {
+          phase,
+          reason,
+          systemCode: 'EIO',
+          privatePath: '/private/source',
+          stderr: 'SYNTHETIC_PRIVATE',
+        } as NonNullable<WorkspacePreparationError['failure']>,
+      );
+      vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(original);
+      const handler = vi.fn();
+      (backend as any).repoToolHandlers.overview = handler;
+      const failure = await backend.callTool('overview', {}).catch((error: unknown) => error);
+      expect(failure).toMatchObject({
+        code: 'workspace_build_failed',
+        retryable: false,
+        diagnostics: { phase, reason, systemCode: 'EIO' },
+      });
+      expect(JSON.stringify(failure)).not.toMatch(
+        /SYNTHETIC_PRIVATE|private\/source|failureDiagnostics/,
+      );
+      expect(handler).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['Error', 'non-Error'])('bounds unexpected %s preparation failures', async (kind) => {
+    const detail = `secret=preparation-token\nsource: private.ts\n${'x'.repeat(100_000)}`;
+    const original = kind === 'Error' ? new Error(detail) : detail;
+    vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(original);
+    const handler = vi.fn();
+    (backend as any).repoToolHandlers.overview = handler;
+    const failure = await backend.callTool('overview', {}).catch((error: unknown) => error);
+    expect(failure).toMatchObject({
+      code: 'workspace_preparation_failed',
+      message: 'workspace_preparation_failed',
+      cause: original,
+    });
+    expect(JSON.stringify(failure)).toBe('{"code":"workspace_preparation_failed"}');
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('fails a vanished usable generation without running the handler', async () => {
+    vi.mocked(getOverlaySnapshot).mockResolvedValueOnce({
+      ...cleanSnapshot(),
+      usable: true,
+      generation: 'gone',
+    });
+    vi.mocked(withPinnedOverlay).mockRejectedValueOnce(
+      new Error('overlay generation no longer available'),
+    );
+    const handler = vi.fn();
+    (backend as any).repoToolHandlers.overview = handler;
+    await expect(backend.callTool('overview', {})).rejects.toMatchObject({
+      code: 'workspace_preparation_failed',
+    });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('maps a pre-handler native-open failure to a preparation error without running the handler', async () => {
+    const { LbugOpenError } = await import('../../src/core/lbug/open-error.js');
+    vi.mocked(getOverlaySnapshot).mockResolvedValueOnce({
+      ...cleanSnapshot(),
+      usable: true,
+      generation: 'bad',
+    });
+    vi.mocked(withPinnedOverlay).mockRejectedValueOnce(
+      new LbugOpenError('/db/lbug', new Error('database is corrupt')),
+    );
+    const handler = vi.fn();
+    (backend as any).repoToolHandlers.overview = handler;
+    await expect(backend.callTool('overview', {})).rejects.toMatchObject({
+      code: 'workspace_preparation_failed',
+    });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('preserves clean base results without pinning', async () => {
+    (backend as any).repoToolHandlers.overview = async () => ['base'];
+    expect(await backend.callTool('overview', {})).toEqual(['base']);
+    expect(withPinnedOverlay).not.toHaveBeenCalled();
+  });
+
+  describe('idle repository eviction', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    });
+    const idleSetup = async () => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+      (backend as any).repoToolHandlers.overview = async () => ({ items: [1] });
+      await backend.callTool('overview', {});
+      return (await backend.resolveRepo(undefined)).id as string;
+    };
+
+    it('releases runtime state of a repo idle for 60 seconds', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const id = await idleSetup();
+      (backend as any).initializedRepos.add(id);
+      vi.setSystemTime(Date.now() + 61_000);
+      expect(await backend.evictIdleRepos()).toEqual([id]);
+      expect((backend as any).initializedRepos.has(id)).toBe(false);
+      expect(closeLbug).toHaveBeenCalledWith(id);
+    });
+
+    it('keeps a repo that was used within the last minute', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const id = await idleSetup();
+      (backend as any).initializedRepos.add(id);
+      vi.setSystemTime(Date.now() + 30_000);
+      expect(await backend.evictIdleRepos()).toEqual([]);
+      expect((backend as any).initializedRepos.has(id)).toBe(true);
+    });
+
+    it('never evicts a repo with a request still running', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+      let finish!: () => void;
+      (backend as any).repoToolHandlers.overview = () =>
+        new Promise((resolve) => {
+          finish = () => resolve({ items: [1] });
+        });
+      const running = backend.callTool('overview', {});
+      await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+      const id = (await backend.resolveRepo(undefined)).id as string;
+      (backend as any).initializedRepos.add(id);
+      vi.setSystemTime(Date.now() + 10 * 60_000);
+      expect(await backend.evictIdleRepos()).toEqual([]);
+      expect((backend as any).initializedRepos.has(id)).toBe(true);
+      finish();
+      await running;
+    });
+
+    it('leaves a repo with a working-tree build in progress alone', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const id = await idleSetup();
+      (backend as any).initializedRepos.add(id);
+      const building = vi.spyOn(runtimeModule, 'hasWorkspaceBuild').mockReturnValue(true);
+      try {
+        vi.setSystemTime(Date.now() + 61_000);
+        expect(await backend.evictIdleRepos()).toEqual([]);
+        expect((backend as any).initializedRepos.has(id)).toBe(true);
+      } finally {
+        building.mockRestore();
+      }
+    });
+
+    it('does not track repos when the flag is off', async () => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
+      vi.useFakeTimers({ toFake: ['Date'] });
+      (backend as any).repoToolHandlers.overview = async () => ({ items: [1] });
+      await backend.callTool('overview', {});
+      const id = (await backend.resolveRepo(undefined)).id as string;
+      (backend as any).initializedRepos.add(id);
+      vi.setSystemTime(Date.now() + 10 * 60_000);
+      expect(await backend.evictIdleRepos()).toEqual([]);
+      expect((backend as any).initializedRepos.has(id)).toBe(true);
+      expect(closeLbug).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('impactByUid', () => {
+    it('adds the preparation note to the result of a degraded read', async () => {
+      vi.mocked(prepareWorkspaceRead).mockResolvedValueOnce({
+        ...cleanSnapshot(),
+        preparationNote: 'Working-tree graph not built (workspace_too_large); test note',
+      });
+      (backend as any).repoToolHandlers.overview = async () => ({ items: [1], warnings: ['old'] });
+      const result = (await backend.callTool('overview', {})) as { warnings: string[] };
+      expect(result.warnings).toEqual(['old', expect.stringContaining('workspace_too_large')]);
+    });
+
+    it('leaves results alone when there is no preparation note', async () => {
+      (backend as any).repoToolHandlers.overview = async () => ({ items: [1] });
+      expect(await backend.callTool('overview', {})).toEqual(
+        expect.not.objectContaining({ warnings: expect.anything() }),
+      );
+    });
+
+    const opts = { maxDepth: 3, relationTypes: ['CALLS'], minConfidence: 0, includeTests: false };
+    let repoId: string;
+    beforeEach(async () => {
+      repoId = (await backend.resolveRepo(undefined)).id;
+      vi.spyOn(backend as any, 'ensureInitialized').mockResolvedValue(undefined);
+    });
+    afterEach(() => vi.unstubAllEnvs());
+
+    it.each([undefined, '1'])(
+      'routes through the gated impact handler with activation %s',
+      async (flag) => {
+        vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', flag);
+        const handler = vi.fn(async () => ({ risk: 'LOW', impactedCount: 1, byDepth: {} }));
+        (backend as any).repoToolHandlers.impact = handler;
+        const result = await backend.impactByUid(repoId, 'uid-1', 'downstream', opts);
+        expect(result).toMatchObject({ impactedCount: 1 });
+        expect(handler).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ target_uid: 'uid-1', direction: 'downstream', maxDepth: 3 }),
+        );
+        expect(prepareWorkspaceRead).toHaveBeenCalledOnce();
+      },
+    );
+
+    it.each([
+      ['error', { error: 'not found' }],
+      ['ambiguous', { status: 'ambiguous' }],
+    ])('returns null for a %s workspace result', async (_name, payload) => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+      (backend as any).repoToolHandlers.impact = async () => payload;
+      expect(await backend.impactByUid(repoId, 'uid-1', 'upstream', opts)).toBeNull();
+    });
+
+    it('returns null when workspace preparation fails', async () => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+      vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(
+        new WorkspacePreparationError('workspace_busy'),
+      );
+      (backend as any).repoToolHandlers.impact = vi.fn();
+      expect(await backend.impactByUid(repoId, 'uid-1', 'upstream', opts)).toBeNull();
+    });
+
+    it('does not use the gated handler when the flag is off', async () => {
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
+      const handler = vi.fn();
+      (backend as any).repoToolHandlers.impact = handler;
+      await backend.impactByUid(repoId, 'uid-1', 'upstream', opts);
+      expect(handler).not.toHaveBeenCalled();
+      expect(prepareWorkspaceRead).not.toHaveBeenCalled();
+    });
+
+    describe('group service ports', () => {
+      const ports = ['impact', 'query', 'context'] as const;
+      const call = (port: (typeof ports)[number]) => {
+        const svc = backend.getGroupService() as any;
+        const repo = { id: repoId } as any;
+        const params = { target: 'x', query: 'x', name: 'x' };
+        return svc.port[port](repo, params, {});
+      };
+
+      it.each(ports)(
+        'routes %s through the workspace gate with default activation',
+        async (port) => {
+          vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', undefined);
+          const handler = vi.fn(async () => ({ ok: port }));
+          (backend as any).repoToolHandlers[port] = handler;
+          expect(await call(port)).toMatchObject({ ok: port });
+          expect(prepareWorkspaceRead).toHaveBeenCalledOnce();
+        },
+      );
+
+      it.each(ports)('does not prepare a workspace for %s when the flag is off', async (port) => {
+        vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
+        vi.spyOn(backend as any, port).mockResolvedValue({ ok: port });
+        expect(await call(port)).toMatchObject({ ok: port });
+        expect(prepareWorkspaceRead).not.toHaveBeenCalled();
+      });
+    });
+  });
+});
 
 describe('LocalBackend.init', () => {
   let backend: LocalBackend;
@@ -249,6 +853,28 @@ describe('LocalBackend.callTool', () => {
     backend = new LocalBackend();
     setupSingleRepo();
     await backend.init();
+  });
+
+  it.each([null, '/tmp/startup-other-project'])(
+    'passes trusted selected repo context to diagnostics with startup project %s',
+    async (projectCwd) => {
+      backend = new LocalBackend({ preferredProjectPath: projectCwd ?? undefined });
+      await backend.init();
+      const params = { repo: MOCK_REPO_ENTRY.name, checkLsp: false };
+      await backend.callTool('gn_diagnose', params);
+      expect(gnDiagnose).toHaveBeenCalledWith(expect.any(String), params, {
+        repoPath: MOCK_REPO_ENTRY.path,
+        projectCwd,
+      });
+    },
+  );
+
+  it('rejects diagnostics outside an explicit repo filter', async () => {
+    await setupMultipleReposWithReadableOther();
+    backend = new LocalBackend({ repoFilter: 'other-project' });
+    await backend.init();
+    await expect(backend.callTool('gn_diagnose', { repo: MOCK_REPO_ENTRY.name })).rejects.toThrow();
+    expect(gnDiagnose).not.toHaveBeenCalled();
   });
 
   it('routes list_repos without needing repo param', async () => {
@@ -850,6 +1476,17 @@ describe('LocalBackend.callTool', () => {
     (executeParameterized as any).mockResolvedValue([]);
     const result = await backend.callTool('search', { query: 'auth' });
     expect(result).toHaveProperty('processes');
+  });
+
+  it('requires the full workspace graph for the search alias', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    (executeParameterized as any).mockResolvedValue([]);
+    await backend.callTool('search', { query: 'auth' });
+    expect(prepareWorkspaceRead).toHaveBeenCalledWith(
+      expect.objectContaining({
+        wantsWorkspaceGraph: true,
+      }),
+    );
   });
 
   it('dispatches "explore" as alias for context', async () => {

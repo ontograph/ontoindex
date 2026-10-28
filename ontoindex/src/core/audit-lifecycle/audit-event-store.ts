@@ -189,17 +189,25 @@ export class LocalAuditEventStore {
     return loadAuditEventStoreState(this.eventStorePath);
   }
 
-  async appendEvent(event: AuditEvent, options: AuditStoreUpdateOptions = {}): Promise<AuditEvent> {
+  async appendEvent(
+    event: AuditEvent,
+    options: AuditStoreUpdateOptions & {
+      precondition?: (state: AuditEventStoreState) => void;
+    } = {},
+  ): Promise<AuditEvent> {
     return withAuditStoreUpdateLock(this.eventStorePath, options, async () => {
       const state = await this.load();
       assertWritableChain(state);
+      options.precondition?.(state);
       assertUniqueEventId(state.events, event.id);
       const nextEvent = normalizeAuditEvent(event);
+      const events = [...state.events, nextEvent];
+      const projection = buildAuditProjection(events);
       await saveAuditEventStoreState(this.eventStorePath, {
         ...state,
-        events: [...state.events, nextEvent],
+        events,
       });
-      await rebuildAuditProjectionFile(this.eventStorePath, this.projectionPath);
+      await atomicWriteJson(this.projectionPath, projection);
       return nextEvent;
     });
   }

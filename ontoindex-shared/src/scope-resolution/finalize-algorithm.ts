@@ -32,8 +32,17 @@
  */
 
 import type { SymbolDefinition } from './symbol-definition.js';
+import { buildDefIndex, type DefIndex } from './def-index.js';
 import { tarjanSccs } from './scc.js';
-import type { BindingRef, ImportEdge, ParsedImport, ScopeId, WorkspaceIndex } from './types.js';
+import type { ParsedFile } from './parsed-file.js';
+import type {
+  BindingRef,
+  DefId,
+  ImportEdge,
+  ParsedImport,
+  ScopeId,
+  WorkspaceIndex,
+} from './types.js';
 
 // ─── Public contracts ───────────────────────────────────────────────────────
 
@@ -44,24 +53,28 @@ export interface FinalizeFile {
   readonly moduleScope: ScopeId;
   readonly parsedImports: readonly ParsedImport[];
   /**
-   * Defs exported from this file — the "what other files can import by name"
-   * surface. Typically those with `isExported: true` (the module's own
-   * declarations) plus, for multi-hop re-export chains, the re-exported
-   * names the parser chose to surface here.
-   *
-   * **Multi-hop re-export contract.** `finalize` resolves an edge
-   * `A → B (importedName: 'X')` by looking up `X` in `B.localDefs`. If B
-   * only has `export { X } from './C'` and the parser *does not* include
-   * `X` in `B.localDefs`, A's edge hits the fixpoint cap and is marked
-   * `linkStatus: 'unresolved'`. The fixpoint does NOT mutate `localDefs`
-   * across iterations — it is static input.
-   *
-   * Parsers that want multi-hop re-export chains to settle end-to-end must
-   * include re-exported names in the intermediate file's `localDefs` (with
-   * the original `DefId` of the source symbol). This keeps the algorithm
-   * O(1) per lookup and avoids graph-crawl during finalize.
+   * All local definitions, including private and nested declarations, used
+   * for definition and export lookup. These remain static during finalize;
+   * re-export chains are not followed to add definitions. When localBindings
+   * is omitted, these also supply legacy module bindings by simple name.
    */
   readonly localDefs: readonly SymbolDefinition[];
+  /**
+   * Authoritative extracted module bindings. A supplied map, including an
+   * empty map, preserves its names and buckets without deriving bindings
+   * from localDefs. Finalized imports merge into copied buckets afterward.
+   */
+  readonly localBindings?: ReadonlyMap<string, readonly BindingRef[]>;
+  /**
+   * Optional exported-name → local definition ID surface. When supplied,
+   * only names mapped to definitions present in `localDefs` can be imported;
+   * an empty map exports nothing. When omitted, legacy simple-name lookup
+   * over `localDefs` applies. Re-exported definitions must already be present
+   * in `localDefs` and, when this map is supplied, listed here.
+   */
+  readonly exports?: ReadonlyMap<string, DefId>;
+  /** Authoritative separate lexical meanings; absence preserves legacy lookup. */
+  readonly exportsByNamespace?: ParsedFile['exportsByNamespace'];
 }
 
 /** Input to `finalize`. */
@@ -90,8 +103,8 @@ export interface FinalizeHooks {
 
   /**
    * For a wildcard `import * from M`, return the names visible in the
-   * exporting module scope `M`. The finalize pass looks each name up in
-   * `M`'s local defs to produce a concrete `BindingRef`; names with no
+   * exporting module scope `M`. The finalize pass resolves each name through
+   * `M`'s export surface to produce a concrete `BindingRef`; names with no
    * matching export are dropped.
    */
   expandsWildcardTo(targetModuleScope: ScopeId, workspaceIndex: WorkspaceIndex): readonly string[];
@@ -147,6 +160,12 @@ export interface FinalizeStats {
 }
 
 export interface FinalizeOutput {
+  /** Explicit export surfaces only; absent surfaces never expose local definitions. */
+  readonly lookupExport?: (
+    moduleScope: ScopeId,
+    name: string,
+    namespace: 'type' | 'value',
+  ) => readonly SymbolDefinition[];
   /** Linked `ImportEdge[]` per module scope, in original input order. */
   readonly imports: ReadonlyMap<ScopeId, readonly ImportEdge[]>;
   /** Materialized bindings per module scope. */
@@ -160,7 +179,60 @@ export interface FinalizeOutput {
 
 export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOutput {
   const byFilePath = new Map<string, FinalizeFile>();
-  for (const f of input.files) byFilePath.set(f.filePath, f);
+  const byModuleScope = new Map<ScopeId, FinalizeFile>();
+  for (const f of input.files) {
+    byFilePath.set(f.filePath, f);
+    byModuleScope.set(f.moduleScope, f);
+  }
+
+  const defsByFile = new Map<FinalizeFile, DefIndex>();
+  const namesByFile = new Map<FinalizeFile, ReadonlyMap<string, SymbolDefinition>>();
+  const findDef = (file: FinalizeFile, defId: DefId): SymbolDefinition | undefined => {
+    let defs = defsByFile.get(file);
+    if (defs === undefined) {
+      defs = buildDefIndex(file.localDefs);
+      defsByFile.set(file, defs);
+    }
+    return defs.get(defId);
+  };
+  const findExport: FindExport = (file, name, namespace) => {
+    if (file.exportsByNamespace !== undefined) {
+      const meanings: ExportMeaning[] = [];
+      for (const space of ['type', 'value'] as const) {
+        if (namespace !== undefined && namespace !== 'both' && namespace !== space) continue;
+        const defId = file.exportsByNamespace[space].get(name);
+        if (defId === undefined) continue;
+        const def = findDef(file, defId);
+        if (def === undefined) continue;
+        if (meanings[0]?.def.nodeId === def.nodeId) {
+          meanings[0] = { def: meanings[0].def, namespace: 'both' };
+        } else {
+          meanings.push({ def, namespace: space });
+        }
+      }
+      return meanings;
+    }
+
+    if (file.exports !== undefined) {
+      const defId = file.exports.get(name);
+      const def = defId === undefined ? undefined : findDef(file, defId);
+      return def === undefined ? [] : [{ def, ...(namespace !== undefined ? { namespace } : {}) }];
+    }
+
+    let names = namesByFile.get(file);
+    if (names === undefined) {
+      const byName = new Map<string, SymbolDefinition>();
+      // Index the original sequence: duplicate IDs can have distinct names.
+      for (const def of file.localDefs) {
+        const simpleName = deriveSimpleName(def);
+        if (simpleName !== null && !byName.has(simpleName)) byName.set(simpleName, def);
+      }
+      names = byName;
+      namesByFile.set(file, names);
+    }
+    const def = names.get(name);
+    return def === undefined ? [] : [{ def, ...(namespace !== undefined ? { namespace } : {}) }];
+  };
 
   // ── Phase 0: pre-resolve raw import targets (one syscall-equivalent per
   // (file, parsedImport)). Edges with no resolvable target become
@@ -206,6 +278,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
   // Edges leaving the SCC are already resolved (their target SCC is
   // already finalized); edges inside the SCC may need multiple passes.
   const linkedByScope = new Map<ScopeId, readonly ImportEdge[]>();
+  const groupsByScope = new Map<ScopeId, readonly (readonly ImportEdge[])[]>();
   let linkedEdges = 0;
 
   for (const scc of sccs) {
@@ -224,7 +297,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
         const drafts = edgeIndex.get(filePath)!;
         for (const draft of drafts) {
           if (draft.finalized !== null) continue;
-          const finalized = tryFinalize(draft, byFilePath);
+          const finalized = tryFinalize(draft, byFilePath, findExport);
           if (finalized !== null) {
             draft.finalized = finalized;
             progressed = true;
@@ -238,10 +311,12 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
       const drafts = edgeIndex.get(filePath)!;
       for (const draft of drafts) {
         if (draft.finalized !== null) continue;
-        draft.finalized = {
-          ...draft.base,
-          linkStatus: 'unresolved' as const,
-        };
+        draft.finalized = [
+          {
+            ...draft.base,
+            linkStatus: 'unresolved' as const,
+          },
+        ];
       }
     }
   }
@@ -251,23 +326,30 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
   for (const file of input.files) {
     const drafts = edgeIndex.get(file.filePath)!;
     const finalized: ImportEdge[] = [];
+    const groups: (readonly ImportEdge[])[] = [];
     for (const d of drafts) {
-      const edge = d.finalized!;
+      const edges = d.finalized!;
+      const edge = edges[0]!;
       if (d.source.kind === 'wildcard' && edge.linkStatus !== 'unresolved') {
-        // Produce one `wildcard-expanded` ImportEdge per exported name.
-        const expanded = expandWildcard(edge, byFilePath, hooks, input.workspaceIndex);
-        for (const e of expanded) finalized.push(e);
+        // Keep both meanings of each expansion together for mergeBindings.
+        const expanded = expandWildcard(edge, byFilePath, hooks, input.workspaceIndex, findExport);
+        for (const group of expanded) {
+          finalized.push(...group);
+          groups.push(group);
+        }
       } else {
-        finalized.push(edge);
+        finalized.push(...edges);
+        groups.push(edges);
       }
       if (edge.linkStatus !== 'unresolved') linkedEdges++;
     }
     linkedByScope.set(file.moduleScope, Object.freeze(finalized));
+    groupsByScope.set(file.moduleScope, groups);
   }
 
   // ── Phase 5: materialize module-scope bindings (local + imports + wildcards),
   // delegating precedence to `provider.mergeBindings`.
-  const bindingsByScope = materializeBindings(input.files, linkedByScope, hooks);
+  const bindingsByScope = materializeBindings(input.files, groupsByScope, hooks);
 
   // ── Stats.
   const sccCount = sccs.length;
@@ -285,6 +367,15 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
   };
 
   return Object.freeze({
+    lookupExport: (moduleScope: ScopeId, name: string, namespace: 'type' | 'value') => {
+      const file = byModuleScope.get(moduleScope);
+      if (
+        file === undefined ||
+        (file.exports === undefined && file.exportsByNamespace === undefined)
+      )
+        return [];
+      return findExport(file, name, namespace).map(({ def }) => def);
+    },
     imports: linkedByScope,
     bindings: bindingsByScope,
     sccs,
@@ -300,7 +391,7 @@ interface ImportEdgeDraft {
   readonly fromScope: ScopeId;
   readonly targetFile: string | null;
   readonly base: ImportEdge;
-  finalized: ImportEdge | null;
+  finalized: readonly ImportEdge[] | null;
 }
 
 function makeEdgeDraft(
@@ -316,6 +407,7 @@ function makeEdgeDraft(
       targetFile: null,
       targetExportedName: '',
       kind: 'dynamic-unresolved',
+      ...(parsed.namespace !== undefined ? { namespace: parsed.namespace } : {}),
     };
     return {
       source: parsed,
@@ -323,7 +415,7 @@ function makeEdgeDraft(
       fromScope: file.moduleScope,
       targetFile: null,
       base,
-      finalized: base, // already fully finalized
+      finalized: [base], // already fully finalized
     };
   }
 
@@ -340,6 +432,7 @@ function makeEdgeDraft(
       targetExportedName,
       kind: edgeKind,
       linkStatus: 'unresolved',
+      ...(parsed.namespace !== undefined ? { namespace: parsed.namespace } : {}),
     };
     return {
       source: parsed,
@@ -347,7 +440,7 @@ function makeEdgeDraft(
       fromScope: file.moduleScope,
       targetFile: null,
       base,
-      finalized: base,
+      finalized: [base],
     };
   }
 
@@ -361,6 +454,7 @@ function makeEdgeDraft(
     targetFile,
     targetExportedName,
     kind: edgeKind,
+    ...(parsed.namespace !== undefined ? { namespace: parsed.namespace } : {}),
   };
   return {
     source: parsed,
@@ -387,60 +481,81 @@ function extractExportedName(parsed: ParsedImport): string {
 
 // ─── Internal: per-edge finalization (phase 3) ─────────────────────────────
 
+interface ExportMeaning {
+  readonly def: SymbolDefinition;
+  readonly namespace?: ImportEdge['namespace'];
+}
+
+type FindExport = (
+  file: FinalizeFile,
+  name: string,
+  namespace?: ImportEdge['namespace'],
+) => readonly ExportMeaning[];
+
 function tryFinalize(
   draft: ImportEdgeDraft,
   byFilePath: Map<string, FinalizeFile>,
-): ImportEdge | null {
+  findExport: FindExport,
+): readonly ImportEdge[] | null {
   const targetFile = draft.targetFile;
-  if (targetFile === null) return draft.base; // already terminal
+  if (targetFile === null) return [draft.base]; // already terminal
 
   const targetModule = byFilePath.get(targetFile);
-  if (targetModule === undefined) return draft.base; // external target — leave as-is
+  if (targetModule === undefined) return [draft.base]; // external target — leave as-is
 
   // Wildcards finalize at the file level; their per-name expansion happens
   // in phase 4. At this stage we just record the target module scope.
   if (draft.source.kind === 'wildcard') {
-    return {
-      ...draft.base,
-      targetModuleScope: targetModule.moduleScope,
-    };
+    return [
+      {
+        ...draft.base,
+        targetModuleScope: targetModule.moduleScope,
+      },
+    ];
   }
 
   // Namespace imports alias the target *module*; they don't name a
   // specific export. Link the module scope unconditionally. If the target
-  // also exposes a def whose simple name matches `importedName` (some
+  // also exports a def under `importedName` (some
   // languages emit a synthetic module-def), pick it up as the `targetDefId`
   // so consumers can reach the module as a symbol — but its absence is not
   // a failure.
   if (draft.source.kind === 'namespace') {
-    const moduleDef = findExportByName(targetModule.localDefs, extractExportedName(draft.source));
-    return {
-      ...draft.base,
-      targetModuleScope: targetModule.moduleScope,
-      ...(moduleDef !== undefined ? { targetDefId: moduleDef.nodeId } : {}),
-    };
+    const meanings = findExport(
+      targetModule,
+      extractExportedName(draft.source),
+      draft.base.namespace,
+    );
+    return meanings.length === 0
+      ? [{ ...draft.base, targetModuleScope: targetModule.moduleScope }]
+      : meanings.map(({ def, namespace }) => ({
+          ...draft.base,
+          targetModuleScope: targetModule.moduleScope,
+          targetDefId: def.nodeId,
+          ...(namespace !== undefined ? { namespace } : {}),
+        }));
   }
 
   // named / alias / reexport: look up the imported name in the target's
-  // local defs. Multi-hop re-export chains settle iteratively — each hop
-  // resolves once its prior hop is finalized.
+  // static export surface.
   const importedName = extractExportedName(draft.source);
-  const exported = findExportByName(targetModule.localDefs, importedName);
+  const exported = findExport(targetModule, importedName, draft.base.namespace);
 
-  if (exported === undefined) {
-    // Target resolvable but the name isn't exported — keep trying in case a
-    // re-export inside the target's SCC surfaces it in a later iteration.
+  if (exported.length === 0) {
+    // Target resolvable but the name isn't exported; the bounded pass will
+    // mark this edge unresolved.
     return null;
   }
 
   const transitiveVia = draft.source.kind === 'reexport' ? Object.freeze([targetFile]) : undefined;
 
-  return {
+  return exported.map(({ def, namespace }) => ({
     ...draft.base,
     targetModuleScope: targetModule.moduleScope,
-    targetDefId: exported.nodeId,
+    targetDefId: def.nodeId,
+    ...(namespace !== undefined ? { namespace } : {}),
     ...(transitiveVia !== undefined ? { transitiveVia } : {}),
-  };
+  }));
 }
 
 /**
@@ -457,16 +572,6 @@ function deriveSimpleName(def: SymbolDefinition): string | null {
   if (q === undefined || q.length === 0) return null;
   const dot = q.lastIndexOf('.');
   return dot === -1 ? q : q.slice(dot + 1);
-}
-
-function findExportByName(
-  defs: readonly SymbolDefinition[],
-  name: string,
-): SymbolDefinition | undefined {
-  for (const d of defs) {
-    if (deriveSimpleName(d) === name) return d;
-  }
-  return undefined;
 }
 
 function countEdgesWithin(edgeIndex: Map<string, ImportEdgeDraft[]>, files: Set<string>): number {
@@ -491,28 +596,32 @@ function expandWildcard(
   byFilePath: Map<string, FinalizeFile>,
   hooks: FinalizeHooks,
   workspace: WorkspaceIndex,
-): readonly ImportEdge[] {
+  findExport: FindExport,
+): readonly (readonly ImportEdge[])[] {
   if (edge.targetModuleScope === undefined || edge.targetFile === null) {
-    return [edge]; // unresolvable wildcard survives as a single unlinked edge
+    return [[edge]]; // unresolvable wildcard survives as a single unlinked edge
   }
   const target = byFilePath.get(edge.targetFile);
-  if (target === undefined) return [edge];
+  if (target === undefined) return [[edge]];
 
   const names = hooks.expandsWildcardTo(edge.targetModuleScope, workspace);
   if (names.length === 0) return [];
 
-  const expanded: ImportEdge[] = [];
+  const expanded: ImportEdge[][] = [];
   for (const name of names) {
-    const def = findExportByName(target.localDefs, name);
-    if (def === undefined) continue;
-    expanded.push({
-      localName: name,
-      targetFile: edge.targetFile,
-      targetExportedName: name,
-      kind: 'wildcard-expanded',
-      targetModuleScope: edge.targetModuleScope,
-      targetDefId: def.nodeId,
-    });
+    const meanings = findExport(target, name, edge.namespace);
+    if (meanings.length === 0) continue;
+    expanded.push(
+      meanings.map(({ def, namespace }) => ({
+        localName: name,
+        targetFile: edge.targetFile,
+        targetExportedName: name,
+        kind: 'wildcard-expanded',
+        targetModuleScope: edge.targetModuleScope,
+        targetDefId: def.nodeId,
+        ...(namespace !== undefined ? { namespace } : {}),
+      })),
+    );
   }
   return expanded;
 }
@@ -521,47 +630,66 @@ function expandWildcard(
 
 function materializeBindings(
   files: readonly FinalizeFile[],
-  linkedByScope: ReadonlyMap<ScopeId, readonly ImportEdge[]>,
+  groupsByScope: ReadonlyMap<ScopeId, readonly (readonly ImportEdge[])[]>,
   hooks: FinalizeHooks,
 ): ReadonlyMap<ScopeId, ReadonlyMap<string, readonly BindingRef[]>> {
   const out = new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>();
+  let workspaceDefs: DefIndex | undefined;
 
   for (const file of files) {
     const scopeBindings = new Map<string, readonly BindingRef[]>();
 
-    // Start with local defs as `origin: 'local'` bindings.
-    for (const def of file.localDefs) {
-      const name = deriveSimpleName(def);
-      if (name === null) continue;
-      const incoming: BindingRef[] = [{ def, origin: 'local' }];
-      const existing = scopeBindings.get(name) ?? [];
-      scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
+    if (file.localBindings !== undefined) {
+      // Extracted scope placement and names are authoritative.
+      for (const [name, refs] of file.localBindings) {
+        scopeBindings.set(name, refs.slice());
+      }
+    } else {
+      // Legacy callers supply local defs as `origin: 'local'` bindings.
+      for (const def of file.localDefs) {
+        const name = deriveSimpleName(def);
+        if (name === null) continue;
+        const incoming: BindingRef[] = [{ def, origin: 'local' }];
+        const existing = scopeBindings.get(name) ?? [];
+        scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
+      }
     }
 
     // Layer in finalized imports.
-    const imports = linkedByScope.get(file.moduleScope) ?? [];
-    for (const edge of imports) {
-      if (edge.targetDefId === undefined || edge.linkStatus === 'unresolved') continue;
-      // Every def the importing file needs to reach is in some other file's
-      // `localDefs`; walk all files to find it. In practice we could index
-      // this, but at finalize-time N(files) is small per workspace pass.
-      const def = findDefById(files, edge.targetDefId);
-      if (def === undefined) continue;
+    const groups = groupsByScope.get(file.moduleScope) ?? [];
+    for (const group of groups) {
+      const incomingByName = new Map<string, BindingRef[]>();
+      for (const edge of group) {
+        if (edge.targetDefId === undefined || edge.linkStatus === 'unresolved') continue;
+        // Preserve first-match order across all files, building only for linked defs.
+        workspaceDefs ??= buildDefIndex(files.flatMap((f) => f.localDefs));
+        const def = workspaceDefs.get(edge.targetDefId);
+        if (def === undefined) continue;
 
-      const origin: BindingRef['origin'] =
-        edge.kind === 'namespace'
-          ? 'namespace'
-          : edge.kind === 'wildcard-expanded'
-            ? 'wildcard'
-            : edge.kind === 'reexport'
-              ? 'reexport'
-              : 'import';
-      const fallback = deriveSimpleName(def);
-      const name = edge.localName.length > 0 ? edge.localName : fallback;
-      if (name === null) continue;
-      const incoming: BindingRef[] = [{ def, origin, via: edge }];
-      const existing = scopeBindings.get(name) ?? [];
-      scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
+        const origin: BindingRef['origin'] =
+          edge.kind === 'namespace'
+            ? 'namespace'
+            : edge.kind === 'wildcard-expanded'
+              ? 'wildcard'
+              : edge.kind === 'reexport'
+                ? 'reexport'
+                : 'import';
+        const fallback = deriveSimpleName(def);
+        const name = edge.localName.length > 0 ? edge.localName : fallback;
+        if (name === null) continue;
+        const incoming = incomingByName.get(name) ?? [];
+        incoming.push({
+          def,
+          origin,
+          via: edge,
+          ...(edge.namespace !== undefined ? { namespace: edge.namespace } : {}),
+        });
+        incomingByName.set(name, incoming);
+      }
+      for (const [name, incoming] of incomingByName) {
+        const existing = scopeBindings.get(name) ?? [];
+        scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
+      }
     }
 
     // Freeze nested buckets for immutability.
@@ -573,13 +701,4 @@ function materializeBindings(
   }
 
   return out;
-}
-
-function findDefById(files: readonly FinalizeFile[], defId: string): SymbolDefinition | undefined {
-  for (const f of files) {
-    for (const d of f.localDefs) {
-      if (d.nodeId === defId) return d;
-    }
-  }
-  return undefined;
 }

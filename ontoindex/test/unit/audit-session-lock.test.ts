@@ -121,6 +121,51 @@ describe('audit session lock', () => {
     expect(persisted).toEqual(lock);
   });
 
+  it('overrides live graph identity in the lock and snapshot without mutating stored session', async () => {
+    await store.createSession(
+      {
+        ...sessionInput,
+        snapshotMode: 'dirty-worktree-overlay',
+        changedFiles: ['src/app.ts'],
+        changedSymbols: ['run'],
+      },
+      { id: 'evt-overlay-session' },
+    );
+    const before = await Promise.all(
+      [store.eventStorePath, store.projectionPath].map((file) => fs.readFile(file)),
+    );
+    const lock = await createAuditSessionLockFromStore({
+      repoRoot: tmpDir,
+      sessionId: sessionInput.id,
+      graphIndexId: 'live-generation',
+      graphHash: 'live-metadata-hash',
+      ontoindexVersion: '1.6.2',
+      store,
+    });
+    expect(lock).toMatchObject({
+      graphIndexId: 'live-generation',
+      graphHash: 'live-metadata-hash',
+      snapshot: {
+        graphIndexId: 'live-generation',
+        targetHead: sessionInput.targetHead,
+        changedFiles: ['src/app.ts'],
+      },
+    });
+    expect(await loadAuditSessionLock(tmpDir, sessionInput.id)).toEqual(lock);
+    expect(
+      await Promise.all(
+        [store.eventStorePath, store.projectionPath].map((file) => fs.readFile(file)),
+      ),
+    ).toEqual(before);
+    const state = await store.load();
+    expect(state.events[0]).toMatchObject({
+      session: {
+        graphIndexId: sessionInput.graphIndexId,
+        snapshot: { graphIndexId: sessionInput.graphIndexId },
+      },
+    });
+  });
+
   it('validates a lock when HEAD and graph identity still match', async () => {
     await seedSessionWithTombstone();
     await createAuditSessionLockFromStore({

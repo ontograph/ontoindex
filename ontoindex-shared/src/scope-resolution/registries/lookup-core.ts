@@ -16,10 +16,11 @@
  *
  * **Step 1 — Lexical scope-chain walk.** From `startScope`, walk
  *   parent-ward. At each scope, consult `scope.bindings.get(name)`:
+ *     - If requested, filter bindings by lexical namespace before shadowing.
  *     - Filter candidates whose `def.type ∈ acceptedKinds`.
  *     - For each surviving candidate, record a raw signal with the
  *       binding's origin + the current scope-chain depth.
- *     - **Hard shadow.** If `bindings.get(name)` is non-empty (including
+ *     - **Hard shadow.** If eligible bindings are non-empty (including
  *       non-kind-matching candidates), stop walking. The name is
  *       lexically bound here; outer scopes are not consulted.
  *
@@ -50,8 +51,8 @@
  *
  * **Step 6 — Global fallback.** When Steps 1-3 produced **no**
  *   candidates and the name contains a `.`, consult the
- *   `QualifiedNameIndex` via `lookupQualified` — see §4.5. The `scope`
- *   argument is NOT passed here because global lookup is scope-agnostic.
+ *   `QualifiedNameIndex` via `lookupQualified` — see §4.5. With an explicit
+ *   lexical namespace, tagged source prefixes must first admit this fallback.
  *
  * **Step 7 — Rank + tie-break.** Compose evidence, compute confidence
  *   (sum capped at 1.0), sort by the RFC Appendix B cascade.
@@ -67,6 +68,8 @@
 
 import type { NodeLabel } from '../../graph/types.js';
 import type { SymbolDefinition } from '../symbol-definition.js';
+import { resolveTypeRef } from '../resolve-type-ref.js';
+import { lookupNamespaceMember } from '../namespace-member.js';
 import type {
   BindingRef,
   Callsite,
@@ -79,8 +82,14 @@ import type {
 import type { OriginForTieBreak } from '../origin-priority.js';
 import { composeEvidence, confidenceFromEvidence, type RawSignals } from './evidence.js';
 import { compareByConfidenceWithTiebreaks, type TieBreakKey } from './tie-breaks.js';
-import { lookupQualified } from './lookup-qualified.js';
-import type { ArityVerdict, OwnerScopedContributor, RegistryContext } from './context.js';
+import { canUseCanonicalFallback, lookupQualified } from './lookup-qualified.js';
+import {
+  FIELD_KINDS,
+  METHOD_KINDS,
+  type ArityVerdict,
+  type OwnerScopedContributor,
+  type RegistryContext,
+} from './context.js';
 
 // ─── Public entry point ─────────────────────────────────────────────────────
 
@@ -102,11 +111,38 @@ export function lookupCore(
   params: CoreLookupParams,
   ctx: RegistryContext,
 ): readonly Resolution[] {
+  if (params.explicitReceiver !== undefined)
+    return lookupExplicitReceiver(name, startScope, params, ctx);
   const acceptedKinds = new Set<NodeLabel>(params.acceptedKinds);
   const perCandidate = new Map<DefId, CandidateState>();
 
   // ── Step 1: lexical scope-chain walk ──────────────────────────────────
-  const lexicalShadowed = walkLexicalChain(name, startScope, acceptedKinds, ctx, perCandidate);
+  const lexicalShadowed = walkLexicalChain(
+    name,
+    startScope,
+    acceptedKinds,
+    params.lexicalNamespace,
+    ctx,
+    perCandidate,
+  );
+  let namespaceClaimed = false;
+  if (!lexicalShadowed && params.lexicalNamespace !== undefined && ctx.lookupExport !== undefined) {
+    const member = lookupNamespaceMember(
+      name,
+      startScope,
+      params.lexicalNamespace,
+      ctx.scopes,
+      ctx.defs,
+      ctx.lookupExport,
+    );
+    namespaceClaimed = member.claimed;
+    if (member.claimed) {
+      for (const def of member.candidates) {
+        if (!acceptedKinds.has(def.type)) continue;
+        recordLexicalHit(perCandidate, { def, origin: 'namespace' }, member.scopeChainDepth);
+      }
+    }
+  }
 
   // ── Step 2: type-binding / MRO walk (methods/fields) ──────────────────
   if (params.useReceiverTypeBinding && ctx.methodDispatch !== undefined) {
@@ -132,7 +168,13 @@ export function lookupCore(
   }
 
   // ── Step 6: global fallback (only when Steps 1-3 produced nothing) ──
-  if (perCandidate.size === 0 && !lexicalShadowed && name.includes('.')) {
+  if (
+    perCandidate.size === 0 &&
+    !lexicalShadowed &&
+    !namespaceClaimed &&
+    name.includes('.') &&
+    (params.lexicalNamespace === undefined || canUseCanonicalFallback(name, startScope, ctx.scopes))
+  ) {
     const globals = lookupQualified(name, { acceptedKinds: params.acceptedKinds }, ctx);
     if (globals.length > 0) return globals;
   }
@@ -187,13 +229,14 @@ function ensureCandidate(
 
 /**
  * Walk the lexical scope chain from `startScope` upward. Returns `true`
- * iff a scope with any `bindings.get(name)` entries was found — the
+ * iff a scope with namespace-eligible `bindings.get(name)` entries was found — the
  * caller uses this to decide whether to run the global fallback.
  */
 function walkLexicalChain(
   name: string,
   startScope: ScopeId,
   acceptedKinds: ReadonlySet<NodeLabel>,
+  lexicalNamespace: LookupParams['lexicalNamespace'],
   ctx: RegistryContext,
   perCandidate: Map<DefId, CandidateState>,
 ): boolean {
@@ -210,11 +253,20 @@ function walkLexicalChain(
 
     const bindings = scope.bindings.get(name);
     if (bindings !== undefined && bindings.length > 0) {
+      let hasEligibleBinding = false;
       for (const binding of bindings) {
+        if (
+          lexicalNamespace !== undefined &&
+          binding.namespace !== undefined &&
+          binding.namespace !== 'both' &&
+          binding.namespace !== lexicalNamespace
+        )
+          continue;
+        hasEligibleBinding = true;
         if (!acceptedKinds.has(binding.def.type)) continue;
         recordLexicalHit(perCandidate, binding, depth);
       }
-      return true; // hard shadow regardless of kind-filter survivorship
+      if (hasEligibleBinding) return true; // hard shadow regardless of kind-filter survivorship
     }
 
     currentId = scope.parent;
@@ -278,14 +330,6 @@ function resolveReceiverOwner(
   params: CoreLookupParams,
   ctx: RegistryContext,
 ): DefId | undefined {
-  // Explicit receiver: consult the callsite scope's typeBindings for the
-  // named receiver; the attached TypeRef identifies the owner. Without a
-  // ready resolveTypeRef call (that module is separate), we do a direct
-  // lookup and trust the caller to have populated the binding.
-  if (params.explicitReceiver !== undefined) {
-    return lookupReceiverType(startScope, params.explicitReceiver.name, ctx);
-  }
-
   // Implicit `self` / `this` — the scope's typeBindings should carry it.
   for (const implicitName of IMPLICIT_RECEIVERS) {
     const owner = lookupReceiverType(startScope, implicitName, ctx);
@@ -295,6 +339,164 @@ function resolveReceiverOwner(
 }
 
 const IMPLICIT_RECEIVERS: readonly string[] = Object.freeze(['self', 'this']);
+
+/** Explicit syntax never falls back to an unrelated lexical leaf or implicit receiver. */
+function lookupExplicitReceiver(
+  name: string,
+  startScope: ScopeId,
+  params: CoreLookupParams,
+  ctx: RegistryContext,
+): readonly Resolution[] {
+  const receiver = params.explicitReceiver!;
+  if ('kind' in receiver && receiver.kind === 'unknown') return EMPTY;
+  const chain = 'kind' in receiver ? receiver : undefined;
+  if (chain !== undefined && (chain.steps.length === 0 || chain.steps.length > 64)) return EMPTY;
+  const rootName =
+    chain === undefined ? (receiver as { readonly name: string }).name : chain.root.name;
+  if (!rootName || rootName.includes('.')) return EMPTY;
+
+  // Build each derived membership view once per lookup, never once per hop.
+  const declarationScopes = new Map<DefId, ScopeId | null>();
+  for (const scope of ctx.scopes.byId.values()) {
+    for (const def of scope.ownedDefs) {
+      const previous = declarationScopes.get(def.nodeId);
+      declarationScopes.set(
+        def.nodeId,
+        previous === undefined || previous === scope.id ? scope.id : null,
+      );
+    }
+  }
+  const membersByOwner = new Map<DefId, Map<string, SymbolDefinition[]>>();
+  for (const def of ctx.defs.byId.values()) {
+    const memberName = simpleNameOf(def);
+    if (def.ownerId === undefined || memberName === undefined) continue;
+    let members = membersByOwner.get(def.ownerId);
+    if (members === undefined) membersByOwner.set(def.ownerId, (members = new Map()));
+    const bucket = members.get(memberName);
+    if (bucket === undefined) members.set(memberName, [def]);
+    else bucket.push(def);
+  }
+  const resolveAnnotation = (
+    def: SymbolDefinition,
+    rawName: string | undefined,
+  ): DefId | undefined => {
+    const declaredAtScope = declarationScopes.get(def.nodeId);
+    if (!rawName || declaredAtScope == null) return undefined;
+    return resolveTypeRef(
+      { rawName, declaredAtScope, source: 'annotation' },
+      {
+        scopes: ctx.scopes,
+        defIndex: ctx.defs,
+        qualifiedNameIndex: ctx.qualifiedNames,
+        lookupExport: ctx.lookupExport,
+      },
+    )?.nodeId;
+  };
+  let currentDef: SymbolDefinition | undefined;
+  let owner: DefId | undefined;
+  let rootShadowed = false;
+  let currentId: ScopeId | null = startScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return EMPTY;
+    visited.add(currentId);
+    const scope = ctx.scopes.getScope(currentId);
+    if (scope === undefined) return EMPTY;
+    const bindings = (scope.bindings.get(rootName) ?? []).filter(
+      (binding) => binding.namespace !== 'type' && binding.via?.namespace !== 'type',
+    );
+    const candidates = new Map(bindings.map((binding) => [binding.def.nodeId, binding.def]));
+    if (candidates.size > 1) return EMPTY;
+    if (bindings.length > 0 && bindings.every((binding) => binding.origin === 'namespace')) break;
+    currentDef = candidates.values().next().value;
+    const ref = scope.typeBindings.get(rootName);
+    if (ref !== undefined) {
+      rootShadowed = true;
+      owner = resolveTypeRef(ref, {
+        scopes: ctx.scopes,
+        defIndex: ctx.defs,
+        qualifiedNameIndex: ctx.qualifiedNames,
+        lookupExport: ctx.lookupExport,
+      })?.nodeId;
+      break;
+    }
+    if (currentDef !== undefined) {
+      rootShadowed = true;
+      owner = resolveAnnotation(currentDef, currentDef.declaredType);
+      break; // Even an untyped value shadows every outer receiver fact.
+    }
+    currentId = scope.parent;
+  }
+
+  let namespaceRoot = !rootShadowed && owner === undefined && currentDef === undefined;
+  const selectMember = (memberName: string): SymbolDefinition | undefined => {
+    if (namespaceRoot && ctx.lookupExport !== undefined) {
+      namespaceRoot = false;
+      const result = lookupNamespaceMember(
+        `${rootName}.${memberName}`,
+        startScope,
+        'value',
+        ctx.scopes,
+        ctx.defs,
+        ctx.lookupExport,
+      );
+      return result.claimed && result.candidates.length === 1 ? result.candidates[0] : undefined;
+    }
+    namespaceRoot = false;
+    if (owner === undefined) return undefined;
+    const members = collectOwnedMembers(owner, memberName, ctx, membersByOwner);
+    return members.length === 1 ? members[0] : undefined;
+  };
+  for (const step of chain?.steps ?? []) {
+    if (step.kind === 'member') {
+      currentDef = selectMember(step.name);
+      if (currentDef === undefined) return EMPTY;
+      owner = FIELD_KINDS.includes(currentDef.type)
+        ? resolveAnnotation(currentDef, currentDef.declaredType)
+        : undefined;
+    } else {
+      if (
+        !Number.isInteger(step.arity) ||
+        step.arity < 0 ||
+        currentDef === undefined ||
+        !METHOD_KINDS.includes(currentDef.type) ||
+        ctx.providers.arityCompatibility?.({ arity: step.arity }, currentDef) !== 'compatible'
+      )
+        return EMPTY;
+      owner = resolveAnnotation(currentDef, currentDef.returnType);
+      currentDef = undefined;
+      namespaceRoot = false;
+      if (owner === undefined) return EMPTY;
+    }
+  }
+  const candidates = new Map<DefId, CandidateState>();
+  if (namespaceRoot && ctx.lookupExport !== undefined) {
+    const result = lookupNamespaceMember(
+      `${rootName}.${name}`,
+      startScope,
+      'value',
+      ctx.scopes,
+      ctx.defs,
+      ctx.lookupExport,
+    );
+    if (!result.claimed) return EMPTY;
+    for (const def of result.candidates) {
+      if (params.acceptedKinds.includes(def.type))
+        recordLexicalHit(candidates, { def, origin: 'namespace' }, result.scopeChainDepth);
+    }
+  } else if (owner !== undefined) {
+    const owners = [owner, ...(ctx.methodDispatch?.mroFor(owner) ?? [])];
+    for (let depth = 0; depth < owners.length; depth++) {
+      for (const def of collectOwnedMembers(owners[depth]!, name, ctx, membersByOwner)) {
+        if (params.acceptedKinds.includes(def.type))
+          recordTypeBindingHit(candidates, def, depth, owner);
+      }
+    }
+  }
+  if (candidates.size === 0) return EMPTY;
+  if (params.callsite !== undefined) applyArityFilter(params.callsite, candidates, ctx);
+  return rankCandidates(candidates);
+}
 
 function lookupReceiverType(
   startScope: ScopeId,
@@ -312,16 +514,14 @@ function lookupReceiverType(
 
     const typeRef = scope.typeBindings.get(receiverName);
     if (typeRef !== undefined) {
-      // rawName must resolve to a def via qualifiedNames; if it doesn't, we
-      // can't claim the receiver type. No fallback — that's what
-      // `resolveTypeRef` would do, but we keep this path lean and let
-      // callers pre-resolve if they want the richer semantics.
-      const candidateIds = ctx.qualifiedNames.get(typeRef.rawName);
-      if (candidateIds.length === 1) return candidateIds[0];
-      // Ambiguous (≥ 2) or missing (0) — caller must pre-resolve via
-      // `resolveTypeRef` (#916) if they want the richer semantics. We
-      // intentionally do NOT re-implement a simple-name fallback here.
-      return undefined;
+      // The nearest receiver binding shadows outer bindings even when its
+      // TypeRef cannot resolve under the strict declaration-site policy.
+      return resolveTypeRef(typeRef, {
+        scopes: ctx.scopes,
+        defIndex: ctx.defs,
+        qualifiedNameIndex: ctx.qualifiedNames,
+        lookupExport: ctx.lookupExport,
+      })?.nodeId;
     }
     currentId = scope.parent;
   }
@@ -332,7 +532,9 @@ function collectOwnedMembers(
   ownerDefId: DefId,
   memberName: string,
   ctx: RegistryContext,
+  byOwner?: ReadonlyMap<DefId, ReadonlyMap<string, readonly SymbolDefinition[]>>,
 ): readonly SymbolDefinition[] {
+  if (byOwner !== undefined) return byOwner.get(ownerDefId)?.get(memberName) ?? [];
   // An owner's members are defs whose `ownerId === ownerDefId` and whose
   // simple name matches `memberName`. We iterate `defs.byId` — O(D) per
   // call today. A future by-owner index would make this O(K); tracked as

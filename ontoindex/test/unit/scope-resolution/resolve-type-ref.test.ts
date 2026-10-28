@@ -7,7 +7,7 @@
  * cycle guard.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   resolveTypeRef,
   buildDefIndex,
@@ -42,6 +42,7 @@ const mkScope = (
   parent: ScopeId | null,
   bindings: Record<string, BindingRef[]> = {},
   filePath = 'src/test.ts',
+  imports: readonly ImportEdge[] = [],
 ): Scope => ({
   id,
   parent,
@@ -50,7 +51,7 @@ const mkScope = (
   filePath,
   bindings: new Map(Object.entries(bindings)),
   ownedDefs: [],
-  imports: [],
+  imports,
   typeBindings: new Map(),
 });
 
@@ -73,7 +74,340 @@ const typeRef = (
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
+describe('resolveTypeRef: same-scope ambiguity', () => {
+  it('rejects two distinct eligible types instead of picking the first', () => {
+    const first = mkDef({ nodeId: 'type:first' });
+    const second = mkDef({ nodeId: 'type:second' });
+    const scope = mkScope('scope:types', null, {
+      T: [mkBinding(first, 'local'), mkBinding(second, 'import')],
+    });
+    expect(resolveTypeRef(typeRef('T', scope.id), mkCtx([scope], [first, second]))).toBeNull();
+  });
+
+  it('allows duplicate bindings to the same node', () => {
+    const def = mkDef({ nodeId: 'type:one' });
+    const scope = mkScope('scope:types', null, {
+      T: [mkBinding(def, 'local'), mkBinding(def, 'import')],
+    });
+    expect(resolveTypeRef(typeRef('T', scope.id), mkCtx([scope], [def]))).toBe(def);
+  });
+});
+
+describe('resolveTypeRef: exported namespace members', () => {
+  const fixture = () => {
+    const exported = mkDef({ nodeId: 'def:exported', qualifiedName: 'lib.Internal' });
+    const collision = mkDef({ nodeId: 'def:collision', qualifiedName: 'ns.Public' });
+    const module = mkScope('scope:lib', null, {}, 'lib.ts');
+    const edge: ImportEdge = {
+      kind: 'namespace',
+      localName: 'ns',
+      namespace: 'type',
+      targetFile: 'lib.ts',
+      targetModuleScope: module.id,
+      targetExportedName: '*',
+    };
+    const declaration = mkScope('scope:declaration', null, {}, 'app.ts', [edge]);
+    const lookupExport = vi
+      .fn<NonNullable<ResolveTypeRefContext['lookupExport']>>()
+      .mockReturnValue([exported]);
+    const context = {
+      ...mkCtx([module, declaration], [exported, collision]),
+      lookupExport,
+    };
+    return { exported, collision, module, edge, declaration, lookupExport, context };
+  };
+
+  it.each(['type', 'both', undefined] as const)(
+    'resolves a %s namespace through its actual export spelling',
+    (namespace) => {
+      const f = fixture();
+      const declaration = { ...f.declaration, imports: [{ ...f.edge, namespace }] };
+      const context = { ...f.context, scopes: mkLookup([declaration, f.module]) };
+      expect(resolveTypeRef(typeRef('ns.Public', declaration.id), context)).toBe(f.exported);
+      expect(f.lookupExport).toHaveBeenCalledExactlyOnceWith(f.module.id, 'Public', 'type');
+    },
+  );
+
+  it('resolves at the annotation declaration despite callsite namespace shadowing', () => {
+    const f = fixture();
+    const callsite = mkScope('scope:call', f.declaration.id, {
+      ns: [mkBinding(f.collision, 'local')],
+    });
+    const context = { ...f.context, scopes: mkLookup([f.module, f.declaration, callsite]) };
+    expect(resolveTypeRef(typeRef('ns.Public', f.declaration.id), context)).toBe(f.exported);
+  });
+
+  it('skips a value-only namespace alias to reach the outer type alias', () => {
+    const f = fixture();
+    const inner = mkScope(
+      'scope:inner',
+      f.declaration.id,
+      {
+        ns: [{ ...mkBinding(f.collision, 'local'), namespace: 'value' }],
+      },
+      'app.ts',
+      [{ ...f.edge, namespace: 'value', targetModuleScope: 'scope:missing' }],
+    );
+    expect(
+      resolveTypeRef(typeRef('ns.Public', inner.id), {
+        ...f.context,
+        scopes: mkLookup([f.module, f.declaration, inner]),
+      }),
+    ).toBe(f.exported);
+  });
+
+  it.each(['local', 'import', 'wildcard'] as const)(
+    'stops at a nearer %s alias binding',
+    (origin) => {
+      const f = fixture();
+      const inner = mkScope('scope:inner', f.declaration.id, {
+        ns: [mkBinding(f.collision, origin)],
+      });
+      expect(
+        resolveTypeRef(typeRef('ns.Public', inner.id), {
+          ...f.context,
+          scopes: mkLookup([f.module, f.declaration, inner]),
+        }),
+      ).toBeNull();
+      expect(f.lookupExport).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['unresolved', 'missing-target', 'missing-scope', 'non-module', 'conflict'] as const)(
+    'rejects %s namespace evidence without canonical fallback',
+    (state) => {
+      const f = fixture();
+      const edge =
+        state === 'unresolved'
+          ? { ...f.edge, linkStatus: 'unresolved' as const }
+          : state === 'missing-target'
+            ? { ...f.edge, targetModuleScope: undefined }
+            : state === 'missing-scope'
+              ? { ...f.edge, targetModuleScope: 'scope:missing' }
+              : f.edge;
+      const module = state === 'non-module' ? { ...f.module, kind: 'Function' as const } : f.module;
+      const otherModule = mkScope('scope:other', null, {}, 'other.ts');
+      const declaration = {
+        ...f.declaration,
+        imports:
+          state === 'conflict' ? [edge, { ...f.edge, targetModuleScope: otherModule.id }] : [edge],
+      };
+      expect(
+        resolveTypeRef(typeRef('ns.Public', declaration.id), {
+          ...f.context,
+          scopes: mkLookup([module, otherModule, declaration]),
+        }),
+      ).toBeNull();
+      expect(f.lookupExport).not.toHaveBeenCalled();
+    },
+  );
+
+  it('deduplicates namespace edges pointing to the same module', () => {
+    const f = fixture();
+    const declaration = { ...f.declaration, imports: [f.edge, { ...f.edge }] };
+    expect(
+      resolveTypeRef(typeRef('ns.Public', declaration.id), {
+        ...f.context,
+        scopes: mkLookup([f.module, declaration]),
+      }),
+    ).toBe(f.exported);
+    expect(f.lookupExport).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts a linked namespace binding with its matching import edge', () => {
+    const f = fixture();
+    const namespace = mkDef({ nodeId: 'def:namespace', type: 'Namespace' });
+    const declaration = {
+      ...f.declaration,
+      bindings: new Map([
+        ['ns', [{ ...mkBinding(namespace, 'namespace', f.edge), namespace: 'type' as const }]],
+      ]),
+    };
+    expect(
+      resolveTypeRef(typeRef('ns.Public', declaration.id), {
+        ...f.context,
+        scopes: mkLookup([f.module, declaration]),
+      }),
+    ).toBe(f.exported);
+  });
+
+  it('rejects a value-only namespace import despite an unrelated canonical hit', () => {
+    const f = fixture();
+    const declaration = { ...f.declaration, imports: [{ ...f.edge, namespace: 'value' as const }] };
+    expect(
+      resolveTypeRef(typeRef('ns.Public', declaration.id), {
+        ...f.context,
+        scopes: mkLookup([f.module, declaration]),
+      }),
+    ).toBeNull();
+    expect(f.lookupExport).not.toHaveBeenCalled();
+  });
+
+  it.each(['binding', 'via'] as const)(
+    'filters %s tags before a namespace binding shadows an outer type alias',
+    (source) => {
+      for (const tag of ['type', 'value', 'both', undefined] as const) {
+        const f = fixture();
+        const namespace = mkDef({ nodeId: 'def:namespace', type: 'Namespace' });
+        const inner = mkScope('scope:inner', f.declaration.id, {
+          ns: [
+            {
+              ...mkBinding(namespace, 'namespace', {
+                ...f.edge,
+                namespace: source === 'via' ? tag : 'both',
+                targetModuleScope: 'scope:missing',
+              }),
+              namespace: source === 'binding' ? tag : 'both',
+            },
+          ],
+        });
+        const result = resolveTypeRef(typeRef('ns.Public', inner.id), {
+          ...f.context,
+          scopes: mkLookup([f.module, f.declaration, inner]),
+        });
+        expect(result).toBe(tag === 'value' ? f.exported : null);
+        expect(f.lookupExport).toHaveBeenCalledTimes(tag === 'value' ? 1 : 0);
+      }
+    },
+  );
+
+  it('keeps multiple exported type candidates ambiguous after non-type filtering', () => {
+    const f = fixture();
+    const functionDef = mkDef({ nodeId: 'def:function', type: 'Function' });
+    f.lookupExport.mockReturnValue([functionDef, f.exported]);
+    const context = {
+      ...f.context,
+      defIndex: buildDefIndex([functionDef, f.exported, f.collision]),
+    };
+    expect(resolveTypeRef(typeRef('ns.Public', f.declaration.id), context)).toBe(f.exported);
+    f.lookupExport.mockReturnValue([functionDef, f.exported, f.collision]);
+    expect(resolveTypeRef(typeRef('ns.Public', f.declaration.id), context)).toBeNull();
+  });
+
+  it.each(['absent', 'wrong-kind', 'dangling', 'ambiguous'] as const)(
+    'rejects %s exported definitions without canonical fallback',
+    (state) => {
+      const f = fixture();
+      const wrongKind = mkDef({ nodeId: 'def:function', type: 'Function' });
+      const dangling = mkDef({ nodeId: 'def:missing' });
+      f.lookupExport.mockReturnValue(
+        state === 'absent'
+          ? []
+          : state === 'wrong-kind'
+            ? [wrongKind]
+            : state === 'dangling'
+              ? [dangling]
+              : [f.exported, f.collision],
+      );
+      expect(
+        resolveTypeRef(typeRef('ns.Public', f.declaration.id), {
+          ...f.context,
+          defIndex: buildDefIndex([f.exported, f.collision, wrongKind]),
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it('deduplicates exported IDs and returns their authoritative indexed definition', () => {
+    const f = fixture();
+    const copy = { ...f.exported, qualifiedName: 'forged.Public' };
+    f.lookupExport.mockReturnValue([copy, copy]);
+    expect(resolveTypeRef(typeRef('ns.Public', f.declaration.id), f.context)).toBe(f.exported);
+  });
+
+  it('checks the indexed kind even if the export callback reports a class', () => {
+    const f = fixture();
+    const indexed = { ...f.exported, type: 'Function' as const };
+    expect(
+      resolveTypeRef(typeRef('ns.Public', f.declaration.id), {
+        ...f.context,
+        defIndex: buildDefIndex([indexed, f.collision]),
+      }),
+    ).toBeNull();
+  });
+
+  it('keeps exact lexical resolution ahead of namespace traversal', () => {
+    const f = fixture();
+    const declaration = {
+      ...f.declaration,
+      bindings: new Map([['ns.Public', [mkBinding(f.collision, 'local')]]]),
+    };
+    expect(
+      resolveTypeRef(typeRef('ns.Public', declaration.id), {
+        ...f.context,
+        scopes: mkLookup([f.module, declaration]),
+      }),
+    ).toBe(f.collision);
+    expect(f.lookupExport).not.toHaveBeenCalled();
+  });
+
+  it('does not admit deeper namespace traversal', () => {
+    const f = fixture();
+    const global = mkDef({ nodeId: 'def:deep', qualifiedName: 'ns.nested.Public' });
+    expect(
+      resolveTypeRef(typeRef(global.qualifiedName!, f.declaration.id), {
+        ...f.context,
+        defIndex: buildDefIndex([f.exported, global]),
+        qualifiedNameIndex: buildQualifiedNameIndex([global]),
+      }),
+    ).toBeNull();
+    expect(f.lookupExport).not.toHaveBeenCalled();
+  });
+
+  it('preserves fail-closed namespace behavior when lookupExport is absent', () => {
+    const f = fixture();
+    const { lookupExport: _lookupExport, ...context } = f.context;
+    expect(resolveTypeRef(typeRef('ns.Public', f.declaration.id), context)).toBeNull();
+  });
+});
+
 describe('resolveTypeRef', () => {
+  describe('lexical namespaces', () => {
+    it('skips value-only bindings before shadowing, even when they target a class', () => {
+      const outer = mkDef({ nodeId: 'def:outer' });
+      const inner = mkDef({ nodeId: 'def:inner' });
+      const mod = mkScope('scope:m', null, {
+        Name: [{ ...mkBinding(outer, 'local'), namespace: 'type' }],
+      });
+      const fn = mkScope('scope:f', mod.id, {
+        Name: [{ ...mkBinding(inner, 'local'), namespace: 'value' }],
+      });
+      expect(resolveTypeRef(typeRef('Name', fn.id), mkCtx([mod, fn], [outer, inner]))).toBe(outer);
+    });
+
+    it.each(['type', 'both', undefined] as const)(
+      'accepts a %s binding from a mixed bucket',
+      (namespace) => {
+        const valueDef = mkDef({ nodeId: 'def:value' });
+        const typeDef = mkDef({ nodeId: 'def:type' });
+        const scope = mkScope('scope:m', null, {
+          Name: [
+            { ...mkBinding(valueDef, 'local'), namespace: 'value' },
+            { ...mkBinding(typeDef, 'local'), ...(namespace !== undefined ? { namespace } : {}) },
+          ],
+        });
+        expect(resolveTypeRef(typeRef('Name', scope.id), mkCtx([scope], [valueDef, typeDef]))).toBe(
+          typeDef,
+        );
+      },
+    );
+
+    it.each(['type', 'both', undefined] as const)(
+      'retains wrong-kind shadowing for a %s binding',
+      (namespace) => {
+        const outer = mkDef({ nodeId: 'def:outer' });
+        const inner = mkDef({ nodeId: 'def:inner', type: 'Variable' });
+        const mod = mkScope('scope:m', null, { Name: [mkBinding(outer, 'local')] });
+        const fn = mkScope('scope:f', mod.id, {
+          Name: [
+            { ...mkBinding(inner, 'local'), ...(namespace !== undefined ? { namespace } : {}) },
+          ],
+        });
+        expect(resolveTypeRef(typeRef('Name', fn.id), mkCtx([mod, fn], [outer, inner]))).toBeNull();
+      },
+    );
+  });
+
   describe('scope-chain walk', () => {
     it('resolves a local type defined in the same scope', () => {
       const userClass = mkDef({ nodeId: 'def:User', type: 'Class' });
@@ -226,6 +560,136 @@ describe('resolveTypeRef', () => {
   });
 
   describe('dotted qualified-name fallback', () => {
+    it.each(['type', 'value', 'both', undefined] as const)(
+      'refuses namespace bindings tagged %s at full spelling and nested prefixes',
+      (namespace) => {
+        const global = mkDef({ nodeId: 'def:global', qualifiedName: 'app.models.User' });
+        const claimed = mkDef({ nodeId: 'def:claimed', type: 'Namespace' });
+        for (const name of ['app', 'app.models', 'app.models.User']) {
+          const mod = mkScope('scope:m', null, {
+            [name]: [{ ...mkBinding(claimed, 'namespace'), namespace }],
+          });
+          const fn = mkScope('scope:f', mod.id);
+          expect(
+            resolveTypeRef(
+              typeRef(global.qualifiedName!, fn.id),
+              mkCtx([mod, fn], [global, claimed]),
+            ),
+          ).toBeNull();
+        }
+      },
+    );
+
+    it.each(['type', 'value', 'both', undefined] as const)(
+      'refuses namespace edges tagged %s regardless of link state',
+      (namespace) => {
+        const global = mkDef({ nodeId: 'def:global', qualifiedName: 'app.models.User' });
+        const importedNamespace = mkDef({ nodeId: 'def:module', type: 'Namespace' });
+        for (const localName of ['app', 'app.models', 'app.models.User']) {
+          for (const link of [
+            {},
+            { targetDefId: importedNamespace.nodeId },
+            { linkStatus: 'unresolved' },
+          ] as const) {
+            const scope = mkScope('scope:m', null, {}, 'src/test.ts', [
+              {
+                kind: 'namespace',
+                localName,
+                namespace,
+                targetFile: 'models.ts',
+                targetExportedName: '*',
+                ...link,
+              },
+            ]);
+            expect(
+              resolveTypeRef(
+                typeRef(global.qualifiedName!, scope.id),
+                mkCtx([scope], [global, importedNamespace]),
+              ),
+            ).toBeNull();
+          }
+        }
+      },
+    );
+
+    it('does not recover a value-only exact class binding through canonical fallback', () => {
+      const global = mkDef({ nodeId: 'def:global', qualifiedName: 'app.User' });
+      const scope = mkScope('scope:m', null, {
+        'app.User': [{ ...mkBinding(global, 'import'), namespace: 'value' }],
+      });
+      expect(resolveTypeRef(typeRef('app.User', scope.id), mkCtx([scope], [global]))).toBeNull();
+    });
+
+    it('requires dot-boundary prefix matches', () => {
+      const global = mkDef({ nodeId: 'def:global', qualifiedName: 'app.models.User' });
+      const claimed = mkDef({ nodeId: 'def:claimed', type: 'Namespace' });
+      const scope = mkScope(
+        'scope:m',
+        null,
+        {
+          'app.modelsExtra': [mkBinding(claimed, 'namespace')],
+          'app.model': [{ ...mkBinding(claimed, 'namespace'), namespace: 'type' }],
+        },
+        'src/test.ts',
+        [
+          {
+            kind: 'namespace',
+            localName: 'app.modelsExtra',
+            targetFile: 'models.ts',
+            targetExportedName: '*',
+          },
+          {
+            kind: 'namespace',
+            localName: 'app.mod',
+            namespace: 'both',
+            targetFile: 'models.ts',
+            targetExportedName: '*',
+          },
+        ],
+      );
+      expect(
+        resolveTypeRef(typeRef(global.qualifiedName!, scope.id), mkCtx([scope], [global, claimed])),
+      ).toBe(global);
+    });
+
+    it('preserves canonical fallback past an untagged non-namespace local prefix', () => {
+      const global = mkDef({ nodeId: 'def:global', qualifiedName: 'app.User' });
+      const local = mkDef({ nodeId: 'def:local', type: 'Variable' });
+      const scope = mkScope('scope:m', null, { app: [mkBinding(local, 'local')] });
+      expect(resolveTypeRef(typeRef('app.User', scope.id), mkCtx([scope], [global, local]))).toBe(
+        global,
+      );
+    });
+
+    it.each(['value', undefined] as const)(
+      'keeps an exact lexical type success despite a namespace prefix tagged %s',
+      (namespace) => {
+        const local = mkDef({ nodeId: 'def:local' });
+        const global = mkDef({ nodeId: 'def:global', qualifiedName: 'app.User' });
+        const scope = mkScope('scope:m', null, {
+          app: [{ ...mkBinding(global, 'namespace'), namespace }],
+          'app.User': [{ ...mkBinding(local, 'import'), namespace: 'type' }],
+        });
+        expect(resolveTypeRef(typeRef('app.User', scope.id), mkCtx([scope], [local, global]))).toBe(
+          local,
+        );
+      },
+    );
+
+    it.each(['missing-start', 'missing-parent', 'cycle'] as const)(
+      'refuses a global hit with a %s scope chain',
+      (shape) => {
+        const global = mkDef({ nodeId: 'def:global', qualifiedName: 'app.User' });
+        const scope = mkScope('scope:m', shape === 'cycle' ? 'scope:m' : 'scope:missing');
+        expect(
+          resolveTypeRef(
+            typeRef('app.User', scope.id),
+            mkCtx(shape === 'missing-start' ? [] : [scope], [global]),
+          ),
+        ).toBeNull();
+      },
+    );
+
     it('resolves a unique qualified name when no scope binding matches', () => {
       const userClass = mkDef({
         nodeId: 'def:appUser',

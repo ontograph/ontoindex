@@ -1,5 +1,13 @@
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import {
+  isAutomaticWorkspaceEnabled,
+  getOverlaySnapshot,
+  isAuthoritativePath,
+  queryOverlay,
+  type OverlaySnapshot,
+} from './backend-overlay.js';
 import { resolveSymbolCandidates, toSymbolIdentity } from './backend-symbol-resolution.js';
+import { nodeKind } from '../super/_helpers/node-kind.js';
 
 const MAX_CONTEXT_PROCESS_ROWS = (() => {
   const raw = Number.parseInt(process.env.ONTOINDEX_CONTEXT_PROCESS_LIMIT ?? '', 10);
@@ -7,6 +15,22 @@ const MAX_CONTEXT_PROCESS_ROWS = (() => {
 })();
 const MAX_CONTEXT_RELATIONSHIP_ROWS = 30;
 const MAX_CONTEXT_CONCEPT_ROWS = 10;
+const METHOD_METADATA_KEYS = new Set([
+  'visibility',
+  'isStatic',
+  'isAbstract',
+  'isFinal',
+  'isVirtual',
+  'isOverride',
+  'isAsync',
+  'isPartial',
+  'returnType',
+  'parameterCount',
+  'isVariadic',
+  'requiredParameterCount',
+  'parameterTypes',
+  'annotations',
+]);
 
 interface ContextRepoHandle {
   id: string;
@@ -15,6 +39,7 @@ interface ContextRepoHandle {
 }
 
 type QueryRow = Record<string, unknown> | readonly unknown[];
+type GraphQuery = (cypher: string, params: Record<string, unknown>) => Promise<QueryRow[]>;
 type ContextRelationshipRow = QueryRow;
 type ProcessParticipationRow = QueryRow;
 type MethodMetadataRow = QueryRow;
@@ -68,11 +93,17 @@ function categorizeRows(rows: ContextRelationshipRow[]): Record<string, unknown[
   const categories: Record<string, unknown[]> = {};
   for (const row of rows) {
     const relType = String(rowValue(row, 'relType', 0) || '').toLowerCase();
+    const uid = rowValue(row, 'uid', 1);
+    const rowKind = rowValue(row, 'kind', 4);
+    const kind =
+      (rowKind === undefined || rowKind === null || rowKind === '') && typeof uid === 'string'
+        ? nodeKind('', uid) || rowKind
+        : rowKind;
     const entry = {
-      uid: rowValue(row, 'uid', 1),
+      uid,
       name: rowValue(row, 'name', 2),
       filePath: rowValue(row, 'filePath', 3),
-      kind: rowValue(row, 'kind', 4),
+      kind,
       ...(rowValue(row, 'source', 5) === 'overlay' ? { source: 'overlay' } : {}),
     };
     if (!categories[relType]) categories[relType] = [];
@@ -82,7 +113,7 @@ function categorizeRows(rows: ContextRelationshipRow[]): Record<string, unknown[
 }
 
 async function resolveClassLike(
-  repoId: string,
+  graphQuery: GraphQuery,
   symId: string,
   resolvedLabel: string | undefined,
   sym: ResolvedContextSymbol,
@@ -92,8 +123,7 @@ async function resolveClassLike(
   if (!isClassLike && symRawType === '') {
     try {
       // Single UNION query instead of two serial round-trips.
-      const typeCheck = await executeParameterized(
-        repoId,
+      const typeCheck = await graphQuery(
         `
         MATCH (n:Class) WHERE n.id = $symId RETURN 'Class' AS label LIMIT 1
         UNION ALL
@@ -112,14 +142,13 @@ async function resolveClassLike(
 }
 
 async function expandClassLikeIncomingRefs(
-  repoId: string,
+  graphQuery: GraphQuery,
   symId: string,
   incomingRows: ContextRelationshipRow[],
 ): Promise<{ truncated: boolean; missingReasons: string[] }> {
   // Each independent query keeps its successful sibling if the other fails.
   const results = await Promise.allSettled([
-    executeParameterized(
-      repoId,
+    graphQuery(
       `
         MATCH (n)-[hm:CodeRelation]->(ctor:Constructor)
         WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
@@ -130,8 +159,7 @@ async function expandClassLikeIncomingRefs(
       `,
       { symId },
     ),
-    executeParameterized(
-      repoId,
+    graphQuery(
       `
         MATCH (f:File)-[rel:CodeRelation]->(n)
         WHERE n.id = $symId AND rel.type = 'DEFINES'
@@ -176,31 +204,26 @@ async function expandClassLikeIncomingRefs(
 }
 
 async function fetchMethodMetadata(
-  repoId: string,
+  graphQuery: GraphQuery,
   symId: string,
 ): Promise<{ metadata?: Record<string, unknown>; queryFailed: boolean }> {
   try {
-    const metaRows = (await executeParameterized(
-      repoId,
+    const metaRows = (await graphQuery(
       `
       MATCH (n {id: $symId})
-      RETURN n.visibility AS visibility, n.isStatic AS isStatic, n.isAbstract AS isAbstract,
-             n.isFinal AS isFinal, n.isVirtual AS isVirtual, n.isOverride AS isOverride,
-             n.isAsync AS isAsync, n.isPartial AS isPartial, n.returnType AS returnType,
-             n.parameterCount AS parameterCount, n.isVariadic AS isVariadic,
-             n.requiredParameterCount AS requiredParameterCount,
-             n.parameterTypes AS parameterTypes, n.annotations AS annotations
+      RETURN n
       LIMIT 1
     `,
       { symId },
     )) as MethodMetadataRow[];
     if (metaRows.length === 0) return { queryFailed: false };
 
-    const row = metaRows[0];
+    const node = rowValue(metaRows[0], 'n', 0);
+    if (!node || typeof node !== 'object') return { queryFailed: false };
     const meta: Record<string, unknown> = {};
-    // Only include defined properties to distinguish "not applicable" from "not enriched"
-    for (const [key, val] of rowEntries(row)) {
-      if (val !== null && val !== undefined) meta[key] = val;
+    // Optional fields vary by node schema; never project them across all labels.
+    for (const [key, val] of rowEntries(node as QueryRow)) {
+      if (METHOD_METADATA_KEYS.has(key) && val !== null && val !== undefined) meta[key] = val;
     }
     return { metadata: Object.keys(meta).length > 0 ? meta : undefined, queryFailed: false };
   } catch {
@@ -224,10 +247,32 @@ export async function context(
     return { error: 'Either "name" or "uid" parameter is required.' };
   }
 
+  const overlayRepo =
+    repo.repoPath && repo.storagePath
+      ? { id: repo.id, repoPath: repo.repoPath, storagePath: repo.storagePath }
+      : undefined;
+  let snapshot: OverlaySnapshot | undefined;
+  if (overlayRepo) {
+    try {
+      snapshot = await getOverlaySnapshot(overlayRepo);
+    } catch (error) {
+      if (isAutomaticWorkspaceEnabled()) throw error;
+      /* Resolver retains base fallback. */
+    }
+  }
+  if (
+    isAutomaticWorkspaceEnabled() &&
+    snapshot &&
+    !snapshot.usable &&
+    (snapshot.dirtyPaths.size > 0 || (snapshot.configPaths?.size ?? 0) > 0)
+  ) {
+    throw new Error(snapshot.reason ?? 'Automatic workspace snapshot is unavailable');
+  }
   const outcome = await resolveSymbolCandidates(
     repo,
     { uid, name, include_content },
     { file_path, kind },
+    { snapshot },
   );
 
   if (outcome.kind === 'not_found') {
@@ -261,7 +306,17 @@ export async function context(
   const resolvedLabel = outcome.resolvedLabel;
   const symId = sym.id;
 
-  if (sym.source === 'overlay') {
+  const workspaceGraph = sym.source === 'overlay' && sym.graph === 'workspace-graph';
+  const graphQuery: GraphQuery = (cypher, queryParams) =>
+    workspaceGraph && overlayRepo
+      ? queryOverlay(overlayRepo, cypher, queryParams, snapshot?.generation)
+      : executeParameterized(repo.id, cypher, queryParams);
+  const parseErrorFile =
+    workspaceGraph &&
+    snapshot?.coverage === 'partial' &&
+    !isAuthoritativePath(snapshot, sym.filePath);
+
+  if (sym.source === 'overlay' && !workspaceGraph) {
     return {
       status: 'found',
       source: 'overlay',
@@ -293,8 +348,7 @@ export async function context(
   }
 
   // Categorized incoming refs
-  const incomingQueryRows = (await executeParameterized(
-    repo.id,
+  const incomingQueryRows = (await graphQuery(
     `
     MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
     WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
@@ -305,22 +359,21 @@ export async function context(
   )) as ContextRelationshipRow[];
   let truncated = incomingQueryRows.length > MAX_CONTEXT_RELATIONSHIP_ROWS;
   const incomingRows = incomingQueryRows.slice(0, MAX_CONTEXT_RELATIONSHIP_ROWS);
-  const missingReasons: string[] = [];
+  const missingReasons: string[] = parseErrorFile ? ['parse-error-file'] : [];
 
   // Fix #480: Class/Interface nodes have no direct CALLS/IMPORTS edges —
   // those point to Constructor and File nodes respectively. Fetch those
   // extra incoming refs and merge them in so context() shows real callers.
-  const classLike = await resolveClassLike(repo.id, symId, resolvedLabel, sym);
+  const classLike = await resolveClassLike(graphQuery, symId, resolvedLabel, sym);
   if (classLike.queryFailed) missingReasons.push('class-type-query-failed');
   if (classLike.isClassLike) {
-    const expansion = await expandClassLikeIncomingRefs(repo.id, symId, incomingRows);
+    const expansion = await expandClassLikeIncomingRefs(graphQuery, symId, incomingRows);
     truncated ||= expansion.truncated;
     missingReasons.push(...expansion.missingReasons);
   }
 
   // Categorized outgoing refs
-  const outgoingQueryRows = (await executeParameterized(
-    repo.id,
+  const outgoingQueryRows = (await graphQuery(
     `
     MATCH (n {id: $symId})-[r:CodeRelation]->(target)
     WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
@@ -335,8 +388,7 @@ export async function context(
   // Process participation
   let processRows: ProcessParticipationRow[] = [];
   try {
-    processRows = (await executeParameterized(
-      repo.id,
+    processRows = (await graphQuery(
       `
       MATCH (n {id: $symId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
       RETURN p.id AS pid, p.heuristicLabel AS label, r.step AS step, p.stepCount AS stepCount
@@ -355,14 +407,13 @@ export async function context(
   // Method/Function/Constructor enrichment: fetch method-specific properties
   const symKind = classLike.isClassLike ? resolvedLabel || 'Class' : sym.type;
   const isMethodLike = symKind === 'Method' || symKind === 'Function' || symKind === 'Constructor';
-  const metadataResult = isMethodLike ? await fetchMethodMetadata(repo.id, symId) : undefined;
+  const metadataResult = isMethodLike ? await fetchMethodMetadata(graphQuery, symId) : undefined;
   if (metadataResult?.queryFailed) missingReasons.push('method-metadata-query-failed');
 
   // Concepts (B11)
   let concepts: any[] = [];
   try {
-    const conceptRows = await executeParameterized(
-      repo.id,
+    const conceptRows = await graphQuery(
       `
       MATCH (n {id: $symId})-[:CodeRelation {type: 'EXPLAINED_BY'}]-(c:Concept)
       RETURN c.id AS id, c.name AS name, c.authority AS authority, c.confidence AS confidence
@@ -384,6 +435,15 @@ export async function context(
 
   return {
     status: 'found',
+    ...(workspaceGraph
+      ? {
+          source: 'workspace-graph',
+          graphImpactAvailable: !parseErrorFile,
+          ...(parseErrorFile
+            ? { warnings: ['Symbol file failed to parse; relationships may be incomplete'] }
+            : {}),
+        }
+      : {}),
     symbol: {
       uid: sym.id,
       name: sym.name,

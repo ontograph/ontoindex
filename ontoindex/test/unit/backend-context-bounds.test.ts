@@ -64,6 +64,66 @@ describe('backend context bounds', () => {
     expect(processQuery).toContain('LIMIT 51');
   });
 
+  it.each(['named', 'positional'])(
+    'recovers missing relationship kinds from canonical IDs without extra queries (%s rows)',
+    async (shape) => {
+      const { context } = await import('../../src/mcp/local/backend-context.js');
+      await context({ id: 'repo' }, { name: 'login' });
+      const baselineQueries = lbugMocks.executeParameterized.mock.calls.map((call) => call[1]);
+      lbugMocks.executeParameterized.mockClear();
+
+      const cases = [
+        { uid: 'Function:src/auth.ts:login', kind: null, expectedKind: 'Function' },
+        { uid: 'Method:src/auth.ts:login', kind: '', expectedKind: 'Method' },
+        { uid: 'Variable:src/auth.ts:token', kind: undefined, expectedKind: 'Variable' },
+        { uid: 'Function:src/auth.ts:login', kind: 'Method', expectedKind: 'Method' },
+        { uid: 'Unknown:login', kind: 'CustomKind', expectedKind: 'CustomKind' },
+        { uid: 'Unknown:login', kind: undefined, expectedKind: undefined },
+        { uid: 'Function:', kind: undefined, expectedKind: undefined },
+        { uid: 'Function', kind: undefined, expectedKind: undefined },
+        { uid: ':login', kind: undefined, expectedKind: undefined },
+        { uid: 42, kind: undefined, expectedKind: undefined },
+        { uid: { id: 'Function:login' }, kind: undefined, expectedKind: undefined },
+        { uid: undefined, kind: undefined, expectedKind: undefined },
+      ];
+      const rows = cases.map(({ uid, kind }, index) => {
+        const values = ['CALLS', uid, `neighbor-${index}`, 'src/neighbor.ts', kind, 'overlay'];
+        return shape === 'positional'
+          ? values
+          : {
+              relType: values[0],
+              uid,
+              name: values[2],
+              filePath: values[3],
+              kind,
+              source: values[5],
+            };
+      });
+      lbugMocks.executeParameterized.mockImplementation(async (_repo: string, query: string) => {
+        if (
+          query.includes('MATCH (caller)-[r:CodeRelation]->(n') ||
+          query.includes('MATCH (n {id: $symId})-[r:CodeRelation]->(target)')
+        )
+          return rows;
+        return [];
+      });
+
+      const result = (await context({ id: 'repo' }, { name: 'login' })) as any;
+      const expected = cases.map(({ uid, expectedKind }, index) => ({
+        uid,
+        name: `neighbor-${index}`,
+        filePath: 'src/neighbor.ts',
+        kind: expectedKind,
+        source: 'overlay',
+      }));
+      expect(result.incoming).toStrictEqual({ calls: expected });
+      expect(result.outgoing).toStrictEqual({ calls: expected });
+      expect(lbugMocks.executeParameterized.mock.calls.map((call) => call[1])).toStrictEqual(
+        baselineQueries,
+      );
+    },
+  );
+
   it('marks omitted rows from incoming, outgoing, process, and concept limits', async () => {
     lbugMocks.executeParameterized.mockImplementation(async (_repo: string, query: string) => {
       if (query.includes('STEP_IN_PROCESS'))
@@ -171,7 +231,7 @@ describe('backend context bounds', () => {
     lbugMocks.executeParameterized.mockImplementation(async (_repo: string, query: string) => {
       if (query.includes('STEP_IN_PROCESS')) throw new Error('process unavailable');
       if (query.includes('EXPLAINED_BY')) throw new Error('concept unavailable');
-      if (query.includes('RETURN n.visibility')) throw new Error('metadata unavailable');
+      if (/RETURN n\s+LIMIT 1/.test(query)) throw new Error('metadata unavailable');
       return [];
     });
 
@@ -189,6 +249,90 @@ describe('backend context bounds', () => {
     });
   });
 
+  it.each(['Function', 'Method', 'Constructor'])(
+    'omits unavailable metadata from sparse %s nodes without reporting a failure',
+    async (kind) => {
+      resolveMocks.resolveSymbolCandidates.mockResolvedValue({
+        kind: 'ok',
+        resolvedLabel: kind,
+        symbol: { id: 'sym-1', name: 'login', type: kind, filePath: 'src/auth.ts' },
+      });
+      lbugMocks.executeParameterized.mockImplementation(async (_repo: string, query: string) => {
+        if (/RETURN n\s+LIMIT 1/.test(query))
+          return [{ n: { id: 'sym-1', name: 'login', _label: kind, _id: { offset: 1 } } }];
+        return [];
+      });
+
+      const { context } = await import('../../src/mcp/local/backend-context.js');
+      const result = (await context({ id: 'repo' }, { name: 'login' })) as any;
+
+      expect(result.symbol).not.toHaveProperty('methodMetadata');
+      expect(result.contextCompleteness.missingReasons).not.toContain(
+        'method-metadata-query-failed',
+      );
+      const metadataQuery = lbugMocks.executeParameterized.mock.calls
+        .map((call) => String(call[1]))
+        .find((query) => /RETURN n\s+LIMIT 1/.test(query));
+      expect(metadataQuery).toBeDefined();
+      expect(metadataQuery).not.toContain('n.visibility');
+    },
+  );
+
+  it.each(['named', 'positional'])(
+    'retains known metadata including false and zero and excludes unrelated node fields (%s row)',
+    async (shape) => {
+      const metadata = {
+        visibility: 'public',
+        isStatic: false,
+        isAbstract: false,
+        isFinal: true,
+        isVirtual: false,
+        isOverride: false,
+        isAsync: true,
+        isPartial: false,
+        returnType: 'void',
+        parameterCount: 0,
+        isVariadic: false,
+        requiredParameterCount: 0,
+        parameterTypes: [],
+        annotations: ['exported'],
+      };
+      const node = {
+        ...metadata,
+        id: 'sym-1',
+        name: 'login',
+        _label: 'Function',
+        _id: { offset: 1 },
+        unknownMetadata: 'private',
+      };
+      lbugMocks.executeParameterized.mockImplementation(async (_repo: string, query: string) => {
+        if (/RETURN n\s+LIMIT 1/.test(query)) return [shape === 'named' ? { n: node } : [node]];
+        return [];
+      });
+
+      const { context } = await import('../../src/mcp/local/backend-context.js');
+      const result = (await context({ id: 'repo' }, { name: 'login' })) as any;
+
+      expect(result.symbol.methodMetadata).toStrictEqual(metadata);
+      expect(result.contextCompleteness.missingReasons).not.toContain(
+        'method-metadata-query-failed',
+      );
+    },
+  );
+
+  it('omits null and undefined metadata fields while preserving available fields', async () => {
+    lbugMocks.executeParameterized.mockImplementation(async (_repo: string, query: string) => {
+      if (/RETURN n\s+LIMIT 1/.test(query))
+        return [{ n: { visibility: null, returnType: undefined, isAsync: false } }];
+      return [];
+    });
+
+    const { context } = await import('../../src/mcp/local/backend-context.js');
+    const result = (await context({ id: 'repo' }, { name: 'login' })) as any;
+
+    expect(result.symbol.methodMetadata).toStrictEqual({ isAsync: false });
+  });
+
   it('adds context completeness when source was not requested', async () => {
     const { context } = await import('../../src/mcp/local/backend-context.js');
     const result = await context({ id: 'repo' }, { name: 'login' });
@@ -201,6 +345,41 @@ describe('backend context bounds', () => {
         missingReasons: ['source-not-requested'],
       },
     });
+  });
+
+  it.each([
+    { source: 'present', content: 'function login() { return true; }', sourceIncluded: true },
+    { source: 'absent', content: undefined, sourceIncluded: false },
+    { source: 'empty', content: '', sourceIncluded: false },
+  ])('reports requested $source source completeness', async ({ content, sourceIncluded }) => {
+    resolveMocks.resolveSymbolCandidates.mockResolvedValue({
+      kind: 'ok',
+      resolvedLabel: 'Function',
+      symbol: {
+        id: 'sym-1',
+        name: 'login',
+        type: 'Function',
+        filePath: 'src/auth.ts',
+        startLine: 1,
+        endLine: 5,
+        ...(content !== undefined ? { content } : {}),
+      },
+    });
+
+    const { context } = await import('../../src/mcp/local/backend-context.js');
+    const result = (await context({ id: 'repo' }, { name: 'login', include_content: true })) as any;
+
+    expect(result.status).toBe('found');
+    expect(result.contextCompleteness).toMatchObject({
+      sourceIncluded,
+      truncated: false,
+      missingReasons: sourceIncluded ? [] : ['source-unavailable'],
+    });
+    if (sourceIncluded) {
+      expect(result.symbol.content).toBe(content);
+    } else {
+      expect(result.symbol).not.toHaveProperty('content');
+    }
   });
 
   it('normalizes ambiguous candidates with nodeId and retry calls', async () => {

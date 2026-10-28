@@ -16,6 +16,44 @@ import {
   resolveOverlayDbPath,
 } from '../../src/mcp/local/backend-overlay.js';
 import { buildTestGraph } from '../helpers/test-graph.js';
+import {
+  acquireOverlayGenerationPin,
+  overlayArtifactBytes,
+  pruneOverlayGenerations,
+} from '../../src/storage/repo-manager.js';
+
+describe('overlay reader retention', () => {
+  it('retains live pins and removes eligible generations with dead markers', async () => {
+    const storage = await fs.mkdtemp(path.join(os.tmpdir(), 'overlay-pins-'));
+    const overlay = path.join(storage, 'overlay');
+    try {
+      for (let index = 1; index <= 5; index++) {
+        const dir = path.join(overlay, `${index}-1-abc`);
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(path.join(dir, 'lbug'), 'artifact');
+        await fs.utimes(dir, index, index);
+      }
+      const live = path.join(overlay, '1-1-abc');
+      const pin = await acquireOverlayGenerationPin(live);
+      await fs.writeFile(path.join(overlay, '2-1-abc', '.reader-2147483647-dead'), '');
+      // Pin creation changes mtime; restore chronology for deterministic retention.
+      await fs.utimes(live, 1, 1);
+      await fs.utimes(path.join(overlay, '2-1-abc'), 2, 2);
+      expect(await pruneOverlayGenerations(overlay, '5-1-abc')).toBe(true);
+      expect(await fs.stat(live)).toBeDefined();
+      await expect(fs.stat(path.join(overlay, '2-1-abc'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      expect(await overlayArtifactBytes(overlay)).toBe(32);
+      await pin.release();
+      await fs.utimes(live, 1, 1);
+      expect(await pruneOverlayGenerations(overlay, '5-1-abc')).toBe(false);
+      await expect(fs.stat(live)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await fs.rm(storage, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('immutable overlay generations (real LadybugDB)', () => {
   let root: string;
@@ -28,6 +66,8 @@ describe('immutable overlay generations (real LadybugDB)', () => {
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
       .sort();
+  // Mirrors the literal `generations.slice(3)` in run-analyze.ts (runDirtyOverlayAnalysis pruning).
+  const retentionLimit = async () => 3;
 
   async function build(name: string, fail = false, onLog = vi.fn()) {
     const analyzeRepo = vi.fn(async () => ({
@@ -53,7 +93,16 @@ describe('immutable overlay generations (real LadybugDB)', () => {
       { analyzeRuntime: { analyzeRepo } },
     );
     expect(analyzeRepo).toHaveBeenCalledWith(
-      expect.objectContaining({ options: { profile: 'symbols', includePaths: ['source.ts'] } }),
+      expect.objectContaining({
+        options: {
+          profile: 'symbols',
+          includePaths: ['source.ts'],
+          capturedWorkspace: {
+            captureRoot: expect.stringContaining('workspace-inputs'),
+            canonicalRepoPath: expect.any(String),
+          },
+        },
+      }),
     );
     expect(result.stats.embeddings).toBe(0);
     return result;
@@ -184,6 +233,55 @@ describe('immutable overlay generations (real LadybugDB)', () => {
     await build('gen3');
     expect(await directories()).toHaveLength(3);
     expect(await queryOverlay(repo, cypher)).toEqual([{ name: 'gen3' }]);
+  });
+
+  it('bounds retained generations with a simulated OS lock until reader release', async () => {
+    const retained = await retentionLimit();
+    await build('held');
+    await queryOverlay(repo, cypher);
+    const heldId = (await current()).trim();
+    const realRm = fs.rm.bind(fs);
+    const blockedRm = vi.spyOn(fs, 'rm').mockImplementation(async (target, options) => {
+      if (target === path.join(overlay, heldId)) {
+        throw Object.assign(new Error('locked a portion of the file'), { code: 'EPERM' });
+      }
+      return realRm(target, options);
+    });
+
+    let newestId = heldId;
+    for (let index = 1; index < 10; index += 1) {
+      await build(`retained-${index}`);
+      newestId = path.basename(path.dirname((await resolveOverlayDbPath(repo.storagePath))!));
+    }
+    const heldPath = path.join(overlay, heldId);
+    expect((await fs.stat(heldPath)).isDirectory()).toBe(true);
+    expect(await pool.executeParameterized(overlayRepoId(repo.id), cypher, {})).toEqual([
+      { name: 'held' },
+    ]);
+    expect(await directories()).toHaveLength(retained + 1);
+    expect(newestId).toBe((await current()).trim());
+    async function totalBytes(directory: string): Promise<number> {
+      const entries = await fs.readdir(directory, { withFileTypes: true });
+      const sizes = await Promise.all(
+        entries.map(async (entry) => {
+          const target = path.join(directory, entry.name);
+          return entry.isDirectory() ? totalBytes(target) : (await fs.stat(target)).size;
+        }),
+      );
+      return sizes.reduce((sum, size) => sum + size, 0);
+    }
+    const retainedBytes = (
+      await Promise.all((await directories()).map((name) => totalBytes(path.join(overlay, name))))
+    ).reduce((sum, size) => sum + size, 0);
+    expect(retainedBytes).toBeGreaterThan(0);
+    expect(Number.isFinite(retainedBytes)).toBe(true);
+
+    blockedRm.mockRestore();
+    await queryOverlay(repo, cypher);
+    await build('after-release');
+    await expect(fs.stat(heldPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await directories()).toHaveLength(retained);
+    expect((await current()).trim()).not.toBe(heldId);
   });
 
   it.each(['', '../outside', '/absolute', 'one/two', '..', 'gen\nother', 'missing-generation'])(

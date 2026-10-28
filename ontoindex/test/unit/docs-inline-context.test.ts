@@ -69,7 +69,7 @@ describe('createDocsInlineContextBundle', () => {
       Next checks:
       - confirm unsupported extractor or framework gap
       - review warnings and skip reasons
-      - run \`ontoindex docs refresh\` (or \`ontoindex analyze --markdown-sidecar\`) before trusting evidence"
+      - run \`ontoindex docs sidecar run markdown\` (or \`ontoindex analyze --markdown-sidecar\`) before trusting evidence"
     `);
   });
 
@@ -95,7 +95,7 @@ describe('createDocsInlineContextBundle', () => {
       - skip reasons: sidecar-partial
       Next checks:
       - review warnings and skip reasons
-      - run \`ontoindex docs refresh\` (or \`ontoindex analyze --markdown-sidecar\`) before relying on incomplete docs coverage"
+      - run \`ontoindex docs sidecar run markdown\` (or \`ontoindex analyze --markdown-sidecar\`) before relying on incomplete docs coverage"
     `);
   });
 

@@ -88,6 +88,7 @@ export function extractImports(
           fileScopeBindings: [],
           parsedFiles: [],
           processedPaths: [filePath],
+          parseErrorPaths: [],
           fileTimings: [],
           extractorTimings: [],
           skippedLanguages: {},

@@ -12,9 +12,9 @@ Resolve the PR's base and head commits and ensure the local comparison contains 
 Use that exact range for graph-assisted review:
 
 ```text
-gn_review_diff({repo: "<repo>", scope: "commit-range", commitRange: "<base>...<head>"})
-gn_diff_impact({repo: "<repo>", scope: "commit-range", commitRange: "<base>...<head>"})
-gn_test_gap({repo: "<repo>", scope: "compare", diffRef: "<base>", changedFiles: ["<changed-file>"], executedTests: ["<executed-test>"]})
+audit({action: "review_diff", repo: "<repo>", scope: "commit-range", commitRange: "<base>...<head>"})
+impact({action: "diff_impact", repo: "<repo>", scope: "commit-range", commitRange: "<base>...<head>"})
+audit({action: "test_gap", repo: "<repo>", scope: "compare", diffRef: "<base>", changedFiles: ["<changed-file>"], executedTests: ["<executed-test>"]})
 ```
 
 Run coverage comparison in the checkout of the reviewed head; supply only tests actually executed.

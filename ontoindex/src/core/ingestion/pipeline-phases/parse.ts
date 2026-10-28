@@ -29,8 +29,11 @@ import type {
 } from '../workers/parse-worker.js';
 import type { createResolutionContext } from '../model/resolution-context.js';
 import { runChunkedParseAndResolve } from './parse-impl.js';
+import { createKnowledgeGraph } from '../../graph/graph.js';
+import { admitScopeRetentionParseReplay, reconstructScopeRetentionParse } from './parse-replay.js';
 
 export interface ParseOutput {
+  readonly parseMode: 'full' | 'retained-replay';
   /**
    * Read-only snapshot of exported type bindings keyed by file path.
    *
@@ -67,7 +70,7 @@ export interface ParseOutput {
    * Releases large parse-owned collections once all parse consumers have run.
    * Scalar summary fields stay readable in the final phase-results map.
    */
-  dispose?(): void;
+  dispose?(): void | Promise<void>;
   /** Releases route/fetch extraction arrays once the routes phase has copied/consumed them. */
   releaseRouteExtractionData?(): void;
   /** Releases tool-definition extraction arrays once the tools phase has consumed them. */
@@ -91,23 +94,106 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<ParseOutput> {
-    const { scannedFiles, allPaths, totalFiles } = getPhaseOutput<StructureOutput>(
-      deps,
-      'structure',
-    );
+    const { scannedFiles, allPaths, totalFiles, skippedLargeFiles } =
+      getPhaseOutput<StructureOutput>(deps, 'structure');
 
     let result: Awaited<ReturnType<typeof runChunkedParseAndResolve>>;
+    let replayed = false;
     try {
-      result = await runChunkedParseAndResolve(
-        ctx.graph,
-        scannedFiles,
-        allPaths,
-        totalFiles,
-        ctx.repoPath,
-        ctx.pipelineStart,
-        ctx.onProgress,
-        ctx.options,
-      );
+      const replay = ctx.options?.scopeReplay;
+      if (replay && (ctx.options?.profile ?? 'full') === 'full') {
+        const checkRequest = () => {
+          if (replay.request.signal?.aborted)
+            throw new Error('scope-retention-parse-replay: cancelled');
+          if (!Number.isFinite(replay.request.deadline))
+            throw new Error('scope-retention-parse-replay: invalid request');
+          if (Date.now() >= replay.request.deadline)
+            throw new Error('scope-retention-parse-replay: deadline');
+        };
+        const disposeStaged = (
+          staged: Awaited<ReturnType<typeof reconstructScopeRetentionParse>>,
+        ) => {
+          staged.allFetchCalls.length = 0;
+          staged.allExtractedRoutes.length = 0;
+          staged.allDecoratorRoutes.length = 0;
+          staged.allToolDefs.length = 0;
+          staged.allORMQueries.length = 0;
+          clearExportedTypeMap(staged.exportedTypeMap);
+          try {
+            staged.resolutionContext.clear();
+          } catch {
+            /* Preserve the primary failure. */
+          }
+          try {
+            staged.bindingAccumulator.dispose();
+          } catch {
+            /* Preserve the primary failure. */
+          }
+        };
+        checkRequest();
+        let admitted = false;
+        try {
+          await admitScopeRetentionParseReplay(
+            replay.candidate,
+            {
+              repoPath: ctx.repoPath,
+              allPaths,
+              scannedFiles,
+              skippedLargeFiles: skippedLargeFiles ?? [],
+            },
+            replay.request,
+          );
+          admitted = true;
+        } catch {
+          checkRequest();
+        }
+        if (admitted) {
+          const stagedGraph = createKnowledgeGraph();
+          for (const node of ctx.graph.iterNodes()) stagedGraph.addNode(structuredClone(node));
+          for (const edge of ctx.graph.iterRelationships())
+            stagedGraph.addRelationship(structuredClone(edge));
+          let staged: Awaited<ReturnType<typeof reconstructScopeRetentionParse>> | undefined;
+          try {
+            staged = await reconstructScopeRetentionParse(
+              replay.candidate.families,
+              stagedGraph,
+              ctx.onProgress,
+            );
+            checkRequest();
+          } catch {
+            if (staged) disposeStaged(staged);
+            staged = undefined;
+            checkRequest();
+          }
+          if (staged) {
+            // Preservation is the commit boundary: its failures must propagate without parsing.
+            try {
+              await replay.preserve();
+              checkRequest();
+              for (const node of stagedGraph.iterNodes()) ctx.graph.addNode(node);
+              for (const edge of stagedGraph.iterRelationships()) ctx.graph.addRelationship(edge);
+              result = staged;
+              replayed = true;
+            } catch (error) {
+              disposeStaged(staged);
+              throw error;
+            }
+          }
+        }
+      }
+      if (!replayed) {
+        result = await runChunkedParseAndResolve(
+          ctx.graph,
+          scannedFiles,
+          allPaths,
+          totalFiles,
+          ctx.repoPath,
+          ctx.pipelineStart,
+          ctx.onProgress,
+          ctx.options,
+          skippedLargeFiles,
+        );
+      }
     } finally {
       scannedFiles.length = 0;
     }
@@ -127,8 +213,50 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
       result.allORMQueries.length = 0;
     };
 
+    const { scopeRetention, ...parseResult } = result;
+    const releaseFailedResult = () => {
+      for (const cleanup of [
+        releaseRouteExtractionData,
+        releaseToolDefinitions,
+        releaseORMQueries,
+        () => clearExportedTypeMap(result.exportedTypeMap),
+        () => result.resolutionContext.clear(),
+        () => result.bindingAccumulator.dispose(),
+        () => {
+          allPathsSnapshot.length = 0;
+          (allPathSetSnapshot as Set<string>).clear();
+        },
+      ]) {
+        try {
+          cleanup();
+        } catch {
+          /* Preserve the primary failure. */
+        }
+      }
+    };
+    if (scopeRetention) {
+      let failed = false;
+      try {
+        await ctx.options?.scopeRetention?.consume(scopeRetention);
+      } catch (error) {
+        failed = true;
+        releaseFailedResult();
+        throw error;
+      } finally {
+        try {
+          await scopeRetention.dispose();
+        } catch (error) {
+          if (!failed) {
+            releaseFailedResult();
+            throw error;
+          }
+        }
+      }
+    }
+
     return {
-      ...result,
+      ...parseResult,
+      parseMode: replayed ? 'retained-replay' : 'full',
       allPaths: allPathsSnapshot,
       allPathSet: allPathSetSnapshot,
       totalFiles,

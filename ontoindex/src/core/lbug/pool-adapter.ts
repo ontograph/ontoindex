@@ -17,9 +17,17 @@
 
 import fs from 'fs/promises';
 import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import lbug, { type LbugValue } from '@ladybugdb/core';
 import { resolveLocalLbugExtensionPath } from './lbug-adapter.js';
+import { quoteLbugString } from './quote-string.js';
+import {
+  LbugOpenError,
+  classifyLbugOpenDiagnostic as classifyLbugOpenError,
+} from './open-error.js';
 import { acquireIndexGenerationPin, type IndexGenerationPin } from '../../storage/repo-manager.js';
+
+export { classifyLbugOpenDiagnostic as classifyLbugOpenError } from './open-error.js';
 
 export type LbugQueryRow = {
   readonly [field: string]: unknown;
@@ -113,9 +121,65 @@ interface PoolEntry {
 
 const pool = new Map<string, PoolEntry>();
 const closePromises = new Map<string, Promise<void>>();
+const pinnedContext = new AsyncLocalStorage<ReadonlyMap<string, string>>();
+const pinnedReferences = new Map<string, number>();
+
+export function getPinnedRepoId(repoId: string): string | undefined {
+  return pinnedContext.getStore()?.get(repoId);
+}
+
+/** True when a request scope still holds a pin on an entry sharing this database. */
+function hasLivePin(shared: SharedDB | undefined): boolean {
+  if (!shared) return false;
+  for (const [id, count] of pinnedReferences) {
+    if (count > 0 && dbCache.get(pool.get(id)?.dbPath ?? '') === shared) return true;
+  }
+  return false;
+}
+
+/** Keep every query in one request on the generation resolved at admission. */
+export async function withPinnedGeneration<T>(
+  repoId: string,
+  databasePath: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const realDbPath = await fs.realpath(databasePath);
+  const pinnedId = `${repoId}\u0000pin\u0000${realDbPath}`;
+  if (getPinnedRepoId(repoId) === pinnedId) return fn();
+
+  // Reserve before awaiting initialization so concurrent scopes and eviction see it.
+  pinnedReferences.set(pinnedId, (pinnedReferences.get(pinnedId) ?? 0) + 1);
+  try {
+    // A previous final release may still be draining this immutable entry.
+    await closePromises.get(pinnedId);
+    await initLbug(pinnedId, realDbPath);
+    const context = new Map(pinnedContext.getStore());
+    context.set(repoId, pinnedId);
+    return await pinnedContext.run(context, fn);
+  } finally {
+    const remaining = (pinnedReferences.get(pinnedId) ?? 1) - 1;
+    if (remaining > 0) {
+      pinnedReferences.set(pinnedId, remaining);
+    } else {
+      // Keep the entry identified as a pin until closeLbug has selected its
+      // narrow close path; ordinary aliases retain their existing semantics.
+      pinnedReferences.set(pinnedId, 0);
+      try {
+        await closeLbug(pinnedId);
+      } catch (error) {
+        realStderrWrite(`LadybugDB request pin release failed: ${String(error)}\n`);
+      } finally {
+        if (pinnedReferences.get(pinnedId) === 0) pinnedReferences.delete(pinnedId);
+      }
+    }
+  }
+}
 let admissionTail: Promise<void> = Promise.resolve();
 // Failed opens remain fenced until their retry cooldown expires and cleanup succeeds.
-const failedNativeOpens = new Map<string, { shared: SharedDB; failedAt: number; error: Error }>();
+const failedNativeOpens = new Map<
+  string,
+  { shared: SharedDB; failedAt: number; error: LbugOpenError }
+>();
 const unreleasedPins = new Set<IndexGenerationPin>();
 
 function retainFailedNativeOpen(
@@ -132,7 +196,11 @@ function retainFailedNativeOpen(
   failedNativeOpens.set(dbPath, {
     shared: newSharedDb({ db, generationPin, refCount: 0, ftsLoaded: false, vectorLoaded: false }),
     failedAt: Date.now(),
-    error: new Error(`LadybugDB native initialization failed: ${String(error)}`),
+    error: new LbugOpenError(
+      dbPath,
+      error instanceof LbugOpenError ? error.cause : error,
+      `LadybugDB native initialization failed: ${String(error)}`,
+    ),
   });
 }
 
@@ -189,7 +257,7 @@ export function addPoolCloseListener(listener: PoolCloseListener): () => void {
 
 /** Return the published generation directory held open for a repo, if any. */
 export function getPinnedGenerationDir(repoId: string): string | undefined {
-  const entry = pool.get(repoId);
+  const entry = pool.get(getPinnedRepoId(repoId) ?? repoId);
   const generationPin = entry && dbCache.get(entry.dbPath)?.generationPin;
   return generationPin?.published ? path.dirname(generationPin.dbPath) : undefined;
 }
@@ -417,7 +485,11 @@ function ensureIdleTimer(): void {
     void retryUnreleasedPins();
     const now = Date.now();
     for (const [repoId, entry] of pool) {
-      if (now - entry.lastUsed > IDLE_TIMEOUT_MS && entry.checkedOut === 0) {
+      if (
+        !pinnedReferences.has(repoId) &&
+        now - entry.lastUsed > IDLE_TIMEOUT_MS &&
+        entry.checkedOut === 0
+      ) {
         void closeOneWhenIdle(repoId).catch((err) =>
           realStderrWrite(`LadybugDB idle close failed: ${String(err)}\n`),
         );
@@ -434,7 +506,7 @@ function ensureIdleTimer(): void {
  * Call this during long-running operations to prevent the connection from being closed.
  */
 export const touchRepo = (repoId: string): void => {
-  const entry = pool.get(repoId);
+  const entry = pool.get(getPinnedRepoId(repoId) ?? repoId);
   if (entry) {
     entry.lastUsed = Date.now();
   }
@@ -450,7 +522,7 @@ async function evictLRU(): Promise<void> {
       await closeSharedDatabase(failed.shared);
       failedNativeOpens.delete(dbPath);
     } catch (error) {
-      failed.error = error instanceof Error ? error : new Error(String(error));
+      failed.error = new LbugOpenError(dbPath, error);
     }
   }
   const occupied = () => pool.size + failedInitShares.size + failedNativeOpens.size;
@@ -460,6 +532,7 @@ async function evictLRU(): Promise<void> {
   let oldestTime = Infinity;
   for (const [id, entry] of pool) {
     if (
+      !pinnedReferences.has(id) &&
       entry.checkedOut === 0 &&
       entry.pendingRetirements.size === 0 &&
       !isAdmissionClosed(entry) &&
@@ -690,7 +763,8 @@ setInterval(() => {
 function createConnection(db: lbug.Database): lbug.Connection {
   silenceStdout();
   try {
-    return new lbug.Connection(db);
+    // Bound per-query native working memory across every pool connection.
+    return new lbug.Connection(db, 4);
   } finally {
     restoreStdout();
   }
@@ -729,7 +803,7 @@ async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): 
         const localFtsPath = await resolveLocalLbugExtensionPath('fts');
         if (localFtsPath) {
           try {
-            const loadQuery = `LOAD EXTENSION '${localFtsPath.replace(/'/g, "\\'")}'`;
+            const loadQuery = `LOAD EXTENSION '${quoteLbugString(localFtsPath)}'`;
             await runStatement(conn, loadQuery);
             shared.ftsLoaded = true;
           } catch {
@@ -800,9 +874,23 @@ function readBoundedIntEnv(name: string, fallback: number, min: number, max: num
   return Math.max(min, Math.min(max, parsed));
 }
 
-export function readBufferManagerSize(): number {
+/** Working-tree graphs hold the whole repository and run the heaviest read queries. */
+const OVERLAY_BUFFER_BYTES = 256 * 1048576;
+
+/** True for `<storage>/overlay/<generation>/lbug`, where workspace graphs are published. */
+function isOverlayGenerationPath(dbPath: string): boolean {
+  return path.basename(path.dirname(path.dirname(dbPath))) === 'overlay';
+}
+
+/**
+ * Buffer for a read-only open. An explicit `ONTOINDEX_LBUG_BUFFER_MB` applies to every database;
+ * otherwise workspace generations get 256 MiB and the committed index keeps 64 MiB.
+ */
+export function readBufferManagerSize(dbPath?: string): number {
   const raw = process.env.ONTOINDEX_LBUG_BUFFER_MB;
-  if (raw === undefined || raw === '' || raw === '0') return 64 * 1048576;
+  if (raw === undefined || raw === '' || raw === '0') {
+    return dbPath && isOverlayGenerationPath(dbPath) ? OVERLAY_BUFFER_BYTES : 64 * 1048576;
+  }
   if (
     !/^\d+$/.test(raw) ||
     !Number.isSafeInteger(Number(raw)) ||
@@ -881,21 +969,6 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
  * Pool entry is registered LAST so concurrent executeQuery calls see either
  * "not initialized" (and throw) or a fully ready pool — never a half-built one.
  */
-export function classifyLbugOpenError(message: string): 'lock' | 'wal' | 'other' {
-  if (
-    /Could not set lock/i.test(message) ||
-    /\b(file|database|db)\s+lock\b|\block\s+(held|file|conflict)\b/i.test(message) ||
-    /resource temporarily unavailable|\b(EAGAIN|EWOULDBLOCK)\b/i.test(message)
-  )
-    return 'lock';
-  if (
-    /\bwal\b/i.test(message) &&
-    /corrupt|checksum|replay|past the end of the file|truncat/i.test(message)
-  )
-    return 'wal';
-  return 'other';
-}
-
 async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   const generationPin = await acquireIndexGenerationPin(dbPath);
   dbPath = generationPin.dbPath;
@@ -929,7 +1002,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
       // avoids lock conflicts when `ontoindex analyze` is writing.
       let lastError: Error | null = null;
       let isLockError = false;
-      const bufferManagerSize = readBufferManagerSize();
+      const bufferManagerSize = readBufferManagerSize(dbPath);
       for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
         silenceStdout();
         try {
@@ -942,11 +1015,12 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           try {
             await db.init();
           } catch (error) {
+            const openError = new LbugOpenError(dbPath, error);
             const message = error instanceof Error ? error.message : String(error);
             const errorClass = classifyLbugOpenError(message);
             const lockError = errorClass === 'lock';
             if (lockError && attempt === LOCK_RETRY_ATTEMPTS) {
-              retainFailedNativeOpen(dbPath, db, generationPin, error);
+              retainFailedNativeOpen(dbPath, db, generationPin, openError);
               nativeOwnsPin = true;
             } else {
               if ('_initPromise' in db)
@@ -954,15 +1028,15 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
               try {
                 await db.close();
               } catch {
-                retainFailedNativeOpen(dbPath, db, generationPin, error);
+                retainFailedNativeOpen(dbPath, db, generationPin, openError);
                 nativeOwnsPin = true;
               }
             }
             if (errorClass === 'other' && !nativeOwnsPin) {
-              retainFailedNativeOpen(dbPath, db, generationPin, error);
+              retainFailedNativeOpen(dbPath, db, generationPin, openError);
               nativeOwnsPin = true;
             }
-            throw error;
+            throw openError;
           }
           restoreStdout();
           shared = newSharedDb({
@@ -977,8 +1051,8 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           break;
         } catch (err: unknown) {
           restoreStdout();
-          lastError = err instanceof Error ? err : new Error(String(err));
-          if (failedNativeOpens.has(dbPath)) throw err;
+          lastError = err instanceof LbugOpenError ? err : new LbugOpenError(dbPath, err);
+          if (failedNativeOpens.has(dbPath)) throw lastError;
           isLockError = classifyLbugOpenError(lastError.message) === 'lock';
           if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
           await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_DELAY_MS * attempt));
@@ -1037,7 +1111,9 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
           restoreStdout();
           const cause = error instanceof Error ? error.message : String(error);
           // Recovery also failed — the database is unrecoverable.
-          throw new Error(
+          throw new LbugOpenError(
+            dbPath,
+            error,
             'OntoIndex index unrecoverable due to WAL corruption. ' +
               `Run \`ontoindex clean --force && ontoindex analyze\` to rebuild. Cause: ${cause}`,
           );
@@ -1045,7 +1121,9 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
       }
 
       if (!shared) {
-        throw new Error(
+        throw new LbugOpenError(
+          dbPath,
+          lastError instanceof LbugOpenError ? lastError.cause : lastError,
           `LadybugDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
             `Retry later. (${lastError?.message || 'unknown error'})`,
         );
@@ -1448,7 +1526,7 @@ export const executeQuery = async <TRow extends object = LbugQueryRow>(
   repoId: string,
   cypher: string,
 ): Promise<LbugQueryResult<TRow>> => {
-  const entry = pool.get(repoId);
+  const entry = pool.get(getPinnedRepoId(repoId) ?? repoId);
   if (!entry) {
     throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
   }
@@ -1505,7 +1583,7 @@ export const executeParameterized = async <TRow extends object = LbugQueryRow>(
   cypher: string,
   params: LbugQueryParams,
 ): Promise<LbugQueryResult<TRow>> => {
-  const entry = pool.get(repoId);
+  const entry = pool.get(getPinnedRepoId(repoId) ?? repoId);
   if (!entry) {
     throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
   }
@@ -1581,6 +1659,10 @@ export const executeParameterized = async <TRow extends object = LbugQueryRow>(
  * If omitted, close all repos.
  */
 export const closeLbug = async (repoId?: string): Promise<void> => {
+  if (repoId && pinnedReferences.has(repoId)) {
+    await closeOneWhenIdle(repoId);
+    return;
+  }
   // Start the retry without awaiting it: close must fence the pool synchronously.
   void retryUnreleasedPins();
   if (repoId) {
@@ -1591,6 +1673,11 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
       pool.get(repoId)?.dbPath ?? failedInitShares.get(repoId)?.dbPath ?? initializingShare?.dbPath;
     const knownShared =
       initializingShare?.shared ?? (knownPath ? dbCache.get(knownPath) : undefined);
+    if (hasLivePin(knownShared)) {
+      // A live request scope owns this database; its final release closes it.
+      await closeOneWhenIdle(repoId);
+      return;
+    }
     if (knownShared) requestSharedClose(knownShared);
     const initializing = initPromises.get(repoId);
     if (initializing)
@@ -1637,7 +1724,7 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
   }
 
   for (const shared of dbCache.values()) {
-    requestSharedClose(shared);
+    if (!hasLivePin(shared)) requestSharedClose(shared);
   }
   await withTimeout(
     Promise.allSettled([...initPromises.values()]),
@@ -1645,6 +1732,7 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
     'Pool initialization drain',
   );
   for (const id of [...pool.keys()]) {
+    if (hasLivePin(dbCache.get(pool.get(id)?.dbPath ?? ''))) continue;
     await closeOneWhenIdle(id);
   }
   for (const [id, state] of [...failedInitShares]) {
@@ -1655,7 +1743,7 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
       await closeSharedDatabase(failed.shared);
       failedNativeOpens.delete(dbPath);
     } catch (error) {
-      failed.error = error instanceof Error ? error : new Error(String(error));
+      failed.error = new LbugOpenError(dbPath, error);
     }
   }
   pruneInitializationRoutes();

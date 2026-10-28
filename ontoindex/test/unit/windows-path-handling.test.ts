@@ -130,6 +130,7 @@ describe('Windows-style path handling', () => {
       tombstones: ['old name.ts'],
       tooMany: false,
       skipped: [],
+      configPaths: [],
     });
   });
 
@@ -145,6 +146,7 @@ describe('Windows-style path handling', () => {
       tombstones: ['old name.ts'],
       tooMany: false,
       skipped: [],
+      configPaths: [],
     });
   });
 
@@ -169,6 +171,7 @@ describe('Windows-style path handling', () => {
         tombstones: ['old name.ts'],
         tooMany: false,
         skipped: [],
+        configPaths: [],
       });
     } finally {
       execFileTextMock.useReal = false;

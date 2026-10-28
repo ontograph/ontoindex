@@ -10,51 +10,94 @@
  * The bridge:
  *
  *   1. Short-circuits when the provider has NOT implemented
- *      `emitScopeCaptures`. Returns `undefined`; zero work done. This is
- *      the state of every language today — `ParsedFile` production stays
- *      dormant until a language migrates.
+ *      `emitScopeCaptures`. Reports an unsupported outcome; zero work done.
  *   2. Invokes the hook + feeds its output to `ScopeExtractor.extract`.
- *   3. **Swallows exceptions from either side.** A failure here returns
- *      `undefined` and emits a warning via `onWarn`; legacy parsing on
- *      the same file continues unaffected by the scope-extraction miss.
+ *   3. **Catches exceptions from either side.** A failure reports a failed
+ *      outcome, distinguishing unsupported syntax, and emits a warning via
+ *      `onWarn`, except for an expected C++ missing-module miss.
+ *      Exceptions from `onWarn` still propagate.
+ *      The compatibility wrapper returns `undefined` for either miss.
  *      Scope-based resolution is the new path under construction — it
  *      must not destabilize the legacy DAG.
  */
 
 import type { ParsedFile } from 'ontoindex-shared';
 import { extract as extractScope } from './scope-extractor.js';
+import { isScopeUnsupportedSyntax } from './scope-unsupported-syntax.js';
 import type { LanguageProvider } from './language-provider.js';
+import type { SyntaxNode } from './utils/ast-helpers.js';
 
 /** Callback used to report scope-extraction warnings to the host (worker or direct). */
 type ScopeBridgeWarn = (message: string) => void;
+
+export type ScopeExtractionOutcome =
+  | { status: 'success'; parsedFile: ParsedFile }
+  | { status: 'unsupported'; reason: 'missing-scope-hook' }
+  | {
+      status: 'failed';
+      reason: 'scope-extraction-error' | 'missing-module-scope' | 'unsupported-syntax';
+    };
+
+/** Compact evidence for attempted extraction; absent records do not establish completeness. */
+export type ScopeExtractionRecord = { filePath: string } & (
+  | { status: 'success' }
+  | { status: 'unsupported'; reason: 'missing-scope-hook' }
+  | {
+      status: 'failed';
+      reason: 'scope-extraction-error' | 'missing-module-scope' | 'unsupported-syntax';
+    }
+);
 
 const NO_MODULE_SCOPE_MESSAGE = 'ScopeExtractor: no Module scope found';
 const CPP_LIKE_EXTENSIONS = new Set(['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh']);
 
 /**
  * Produce a `ParsedFile` for the given file, or `undefined` when the
- * provider hasn't migrated / the extractor throws. Never propagates
- * exceptions.
+ * provider hasn't migrated / the extractor throws. Exceptions from the
+ * warning callback still propagate.
  */
 export function extractParsedFile(
   provider: LanguageProvider,
   sourceText: string,
   filePath: string,
   onWarn?: ScopeBridgeWarn,
+  rootNode?: SyntaxNode,
 ): ParsedFile | undefined {
-  if (provider.emitScopeCaptures === undefined) return undefined;
+  const outcome = extractParsedFileOutcome(provider, sourceText, filePath, onWarn, rootNode);
+  return outcome.status === 'success' ? outcome.parsedFile : undefined;
+}
+
+/** Report scope extraction status while preserving warning callback exceptions. */
+export function extractParsedFileOutcome(
+  provider: LanguageProvider,
+  sourceText: string,
+  filePath: string,
+  onWarn?: ScopeBridgeWarn,
+  rootNode?: SyntaxNode,
+): ScopeExtractionOutcome {
+  if (provider.emitScopeCaptures === undefined) {
+    return { status: 'unsupported', reason: 'missing-scope-hook' };
+  }
   try {
-    const captures = provider.emitScopeCaptures(sourceText, filePath);
-    return extractScope(captures, filePath, provider);
+    const captures =
+      rootNode === undefined
+        ? provider.emitScopeCaptures(sourceText, filePath)
+        : provider.emitScopeCaptures(sourceText, filePath, rootNode);
+    return { status: 'success', parsedFile: extractScope(captures, filePath, provider) };
   } catch (err) {
-    if (isExpectedCppNoModuleScopeMiss(err, filePath)) return undefined;
+    if (isExpectedCppNoModuleScopeMiss(err, filePath)) {
+      return { status: 'failed', reason: 'missing-module-scope' };
+    }
 
     const message = `scope extraction failed for ${filePath}: ${
       err instanceof Error ? err.message : String(err)
     }`;
     if (onWarn !== undefined) onWarn(message);
     else console.warn(message);
-    return undefined;
+    if (isScopeUnsupportedSyntax(err)) {
+      return { status: 'failed', reason: 'unsupported-syntax' };
+    }
+    return { status: 'failed', reason: 'scope-extraction-error' };
   }
 }
 

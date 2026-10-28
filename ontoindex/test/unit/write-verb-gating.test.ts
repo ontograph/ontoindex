@@ -5,6 +5,9 @@
  * and the --confirm-writes startup flag.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // Mock LadybugDB and RepoManager to avoid side effects
 const { lbugMocks } = vi.hoisted(() => ({
@@ -48,18 +51,17 @@ describe('LocalBackend write-verb gating (replace_symbol)', () => {
     (listRegisteredRepos as any).mockResolvedValue([MOCK_REPO_ENTRY]);
   });
 
-  it('allows replace_symbol in dry_run mode even without confirmation', async () => {
+  it('resolves replace_symbol in dry_run mode without requiring confirmation', async () => {
     backend = new LocalBackend({ confirmWrites: true });
     await backend.init();
 
-    const result = await backend.callTool('replace_symbol', {
-      uid: 'Function:foo',
-      new_body: 'return 1;',
-      dry_run: true,
-    });
-
-    expect(result.success).toBe(true);
-    expect(result.dry_run).toBe(true);
+    await expect(
+      backend.callTool('replace_symbol', {
+        uid: 'Function:foo',
+        new_body: 'return 1;',
+        dry_run: true,
+      }),
+    ).rejects.toThrow(/Symbol not found or ambiguous/);
   });
 
   it('rejects replace_symbol when dry_run: false and confirm: false', async () => {
@@ -91,18 +93,56 @@ describe('LocalBackend write-verb gating (replace_symbol)', () => {
     ).rejects.toThrow(/Write operations are disabled/);
   });
 
-  it('allows replace_symbol when dry_run: false, confirm: true, and confirmWrites: true', async () => {
+  it.each([
+    { tool: 'update_symbol_body', mutation: { new_body: 'export function foo() { return 2; }' } },
+    { tool: 'extract_function', mutation: { new_name: 'extractedFoo' } },
+    { tool: 'move_symbol', mutation: {} },
+  ])(
+    'rejects $tool when request confirmation cannot override disabled backend writes',
+    async ({ tool, mutation }) => {
+      const repoPath = await mkdtemp(join(tmpdir(), 'ontoindex-write-gating-'));
+      const sourcePath = join(repoPath, 'source.ts');
+      const destinationPath = join(repoPath, 'destination.ts');
+
+      try {
+        await writeFile(sourcePath, 'export function foo() { return 1; }\n');
+        await writeFile(destinationPath, 'export const existing = true;\n');
+        const sourceBefore = await readFile(sourcePath);
+        const destinationBefore = await readFile(destinationPath);
+        (listRegisteredRepos as any).mockResolvedValue([{ ...MOCK_REPO_ENTRY, path: repoPath }]);
+        backend = new LocalBackend({ confirmWrites: false });
+        await backend.init();
+
+        await expect(
+          backend.callTool(tool, {
+            uid: 'Function:foo',
+            target_file: 'destination.ts',
+            ...mutation,
+            dry_run: false,
+            confirm: true,
+            confirmWrites: true,
+          }),
+        ).rejects.toThrow('Write operations are disabled (start server with --confirm-writes)');
+
+        expect(await readFile(sourcePath)).toEqual(sourceBefore);
+        expect(await readFile(destinationPath)).toEqual(destinationBefore);
+      } finally {
+        await rm(repoPath, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('rejects unresolved replace_symbol instead of reporting a successful write', async () => {
     backend = new LocalBackend({ confirmWrites: true });
     await backend.init();
 
-    const result = await backend.callTool('replace_symbol', {
-      uid: 'Function:foo',
-      new_body: 'return 1;',
-      dry_run: false,
-      confirm: true,
-    });
-
-    expect(result.success).toBe(true);
-    expect(result.dry_run).toBe(false);
+    await expect(
+      backend.callTool('replace_symbol', {
+        uid: 'Function:foo',
+        new_body: 'return 1;',
+        dry_run: false,
+        confirm: true,
+      }),
+    ).rejects.toThrow(/Symbol not found or ambiguous/);
   });
 });

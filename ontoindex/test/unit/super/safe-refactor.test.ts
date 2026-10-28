@@ -1,7 +1,7 @@
 /**
  * Unit tests for gn_safe_refactor super-function (Phase 3 W3a).
  *
- * All external primitives are mocked so tests run without a live DB or filesystem.
+ * Graph primitives are mocked; the public-route write guard uses a temporary source file.
  *
  * Mock call-order for gnSafeRefactor (non-preCheck path):
  *   1. resolveSymbol (executeParameterized — fuzzy lookup)
@@ -13,6 +13,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Mocks — must be declared before the import under test.
@@ -73,6 +76,9 @@ import { detectChanges } from '../../../src/mcp/local/backend-detect-changes.js'
 import { resolveSymbolCandidates } from '../../../src/mcp/local/backend-symbol-resolution.js';
 import { runImpactKernel } from '../../../src/core/impact/impact-kernel.js';
 import { gnSafeRefactor } from '../../../src/mcp/super/safe-refactor.js';
+import { dispatchSuper } from '../../../src/mcp/super/dispatch.js';
+import { dispatchFacade } from '../../../src/mcp/facade/dispatch.js';
+import { LocalBackend } from '../../../src/mcp/local/local-backend.js';
 
 const mockExecuteParameterized = executeParameterized as unknown as ReturnType<typeof vi.fn>;
 const mockGetClient = lspBridge.getClient as unknown as ReturnType<typeof vi.fn>;
@@ -192,6 +198,193 @@ describe('gnSafeRefactor', () => {
     refactorBackend.callTool.mockImplementation(async (method: string, params: unknown) => {
       if (method !== 'rename') throw new Error(`Unexpected tool: ${method}`);
       return mockRenameSymbol({ id: REPO_ID, repoPath: refactorBackend.repoPath }, params);
+    });
+  });
+
+  describe('real facade and super dispatch parity', () => {
+    const args = {
+      intent: 'modify-body',
+      symbol: SYMBOL_NAME,
+      target: 'ignoredAlias',
+      params: { newBody: 'return 1;' },
+      preChecks: false,
+    };
+
+    function backendFixture() {
+      return {
+        ensureRepoInitialized: vi.fn(async () => {}),
+        withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => operation()),
+        withCommittedGraphNotice: vi.fn(async (result) => result),
+        repoPath: '/repo/fixture',
+        resolveRepo: vi.fn().mockResolvedValue({ id: REPO_ID, repoPath: '/repo/fixture' }),
+        callTool: vi.fn(function (this: { repoPath: string }) {
+          expect(this.repoPath).toBe('/repo/fixture');
+          throw sentinel;
+        }),
+      };
+    }
+    const sentinel = new Error('authorized backend sentinel');
+
+    function preparePreview() {
+      mockExecuteParameterized.mockResolvedValue([resolvedRow()]);
+      _mockResolveSymbolCandidates.mockResolvedValue({
+        kind: 'ok',
+        symbol: { startLine: 1, endLine: 3, filePath: 'src/auth/token.ts' },
+      });
+    }
+
+    it.each([{}, { dryRun: true }])(
+      'returns the same preview with zero writes: %j',
+      async (options) => {
+        preparePreview();
+        const backend = backendFixture();
+        const request = { ...args, ...options };
+        const direct = await dispatchSuper('gn_safe_refactor', request, REPO_ID, backend);
+        const facade = await dispatchFacade(
+          'refactor',
+          'safe_refactor',
+          request,
+          backend as unknown as LocalBackend,
+        );
+        expect(facade).toMatchObject(direct as object);
+        expect(direct).toMatchObject({
+          applied: false,
+          symbol: { name: SYMBOL_NAME },
+          preview: { affectedFiles: ['src/auth/token.ts'], estimatedLinesChanged: 5 },
+        });
+        expect(backend.callTool).not.toHaveBeenCalled();
+        expect(mockRenameSymbol).not.toHaveBeenCalled();
+        expect(_mockExtractFunction).not.toHaveBeenCalled();
+        expect(_mockMoveSymbol).not.toHaveBeenCalled();
+        expect(mockDetectChanges).not.toHaveBeenCalled();
+        for (const call of mockExecuteParameterized.mock.calls) {
+          expect(call[2]).toEqual(expect.objectContaining({ name: SYMBOL_NAME }));
+        }
+      },
+    );
+
+    it.each([undefined, false, 'true', 1])(
+      'rejects unconfirmed apply equally: %j',
+      async (confirm) => {
+        const backend = backendFixture();
+        const request = { ...args, dryRun: false, ...(confirm === undefined ? {} : { confirm }) };
+        const pattern =
+          typeof confirm === 'string' || typeof confirm === 'number'
+            ? /confirm: expected boolean/
+            : /Explicit confirmation required to apply/;
+        await expect(dispatchSuper('gn_safe_refactor', request, REPO_ID, backend)).rejects.toThrow(
+          pattern,
+        );
+        await expect(
+          dispatchFacade('refactor', 'safe_refactor', request, backend as unknown as LocalBackend),
+        ).rejects.toThrow(pattern);
+        expect(backend.callTool).not.toHaveBeenCalled();
+        expect(mockExecuteParameterized).not.toHaveBeenCalled();
+      },
+    );
+
+    it('reaches the same bound authorized backend on confirmed apply without writing', async () => {
+      preparePreview();
+      const backend = backendFixture();
+      const request = { ...args, dryRun: false, confirm: true };
+      await expect(
+        dispatchSuper('gn_safe_refactor', request, REPO_ID, {
+          repoPath: backend.repoPath,
+          callTool: backend.callTool.bind(backend),
+        }),
+      ).rejects.toBe(sentinel);
+      await expect(
+        dispatchFacade('refactor', 'safe_refactor', request, backend as unknown as LocalBackend),
+      ).rejects.toBe(sentinel);
+      expect(backend.callTool).toHaveBeenCalledTimes(2);
+      for (const call of backend.callTool.mock.calls) {
+        expect(call).toEqual([
+          'update_symbol_body',
+          {
+            repo: REPO_ID,
+            uid: NODE_ID,
+            new_body: 'return 1;',
+            dry_run: false,
+            confirm: true,
+          },
+        ]);
+      }
+      expect(mockDetectChanges).not.toHaveBeenCalled();
+    });
+
+    it.each(['super', 'facade'] as const)(
+      'enforces disabled backend writes through the %s route',
+      async (route) => {
+        const repoPath = await mkdtemp(join(tmpdir(), 'safe-refactor-disabled-writes-'));
+        try {
+          const sourcePath = join(repoPath, 'src/auth/token.ts');
+          const source = Buffer.from('export function parseToken() {\n  return 0;\n}\n');
+          await mkdir(join(repoPath, 'src/auth'), { recursive: true });
+          await writeFile(sourcePath, source);
+          preparePreview();
+
+          const backend = new LocalBackend({ confirmWrites: false });
+          const storagePath = join(repoPath, '.ontoindex');
+          const repo = {
+            id: REPO_ID,
+            name: REPO_ID,
+            repoPath,
+            path: repoPath,
+            storagePath,
+            lbugPath: join(storagePath, 'lbug'),
+            indexedAt: '2026-10-22T00:00:00Z',
+            lastCommit: 'test-commit',
+          };
+          vi.spyOn(backend, 'resolveRepo').mockResolvedValue(repo);
+          vi.spyOn(
+            backend as unknown as { ensureInitialized: (id: string) => Promise<void> },
+            'ensureInitialized',
+          ).mockResolvedValue(undefined);
+          vi.spyOn(backend, 'withPreparedRepoRead').mockImplementation(
+            async (_repo, _options, operation) => operation(),
+          );
+          const callTool = vi.spyOn(backend, 'callTool');
+          const request = { ...args, dryRun: false, confirm: true, force: true };
+          const result =
+            route === 'super'
+              ? dispatchSuper('gn_safe_refactor', request, REPO_ID, {
+                  repoPath,
+                  callTool: backend.callTool.bind(backend),
+                })
+              : dispatchFacade('refactor', 'safe_refactor', request, backend);
+
+          await expect(result).rejects.toThrow(
+            'Write operations are disabled (start server with --confirm-writes)',
+          );
+          expect(callTool).toHaveBeenCalledExactlyOnceWith('update_symbol_body', {
+            repo: REPO_ID,
+            uid: NODE_ID,
+            new_body: 'return 1;',
+            dry_run: false,
+            confirm: true,
+          });
+          expect(await readFile(sourcePath)).toEqual(source);
+          expect(mockDetectChanges).not.toHaveBeenCalled();
+        } finally {
+          await rm(repoPath, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it.each([
+      { intent: 'modify-body', symbol: SYMBOL_NAME },
+      { ...args, intent: 'invalid' },
+    ])('uses the same super validation before graph or write IO: %j', async (request) => {
+      const backend = backendFixture();
+      const pattern = 'params' in request ? /intent: expected one of/ : /params: Required/;
+      await expect(dispatchSuper('gn_safe_refactor', request, REPO_ID, backend)).rejects.toThrow(
+        pattern,
+      );
+      await expect(
+        dispatchFacade('refactor', 'safe_refactor', request, backend as unknown as LocalBackend),
+      ).rejects.toThrow(pattern);
+      expect(mockExecuteParameterized).not.toHaveBeenCalled();
+      expect(backend.callTool).not.toHaveBeenCalled();
     });
   });
 

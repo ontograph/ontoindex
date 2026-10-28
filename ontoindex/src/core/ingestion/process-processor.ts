@@ -135,9 +135,7 @@ export const processProcesses = async (
   );
 
   // Step 4: Limit to max processes (prioritize longer traces)
-  const limitedTraces = endpointDeduped
-    .sort((a, b) => b.length - a.length)
-    .slice(0, cfg.maxProcesses);
+  const limitedTraces = endpointDeduped.sort(compareTraces).slice(0, cfg.maxProcesses);
 
   onProgress?.(`Creating ${limitedTraces.length} process nodes...`, 80);
 
@@ -219,6 +217,18 @@ export const processProcesses = async (
 
 type AdjacencyList = Map<string, string[]>;
 
+const compareIds = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+// Prefer longer traces, then compare node IDs without joining ambiguous delimiters.
+const compareTraces = (a: string[], b: string[]): number => {
+  if (a.length !== b.length) return b.length - a.length;
+  for (let i = 0; i < a.length; i++) {
+    const order = compareIds(a[i], b[i]);
+    if (order !== 0) return order;
+  }
+  return 0;
+};
+
 /**
  * Minimum edge confidence for process tracing.
  * Filters out ambiguous fuzzy-global matches (0.3) that cause
@@ -237,6 +247,8 @@ const buildCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
       adj.get(rel.sourceId)!.push(rel.targetId);
     }
   }
+
+  for (const targets of adj.values()) targets.sort(compareIds);
 
   return adj;
 };
@@ -314,8 +326,8 @@ const findEntryPoints = (
     }
   }
 
-  // Sort by score descending and return top candidates
-  const sorted = entryPointCandidates.sort((a, b) => b.score - a.score);
+  // Resolve equal scores by ID before applying the candidate cap.
+  const sorted = entryPointCandidates.sort((a, b) => b.score - a.score || compareIds(a.id, b.id));
 
   // DEBUG: Log top candidates with new scoring details
   if (sorted.length > 0 && isDev) {
@@ -404,8 +416,8 @@ const traceFromEntryPoint = (
 const deduplicateTraces = (traces: string[][]): string[][] => {
   if (traces.length === 0) return [];
 
-  // Sort by length descending
-  const sorted = [...traces].sort((a, b) => b.length - a.length);
+  // Resolve equal lengths canonically before subset removal.
+  const sorted = [...traces].sort(compareTraces);
   const unique: string[][] = [];
 
   for (const trace of sorted) {
@@ -436,8 +448,8 @@ const deduplicateByEndpoints = (traces: string[][]): string[][] => {
   if (traces.length === 0) return [];
 
   const byEndpoints = new Map<string, string[]>();
-  // Sort longest first so the first seen per key is the longest
-  const sorted = [...traces].sort((a, b) => b.length - a.length);
+  // Sort longest first, resolving equal-length paths canonically per endpoint pair.
+  const sorted = [...traces].sort(compareTraces);
 
   for (const trace of sorted) {
     const key = `${trace[0]}::${trace[trace.length - 1]}`;

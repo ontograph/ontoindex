@@ -153,6 +153,37 @@ describe('filesystem-walker', () => {
       }
     });
 
+    it('skips an included path inside a nested repository without a repo-wide marker search', async () => {
+      const nestedRoot = path.join(tmpDir, 'scoped-embedded');
+      await fs.mkdir(path.join(nestedRoot, '.git'), { recursive: true });
+      await fs.mkdir(path.join(nestedRoot, 'src'), { recursive: true });
+      await fs.writeFile(path.join(nestedRoot, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+      await fs.writeFile(path.join(nestedRoot, 'src', 'nested.ts'), 'export const n = 1;\n');
+      try {
+        const files = await walkRepositoryPaths(tmpDir, undefined, {
+          includePaths: ['scoped-embedded/src/nested.ts', 'src/index.ts'],
+        });
+        expect(files.map((file) => file.path)).toEqual(['src/index.ts']);
+      } finally {
+        await fs.rm(nestedRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('still excludes descendant repositories under a directory or root include scope', async () => {
+      const nestedRoot = path.join(tmpDir, 'src', 'dir-embedded');
+      await fs.mkdir(path.join(nestedRoot, '.git'), { recursive: true });
+      await fs.writeFile(path.join(nestedRoot, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+      await fs.writeFile(path.join(nestedRoot, 'foreign.ts'), 'export const f = 1;\n');
+      try {
+        for (const includePaths of [['src'], ['.']]) {
+          const files = await walkRepositoryPaths(tmpDir, undefined, { includePaths });
+          expect(files.some((file) => file.path.startsWith('src/dir-embedded/'))).toBe(false);
+        }
+      } finally {
+        await fs.rm(nestedRoot, { recursive: true, force: true });
+      }
+    });
+
     it('still scans a crate whose .git directory is a stray empty leftover', async () => {
       const crateRoot = path.join(tmpDir, 'core-crate');
       await fs.mkdir(path.join(crateRoot, '.git'), { recursive: true });

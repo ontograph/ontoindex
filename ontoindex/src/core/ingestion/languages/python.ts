@@ -29,6 +29,11 @@ import { pythonVariableConfig } from '../variable-extractors/configs/python.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { pythonCallConfig } from '../call-extractors/configs/python.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import {
+  emitPythonCaptures,
+  interpretPythonExports,
+  pythonDeclarationBindingScope,
+} from './python-captures.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'print',
@@ -77,4 +82,12 @@ export const pythonProvider = defineLanguage({
   classExtractor: createClassExtractor(pythonClassConfig),
   heritageExtractor: createHeritageExtractor(SupportedLanguages.Python),
   builtInNames: BUILT_INS,
+  emitScopeCaptures: (_sourceText, _filePath, rootNode) => {
+    if (!rootNode) throw new Error('Python scope captures require the borrowed root');
+    return emitPythonCaptures(rootNode);
+  },
+  bindingScopeFor: pythonDeclarationBindingScope,
+  // The admitted subset rejects imports before interpretation.
+  interpretImport: () => null,
+  interpretExports: interpretPythonExports,
 });

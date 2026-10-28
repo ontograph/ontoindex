@@ -37,6 +37,8 @@ import {
 /** Cross-boundary hops beyond this value are clamped (multi-hop reserved for future work). */
 export const MAX_SUPPORTED_CROSS_DEPTH = 1;
 
+/** Upper bound for any caller-supplied `timeoutMs`. */
+const MAX_LOCAL_IMPACT_TIMEOUT_MS = 3_600_000;
 /** Default wall-clock budget for the Phase 1 `impact` leg when callers omit `timeoutMs`. */
 export const DEFAULT_LOCAL_IMPACT_TIMEOUT_MS = 30_000;
 
@@ -244,7 +246,7 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
       : typeof params.timeout === 'number' && params.timeout > 0
         ? params.timeout
         : DEFAULT_LOCAL_IMPACT_TIMEOUT_MS;
-  if (timeoutMs > 3_600_000) timeoutMs = 3_600_000;
+  if (timeoutMs > MAX_LOCAL_IMPACT_TIMEOUT_MS) timeoutMs = MAX_LOCAL_IMPACT_TIMEOUT_MS;
 
   return {
     ok: true,
@@ -292,11 +294,12 @@ async function safeLocalImpact(
     error: err instanceof Error ? err.message : String(err),
   }));
   const timeoutP = new Promise<'timeout'>((resolve) => {
+    const delayMs = timeoutMs >= 0 && timeoutMs <= MAX_LOCAL_IMPACT_TIMEOUT_MS ? timeoutMs : 0;
     timer = setTimeout(() => {
       controller.abort(new Error(`Local impact timed out after ${timeoutMs}ms`));
       void closeLbug(repo.id).catch(() => {});
       resolve('timeout');
-    }, timeoutMs);
+    }, delayMs);
   });
   const won = await Promise.race([
     impactP.then((v) => ({ tag: 'impact' as const, v })),
@@ -652,6 +655,7 @@ export async function runGroupImpact(
         continue;
       }
 
+      const metadata = fan as Partial<CrossRepoImpact>;
       cross.push({
         repo: regName,
         repo_path: n.neighborRepo,
@@ -663,6 +667,20 @@ export async function runGroupImpact(
         },
         by_depth: ((fan as { byDepth?: unknown }).byDepth ?? {}) as Record<string, unknown[]>,
         affected_processes: extractProcessNames(fan),
+        ...(metadata.source !== undefined ? { source: metadata.source } : {}),
+        ...(metadata.graphImpactAvailable !== undefined
+          ? { graphImpactAvailable: metadata.graphImpactAvailable }
+          : {}),
+        ...(metadata.targetContext !== undefined ? { targetContext: metadata.targetContext } : {}),
+        ...(metadata.freshness !== undefined ? { freshness: metadata.freshness } : {}),
+        ...(metadata.repoLabel !== undefined ? { repoLabel: metadata.repoLabel } : {}),
+        ...(metadata.repoPath !== undefined ? { repoPath: metadata.repoPath } : {}),
+        ...(metadata.capabilitiesUsed !== undefined
+          ? { capabilitiesUsed: metadata.capabilitiesUsed }
+          : {}),
+        ...(metadata.capabilitiesMissing !== undefined
+          ? { capabilitiesMissing: metadata.capabilitiesMissing }
+          : {}),
       });
     }
   } finally {

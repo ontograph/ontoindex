@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
 import path from 'node:path';
 
 export interface ServiceBoundary {
@@ -78,7 +79,7 @@ async function walkForBoundaries(
   repoRoot: string,
   results: ServiceBoundary[],
 ): Promise<void> {
-  let entries: import('node:fs').Dirent[];
+  let entries: Dirent[];
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
   } catch {
@@ -133,7 +134,7 @@ async function walkForBoundaries(
 
 async function hasSourceFilesInSubdirs(subdirs: string[]): Promise<boolean> {
   for (const subdir of subdirs) {
-    let entries: import('node:fs').Dirent[];
+    let entries: Dirent[];
     try {
       entries = await fs.readdir(subdir, { withFileTypes: true });
     } catch {

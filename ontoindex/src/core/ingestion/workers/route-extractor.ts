@@ -1,10 +1,230 @@
 /**
- * Laravel route extraction helpers extracted from parse-worker.ts.
- * All route-specific AST walking logic lives here; parse-worker imports and delegates.
+ * Route extraction and decorator association shared by worker and sequential parsing.
  */
 
 import { extractStringContent, findDescendant, type SyntaxNode } from '../utils/ast-helpers.js';
 import type Parser from 'tree-sitter';
+import type { ParseWorkerResult } from './parse-types.js';
+import type { FrameworkHint } from '../framework-detection.js';
+
+// Route/decorator capture rules shared by worker and sequential parsing.
+const EXPRESS_ROUTE_METHODS = new Set([
+  'get',
+  'post',
+  'put',
+  'delete',
+  'patch',
+  'all',
+  'use',
+  'route',
+]);
+
+// Known HTTP client receivers are consumers rather than route registrations.
+const HTTP_CLIENT_RECEIVERS = new Set([
+  'axios',
+  'request',
+  'fetch',
+  'http',
+  'https',
+  'got',
+  'ky',
+  'superagent',
+  'needle',
+  'undici',
+  'apiclient',
+  'client',
+  'httpclient',
+  'api',
+  '$http',
+  'session',
+  'httpservice',
+  'conn',
+]);
+
+// Decorator names that indicate HTTP route handlers (NestJS, Flask, FastAPI, Spring)
+const ROUTE_DECORATOR_NAMES = new Set([
+  'Get',
+  'Post',
+  'Put',
+  'Delete',
+  'Patch',
+  'Route',
+  'get',
+  'post',
+  'put',
+  'delete',
+  'patch',
+  'route',
+  'RequestMapping',
+  'GetMapping',
+  'PostMapping',
+  'PutMapping',
+  'DeleteMapping',
+]);
+
+export type RouteToolExtractions = Pick<
+  ParseWorkerResult,
+  'routes' | 'decoratorRoutes' | 'toolDefs'
+>;
+export type FileDecorators = Map<number, { name: string; arg?: string; isTool?: boolean }>;
+
+/** Consume route/decorator captures in query order before definition filtering. */
+export function captureRouteOrDecorator(
+  captureMap: Record<string, SyntaxNode>,
+  filePath: string,
+  lineOffset: number,
+  fileDecorators: FileDecorators,
+  result: RouteToolExtractions,
+): boolean {
+  // Store decorator metadata for later association with definitions
+  if (captureMap['decorator'] && captureMap['decorator.name']) {
+    const decoratorName = captureMap['decorator.name'].text;
+    const decoratorArg = captureMap['decorator.arg']?.text;
+    const decoratorNode = captureMap['decorator'];
+    // Store by the decorator's end line — the definition follows immediately after
+    fileDecorators.set(decoratorNode.endPosition.row, {
+      name: decoratorName,
+      arg: decoratorArg,
+    });
+
+    if (ROUTE_DECORATOR_NAMES.has(decoratorName)) {
+      const routePath = decoratorArg || '';
+      const method = decoratorName.replace('Mapping', '').toUpperCase();
+      const httpMethod = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(method)
+        ? method
+        : 'GET';
+      result.decoratorRoutes.push({
+        filePath,
+        routePath,
+        httpMethod,
+        decoratorName,
+        lineNumber: decoratorNode.startPosition.row + lineOffset,
+      });
+    }
+    // MCP/RPC tool detection: @mcp.tool(), @app.tool(), @server.tool()
+    if (decoratorName === 'tool') {
+      // Re-store with isTool flag for the definition handler
+      fileDecorators.set(decoratorNode.endPosition.row, {
+        name: decoratorName,
+        arg: decoratorArg,
+        isTool: true,
+      });
+    }
+    return true;
+  }
+
+  // Express/Hono route registration: app.get('/path', handler)
+  if (
+    captureMap['express_route'] &&
+    captureMap['express_route.method'] &&
+    captureMap['express_route.path']
+  ) {
+    const method = captureMap['express_route.method'].text;
+    const routePath = captureMap['express_route.path'].text;
+    if (EXPRESS_ROUTE_METHODS.has(method) && routePath.startsWith('/')) {
+      // Extract the receiver (the object the method is called on) to filter out
+      // HTTP client calls like axios.get('/api/users') that match the same pattern
+      // as Express route registrations.
+      const callNode = captureMap['express_route'];
+      const funcNode = callNode.childForFieldName?.('function') ?? callNode.children?.[0];
+      // Walk through nested member_expressions and call_expressions to
+      // reach the innermost receiver identifier.  Handles chains like:
+      //   this.httpService.get('/path')   -> member chain    -> 'httpservice'
+      //   getClient().get('/path')         -> call_expression -> 'getclient'
+      //   axios.get('/path')               -> bare identifier -> 'axios'
+      let receiverNode = funcNode?.childForFieldName?.('object') ?? funcNode?.children?.[0];
+      while (
+        receiverNode?.type === 'member_expression' ||
+        receiverNode?.type === 'call_expression'
+      ) {
+        if (receiverNode.type === 'member_expression') {
+          // Drill into the property (rightmost part) of the member expression
+          const propNode = receiverNode.childForFieldName?.('property');
+          if (propNode) {
+            receiverNode = propNode;
+          } else {
+            break;
+          }
+        } else {
+          // call_expression: unwrap to the function being called
+          const innerFunc =
+            receiverNode.childForFieldName?.('function') ?? receiverNode.children?.[0];
+          if (innerFunc && innerFunc !== receiverNode) {
+            receiverNode = innerFunc;
+          } else {
+            break;
+          }
+        }
+      }
+      const receiverText = receiverNode?.text?.toLowerCase() ?? '';
+
+      if (HTTP_CLIENT_RECEIVERS.has(receiverText)) {
+        // This is an HTTP client call, not a route definition — skip it
+        return true;
+      }
+
+      const httpMethod =
+        method === 'all' || method === 'use' || method === 'route' ? 'GET' : method.toUpperCase();
+      result.decoratorRoutes.push({
+        filePath,
+        routePath,
+        httpMethod,
+        decoratorName: `express.${method}`,
+        lineNumber: captureMap['express_route'].startPosition.row + lineOffset,
+      });
+    }
+    return true;
+  }
+
+  return false;
+}
+
+/** Associate preceding decorators with the final definition name exactly once. */
+export function associateDefinitionDecorators(
+  definitionNode: SyntaxNode | null | undefined,
+  nodeName: string,
+  filePath: string,
+  lineOffset: number,
+  fileDecorators: FileDecorators,
+  result: RouteToolExtractions,
+  frameworkHint: FrameworkHint | null,
+): FrameworkHint | null {
+  // Decorators appear on lines immediately before their definition; allow up to
+  // MAX_DECORATOR_SCAN_LINES gap for blank lines / multi-line decorator stacks.
+  const MAX_DECORATOR_SCAN_LINES = 5;
+  if (definitionNode) {
+    const defStartLine = definitionNode.startPosition.row;
+    for (
+      let checkLine = defStartLine - 1;
+      checkLine >= Math.max(0, defStartLine - MAX_DECORATOR_SCAN_LINES);
+      checkLine--
+    ) {
+      const dec = fileDecorators.get(checkLine);
+      if (dec) {
+        // Use first (closest) decorator found for framework hint
+        if (!frameworkHint) {
+          frameworkHint = {
+            framework: 'decorator',
+            entryPointMultiplier: 1.2,
+            reason: `@${dec.name}${dec.arg ? `("${dec.arg}")` : ''}`,
+          };
+        }
+        // Emit tool definition if this is a @tool decorator
+        if (dec.isTool) {
+          result.toolDefs.push({
+            filePath,
+            toolName: nodeName,
+            description: dec.arg || '',
+            lineNumber: definitionNode.startPosition.row + lineOffset,
+          });
+        }
+        fileDecorators.delete(checkLine);
+      }
+    }
+  }
+
+  return frameworkHint;
+}
 
 // ============================================================================
 // Public types
@@ -299,7 +519,10 @@ function parseArrayGroupArgs(argsNode: SyntaxNode | null): RouteGroupContext {
 // Public API
 // ============================================================================
 
-export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): ExtractedRoute[] {
+export function extractLaravelRoutes(
+  tree: Pick<Parser.Tree, 'rootNode'>,
+  filePath: string,
+): ExtractedRoute[] {
   const routes: ExtractedRoute[] = [];
 
   function resolveStack(stack: RouteGroupContext[]): {

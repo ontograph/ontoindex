@@ -64,6 +64,51 @@ function addClique(
 // ============================================================================
 
 describe('calculateCohesion — internal edge ratio', () => {
+  it('produces identical communities for insertion-permuted equivalent graphs', async () => {
+    const nodes = [
+      makeNode('fn:a', 'a', 'Function', '/src/alpha/a.ts'),
+      makeNode('fn:b', 'b', 'Function', '/src/alpha/b.ts'),
+      makeNode('fn:c', 'c', 'Function', '/src/beta/c.ts'),
+      makeNode('fn:d', 'd', 'Function', '/src/beta/d.ts'),
+      makeNode('fn:e', 'e', 'Function', '/src/gamma/e.ts'),
+      makeNode('fn:f', 'f', 'Function', '/src/gamma/f.ts'),
+      makeNode('fn:g', 'g', 'Function', '/src/other/g.ts'),
+    ];
+    // Two dense regions joined by a bridge, plus a third region joined by a
+    // second bridge, so insertion ordering can affect tie-breaking in Leiden.
+    const relationships = [
+      makeRel('rel:ab', 'fn:a', 'fn:b'),
+      makeRel('rel:ac', 'fn:a', 'fn:c'),
+      makeRel('rel:bc', 'fn:b', 'fn:c'),
+      makeRel('rel:cd', 'fn:c', 'fn:d'),
+      makeRel('rel:de', 'fn:d', 'fn:e'),
+      makeRel('rel:df', 'fn:d', 'fn:f'),
+      makeRel('rel:ef', 'fn:e', 'fn:f'),
+      makeRel('rel:dg', 'fn:d', 'fn:g'),
+      makeRel('rel:gd-reverse', 'fn:g', 'fn:d'),
+    ];
+    const build = (nodeOrder: GraphNode[], relationshipOrder: GraphRelationship[]) => {
+      const graph = createKnowledgeGraph();
+      for (const node of nodeOrder) graph.addNode(node);
+      for (const rel of relationshipOrder) graph.addRelationship(rel);
+      return graph;
+    };
+
+    const forward = await processCommunities(build(nodes, relationships));
+    const permuted = await processCommunities(
+      build([...nodes].reverse(), [...relationships].reverse()),
+    );
+    const canonicalize = (result: Awaited<ReturnType<typeof processCommunities>>) => ({
+      communities: [...result.communities].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+      memberships: [...result.memberships].sort((a, b) =>
+        a.nodeId < b.nodeId ? -1 : a.nodeId > b.nodeId ? 1 : 0,
+      ),
+      stats: result.stats,
+    });
+
+    expect(canonicalize(permuted)).toEqual(canonicalize(forward));
+  });
+
   /**
    * Build a 4-node fully connected clique with 2 external boundary edges.
    * For the clique community:

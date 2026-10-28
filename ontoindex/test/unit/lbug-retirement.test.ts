@@ -55,6 +55,10 @@ const deferred = () => {
   return { promise, resolve };
 };
 const never = () => new Promise<never>(() => {});
+const flush = async () => {
+  await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(0);
+};
 
 describe('retired native ownership', () => {
   beforeEach(() => {
@@ -73,16 +77,25 @@ describe('retired native ownership', () => {
       await adapter.initLbug(alias);
       const connectionClose = deferred();
       const databaseClose = deferred();
+      const native = deferred();
+      const resultClose = vi.fn();
       state.connections[0].close.mockReturnValue(connectionClose.promise);
       state.databases[0].close.mockReturnValue(databaseClose.promise);
       state.connections[0].query.mockImplementationOnce(() =>
-        stage === 'query' ? never() : { getAll: never, close: vi.fn() },
+        stage === 'query'
+          ? (native.promise as Promise<never>)
+          : { getAll: () => native.promise, close: resultClose },
       );
       const assertion = expect(adapter.executeQuery('RETURN 1')).rejects.toThrow(
         'timed out after 30000ms',
       );
       await vi.advanceTimersByTimeAsync(30_001);
       await assertion;
+      // The native call is still running: nothing may be closed underneath it.
+      expect(resultClose).not.toHaveBeenCalled();
+      expect(state.connections[0].close).not.toHaveBeenCalled();
+      expect(state.databases[0].close).not.toHaveBeenCalled();
+      expect(state.pins[0]).not.toHaveBeenCalled();
       for (const value of [physical, alias]) {
         await expect(adapter.closeLbugForPath(value, { strict: true })).rejects.toThrow(
           'native close',
@@ -91,8 +104,12 @@ describe('retired native ownership', () => {
       }
       await adapter.closeLbugForPath(other, { strict: true });
       await adapter.initLbug(other);
+      native.resolve();
+      await flush();
+      if (stage === 'getAll') expect(resultClose).toHaveBeenCalledOnce();
+      expect(state.connections[0].close).toHaveBeenCalledOnce();
       connectionClose.resolve();
-      await vi.advanceTimersByTimeAsync(0);
+      await flush();
       expect(state.databases[0].close).toHaveBeenCalledOnce();
       expect(state.pins[0]).not.toHaveBeenCalled();
       await expect(adapter.closeLbugForPath(alias, { strict: true })).rejects.toThrow(
@@ -120,10 +137,14 @@ describe('retired native ownership', () => {
       if (failure === 'connection') state.connections[0].close.mockRejectedValue(error);
       if (failure === 'database') state.databases[0].close.mockRejectedValue(error);
       if (failure === 'pin') state.pins[0].mockRejectedValue(error);
-      state.connections[0].query.mockReturnValueOnce(never());
+      const native = deferred();
+      state.connections[0].query.mockReturnValueOnce(native.promise);
       const assertion = expect(adapter.executeQuery('RETURN 1')).rejects.toThrow('timed out');
       await vi.advanceTimersByTimeAsync(30_001);
       await assertion;
+      expect(state.databases[0].close).not.toHaveBeenCalled();
+      native.resolve();
+      await flush();
       expect(state.databases[0].close).toHaveBeenCalledOnce();
       expect(state.pins[0]).toHaveBeenCalledTimes(failure === 'pin' ? 1 : 0);
       for (const value of [physical, alias]) {
@@ -165,21 +186,68 @@ describe('retired native ownership', () => {
   it('successful retirement removes only its captured record', async () => {
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
     const closes = [deferred(), deferred()];
+    const natives = [deferred(), deferred()];
     for (const [index, value] of [alias, other].entries()) {
       await adapter.initLbug(value);
       state.connections[index].close.mockReturnValue(closes[index].promise);
-      state.connections[index].query.mockReturnValueOnce(never());
+      state.connections[index].query.mockReturnValueOnce(natives[index].promise);
       const assertion = expect(adapter.executeQuery('RETURN 1')).rejects.toThrow('timed out');
       await vi.advanceTimersByTimeAsync(30_001);
       await assertion;
     }
+    natives[0].resolve();
     closes[0].resolve();
-    await vi.advanceTimersByTimeAsync(0);
+    await flush();
     await adapter.closeLbugForPath(alias, { strict: true });
     await expect(adapter.closeLbugForPath(other, { strict: true })).rejects.toThrow('native close');
     expect(state.pins[1]).not.toHaveBeenCalled();
+    natives[1].resolve();
     closes[1].resolve();
-    await vi.advanceTimersByTimeAsync(0);
+    await flush();
     await adapter.closeLbugForPath(other, { strict: true });
+  });
+
+  it('closeLbug waits for an in-flight session operation instead of closing under it', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    await adapter.initLbug(alias);
+    const gate = deferred();
+    state.connections[0].close.mockReturnValue(gate.promise);
+    // A second init for another path holds the session lock while it closes the active handles.
+    const switching = adapter.initLbug(other);
+    await flush();
+    expect(state.connections[0].close).toHaveBeenCalledOnce();
+    let closed = false;
+    const closing = adapter.closeLbug().then(() => {
+      closed = true;
+    });
+    await flush();
+    expect(closed).toBe(false);
+    expect(state.databases).toHaveLength(1);
+    gate.resolve();
+    await switching;
+    await closing;
+    expect(closed).toBe(true);
+    expect(state.connections[1].close).toHaveBeenCalledOnce();
+  });
+
+  it('tears down after the timed-out native call rejects, never before', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    await adapter.initLbug(alias);
+    let reject!: (error: Error) => void;
+    const native = new Promise<never>((_, fail) => {
+      reject = fail;
+    });
+    state.connections[0].query.mockReturnValueOnce(native);
+    const assertion = expect(adapter.executeQuery('RETURN 1')).rejects.toThrow('timed out');
+    await vi.advanceTimersByTimeAsync(30_001);
+    await assertion;
+    await flush();
+    expect(state.connections[0].close).not.toHaveBeenCalled();
+    reject(new Error('native failure after timeout'));
+    await flush();
+    expect(state.connections[0].close).toHaveBeenCalledOnce();
+    expect(state.databases[0].close).toHaveBeenCalledOnce();
+    expect(state.pins[0]).toHaveBeenCalledOnce();
+    await adapter.closeLbugForPath(alias, { strict: true });
   });
 });

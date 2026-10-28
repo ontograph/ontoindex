@@ -14,7 +14,10 @@ import {
   repoResolutionCandidatesFromEntries,
   repoResolutionEnvironmentFromProcess,
 } from '../mcp/shared/repo-resolution-errors.js';
-import { getPublicToolDefinitions } from '../mcp/shared/tool-registry.js';
+import {
+  getMcpStartupProfileFromEnv,
+  getPublicToolDefinitions,
+} from '../mcp/shared/tool-registry.js';
 import { INTERNAL_TOOL_HANDLERS } from '../mcp/tools.js';
 import { getGitRoot } from '../storage/git.js';
 import path from 'path';
@@ -104,6 +107,7 @@ export const mcpCommand = async (
   console.error(`OntoIndex: MCP target repo filter: ${formatRepoFilterLabel(repoFilter)}`);
 
   const backend = new LocalBackend({
+    watchWorkspace: true,
     repoFilter,
     preferredProjectPath: targetProjectPath,
     ...(options.confirmWrites === true && { confirmWrites: true }),
@@ -223,7 +227,7 @@ export const mcpCommand = async (
     );
   } else {
     console.error(
-      `OntoIndex: exposing ${getPublicToolDefinitions().length} public MCP tools (super-functions + facade API)`,
+      `OntoIndex: exposing ${getPublicToolDefinitions({ startupProfile: getMcpStartupProfileFromEnv() }).length} public MCP tools (super-functions + facade API)`,
     );
   }
 

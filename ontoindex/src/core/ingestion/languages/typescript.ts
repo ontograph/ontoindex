@@ -8,8 +8,8 @@
  */
 
 import { SupportedLanguages } from 'ontoindex-shared';
-import type { NodeLabel } from 'ontoindex-shared';
-import { defineLanguage } from '../language-provider.js';
+import type { CaptureMatch, NodeLabel, ParsedTypeBinding } from 'ontoindex-shared';
+import { defineLanguage, type LanguageProvider } from '../language-provider.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import {
   typescriptClassConfig,
@@ -44,6 +44,61 @@ import {
   javascriptCallConfig,
 } from '../call-extractors/configs/typescript-javascript.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import { emitTypeScriptCaptures } from './typescript-captures.js';
+import {
+  selectTypeScriptLocalBindings,
+  typeScriptDeclarationBindingScope,
+  typeScriptDeclarationNamespace,
+} from './typescript-declaration-captures.js';
+import { interpretTypeScriptImport } from './typescript-import-captures.js';
+import { interpretTypeScriptExports } from './typescript-export-captures.js';
+
+export function interpretTypeScriptTypeBinding(captures: CaptureMatch): ParsedTypeBinding | null {
+  const name = captures['@type-binding.name'];
+  const type = captures['@type-binding.type'];
+  return name && type
+    ? { boundName: name.text, rawTypeName: type.text, source: 'annotation' }
+    : null;
+}
+
+const tsScopeHooks = {
+  emitScopeCaptures: (_sourceText, _filePath, rootNode) => {
+    if (!rootNode) throw new Error('TS/JS scope captures require the borrowed root');
+    return emitTypeScriptCaptures(rootNode);
+  },
+  bindingScopeFor: typeScriptDeclarationBindingScope,
+  declarationNamespaceFor: typeScriptDeclarationNamespace,
+  selectLocalBindings: selectTypeScriptLocalBindings,
+  interpretImport: interpretTypeScriptImport,
+  interpretExports: interpretTypeScriptExports,
+  interpretTypeBinding: interpretTypeScriptTypeBinding,
+  arityCompatibility: (def, callsite) => {
+    if (
+      def.parameterCount === undefined ||
+      def.requiredParameterCount === undefined ||
+      !Number.isSafeInteger(def.parameterCount) ||
+      !Number.isSafeInteger(def.requiredParameterCount) ||
+      def.requiredParameterCount < 0 ||
+      def.parameterCount < def.requiredParameterCount ||
+      !Number.isSafeInteger(callsite.arity) ||
+      callsite.arity < 0
+    )
+      return 'unknown';
+    return callsite.arity >= def.requiredParameterCount && callsite.arity <= def.parameterCount
+      ? 'compatible'
+      : 'incompatible';
+  },
+} satisfies Pick<
+  LanguageProvider,
+  | 'emitScopeCaptures'
+  | 'bindingScopeFor'
+  | 'declarationNamespaceFor'
+  | 'selectLocalBindings'
+  | 'interpretImport'
+  | 'interpretExports'
+  | 'interpretTypeBinding'
+  | 'arityCompatibility'
+>;
 
 /**
  * TypeScript/JavaScript: arrow_function and function_expression get their name
@@ -168,6 +223,7 @@ export const BUILT_INS: ReadonlySet<string> = new Set([
 ]);
 
 export const typescriptProvider = defineLanguage({
+  ...tsScopeHooks,
   id: SupportedLanguages.TypeScript,
   extensions: ['.ts', '.tsx'],
   treeSitterQueries: TYPESCRIPT_QUERIES,
@@ -188,6 +244,7 @@ export const typescriptProvider = defineLanguage({
 });
 
 export const javascriptProvider = defineLanguage({
+  ...tsScopeHooks,
   id: SupportedLanguages.JavaScript,
   extensions: ['.js', '.jsx'],
   treeSitterQueries: JAVASCRIPT_QUERIES,

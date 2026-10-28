@@ -337,7 +337,7 @@ setTimeout(() => {}, 30000);
     await expect(fs.readFile(lockPath, 'utf8')).resolves.toBe('{"version":1');
   });
 
-  it('reclaims a stale structured recovery sentinel and mutation lock', async () => {
+  it('preserves the permanent kernel lock inode and cleans proven-dead legacy owners', async () => {
     const repoPath = await makeRepo();
     const dir = path.join(repoPath, '.ontoindex', 'analysis-jobs');
     const lockPath = path.join(dir, 'active.mutation.lock');
@@ -357,8 +357,19 @@ setTimeout(() => {}, 30000);
     );
     const staleClaimPath = `${lockPath}.recovery.claim.${deadOwner.pid}.${Buffer.from(deadOwner.processStartIdentity).toString('hex')}.abandoned`;
     await fs.writeFile(staleClaimPath, JSON.stringify({ ...deadOwner, token: 'older-recovery' }));
+    const orphan = `${lockPath}.2147483647.12345678-1234-4234-8234-123456789abc.tmp`;
+    const partialOrphan = `${lockPath}.2147483647.12345678-1234-4234-9234-123456789abc.tmp`;
+    const stagingDirectory = `${lockPath}.2147483647.12345678-1234-4234-a234-123456789abc.tmp`;
+    const stagingSymlink = `${lockPath}.2147483647.12345678-1234-4234-b234-123456789abc.tmp`;
+    const unrelated = `${lockPath}.2147483647.not-a-uuid.tmp`;
+    await fs.writeFile(orphan, '');
+    await fs.writeFile(partialOrphan, '{partial');
+    await fs.mkdir(stagingDirectory);
+    await fs.writeFile(unrelated, 'preserve');
+    await fs.symlink(unrelated, stagingSymlink);
     process.env.ONTOINDEX_ANALYSIS_JOB_RUNNER_PATH = await writeCompletingRunner(repoPath);
 
+    const kernelPath = `${lockPath}.kernel`;
     await expect(
       submitAnalysisJob({
         repoPath,
@@ -369,8 +380,83 @@ setTimeout(() => {}, 30000);
         sourceIdentity: SOURCE_IDENTITY,
       }),
     ).resolves.toMatchObject({ reused: false });
+    const kernelInode = (await fs.stat(kernelPath)).ino;
+    await expect(
+      submitAnalysisJob({
+        repoPath,
+        targetHead: TEST_HEAD,
+        command: process.execPath,
+        args: [],
+        options: {},
+        sourceIdentity: SOURCE_IDENTITY,
+      }),
+    ).resolves.toMatchObject({ reused: true });
+    await expect(fs.stat(kernelPath)).resolves.toMatchObject({ ino: kernelInode });
     await expect(exists(`${lockPath}.recovery`)).resolves.toBe(false);
     await expect(exists(staleClaimPath)).resolves.toBe(false);
+    await expect(exists(lockPath)).resolves.toBe(false);
+    await expect(exists(orphan)).resolves.toBe(false);
+    await expect(exists(partialOrphan)).resolves.toBe(false);
+    expect((await fs.lstat(stagingDirectory)).isDirectory()).toBe(true);
+    expect((await fs.lstat(stagingSymlink)).isSymbolicLink()).toBe(true);
+    expect(await fs.readFile(unrelated, 'utf8')).toBe('preserve');
+  });
+
+  it('preserves dead recovery diagnostics when the main legacy record is malformed', async () => {
+    const repoPath = await makeRepo();
+    const dir = path.join(repoPath, '.ontoindex', 'analysis-jobs');
+    const lockPath = path.join(dir, 'active.mutation.lock');
+    const recoveryPath = `${lockPath}.recovery`;
+    const recovery = JSON.stringify({
+      version: 1,
+      token: 'dead-recovery',
+      pid: 2_147_483_647,
+      processStartIdentity: 'dead-process',
+      acquiredAt: new Date().toISOString(),
+      repoPath,
+    });
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(recoveryPath, recovery);
+    await fs.writeFile(lockPath, '{malformed');
+    const orphan = `${lockPath}.2147483647.12345678-1234-4234-8234-123456789abc.tmp`;
+    await fs.writeFile(orphan, '');
+    await expect(
+      submitAnalysisJob({
+        repoPath,
+        targetHead: TEST_HEAD,
+        command: process.execPath,
+        args: [],
+        options: {},
+        sourceIdentity: SOURCE_IDENTITY,
+      }),
+    ).rejects.toThrow('malformed analysis active mutation lock');
+    expect(
+      await Promise.all([recoveryPath, lockPath].map((file) => fs.readFile(file, 'utf8'))),
+    ).toEqual([recovery, '{malformed']);
+    expect(await fs.readFile(orphan, 'utf8')).toBe('');
+  });
+
+  it('preserves malformed legacy recovery sentinels while refusing mutation', async () => {
+    const repoPath = await makeRepo();
+    const dir = path.join(repoPath, '.ontoindex', 'analysis-jobs');
+    const lockPath = path.join(dir, 'active.mutation.lock');
+    const recoveryPath = `${lockPath}.recovery`;
+    const malformed = '{"version":1';
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(recoveryPath, malformed);
+
+    await expect(
+      submitAnalysisJob({
+        repoPath,
+        targetHead: TEST_HEAD,
+        command: process.execPath,
+        args: [],
+        options: {},
+        sourceIdentity: SOURCE_IDENTITY,
+      }),
+    ).rejects.toThrow('malformed analysis lock recovery owner');
+    await expect(fs.readFile(recoveryPath, 'utf8')).resolves.toBe(malformed);
+    await expect(exists(lockPath)).resolves.toBe(false);
   });
 
   it('does not copy current graph metadata into a completed job', async () => {

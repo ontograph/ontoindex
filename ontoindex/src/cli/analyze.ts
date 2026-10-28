@@ -17,6 +17,7 @@ import {
   getStoragePaths,
   getGlobalRegistryPath,
   RegistryNameCollisionError,
+  readActiveGenerationMeta,
 } from '../storage/repo-manager.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import fs from 'fs/promises';
@@ -39,8 +40,17 @@ import {
 } from '../core/indexing/file-scope-preview.js';
 import type { PipelineProfile } from '../core/ingestion/pipeline.js';
 import type { EmbeddingLifecycleSummary } from '../core/run-analyze.js';
-import { resolveOverlayDbPath } from '../mcp/local/backend-overlay.js';
+import {
+  resolveOverlayDbPath,
+  isAutomaticWorkspaceEnabled,
+  getOverlaySnapshot,
+  evictOverlayState,
+  type OverlaySnapshot,
+} from '../mcp/local/backend-overlay.js';
+import { buildWorkspaceGraph } from '../mcp/local/local-backend-repo-runtime.js';
+import { assertWorkspaceBuildAdmission } from '../mcp/local/workspace-build-supervisor.js';
 import { parseManagedAnalysisContextFromEnv } from '../core/analysis/analysis-publication-receipt.js';
+import { acquireNativeFileLock } from '../native/file-lock.js';
 
 const HEAP_MB = 8192;
 const HEAP_FLAG = `--max-old-space-size=${HEAP_MB}`;
@@ -150,12 +160,12 @@ interface AnalyzeLock {
   release: () => Promise<void>;
 }
 
-function isProcessAlive(pid: number): boolean {
+function isProcessAlive(pid: number): boolean | null {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return getErrorCode(error) === 'ESRCH' ? false : null;
   }
 }
 
@@ -174,9 +184,19 @@ async function readProcessStartIdentity(pid: number): Promise<string | null> {
 }
 
 async function isAnalyzeLockOwnerActive(record: AnalyzeLockRecord): Promise<boolean | null> {
-  const pid = typeof record.pid === 'number' ? record.pid : null;
+  if (record.token !== undefined && typeof record.token !== 'string') return null;
+  if (
+    record.processStartIdentity !== undefined &&
+    (typeof record.processStartIdentity !== 'string' || !record.processStartIdentity)
+  )
+    return null;
+  const pid =
+    typeof record.pid === 'number' && Number.isSafeInteger(record.pid) && record.pid > 0
+      ? record.pid
+      : null;
   if (pid === null) return null;
-  if (!isProcessAlive(pid)) return false;
+  const alive = isProcessAlive(pid);
+  if (alive !== true) return alive;
 
   const recordedIdentity =
     typeof record.processStartIdentity === 'string' ? record.processStartIdentity : null;
@@ -238,25 +258,32 @@ async function createAnalyzeLockFile(
   processStartIdentity: string | null,
   repoPath: string,
 ): Promise<AnalyzeLock> {
-  const handle = await fs.open(lockPath, 'wx');
+  const temporaryPath = `${lockPath}.${token}.tmp`;
+  const handle = await fs.open(temporaryPath, 'wx', 0o600);
   try {
-    await handle.writeFile(
-      JSON.stringify(
-        {
-          pid: process.pid,
-          token,
-          startedAt: new Date().toISOString(),
-          ...(processStartIdentity ? { processStartIdentity } : {}),
-          repoPath,
-          command: process.argv.join(' '),
-        },
-        null,
-        2,
-      ),
-      'utf-8',
-    );
+    try {
+      await handle.writeFile(
+        JSON.stringify(
+          {
+            pid: process.pid,
+            token,
+            startedAt: new Date().toISOString(),
+            ...(processStartIdentity ? { processStartIdentity } : {}),
+            repoPath,
+            command: process.argv.join(' '),
+          },
+          null,
+          2,
+        ),
+        'utf-8',
+      );
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await fs.link(temporaryPath, lockPath);
   } finally {
-    await handle.close();
+    await fs.unlink(temporaryPath).catch(() => {});
   }
   let released = false;
   return {
@@ -274,67 +301,107 @@ export async function acquireAnalyzeLock(repoPath: string): Promise<AnalyzeLock>
   await fs.mkdir(storagePath, { recursive: true });
   const lockPath = path.join(storagePath, 'analyze.lock');
   const recoveryLockPath = `${lockPath}.recovery`;
-  const token = randomUUID();
-  const processStartIdentity = await readProcessStartIdentity(process.pid);
-
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      return await createAnalyzeLockFile(lockPath, token, processStartIdentity, repoPath);
-    } catch (err: unknown) {
-      if (getErrorCode(err) !== 'EEXIST') throw err;
-
-      let existing: AnalyzeLockRecord | null = null;
-      let existingContents = '';
+  const nativeLock = await acquireNativeFileLock(`${lockPath}.kernel`);
+  let lock: AnalyzeLock | undefined;
+  let transferred = false;
+  try {
+    // The permanent kernel lock serializes both legacy diagnostics and publication.
+    // Validate both records before removing either or publishing a new owner.
+    const stale: Array<{ path: string; record: AnalyzeLockRecord; contents: string }> = [];
+    for (const diagnosticPath of [recoveryLockPath, lockPath]) {
+      let contents: string;
       try {
-        existingContents = await fs.readFile(lockPath, 'utf-8');
-        existing = parseAnalyzeLockRecord(existingContents);
-      } catch {}
-
-      const pid = typeof existing?.pid === 'number' ? existing.pid : null;
-      const ownerActive = existing ? await isAnalyzeLockOwnerActive(existing) : null;
-      if (pid !== null && ownerActive === false) {
-        let recoveryHandle;
-        try {
-          recoveryHandle = await fs.open(recoveryLockPath, 'wx');
-        } catch (recoveryError: unknown) {
-          if (getErrorCode(recoveryError) === 'EEXIST') {
-            throw new Error(`Another process is recovering the analyze lock. Lock: ${lockPath}`);
-          }
-          throw recoveryError;
-        }
-
-        try {
-          existingContents = await fs.readFile(lockPath, 'utf-8');
-          existing = parseAnalyzeLockRecord(existingContents);
-          const currentPid = typeof existing?.pid === 'number' ? existing.pid : null;
-          const currentOwnerActive = existing ? await isAnalyzeLockOwnerActive(existing) : null;
-          if (currentPid === null || currentOwnerActive !== false) {
-            throw new Error(`Cannot safely recover for this repo. Lock: ${lockPath}`);
-          }
-          const currentToken = existing?.token;
-          const staleToken = typeof currentToken === 'string' ? currentToken : undefined;
-          await archiveStaleAnalyzeDiagnostics(storagePath, existingContents, staleToken);
-          if (!(await removeAnalyzeLockIfOwner(lockPath, currentPid, staleToken))) {
-            throw new Error(`Cannot safely recover for this repo. Lock: ${lockPath}`);
-          }
-          return await createAnalyzeLockFile(lockPath, token, processStartIdentity, repoPath);
-        } finally {
-          await recoveryHandle.close();
-          await fs.unlink(recoveryLockPath).catch(() => {});
-        }
+        contents = await fs.readFile(diagnosticPath, 'utf-8');
+      } catch (error) {
+        if (getErrorCode(error) === 'ENOENT') continue;
+        throw new Error(`Cannot safely recover for this repo. Lock: ${diagnosticPath}`, {
+          cause: error,
+        });
       }
-
-      const owner = pid !== null ? `PID ${pid}` : 'another process';
-      const startedAt =
-        typeof existing?.startedAt === 'string' ? ` since ${existing.startedAt}` : '';
+      let record: AnalyzeLockRecord | null = null;
+      try {
+        record = parseAnalyzeLockRecord(contents);
+      } catch {}
+      const active = record ? await isAnalyzeLockOwnerActive(record) : null;
+      if (active !== false) {
+        const owner =
+          record && typeof record.pid === 'number' ? `PID ${record.pid}` : 'another process';
+        throw new Error(
+          `${diagnosticPath === recoveryLockPath ? 'Another process is recovering the analyze lock. ' : ''}` +
+            `${active === null ? 'Cannot safely recover' : 'OntoIndex analyze is already running'} for this repo (${owner}). Lock: ${diagnosticPath}`,
+        );
+      }
+      stale.push({ path: diagnosticPath, record: record!, contents });
+    }
+    // Only the kernel-lock holder can publish staging files; earlier holders are gone.
+    for (const name of await fs.readdir(storagePath)) {
+      if (
+        !/^analyze\.lock\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp$/i.test(
+          name,
+        )
+      )
+        continue;
+      const stagingPath = path.join(storagePath, name);
+      try {
+        if ((await fs.lstat(stagingPath)).isFile()) await fs.unlink(stagingPath);
+      } catch (error) {
+        if (getErrorCode(error) !== 'ENOENT') throw error;
+      }
+    }
+    for (const diagnostic of stale) {
+      const staleToken =
+        typeof diagnostic.record.token === 'string' ? diagnostic.record.token : undefined;
+      if (diagnostic.path === lockPath) {
+        await archiveStaleAnalyzeDiagnostics(storagePath, diagnostic.contents, staleToken);
+      }
+      if (
+        !(await removeAnalyzeLockIfOwner(
+          diagnostic.path,
+          diagnostic.record.pid as number,
+          staleToken,
+        ))
+      ) {
+        throw new Error(`Cannot safely recover for this repo. Lock: ${diagnostic.path}`);
+      }
+    }
+    lock = await createAnalyzeLockFile(
+      lockPath,
+      randomUUID(),
+      await readProcessStartIdentity(process.pid),
+      repoPath,
+    );
+    try {
+      await assertWorkspaceBuildAdmission(storagePath);
+    } catch (error) {
       throw new Error(
-        `${ownerActive === null ? 'Cannot safely recover' : 'OntoIndex analyze is already running'} for this repo (${owner}${startedAt}). ` +
-          `Lock: ${lockPath}`,
+        `Cannot safely recover workspace build for this repo. Inspect ${storagePath} before retrying.`,
+        { cause: error },
       );
     }
+    const diagnosticLock = lock;
+    let release: Promise<void> | undefined;
+    const result: AnalyzeLock = {
+      path: lockPath,
+      release: () =>
+        (release ??= (async () => {
+          try {
+            await diagnosticLock.release();
+          } finally {
+            await nativeLock.release();
+          }
+        })()),
+    };
+    transferred = true;
+    return result;
+  } finally {
+    if (!transferred) {
+      try {
+        await lock?.release();
+      } finally {
+        await nativeLock.release();
+      }
+    }
   }
-
-  throw new Error(`Could not acquire analyze lock for ${repoPath}`);
 }
 
 interface AnalyzeOptions {
@@ -368,6 +435,8 @@ interface AnalyzeOptions {
   experimentalFileDelta?: boolean;
   /** Build a disposable dirty-source graph without changing the active index. */
   dirtyOverlay?: boolean;
+  /** Explicitly prepare the full disposable workspace graph. */
+  workspaceGraph?: boolean;
   /** Preview file scope without writing .ontoindex. */
   dryRun?: boolean;
   /** Explain why one file would be included or skipped. */
@@ -455,7 +524,133 @@ function formatFileScopeExplanation(
   return lines.join('\n');
 }
 
+export async function prepareWorkspaceGraphCommand(
+  repoPath: string,
+  signal?: AbortSignal,
+): Promise<{ snapshot: OverlaySnapshot; reused: boolean; baseCurrent: boolean }> {
+  signal?.throwIfAborted();
+  if (parseManagedAnalysisContextFromEnv()) {
+    throw new Error('--workspace-graph cannot run as a managed analysis job.');
+  }
+  if (!isAutomaticWorkspaceEnabled()) {
+    throw new Error(
+      '--workspace-graph requires automatic workspace consumption (ONTOINDEX_AUTO_WORKSPACE=1).',
+    );
+  }
+  const canonicalPath = await fs.realpath(repoPath);
+  signal?.throwIfAborted();
+  const repo = {
+    id: canonicalPath,
+    repoPath: canonicalPath,
+    storagePath: getStoragePaths(canonicalPath).storagePath,
+  };
+  // Check before taking the lock so an unindexed repository is not initialized by this command.
+  if (!(await readActiveGenerationMeta(repo.storagePath)).meta?.lastCommit) {
+    throw new Error(
+      '--workspace-graph requires an existing committed base; run ontoindex analyze first.',
+    );
+  }
+  signal?.throwIfAborted();
+  const lock = await acquireAnalyzeLock(canonicalPath);
+  try {
+    signal?.throwIfAborted();
+    if (!(await readActiveGenerationMeta(repo.storagePath)).meta?.lastCommit) {
+      throw new Error(
+        '--workspace-graph requires an existing committed base; run ontoindex analyze first.',
+      );
+    }
+    evictOverlayState(repo.id);
+    let snapshot = await getOverlaySnapshot(repo);
+    signal?.throwIfAborted();
+    const baseCurrent =
+      snapshot.dirtyPaths.size === 0 &&
+      (snapshot.configPaths?.size ?? 0) === 0 &&
+      snapshot.baseMatches === true &&
+      !snapshot.headChanged;
+    if (baseCurrent) return { snapshot, reused: true, baseCurrent: true };
+    const ready = (value: OverlaySnapshot) =>
+      value.usable &&
+      value.capability === 'workspace-graph' &&
+      (value.coverage === 'complete' || value.coverage === 'partial');
+    if (ready(snapshot)) return { snapshot, reused: true, baseCurrent: false };
+    // Await the supervisor, including cancellation/reaping, before releasing the analyze lock.
+    await buildWorkspaceGraph(repo, signal, undefined, true);
+    signal?.throwIfAborted();
+    evictOverlayState(repo.id);
+    snapshot = await getOverlaySnapshot(repo);
+    signal?.throwIfAborted();
+    if (!ready(snapshot)) {
+      throw new Error(
+        `Workspace graph verification failed: ${snapshot.reason ?? snapshot.coverage ?? 'full workspace capability missing'}.`,
+      );
+    }
+    return { snapshot, reused: false, baseCurrent: false };
+  } finally {
+    await lock.release();
+  }
+}
+
 export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
+  if (options?.workspaceGraph) {
+    const controller = new AbortController();
+    let signalExitCode: number | undefined;
+    const interrupt = () => {
+      signalExitCode ??= 130;
+      controller.abort();
+    };
+    const terminate = () => {
+      signalExitCode ??= 143;
+      controller.abort();
+    };
+    process.on('SIGINT', interrupt);
+    process.on('SIGTERM', terminate);
+    try {
+      const incompatible = [
+        'dirtyOverlay',
+        'symbolsOnly',
+        'indexOnly',
+        'hugeRepo',
+        'allowHugeRoot',
+        'largeRepoSafe',
+        'experimentalFileDelta',
+        'embeddings',
+        'annNeighbors',
+        'skills',
+        'skillsTarget',
+        'name',
+        'allowDuplicateName',
+        'markdownSidecar',
+        'skipGit',
+        'dryRun',
+        'explainFile',
+        'force',
+      ] as const;
+      const conflict = incompatible.find(
+        (key) => options[key] !== undefined && options[key] !== false,
+      );
+      if (conflict || options.includePath?.length) {
+        const flag =
+          conflict?.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`) ?? 'include-path';
+        throw new Error(`--workspace-graph cannot be combined with --${flag}.`);
+      }
+      const repoPath = inputPath ? path.resolve(inputPath) : getGitRoot(process.cwd());
+      if (!repoPath) throw new Error('--workspace-graph requires a Git repository path.');
+      const result = await prepareWorkspaceGraphCommand(repoPath, controller.signal);
+      console.log(
+        result.baseCurrent
+          ? 'Committed base is current; no workspace graph preparation is needed.'
+          : `Workspace graph ${result.reused ? 'reused' : 'prepared'}; coverage: ${result.snapshot.coverage}.`,
+      );
+    } catch (error) {
+      console.error(`Workspace graph preparation failed: ${getErrorMessage(error)}`);
+      process.exitCode = signalExitCode ?? 1;
+    } finally {
+      process.off('SIGINT', interrupt);
+      process.off('SIGTERM', terminate);
+      if (signalExitCode !== undefined) process.exitCode = signalExitCode;
+    }
+    return;
+  }
   const managedAnalysis = parseManagedAnalysisContextFromEnv();
   if (ensureHeap()) return;
   if (options?.allowDuplicateName) {

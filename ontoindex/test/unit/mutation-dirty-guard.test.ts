@@ -97,8 +97,7 @@ describe('mutation dirty guard', () => {
         expectedSource = leading + '\n' + after;
         break;
       case 'replace':
-        // replaceSymbol is still a gate-only tool; updateSymbolBody owns writes.
-        expectedSource = leading + original;
+        expectedSource = leading + first.replace('return 1;', 'replacement') + '\n' + after;
         break;
     }
     expect(await fs.readFile(source, 'utf8')).toBe(expectedSource);
@@ -190,6 +189,19 @@ describe('mutation dirty guard', () => {
     expect(await fs.readFile(target, 'utf8')).toBe('// target\n');
   });
 
+  // RT-22: guardMutationRange relativizes with the host `path`. A Windows absolute path
+  // (C:\repo\src\a.ts) is only recognised as absolute on win32, where the windows-latest CI
+  // job runs the host-native case above. On POSIX the same string is a relative name, so the
+  // dirty-path lookup does not match. The production relative-path logic is reported, not changed.
+  it('documents that a Windows absolute path is only resolved on a win32 host', () => {
+    const repoRoot = 'C:\\work\\repo';
+    const absolute = 'C:\\work\\repo\\src\\a.ts';
+    expect(path.win32.relative(repoRoot, absolute)).toBe('src\\a.ts');
+    expect(path.win32.isAbsolute(absolute)).toBe(true);
+    expect(path.posix.isAbsolute(absolute)).toBe(false);
+    expect(path.posix.relative(repoRoot, absolute).replace(/\\/g, '/')).not.toBe('src/a.ts');
+  });
+
   it.each(['host-native absolute path', 'backslash-relative path'])(
     'detects a dirty file with a %s',
     async (pathKind) => {
@@ -240,7 +252,7 @@ describe('mutation dirty guard', () => {
         replace: { success: true, dry_run: true, uid },
       };
       expect(result).toEqual(expected[operation]);
-      await expectContents('replace');
+      expect(await fs.readFile(source, 'utf8')).toBe(original);
     },
   );
 
@@ -284,7 +296,7 @@ describe('mutation dirty guard', () => {
     await fs.writeFile(source, prefix + original);
     resolve(operation, true);
     expect(await mutate(operation, true)).not.toHaveProperty('warnings');
-    await expectContents('replace', true);
+    expect(await fs.readFile(source, 'utf8')).toBe(prefix + original);
   });
 
   it.each(['move', 'extract'] as const)(
@@ -298,7 +310,7 @@ describe('mutation dirty guard', () => {
           ? moveSymbol(repo, { ...params, target_file: 'src/target.ts' })
           : extractFunction(repo, { ...params, new_name: 'helper' }),
       ).rejects.toThrow(/line range may be stale/);
-      await expectContents('replace', true);
+      expect(await fs.readFile(source, 'utf8')).toBe(prefix + original);
     },
   );
 
@@ -435,6 +447,6 @@ describe('mutation dirty guard', () => {
     await expect(
       moveSymbolByUid(repo, { ...params, confirm: false }, true, initialize),
     ).rejects.toThrow(/Explicit confirmation required/);
-    await expectContents('replace');
+    expect(await fs.readFile(source, 'utf8')).toBe(original);
   });
 });

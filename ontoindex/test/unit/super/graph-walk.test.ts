@@ -2,11 +2,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { gnGraphWalk } from '../../../src/mcp/super/graph-walk.js';
 import { dispatchSuper } from '../../../src/mcp/super/dispatch.js';
 import { ONTOINDEX_SUPER_TOOLS } from '../../../src/mcp/super/tool-definitions.js';
-import { executeParameterized } from '../../../src/core/lbug/pool-adapter.js';
+import {
+  executeParameterized,
+  getPinnedGenerationDir,
+} from '../../../src/core/lbug/pool-adapter.js';
 import { getPublicToolRegistry } from '../../../src/mcp/shared/tool-registry.js';
 
 vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
   executeParameterized: vi.fn(),
+  getPinnedGenerationDir: vi.fn(),
+}));
+
+vi.mock('../../../src/mcp/local/backend-overlay.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/mcp/local/backend-overlay.js')>()),
+  getPinnedOverlaySnapshot: vi.fn(),
 }));
 
 const mockExecute = vi.mocked(executeParameterized);
@@ -14,6 +23,50 @@ const mockExecute = vi.mocked(executeParameterized);
 describe('gnGraphWalk', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getPinnedGenerationDir).mockReturnValue(undefined);
+  });
+
+  it('rejects changed admitted generations before status or step changes state', async () => {
+    vi.mocked(getPinnedGenerationDir).mockReturnValue('/generation/a');
+    mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
+    const started = await gnGraphWalk('repo1', { action: 'start', seedSymbol: 'seed-id' });
+    expect((await gnGraphWalk('repo1', { action: 'status', walkId: started.state.id })).ok).toBe(
+      true,
+    );
+    const before = JSON.stringify(started.state);
+    mockExecute.mockClear();
+    vi.mocked(getPinnedGenerationDir).mockReturnValue('/generation/b');
+    for (const action of ['status', 'step'] as const) {
+      expect(await gnGraphWalk('repo1', { action, walkId: started.state.id })).toMatchObject({
+        ok: false,
+        code: 'RESTART_REQUIRED',
+      });
+      expect(JSON.stringify(started.state)).toBe(before);
+    }
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+
+  it('checks a queued step binding when its serialized operation begins', async () => {
+    vi.mocked(getPinnedGenerationDir).mockReturnValue('/generation/a');
+    mockExecute.mockResolvedValueOnce([{ n: { id: 'seed-id' } }]);
+    const started = await gnGraphWalk('repo1', { action: 'start', seedSymbol: 'seed-id' });
+    let release!: (rows: any[]) => void;
+    mockExecute.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const first = gnGraphWalk('repo1', { action: 'step', walkId: started.state.id });
+    await Promise.resolve();
+    const queued = gnGraphWalk('repo1', { action: 'step', walkId: started.state.id });
+    vi.mocked(getPinnedGenerationDir).mockReturnValue('/generation/b');
+    release([{ tid: 'next', tname: 'next', rel: 'CALLS' }]);
+    await first;
+    const before = JSON.stringify(started.state);
+    await expect(queued).resolves.toMatchObject({ ok: false, code: 'RESTART_REQUIRED' });
+    expect(JSON.stringify(started.state)).toBe(before);
+    expect(mockExecute).toHaveBeenCalledTimes(2);
   });
 
   it('starts a walk', async () => {

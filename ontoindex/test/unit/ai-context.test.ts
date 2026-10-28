@@ -79,11 +79,13 @@ describe('generateAIContextFiles', () => {
     const explore = content.indexOf('1. **Explore/search**');
     const inspect = content.indexOf('2. **Inspect context**');
     const impact = content.indexOf('3. **Impact before edits**');
-    const verify = content.indexOf('4. **gn_verify_diff before commit**');
+    const verify = content.indexOf('4. **Verify scope before commit**');
     expect(explore).toBeGreaterThan(-1);
     expect(inspect).toBeGreaterThan(explore);
     expect(impact).toBeGreaterThan(inspect);
     expect(verify).toBeGreaterThan(impact);
+    expect(content).toContain('audit({action: "verify_diff", repo: "TestProject", scope: "all"})');
+    expect(content).toContain('ontoindex detect-changes --repo TestProject');
 
     // Commit-based index + forbid silent dirty-worktree assumptions.
     expect(content).toContain('The graph index is commit-based');
@@ -91,6 +93,26 @@ describe('generateAIContextFiles', () => {
     expect(content).toContain(
       'Never silently assume dirty or uncommitted worktree changes are represented in the graph',
     );
+  });
+
+  it('only names gn_* tools available in the core startup profile', async () => {
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', { nodes: 50 });
+
+    const coreTools = new Set([
+      'gn_help',
+      'gn_tool_contract',
+      'gn_diagnose',
+      'gn_ensure_fresh',
+      'gn_analyze_job',
+      'gn_quality_mode',
+    ]);
+    for (const filename of ['AGENTS.md', 'CLAUDE.md']) {
+      const content = await fs.readFile(path.join(tmpDir, filename), 'utf-8');
+      const hiddenTools = (content.match(/\bgn_[a-z_]+\b/g) || []).filter(
+        (tool) => !coreTools.has(tool),
+      );
+      expect(hiddenTools).toEqual([]);
+    }
   });
 
   it('does not duplicate content that already lives in skill files (#856)', async () => {

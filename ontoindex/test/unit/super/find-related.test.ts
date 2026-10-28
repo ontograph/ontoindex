@@ -61,12 +61,8 @@ function calleeRow(
 }
 
 /** A co-changed-file row. */
-function coChangedRow(
-  filePath = 'src/middleware.ts',
-  coChangeCount = 5,
-  lastDate = '2025-01-01',
-): any {
-  return { filePath, coChangeCount, lastDate };
+function coChangedRow(filePath = 'src/middleware.ts', coChangeCount = 5): any {
+  return { filePath, coChangeCount };
 }
 
 /** A cluster-sibling row. */
@@ -181,6 +177,26 @@ describe('gnFindRelated', () => {
     expect(callersCall[2]).toMatchObject({ max: 2 });
   });
 
+  it('orders each related category deterministically before limiting', async () => {
+    mockExecuteParameterized.mockResolvedValueOnce([resolvedRow()]).mockResolvedValue([]);
+
+    await gnFindRelated(REPO_ID, { symbol: 'parseToken' });
+
+    const queries = mockExecuteParameterized.mock.calls.slice(1).map((call) => call[1]);
+    expect(queries).toHaveLength(4);
+    const orderings = [
+      'ORDER BY caller.id, r.type',
+      'ORDER BY callee.id, r.type',
+      'ORDER BY r.confidence DESC, other.filePath',
+      'ORDER BY sibling.id',
+    ];
+    queries.forEach((query, index) => {
+      expect(query).toContain(orderings[index]);
+      expect(query).toContain('LIMIT $max');
+      expect(query.indexOf(orderings[index])).toBeLessThan(query.indexOf('LIMIT $max'));
+    });
+  });
+
   // ---- Test 3: callees include CALLS, REFERENCES, IMPORTS -----------------
 
   it('callees include CALLS, REFERENCES, and IMPORTS relationship kinds', async () => {
@@ -203,6 +219,32 @@ describe('gnFindRelated', () => {
     expect(kinds).toContain('CALLS');
     expect(kinds).toContain('REFERENCES');
     expect(kinds).toContain('IMPORTS');
+  });
+
+  it('returns co-changed files when CodeRelation has no lastDate property', async () => {
+    mockExecuteParameterized.mockImplementation(async (_repoId: string, query: string) => {
+      if (query.includes('r.lastDate')) {
+        throw new Error('Binder exception: property lastDate does not exist on CodeRelation');
+      }
+      if (query.includes('s.name = $name')) return [resolvedRow()];
+      if (query.includes("type: 'CO_CHANGED_WITH'")) {
+        return [{ filePath: 'src/middleware.ts', coChangeCount: '5' }];
+      }
+      return [];
+    });
+
+    const report = await gnFindRelated(REPO_ID, {
+      symbol: 'parseToken',
+      includeCallers: false,
+      includeCallees: false,
+      includeClusterSiblings: false,
+    });
+
+    expect(report.coChangedFiles).toEqual([
+      { filePath: 'src/middleware.ts', coChangeCount: 5, lastChangedTogether: '' },
+    ]);
+    expect(mockExecuteParameterized.mock.calls[1][1]).toContain('r.confidence AS coChangeCount');
+    expect(report.warnings).toEqual([]);
   });
 
   // ---- Test 4: cluster siblings exclude the target symbol itself -----------

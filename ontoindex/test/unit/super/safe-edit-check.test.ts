@@ -45,6 +45,9 @@ import { collectAdvisoryDocsEvidence } from '../../../src/mcp/super/docs-evidenc
 import { resolveTargetContext } from '../../../src/mcp/shared/target-context.js';
 import { resolveSymbolCandidates } from '../../../src/mcp/local/backend-symbol-resolution.js';
 import { gnSafeEditCheck } from '../../../src/mcp/super/safe-edit-check.js';
+import { dispatchSuper } from '../../../src/mcp/super/dispatch.js';
+import { dispatchFacade } from '../../../src/mcp/facade/dispatch.js';
+import type { LocalBackend } from '../../../src/mcp/local/local-backend.js';
 
 const mockExecuteParameterized = executeParameterized as unknown as ReturnType<typeof vi.fn>;
 const mockGetClient = lspBridge.getClient as unknown as ReturnType<typeof vi.fn>;
@@ -811,22 +814,70 @@ describe('gnSafeEditCheck', () => {
   // -------------------------------------------------------------------------
   // Additional: symbol not found must not yield the most permissive verdict
   // -------------------------------------------------------------------------
-  it('returns CAUTION with warning when symbol is not found in index', async () => {
-    // resolveSymbol returns empty
-    mockExecuteParameterized.mockResolvedValueOnce([]); // canonical lookup → 0 rows
-    mockFindTestFiles.mockResolvedValue({ coveringTests: [], likelihoodOfCoverage: 'NONE' });
-    mockGetClient.mockResolvedValue(null);
+  it.each([
+    { mode: 'omitted', options: {} },
+    { mode: 'explicit true', options: { legacyResponse: true } },
+    { mode: 'explicit false', options: { legacyResponse: false } },
+  ])(
+    'returns CAUTION with warning when symbol is not found in index ($mode)',
+    async ({ options }) => {
+      // resolveSymbol returns empty
+      mockExecuteParameterized.mockResolvedValue([]); // both dispatchers resolve zero rows
+      mockFindTestFiles.mockResolvedValue({ coveringTests: [], likelihoodOfCoverage: 'NONE' });
+      mockGetClient.mockResolvedValue(null);
 
-    const report = await gnSafeEditCheck(REPO_ID, { symbol: 'unknownSymbol' });
+      const args = Object.freeze({ symbol: 'unknownSymbol', ...options });
+      const original = { ...args };
+      const callTool = vi.fn();
+      const backend = {
+        resolveRepo: vi.fn(async () => ({ id: REPO_ID })),
+        ensureRepoInitialized: vi.fn(async () => {}),
+        withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => operation()),
+        callTool,
+      } as unknown as LocalBackend;
+      const response = (await dispatchSuper('gn_safe_edit_check', args, REPO_ID)) as Awaited<
+        ReturnType<typeof gnSafeEditCheck>
+      >;
+      const facade = await dispatchFacade('audit', 'safe_edit_check', args, backend);
 
-    expect(report.verdict).toBe('CAUTION');
-    expect(report.warnings).toContain('symbol not found in index');
-    expect(report.symbol.nodeId).toBe('');
-    expect(report.rawCounts).toBeUndefined();
-    expect(report.preChecks).toContainEqual(
-      expect.objectContaining({ check: 'symbol_in_index', passed: false }),
-    );
-  });
+      expect(facade).toEqual(response);
+      expect(args).toEqual(original);
+      expect(callTool).not.toHaveBeenCalled();
+
+      if (options.legacyResponse === false) {
+        expect(response).toMatchObject({
+          envelopeVersion: '1',
+          tool: 'gn_safe_edit_check',
+          status: 'degraded',
+          warnings: expect.arrayContaining(['symbol not found in index']),
+          evidence: expect.arrayContaining([
+            expect.objectContaining({ check: 'symbol_in_index', passed: false }),
+          ]),
+        });
+      } else {
+        expect(response).not.toHaveProperty('envelopeVersion');
+        expect(response).not.toHaveProperty('results');
+        expect(response).toMatchObject({
+          verdict: 'CAUTION',
+          warnings: expect.arrayContaining(['symbol not found in index']),
+        });
+      }
+
+      const report = ('results' in response ? response.results : response) as {
+        verdict: string;
+        symbol: { nodeId: string };
+        rawCounts?: unknown;
+        preChecks: Array<{ check: string; passed: boolean }>;
+      };
+
+      expect(report.verdict).toBe('CAUTION');
+      expect(report.symbol.nodeId).toBe('');
+      expect(report.rawCounts).toBeUndefined();
+      expect(report.preChecks).toContainEqual(
+        expect.objectContaining({ check: 'symbol_in_index', passed: false }),
+      );
+    },
+  );
 
   it('does not report a delete-intent unknown symbol as SAFE', async () => {
     mockExecuteParameterized.mockResolvedValueOnce([]);

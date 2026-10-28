@@ -43,18 +43,44 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
   };
 
   /**
-   * Remove all nodes (and their relationships) belonging to a file.
+   * Remove all nodes belonging to the files, scanning relationships once.
    */
-  const removeNodesByFile = (filePath: string): number => {
-    let removed = 0;
+  const removeNodesByFiles: KnowledgeGraph['removeNodesByFiles'] = (filePaths) => {
+    const paths = new Set(filePaths);
+    const removedIds = new Set<string>();
+    const affectedSourceIds = new Set<string>();
+    let removedRelationships = 0;
+    if (paths.size === 0) {
+      return { removedNodes: 0, removedRelationships: 0, affectedSourceIds: [] };
+    }
+
     for (const [nodeId, node] of nodeMap) {
-      if (node.properties?.filePath === filePath) {
-        removeNode(nodeId);
-        removed++;
+      if (node.properties?.filePath !== undefined && paths.has(node.properties.filePath)) {
+        removedIds.add(nodeId);
+        nodeMap.delete(nodeId);
       }
     }
-    return removed;
+
+    for (const [relId, rel] of relationshipMap) {
+      if (removedIds.has(rel.sourceId) || removedIds.has(rel.targetId)) {
+        relationshipMap.delete(relId);
+        removedRelationships++;
+        if (!removedIds.has(rel.sourceId)) affectedSourceIds.add(rel.sourceId);
+      }
+    }
+
+    return {
+      removedNodes: removedIds.size,
+      removedRelationships,
+      affectedSourceIds: [...affectedSourceIds].sort(),
+    };
   };
+
+  /**
+   * Remove all nodes (and their relationships) belonging to a file.
+   */
+  const removeNodesByFile = (filePath: string): number =>
+    removeNodesByFiles([filePath]).removedNodes;
 
   return {
     get nodes() {
@@ -88,6 +114,7 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
     addRelationship,
     removeNode,
     removeNodesByFile,
+    removeNodesByFiles,
     removeRelationship,
   };
 };

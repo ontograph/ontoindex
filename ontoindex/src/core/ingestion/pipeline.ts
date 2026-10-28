@@ -45,6 +45,27 @@ import {
 } from './pipeline-phases/index.js';
 
 export interface PipelineOptions {
+  /** Replay an explicitly admitted candidate during a full parse, preserving it before graph commit. */
+  scopeReplay?: {
+    candidate: Awaited<
+      ReturnType<
+        typeof import('./pipeline-phases/scope-retention-candidate-reader.js').loadScopeRetentionCandidate
+      >
+    >;
+    request: Pick<
+      import('./pipeline-phases/scope-retention-stage.js').ScopeRetentionRequest,
+      'deadline' | 'signal'
+    >;
+    preserve(): Promise<void>;
+  };
+  /** Consume bounded observed scope inputs within parse ownership; never a complete replay seed. */
+  scopeRetention?: import('./pipeline-phases/scope-retention-stage.js').ScopeRetentionRequest & {
+    consume(
+      handle: import('./pipeline-phases/scope-retention-stage.js').ScopeRetentionHandle,
+    ): Promise<void>;
+  };
+  /** Read inputs from an isolated capture while retaining the repository identity. */
+  capturedWorkspace?: { captureRoot: string; canonicalRepoPath: string };
   /** Selects the ingestion phase set. Defaults to the full index profile. */
   profile?: PipelineProfile;
   /** Skip MRO, community detection, and process extraction for faster test runs. */
@@ -66,6 +87,7 @@ export interface PipelineOptions {
       | 'parse-sub-batch-start'
       | 'parse-worker-result'
       | 'parse-degraded-files'
+      | 'parse-error-files'
       | 'parse-slowest-files'
       | 'parse-slowest-extractors'
       | 'cross-file-plan'
@@ -106,6 +128,8 @@ export interface PipelineOptions {
     parseWorkerRecoveryWindowSize?: number;
     firstFilePath?: string;
     lastFilePath?: string;
+    parseErrorCount?: number;
+    parseErrorFiles?: string[];
     degradedReason?: string;
     degradedAction?:
       | 'quarantine-files'
@@ -193,7 +217,7 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
 
   const phases: PipelinePhase[] = [
     scanPhase,
-    gitMiningPhase,
+    ...(options?.capturedWorkspace ? [] : [gitMiningPhase]),
     structurePhase,
     markdownPhase,
     cobolPhase,
@@ -216,6 +240,7 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
 interface ResolvedPipelineOutputs {
   totalFiles: number;
   usedWorkerPool: boolean;
+  parseMode?: PipelineResult['parseMode'];
   communityResult?: CommunitiesOutput['communityResult'];
   processResult?: ProcessesOutput['processResult'];
 }
@@ -224,18 +249,20 @@ const resolvePipelineOutputs = (
   results: Awaited<ReturnType<typeof runPipeline>>,
   options?: PipelineOptions,
 ): ResolvedPipelineOutputs => {
-  const { totalFiles, usedWorkerPool } = getPhaseOutput<{
+  const { totalFiles, usedWorkerPool, parseMode } = getPhaseOutput<{
     totalFiles: number;
     usedWorkerPool: boolean;
+    parseMode?: PipelineResult['parseMode'];
   }>(results, 'parse');
 
   if (!usesGraphSummaryPhases(options)) {
-    return { totalFiles, usedWorkerPool };
+    return { totalFiles, usedWorkerPool, parseMode };
   }
 
   return {
     totalFiles,
     usedWorkerPool,
+    parseMode,
     communityResult: getPhaseOutput<CommunitiesOutput>(results, 'communities').communityResult,
     processResult: getPhaseOutput<ProcessesOutput>(results, 'processes').processResult,
   };
@@ -274,7 +301,7 @@ export const runPipelineFromRepo = async (
   const phases = buildPhaseList(options);
 
   const results = await runPipeline(phases, {
-    repoPath,
+    repoPath: options?.capturedWorkspace?.captureRoot ?? repoPath,
     graph,
     onProgress,
     options,
@@ -286,10 +313,11 @@ export const runPipelineFromRepo = async (
 
   return {
     graph,
-    repoPath,
+    repoPath: options?.capturedWorkspace?.canonicalRepoPath ?? repoPath,
     totalFileCount: outputs.totalFiles,
     communityResult: outputs.communityResult,
     processResult: outputs.processResult,
     usedWorkerPool: outputs.usedWorkerPool,
+    parseMode: outputs.parseMode,
   };
 };

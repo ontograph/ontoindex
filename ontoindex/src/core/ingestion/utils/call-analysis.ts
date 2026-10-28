@@ -1,4 +1,5 @@
 import type { SyntaxNode } from './ast-helpers.js';
+import type { Range } from 'ontoindex-shared';
 import { CALL_ARGUMENT_LIST_TYPES } from './ast-helpers.js';
 
 /** Node types representing call expressions across supported languages. */
@@ -94,6 +95,14 @@ const SCOPED_CALL_NODE_TYPES = new Set([
 
 type CallForm = 'free' | 'member' | 'constructor';
 
+const isSameSyntaxNode = (node: SyntaxNode | null | undefined, other: SyntaxNode): boolean =>
+  node === other ||
+  (node != null &&
+    node.tree != null &&
+    node.tree === other.tree &&
+    Number.isFinite(node.id) &&
+    node.id === other.id);
+
 /**
  * Infer whether a captured call site is a free call, member call, or constructor.
  * Returns undefined if the form cannot be determined.
@@ -140,8 +149,8 @@ export const inferCallForm = (callNode: SyntaxNode, nameNode: SyntaxNode): CallF
     return 'free';
   }
 
-  // 6. Default: if nameNode is a direct child of callNode, it's a free call
-  if (nameNode.parent === callNode || nameParent?.parent === callNode) {
+  // 6. Node wrappers may differ even when they represent the same node in a tree.
+  if (isSameSyntaxNode(nameParent, callNode) || isSameSyntaxNode(nameParent?.parent, callNode)) {
     return 'free';
   }
 
@@ -363,7 +372,17 @@ const FIELD_ACCESS_NODE_TYPES = new Set([
 ]);
 
 /** One step in a mixed receiver chain. */
-export type MixedChainStep = { kind: 'field' | 'call'; name: string };
+export type MixedChainStep =
+  | { kind: 'field'; name: string }
+  | { kind: 'call'; name: string; atRange?: Range };
+
+/** Whole expression coordinates shared by worker, sequential and chain capture. */
+export const callExpressionRange = (node: SyntaxNode): Range => ({
+  startLine: node.startPosition.row + 1,
+  startCol: node.startPosition.column,
+  endLine: node.endPosition.row + 1,
+  endCol: node.endPosition.column,
+});
 
 /**
  * Walk a receiver AST node that is itself a call expression, accumulating the
@@ -506,7 +525,7 @@ export function extractMixedChain(
         }
       }
       if (!methodName) break;
-      chain.unshift({ kind: 'call', name: methodName });
+      chain.unshift({ kind: 'call', name: methodName, atRange: callExpressionRange(current) });
 
       if (!innerReceiver && funcNode) {
         innerReceiver =

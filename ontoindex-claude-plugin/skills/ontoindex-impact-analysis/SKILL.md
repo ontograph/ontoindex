@@ -9,7 +9,7 @@ Read ontoindex-navigation first (freshness gate and failure path).
 
 ```text
 impact({action: "symbol", repo: "<repo>", target: "<symbol>", direction: "upstream", maxDepth: 3, includeTests: true})
-gn_safe_edit_check({repo: "<repo>", symbol: "<symbol>", intent: "modify-body"})
+audit({action: "safe_edit_check", repo: "<repo>", symbol: "<symbol>", intent: "modify-body"})
 ```
 
 Use the tool's LOW, MEDIUM, HIGH, or CRITICAL risk output; warn on HIGH or CRITICAL before editing.
@@ -23,7 +23,7 @@ Prefer the smallest change in the existing owner and validate the affected behav
 ## Before committing
 
 ```text
-gn_verify_diff({repo: "<repo>", scope: "all", changedFiles: ["<changed-file>"], expectedFiles: ["<expected-file>"], expectedSymbols: ["<symbol>"], executedTests: ["<executed-test>"]})
+audit({action: "verify_diff", repo: "<repo>", scope: "all", changedFiles: ["<changed-file>"], expectedFiles: ["<expected-file>"], expectedSymbols: ["<symbol>"], executedTests: ["<executed-test>"]})
 ```
 
 Supply actual paths and only tests that ran. Investigate unexpected files or symbols.

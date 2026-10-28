@@ -63,14 +63,15 @@ module.exports = function defineGrammar(dialect) {
       [$.decorator_call_expression, $.decorator],
       [$.literal_type, $.pattern],
       [$.predefined_type, $.pattern],
-      [$.call_expression, $._type_query_call_expression],
-      [$.call_expression, $._type_query_call_expression_in_type_annotation],
       [$.new_expression, $.primary_expression],
       [$.meta_property, $.primary_expression],
       [$.construct_signature, $._property_name],
     ]),
 
     conflicts: ($, previous) => previous.concat([
+      // Keep both reductions until generic syntax disambiguates typeof import calls.
+      [$.call_expression, $._type_query_call_expression],
+      [$.call_expression, $._type_query_call_expression_in_type_annotation],
       [$.call_expression, $.instantiation_expression, $.binary_expression],
       [$.call_expression, $.instantiation_expression, $.binary_expression, $.unary_expression],
       [$.call_expression, $.instantiation_expression, $.binary_expression, $.update_expression],

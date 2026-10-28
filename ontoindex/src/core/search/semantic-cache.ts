@@ -32,6 +32,7 @@ export interface CachedQueryResult {
   diagnostics: Partial<QueryExecutionDiagnostics>;
   timestamp: number;
   indexedHead: string;
+  snapshotIdentity?: string;
 }
 
 export class SemanticRetrievalCache {
@@ -49,12 +50,20 @@ export class SemanticRetrievalCache {
     this.now = options.now ?? Date.now;
   }
 
-  async get(key: string, indexedHead: string): Promise<CachedQueryResult | null> {
-    const lookup = await this.lookup(key, indexedHead);
+  async get(
+    key: string,
+    indexedHead: string,
+    snapshotIdentity?: string,
+  ): Promise<CachedQueryResult | null> {
+    const lookup = await this.lookup(key, indexedHead, snapshotIdentity);
     return lookup.result;
   }
 
-  async lookup(key: string, indexedHead: string): Promise<SemanticCacheLookupResult> {
+  async lookup(
+    key: string,
+    indexedHead: string,
+    snapshotIdentity?: string,
+  ): Promise<SemanticCacheLookupResult> {
     try {
       const path = join(this.cacheDir, `${key}.json`);
       const data = await readFile(path, 'utf8');
@@ -62,7 +71,7 @@ export class SemanticRetrievalCache {
       if (!isCachedQueryResult(cached)) return { status: 'miss', result: null };
       const ageMs = Math.max(0, this.now() - cached.timestamp);
 
-      if (cached.indexedHead !== indexedHead) {
+      if (cached.indexedHead !== indexedHead || cached.snapshotIdentity !== snapshotIdentity) {
         return { status: 'stale', result: null, ageMs };
       }
 
@@ -178,6 +187,7 @@ export class SemanticRetrievalCache {
     retrievalPolicy?: string;
     capabilities: string[];
     indexedHead: string;
+    snapshotIdentity?: string;
     embeddingModelHash?: string;
     filters?: TypedQueryFilter[];
   }): string {
@@ -186,6 +196,7 @@ export class SemanticRetrievalCache {
       p: params.retrievalPolicy,
       c: [...params.capabilities].sort(),
       h: params.indexedHead,
+      s: params.snapshotIdentity,
       e: params.embeddingModelHash,
       f: params.filters
         ? [...params.filters]
@@ -213,6 +224,7 @@ function isCachedQueryResult(value: unknown): value is CachedQueryResult {
     !!cached.diagnostics &&
     typeof cached.diagnostics === 'object' &&
     Number.isFinite(cached.timestamp) &&
-    typeof cached.indexedHead === 'string'
+    typeof cached.indexedHead === 'string' &&
+    (cached.snapshotIdentity === undefined || typeof cached.snapshotIdentity === 'string')
   );
 }

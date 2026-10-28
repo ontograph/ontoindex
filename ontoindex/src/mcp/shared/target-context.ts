@@ -1,5 +1,10 @@
 import path from 'node:path';
 import { getPinnedGenerationDir } from '../../core/lbug/pool-adapter.js';
+import {
+  getPinnedOverlaySnapshot,
+  getCommittedRead,
+  type OverlaySnapshot,
+} from '../local/backend-overlay.js';
 import { createHash } from 'node:crypto';
 
 import { execFileText } from '../../core/process/exec-file.js';
@@ -64,7 +69,11 @@ export interface TargetContextGraphAuthority {
   reason: string;
   generationId?: string;
   manifestDigest?: string;
+  capability?: 'workspace-graph';
   coverage?: 'complete' | 'degraded' | 'unknown';
+  baseGenerationId?: string | null;
+  baseCommit?: string | null;
+  capabilities?: { symbols: boolean; impact: 'full' | 'degraded'; processes: boolean };
 }
 
 export interface TargetContextReadiness {
@@ -170,6 +179,7 @@ export interface ResolveTargetContextDeps {
   readActiveGenerationMeta?: typeof readActiveGenerationMeta;
   getPinnedGenerationDir?: typeof getPinnedGenerationDir;
   readIndexGenerationMeta?: typeof readIndexGenerationMeta;
+  getPinnedOverlaySnapshot?: typeof getPinnedOverlaySnapshot;
 }
 
 export async function resolveTargetContext(
@@ -285,9 +295,17 @@ export async function resolveTargetContext(
   const workspaceSummary = summarizeGitPorcelainStatus(statusOutput);
   const dirtyWorktree = workspaceSummary !== null ? workspaceSummary.dirtyFileCount > 0 : null;
   const dirtyFileCount = workspaceSummary?.dirtyFileCount ?? null;
-  let generationMeta = await readGenerationMetaPair(entry.storagePath, deps);
+  const repoId = repoIds.get(entry) ?? entry.name.toLowerCase();
+  const workspaceSnapshot = (deps.getPinnedOverlaySnapshot ?? getPinnedOverlaySnapshot)(repoId);
+  const admittedWorkspace =
+    workspaceSnapshot?.capability === 'workspace-graph' ? workspaceSnapshot : undefined;
+  let generationMeta: ActiveGenerationMetaPair = admittedWorkspace
+    ? { activeGeneration: null, meta: null, authority: 'legacy-root' }
+    : await readGenerationMetaPair(entry.storagePath, deps);
   let queriedGenerationId = generationMeta.activeGeneration?.generationId;
-  const pinnedGenerationDir = (deps.getPinnedGenerationDir ?? getPinnedGenerationDir)(entry.name);
+  const pinnedGenerationDir = admittedWorkspace
+    ? undefined
+    : (deps.getPinnedGenerationDir ?? getPinnedGenerationDir)(repoId);
   const pinnedGenerationId = pinnedGenerationDir ? path.basename(pinnedGenerationDir) : undefined;
   if (pinnedGenerationDir && pinnedGenerationId !== generationMeta.activeGeneration?.generationId) {
     queriedGenerationId = pinnedGenerationId;
@@ -312,7 +330,10 @@ export async function resolveTargetContext(
     warnings.push(generationMetadataWarning(generationMeta, entry.lastCommit));
   }
   const indexedHead =
-    (trustedIndexMeta ? activeMeta?.lastCommit : undefined) || entry.lastCommit || undefined;
+    admittedWorkspace?.baseCommit ||
+    (trustedIndexMeta ? activeMeta?.lastCommit : undefined) ||
+    entry.lastCommit ||
+    undefined;
   if (
     trustedIndexMeta &&
     activeMeta?.lastCommit &&
@@ -323,32 +344,37 @@ export async function resolveTargetContext(
       `Registry commit ${entry.lastCommit} lags trusted index metadata ${activeMeta.lastCommit}; using trusted metadata as indexed-head authority.`,
     );
   }
+  if (admittedWorkspace) queriedGenerationId = admittedWorkspace.generation;
   const graphAuthority = options.verifyGraphAuthority
-    ? generationMeta.authority === 'untrusted'
-      ? {
-          state: 'degraded' as const,
-          reason:
-            generationMeta.reason === 'active-generation-metadata-mismatch'
-              ? 'active graph generation does not match metadata generation'
-              : 'active generation metadata authority is untrusted',
-          ...(queriedGenerationId ? { generationId: queriedGenerationId } : {}),
-          coverage: 'unknown' as const,
-        }
-      : await resolveGraphAuthority(
-          repoPath,
-          activeMeta,
-          deps.computeSourceManifest ?? computeSourceManifest,
-          queriedGenerationId,
-          options.requiredGraphCapabilities ?? [],
-          targetHead,
-          currentHead,
-        )
+    ? admittedWorkspace
+      ? resolveWorkspaceAuthority(admittedWorkspace, targetHead, currentHead)
+      : generationMeta.authority === 'untrusted'
+        ? {
+            state: 'degraded' as const,
+            reason:
+              generationMeta.reason === 'active-generation-metadata-mismatch'
+                ? 'active graph generation does not match metadata generation'
+                : 'active generation metadata authority is untrusted',
+            ...(queriedGenerationId ? { generationId: queriedGenerationId } : {}),
+            coverage: 'unknown' as const,
+          }
+        : await resolveGraphAuthority(
+            repoPath,
+            activeMeta,
+            deps.computeSourceManifest ?? computeSourceManifest,
+            queriedGenerationId,
+            options.requiredGraphCapabilities ?? [],
+            targetHead,
+            currentHead,
+          )
     : undefined;
   const headChangedSinceIndex = !!currentHead && !!indexedHead && currentHead !== indexedHead;
   const changedSinceIndex =
-    dirtyWorktree === null && (!currentHead || !indexedHead)
-      ? null
-      : dirtyWorktree === true || headChangedSinceIndex;
+    dirtyWorktree === true || headChangedSinceIndex
+      ? true
+      : dirtyWorktree === null || !currentHead || !indexedHead
+        ? null
+        : false;
   const selectionMismatch =
     cwdResolution.status === 'ok' && !sameResolvedPath(cwdResolution.entry.path, repoPath);
   const dirtyWorkspace = resolveDirtyWorkspace({
@@ -399,10 +425,19 @@ export async function resolveTargetContext(
     ...(scopePaths.length > 0 ? { scopePaths } : {}),
     ...(scopedDirtyWorkspace ? { scopedDirtyWorkspace } : {}),
     changedSinceIndex,
-    snapshotMode: resolveSnapshotMode(targetRef, dirtyWorktree),
-    scopeConfidence: confidence.value,
-    scopeConfidenceReason: confidence.reason,
-    ...(confidence.repairCommand ? { repairCommand: confidence.repairCommand } : {}),
+    snapshotMode: getCommittedRead(repoId)
+      ? 'committed-head'
+      : resolveSnapshotMode(targetRef, dirtyWorktree),
+    scopeConfidence:
+      graphAuthority?.state === 'authoritative' && admittedWorkspace ? 'high' : confidence.value,
+    scopeConfidenceReason:
+      graphAuthority?.state === 'authoritative' && admittedWorkspace
+        ? graphAuthority.reason
+        : confidence.reason,
+    ...(confidence.repairCommand &&
+    !(graphAuthority?.state === 'authoritative' && admittedWorkspace)
+      ? { repairCommand: confidence.repairCommand }
+      : {}),
     embeddings: resolveEmbeddingsReadiness(
       entry,
       options.readiness?.embeddingsCount,
@@ -452,6 +487,42 @@ function generationMetadataWarning(pair: ActiveGenerationMetaPair, registryCommi
     ? `using registry commit ${registryCommit} as a conservative indexed-head fallback`
     : 'no trusted indexed-head fallback is available';
   return `Active generation metadata authority is untrusted (${pair.reason ?? 'unknown reason'}); ${fallback}. Generation metadata is excluded from commit and graph claims.`;
+}
+
+function resolveWorkspaceAuthority(
+  snapshot: OverlaySnapshot,
+  targetHead: string | undefined,
+  currentHead: string | undefined,
+): TargetContextGraphAuthority {
+  const complete =
+    snapshot.usable &&
+    snapshot.coverage === 'complete' &&
+    !!snapshot.generation &&
+    !!snapshot.manifestDigest?.trim();
+  const current =
+    !!targetHead &&
+    !!currentHead &&
+    targetHead === currentHead &&
+    snapshot.currentHead === currentHead;
+  return {
+    state: !complete ? 'degraded' : current ? 'authoritative' : 'review',
+    reason: !complete
+      ? 'workspace graph identity or complete coverage unavailable'
+      : current
+        ? 'validated workspace graph covers current checkout'
+        : 'workspace graph describes current checkout, not requested target ref',
+    generationId: snapshot.generation,
+    manifestDigest: snapshot.manifestDigest,
+    capability: 'workspace-graph',
+    baseGenerationId: snapshot.baseGenerationId,
+    baseCommit: snapshot.baseCommit,
+    coverage: snapshot.coverage === 'complete' ? 'complete' : 'degraded',
+    capabilities: {
+      symbols: complete,
+      impact: complete ? 'full' : 'degraded',
+      processes: complete,
+    },
+  };
 }
 
 async function resolveGraphAuthority(
@@ -551,10 +622,10 @@ async function resolveGraphAuthority(
       manifestDigest,
       coverage: 'complete',
     };
-  } catch (err) {
+  } catch {
     return {
       state: 'degraded',
-      reason: `source manifest unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      reason: 'source manifest unavailable',
       generationId: meta.generationId ?? meta.indexedAt,
       coverage: meta.sourceManifest.coverage,
     };

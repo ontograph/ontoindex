@@ -152,12 +152,12 @@ Your AI agent gets these tools automatically:
 
 ### Managed Freshness Recovery
 
-`gn_ensure_fresh` is the prerequisite and managed-submission surface. With
+`manage({action: 'ensure_fresh', repo})` is the prerequisite and managed-submission surface. With
 `autoAnalyze: true`, it returns a structured submission status and either
 queues or reuses work only when repository, target commit, source manifest,
 requested graph or embedding capabilities, and analysis options match.
 
-Observe a returned job ID with `gn_analyze_job`. Its recovery disposition is
+Observe a returned job ID with `manage({action: 'analyze_job', repo, jobId, job_action: 'status'})`. Its recovery disposition is
 `REFRESH_RUNNING`, `REFRESHED`, `FAILED`, or `FRESHNESS_UNCONFIRMED`.
 `REFRESHED` requires a job-bound publication receipt, the matching active
 generation, and a final freshness check using the original capability
@@ -178,13 +178,59 @@ ontoindex mcp --project /path/to/target/repo
 
 ## Environment Variables
 
+- `ONTOINDEX_MCP_STARTUP_PROFILE` controls the advertised MCP tools. The default `core` profile lists only the 8 facades: `discover`, `search`, `inspect`, `impact`, `audit`, `refactor`, `manage`, and `docs`. Set it to `public-full` to list all 62 tools. Hidden legacy `gn_*` tools remain callable aliases.
 - `ONTOINDEX_ALLOWED_HOSTS` adds trusted HTTP Host authorities for `serve` and `eval-server` (for example `localhost:8080` for a reverse proxy). Use up to 32 comma-separated hostnames or host:port authorities (IPv6 in brackets), each at most 255 characters. Hostnames are case-insensitive; host-only entries accept any port. Wildcards are unsupported; malformed entries are ignored with one stderr warning. Origin policy remains unchanged.
-- `ONTOINDEX_MCP_IDLE_EXIT_MS` optionally exits the stdio MCP server after a period without requests or notifications; accepted values are `60000` through `86400000` milliseconds. Clients that do not restart a stopped stdio server will lose access to its tools, so leave this unset for those clients. The server does not exit while a repository connection pool is open; pools close after 5 minutes without a query. `gn_diagnose` reports `processMemory` for the running server.
+- `ONTOINDEX_MCP_IDLE_EXIT_MS` optionally exits the stdio MCP server after a period without requests or notifications; accepted values are `60000` through `86400000` milliseconds. Clients that do not restart a stopped stdio server will lose access to its tools, so leave this unset for those clients. The server does not exit while a repository connection pool is open; pools close after 5 minutes without a query. `manage({action: 'diagnose', repo})` reports `processMemory` for the running server.
 - `ONTOINDEX_MAX_ARG_CHARS` limits string arguments accepted by MCP tools, REST `/api/search` and `/api/query`, and the eval server. It defaults to `2097152` characters and accepts values from `1024` through `67108864`.
 - `ONTOINDEX_MAX_ARG_ITEMS` limits array arguments across tools; it defaults to `1024` items and accepts values from `1` through `65536`.
 - `ONTOINDEX_MAX_ARG_TOTAL_BYTES` limits the UTF-8 size of serialized arguments; it defaults to the larger of `4194304` bytes or twice the string limit plus `1048576` bytes, and accepts values from `1024` through `134217728`.
-- `ONTOINDEX_LBUG_BUFFER_MB` sets the read-only index connection's buffer pool size in MiB; it defaults to `64` and accepts `1` through `16384`. Unset, empty, `0`, or invalid values use the 64 MiB default. In one run, a 64 MiB cap reduced resident memory after opening a 273 MiB index from about 426 MiB to 251 MiB, with queries about 10% slower.
+- `ONTOINDEX_LBUG_BUFFER_MB` sets the read-only index connection's buffer pool size in MiB; it defaults to `64` and accepts `1` through `16384`. Unset, empty, `0`, or invalid values use the default: 64 MiB for the committed index and 256 MiB for working-tree graph generations (`overlay/<generation>`), which hold the whole repository and run the heaviest queries. A valid setting applies to both. In one run, a 64 MiB cap reduced resident memory after opening a 273 MiB index from about 426 MiB to 251 MiB, with queries about 10% slower.
 - `ONTOINDEX_LBUG_POOL_SIZE` sets the per-repository read connection pool size; it defaults to `2` and accepts `1` through `16`.
+- `ONTOINDEX_AUTO_WORKSPACE` controls automatic preparation of current workspace reads. An absent setting or exactly `1` enables it; `0`, an empty setting, or any other value disables it. Supported CLI and MCP reads prepare an immutable workspace generation when eligible source, configuration or base identity changes. Matching clean inputs reuse the committed index without a workspace build. Relationship reads use the full supported workspace graph; fresh lexical search has no new semantic vectors. Graph resources, lazy read tools, docs code facts and group reads share the preparation boundary. Diagnostics and explicit historical references retain their own scope. See [Working with uncommitted code](#working-with-uncommitted-code) for coverage and recovery.
+- `ONTOINDEX_WORKSPACE_BUILD_TIMEOUT_MS` limits one supervised workspace build; the default is `120000` ms. The request preparation deadline is `60000` ms and covers capture and waiting. Cancelling one waiter does not cancel a shared build still needed by another waiter. Failed preparation returns its typed error; retry only where the response says the error is retryable.
+- `ONTOINDEX_WORKSPACE_MAX_FILES` limits the indexed file count admitted to a full workspace build; the default is `1600`. A required graph above the limit returns `workspace_too_large`. Refresh the committed index with `ontoindex analyze`, reduce the input scope, or deliberately adjust the limit for available resources. An ordinary read does not substitute a stale committed success for failed required preparation. Benchmark runs that raise this gate must say so.
+
+## Working with uncommitted code
+
+For an explicit view of the indexed commit, add `read_mode: "committed"` and an
+explicit repository to MCP `inspect/explore`, `inspect/context`, `impact/symbol`, or
+`search/semantic`. This bypasses workspace preparation and excludes uncommitted
+source, manual overlays and live LSP references. Responses include `readContext`
+with indexed commit and generation. Live or external enrichment options and
+repository groups are rejected. Omission retains automatic workspace reads.
+Repeat the same mode when following a pagination cursor.
+
+Freshness `dirtyCoverage` describes symbol-overlay eligibility.
+`workspaceReadiness.preparationChecked: false` means graph preparation has not
+been checked. Size diagnostics use the file count stored in index metadata,
+not an independently recounted filesystem total. Choose committed evidence when
+current-worktree coverage is unnecessary. Increasing `ONTOINDEX_WORKSPACE_MAX_FILES`
+permits more expensive full graph builds and requires suitable host resources.
+
+Automatic reads capture eligible files from disk and pin one immutable generation
+for graph queries and source enrichment. Matching generations are reused. The
+capture is verified within finite retries; it is not an atomic filesystem
+snapshot. Unsaved editor buffers and dynamic or external resolver inputs are
+outside its coverage. Parse failures and unsupported capabilities remain explicit.
+
+Logical pagination is bound to the admitted generation and input manifest; restart
+the query when that binding changes. Saved response pages replay their original
+bytes. Group reads prepare each repository independently and do not promise an
+atomic snapshot across repositories. Read preparation preserves existing write
+permissions and mutation guards.
+
+Preparation failures return `workspace_busy`, `workspace_timeout`,
+`workspace_cancelled`, `workspace_too_large` or `workspace_build_failed`.
+Inspect the error and stderr before retrying; retry only when the response marks
+the error retryable. A caller that expires before build admission starts no new
+build. A build already admitted can finish for another waiter. Failed owned
+captures are cleaned up; live readers retain their generation pins.
+
+Set `ONTOINDEX_AUTO_WORKSPACE=0` to use committed/manual-overlay behavior.
+`ontoindex analyze --dirty-overlay` and `ontoindex watch [path]` remain available
+for manual operation; ordinary automatic reads require neither. Full workspace
+graphs above the configured file gate fail explicitly. Adjust that gate only
+for the available memory and CPU; the defaults and deadlines are listed above.
 
 ## Index Generations
 
@@ -324,6 +370,8 @@ bigger cycle) and `N` increments per published rc. Example sequence:
 for the full list; stable `latest` is unaffected.
 
 ## Troubleshooting
+
+npm 11 blocks dependency install scripts; the installer passes `--allow-scripts=ontoindex,tree-sitter,@ladybugdb/core` for global installs, while project-local installs need an `allowScripts` field in `package.json`.
 
 ### `Cannot destructure property 'package' of 'node.target' as it is null`
 

@@ -3,7 +3,7 @@
 // Heap re-spawn removed — only analyze.ts needs the 8GB heap (via its own ensureHeap()).
 // Removing it from here improves MCP server startup time significantly.
 
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { createRequire } from 'node:module';
 import { createLazyAction } from './lazy-action.js';
 import { registerGroupCommands } from './group.js';
@@ -80,6 +80,10 @@ program
     '--dirty-overlay',
     'Build a disposable graph of uncommitted source files under .ontoindex/overlay without changing the active index',
   )
+  .option(
+    '--workspace-graph',
+    'Prepare a supervised full workspace graph while preserving the committed index',
+  )
   .option('--markdown-sidecar', 'Queue opt-in Markdown RAG sidecar enrichment after indexing')
   .option(
     '--name <alias>',
@@ -99,6 +103,10 @@ program
       '    ONTOINDEX_WORKER_SUB_BATCH_TIMEOUT_MS, and ONTOINDEX_WORKER_SUB_BATCH_MAX_BYTES',
   )
   .action(async (inputPath, options) => {
+    if (options?.workspaceGraph) {
+      await createLazyAction(() => import('./analyze.js'), 'analyzeCommand')(inputPath, options);
+      return;
+    }
     const applied = applyLargeRepoSafeAnalyzePreset(options);
     if (
       (options?.largeRepoSafe || options?.hugeRepo) &&
@@ -420,6 +428,11 @@ program
 program
   .command('query <search_query>')
   .description('Search the knowledge graph for execution flows related to a concept')
+  .addOption(
+    new Option('--read-mode <mode>', 'Read the indexed commit only; requires --repo').choices([
+      'committed',
+    ]),
+  )
   .option('-r, --repo <name>', 'Target repository (omit if only one indexed)')
   .option('-c, --context <text>', 'Task context to improve ranking')
   .option('-g, --goal <text>', 'What you want to find')
@@ -457,6 +470,11 @@ program
 program
   .command('context [name]')
   .description('360-degree view of a code symbol: callers, callees, processes')
+  .addOption(
+    new Option('--read-mode <mode>', 'Read the indexed commit only; requires --repo').choices([
+      'committed',
+    ]),
+  )
   .option('-r, --repo <name>', 'Target repository')
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-f, --file <path>', 'File path to disambiguate common names')
@@ -466,6 +484,12 @@ program
 program
   .command('impact <target>')
   .description('Blast radius analysis: what breaks if you change a symbol')
+  .addOption(
+    new Option('--read-mode <mode>', 'Read the indexed commit only; requires --repo').choices([
+      'committed',
+    ]),
+  )
+  .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-d, --direction <dir>', 'upstream (dependants) or downstream (dependencies)', 'upstream')
   .option('-r, --repo <name>', 'Target repository')
   .option('--depth <n>', 'Max relationship depth (default: 3)')

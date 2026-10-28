@@ -108,14 +108,14 @@ Use OntoIndex in this order:
 1. **Explore/search** — MCP \`search({action: "semantic", repo: "${projectName}", query: "concept"})\` to find execution flows instead of grepping.
 2. **Inspect context** — MCP \`inspect({action: "context", repo: "${projectName}", target: "symbolName"})\` for a symbol's callers, callees, and execution flows.
 3. **Impact before edits** — MCP \`impact({action: "symbol", repo: "${projectName}", target: "symbolName", direction: "upstream"})\` or CLI \`${cliCommand} impact --repo ${projectName} <symbol>\`; report the blast radius and MUST warn on HIGH or CRITICAL risk before editing.
-4. **gn_verify_diff before commit** — MCP \`gn_verify_diff({repo: "${projectName}", scope: "all"})\` or CLI \`${cliCommand} detect-changes --repo ${projectName}\` to confirm only expected symbols and execution flows changed.
+4. **Verify scope before commit** — MCP \`audit({action: "verify_diff", repo: "${projectName}", scope: "all"})\` or CLI \`${cliCommand} detect-changes --repo ${projectName}\` to confirm only expected symbols and execution flows changed.
 
 ## Never Do
 
 - NEVER edit a function, class, or method without first running MCP \`impact\` or CLI \`${cliCommand} impact\` on it.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
 - NEVER rename symbols with find-and-replace — use MCP \`refactor({action: "rename", ...})\` which understands the call graph.
-- NEVER commit changes without running MCP \`gn_verify_diff\` or CLI \`${cliCommand} detect-changes\` to check affected scope.
+- NEVER commit changes without step 4 verification.
 
 ## Resources
 

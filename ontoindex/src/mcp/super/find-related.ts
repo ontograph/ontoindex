@@ -14,6 +14,7 @@
  */
 
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { nodeKind } from './_helpers/node-kind.js';
 import {
   projectReadFirstFiles,
   type ReadFirstFileFact,
@@ -94,6 +95,10 @@ function rowString(row: QueryRow, key: string, index: number, fallback = ''): st
   return rowValue(row, key, index, fallback) as string;
 }
 
+function rowKind(row: QueryRow, nodeId: string): string {
+  return nodeKind(rowString(row, 'kind', 3), nodeId);
+}
+
 function symbolRetryExamples(repoId: string, nodeId: string, name: string): string[] {
   return [
     `inspect({ action: "context", repo: "${repoId}", uid: "${nodeId}" })`,
@@ -134,11 +139,12 @@ async function resolveSymbol(
       );
       if (rows.length === 0) return null;
       const row = rows[0];
+      const nodeId = rowString(row, 'nodeId', 0);
       return {
-        nodeId: rowString(row, 'nodeId', 0),
+        nodeId,
         name: rowString(row, 'name', 1),
         filePath: rowString(row, 'filePath', 2),
-        kind: rowString(row, 'kind', 3),
+        kind: rowKind(row, nodeId),
       };
     } catch {
       return null;
@@ -159,11 +165,12 @@ async function resolveSymbol(
     );
     if (candidates.length === 0) return null;
     const row = candidates[0];
+    const nodeId = rowString(row, 'nodeId', 0);
     return {
-      nodeId: rowString(row, 'nodeId', 0),
+      nodeId,
       name: rowString(row, 'name', 1),
       filePath: rowString(row, 'filePath', 2),
-      kind: rowString(row, 'kind', 3),
+      kind: rowKind(row, nodeId),
     };
   } catch {
     return null;
@@ -238,6 +245,7 @@ async function fetchCallers(
       `MATCH (caller)-[r:CodeRelation]->(target {id: $id})
        WHERE r.type IN ['CALLS', 'REFERENCES']
        RETURN caller.id AS nodeId, caller.name AS name, caller.filePath AS filePath, r.type AS relKind
+       ORDER BY caller.id, r.type
        LIMIT $max`,
       { id: nodeId, max },
     );
@@ -263,6 +271,7 @@ async function fetchCallees(
       `MATCH (target {id: $id})-[r:CodeRelation]->(callee)
        WHERE r.type IN ['CALLS', 'REFERENCES', 'IMPORTS']
        RETURN callee.id AS nodeId, callee.name AS name, callee.filePath AS filePath, r.type AS relKind
+       ORDER BY callee.id, r.type
        LIMIT $max`,
       { id: nodeId, max },
     );
@@ -301,15 +310,15 @@ async function fetchCoChangedFiles(
     const rows: QueryRow[] = await executeParameterized(
       repoId,
       `MATCH (f:File {filePath: $path})-[r:CodeRelation {type: 'CO_CHANGED_WITH'}]-(other:File)
-       RETURN other.filePath AS filePath, r.confidence AS coChangeCount, r.lastDate AS lastDate
-       ORDER BY r.confidence DESC
+       RETURN other.filePath AS filePath, r.confidence AS coChangeCount
+       ORDER BY r.confidence DESC, other.filePath
        LIMIT $max`,
       { path: filePath, max },
     );
     return rows.map((row) => ({
       filePath: rowString(row, 'filePath', 0),
       coChangeCount: Number(rowValue(row, 'coChangeCount', 1, 0)),
-      lastChangedTogether: rowString(row, 'lastDate', 2),
+      lastChangedTogether: '',
     }));
   } catch {
     return [];
@@ -327,6 +336,7 @@ async function fetchClusterSiblings(
       `MATCH (target {id: $id})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)<-[:CodeRelation {type: 'MEMBER_OF'}]-(sibling)
        WHERE sibling.id <> $id
        RETURN sibling.id AS nodeId, sibling.name AS name, sibling.filePath AS filePath, c.heuristicLabel AS clusterName
+       ORDER BY sibling.id
        LIMIT $max`,
       { id: nodeId, max },
     );

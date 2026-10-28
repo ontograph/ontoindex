@@ -217,17 +217,27 @@ export interface ProcessMemoryReport {
   nativeMB: number;
   openRepositoryPools: number;
   bufferPoolMB: number;
+  /** Buffer for working-tree graph generations: 256 unless the setting overrides every database. */
+  workspaceBufferPoolMB: number;
   idleExitMs: number | null;
 }
 
 const BYTES_PER_MB = 1024 * 1024;
 
-function readBufferPoolMB(env: NodeJS.ProcessEnv): number {
+/** The explicit setting in MiB, or undefined when it is unset or invalid. */
+function explicitBufferPoolMB(env: NodeJS.ProcessEnv): number | undefined {
   const raw = env.ONTOINDEX_LBUG_BUFFER_MB;
-  if (raw === undefined || raw === '' || raw === '0') return 64;
-  if (!/^\d+$/.test(raw)) return 64;
+  if (raw === undefined || raw === '' || raw === '0' || !/^\d+$/.test(raw)) return undefined;
   const value = Number(raw);
-  return Number.isSafeInteger(value) && value >= 1 && value <= 16_384 ? value : 64;
+  return Number.isSafeInteger(value) && value >= 1 && value <= 16_384 ? value : undefined;
+}
+
+function readBufferPoolMB(env: NodeJS.ProcessEnv): number {
+  return explicitBufferPoolMB(env) ?? 64;
+}
+
+function readWorkspaceBufferPoolMB(env: NodeJS.ProcessEnv): number {
+  return explicitBufferPoolMB(env) ?? 256;
 }
 
 export function buildProcessMemory(
@@ -244,6 +254,7 @@ export function buildProcessMemory(
     nativeMB: toMB(Math.max(0, usage.rss - usage.heapTotal)),
     openRepositoryPools: openPools,
     bufferPoolMB: readBufferPoolMB(env),
+    workspaceBufferPoolMB: readWorkspaceBufferPoolMB(env),
     idleExitMs: resolveIdleExitMs(env.ONTOINDEX_MCP_IDLE_EXIT_MS),
   };
 }
@@ -278,7 +289,7 @@ function collectOntoIndexEnv(): Record<string, string | undefined> {
 }
 
 function isSensitiveOntoIndexEnvKey(key: string): boolean {
-  return /(?:^|[_-])(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE|BEARER|PRIVATE|AUTH|API_KEY)(?:$|[_-])/i.test(
+  return /(?:^|[_-])(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|COOKIE|BEARER|PRIVATE|AUTH|API_KEY|URL|ENDPOINT)(?:$|[_-])/i.test(
     key,
   );
 }
@@ -483,10 +494,16 @@ function buildMisconfigurationReport(
   const processCwd = process.cwd();
   const activeRepoPath = targetContext?.repoPath;
   const activeRepoLabel = targetContext?.repoLabel ?? targetContext?.repoKey;
-  const pathMismatch =
+  const trustedTargetMatches =
+    targetContext?.status === 'ok' &&
+    context?.repoPath !== undefined &&
     activeRepoPath !== undefined &&
-    projectCwd !== undefined &&
-    !sameResolvedPath(projectCwd, activeRepoPath);
+    sameResolvedPath(context.repoPath, activeRepoPath);
+  const pathMismatch =
+    !trustedTargetMatches &&
+    activeRepoPath !== undefined &&
+    ((context?.repoPath !== undefined && !sameResolvedPath(context.repoPath, activeRepoPath)) ||
+      (projectCwd !== undefined && !sameResolvedPath(projectCwd, activeRepoPath)));
   const targetMismatch =
     targetContext?.status === 'ambiguous' || targetContext?.status === 'not-found' || pathMismatch;
 
@@ -601,8 +618,8 @@ export async function gnDiagnose(
     let freshReport;
     try {
       freshReport = await gnEnsureFresh(context?.repoPath ?? repoId, { autoAnalyze: false });
-    } catch (err) {
-      warnings.push('gnEnsureFresh failed: ' + (err instanceof Error ? err.message : String(err)));
+    } catch {
+      warnings.push('gnEnsureFresh failed: freshness probe unavailable');
     }
 
     if (freshReport) {
@@ -622,23 +639,17 @@ export async function gnDiagnose(
         };
 
         if (freshReport.preCheck.isStale) {
-          // autoAnalyze is refused while the worktree is dirty, because the
-          // analyzer reads working-tree files but publishes under a commit
-          // source identity. Recommending it here regardless of worktree state
-          // advertises a repair that its own precondition guarantees will fail.
           const dirtyFileCount = freshReport.dirtyFileCount;
-          // `null` (git probe failed) and `undefined` (field absent) are both
-          // unproven-clean, and autoAnalyze refuses each of them.
+          // Unknown source status still prevents a trustworthy refresh.
           const worktreeStateUnknown = dirtyFileCount === null || dirtyFileCount === undefined;
-          const worktreeBlocksAutoAnalyze = worktreeStateUnknown || dirtyFileCount > 0;
           recommendations.push({
             severity: 'WARN',
             detail: `Index is stale (indexed ${freshReport.preCheck.indexedCommit} vs current ${freshReport.preCheck.currentCommit})`,
-            fix: worktreeBlocksAutoAnalyze
-              ? worktreeStateUnknown
-                ? 'Worktree status is unavailable, so gn_ensure_fresh({autoAnalyze: true}) will be refused. Restore git status, then refresh.'
-                : `Commit or stash the ${dirtyFileCount} changed file${dirtyFileCount === 1 ? '' : 's'} first; gn_ensure_fresh({autoAnalyze: true}) is refused while the worktree is dirty.`
-              : 'gn_ensure_fresh({autoAnalyze: true})',
+            fix: worktreeStateUnknown
+              ? 'Worktree status is unavailable, so gn_ensure_fresh({autoAnalyze: true}) will be refused. Restore git status, then refresh.'
+              : dirtyFileCount > 0
+                ? 'gn_ensure_fresh({autoAnalyze: true}) supports working-tree analysis; ontoindex analyze --dirty-overlay provides partial file coverage, with current relationships limited to covered files.'
+                : 'gn_ensure_fresh({autoAnalyze: true})',
           });
         }
       }
@@ -674,12 +685,13 @@ export async function gnDiagnose(
             : 'WARN';
       recommendations.push({
         severity,
-        detail:
+        detail: `${
           embeddings.status === 'drifted'
             ? 'Embeddings metadata drift detected'
             : embeddings.status === 'missing'
               ? 'Embeddings not populated'
-              : 'Embedding metadata unavailable',
+              : 'Embedding metadata unavailable'
+        }; optional semantic search is opt-in, and structural navigation does not require embeddings`,
         fix:
           embeddings.repairCommand ??
           (embeddings.status === 'missing'
@@ -775,10 +787,8 @@ export async function gnDiagnose(
         fix: 'Run ontoindex analyze for the target repository.',
       });
     }
-  } catch (err) {
-    warnings.push(
-      'resolveTargetContext failed: ' + (err instanceof Error ? err.message : String(err)),
-    );
+  } catch {
+    warnings.push('resolveTargetContext failed: target context unavailable');
   }
 
   const requestedVectorBackend = envVars['ONTOINDEX_VECTOR_BACKEND']?.trim().toLowerCase();
@@ -801,10 +811,8 @@ export async function gnDiagnose(
           fix: 'Refresh the zvec mirror or unset ONTOINDEX_VECTOR_BACKEND to stay on LadybugDB.',
         });
       }
-    } catch (err) {
-      warnings.push(
-        'zvec backend diagnostics failed: ' + (err instanceof Error ? err.message : String(err)),
-      );
+    } catch {
+      warnings.push('zvec backend diagnostics failed: vector backend status unavailable');
     }
   }
 
@@ -860,10 +868,8 @@ export async function gnDiagnose(
       if (params.explainFile) {
         fileScopeExplanation = await explainPathScope(fileScopeRepoPath, params.explainFile);
       }
-    } catch (err) {
-      warnings.push(
-        'file-scope diagnostics failed: ' + (err instanceof Error ? err.message : String(err)),
-      );
+    } catch {
+      warnings.push('file-scope diagnostics failed: file scope unavailable');
     }
   }
 
@@ -912,16 +918,14 @@ export async function gnDiagnose(
                 : 'Commit, stash, or clean the worktree, then replay or restart the audit session.',
             });
           }
-        } catch (err) {
+        } catch {
           auditFreshness = {
             status: 'unknown',
             targetHead,
             sessionId,
             ...(repairCommand ? { repairCommand } : {}),
           };
-          warnings.push(
-            `computeAuditFreshness failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          warnings.push('computeAuditFreshness failed: audit freshness unavailable');
         }
       } else {
         auditFreshness = { status: 'missing' };
@@ -931,9 +935,7 @@ export async function gnDiagnose(
         auditFreshness = { status: 'missing' };
       } else {
         auditFreshness = { status: 'unknown' };
-        warnings.push(
-          `failed to load audit projection status: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        warnings.push('failed to load audit projection status: audit projection unavailable');
       }
     }
   } else {
@@ -953,11 +955,9 @@ export async function gnDiagnose(
         fix: 'Run ontoindex setup to register the MCP server in your tools.',
       });
     }
-  } catch (err) {
+  } catch {
     mcpResourceBridge = { exposed: false, exposedTo: [] };
-    warnings.push(
-      `checkMcpResourceBridge failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    warnings.push('checkMcpResourceBridge failed: MCP resource bridge status unavailable');
   }
 
   // ---- 8.7. Support diagnostics ---------------------------------------------
@@ -965,10 +965,8 @@ export async function gnDiagnose(
   if (auditRepoPath) {
     try {
       support = await buildSupportDiagnostics(auditRepoPath);
-    } catch (err) {
-      warnings.push(
-        `support diagnostics failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+    } catch {
+      warnings.push('support diagnostics failed: support status unavailable');
     }
   }
 
@@ -1150,7 +1148,6 @@ export async function gnDiagnose(
       ...(lspAvailable?.rust === false ? ['rust-lsp'] : []),
       ...(setup.mcp.autoAnalyze === 'enabled' ? ['bounded-startup-policy'] : []),
     ],
-    semanticFallbackUsed: checkEmbeddings && embeddings?.status === 'missing',
     diagnosticsRequested: true,
     nextTools: ['gn_ensure_fresh', 'gn_quality_mode', 'gn_tool_contract'],
   });

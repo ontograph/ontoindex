@@ -7,7 +7,11 @@
  * Purpose: gate the middleware pipeline refactor — proves structural
  * invariants (dispatch, guard wrapping, response shape) survive refactoring.
  */
-import { describe, it, expect, vi, beforeAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+
+// Mocked graph fixtures have no real Git workspace to build.
+beforeAll(() => vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0'));
+afterAll(() => vi.unstubAllEnvs());
 
 // ─── Mock pool-adapter ─────────────────────────────────────────────────────
 // Must be hoisted before LocalBackend import so the factory fires first.

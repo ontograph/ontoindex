@@ -12,6 +12,17 @@ const FIXTURE_DIR = path.resolve(__dirname, '../../fixtures/mcp-tool-contract');
 const SNAPSHOT_PATH = path.join(FIXTURE_DIR, 'stable-tools.snapshot.json');
 
 describe('tool-contract-schema — snapshot (Phase 3)', () => {
+  it('keeps every facade registry action aligned with its input schema', () => {
+    const facades = getPublicToolRegistry({ includeFacades: true }).filter(
+      (entry) => entry.kind === 'facade',
+    );
+    for (const entry of facades) {
+      expect(entry.actions?.map(({ action }) => action).sort(), entry.name).toEqual(
+        [...entry.definition.inputSchema.properties.action.enum].sort(),
+      );
+    }
+  });
+
   it('generates a deterministic snapshot of stable tool contracts', () => {
     const registry = getPublicToolRegistry({ includeFacades: true });
     const schema = serializeToolContract(registry, { includeExperimental: false });

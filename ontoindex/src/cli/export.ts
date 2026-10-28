@@ -561,7 +561,6 @@ function removeBootstrapConflicts(storagePath: string): void {
   const paths = [
     path.join(storagePath, 'analysis-checkpoint.json'),
     path.join(storagePath, 'embedding-checkpoint.json'),
-    path.join(storagePath, 'analyze.lock'),
     path.join(storagePath, 'needs_update'),
     path.join(storagePath, BOOTSTRAP_SOURCE_NAME),
   ];
@@ -1902,77 +1901,91 @@ export async function exportBootstrapHydrateCommand(
   }
   const repoRoot = await resolveRepoRoot(opts.repo);
   const { storagePath } = getStoragePaths(repoRoot);
-  const lbugPath = await resolveActiveLbugPath(storagePath);
-  const existingMeta = await loadMeta(storagePath);
-  if ((existingMeta || fs.existsSync(lbugPath)) && !opts.force) {
-    console.error(
-      'A local OntoIndex index already exists. Re-run with `--force` to replace the local .ontoindex state.',
-    );
-    process.exit(1);
-  }
-  const registrationOpts = await registrationOptsForHydratedRepo(repoRoot, opts);
-
   const artifact = readCompressedArtifact(path.resolve(artifactPath));
   validateBootstrapArtifact(artifact);
   ensureBootstrapCompatibility(artifact);
 
-  const lbugBuffer = Buffer.from(artifact.payload.lbugBase64, 'base64');
-  const generationId = `bootstrap-${Date.now()}-${artifact.integrity.payloadSha256.slice(0, 12)}`;
-  const meta = { ...artifact.payload.meta, generationId };
-  fs.mkdirSync(storagePath, { recursive: true });
-  removeBootstrapConflicts(storagePath);
-  const generation = await createIndexGeneration(storagePath, generationId);
+  // Match analyze's lifetime lock without creating a static import cycle through
+  // local-backend-repo-runtime.ts, which already imports analyze dynamically.
+  const analyzeLock = await (await import('./analyze.js')).acquireAnalyzeLock(repoRoot);
+  const localIndexConflict = Symbol('local index conflict');
+  let exitForLocalIndexConflict = false;
   try {
-    fs.writeFileSync(generation.lbugPath, lbugBuffer);
-    await saveMeta(generation.generationPath, meta as any);
-    if (typeof artifact.payload.snapshotJson === 'string') {
-      fs.writeFileSync(generation.snapshotPath, artifact.payload.snapshotJson, 'utf8');
+    const lbugPath = await resolveActiveLbugPath(storagePath);
+    const existingMeta = await loadMeta(storagePath);
+    if ((existingMeta || fs.existsSync(lbugPath)) && !opts.force) {
+      console.error(
+        'A local OntoIndex index already exists. Re-run with `--force` to replace the local .ontoindex state.',
+      );
+      exitForLocalIndexConflict = true;
+      throw localIndexConflict;
     }
-    validateStagedBootstrapGeneration(generation, artifact);
-    await activateIndexGeneration(storagePath, generation);
-  } catch (err) {
-    await discardIndexGeneration(generation);
-    throw err;
-  }
+    const registrationOpts = await registrationOptsForHydratedRepo(repoRoot, opts);
 
-  const bootstrapSource: BootstrapSourceRecord = {
-    schemaVersion: 1,
-    restoredAt: new Date().toISOString(),
-    artifactGeneratedAt: artifact.generatedAt,
-    artifactPayloadSha256: artifact.integrity.payloadSha256,
-    sourceIndexedCommit: artifact.sourceIndexedCommit,
-    sourceRepoLabel: artifact.repoLabel,
-    sourceOntoindexVersion: artifact.runtime.ontoindexVersion,
-  };
-  const postActivationWarnings: string[] = [];
-  try {
-    writeJsonArtifact(storagePath, BOOTSTRAP_SOURCE_NAME, bootstrapSource);
-  } catch (err) {
-    postActivationWarnings.push(
-      `bootstrap provenance was not recorded: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-  try {
-    await registerRepo(repoRoot, meta as any, registrationOpts);
-  } catch (err) {
-    postActivationWarnings.push(
-      `repository registry was not updated: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-  try {
-    await addToGitignore(repoRoot);
-  } catch (err) {
-    postActivationWarnings.push(
-      `.gitignore was not updated: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
+    const lbugBuffer = Buffer.from(artifact.payload.lbugBase64, 'base64');
+    const generationId = `bootstrap-${Date.now()}-${artifact.integrity.payloadSha256.slice(0, 12)}`;
+    const meta = { ...artifact.payload.meta, generationId };
+    fs.mkdirSync(storagePath, { recursive: true });
+    removeBootstrapConflicts(storagePath);
+    const generation = await createIndexGeneration(storagePath, generationId);
+    try {
+      fs.writeFileSync(generation.lbugPath, lbugBuffer);
+      await saveMeta(generation.generationPath, meta as any);
+      if (typeof artifact.payload.snapshotJson === 'string') {
+        fs.writeFileSync(generation.snapshotPath, artifact.payload.snapshotJson, 'utf8');
+      }
+      validateStagedBootstrapGeneration(generation, artifact);
+      await activateIndexGeneration(storagePath, generation);
+    } catch (err) {
+      await discardIndexGeneration(generation);
+      throw err;
+    }
 
-  console.log(`bootstrap artifact restored into: ${path.relative(process.cwd(), storagePath)}`);
-  console.log(`  indexed commit: ${artifact.sourceIndexedCommit ?? 'unknown'}`);
-  for (const warning of postActivationWarnings) {
-    console.warn(`  warning: ${warning}`);
+    const bootstrapSource: BootstrapSourceRecord = {
+      schemaVersion: 1,
+      restoredAt: new Date().toISOString(),
+      artifactGeneratedAt: artifact.generatedAt,
+      artifactPayloadSha256: artifact.integrity.payloadSha256,
+      sourceIndexedCommit: artifact.sourceIndexedCommit,
+      sourceRepoLabel: artifact.repoLabel,
+      sourceOntoindexVersion: artifact.runtime.ontoindexVersion,
+    };
+    const postActivationWarnings: string[] = [];
+    try {
+      writeJsonArtifact(storagePath, BOOTSTRAP_SOURCE_NAME, bootstrapSource);
+    } catch (err) {
+      postActivationWarnings.push(
+        `bootstrap provenance was not recorded: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    try {
+      await registerRepo(repoRoot, meta as any, registrationOpts);
+    } catch (err) {
+      postActivationWarnings.push(
+        `repository registry was not updated: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    try {
+      await addToGitignore(repoRoot);
+    } catch (err) {
+      postActivationWarnings.push(
+        `.gitignore was not updated: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    console.log(`bootstrap artifact restored into: ${path.relative(process.cwd(), storagePath)}`);
+    console.log(`  indexed commit: ${artifact.sourceIndexedCommit ?? 'unknown'}`);
+    for (const warning of postActivationWarnings) {
+      console.warn(`  warning: ${warning}`);
+    }
+    console.log('  next: ontoindex status');
+  } catch (err) {
+    if (err !== localIndexConflict) throw err;
+  } finally {
+    await analyzeLock.release();
   }
-  console.log('  next: ontoindex status');
+  // Preserve the command's historical exit behavior after releasing the lock.
+  if (exitForLocalIndexConflict) process.exit(1);
 }
 
 // Command registration

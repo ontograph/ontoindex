@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { captureWorkspaceInputs } from '../../src/core/analyze-delta.js';
 import {
   buildAnalysisExecutionPlan,
   getActiveComponentFilePatterns,
@@ -22,6 +23,55 @@ describe('analysis execution planning', () => {
     tmpDirs.push(dir);
     return dir;
   }
+
+  it('keeps active model packs frozen after live catalog mutation, addition, and deletion', async () => {
+    const repoDir = await createRepo();
+    await fs.mkdir(path.join(repoDir, 'src'));
+    await fs.writeFile(path.join(repoDir, 'src/main.ts'), 'export const value = 1;');
+    await fs.writeFile(path.join(repoDir, '.ontoindexignore'), 'ontoindex-packs/\n');
+    const directory = path.join(repoDir, 'ontoindex-packs/core/model');
+    await fs.mkdir(directory, { recursive: true });
+    const filename = path.join(directory, 'pack.yml');
+    const manifest = [
+      'schema: 1',
+      'id: core.frozen-model',
+      'name: Frozen Model',
+      'version: 0.1.0',
+      'kind: model',
+      'tier: stable',
+      'summary: Captured model.',
+      'provides: [route-models]',
+      'routeFilePatterns: ["frozen/**/*.ts"]',
+    ].join('\n');
+    await fs.writeFile(filename, manifest);
+    const captured = await captureWorkspaceInputs(repoDir, {
+      includePaths: ['src/main.ts'],
+      parserIdentity: 'test-parser-v1',
+    });
+    try {
+      const frozen = await getActiveModelPacks(captured.captureRoot, ['route-models']);
+      expect(frozen.map((pack) => pack.id)).toEqual(['core.frozen-model']);
+      await fs.writeFile(filename, manifest.replace('core.frozen-model', 'core.changed-model'));
+      expect((await getActiveModelPacks(repoDir)).map((pack) => pack.id)).toEqual([
+        'core.changed-model',
+      ]);
+      expect(await getActiveModelPacks(captured.captureRoot, ['route-models'])).toEqual(frozen);
+      const added = path.join(repoDir, 'ontoindex-packs/added');
+      await fs.mkdir(added);
+      await fs.writeFile(
+        path.join(added, 'pack.yml'),
+        manifest.replace('core.frozen-model', 'core.added-model'),
+      );
+      await fs.rm(filename);
+      expect((await getActiveModelPacks(repoDir)).map((pack) => pack.id)).toEqual([
+        'core.added-model',
+      ]);
+      expect(await getActiveModelPacks(captured.captureRoot, ['route-models'])).toEqual(frozen);
+      expect(await getActiveRouteFilePatterns(captured.captureRoot)).toEqual(['frozen/**/*.ts']);
+    } finally {
+      await captured.dispose();
+    }
+  });
 
   it('expands suite manifests into ordered tool steps and model packs', async () => {
     const repoDir = await createRepo();

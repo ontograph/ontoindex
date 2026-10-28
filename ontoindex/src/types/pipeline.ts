@@ -4,6 +4,8 @@ import { ProcessDetectionResult } from '../core/ingestion/process-processor.js';
 
 // CLI-specific: in-memory result with graph + detection results
 export interface PipelineResult {
+  /** Actual successful parse outcome, absent for runtimes that do not report it. */
+  parseMode?: 'full' | 'retained-replay';
   graph: KnowledgeGraph;
   /** Absolute path to the repo root — used for lazy file reads during LadybugDB loading */
   repoPath: string;

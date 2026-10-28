@@ -109,6 +109,23 @@ async function findNestedGitRoots(
   return roots;
 }
 
+/** Scoped scans only need markers on the chain from the root to each included path. */
+async function findScopedNestedGitRoots(
+  repoPath: string,
+  includePaths: readonly string[],
+): Promise<Set<string>> {
+  const candidates = new Set<string>();
+  for (const includePath of includePaths) {
+    const parts = toPosixPath(includePath).split('/').filter(Boolean);
+    for (let i = 1; i <= parts.length; i++) candidates.add(parts.slice(0, i).join('/'));
+  }
+  const roots = new Set<string>();
+  for (const candidate of candidates) {
+    if (await isNestedGitMarker(path.join(repoPath, candidate, '.git'))) roots.add(candidate);
+  }
+  return roots;
+}
+
 function isNestedGitPath(relativePath: string, roots: ReadonlySet<string>): boolean {
   for (const root of roots) {
     if (relativePath === root || relativePath.startsWith(`${root}/`)) return true;
@@ -208,7 +225,14 @@ export const walkRepositoryPaths = async (
   options?: WalkRepositoryOptions,
 ): Promise<ScannedFile[]> => {
   const ignoreFilter = await createIgnoreFilter(repoPath, { includeFiles: options?.includeFiles });
-  const nestedGitRoots = await findNestedGitRoots(repoPath, ignoreFilter);
+  const includePaths = await normalizeRepositoryIncludePaths(repoPath, options?.includePaths);
+  // Directory scopes (and '.') can contain descendant repositories, so only an
+  // all-file scope may use the ancestor-chain shortcut.
+  const fileScopeOnly =
+    includePaths.length > 0 && includePaths.every((p) => p !== '.' && !p.endsWith('/'));
+  const nestedGitRoots = fileScopeOnly
+    ? await findScopedNestedGitRoots(repoPath, includePaths)
+    : await findNestedGitRoots(repoPath, ignoreFilter);
   const scanIgnore = {
     ignored(p: Parameters<typeof ignoreFilter.ignored>[0]): boolean {
       const relative = toPosixPath(p.relative());
@@ -220,7 +244,6 @@ export const walkRepositoryPaths = async (
     },
   };
   const maxFileSizeBytes = getScanMaxFileSizeBytes();
-  const includePaths = await normalizeRepositoryIncludePaths(repoPath, options?.includePaths);
   const includeGlobs = includePaths.length > 0 ? includePaths.map(includePathToGlob) : ['**/*'];
 
   const entries: ScannedFile[] = [];

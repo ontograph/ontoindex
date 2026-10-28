@@ -52,7 +52,7 @@ describe('MCP shutdown deadline', () => {
     const { exit, stderr } = await harness(vi.fn(() => new Promise<void>(() => {})));
     process.stdin.emit('end');
     await vi.advanceTimersByTimeAsync(100);
-    expect(exit).toHaveBeenCalledWith(0);
+    expect(exit).toHaveBeenCalledWith(1);
     expect(stderr).toHaveBeenCalledWith('[ontoindex:mcp] shutdown grace expired; forcing exit\n');
   });
 

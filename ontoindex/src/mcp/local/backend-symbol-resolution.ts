@@ -1,5 +1,6 @@
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import {
+  isAutomaticWorkspaceEnabled,
   getOverlaySnapshot,
   isOverlayReplacedPath,
   queryOverlay,
@@ -45,6 +46,7 @@ interface ResolvedSymbol {
   endLine: number;
   content?: string;
   source?: 'overlay';
+  graph?: 'workspace-graph';
 }
 
 interface AmbiguousSymbol extends ResolvedSymbol {
@@ -66,6 +68,7 @@ type SymbolResolutionOutcome =
       kind: 'ok';
       symbol: ResolvedSymbol;
       resolvedLabel: string;
+      snapshot?: OverlaySnapshot;
     }
   | {
       kind: 'ambiguous';
@@ -183,40 +186,44 @@ async function readOverlayRows(
   repo: SymbolResolutionRepoHandle,
   cypher: string,
   params: Record<string, unknown>,
+  pinnedSnapshot?: OverlaySnapshot,
 ): Promise<{ snapshot: OverlaySnapshot; rows: QueryRow[]; overlayAvailable: boolean } | undefined> {
   if (!repo.repoPath || !repo.storagePath) return undefined;
   let snapshot: OverlaySnapshot;
   try {
-    snapshot = await getOverlaySnapshot({
-      id: repo.id,
-      repoPath: repo.repoPath,
-      storagePath: repo.storagePath,
-    });
-  } catch {
+    snapshot =
+      pinnedSnapshot ??
+      (await getOverlaySnapshot({
+        id: repo.id,
+        repoPath: repo.repoPath,
+        storagePath: repo.storagePath,
+      }));
+  } catch (error) {
     // Without a snapshot there is no reliable tombstone evidence to apply.
+    if (isAutomaticWorkspaceEnabled()) throw error;
     return undefined;
   }
   if (!snapshot.usable) return { snapshot, rows: [], overlayAvailable: false };
-  try {
-    const rows = await queryOverlay(
-      { id: repo.id, repoPath: repo.repoPath, storagePath: repo.storagePath },
-      cypher,
-      params,
-    );
-    return {
-      snapshot,
-      overlayAvailable: true,
-      rows: (rows as QueryRow[]).filter((row) => {
-        const filePath = rowValue(row, 'filePath', 3);
-        return (
-          typeof filePath === 'string' && snapshot.overlayPaths.has(filePath.replace(/\\/g, '/'))
-        );
-      }),
-    };
-  } catch {
-    // Keep the snapshot for tombstone safety while preserving base-only fallback.
-    return { snapshot, rows: [], overlayAvailable: false };
-  }
+  // A usable snapshot promises these identities; query errors must fail closed.
+  const rows = await queryOverlay(
+    { id: repo.id, repoPath: repo.repoPath, storagePath: repo.storagePath },
+    cypher,
+    params,
+    snapshot.generation,
+  );
+  return {
+    snapshot,
+    overlayAvailable: true,
+    rows: (rows as QueryRow[]).filter((row) => {
+      const filePath = rowValue(row, 'filePath', 3);
+      return (
+        typeof filePath === 'string' &&
+        (snapshot.capability === 'workspace-graph'
+          ? !snapshot.tombstones.has(filePath.replace(/\\/g, '/'))
+          : snapshot.overlayPaths.has(filePath.replace(/\\/g, '/')))
+      );
+    }),
+  };
 }
 
 function filterBaseRows(
@@ -236,6 +243,7 @@ function filterBaseRows(
     if (overlay.overlayAvailable && isOverlayReplacedPath(overlay.snapshot, normalized)) {
       continue;
     }
+    if (overlay.overlayAvailable && overlay.snapshot.capability === 'workspace-graph') continue;
     kept.push(row);
   }
   return { rows: kept, tombstones: [...tombstones] };
@@ -270,6 +278,7 @@ export async function resolveSymbolCandidates(
   repo: SymbolResolutionRepoHandle,
   query: ResolutionQuery,
   hints: ResolutionHints,
+  options: { snapshot?: OverlaySnapshot } = {},
 ): Promise<SymbolResolutionOutcome> {
   const { uid, name, include_content } = query;
   const selectClause = `n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`;
@@ -277,8 +286,13 @@ export async function resolveSymbolCandidates(
   if (uid) {
     const cypher = `MATCH (n {id: $uid}) RETURN ${selectClause} LIMIT 1`;
     const params = { uid };
-    const rows = await executeParameterized(repo.id, cypher, params);
-    const overlay = await readOverlayRows(repo, cypher, params);
+    const overlay = await readOverlayRows(repo, cypher, params, options.snapshot);
+    const rows =
+      isAutomaticWorkspaceEnabled() &&
+      overlay?.overlayAvailable &&
+      overlay.snapshot.capability === 'workspace-graph'
+        ? []
+        : await executeParameterized(repo.id, cypher, params);
     const filtered = filterBaseRows(rows as QueryRow[], overlay);
     const candidates = filtered.rows.map((row) => parseSymbolRow(row, include_content));
     if (overlay) {
@@ -286,13 +300,16 @@ export async function resolveSymbolCandidates(
         ...overlay.rows.map((row) => ({
           ...parseSymbolRow(row, include_content),
           source: 'overlay' as const,
+          ...(overlay?.snapshot.capability === 'workspace-graph'
+            ? { graph: 'workspace-graph' as const }
+            : {}),
         })),
       );
     }
     if (candidates.length === 0) return notFoundForTombstones(filtered.tombstones);
     const symbol = candidates[0];
     await enrichCandidateLabels(repo, [symbol]);
-    return { kind: 'ok', symbol, resolvedLabel: symbol.type };
+    return { kind: 'ok', symbol, resolvedLabel: symbol.type, snapshot: overlay?.snapshot };
   }
 
   if (!name) return { kind: 'not_found' };
@@ -314,8 +331,13 @@ export async function resolveSymbolCandidates(
   }
 
   const cypher = `MATCH (n) ${whereClause} RETURN ${selectClause} LIMIT 20`;
-  const rows = await executeParameterized(repo.id, cypher, queryParams);
-  const overlay = await readOverlayRows(repo, cypher, queryParams);
+  const overlay = await readOverlayRows(repo, cypher, queryParams, options.snapshot);
+  const rows =
+    isAutomaticWorkspaceEnabled() &&
+    overlay?.overlayAvailable &&
+    overlay.snapshot.capability === 'workspace-graph'
+      ? []
+      : await executeParameterized(repo.id, cypher, queryParams);
   const filtered = filterBaseRows(rows as QueryRow[], overlay);
   const baseRows = filtered.rows;
   const queryRows = [...baseRows, ...(overlay?.rows ?? [])];
@@ -324,6 +346,9 @@ export async function resolveSymbolCandidates(
     ...(overlay?.rows ?? []).map((r) => ({
       ...parseSymbolRow(r, include_content),
       source: 'overlay' as const,
+      ...(overlay?.snapshot.capability === 'workspace-graph'
+        ? { graph: 'workspace-graph' as const }
+        : {}),
     })),
   ];
 
@@ -335,11 +360,20 @@ export async function resolveSymbolCandidates(
     const ambiguousType = normalized.some((s) => s.type === '' || s.type === 'Constructor');
     if (ambiguousType) {
       const candidateIds = normalized.map((s) => s.id).filter(Boolean);
+      const workspaceSnapshot =
+        overlay?.snapshot.capability === 'workspace-graph' ? overlay.snapshot : undefined;
       for (const label of ['Class', 'Interface']) {
-        const labelRows = await executeParameterized(
-          repo.id,
-          `MATCH (n:\`${label}\`) WHERE n.id IN $candidateIds RETURN n.id AS id LIMIT 1`,
-          { candidateIds },
+        const labelCypher = `MATCH (n:\`${label}\`) WHERE n.id IN $candidateIds RETURN n.id AS id LIMIT 1`;
+        // A workspace graph is the whole truth; the base index lacks its new classes.
+        const labelRows = await (
+          workspaceSnapshot
+            ? queryOverlay(
+                { id: repo.id, repoPath: repo.repoPath, storagePath: repo.storagePath },
+                labelCypher,
+                { candidateIds },
+                workspaceSnapshot.generation,
+              )
+            : executeParameterized(repo.id, labelCypher, { candidateIds })
         ).catch(() => []);
         if (labelRows.length > 0) {
           const preferredId = rowValue(labelRows[0] as QueryRow, 'id', 0);
@@ -349,6 +383,7 @@ export async function resolveSymbolCandidates(
               kind: 'ok',
               symbol: preferred,
               resolvedLabel: label,
+              snapshot: overlay?.snapshot,
             };
           }
         }
@@ -361,6 +396,7 @@ export async function resolveSymbolCandidates(
       kind: 'ok',
       symbol: normalized[0],
       resolvedLabel: '',
+      snapshot: overlay?.snapshot,
     };
   }
 
@@ -386,7 +422,12 @@ export async function resolveSymbolCandidates(
   });
 
   if (scored.length >= 2 && scored[0].score >= 0.95 && scored[0].score - scored[1].score > 0.09) {
-    return { kind: 'ok', symbol: scored[0], resolvedLabel: scored[0].type };
+    return {
+      kind: 'ok',
+      symbol: scored[0],
+      resolvedLabel: scored[0].type,
+      snapshot: overlay?.snapshot,
+    };
   }
 
   return { kind: 'ambiguous', candidates: scored };

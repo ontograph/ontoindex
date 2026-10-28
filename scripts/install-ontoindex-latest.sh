@@ -186,7 +186,12 @@ download_ladybug_extensions() {
 node_major="$(node -p 'process.versions.node.split(".")[0]')"
 node_minor="$(node -p 'process.versions.node.split(".")[1]')"
 node_version="$(node -p 'process.versions.node')"
-log "Detected Node.js ${node_version}, npm $(npm --version)"
+npm_version="$(npm --version)"
+npm_script_args=()
+if [ "${npm_version%%.*}" -ge 11 ]; then
+  npm_script_args=(--allow-scripts=ontoindex,tree-sitter,@ladybugdb/core)
+fi
+log "Detected Node.js ${node_version}, npm ${npm_version}"
 if [ "${node_major}" -lt 22 ] || { [ "${node_major}" -eq 22 ] && [ "${node_minor}" -lt 12 ]; }; then
   echo "error: OntoIndex supports Node.js 22.12.0 through Node.js 25.x for published installs." >&2
   echo "error: detected Node.js ${node_version}." >&2
@@ -343,7 +348,7 @@ if [ ! -f "${asset_url}" ]; then
     exit 1
   fi
 fi
-install_args=(-g "${install_asset}")
+install_args=(-g ${npm_script_args[@]+"${npm_script_args[@]}"} "${install_asset}")
 bin_path=""
 install_prefix="${default_prefix}"
 log "npm global prefix: ${default_prefix}"

@@ -35,6 +35,25 @@ interface FTSNode {
 type FTSQueryRow = { readonly [key: string]: unknown } | readonly unknown[];
 type FTSExecutor = (cypher: string) => Promise<FTSQueryRow[]>;
 
+/** Path-prefix scope applied inside the full-text query, before the ranking window. */
+export interface FTSPathScope {
+  include?: readonly string[];
+  exclude?: readonly string[];
+}
+
+function pathScopePredicate(scope: FTSPathScope | undefined): string {
+  if (!scope) return '';
+  const literal = (value: string) => `'${value.replace(/\\/g, '\\\\').replace(/'/g, "''")}'`;
+  const under = (prefix: string) =>
+    `(node.filePath = ${literal(prefix)} OR node.filePath STARTS WITH ${literal(`${prefix}/`)})`;
+  const parts: string[] = [];
+  const include = (scope.include ?? []).filter(Boolean);
+  const exclude = (scope.exclude ?? []).filter(Boolean);
+  if (include.length > 0) parts.push(`(${include.map(under).join(' OR ')})`);
+  for (const prefix of exclude) parts.push(`NOT ${under(prefix)}`);
+  return parts.length > 0 ? `WITH node, score WHERE ${parts.join(' AND ')}` : '';
+}
+
 function recordField(value: unknown, field: string): unknown {
   if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
     return undefined;
@@ -184,11 +203,13 @@ async function queryFTSViaExecutor(
   indexName: string,
   query: string,
   limit: number,
+  scope?: FTSPathScope,
 ): Promise<BM25FTSResult[]> {
   // Escape single quotes and backslashes to prevent Cypher injection
   const escapedQuery = query.replace(/\\/g, '\\\\').replace(/'/g, "''");
   const cypher = `
     CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', '${escapedQuery}', conjunctive := false)
+    ${pathScopePredicate(scope)}
     RETURN node, score
     ORDER BY score DESC
     LIMIT ${limit}
@@ -224,6 +245,8 @@ export const searchFTSFromLbug = async (
   query: string,
   limit: number = 20,
   repoId?: string,
+  /** Only honoured with `boundScope`-aware callers on the pinned workspace lane. */
+  scope?: FTSPathScope,
 ): Promise<BM25SearchResult[]> => {
   // Expand identifier-shaped tokens (camelCase / snake_case / kebab-case) so that
   // a query like "user data" can match indexed `getUserData`. Purely additive —
@@ -255,16 +278,31 @@ export const searchFTSFromLbug = async (
       await ensureFTSIndexViaExecutor(executor, repoId, table, indexName, properties);
     }
 
-    fileResults = await queryFTSViaExecutor(executor, 'File', 'file_fts', query, limit);
-    functionResults = await queryFTSViaExecutor(executor, 'Function', 'function_fts', query, limit);
-    classResults = await queryFTSViaExecutor(executor, 'Class', 'class_fts', query, limit);
-    methodResults = await queryFTSViaExecutor(executor, 'Method', 'method_fts', query, limit);
+    fileResults = await queryFTSViaExecutor(executor, 'File', 'file_fts', query, limit, scope);
+    functionResults = await queryFTSViaExecutor(
+      executor,
+      'Function',
+      'function_fts',
+      query,
+      limit,
+      scope,
+    );
+    classResults = await queryFTSViaExecutor(executor, 'Class', 'class_fts', query, limit, scope);
+    methodResults = await queryFTSViaExecutor(
+      executor,
+      'Method',
+      'method_fts',
+      query,
+      limit,
+      scope,
+    );
     interfaceResults = await queryFTSViaExecutor(
       executor,
       'Interface',
       'interface_fts',
       query,
       limit,
+      scope,
     );
   } else {
     // Use core lbug adapter (CLI / pipeline context) — also sequential for safety.

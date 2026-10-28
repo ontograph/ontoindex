@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,6 +27,8 @@ describe('real fs.watch editor save patterns', () => {
     root = path.join(parent, 'root');
     fs.mkdirSync(root);
     root = fs.realpathSync(root);
+    // The acceptance for this suite asks for real files in a temp git repository.
+    execFileSync('git', ['init', '--quiet'], { cwd: root });
     file = path.join(root, 'a.ts');
     observedFile = file;
     fs.writeFileSync(file, 'initial');

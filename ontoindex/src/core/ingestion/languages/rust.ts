@@ -31,6 +31,11 @@ import { rustVariableConfig } from '../variable-extractors/configs/rust.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { rustCallConfig } from '../call-extractors/configs/rust.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import {
+  emitRustCaptures,
+  interpretRustExports,
+  rustDeclarationBindingScope,
+} from './rust-captures.js';
 
 /** Rust impl_item: find the function_item child and extract its name as a Method. */
 const rustExtractFunctionName = (
@@ -122,6 +127,13 @@ export const rustProvider = defineLanguage({
   id: SupportedLanguages.Rust,
   extensions: ['.rs'],
   treeSitterQueries: RUST_QUERIES,
+  emitScopeCaptures(_sourceText, _filePath, rootNode) {
+    if (!rootNode) throw new Error('Rust scope captures require the borrowed root');
+    return emitRustCaptures(rootNode);
+  },
+  interpretImport: () => null,
+  bindingScopeFor: rustDeclarationBindingScope,
+  interpretExports: interpretRustExports,
   typeConfig: rustConfig,
   exportChecker: rustExportChecker,
   importResolver: createImportResolver(rustImportConfig),

@@ -120,6 +120,289 @@ const bindingsFor = (
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 describe('finalize', () => {
+  describe('namespace export intersection', () => {
+    const exporter = (): FinalizeFile => ({
+      ...file('b', [
+        def('def:type', 'Interface', 'b.Shared'),
+        def('def:value', 'Function', 'b.Shared'),
+        def('def:class', 'Class', 'b.Dual'),
+      ]),
+      exportsByNamespace: {
+        type: new Map([
+          ['Shared', 'def:type'],
+          ['Dual', 'def:class'],
+        ]),
+        value: new Map([
+          ['Shared', 'def:value'],
+          ['Dual', 'def:class'],
+        ]),
+      },
+    });
+
+    it('keeps distinct meanings together for an incoming-replaces-existing hook', () => {
+      const b = exporter();
+      const a = file('a', [], [named('Shared', 'Shared', 'b')]);
+      const files = [a, b];
+      const seen: (readonly BindingRef[])[] = [];
+      const out = finalize(
+        { files, workspaceIndex: undefined },
+        {
+          ...defaultHooks(files),
+          mergeBindings(_existing, incoming, scope) {
+            if (scope === a.moduleScope) seen.push(incoming);
+            return incoming;
+          },
+        },
+      );
+      expect(
+        out.imports.get(a.moduleScope)?.map((edge) => [edge.targetDefId, edge.namespace]),
+      ).toEqual([
+        ['def:type', 'type'],
+        ['def:value', 'value'],
+      ]);
+      expect(
+        bindingsFor(out, a.moduleScope, 'Shared').map((binding) => [
+          binding.def.nodeId,
+          binding.namespace,
+          binding.via?.namespace,
+        ]),
+      ).toEqual([
+        ['def:type', 'type', 'type'],
+        ['def:value', 'value', 'value'],
+      ]);
+      expect(seen.map((bucket) => bucket.length)).toEqual([2]);
+      expect(out.stats).toMatchObject({ totalEdges: 1, linkedEdges: 1, unresolvedEdges: 0 });
+    });
+
+    it.each(['type', 'value', 'both', undefined] as const)(
+      'intersects %s imports and coalesces a dual-space class by identity',
+      (namespace) => {
+        const b = exporter();
+        const a = file('a', [], [{ ...named('Dual', 'Dual', 'b'), namespace }]);
+        const files = [a, b];
+        const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+        expect(
+          out.imports.get(a.moduleScope)?.map((edge) => [edge.targetDefId, edge.namespace]),
+        ).toEqual([['def:class', namespace === undefined ? 'both' : namespace]]);
+        expect(bindingsFor(out, a.moduleScope, 'Dual').map((binding) => binding.namespace)).toEqual(
+          [namespace === undefined ? 'both' : namespace],
+        );
+      },
+    );
+
+    it('rejects opposite meanings, missing names and dangling explicit IDs without legacy fallback', () => {
+      const b: FinalizeFile = {
+        ...exporter(),
+        exports: new Map([
+          ['Shared', 'def:type'],
+          ['Missing', 'def:class'],
+        ]),
+        exportsByNamespace: {
+          type: new Map([
+            ['Shared', 'def:type'],
+            ['Dangling', 'def:absent'],
+          ]),
+          value: new Map(),
+        },
+      };
+      const a = file(
+        'a',
+        [],
+        [
+          { ...named('Shared', 'Shared', 'b'), namespace: 'value' },
+          { ...named('Missing', 'Missing', 'b'), namespace: 'type' },
+          { ...named('Dangling', 'Dangling', 'b'), namespace: 'type' },
+        ],
+      );
+      const files = [a, b];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      expect(
+        out.imports
+          .get(a.moduleScope)
+          ?.map((edge) => [edge.namespace, edge.linkStatus, edge.targetDefId]),
+      ).toEqual([
+        ['value', 'unresolved', undefined],
+        ['type', 'unresolved', undefined],
+        ['type', 'unresolved', undefined],
+      ]);
+      expect([...out.bindings.get(a.moduleScope)!]).toEqual([]);
+      expect(out.stats).toMatchObject({ totalEdges: 3, linkedEdges: 0, unresolvedEdges: 3 });
+    });
+
+    it.each([true, false])('treats empty namespace maps as authoritative: %s', (explicit) => {
+      const b: FinalizeFile = {
+        ...exporter(),
+        exports: new Map([['Shared', 'def:value']]),
+        exportsByNamespace: explicit ? { type: new Map(), value: new Map() } : undefined,
+      };
+      const a = file('a', [], [{ ...named('Shared', 'Shared', 'b'), namespace: 'type' }]);
+      const files = [a, b];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      expect(firstImport(out, a.moduleScope)).toMatchObject(
+        explicit
+          ? { namespace: 'type', linkStatus: 'unresolved' }
+          : { namespace: 'type', targetDefId: 'def:value' },
+      );
+      expect(bindingsFor(out, a.moduleScope, 'Shared').map((binding) => binding.namespace)).toEqual(
+        explicit ? [] : ['type'],
+      );
+    });
+
+    it('narrows unknown legacy exports without inferring their definition kind', () => {
+      const b = file('b', [def('def:value', 'Function', 'b.Shared')]);
+      const a = file('a', [], [{ ...named('Shared', 'Shared', 'b'), namespace: 'type' }]);
+      const files = [a, b];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      expect(
+        bindingsFor(out, a.moduleScope, 'Shared').map((binding) => [
+          binding.def.nodeId,
+          binding.namespace,
+        ]),
+      ).toEqual([['def:value', 'type']]);
+    });
+
+    it('retains alias and static reexport restrictions without following reexport closure', () => {
+      const b = exporter();
+      const a = file(
+        'a',
+        [],
+        [
+          { ...aliased('Renamed', 'Shared', 'Renamed', 'b'), namespace: 'type' },
+          { ...reexport('Published', 'Shared', 'b'), namespace: 'value' },
+        ],
+      );
+      const c = file('c', [], [named('Published', 'Published', 'a')]);
+      const files = [a, b, c];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      expect(
+        out.imports
+          .get(a.moduleScope)
+          ?.map((edge) => [edge.localName, edge.targetDefId, edge.namespace, edge.transitiveVia]),
+      ).toEqual([
+        ['Renamed', 'def:type', 'type', undefined],
+        ['Published', 'def:value', 'value', ['b']],
+      ]);
+      expect(firstImport(out, c.moduleScope)?.linkStatus).toBe('unresolved');
+    });
+
+    it('expands only hook-selected names, intersects wildcard meanings, and retains duplicate hook ordering', () => {
+      const b = exporter();
+      const a = file('a', [], [{ ...wildcard('b'), namespace: 'type' }, wildcard('b')]);
+      const files = [a, b];
+      const buckets: number[] = [];
+      const out = finalize(
+        { files, workspaceIndex: undefined },
+        {
+          ...defaultHooks(files),
+          expandsWildcardTo: () => ['Shared', 'Missing', 'Shared'],
+          mergeBindings(existing, incoming, scope) {
+            if (scope === a.moduleScope) buckets.push(incoming.length);
+            return [...existing, ...incoming];
+          },
+        },
+      );
+      expect(
+        out.imports.get(a.moduleScope)?.map((edge) => [edge.targetDefId, edge.namespace]),
+      ).toEqual([
+        ['def:type', 'type'],
+        ['def:type', 'type'],
+        ['def:type', 'type'],
+        ['def:value', 'value'],
+        ['def:type', 'type'],
+        ['def:value', 'value'],
+      ]);
+      expect(buckets).toEqual([1, 1, 2, 2]);
+      expect(out.stats).toMatchObject({ totalEdges: 2, linkedEdges: 2, unresolvedEdges: 0 });
+    });
+
+    it('links namespace modules even when their optional synthetic definition has no eligible meaning', () => {
+      const b = exporter();
+      const a = file(
+        'a',
+        [],
+        [
+          { ...namespace('module', 'Absent', 'b'), namespace: 'type' },
+          { ...namespace('dual', 'Dual', 'b'), namespace: 'type' },
+        ],
+      );
+      const files = [a, b];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      expect(
+        out.imports
+          .get(a.moduleScope)
+          ?.map((edge) => [
+            edge.targetModuleScope,
+            edge.targetDefId,
+            edge.namespace,
+            edge.linkStatus,
+          ]),
+      ).toEqual([
+        [b.moduleScope, undefined, 'type', undefined],
+        [b.moduleScope, 'def:class', 'type', undefined],
+      ]);
+      expect(bindingsFor(out, a.moduleScope, 'module')).toEqual([]);
+      expect(bindingsFor(out, a.moduleScope, 'dual')[0]?.namespace).toBe('type');
+    });
+
+    it('preserves requested restrictions on dynamic, unresolved, and external targets', () => {
+      const a = file(
+        'a',
+        [],
+        [
+          { ...dynamic('', 'expr'), namespace: 'type' },
+          { ...named('Missing', 'Missing', 'missing'), namespace: 'value' },
+          { ...wildcard('missing'), namespace: 'type' },
+          { ...named('External', 'External', 'external'), namespace: 'both' },
+        ],
+      );
+      const out = finalize(
+        { files: [a], workspaceIndex: undefined },
+        {
+          ...defaultHooks([a]),
+          resolveImportTarget: (raw) => (raw === 'external' ? raw : null),
+        },
+      );
+      expect(
+        out.imports
+          .get(a.moduleScope)
+          ?.map((edge) => [edge.namespace, edge.targetFile, edge.linkStatus]),
+      ).toEqual([
+        ['type', null, undefined],
+        ['value', null, 'unresolved'],
+        ['type', null, 'unresolved'],
+        ['both', 'external', undefined],
+      ]);
+      expect([...out.bindings.get(a.moduleScope)!]).toEqual([]);
+      expect(out.stats).toMatchObject({ totalEdges: 4, linkedEdges: 2, unresolvedEdges: 2 });
+    });
+
+    it('keeps provider precedence authoritative across separate parsed imports', () => {
+      const b = exporter();
+      const a = file(
+        'a',
+        [],
+        [
+          { ...named('Shared', 'Shared', 'b'), namespace: 'type' },
+          { ...named('Shared', 'Shared', 'b'), namespace: 'value' },
+        ],
+      );
+      const files = [a, b];
+      const out = finalize(
+        { files, workspaceIndex: undefined },
+        {
+          ...defaultHooks(files),
+          mergeBindings: (_existing, incoming) => incoming,
+        },
+      );
+      expect(
+        bindingsFor(out, a.moduleScope, 'Shared').map((binding) => [
+          binding.def.nodeId,
+          binding.namespace,
+        ]),
+      ).toEqual([['def:value', 'value']]);
+    });
+  });
+
   describe('trivial / acyclic', () => {
     it('handles an empty workspace', () => {
       const out = finalize({ files: [], workspaceIndex: undefined }, defaultHooks([]));
@@ -171,6 +454,336 @@ describe('finalize', () => {
       expect(edge.targetFile).toBeNull();
       expect(edge.linkStatus).toBeUndefined();
     });
+  });
+
+  describe('explicit export maps', () => {
+    it('restricts named imports while retaining private local bindings', () => {
+      const b: FinalizeFile = {
+        ...file('b', [
+          def('def:b.Public', 'Class', 'b.Public'),
+          def('def:b.Private', 'Class', 'b.Private'),
+        ]),
+        exports: new Map([['Public', 'def:b.Public']]),
+      };
+      const a = file('a', [], [named('Public', 'Public', 'b'), named('Private', 'Private', 'b')]);
+      const files = [a, b];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+
+      const edges = out.imports.get(a.moduleScope)!;
+      expect(edges[0]!.targetDefId).toBe('def:b.Public');
+      expect(edges[1]!.linkStatus).toBe('unresolved');
+      expect(edges[1]!.targetDefId).toBeUndefined();
+      expect(bindingsFor(out, a.moduleScope, 'Private')).toEqual([]);
+      expect(
+        bindingsFor(out, b.moduleScope, 'Private').map((binding) => [
+          binding.origin,
+          binding.def.nodeId,
+        ]),
+      ).toEqual([['local', 'def:b.Private']]);
+    });
+
+    it('resolves exported aliases and default to the original local definition IDs', () => {
+      const b: FinalizeFile = {
+        ...file('b', [def('def:b.Internal', 'Class', 'b.Internal')]),
+        exports: new Map([
+          ['Public', 'def:b.Internal'],
+          ['default', 'def:b.Internal'],
+        ]),
+      };
+      const a = file(
+        'a',
+        [],
+        [
+          named('Public', 'Public', 'b'),
+          aliased('Renamed', 'Public', 'Renamed', 'b'),
+          named('DefaultValue', 'default', 'b'),
+        ],
+      );
+      const files = [a, b];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+
+      expect(
+        out.imports
+          .get(a.moduleScope)!
+          .map((edge) => [edge.localName, edge.targetExportedName, edge.targetDefId]),
+      ).toEqual([
+        ['Public', 'Public', 'def:b.Internal'],
+        ['Renamed', 'Public', 'def:b.Internal'],
+        ['DefaultValue', 'default', 'def:b.Internal'],
+      ]);
+      expect(bindingsFor(out, a.moduleScope, 'DefaultValue')[0]!.def.nodeId).toBe('def:b.Internal');
+    });
+
+    it('fails closed for missing names and dangling IDs even when local simple names match', () => {
+      const b: FinalizeFile = {
+        ...file('b', [
+          def('def:b.Missing', 'Class', 'b.Missing'),
+          def('def:b.Dangling', 'Class', 'b.Dangling'),
+        ]),
+        exports: new Map([['Dangling', 'def:elsewhere.Dangling']]),
+      };
+      // A definition in another file must not satisfy B's dangling export ID.
+      const c = file('c', [def('def:elsewhere.Dangling', 'Class', 'c.Dangling')]);
+      const a = file(
+        'a',
+        [],
+        [named('Missing', 'Missing', 'b'), named('Dangling', 'Dangling', 'b')],
+      );
+      const files = [a, b, c];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+
+      expect(
+        out.imports.get(a.moduleScope)!.map((edge) => [edge.linkStatus, edge.targetDefId]),
+      ).toEqual([
+        ['unresolved', undefined],
+        ['unresolved', undefined],
+      ]);
+      expect(bindingsFor(out, a.moduleScope, 'Missing')).toEqual([]);
+      expect(bindingsFor(out, a.moduleScope, 'Dangling')).toEqual([]);
+    });
+
+    it('distinguishes an empty export map from omitted legacy metadata', () => {
+      const legacy = file('legacy', [def('def:legacy.X', 'Class', 'legacy.X')]);
+      const explicit: FinalizeFile = {
+        ...file('explicit', [def('def:explicit.X', 'Class', 'explicit.X')]),
+        exports: new Map(),
+      };
+      const a = file(
+        'a',
+        [],
+        [named('LegacyX', 'X', 'legacy'), named('ExplicitX', 'X', 'explicit')],
+      );
+      const files = [a, legacy, explicit];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+
+      const edges = out.imports.get(a.moduleScope)!;
+      expect(edges[0]!.targetDefId).toBe('def:legacy.X');
+      expect(edges[1]!.linkStatus).toBe('unresolved');
+      expect(edges[1]!.targetDefId).toBeUndefined();
+    });
+
+    it('filters wildcard candidates through the export map and resolves exported aliases', () => {
+      const b: FinalizeFile = {
+        ...file('b', [
+          def('def:b.Internal', 'Class', 'b.Internal'),
+          def('def:b.Private', 'Class', 'b.Private'),
+          def('def:b.Dangling', 'Class', 'b.Dangling'),
+        ]),
+        exports: new Map([
+          ['Public', 'def:b.Internal'],
+          ['Dangling', 'def:missing'],
+        ]),
+      };
+      const a = file('a', [], [wildcard('b')]);
+      const files = [a, b];
+      const hooks: FinalizeHooks = {
+        ...defaultHooks(files),
+        expandsWildcardTo: () => ['Public', 'Internal', 'Private', 'Dangling'],
+      };
+      const out = finalize({ files, workspaceIndex: undefined }, hooks);
+
+      expect(
+        out.imports.get(a.moduleScope)!.map((edge) => [edge.localName, edge.targetDefId]),
+      ).toEqual([['Public', 'def:b.Internal']]);
+      expect(bindingsFor(out, a.moduleScope, 'Public')[0]!.origin).toBe('wildcard');
+      expect(bindingsFor(out, a.moduleScope, 'Private')).toEqual([]);
+    });
+
+    it('links namespace imports to the module without exposing a private matching definition', () => {
+      const b: FinalizeFile = {
+        ...file('b', [def('def:b.Private', 'Namespace', 'b.Private')]),
+        exports: new Map(),
+      };
+      const a = file('a', [], [namespace('ns', 'Private', 'b')]);
+      const files = [a, b];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+
+      const edge = firstImport(out, a.moduleScope)!;
+      expect(edge.targetModuleScope).toBe(b.moduleScope);
+      expect(edge.linkStatus).toBeUndefined();
+      expect(edge.targetDefId).toBeUndefined();
+      expect(bindingsFor(out, a.moduleScope, 'ns')).toEqual([]);
+    });
+
+    it('uses export maps for direct reexports without adding transitive resolution', () => {
+      const c: FinalizeFile = {
+        ...file('c', [def('def:c.Internal', 'Class', 'c.Internal')]),
+        exports: new Map([['Public', 'def:c.Internal']]),
+      };
+      const b: FinalizeFile = {
+        ...file(
+          'b',
+          [],
+          [reexport('Public', 'Public', 'c'), reexport('Internal', 'Internal', 'c')],
+        ),
+        exports: new Map([['Public', 'def:c.Internal']]),
+      };
+      const a = file('a', [], [named('Public', 'Public', 'b')]);
+      const files = [a, b, c];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+
+      const edges = out.imports.get(b.moduleScope)!;
+      expect(edges[0]!.targetDefId).toBe('def:c.Internal');
+      expect(edges[0]!.transitiveVia).toEqual(['c']);
+      expect(edges[1]!.linkStatus).toBe('unresolved');
+      expect(firstImport(out, a.moduleScope)!.linkStatus).toBe('unresolved');
+      expect(firstImport(out, a.moduleScope)!.targetDefId).toBeUndefined();
+    });
+  });
+
+  describe('definition lookup indexes', () => {
+    it.each(
+      (['named', 'wildcard'] as const).flatMap((kind) =>
+        (['explicit', 'legacy'] as const).flatMap((exports) =>
+          [128, 256].map((size) => ({ kind, exports, size })),
+        ),
+      ),
+    )(
+      'reads definitions linearly for $size distinct $kind imports with $exports exports',
+      ({ kind, exports, size }) => {
+        const names = Array.from({ length: size }, (_, i) => `Name${i}`);
+        const ids = names.map((name) => `def:b.${name}`);
+        const b: FinalizeFile = {
+          ...file(
+            'b',
+            names.map((name, i) => def(ids[i]!, 'Class', `b.${name}`)),
+          ),
+          ...(exports === 'explicit'
+            ? { exports: new Map(names.map((name, i) => [name, ids[i]!])) }
+            : {}),
+        };
+        const a = file(
+          'a',
+          [],
+          kind === 'named' ? names.map((name) => named(name, name, 'b')) : [wildcard('b')],
+        );
+        let nodeIdReads = 0;
+        let qualifiedNameReads = 0;
+        // Instrument the cloned definitions that finalize actually receives.
+        for (const definition of b.localDefs) {
+          const { nodeId, qualifiedName } = definition;
+          Object.defineProperties(definition, {
+            nodeId: {
+              enumerable: true,
+              get: () => {
+                nodeIdReads++;
+                return nodeId;
+              },
+            },
+            qualifiedName: {
+              enumerable: true,
+              get: () => {
+                qualifiedNameReads++;
+                return qualifiedName;
+              },
+            },
+          });
+        }
+        const files = [a, b];
+        const out = finalize(
+          { files, workspaceIndex: undefined },
+          {
+            ...defaultHooks(files),
+            expandsWildcardTo: () => names,
+          },
+        );
+        const reads = { nodeId: nodeIdReads, qualifiedName: qualifiedNameReads };
+
+        expect(reads.nodeId).toBeLessThanOrEqual(24 * size);
+        expect(reads.qualifiedName).toBeLessThanOrEqual(24 * size);
+        expect(
+          out.imports.get(a.moduleScope)!.map((edge) => [edge.localName, edge.targetDefId]),
+        ).toEqual(names.map((name, i) => [name, ids[i]]));
+        expect(out.bindings.get(a.moduleScope)!.size).toBe(size);
+        expect(
+          names.map((name) => bindingsFor(out, a.moduleScope, name).map((ref) => ref.def.nodeId)),
+        ).toEqual(ids.map((id) => [id]));
+      },
+    );
+
+    it('keeps the first definition when an explicit provider repeats a definition ID', () => {
+      const b: FinalizeFile = {
+        ...file('b', [
+          def('def:shared', 'Class', 'b.First'),
+          def('def:shared', 'Function', 'b.Second'),
+        ]),
+        exports: new Map([['Public', 'def:shared']]),
+      };
+      const a = file('a', [], [named('Public', 'Public', 'b')]);
+      const files = [a, b];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+
+      expect(firstImport(out, a.moduleScope)!.targetDefId).toBe('def:shared');
+      expect(bindingsFor(out, a.moduleScope, 'Public')).toHaveLength(1);
+      expect(bindingsFor(out, a.moduleScope, 'Public')[0]!.def).toBe(b.localDefs[0]);
+    });
+
+    it('keeps workspace input order when distinct files repeat a definition ID', () => {
+      const first = file('first', [def('def:shared', 'Class', 'first.Other')]);
+      const provider: FinalizeFile = {
+        ...file('provider', [def('def:shared', 'Function', 'provider.Public')]),
+        exports: new Map([['Public', 'def:shared']]),
+      };
+      const a = file('a', [], [named('Public', 'Public', 'provider')]);
+      const files = [first, a, provider];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+
+      expect(firstImport(out, a.moduleScope)!.targetDefId).toBe('def:shared');
+      expect(bindingsFor(out, a.moduleScope, 'Public')[0]!.def).toBe(first.localDefs[0]);
+    });
+
+    it('keeps the first legacy name without discarding other names with duplicate IDs', () => {
+      const b = file('b', [
+        def('def:b.First', 'Class', 'b.Public'),
+        def('def:b.Second', 'Function', 'b.nested.Public'),
+        def('def:b.First', 'Variable', 'b.Other'),
+      ]);
+      const a = file('a', [], [named('Public', 'Public', 'b'), named('Other', 'Other', 'b')]);
+      const files = [a, b];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+
+      expect(
+        out.imports.get(a.moduleScope)!.map((edge) => [edge.localName, edge.targetDefId]),
+      ).toEqual([
+        ['Public', 'def:b.First'],
+        ['Other', 'def:b.First'],
+      ]);
+      expect(bindingsFor(out, a.moduleScope, 'Public')[0]!.def).toBe(b.localDefs[0]);
+      expect(bindingsFor(out, a.moduleScope, 'Other')[0]!.def).toBe(b.localDefs[0]);
+    });
+
+    it.each(['explicit', 'legacy'] as const)(
+      'isolates %s lookups between invocations with reused paths and IDs',
+      (exports) => {
+        const run = (type: SymbolDefinition['type'], name: string) => {
+          const b: FinalizeFile = {
+            ...file('b', [def('def:b.Shared', type, `b.${name}`)]),
+            ...(exports === 'explicit' ? { exports: new Map([[name, 'def:b.Shared']]) } : {}),
+          };
+          const a = file('a', [], [named(name, name, 'b'), named('Old', 'Old', 'b')]);
+          const files = [a, b];
+          return { a, b, out: finalize({ files, workspaceIndex: undefined }, defaultHooks(files)) };
+        };
+        const first = run('Class', 'Old');
+        const second = run('Function', 'New');
+
+        expect(bindingsFor(first.out, first.a.moduleScope, 'Old')[0]!.def).toBe(
+          first.b.localDefs[0],
+        );
+        expect(bindingsFor(second.out, second.a.moduleScope, 'New')[0]!.def).toBe(
+          second.b.localDefs[0],
+        );
+        expect(bindingsFor(second.out, second.a.moduleScope, 'Old')).toEqual([]);
+        expect(
+          second.out.imports
+            .get(second.a.moduleScope)!
+            .map((edge) => [edge.targetDefId, edge.linkStatus]),
+        ).toEqual([
+          ['def:b.Shared', undefined],
+          [undefined, 'unresolved'],
+        ]);
+      },
+    );
   });
 
   describe('cycles + bounded fixpoint', () => {
@@ -387,6 +1000,79 @@ describe('finalize', () => {
   });
 
   describe('module-scope binding materialization', () => {
+    it('distinguishes authoritative empty bindings from omitted legacy bindings', () => {
+      const legacy = file('legacy', [def('def:legacy.X', 'Class', 'legacy.X')]);
+      const explicit: FinalizeFile = {
+        ...file('explicit', [def('def:explicit.secret', 'Variable', 'explicit.fn.secret')]),
+        localBindings: new Map(),
+      };
+      const files = [legacy, explicit];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+
+      expect(bindingsFor(out, legacy.moduleScope, 'X').map((ref) => ref.def.nodeId)).toEqual([
+        'def:legacy.X',
+      ]);
+      expect([...out.bindings.get(explicit.moduleScope)!]).toEqual([]);
+      expect(explicit.localDefs).toHaveLength(1);
+    });
+
+    it('preserves extracted alias and hoisted buckets without remerging local definitions', () => {
+      const base = file('a', [
+        def('def:a.X', 'Class', 'a.X'),
+        def('def:a.nested.X', 'Class', 'a.fn.X'),
+        def('def:a.secret', 'Variable', 'a.fn.secret'),
+        def('def:a.hoisted', 'Variable', 'a.fn.hoisted'),
+      ]);
+      const localBindings = new Map<string, readonly BindingRef[]>([
+        ['Alias', [{ def: base.localDefs[0]!, origin: 'local' }]],
+        ['hoisted', [{ def: base.localDefs[3]!, origin: 'local' }]],
+      ]);
+      const original = [...localBindings].map(([name, refs]) => [name, [...refs]]);
+      const a: FinalizeFile = { ...base, localBindings };
+      const hooks: FinalizeHooks = {
+        ...defaultHooks([a]),
+        mergeBindings() {
+          throw new Error('authoritative local buckets must not be remerged');
+        },
+      };
+      const out = finalize({ files: [a], workspaceIndex: undefined }, hooks);
+
+      expect([...out.bindings.get(a.moduleScope)!]).toEqual(original);
+      expect(bindingsFor(out, a.moduleScope, 'X')).toEqual([]);
+      expect(bindingsFor(out, a.moduleScope, 'secret')).toEqual([]);
+      expect([...localBindings]).toEqual(original);
+      expect(a.localDefs).toHaveLength(4);
+    });
+
+    it('merges imports into authoritative local buckets with provider precedence without mutating input', () => {
+      const base = file('a', [def('def:a.X', 'Class', 'a.X')], [named('X', 'X', 'b')]);
+      const refs: readonly BindingRef[] = Object.freeze([
+        { def: base.localDefs[0]!, origin: 'local' },
+      ]);
+      const localBindings = new Map([['X', refs]]);
+      const a: FinalizeFile = { ...base, localBindings };
+      const b = file('b', [def('def:b.X', 'Class', 'b.X')]);
+      const files = [a, b];
+      const calls: unknown[] = [];
+      const out = finalize(
+        { files, workspaceIndex: undefined },
+        {
+          ...defaultHooks(files),
+          mergeBindings(existing, incoming, scope) {
+            if (scope === a.moduleScope) calls.push([existing, incoming.map((ref) => ref.origin)]);
+            return incoming;
+          },
+        },
+      );
+
+      expect(calls).toEqual([[refs, ['import']]]);
+      expect(
+        bindingsFor(out, a.moduleScope, 'X').map((ref) => [ref.def.nodeId, ref.origin]),
+      ).toEqual([['def:b.X', 'import']]);
+      expect([...localBindings]).toEqual([['X', refs]]);
+      expect(refs).toEqual([{ def: base.localDefs[0]!, origin: 'local' }]);
+    });
+
     it('lays down local defs with origin=local', () => {
       const a = file('a', [def('def:a.X', 'Class', 'a.X')]);
       const out = finalize({ files: [a], workspaceIndex: undefined }, defaultHooks([a]));

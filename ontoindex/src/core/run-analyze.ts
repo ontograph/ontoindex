@@ -14,6 +14,11 @@ import fs from 'fs/promises';
 import * as fsSync from 'fs';
 import { type PipelineOptions, type PipelineProfile } from './ingestion/pipeline.js';
 import { normalizeRepositoryIncludePaths } from './ingestion/filesystem-walker.js';
+import {
+  planDirtyOverlay,
+  captureWorkspaceInputs,
+  type WorkspaceInputCapture,
+} from './analyze-delta.js';
 import { createTypeScriptAnalyzeRuntime, type AnalyzeRuntime } from './ingestion/runtime/index.js';
 import {
   initLbug,
@@ -31,6 +36,10 @@ import {
 } from './lbug/lbug-adapter.js';
 import {
   getStoragePaths,
+  OVERLAY_ARTIFACT_BUDGET_BYTES,
+  overlayArtifactBytes,
+  pruneOverlayGenerations,
+  acquireOverlayGenerationPin,
   readActiveGenerationMeta,
   saveMeta,
   loadMeta,
@@ -90,6 +99,18 @@ import {
   commitManagedAnalysisPublication,
 } from './analysis/analysis-coordinator.js';
 import { execFileText } from './process/exec-file.js';
+import { digestDatabaseFile } from './lbug/database-digest.js';
+import { syncPath, syncTree } from './durable-publish.js';
+import {
+  workspaceParserIdentity,
+  supervisedWorkspaceParserIdentity,
+} from './tree-sitter/parser-identity.js';
+import type { ScopeRetentionRequest } from './ingestion/pipeline-phases/scope-retention-stage.js';
+import {
+  persistScopeRetentionCandidate,
+  copyScopeRetentionCandidate,
+} from './ingestion/pipeline-phases/scope-retention-candidate.js';
+import { loadScopeRetentionCandidate } from './ingestion/pipeline-phases/scope-retention-candidate-reader.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -102,6 +123,7 @@ interface AnalyzeCallbacks {
 
 export interface RunFullAnalysisDependencies {
   analyzeRuntime?: AnalyzeRuntime;
+  scopeRetention?: ScopeRetentionRequest;
 }
 
 export interface AnalyzeOptions {
@@ -138,6 +160,8 @@ export interface AnalyzeOptions {
   includePaths?: string[];
   /** Build a disposable graph without publishing an index generation. */
   dirtyOverlay?: boolean;
+  /** Build an isolated complete graph of captured workspace inputs. */
+  workspaceGraph?: boolean;
   /** Repository-relative dirty source files; at most 50, never directory roots. */
   overlayPaths?: string[];
   /** Publication identity supplied only by the managed analysis runner. */
@@ -828,6 +852,16 @@ async function runDirtyOverlayAnalysis(
   callbacks: AnalyzeCallbacks,
   dependencies: RunFullAnalysisDependencies,
 ): Promise<AnalyzeResult> {
+  return runWorkspaceAnalysis(repoPath, overlayPaths, callbacks, dependencies, false);
+}
+
+async function runWorkspaceAnalysis(
+  repoPath: string,
+  overlayPaths: string[],
+  callbacks: AnalyzeCallbacks,
+  dependencies: RunFullAnalysisDependencies,
+  workspaceGraph: boolean,
+): Promise<AnalyzeResult> {
   if (overlayPaths.length > 50) {
     throw new Error('Dirty overlay is limited to 50 source files; refusing a full scan.');
   }
@@ -846,19 +880,196 @@ async function runDirtyOverlayAnalysis(
   if (!(await fs.lstat(overlayPath)).isDirectory()) {
     throw new Error('Dirty overlay directory must not be a symlink.');
   }
+  const previousCurrent = (
+    await fs.readFile(path.join(overlayPath, 'CURRENT'), 'utf8').catch(() => '')
+  ).trim();
+  await pruneOverlayGenerations(overlayPath, previousCurrent);
+  const bytes = await overlayArtifactBytes(overlayPath);
+  const configuredBudget = Number(process.env.ONTOINDEX_OVERLAY_BUDGET_BYTES);
+  const budget =
+    Number.isSafeInteger(configuredBudget) &&
+    configuredBudget >= 0 &&
+    process.env.ONTOINDEX_OVERLAY_BUDGET_BYTES !== undefined
+      ? configuredBudget
+      : OVERLAY_ARTIFACT_BUDGET_BYTES;
+  if (bytes > budget) {
+    throw Object.assign(
+      new Error(`Overlay artifacts use ${bytes} bytes, exceeding budget ${budget} bytes.`),
+      {
+        code: 'overlay_budget_exceeded',
+      },
+    );
+  }
   const generationId = `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`;
   const generationPath = path.join(overlayPath, generationId);
   const overlayDbPath = path.join(generationPath, 'lbug');
   const currentTempPath = path.join(overlayPath, `.CURRENT-${generationId}.tmp`);
   await fs.mkdir(generationPath);
+  let capture: WorkspaceInputCapture | undefined;
+  let persistedCandidateBytes = 0;
+  let published = false;
+  let replayPin: Awaited<ReturnType<typeof acquireOverlayGenerationPin>> | undefined;
   try {
+    const captureStart = performance.now();
+    // Build from one verified byte snapshot so the stored manifest identifies the exact inputs.
+    if (workspaceGraph) capture = await captureWorkspaceInputs(repoPath);
+    else if (includePaths.length > 0)
+      capture = await captureWorkspaceInputs(repoPath, { includePaths });
+    const inventory: Record<string, [number, number | null, number | null, string]> = {};
+    let inventoryTruncated = false;
+    if (workspaceGraph) {
+      const entries = capture!.manifest.workspaceCapture!.entries;
+      inventoryTruncated = entries.length > 100_000;
+      if (!inventoryTruncated) {
+        for (const entry of entries) {
+          const stat = await fs.lstat(path.join(repoPath, entry.path)).catch(() => null);
+          inventory[entry.path] = [
+            entry.byteLength,
+            stat?.mtimeMs ?? null,
+            stat?.ino ?? null,
+            entry.digest,
+          ];
+        }
+        inventoryTruncated = Buffer.byteLength(JSON.stringify(inventory)) > 64 * 1024 * 1024;
+      }
+    }
+    const captureAndInventoryMs = performance.now() - captureStart;
+    const phases: { name: string; durationMs: number }[] = [];
     const activeBase = await readActiveGenerationMeta(storagePath);
+    if (
+      capture &&
+      ((getCurrentCommit(repoPath) || null) !== capture!.head ||
+        (activeBase.activeGeneration?.generationId ?? null) !== capture!.baseGenerationId ||
+        (activeBase.meta?.lastCommit ?? null) !== capture!.baseCommit)
+    ) {
+      throw new Error('Workspace graph base or HEAD changed after capture; rebuild required.');
+    }
+    const dirtyPlan = workspaceGraph ? await planDirtyOverlay(repoPath) : undefined;
+    const dirtyPathSet = new Set(dirtyPlan?.allDirtyPaths ?? includePaths);
+    let degraded = inventoryTruncated;
+    let parseErrorCount = 0;
+    const parseErrorFiles = new Set<string>();
     const overlayBase = {
+      head: capture?.head ?? (getCurrentCommit(repoPath) || null),
       baseGenerationId: activeBase.activeGeneration?.generationId ?? null,
       baseCommit: activeBase.meta?.lastCommit ?? null,
+      manifestDigest: capture?.manifestDigest ?? null,
+      configurationDigest: capture?.manifest.workspaceCapture?.configurationDigest ?? null,
+      parserIdentity: capture?.manifest.workspaceCapture?.parserIdentity ?? null,
+      includePaths,
+      ...(workspaceGraph
+        ? {
+            inventory: inventoryTruncated ? undefined : inventory,
+            inventoryTruncated,
+            ...(inventoryTruncated
+              ? {
+                  inventoryReason:
+                    'workspace graph input inventory exceeds 100000 entries or 64 MiB',
+                }
+              : {}),
+            capability: 'workspace-graph',
+            profile: 'full',
+            coverage: 'complete',
+            parseErrorCount: 0,
+            parseErrorFiles: [] as string[],
+            ftsIndexes: undefined as string[] | undefined,
+            ftsDurationMs: undefined as number | undefined,
+            dirtyPaths: [...dirtyPathSet].sort(),
+            tombstones: [...dirtyPlan!.tombstones].sort(),
+          }
+        : {}),
+      inputs: Object.fromEntries(
+        (capture?.manifest.workspaceCapture?.entries ?? [])
+          .filter((entry) => dirtyPathSet.has(entry.path))
+          .map((entry) => [entry.path, entry.digest]),
+      ),
     };
+    const retentionCapture = workspaceGraph ? capture : undefined;
+    const retentionRequest = dependencies.scopeRetention;
+    let scopeReplay: PipelineOptions['scopeReplay'];
+    if (
+      retentionRequest &&
+      retentionCapture &&
+      /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(previousCurrent)
+    ) {
+      const checkReplayRequest = () => {
+        if (retentionRequest.signal?.aborted) throw new Error('Workspace replay cancelled');
+        if (!Number.isFinite(retentionRequest.deadline) || Date.now() >= retentionRequest.deadline)
+          throw new Error('Workspace replay deadline');
+      };
+      checkReplayRequest();
+      // Only the supervised child captures a baseline before loading analyzer code.
+      const parserCodeIdentity = await supervisedWorkspaceParserIdentity();
+      checkReplayRequest();
+      if (parserCodeIdentity !== null) {
+        const sourceGenerationPath = path.join(overlayPath, previousCurrent);
+        const expected = {
+          identity: {
+            sourceManifestDigest: retentionCapture.manifestDigest,
+            targetCommit: retentionCapture.head ?? '',
+            baseGenerationId: retentionCapture.baseGenerationId,
+          },
+          parserCodeIdentity,
+        };
+        try {
+          replayPin = await acquireOverlayGenerationPin(sourceGenerationPath);
+          const candidate = await loadScopeRetentionCandidate(
+            sourceGenerationPath,
+            expected,
+            retentionRequest,
+          );
+          checkReplayRequest();
+          scopeReplay = {
+            candidate,
+            request: retentionRequest,
+            preserve: async () => {
+              const before = retentionRequest.artifactAllowance.remainingBytes;
+              try {
+                await copyScopeRetentionCandidate(
+                  sourceGenerationPath,
+                  generationPath,
+                  expected,
+                  retentionRequest,
+                );
+              } finally {
+                persistedCandidateBytes =
+                  before - retentionRequest.artifactAllowance.remainingBytes;
+              }
+            },
+          };
+        } catch {
+          checkReplayRequest();
+          // Missing, stale or corrupt candidates are ordinary full-parse misses.
+        }
+      }
+    }
+    const scopeRetention: PipelineOptions['scopeRetention'] =
+      retentionRequest && retentionCapture
+        ? {
+            ...retentionRequest,
+            consume: async (handle) => {
+              const before = retentionRequest.artifactAllowance.remainingBytes;
+              try {
+                await persistScopeRetentionCandidate(
+                  handle,
+                  generationPath,
+                  {
+                    sourceManifestDigest: retentionCapture.manifestDigest,
+                    targetCommit: retentionCapture.head ?? '',
+                    baseGenerationId: retentionCapture.baseGenerationId,
+                  },
+                  retentionRequest,
+                );
+              } finally {
+                persistedCandidateBytes =
+                  before - retentionRequest.artifactAllowance.remainingBytes;
+              }
+            },
+          }
+        : undefined;
+    const pipelineStart = performance.now();
     const pipelineResult: PipelineResult =
-      includePaths.length === 0
+      !workspaceGraph && includePaths.length === 0
         ? { graph: createKnowledgeGraph(), repoPath, totalFileCount: 0, usedWorkerPool: false }
         : await runAnalysisPipeline(
             repoPath,
@@ -868,37 +1079,157 @@ async function runDirtyOverlayAnalysis(
                 Math.round(p.percent * 0.6),
                 PHASE_LABELS[p.phase] || p.phase,
               ),
-            { profile: 'symbols', includePaths },
+            {
+              profile: workspaceGraph ? 'full' : 'symbols',
+              ...(scopeRetention ? { scopeRetention } : {}),
+              ...(scopeReplay ? { scopeReplay } : {}),
+              ...(workspaceGraph
+                ? {
+                    onTelemetry: (
+                      event: Parameters<NonNullable<PipelineOptions['onTelemetry']>>[0],
+                    ) => {
+                      if (
+                        event.event === 'phase-end' &&
+                        typeof event.phaseName === 'string' &&
+                        event.phaseName.length > 0 &&
+                        typeof event.durationMs === 'number' &&
+                        Number.isFinite(event.durationMs) &&
+                        event.durationMs >= 0 &&
+                        phases.length < 128
+                      ) {
+                        phases.push({ name: event.phaseName, durationMs: event.durationMs });
+                      }
+                      if (event.event === 'parse-error-files') {
+                        parseErrorCount += event.parseErrorCount ?? 0;
+                        for (const filePath of event.parseErrorFiles ?? []) {
+                          if (parseErrorFiles.size < 1000) parseErrorFiles.add(filePath);
+                        }
+                      }
+                      if (
+                        event.degradedFiles?.length ||
+                        event.event === 'phase-error' ||
+                        event.degradedReason ||
+                        event.slowFiles?.some((file) => file.status !== 'processed')
+                      ) {
+                        degraded = true;
+                      }
+                    },
+                  }
+                : { includePaths }),
+              capturedWorkspace: {
+                captureRoot: capture!.captureRoot,
+                canonicalRepoPath: capture!.canonicalRepoPath,
+              },
+            },
             dependencies.analyzeRuntime,
           );
+    const pipelineMs = performance.now() - pipelineStart;
+    const storageStart = performance.now();
     await initLbug(overlayDbPath, { maxDBSize: 2 ** 32 });
-    await loadGraphToLbug(pipelineResult.graph, repoPath, generationPath, (message) => {
-      callbacks.onProgress('lbug', 80, message);
-    });
+    await loadGraphToLbug(
+      pipelineResult.graph,
+      capture?.captureRoot ?? repoPath,
+      generationPath,
+      (message) => {
+        callbacks.onProgress('lbug', 80, message);
+      },
+    );
     const stats = await getLbugStats();
-    await closeLbugForPath(overlayDbPath);
-    await fs.writeFile(path.join(generationPath, 'base.json'), JSON.stringify(overlayBase));
+    const storageLoadMs = performance.now() - storageStart;
+    let ftsIndexes: string[] | undefined;
+    let ftsDurationMs: number | undefined;
+    if (workspaceGraph) {
+      // Pool readers are read-only and cannot create indexes, so build them before publishing.
+      const ftsStart = performance.now();
+      const counts = countGraphNodesByLabel(pipelineResult.graph);
+      ftsIndexes = [];
+      for (const { table, indexName, properties } of FTS_INDEXES) {
+        if ((counts.get(table) ?? 0) === 0) continue;
+        try {
+          await createFTSIndex(
+            table,
+            indexName,
+            selectAnalyzeFTSProperties(table, properties, pipelineResult.graph),
+          );
+          ftsIndexes.push(indexName);
+        } catch (error) {
+          // Without the extension the generation stays valid but cannot rank lexical queries.
+          if (!/FTS extension unavailable/.test(error instanceof Error ? error.message : '')) {
+            throw error;
+          }
+          ftsIndexes = [];
+          break;
+        }
+      }
+      ftsDurationMs = performance.now() - ftsStart;
+    }
+    // A swallowed native close failure must not be followed by publication of the generation.
+    await closeLbugForPath(overlayDbPath, { strict: true });
+    const databaseDigest = await digestDatabaseFile(overlayDbPath);
+    if (workspaceGraph) {
+      overlayBase.ftsIndexes = ftsIndexes;
+      overlayBase.ftsDurationMs = ftsDurationMs;
+      Object.assign(overlayBase, {
+        buildTimings: {
+          ...(pipelineResult.parseMode === 'full' || pipelineResult.parseMode === 'retained-replay'
+            ? { parseMode: pipelineResult.parseMode }
+            : {}),
+          captureAndInventoryMs,
+          pipelineMs,
+          storageLoadMs,
+          ftsMs: ftsDurationMs,
+          phases,
+        },
+      });
+      // A truncated path list cannot say which files failed, so no path may be called authoritative.
+      const parseErrorListTruncated = parseErrorCount > parseErrorFiles.size;
+      overlayBase.coverage =
+        degraded || parseErrorListTruncated
+          ? 'degraded'
+          : parseErrorCount > 0
+            ? 'partial'
+            : 'complete';
+      overlayBase.parseErrorCount = parseErrorCount;
+      overlayBase.parseErrorFiles = [...parseErrorFiles].sort();
+    }
+    const currentBase = await readActiveGenerationMeta(storagePath);
+    if (
+      (getCurrentCommit(repoPath) || null) !== overlayBase.head ||
+      (currentBase.activeGeneration?.generationId ?? null) !== overlayBase.baseGenerationId ||
+      (currentBase.meta?.lastCommit ?? null) !== overlayBase.baseCommit
+    ) {
+      throw new Error('Workspace graph base or HEAD changed during analysis; rebuild required.');
+    }
+    await fs.writeFile(
+      path.join(generationPath, 'base.json'),
+      JSON.stringify({ ...overlayBase, databaseDigest }),
+    );
     callbacks.onProgress('done', 100, 'Dirty overlay built; active index unchanged');
     await fs.writeFile(currentTempPath, `${generationId}\n`);
+    await syncTree(generationPath);
+    await syncPath(currentTempPath);
+    if (capture && (await workspaceParserIdentity()) !== capture.parserIdentity) {
+      throw new Error('Workspace parser identity changed during analysis; restart required.');
+    }
     await fs.rename(currentTempPath, path.join(overlayPath, 'CURRENT'));
+    published = true;
+    await syncPath(overlayPath, { bestEffort: true }).catch(() => {});
 
     // Published stores are immutable. A Windows reader may retain a file lock,
     // so pruning is only housekeeping, never a condition of build success.
     let pruneFailed = false;
     try {
-      const generations = [];
-      for (const entry of await fs.readdir(overlayPath, { withFileTypes: true })) {
-        if (!entry.isDirectory() || !/^\d+-\d+-[a-z0-9]+$/.test(entry.name)) continue;
-        const dir = path.join(overlayPath, entry.name);
-        generations.push({ name: entry.name, dir, mtime: (await fs.stat(dir)).mtimeMs });
-      }
-      generations.sort((a, b) =>
-        a.name === generationId ? -1 : b.name === generationId ? 1 : b.mtime - a.mtime,
-      );
-      for (const generation of generations.slice(3)) {
-        await fs.rm(generation.dir, { recursive: true, force: true }).catch(() => {
-          pruneFailed = true;
-        });
+      pruneFailed = await pruneOverlayGenerations(overlayPath, generationId);
+      const publishedBytes = await overlayArtifactBytes(overlayPath);
+      if (publishedBytes > budget) {
+        // The budget is checked before a build, so one build can overshoot; say so instead of hiding it.
+        try {
+          callbacks.onLog?.(
+            `Overlay artifacts now use ${publishedBytes} bytes, above the ${budget} byte budget; the next build will be refused until older generations are released.`,
+          );
+        } catch {
+          // A logging callback must not turn housekeeping into a failed build.
+        }
       }
       // Legacy single-file overlays are never opened by generation readers.
       await fs.rm(path.join(overlayPath, 'lbug'), { recursive: true, force: true }).catch(() => {
@@ -923,9 +1254,22 @@ async function runDirtyOverlayAnalysis(
     };
   } catch (err) {
     await closeLbugForPath(overlayDbPath).catch(() => {});
-    await fs.rm(currentTempPath, { force: true }).catch(() => {});
-    await fs.rm(generationPath, { recursive: true, force: true }).catch(() => {});
+    if (!published) {
+      await fs.rm(currentTempPath, { force: true }).catch(() => {});
+      await fs
+        .rm(generationPath, { recursive: true, force: true })
+        .then(() => {
+          if (dependencies.scopeRetention) {
+            dependencies.scopeRetention.artifactAllowance.remainingBytes += persistedCandidateBytes;
+            persistedCandidateBytes = 0;
+          }
+        })
+        .catch(() => {});
+    }
     throw err;
+  } finally {
+    await replayPin?.release().catch(() => {});
+    await capture?.dispose().catch(() => {});
   }
 }
 
@@ -947,6 +1291,9 @@ export async function runFullAnalysis(
   dependencies: RunFullAnalysisDependencies = {},
 ): Promise<AnalyzeResult> {
   // Keep overlay builds outside every active-index lifecycle operation below.
+  if (options.workspaceGraph === true) {
+    return runWorkspaceAnalysis(repoPath, [], callbacks, dependencies, true);
+  }
   if (options.dirtyOverlay === true) {
     return runDirtyOverlayAnalysis(repoPath, options.overlayPaths ?? [], callbacks, dependencies);
   }
@@ -1069,6 +1416,7 @@ export async function runFullAnalysis(
   if (
     existingMeta &&
     !options.force &&
+    !dependencies.scopeRetention &&
     existingMeta.lastCommit === currentCommit &&
     persistedPipelineProfile(existingMeta) === requestedProfile &&
     sameStringList(existingMeta.includePaths, includePaths) &&
@@ -1128,6 +1476,8 @@ export async function runFullAnalysis(
 
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
   let pipelineResult: PipelineResult;
+  let stagedGeneration: IndexGenerationPaths | null = null;
+  let persistedCandidateBytes = 0;
   const degradedFiles = new Map<string, { reason: string; phase: string; language: string }>();
   const recordDegradedFiles = (
     files?: readonly AnalyzeDegradedFile[],
@@ -1169,6 +1519,34 @@ export async function runFullAnalysis(
     if (includePaths.length > 0) {
       pipelineOptions.includePaths = includePaths;
     }
+    if (dependencies.scopeRetention) {
+      const request = dependencies.scopeRetention;
+      const generation = await createIndexGeneration(
+        storagePath,
+        `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`,
+      );
+      stagedGeneration = generation;
+      pipelineOptions.scopeRetention = {
+        ...request,
+        consume: async (handle) => {
+          const before = request.artifactAllowance.remainingBytes;
+          try {
+            await persistScopeRetentionCandidate(
+              handle,
+              generation.generationPath,
+              {
+                sourceManifestDigest: sourceManifestDigest(inputManifest),
+                targetCommit: currentCommit,
+                baseGenerationId: existingMeta?.generationId ?? null,
+              },
+              request,
+            );
+          } finally {
+            persistedCandidateBytes = before - request.artifactAllowance.remainingBytes;
+          }
+        },
+      };
+    }
 
     pipelineResult = await runAnalysisPipeline(
       repoPath,
@@ -1181,31 +1559,41 @@ export async function runFullAnalysis(
       dependencies.analyzeRuntime,
     );
   } catch (err) {
+    if (stagedGeneration !== null) {
+      await discardIndexGeneration(stagedGeneration)
+        .then(() => {
+          if (dependencies.scopeRetention) {
+            dependencies.scopeRetention.artifactAllowance.remainingBytes += persistedCandidateBytes;
+            persistedCandidateBytes = 0;
+          }
+        })
+        .catch(() => {});
+    }
     partialCheckpoint?.markFailed(err);
     gcTelemetry?.stop();
     throw err;
   }
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
-  progress('lbug', 60, 'Loading into LadybugDB...');
-  emitTelemetry({
-    event: 'phase-start',
-    phaseName: 'lbug',
-    graphNodes: pipelineResult.graph.nodeCount,
-    graphRelationships: pipelineResult.graph.relationshipCount,
-  });
-  const lbugStart = Date.now();
-
-  let stagedGeneration: IndexGenerationPaths | null = await createIndexGeneration(
-    storagePath,
-    `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`,
-  );
-  const generationStoragePath = stagedGeneration.generationPath;
-  const lbugPath = stagedGeneration.lbugPath;
-
-  await initLbug(lbugPath);
   try {
-    // All work after initLbug is wrapped in try/finally to ensure closeLbug()
+    progress('lbug', 60, 'Loading into LadybugDB...');
+    emitTelemetry({
+      event: 'phase-start',
+      phaseName: 'lbug',
+      graphNodes: pipelineResult.graph.nodeCount,
+      graphRelationships: pipelineResult.graph.relationshipCount,
+    });
+    const lbugStart = Date.now();
+
+    stagedGeneration ??= await createIndexGeneration(
+      storagePath,
+      `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`,
+    );
+    const generationStoragePath = stagedGeneration.generationPath;
+    const lbugPath = stagedGeneration.lbugPath;
+
+    await initLbug(lbugPath);
+    // Initialization and all subsequent work are wrapped in try/finally to ensure closeLbug()
     // is called even if an error occurs — the module-level singleton DB handle
     // must be released to avoid blocking subsequent invocations.
 
@@ -1791,7 +2179,14 @@ export async function runFullAnalysis(
       /* swallow */
     }
     if (stagedGeneration !== null) {
-      await discardIndexGeneration(stagedGeneration).catch(() => {});
+      await discardIndexGeneration(stagedGeneration)
+        .then(() => {
+          if (dependencies.scopeRetention) {
+            dependencies.scopeRetention.artifactAllowance.remainingBytes += persistedCandidateBytes;
+            persistedCandidateBytes = 0;
+          }
+        })
+        .catch(() => {});
     }
     partialCheckpoint?.markFailed(err);
     gcTelemetry?.stop();

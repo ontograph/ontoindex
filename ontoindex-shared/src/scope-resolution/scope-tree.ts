@@ -12,7 +12,8 @@
  *   - Every non-`Module` scope has a non-null parent.
  *   - Every parent pointer references a scope that was also supplied to
  *     `buildScopeTree`.
- *   - Parent range **strictly contains** child range.
+ *   - Parent range **strictly contains** child range, except that a root
+ *     module may share its range with a non-module child.
  *   - Sibling ranges under the same parent do not overlap.
  *   - Parent and child live in the same `filePath`. (Cross-file parent
  *     pointers would be a category error — a `File` scope is not the
@@ -119,7 +120,13 @@ export function buildScopeTree(scopes: readonly Scope[]): ScopeTree {
         `Scope '${scope.id}' (${scope.filePath}) has parent '${parent.id}' in a different file (${parent.filePath}). Parent/child scopes must share filePath.`,
       );
     }
-    if (!rangeStrictlyContains(parent.range, scope.range)) {
+    if (
+      !rangeStrictlyContains(
+        parent.range,
+        scope.range,
+        parent.kind === 'Module' && parent.parent === null && scope.kind !== 'Module',
+      )
+    ) {
       throw new ScopeTreeInvariantError(
         'parent-must-contain-child',
         `Parent scope '${parent.id}' at ${formatRange(parent.range)} does not strictly contain child '${scope.id}' at ${formatRange(scope.range)}.`,
@@ -209,17 +216,17 @@ function freezeTree(
 /**
  * `outer` strictly contains `inner` when `outer`'s start is at or before
  * `inner`'s start, `outer`'s end is at or after `inner`'s end, and they are
- * not the exact same range. Equal ranges are rejected — a child cannot
- * occupy the exact same span as its parent.
+ * not the exact same range, unless the caller permits equality for a root
+ * module and its non-module child.
  */
-function rangeStrictlyContains(outer: Range, inner: Range): boolean {
+function rangeStrictlyContains(outer: Range, inner: Range, allowEqual = false): boolean {
   if (
     outer.startLine === inner.startLine &&
     outer.startCol === inner.startCol &&
     outer.endLine === inner.endLine &&
     outer.endCol === inner.endCol
   ) {
-    return false;
+    return allowEqual;
   }
   const outerStartsAtOrBefore =
     outer.startLine < inner.startLine ||
@@ -237,6 +244,14 @@ function rangeStrictlyContains(outer: Range, inner: Range): boolean {
  * and the typical "sibling blocks meet but don't overlap" pattern.
  */
 function rangesOverlap(a: Range, b: Range): boolean {
+  // Identical empty siblings are ambiguous too; ordinary touching boundaries remain valid.
+  if (
+    a.startLine === b.startLine &&
+    a.startCol === b.startCol &&
+    a.endLine === b.endLine &&
+    a.endCol === b.endCol
+  )
+    return true;
   const aEndsBeforeB =
     a.endLine < b.startLine || (a.endLine === b.startLine && a.endCol <= b.startCol);
   const bEndsBeforeA =

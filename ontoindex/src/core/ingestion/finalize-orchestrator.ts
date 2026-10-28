@@ -37,6 +37,8 @@ import type {
   FinalizeFile,
   FinalizeHooks,
   ParsedFile,
+  RegistryContext,
+  RegistryProviders,
   Scope,
   ScopeId,
   SymbolDefinition,
@@ -139,6 +141,7 @@ export function finalizeScopeModel(
     qualifiedNames,
     moduleScopes,
     methodDispatch,
+    lookupExport: finalizeOut.lookupExport,
     imports: finalizeOut.imports,
     bindings: finalizeOut.bindings,
     referenceSites: Object.freeze([...allReferenceSites]),
@@ -147,17 +150,51 @@ export function finalizeScopeModel(
   };
 }
 
+/** Build a registry view with finalized module bindings and imports, preserving extracted scopes. */
+export function buildScopeRegistryContext(
+  indexes: ScopeResolutionIndexes,
+  providers: RegistryProviders = {},
+): RegistryContext {
+  const scopes = buildScopeTree(
+    [...indexes.scopeTree.byId.values()].map((scope) =>
+      scope.kind === 'Module'
+        ? {
+            ...scope,
+            bindings: indexes.bindings.get(scope.id) ?? scope.bindings,
+            imports: indexes.imports.get(scope.id) ?? scope.imports,
+          }
+        : scope,
+    ),
+  );
+
+  return {
+    scopes,
+    defs: indexes.defs,
+    qualifiedNames: indexes.qualifiedNames,
+    moduleScopes: indexes.moduleScopes,
+    methodDispatch: indexes.methodDispatch,
+    lookupExport: indexes.lookupExport,
+    providers,
+  };
+}
+
 // ─── Internal ───────────────────────────────────────────────────────────────
 
-/** Shape-reduce a `ParsedFile` to the narrower `FinalizeFile` the shared
- *  algorithm reads. The subset is stable — `FinalizeFile` is a proper
- *  subset of `ParsedFile`. */
+/** Adapt per-file definitions and extracted module bindings to the shared
+ *  finalize input. Files without the module scope retain legacy binding
+ *  materialization from localDefs. */
 function toFinalizeFile(file: ParsedFile): FinalizeFile {
+  const moduleScope = file.scopes.find((scope) => scope.id === file.moduleScope);
   return {
     filePath: file.filePath,
     moduleScope: file.moduleScope,
     parsedImports: file.parsedImports,
     localDefs: file.localDefs,
+    ...(moduleScope !== undefined ? { localBindings: moduleScope.bindings } : {}),
+    ...(Object.hasOwn(file, 'exports') ? { exports: file.exports } : {}),
+    ...(Object.hasOwn(file, 'exportsByNamespace')
+      ? { exportsByNamespace: file.exportsByNamespace }
+      : {}),
   };
 }
 

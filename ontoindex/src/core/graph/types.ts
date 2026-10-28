@@ -23,5 +23,10 @@ export interface KnowledgeGraph {
   addRelationship: (relationship: GraphRelationship) => void;
   removeNode: (nodeId: string) => boolean;
   removeNodesByFile: (filePath: string) => number;
+  removeNodesByFiles: (filePaths: Iterable<string>) => {
+    removedNodes: number;
+    removedRelationships: number;
+    affectedSourceIds: string[];
+  };
   removeRelationship: (relationshipId: string) => boolean;
 }

@@ -90,6 +90,11 @@ export interface RuntimeHealthSnapshot {
   };
   /** Whether stored metadata reports at least one embedding vector. */
   embeddingsAvailable?: boolean | null;
+  workspaceReadiness?: {
+    state: 'not-checked';
+    dirtyCoverageScope: 'symbol-overlay-eligibility';
+    preparationChecked: false;
+  };
   degradedReason: string | null;
   repairCommand: string;
   repairAction?: RuntimeRepairAction;
@@ -176,6 +181,11 @@ export async function readRuntimeHealth(
           : 'stale'
         : 'unknown',
     dirtyCoverage,
+    workspaceReadiness: {
+      state: 'not-checked',
+      dirtyCoverageScope: 'symbol-overlay-eligibility',
+      preparationChecked: false,
+    },
     embeddingsAvailable:
       typeof meta?.stats?.embeddings === 'number' && Number.isFinite(meta.stats.embeddings)
         ? meta.stats.embeddings > 0
@@ -302,12 +312,14 @@ export function deriveRuntimeHealth(input: {
     return {
       freshnessState: 'dirty',
       degradedReason: dirtyReason,
-      repairCommand: 'commit, stash, or clean the worktree, then rerun ontoindex analyze',
+      repairCommand:
+        'ontoindex analyze supports working-tree sources; ontoindex analyze --dirty-overlay provides partial file coverage, with current relationships limited to covered files',
       repairAction: {
         tool: 'ontoindex',
         command: 'analyze',
         args: [],
-        reason: 'analyze after the worktree is clean',
+        reason:
+          'analyze working-tree sources; verify partial overlay coverage before relying on current relationships',
       },
     };
   }

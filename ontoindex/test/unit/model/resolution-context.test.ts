@@ -9,6 +9,49 @@
 import { describe, it, expect } from 'vitest';
 import { createResolutionContext } from '../../../src/core/ingestion/model/resolution-context.js';
 
+describe('ResolutionContext registration observation', () => {
+  it('retains publication authority across cache resets and releases it on clear', () => {
+    const ctx = createResolutionContext();
+    const authority = { owns: () => true, emit: () => {} };
+    ctx.scopeCallPublication = authority;
+    ctx.enableCache('app.ts');
+    ctx.clearCache();
+    expect(ctx.scopeCallPublication).toBe(authority);
+    ctx.clear();
+    expect(ctx.scopeCallPublication).toBeUndefined();
+  });
+
+  it('forwards bounded observation and failure notification without local journaling', () => {
+    const events: string[] = [];
+    let failures = 0;
+    const ctx = createResolutionContext({
+      onRegistration: (encoded) => {
+        events.push(encoded);
+        return false;
+      },
+      onRegistrationError: () => {
+        failures++;
+      },
+    });
+    ctx.model.symbols.add('a.ts', 'First', 'first', 'Class');
+    ctx.model.symbols.add('a.ts', 'Second', 'second', 'Class');
+    expect(events.map((event) => JSON.parse(event).name)).toEqual(['First']);
+    expect(failures).toBe(1);
+    expect(ctx.model.snapshotRegistrations()).toBeUndefined();
+    expect(ctx.resolve('Second', 'a.ts')?.candidates[0]?.nodeId).toBe('second');
+  });
+
+  it('rejects observation options that cannot attach to a supplied model', () => {
+    const model = createResolutionContext().model;
+    expect(() => createResolutionContext({ model, onRegistration: () => true })).toThrow(
+      'Cannot observe registrations',
+    );
+    expect(() => createResolutionContext({ model, onRegistrationError: () => {} })).toThrow(
+      'Cannot observe registrations',
+    );
+  });
+});
+
 describe('ResolutionContext.resolve() — tier precedence', () => {
   it('Tier 2a-named binding chain takes precedence over Tier 2a import-scoped', () => {
     // Setup: A imports { User as U } from B. B defines both User (the

@@ -12,6 +12,7 @@
  */
 
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { nodeKind } from './_helpers/node-kind.js';
 import {
   runImpactKernel,
   SAFE_EDIT_DOWNSTREAM_RELATION_TYPES,
@@ -264,7 +265,7 @@ async function resolveSymbol(repoId: string, symbol: string): Promise<ResolvedSy
         nodeId: rowString(row, 'nodeId', 0),
         name: rowString(row, 'name', 1),
         filePath: rowString(row, 'filePath', 2),
-        kind: rowString(row, 'kind', 3),
+        kind: nodeKind(rowString(row, 'kind', 3), rowString(row, 'nodeId', 0)),
       };
     } catch {
       return null;
@@ -294,7 +295,7 @@ async function resolveSymbol(repoId: string, symbol: string): Promise<ResolvedSy
       nodeId: rowString(row, 'nodeId', 0),
       name: rowString(row, 'name', 1),
       filePath: rowString(row, 'filePath', 2),
-      kind: rowString(row, 'kind', 3),
+      kind: nodeKind(rowString(row, 'kind', 3), rowString(row, 'nodeId', 0)),
     };
   } catch {
     return null;

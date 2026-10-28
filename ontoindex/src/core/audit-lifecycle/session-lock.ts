@@ -69,6 +69,7 @@ export interface CreateAuditSessionLockFromStoreOptions {
   repoRoot: string;
   sessionId: string;
   ontoindexVersion: string;
+  graphIndexId?: string;
   graphHash?: string;
   createdAt?: string;
   tombstones?: readonly AuditSessionLockTombstoneInput[];
@@ -171,10 +172,13 @@ export async function createAuditSessionLockFromStore(
     sessionId: session.id,
     targetRepo: session.targetRepo,
     targetHead: session.targetHead,
-    graphIndexId: session.graphIndexId,
+    graphIndexId: options.graphIndexId ?? session.graphIndexId,
     graphHash: options.graphHash ?? session.sidecarStateHash,
     ontoindexVersion: options.ontoindexVersion,
     ...sessionSnapshotInput(session),
+    ...(session.snapshot !== undefined && options.graphIndexId !== undefined
+      ? { snapshot: { ...session.snapshot, graphIndexId: options.graphIndexId } }
+      : {}),
     tombstoneIds: tombstoneSnapshot.ids,
     tombstoneSnapshot,
     createdAt: options.createdAt ?? session.createdAt,

@@ -4,7 +4,9 @@
  * All external primitives are mocked so tests run without a live DB.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
+
+afterEach(() => vi.unstubAllEnvs());
 
 // ---------------------------------------------------------------------------
 // Mocks — must be declared before the import under test.
@@ -42,6 +44,10 @@ import { execFileText } from '../../../src/core/process/exec-file.js';
 import { getCurrentCommit } from '../../../src/storage/git.js';
 import { listRegisteredRepos, loadMeta } from '../../../src/storage/repo-manager.js';
 import { gnCanDelete } from '../../../src/mcp/super/can-delete.js';
+import { dispatchSuper } from '../../../src/mcp/super/dispatch.js';
+import { dispatchFacade } from '../../../src/mcp/facade/dispatch.js';
+import { attachRepoScopeIdentity } from '../../../src/mcp/shared/response-envelope.js';
+import type { LocalBackend } from '../../../src/mcp/local/local-backend.js';
 
 // Typed mock handles.
 const mockExecuteParameterized = executeParameterized as unknown as ReturnType<typeof vi.fn>;
@@ -143,6 +149,88 @@ describe('gnCanDelete', () => {
   });
 
   // ---- Test 1: fail closed for a reference-free symbol ----------------------
+
+  it.each(['caller', 'unresolved'] as const)(
+    'preserves the real %s handler report through the facade adapter',
+    async (scenario) => {
+      const seedQueries = () => {
+        mockExecuteParameterized.mockReset();
+        mockFindTestFiles.mockReset();
+        if (scenario === 'unresolved') {
+          mockExecuteParameterized.mockResolvedValueOnce([]);
+        } else {
+          mockExecuteParameterized
+            .mockResolvedValueOnce([resolvedRow()])
+            .mockResolvedValueOnce([callerRow()])
+            .mockResolvedValueOnce([]);
+          mockFindTestFiles.mockResolvedValueOnce({
+            coveringTests: [],
+            likelihoodOfCoverage: 'NONE',
+          });
+        }
+      };
+      const args = { action: 'can_delete', symbol: 'orphanHelper', includeCrossRepo: false };
+      const original = structuredClone(args);
+      const repo = { id: REPO_ID, repoPath: '/repo' };
+      const resolveRepo = vi.fn().mockResolvedValue(repo);
+      const callTool = vi.fn();
+      const withCommittedGraphNotice = vi.fn(async (report) => report);
+      vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');
+      seedQueries();
+      const direct = await dispatchSuper('gn_can_delete', args, REPO_ID);
+
+      seedQueries();
+      const facade = await dispatchFacade('audit', 'can_delete', args, {
+        resolveRepo,
+        callTool,
+        withCommittedGraphNotice,
+        ensureRepoInitialized: vi.fn(async () => {}),
+        withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => operation()),
+      } as unknown as LocalBackend);
+
+      expect(facade).toEqual(attachRepoScopeIdentity(direct, repo));
+      expect(direct).toMatchObject({
+        verdict: scenario === 'caller' ? 'DO-NOT-DELETE' : 'CAUTION',
+      });
+      expect(direct).toHaveProperty(
+        'blockers',
+        expect.arrayContaining([
+          scenario === 'caller'
+            ? { type: 'caller', detail: 'called by handle' }
+            : { type: 'incomplete-evidence', detail: 'symbol resolution failed' },
+        ]),
+      );
+      expect(direct).toHaveProperty('evidence.buildManifest', 'unavailable');
+      expect(withCommittedGraphNotice).toHaveBeenCalledExactlyOnceWith(direct, repo);
+      expect(resolveRepo).toHaveBeenCalledExactlyOnceWith(undefined);
+      expect(callTool).not.toHaveBeenCalled();
+      expect(args).toEqual(original);
+    },
+  );
+
+  it.each([{}, { symbol: 42 }, { symbol: 'orphanHelper', includeCrossRepo: 'true' }])(
+    'rejects malformed adapter arguments before graph queries: %j',
+    async (args) => {
+      const resolveRepo = vi.fn().mockResolvedValue({ id: REPO_ID, repoPath: '/repo' });
+      const callTool = vi.fn();
+
+      await expect(dispatchSuper('gn_can_delete', args, REPO_ID)).rejects.toThrow(
+        'Invalid arguments for gn_can_delete',
+      );
+      await expect(
+        dispatchFacade('audit', 'can_delete', args, {
+          resolveRepo,
+          callTool,
+          ensureRepoInitialized: vi.fn(async () => {}),
+          withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => operation()),
+        } as unknown as LocalBackend),
+      ).rejects.toThrow('Invalid arguments for gn_can_delete');
+      expect(mockExecuteParameterized).not.toHaveBeenCalled();
+      expect(mockFindTestFiles).not.toHaveBeenCalled();
+      expect(mockExecFileText).not.toHaveBeenCalled();
+      expect(callTool).not.toHaveBeenCalled();
+    },
+  );
 
   it('returns CAUTION for a reference-free symbol when build-manifest proof is unavailable', async () => {
     mockOrphanSymbol();

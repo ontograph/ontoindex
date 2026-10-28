@@ -1,4 +1,5 @@
-import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { executeParameterized, getPinnedGenerationDir } from '../../core/lbug/pool-adapter.js';
+import { isAutomaticWorkspaceEnabled, getPinnedOverlaySnapshot } from '../local/backend-overlay.js';
 import { randomUUID } from 'node:crypto';
 import { markInvocationError } from '../shared/invocation-error.js';
 
@@ -38,7 +39,8 @@ type GraphWalkErrorCode =
   | 'SEED_SYMBOL_REQUIRED'
   | 'SEED_NOT_FOUND'
   | 'WALK_ID_REQUIRED'
-  | 'WALK_NOT_FOUND';
+  | 'WALK_NOT_FOUND'
+  | 'RESTART_REQUIRED';
 
 interface GraphWalkLimits {
   maxSteps: number;
@@ -64,6 +66,7 @@ const VALID_POLICIES = new Set<GraphWalkPolicy>([
 ]);
 
 const activeWalks = new Map<string, GraphWalkState>();
+const walkBindings = new WeakMap<GraphWalkState, string>();
 const pendingSteps = new Map<string, Promise<void>>();
 
 export async function gnGraphWalk(repoId: string, params: GraphWalkParams): Promise<any> {
@@ -121,6 +124,7 @@ export async function gnGraphWalk(repoId: string, params: GraphWalkParams): Prom
       return graphWalkError(action, 'WALK_ID_REQUIRED', 'status action requires a walkId');
     const state = getWalk(repoId, walkId);
     if (!state) return graphWalkError(action, 'WALK_NOT_FOUND', `Walk ${walkId} not found`);
+    if (!matchesWalkBinding(repoId, state)) return restartWalk(action);
     state.updatedAt = new Date().toISOString();
     return { version: 1, ok: true, state, warnings, limits: graphWalkLimits() };
   }
@@ -129,7 +133,11 @@ export async function gnGraphWalk(repoId: string, params: GraphWalkParams): Prom
     if (!walkId) return graphWalkError(action, 'WALK_ID_REQUIRED', 'step action requires a walkId');
     const state = getWalk(repoId, walkId);
     if (!state) return graphWalkError(action, 'WALK_NOT_FOUND', `Walk ${walkId} not found`);
-    return serializeStep(walkId, () => stepWalk(repoId, state, warnings));
+    return serializeStep(walkId, () =>
+      matchesWalkBinding(repoId, state)
+        ? stepWalk(repoId, state, warnings)
+        : Promise.resolve(restartWalk(action)),
+    );
   }
 
   return graphWalkError('status', 'INVALID_PARAMS', `Unknown action: ${String(action)}`);
@@ -411,8 +419,36 @@ function graphWalkLimits(): GraphWalkLimits {
 }
 
 function registerWalkState(id: string, state: GraphWalkState): void {
+  const binding = currentWalkBinding(state.repoId);
+  if (binding !== undefined) walkBindings.set(state, binding);
   activeWalks.set(id, state);
   pruneActiveWalks();
+}
+
+function currentWalkBinding(repoId: string): string | undefined {
+  const snapshot = getPinnedOverlaySnapshot(repoId);
+  const generation = snapshot?.generation ?? getPinnedGenerationDir(repoId);
+  if (generation === undefined) return undefined;
+  return JSON.stringify([
+    repoId,
+    isAutomaticWorkspaceEnabled(),
+    snapshot?.capability ?? null,
+    snapshot?.coverage ?? null,
+    generation,
+  ]);
+}
+
+function matchesWalkBinding(repoId: string, state: GraphWalkState): boolean {
+  const binding = walkBindings.get(state);
+  return binding === undefined || binding === currentWalkBinding(repoId);
+}
+
+function restartWalk(action: GraphWalkAction): Record<string, unknown> {
+  return graphWalkError(
+    action,
+    'RESTART_REQUIRED',
+    'Graph generation changed; restart the graph walk.',
+  );
 }
 
 function pruneActiveWalks(nowMs = Date.now()): void {

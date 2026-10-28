@@ -493,7 +493,7 @@ describe('persisted graph-quality outcome', () => {
 
 describe('large-codebase-benchmark --max-peak-rss-mib parsing', () => {
   it('rejects zero, negative, and non-finite thresholds', () => {
-    for (const value of ['0', '-10', 'abc']) {
+    for (const value of ['0', '-10', 'abc', 'NaN', 'Infinity', '']) {
       expect(() => parseArgs(['--max-peak-rss-mib', value])).toThrow(
         /--max-peak-rss-mib must be a positive finite number/,
       );
@@ -503,6 +503,19 @@ describe('large-codebase-benchmark --max-peak-rss-mib parsing', () => {
   it('accepts a positive finite threshold and defaults to null when omitted', () => {
     expect(parseArgs(['--max-peak-rss-mib', '512']).maxPeakRssMib).toBe(512);
     expect(parseArgs([]).maxPeakRssMib).toBeNull();
+  });
+});
+
+describe('large-codebase-benchmark --sample-ms parsing', () => {
+  it.each(['99', '100.5', '60001', 'NaN', 'Infinity', ''])(
+    'rejects invalid interval %j',
+    (value) => {
+      expect(() => parseArgs(['--sample-ms', value])).toThrow();
+    },
+  );
+
+  it.each(['100', '60000'])('accepts boundary interval %s', (value) => {
+    expect(parseArgs(['--sample-ms', value]).sampleMs).toBe(Number(value));
   });
 });
 

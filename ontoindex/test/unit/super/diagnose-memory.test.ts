@@ -14,7 +14,18 @@ describe('buildProcessMemory', () => {
   it('reports the default buffer pool and disabled idle exit', () => {
     expect(buildProcessMemory(usage, {}, 0)).toMatchObject({
       bufferPoolMB: 64,
+      workspaceBufferPoolMB: 256,
       idleExitMs: null,
+    });
+  });
+
+  it('applies an explicit buffer setting to the workspace figure too', () => {
+    expect(
+      buildProcessMemory(usage, { ONTOINDEX_LBUG_BUFFER_MB: '128' }, 0).workspaceBufferPoolMB,
+    ).toBe(128);
+    expect(buildProcessMemory(usage, { ONTOINDEX_LBUG_BUFFER_MB: 'bad' }, 0)).toMatchObject({
+      bufferPoolMB: 64,
+      workspaceBufferPoolMB: 256,
     });
   });
 
@@ -33,6 +44,7 @@ describe('buildProcessMemory', () => {
       nativeMB: 564,
       openRepositoryPools: 2,
       bufferPoolMB: 128,
+      workspaceBufferPoolMB: 128,
       idleExitMs: 600_000,
     });
   });

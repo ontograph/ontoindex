@@ -38,6 +38,7 @@ const validRelPairs = getValidRelPairs();
 
 import { streamAllCSVsToDisk } from './csv-generator.js';
 import type { CachedEmbedding } from '../embeddings/types.js';
+import { quoteLbugString } from './quote-string.js';
 
 export type LbugProjectionRow = {
   [field: string]: unknown;
@@ -336,8 +337,6 @@ const getThrownMessage = (err: unknown): string | undefined =>
 const getOptionalThrownMessage = (err: unknown): string | undefined =>
   err == null ? undefined : getThrownMessage(err);
 
-const quoteLbugString = (value: string): string => value.replace(/'/g, "\\'");
-
 const LADYBUG_EXTENSIONS_VERSION = 'v0.17.0';
 
 const currentLbugExtensionPlatformDir = (): string | null => {
@@ -457,15 +456,23 @@ class LbugQueryTimeoutError extends Error {
   }
 }
 
-const retireTimedOutLbugSession = (): void => {
+const retireTimedOutLbugSession = (pending: unknown): void => {
   const retired = captureLbugSession();
   failedClosePaths.add(retired);
   resetLbugSessionState(true);
 
   // Native getAll() cannot be cancelled. Quarantine the handles immediately so
-  // later calls cannot reuse a connection that may still be busy, then close
-  // them in the background. Keep their identity and pin until both closes succeed.
+  // later calls cannot reuse a connection that may still be busy. Closing a
+  // handle while its native call is running can corrupt native memory, so the
+  // background close starts only after that call settles (a call that never
+  // settles keeps the handles and pin until process restart). Keep their
+  // identity and pin until both closes succeed.
   void (async () => {
+    try {
+      await pending;
+    } catch {
+      // A rejected native call has also finished; teardown may proceed.
+    }
     let closeFailed = false;
     try {
       if (retired.connection) await retired.connection.close();
@@ -507,7 +514,7 @@ async function withLbugNativeTimeout<T>(
     ]);
   } catch (err) {
     if (err instanceof LbugQueryTimeoutError && conn === queryConnection && db === queryDatabase) {
-      retireTimedOutLbugSession();
+      retireTimedOutLbugSession(value);
     }
     throw err;
   }
@@ -538,12 +545,20 @@ async function getAllWithTimeout<TRow extends LbugProjectionRow = LbugProjection
   label: string,
   timeoutMs = GET_ALL_TIMEOUT_MS,
 ): Promise<LbugProjectionRows<TRow>> {
-  let rows;
+  // The result is closed when getAll settles, not when the caller gives up on it: after a
+  // timeout the native read is still running and must not lose its result underneath it.
+  let pending: Promise<unknown>;
   try {
-    rows = await withLbugNativeTimeout(result.getAll(), `${label} getAll`, timeoutMs);
-  } finally {
+    pending = Promise.resolve(result.getAll());
+  } catch (error) {
     closeQueryResults(result);
+    throw error;
   }
+  const rows = await withLbugNativeTimeout(
+    pending.finally(() => closeQueryResults(result)),
+    `${label} getAll`,
+    timeoutMs,
+  );
   return rows as LbugProjectionRows<TRow>;
 }
 
@@ -941,7 +956,7 @@ export const loadGraphToLbug = async (
     finalRelsByPairMeta = new Map();
     if (csvResult.relByPairMeta) {
       for (const [pairKey, rows] of csvResult.relByPairMeta) {
-        const fromToSlug = pairKey.replace('|', '_to_');
+        const fromToSlug = pairKey.replaceAll('|', '_to_');
         finalRelsByPairMeta.set(pairKey, {
           csvPath: path.join(csvDir, `rels_${fromToSlug}.csv`),
           rows,
@@ -1027,7 +1042,8 @@ export const loadGraphToLbug = async (
       if (failedPairEdges > 1000) {
         throw new Error(
           `Bulk edge COPY failed for ${failedPairEdges} edges. Individual insert fallback is disabled for sets > 1000 to prevent extreme slowdown. ` +
-            'Check your schema label-pairs or reduce the number of missing relationships.',
+            'Check your schema label-pairs or reduce the number of missing relationships.' +
+            (warnings.length > 0 ? ` Failed pairs: ${warnings.slice(0, 5).join('; ')}` : ''),
         );
       }
 
@@ -1797,7 +1813,8 @@ export const fetchExistingEmbeddingHashes = async (
  * session state is reset, for callers that must not publish while a handle may be open.
  */
 export const closeLbug = async (opts?: { strict?: boolean }): Promise<void> => {
-  await closeActiveLbugHandles(true, opts?.strict === true);
+  // Serialized with init/switch/close-for-path so a close cannot run under an in-flight open.
+  await runWithSessionLock(() => closeActiveLbugHandles(true, opts?.strict === true));
 };
 
 export const closeLbugForPath = async (

@@ -44,6 +44,11 @@ import { cVariableConfig, cppVariableConfig } from '../variable-extractors/confi
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { cCallConfig, cppCallConfig } from '../call-extractors/configs/c-cpp.js';
 import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import {
+  emitCppCaptures,
+  interpretCppExports,
+  cppDeclarationBindingScope,
+} from './cpp-captures.js';
 
 const C_BUILT_INS: ReadonlySet<string> = new Set([
   'printf',
@@ -355,4 +360,12 @@ export const cppProvider = defineLanguage({
   heritageExtractor: createHeritageExtractor(SupportedLanguages.CPlusPlus),
   labelOverride: cppLabelOverride,
   builtInNames: C_BUILT_INS,
+  emitScopeCaptures: (_sourceText, _filePath, rootNode) => {
+    if (!rootNode) throw new Error('C++ scope captures require the borrowed root');
+    return emitCppCaptures(rootNode);
+  },
+  bindingScopeFor: cppDeclarationBindingScope,
+  // The admitted subset rejects includes before interpretation.
+  interpretImport: () => null,
+  interpretExports: interpretCppExports,
 });

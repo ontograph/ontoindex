@@ -12,7 +12,7 @@
  *     `unknown` (neutral signal).
  */
 
-import type { Callsite, Resolution, ScopeId } from '../types.js';
+import type { Callsite, LookupParams, Resolution, ScopeId } from '../types.js';
 import { lookupCore, type CoreLookupParams } from './lookup-core.js';
 import type { OwnerScopedContributor, RegistryContext } from './context.js';
 import { METHOD_KINDS } from './context.js';
@@ -24,10 +24,11 @@ import { METHOD_KINDS } from './context.js';
  * arity knobs the RFC algorithm needs.
  */
 export interface MethodLookupOptions {
+  readonly lexicalNamespace?: LookupParams['lexicalNamespace'];
   /** Call-site arity for `provider.arityCompatibility`. */
   readonly callsite?: Callsite;
   /** Explicit receiver (e.g., `user` in `user.save()`). See §4.1. */
-  readonly explicitReceiver?: { readonly name: string };
+  readonly explicitReceiver?: LookupParams['explicitReceiver'];
   /** Optional per-owner contributor (Step 3). */
   readonly ownerScopedContributor?: OwnerScopedContributor;
 }
@@ -43,6 +44,9 @@ export function buildMethodRegistry(ctx: RegistryContext): MethodRegistry {
         acceptedKinds: METHOD_KINDS,
         useReceiverTypeBinding: true,
         ownerScopedContributor: options.ownerScopedContributor ?? null,
+        ...(options.lexicalNamespace !== undefined
+          ? { lexicalNamespace: options.lexicalNamespace }
+          : {}),
         ...(options.callsite !== undefined ? { callsite: options.callsite } : {}),
         ...(options.explicitReceiver !== undefined
           ? { explicitReceiver: options.explicitReceiver }

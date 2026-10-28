@@ -13,6 +13,7 @@ import type {
   SupportedLanguages,
   MroStrategy,
   CaptureMatch,
+  DefId,
   BindingRef,
   TypeRef,
   Scope,
@@ -20,6 +21,7 @@ import type {
   ScopeKind,
   ScopeTree,
   ParsedImport,
+  ParsedFile,
   ParsedTypeBinding,
   SymbolDefinition,
   Callsite,
@@ -47,6 +49,12 @@ import type { NodeLabel } from 'ontoindex-shared';
 // ── Shared type aliases ────────────────────────────────────────────────────
 /** Tree-sitter query captures: capture name → AST node (or undefined if not captured). */
 export type CaptureMap = Record<string, SyntaxNode | undefined>;
+
+/** One declaration eligible to contribute a local binding. */
+export interface LocalBindingCandidate {
+  readonly match: CaptureMatch;
+  readonly def: SymbolDefinition;
+}
 
 // ── Strategy tag types ─────────────────────────────────────────────────────
 // NOTE: `MroStrategy` is defined in `ontoindex-shared` and re-exported above
@@ -327,9 +335,17 @@ interface LanguageProviderConfig {
    * `parse-worker.ts` (#920) invoke it inline in its already-sync
    * per-file loop without cascading `async` through the batch pipeline.
    *
+   * When supplied, `rootNode` is the read-only borrowed root of the existing
+   * parse of `sourceText`. Use it synchronously; do not retain it or delete
+   * its tree. The caller owns the parse tree and its lifetime.
+   *
    * Default: undefined (language continues to use legacy DAG).
    */
-  readonly emitScopeCaptures?: (sourceText: string, filePath: string) => readonly CaptureMatch[];
+  readonly emitScopeCaptures?: (
+    sourceText: string,
+    filePath: string,
+    rootNode?: SyntaxNode,
+  ) => readonly CaptureMatch[];
 
   /**
    * Interpret a raw `@import.statement` capture group into a `ParsedImport`.
@@ -340,6 +356,22 @@ interface LanguageProviderConfig {
    * Required when `emitScopeCaptures` is implemented.
    */
   readonly interpretImport?: (captures: CaptureMatch) => ParsedImport | null;
+
+  /**
+   * Resolve explicit local exports once all five extraction passes complete.
+   * Receives the original captures and completed scopes, bindings, and local
+   * definitions. Export names may be aliases, `default`, or empty strings;
+   * every target must be an existing local definition ID.
+   *
+   * Return a native Map. The extractor validates and copies it, detaching
+   * ownership without promising runtime Map immutability. The readonly context
+   * is a trusted provider contract, not a plugin isolation boundary.
+   * Default: undefined (the ParsedFile exports property is omitted).
+   */
+  readonly interpretExports?: (
+    captures: readonly CaptureMatch[],
+    context: Readonly<Pick<ParsedFile, 'filePath' | 'moduleScope' | 'scopes' | 'localDefs'>>,
+  ) => ReadonlyMap<string, DefId>;
 
   /**
    * What is the implicit receiver on a Function scope? For instance methods
@@ -409,6 +441,26 @@ interface LanguageProviderConfig {
     innermostScope: Scope,
     scopeTree: ScopeTree,
   ) => ScopeId | null;
+
+  /**
+   * Select local bindings after all declarations have been collected, once
+   * per binding host and name. Return a nonempty, duplicate-free subset of
+   * the supplied candidate objects, or null to keep every candidate.
+   * Selection affects bindings only; all declarations remain in localDefs
+   * and their structural owner's ownedDefs. Inputs must not be mutated.
+   * Host and tree are structural snapshots with empty content collections.
+   * Default: undefined (keep every candidate).
+   */
+  readonly selectLocalBindings?: (
+    candidates: readonly LocalBindingCandidate[],
+    host: Scope,
+    tree: ScopeTree,
+  ) => readonly LocalBindingCandidate[] | null;
+
+  /** Classify a local declaration once for bindings and exported aliases.
+   * Undefined retains the declaration's legacy visibility in both namespaces.
+   */
+  readonly declarationNamespaceFor?: (candidate: LocalBindingCandidate) => BindingRef['namespace'];
 
   // ── Finalize phase (cross-file + materialization) ──────────────────
 

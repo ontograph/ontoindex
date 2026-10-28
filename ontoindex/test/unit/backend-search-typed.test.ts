@@ -1094,7 +1094,7 @@ describe('backend-search typed input', () => {
       structured_output: true,
     });
 
-    expect(lookupSpy).toHaveBeenCalledWith(expect.any(String), 'abc123');
+    expect(lookupSpy).toHaveBeenCalledWith(expect.any(String), 'abc123', undefined);
     expect(setSpy).not.toHaveBeenCalled();
     expect(mockBm25Search).not.toHaveBeenCalled();
     expect(result.structured_retrieval?.rows).toEqual([
@@ -1180,7 +1180,7 @@ describe('backend-search typed input', () => {
       cacheHit: false,
       cacheStatus: 'miss',
     });
-    expect(lookupSpy).toHaveBeenCalledWith(expect.any(String), 'abc123');
+    expect(lookupSpy).toHaveBeenCalledWith(expect.any(String), 'abc123', undefined);
     expect(setSpy).not.toHaveBeenCalled();
 
     lookupSpy.mockRestore();

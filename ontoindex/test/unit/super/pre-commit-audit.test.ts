@@ -43,6 +43,10 @@ import { execFileText } from '../../../src/core/process/exec-file.js';
 import { executeParameterized } from '../../../src/core/lbug/pool-adapter.js';
 import { resolveTargetContext } from '../../../src/mcp/shared/target-context.js';
 import { gnPreCommitAudit } from '../../../src/mcp/super/pre-commit-audit.js';
+import { dispatchFacade } from '../../../src/mcp/facade/dispatch.js';
+import { dispatchSuper } from '../../../src/mcp/super/dispatch.js';
+import { resetEvidenceReadLedgerForTests } from '../../../src/core/runtime/evidence-read-ledger.js';
+import type { LocalBackend } from '../../../src/mcp/local/local-backend.js';
 
 const mockExecFileText = vi.mocked(execFileText);
 const mockExecute = vi.mocked(executeParameterized);
@@ -143,6 +147,91 @@ describe('gnPreCommitAudit', () => {
       policy: { status: 'unknown' },
       warnings: [],
     });
+  });
+
+  it.each([
+    { scenario: 'ready', options: {}, verdict: 'READY' },
+    {
+      scenario: 'unexpected symbol',
+      options: { scope: 'unstaged', expectedSymbols: ['otherSymbol'] },
+      verdict: 'REVIEW',
+    },
+    { scenario: 'high risk', options: { scope: 'branch' }, verdict: 'DO-NOT-COMMIT' },
+    {
+      scenario: 'filtered paths',
+      options: { scope: 'all', includePaths: ['src'], docsEvidence: false },
+      verdict: 'READY',
+    },
+    { scenario: 'git failure', options: { scope: 'staged' }, verdict: 'DO-NOT-COMMIT' },
+  ])(
+    'preserves the real $scenario report through the facade',
+    async ({ scenario, options, verdict }) => {
+      setupGitDiff(scenario === 'filtered paths' ? 'src/foo.ts\ndocs/note.md\n' : 'src/foo.ts\n');
+      setupGraphMocks({ upstreamCount: scenario === 'high risk' ? 75 : 3 });
+      if (scenario === 'git failure')
+        mockExecFileText.mockRejectedValue(new Error('git scan failed'));
+      const args = { action: 'pre_commit_audit', repo: REPO_ID, ...options };
+      const original = structuredClone(args);
+      const callTool = vi.fn();
+      const backend = {
+        resolveRepo: vi.fn(async () => ({ id: REPO_ID, repoPath: '/repo' })),
+        ensureRepoInitialized: vi.fn(async () => {}),
+        withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => operation()),
+        withCommittedGraphNotice: vi.fn(async (report) => report),
+        callTool,
+      };
+
+      resetEvidenceReadLedgerForTests();
+      const direct = (await dispatchSuper('gn_pre_commit_audit', args, REPO_ID)) as Awaited<
+        ReturnType<typeof gnPreCommitAudit>
+      >;
+      resetEvidenceReadLedgerForTests();
+      const facade = await dispatchFacade(
+        'audit',
+        'pre_commit_audit',
+        args,
+        backend as unknown as LocalBackend,
+      );
+
+      expect(facade).toEqual(direct);
+      expect(direct.verdict).toBe(verdict);
+      expect(direct).toHaveProperty('basedOnReads');
+      if (scenario === 'unexpected symbol') expect(direct.unexpectedSymbols).toEqual(['doWork']);
+      if (scenario === 'filtered paths') {
+        expect(direct.changedFiles.map((file) => file.path)).toEqual(['src/foo.ts']);
+        expect(direct.warnings).toContain(
+          'Omitted 1 changed file outside includePaths (src): docs/note.md',
+        );
+      }
+      if (scenario === 'git failure') {
+        expect(direct.evaluation.status).toBe('incomplete');
+        expect(direct.warnings).toContain('git changed-path scan failed: git scan failed');
+      }
+      expect(backend.resolveRepo).toHaveBeenCalledExactlyOnceWith(REPO_ID);
+      expect(callTool).not.toHaveBeenCalled();
+      expect(args).toEqual(original);
+    },
+  );
+
+  it('rejects malformed scope through the real super dispatcher before handler IO', async () => {
+    const args = { scope: 'invalid' };
+    const callTool = vi.fn();
+    const backend = {
+      resolveRepo: vi.fn(async () => ({ id: REPO_ID, repoPath: '/repo' })),
+      ensureRepoInitialized: vi.fn(async () => {}),
+      withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => operation()),
+      callTool,
+    };
+    await expect(dispatchSuper('gn_pre_commit_audit', args, REPO_ID)).rejects.toThrow(
+      /scope: expected one of/,
+    );
+    await expect(
+      dispatchFacade('audit', 'pre_commit_audit', args, backend as unknown as LocalBackend),
+    ).rejects.toThrow(/scope: expected one of/);
+    expect(mockResolveTargetContext).not.toHaveBeenCalled();
+    expect(mockExecFileText).not.toHaveBeenCalled();
+    expect(mockExecute).not.toHaveBeenCalled();
+    expect(callTool).not.toHaveBeenCalled();
   });
 
   // ---- Test 1: READY for clean staged diff with no unexpected symbols -----
@@ -291,6 +380,14 @@ describe('gnPreCommitAudit', () => {
 
     expect(report.verdict).toBe('READY');
     expect(report.changedFiles).toHaveLength(0);
+    expect(report.evaluation).toEqual({
+      status: 'skipped',
+      scope: 'staged',
+      includePaths: [],
+      evaluatedPathCount: 0,
+      graphValidated: false,
+    });
+    expect(report.capabilitiesUsed).not.toContain('graph-symbol-audit');
     expect(report.reasoning).toContain('No staged changes');
     expect(mockExecute).not.toHaveBeenCalled();
     expect(report.preCommitChecklist.find((c) => c.check === 'staged diff non-empty')!.passed).toBe(
@@ -299,6 +396,120 @@ describe('gnPreCommitAudit', () => {
     expect(report.preCommitChecklist.find((c) => c.check === 'staged diff non-empty')!.state).toBe(
       'SKIPPED',
     );
+  });
+
+  it('reports completed graph validation independently of a risk-driven verdict', async () => {
+    setupGitDiff('src/core/engine.ts\n');
+    setupGraphMocks({
+      symbolRows: [{ id: 'Class:src/core/engine.ts:Engine', name: 'Engine', kind: 'Class' }],
+      upstreamCount: 75,
+    });
+
+    const report = await gnPreCommitAudit(REPO_ID, {
+      scope: 'all',
+      includePaths: ['src'],
+    });
+
+    expect(report.verdict).toBe('DO-NOT-COMMIT');
+    expect(report.evaluation).toEqual({
+      status: 'completed',
+      scope: 'all',
+      includePaths: ['src'],
+      evaluatedPathCount: 1,
+      graphValidated: true,
+    });
+  });
+
+  it.each(['review', 'degraded'] as const)(
+    'marks an empty %s audit skipped without validating the graph',
+    async (state) => {
+      const context = await mockResolveTargetContext({ repo: REPO_ID });
+      mockResolveTargetContext.mockResolvedValue({
+        ...context,
+        graphAuthority: {
+          state,
+          reason: 'required graph evidence unavailable',
+          coverage: 'unknown',
+        },
+      });
+      setupGitDiff('');
+
+      const report = await gnPreCommitAudit(REPO_ID, {});
+
+      expect(report.verdict).toBe('READY');
+      expect(report.status).toBe('degraded');
+      expect(report.evaluation).toEqual({
+        status: 'skipped',
+        scope: 'staged',
+        includePaths: [],
+        evaluatedPathCount: 0,
+        graphValidated: false,
+      });
+      expect(mockExecute).not.toHaveBeenCalled();
+    },
+  );
+
+  it('marks a failed changed-path scan incomplete', async () => {
+    mockExecFileText.mockRejectedValue(new Error('git scan failed'));
+
+    const report = await gnPreCommitAudit(REPO_ID, {});
+
+    expect(report.evaluation.status).toBe('incomplete');
+    expect(report.evaluation.graphValidated).toBe(false);
+    expect(report.evaluation.evaluatedPathCount).toBe(0);
+    expect(mockExecute).not.toHaveBeenCalled();
+  });
+
+  it('reports nonempty degraded graph review as incomplete', async () => {
+    setupGitDiff('src/foo.ts\n');
+    setupGraphMocks();
+    mockExecute.mockImplementation(async (_repoId: string, cypher: string) => {
+      if (cypher.includes("type: 'DEFINES'")) throw new Error('graph unavailable');
+      return [];
+    });
+
+    const report = await gnPreCommitAudit(REPO_ID, { scope: 'unstaged' });
+
+    expect(report.verdict).toBe('REVIEW');
+    expect(report.evaluation).toEqual({
+      status: 'incomplete',
+      scope: 'unstaged',
+      includePaths: [],
+      evaluatedPathCount: 1,
+      graphValidated: false,
+    });
+  });
+
+  it('marks unresolved repository evaluation incomplete without claiming graph validation', async () => {
+    mockResolveTargetContext.mockResolvedValue({
+      version: 1,
+      status: 'not-found',
+      targetRef: 'HEAD',
+      dirtyWorktree: null,
+      changedSinceIndex: null,
+      snapshotMode: 'unknown',
+      qualityMode: 'balanced',
+      embeddings: { status: 'unknown' },
+      lsp: { status: 'unknown' },
+      sidecar: { status: 'unknown' },
+      policy: { status: 'unknown' },
+      action: 'repository unavailable',
+      warnings: [],
+    });
+
+    const report = await gnPreCommitAudit(REPO_ID, {
+      scope: 'branch',
+      includePaths: ['src'],
+    });
+
+    expect(report.evaluation).toEqual({
+      status: 'incomplete',
+      scope: 'branch',
+      includePaths: ['src'],
+      evaluatedPathCount: 0,
+      graphValidated: false,
+    });
+    expect(report.capabilitiesUsed).not.toContain('git-diff');
   });
 
   it('does not execute git when the explicit repository cannot be resolved', async () => {
@@ -646,6 +857,68 @@ describe('gnPreCommitAudit', () => {
     expect(
       report.preCommitChecklist.find((c) => c.check === 'changed file scan complete')!.passed,
     ).toBe(false);
+  });
+
+  it.each([50, 51])('reports symbol scan completeness for %i file symbols', async (count) => {
+    setupGitDiff('src/foo.ts\n');
+    setupGraphMocks({
+      symbolRows: Array.from({ length: count }, (_, i) => ({
+        id: `Function:src/foo.ts:work${i}`,
+        name: `work${i}`,
+      })),
+      upstreamCount: 0,
+    });
+
+    const report = await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
+
+    expect(
+      mockExecute.mock.calls.find((call) => call[1].includes("type: 'DEFINES'"))?.[1],
+    ).toContain('LIMIT 51');
+    expect(report.changedFiles[0].changedSymbols).toHaveLength(50);
+    expect(report.verdict).toBe(count === 50 ? 'READY' : 'REVIEW');
+    expect(report.evaluation.graphValidated).toBe(count === 50);
+    expect(report.evaluation.status).toBe(count === 50 ? 'completed' : 'incomplete');
+    expect(report.warnings.includes('Symbol scan for src/foo.ts capped at 50 symbols')).toBe(
+      count > 50,
+    );
+  });
+
+  it('detects symbol overflow before filtering changed hunks and excludes the sentinel', async () => {
+    setupGitDiff('src/foo.ts\n', '', '+++ b/src/foo.ts\n@@ -100 +100 @@\n');
+    setupGraphMocks({
+      symbolRows: Array.from({ length: 51 }, (_, i) => ({
+        id: `Function:src/foo.ts:work${i}`,
+        name: `work${i}`,
+        startLine: i === 50 ? 100 : 1,
+        endLine: i === 50 ? 100 : 1,
+      })),
+      upstreamCount: 0,
+    });
+
+    const report = await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
+
+    expect(report.changedFiles[0].changedSymbols).toEqual([]);
+    expect(report.verdict).toBe('REVIEW');
+    expect(report.evaluation.graphValidated).toBe(false);
+    expect(report.evaluation.status).toBe('incomplete');
+    expect(report.warnings).toContain('Symbol scan for src/foo.ts capped at 50 symbols');
+  });
+
+  it('preserves DO-NOT-COMMIT when a capped symbol scan finds HIGH risk', async () => {
+    setupGitDiff('src/foo.ts\n');
+    setupGraphMocks({
+      symbolRows: Array.from({ length: 51 }, (_, i) => ({
+        id: `Function:src/foo.ts:work${i}`,
+        name: `work${i}`,
+      })),
+      upstreamCount: 75,
+    });
+
+    const report = await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
+
+    expect(report.verdict).toBe('DO-NOT-COMMIT');
+    expect(report.evaluation.graphValidated).toBe(false);
+    expect(report.evaluation.status).toBe('incomplete');
   });
 
   it('returns REVIEW when graph symbol lookup fails', async () => {

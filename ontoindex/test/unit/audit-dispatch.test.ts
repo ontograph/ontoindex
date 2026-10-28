@@ -16,7 +16,10 @@ import type {
   AuditFinding,
   AuditSession,
 } from '../../src/core/audit-lifecycle/audit-session.js';
-import { gnAuditSessionDispatch } from '../../src/mcp/super/audit-session-tools.js';
+import {
+  gnAuditSessionDispatch,
+  gnAuditSessionLock,
+} from '../../src/mcp/super/audit-session-tools.js';
 import { isMarkedInvocationError } from '../../src/mcp/shared/invocation-error.js';
 import { gnDispatchPrompt } from '../../src/mcp/super/audit-advanced.js';
 import {
@@ -188,6 +191,18 @@ describe('manager audit dispatch wrapper', () => {
     await fs.writeFile(path.join(repo, 'src/app.ts'), 'export function run() { return 1; }\n');
     execFileSync('git', ['add', '-A'], { cwd: repo });
     execFileSync('git', ['commit', '-m', 'initial'], { cwd: repo, stdio: 'ignore' });
+    await fs.mkdir(path.join(repo, '.ontoindex'));
+    await fs.writeFile(
+      path.join(repo, '.ontoindex/meta.json'),
+      JSON.stringify({
+        repoPath: repo,
+        lastCommit: execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: repo,
+          encoding: 'utf8',
+        }).trim(),
+        indexedAt: '2026-05-17T00:00:00.000Z',
+      }),
+    );
   });
 
   afterEach(async () => {
@@ -264,12 +279,10 @@ describe('manager audit dispatch wrapper', () => {
         },
       },
     });
-    await createAuditSessionLockFromStore({
-      repoRoot: repo,
-      sessionId: 'session-1',
-      graphHash: 'sha256:sidecar',
+    await gnAuditSessionLock(repo, {
+      session: 'session-1',
+      action: 'create',
       ontoindexVersion: '1.0.0',
-      store,
     });
 
     const result = await gnAuditSessionDispatch(repo, {
@@ -285,12 +298,10 @@ describe('manager audit dispatch wrapper', () => {
 
   it('refuses dispatch when the event chain is broken, including persist=false', async () => {
     const store = await seedDispatchBundle(repo);
-    await createAuditSessionLockFromStore({
-      repoRoot: repo,
-      sessionId: 'session-1',
-      graphHash: 'sha256:sidecar',
+    await gnAuditSessionLock(repo, {
+      session: 'session-1',
+      action: 'create',
       ontoindexVersion: '1.0.0',
-      store,
     });
     const statePath = store.eventStorePath;
     const state = JSON.parse(await fs.readFile(statePath, 'utf8')) as Record<string, unknown>;
@@ -322,12 +333,10 @@ describe('manager audit dispatch wrapper', () => {
 
   it('refuses dispatch for an unverifiable legacy chain', async () => {
     const store = await seedDispatchBundle(repo);
-    await createAuditSessionLockFromStore({
-      repoRoot: repo,
-      sessionId: 'session-1',
-      graphHash: 'sha256:sidecar',
+    await gnAuditSessionLock(repo, {
+      session: 'session-1',
+      action: 'create',
       ontoindexVersion: '1.0.0',
-      store,
     });
     const state = JSON.parse(await fs.readFile(store.eventStorePath, 'utf8')) as Record<
       string,
