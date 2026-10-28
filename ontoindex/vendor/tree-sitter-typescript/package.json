@@ -10,6 +10,7 @@
   ],
   "main": "bindings/node",
   "types": "bindings/node",
+  "gypfile": false,
   "scripts": {
     "generate": "node scripts/regenerate.cjs"
   },
