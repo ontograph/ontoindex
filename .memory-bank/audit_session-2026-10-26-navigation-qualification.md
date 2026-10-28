@@ -2850,3 +2850,18 @@ MCP target (config.toml line 46 only; rollback `/opt/d1/tmp/ontoindex-cpp-attrib
 Removed `ontoindex-2204a4f-20261028` (no process, config or symlink reference; about 1.4 GB recovered).
 Retained: `-f6ddde9-20261028` (one-step rollback), CLI target `-workspace-20261025-rust`, and
 `/opt/d1/tmp/ontoindex-next4-b64b569` (17 live MCP processes still run it).
+
+## Round 18 (2026-10-28): CLI/MCP alignment and parser-identity precision
+
+Challenge of the "no change needed" claim for parser identity (read-only agent): digest is a content
+hash, but terminal checks (`run-analyze.ts` ~1211 before publication, `backend-overlay.ts` ~578/595)
+trust one hash, and `sameArtifact` compared millisecond floats. Fix ca6382d: `runtimeArtifactIdentity`
+uses bigint stats and compares `mtimeNs`/`ctimeNs`; size/mode converted with `Number()`. New test
+(sub-millisecond-only change) fails on the old source. 185 tests green across 9 identity/workspace
+files. Limit: coarse-timestamp filesystems still cannot be made atomic; that needs immutable artifacts.
+CLI alignment (read-only agent said GO): `~/.local/bin/ontoindex` now points at
+`~/.local/opt/ontoindex-6784cee-20261028/dist/cli/index.js` (same build as the MCP target); smoke
+`--version/--help/list/status` OK; rollback target saved in `/opt/d1/tmp/ontoindex-cpp-attrib-20261028/cli-symlink.before`.
+Removed the old CLI install `ontoindex-2.3.5-rc.12-workspace-20261025-rust` (no process, symlink or
+config reference; 25611 -> 26107 MB available). Retained: `-6784cee` (current), `-f6ddde9` (rollback),
+`/opt/d1/tmp/ontoindex-next4-b64b569` (live MCP sessions). This closes "CLI is an older build".
