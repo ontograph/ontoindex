@@ -2865,3 +2865,10 @@ CLI alignment (read-only agent said GO): `~/.local/bin/ontoindex` now points at
 Removed the old CLI install `ontoindex-2.3.5-rc.12-workspace-20261025-rust` (no process, symlink or
 config reference; 25611 -> 26107 MB available). Retained: `-6784cee` (current), `-f6ddde9` (rollback),
 `/opt/d1/tmp/ontoindex-next4-b64b569` (live MCP sessions). This closes "CLI is an older build".
+
+Round 18 delivery. Full suite (tests-full-8.log): rc=0, 770 files, 17765 passed, 0 failed, 1 expected fail,
+304 skipped. New frozen snapshot `~/.local/opt/ontoindex-1d77e34-20261028` (dist identical to the built
+tree, 15808-file manifest, 0 symlinks, smoke PASS) is now BOTH the MCP target (config.toml line 46 only;
+rollback `/opt/d1/tmp/ontoindex-cpp-attrib-20261028/config.toml.before-rebind4`) and the CLI
+(`~/.local/bin/ontoindex`; previous target in `cli-symlink.before2`). Removed superseded `-6784cee`.
+Retained: `-f6ddde9` (rollback) and `/opt/d1/tmp/ontoindex-next4-b64b569` (live MCP sessions).
