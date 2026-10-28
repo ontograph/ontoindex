@@ -2823,3 +2823,23 @@ Fresh-process smoke PASS. `config.toml` line 46 rebound to it (only that line ch
 `/opt/d1/tmp/ontoindex-cpp-attrib-20261028/config.toml.before-rebind2`. Real supervisor run with
 `retryNativeCrash` on the 245-file C++ corpus: OK in 25 s (no crash occurred, so the retry path
 itself is proven only by the unit tests).
+
+## Round 17 (2026-10-28): lbug handle safety
+
+Review of rounds 7-16 (2 read-only gpt-6.1-sol agents plus source reading). Weakest area: the
+native-crash retry is a mitigation only, and two adapter paths could close a native handle under
+running work. Fixed both, test-first, each verified red against the old source:
+- d48a025 `retireTimedOutLbugSession(pending)` now closes the connection, database and pin only after
+  the timed-out native call settles; `getAllWithTimeout` closes its QueryResult on settlement, not on
+  timeout. A call that never settles keeps handles and pin until restart (accepted: leak over
+  corruption). Existing retirement tests adapted to deferred native work; one new test for rejection.
+- 962514e `closeLbug()` runs under `sessionLock`, like init/switch/close-for-path. New test fails
+  without the lock. No caller invokes it from inside a session operation (checked api.ts,
+  local-backend.ts, analyze-worker.ts, cli/analyze.ts, run-analyze.ts).
+Neither is proven to be the cause of the 1-in-25 C++ abort (that trace was a normal end-of-build close
+with no timeout), so the retry stays.
+Full suite (tests-full-7.log): rc=0, 770 files, 17764 passed, 0 failed, 1 expected fail, 304 skipped.
+Still open: valgrind or core capture for the abort; lbug 0.18+ upgrade as its own validated task
+(extensions pinned v0.17.0); Python packaging roots and C++ compile-db semantics; TS syntax refusals
+and object-literal methods; parser-identity same-tick limitation; push/PR (needs approval);
+delete next4 and 2204a4f once the 13 live MCP sessions restart; CLI target is still an older build.
