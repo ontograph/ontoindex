@@ -480,6 +480,7 @@ describe('explicit committed navigation over MCP', () => {
       expect(tool!.inputSchema.properties!.read_mode).toMatchObject({
         type: 'string',
         enum: expect.arrayContaining(['committed']),
+        description: expect.stringContaining('inspect context|related|explore'),
       });
     }
   });
@@ -516,7 +517,22 @@ describe('explicit committed navigation over MCP', () => {
       arguments: { repo: repoName, action: 'shape', route: '/baseline', read_mode: 'committed' },
     });
     expect(result.isError).toBe(true);
-    expect(JSON.stringify(result)).toContain('supported navigation operation');
+    expect(JSON.stringify(result)).toContain(
+      'read_mode=committed requires an explicit single repository and a supported navigation operation.',
+    );
+    expect(JSON.stringify(result)).toContain('search semantic');
+    expect(JSON.stringify(result)).toContain('Received inspect/shape.');
+    expect(analysisSpy).not.toHaveBeenCalled();
+  });
+
+  it('lists supported operations when committed cypher reads are rejected', async () => {
+    const result = await client.callTool({
+      name: 'search',
+      arguments: { repo: repoName, action: 'cypher', query: 'RETURN 1', read_mode: 'committed' },
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result)).toContain('Received search/cypher.');
+    expect(JSON.stringify(result)).toContain('search semantic');
     expect(analysisSpy).not.toHaveBeenCalled();
   });
 

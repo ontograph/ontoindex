@@ -176,7 +176,12 @@ export async function gnVerifyDiff(
     unexpectedChangedSymbols: result.unexpectedChangedSymbols,
     unexpectedImpactedSymbols: result.unexpectedImpactedSymbols,
     missingRequiredTests: result.missingRequiredTests,
-    warnings: actual.warnings,
+    warnings: [
+      ...actual.warnings,
+      ...(params.expectedFiles === undefined && result.unexpectedChangedFiles.length > 0
+        ? ['expectedFiles not provided; every changed file is reported as unexpected.']
+        : []),
+    ],
     skipReasons: [
       ...(actual.collectionFailed ? ['Diff collection failed; verification is incomplete.'] : []),
       ...(params.expectedSymbols === undefined
@@ -213,7 +218,15 @@ export async function gnTestGap(
         }
       : {}),
     actual: summarizeActual(actual),
-    warnings: [...actual.warnings, ...collectWarnings(report)],
+    warnings: [
+      ...actual.warnings,
+      ...collectWarnings(report),
+      ...(!actual.collectionFailed &&
+      report.status === 'PASS' &&
+      report.changedProductionSymbolCount === 0
+        ? ['No changed production symbols; PASS does not establish test coverage.']
+        : []),
+    ],
   };
 }
 
