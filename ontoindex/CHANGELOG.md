@@ -4,6 +4,11 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.7] - 2026-10-29
+
+- Rust member calls on receiver types that are not in the index, such as `HashMap`, stay unresolved instead of linking to an unrelated method with the same name.
+- Audit report Markdown shows a partial-report warning and marks sections from failed or timed-out backends as unavailable instead of reporting no findings. JSON results add optional `incompleteSections`.
+
 ## [2.3.6] - 2026-10-28
 
 - Committed-mode errors identify the rejected operation and list supported navigation operations.

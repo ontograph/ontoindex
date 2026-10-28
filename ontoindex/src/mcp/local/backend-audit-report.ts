@@ -242,6 +242,8 @@ export interface AuditReportResult {
   recentDrift: Array<{ type: string; source: string; target: string }>;
   /** Names of backends that failed during fan-out; report data is partial when non-empty. */
   warnings: string[];
+  /** Backend names whose report sections could not be completed. */
+  incompleteSections?: string[];
   annotation?: string;
 }
 
@@ -317,6 +319,7 @@ export async function runAuditReport(
   );
 
   const warnings: string[] = [];
+  const incompleteSections: string[] = [];
   const [
     deadResult,
     cycleResult,
@@ -329,6 +332,7 @@ export async function runAuditReport(
   ] = rawResults.map((r, i) => {
     if (r instanceof Error) {
       warnings.push(`${BACKEND_NAMES[i]}: ${r.message}`);
+      incompleteSections.push(BACKEND_NAMES[i]);
       return null;
     }
     return r;
@@ -412,6 +416,7 @@ export async function runAuditReport(
     deadCandidates,
     recentDrift,
     warnings,
+    ...(incompleteSections.length > 0 ? { incompleteSections } : {}),
   };
 
   if (params.annotate) {
@@ -481,6 +486,20 @@ export function formatAuditReport(result: AuditReportResult): string {
     `# Audit Report — ${result.repo} (${date})\n\nGenerated: ${result.generatedAt} | Commit: ${result.commitId || 'unknown'}`,
   );
 
+  if (result.warnings?.length) {
+    sections.push(
+      `> **Partial report**\n>\n${result.warnings.map((warning) => `> - ${warning}`).join('\n')}`,
+    );
+  }
+
+  const unavailable = (...backends: string[]): string | undefined => {
+    const failed = backends.filter((backend) => result.incompleteSections?.includes(backend));
+    return failed.length > 0
+      ? `Unavailable: ${failed.join(', ')} did not complete (see warnings).`
+      : undefined;
+  };
+  const riskUnavailable = unavailable('tech-debt', 'hotspot-analysis');
+
   // Risk Surface
   const riskRows = result.riskSurface
     .map(
@@ -491,14 +510,15 @@ export function formatAuditReport(result: AuditReportResult): string {
 
   const riskSurfaceParts: string[] = [
     `## Risk Surface (top ${result.riskSurface.length})\n` +
-      `| Symbol | File | Risk Score | Callers | Churn |\n` +
-      `|--------|------|------------|---------|-------|\n` +
-      (riskRows || '| — | — | — | — | — |'),
+      (riskUnavailable ??
+        `| Symbol | File | Risk Score | Callers | Churn |\n` +
+          `|--------|------|------------|---------|-------|\n` +
+          (riskRows || '| — | — | — | — | — |')),
   ];
 
   // Top-risk ranking diagram — non-directional subgraph so rank order is not
   // misread as a call relationship between symbols.
-  if (result.riskSurface.length > 1) {
+  if (!riskUnavailable && result.riskSurface.length > 1) {
     const top = result.riskSurface.slice(0, 5);
     const nodes = top
       .map((item, i) => {
@@ -515,11 +535,12 @@ export function formatAuditReport(result: AuditReportResult): string {
 
   // Architectural Issues
   const cycleLines =
-    result.openCycles.length > 0
+    unavailable('cycle-detect') ??
+    (result.openCycles.length > 0
       ? result.openCycles
           .map((members, i) => `- Cycle ${i + 1}: ${members.map((m) => m.name).join(' → ')}`)
           .join('\n')
-      : 'No cycles detected.';
+      : 'No cycles detected.');
 
   const couplingRows =
     result.couplingViolations.length > 0
@@ -529,13 +550,14 @@ export function formatAuditReport(result: AuditReportResult): string {
       : null;
 
   const couplingTable =
-    couplingRows !== null
+    unavailable('coupling-matrix') ??
+    (couplingRows !== null
       ? `| Module | Ca | Ce | Instability |\n|--------|----|----|-------------|\n${couplingRows}`
-      : 'No high-instability modules.';
+      : 'No high-instability modules.');
 
   // Coupling inter-module diagram — show Ce (efferent) dependency weight per module
   let couplingDiagramBlock = '';
-  if (result.couplingViolations.length > 1) {
+  if (!unavailable('coupling-matrix') && result.couplingViolations.length > 1) {
     const violations = result.couplingViolations.slice(0, 10);
     const moduleEdges: InterModuleEdge[] = [];
     for (let i = 0; i + 1 < violations.length; i++) {
@@ -552,9 +574,10 @@ export function formatAuditReport(result: AuditReportResult): string {
   }
 
   const boundaryLines =
-    result.boundaryViolations.length > 0
+    unavailable('boundary-violations') ??
+    (result.boundaryViolations.length > 0
       ? result.boundaryViolations.map((v) => `- ${v}`).join('\n')
-      : 'No boundary violations.';
+      : 'No boundary violations.');
 
   sections.push(
     `## Architectural Issues\n\n` +
@@ -566,23 +589,26 @@ export function formatAuditReport(result: AuditReportResult): string {
 
   // Verification Gaps
   const gapLines =
-    result.verificationGaps.length > 0
+    unavailable('verification-gap') ??
+    (result.verificationGaps.length > 0
       ? result.verificationGaps.map((f) => `- ${f}`).join('\n')
-      : 'No uncovered files detected.';
+      : 'No uncovered files detected.');
   sections.push(`## Verification Gaps (${result.verificationGaps.length})\n${gapLines}`);
 
   // Dead Code Candidates
   const deadLines =
-    result.deadCandidates.length > 0
+    unavailable('dead-code') ??
+    (result.deadCandidates.length > 0
       ? result.deadCandidates.map((d) => `- ${d}`).join('\n')
-      : 'No dead code candidates.';
+      : 'No dead code candidates.');
   sections.push(`## Dead Code Candidates (${result.deadCandidates.length})\n${deadLines}`);
 
   // Recent Drift
   const driftLines =
-    result.recentDrift.length > 0
+    unavailable('graph-diff') ??
+    (result.recentDrift.length > 0
       ? result.recentDrift.map((d) => `- [${d.type}] ${d.source} → ${d.target}`).join('\n')
-      : 'No recent structural drift.';
+      : 'No recent structural drift.');
   sections.push(`## Recent Drift\n${driftLines}`);
 
   let output = sections.join('\n\n');

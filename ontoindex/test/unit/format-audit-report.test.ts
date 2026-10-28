@@ -35,6 +35,63 @@ const fixture: AuditReportResult = {
 };
 
 describe('formatAuditReport', () => {
+  it('leaves complete reports unchanged when completion metadata is empty', () => {
+    const output = formatAuditReport(fixture);
+    expect(formatAuditReport({ ...fixture, warnings: [], incompleteSections: [] })).toBe(output);
+    expect(output).not.toContain('Partial report');
+    expect(output).not.toContain('Unavailable:');
+  });
+
+  it('shows timeout warnings before findings and preserves completed sections', () => {
+    const output = formatAuditReport({
+      ...fixture,
+      deadCandidates: [],
+      warnings: ['dead-code: timed out after 15000ms'],
+      incompleteSections: ['dead-code'],
+    });
+    expect(output).toContain('> **Partial report**');
+    expect(output).toContain('> - dead-code: timed out after 15000ms');
+    expect(output.indexOf('Partial report')).toBeLessThan(output.indexOf('## Risk Surface'));
+    expect(output).toContain('Unavailable: dead-code did not complete (see warnings).');
+    expect(output).not.toContain('No dead code candidates.');
+    expect(output).toContain('src/api.ts → src/db.ts (layer violation)');
+  });
+
+  it.each([
+    ['cycle-detect', 'openCycles', 'No cycles detected.'],
+    ['coupling-matrix', 'couplingViolations', 'No high-instability modules.'],
+    ['boundary-violations', 'boundaryViolations', 'No boundary violations.'],
+    ['verification-gap', 'verificationGaps', 'No uncovered files detected.'],
+    ['dead-code', 'deadCandidates', 'No dead code candidates.'],
+    ['graph-diff', 'recentDrift', 'No recent structural drift.'],
+  ])(
+    'marks %s results unavailable instead of reporting no findings',
+    (backend, field, emptyText) => {
+      const output = formatAuditReport({
+        ...fixture,
+        [field]: [],
+        warnings: [`${backend}: failed`],
+        incompleteSections: [backend],
+      });
+      expect(output).toContain(`Unavailable: ${backend} did not complete (see warnings).`);
+      expect(output).not.toContain(emptyText);
+    },
+  );
+
+  it.each(['tech-debt', 'hotspot-analysis'])(
+    'marks Risk Surface unavailable when %s fails',
+    (backend) => {
+      const output = formatAuditReport({
+        ...fixture,
+        warnings: [`${backend}: failed`],
+        incompleteSections: [backend],
+      });
+      expect(output).toContain(`Unavailable: ${backend} did not complete (see warnings).`);
+      expect(output).not.toContain('| Symbol |');
+      expect(output).not.toContain('### Top Risk Rankings');
+    },
+  );
+
   it('contains the report header with repo name', () => {
     const output = formatAuditReport(fixture);
     expect(output).toContain('# Audit Report — test-repo');

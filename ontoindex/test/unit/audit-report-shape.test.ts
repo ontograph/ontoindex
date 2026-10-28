@@ -100,6 +100,7 @@ vi.mock('../../src/mcp/local/backend-graph-diff.js', () => ({
 
 import {
   runAuditReport,
+  formatAuditReport,
   type AuditReportResult,
 } from '../../src/mcp/local/backend-audit-report.js';
 import { runDeadCode } from '../../src/mcp/local/backend-dead-code.js';
@@ -225,6 +226,7 @@ describe('AuditReportResult shape — structural drift gate', () => {
     for (const w of result.warnings) {
       expect(typeof w).toBe('string');
     }
+    expect(result.incompleteSections).toBeUndefined();
   });
 
   it('annotation is undefined when annotate is not requested', () => {
@@ -244,6 +246,7 @@ describe('AuditReportResult shape — structural drift gate', () => {
       'deadCandidates',
       'recentDrift',
       'warnings',
+      'incompleteSections',
       'annotation',
     ]);
     for (const key of Object.keys(result)) {
@@ -308,6 +311,11 @@ describe('AuditReportResult shape — structural drift gate', () => {
       const timed = await runAuditReport(repo, {});
       expect(timed.deadCandidates).toEqual([]);
       expect(timed.warnings).toContain('dead-code: dead-code: timed out after 10ms');
+      expect(timed.incompleteSections).toEqual(['dead-code']);
+      const markdown = formatAuditReport(timed);
+      expect(markdown).toContain('Partial report');
+      expect(markdown).toContain('Unavailable: dead-code did not complete (see warnings).');
+      expect(markdown).not.toContain('No dead code candidates.');
     } finally {
       if (previousBackendTimeout === undefined) {
         delete process.env.ONTOINDEX_AUDIT_REPORT_BACKEND_TIMEOUT_MS;
