@@ -17,34 +17,12 @@ type LookupAddress = { address: string; family: number };
 
 export const MAX_GIT_URL_LENGTH = 2048;
 
-/** Remove URL userinfo before rendering untrusted Git output. */
+/**
+ * Remove URL userinfo before rendering untrusted Git output.
+ * Anchoring on `://` keeps the scan linear: each match is bounded by the next `/` or whitespace.
+ */
 export function redactGitUrl(text: string): string {
-  const parts: string[] = [];
-  let copiedThrough = 0;
-  let schemeStart = -1;
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i]!;
-    if (/[a-z\d+.-]/i.test(char)) {
-      if (schemeStart < 0 && /[a-z]/i.test(char)) schemeStart = i;
-      continue;
-    }
-    if (schemeStart >= 0 && text.startsWith('://', i)) {
-      const authorityStart = i + 3;
-      let lastAt = -1;
-      for (let end = authorityStart; end < text.length; end++) {
-        if (text[end] === '/' || /\s/.test(text[end]!)) break;
-        if (text[end] === '@') lastAt = end;
-      }
-      if (lastAt >= 0) {
-        parts.push(text.slice(copiedThrough, authorityStart));
-        copiedThrough = lastAt + 1;
-        i = lastAt;
-      }
-    }
-    schemeStart = -1;
-  }
-  parts.push(text.slice(copiedThrough));
-  return parts.join('');
+  return text.replace(/(?<=[a-z][a-z\d+.-]*):\/\/[^\s/]*@/gi, '://');
 }
 
 export function gitEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
