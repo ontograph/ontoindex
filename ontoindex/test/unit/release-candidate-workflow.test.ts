@@ -50,7 +50,7 @@ describe('release-candidate workflow', () => {
     });
     expect(ci.jobs.tests).toMatchObject({
       uses: './.github/workflows/ci-tests.yml',
-      with: { linux_only: '${{ inputs.linux_only }}' },
+      with: { linux_only: '${{ inputs.linux_only == true }}' },
     });
     expect(tests.jobs['runtime-matrix'].strategy?.matrix).toEqual({
       os: '${{ fromJSON(inputs.linux_only && \'["ubuntu-latest"]\' || \'["ubuntu-latest","windows-latest","macos-latest"]\') }}',
