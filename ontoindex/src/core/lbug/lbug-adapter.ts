@@ -38,6 +38,7 @@ const validRelPairs = getValidRelPairs();
 
 import { streamAllCSVsToDisk } from './csv-generator.js';
 import type { CachedEmbedding } from '../embeddings/types.js';
+import { quoteLbugString } from './quote-string.js';
 
 export type LbugProjectionRow = {
   [field: string]: unknown;
@@ -335,9 +336,6 @@ const getThrownMessage = (err: unknown): string | undefined =>
 
 const getOptionalThrownMessage = (err: unknown): string | undefined =>
   err == null ? undefined : getThrownMessage(err);
-
-export const quoteLbugString = (value: string): string =>
-  value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
 const LADYBUG_EXTENSIONS_VERSION = 'v0.17.0';
 

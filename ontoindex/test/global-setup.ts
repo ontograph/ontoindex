@@ -11,7 +11,8 @@ import path from 'path';
 import lbug from '@ladybugdb/core';
 import type { GlobalSetupContext } from 'vitest/node';
 import { createTempDir } from './helpers/test-db.js';
-import { quoteLbugString, resolveLocalLbugExtensionPath } from '../src/core/lbug/lbug-adapter.js';
+import { resolveLocalLbugExtensionPath } from '../src/core/lbug/lbug-adapter.js';
+import { quoteLbugString } from '../src/core/lbug/quote-string.js';
 import { isUnavailableExtension } from '../src/core/lbug/pool-adapter.js';
 import {
   NODE_SCHEMA_QUERIES,

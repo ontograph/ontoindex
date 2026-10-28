@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { quoteLbugString } from '../../src/core/lbug/lbug-adapter.js';
+import { quoteLbugString } from '../../src/core/lbug/quote-string.js';
 
 describe('quoteLbugString', () => {
   it('escapes backslashes before quotes so a trailing backslash cannot close the literal', () => {

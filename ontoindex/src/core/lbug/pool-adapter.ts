@@ -19,7 +19,8 @@ import fs from 'fs/promises';
 import path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import lbug, { type LbugValue } from '@ladybugdb/core';
-import { quoteLbugString, resolveLocalLbugExtensionPath } from './lbug-adapter.js';
+import { resolveLocalLbugExtensionPath } from './lbug-adapter.js';
+import { quoteLbugString } from './quote-string.js';
 import {
   LbugOpenError,
   classifyLbugOpenDiagnostic as classifyLbugOpenError,
