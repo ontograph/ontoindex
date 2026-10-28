@@ -2843,3 +2843,10 @@ Still open: valgrind or core capture for the abort; lbug 0.18+ upgrade as its ow
 (extensions pinned v0.17.0); Python packaging roots and C++ compile-db semantics; TS syntax refusals
 and object-literal methods; parser-identity same-tick limitation; push/PR (needs approval);
 delete next4 and 2204a4f once the 13 live MCP sessions restart; CLI target is still an older build.
+
+Round 17 delivery. New frozen snapshot `~/.local/opt/ontoindex-6784cee-20261028` (dist byte-identical to
+the built tree at 6784cee, 15808-file sha256 manifest, 0 symlinks, fresh-process smoke PASS) is now the
+MCP target (config.toml line 46 only; rollback `/opt/d1/tmp/ontoindex-cpp-attrib-20261028/config.toml.before-rebind3`).
+Removed `ontoindex-2204a4f-20261028` (no process, config or symlink reference; about 1.4 GB recovered).
+Retained: `-f6ddde9-20261028` (one-step rollback), CLI target `-workspace-20261025-rust`, and
+`/opt/d1/tmp/ontoindex-next4-b64b569` (17 live MCP processes still run it).
