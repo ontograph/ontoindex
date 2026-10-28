@@ -2894,3 +2894,24 @@ CodeQL: alerts 75-77 dismissed as false positives (test launcher passes the cgro
 interpolated); setup.ts hook quoting, lbug-adapter.ts slug `replaceAll`, and the cross-impact.ts timer bound
 fixed in code (a comparison guard, since CodeQL does not treat `Math.min` as a barrier). 48 older alerts remain.
 Open: lbug double free root cause, Python/C++ semantics, TS gaps, stale index at 2623820, `next4`/`f6ddde9` cleanup.
+
+Round 20 review and packet (PR #136). Four read-only gpt-6.1-sol reviews on merged #135, then three disjoint implementers.
+Challenge findings. (1) lbug double free: our error paths closed the Database after a rejected Connection close
+(lbug-adapter.ts normal close and retireTimedOutLbugSession), which is a plausible ownership violation but unproven
+as the cause; fixed to keep the database open and quarantine the session. Also noted, not changed: `executeQuery`
+starts native work without the session lock, and `run-analyze.ts` closes strictly before publication, so the abort
+is late build teardown and not process exit. The retry masks any SIGABRT/SIGSEGV/SIGBUS and drops first-attempt stderr.
+Upgrading past 0.17.1 is unproven (0.18 PR #623 touches the C API, not NodeConnection::Close; extensions pinned v0.17.0).
+(2) CodeQL, 48 older alerts: no single path helper explains them. git-clone/path-util path-injection are false
+positives for HTTP traversal (getCloneDir sanitizes and hashes; resolveContainedRealPath checks containment). Real:
+unbounded analyze URL into polynomial regexes (fixed), non-string grep pattern (fixed). Open: docker-server.mjs
+static handler follows symlinks and binds 0.0.0.0; COBOL regex at cobol-preprocessor.ts:372 reachable from repo
+content; alert line numbers have drifted, so never dismiss in bulk.
+(3) TypeScript gaps ranked by static count: async arrows 120/794 files (fixed), then C++ compile-db include roots,
+Python packaging roots, object-literal methods, namespaces (0 occurrences), let/var callables (stay Variables).
+Generic arrows remain refused on purpose. (4) Delivery: installed 1d77e34 lacks quote-string.js and the hook, impact
+timer and slug fixes. The `.ontoindex` store is 4.7 GB, last analyze 43.7 s. No install or /opt/d1/tmp dir was proven
+removable; next4 has 18 live MCP processes. Rebinding config does not migrate live sessions.
+Full suite after the packet: tests-full-9.log, 771 files, 17794 passed, 0 failed.
+Next: new frozen snapshot from master, one coordinated analyze, canary a fresh MCP, then rebind; async-arrow follow-ups
+(generic arrows, object-literal methods); docker-server.mjs symlink containment; COBOL regex review.
