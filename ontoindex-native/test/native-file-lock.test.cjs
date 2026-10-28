@@ -56,12 +56,16 @@ function startChild(lockPath, ownedChildren) {
     }
   });
   state.closed = new Promise((resolve) => {
-    child.on('error', (error) => { state.error = error; });
+    child.on('error', (error) => {
+      state.error = error;
+    });
     child.on('close', (code, signal) => {
       state.ended = true;
       if (state.pending) {
         clearTimeout(state.pending.timer);
-        state.pending.reject(new Error(`Child exited before IPC: ${code}/${signal}\n${state.stderr}`));
+        state.pending.reject(
+          new Error(`Child exited before IPC: ${code}/${signal}\n${state.stderr}`),
+        );
         state.pending = null;
       }
       resolve({ code, signal });
@@ -89,7 +93,10 @@ async function waitClosed(state) {
     return await Promise.race([
       state.closed,
       new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`Child did not exit\n${state.stderr}`)), TIMEOUT_MS);
+        timer = setTimeout(
+          () => reject(new Error(`Child did not exit\n${state.stderr}`)),
+          TIMEOUT_MS,
+        );
       }),
     ]);
   } finally {
@@ -146,7 +153,10 @@ async function main() {
 
     const successors = [startChild(lockPath, children), startChild(lockPath, children)];
     const ready = await Promise.all(successors.map(nextMessage));
-    assert.deepEqual(ready.map((message) => message.type), ['ready', 'ready']);
+    assert.deepEqual(
+      ready.map((message) => message.type),
+      ['ready', 'ready'],
+    );
     for (const successor of successors) successor.child.send({ type: 'go' });
     const results = await Promise.all(successors.map(nextMessage));
     assert.deepEqual(results.map((message) => message.type).sort(), ['acquired', 'conflict']);
