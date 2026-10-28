@@ -46,7 +46,8 @@ jobs:
   tests:
     uses: ./.github/workflows/ci-tests.yml
     with:
-      linux_only: ${{ inputs.linux_only }}
+      # `inputs` is empty on pull_request/push; a boolean input must still receive a boolean.
+      linux_only: ${{ inputs.linux_only == true }}
     permissions:
       contents: read
 
