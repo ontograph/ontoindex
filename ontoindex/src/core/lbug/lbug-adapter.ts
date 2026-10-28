@@ -473,18 +473,17 @@ const retireTimedOutLbugSession = (pending: unknown): void => {
     } catch {
       // A rejected native call has also finished; teardown may proceed.
     }
-    let closeFailed = false;
     try {
       if (retired.connection) await retired.connection.close();
     } catch {
-      closeFailed = true;
+      // The database must outlive its connection, even when native close fails.
+      console.warn('[lbug] Connection close failed; session retained until process restart.');
+      return;
     }
     try {
       if (retired.database) await retired.database.close();
-      if (!closeFailed) {
-        await retired.pin?.release();
-        failedClosePaths.delete(retired);
-      }
+      await retired.pin?.release();
+      failedClosePaths.delete(retired);
     } catch {
       // Retain this session's handles, identity and pin until process restart.
     }
@@ -628,23 +627,26 @@ const closeActiveLbugHandles = async (
   }
   const closing = captureLbugSession();
   let firstError: unknown;
+  let connectionCloseFailed = false;
   try {
     if (closing.connection) await closing.connection.close();
   } catch (err) {
     firstError = err;
+    connectionCloseFailed = true;
+    console.warn('[lbug] Connection close failed; session retained until process restart.');
   }
   try {
-    if (closing.database) await closing.database.close();
-    if (!firstError) await closing.pin?.release();
+    if (!connectionCloseFailed && closing.database) await closing.database.close();
+    if (!connectionCloseFailed && !firstError) await closing.pin?.release();
   } catch (err) {
     firstError ??= err;
   }
-  if (firstError) {
+  if (connectionCloseFailed || firstError) {
     failedClosePaths.add(closing);
   }
   // Failed handles are unusable; their paths remain blocked until restart.
   resetLbugSessionState(clearEnsuredIndexes);
-  if (strict && firstError) throw firstError;
+  if (strict && (connectionCloseFailed || firstError)) throw firstError;
 };
 
 const normalizeCopyPath = (filePath: string): string => filePath.replace(/\\/g, '/');

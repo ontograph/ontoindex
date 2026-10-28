@@ -41,6 +41,59 @@ async function parse(source: string, filePath = 'fixture.ts') {
 }
 
 describe('borrowed TS/JS module captures', () => {
+  it.each(filePaths)('admits async arrows in supported value contexts in %s', async (filePath) => {
+    for (const arrow of [
+      'async x => x',
+      'async (x) => x',
+      'async () => { return value; }',
+      'async /* parameters */ (x) /* arrow */ => /* body */ x',
+      ...(/\.tsx?$/.test(filePath)
+        ? ['async (x: number) => x', 'async (x): Promise<number> => x']
+        : []),
+    ]) {
+      for (const statement of [`const f = ${arrow};`, `consume(${arrow});`, `(${arrow})(value);`]) {
+        const source = `before(); ${statement} after();`;
+        const { root } = await parse(source, filePath);
+        expect(root.hasError, source).toBe(false);
+        const result = extract(emitTypeScriptCaptures(root), filePath, hooks);
+        const owner = result.scopes.find((scope) => scope.kind === 'Function')!;
+        expect(owner, source).toBeDefined();
+        const body = result.scopes.find(
+          (scope) => scope.kind === 'Block' && scope.parent === owner.id,
+        );
+        expect([...owner.bindings.keys()], source).toEqual(
+          arrow.startsWith('async ()') ? [] : ['x'],
+        );
+        expect(result.referenceSites, source).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ name: 'before', kind: 'call' }),
+            expect.objectContaining({ name: 'after', kind: 'call' }),
+            expect.objectContaining({
+              name: arrow.startsWith('async ()') ? 'value' : 'x',
+              kind: 'read',
+              inScope: body?.id ?? owner.id,
+            }),
+          ]),
+        );
+      }
+    }
+  });
+
+  it.each(filePaths)('refuses malformed async arrows atomically in %s', async (filePath) => {
+    const { root } = await parse('before(); const f = async (x) =>; after();', filePath);
+    expect(root.hasError).toBe(true);
+    expect(() => emitTypeScriptCaptures(root)).toThrow(ScopeUnsupportedSyntaxError);
+  });
+
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'still refuses generic async arrows atomically in %s',
+    async (filePath) => {
+      const { root } = await parse('before(); const f = async <T,>(x: T) => x; after();', filePath);
+      expect(root.hasError).toBe(false);
+      expect(() => emitTypeScriptCaptures(root)).toThrow(ScopeUnsupportedSyntaxError);
+    },
+  );
+
   it.each(filePaths)(
     'retains newly supported optional member calls across nested value contexts in %s',
     async (filePath) => {
@@ -2172,7 +2225,6 @@ describe('borrowed TS/JS module captures', () => {
         '(options = {}) => { "use strict"; }',
         '() => { return super.value; }',
         '() => { target = value = other; }',
-        'async () => { return value; }',
         '(...values) => { return values; }',
         ...(/\.tsx?$/.test(filePath) ? ['<T,>(value: T) => { return value; }'] : []),
       ]) {
@@ -2227,7 +2279,6 @@ describe('borrowed TS/JS module captures', () => {
     async (filePath) => {
       const arrows = [
         '() => { return this; }',
-        'async value => value',
         '(value = 1) => value',
         '(...values) => values',
         '({value: {nested}}) => nested',

@@ -22,6 +22,7 @@ describe('TypeScript callable lexical definitions', () => {
     ['annotated arrow', 'const f: (x: number) => number = x => x;'],
     ['destructured parameter', 'const f = ({x}: {x: number}) => x;'],
     ['exported arrow', 'export const f = (x: number) => x;'],
+    ['async arrow', 'const f = async x => x;'],
   ])('resolves caller to one Function for %s', async (_label, declaration) => {
     const result = await parsed(`${declaration} function caller() { f(1); }`);
     const definitions = result.localDefs.filter((def) => def.qualifiedName === 'f');
@@ -74,16 +75,15 @@ describe('TypeScript callable lexical definitions', () => {
     expect(calls).toHaveLength(2);
   });
 
-  it.each([
-    'const f = <T>(x: T): T => x;',
-    'const f = async (x: number) => x;',
-    'namespace N { const f = (x: number) => x; }',
-  ])('atomically refuses unsupported callable syntax: %s', async (source) => {
-    // Generic/async arrows and namespaces currently fall outside the supported subset.
-    await expect(parsed(`${source} function caller() { f(); }`)).rejects.toThrow(
-      'TS/JS captures require the supported module subset',
-    );
-  });
+  it.each(['const f = <T>(x: T): T => x;', 'namespace N { const f = (x: number) => x; }'])(
+    'atomically refuses unsupported callable syntax: %s',
+    async (source) => {
+      // Generic arrows and namespaces currently fall outside the supported subset.
+      await expect(parsed(`${source} function caller() { f(); }`)).rejects.toThrow(
+        'TS/JS captures require the supported module subset',
+      );
+    },
+  );
 
   it('keeps a declared callable as a Variable without an implementation', async () => {
     // Ambient callable declarations currently extract as Variables and produce no call edge.

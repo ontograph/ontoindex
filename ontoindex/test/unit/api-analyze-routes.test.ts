@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChildProcess } from 'child_process';
 import { JobManager } from '../../src/server/analyze-job.js';
 import { mountAnalyzeRoutes } from '../../src/server/api-analyze-routes.js';
+import { MAX_GIT_URL_LENGTH } from '../../src/server/git-clone.js';
 
 const forkMockState = vi.hoisted(() => ({
   fork: vi.fn(),
@@ -50,6 +51,61 @@ describe('mountAnalyzeRoutes cancellation lifecycle', () => {
       });
       server.on('error', reject);
     });
+
+  it.each([MAX_GIT_URL_LENGTH + 1, 200_000])(
+    'rejects a %i-character URL before creating a job',
+    async (length) => {
+      const app = express();
+      app.use(express.json({ limit: '10mb' }));
+      const createJob = vi.spyOn(jobManager, 'createJob');
+      const acquireRepoLock = vi.fn(() => 'busy');
+      mountAnalyzeRoutes(
+        app,
+        jobManager,
+        { init: vi.fn().mockResolvedValue(true) },
+        acquireRepoLock,
+        vi.fn(),
+      );
+      const baseUrl = await listen(app);
+      const response = await fetch(`${baseUrl}/api/analyze`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'a'.repeat(length) }),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: '"url" is too long' });
+      expect(createJob).not.toHaveBeenCalled();
+      expect(acquireRepoLock).not.toHaveBeenCalled();
+      expect(forkMockState.fork).not.toHaveBeenCalled();
+      createJob.mockRestore();
+    },
+  );
+
+  it('allows a URL at the length limit to reach job creation', async () => {
+    const app = express();
+    app.use(express.json());
+    const createJob = vi.spyOn(jobManager, 'createJob').mockImplementation(() => {
+      throw new Error('job creation reached');
+    });
+    mountAnalyzeRoutes(
+      app,
+      jobManager,
+      { init: vi.fn().mockResolvedValue(true) },
+      vi.fn(() => 'busy'),
+      vi.fn(),
+    );
+    const baseUrl = await listen(app);
+    const url = `https://example.com/${'a'.repeat(MAX_GIT_URL_LENGTH - 20)}`;
+    expect(url).toHaveLength(MAX_GIT_URL_LENGTH);
+    const response = await fetch(`${baseUrl}/api/analyze`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    expect(response.status).toBe(500);
+    expect(createJob).toHaveBeenCalledWith({ repoUrl: url, repoPath: undefined });
+    createJob.mockRestore();
+  });
 
   it('keeps the repo write lock until a cancelled analyze child exits', async () => {
     const app = express();

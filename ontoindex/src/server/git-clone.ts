@@ -15,9 +15,22 @@ import { createHash, randomUUID } from 'crypto';
 
 type LookupAddress = { address: string; family: number };
 
-/** Remove URL userinfo before rendering untrusted Git output. */
+export const MAX_GIT_URL_LENGTH = 2048;
+
+/**
+ * Remove URL userinfo before rendering untrusted Git output.
+ * The pattern starts at a literal `://` and its userinfo run cannot contain `/`, so matches never
+ * overlap. The scheme check walks back over one disjoint run per match, which keeps the scan linear
+ * on every supported Node version (a regex lookbehind is quadratic on Node 22).
+ */
 export function redactGitUrl(text: string): string {
-  return text.replace(/([a-z][a-z\d+.-]*:\/\/)[^\s/]*@/gi, '$1');
+  return text.replace(/:\/\/[^\s/]*@/g, (match, offset: number) => {
+    let sawLetter = false;
+    for (let i = offset - 1; i >= 0 && /[a-z\d+.-]/i.test(text[i]!); i--) {
+      if (/[a-z]/i.test(text[i]!)) sawLetter = true;
+    }
+    return sawLetter ? '://' : match;
+  });
 }
 
 export function gitEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -42,7 +55,9 @@ export function gitEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.
 
 /** Extract the repository name from a git URL (HTTPS or SSH). */
 export function extractRepoName(url: string): string {
-  const cleaned = url.replace(/\/+$/, '');
+  let end = url.length;
+  while (end > 0 && url[end - 1] === '/') end--;
+  const cleaned = url.slice(0, end);
   const lastSegment = cleaned.split(/[/:]/).pop() || 'unknown';
   return lastSegment.replace(/\.git$/, '');
 }
