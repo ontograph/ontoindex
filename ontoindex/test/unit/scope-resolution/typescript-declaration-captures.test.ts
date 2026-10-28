@@ -1180,9 +1180,9 @@ describe('borrowed TS/JS lexical binding captures', () => {
 
   it.each([
     'var value = 1;',
-    'const { value } = input;',
+    'const { value: { nested } } = input;',
     'let [[value]] = input;',
-    'const valid = 1, { invalid } = input;',
+    'const valid = 1, { invalid: { nested } } = input;',
     'let valid = 1, [[invalid]] = input;',
     'let value = ;',
     'const = 1;',
@@ -1568,7 +1568,7 @@ describe('borrowed TS/JS catch binding captures', () => {
     'try {} catch (error) { class error {} }',
     'try {} catch (error) { function error() {} }',
     'try {} catch (error) { function* error() {} }',
-    'try {} catch (error) { let valid; const { other } = source; }',
+    'try {} catch (error) { let valid; const { other: { nested } } = source; }',
     'try {} catch (error) { let valid; let broken = ; }',
   ])('refuses unsupported syntax or direct body conflicts atomically: %s', async (source) => {
     const { root } = await parse(source);
@@ -1804,7 +1804,7 @@ describe('borrowed TS/JS var binding captures', () => {
     'preserves exported lexical refusal and unrelated binding parity in %s',
     async (filePath) => {
       for (const declaration of [
-        'export const { other } = input;',
+        'export const { other: { nested } } = input;',
         'export let [[other]] = input;',
       ]) {
         for (const source of [`var value; ${declaration}`, `${declaration} var value;`]) {
@@ -1939,8 +1939,8 @@ describe('file-batch TS/JS var binding captures', () => {
     'function visited(value = 1) { var other; }',
     'function visited(...values) { var other; }',
     'function visited({ value = 1 }) { var other; }',
-    'function visited() { const { unrelated } = source; var other; }',
-    'const { unrelated } = source; var other;',
+    'function visited() { const { unrelated: { nested } } = source; var other; }',
+    'const { unrelated: { nested } } = source; var other;',
   ])('preserves refusal in a visited environment: %s', async (source) => {
     const { root } = await parse(source);
     expect(root.hasError).toBe(false);

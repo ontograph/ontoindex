@@ -833,8 +833,8 @@ describe('borrowed TS/JS local export captures', () => {
   });
 
   it.each([
-    'export const local = 1, { value } = source;',
-    'export const { value } = source, local = 1;',
+    'export const local = 1, { value: { nested } } = source;',
+    'export const { value: { nested } } = source, local = 1;',
     'export let local = 1, [[value]] = source;',
     'export let [[value]] = source, local = 1;',
   ])(

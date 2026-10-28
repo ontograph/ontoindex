@@ -5,6 +5,7 @@ import {
   emitTypeScriptCatchBindingCaptures,
   emitTypeScriptDeclarationCaptures,
   emitTypeScriptLexicalBindingCaptures,
+  typeScriptObjectPatternDefaults,
   emitTypeScriptParameterBindingCaptures,
   emitTypeScriptVarBindingCapturesForNodes,
   typeScriptAnnotationType,
@@ -1386,7 +1387,7 @@ function validateDeclaration(
       const annotation = declarator.childForFieldName('type');
       if (annotation) typeScriptAnnotationType(annotation);
       const initializer = value ? unwrapTypeScriptParenthesized(value) : null;
-      const destructured = name?.type === 'array_pattern';
+      const destructured = name?.type === 'array_pattern' || name?.type === 'object_pattern';
       if (
         !name ||
         (!destructured && name.type !== 'identifier') ||
@@ -1406,6 +1407,9 @@ function validateDeclaration(
       )
         unsupported(initializer ?? declarator);
       if (initializer) appendExpressionReferences(initializer, references, localCaptures);
+      if (name?.type === 'object_pattern')
+        for (const fallback of typeScriptObjectPatternDefaults(name))
+          appendExpressionReferences(fallback, references, localCaptures);
     }
     return;
   }

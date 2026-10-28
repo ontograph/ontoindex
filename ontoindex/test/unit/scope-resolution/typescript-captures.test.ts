@@ -6985,7 +6985,7 @@ describe('borrowed TS/JS module captures', () => {
           'bad = outer(good(1), bad(value?.[key].deep))',
           'bad = outer(bad(value?.[key].deep), good(1))',
           'bad = () => { return this; }',
-          '{ bad } = {}',
+          '{ bad: { nested } } = {}',
           ...(/\.tsx?$/.test(filePath)
             ? ['bad: number & string = 1', 'bad = new Box<() => typeof Type>()']
             : []),
@@ -9057,7 +9057,7 @@ describe('borrowed TS/JS module captures', () => {
         'bad = /pattern/zz',
         'bad = {...value?.[key].deep}',
         'bad = [...values?.[key].deep]',
-        '{ bad } = {}',
+        '{ bad: { nested } } = {}',
         '[[bad]] = []',
       ];
       for (const declaration of unsupported) {
