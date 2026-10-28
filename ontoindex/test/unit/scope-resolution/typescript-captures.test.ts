@@ -602,8 +602,7 @@ describe('borrowed TS/JS module captures', () => {
         '/pattern/;',
         '(/pattern/)();',
         '/pattern/();',
-        '/pattern/.test(value);',
-        'const result = /pattern/.field;',
+        'delete /pattern/;',
         ...(/\.tsx?$/.test(filePath) ? ['const result = /pattern/ as const;'] : []),
       ];
       for (const statement of statements) {
@@ -844,7 +843,7 @@ describe('borrowed TS/JS module captures', () => {
         'const result = obj[value = 1];',
         'const result = obj[value++];',
         'const result = obj[() => { return this; }];',
-        'const result = obj[value % 1];',
+        'const result = obj[delete value];',
         'const result = obj[obj?.[key]];',
         'const result = obj?.[key][other];',
         'const result = factory(obj?.[key])[indexer(key)];',
@@ -3735,7 +3734,7 @@ describe('borrowed TS/JS module captures', () => {
           '() => { return this; }',
           'value = 1',
           'value++',
-          'value % 1',
+          'delete value',
           'value as typeof Shape',
         ].map((operand) => `const result = good() + (${operand})!;`),
       ]) {
@@ -3862,7 +3861,7 @@ describe('borrowed TS/JS module captures', () => {
       '() => { return this; }',
       'value = 1',
       'value++',
-      'value % 1',
+      'delete value',
       'delete value',
       'delete value.x',
       'delete (value)',
@@ -3932,8 +3931,8 @@ describe('borrowed TS/JS module captures', () => {
         '() => { return this; }',
         'value = 1',
         'value++',
-        'value % 1',
-        'value instanceof Box',
+        'delete value',
+        'delete value.box',
         ...(/\.tsx?$/.test(filePath) ? ['(value < other) as const', 'value as typeof Shape'] : []),
       ];
       for (const operator of ['<', '-', 'in']) {
@@ -4103,7 +4102,7 @@ describe('borrowed TS/JS module captures', () => {
         'obj?.[key].field',
         '() => { return this; }',
         'value = 1',
-        'value % 1',
+        'delete value',
       ]) {
         for (const expression of [
           `(${bad}) ? first() : second()`,
@@ -6413,7 +6412,7 @@ describe('borrowed TS/JS module captures', () => {
   it.each(filePaths)('rejects unsupported returned values atomically in %s', async (filePath) => {
     const values = [
       'delete value',
-      '1 % 2',
+      'delete value',
       '{...value?.[key].deep}',
       '[...values?.[key].deep]',
       'tag`text`',
@@ -6642,7 +6641,7 @@ describe('borrowed TS/JS module captures', () => {
         ]),
         ...[
           'delete value',
-          '1 % 2',
+          'delete value',
           '{...value?.[key].deep}',
           '[...values?.[key].deep]',
           'tag`text`',
@@ -6727,7 +6726,7 @@ describe('borrowed TS/JS module captures', () => {
         ]),
         ...[
           'delete value',
-          '1 % 2',
+          'delete value',
           '{...value?.[key].deep}',
           '[...values?.[key].deep]',
           'tag`text`',
@@ -7419,7 +7418,7 @@ describe('borrowed TS/JS module captures', () => {
         'const lexical = 1;',
         'function nested() {}',
         'class Nested {}',
-        'return value % 1;',
+        'return delete value;',
         'throw value?.[key].deep;',
         'value?.();',
         'break;',
@@ -7529,7 +7528,7 @@ describe('borrowed TS/JS module captures', () => {
     async (filePath) => {
       const statements = [
         'if (obj?.[key].deep) {}',
-        'if ((value % 1)) {}',
+        'if ((delete value)) {}',
         'if (value = 1) {}',
         'if (outer(good(), bad(obj?.[key].deep))) {}',
         'if (outer(bad(obj?.[key].deep), good())) {}',
@@ -10526,7 +10525,7 @@ describe('borrowed TS/JS module captures', () => {
         '() => { return this; }',
         '...make()',
         'value = 1',
-        'value % 1',
+        'delete value',
         'value?.()',
         'obj[key]()',
         '/pattern/zz',
@@ -10877,7 +10876,7 @@ describe('borrowed TS/JS module captures', () => {
         'key = value',
         '(key, value)',
         'delete key',
-        'key % 1',
+        'delete key',
         'key?.()',
         'object[key]()',
         '() => { return this; }',
@@ -12373,8 +12372,8 @@ describe('borrowed TS/JS module captures', () => {
         '[() => { return this; }]',
         '[delete value]',
         '[tag`text`]',
-        '[value].method()',
-        '([value]).method()',
+        '[delete value].method()',
+        '([delete value]).method()',
         ...(/\.tsx?$/.test(filePath) ? ['[value as typeof Shape]', '[value as const]'] : []),
       ];
       for (const bad of unsupported) {

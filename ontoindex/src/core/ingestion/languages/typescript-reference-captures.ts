@@ -48,6 +48,11 @@ export function unwrapTypeScriptParenthesized(node: SyntaxNode): SyntaxNode {
   return node;
 }
 
+/** Literal receivers (`[a].map`, `/x/.test`, `"s".length`) carry no named type, so they resolve as unknown receivers. */
+export function isTypeScriptLiteralReceiver(node: SyntaxNode): boolean {
+  return ['array', 'regex', 'string', 'template_string', 'number'].includes(node.type);
+}
+
 /** Validated assertions preserve the identity of a receiver, including dynamic operands. */
 export function unwrapTypeScriptReceiver(node: SyntaxNode): SyntaxNode {
   while (true) {
@@ -259,6 +264,11 @@ function receiverCapture(
         receiver: { ...capture('@reference.receiver', node, ''), receiver: { kind: 'unknown' } },
         read: [],
       };
+    } else if (isTypeScriptLiteralReceiver(current)) {
+      return {
+        receiver: { ...capture('@reference.receiver', node, ''), receiver: { kind: 'unknown' } },
+        read: [],
+      };
     } else if (current.type === 'ternary_expression') {
       const condition = current.childForFieldName('condition');
       const consequence = current.childForFieldName('consequence');
@@ -387,6 +397,7 @@ export function emitTypeScriptMemberReadCaptures(node: SyntaxNode): CaptureMatch
   }
   const terminalCall = current.type === 'call_expression';
   const terminalDynamic =
+    isTypeScriptLiteralReceiver(current) ||
     current.type === 'subscript_expression' ||
     current.type === 'ternary_expression' ||
     (current.type === 'binary_expression' && current.childForFieldName('operator')?.type === '??');
