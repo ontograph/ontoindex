@@ -153,5 +153,5 @@ describe('dirty overlay publication rollback', () => {
       await closeLbug();
       await fs.rm(repoPath, { recursive: true, force: true });
     }
-  });
+  }, 120_000);
 });

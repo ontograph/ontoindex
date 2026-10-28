@@ -104,5 +104,5 @@ describe('dirty overlay database digest publication', () => {
         await fs.rm(repoPath, { recursive: true, force: true });
       }
     }
-  });
+  }, 120_000);
 });

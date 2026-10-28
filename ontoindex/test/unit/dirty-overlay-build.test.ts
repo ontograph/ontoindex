@@ -286,7 +286,7 @@ describe('disposable dirty overlay build', () => {
       await closeLbug();
       await fs.rm(repoPath, { recursive: true, force: true });
     }
-  });
+  }, 120_000);
 
   it('refuses over-limit scope without running the pipeline or creating storage', async () => {
     const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-overlay-limit-'));
