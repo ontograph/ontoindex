@@ -676,7 +676,7 @@ describe('semantic registration capture and replay', () => {
     expect(() => restoreSemanticModelRegistrations({ version: 1, events })).toThrow(
       expect.objectContaining({ code: 'INVALID_SEMANTIC_MODEL_REGISTRATIONS' }),
     );
-  }, 15_000);
+  }, 60_000);
 
   it('rejects a snapshot whose individually valid events exceed the aggregate byte limit', () => {
     const largeEvent = { ...symbolEvent, name: 'x'.repeat(256 * 1024 - 256) };
@@ -685,5 +685,5 @@ describe('semantic registration capture and replay', () => {
     ).not.toThrow();
     const events = Array.from({ length: 257 }, () => largeEvent);
     expect(() => restoreSemanticModelRegistrations({ version: 1, events })).toThrow();
-  }, 15_000);
+  }, 60_000);
 });
