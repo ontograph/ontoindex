@@ -19,10 +19,18 @@ export const MAX_GIT_URL_LENGTH = 2048;
 
 /**
  * Remove URL userinfo before rendering untrusted Git output.
- * Anchoring on `://` keeps the scan linear: each match is bounded by the next `/` or whitespace.
+ * The pattern starts at a literal `://` and its userinfo run cannot contain `/`, so matches never
+ * overlap. The scheme check walks back over one disjoint run per match, which keeps the scan linear
+ * on every supported Node version (a regex lookbehind is quadratic on Node 22).
  */
 export function redactGitUrl(text: string): string {
-  return text.replace(/(?<=[a-z][a-z\d+.-]*):\/\/[^\s/]*@/gi, '://');
+  return text.replace(/:\/\/[^\s/]*@/g, (match, offset: number) => {
+    let sawLetter = false;
+    for (let i = offset - 1; i >= 0 && /[a-z\d+.-]/i.test(text[i]!); i--) {
+      if (/[a-z]/i.test(text[i]!)) sawLetter = true;
+    }
+    return sawLetter ? '://' : match;
+  });
 }
 
 export function gitEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
