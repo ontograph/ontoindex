@@ -134,6 +134,31 @@ describe('parser runtime disk artifact identity', () => {
     await expect(value.identity()).rejects.toThrow(/inventory limit/);
   });
 
+  it('refuses a same-size rewrite that differs only below one millisecond', async () => {
+    const value = await fixture();
+    const original = fs.open;
+    vi.spyOn(fs, 'open').mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+      const handle = await original(...args);
+      if (args[0] === value.processor) {
+        const stat = handle.stat.bind(handle);
+        let calls = 0;
+        // Report the same millisecond value with a different nanosecond remainder after the
+        // first check: millisecond-float comparison cannot see this, nanosecond comparison can.
+        vi.spyOn(handle, 'stat').mockImplementation((async (...statArgs: unknown[]) => {
+          const result = (await (stat as (...a: unknown[]) => Promise<any>)(...statArgs)) as any;
+          if (++calls > 1 && typeof result.mtimeNs === 'bigint')
+            return Object.assign(Object.create(Object.getPrototypeOf(result)), result, {
+              mtimeNs: result.mtimeNs + 1n,
+              mtimeMs: result.mtimeMs,
+            });
+          return result;
+        }) as typeof handle.stat);
+      }
+      return handle;
+    });
+    await expect(value.identity()).rejects.toThrow(/changed/);
+  });
+
   it.each(['replace', 'mutate', 'add'])('refuses %s during a streamed read', async (change) => {
     const value = await fixture();
     const original = fs.open;

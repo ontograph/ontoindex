@@ -3,20 +3,23 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { constants, type Stats } from 'node:fs';
+import { constants, type BigIntStats } from 'node:fs';
 
 const require = createRequire(import.meta.url);
 
-type ArtifactEntry = { filename: string; label: string; stat: Stats };
+type ArtifactEntry = { filename: string; label: string; stat: BigIntStats };
 
-function sameArtifact(left: Stats, right: Stats): boolean {
+// Nanosecond stats: millisecond floats can hide a same-size rewrite on filesystems with finer ticks.
+const BIGINT = { bigint: true } as const;
+
+function sameArtifact(left: BigIntStats, right: BigIntStats): boolean {
   return (
     left.dev === right.dev &&
     left.ino === right.ino &&
     left.mode === right.mode &&
     left.size === right.size &&
-    left.mtimeMs === right.mtimeMs &&
-    left.ctimeMs === right.ctimeMs
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
   );
 }
 
@@ -34,27 +37,27 @@ export async function runtimeArtifactIdentity(
     async function visit(filename: string, label: string, depth: number): Promise<void> {
       if (depth > 32 || entries.length >= maxEntries)
         throw new Error('Parser artifact inventory limit exceeded');
-      const stat = await fs.lstat(filename);
-      if ((!stat.isFile() && !stat.isDirectory()) || !(stat.mode & 0o444))
+      const stat = await fs.lstat(filename, BIGINT);
+      if ((!stat.isFile() && !stat.isDirectory()) || !(Number(stat.mode) & 0o444))
         throw new Error(`Parser artifact is not a readable regular file or directory: ${label}`);
-      if (stat.isDirectory() && !(stat.mode & 0o111))
+      if (stat.isDirectory() && !(Number(stat.mode) & 0o111))
         throw new Error(`Parser artifact directory is not searchable: ${label}`);
       entries.push({ filename, label, stat });
       if (stat.isFile()) {
-        totalBytes += stat.size;
-        if (stat.size > maxFileBytes || totalBytes > maxTotalBytes)
+        totalBytes += Number(stat.size);
+        if (Number(stat.size) > maxFileBytes || totalBytes > maxTotalBytes)
           throw new Error(`Parser artifact byte limit exceeded: ${label}`);
       } else {
         const directory = await fs.opendir(filename);
         for await (const entry of directory) {
           await visit(path.join(filename, entry.name), `${label}/${entry.name}`, depth + 1);
         }
-        if (!sameArtifact(stat, await fs.lstat(filename)))
+        if (!sameArtifact(stat, await fs.lstat(filename, BIGINT)))
           throw new Error(`Parser artifact changed during inventory: ${label}`);
       }
     }
     for (const [label, root] of roots) {
-      if (!(await fs.lstat(root)).isDirectory())
+      if (!(await fs.lstat(root, BIGINT)).isDirectory())
         throw new Error(`Parser artifact root is not a directory: ${label}`);
       await visit(root, label, 0);
     }
@@ -76,8 +79,8 @@ export async function runtimeArtifactIdentity(
     );
     try {
       if (
-        !sameArtifact(entry.stat, await handle.stat()) ||
-        !sameArtifact(entry.stat, await fs.lstat(entry.filename))
+        !sameArtifact(entry.stat, await handle.stat(BIGINT)) ||
+        !sameArtifact(entry.stat, await fs.lstat(entry.filename, BIGINT))
       )
         throw new Error(`Parser artifact changed before read: ${entry.label}`);
       hash.update(`${Buffer.byteLength(entry.label)}\0${entry.label}\0${entry.stat.size}\0`);
@@ -86,19 +89,19 @@ export async function runtimeArtifactIdentity(
         const { bytesRead } = await handle.read(
           buffer,
           0,
-          Math.min(buffer.length, entry.stat.size - length + 1),
+          Math.min(buffer.length, Number(entry.stat.size) - length + 1),
           null,
         );
         if (!bytesRead) break;
         length += bytesRead;
-        if (length > entry.stat.size)
+        if (length > Number(entry.stat.size))
           throw new Error(`Parser artifact changed during read: ${entry.label}`);
         hash.update(buffer.subarray(0, bytesRead));
       }
       if (
-        length !== entry.stat.size ||
-        !sameArtifact(entry.stat, await handle.stat()) ||
-        !sameArtifact(entry.stat, await fs.lstat(entry.filename))
+        length !== Number(entry.stat.size) ||
+        !sameArtifact(entry.stat, await handle.stat(BIGINT)) ||
+        !sameArtifact(entry.stat, await fs.lstat(entry.filename, BIGINT))
       )
         throw new Error(`Parser artifact changed during read: ${entry.label}`);
     } finally {
