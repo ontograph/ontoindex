@@ -95,12 +95,15 @@ it('/api/grep skips indexed files replaced by external symlinks and allows inter
     results: [{ filePath: 'link.txt', line: 1, text: 'needle internal' }],
   });
   const queryCalls = mocks.executeQuery.mock.calls.length;
-  for (const query of ['pattern=needle&pattern=other', 'pattern[value]=needle']) {
+  for (const [query, error] of [
+    ['pattern=needle&pattern=other', '"pattern" must be a single string'],
+    ['pattern[value]=needle', 'Missing "pattern" query parameter'],
+  ] as const) {
     const invalid = await fetch(`http://127.0.0.1:${address.port}/api/grep?repo=repo&${query}`, {
       headers: { Authorization: 'Bearer grep-test-token' },
     });
     expect(invalid.status).toBe(400);
-    expect(await invalid.json()).toEqual({ error: 'Missing "pattern" query parameter' });
+    expect(await invalid.json()).toEqual({ error });
   }
   expect(mocks.executeQuery).toHaveBeenCalledTimes(queryCalls);
   await fs.mkdir(path.join(repo, '.git'));
