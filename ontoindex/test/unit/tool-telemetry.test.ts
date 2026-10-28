@@ -19,19 +19,27 @@ import {
   recordToolCall,
 } from '../../src/mcp/local/tool-telemetry.js';
 import { appendFile, readFile, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 
 const appendMock = appendFile as unknown as ReturnType<typeof vi.fn>;
 const readFileMock = readFile as unknown as ReturnType<typeof vi.fn>;
 const statMock = stat as unknown as ReturnType<typeof vi.fn>;
 
 describe('recordToolCall', () => {
+  let originalTelemetryDir: string | undefined;
+
   beforeEach(() => {
+    originalTelemetryDir = process.env.ONTOINDEX_TELEMETRY_DIR;
+    delete process.env.ONTOINDEX_TELEMETRY_DIR;
     vi.clearAllMocks();
     statMock.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
     appendMock.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
+    if (originalTelemetryDir === undefined) delete process.env.ONTOINDEX_TELEMETRY_DIR;
+    else process.env.ONTOINDEX_TELEMETRY_DIR = originalTelemetryDir;
     vi.restoreAllMocks();
   });
 
@@ -48,11 +56,35 @@ describe('recordToolCall', () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(appendMock).toHaveBeenCalledOnce();
     const [path, line] = appendMock.mock.calls[0];
-    expect(path).toContain('telemetry.jsonl');
+    expect(path).toBe(join('/fake/home', '.ontoindex', 'telemetry.jsonl'));
     const parsed = JSON.parse(line.trim());
     expect(parsed.method).toBe('dead_code');
     expect(parsed.durationMs).toBe(123);
     expect(parsed.ok).toBe(true);
+  });
+
+  it('uses the telemetry directory override for appends, rotation and reads', async () => {
+    const { mkdir, rename } = await import('node:fs/promises');
+    vi.stubEnv('ONTOINDEX_TELEMETRY_DIR', '/isolated/telemetry');
+    const telemetryPath = join('/isolated/telemetry', 'telemetry.jsonl');
+    statMock.mockResolvedValue({ size: 11 * 1024 * 1024 });
+    recordToolCall({
+      ts: '2026-01-01T00:00:00.000Z',
+      method: 'list_repos',
+      repo: '',
+      durationMs: 1,
+      responseSizeBytes: 600 * 1024,
+      ok: true,
+    });
+    await vi.waitFor(() => expect(appendMock).toHaveBeenCalledOnce());
+    expect(mkdir).toHaveBeenCalledWith('/isolated/telemetry', { recursive: true });
+    expect(statMock).toHaveBeenCalledWith(telemetryPath);
+    expect(rename).toHaveBeenCalledWith(telemetryPath, telemetryPath + '.1');
+    expect(appendMock.mock.calls[0][0]).toBe(telemetryPath);
+
+    readFileMock.mockResolvedValue(appendMock.mock.calls[0][1]);
+    await expect(readRecentOversizedToolCalls()).resolves.toEqual(['list_repos']);
+    expect(readFileMock).toHaveBeenCalledWith(telemetryPath, 'utf8');
   });
 
   it('does not throw when appendFile rejects', async () => {

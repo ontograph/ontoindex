@@ -1714,7 +1714,8 @@ export const ONTOINDEX_SUPER_TOOLS: ToolDefinition[] = [
         expectedFiles: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Expected changed files.',
+          description:
+            'Expected changed files. Omitted means no changes are expected, so every changed file is reported as unexpected.',
         },
         expectedSymbols: {
           type: 'array',

@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  applyLogicalResponseBudget,
   pageMcpResponse,
   serializedMcpToolResultBytes,
   type ResponsePageEnvelope,
@@ -42,6 +43,63 @@ async function collectPages(
 async function collect(text: string, maxBytes?: number): Promise<string> {
   return (await collectPages(text, maxBytes)).reconstructed;
 }
+
+describe('applyLogicalResponseBudget retry hints', () => {
+  it.each([false, true])(
+    'reports the full size for an unsupported tool (isError=%s)',
+    (isError) => {
+      const text = JSON.stringify({ message: '日本語🙂'.repeat(100) });
+      const fullSize = serializedMcpToolResultBytes(text, isError);
+      expect(() => applyLogicalResponseBudget(text, 'manage', 1, isError)).toThrow(
+        `response_budget_bytes is too small for a safe response projection. Requested 1 bytes; this response cannot be projected and needs at least ${fullSize} bytes (its full size).`,
+      );
+      expect(applyLogicalResponseBudget(text, 'manage', fullSize, isError)).toBe(text);
+    },
+  );
+
+  it.each([false, true])('reports a retryable smallest projection (wrapped=%s)', (wrapped) => {
+    const result = { results: [{ name: '日本語🙂'.repeat(500) }], evidence: ['x'.repeat(500)] };
+    const text = JSON.stringify(
+      wrapped ? { repoLabel: 'test', repoPath: '/test', result } : result,
+    );
+    let message = '';
+    try {
+      applyLogicalResponseBudget(text, 'search', 1);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(
+      /^response_budget_bytes is too small to preserve the response diagnostics\. Requested 1 bytes; the smallest safe projection needs \d+ bytes\.$/,
+    );
+    const minimumBytes = Number(message.match(/needs (\d+) bytes/)?.[1]);
+    const projected = applyLogicalResponseBudget(text, 'search', minimumBytes);
+    expect(serializedMcpToolResultBytes(projected)).toBe(minimumBytes);
+    expect(JSON.parse(projected).responseBudget).toMatchObject({
+      requestedBytes: minimumBytes,
+      returnedBytes: minimumBytes,
+      truncated: true,
+      omittedFields: wrapped ? ['result.results', 'result.evidence'] : ['results', 'evidence'],
+    });
+  });
+
+  it('reports the full size when diagnostic-bearing detail cannot be removed', () => {
+    const text = JSON.stringify({ results: [{ warnings: ['keep this warning'] }] });
+    const fullSize = serializedMcpToolResultBytes(text);
+    expect(() => applyLogicalResponseBudget(text, 'search', 1)).toThrow(
+      `response_budget_bytes is too small to preserve the response diagnostics. Requested 1 bytes; this response cannot be projected and needs at least ${fullSize} bytes (its full size).`,
+    );
+    expect(applyLogicalResponseBudget(text, 'search', fullSize)).toBe(text);
+  });
+
+  it('reports the full size for a non-JSON response', () => {
+    const text = '日本語🙂';
+    const fullSize = serializedMcpToolResultBytes(text);
+    expect(() => applyLogicalResponseBudget(text, 'search', 1)).toThrow(
+      `response_budget_bytes cannot fit this non-JSON response without losing diagnostics. Requested 1 bytes; the response needs ${fullSize} bytes.`,
+    );
+    expect(applyLogicalResponseBudget(text, 'search', fullSize)).toBe(text);
+  });
+});
 
 describe('pageMcpResponse small budgets', () => {
   it.each([1, 10, 100])(

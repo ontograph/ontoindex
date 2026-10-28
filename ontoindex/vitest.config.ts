@@ -1,4 +1,6 @@
-import { cpus } from 'node:os';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { cpus, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { defineConfig } from 'vitest/config';
 
 const logicalCpuCount = Math.max(1, cpus().length);
@@ -16,6 +18,13 @@ const skipGlobalSetup = process.env.ONTOINDEX_SKIP_GLOBAL_SETUP === '1';
 
 process.env.VITEST_MAX_WORKERS = String(testWorkerLimit);
 process.env.ONTOINDEX_MAX_WORKERS = String(testWorkerLimit);
+
+const testStateDir = mkdtempSync(join(tmpdir(), 'ontoindex-vitest-state-'));
+// Keep test telemetry, query logs and paged results out of the user's ~/.ontoindex.
+process.on('exit', () => rmSync(testStateDir, { recursive: true, force: true }));
+process.env.ONTOINDEX_TELEMETRY_DIR ??= join(testStateDir, 'telemetry');
+process.env.ONTOINDEX_QUERY_LOG_DIR ??= join(testStateDir, 'query-log');
+process.env.ONTOINDEX_MCP_RESULT_DIR ??= join(testStateDir, 'mcp-results');
 
 export default defineConfig({
   test: {

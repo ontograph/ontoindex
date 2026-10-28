@@ -136,7 +136,9 @@ export function applyLogicalResponseBudget(
   requestedBytes: number,
   isError = false,
 ): string {
-  if (serializedMcpToolResultBytes(text, isError) <= requestedBytes) return text;
+  const originalBytes = serializedMcpToolResultBytes(text, isError);
+  if (originalBytes <= requestedBytes) return text;
+  const fullSizeHint = ` Requested ${requestedBytes} bytes; this response cannot be projected and needs at least ${originalBytes} bytes (its full size).`;
   let value: Record<string, unknown>;
   try {
     const parsed: unknown = JSON.parse(text);
@@ -144,7 +146,7 @@ export function applyLogicalResponseBudget(
     value = parsed as Record<string, unknown>;
   } catch {
     throw new Error(
-      'response_budget_bytes cannot fit this non-JSON response without losing diagnostics.',
+      `response_budget_bytes cannot fit this non-JSON response without losing diagnostics. Requested ${requestedBytes} bytes; the response needs ${originalBytes} bytes.`,
     );
   }
 
@@ -157,7 +159,9 @@ export function applyLogicalResponseBudget(
           ? RESULT_DETAIL_FIELDS
           : undefined;
   if (!candidates)
-    throw new Error('response_budget_bytes is too small for a safe response projection.');
+    throw new Error(
+      'response_budget_bytes is too small for a safe response projection.' + fullSizeHint,
+    );
 
   const isEnvelope =
     value.envelopeVersion === '1' &&
@@ -175,13 +179,38 @@ export function applyLogicalResponseBudget(
     value.result !== undefined;
   const isKnownOrdinary = Boolean(candidates?.some((field) => isDetailCollection(value[field])));
   if (!isEnvelope && !isRepoWrapper && !isKnownOrdinary) {
-    throw new Error('response_budget_bytes is too small for a safe response projection.');
+    throw new Error(
+      'response_budget_bytes is too small for a safe response projection.' + fullSizeHint,
+    );
   }
   if (isEnvelope && value.status !== 'ok') {
-    throw new Error('response_budget_bytes is too small to preserve the response diagnostics.');
+    throw new Error(
+      'response_budget_bytes is too small to preserve the response diagnostics.' + fullSizeHint,
+    );
   }
 
-  const originalBytes = serializedMcpToolResultBytes(text, isError);
+  let smallestProjectionBytes = Infinity;
+  const recordProjectionSize = (
+    projectedBytes: number,
+    projectionValue: Record<string, unknown>,
+    fields: string[],
+  ): void => {
+    // A retry changes requestedBytes in the metadata, so measure at the proposed retry budget.
+    let retryBytes = projectedBytes;
+    while (true) {
+      const retryProjection = withBudgetMetadata(
+        projectionValue,
+        retryBytes,
+        originalBytes,
+        fields,
+        isError,
+      );
+      const actualBytes = serializedMcpToolResultBytes(retryProjection, isError);
+      if (actualBytes <= retryBytes) break;
+      retryBytes = actualBytes;
+    }
+    smallestProjectionBytes = Math.min(smallestProjectionBytes, retryBytes);
+  };
   const originalValue = { ...value };
   const omittedFields: string[] = [];
   for (const field of candidates) {
@@ -196,7 +225,9 @@ export function applyLogicalResponseBudget(
       omittedFields,
       isError,
     );
-    if (serializedMcpToolResultBytes(projected, isError) <= requestedBytes) return projected;
+    const projectedBytes = serializedMcpToolResultBytes(projected, isError);
+    if (projectedBytes <= requestedBytes) return projected;
+    recordProjectionSize(projectedBytes, value, omittedFields);
   }
   // Repository identity wrappers retain their identity while only known result detail is removed.
   if (
@@ -221,10 +252,17 @@ export function applyLogicalResponseBudget(
         nextOmitted,
         isError,
       );
-      if (serializedMcpToolResultBytes(projected, isError) <= requestedBytes) return projected;
+      const projectedBytes = serializedMcpToolResultBytes(projected, isError);
+      if (projectedBytes <= requestedBytes) return projected;
+      recordProjectionSize(projectedBytes, nextValue, nextOmitted);
     }
   }
-  throw new Error('response_budget_bytes is too small to preserve the response diagnostics.');
+  throw new Error(
+    'response_budget_bytes is too small to preserve the response diagnostics.' +
+      (smallestProjectionBytes === Infinity
+        ? fullSizeHint
+        : ` Requested ${requestedBytes} bytes; the smallest safe projection needs ${smallestProjectionBytes} bytes.`),
+  );
 }
 
 function isDetailCollection(value: unknown): value is unknown[] | Record<string, unknown> {

@@ -381,6 +381,49 @@ describe('collectVerificationDiff changedFiles scope', () => {
     expect(detectChanges).toHaveBeenCalledWith(repo, { scope: 'unstaged' });
   });
 
+  it('warns when omitted expectedFiles makes changed files unexpected', async () => {
+    const report = await gnVerifyDiff('scope', { changedFiles: ['src/selected.ts'] });
+    expect(report.status).toBe('FAIL');
+    expect(report.unexpectedChangedFiles).toEqual(['src/selected.ts']);
+    expect(report.warnings).toEqual([
+      'Detector capped.',
+      'expectedFiles not provided; every changed file is reported as unexpected.',
+    ]);
+    expect(report.skipReasons).toEqual([
+      'expectedSymbols not provided; symbol scope was not checked.',
+    ]);
+  });
+
+  it.each([[[]], [['src/selected.ts']]])(
+    'does not warn about omitted expectedFiles when provided as %j',
+    async (expectedFiles) => {
+      const report = await gnVerifyDiff('scope', {
+        changedFiles: ['src/selected.ts'],
+        expectedFiles,
+      });
+      expect(report.status).toBe(expectedFiles.length === 0 ? 'FAIL' : 'PASS');
+      expect(report.warnings).toEqual(['Detector capped.']);
+    },
+  );
+
+  it('does not warn about omitted expectedFiles for an empty diff', async () => {
+    const report = await gnVerifyDiff('scope', { changedFiles: [] });
+    expect(report.status).toBe('PASS');
+    expect(report.warnings).toEqual([]);
+  });
+
+  it('warns that a zero-production-symbol test-gap PASS does not establish coverage', async () => {
+    detectChanges.mockResolvedValue({ changed_symbols: [], warnings: ['Detector capped.'] });
+    const report = await gnTestGap('scope', { changedFiles: ['src/selected.ts'] });
+    expect(report.status).toBe('PASS');
+    expect(report.changedProductionSymbolCount).toBe(0);
+    expect(report.warnings).toEqual([
+      'Detector capped.',
+      'No changed production symbols; PASS does not establish test coverage.',
+    ]);
+    expect(report.skipReasons).toEqual([]);
+  });
+
   it('fails diff test-gap verification when collection fails without exposing internal state', async () => {
     detectChanges.mockResolvedValue({ error: 'Detector failed.' });
     const report = await gnTestGap('scope', { changedFiles: ['src/selected.ts'] });
@@ -396,7 +439,10 @@ describe('collectVerificationDiff changedFiles scope', () => {
       detectChanges.mockResolvedValue({ changed_symbols: [], warnings });
       const report = await gnTestGap('scope', { changedFiles: ['src/selected.ts'] });
       expect(report.status).toBe('PASS');
-      expect(report.warnings).toEqual(warnings);
+      expect(report.warnings).toEqual([
+        ...warnings,
+        'No changed production symbols; PASS does not establish test coverage.',
+      ]);
       expect(report.skipReasons).toEqual([]);
       expect(report.actual).not.toHaveProperty('collectionFailed');
     },

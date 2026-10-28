@@ -57,6 +57,20 @@ import {
 
 const MAX_PROMPT_ARGUMENT_BYTES = 4096;
 
+const COMMITTED_READ_OPERATIONS: ReadonlyArray<{ tool: string; actions?: readonly string[] }> = [
+  { tool: 'inspect', actions: ['context', 'related', 'explore'] },
+  { tool: 'impact', actions: ['symbol'] },
+  { tool: 'search', actions: ['semantic'] },
+  { tool: 'audit', actions: ['safe_edit_check', 'can_delete'] },
+  { tool: 'gn_explore' },
+  { tool: 'gn_find_related' },
+  { tool: 'gn_safe_edit_check' },
+  { tool: 'gn_can_delete' },
+];
+const COMMITTED_READ_SUPPORTED = COMMITTED_READ_OPERATIONS.map(({ tool, actions }) =>
+  actions ? `${tool} ${actions.join('|')}` : tool,
+).join(', ');
+
 // Explicit because the registry labels discover (sync writes group files) and gn_ensure_fresh (autoAnalyze starts a job) read_only; docs is omitted because it persists a sidecar manifest.
 const READ_ONLY_TOOL_NAMES = new Set([
   'search',
@@ -615,16 +629,7 @@ export function createMCPServer(
         description: tool.description,
         inputSchema: relaxSchemaForClient(
           withResponseCursor(
-            [
-              'gn_explore',
-              'gn_find_related',
-              'gn_safe_edit_check',
-              'gn_can_delete',
-              'inspect',
-              'impact',
-              'search',
-              'audit',
-            ].includes(tool.name)
+            COMMITTED_READ_OPERATIONS.some((operation) => operation.tool === tool.name)
               ? {
                   ...tool.inputSchema,
                   properties: {
@@ -632,8 +637,7 @@ export function createMCPServer(
                     read_mode: {
                       type: 'string',
                       enum: ['committed'],
-                      description:
-                        'Explicit indexed-commit view; excludes uncommitted source and live enrichment. Supported for explore, find_related, safe_edit_check, can_delete, inspect/context or related, impact/symbol, search/semantic and audit/safe_edit_check or can_delete.',
+                      description: `Explicit indexed-commit view; excludes uncommitted source and live enrichment. Supported: ${COMMITTED_READ_SUPPORTED}.`,
                     },
                   },
                 }
@@ -664,19 +668,10 @@ export function createMCPServer(
         const { name, arguments: args } = request.params;
         const typedArgs = (args ?? {}) as Record<string, unknown>;
         let repoIdentity: RepoIdentity | null = null;
-        const supportedCommittedRead =
-          name === 'gn_explore' ||
-          name === 'gn_find_related' ||
-          name === 'gn_safe_edit_check' ||
-          name === 'gn_can_delete' ||
-          (name === 'audit' &&
-            (typedArgs.action === 'safe_edit_check' || typedArgs.action === 'can_delete')) ||
-          (name === 'inspect' &&
-            (typedArgs.action === 'context' ||
-              typedArgs.action === 'related' ||
-              typedArgs.action === 'explore')) ||
-          (name === 'impact' && typedArgs.action === 'symbol') ||
-          (name === 'search' && typedArgs.action === 'semantic');
+        const supportedCommittedRead = COMMITTED_READ_OPERATIONS.some(
+          ({ tool, actions }) =>
+            name === tool && (!actions || actions.some((action) => action === typedArgs.action)),
+        );
         const committedFallbackAvailable =
           supportedCommittedRead &&
           !options.full &&
@@ -703,8 +698,16 @@ export function createMCPServer(
               typeof typedArgs.repo !== 'string' ||
               typedArgs.repo.startsWith('@')
             ) {
+              const reason =
+                typedArgs.read_mode !== 'committed'
+                  ? `Unsupported read_mode value: ${String(typedArgs.read_mode)}.`
+                  : !supportedCommittedRead
+                    ? `Received ${name}/${String(typedArgs.action)}.`
+                    : options.full
+                      ? 'Committed reads are unavailable in full-backend mode.'
+                      : 'Missing single repository or received a repository group.';
               throw new Error(
-                'read_mode=committed requires an explicit single repository and a supported navigation operation.',
+                `read_mode=committed requires an explicit single repository and a supported navigation operation. ${reason} Supported: ${COMMITTED_READ_SUPPORTED}.`,
               );
             }
             if (
