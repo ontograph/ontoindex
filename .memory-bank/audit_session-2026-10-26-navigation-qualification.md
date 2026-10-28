@@ -2915,3 +2915,18 @@ removable; next4 has 18 live MCP processes. Rebinding config does not migrate li
 Full suite after the packet: tests-full-9.log, 771 files, 17794 passed, 0 failed.
 Next: new frozen snapshot from master, one coordinated analyze, canary a fresh MCP, then rebind; async-arrow follow-ups
 (generic arrows, object-literal methods); docker-server.mjs symlink containment; COBOL regex review.
+
+Round 20 delivery (master b36fd4c, PR #136 merged). New frozen snapshot `~/.local/opt/ontoindex-b36fd4c-20261028`
+(dist from the built tree, 15,810-file manifest, 0 symlinks, snapshot smoke PASS; contains quote-string.js and the
+URL bound). One coordinated `ONTOINDEX_MAX_WORKERS=7 ontoindex analyze` from that snapshot: 42.3 s, 48,659 nodes,
+78,498 edges, 935 clusters, 300 flows; index now fresh at b36fd4c, so `ensure_fresh` reports isStale=false and
+OntoIndex navigation no longer needs the stale-index caveat. A fresh MCP canary (ensure_fresh, semantic search,
+impact, context) passed against the new snapshot. Rebound: `~/.ontocode/config.toml` line 46 and
+`/opt/d2/.ontocode/config.toml` line 46 (same target), and the `~/.local/bin/ontoindex` symlink. Rollback files in
+`/opt/d1/tmp/ontoindex-cpp-attrib-20261028/`: `config.toml.before-rebind5`, `cli-symlink.before3`.
+Retained, not removed: `-1d77e34` (now the one-step rollback, 2 live processes), `-f6ddde9` (1 live process),
+`/opt/d1/tmp/ontoindex-next4-b64b569` (22 live MCP processes). Existing sessions keep their old build until they
+restart; nothing was killed. Observation: the analyze run reported scope-extraction refusals on 20+ of this repo's
+own TS files (async function declarations, class and method definitions, await, array and call shapes at
+audit-*.ts, pipeline-phases/*.ts, scope-retention-*.test.ts); those files fall back to the legacy path and are the
+next admission targets after async arrows. `.ontoindex` is 4.7 GB; root has 24 GB free.
