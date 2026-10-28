@@ -434,24 +434,36 @@ function appendExpressionReferences(
       pending.push(children[0]!);
       continue;
     }
+    if (current.type === 'await_expression') {
+      const children = current.children.filter((child) => child.type !== 'comment');
+      if (
+        children.length !== 2 ||
+        children[0]!.type !== 'await' ||
+        children[0]!.isNamed ||
+        !children[1]!.isNamed ||
+        children.some((child) => child.hasError || child.isMissing)
+      )
+        unsupported(current);
+      pending.push(children[1]!);
+      continue;
+    }
     if (current.type === 'unary_expression') {
       const operator = current.childForFieldName('operator');
       const argument = current.childForFieldName('argument');
       const children = current.children.filter((child) => child.type !== 'comment');
       if (
         !operator ||
-        !['-', '!'].includes(operator.type) ||
+        !['-', '+', '~', '!', 'typeof', 'void'].includes(operator.type) ||
         operator.isNamed ||
         !argument ||
         !argument.isNamed ||
-        (operator.type === '-' && argument.type !== 'number') ||
         children.length !== 2 ||
         children[0]!.id !== operator.id ||
         children[1]!.id !== argument.id ||
         children.some((child) => child.hasError || child.isMissing)
       )
         unsupported(current);
-      if (operator.type === '!') pending.push(argument);
+      pending.push(argument);
       continue;
     }
     if (current.type === 'satisfies_expression') {
@@ -502,7 +514,8 @@ function appendExpressionReferences(
       }
       if (
         operand.type === 'unary_expression' &&
-        operand.childForFieldName('operator')?.type !== '-'
+        (operand.childForFieldName('operator')?.type !== '-' ||
+          operand.childForFieldName('argument')?.type !== 'number')
       ) {
         unsupported(operand);
       }
@@ -762,6 +775,7 @@ function appendExpressionStatementReferences(
       'assignment_expression',
       'augmented_assignment_expression',
       'update_expression',
+      'await_expression',
     ].includes(value.type) ||
     statement.children.some(
       (child) =>
@@ -1424,10 +1438,10 @@ function validateDeclaration(
   const tokens = isClass
     ? ['class']
     : isMethod
-      ? []
+      ? ['async']
       : node.type === 'generator_function_declaration'
         ? ['function', '*']
-        : ['function'];
+        : ['async', 'function'];
   if (
     node.children.some(
       (child) =>
