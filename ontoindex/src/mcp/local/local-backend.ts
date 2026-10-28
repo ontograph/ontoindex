@@ -2207,7 +2207,9 @@ export class LocalBackend implements BackendPort {
 
   private async dispatchRepoTool(method: string, params: NormalizedToolParams): Promise<unknown> {
     const repo = await this.resolveRepo(this.getRepoParam(params));
-    const handler = this.repoToolHandlers[method];
+    const handler = Object.hasOwn(this.repoToolHandlers, method)
+      ? this.repoToolHandlers[method]
+      : undefined;
     if (!handler) throw new Error(`Unknown tool: ${method}`);
     const endUse = this.trackRepoUse(repo.id);
     try {
