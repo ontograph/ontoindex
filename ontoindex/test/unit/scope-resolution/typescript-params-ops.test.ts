@@ -129,7 +129,7 @@ describe('flat destructured parameters and bounded operators', () => {
     'workspaceDefs %= fallback;',
     'workspaceDefs /= fallback;',
     'const value = (workspaceDefs ??= fallback);',
-    'const value = a % b;',
+    'const value = a ?? b ?? delete c;',
   ])('fails closed for %s', async (source) => {
     await expect(captures(source)).rejects.toThrow(ScopeUnsupportedSyntaxError);
   });

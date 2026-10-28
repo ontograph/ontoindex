@@ -2945,3 +2945,23 @@ their "still refused" sentinel now use `delete ...` and `async function*`. After
 top refusals: array in calls 56, object_pattern 48, regex 44, type_predicate_annotation 40, binary_expression 30,
 await_expression 26 (await in positions other than a declaration initializer, return or statement), meta_property 24,
 function_declaration 23 (generic and generator). Next: object_pattern, type predicates, regex in calls, meta_property.
+
+Round 22 (branch feat/ts-capture-args-predicates, after PR #138 merged as dd55de9). The round 21 census labels
+"array in call" and "regex in call" were misleading: plain arrays and regexes as call arguments were already admitted.
+What refused files was a literal used as a call or member receiver (`[a, b].join(',')`, `/x/.test(a)`,
+`"s".length`, `` `x${a}`.length ``) and the binary operators `% ** << >> & | ^ instanceof`. Change: new
+`isTypeScriptLiteralReceiver` (array, regex, string, template_string, number) in `typescript-reference-captures.ts`,
+used by `receiverCapture`, `emitTypeScriptMemberReadCaptures` and the three receiver sites in `typescript-captures.ts`;
+such a receiver is an `{kind:'unknown'}` receiver (lookup-core.ts:351 resolves it to EMPTY with no lexical fallback)
+and its inner expressions are still traversed once. Binary allowlist gained the operators above; `-a ** b` (unary left
+operand of `**`) stays refused because it is a JavaScript early error that tree-sitter parses without error. Review
+by `gpt-6.1-sol` agents found these two issues (stale `instanceof` refusal fixtures, `**` unary left) and no others.
+Census: 217 admitted before, 269 after, of 759. Design reviews for the next packet are recorded here:
+(a) object_pattern declarations: share a bounded pattern validator that returns binding names and default expressions,
+enable defaults only for ordinary `const`/`let` declarations (not parameters or for-of headers, where default reads
+would not be traversed), keep nested/rest/computed keys, annotations, ambient and `var` refused (typescript-declaration-
+captures.ts flatBindingNames ~699, emitTypeScriptLexicalBindingCaptures ~805, validateDeclaration ~1350).
+(b) type predicates: validate the exact `x is T` shape inside `typeScriptAnnotationType` only, keep `asserts` and
+`this is T` refused; they bind nothing and read nothing. (c) `import.meta`: structural `import . meta` as an unknown
+receiver root; keep `new.target` and `import.meta()` refused. (d) type_query/type_arguments: bounded `typeof ident`
+and call type arguments through `validateTypeScriptType` and `callParts`.

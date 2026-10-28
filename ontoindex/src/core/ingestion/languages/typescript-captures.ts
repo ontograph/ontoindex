@@ -25,6 +25,7 @@ import {
   typeScriptThisMemberWriteValue,
   typeScriptSubscriptParts,
   unwrapTypeScriptParenthesized,
+  isTypeScriptLiteralReceiver,
   unwrapTypeScriptReceiver,
 } from './typescript-reference-captures.js';
 import { emitTypeScriptLexicalScopeCaptures } from './typescript-scope-captures.js';
@@ -403,11 +404,19 @@ function appendExpressionReferences(
           '*',
           '/',
           '+',
+          '%',
+          '**',
+          '<<',
+          '>>',
           '>>>',
+          '&',
+          '|',
+          '^',
           '&&',
           '||',
           '??',
           'in',
+          'instanceof',
         ].includes(operator.type) ||
         !right ||
         !right.isNamed ||
@@ -415,7 +424,9 @@ function appendExpressionReferences(
         children[0]!.id !== left.id ||
         children[1]!.id !== operator.id ||
         children[2]!.id !== right.id ||
-        children.some((child) => child.hasError || child.isMissing)
+        children.some((child) => child.hasError || child.isMissing) ||
+        // An unparenthesized unary left operand of `**` is a JavaScript early error.
+        (operator.type === '**' && left.type === 'unary_expression')
       )
         unsupported(current);
       pending.push(right, left);
@@ -563,6 +574,7 @@ function appendExpressionReferences(
       }
       if (
         terminal.type === 'call_expression' ||
+        isTypeScriptLiteralReceiver(terminal) ||
         terminal.type === 'subscript_expression' ||
         terminal.type === 'ternary_expression' ||
         (terminal.type === 'binary_expression' &&
@@ -719,6 +731,7 @@ function appendExpressionReferences(
       if (receiver.type !== 'member_expression') {
         if (
           receiver.type === 'call_expression' ||
+          isTypeScriptLiteralReceiver(receiver) ||
           receiver.type === 'subscript_expression' ||
           receiver.type === 'arrow_function' ||
           receiver.type === 'ternary_expression' ||
@@ -732,6 +745,7 @@ function appendExpressionReferences(
       receiver = receiver.childForFieldName('object');
       if (
         receiver?.type === 'call_expression' ||
+        (receiver && isTypeScriptLiteralReceiver(receiver)) ||
         receiver?.type === 'ternary_expression' ||
         (receiver?.type === 'binary_expression' &&
           receiver.childForFieldName('operator')?.type === '??')

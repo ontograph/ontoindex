@@ -104,7 +104,7 @@ describe('validated TypeScript assertion receivers and optional member calls', (
       '(x as { [key: string]: T }).method();',
       '(x satisfies T).method();',
       '(<T>x).method();',
-      '(1 as T).method();',
+      '(delete x as T).method();',
       '((x + y) as T).method();',
       '(x as).method();',
     ]) {
