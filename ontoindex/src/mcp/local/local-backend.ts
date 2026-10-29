@@ -24,6 +24,7 @@ import {
 } from './backend-overlay.js';
 import { RepoHandle, BackendPort } from 'ontoindex-shared';
 import { recordToolCall } from './tool-telemetry.js';
+import { maybeScheduleAutoRefresh } from './auto-refresh.js';
 import {
   initLbug,
   closeLbug,
@@ -1271,6 +1272,8 @@ const RELATIONSHIP_TOOLS = new Set([
 // Unlike RELATIONSHIP_TOOLS it degrades to the committed index when the build is refused.
 const WORKSPACE_GRAPH_TOOLS = new Set([...RELATIONSHIP_TOOLS, 'query', 'repomap', 'search']);
 
+const COMMITTED_FALLBACK_CODES = new Set(['workspace_busy', 'workspace_too_large', 'workspace_timeout']);
+
 function workspacePreparationError(error: unknown): Error & { code: string; retryable?: boolean } {
   if (error instanceof WorkspacePreparationError) {
     return Object.assign(
@@ -2376,25 +2379,59 @@ export class LocalBackend implements BackendPort {
     let preparationNote: string | undefined;
     const metadataOnlyReadiness =
       method === 'docs' && (params.action === undefined || params.action === 'readiness');
-    let result =
-      UNGATED_REPO_TOOLS.has(method) || metadataOnlyReadiness
-        ? await invoke()
-        : await this.withPreparedRepoRead(
-            repo,
-            {
-              needsRelationships: RELATIONSHIP_TOOLS.has(method),
-              wantsWorkspaceGraph: WORKSPACE_GRAPH_TOOLS.has(method),
-            },
-            async () => {
-              preparationNote = getReadRequestContext()?.snapshot.preparationNote;
-              return invoke();
-            },
-          );
-    if (preparationNote && isObjectResponse(result)) {
+    const refreshWarning =
+      UNGATED_REPO_TOOLS.has(method) || metadataOnlyReadiness ||
+      /(?:analyze|ensure_fresh)/.test(method)
+        ? Promise.resolve(undefined)
+        : new Promise<string | undefined>((resolve) => {
+            const timer = setTimeout(() => resolve(undefined), 1500);
+            void maybeScheduleAutoRefresh(repo).then((warning) => {
+              clearTimeout(timer);
+              resolve(warning);
+            });
+          });
+    let committedFallbackNote: string | undefined;
+    let result: unknown;
+    if (UNGATED_REPO_TOOLS.has(method) || metadataOnlyReadiness) {
+      result = await invoke();
+    } else {
+      try {
+        result = await this.withPreparedRepoRead(
+          repo,
+          {
+            needsRelationships: RELATIONSHIP_TOOLS.has(method),
+            wantsWorkspaceGraph: WORKSPACE_GRAPH_TOOLS.has(method),
+          },
+          async () => {
+            preparationNote = getReadRequestContext()?.snapshot.preparationNote;
+            return invoke();
+          },
+        );
+      } catch (error) {
+        // A stale index whose refresh is scheduled cannot also build a working-tree
+        // graph for the moved HEAD; answer from the labelled committed index instead.
+        const code = (error as { code?: unknown }).code;
+        if (
+          !COMMITTED_FALLBACK_CODES.has(code as string) ||
+          (await refreshWarning) === undefined
+        ) {
+          throw error;
+        }
+        result = await this.withPreparedRepoRead(
+          repo,
+          { needsRelationships: RELATIONSHIP_TOOLS.has(method), readMode: 'committed' },
+          invoke,
+        );
+        committedFallbackNote = `Working-tree read unavailable (${code}); answered from the committed index while it refreshes. Verify uncommitted and newly committed code from source.`;
+      }
+    }
+    const autoRefreshNote = await refreshWarning;
+    const notes = [preparationNote, autoRefreshNote, committedFallbackNote].filter((note) => note !== undefined);
+    if (notes.length && isObjectResponse(result)) {
       const existing = (result as { warnings?: unknown }).warnings;
       result = {
         ...(result as Record<string, unknown>),
-        warnings: [...(Array.isArray(existing) ? existing : []), preparationNote],
+        warnings: [...(Array.isArray(existing) ? existing : []), ...notes],
       };
     }
     if (method !== 'query' && method !== 'context' && method !== 'impact') {

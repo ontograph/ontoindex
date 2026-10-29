@@ -3,7 +3,7 @@ name: ontoindex-pr-review
 description: 'Review a pull request or diff for correctness, merge risk, and missing test coverage.'
 ---
 
-Read ontoindex-navigation first (freshness gate and failure path).
+Read ontoindex-navigation first (freshness labels and query failure guidance).
 
 ## Establish the review scope
 

@@ -5,7 +5,7 @@
  * PreToolUse  — intercepts Grep/Glob/Bash searches and augments
  *               with graph context from the OntoIndex index.
  * PostToolUse — detects stale index after git mutations and notifies
- *               the agent to reindex.
+ *               the agent about automatic refresh on the next query.
  *
  * NOTE: SessionStart hooks are broken on Windows (Claude Code bug).
  * Session context is injected via CLAUDE.md / skills instead.
@@ -250,7 +250,7 @@ function splitAugmentStderr(stderr) {
  * Resolve the ontoindex CLI path.
  * 1. Relative path (works when script is inside npm package)
  * 2. require.resolve (works when ontoindex is globally installed)
- * 3. Fall back to npx (returns empty string)
+ * 3. Fall back to the installed binary on PATH (returns empty string)
  */
 function resolveCliPath() {
   if (process.env.ONTOINDEX_HOOK_CLI_PATH) return process.env.ONTOINDEX_HOOK_CLI_PATH;
@@ -280,8 +280,8 @@ function runOntoIndexCli(cliPath, args, cwd, timeout) {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
   }
-  // On Windows, invoke npx.cmd directly (no shell needed)
-  return spawnSync(isWin ? 'npx.cmd' : 'npx', ['-y', 'ontoindex', ...args], {
+  // Use the installed binary on PATH; never download a CLI.
+  return spawnSync(isWin ? 'ontoindex.cmd' : 'ontoindex', args, {
     encoding: 'utf-8',
     timeout,
     cwd,
@@ -346,7 +346,7 @@ function sendHookResponse(hookEventName, message) {
  * the agent for up to 120s and risks KuzuDB corruption on timeout), we do a
  * lightweight staleness check: compare `git rev-parse HEAD` against the
  * lastCommit stored in `.ontoindex/meta.json`. If they differ, notify the
- * agent so it can decide when to reindex.
+ * agent that the next OntoIndex query refreshes the index in the background.
  */
 function handlePostToolUse(input) {
   const toolName = input.tool_name || '';
@@ -393,11 +393,12 @@ function handlePostToolUse(input) {
   // If HEAD matches last indexed commit, no reindex needed
   if (currentHead && currentHead === lastCommit) return;
 
-  const analyzeCmd = `npx ontoindex analyze${hadEmbeddings ? ' --embeddings' : ''}`;
+  const analyzeCmd = `ontoindex analyze${hadEmbeddings ? ' --embeddings' : ''}`;
   sendHookResponse(
     'PostToolUse',
-    `OntoIndex index is stale (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +
-      `Run \`${analyzeCmd}\` to update the knowledge graph.`,
+    `OntoIndex index is behind HEAD (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +
+      'The next OntoIndex query refreshes it automatically in the background; keep using OntoIndex. ' +
+      `To refresh now, run \`${analyzeCmd}\`.`,
   );
 }
 

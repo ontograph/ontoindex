@@ -56,7 +56,7 @@ describe('generateAIContextFiles', () => {
 
     const content = await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
 
-    expect(content).toContain('If any OntoIndex tool warns the index is stale');
+    expect(content).toContain('Always query OntoIndex first');
     expect(content).toContain('## Always Do');
     expect(content).toContain('## Never Do');
     expect(content).toContain('## Resources');
@@ -69,7 +69,7 @@ describe('generateAIContextFiles', () => {
     expect(content).not.toContain('npx ontoindex');
   });
 
-  it('orders the small-tool ladder and states the commit-based freshness rule', async () => {
+  it('orders the small-tool ladder and keeps stale evidence usable during refresh', async () => {
     const stats = { nodes: 50, edges: 100, processes: 5 };
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
 
@@ -87,12 +87,14 @@ describe('generateAIContextFiles', () => {
     expect(content).toContain('audit({action: "verify_diff", repo: "TestProject", scope: "all"})');
     expect(content).toContain('ontoindex detect-changes --repo TestProject');
 
-    // Commit-based index + forbid silent dirty-worktree assumptions.
-    expect(content).toContain('The graph index is commit-based');
-    expect(content).toContain('current HEAD differs from the indexed commit');
-    expect(content).toContain(
-      'Never silently assume dirty or uncommitted worktree changes are represented in the graph',
-    );
+    expect(content).toContain('Repo queries refresh stale indexes in the background');
+    expect(content).toContain('dirty edits use the automatic overlay');
+    expect(content).toContain('Use stale/refreshing results with freshness labels');
+    expect(content).toContain('verify edited or new code from source');
+    expect(content).toContain('Never fall back to grep-only because the index is stale');
+    expect(content).toContain('is only for immediate refresh with no active job');
+    expect(content).toContain('Sub-agents never start reindex jobs; refresh-on-query covers them');
+    expect(content).not.toContain('exactly one process must run');
   });
 
   it('only names gn_* tools available in the core startup profile', async () => {

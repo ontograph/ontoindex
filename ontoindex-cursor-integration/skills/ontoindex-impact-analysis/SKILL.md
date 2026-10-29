@@ -3,7 +3,7 @@ name: ontoindex-impact-analysis
 description: 'Assess blast radius before editing a symbol and identify dependencies that need review or validation.'
 ---
 
-Read ontoindex-navigation first (freshness gate and failure path).
+Read ontoindex-navigation first (freshness labels and query failure guidance).
 
 ## Before editing
 

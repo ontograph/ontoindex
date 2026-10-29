@@ -180,8 +180,11 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
 
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
-      expect(output!.additionalContext).toContain('stale');
-      expect(output!.additionalContext).toContain('npx ontoindex analyze');
+      expect(output!.additionalContext).toBe(
+        'OntoIndex index is behind HEAD (last indexed: aaaaaaa). ' +
+        'The next OntoIndex query refreshes it automatically in the background; keep using OntoIndex. ' +
+        'To refresh now, run `ontoindex analyze`.',
+      );
     });
 
     it('stays silent when meta.json lastCommit matches HEAD', () => {
@@ -248,7 +251,7 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
 
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
-      expect(output!.additionalContext).toContain('stale');
+      expect(output!.additionalContext).toContain('behind HEAD (last indexed: never)');
     });
 
     it('ignores failed git commands (exit_code !== 0)', () => {
@@ -312,7 +315,7 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
         });
         const output = parseHookOutput(result.stdout);
         expect(output).not.toBeNull();
-        expect(output!.additionalContext).toContain('stale');
+        expect(output!.additionalContext).toContain('behind HEAD');
       }
     });
   });
@@ -419,7 +422,7 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
       const output = parseHookOutput(result.stdout);
       // Missing lastCommit should be treated as stale
       if (output) {
-        expect(output.additionalContext).toContain('stale');
+        expect(output.additionalContext).toContain('behind HEAD');
       }
     });
 

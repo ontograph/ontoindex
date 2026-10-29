@@ -3,7 +3,7 @@ name: ontoindex-debugging
 description: 'Diagnose failing behavior, trace errors, and locate the source of a reproducible bug.'
 ---
 
-Read ontoindex-navigation first (freshness gate and failure path).
+Read ontoindex-navigation first (freshness labels and query failure guidance).
 
 ## Trace the failure
 

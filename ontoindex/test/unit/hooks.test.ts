@@ -16,7 +16,7 @@
  * Since the hooks are CJS scripts that call main() on load, we test them
  * by spawning them as child processes with controlled stdin JSON.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -119,9 +119,10 @@ describe('Windows .cmd extension handling', () => {
     ['CJS', CJS_HOOK],
     ['Plugin', PLUGIN_HOOK],
   ] as const) {
-    it(`${label} hook uses .cmd extensions for Windows npx`, () => {
+    it(`${label} hook uses the Windows installed binary without a package runner`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
-      expect(source).toContain('npx.cmd');
+      expect(source).toContain('ontoindex.cmd');
+      expect(source).not.toContain('npx');
     });
   }
 
@@ -129,6 +130,44 @@ describe('Windows .cmd extension handling', () => {
     const source = fs.readFileSync(PLUGIN_HOOK, 'utf-8');
     expect(source).toContain('ontoindex.cmd');
   });
+});
+
+describe('Installed CLI PATH fallback', () => {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
+    function loadRunner(platform: string, spawn: ReturnType<typeof vi.fn>) {
+      const source = fs.readFileSync(hookPath, 'utf-8');
+      const start = source.indexOf('function runOntoIndexCli(');
+      const end = source.indexOf('\n}\n', start) + 2;
+      return vm.runInNewContext(`${source.slice(start, end)}\nrunOntoIndexCli`, {
+        process: { platform, env: {}, execPath: process.execPath },
+        spawnSync: spawn,
+      }) as (...args: unknown[]) => unknown;
+    }
+
+    for (const [platform, binary] of [['linux', 'ontoindex'], ['win32', 'ontoindex.cmd']]) {
+      it(`${label}: runs the PATH binary on ${platform} exactly once`, () => {
+        const result = { status: 0, stderr: 'context' };
+        const spawn = vi.fn().mockReturnValue(result);
+        const runner = loadRunner(platform, spawn);
+        const args = ['augment', '--', 'login'];
+        expect(label === 'CJS' ? runner('', args, tmpDir, 1234) : runner(args, tmpDir, 1234)).toBe(result);
+        expect(spawn).toHaveBeenCalledExactlyOnceWith(binary, args, {
+          encoding: 'utf-8', timeout: 1234, cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      });
+    }
+
+    it(`${label}: returns a missing PATH binary failure without retrying`, () => {
+      const result = { status: null, error: Object.assign(new Error('missing'), { code: 'ENOENT' }) };
+      const spawn = vi.fn().mockReturnValue(result);
+      const runner = loadRunner('linux', spawn);
+      expect(label === 'CJS' ? runner('', [], tmpDir, 1234) : runner([], tmpDir, 1234)).toBe(result);
+      expect(spawn).toHaveBeenCalledTimes(1);
+    });
+  }
 });
 
 // ─── Source code regression: cwd validation ─────────────────────────
@@ -402,8 +441,11 @@ describe('PostToolUse staleness detection (integration)', () => {
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
       expect(output!.hookEventName).toBe('PostToolUse');
-      expect(output!.additionalContext).toContain('stale');
-      expect(output!.additionalContext).toContain('aaaaaaa');
+      expect(output!.additionalContext).toBe(
+        'OntoIndex index is behind HEAD (last indexed: aaaaaaa). ' +
+        'The next OntoIndex query refreshes it automatically in the background; keep using OntoIndex. ' +
+        'To refresh now, run `ontoindex analyze`.',
+      );
     });
 
     it(`${label}: silent when HEAD matches meta lastCommit`, () => {
@@ -510,7 +552,7 @@ describe('PostToolUse staleness detection (integration)', () => {
 
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
-      expect(output!.additionalContext).toContain('stale');
+      expect(output!.additionalContext).toContain('behind HEAD');
     });
 
     it(`${label}: detects git cherry-pick as a mutation`, () => {
