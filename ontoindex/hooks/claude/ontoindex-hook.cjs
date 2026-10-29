@@ -130,14 +130,60 @@ function normalizePattern(pattern) {
 
 function augmentPaths(cwd, pattern) {
   const hash = crypto.createHash('sha256').update(`${cwd}\0${pattern}`).digest('hex').slice(0, 24);
-  const base = path.join(os.tmpdir(), `ontoindex-hook-augment-${hash}`);
+  const dir = path.join(os.tmpdir(), 'ontoindex-hook-augment');
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } catch {
+    return null;
+  }
+  pruneAugmentFiles(dir);
+  const base = path.join(dir, `ontoindex-hook-augment-${hash}`);
   return { lockPath: `${base}.lock`, stampPath: `${base}.stamp` };
+}
+
+function pruneAugmentFiles(dir) {
+  const marker = path.join(dir, '.prune');
+  const now = Date.now();
+  try {
+    try {
+      if (now - fs.statSync(marker).mtimeMs < 60 * 60 * 1000) return;
+    } catch {
+      /* first cleanup */
+    }
+    fs.writeFileSync(marker, '');
+    let remaining = 500;
+    for (const parent of [dir, os.tmpdir()]) {
+      const entries = fs.opendirSync(parent);
+      try {
+        let entry;
+        while (remaining > 0 && (entry = entries.readSync()) !== null) {
+          if (!/^ontoindex-hook-augment-[a-f0-9]{24}\.(stamp|lock)$/.test(entry.name)) continue;
+          try {
+            const file = path.join(parent, entry.name);
+            const stat = fs.lstatSync(file);
+            if (stat.isFile() && now - stat.mtimeMs > 24 * 60 * 60 * 1000) {
+              fs.unlinkSync(file);
+              remaining--;
+            }
+          } catch {
+            /* best effort; another hook may have removed this entry */
+          }
+        }
+      } finally {
+        entries.closeSync();
+      }
+      if (remaining === 0) break;
+    }
+  } catch {
+    /* cleanup must never prevent augmentation */
+  }
 }
 
 function beginAugment(cwd, pattern) {
   if (process.env.ONTOINDEX_HOOK_AUGMENT === '0') return null;
   const now = Date.now();
   const paths = augmentPaths(cwd, pattern);
+  if (!paths) return null;
 
   try {
     const stamp = fs.statSync(paths.stampPath);
