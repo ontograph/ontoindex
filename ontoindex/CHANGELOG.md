@@ -4,6 +4,11 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.15] - 2026-10-30
+
+- A query whose working-tree graph is refused as too large (`workspace_too_large`, above `ONTOINDEX_WORKSPACE_MAX_FILES`, default 1600) now answers from the committed index instead of failing. This applies to `context`, `impact` and `query` on any large repository with uncommitted edits. The answer carries `readContext.mode: "committed"` and a warning that names up to 10 uncommitted source files it cannot see, with the total count. When no trustworthy committed index exists, the original refusal is returned unchanged.
+- The Rust scope-extraction warning now says that skipped files are outside the supported subset and that their symbols and calls are still indexed by the standard Rust resolver.
+
 ## [2.3.14] - 2026-10-29
 
 - Repo tool queries schedule one managed background refresh when the indexed commit differs from HEAD, or indexed-scope files change in a repository without commits, while returning the existing index with a freshness warning. Refresh keeps the recorded scope and excludes `huge-repo-symbols` indexes; `ONTOINDEX_AUTO_REFRESH_INTERVAL_MS` sets the interval (default 5 minutes), and `ONTOINDEX_AUTO_REFRESH=0` disables it. Dirty-only edits use the automatic overlay.

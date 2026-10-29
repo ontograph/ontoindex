@@ -171,7 +171,7 @@ describe('production Rust scope retention', () => {
         },
       });
       expect(warning).toHaveBeenCalledWith(
-        'Scope extraction skipped for 1 Rust file(s): unsupported syntax.',
+        'Scope extraction skipped for 1 Rust file(s) outside the supported subset; their symbols and calls are still indexed by the standard Rust resolver.',
       );
       expect(
         warning.mock.calls.filter(([message]) =>
