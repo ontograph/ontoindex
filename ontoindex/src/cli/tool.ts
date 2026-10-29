@@ -20,6 +20,7 @@ import { parseTypedQueryDocument } from '../core/search/typed-query-document.js'
 import { LocalBackend } from '../mcp/local/local-backend.js';
 
 let _backend: LocalBackend | null = null;
+const NAVIGATION_PREPARATION_FAILED = Symbol('navigation-preparation-failed');
 
 async function getBackend(): Promise<LocalBackend> {
   if (_backend) return _backend;
@@ -54,17 +55,35 @@ async function callNavigationTool(
       throw new Error('Committed reads do not support live or external enrichment.');
     }
   }
-  const backend = await getBackend();
-  if (params.read_mode === 'committed') {
-    const repo = await backend.resolveRepo(params.repo as string);
-    await backend.ensureRepoInitialized(repo.id);
-    return backend.withPreparedRepoRead(
-      repo,
-      { needsRelationships: true, readMode: 'committed' },
-      () => backend.callTool(name, params),
+  try {
+    const backend = await getBackend();
+    if (params.read_mode === 'committed') {
+      const repo = await backend.resolveRepo(params.repo as string);
+      await backend.ensureRepoInitialized(repo.id);
+      return await backend.withPreparedRepoRead(
+        repo,
+        { needsRelationships: true, readMode: 'committed' },
+        () => backend.callTool(name, params),
+      );
+    }
+    return await backend.callTool(name, params);
+  } catch (err) {
+    const code = thrownCode(err);
+    if (
+      !(err instanceof Error) ||
+      !/^workspace_preparation_failed(?::|$)/.test(err.message) ||
+      typeof code !== 'string'
+    ) {
+      throw err;
+    }
+    const diagnostics = recordField(err, 'diagnostics');
+    console.error(
+      `OntoIndex: ${code}${diagnostics ? ` ${JSON.stringify(diagnostics)}` : ''}. ` +
+        'Use --repo <name> --read-mode committed to read the indexed commit only (uncommitted changes excluded).',
     );
+    process.exitCode = 1;
+    return NAVIGATION_PREPARATION_FAILED;
   }
-  return backend.callTool(name, params);
 }
 
 export async function disposeBackend(): Promise<void> {
@@ -198,6 +217,7 @@ export async function queryCommand(
       params.include_markdown_ppr = options.includeMarkdownPpr;
     }
     const result = await callNavigationTool('query', params);
+    if (result === NAVIGATION_PREPARATION_FAILED) return;
     output(result);
   } finally {
     await disposeBackend();
@@ -228,6 +248,7 @@ export async function contextCommand(
       repo: options?.repo,
       ...(options?.readMode !== undefined ? { read_mode: options.readMode } : {}),
     });
+    if (result === NAVIGATION_PREPARATION_FAILED) return;
     output(result);
   } finally {
     await disposeBackend();
@@ -261,6 +282,7 @@ export async function impactCommand(
         ...(options?.readMode !== undefined ? { read_mode: options.readMode } : {}),
         ...(options?.uid !== undefined ? { target_uid: options.uid } : {}),
       });
+      if (result === NAVIGATION_PREPARATION_FAILED) return;
       output(result);
     } finally {
       await disposeBackend();

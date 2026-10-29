@@ -25,9 +25,18 @@ export function rustCargoRoots(
   manifestPath: string,
   inventory: ReadonlySet<string>,
 ): string[] {
+  return rustCargoTargets(source, manifestPath, inventory).roots;
+}
+
+/** Discover roots and the one importable library from the same parsed manifest. */
+export function rustCargoTargets(
+  source: string,
+  manifestPath: string,
+  inventory: ReadonlySet<string>,
+): { roots: string[]; library?: { name: string; root: string } } {
   const manifest = parse(source) as Table;
   if (!isCargoInventoryPath(manifestPath)) throw new Error('Invalid Cargo manifest path');
-  if (manifest.package === undefined) return [];
+  if (manifest.package === undefined) return { roots: [] };
   if (!table(manifest.package)) throw new Error('Invalid Cargo package');
   const pkg = manifest.package;
   const validName = (name: unknown): name is string =>
@@ -45,7 +54,7 @@ export function rustCargoRoots(
   const bins = (manifest.bin ?? []) as unknown[];
   const edition = pkg.edition ?? '2015';
   const knownEdition = ['2015', '2018', '2021', '2024'].includes(edition as string);
-  if (!knownEdition) return [];
+  if (!knownEdition) return { roots: [] };
   const oldExplicit = edition === '2015' && (lib !== undefined || bins.length > 0);
   const autoLib =
     knownEdition && (pkg.autolib === true || (pkg.autolib === undefined && !oldExplicit));
@@ -77,6 +86,7 @@ export function rustCargoRoots(
     if (lib.path !== undefined) add(rootPath(lib.path));
     else if (knownEdition) add(`${prefix}src/lib.rs`);
   } else if (autoLib) add(`${prefix}src/lib.rs`);
+  const libraryRoot = [...roots][0];
 
   const explicit = new Map<string, Table>();
   for (const bin of bins) {
@@ -115,5 +125,15 @@ export function rustCargoRoots(
       add(candidates[0]);
     }
   }
-  return [...roots].sort();
+  return {
+    roots: [...roots].sort(),
+    ...(libraryRoot
+      ? {
+          library: {
+            name: ((lib?.name ?? pkg.name) as string).replace(/-/g, '_'),
+            root: libraryRoot,
+          },
+        }
+      : {}),
+  };
 }

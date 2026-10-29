@@ -31,6 +31,27 @@ function resolveCargoRootImport(raw: string, filePath: string, ctx: ResolveCtx):
     const resolved = resolveRustImportInternal(filePath, importPath, ctx.allFilePaths);
     return resolved ? [resolved] : [];
   }
+  const segments = importPath.split('::');
+  const isDeclaredRootModule =
+    ctx.configs.rustCrateRoots?.includes(filePath) &&
+    ctx.rustDeclaredModules?.includes(segments[0]);
+  if (!isDeclaredRootModule && ctx.configs.rustWorkspaceCrates?.has(segments[0])) {
+    const root = ctx.configs.rustWorkspaceCrates.get(segments[0]);
+    if (!root || !segments.every((part) => /^(?:[A-Za-z_][A-Za-z0-9_]*|\*)$/.test(part))) return [];
+    if (segments.length === 1) return [root];
+    const directory = root.slice(0, root.lastIndexOf('/') + 1);
+    const modulePath = directory + segments.slice(1).join('/');
+    const candidates = [modulePath + '.rs', modulePath + '/mod.rs', modulePath + '/lib.rs'].filter(
+      (filename) => ctx.allFilePaths.has(filename),
+    );
+    if (candidates.length > 0) return candidates.length === 1 ? candidates : [];
+    if (segments.length === 2) return [root];
+    const parent = modulePath.slice(0, modulePath.lastIndexOf('/'));
+    const parents = [parent + '.rs', parent + '/mod.rs'].filter((filename) =>
+      ctx.allFilePaths.has(filename),
+    );
+    return parents.length === 1 ? parents : [];
+  }
   // Only a root module and its immediate item are proven by this evidence.
   const match = /^([A-Za-z_][A-Za-z0-9_]*)(?:::(?:[A-Za-z_][A-Za-z0-9_]*|\*))?$/.exec(importPath);
   if (

@@ -45,6 +45,40 @@ describe('Cargo-backed Rust bare imports', () => {
     });
   });
 
+  it.each(['src/foo.rs', 'src/foo/mod.rs'])(
+    'prefers a declared root module at %s over a same-named workspace crate',
+    (localModule) => {
+      const ctx = context(['src/lib.rs', localModule, 'foo/src/lib.rs'], ['src/lib.rs'], ['foo']);
+      ctx.configs.rustWorkspaceCrates = new Map([['foo', 'foo/src/lib.rs']]);
+      expect(resolve('foo::x', 'src/lib.rs', ctx)).toEqual({
+        kind: 'files',
+        files: [localModule],
+      });
+    },
+  );
+
+  it('resolves a workspace crate when the crate root has no same-named module declaration', () => {
+    const ctx = context(['src/lib.rs', 'src/foo.rs', 'foo/src/lib.rs'], ['src/lib.rs'], []);
+    ctx.configs.rustWorkspaceCrates = new Map([['foo', 'foo/src/lib.rs']]);
+    expect(resolve('foo::x', 'src/lib.rs', ctx)).toEqual({
+      kind: 'files',
+      files: ['foo/src/lib.rs'],
+    });
+  });
+
+  it('resolves a workspace crate from a non-root file with a same-named declaration', () => {
+    const ctx = context(
+      ['src/lib.rs', 'src/nested.rs', 'src/nested/foo.rs', 'foo/src/lib.rs'],
+      ['src/lib.rs'],
+      ['foo'],
+    );
+    ctx.configs.rustWorkspaceCrates = new Map([['foo', 'foo/src/lib.rs']]);
+    expect(resolve('foo::x', 'src/nested.rs', ctx)).toEqual({
+      kind: 'files',
+      files: ['foo/src/lib.rs'],
+    });
+  });
+
   it.each(['src/main.rs', 'src/lib.rs', 'src/nested/main.rs'])(
     'rejects the unproven root %s',
     (source) => {
@@ -117,6 +151,56 @@ describe('Cargo target config discovery', () => {
       'src/helper.rs': '',
     });
     expect(loaded.rustCrateRoots?.slice().sort()).toEqual(['src/lib.rs', 'src/main.rs']);
+    expect(loaded.rustWorkspaceCrates?.get('fixture')).toBe('src/lib.rs');
+  });
+
+  it('uses normalized library names and custom paths, excluding binaries', async () => {
+    const loaded = await configs(`${pkg}[lib]\nname = "custom-library"\npath = "api/root.rs"\n`, {
+      'api/root.rs': '',
+      'src/main.rs': '',
+    });
+    expect([...loaded.rustWorkspaceCrates!]).toEqual([['custom_library', 'api/root.rs']]);
+  });
+
+  it('rejects ambiguous normalized crate names and omits binary-only packages', async () => {
+    const loaded = await configs('[workspace]\nmembers = ["a", "b", "cli"]\n', {
+      'a/Cargo.toml': pkg.replace('fixture', 'same-name'),
+      'a/src/lib.rs': '',
+      'b/Cargo.toml': pkg.replace('fixture', 'same_name'),
+      'b/src/lib.rs': '',
+      'cli/Cargo.toml': pkg.replace('fixture', 'binary-only'),
+      'cli/src/main.rs': '',
+    });
+    expect([...loaded.rustWorkspaceCrates!]).toEqual([['same_name', null]]);
+    const ctx = context(
+      ['a/src/lib.rs', 'b/src/lib.rs', 'cli/src/main.rs'],
+      loaded.rustCrateRoots!.slice(),
+    );
+    ctx.configs = loaded;
+    expect(resolve('same_name::helper', 'cli/src/main.rs', ctx)).toEqual({
+      kind: 'files',
+      files: [],
+    });
+    expect(resolve('binary_only::helper', 'a/src/lib.rs', ctx)).toEqual({
+      kind: 'files',
+      files: [],
+    });
+  });
+
+  it('resolves workspace module paths from their own library root', async () => {
+    const loaded = await configs(pkg.replace('fixture', 'other-crate'), {
+      'src/lib.rs': '',
+      'src/models/mod.rs': '',
+    });
+    const ctx = context(
+      ['src/lib.rs', 'src/models/mod.rs', 'consumer/src/main.rs'],
+      ['src/lib.rs'],
+    );
+    ctx.configs = loaded;
+    expect(resolve('other_crate::models::Item', 'consumer/src/main.rs', ctx)).toEqual({
+      kind: 'files',
+      files: ['src/models/mod.rs'],
+    });
   });
 
   it('discovers explicit custom library and binary target paths', async () => {

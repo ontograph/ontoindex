@@ -264,7 +264,7 @@ describe('production Rust capture bridge', () => {
     }
   });
 
-  it('reports atomic refusal with a file warning', async () => {
+  it('reports atomic refusal without a per-file warning', async () => {
     const source = 'fn retained() { retained(); } const VALUE: i32 = 1;';
     const { root } = await parse(source);
     const warning = vi.fn();
@@ -272,6 +272,6 @@ describe('production Rust capture bridge', () => {
       status: 'failed',
       reason: 'unsupported-syntax',
     });
-    expect(warning).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(filePath));
+    expect(warning).not.toHaveBeenCalled();
   });
 });

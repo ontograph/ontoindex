@@ -4,6 +4,12 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.8] - 2026-10-29
+
+- Rust imports between crates in a Cargo workspace resolve to the target crate's library (`package.name` or `[lib].name`, with `-` mapped to `_`), including items re-exported from the library root with `pub use`. A module declared with `mod` in the crate root takes precedence over a workspace crate with the same name; ambiguous crate names stay unresolved. Renamed dependencies (`package = "..."`) are not yet mapped.
+- `query`, `context` and `impact` CLI commands report workspace preparation failures as one line with the error code, diagnostics and the `--read-mode committed` option, and exit with status 1 instead of printing a stack trace. Other errors are reported as before.
+- Analyze prints one summary line with the number of Rust files whose scope extraction was skipped for unsupported syntax, instead of a warning per file.
+
 ## [2.3.7] - 2026-10-29
 
 - Rust member calls on receiver types that are not in the index, such as `HashMap`, stay unresolved instead of linking to an unrelated method with the same name.

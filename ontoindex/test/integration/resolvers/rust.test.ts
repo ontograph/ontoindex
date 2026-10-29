@@ -1920,3 +1920,21 @@ describe('Rust Child extends Parent — qualified-syntax MRO (SM-11)', () => {
     expect(traitCall).toBeUndefined();
   });
 });
+
+describe('Rust workspace crate imports', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-workspace-crates'), () => {});
+  }, 60000);
+
+  it.each([
+    ['imported_calls', 'code_mode_name_for_tool_name', 'tools/src/code_mode.rs'],
+    ['imported_calls', 'direct_helper', 'tools/src/lib.rs'],
+    ['qualified_call', 'direct_helper', 'tools/src/lib.rs'],
+  ])('resolves %s → %s to %s', (source, target, targetFilePath) => {
+    expect(getRelationships(result, 'CALLS')).toEqual(
+      expect.arrayContaining([expect.objectContaining({ source, target, targetFilePath })]),
+    );
+  });
+});

@@ -93,6 +93,7 @@ import {
   shouldRetainRegistration,
 } from './scope-retention-registration-filter.js';
 import { getProviderForFile } from '../languages/index.js';
+import type { ScopeExtractionRecord } from '../scope-extractor-bridge.js';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -658,6 +659,19 @@ export async function runChunkedParseAndResolve(
     }
 
     let workerPhaseFailed = false;
+    let unsupportedRustScopeCount = 0;
+    const recordScopeOutcomes = (outcomes: readonly ScopeExtractionRecord[]) => {
+      for (const outcome of outcomes) {
+        if (
+          outcome.filePath.endsWith('.rs') &&
+          outcome.status === 'failed' &&
+          outcome.reason === 'unsupported-syntax'
+        ) {
+          unsupportedRustScopeCount++;
+        }
+      }
+      scopeRetention?.recordOutcomes(outcomes);
+    };
     try {
       const importConfigs = await loadImportConfigs(repoPath, allPaths);
       scopeRetention?.captureConfigObservations(importConfigs.observations);
@@ -820,7 +834,7 @@ export async function runChunkedParseAndResolve(
                 if (scopeCallFiles) collectScopeCallFiles(files);
               }
             : undefined,
-          scopeRetention ? (outcomes) => scopeRetention.recordOutcomes(outcomes) : undefined,
+          recordScopeOutcomes,
           async (extractions) => {
             await settleStageOperations([
               extractedRouteStage.append(extractions.routes),
@@ -830,6 +844,7 @@ export async function runChunkedParseAndResolve(
           },
         );
         if (scopeCallFiles && chunkWorkerData) collectScopeCallFiles(chunkWorkerData.parsedFiles);
+        if (chunkWorkerData) recordScopeOutcomes(chunkWorkerData.scopeExtractionOutcomes ?? []);
         if (scopeRetention) {
           if (chunkWorkerData) {
             scopeRetention.captureCalls(
@@ -857,7 +872,6 @@ export async function runChunkedParseAndResolve(
               ),
             );
             scopeRetention.capture(chunkWorkerData.parsedFiles);
-            scopeRetention.recordOutcomes(chunkWorkerData.scopeExtractionOutcomes ?? []);
           }
           await scopeRetention.flush();
         }
@@ -1073,6 +1087,12 @@ export async function runChunkedParseAndResolve(
         if (chunkWorkerData) {
           clearChunkWorkerData(chunkWorkerData);
         }
+      }
+
+      if (unsupportedRustScopeCount > 0) {
+        console.warn(
+          `Scope extraction skipped for ${unsupportedRustScopeCount} Rust file(s): unsupported syntax.`,
+        );
       }
 
       if (scopeCallFiles) {
