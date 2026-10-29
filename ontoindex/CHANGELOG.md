@@ -4,6 +4,10 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.13] - 2026-10-29
+
+- The Claude hook keeps augment cooldown stamps and locks in one private temp subdirectory (`ontoindex-hook-augment/`, mode 0700). At most once an hour it deletes stamp and lock files older than 24 hours, capped at 500 per pass, including legacy files left directly in the temp directory. Cooldown and lock behavior are unchanged.
+
 ## [2.3.12] - 2026-10-29
 
 - Runtime health `workspaceReadiness` reports `within-limit` or `over-limit` from the indexed file count against the workspace-graph limit (`ONTOINDEX_WORKSPACE_MAX_FILES`, default 1600), with the committed-mode remediation when over the limit. No preparation is attempted; without a recorded file count it stays `not-checked`.
