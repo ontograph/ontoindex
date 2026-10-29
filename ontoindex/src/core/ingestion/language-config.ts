@@ -1,4 +1,3 @@
-import { minimatch } from 'minimatch';
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
@@ -556,28 +555,15 @@ export async function loadImportConfigs(
             relative === normalized || relative.startsWith(`${normalized}/`) || normalized === '.'
           );
         });
-        const included =
-          candidate?.members === undefined ||
-          candidate.members.some((entry) => {
-            const pattern = path.posix.normalize(entry).replace(/\/$/, '').split('/');
-            const parts = relative.split('/');
-            return (
-              pattern.length === parts.length &&
-              pattern.every((segment, index) =>
-                // Cargo globs are per-segment `*`, `?` and `[..]`, and match leading dots.
-                minimatch(parts[index], segment, { dot: true, nobrace: true, noext: true }),
-              )
-            );
-          });
         if (
           candidate &&
-          (directory === memberDirectory ||
-            (!excluded && (explicitWorkspace !== undefined || included)))
+          // Cargo also admits path dependencies of members implicitly, and refuses to build an
+          // inheriting package outside its workspace, so `members` never narrows inheritance here.
+          (directory === memberDirectory || !excluded)
         ) {
           workspace = candidate;
           break;
         }
-        if (candidate && !included) break;
         if (explicitWorkspace !== undefined || directory === '.') break;
         directory = path.posix.dirname(directory);
       }

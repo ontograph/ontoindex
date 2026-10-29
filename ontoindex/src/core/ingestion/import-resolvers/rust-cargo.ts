@@ -13,7 +13,6 @@ export function rustWorkspacePackageEdition(source: string):
       edition?: string;
       exclude: string[];
       invalidExclude: boolean;
-      members?: string[];
       invalidMembers: boolean;
       dependencies?: Table;
     }
@@ -40,7 +39,6 @@ export function rustWorkspacePackageEdition(source: string):
         : undefined,
     exclude: invalidExclude ? [] : ((exclude ?? []) as string[]),
     invalidExclude,
-    members: invalidMembers ? [] : (members as string[] | undefined),
     invalidMembers,
     dependencies: table(manifest.workspace.dependencies)
       ? manifest.workspace.dependencies
