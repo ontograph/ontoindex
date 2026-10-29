@@ -154,6 +154,165 @@ describe('Cargo target config discovery', () => {
     expect(loaded.rustWorkspaceCrates?.get('fixture')).toBe('src/lib.rs');
   });
 
+  it.each(['edition.workspace = true', 'edition = { workspace = true }'])(
+    'inherits workspace edition for %s, including the root package',
+    async (edition) => {
+      const loaded = await configs(
+        `[package]\nname = "root"\n${edition}\n[workspace]\n[workspace.package]\nedition = "2024"\n`,
+        {
+          'src/lib.rs': '',
+          'member/Cargo.toml': `[package]\nname = "ontocode-tools"\n${edition}\n`,
+          'member/src/lib.rs': '',
+        },
+      );
+      expect(loaded.rustCrateRoots).toEqual(['member/src/lib.rs', 'src/lib.rs']);
+      expect(loaded.rustWorkspaceCrates?.get('ontocode_tools')).toBe('member/src/lib.rs');
+    },
+  );
+
+  it.each([
+    undefined,
+    '[workspace]\n',
+    '[workspace]\n[workspace.package]\nedition = 2024\n',
+    '[workspace]\n[workspace.package]\nedition = "future"\n',
+  ])('records unresolved inherited editions as parse errors (%s)', async (workspace) => {
+    const loaded = await configs(workspace, {
+      'member/Cargo.toml': '[package]\nname = "fixture"\nedition.workspace = true\n',
+      'member/src/lib.rs': '',
+    });
+    expect(loaded.rustCrateRoots).toEqual([]);
+    expect(loaded.observations?.records).toContainEqual({
+      kind: 'parse-error',
+      path: 'member/Cargo.toml',
+    });
+  });
+
+  it('finds the nearest ancestor workspace through intermediate package directories', async () => {
+    const loaded = await configs('[workspace]\n[workspace.package]\nedition = "2024"\n', {
+      'nested/Cargo.toml': pkg,
+      'nested/deeper/member/Cargo.toml': '[package]\nname = "fixture"\nedition.workspace = true\n',
+      'nested/deeper/member/src/lib.rs': '',
+    });
+    expect(loaded.rustCrateRoots).toEqual(['nested/deeper/member/src/lib.rs']);
+  });
+
+  it('does not inherit through a nearer workspace that lacks an edition', async () => {
+    const loaded = await configs('[workspace]\n[workspace.package]\nedition = "2024"\n', {
+      'nested/Cargo.toml': '[workspace]\n',
+      'nested/member/Cargo.toml': '[package]\nname = "fixture"\nedition.workspace = true\n',
+      'nested/member/src/lib.rs': '',
+    });
+    expect(loaded.rustCrateRoots).toEqual([]);
+    expect(loaded.observations?.records).toContainEqual({
+      kind: 'parse-error',
+      path: 'nested/member/Cargo.toml',
+    });
+  });
+
+  it('inherits from a virtual workspace at the repository root', async () => {
+    const loaded = await configs('[workspace.package]\nedition = "2024"\n', {
+      'deep/member/Cargo.toml': '[package]\nname = "member"\nedition.workspace = true\n',
+      'deep/member/src/lib.rs': '',
+    });
+    expect(loaded.rustCrateRoots).toEqual(['deep/member/src/lib.rs']);
+    expect(loaded.observations?.records.filter((record) => record.kind === 'parse-error')).toEqual(
+      [],
+    );
+  });
+
+  it('honors a normalized explicit sibling workspace before an ancestor', async () => {
+    const loaded = await configs('[workspace.package]\nedition = "2024"\n', {
+      'selected/Cargo.toml': '[workspace.package]\nedition = "2015"\n',
+      'member/Cargo.toml':
+        '[package]\nname = "member"\nworkspace = "../unused/../selected"\nedition.workspace = true\n[lib]\n',
+      'member/src/lib.rs': '',
+      'member/src/main.rs': '',
+    });
+    expect(loaded.rustCrateRoots).toEqual(['member/src/lib.rs']);
+  });
+
+  it.each(['member', 'member/deep', './member/'])(
+    'skips a workspace excluding %s and continues to the repository root',
+    async (excluded) => {
+      const loaded = await configs('[workspace.package]\nedition = "2015"\n', {
+        'nested/Cargo.toml': `[workspace]\nexclude = ["${excluded}"]\n[workspace.package]\nedition = "2024"\n`,
+        'nested/member/deep/Cargo.toml':
+          '[package]\nname = "member"\nedition.workspace = true\n[lib]\n',
+        'nested/member/deep/src/lib.rs': '',
+        'nested/member/deep/src/main.rs': '',
+      });
+      expect(loaded.rustCrateRoots).toEqual(['nested/member/deep/src/lib.rs']);
+    },
+  );
+
+  it('matches exclude prefixes at path boundaries', async () => {
+    const loaded = await configs(
+      '[workspace]\nexclude = ["mem"]\n[workspace.package]\nedition = "2024"\n',
+      {
+        'member/Cargo.toml': '[package]\nname = "member"\nedition.workspace = true\n',
+        'member/src/lib.rs': '',
+      },
+    );
+    expect(loaded.rustCrateRoots).toEqual(['member/src/lib.rs']);
+  });
+
+  it.each(['"missing"', '"../../outside"', '"/outside"', '"C:/outside"', '42', '""'])(
+    'records an invalid explicit workspace %s without ancestor fallback',
+    async (workspace) => {
+      const loaded = await configs('[workspace.package]\nedition = "2024"\n', {
+        'member/Cargo.toml': `[package]\nname = "member"\nworkspace = ${workspace}\nedition.workspace = true\n`,
+        'member/src/lib.rs': '',
+      });
+      expect(loaded.rustCrateRoots).toEqual([]);
+      expect(loaded.observations?.records).toContainEqual({
+        kind: 'parse-error',
+        path: 'member/Cargo.toml',
+      });
+    },
+  );
+
+  it.each(['["member"]', '["member", 42]', '42'])(
+    'fails closed when the only workspace excludes the member or has invalid exclusions (%s)',
+    async (exclude) => {
+      const loaded = await configs(
+        `[workspace]\nexclude = ${exclude}\n[workspace.package]\nedition = "2024"\n`,
+        {
+          'member/Cargo.toml': '[package]\nname = "member"\nedition.workspace = true\n',
+          'member/src/lib.rs': '',
+        },
+      );
+      expect(loaded.rustCrateRoots).toEqual([]);
+      expect(loaded.observations?.records).toContainEqual({
+        kind: 'parse-error',
+        path: 'member/Cargo.toml',
+      });
+    },
+  );
+
+  it('uses a nested workspace root package’s own edition', async () => {
+    const loaded = await configs('[workspace.package]\nedition = "2015"\n', {
+      'nested/Cargo.toml':
+        '[package]\nname = "nested"\nedition.workspace = true\n[lib]\n[workspace.package]\nedition = "2024"\n',
+      'nested/src/lib.rs': '',
+      'nested/src/main.rs': '',
+    });
+    expect(loaded.rustCrateRoots).toEqual(['nested/src/lib.rs', 'nested/src/main.rs']);
+  });
+
+  it.each(['2024', 'false', '{ workspace = false }'])(
+    'records a non-string package edition %s as a parse error',
+    async (edition) => {
+      const loaded = await configs(`[package]\nname = "fixture"\nedition = ${edition}\n`, {
+        'src/lib.rs': '',
+      });
+      expect(loaded.rustCrateRoots).toEqual([]);
+      expect(loaded.observations?.records).toContainEqual({
+        kind: 'parse-error',
+        path: 'Cargo.toml',
+      });
+    },
+  );
+
   it('uses normalized library names and custom paths, excluding binaries', async () => {
     const loaded = await configs(`${pkg}[lib]\nname = "custom-library"\npath = "api/root.rs"\n`, {
       'api/root.rs': '',

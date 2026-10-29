@@ -191,6 +191,7 @@ export interface AnalyzeResult {
     communities?: number;
     processes?: number;
     embeddings?: number;
+    scopeSkippedUnsupportedRustFiles?: number;
   };
   embeddingLifecycle?: EmbeddingLifecycleSummary;
   alreadyUpToDate?: boolean;
@@ -1248,7 +1249,12 @@ async function runWorkspaceAnalysis(
     return {
       repoName: path.basename(repoPath),
       repoPath,
-      stats: { ...stats, files: pipelineResult.totalFileCount, embeddings: 0 },
+      stats: {
+        ...stats,
+        files: pipelineResult.totalFileCount,
+        embeddings: 0,
+        scopeSkippedUnsupportedRustFiles: pipelineResult.scopeSkippedUnsupportedRustFiles,
+      },
       embeddingLifecycle: { mode: 'off', state: 'absent' },
       pipelineResult,
     };
@@ -1991,6 +1997,7 @@ export async function runFullAnalysis(
         communities: pipelineResult.communityResult?.stats.totalCommunities,
         processes: pipelineResult.processResult?.stats.totalProcesses,
         embeddings: embeddingCount,
+        scopeSkippedUnsupportedRustFiles: pipelineResult.scopeSkippedUnsupportedRustFiles,
       },
       relationshipDistributions,
       ...(includePaths.length > 0 ? { includePaths } : {}),

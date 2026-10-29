@@ -1,0 +1,7 @@
+[package]
+name = "ontocode-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ontocode-tools = { path = "../tools" }

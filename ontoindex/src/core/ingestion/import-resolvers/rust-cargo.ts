@@ -7,6 +7,47 @@ function table(value: unknown): value is Table {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** Keep workspace boundaries even when their inherited edition is missing or invalid. */
+export function rustWorkspacePackageEdition(
+  source: string,
+): { edition?: string; exclude: string[]; invalidExclude: boolean } | undefined {
+  const manifest = parse(source) as Table;
+  if (!table(manifest.workspace)) return undefined;
+  const pkg = manifest.workspace.package;
+  const edition = table(pkg) ? pkg.edition : undefined;
+  const exclude = manifest.workspace.exclude;
+  const invalidExclude =
+    exclude !== undefined &&
+    (!Array.isArray(exclude) || exclude.some((entry) => typeof entry !== 'string'));
+  return {
+    edition:
+      !invalidExclude &&
+      typeof edition === 'string' &&
+      ['2015', '2018', '2021', '2024'].includes(edition)
+        ? edition
+        : undefined,
+    exclude: invalidExclude ? [] : ((exclude ?? []) as string[]),
+    invalidExclude,
+  };
+}
+
+/** An explicit workspace is authoritative; never fall back to an ancestor on invalid input. */
+export function rustCargoPackageWorkspace(source: string): string | undefined {
+  const manifest = parse(source) as Table;
+  const workspace = table(manifest.package) ? manifest.package.workspace : undefined;
+  if (workspace === undefined) return undefined;
+  if (
+    typeof workspace !== 'string' ||
+    workspace.length === 0 ||
+    workspace.includes('\\') ||
+    workspace.includes('\0') ||
+    path.posix.isAbsolute(workspace) ||
+    /^[A-Za-z]:/.test(workspace)
+  )
+    throw new Error('Invalid Cargo package workspace');
+  return workspace;
+}
+
 /** Only canonical repository-relative inventory paths are eligible for Cargo reads. */
 export function isCargoInventoryPath(filename: string): boolean {
   return (
@@ -33,6 +74,7 @@ export function rustCargoTargets(
   source: string,
   manifestPath: string,
   inventory: ReadonlySet<string>,
+  inheritedEdition?: string,
 ): { roots: string[]; library?: { name: string; root: string } } {
   const manifest = parse(source) as Table;
   if (!isCargoInventoryPath(manifestPath)) throw new Error('Invalid Cargo manifest path');
@@ -52,7 +94,14 @@ export function rustCargoTargets(
     throw new Error('Invalid Cargo bins');
   const lib = manifest.lib as Table | undefined;
   const bins = (manifest.bin ?? []) as unknown[];
-  const edition = pkg.edition ?? '2015';
+  let edition = pkg.edition ?? '2015';
+  if (table(edition) && edition.workspace === true) {
+    if (!inheritedEdition || !['2015', '2018', '2021', '2024'].includes(inheritedEdition)) {
+      throw new Error('Unresolved Cargo workspace edition');
+    }
+    edition = inheritedEdition;
+  }
+  if (typeof edition !== 'string') throw new Error('Invalid Cargo package edition');
   const knownEdition = ['2015', '2018', '2021', '2024'].includes(edition as string);
   if (!knownEdition) return { roots: [] };
   const oldExplicit = edition === '2015' && (lib !== undefined || bins.length > 0);

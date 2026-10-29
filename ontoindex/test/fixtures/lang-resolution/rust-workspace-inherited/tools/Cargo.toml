@@ -1,0 +1,4 @@
+[package]
+name = "ontocode-tools"
+version.workspace = true
+edition.workspace = true

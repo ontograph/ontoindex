@@ -3,7 +3,12 @@ import path from 'path';
 import { createHash } from 'crypto';
 import type { Dirent } from 'fs';
 import type { ImportConfigs } from './import-resolvers/types.js';
-import { isCargoInventoryPath, rustCargoTargets } from './import-resolvers/rust-cargo.js';
+import {
+  isCargoInventoryPath,
+  rustCargoTargets,
+  rustCargoPackageWorkspace,
+  rustWorkspacePackageEdition,
+} from './import-resolvers/rust-cargo.js';
 
 import { isDev } from './utils/env.js';
 
@@ -493,6 +498,11 @@ export async function loadImportConfigs(
   let cargoPresent = false;
   const rustCrateRoots = new Set<string>();
   const rustWorkspaceCrates = new Map<string, string | null>();
+  const cargoSources = new Map<string, string>();
+  const workspaceEditions = new Map<
+    string,
+    NonNullable<ReturnType<typeof rustWorkspacePackageEdition>>
+  >();
   for (const manifest of manifests) {
     const filename = path.join(repoRoot, manifest);
     let source: string;
@@ -505,14 +515,56 @@ export async function loadImportConfigs(
     }
     cargoPresent = true;
     try {
-      const targets = rustCargoTargets(source, manifest, inventory);
+      const workspace = rustWorkspacePackageEdition(source);
+      if (workspace) {
+        workspaceEditions.set(path.posix.dirname(manifest), workspace);
+        if (workspace.invalidExclude) observations.parseError(filename);
+      }
+      cargoSources.set(manifest, source);
+    } catch {
+      observations.parseError(filename);
+    }
+  }
+  for (const [manifest, source] of cargoSources) {
+    try {
+      const memberDirectory = path.posix.dirname(manifest);
+      const explicitWorkspace = rustCargoPackageWorkspace(source);
+      let directory =
+        explicitWorkspace === undefined
+          ? memberDirectory
+          : path.posix.normalize(path.posix.join(memberDirectory, explicitWorkspace));
+      if (
+        directory === '..' ||
+        directory.startsWith('../') ||
+        (explicitWorkspace !== undefined && !workspaceEditions.has(directory))
+      ) {
+        throw new Error('Unresolved Cargo package workspace');
+      }
+      let workspace: ReturnType<typeof rustWorkspacePackageEdition>;
+      while (true) {
+        const candidate = workspaceEditions.get(directory);
+        const relative = path.posix.relative(directory, memberDirectory);
+        const excluded = candidate?.exclude.some((entry) => {
+          const normalized = path.posix.normalize(entry).replace(/\/$/, '');
+          return (
+            relative === normalized || relative.startsWith(`${normalized}/`) || normalized === '.'
+          );
+        });
+        if (candidate && (!excluded || directory === memberDirectory)) {
+          workspace = candidate;
+          break;
+        }
+        if (explicitWorkspace !== undefined || directory === '.') break;
+        directory = path.posix.dirname(directory);
+      }
+      const targets = rustCargoTargets(source, manifest, inventory, workspace?.edition);
       for (const root of targets.roots) rustCrateRoots.add(root);
       if (targets.library) {
         const { name, root } = targets.library;
         rustWorkspaceCrates.set(name, rustWorkspaceCrates.has(name) ? null : root);
       }
     } catch {
-      observations.parseError(filename);
+      observations.parseError(path.join(repoRoot, manifest));
     }
   }
   return {

@@ -240,6 +240,7 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
 interface ResolvedPipelineOutputs {
   totalFiles: number;
   usedWorkerPool: boolean;
+  scopeSkippedUnsupportedRustFiles?: number;
   parseMode?: PipelineResult['parseMode'];
   communityResult?: CommunitiesOutput['communityResult'];
   processResult?: ProcessesOutput['processResult'];
@@ -249,20 +250,23 @@ const resolvePipelineOutputs = (
   results: Awaited<ReturnType<typeof runPipeline>>,
   options?: PipelineOptions,
 ): ResolvedPipelineOutputs => {
-  const { totalFiles, usedWorkerPool, parseMode } = getPhaseOutput<{
-    totalFiles: number;
-    usedWorkerPool: boolean;
-    parseMode?: PipelineResult['parseMode'];
-  }>(results, 'parse');
+  const { totalFiles, usedWorkerPool, parseMode, scopeSkippedUnsupportedRustFiles } =
+    getPhaseOutput<{
+      totalFiles: number;
+      usedWorkerPool: boolean;
+      scopeSkippedUnsupportedRustFiles?: number;
+      parseMode?: PipelineResult['parseMode'];
+    }>(results, 'parse');
 
   if (!usesGraphSummaryPhases(options)) {
-    return { totalFiles, usedWorkerPool, parseMode };
+    return { totalFiles, usedWorkerPool, parseMode, scopeSkippedUnsupportedRustFiles };
   }
 
   return {
     totalFiles,
     usedWorkerPool,
     parseMode,
+    scopeSkippedUnsupportedRustFiles,
     communityResult: getPhaseOutput<CommunitiesOutput>(results, 'communities').communityResult,
     processResult: getPhaseOutput<ProcessesOutput>(results, 'processes').processResult,
   };
@@ -318,6 +322,7 @@ export const runPipelineFromRepo = async (
     communityResult: outputs.communityResult,
     processResult: outputs.processResult,
     usedWorkerPool: outputs.usedWorkerPool,
+    scopeSkippedUnsupportedRustFiles: outputs.scopeSkippedUnsupportedRustFiles,
     parseMode: outputs.parseMode,
   };
 };
