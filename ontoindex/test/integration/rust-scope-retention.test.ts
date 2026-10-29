@@ -160,13 +160,13 @@ describe('production Rust scope retention', () => {
                 left.filePath.localeCompare(right.filePath),
               ),
             ).toEqual([
-              { filePath: 'refused.rs', status: 'failed', reason: 'unsupported-syntax' },
+              { filePath: 'refused.rs', status: 'not-required', reason: 'unsupported-syntax' },
               { filePath: 'supported.rs', status: 'retained' },
             ]);
-            expect(handle.status).toBe('incomplete');
-            expect(handle.reasons).toContain('unsupported-syntax');
+            expect(handle.status).toBe('retained');
+            expect(handle.reasons).toEqual([]);
             expect(handle.seedReady).toBe(false);
-            expect(summarizeScopeRetentionCoverage(handle.inventory).complete).toBe(false);
+            expect(summarizeScopeRetentionCoverage(handle.inventory).complete).toBe(true);
           },
         },
       });

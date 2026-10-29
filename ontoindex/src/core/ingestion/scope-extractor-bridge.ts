@@ -53,6 +53,19 @@ export type ScopeExtractionRecord = { filePath: string } & (
 const NO_MODULE_SCOPE_MESSAGE = 'ScopeExtractor: no Module scope found';
 const CPP_LIKE_EXTENSIONS = new Set(['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh']);
 
+/** Rust scopes have no production resolver consumer; legacy parser families remain required. */
+export function isUnconsumedRustScopeFailure(record: {
+  filePath: string;
+  status?: string;
+  reason?: string;
+}): boolean {
+  return (
+    extensionOf(record.filePath) === '.rs' &&
+    (record.status === 'failed' || record.status === 'not-required') &&
+    record.reason === 'unsupported-syntax'
+  );
+}
+
 /**
  * Produce a `ParsedFile` for the given file, or `undefined` when the
  * provider hasn't migrated / the extractor throws. Exceptions from the

@@ -120,6 +120,27 @@ export interface TargetContextDirtyWorkspace {
 
 export const MAX_DIRTY_PATHS = 50;
 
+/** Project the existing workspace summary without probing Git again. */
+export function dirtyWorkspaceSearchWarning(
+  workspace: TargetContextDirtyWorkspace | undefined,
+  query: string,
+): string | undefined {
+  if (!workspace || !workspace.sourceFileCount) return undefined;
+  const paths = getDirtyWorkspacePaths(workspace).filter(
+    (filePath) => summarizeGitPorcelainStatus(`?? ${filePath}`).sourceFileCount > 0,
+  );
+  const normalizedQuery = query.replace(/\\/g, '/');
+  const tokens = normalizedQuery.split(/[\s`'"(),:]+/);
+  const matches = (filePath: string) =>
+    tokens.some((token) => token === filePath || token === path.posix.basename(filePath));
+  const ordered = [...paths.filter(matches), ...paths.filter((filePath) => !matches(filePath))];
+  const preview = ordered.slice(0, 5);
+  const remaining = Math.max(paths.length, workspace.sourceFileCount) - preview.length;
+  const kind =
+    workspace.untrackedSourceFileCount === workspace.sourceFileCount ? 'untracked' : 'dirty';
+  return `${workspace.sourceFileCount} ${kind} source file(s) are not in the graph; results may omit changes${preview.length ? `: ${preview.join(', ')}` : ''}${remaining > 0 ? `, +${remaining} more` : ''}`;
+}
+
 export interface TargetContext {
   version: 1;
   status: TargetContextStatus;

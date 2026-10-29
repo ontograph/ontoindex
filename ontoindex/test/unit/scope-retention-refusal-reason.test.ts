@@ -9,6 +9,44 @@ const options = () => ({
 });
 
 describe('scope retention refusal inventory reasons', () => {
+  it('completes the parsed-file producer for unsupported Rust scopes with no consumer', async () => {
+    const stage = new ScopeRetentionStage(options());
+    try {
+      stage.recordOutcomes([
+        { filePath: 'legacy.rs', status: 'failed', reason: 'unsupported-syntax' },
+      ]);
+      stage.reconcile(['legacy.rs']);
+      stage.markProducerCompleted('parsed-files');
+      expect(stage.inventory).toEqual([
+        { filePath: 'legacy.rs', status: 'not-required', reason: 'unsupported-syntax' },
+      ]);
+      expect(stage.status).toBe('retained');
+      expect(stage.producerCompletion['parsed-files']).toBe(true);
+    } finally {
+      await stage.dispose();
+    }
+  });
+
+  it.each<ScopeExtractionRecord>([
+    { filePath: 'used.ts', status: 'failed', reason: 'unsupported-syntax' },
+    { filePath: 'legacy.rs', status: 'failed', reason: 'scope-extraction-error' },
+    { filePath: 'legacy.rs', status: 'unsupported', reason: 'missing-scope-hook' },
+  ])(
+    'keeps required or unexpected scope failures incomplete: $filePath $reason',
+    async (outcome) => {
+      const stage = new ScopeRetentionStage(options());
+      try {
+        stage.recordOutcomes([outcome]);
+        stage.reconcile([outcome.filePath]);
+        stage.markProducerCompleted('parsed-files');
+        expect(stage.status).toBe('incomplete');
+        expect(stage.producerCompletion['parsed-files']).toBe(false);
+      } finally {
+        await stage.dispose();
+      }
+    },
+  );
+
   it('exposes unsupported syntax only on the refused entry and preserves it in JSON', async () => {
     const stage = new ScopeRetentionStage(options());
     try {

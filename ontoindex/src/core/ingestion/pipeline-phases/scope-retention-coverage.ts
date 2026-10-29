@@ -1,4 +1,5 @@
 import { getLanguageFromFilename } from 'ontoindex-shared';
+import { isUnconsumedRustScopeFailure } from '../scope-extractor-bridge.js';
 
 export interface ScopeRetentionCoverage {
   version: 1;
@@ -38,6 +39,8 @@ export function summarizeScopeRetentionCoverage(
     }
     bucket.files++;
     if (item.status === 'retained') bucket.retained++;
+    else if (item.status === 'not-required' && isUnconsumedRustScopeFailure(item))
+      bucket.unparsed++;
     else if (item.status === 'skipped') bucket.skipped++;
     else if (['failed', 'unsupported', 'invalid-outcome'].includes(item.status)) {
       bucket.refused++;

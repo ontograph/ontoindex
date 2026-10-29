@@ -1,3 +1,4 @@
+import { minimatch } from 'minimatch';
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
@@ -498,6 +499,11 @@ export async function loadImportConfigs(
   let cargoPresent = false;
   const rustCrateRoots = new Set<string>();
   const rustWorkspaceCrates = new Map<string, string | null>();
+  const cargoLibraries = new Map<string, string | null>();
+  const cargoAliases: [string, string][] = [];
+  const registerCrate = (crates: Map<string, string | null>, name: string, root: string): void => {
+    crates.set(name, crates.has(name) && crates.get(name) !== root ? null : root);
+  };
   const cargoSources = new Map<string, string>();
   const workspaceEditions = new Map<
     string,
@@ -518,7 +524,7 @@ export async function loadImportConfigs(
       const workspace = rustWorkspacePackageEdition(source);
       if (workspace) {
         workspaceEditions.set(path.posix.dirname(manifest), workspace);
-        if (workspace.invalidExclude) observations.parseError(filename);
+        if (workspace.invalidExclude || workspace.invalidMembers) observations.parseError(filename);
       }
       cargoSources.set(manifest, source);
     } catch {
@@ -550,22 +556,54 @@ export async function loadImportConfigs(
             relative === normalized || relative.startsWith(`${normalized}/`) || normalized === '.'
           );
         });
-        if (candidate && (!excluded || directory === memberDirectory)) {
+        const included =
+          candidate?.members === undefined ||
+          candidate.members.some((entry) => {
+            const pattern = path.posix.normalize(entry).replace(/\/$/, '').split('/');
+            const parts = relative.split('/');
+            return (
+              pattern.length === parts.length &&
+              pattern.every((segment, index) =>
+                // Cargo globs are per-segment `*`, `?` and `[..]`, and match leading dots.
+                minimatch(parts[index], segment, { dot: true, nobrace: true, noext: true }),
+              )
+            );
+          });
+        if (
+          candidate &&
+          (directory === memberDirectory ||
+            (!excluded && (explicitWorkspace !== undefined || included)))
+        ) {
           workspace = candidate;
           break;
         }
+        if (candidate && !included) break;
         if (explicitWorkspace !== undefined || directory === '.') break;
         directory = path.posix.dirname(directory);
       }
-      const targets = rustCargoTargets(source, manifest, inventory, workspace?.edition);
+      const targets = rustCargoTargets(
+        source,
+        manifest,
+        inventory,
+        workspace?.edition,
+        workspace?.dependencies,
+      );
+      cargoAliases.push(...(targets.aliases ?? []));
       for (const root of targets.roots) rustCrateRoots.add(root);
       if (targets.library) {
         const { name, root } = targets.library;
-        rustWorkspaceCrates.set(name, rustWorkspaceCrates.has(name) ? null : root);
+        registerCrate(rustWorkspaceCrates, name, root);
+        registerCrate(cargoLibraries, targets.packageName!, root);
       }
     } catch {
       observations.parseError(path.join(repoRoot, manifest));
     }
+  }
+  // The resolver's crate registry is global; conflicting aliases fail closed across packages.
+  for (const [alias, packageName] of cargoAliases) {
+    const root = cargoLibraries.get(packageName);
+    if (root) registerCrate(rustWorkspaceCrates, alias, root);
+    else if (root === null) rustWorkspaceCrates.set(alias, null);
   }
   return {
     tsconfigPaths: await loadTsconfigPaths(repoRoot, observations),

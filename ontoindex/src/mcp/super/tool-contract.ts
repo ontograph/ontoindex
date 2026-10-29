@@ -162,9 +162,10 @@ export function gnToolContract(params: ToolContractParams = {}): ToolContractRep
   const includeFacades = params.includeFacades === true;
   const { mode } = params;
   const startupProfile = getStartupProfileState().activeProfile;
+  // Match server tools/list independently of diagnostic display filters.
+  const frontierRegistry = getPublicToolRegistry({ includeFacades: true });
   const hostProfiledCallable = getPublicToolRegistry({
-    includeFacades,
-    mode,
+    includeFacades: true,
     startupProfile,
   }).map((entry) => entry.name);
 
@@ -334,9 +335,9 @@ export function gnToolContract(params: ToolContractParams = {}): ToolContractRep
   const visibleFrontier = computeVisibleFrontier({
     mode: mode ?? 'default',
     startupProfile: startupProfile,
-    registryEntries,
+    registryEntries: frontierRegistry,
     callable: hostProfiledCallable,
-    registrySet,
+    registrySet: new Set(frontierRegistry.map((entry) => entry.name)),
   });
 
   const warnings: string[] = [];
@@ -492,9 +493,8 @@ function computeVisibleFrontier(input: {
   const internalOnly = internalCallable.filter((tool) => !hostSet.has(tool));
   const clientOnly = hostVisible.filter((tool) => !input.registrySet.has(tool));
 
-  const modeDescription = input.mode === 'default' ? 'all modes' : `mode "${input.mode}"`;
   const note = [
-    `Callable tools in the OntoIndex registry (${modeDescription}) are compared with host-discoverable wrappers for this process.`,
+    'All callable tools in the OntoIndex registry are compared with host-discoverable wrappers for this process, independently of diagnostic mode and facade display filters.',
     'Client visibility is unobserved: clientVisible is a compatibility alias of hostVisible (server advertisement), not evidence that a client discovered or loaded those tools.',
     `Facade-first guidance prefers ${facadeFirst.length} facade tools before ${compatibilityTools.length} compatibility tools.`,
     'discover({action: "tools"}) should show the recommended facade surface first, with compatibility tools listed separately.',

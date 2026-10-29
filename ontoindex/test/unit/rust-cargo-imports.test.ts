@@ -196,6 +196,133 @@ describe('Cargo target config discovery', () => {
     expect(loaded.rustCrateRoots).toEqual(['nested/deeper/member/src/lib.rs']);
   });
 
+  it.each(['crates/*', 'crates/to?l', 'crates/[t]ool', './crates/../crates/tool/'])(
+    'inherits edition for workspace member pattern %s',
+    async (member) => {
+      const loaded = await configs(
+        `[workspace]\nmembers = ["${member}"]\n[workspace.package]\nedition = "2024"\n`,
+        {
+          'crates/tool/Cargo.toml': '[package]\nname = "tool"\nedition.workspace = true\n',
+          'crates/tool/src/lib.rs': '',
+        },
+      );
+      expect(loaded.rustCrateRoots).toEqual(['crates/tool/src/lib.rs']);
+    },
+  );
+
+  it.each(['["other/*"]', '["crates/*"]', '[]', '[42]', '42'])(
+    'does not inherit edition for unmatched or invalid workspace members %s',
+    async (members) => {
+      const loaded = await configs(
+        `[workspace]\nmembers = ${members}\n[workspace.package]\nedition = "2024"\n`,
+        {
+          'crates/deep/tool/Cargo.toml': '[package]\nname = "tool"\nedition.workspace = true\n',
+          'crates/deep/tool/src/lib.rs': '',
+        },
+      );
+      expect(loaded.rustCrateRoots).toEqual([]);
+      expect(loaded.observations?.records).toContainEqual({
+        kind: 'parse-error',
+        path: 'crates/deep/tool/Cargo.toml',
+      });
+      if (members === '[42]' || members === '42') {
+        expect(loaded.observations?.records).toContainEqual({
+          kind: 'parse-error',
+          path: 'Cargo.toml',
+        });
+      }
+    },
+  );
+
+  it('keeps an explicit package workspace authoritative over members', async () => {
+    const loaded = await configs(
+      '[workspace]\nmembers = []\n[workspace.package]\nedition = "2024"\n',
+      {
+        'member/Cargo.toml':
+          '[package]\nname = "member"\nworkspace = ".."\nedition.workspace = true\n',
+        'member/src/lib.rs': '',
+      },
+    );
+    expect(loaded.rustCrateRoots).toEqual(['member/src/lib.rs']);
+  });
+
+  it('matches dot directories without treating braces as Cargo glob syntax', async () => {
+    const loaded = await configs(
+      '[workspace]\nmembers = ["crates/*", "{one,two}"]\n[workspace.package]\nedition = "2024"\n',
+      {
+        'crates/.hidden/Cargo.toml': '[package]\nname = "hidden"\nedition.workspace = true\n',
+        'crates/.hidden/src/lib.rs': '',
+        'one/Cargo.toml': '[package]\nname = "one"\nedition.workspace = true\n',
+        'one/src/lib.rs': '',
+      },
+    );
+    expect(loaded.rustCrateRoots).toEqual(['crates/.hidden/src/lib.rs']);
+  });
+
+  it.each([
+    'dependencies',
+    'dev-dependencies',
+    'build-dependencies',
+    "target.'cfg(unix)'.dependencies",
+  ])('resolves renamed library dependencies from %s', async (kind) => {
+    const loaded = await configs('[workspace]\nmembers = ["consumer", "real"]\n', {
+      'consumer/Cargo.toml': `${pkg}[${kind}]\nfoo-alias = { package = "real-crate", path = "../real" }\n`,
+      'consumer/src/main.rs': '',
+      'real/Cargo.toml': pkg.replace('fixture', 'real-crate') + '[lib]\nname = "custom-lib"\n',
+      'real/src/lib.rs': '',
+      'real/src/module.rs': 'pub fn item() {}',
+    });
+    const ctx = context(
+      ['consumer/src/main.rs', 'real/src/lib.rs', 'real/src/module.rs'],
+      loaded.rustCrateRoots!,
+    );
+    ctx.configs = loaded;
+    expect(resolve('foo_alias::module::item', 'consumer/src/main.rs', ctx)).toEqual({
+      kind: 'files',
+      files: ['real/src/module.rs'],
+    });
+  });
+
+  it('inherits a renamed workspace dependency', async () => {
+    const loaded = await configs(
+      '[workspace]\nmembers = ["consumer", "real"]\n[workspace.dependencies]\nfoo_alias = { package = "real-crate", path = "real" }\n',
+      {
+        'consumer/Cargo.toml': `${pkg}[dependencies]\nfoo_alias.workspace = true\n`,
+        'consumer/src/main.rs': '',
+        'real/Cargo.toml': pkg.replace('fixture', 'real-crate'),
+        'real/src/lib.rs': '',
+        'real/src/module.rs': '',
+      },
+    );
+    const ctx = context(['consumer/src/main.rs', 'real/src/module.rs'], loaded.rustCrateRoots!);
+    ctx.configs = loaded;
+    expect(resolve('foo_alias::module::item', 'consumer/src/main.rs', ctx)).toEqual({
+      kind: 'files',
+      files: ['real/src/module.rs'],
+    });
+  });
+
+  it('rejects a dependency alias colliding with another library name', async () => {
+    const loaded = await configs('[workspace]\nmembers = ["consumer", "real", "other"]\n', {
+      'consumer/Cargo.toml': `${pkg}[dependencies]\nfoo_alias = { package = "real-crate", path = "../real" }\n`,
+      'consumer/src/main.rs': '',
+      'real/Cargo.toml': pkg.replace('fixture', 'real-crate'),
+      'real/src/lib.rs': '',
+      'other/Cargo.toml': pkg.replace('fixture', 'foo-alias'),
+      'other/src/lib.rs': '',
+    });
+    expect(loaded.rustWorkspaceCrates?.get('foo_alias')).toBeNull();
+    const ctx = context(
+      ['consumer/src/main.rs', 'real/src/lib.rs', 'other/src/lib.rs'],
+      loaded.rustCrateRoots!,
+    );
+    ctx.configs = loaded;
+    expect(resolve('foo_alias::item', 'consumer/src/main.rs', ctx)).toEqual({
+      kind: 'files',
+      files: [],
+    });
+  });
+
   it('does not inherit through a nearer workspace that lacks an edition', async () => {
     const loaded = await configs('[workspace]\n[workspace.package]\nedition = "2024"\n', {
       'nested/Cargo.toml': '[workspace]\n',

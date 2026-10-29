@@ -15,6 +15,7 @@ import {
   type ScopeRetentionRequest,
 } from './scope-retention-stage.js';
 import { summarizeScopeRetentionCoverage } from './scope-retention-coverage.js';
+import { isUnconsumedRustScopeFailure } from '../scope-extractor-bridge.js';
 import { cloneRegistrationEvent } from '../model/semantic-model.js';
 import { restoreImportResolutionState } from '../model/resolution-context.js';
 import {
@@ -392,8 +393,12 @@ async function readScopeRetentionCandidate(
   }
   const inventoryPaths = new Set<string>();
   const retainedInventoryPaths = new Set<string>();
+  const optionalScopePaths = new Set<string>();
   let retainedInventoryCount = 0;
   for (const item of retention.inventory) {
+    if (item.status === 'not-required' && !isUnconsumedRustScopeFailure(item))
+      fail('invalid optional scope inventory');
+    if (item.status === 'not-required') optionalScopePaths.add(item.filePath);
     if (inventoryPaths.has(item.filePath)) fail('duplicate inventory file path');
     inventoryPaths.add(item.filePath);
     if (item.status === 'retained') {
@@ -768,11 +773,17 @@ async function readScopeRetentionCandidate(
     }
     if (retention.status === 'retained') {
       for (const filePath of auxiliaryPaths) {
-        if (!retainedInventoryPaths.has(filePath)) fail('auxiliary record file not retained');
+        if (!retainedInventoryPaths.has(filePath) && !optionalScopePaths.has(filePath))
+          fail('auxiliary record file not retained');
       }
       if (
-        parsedFilePaths.size !== retention.inventory.length ||
-        retainedInventoryCount !== retention.inventory.length
+        parsedFilePaths.size !== retainedInventoryCount ||
+        [...retainedInventoryPaths].some((filePath) => !parsedFilePaths.has(filePath)) ||
+        retention.inventory.some(
+          (item) =>
+            item.status !== 'retained' &&
+            !(item.status === 'not-required' && isUnconsumedRustScopeFailure(item)),
+        )
       ) {
         fail('retained inventory mismatch');
       }

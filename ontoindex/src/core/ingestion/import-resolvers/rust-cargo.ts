@@ -8,26 +8,43 @@ function table(value: unknown): value is Table {
 }
 
 /** Keep workspace boundaries even when their inherited edition is missing or invalid. */
-export function rustWorkspacePackageEdition(
-  source: string,
-): { edition?: string; exclude: string[]; invalidExclude: boolean } | undefined {
+export function rustWorkspacePackageEdition(source: string):
+  | {
+      edition?: string;
+      exclude: string[];
+      invalidExclude: boolean;
+      members?: string[];
+      invalidMembers: boolean;
+      dependencies?: Table;
+    }
+  | undefined {
   const manifest = parse(source) as Table;
   if (!table(manifest.workspace)) return undefined;
   const pkg = manifest.workspace.package;
   const edition = table(pkg) ? pkg.edition : undefined;
   const exclude = manifest.workspace.exclude;
+  const members = manifest.workspace.members;
+  const invalidMembers =
+    members !== undefined &&
+    (!Array.isArray(members) || members.some((entry) => typeof entry !== 'string'));
   const invalidExclude =
     exclude !== undefined &&
     (!Array.isArray(exclude) || exclude.some((entry) => typeof entry !== 'string'));
   return {
     edition:
       !invalidExclude &&
+      !invalidMembers &&
       typeof edition === 'string' &&
       ['2015', '2018', '2021', '2024'].includes(edition)
         ? edition
         : undefined,
     exclude: invalidExclude ? [] : ((exclude ?? []) as string[]),
     invalidExclude,
+    members: invalidMembers ? [] : (members as string[] | undefined),
+    invalidMembers,
+    dependencies: table(manifest.workspace.dependencies)
+      ? manifest.workspace.dependencies
+      : undefined,
   };
 }
 
@@ -75,12 +92,38 @@ export function rustCargoTargets(
   manifestPath: string,
   inventory: ReadonlySet<string>,
   inheritedEdition?: string,
-): { roots: string[]; library?: { name: string; root: string } } {
+  workspaceDependencies?: Table,
+): {
+  roots: string[];
+  packageName?: string;
+  aliases?: [string, string][];
+  library?: { name: string; root: string };
+} {
   const manifest = parse(source) as Table;
   if (!isCargoInventoryPath(manifestPath)) throw new Error('Invalid Cargo manifest path');
   if (manifest.package === undefined) return { roots: [] };
   if (!table(manifest.package)) throw new Error('Invalid Cargo package');
   const pkg = manifest.package;
+  const aliases: [string, string][] = [];
+  const collectDependencies = (owner: Table): void => {
+    for (const kind of ['dependencies', 'dev-dependencies', 'build-dependencies']) {
+      const dependencies = owner[kind];
+      if (!table(dependencies)) continue;
+      for (const [alias, value] of Object.entries(dependencies)) {
+        if (!table(value)) continue;
+        const dependency = value.workspace === true ? workspaceDependencies?.[alias] : value;
+        if (table(dependency) && typeof dependency.package === 'string') {
+          aliases.push([alias.replace(/-/g, '_'), dependency.package]);
+        }
+      }
+    }
+  };
+  collectDependencies(manifest);
+  if (table(manifest.target)) {
+    for (const target of Object.values(manifest.target)) {
+      if (table(target)) collectDependencies(target);
+    }
+  }
   const validName = (name: unknown): name is string =>
     typeof name === 'string' && /^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(name);
   if (!validName(pkg.name)) throw new Error('Invalid Cargo package name');
@@ -176,6 +219,8 @@ export function rustCargoTargets(
   }
   return {
     roots: [...roots].sort(),
+    packageName: pkg.name,
+    aliases,
     ...(libraryRoot
       ? {
           library: {

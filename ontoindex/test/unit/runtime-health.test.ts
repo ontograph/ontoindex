@@ -106,6 +106,27 @@ describe('commitless runtime health', () => {
     expect(health.freshnessState).toBe('degraded');
     expect(health.degradedReason).toBe('source manifest coverage is incomplete');
   });
+
+  it.each([false, true])(
+    'includes five repo-relative degraded paths, aggregates=%s',
+    async (aggregates) => {
+      meta.degradedFiles = Array.from({ length: 7 }, (_, i) => ({
+        filePath: i === 0 ? path.join(repoPath, 'src/large-0.py') : `src/large-${i}.py`,
+        reason: 'file exceeds scan file-size cap',
+      }));
+      if (aggregates) {
+        meta.degradedFileAggregates = { sampledDegradedCount: 7, groups: [], omittedGroupCount: 0 };
+      }
+      const health = await readHealth();
+      expect(health.freshnessState).toBe('degraded');
+      expect(health.degradedReason).toBe(
+        `degraded files ${aggregates ? 'sampled' : 'recorded'}: 7 (src/large-0.py, src/large-1.py, src/large-2.py, src/large-3.py, src/large-4.py; +2 more)`,
+      );
+      expect(formatRuntimeHealthDetailLines(health)).toContain(
+        `  Reason: ${health.degradedReason}`,
+      );
+    },
+  );
 });
 
 function makeLock(state: RuntimeAnalyzeLockState['state']): RuntimeAnalyzeLockState {

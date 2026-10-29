@@ -19,6 +19,7 @@ type Current = {
   skippedLargeFiles: { path: string; size: number }[];
 };
 const sources = {
+  'src/legacy.rs': 'pub const VALUE: i32 = 1;\npub fn legacy() {}\n',
   'src/util.ts': 'export function helper() {}\nexport function other() {}\n',
   'src/main.ts':
     "import { helper, other as renamed } from './util';\nfunction run() { helper(); renamed(); missing(); }\nexport function entry() { run(); }\n",
@@ -154,6 +155,37 @@ describe.sequential('strict parse replay admission against live inputs', () => {
     );
     expect(loaded.manifest.retention.discovery!.allPaths).toContain('package.json');
   }, 60_000);
+
+  it('keeps refused Rust scopes neutral while retaining source and legacy graph evidence', () => {
+    expect(candidate.manifest.retention.inventory).toContainEqual({
+      filePath: 'src/legacy.rs',
+      status: 'not-required',
+      reason: 'unsupported-syntax',
+    });
+    expect(candidate.families.parsedFiles.some((file) => file.filePath === 'src/legacy.rs')).toBe(
+      false,
+    );
+    expect(
+      candidate.manifest.retention.inputEvidence.sources.some(
+        (file) => file.filePath === 'src/legacy.rs',
+      ),
+    ).toBe(true);
+    expect(
+      candidate.families.declarationNodes.some(
+        (node) => node.properties.filePath === 'src/legacy.rs',
+      ),
+    ).toBe(true);
+  });
+
+  it('refuses to exempt a consumed TypeScript scope from the inventory', async () => {
+    const changed = structuredClone(candidate);
+    const item = changed.manifest.retention.inventory.find(
+      (file) => file.filePath === 'src/main.ts',
+    )!;
+    item.status = 'not-required';
+    item.reason = 'unsupported-syntax';
+    await refuses(changed);
+  });
 
   it.each(['directory', 'file', 'symlink'] as const)(
     'refuses a newly present ignored analysis pack root: %s',

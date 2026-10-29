@@ -12,6 +12,7 @@ import path from 'path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { performance } from 'node:perf_hooks';
 import { canonicalRepoId, registryRepoIds } from '../shared/target-context.js';
+import { attachWorkspaceSearchWarning } from '../shared/workspace-search-warning.js';
 import fs from 'fs/promises';
 import {
   isAutomaticWorkspaceEnabled,
@@ -2778,6 +2779,17 @@ export class LocalBackend implements BackendPort {
       allow_low_confidence?: boolean;
       retrieval_policy?: string;
     },
+  ): Promise<QueryResult> {
+    return (await attachWorkspaceSearchWarning(
+      await this.queryUnwarned(repo, params),
+      params as unknown as Record<string, unknown>,
+      repo.id,
+    )) as QueryResult;
+  }
+
+  private async queryUnwarned(
+    repo: RepoHandle,
+    params: Parameters<LocalBackend['query']>[1],
   ): Promise<QueryResult> {
     await this.ensureInitialized(repo.id);
     const result = await queryImpl(repo as any, params);
