@@ -560,4 +560,14 @@ describe('analyze lock lifecycle', () => {
     expect(fulfilled).toHaveLength(1);
     await fulfilled[0].value.release();
   });
+
+  it('waits for a briefly held kernel lock when retries are requested', async () => {
+    const repo = await makeRepo();
+    const first = await acquireAnalyzeLock(repo);
+    await expect(acquireAnalyzeLock(repo)).rejects.toThrow(/already running|mutation lock/);
+    const waiting = acquireAnalyzeLock(repo, { attempts: 100, retryDelayMs: 10 });
+    setTimeout(() => void first.release(), 50);
+    const second = await waiting;
+    await second.release();
+  });
 });

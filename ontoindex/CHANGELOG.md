@@ -4,6 +4,13 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.14] - 2026-10-29
+
+- Repo tool queries schedule one managed background refresh when the indexed commit differs from HEAD, or indexed-scope files change in a repository without commits, while returning the existing index with a freshness warning. Refresh keeps the recorded scope and excludes `huge-repo-symbols` indexes; `ONTOINDEX_AUTO_REFRESH_INTERVAL_MS` sets the interval (default 5 minutes), and `ONTOINDEX_AUTO_REFRESH=0` disables it. Dirty-only edits use the automatic overlay.
+- While a refresh runs, queries keep answering: a published index generation stays readable while analyze holds its lock (only the legacy in-place database is refused), a managed refresh waits up to two minutes for a briefly held analyze lock instead of failing, and a query whose working-tree read is busy, too large, or timed out answers from the committed index with a warning when a refresh is scheduled.
+- The Claude hook says the next query refreshes the index automatically, and its CLI fallback runs the installed `ontoindex` instead of downloading with `npx`.
+- Agent guidance queries OntoIndex first, uses stale/refreshing evidence with freshness labels and source verification, and reserves manual refresh for immediate needs with no active job. Sub-agents never reindex, and staleness alone never triggers grep-only fallback.
+
 ## [2.3.13] - 2026-10-29
 
 - The Claude hook keeps augment cooldown stamps and locks in one private temp subdirectory (`ontoindex-hook-augment/`, mode 0700). At most once an hour it deletes stamp and lock files older than 24 hours, capped at 500 per pass, including legacy files left directly in the temp directory. Cooldown and lock behavior are unchanged.

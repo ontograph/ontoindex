@@ -13,4 +13,4 @@ Read ontoindex-navigation first.
 4. For extract, move, or modify-body operations, use `refactor({action: "safe_refactor", ...})` with `repo` and the matching `intent`; `dryRun` defaults to `true`. Review the preview before any apply.
 5. After edits, call `audit({action: "verify_diff", ...})` with explicit `changedFiles` and `expectedFiles`, then use `audit({action: "test_gap", ...})` to inspect affected test evidence. Run the focused tests indicated by the change.
 
-Pass `repo` explicitly to each OntoIndex call. When the index is stale or degraded, follow ontoindex-navigation and verify uncommitted source directly.
+Pass `repo` explicitly to each OntoIndex call. Use stale/refreshing results with freshness labels, and verify edited or new code from source. Follow ontoindex-navigation for degraded/untrusted evidence or failed calls; staleness alone never requires grep-only fallback.

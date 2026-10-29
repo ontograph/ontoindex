@@ -3,7 +3,7 @@ name: ontoindex-exploring
 description: 'Understand architecture, find code, and trace callers or execution flows in an unfamiliar repository.'
 ---
 
-Read ontoindex-navigation first (freshness gate and failure path).
+Read ontoindex-navigation first (freshness labels and query failure guidance).
 
 ## Find and explain code
 

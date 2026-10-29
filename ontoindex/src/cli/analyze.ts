@@ -296,12 +296,15 @@ async function createAnalyzeLockFile(
   };
 }
 
-export async function acquireAnalyzeLock(repoPath: string): Promise<AnalyzeLock> {
+export async function acquireAnalyzeLock(
+  repoPath: string,
+  options: { attempts?: number; retryDelayMs?: number } = {},
+): Promise<AnalyzeLock> {
   const { storagePath } = getStoragePaths(repoPath);
   await fs.mkdir(storagePath, { recursive: true });
   const lockPath = path.join(storagePath, 'analyze.lock');
   const recoveryLockPath = `${lockPath}.recovery`;
-  const nativeLock = await acquireNativeFileLock(`${lockPath}.kernel`);
+  const nativeLock = await acquireNativeFileLock(`${lockPath}.kernel`, options);
   let lock: AnalyzeLock | undefined;
   let transferred = false;
   try {
@@ -865,7 +868,12 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
 
   // ── Run shared analysis orchestrator ───────────────────────────────
   try {
-    analyzeLock = await acquireAnalyzeLock(repoPath);
+    // A managed background refresh waits for short holders, such as the dirty
+    // overlay build started by the same query, instead of failing immediately.
+    analyzeLock = await acquireAnalyzeLock(
+      repoPath,
+      managedAnalysis ? { attempts: 1200, retryDelayMs: 100 } : {},
+    );
     const { runFullAnalysis } = await import('../core/run-analyze.js');
     const profile = experimentalFileDeltaPlan?.safeToBound
       ? 'symbols'

@@ -52,6 +52,8 @@ const GIT_HEAD = /^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/;
 // ---------------------------------------------------------------------------
 
 export interface EnsureFreshParams {
+  /** Internal refresh scope, inherited from the active index. */
+  scope?: { includePaths: string[]; pipelineProfile: 'full' | 'symbols' };
   repo?: string;
   withEmbeddings?: boolean; // default: false
   requiredGraphCapabilities?: readonly GraphAuthorityCapability[]; // default: ['symbols']
@@ -249,7 +251,7 @@ function emptyReport(
   };
 }
 
-function currentCliCommand(): { command: string; argsPrefix: string[]; displayPrefix: string } {
+export function currentCliCommand(): { command: string; argsPrefix: string[]; displayPrefix: string } {
   const cliEntry = process.env.ONTOINDEX_CLI_PATH || process.argv[1];
   if (cliEntry) {
     return {
@@ -830,6 +832,10 @@ async function buildEnsureFreshReport(
     const forceAnalyze = forceRecovery || forceEmbeddingsRepair;
     if (forceAnalyze) args.push('--force');
     if (params.withEmbeddings) args.push('--embeddings');
+    for (const includePath of params.scope?.includePaths ?? []) {
+      args.push('--include-path', includePath);
+    }
+    if (params.scope?.pipelineProfile === 'symbols') args.push('--symbols-only');
 
     try {
       const requestedCapabilities: AnalysisRequestedCapabilities = {
@@ -843,8 +849,8 @@ async function buildEnsureFreshReport(
             : null,
       };
       const manifest = await computeSourceManifest(repoRoot, {
-        includePaths: [],
-        pipelineProfile: 'full',
+        includePaths: params.scope?.includePaths ?? [],
+        pipelineProfile: params.scope?.pipelineProfile ?? 'full',
       });
       const manifestDigest = sourceManifestDigest(manifest);
       // A dirty tree is analyzed as-is, but it must not be published under a
@@ -867,7 +873,10 @@ async function buildEnsureFreshReport(
         sourceManifestDigest: manifestDigest,
         command: cli.command,
         args,
-        options: { withEmbeddings: params.withEmbeddings === true },
+        options: {
+          withEmbeddings: params.withEmbeddings === true,
+          ...(params.scope ? { scope: params.scope } : {}),
+        },
       });
       analysisJob = submitted.job;
       analysisSubmission = {

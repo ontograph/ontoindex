@@ -2196,6 +2196,46 @@ describe('resolveRepoFromHandles', () => {
 });
 
 describe('ensureRepoInitialized', () => {
+  it.each([
+    { label: 'a published generation stays readable', lbug: 'generations/G1/lbug', opens: true },
+    { label: 'the legacy in-place database is refused', lbug: 'lbug', opens: false },
+  ])('while a live analyze holds the lock, $label', async ({ lbug, opens }) => {
+    const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-rebuild-read-'));
+    const storagePath = path.join(repoPath, '.ontoindex');
+    await fs.mkdir(storagePath);
+    await fs.writeFile(
+      path.join(storagePath, 'analyze.lock'),
+      JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }),
+    );
+    const handle = makeRepo('repo', 'repo', repoPath);
+    handle.storagePath = storagePath;
+    const lbugPath = path.join(storagePath, lbug);
+    const initLbug = vi.fn(async () => undefined);
+    try {
+      const run = ensureRepoInitialized({
+        repoId: 'repo',
+        handle,
+        initializedRepos: new Set(),
+        reinitPromises: new Map(),
+        lastStalenessCheck: new Map(),
+        isLbugReady: () => false,
+        isLbugDbPathReady: () => true,
+        initLbug,
+        closeLbug: vi.fn(async () => undefined),
+        resolveActiveLbugPath: vi.fn(async () => lbugPath),
+      });
+      if (opens) {
+        await run;
+        expect(initLbug).toHaveBeenCalledWith('repo', lbugPath);
+      } else {
+        await expect(run).rejects.toThrow(/currently being rebuilt/);
+        expect(initLbug).not.toHaveBeenCalled();
+      }
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
+  });
+
   it('adopts the commit of a newly published generation when it reopens the index', async () => {
     const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-republish-'));
     const storagePath = path.join(repoPath, '.ontoindex');

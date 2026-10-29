@@ -7,9 +7,9 @@ Read ontoindex-navigation first.
 
 # OntoIndex CLI Commands
 
-Run the installed `ontoindex` command from the target repository. Only the coordinating session runs `ontoindex analyze`; sub-agents never analyze. Never launch analyze through npx; npx can fetch a different version.
+Run the installed `ontoindex` command from the target repository. Query OntoIndex first; repo queries schedule managed background refresh when stale. Only the coordinating session runs `ontoindex analyze` manually when immediate refresh is required and no refresh job is active; sub-agents never analyze. Never launch analyze through npx; npx can fetch a different version.
 
-`analyze` indexes the repository and updates the OntoIndex block in `AGENTS.md` and `CLAUDE.md`. Use `--skip-agents-md` to leave those files untouched. The index is commit-based, so a dirty tree needs direct source checks. Embeddings are optional and off by default.
+`analyze` indexes the repository and updates the OntoIndex block in `AGENTS.md` and `CLAUDE.md`. Use `--skip-agents-md` to leave those files untouched. Uncommitted edits use the automatic overlay; label stale/refreshing results and verify edited or new code from source. Embeddings are optional and off by default.
 
 | Command                                                                | Purpose                                                                                                                            |
 | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |

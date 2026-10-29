@@ -921,7 +921,11 @@ async function assertIndexCanOpenReadOnly(
   handle: RepoHandle,
   isLbugDbPathReady?: (dbPath: string) => boolean,
 ): Promise<void> {
-  const lock = await readAnalyzeLock(handle.storagePath);
+  // Analysis stages a new generation and publishes it atomically, so a published
+  // generation stays readable during a rebuild. Only the legacy in-place database
+  // is unsafe to open while analyze runs.
+  const legacyLayout = path.resolve(handle.lbugPath) === path.resolve(handle.storagePath, 'lbug');
+  const lock = legacyLayout ? await readAnalyzeLock(handle.storagePath) : null;
   if (lock) {
     throw new Error(
       `OntoIndex index for "${handle.name}" is currently being rebuilt (${lock}). ` +

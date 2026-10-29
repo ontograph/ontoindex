@@ -99,7 +99,7 @@ function generateOntoIndexContent(
 
 This project is indexed by OntoIndex as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}. Use the OntoIndex MCP tools to understand code, assess impact, and navigate safely.
 
-> The graph index is commit-based. If any OntoIndex tool warns the index is stale, or current HEAD differs from the indexed commit, coordinate first; exactly one process must run \`${analyzeCommand}\` before graph-backed claims. Never silently assume dirty or uncommitted worktree changes are represented in the graph — verify current source or the diff for those changes.
+> Always query OntoIndex first. Repo queries refresh stale indexes in the background; dirty edits use the automatic overlay. Use stale/refreshing results with freshness labels; verify edited or new code from source. Never fall back to grep-only because the index is stale. Manual \`${analyzeCommand}\` is only for immediate refresh with no active job. Sub-agents never start reindex jobs; refresh-on-query covers them.
 
 ## Always Do
 
@@ -255,7 +255,7 @@ async function installSkills(repoPath: string): Promise<string[]> {
     {
       name: 'ontoindex-navigation',
       description:
-        'Use first for any code task: OntoIndex freshness gate, tool routing, and what to do when OntoIndex is missing or stale.',
+        'Use first for any code task: OntoIndex tool routing, freshness labels, and what to do when a query fails.',
     },
     {
       name: 'ontoindex-pr-review',
