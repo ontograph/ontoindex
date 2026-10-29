@@ -21,6 +21,8 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
+import vm from 'vm';
 import { runHook, parseHookOutput } from '../utils/hook-test-helpers.js';
 
 // ─── Paths to both hook variants ────────────────────────────────────
@@ -231,6 +233,47 @@ describe('PreToolUse augment hardening', () => {
       expect(source).toContain("fs.openSync(paths.lockPath, 'wx')");
       expect(source).toContain('fs.statSync(paths.stampPath)');
       expect(source).toContain('finishAugment(augmentLease)');
+    });
+
+    it(`${label} hook stores stamps in a private directory and prunes stale files hourly`, () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ontoindex-hook-prune-test-'));
+      try {
+        const dir = path.join(root, 'ontoindex-hook-augment');
+        fs.mkdirSync(dir, { mode: 0o700 });
+        const stale = path.join(dir, `ontoindex-hook-augment-${'a'.repeat(24)}.stamp`);
+        const legacy = path.join(root, `ontoindex-hook-augment-${'b'.repeat(24)}.lock`);
+        const recent = path.join(dir, `ontoindex-hook-augment-${'c'.repeat(24)}.lock`);
+        const unrelated = path.join(root, 'unrelated.stamp');
+        const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+        for (const file of [stale, legacy, unrelated]) {
+          fs.writeFileSync(file, '');
+          fs.utimesSync(file, old, old);
+        }
+        fs.writeFileSync(recent, '');
+        const source = fs.readFileSync(hookPath, 'utf-8');
+        const functions = source.slice(
+          source.indexOf('function augmentPaths('),
+          source.indexOf('function beginAugment('),
+        );
+        const augmentPaths = vm.runInNewContext(`${functions}\naugmentPaths`, {
+          fs, path, crypto, os: { tmpdir: () => root },
+        }) as (cwd: string, pattern: string) => { stampPath: string; lockPath: string };
+
+        const paths = augmentPaths(root, 'pattern');
+        expect(path.dirname(paths.stampPath)).toBe(dir);
+        expect(path.dirname(paths.lockPath)).toBe(dir);
+        expect(fs.existsSync(stale)).toBe(false);
+        expect(fs.existsSync(legacy)).toBe(false);
+        expect(fs.existsSync(recent)).toBe(true);
+        expect(fs.existsSync(unrelated)).toBe(true);
+
+        fs.writeFileSync(stale, '');
+        fs.utimesSync(stale, old, old);
+        augmentPaths(root, 'another-pattern');
+        expect(fs.existsSync(stale)).toBe(true);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
     });
 
     it(`${label} hook releases augment lock in a finally block`, () => {
