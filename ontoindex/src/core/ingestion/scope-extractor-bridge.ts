@@ -14,7 +14,9 @@
  *   2. Invokes the hook + feeds its output to `ScopeExtractor.extract`.
  *   3. **Catches exceptions from either side.** A failure reports a failed
  *      outcome, distinguishing unsupported syntax, and emits a warning via
- *      `onWarn`, except for an expected C++ missing-module miss.
+ *      `onWarn`, except for Rust unsupported syntax (the Rust scope pass
+ *      covers a deliberate subset; fallback telemetry still records it) or an
+ *      expected C++ missing-module miss.
  *      Exceptions from `onWarn` still propagate.
  *      The compatibility wrapper returns `undefined` for either miss.
  *      Scope-based resolution is the new path under construction — it
@@ -87,6 +89,9 @@ export function extractParsedFileOutcome(
   } catch (err) {
     if (isExpectedCppNoModuleScopeMiss(err, filePath)) {
       return { status: 'failed', reason: 'missing-module-scope' };
+    }
+    if (isScopeUnsupportedSyntax(err) && extensionOf(filePath) === '.rs') {
+      return { status: 'failed', reason: 'unsupported-syntax' };
     }
 
     const message = `scope extraction failed for ${filePath}: ${

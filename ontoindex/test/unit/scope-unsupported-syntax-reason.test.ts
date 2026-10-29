@@ -111,6 +111,28 @@ describe('unsupported scope syntax reasons', () => {
     );
   });
 
+  it('does not warn per file for unsupported Rust syntax', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warning = vi.fn();
+    const provider = {
+      emitScopeCaptures() {
+        throw new ScopeUnsupportedSyntaxError('unsupported declaration');
+      },
+    } as unknown as LanguageProvider;
+    try {
+      for (const onWarn of [warning, undefined]) {
+        expect(extractParsedFileOutcome(provider, '', 'src/lib.rs', onWarn)).toEqual({
+          status: 'failed',
+          reason: 'unsupported-syntax',
+        });
+      }
+      expect(warning).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it.each(['unsupported-syntax', 'scope-extraction-error'] as const)(
     'retains failed inventory and distinguishes %s',
     async (reason) => {

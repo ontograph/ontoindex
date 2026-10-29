@@ -31,6 +31,8 @@ export type ImportResult =
 /** Bundled language-specific configs loaded once per ingestion run. */
 export interface ImportConfigs {
   rustCrateRoots?: readonly string[];
+  /** Null entries are ambiguous crate names and must not resolve. */
+  rustWorkspaceCrates?: ReadonlyMap<string, string | null>;
   observations?: ImportConfigObservations;
   tsconfigPaths: TsconfigPaths | null;
   goModule: GoModuleConfig | null;

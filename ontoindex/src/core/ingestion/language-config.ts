@@ -3,7 +3,7 @@ import path from 'path';
 import { createHash } from 'crypto';
 import type { Dirent } from 'fs';
 import type { ImportConfigs } from './import-resolvers/types.js';
-import { isCargoInventoryPath, rustCargoRoots } from './import-resolvers/rust-cargo.js';
+import { isCargoInventoryPath, rustCargoTargets } from './import-resolvers/rust-cargo.js';
 
 import { isDev } from './utils/env.js';
 
@@ -492,6 +492,7 @@ export async function loadImportConfigs(
   ].sort();
   let cargoPresent = false;
   const rustCrateRoots = new Set<string>();
+  const rustWorkspaceCrates = new Map<string, string | null>();
   for (const manifest of manifests) {
     const filename = path.join(repoRoot, manifest);
     let source: string;
@@ -504,7 +505,12 @@ export async function loadImportConfigs(
     }
     cargoPresent = true;
     try {
-      for (const root of rustCargoRoots(source, manifest, inventory)) rustCrateRoots.add(root);
+      const targets = rustCargoTargets(source, manifest, inventory);
+      for (const root of targets.roots) rustCrateRoots.add(root);
+      if (targets.library) {
+        const { name, root } = targets.library;
+        rustWorkspaceCrates.set(name, rustWorkspaceCrates.has(name) ? null : root);
+      }
     } catch {
       observations.parseError(filename);
     }
@@ -515,7 +521,7 @@ export async function loadImportConfigs(
     composerConfig: await loadComposerConfig(repoRoot, observations),
     swiftPackageConfig: await loadSwiftPackageConfig(repoRoot, observations),
     csharpConfigs: await loadCSharpProjectConfig(repoRoot, observations),
-    ...(cargoPresent ? { rustCrateRoots: [...rustCrateRoots].sort() } : {}),
+    ...(cargoPresent ? { rustCrateRoots: [...rustCrateRoots].sort(), rustWorkspaceCrates } : {}),
     observations: observations.snapshot(),
   };
 }

@@ -118,26 +118,64 @@ describe('direct CLI tool commands', () => {
     );
   });
 
-  it('recommends committed impact after a workspace size refusal', async () => {
-    const failure = Object.assign(new Error('workspace_preparation_failed: workspace_too_large'), {
-      code: 'workspace_too_large',
-    });
-    callToolMock.mockRejectedValue(failure);
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('exit');
-    });
-    try {
-      const { impactCommand } = await import('../../src/cli/tool.js');
-      await expect(impactCommand('Symbol')).rejects.toThrow('exit');
-
-      const result = JSON.parse(writeSyncMock.mock.calls[0][1]);
-      expect(result.suggestion).toContain(
-        'ontoindex impact <symbol> --repo <name> --read-mode committed',
+  it.each(['query', 'context', 'impact'] as const)(
+    'reports workspace size failures for %s without throwing or writing stdout',
+    async (command) => {
+      const failure = Object.assign(
+        new Error('workspace_preparation_failed: workspace_too_large'),
+        {
+          code: 'workspace_too_large',
+          diagnostics: { observedIndexedFiles: 6997, maxIndexedFiles: 5000 },
+        },
       );
-      expect(result.suggestion).not.toContain('--depth');
+      callToolMock.mockRejectedValue(failure);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const previousExitCode = process.exitCode;
+      try {
+        const { queryCommand, contextCommand, impactCommand } =
+          await import('../../src/cli/tool.js');
+        const run = { query: queryCommand, context: contextCommand, impact: impactCommand }[
+          command
+        ];
+        await expect(run('Symbol', { repo: 'codex' })).resolves.toBeUndefined();
+
+        expect(errorSpy).toHaveBeenCalledExactlyOnceWith(
+          'OntoIndex: workspace_too_large {"observedIndexedFiles":6997,"maxIndexedFiles":5000}. ' +
+            'Use --repo <name> --read-mode committed to read the indexed commit only (uncommitted changes excluded).',
+        );
+        expect(process.exitCode).toBe(1);
+        expect(writeSyncMock).not.toHaveBeenCalled();
+        expect(disposeMock).toHaveBeenCalledOnce();
+        expect(callToolMock).toHaveBeenCalledOnce();
+        expect(withPreparedRepoReadMock).not.toHaveBeenCalled();
+      } finally {
+        process.exitCode = previousExitCode;
+        errorSpy.mockRestore();
+      }
+    },
+  );
+
+  it('reports committed preparation failures and still disposes the backend', async () => {
+    withPreparedRepoReadMock.mockRejectedValue(
+      Object.assign(new Error('workspace_preparation_failed: workspace_busy'), {
+        code: 'workspace_busy',
+      }),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const previousExitCode = process.exitCode;
+    try {
+      const { contextCommand } = await import('../../src/cli/tool.js');
+      await expect(
+        contextCommand('Symbol', { repo: 'codex', readMode: 'committed' }),
+      ).resolves.toBeUndefined();
+      expect(errorSpy).toHaveBeenCalledOnce();
+      expect(errorSpy.mock.calls[0][0]).toContain('workspace_busy');
+      expect(process.exitCode).toBe(1);
+      expect(writeSyncMock).not.toHaveBeenCalled();
       expect(disposeMock).toHaveBeenCalledOnce();
     } finally {
-      exitSpy.mockRestore();
+      process.exitCode = previousExitCode;
+      errorSpy.mockRestore();
     }
   });
 

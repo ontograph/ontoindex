@@ -171,8 +171,20 @@ describe('production Rust scope retention', () => {
         },
       });
       expect(warning).toHaveBeenCalledWith(
-        expect.stringContaining('scope extraction failed for refused.rs:'),
+        'Scope extraction skipped for 1 Rust file(s): unsupported syntax.',
       );
+      expect(
+        warning.mock.calls.filter(([message]) =>
+          String(message).includes('Scope extraction skipped for'),
+        ),
+      ).toHaveLength(1);
+      expect(
+        warning.mock.calls.some((args) =>
+          args.some((message) =>
+            String(message).includes('scope extraction failed for refused.rs'),
+          ),
+        ),
+      ).toBe(false);
     } finally {
       warning.mockRestore();
     }
