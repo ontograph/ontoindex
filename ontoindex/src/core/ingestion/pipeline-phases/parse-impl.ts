@@ -1092,7 +1092,7 @@ export async function runChunkedParseAndResolve(
 
       if (unsupportedRustScopeCount > 0) {
         console.warn(
-          `Scope extraction skipped for ${unsupportedRustScopeCount} Rust file(s): unsupported syntax.`,
+          `Scope extraction skipped for ${unsupportedRustScopeCount} Rust file(s) outside the supported subset; their symbols and calls are still indexed by the standard Rust resolver.`,
         );
       }
 

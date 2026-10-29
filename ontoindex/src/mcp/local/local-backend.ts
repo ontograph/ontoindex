@@ -25,6 +25,7 @@ import {
 import { RepoHandle, BackendPort } from 'ontoindex-shared';
 import { recordToolCall } from './tool-telemetry.js';
 import { maybeScheduleAutoRefresh } from './auto-refresh.js';
+import { planDirtyOverlay } from '../../core/analyze-delta.js';
 import {
   initLbug,
   closeLbug,
@@ -1272,7 +1273,31 @@ const RELATIONSHIP_TOOLS = new Set([
 // Unlike RELATIONSHIP_TOOLS it degrades to the committed index when the build is refused.
 const WORKSPACE_GRAPH_TOOLS = new Set([...RELATIONSHIP_TOOLS, 'query', 'repomap', 'search']);
 
-const COMMITTED_FALLBACK_CODES = new Set(['workspace_busy', 'workspace_too_large', 'workspace_timeout']);
+const COMMITTED_FALLBACK_CODES = new Set([
+  'workspace_busy',
+  'workspace_too_large',
+  'workspace_timeout',
+]);
+const UNCOVERED_DIRTY_SAMPLE = 10;
+
+/** Name the dirty source files a committed-index answer cannot see; never throws. */
+async function describeUncoveredDirtyPaths(repo: RepoHandle): Promise<string> {
+  try {
+    const plan = await planDirtyOverlay(repo.repoPath);
+    const paths = [
+      ...new Set([...plan.includePaths, ...plan.uncoveredPaths, ...plan.tombstones]),
+    ].sort();
+    if (paths.length === 0) return '';
+    const sample = paths.slice(0, UNCOVERED_DIRTY_SAMPLE).join(', ');
+    const more =
+      paths.length > UNCOVERED_DIRTY_SAMPLE
+        ? ` and ${paths.length - UNCOVERED_DIRTY_SAMPLE} more`
+        : '';
+    return ` ${paths.length} uncommitted source file(s) are not in this answer: ${sample}${more}.`;
+  } catch {
+    return ' Uncommitted source files could not be listed.';
+  }
+}
 
 function workspacePreparationError(error: unknown): Error & { code: string; retryable?: boolean } {
   if (error instanceof WorkspacePreparationError) {
@@ -2380,7 +2405,8 @@ export class LocalBackend implements BackendPort {
     const metadataOnlyReadiness =
       method === 'docs' && (params.action === undefined || params.action === 'readiness');
     const refreshWarning =
-      UNGATED_REPO_TOOLS.has(method) || metadataOnlyReadiness ||
+      UNGATED_REPO_TOOLS.has(method) ||
+      metadataOnlyReadiness ||
       /(?:analyze|ensure_fresh)/.test(method)
         ? Promise.resolve(undefined)
         : new Promise<string | undefined>((resolve) => {
@@ -2408,25 +2434,34 @@ export class LocalBackend implements BackendPort {
           },
         );
       } catch (error) {
-        // A stale index whose refresh is scheduled cannot also build a working-tree
-        // graph for the moved HEAD; answer from the labelled committed index instead.
+        // A refused working-tree graph (too large, or busy/slow while a refresh is
+        // scheduled) must not block navigation: answer from the labelled committed index.
         const code = (error as { code?: unknown }).code;
         if (
           !COMMITTED_FALLBACK_CODES.has(code as string) ||
-          (await refreshWarning) === undefined
+          (code !== 'workspace_too_large' && (await refreshWarning) === undefined)
         ) {
           throw error;
         }
-        result = await this.withPreparedRepoRead(
-          repo,
-          { needsRelationships: RELATIONSHIP_TOOLS.has(method), readMode: 'committed' },
-          invoke,
-        );
-        committedFallbackNote = `Working-tree read unavailable (${code}); answered from the committed index while it refreshes. Verify uncommitted and newly committed code from source.`;
+        const dirtyNote = await describeUncoveredDirtyPaths(repo);
+        try {
+          result = await this.withPreparedRepoRead(
+            repo,
+            { needsRelationships: RELATIONSHIP_TOOLS.has(method), readMode: 'committed' },
+            invoke,
+          );
+        } catch {
+          // No trustworthy committed index either: report the original refusal.
+          throw error;
+        }
+        const refreshing = (await refreshWarning) !== undefined;
+        committedFallbackNote = `Working-tree ${code === 'workspace_too_large' ? 'graph' : 'read'} unavailable (${code}); answered from the committed index${refreshing ? ' while it refreshes' : ''} (see readContext.indexedCommit).${dirtyNote} Verify uncommitted and newly committed code from source.`;
       }
     }
     const autoRefreshNote = await refreshWarning;
-    const notes = [preparationNote, autoRefreshNote, committedFallbackNote].filter((note) => note !== undefined);
+    const notes = [preparationNote, autoRefreshNote, committedFallbackNote].filter(
+      (note) => note !== undefined,
+    );
     if (notes.length && isObjectResponse(result)) {
       const existing = (result as { warnings?: unknown }).warnings;
       result = {

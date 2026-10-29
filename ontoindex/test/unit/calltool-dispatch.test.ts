@@ -40,12 +40,18 @@ vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn().mockResolvedValue([]),
   resolveActiveIndexGeneration: vi.fn().mockResolvedValue(null),
+  readActiveGenerationMeta: vi.fn().mockResolvedValue({ meta: null, authority: 'untrusted' }),
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
 }));
 
 vi.mock('../../src/mcp/super/diagnose.js', () => ({
   gnDiagnose: vi.fn().mockResolvedValue({ misconfiguration: { status: 'ok' } }),
 }));
+
+vi.mock('../../src/core/analyze-delta.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/core/analyze-delta.js')>();
+  return { ...actual, planDirtyOverlay: vi.fn(actual.planDirtyOverlay) };
+});
 
 // Also mock the search modules to avoid loading onnxruntime
 vi.mock('../../src/core/search/bm25-index.js', () => ({
@@ -95,7 +101,12 @@ import {
   withPinnedOverlay,
   type OverlaySnapshot,
 } from '../../src/mcp/local/backend-overlay.js';
-import { listRegisteredRepos, cleanupOldKuzuFiles } from '../../src/storage/repo-manager.js';
+import {
+  listRegisteredRepos,
+  cleanupOldKuzuFiles,
+  readActiveGenerationMeta,
+} from '../../src/storage/repo-manager.js';
+import { planDirtyOverlay } from '../../src/core/analyze-delta.js';
 import {
   initLbug,
   executeQuery,
@@ -432,6 +443,74 @@ describe('request workspace gate', () => {
     });
     expect(JSON.stringify(failure)).not.toMatch(/preparation-token|private\.ts/);
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  describe('committed fallback for a refused working-tree graph', () => {
+    const tooLarge = () =>
+      new WorkspacePreparationError('workspace_too_large', 'too large', undefined, {
+        observedIndexedFiles: 7002,
+        maxIndexedFiles: 1600,
+        requiredCapability: 'workspace-graph',
+      });
+    const dirtyPlan = (count: number) => ({
+      includePaths: Array.from(
+        { length: count },
+        (_, i) => `src/dirty-${String(i).padStart(2, '0')}.rs`,
+      ),
+      uncoveredPaths: [],
+      allDirtyPaths: [],
+      tombstones: [],
+      tooMany: false,
+      skipped: [],
+    });
+
+    it('answers from the committed index and names the uncovered dirty files', async () => {
+      vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(tooLarge());
+      vi.mocked(planDirtyOverlay).mockResolvedValueOnce(dirtyPlan(12) as any);
+      const real = backend.withPreparedRepoRead.bind(backend);
+      const gate = vi
+        .spyOn(backend, 'withPreparedRepoRead')
+        .mockImplementation(async (repo, options, operation) =>
+          options.readMode === 'committed'
+            ? ((await operation()) as any)
+            : real(repo, options, operation),
+        );
+      (backend as any).repoToolHandlers.context = async () => ({ status: 'found', warnings: [] });
+      const result = (await backend.callTool('context', { name: 'x' })) as {
+        status: string;
+        warnings: string[];
+      };
+      expect(result.status).toBe('found');
+      expect(gate).toHaveBeenLastCalledWith(
+        expect.anything(),
+        { needsRelationships: true, readMode: 'committed' },
+        expect.any(Function),
+      );
+      const note = result.warnings.find((w) => w.includes('workspace_too_large'))!;
+      expect(note).toContain('answered from the committed index');
+      expect(note).toContain('readContext.indexedCommit');
+      expect(note).toContain('newly committed code');
+      expect(note).toContain('12 uncommitted source file(s) are not in this answer');
+      expect(note).toContain('src/dirty-00.rs');
+      expect(note).toContain('and 2 more');
+      expect(note).not.toContain('src/dirty-11.rs');
+    });
+
+    it('rethrows the original refusal when no committed index is readable', async () => {
+      vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(tooLarge());
+      vi.mocked(readActiveGenerationMeta).mockResolvedValueOnce({
+        meta: { lastCommit: 'abc1234567890' },
+        authority: 'untrusted',
+      } as any);
+      const handler = vi.fn();
+      (backend as any).repoToolHandlers.context = handler;
+      await expect(backend.callTool('context', { name: 'x' })).rejects.toMatchObject({
+        code: 'workspace_too_large',
+        retryable: false,
+      });
+      expect(readActiveGenerationMeta).toHaveBeenCalled();
+      expect(handler).not.toHaveBeenCalled();
+    });
   });
 
   it('preserves safe size diagnostics without exposing private preparation text', async () => {
