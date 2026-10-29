@@ -196,67 +196,33 @@ describe('Cargo target config discovery', () => {
     expect(loaded.rustCrateRoots).toEqual(['nested/deeper/member/src/lib.rs']);
   });
 
-  it.each(['crates/*', 'crates/to?l', 'crates/[t]ool', './crates/../crates/tool/'])(
-    'inherits edition for workspace member pattern %s',
-    async (member) => {
-      const loaded = await configs(
-        `[workspace]\nmembers = ["${member}"]\n[workspace.package]\nedition = "2024"\n`,
-        {
-          'crates/tool/Cargo.toml': '[package]\nname = "tool"\nedition.workspace = true\n',
-          'crates/tool/src/lib.rs': '',
-        },
-      );
-      expect(loaded.rustCrateRoots).toEqual(['crates/tool/src/lib.rs']);
-    },
-  );
-
-  it.each(['["other/*"]', '["crates/*"]', '[]', '[42]', '42'])(
-    'does not inherit edition for unmatched or invalid workspace members %s',
-    async (members) => {
-      const loaded = await configs(
-        `[workspace]\nmembers = ${members}\n[workspace.package]\nedition = "2024"\n`,
-        {
-          'crates/deep/tool/Cargo.toml': '[package]\nname = "tool"\nedition.workspace = true\n',
-          'crates/deep/tool/src/lib.rs': '',
-        },
-      );
-      expect(loaded.rustCrateRoots).toEqual([]);
-      expect(loaded.observations?.records).toContainEqual({
-        kind: 'parse-error',
-        path: 'crates/deep/tool/Cargo.toml',
-      });
-      if (members === '[42]' || members === '42') {
-        expect(loaded.observations?.records).toContainEqual({
-          kind: 'parse-error',
-          path: 'Cargo.toml',
-        });
-      }
-    },
-  );
-
-  it('keeps an explicit package workspace authoritative over members', async () => {
+  it('inherits edition for crates outside members, as Cargo admits path dependencies', async () => {
     const loaded = await configs(
-      '[workspace]\nmembers = []\n[workspace.package]\nedition = "2024"\n',
+      '[workspace]\nmembers = ["app"]\n[workspace.package]\nedition = "2024"\n',
       {
-        'member/Cargo.toml':
-          '[package]\nname = "member"\nworkspace = ".."\nedition.workspace = true\n',
-        'member/src/lib.rs': '',
+        'app/Cargo.toml':
+          '[package]\nname = "app"\nedition.workspace = true\n[dependencies]\nhelper = { path = "../helper" }\n',
+        'app/src/lib.rs': '',
+        'helper/Cargo.toml': '[package]\nname = "helper"\nedition.workspace = true\n',
+        'helper/src/lib.rs': '',
       },
     );
-    expect(loaded.rustCrateRoots).toEqual(['member/src/lib.rs']);
+    expect(loaded.rustCrateRoots).toEqual(['app/src/lib.rs', 'helper/src/lib.rs']);
   });
 
-  it('matches dot directories without treating braces as Cargo glob syntax', async () => {
+  it.each(['[42]', '42'])('reports invalid workspace members %s', async (members) => {
     const loaded = await configs(
-      '[workspace]\nmembers = ["crates/*", "{one,two}"]\n[workspace.package]\nedition = "2024"\n',
+      `[workspace]\nmembers = ${members}\n[workspace.package]\nedition = "2024"\n`,
       {
-        'crates/.hidden/Cargo.toml': '[package]\nname = "hidden"\nedition.workspace = true\n',
-        'crates/.hidden/src/lib.rs': '',
-        'one/Cargo.toml': '[package]\nname = "one"\nedition.workspace = true\n',
-        'one/src/lib.rs': '',
+        'crates/tool/Cargo.toml': '[package]\nname = "tool"\nedition.workspace = true\n',
+        'crates/tool/src/lib.rs': '',
       },
     );
-    expect(loaded.rustCrateRoots).toEqual(['crates/.hidden/src/lib.rs']);
+    expect(loaded.rustCrateRoots).toEqual([]);
+    expect(loaded.observations?.records).toContainEqual({
+      kind: 'parse-error',
+      path: 'Cargo.toml',
+    });
   });
 
   it.each([
