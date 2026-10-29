@@ -370,27 +370,34 @@ setTimeout(() => {}, 30000);
     process.env.ONTOINDEX_ANALYSIS_JOB_RUNNER_PATH = await writeCompletingRunner(repoPath);
 
     const kernelPath = `${lockPath}.kernel`;
-    await expect(
-      submitAnalysisJob({
-        repoPath,
-        targetHead: TEST_HEAD,
-        command: process.execPath,
-        args: [],
-        options: {},
-        sourceIdentity: SOURCE_IDENTITY,
-      }),
-    ).resolves.toMatchObject({ reused: false });
+    const first = await submitAnalysisJob({
+      repoPath,
+      targetHead: TEST_HEAD,
+      command: process.execPath,
+      args: [],
+      options: {},
+      sourceIdentity: SOURCE_IDENTITY,
+    });
+    expect(first.reused).toBe(false);
+    await expect
+      .poll(async () => (await getAnalysisJob(repoPath, first.job.id))?.status)
+      .toBe('complete');
     const kernelInode = (await fs.stat(kernelPath)).ino;
-    await expect(
-      submitAnalysisJob({
-        repoPath,
-        targetHead: TEST_HEAD,
-        command: process.execPath,
-        args: [],
-        options: {},
-        sourceIdentity: SOURCE_IDENTITY,
-      }),
-    ).resolves.toMatchObject({ reused: true });
+    // The first job is terminal, so the second submission must start a new job
+    // while acquiring the same permanent kernel lock.
+    const second = await submitAnalysisJob({
+      repoPath,
+      targetHead: TEST_HEAD,
+      command: process.execPath,
+      args: [],
+      options: {},
+      sourceIdentity: SOURCE_IDENTITY,
+    });
+    expect(second.reused).toBe(false);
+    expect(second.job.id).not.toBe(first.job.id);
+    await expect
+      .poll(async () => (await getAnalysisJob(repoPath, second.job.id))?.status)
+      .toBe('complete');
     await expect(fs.stat(kernelPath)).resolves.toMatchObject({ ino: kernelInode });
     await expect(exists(`${lockPath}.recovery`)).resolves.toBe(false);
     await expect(exists(staleClaimPath)).resolves.toBe(false);
