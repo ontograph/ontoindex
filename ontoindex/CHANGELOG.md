@@ -4,6 +4,12 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.12] - 2026-10-29
+
+- Runtime health `workspaceReadiness` reports `within-limit` or `over-limit` from the indexed file count against the workspace-graph limit (`ONTOINDEX_WORKSPACE_MAX_FILES`, default 1600), with the committed-mode remediation when over the limit. No preparation is attempted; without a recorded file count it stays `not-checked`.
+- The dirty-workspace search warning says when a queried identifier appears in an untracked source file and lists that file first. It scans at most 50 untracked source files of up to 256 KiB each, inside the repository only.
+- Index capability warnings name up to five degraded file paths (`Degraded paths: ...`, `+N more`).
+
 ## [2.3.11] - 2026-10-29
 
 - Fixes a 2.3.10 regression: crates that inherit from a workspace without being listed in `[workspace] members` lost their library roots, although Cargo admits path dependencies of members as implicit members. On a 7,000-file Rust and TypeScript workspace this removed about 4,400 edges. `members` no longer limits inheritance; `exclude` still does.
