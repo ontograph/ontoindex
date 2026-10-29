@@ -53,6 +53,25 @@ describe('index-capabilities', () => {
       expect(result).toContain('    - (+2 more group(s) omitted)');
     });
 
+    it('names up to five degraded paths relative to the repository', () => {
+      const result = formatIndexCapabilityWarnings({
+        repoPath: '/repo',
+        indexMode: 'full',
+        degradedFiles: ['a', 'b', 'c', 'd', 'e', 'f'].map((name) => ({
+          filePath: `/repo/src/${name}.rs`,
+          reason: 'file exceeds scan file-size cap',
+        })),
+        degradedFileAggregates: {
+          sampledDegradedCount: 6,
+          groups: [{ cause: 'file exceeds cap', phase: 'scan', language: 'rust', count: 6 }],
+          omittedGroupCount: 0,
+        },
+      } as any);
+      expect(result).toContain(
+        '  Degraded paths: src/a.rs, src/b.rs, src/c.rs, src/d.rs, src/e.rs, +1 more',
+      );
+    });
+
     it('falls back to legacy degradedFiles count without aggregates', () => {
       const result = formatIndexCapabilityWarnings({
         indexMode: 'symbols-only',

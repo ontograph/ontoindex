@@ -121,6 +121,7 @@ describe('status formatting', () => {
       '  Skipped phases: communities, processes',
       '  Degraded files (sampled): 2',
       '    - scope extraction skipped [phase: scan, lang: cpp]: 2',
+      '  Degraded paths: include/rtl/string.hxx, editeng/source/editeng/editdoc.cxx',
       '  Partial checkpoint: .ontoindex/analysis-checkpoint.json',
     ]);
   });

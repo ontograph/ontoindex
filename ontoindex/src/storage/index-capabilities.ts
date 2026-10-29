@@ -51,6 +51,18 @@ export const formatIndexCapabilityWarnings = (meta: RepoMeta): string[] => {
   } else if (meta.degradedFiles?.length) {
     lines.push(`  Degraded files: ${meta.degradedFiles.length}`);
   }
+  const degradedPaths = uniqueStrings(
+    (meta.degradedFiles ?? []).map(({ filePath }) =>
+      meta.repoPath && path.isAbsolute(filePath)
+        ? path.relative(meta.repoPath, filePath)
+        : filePath,
+    ),
+  );
+  if (degradedPaths.length) {
+    const shown = degradedPaths.slice(0, 5);
+    const more = degradedPaths.length - shown.length;
+    lines.push(`  Degraded paths: ${shown.join(', ')}${more > 0 ? `, +${more} more` : ''}`);
+  }
   if (meta.partialCheckpointPath) {
     lines.push(`  Partial checkpoint: ${meta.partialCheckpointPath}`);
   }
