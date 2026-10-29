@@ -4,6 +4,7 @@ import { isAutomaticWorkspaceEnabled } from '../local/backend-overlay.js';
 import { ONTOINDEX_FACADE_TOOLS } from './tool-definitions.js';
 import { parseTypedQueryDocument } from '../../core/search/typed-query-document.js';
 import { getMcpStartupProfileFromEnv, getPublicToolRegistry } from '../shared/tool-registry.js';
+import { attachWorkspaceSearchWarning } from '../shared/workspace-search-warning.js';
 import {
   attachRepoScopeIdentity,
   attachRepoScopeIdentityToError,
@@ -91,7 +92,10 @@ export async function dispatchFacade(
                   })
                 : dispatchSuper(superTool, args, repo.id),
       );
-      return attachRepoScopeIdentity(superResult, repo);
+      const result = attachRepoScopeIdentity(superResult, repo);
+      return tool === 'inspect' && (action === 'explore' || action === 'related')
+        ? await attachWorkspaceSearchWarning(result, args, repo.id)
+        : result;
     } catch (error) {
       throw attachRepoScopeIdentityToError(
         error instanceof Error ? error : new Error(String(error)),

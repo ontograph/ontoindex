@@ -4,6 +4,14 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.10] - 2026-10-29
+
+- Rust files whose scope extraction reports unsupported syntax no longer block replay of retained parse output; they are recorded as `not-required` in the retention inventory. Unexpected Rust errors, missing outcomes and TypeScript failures still refuse replay. Rust calls and imports still come from the legacy extraction path.
+- Cargo `[workspace] members` globs are matched per path segment, so only listed members inherit workspace settings. Renamed dependencies (`alias = { package = "real" }`) map to the real crate across normal, dev, build, target-specific and `workspace = true` dependencies; an alias that names two crates stays unresolved.
+- The tool contract's `hostVisible` lists the tools the server advertises for the active startup profile, including facades.
+- Runtime health names up to five degraded files (`+N more`) in the degraded reason.
+- `inspect` explore/related and `search` semantic add one warning when dirty or untracked source files are absent from the graph, naming up to five paths with query matches first. The warning is omitted when a workspace graph answered the request, and it is part of the paged response.
+
 ## [2.3.9] - 2026-10-29
 
 - Rust crates that inherit their edition from the workspace (`edition.workspace = true`) are now recognized, so imports between crates in such workspaces resolve. 2.3.8 found no crates in these layouts; its notes wrongly said the fix covered them. The nearest ancestor `[workspace]` supplies the edition. `package.workspace = "<path>"` selects an explicit root, and a root whose `[workspace] exclude` lists the member is skipped. A missing or invalid inherited edition is reported as a manifest parse error.

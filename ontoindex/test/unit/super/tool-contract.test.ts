@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { gnToolContract } from '../../../src/mcp/super/tool-contract.js';
 import {
   getPublicToolRegistry,
+  getPublicToolDefinitions,
   getRegisteredFacadeToolNames,
 } from '../../../src/mcp/shared/tool-registry.js';
 
@@ -217,6 +218,25 @@ describe('gnToolContract — facade action inventory', () => {
 });
 
 describe('gnToolContract — visible frontier', () => {
+  it.each(['core', 'public-full'] as const)(
+    'matches server advertisement in %s regardless of facade and mode display filters',
+    (startupProfile) => {
+      process.env.ONTOINDEX_MCP_STARTUP_PROFILE = startupProfile;
+      const advertised = getPublicToolDefinitions({ startupProfile })
+        .map(({ name }) => name)
+        .sort();
+      for (const includeFacades of [undefined, false, true]) {
+        const report = gnToolContract({ includeFacades, mode: 'audit' });
+        expect(report.visibleFrontier.hostVisible).toEqual(advertised);
+        expect(report.visibleFrontier.internalOnly).toEqual(
+          report.startupProfile.hiddenButCallable,
+        );
+        expect(report.visibleFrontier.clientOnly).toEqual([]);
+      }
+      if (startupProfile === 'core') expect(advertised).toHaveLength(8);
+    },
+  );
+
   it('includes an explicit internal vs host-visible frontier summary with caveat text', () => {
     const report = gnToolContract({ includeFacades: true });
 

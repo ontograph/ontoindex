@@ -13,6 +13,7 @@ import { getHeritageStrategyForLanguage } from '../heritage-processor.js';
 import { buildHeritageMap } from '../model/heritage-map.js';
 import { createResolutionContext } from '../model/resolution-context.js';
 import { prepareScopeCallPublication } from '../scope-call-publication.js';
+import { isUnconsumedRustScopeFailure } from '../scope-extractor-bridge.js';
 import { isRegistryPrimary } from '../registry-primary-flag.js';
 import { restoreSemanticModelRegistrations } from '../model/semantic-model.js';
 import type { runChunkedParseAndResolve } from './parse-impl.js';
@@ -135,10 +136,21 @@ export async function admitScopeRetentionParseReplay(
       (file) => (getLanguageFromFilename(file) ?? scannedLanguages.get(file)) != null,
     ),
   );
-  if (retention.inventory.some((file) => file.status !== 'retained'))
-    fail('incomplete retained inventory');
   if (
-    [sources, parsed, parserPaths].some(
+    retention.inventory.some(
+      (file) =>
+        file.status !== 'retained' &&
+        !(file.status === 'not-required' && isUnconsumedRustScopeFailure(file)),
+    )
+  )
+    fail('incomplete retained inventory');
+  const requiredParsed = paths(
+    retention.inventory.filter((file) => file.status === 'retained').map((file) => file.filePath),
+  );
+  if (
+    parsed.size !== requiredParsed.size ||
+    [...requiredParsed].some((file) => !parsed.has(file)) ||
+    [sources, parserPaths].some(
       (set) => set.size !== inventory.size || [...inventory].some((file) => !set.has(file)),
     )
   ) {

@@ -145,7 +145,7 @@ export async function readRuntimeHealth(
   const sourceFreshness =
     meta && !indexedCommit ? await readSourceFreshness(repoPath, meta, warnings) : undefined;
   const metaReason =
-    resolveMetaDegradedReason(meta) ??
+    resolveMetaDegradedReason(meta, repoPath) ??
     (sourceFreshness?.state === 'degraded' ? sourceFreshness.reason : null);
   const hasRuntimeArtifacts =
     analyzeLock.present ||
@@ -438,7 +438,10 @@ export function formatRuntimeHealthDetailLines(health: RuntimeHealthSnapshot): s
   return lines;
 }
 
-function resolveMetaDegradedReason(meta: RepoMeta | null | undefined): string | null {
+function resolveMetaDegradedReason(
+  meta: RepoMeta | null | undefined,
+  repoPath: string,
+): string | null {
   if (!meta) return null;
   if (meta.capabilities?.impact === 'degraded' || meta.capabilities?.processes === false) {
     return 'index capabilities are degraded';
@@ -452,11 +455,22 @@ function resolveMetaDegradedReason(meta: RepoMeta | null | undefined): string | 
   if (meta.skippedPhases?.length) {
     return `skipped phases recorded: ${meta.skippedPhases.join(', ')}`;
   }
-  if (meta.degradedFileAggregates) {
-    return `degraded files sampled: ${meta.degradedFileAggregates.sampledDegradedCount}`;
-  }
-  if (meta.degradedFiles?.length) {
-    return `degraded files recorded: ${meta.degradedFiles.length}`;
+  if (meta.degradedFileAggregates || meta.degradedFiles?.length) {
+    const files = meta.degradedFiles ?? [];
+    const paths = files
+      .slice(0, 5)
+      .map(({ filePath }) =>
+        path.isAbsolute(filePath) ? path.relative(repoPath, filePath) : filePath,
+      );
+    const remaining = files.length - paths.length;
+    const details =
+      paths.length > 0
+        ? ` (${paths.join(', ')}${remaining > 0 ? `; +${remaining} more` : ''})`
+        : '';
+    const summary = meta.degradedFileAggregates
+      ? `degraded files sampled: ${meta.degradedFileAggregates.sampledDegradedCount}`
+      : `degraded files recorded: ${files.length}`;
+    return summary + details;
   }
   if (meta.partialCheckpointPath) {
     return `partial checkpoint recorded at ${meta.partialCheckpointPath}`;

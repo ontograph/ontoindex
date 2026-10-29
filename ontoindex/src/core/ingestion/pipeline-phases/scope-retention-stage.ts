@@ -21,7 +21,10 @@ import {
   type ImportResolutionStateSnapshotV1,
 } from '../model/resolution-context.js';
 import type { ImportConfigObservations } from '../language-config.js';
-import type { ScopeExtractionRecord } from '../scope-extractor-bridge.js';
+import {
+  isUnconsumedRustScopeFailure,
+  type ScopeExtractionRecord,
+} from '../scope-extractor-bridge.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'ontoindex-shared';
 import type { ScannedFile } from '../filesystem-walker.js';
 import { ANALYSIS_PACKS_ROOT } from '../../../analysis-packs/catalog.js';
@@ -782,18 +785,29 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
   get inventory(): readonly { filePath: string; status: string; reason?: string }[] {
     return Array.from(this.entries, ([filePath, entry]) => ({
       filePath,
-      status: this.entryStatus(entry),
+      status: this.entryStatus(entry, filePath),
       ...(entry.reason === undefined ? {} : { reason: entry.reason }),
     }));
   }
   get status(): 'retained' | 'incomplete' {
     if (!this.check() || !this.reconciled || !this.entries.size || this.issues.size)
       return 'incomplete';
-    for (const entry of this.entries.values())
-      if (this.entryStatus(entry) !== 'retained') return 'incomplete';
+    for (const [filePath, entry] of this.entries) {
+      const status = this.entryStatus(entry, filePath);
+      if (status !== 'retained' && status !== 'not-required') return 'incomplete';
+    }
     return 'retained';
   }
-  private entryStatus(entry: { artifact: boolean; outcome?: string; skipped?: boolean }): string {
+  private entryStatus(
+    entry: { artifact: boolean; outcome?: string; skipped?: boolean; reason?: string },
+    filePath: string,
+  ): string {
+    if (
+      !entry.skipped &&
+      !entry.artifact &&
+      isUnconsumedRustScopeFailure({ filePath, status: entry.outcome, reason: entry.reason })
+    )
+      return 'not-required';
     return entry.skipped
       ? 'skipped'
       : entry.outcome === undefined
@@ -2357,10 +2371,11 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       entry.outcome = ['success', 'failed', 'unsupported'].includes(outcome.status)
         ? outcome.status
         : 'invalid-outcome';
-      if (entry.outcome !== 'success') this.issue(entry.outcome);
+      const unconsumed = isUnconsumedRustScopeFailure(outcome);
+      if (entry.outcome !== 'success' && !unconsumed) this.issue(entry.outcome);
       if (outcome.status === 'failed' && outcome.reason === 'unsupported-syntax') {
         entry.reason = 'unsupported-syntax';
-        this.issue('unsupported-syntax');
+        if (!unconsumed) this.issue('unsupported-syntax');
       } else {
         delete entry.reason;
       }
@@ -2396,9 +2411,9 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       const entry = this.entry(filePath);
       if (entry) entry.skipped = true;
     }
-    for (const entry of this.entries.values()) {
-      const status = this.entryStatus(entry);
-      if (status !== 'retained') this.issue(status);
+    for (const [filePath, entry] of this.entries) {
+      const status = this.entryStatus(entry, filePath);
+      if (status !== 'retained' && status !== 'not-required') this.issue(status);
       if (!entry.expected) this.issue('unexpected-artifact-or-outcome');
     }
     if (!this.entries.size) this.issue('empty-observed-inventory');

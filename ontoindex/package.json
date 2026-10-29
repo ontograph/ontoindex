@@ -1,6 +1,6 @@
 {
   "name": "ontoindex",
-  "version": "2.3.9",
+  "version": "2.3.10",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "AGPL-3.0-or-later",
@@ -76,6 +76,7 @@
     "mdast-util-gfm": "^3.1.0",
     "micromark-extension-frontmatter": "^2.0.0",
     "micromark-extension-gfm": "^3.0.0",
+    "minimatch": "^10.2.2",
     "mnemonist": "^0.40.4",
     "p-limit": "^7.3.0",
     "pandemonium": "^2.4.1",
