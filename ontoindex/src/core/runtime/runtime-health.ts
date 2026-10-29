@@ -91,9 +91,13 @@ export interface RuntimeHealthSnapshot {
   /** Whether stored metadata reports at least one embedding vector. */
   embeddingsAvailable?: boolean | null;
   workspaceReadiness?: {
-    state: 'not-checked';
+    /** Size check only; no workspace graph build is attempted. */
+    state: 'not-checked' | 'within-limit' | 'over-limit';
     dirtyCoverageScope: 'symbol-overlay-eligibility';
     preparationChecked: false;
+    indexedFiles?: number;
+    maxIndexedFiles?: number;
+    remediation?: string;
   };
   degradedReason: string | null;
   repairCommand: string;
@@ -112,6 +116,19 @@ export interface ReadRuntimeHealthOptions {
   repoLabel?: string;
   storagePath?: string;
   meta?: RepoMeta | null;
+  /** Override for tests; defaults to the workspace-graph file limit. */
+  maxWorkspaceFiles?: number;
+}
+
+/** Measured: 1.3k files ~ 47 s and 1.9 GiB; cost grows with file count. */
+// Builds cost about 33 ms per file (491 files 15 s, 1,225 files 42 s, 2,662 files 90 s on 8 cores), so the
+// ADR's 55 s dirty-cold limit is reached near 1,600 files.
+const DEFAULT_MAX_WORKSPACE_FILES = 1600;
+
+/** Largest indexed file count for which a workspace graph build is attempted. */
+export function workspaceMaxFiles(): number {
+  const value = Number(process.env.ONTOINDEX_WORKSPACE_MAX_FILES);
+  return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_MAX_WORKSPACE_FILES;
 }
 
 const GIT_TIMEOUT_MS = 5_000;
@@ -122,6 +139,38 @@ type SourceFreshness = {
   state: 'clean' | 'stale' | 'degraded' | 'untrusted';
   reason: string | null;
 };
+
+const WORKSPACE_OVER_LIMIT_REMEDIATION =
+  'Workspace-graph reads are refused for this repository size. Use read_mode="committed" for indexed evidence, or explicitly run `ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph` to prepare a bounded workspace graph.';
+
+function workspaceReadinessFromMeta(
+  meta: { stats?: { files?: number } } | null | undefined,
+  maxWorkspaceFiles: number,
+): NonNullable<RuntimeHealthSnapshot['workspaceReadiness']> {
+  const base = {
+    dirtyCoverageScope: 'symbol-overlay-eligibility' as const,
+    preparationChecked: false as const,
+  };
+  const files = meta?.stats?.files;
+  if (typeof files !== 'number' || !Number.isSafeInteger(files) || files < 0) {
+    return { state: 'not-checked', ...base };
+  }
+  if (files > maxWorkspaceFiles) {
+    return {
+      state: 'over-limit',
+      ...base,
+      indexedFiles: files,
+      maxIndexedFiles: maxWorkspaceFiles,
+      remediation: WORKSPACE_OVER_LIMIT_REMEDIATION,
+    };
+  }
+  return {
+    state: 'within-limit',
+    ...base,
+    indexedFiles: files,
+    maxIndexedFiles: maxWorkspaceFiles,
+  };
+}
 
 export async function readRuntimeHealth(
   repoPath: string,
@@ -181,11 +230,10 @@ export async function readRuntimeHealth(
           : 'stale'
         : 'unknown',
     dirtyCoverage,
-    workspaceReadiness: {
-      state: 'not-checked',
-      dirtyCoverageScope: 'symbol-overlay-eligibility',
-      preparationChecked: false,
-    },
+    workspaceReadiness: workspaceReadinessFromMeta(
+      meta,
+      options.maxWorkspaceFiles ?? workspaceMaxFiles(),
+    ),
     embeddingsAvailable:
       typeof meta?.stats?.embeddings === 'number' && Number.isFinite(meta.stats.embeddings)
         ? meta.stats.embeddings > 0

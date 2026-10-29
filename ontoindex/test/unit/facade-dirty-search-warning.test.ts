@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, mkdir, rm, writeFile, symlink } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dispatchFacade } from '../../src/mcp/facade/dispatch.js';
 import { attachWorkspaceSearchWarning } from '../../src/mcp/shared/workspace-search-warning.js';
 import {
@@ -36,10 +39,95 @@ function workspace(
 }
 
 beforeEach(() => {
+  vi.mocked(resolveTargetContext).mockClear();
   vi.mocked(resolveTargetContext).mockResolvedValue({ dirtyWorkspace: workspace() } as never);
 });
 
+const tempDirs: string[] = [];
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+async function tempRepo() {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'dirty-search-warning-'));
+  tempDirs.push(dir);
+  const repoPath = path.join(dir, 'repo');
+  await mkdir(path.join(repoPath, 'src'), { recursive: true });
+  return { dir, repoPath };
+}
+
 describe('facade dirty search warnings', () => {
+  it('prioritizes an untracked file containing the queried symbol', async () => {
+    const { repoPath } = await tempRepo();
+    await writeFile(path.join(repoPath, 'src/f7.ts'), 'function fancySymbol() {}');
+    vi.mocked(resolveTargetContext).mockResolvedValue({
+      repoPath,
+      dirtyWorkspace: workspace(),
+    } as never);
+    const result = (await attachWorkspaceSearchWarning(
+      {},
+      { query: 'fancySymbol' },
+      'fixture',
+    )) as any;
+    expect(result.warnings).toEqual([
+      '8 untracked source file(s) are not in the graph; results may omit changes: src/f7.ts, src/f0.ts, src/f1.ts, src/f2.ts, src/f3.ts, +3 more; query symbol(s) fancySymbol appear in untracked file(s): src/f7.ts',
+    ]);
+  });
+
+  it('preserves the warning when the query has no whole-identifier match', async () => {
+    const { repoPath } = await tempRepo();
+    await writeFile(path.join(repoPath, 'src/f7.ts'), 'function fancySymbolSuffix() {}');
+    vi.mocked(resolveTargetContext).mockResolvedValue({
+      repoPath,
+      dirtyWorkspace: workspace(),
+    } as never);
+    const result = (await attachWorkspaceSearchWarning(
+      {},
+      { query: 'fancySymbol' },
+      'fixture',
+    )) as any;
+    expect(result.warnings).toEqual([dirtyWorkspaceSearchWarning(workspace(), 'fancySymbol')]);
+  });
+
+  it('ignores paths and symlinks escaping the repository', async () => {
+    const { dir, repoPath } = await tempRepo();
+    await writeFile(path.join(dir, 'outside.ts'), 'function fancySymbol() {}');
+    await symlink(path.join(dir, 'outside.ts'), path.join(repoPath, 'src/link.ts'));
+    const dirtyWorkspace = workspace({ dirtyPaths: ['../outside.ts', 'src/link.ts'] });
+    vi.mocked(resolveTargetContext).mockResolvedValue({ repoPath, dirtyWorkspace } as never);
+    const result = (await attachWorkspaceSearchWarning(
+      {},
+      { query: 'fancySymbol' },
+      'fixture',
+    )) as any;
+    expect(result.warnings).toEqual([dirtyWorkspaceSearchWarning(dirtyWorkspace, 'fancySymbol')]);
+  });
+
+  it('skips oversized files and tracked-only dirty workspaces', async () => {
+    const { repoPath } = await tempRepo();
+    await writeFile(path.join(repoPath, 'src/f7.ts'), `fancySymbol ${' '.repeat(256 * 1024)}`);
+    const dirtyWorkspace = workspace();
+    vi.mocked(resolveTargetContext).mockResolvedValue({ repoPath, dirtyWorkspace } as never);
+    const result = (await attachWorkspaceSearchWarning(
+      {},
+      { query: 'fancySymbol' },
+      'fixture',
+    )) as any;
+    expect(result.warnings).toEqual([dirtyWorkspaceSearchWarning(dirtyWorkspace, 'fancySymbol')]);
+    await writeFile(path.join(repoPath, 'src/f7.ts'), 'function fancySymbol() {}');
+    const tracked = workspace({ untrackedSourceFileCount: 0 });
+    vi.mocked(resolveTargetContext).mockResolvedValue({
+      repoPath,
+      dirtyWorkspace: tracked,
+    } as never);
+    const trackedResult = (await attachWorkspaceSearchWarning(
+      {},
+      { query: 'fancySymbol' },
+      'fixture',
+    )) as any;
+    expect(trackedResult.warnings).toEqual([dirtyWorkspaceSearchWarning(tracked, 'fancySymbol')]);
+  });
+
   it.each([
     ['inspect', 'explore'],
     ['inspect', 'related'],
@@ -95,6 +183,12 @@ describe('facade dirty search warnings', () => {
       ),
     ).toBe(
       '60 untracked source file(s) are not in the graph; results may omit changes: src/f6.ts, src/f0.ts, src/f1.ts, src/f2.ts, src/f3.ts, +55 more',
+    );
+  });
+
+  it('lists symbol matches before a path named in the query', () => {
+    expect(dirtyWorkspaceSearchWarning(workspace(), 'f0.ts fancySymbol', ['src/f7.ts'])).toBe(
+      '8 untracked source file(s) are not in the graph; results may omit changes: src/f7.ts, src/f0.ts, src/f1.ts, src/f2.ts, src/f3.ts, +3 more',
     );
   });
 

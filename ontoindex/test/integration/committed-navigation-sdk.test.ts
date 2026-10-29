@@ -172,7 +172,7 @@ describe('explicit committed navigation over MCP', () => {
     },
   );
 
-  it('reports committed freshness without promising workspace-graph readiness', async () => {
+  it('reports committed freshness and the workspace size limit without building', async () => {
     const result = await client.callTool({
       name: 'gn_ensure_fresh',
       arguments: {
@@ -186,8 +186,9 @@ describe('explicit committed navigation over MCP', () => {
     expect(payload.indexedCommit).toBe(payload.headCommit);
     expect(payload.runtimeHealth.dirtyCoverage.state).toBe('coverable');
     expect(payload.runtimeHealth.workspaceReadiness).toMatchObject({
-      state: 'not-checked',
+      state: 'over-limit',
       preparationChecked: false,
+      maxIndexedFiles: 1,
     });
     expect(payload.actionsTaken).toEqual([]);
   });

@@ -15,6 +15,7 @@ import {
   type OverlaySnapshot,
 } from './backend-overlay.js';
 import { WorkspaceBuildError } from './workspace-build-supervisor.js';
+import { workspaceMaxFiles } from '../../core/runtime/runtime-health.js';
 import {
   workspaceConfigurationIdentity,
   WorkspaceInputCaptureError,
@@ -214,16 +215,6 @@ const workspaceDependencies: WorkspacePreparationDependencies = {
   getInputIdentity: workspaceConfigurationIdentity,
   now: () => Date.now(),
 };
-
-/** Measured: 1.3k files ~ 47 s and 1.9 GiB; cost grows with file count. */
-// Builds cost about 33 ms per file (491 files 15 s, 1,225 files 42 s, 2,662 files 90 s on 8 cores), so the
-// ADR's 55 s dirty-cold limit is reached near 1,600 files.
-const DEFAULT_MAX_WORKSPACE_FILES = 1600;
-
-function workspaceMaxFiles(): number {
-  const value = Number(process.env.ONTOINDEX_WORKSPACE_MAX_FILES);
-  return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_MAX_WORKSPACE_FILES;
-}
 
 const FAILED_BUILD_COOLDOWN_MS = 30_000;
 // A held analyze lock usually means the user is running `ontoindex analyze`; recheck soon, not per request.

@@ -43,10 +43,23 @@ import {
 const GIT_TIMEOUT_MS = 5_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
 const completeDirtyPaths = new WeakMap<TargetContextDirtyWorkspace, readonly string[]>();
+const untrackedPaths = new WeakMap<TargetContextDirtyWorkspace, readonly string[]>();
 
 /** Internal matching paths; the serialized workspace summary remains bounded. */
 export function getDirtyWorkspacePaths(workspace: TargetContextDirtyWorkspace): readonly string[] {
   return completeDirtyPaths.get(workspace) ?? workspace.dirtyPaths ?? [];
+}
+
+/** Untracked paths retained from Git status without expanding the serialized summary. */
+export function getUntrackedWorkspacePaths(
+  workspace: TargetContextDirtyWorkspace,
+): readonly string[] {
+  return (
+    untrackedPaths.get(workspace) ??
+    (workspace.untrackedSourceFileCount === workspace.sourceFileCount
+      ? getDirtyWorkspacePaths(workspace)
+      : [])
+  );
 }
 
 export type TargetContextStatus = 'ok' | 'ambiguous' | 'no-index' | 'not-found';
@@ -124,6 +137,7 @@ export const MAX_DIRTY_PATHS = 50;
 export function dirtyWorkspaceSearchWarning(
   workspace: TargetContextDirtyWorkspace | undefined,
   query: string,
+  priorityPaths: readonly string[] = [],
 ): string | undefined {
   if (!workspace || !workspace.sourceFileCount) return undefined;
   const paths = getDirtyWorkspacePaths(workspace).filter(
@@ -133,7 +147,12 @@ export function dirtyWorkspaceSearchWarning(
   const tokens = normalizedQuery.split(/[\s`'"(),:]+/);
   const matches = (filePath: string) =>
     tokens.some((token) => token === filePath || token === path.posix.basename(filePath));
-  const ordered = [...paths.filter(matches), ...paths.filter((filePath) => !matches(filePath))];
+  const remainingPaths = paths.filter((filePath) => !priorityPaths.includes(filePath));
+  const ordered = [
+    ...paths.filter((filePath) => priorityPaths.includes(filePath)),
+    ...remainingPaths.filter(matches),
+    ...remainingPaths.filter((filePath) => !matches(filePath)),
+  ];
   const preview = ordered.slice(0, 5);
   const remaining = Math.max(paths.length, workspace.sourceFileCount) - preview.length;
   const kind =
@@ -955,6 +974,14 @@ function resolveDirtyWorkspace(input: {
       : {}),
   };
   completeDirtyPaths.set(workspace, Object.freeze(allDirtyPaths));
+  untrackedPaths.set(
+    workspace,
+    Object.freeze(
+      input.summary.dirtyFiles
+        .filter((file) => file.indexStatus === '?' && file.worktreeStatus === '?')
+        .map((file) => file.path),
+    ),
+  );
   return workspace;
 }
 

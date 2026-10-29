@@ -347,6 +347,45 @@ describe('deriveRuntimeHealth', () => {
     }
   });
 
+  it('reports workspace readiness from the indexed file count without building', async () => {
+    const repoPath = await makeCommittedGitRepo();
+    try {
+      const indexedCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: repoPath,
+        encoding: 'utf8',
+      }).trim();
+      const meta = (files?: number) => ({
+        repoPath,
+        lastCommit: indexedCommit,
+        indexedAt: '2026-10-14T00:00:00.000Z',
+        stats: files === undefined ? {} : { files },
+      });
+
+      const over = await readRuntimeHealth(repoPath, { meta: meta(1832), maxWorkspaceFiles: 1600 });
+      expect(over.workspaceReadiness).toMatchObject({
+        state: 'over-limit',
+        preparationChecked: false,
+        indexedFiles: 1832,
+        maxIndexedFiles: 1600,
+      });
+      expect(over.workspaceReadiness?.remediation).toContain('read_mode="committed"');
+
+      const within = await readRuntimeHealth(repoPath, { meta: meta(12), maxWorkspaceFiles: 1600 });
+      expect(within.workspaceReadiness).toEqual({
+        state: 'within-limit',
+        dirtyCoverageScope: 'symbol-overlay-eligibility',
+        preparationChecked: false,
+        indexedFiles: 12,
+        maxIndexedFiles: 1600,
+      });
+
+      const unknown = await readRuntimeHealth(repoPath, { meta: meta(), maxWorkspaceFiles: 1600 });
+      expect(unknown.workspaceReadiness?.state).toBe('not-checked');
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
+  });
+
   it('reports stale committed freshness independently of worktree coverage', async () => {
     const repoPath = await makeCommittedGitRepo();
     try {
