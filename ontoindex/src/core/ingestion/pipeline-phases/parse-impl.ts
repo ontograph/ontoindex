@@ -369,6 +369,7 @@ export async function runChunkedParseAndResolve(
   bindingAccumulator: BindingAccumulator;
   resolutionContext: ReturnType<typeof createResolutionContext>;
   usedWorkerPool: boolean;
+  scopeSkippedUnsupportedRustFiles?: number;
   scopeRetention?: ScopeRetentionHandle;
 }> {
   const scopeCallLanguages = new Set(
@@ -1538,6 +1539,9 @@ export async function runChunkedParseAndResolve(
       // sequential fallback handled every chunk (either due to `skipWorkers`,
       // the file-count/byte thresholds, or a pool-creation failure).
       usedWorkerPool: workerPool !== undefined,
+      ...(unsupportedRustScopeCount > 0
+        ? { scopeSkippedUnsupportedRustFiles: unsupportedRustScopeCount }
+        : {}),
       ...(scopeRetention ? { scopeRetention } : {}),
     };
   } catch (error) {

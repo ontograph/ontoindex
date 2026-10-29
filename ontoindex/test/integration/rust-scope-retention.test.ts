@@ -190,6 +190,8 @@ describe('production Rust scope retention', () => {
     }
     expect(consumed).toBe(true);
     expect(result.usedWorkerPool).toBe(false);
+    expect(result.scopeSkippedUnsupportedRustFiles).toBe(1);
+    expect(baseline.scopeSkippedUnsupportedRustFiles).toBeUndefined();
     const normalize = (graph: typeof result.graph) => ({
       nodes: [...graph.nodes].sort((left, right) => left.id.localeCompare(right.id)),
       relationships: [...graph.relationships].sort((left, right) =>

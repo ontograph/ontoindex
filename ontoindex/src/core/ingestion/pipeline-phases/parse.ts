@@ -66,6 +66,7 @@ export interface ParseOutput {
    * see `PipelineOptions.workerThresholdsForTest`.
    */
   readonly usedWorkerPool: boolean;
+  readonly scopeSkippedUnsupportedRustFiles?: number;
   /**
    * Releases large parse-owned collections once all parse consumers have run.
    * Scalar summary fields stay readable in the final phase-results map.

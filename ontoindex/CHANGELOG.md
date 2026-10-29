@@ -4,6 +4,11 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.9] - 2026-10-29
+
+- Rust crates that inherit their edition from the workspace (`edition.workspace = true`) are now recognized, so imports between crates in such workspaces resolve. 2.3.8 found no crates in these layouts; its notes wrongly said the fix covered them. The nearest ancestor `[workspace]` supplies the edition. `package.workspace = "<path>"` selects an explicit root, and a root whose `[workspace] exclude` lists the member is skipped. A missing or invalid inherited edition is reported as a manifest parse error.
+- `meta.json` stats record `scopeSkippedUnsupportedRustFiles` when Rust files were skipped during scope extraction.
+
 ## [2.3.8] - 2026-10-29
 
 - Rust imports between crates in a Cargo workspace resolve to the target crate's library (`package.name` or `[lib].name`, with `-` mapped to `_`), including items re-exported from the library root with `pub use`. A module declared with `mod` in the crate root takes precedence over a workspace crate with the same name; ambiguous crate names stay unresolved. Renamed dependencies (`package = "..."`) are not yet mapped.
