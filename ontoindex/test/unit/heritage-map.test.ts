@@ -17,6 +17,51 @@ describe('buildHeritageMap', () => {
   // ── getParents ──────────────────────────────────────────────────────
 
   describe('getParents', () => {
+    it('only attaches heritage to the child declared in the record file', () => {
+      ctx.model.symbols.add('a.ts', 'Child', 'class:a.Child', 'Class');
+      ctx.model.symbols.add('b.ts', 'Child', 'class:b.Child', 'Class');
+      ctx.model.symbols.add('a.ts', 'Parent', 'class:Parent', 'Class');
+
+      const map = buildHeritageMap(
+        [{ filePath: 'a.ts', className: 'Child', parentName: 'Parent', kind: 'extends' }],
+        ctx,
+      );
+
+      expect(map.getParents('class:a.Child')).toEqual(['class:Parent']);
+      expect(map.getParents('class:b.Child')).toEqual([]);
+    });
+
+    it('preserves same-language cross-file reopenings without linking other languages', () => {
+      ctx.model.symbols.add('first.rb', 'Child', 'class:first.Child', 'Class');
+      ctx.model.symbols.add('second.rb', 'Child', 'class:second.Child', 'Class');
+      ctx.model.symbols.add('other.py', 'Child', 'class:python.Child', 'Class');
+      ctx.model.symbols.add('parent.rb', 'Parent', 'class:ruby.Parent', 'Class');
+      ctx.model.symbols.add('other.py', 'Parent', 'class:python.Parent', 'Class');
+
+      const map = buildHeritageMap(
+        [{ filePath: 'reopen.rb', className: 'Child', parentName: 'Parent', kind: 'include' }],
+        ctx,
+      );
+
+      expect(map.getParents('class:first.Child')).toEqual(['class:ruby.Parent']);
+      expect(map.getParents('class:second.Child')).toEqual(['class:ruby.Parent']);
+      expect(map.getParents('class:python.Child')).toEqual([]);
+    });
+
+    it('falls back to same-language types when local resolution finds a callable', () => {
+      ctx.model.symbols.add('child.ts', 'Child', 'class:Child', 'Class');
+      ctx.model.symbols.add('child.ts', 'Parent', 'function:Parent', 'Function');
+      ctx.model.symbols.add('parent.ts', 'Parent', 'class:Parent', 'Class');
+      ctx.model.symbols.add('other.py', 'Parent', 'class:python.Parent', 'Class');
+
+      const map = buildHeritageMap(
+        [{ filePath: 'child.ts', className: 'Child', parentName: 'Parent', kind: 'extends' }],
+        ctx,
+      );
+
+      expect(map.getParents('class:Child')).toEqual(['class:Parent']);
+    });
+
     it('returns direct parents for a single extends relationship', () => {
       ctx.model.symbols.add('src/child.ts', 'Child', 'class:Child', 'Class');
       ctx.model.symbols.add('src/parent.ts', 'Parent', 'class:Parent', 'Class');

@@ -4,7 +4,7 @@
  * Unified inheritance data structure built from accumulated
  * {@link ExtractedHeritage} records **after all chunks complete** (between
  * chunk processing and call resolution). Consumes `ExtractedHeritage[]` and
- * resolves type names to nodeIds via `lookupClassByName`, NOT graph-edge
+ * resolves type names to nodeIds via the resolution context, NOT graph-edge
  * queries.
  *
  * Combines two concerns:
@@ -14,6 +14,7 @@
  */
 
 import type { ResolutionContext } from './resolution-context.js';
+import { CLASS_TYPES } from './symbol-table.js';
 import { getLanguageFromFilename, type SupportedLanguages } from 'ontoindex-shared';
 
 // ---------------------------------------------------------------------------
@@ -145,6 +146,25 @@ const EMPTY_SET: ReadonlySet<string> = new Set();
  *  `heritageDefaultEdge`. */
 const DEFAULT_HERITAGE_STRATEGY: HeritageResolutionStrategy = { defaultEdge: 'EXTENDS' };
 
+/** Languages that can inherit from each other's declarations. */
+const languageFamily = (filePath: string): string | undefined => {
+  const language = getLanguageFromFilename(filePath);
+  switch (language) {
+    case 'javascript':
+    case 'typescript':
+    case 'vue':
+      return 'js';
+    case 'c':
+    case 'cpp':
+      return 'c';
+    default:
+      return language ?? undefined;
+  }
+};
+
+/** Languages where one class may be declared across several files. */
+const SPLIT_DECLARATION_LANGUAGES = new Set<string>(['csharp', 'ruby']);
+
 // ---------------------------------------------------------------------------
 // Builder
 // ---------------------------------------------------------------------------
@@ -152,9 +172,9 @@ const DEFAULT_HERITAGE_STRATEGY: HeritageResolutionStrategy = { defaultEdge: 'EX
 /**
  * Build a HeritageMap from accumulated ExtractedHeritage records.
  *
- * Resolves class/interface/struct/trait names to nodeIds via
- * `ctx.model.types.lookupClassByName`. When a name resolves to multiple
- * candidates, all are recorded (partial-class / cross-file scenario).
+ * Resolves child definitions in their declaring file and parents through
+ * import-aware name resolution. Same-language name lookups provide a fallback
+ * for cross-file declarations such as Ruby reopenings.
  * Unresolvable names are silently skipped — a missing parent is better
  * than a wrong edge.
  *
@@ -178,8 +198,29 @@ export const buildHeritageMap = (
 
   for (const h of heritage) {
     // ── Parent lookup (nodeId-based) ────────────────────────────────
-    const childDefs = ctx.model.types.lookupClassByName(h.className);
-    const parentDefs = ctx.model.types.lookupClassByName(h.parentName);
+    const family = languageFamily(h.filePath);
+    const sameLanguage = (def: { filePath: string }) => languageFamily(def.filePath) === family;
+    const namedChildren = ctx.model.types.lookupClassByName(h.className);
+    const localChildren = namedChildren.filter((def) => def.filePath === h.filePath);
+    // C# partial classes and Ruby reopenings share ancestry across files.
+    const splitDeclaration = SPLIT_DECLARATION_LANGUAGES.has(family ?? '');
+    const localQualified = new Set(localChildren.map((def) => def.qualifiedName ?? h.className));
+    const childDefs =
+      localChildren.length === 0
+        ? namedChildren.filter(sameLanguage)
+        : splitDeclaration
+          ? namedChildren.filter(
+              (def) => sameLanguage(def) && localQualified.has(def.qualifiedName ?? h.className),
+            )
+          : localChildren;
+    const resolvedParents =
+      ctx
+        .resolve(h.parentName, h.filePath)
+        ?.candidates.filter((def) => CLASS_TYPES.has(def.type) && sameLanguage(def)) ?? [];
+    const parentDefs =
+      resolvedParents.length > 0
+        ? resolvedParents
+        : ctx.model.types.lookupClassByName(h.parentName).filter(sameLanguage);
 
     if (childDefs.length > 0 && parentDefs.length > 0) {
       for (const child of childDefs) {

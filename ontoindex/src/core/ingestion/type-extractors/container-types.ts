@@ -31,7 +31,13 @@ const JAVA_KEY_METHODS: ReadonlySet<string> = new Set(['keySet']);
 const CSHARP_KEY_METHODS: ReadonlySet<string> = new Set(['Keys']);
 
 /** Standard value-yielding methods across languages */
-const STD_VALUE_METHODS: ReadonlySet<string> = new Set(['values', 'get', 'pop', 'remove']);
+const STD_VALUE_METHODS: ReadonlySet<string> = new Set([
+  'values',
+  'values_mut',
+  'get',
+  'pop',
+  'remove',
+]);
 const CSHARP_VALUE_METHODS: ReadonlySet<string> = new Set(['Values', 'TryGetValue']);
 const SINGLE_ELEMENT_METHODS: ReadonlySet<string> = new Set([
   'iter',
