@@ -171,7 +171,7 @@ describe('production Rust scope retention', () => {
         },
       });
       expect(warning).toHaveBeenCalledWith(
-        'Scope extraction skipped for 1 Rust file(s) outside the supported subset; their symbols and calls are still indexed by the standard Rust resolver.',
+        'Scope extraction skipped for 1 Rust file(s) outside the supported subset; their symbols, name calls and import calls are still indexed by the standard Rust resolver, but method calls on unresolved or foreign types may be missed.',
       );
       expect(
         warning.mock.calls.filter(([message]) =>
