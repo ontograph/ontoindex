@@ -1,7 +1,7 @@
 # Donor LTM Answer Grounding Project Plan
 
 Date: 2026-10-14
-Status: Complete (shipped in PR #108; measurement recorded in the audit-session file; task statuses in the YAML stay OPEN because workers had no manager-loop lease)
+Status: Closed — shipped in PR #108, #109
 Authority: User requirement of 2026-10-14: review the donor project `serge3emskov/pharma-ltm-assistant`, compare it with OntoIndex, and write an implementation plan for the adoptable ideas. Ideas only; the donor repository has no license, so no donor code or data is copied.
 
 ## Goal
@@ -37,17 +37,17 @@ Observed on `origin/master` at `1463494`.
 ```yaml
 manager_loop:
   authority: true
-  status: in-progress
+  status: closed
   selection_policy: active_next_task-first
-  active_next_task: DL-1.0
+  active_next_task: null
   max_in_flight: 1
-  dispatch_mode: human
+  dispatch_mode: none
   reopen_gate: null
 
 tasks:
   DL-1.0:
     title: Given an answer text and returned evidence, when checkAnswerGrounding runs, then path and symbol citations missing from the evidence are reported as ungrounded, ambiguous symbols as unverifiable, and oversized input is bounded
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: standard
@@ -80,10 +80,18 @@ tasks:
       - The module needs a change to markdown-mention-resolution.ts.
       - A test fails after the files were copied verbatim; report the output and do not edit the code or the test.
     known_blockers: []
+    closeout:
+      role_results:
+        coder-worker: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: User proceed on 2026-10-30 to reconcile shipped plans
+        validation_summary: Shipped in PR #108, #109; closeout table DL-1.0..DL-3.0. Modules present on master; 2026-10-30 vitest run of markdown-answer-verify, markdown-answer-grounding, markdown-mention-resolution and sidecar-local-backend-enrichment passed 67 tests in 4 files, exit 0.
+    dod_status: pass
 
   DL-2.0:
     title: Given eight labelled answers with known faithful and invented citations, when the checker runs against fixed evidence, then every invented citation is reported and no faithful citation is
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: standard
@@ -114,10 +122,18 @@ tasks:
     stop_conditions:
       - A test fails after the file was copied verbatim; report the output and do not edit the checker or the test.
     known_blockers: []
+    closeout:
+      role_results:
+        coder-worker: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: User proceed on 2026-10-30 to reconcile shipped plans
+        validation_summary: Shipped in PR #108, #109; closeout table DL-1.0..DL-3.0. Modules present on master; 2026-10-30 vitest run of markdown-answer-verify, markdown-answer-grounding, markdown-mention-resolution and sidecar-local-backend-enrichment passed 67 tests in 4 files, exit 0.
+    dod_status: pass
 
   DL-3.0:
     title: Given the merged module and the repository's tracked Markdown, when the measurement script runs, then path-citation counts, ungrounded share and median milliseconds are recorded and the wiring decision follows the fixed thresholds
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -148,6 +164,14 @@ tasks:
     stop_conditions:
       - The script exits non-zero or prints no JSON line; record the error output and stop.
     known_blockers: []
+    closeout:
+      role_results:
+        coder-performance: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: User proceed on 2026-10-30 to reconcile shipped plans
+        validation_summary: Shipped in PR #108, #109; closeout table DL-1.0..DL-3.0. Measurement recorded in the plan closeout and audit-session file; 2026-10-30 vitest run of the four Markdown answer, mention and sidecar test files passed 67 tests, exit 0.
+    dod_status: pass
 ```
 
 ## Task Cards

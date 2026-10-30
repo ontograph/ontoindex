@@ -1,7 +1,7 @@
 # Markdown Graph-RAG Retrieval Project Plan
 
 Date: 2026-10-13
-Status: Complete (shipped in PR #94 and follow-ups; task statuses in the YAML stay OPEN because workers had no manager-loop lease)
+Status: Closed — shipped in PR #94 (1c2dcac) and follow-ups
 Authority: User requirement of 2026-10-13: add graph-RAG retrieval over Markdown files to the existing OntoIndex Markdown sidecar, written so a small model such as Haiku can execute each task without design decisions.
 
 ## Goal
@@ -36,17 +36,17 @@ Observed at commit `7b1494c` with the Markdown sidecar built by `ontoindex docs 
 ```yaml
 manager_loop:
   authority: true
-  status: in-progress
+  status: closed
   selection_policy: active_next_task-first
-  active_next_task: GR-1.0
+  active_next_task: null
   max_in_flight: 1
-  dispatch_mode: human
+  dispatch_mode: none
   reopen_gate: null
 
 tasks:
   GR-1.0:
     title: Given the fixtures in card GR-1.0, when the three new query tests run on the unmodified source, then tests GR1-A and GR1-B fail and every pre-existing test passes
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: standard
@@ -78,10 +78,18 @@ tasks:
       - GR1-A or GR1-B passes on the unmodified source.
       - GR1-C fails on the unmodified source.
     known_blockers: []
+    closeout:
+      role_results:
+        coder-worker: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: User proceed on 2026-10-30 to reconcile shipped plans
+        validation_summary: Shipped in PR #94 (1c2dcac) and follow-ups; closeout GR-1.0..GR-5.0. Modules present on master; 2026-10-30 vitest run of markdown-answer-verify, markdown-answer-grounding, markdown-mention-resolution and sidecar-local-backend-enrichment passed 67 tests in 4 files, exit 0.
+    dod_status: pass
 
   GR-2.0:
     title: Given a non-empty query, when Markdown context is built for query, then chunks are ranked by the BM25 function in card GR-2.0, zero-score chunks are dropped, and GR1-A and GR1-B pass
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -125,10 +133,18 @@ tasks:
       - Any pre-existing assertion other than the two listed in card GR-2.0, step 6 fails.
       - npx tsc reports an error in a file outside the allowed write set.
     known_blockers: []
+    closeout:
+      role_results:
+        coder-worker: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: User proceed on 2026-10-30 to reconcile shipped plans
+        validation_summary: Shipped in PR #94 (1c2dcac) and follow-ups; closeout GR-1.0..GR-5.0. Modules present on master; 2026-10-30 vitest run of markdown-answer-verify, markdown-answer-grounding, markdown-mention-resolution and sidecar-local-backend-enrichment passed 67 tests in 4 files, exit 0.
+    dod_status: pass
 
   GR-2.5:
     title: Given query with Markdown context on, when the enrichment block is returned, then facts and visibleRecords contain only entries for returned chunks and documents, and GR1-C passes with its budget lowered to 200000 bytes
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -162,10 +178,18 @@ tasks:
     stop_conditions:
       - Any pre-existing test needs a change.
     known_blockers: []
+    closeout:
+      role_results:
+        coder-worker: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: User proceed on 2026-10-30 to reconcile shipped plans
+        validation_summary: Shipped in PR #94 (1c2dcac) and follow-ups; closeout GR-1.0..GR-5.0. Modules present on master; 2026-10-30 vitest run of markdown-answer-verify, markdown-answer-grounding, markdown-mention-resolution and sidecar-local-backend-enrichment passed 67 tests in 4 files, exit 0.
+    dod_status: pass
 
   GR-3.0:
     title: Given two chunks with equal BM25 score where only one belongs to a document linked from the top-scoring chunk, when Markdown context is built, then the linked chunk ranks first
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -201,10 +225,18 @@ tasks:
     stop_conditions:
       - Any test from GR-2.0 or GR-2.5 needs a change.
     known_blockers: []
+    closeout:
+      role_results:
+        coder-worker: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: User proceed on 2026-10-30 to reconcile shipped plans
+        validation_summary: Shipped in PR #94 (1c2dcac) and follow-ups; closeout GR-1.0..GR-5.0. Modules present on master; 2026-10-30 vitest run of markdown-answer-verify, markdown-answer-grounding, markdown-mention-resolution and sidecar-local-backend-enrichment passed 67 tests in 4 files, exit 0.
+    dod_status: pass
 
   GR-4.0:
     title: Given the eight-document corpus and ten queries in card GR-4.0, when the ranking runs on facts built by produceMarkdownSidecarFacts, then at least six of eight labelled queries rank their expected document first and both off-topic queries return nothing
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -234,10 +266,18 @@ tasks:
     stop_conditions:
       - Fewer than six labelled queries rank first; record the printed ranks in the report, keep the test with it.fails, and continue to GR-5.0.
     known_blockers: []
+    closeout:
+      role_results:
+        coder-worker: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: User proceed on 2026-10-30 to reconcile shipped plans
+        validation_summary: Shipped in PR #94 (1c2dcac) and follow-ups; closeout GR-1.0..GR-5.0. Modules present on master; 2026-10-30 vitest run of markdown-answer-verify, markdown-answer-grounding, markdown-mention-resolution and sidecar-local-backend-enrichment passed 67 tests in 4 files, exit 0.
+    dod_status: pass
 
   GR-5.0:
     title: Given this repository with the sidecar rebuilt and the CLI rebuilt after GR-3.0, when the eight queries in card GR-5.0 run through the CLI, then the ranks and response sizes are recorded and the embeddings decision follows the rule in the card
-    status: OPEN
+    status: DONE
     classification: proof-only
     assurance_profile: full
     complexity: complex
@@ -269,6 +309,14 @@ tasks:
     stop_conditions:
       - Sidecar status is not complete after the rebuild.
     known_blockers: []
+    closeout:
+      role_results:
+        coder-auditor: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: User proceed on 2026-10-30 to reconcile shipped plans
+        validation_summary: Shipped in PR #94 (1c2dcac) and follow-ups; closeout GR-1.0..GR-5.0. Measurement recorded in the plan closeout and audit-session file; 2026-10-30 vitest run of the four Markdown answer, mention and sidecar test files passed 67 tests, exit 0.
+    dod_status: pass
 ```
 
 ## Task Cards

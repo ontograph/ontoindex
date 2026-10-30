@@ -1,7 +1,7 @@
 # Markdown Mention Resolution Project Plan
 
 Date: 2026-10-14
-Status: Complete (shipped in PR #96; task statuses in the YAML stay OPEN because workers had no manager-loop lease)
+Status: Closed — shipped in PR #96 (c39d641)
 Authority: Follow-up to MARKDOWN_GRAPH_RAG_RETRIEVAL_PROJECT_PLAN.md (PR #94, merged). User requirement of 2026-10-14: consolidate the best option for resolving Markdown code mentions and implement it, using sub-agents on gpt-6.1-sol and gpt-6-luna.
 
 ## Goal
@@ -27,17 +27,17 @@ Observed on `origin/master` at `1c2dcac`.
 ```yaml
 manager_loop:
   authority: true
-  status: in-progress
+  status: closed
   selection_policy: active_next_task-first
-  active_next_task: MR-1.0
+  active_next_task: null
   max_in_flight: 1
-  dispatch_mode: human
+  dispatch_mode: none
   reopen_gate: null
 
 tasks:
   MR-1.0:
     title: Given chunks with unresolved code mention evidence and a graph identity provider, when resolveChunkMentions runs, then bounded unique symbol matches are attached and ambiguity, overflow, errors and timeouts are reported without throwing
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: standard
@@ -69,10 +69,18 @@ tasks:
     stop_conditions:
       - The module needs a change to markdown-graph-identity-provider.ts.
     known_blockers: []
+    closeout:
+      role_results:
+        coder-worker: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: User proceed on 2026-10-30 to reconcile shipped plans
+        validation_summary: Shipped in PR #96 (c39d641); closeout MR-1.0..MR-4.0. Modules present on master; 2026-10-30 vitest run of markdown-answer-verify, markdown-answer-grounding, markdown-mention-resolution and sidecar-local-backend-enrichment passed 67 tests in 4 files, exit 0.
+    dod_status: pass
 
   MR-2.0:
     title: Given a query with Markdown context, when the backend builds the response, then returned chunk mention evidence carries mention text and graph resolution, ranking and stored facts are unchanged, and a graph failure leaves the response intact
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -106,10 +114,18 @@ tasks:
       - A pre-existing test in the file fails.
       - Chunk order changes in any existing assertion.
     known_blockers: []
+    closeout:
+      role_results:
+        coder-worker: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: User proceed on 2026-10-30 to reconcile shipped plans
+        validation_summary: Shipped in PR #96 (c39d641); closeout MR-1.0..MR-4.0. Modules present on master; 2026-10-30 vitest run of markdown-answer-verify, markdown-answer-grounding, markdown-mention-resolution and sidecar-local-backend-enrichment passed 67 tests in 4 files, exit 0.
+    dod_status: pass
 
   MR-4.0:
     title: Given resolved mentions, when the backend builds the response, then results are returned once per distinct mention in a bounded mentionTargets map instead of on every evidence item, and the heavy recall query grows by less than 20 KB
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -141,10 +157,18 @@ tasks:
     stop_conditions:
       - A chunk key order assertion changes.
     known_blockers: []
+    closeout:
+      role_results:
+        coder-worker: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: User proceed on 2026-10-30 to reconcile shipped plans
+        validation_summary: Shipped in PR #96 (c39d641); closeout MR-1.0..MR-4.0. Modules present on master; 2026-10-30 vitest run of markdown-answer-verify, markdown-answer-grounding, markdown-mention-resolution and sidecar-local-backend-enrichment passed 67 tests in 4 files, exit 0.
+    dod_status: pass
 
   MR-3.0:
     title: Given the built CLI and a rerun sidecar, when a live query runs, then mention resolution latency and response growth are measured and recorded
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -173,6 +197,14 @@ tasks:
     stop_conditions:
       - Added latency exceeds 150 ms at the median or response growth exceeds 20 KB.
     known_blockers: []
+    closeout:
+      role_results:
+        coder-performance: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: User proceed on 2026-10-30 to reconcile shipped plans
+        validation_summary: Shipped in PR #96 (c39d641); closeout MR-1.0..MR-4.0. Measurement recorded in the plan closeout and audit-session file; 2026-10-30 vitest run of the four Markdown answer, mention and sidecar test files passed 67 tests, exit 0.
+    dod_status: pass
 ```
 
 ## Task Cards
