@@ -19,13 +19,63 @@ import {
   extractGenericTypeArgs,
   resolveIterableElementType,
   methodToTypeArgPosition,
+  getContainerDescriptor,
   extractElementTypeFromString,
   type TypeArgPosition,
 } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set(['let_declaration', 'let_condition']);
-const ELEMENT_CLOSURE_ADAPTERS = new Set(['map', 'filter', 'for_each', 'any', 'all', 'find']);
-const ELEMENT_ITERATORS = new Set(['iter', 'iter_mut', 'into_iter']);
+const ELEMENT_CLOSURE_ADAPTERS = new Set([
+  'map',
+  'filter',
+  'for_each',
+  'any',
+  'all',
+  'find',
+  'filter_map',
+  'flat_map',
+  'inspect',
+  'position',
+  'take_while',
+  'skip_while',
+]);
+const ELEMENT_ITERATORS = new Set([
+  'iter',
+  'iter_mut',
+  'into_iter',
+  'values',
+  'values_mut',
+  'keys',
+]);
+
+/** Recognize only iterator sources whose element type is preserved. */
+const rustIteratorSource = (
+  call: SyntaxNode | null,
+):
+  | {
+      container: string;
+      method: string;
+      enumerated: boolean;
+    }
+  | undefined => {
+  if (call?.type !== 'call_expression') return undefined;
+  let method = call.childForFieldName('function');
+  let enumerated = false;
+  if (
+    method?.type === 'field_expression' &&
+    method.childForFieldName('field')?.text === 'enumerate'
+  ) {
+    enumerated = true;
+    const innerCall = method.childForFieldName('value');
+    if (innerCall?.type !== 'call_expression') return undefined;
+    method = innerCall.childForFieldName('function');
+  }
+  if (method?.type !== 'field_expression') return undefined;
+  const name = method.childForFieldName('field')?.text;
+  const container = method.childForFieldName('value');
+  if (!name || !ELEMENT_ITERATORS.has(name) || container?.type !== 'identifier') return undefined;
+  return { container: container.text, method: name, enumerated };
+};
 
 /** Walk up the AST to find the enclosing impl block and extract the implementing type name. */
 const findEnclosingImplType = (node: SyntaxNode): string | undefined => {
@@ -325,8 +375,18 @@ const extractPatternBinding: PatternBindingExtractor = (
       typeName,
       narrowingRange: { startIndex: node.startIndex, endIndex: node.endIndex },
     });
-    const elementType = (name: string) =>
-      resolveIterableElementType(
+    const elementType = (name: string, method?: string) => {
+      const descriptor = getContainerDescriptor(scopeEnv.get(name) ?? '');
+      // Map iter()/into_iter() yield (key, value) tuples, not the value alone.
+      if (
+        descriptor?.arity === 2 &&
+        method &&
+        !descriptor.keyMethods.has(method) &&
+        !descriptor.valueMethods.has(method)
+      ) {
+        return undefined;
+      }
+      return resolveIterableElementType(
         name,
         node,
         scopeEnv,
@@ -334,7 +394,9 @@ const extractPatternBinding: PatternBindingExtractor = (
         scope,
         extractRustElementTypeFromTypeNode,
         findRustParamElementType,
+        methodToTypeArgPosition(method, scopeEnv.get(name)),
       );
+    };
     if (receiver.type === 'index_expression') {
       const base = receiver.firstNamedChild;
       const typeName = base?.type === 'identifier' ? elementType(base.text) : undefined;
@@ -349,7 +411,14 @@ const extractPatternBinding: PatternBindingExtractor = (
         const params = parent.childForFieldName('parameters');
         for (const param of params?.namedChildren ?? []) {
           const pattern = param.type === 'parameter' ? param.childForFieldName('pattern') : param;
-          if (!pattern || extractVarName(pattern) !== receiver.text) continue;
+          if (!pattern) continue;
+          const tuple = pattern.type === 'tuple_pattern' ? pattern : undefined;
+          const binding = tuple
+            ? tuple.namedChildren.find((child) => extractVarName(child) === receiver.text)
+            : extractVarName(pattern) === receiver.text
+              ? pattern
+              : undefined;
+          if (!binding) continue;
           const annotation = param.childForFieldName('type');
           let typeName = annotation ? extractSimpleTypeName(annotation) : undefined;
           if (!annotation && params?.namedChildCount === 1) {
@@ -357,22 +426,19 @@ const extractPatternBinding: PatternBindingExtractor = (
             const adapterCall = args?.parent;
             const adapter = adapterCall?.childForFieldName('function');
             const adapterName = adapter?.childForFieldName('field')?.text;
-            const iteratorCall = adapter?.childForFieldName('value');
-            const iterator = iteratorCall?.childForFieldName('function');
-            const iteratorName = iterator?.childForFieldName('field')?.text;
-            const container = iterator?.childForFieldName('value');
+            const source = rustIteratorSource(adapter?.childForFieldName('value') ?? null);
             if (
               args?.type === 'arguments' &&
               adapter?.type === 'field_expression' &&
               adapterName &&
               ELEMENT_CLOSURE_ADAPTERS.has(adapterName) &&
-              iteratorCall?.type === 'call_expression' &&
-              iterator?.type === 'field_expression' &&
-              iteratorName &&
-              ELEMENT_ITERATORS.has(iteratorName) &&
-              container?.type === 'identifier'
+              source &&
+              (source.enumerated
+                ? tuple?.children.filter((child) => !['(', ')', ','].includes(child.type))[1] ===
+                  binding
+                : !tuple)
             ) {
-              typeName = elementType(container.text);
+              typeName = elementType(source.container, source.method);
             }
           }
           // Keep unknown shadowing truthy: an absent type would let constructor
@@ -535,9 +601,17 @@ const extractForLoopBinding: ForLoopExtractor = (
 ): void => {
   if (node.type !== 'for_expression') return;
 
-  const patternNode = node.childForFieldName('pattern');
-  const valueNode = node.childForFieldName('value');
+  let patternNode = node.childForFieldName('pattern');
+  let valueNode = node.childForFieldName('value');
   if (!patternNode || !valueNode) return;
+
+  const source = rustIteratorSource(valueNode);
+  if (source?.enumerated) {
+    if (patternNode.type !== 'tuple_pattern') return;
+    patternNode = patternNode.children.filter((child) => !['(', ')', ','].includes(child.type))[1];
+    valueNode = valueNode.childForFieldName('function')?.childForFieldName('value') ?? null;
+    if (!patternNode || !valueNode) return;
+  }
 
   // Extract iterable name + method — may be &users, users, or users.iter()/keys()/values()
   let iterableName: string | undefined;

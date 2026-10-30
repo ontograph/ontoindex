@@ -39,6 +39,26 @@ fn rc_typed_closure() { let g = |f: Other| f.bar(); }
 fn rc_plain() { let f = mk(); f.bar(); }
 fn rc_after_closure() { let f = Foo {}; let g = |f: Other| {}; f.bar(); }
 fn rc_sibling_closure(v: Vec<Foo>) { v.iter().map(|x| x.bar()); let g = |x| x.area(); }
+fn rc_enumerate(v: Vec<Foo>) { for (i, x) in v.iter().enumerate() { x.bar(); } }
+fn rc_enumerate_map(v: Vec<Foo>) { v.iter().enumerate().map(|(i, x)| x.bar()).count(); }
+fn rc_array(a: [Foo; 3]) { a[0].bar(); }
+fn rc_slice(s: &[Foo]) { s[0].bar(); }
+fn rc_values(m: std::collections::HashMap<u32, Foo>) { m.values().map(|x| x.bar()).count(); }
+fn rc_values_for_each(m: std::collections::HashMap<u32, Foo>) { m.values().for_each(|x| x.bar()); }
+fn rc_filter_map(v: Vec<Foo>) { v.iter().filter_map(|x| { x.bar(); Some(x) }).count(); }
+fn rc_flat_map(v: Vec<Foo>) { v.iter().flat_map(|x| { x.bar(); vec![x] }).count(); }
+fn rc_inspect(v: Vec<Foo>) { v.iter().inspect(|x| x.bar()).count(); }
+fn rc_position(v: Vec<Foo>) { v.iter().position(|x| { x.bar(); true }); }
+fn rc_take_while(v: Vec<Foo>) { v.iter().take_while(|x| { x.bar(); true }).count(); }
+fn rc_skip_while(v: Vec<Foo>) { v.iter().skip_while(|x| { x.bar(); true }).count(); }
+fn rc_wrong_enumerate(v: Vec<Foo>) { v.iter().enumerate().map(|(_, x)| x.area()).count(); }
+fn rc_wrong_values(m: std::collections::HashMap<u32, Foo>) { m.values().for_each(|x| x.area()); }
+fn rc_enumerate_index(v: Vec<Foo>) { v.iter().enumerate().map(|(i, _)| i.bar()).count(); }
+fn rc_loop_index(v: Vec<Foo>) { for (i, _) in v.iter().enumerate() { i.bar(); } }
+fn rc_loop_unknown(v) { for (_, x) in v.iter().enumerate() { x.bar(); } }
+fn rc_keys(m: std::collections::HashMap<Foo, Other>) { m.keys().map(|x| x.bar()).count(); }
+fn rc_other_values(m: std::collections::HashMap<Foo, Other>) { m.values().for_each(|x| x.area()); }
+fn rc_map_tuple(m: std::collections::HashMap<Other, Foo>) { m.iter().map(|x| x.bar()).count(); }
 `;
     await writeFile(path.join(directory, 'main.rs'), source);
     const parser = new Parser();
@@ -51,36 +71,62 @@ fn rc_sibling_closure(v: Vec<Foo>) { v.iter().map(|x| x.bar()); let g = |x| x.ar
     if (directory) await rm(directory, { recursive: true, force: true });
   });
 
-  it.each(['rc_vec', 'rc_map', 'rc_filter', 'rc_for_each', 'rc_any', 'rc_all', 'rc_find'])(
-    '%s resolves the typed container element method',
-    (caller) => {
-      const calls = getRelationships(result, 'CALLS').filter(
-        (edge) => edge.source === caller && edge.target === 'bar',
-      );
-      expect(calls).toHaveLength(1);
-      const target = result.graph.getNode(calls[0].rel.targetId);
-      expect(target?.id).toContain('Foo.bar');
-      const fn = tree.rootNode.namedChildren.find(
-        (node) => node.childForFieldName('name')?.text === caller,
-      )!;
-      const method = fn
-        .descendantsOfType('field_expression')
-        .find((node) => node.childForFieldName('field')?.text === 'bar')!;
-      const receiver = method.childForFieldName('value')!;
-      expect(buildTypeEnv(tree, 'rust').lookup(receiver.text, method.parent!)).toBe('Foo');
-    },
-  );
+  it.each([
+    'rc_vec',
+    'rc_map',
+    'rc_filter',
+    'rc_for_each',
+    'rc_any',
+    'rc_all',
+    'rc_find',
+    'rc_enumerate',
+    'rc_enumerate_map',
+    'rc_array',
+    'rc_slice',
+    'rc_values',
+    'rc_values_for_each',
+    'rc_filter_map',
+    'rc_flat_map',
+    'rc_inspect',
+    'rc_position',
+    'rc_take_while',
+    'rc_skip_while',
+    'rc_keys',
+  ])('%s resolves the typed container element method', (caller) => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === caller && edge.target === 'bar',
+    );
+    expect(calls).toHaveLength(1);
+    const target = result.graph.getNode(calls[0].rel.targetId);
+    expect(target?.id).toContain('Foo.bar');
+    const fn = tree.rootNode.namedChildren.find(
+      (node) => node.childForFieldName('name')?.text === caller,
+    )!;
+    const method = fn
+      .descendantsOfType('field_expression')
+      .find((node) => node.childForFieldName('field')?.text === 'bar')!;
+    const receiver = method.childForFieldName('value')!;
+    expect(buildTypeEnv(tree, 'rust').lookup(receiver.text, method.parent!)).toBe('Foo');
+  });
 
-  it.each(['rc_closure', 'rc_foreign', 'rc_shadow_factory', 'rc_shadow_local'])(
-    '%s does not borrow a method from an unrelated local receiver',
-    (caller) => {
-      expect(
-        getRelationships(result, 'CALLS').filter(
-          (edge) => edge.source === caller && ['bar', 'area'].includes(edge.target),
-        ),
-      ).toHaveLength(0);
-    },
-  );
+  it.each([
+    'rc_closure',
+    'rc_foreign',
+    'rc_shadow_factory',
+    'rc_shadow_local',
+    'rc_wrong_enumerate',
+    'rc_wrong_values',
+    'rc_enumerate_index',
+    'rc_loop_index',
+    'rc_loop_unknown',
+    'rc_map_tuple',
+  ])('%s does not borrow a method from an unrelated local receiver', (caller) => {
+    expect(
+      getRelationships(result, 'CALLS').filter(
+        (edge) => edge.source === caller && ['bar', 'area'].includes(edge.target),
+      ),
+    ).toHaveLength(0);
+  });
 
   it('does not leak adapter parameter types into sibling closures', () => {
     expect(
@@ -88,6 +134,14 @@ fn rc_sibling_closure(v: Vec<Foo>) { v.iter().map(|x| x.bar()); let g = |x| x.ar
         (edge) => edge.source === 'rc_sibling_closure' && edge.target === 'area',
       ),
     ).toHaveLength(0);
+  });
+
+  it('resolves the value type independently from the map key type', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'rc_other_values' && edge.target === 'area',
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0].rel.targetId).toContain('Other.area');
   });
 
   it.each([

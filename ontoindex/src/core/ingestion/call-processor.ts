@@ -2158,11 +2158,29 @@ const resolveCallTarget = (
   }
   // primary === 'owner-scoped'
   if (call.receiverTypeName) {
-    // Skip the owner-scoped MRO path when the tiered pool has genuine
-    // overload ambiguity that needs D1-D4+E handling, not D0.
-    const skipMember =
+    // Only overloads on the receiver's dispatch chain should bypass D0;
+    // same-named methods on unrelated owners must not disable MRO.
+    let skipMember = false;
+    if (
       (!!overloadHints || !!preComputedArgTypes) &&
-      countCallableCandidates(tiered.candidates, call.argCount, call.callForm) > 1;
+      countCallableCandidates(tiered.candidates, call.argCount, call.callForm) > 1
+    ) {
+      const ownerIds = new Set<string>();
+      for (const type of ctx.resolve(call.receiverTypeName, currentFile)?.candidates ?? []) {
+        ownerIds.add(type.nodeId);
+        for (const ancestor of heritageMap?.getAncestors?.(type.nodeId) ?? []) {
+          ownerIds.add(ancestor);
+        }
+      }
+      skipMember =
+        countCallableCandidates(
+          tiered.candidates.filter(
+            (candidate) => !candidate.ownerId || ownerIds.has(candidate.ownerId),
+          ),
+          call.argCount,
+          call.callForm,
+        ) > 1;
+    }
     // Try owner-scoped (resolveMemberCall) then file-scoped (resolveMemberCallByFile).
     // DAG: dispatchDecision.ancestryView selects instance vs singleton ancestry
     // for kind-aware MRO strategies. Ruby `Account.log` flows via 'singleton'.
