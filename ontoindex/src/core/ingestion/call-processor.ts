@@ -2009,6 +2009,7 @@ const resolveMemberCallByFile = (
   callForm?: 'free' | 'member' | 'constructor',
   overloadHints?: OverloadHints,
   preComputedArgTypes?: (string | undefined)[],
+  heritageMap?: HeritageMap,
 ): ResolveResult | null => {
   const typeResolved = ctx.resolve(receiverTypeName, currentFile);
   if (!typeResolved || typeResolved.candidates.length === 0) return null;
@@ -2037,7 +2038,17 @@ const resolveMemberCallByFile = (
   const methodPool = filterCallableCandidates(combinedPool, argCount, callForm);
   const fileFiltered = methodPool.filter((c) => typeFiles.has(c.filePath));
   if (fileFiltered.length === 1) {
-    return toResolveResult(fileFiltered[0], typeResolved.tier);
+    const candidate = fileFiltered[0];
+    if (
+      !candidate.ownerId ||
+      typeNodeIds.has(candidate.ownerId) ||
+      (typeof heritageMap?.getAncestors === 'function' &&
+        [...typeNodeIds].some((typeId) =>
+          heritageMap.getAncestors(typeId).includes(candidate.ownerId!),
+        ))
+    ) {
+      return toResolveResult(candidate, typeResolved.tier);
+    }
   }
 
   // ownerId fallback: narrow by ownerId matching the type's nodeId
@@ -2185,6 +2196,7 @@ const resolveCallTarget = (
             call.callForm,
             overloadHints,
             preComputedArgTypes,
+            heritageMap,
           ));
     if (memberResult) return memberResult;
 
