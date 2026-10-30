@@ -4,6 +4,11 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.18] - 2026-10-30
+
+- Rust method calls on elements of a typed container resolve again. `v[0].bar()` and single-parameter closures passed to `map`, `filter`, `for_each`, `any`, `all` or `find` on `v.iter()`, `iter_mut()` or `into_iter()` now get the element type of `v: Vec<Foo>`, so their `CALLS` edges to `Foo::bar` return. 2.3.17 had dropped them.
+- A closure parameter no longer inherits the type of a same-named local. Before, `let f = mk(); let g = |f| f.bar();` produced a wrong `CALLS` edge to the local's type. Typed parameters use their annotation, untyped parameters produce no edge, and neither changes the enclosing function's bindings.
+
 ## [2.3.17] - 2026-10-30
 
 - A Rust method call whose receiver type is unknown or comes from another crate no longer binds to an unrelated same-file method of the same name. Before, `make_sq(2).area()` in a file that also defined `Other.area` produced a wrong `CALLS` edge with reason `same-file` and confidence 0.95. Calls with a known receiver type, free calls, module aliases, import-resolved candidates and other languages are unchanged.
