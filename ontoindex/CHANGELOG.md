@@ -4,6 +4,11 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.17] - 2026-10-30
+
+- A Rust method call whose receiver type is unknown or comes from another crate no longer binds to an unrelated same-file method of the same name. Before, `make_sq(2).area()` in a file that also defined `Other.area` produced a wrong `CALLS` edge with reason `same-file` and confidence 0.95. Calls with a known receiver type, free calls, module aliases, import-resolved candidates and other languages are unchanged.
+- The Rust scope-extraction warning no longer claims that all calls in skipped files are indexed. It now says that symbols, name calls and import calls are indexed and that method calls on unresolved or foreign types may be missed.
+
 ## [2.3.16] - 2026-10-30
 
 - No runtime change. Four project plans whose work shipped in 2.3.4 (Markdown retrieval ranking, mention resolution, answer grounding and `docs verify-answer`) now record their tasks as done, so plan tooling no longer offers them as open work.
