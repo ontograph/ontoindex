@@ -3335,27 +3335,26 @@ describe('processCalls — D0 MRO fast path (SM-10)', () => {
 
   it('D0 miss: heritageMap provided but method not in MRO chain falls through to D1-D4', async () => {
     // Setup: Class Obj exists in the same file as a `doWork` Method. The
-    // Method is registered under a DIFFERENT ownerId (`class:OtherOwner`)
-    // so lookupMethodByOwner('class:Obj', 'doWork') misses on the direct
+    // Method is registered without ownerId, so
+    // lookupMethodByOwner('class:Obj', 'doWork') misses on the direct
     // lookup. heritageMap is empty for class:Obj, so MRO walk yields no
     // parents. Expected flow:
     //   D0: lookupMethodByOwner + MRO walk both miss → D0 fallthrough
     //   D1-D4: receiver type resolves to Obj; D3 file-filter picks the
     //          `doWork` candidate via its co-located file path.
-    // Guarantees D0 miss does not swallow the call — D1-D4 still runs.
+    // Guarantees D0 miss does not swallow an ownerless call — D1-D4 still runs.
     const classFile = 'src/models/Obj.java';
     const appFile = 'src/services/App.java';
     const classId = 'class:models/Obj.java:Obj';
     const doWorkId = 'method:models/Obj.java:doWork';
 
     ctx.model.symbols.add(classFile, 'Obj', classId, 'Class');
-    // Post-A4: Method+ownerId routes through methodsByName. Using a
-    // different ownerId than the receiver type forces the direct
+    // The ownerless co-located candidate remains eligible for the file filter.
+    // Omitting ownerId forces the direct
     // lookupMethodByOwner miss that the test exercises.
     ctx.model.symbols.add(classFile, 'doWork', doWorkId, 'Method', {
       returnType: 'void',
       parameterCount: 0,
-      ownerId: 'class:models/Obj.java:OtherOwner',
     });
     ctx.importMap.set(appFile, new Set([classFile]));
 
