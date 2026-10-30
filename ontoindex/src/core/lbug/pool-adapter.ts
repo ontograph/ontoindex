@@ -1780,7 +1780,13 @@ export const CYPHER_WRITE_RE =
 /** A `;` followed by more code starts a second statement, which the engine executes. */
 const CYPHER_MULTI_STATEMENT_RE = /;\s*\S/;
 
-/** Check if a Cypher query contains write operations or more than one statement */
+/** User Cypher must open with a read clause. `CALL` must invoke a function: the
+ * engine also accepts `CALL threads=1`-style option assignments, and reports
+ * EXPORT, ATTACH, INSTALL, and CHECKPOINT as read-only, so neither its
+ * read-only flag nor the denylist alone bounds new statement kinds. */
+const CYPHER_READ_START_RE = /^\s*(?:MATCH|OPTIONAL\s+MATCH|WITH|UNWIND|RETURN|CALL\s+\w+\s*\()/i;
+
+/** Check if a Cypher query is anything other than one read statement */
 export function isWriteQuery(query: string): boolean {
   const code: string[] = [];
   let start = 0;
@@ -1818,5 +1824,9 @@ export function isWriteQuery(query: string): boolean {
   }
   code.push(query.slice(start));
   const stripped = code.join('');
-  return CYPHER_WRITE_RE.test(stripped) || CYPHER_MULTI_STATEMENT_RE.test(stripped);
+  return (
+    !CYPHER_READ_START_RE.test(stripped) ||
+    CYPHER_WRITE_RE.test(stripped) ||
+    CYPHER_MULTI_STATEMENT_RE.test(stripped)
+  );
 }

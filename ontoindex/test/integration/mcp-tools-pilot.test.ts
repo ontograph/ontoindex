@@ -145,7 +145,7 @@ describe('MCP tool integration pilot — 5 tools via LocalBackend.callTool', () 
   it('cypher { query: "RETURN 1 AS n LIMIT 1" } returns a non-null result under 600 KB', async () => {
     // Provide a minimal tabular row so formatCypherAsMarkdown produces
     // { markdown, row_count } rather than the empty-array pass-through.
-    lbugMocks.executeQuery.mockResolvedValueOnce([{ n: 1 }]);
+    lbugMocks.executeParameterized.mockResolvedValueOnce([{ n: 1 }]);
 
     const result = await backend.callTool('cypher', { query: 'RETURN 1 AS n LIMIT 1' });
 

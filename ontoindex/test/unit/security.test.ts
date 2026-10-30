@@ -94,8 +94,8 @@ describe('isWriteQuery', () => {
     expect(isWriteQuery('MATCH (n) RETURN n')).toBe(false);
   });
 
-  it('handles empty string', () => {
-    expect(isWriteQuery('')).toBe(false);
+  it('rejects an empty string, which has no read clause', () => {
+    expect(isWriteQuery('')).toBe(true);
   });
 
   // Hardening: regex lastIndex not stuck (non-global regex, but verify)
@@ -129,6 +129,29 @@ describe('isWriteQuery', () => {
   it('does not block property names or labels that match the new keywords', () => {
     expect(isWriteQuery('MATCH (n) WHERE n.isExported = true RETURN n LIMIT 1')).toBe(false);
     expect(isWriteQuery('MATCH (n:Import) RETURN n.use LIMIT 1')).toBe(false);
+  });
+
+  // The engine reports these as read-only, and none is in the denylist, so only
+  // the read-clause allowlist rejects them.
+  it('blocks statements that do not start with a read clause', () => {
+    expect(isWriteQuery('UNINSTALL json')).toBe(true);
+    expect(isWriteQuery('BEGIN TRANSACTION')).toBe(true);
+    expect(isWriteQuery('COMMIT')).toBe(true);
+    expect(isWriteQuery('CALL threads=1')).toBe(true);
+    expect(isWriteQuery('PROFILE MATCH (n) RETURN n LIMIT 1')).toBe(true);
+    expect(isWriteQuery('EXPLAIN MATCH (n) RETURN n LIMIT 1')).toBe(true);
+    expect(isWriteQuery('// MATCH\nUNINSTALL json')).toBe(true);
+  });
+
+  it('allows every supported read clause, including after a leading comment', () => {
+    expect(isWriteQuery('OPTIONAL MATCH (n) RETURN n LIMIT 1')).toBe(false);
+    expect(isWriteQuery('WITH 1 AS x RETURN x LIMIT 1')).toBe(false);
+    expect(isWriteQuery('UNWIND [1, 2] AS x RETURN x LIMIT 2')).toBe(false);
+    expect(isWriteQuery('RETURN 1 AS x LIMIT 1')).toBe(false);
+    expect(
+      isWriteQuery("CALL QUERY_FTS_INDEX('Function', 'idx', 'auth') RETURN node LIMIT 5"),
+    ).toBe(false);
+    expect(isWriteQuery('  /* note */ match (n) RETURN n LIMIT 1')).toBe(false);
   });
 });
 
