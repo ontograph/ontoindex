@@ -1092,7 +1092,7 @@ export async function runChunkedParseAndResolve(
 
       if (unsupportedRustScopeCount > 0) {
         console.warn(
-          `Scope extraction skipped for ${unsupportedRustScopeCount} Rust file(s) outside the supported subset; their symbols and calls are still indexed by the standard Rust resolver.`,
+          `Scope extraction skipped for ${unsupportedRustScopeCount} Rust file(s) outside the supported subset; their symbols, name calls and import calls are still indexed by the standard Rust resolver, but method calls on unresolved or foreign types may be missed.`,
         );
       }
 
