@@ -201,7 +201,7 @@ export async function queryCypher(
   if (isWriteQuery(params.query)) {
     return {
       error:
-        'Write operations (CREATE, DELETE, SET, MERGE, REMOVE, DROP, ALTER, COPY, DETACH) are not allowed. The knowledge graph is read-only.',
+        'Write operations (CREATE, DELETE, SET, MERGE, REMOVE, DROP, ALTER, COPY, DETACH, FOREACH, INSTALL, LOAD, EXPORT, IMPORT, ATTACH, USE, CHECKPOINT) and multiple statements are not allowed. The knowledge graph is read-only.',
     };
   }
 

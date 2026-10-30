@@ -29,6 +29,11 @@ describe('CYPHER_WRITE_RE', () => {
     'ALTER',
     'COPY',
     'DETACH',
+    'EXPORT',
+    'IMPORT',
+    'ATTACH',
+    'USE',
+    'CHECKPOINT',
   ];
 
   for (const keyword of writeKeywords) {
@@ -99,6 +104,31 @@ describe('isWriteQuery', () => {
     expect(isWriteQuery('MATCH (n) RETURN n')).toBe(false);
     expect(isWriteQuery('DROP TABLE foo')).toBe(true);
     expect(isWriteQuery('MATCH (n) RETURN n')).toBe(false);
+  });
+
+  it('blocks database export, import, attach, use, and checkpoint statements', () => {
+    expect(isWriteQuery('EXPORT DATABASE "/tmp/graph"')).toBe(true);
+    expect(isWriteQuery('IMPORT DATABASE "/tmp/graph"')).toBe(true);
+    expect(isWriteQuery('ATTACH "/tmp/other" AS other (dbtype lbug)')).toBe(true);
+    expect(isWriteQuery('USE other')).toBe(true);
+    expect(isWriteQuery('CHECKPOINT')).toBe(true);
+  });
+
+  it('blocks a second statement that would pass the LIMIT guard', () => {
+    expect(isWriteQuery('EXPORT DATABASE "/tmp/graph"; MATCH (n) RETURN n LIMIT 1')).toBe(true);
+    expect(isWriteQuery('MATCH (n) RETURN n LIMIT 1; MATCH (m) RETURN m LIMIT 1')).toBe(true);
+  });
+
+  it('allows a single statement with a trailing semicolon or quoted semicolon', () => {
+    expect(isWriteQuery('MATCH (n) RETURN n LIMIT 1;')).toBe(false);
+    expect(isWriteQuery('MATCH (n) RETURN n LIMIT 1;  \n')).toBe(false);
+    expect(isWriteQuery('MATCH (n) WHERE n.name = "a; b" RETURN n LIMIT 1')).toBe(false);
+    expect(isWriteQuery('MATCH (n) RETURN n LIMIT 1 // ; MATCH (m)')).toBe(false);
+  });
+
+  it('does not block property names or labels that match the new keywords', () => {
+    expect(isWriteQuery('MATCH (n) WHERE n.isExported = true RETURN n LIMIT 1')).toBe(false);
+    expect(isWriteQuery('MATCH (n:Import) RETURN n.use LIMIT 1')).toBe(false);
   });
 });
 
