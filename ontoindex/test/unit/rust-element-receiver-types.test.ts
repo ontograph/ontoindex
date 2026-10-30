@@ -45,6 +45,8 @@ fn rc_array(a: [Foo; 3]) { a[0].bar(); }
 fn rc_slice(s: &[Foo]) { s[0].bar(); }
 fn rc_values(m: std::collections::HashMap<u32, Foo>) { m.values().map(|x| x.bar()).count(); }
 fn rc_values_for_each(m: std::collections::HashMap<u32, Foo>) { m.values().for_each(|x| x.bar()); }
+fn rc_values_mut_map(mut m: std::collections::HashMap<u32, Foo>) { m.values_mut().map(|x| x.bar()).count(); }
+fn rc_values_mut_each(m: &mut std::collections::HashMap<u32, Foo>) { m.values_mut().for_each(|x| x.bar()); }
 fn rc_filter_map(v: Vec<Foo>) { v.iter().filter_map(|x| { x.bar(); Some(x) }).count(); }
 fn rc_flat_map(v: Vec<Foo>) { v.iter().flat_map(|x| { x.bar(); vec![x] }).count(); }
 fn rc_inspect(v: Vec<Foo>) { v.iter().inspect(|x| x.bar()).count(); }
@@ -53,6 +55,7 @@ fn rc_take_while(v: Vec<Foo>) { v.iter().take_while(|x| { x.bar(); true }).count
 fn rc_skip_while(v: Vec<Foo>) { v.iter().skip_while(|x| { x.bar(); true }).count(); }
 fn rc_wrong_enumerate(v: Vec<Foo>) { v.iter().enumerate().map(|(_, x)| x.area()).count(); }
 fn rc_wrong_values(m: std::collections::HashMap<u32, Foo>) { m.values().for_each(|x| x.area()); }
+fn rc_wrong_values_mut(m: &mut std::collections::HashMap<u32, Foo>) { m.values_mut().for_each(|x| x.area()); }
 fn rc_enumerate_index(v: Vec<Foo>) { v.iter().enumerate().map(|(i, _)| i.bar()).count(); }
 fn rc_loop_index(v: Vec<Foo>) { for (i, _) in v.iter().enumerate() { i.bar(); } }
 fn rc_loop_unknown(v) { for (_, x) in v.iter().enumerate() { x.bar(); } }
@@ -85,6 +88,8 @@ fn rc_map_tuple(m: std::collections::HashMap<Other, Foo>) { m.iter().map(|x| x.b
     'rc_slice',
     'rc_values',
     'rc_values_for_each',
+    'rc_values_mut_map',
+    'rc_values_mut_each',
     'rc_filter_map',
     'rc_flat_map',
     'rc_inspect',
@@ -116,6 +121,7 @@ fn rc_map_tuple(m: std::collections::HashMap<Other, Foo>) { m.iter().map(|x| x.b
     'rc_shadow_local',
     'rc_wrong_enumerate',
     'rc_wrong_values',
+    'rc_wrong_values_mut',
     'rc_enumerate_index',
     'rc_loop_index',
     'rc_loop_unknown',
