@@ -4,6 +4,11 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.22] - 2026-10-31
+
+- Inherited-method calls no longer bind to a same-named class in another file or another language. Before, the ancestor map used for method lookup linked every class with the child's name to every class with the parent's name across the whole repository. With `class Foo extends Base` in `a.ts` and a Python `class Base` in `b.py`, `f.greet()` on a `Foo` resolved to `b.py:Base.greet` at confidence 0.95; with two `Base` classes in `x/base.ts` and `y/base.ts`, the call could pick the one `Foo` does not import. The parent is now resolved through the declaring file's imports, the child is taken from its declaring file, and fallbacks stay within the same language family (JavaScript/TypeScript, C/C++). C# partial classes and Ruby reopenings still share ancestry across their files.
+- Rust `HashMap` `values_mut()` closure receivers resolve, as the 2.3.20 notes claimed. Before, `m.values_mut().map(|x| x.bar())` and `.for_each(...)` produced no edge; the `for x in m.values_mut()` loop already worked.
+
 ## [2.3.21] - 2026-10-30
 
 - The raw `cypher` MCP action, the HTTP query route, and internal query execution reject `EXPORT`, `IMPORT`, `ATTACH`, `USE`, and `CHECKPOINT`, and reject input that contains a second statement after `;`. Before, `EXPORT DATABASE "<path>"; MATCH (n) RETURN n LIMIT 1` passed both the write guard and the LIMIT guard, and the read-only database still wrote a full parquet copy of the graph to `<path>`. A single trailing `;`, semicolons inside strings or comments, and property names such as `n.use` remain allowed.
