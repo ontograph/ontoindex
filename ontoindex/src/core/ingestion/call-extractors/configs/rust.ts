@@ -7,6 +7,18 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
 function extractRustAssociatedCall(callNode: SyntaxNode): ExtractedCallSite | null {
   if (callNode.type !== 'call_expression') return null;
   const scoped = callNode.childForFieldName('function');
+  if (scoped?.type === 'field_expression') {
+    const receiver = scoped.childForFieldName('value');
+    const name = scoped.childForFieldName('field');
+    if (receiver?.type === 'index_expression' && name) {
+      return {
+        calledName: name.text,
+        callForm: 'member',
+        receiverName: receiver.text,
+        argCount: callNode.childForFieldName('arguments')?.namedChildCount,
+      };
+    }
+  }
   if (scoped?.type !== 'scoped_identifier') return null;
 
   const receiver = scoped.childForFieldName('path');

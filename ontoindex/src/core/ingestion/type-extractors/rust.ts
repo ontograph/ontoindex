@@ -24,6 +24,8 @@ import {
 } from './shared.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set(['let_declaration', 'let_condition']);
+const ELEMENT_CLOSURE_ADAPTERS = new Set(['map', 'filter', 'for_each', 'any', 'all', 'find']);
+const ELEMENT_ITERATORS = new Set(['iter', 'iter_mut', 'into_iter']);
 
 /** Walk up the AST to find the enclosing impl block and extract the implementing type name. */
 const findEnclosingImplType = (node: SyntaxNode): string | undefined => {
@@ -172,6 +174,9 @@ const extractInitializer: InitializerExtractor = (
 
 /** Rust: parameter → pattern: type */
 const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+  // Closure parameters are resolved at their uses below, with position ranges;
+  // recording them in the function-wide environment would overwrite outer locals.
+  if (node.parent?.type === 'closure_parameters') return;
   let nameNode: SyntaxNode | null = null;
   let typeNode: SyntaxNode | null = null;
 
@@ -312,6 +317,73 @@ const extractPatternBinding: PatternBindingExtractor = (
   declarationTypeNodes,
   scope,
 ) => {
+  if (node.type === 'field_expression') {
+    const receiver = node.childForFieldName('value');
+    if (!receiver) return undefined;
+    const scopedBinding = (typeName: string) => ({
+      varName: receiver.text,
+      typeName,
+      narrowingRange: { startIndex: node.startIndex, endIndex: node.endIndex },
+    });
+    const elementType = (name: string) =>
+      resolveIterableElementType(
+        name,
+        node,
+        scopeEnv,
+        declarationTypeNodes,
+        scope,
+        extractRustElementTypeFromTypeNode,
+        findRustParamElementType,
+      );
+    if (receiver.type === 'index_expression') {
+      const base = receiver.firstNamedChild;
+      const typeName = base?.type === 'identifier' ? elementType(base.text) : undefined;
+      return typeName ? scopedBinding(typeName) : undefined;
+    }
+    if (receiver.type !== 'identifier') return undefined;
+    // Resolve the nearest closure parameter at this use, so unknown parameters
+    // shadow outer locals without leaking inferred types into sibling closures.
+    let parent = node.parent;
+    while (parent && parent.type !== 'function_item') {
+      if (parent.type === 'closure_expression') {
+        const params = parent.childForFieldName('parameters');
+        for (const param of params?.namedChildren ?? []) {
+          const pattern = param.type === 'parameter' ? param.childForFieldName('pattern') : param;
+          if (!pattern || extractVarName(pattern) !== receiver.text) continue;
+          const annotation = param.childForFieldName('type');
+          let typeName = annotation ? extractSimpleTypeName(annotation) : undefined;
+          if (!annotation && params?.namedChildCount === 1) {
+            const args = parent.parent;
+            const adapterCall = args?.parent;
+            const adapter = adapterCall?.childForFieldName('function');
+            const adapterName = adapter?.childForFieldName('field')?.text;
+            const iteratorCall = adapter?.childForFieldName('value');
+            const iterator = iteratorCall?.childForFieldName('function');
+            const iteratorName = iterator?.childForFieldName('field')?.text;
+            const container = iterator?.childForFieldName('value');
+            if (
+              args?.type === 'arguments' &&
+              adapter?.type === 'field_expression' &&
+              adapterName &&
+              ELEMENT_CLOSURE_ADAPTERS.has(adapterName) &&
+              iteratorCall?.type === 'call_expression' &&
+              iterator?.type === 'field_expression' &&
+              iteratorName &&
+              ELEMENT_ITERATORS.has(iteratorName) &&
+              container?.type === 'identifier'
+            ) {
+              typeName = elementType(container.text);
+            }
+          }
+          // Keep unknown shadowing truthy: an absent type would let constructor
+          // binding fallback borrow the outer local's type during call resolution.
+          return scopedBinding(typeName ?? '<unknown>');
+        }
+      }
+      parent = parent.parent;
+    }
+    return undefined;
+  }
   let patternNode: SyntaxNode | null = null;
   let valueNode: SyntaxNode | null = null;
 
@@ -522,7 +594,7 @@ const extractForLoopBinding: ForLoopExtractor = (
 export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
   forLoopNodeTypes: FOR_LOOP_NODE_TYPES,
-  patternBindingNodeTypes: new Set(['let_condition', 'match_arm']),
+  patternBindingNodeTypes: new Set(['let_condition', 'match_arm', 'field_expression']),
   extractDeclaration,
   extractInitializer,
   extractParameter,
