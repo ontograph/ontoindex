@@ -1770,11 +1770,17 @@ export const isLbugDbPathReady = (dbPath: string): boolean => dbCache.has(dbPath
 /** Regex to detect write operations in user-supplied Cypher queries.
  * Note: CALL is NOT blocked — it's used for read-only FTS (CALL QUERY_FTS_INDEX)
  * and vector search (CALL QUERY_VECTOR_INDEX). The database is opened in
- * read-only mode as defense-in-depth against write procedures. */
+ * read-only mode as defense-in-depth against write procedures. EXPORT, IMPORT,
+ * ATTACH, USE, and CHECKPOINT are blocked because a read-only database still
+ * executes EXPORT DATABASE, which writes files outside the index. A keyword
+ * directly after `:` or `.` is a label or property name, not a statement. */
 export const CYPHER_WRITE_RE =
-  /(?<!:)\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH|FOREACH|INSTALL|LOAD)\b/i;
+  /(?<![:.])\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH|FOREACH|INSTALL|LOAD|EXPORT|IMPORT|ATTACH|USE|CHECKPOINT)\b/i;
 
-/** Check if a Cypher query contains write operations */
+/** A `;` followed by more code starts a second statement, which the engine executes. */
+const CYPHER_MULTI_STATEMENT_RE = /;\s*\S/;
+
+/** Check if a Cypher query contains write operations or more than one statement */
 export function isWriteQuery(query: string): boolean {
   const code: string[] = [];
   let start = 0;
@@ -1811,5 +1817,6 @@ export function isWriteQuery(query: string): boolean {
     start = i + 1;
   }
   code.push(query.slice(start));
-  return CYPHER_WRITE_RE.test(code.join(''));
+  const stripped = code.join('');
+  return CYPHER_WRITE_RE.test(stripped) || CYPHER_MULTI_STATEMENT_RE.test(stripped);
 }
