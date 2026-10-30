@@ -2253,7 +2253,11 @@ const resolveCallTarget = (
   // branch above as a guarded fallback after owner/file-scoped resolvers.
   return (
     resolveModuleAliasedCall(call, currentFile, ctx, widenCache, tiered) ??
-    singleCandidate(tiered, call.argCount, call.callForm)
+    // A same-file Rust method of that name does not prove it owns an unknown receiver;
+    // import/global single candidates keep resolving (e.g. method-chain results).
+    (call.callForm === 'member' && currentFile.endsWith('.rs') && tiered?.tier === 'same-file'
+      ? null
+      : singleCandidate(tiered, call.argCount, call.callForm))
   );
 };
 
