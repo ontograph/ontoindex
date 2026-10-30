@@ -4,6 +4,10 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.16] - 2026-10-30
+
+- No runtime change. Four project plans whose work shipped in 2.3.4 (Markdown retrieval ranking, mention resolution, answer grounding and `docs verify-answer`) now record their tasks as done, so plan tooling no longer offers them as open work.
+
 ## [2.3.15] - 2026-10-30
 
 - A query whose working-tree graph is refused as too large (`workspace_too_large`, above `ONTOINDEX_WORKSPACE_MAX_FILES`, default 1600) now answers from the committed index instead of failing. This applies to `context`, `impact` and `query` on any large repository with uncommitted edits. The answer carries `readContext.mode: "committed"` and a warning that names up to 10 uncommitted source files it cannot see, with the total count. When no trustworthy committed index exists, the original refusal is returned unchanged.
