@@ -4,6 +4,10 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.19] - 2026-10-30
+
+- A member call no longer binds to a method owned by an unrelated type in the same file. Before, `fn c(f: Foo) { f.only_baz(); }` in a file that also defined `Baz::only_baz` produced a `CALLS` edge to `Baz::only_baz` with reason `same-file` and confidence 0.95. This affected Rust (typed, indexed and closure receivers), TypeScript, JavaScript and Python. Methods owned by the receiver type, by one of its ancestors (inherited methods, default trait methods) or by no type still resolve.
+
 ## [2.3.18] - 2026-10-30
 
 - Rust method calls on elements of a typed container resolve again. `v[0].bar()` and single-parameter closures passed to `map`, `filter`, `for_each`, `any`, `all` or `find` on `v.iter()`, `iter_mut()` or `into_iter()` now get the element type of `v: Vec<Foo>`, so their `CALLS` edges to `Foo::bar` return. 2.3.17 had dropped them.
