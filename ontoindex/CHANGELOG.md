@@ -4,6 +4,10 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.21] - 2026-10-30
+
+- The raw `cypher` MCP action, the HTTP query route, and internal query execution reject `EXPORT`, `IMPORT`, `ATTACH`, `USE`, and `CHECKPOINT`, and reject input that contains a second statement after `;`. Before, `EXPORT DATABASE "<path>"; MATCH (n) RETURN n LIMIT 1` passed both the write guard and the LIMIT guard, and the read-only database still wrote a full parquet copy of the graph to `<path>`. A single trailing `;`, semicolons inside strings or comments, and property names such as `n.use` remain allowed.
+
 ## [2.3.20] - 2026-10-30
 
 - TypeScript and JavaScript calls to an inherited method resolve again when an unrelated class in the same file defines a method of the same name. Before, with `class Foo extends Base` and `class Baz { greet() {} }`, `f.greet()` on a `Foo` produced no `CALLS` edge; it now resolves to `Base.greet`. Genuine overloads on the receiver's own class chain are handled as before.
