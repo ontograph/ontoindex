@@ -1,7 +1,7 @@
 # Answer Verify CLI Project Plan
 
 Date: 2026-10-14
-Status: Complete (task statuses in the YAML stay OPEN because workers had no manager-loop lease)
+Status: Closed — shipped in PR #110 (4f77487)
 Authority: Follow-up to DONOR_LTM_ANSWER_GROUNDING_PROJECT_PLAN.md (PR #108, #109). Its DL-3.0 decision allowed wiring in a separate plan: 40 of 270 path citations reported (0.148, limit 0.25), median 0.27 ms (limit 20 ms). User requirement of 2026-10-14: review done work, compare options, consolidate the best one and implement it with sub-agents.
 
 ## Goal
@@ -28,17 +28,17 @@ Observed on `origin/master` at `0fe72ad`.
 ```yaml
 manager_loop:
   authority: true
-  status: in-progress
+  status: closed
   selection_policy: active_next_task-first
-  active_next_task: AV-1.0
+  active_next_task: null
   max_in_flight: 1
-  dispatch_mode: human
+  dispatch_mode: none
   reopen_gate: null
 
 tasks:
   AV-1.0:
     title: Given an answer text, a path list and an optional symbol provider, when verifyAnswer runs, then missing paths are ungrounded, symbols are checked against the provider, and a missing or failing provider yields unverifiable symbols instead of false ungrounded ones
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: standard
@@ -71,10 +71,18 @@ tasks:
     stop_conditions:
       - The module needs a change to a file outside the write set.
     known_blockers: []
+    closeout:
+      role_results:
+        coder-worker: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: User proceed on 2026-10-30 to reconcile shipped plans
+        validation_summary: Shipped in PR #110 (4f77487); closeout table AV-1.0..AV-3.0. Modules present on master; 2026-10-30 vitest run of markdown-answer-verify, markdown-answer-grounding, markdown-mention-resolution and sidecar-local-backend-enrichment passed 67 tests in 4 files, exit 0.
+    dod_status: pass
 
   AV-2.0:
     title: Given an answer file and the CLI, when docs verify-answer runs, then it prints the report as JSON or text, exits 1 only with --strict and an ungrounded status, and still reports when the graph cannot be opened
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -112,10 +120,18 @@ tasks:
       - An existing docs-cli test fails.
       - A CLI contract or help snapshot test outside the write set fails and needs a snapshot update; report it.
     known_blockers: []
+    closeout:
+      role_results:
+        coder-worker: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: User proceed on 2026-10-30 to reconcile shipped plans
+        validation_summary: Shipped in PR #110 (4f77487); closeout table AV-1.0..AV-3.0. Modules present on master; 2026-10-30 vitest run of markdown-answer-verify, markdown-answer-grounding, markdown-mention-resolution and sidecar-local-backend-enrichment passed 67 tests in 4 files, exit 0.
+    dod_status: pass
 
   AV-3.0:
     title: Given the built CLI and this repository's tracked plans as answers, when verify-answer runs on them, then exit codes, report fields and timing are recorded
-    status: OPEN
+    status: DONE
     classification: implementation-ready
     assurance_profile: full
     complexity: complex
@@ -144,6 +160,14 @@ tasks:
     stop_conditions:
       - The command crashes with a stack trace instead of a report.
     known_blockers: []
+    closeout:
+      role_results:
+        coder-performance: null
+      main_session_evidence:
+        authorized_by: user
+        authorization_ref: User proceed on 2026-10-30 to reconcile shipped plans
+        validation_summary: Shipped in PR #110 (4f77487); closeout table AV-1.0..AV-3.0. Measurement recorded in the plan closeout and audit-session file; 2026-10-30 vitest run of the four Markdown answer, mention and sidecar test files passed 67 tests, exit 0.
+    dod_status: pass
 ```
 
 ## Task Cards
