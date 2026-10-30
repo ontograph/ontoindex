@@ -4,6 +4,11 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.20] - 2026-10-30
+
+- TypeScript and JavaScript calls to an inherited method resolve again when an unrelated class in the same file defines a method of the same name. Before, with `class Foo extends Base` and `class Baz { greet() {} }`, `f.greet()` on a `Foo` produced no `CALLS` edge; it now resolves to `Base.greet`. Genuine overloads on the receiver's own class chain are handled as before.
+- More Rust element receivers resolve: the item in `for (i, x) in v.iter().enumerate()` and `.enumerate().map(|(i, x)| ...)`, `HashMap` `keys()`, `values()` and `values_mut()` (key or value type), and closures passed to `filter_map`, `flat_map`, `inspect`, `position`, `take_while` and `skip_while`. Map `iter()` items and the enumerate index stay untyped.
+
 ## [2.3.19] - 2026-10-30
 
 - A member call no longer binds to a method owned by an unrelated type in the same file. Before, `fn c(f: Foo) { f.only_baz(); }` in a file that also defined `Baz::only_baz` produced a `CALLS` edge to `Baz::only_baz` with reason `same-file` and confidence 0.95. This affected Rust (typed, indexed and closure receivers), TypeScript, JavaScript and Python. Methods owned by the receiver type, by one of its ancestors (inherited methods, default trait methods) or by no type still resolve.
