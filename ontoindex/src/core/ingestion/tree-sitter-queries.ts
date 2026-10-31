@@ -142,7 +142,6 @@ export const TYPESCRIPT_QUERIES = `
   (class_heritage
     (extends_clause
       value: (member_expression
-        object: (identifier)
         property: (property_identifier)) @heritage.extends))) @heritage
 
 ; Heritage queries - class implements interface
@@ -284,7 +283,6 @@ export const JAVASCRIPT_QUERIES = `
   name: (identifier) @heritage.class
   (class_heritage
     (member_expression
-      object: (identifier)
       property: (property_identifier)) @heritage.extends)) @heritage
 
 ; Write access: obj.field = value
