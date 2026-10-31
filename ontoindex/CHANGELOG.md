@@ -4,6 +4,11 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.4.3] - 2026-10-31
+
+- No runtime change. Cypher rejection tests in `calltool-dispatch.test.ts` and `automatic-dirty-workspace.test.ts` assert the reason-specific errors introduced in 2.4.2 (for example `forbidden keyword DETACH`); 2.4.2 shipped with these 11 assertions still expecting the earlier generic text.
+- `CONTRIBUTING.md` requires a passing `npm run test:unit` before any release commit, including local-only and `[skip ci]` commits.
+
 ## [2.4.2] - 2026-10-31
 
 - Cypher rejections identify unterminated input, multiple statements, forbidden keywords, or unsupported opening clauses. Bare reserved aliases such as `AS use` remain blocked; rename the alias or quote it with backticks. `EXPLAIN`, `PROFILE`, and dotted `CALL` procedures remain unsupported by the read guard.

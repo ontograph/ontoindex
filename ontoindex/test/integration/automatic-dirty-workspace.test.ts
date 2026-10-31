@@ -231,7 +231,9 @@ it('replays current workspace mutations through persistent stdio MCP and foregro
       };
       const deniedResponse = await client.callTool(deniedRequest);
       evidence.push({ request: deniedRequest, response: deniedResponse });
-      expect(JSON.stringify(deniedResponse)).toContain('Write operations');
+      expect(JSON.stringify(deniedResponse)).toContain(
+        'Read-only Cypher rejected: forbidden keyword CREATE',
+      );
       expect(await identity()).toEqual(before);
       expect(await fs.readFile(path.join(home, 'registry.json'))).toEqual(registry);
       expect(await fs.readFile(path.join(storage, 'meta.json'))).toEqual(meta);

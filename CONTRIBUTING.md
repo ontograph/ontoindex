@@ -132,6 +132,16 @@ If you use coding agents, follow project context files (e.g. `AGENTS.md`, `CLAUD
 
 ## Releases
 
+Before you create a release commit, run the full unit suite on the release
+candidate and continue only when it reports no failures:
+
+```bash
+cd ontoindex && npm run test:unit
+```
+
+This applies to local-only releases and to any commit marked `[skip ci]`,
+because no workflow runs the suite for those commits.
+
 Two publish workflows ship `ontoindex` to npm:
 
 - **Stable** (`.github/workflows/publish.yml`) — triggered by pushing any `v*`
