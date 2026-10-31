@@ -13,7 +13,7 @@ describe('heritage owner scoping', () => {
     );
   });
 
-  async function inheritedTargets(files: Record<string, string>, caller: string) {
+  async function inheritedTargets(files: Record<string, string>, caller: string, method = 'greet') {
     const directory = await mkdtemp(path.join(tmpdir(), 'ontoindex-heritage-owner-'));
     directories.push(directory);
     for (const [file, source] of Object.entries(files)) {
@@ -22,7 +22,7 @@ describe('heritage owner scoping', () => {
     }
     const result = await runPipelineFromRepo(directory, () => {}, { skipGraphPhases: true });
     return getRelationships(result, 'CALLS')
-      .filter((edge) => edge.source === caller && edge.target === 'greet')
+      .filter((edge) => edge.source === caller && edge.target === method)
       .map((edge) => edge.rel.targetId);
   }
 
@@ -68,6 +68,70 @@ export function t_inh(f: Foo) { f.greet(); }`,
       ),
     ).toEqual(['Method:x/base.ts:Base.greet#0']);
   }, 60000);
+  it.each<{ name: string; files: Record<string, string>; target: string }>([
+    {
+      name: 'TypeScript barrel re-export',
+      files: {
+        'x/base.ts': 'export class Base { greet() {} }',
+        'x/index.ts': "export { Base } from './base';",
+        'y/base.ts': 'export class Base { greet() {} only_other() {} }',
+        'x/foo.ts': `import { Base } from './index';
+export class Foo extends Base {}
+export function inherited(f: Foo) { f.greet(); }
+export function wrong(f: Foo) { f.only_other(); }`,
+      },
+      target: 'Method:x/base.ts:Base.greet#0',
+    },
+    {
+      name: 'TypeScript named import alias',
+      files: {
+        'x/base.ts': 'export class Base { greet() {} }',
+        'y/base.ts': 'export class Base { greet() {} only_other() {} }',
+        'x/foo.ts': `import { Base as Parent } from './base';
+export class Foo extends Parent {}
+export function inherited(f: Foo) { f.greet(); }
+export function wrong(f: Foo) { f.only_other(); }`,
+      },
+      target: 'Method:x/base.ts:Base.greet#0',
+    },
+    {
+      name: 'Python imported parent',
+      files: {
+        'base.py': 'class Base:\n    def greet(self):\n        pass\n',
+        'other.py':
+          'class Base:\n    def greet(self):\n        pass\n    def only_other(self):\n        pass\n',
+        'foo.py': `from base import Base
+class Foo(Base):
+    pass
+def inherited(f: Foo):
+    f.greet()
+def wrong(f: Foo):
+    f.only_other()
+`,
+      },
+      target: 'Function:base.py:Base.greet',
+    },
+    {
+      name: 'JavaScript imported parent',
+      files: {
+        'x/base.js': 'export class Base { greet() {} }',
+        'y/base.js': 'export class Base { greet() {} only_other() {} }',
+        'x/foo.js': `import { Base } from './base.js';
+export class Foo extends Base {}
+export function inherited() { const f = new Foo(); f.greet(); }
+export function wrong() { const f = new Foo(); f.only_other(); }`,
+      },
+      target: 'Method:x/base.js:Base.greet#0',
+    },
+  ])(
+    'resolves only the $name owner',
+    async ({ files, target }) => {
+      expect(await inheritedTargets(files, 'inherited')).toEqual([target]);
+      expect(await inheritedTargets(files, 'wrong', 'only_other')).toEqual([]);
+    },
+    60000,
+  );
+
   it('shares C# partial-class ancestry across declaring files', async () => {
     const directory = await mkdtemp(path.join(tmpdir(), 'ontoindex-heritage-owner-'));
     directories.push(directory);

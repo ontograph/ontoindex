@@ -5,8 +5,13 @@ export function extractTsNamedBindings(importNode: SyntaxNode): NamedBinding[] |
   // import_statement > import_clause > named_imports > import_specifier*
   const importClause = findChild(importNode, 'import_clause');
   if (importClause) {
+    const namespaceImport = findChild(importClause, 'namespace_import');
+    if (namespaceImport) {
+      const alias = findChild(namespaceImport, 'identifier');
+      return alias ? [{ local: alias.text, exported: '*', isModuleAlias: true }] : undefined;
+    }
     const namedImports = findChild(importClause, 'named_imports');
-    if (!namedImports) return undefined; // default import, namespace import, or side-effect
+    if (!namedImports) return undefined; // default import or side-effect
 
     const bindings: NamedBinding[] = [];
     for (let i = 0; i < namedImports.namedChildCount; i++) {
