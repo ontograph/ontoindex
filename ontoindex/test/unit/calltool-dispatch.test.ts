@@ -1004,7 +1004,7 @@ describe('LocalBackend.callTool', () => {
   it('dispatches cypher tool and blocks write queries', async () => {
     const result = await backend.callTool('cypher', { query: 'CREATE (n:Test)' });
     expect(result).toHaveProperty('error');
-    expect(result.error).toContain('Write operations');
+    expect(result.error).toContain('Read-only Cypher rejected: forbidden keyword CREATE');
   });
 
   it('dispatches cypher tool with valid read query', async () => {
@@ -1785,22 +1785,24 @@ describe('callTool cypher write blocking', () => {
   });
 
   const writeQueries = [
-    'CREATE (n:Function {name: "test"})',
-    'MATCH (n) DELETE n',
-    'MATCH (n) SET n.name = "hacked"',
-    'MERGE (n:Function {name: "test"})',
-    'MATCH (n) REMOVE n.name',
-    'DROP TABLE Function',
-    'ALTER TABLE Function ADD COLUMN foo STRING',
-    'COPY Function FROM "file.csv"',
-    'MATCH (n) DETACH DELETE n',
+    ['CREATE (n:Function {name: "test"})', 'CREATE'],
+    ['MATCH (n) DELETE n', 'DELETE'],
+    ['MATCH (n) SET n.name = "hacked"', 'SET'],
+    ['MERGE (n:Function {name: "test"})', 'MERGE'],
+    ['MATCH (n) REMOVE n.name', 'REMOVE'],
+    ['DROP TABLE Function', 'DROP'],
+    ['ALTER TABLE Function ADD COLUMN foo STRING', 'ALTER'],
+    ['COPY Function FROM "file.csv"', 'COPY'],
+    ['MATCH (n) DETACH DELETE n', 'DETACH'],
   ];
 
-  for (const query of writeQueries) {
+  for (const [query, expectedKeyword] of writeQueries) {
     it(`blocks write query: ${query.slice(0, 30)}...`, async () => {
       const result = await backend.callTool('cypher', { query });
       expect(result).toHaveProperty('error');
-      expect(result.error).toContain('Write operations');
+      expect(result.error).toContain(
+        `Read-only Cypher rejected: forbidden keyword ${expectedKeyword}`,
+      );
     });
   }
 
