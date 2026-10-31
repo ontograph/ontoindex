@@ -20,6 +20,10 @@ describe('ResolutionContext.resolve() — namespace imports', () => {
       ctx.model.symbols.add('src/other.ts', 'Base', 'class:other', 'Class');
       ctx.model.symbols.add(caller, 'Base', 'class:local', 'Class');
       ctx.moduleAliasMap.set(caller, new Map([['models', 'src/base.ts']]));
+      ctx.namedImportMap.set(
+        'src/base.ts',
+        new Map([['#local-export:Base', { sourcePath: 'src/base.ts', exportedName: 'Base' }]]),
+      );
       ctx.importMap.set(caller, new Set(['src/base.ts', 'src/other.ts']));
 
       const result = ctx.resolve('models . Base', caller);
@@ -36,7 +40,11 @@ describe('ResolutionContext.resolve() — namespace imports', () => {
     ctx.moduleAliasMap.set('app.ts', new Map([['模型', 'index.ts']]));
     ctx.namedImportMap.set(
       'index.ts',
-      new Map([['基类', { sourcePath: 'base.ts', exportedName: 'Original' }]]),
+      new Map([['#export:基类', { sourcePath: 'base.ts', exportedName: 'Original' }]]),
+    );
+    ctx.namedImportMap.set(
+      'base.ts',
+      new Map([['#local-export:Original', { sourcePath: 'base.ts', exportedName: 'Original' }]]),
     );
     ctx.model.symbols.add('base.ts', 'Original', 'class:original', 'Class');
     expect(

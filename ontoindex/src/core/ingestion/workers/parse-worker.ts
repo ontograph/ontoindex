@@ -17,6 +17,7 @@ import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'ontoindex-shared';
 import { getProvider } from '../languages/index.js';
 import { collectRustDeclaredModules } from '../import-resolvers/rust-module-evidence.js';
+import { extractTsLocalExportBindings } from '../named-bindings/typescript.js';
 import {
   exceedsParseMaxAstDepth,
   getParseMaxAstDepth,
@@ -1284,6 +1285,18 @@ const processFileMatches = (
   correspondence?: ReturnType<typeof createDeclarationCorrespondence>,
 ): void => {
   const { file, language, lineOffset, isVueSetup, matches, provider, typeEnv, callRouter } = state;
+  if (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) {
+    const namedBindings = extractTsLocalExportBindings(state.tree.rootNode);
+    if (namedBindings.length > 0) {
+      result.imports.push({
+        filePath: file.path,
+        rawImportPath: '',
+        language,
+        namedBindings,
+        isLocalExport: true,
+      });
+    }
+  }
 
   // Per-file map: decorator end-line → decorator info, for associating with definitions
   const fileDecorators: FileDecorators = new Map();

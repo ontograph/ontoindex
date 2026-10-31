@@ -76,6 +76,35 @@ describe('import configuration ownership', () => {
 });
 
 describe('ResolutionContext.importMap', () => {
+  it('extracts public names in the sequential path without self imports', async () => {
+    const ctx = createResolutionContext();
+    const graph = createKnowledgeGraph();
+    const cache = createASTCache(10);
+    const files = [
+      {
+        path: 'base.ts',
+        content: 'class Local {} export { Local as Public }; export default Local;',
+      },
+      { path: 'app.ts', content: "import * as models from './base';" },
+    ];
+    try {
+      ctx.model.symbols.add('base.ts', 'Local', 'class:local', 'Class');
+      await processImports(graph, files, cache, ctx);
+      expect(ctx.resolve('models.Public', 'app.ts')?.candidates.map((def) => def.nodeId)).toEqual([
+        'class:local',
+      ]);
+      expect(ctx.resolve('models.default', 'app.ts')?.candidates.map((def) => def.nodeId)).toEqual([
+        'class:local',
+      ]);
+      expect(ctx.resolve('models.Local', 'app.ts')).toBeNull();
+      expect(ctx.importMap.get('base.ts')).toBeUndefined();
+      expect(graph.relationships.filter((edge) => edge.sourceId === edge.targetId)).toEqual([]);
+    } finally {
+      cache.clear();
+      ctx.clear();
+    }
+  });
+
   it('creates an empty Map', () => {
     const map = createResolutionContext().importMap;
     expect(map).toBeInstanceOf(Map);

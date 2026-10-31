@@ -47,7 +47,10 @@ export interface NamedImportBinding {
  * / Rust / Java-static / ...). Used to tighten Tier 2a resolution:
  * `import { User } from './models'` means only `User` (not `Repo`) is
  * visible from models.ts via this import.
- * TS/JS `*:<source>` keys retain source-bearing export-star bindings.
+ * TS/JS `#import:<local>` distinguishes imports from legacy reexport bindings.
+ * `#local-export:<public>` and `#export:<public>` retain explicit local
+ * and source-bearing exports; `*:<source>` keys retain export-star bindings.
+ * Older V1 snapshots without these markers conservatively leave namespace members unresolved.
  */
 export type NamedImportMap = Map<string, Map<string, NamedImportBinding>>;
 
@@ -509,20 +512,32 @@ export const createResolutionContext = (options?: {
       const head = parts[0];
       const tail = parts.slice(1).join('.');
       const bindings = namedImportMap.get(file);
-      const binding = bindings?.get(head);
+      const localExport = exported ? bindings?.get(`#local-export:${head}`) : undefined;
+      if (localExport) {
+        return walk(
+          tail ? `${localExport.exportedName}.${tail}` : localExport.exportedName,
+          file,
+          false,
+          depth,
+        );
+      }
+      const binding = bindings?.get(exported ? `#export:${head}` : `#import:${head}`);
+      const source = moduleAliasMap.get(file)?.get(exported ? `#export:${head}` : head);
       if (tail) {
-        const source = moduleAliasMap.get(file)?.get(exported ? `#export:${head}` : head);
         if (source) return walk(tail, source, true, depth + 1);
         if (binding)
           return walk(`${binding.exportedName}.${tail}`, binding.sourcePath, true, depth + 1);
       } else {
-        const direct = symbols.lookupExactAll(file, head);
-        if (direct.length > 0) return direct;
+        if (!exported) {
+          const direct = symbols.lookupExactAll(file, head);
+          if (direct.length > 0) return direct;
+        }
         if (binding) return walk(binding.exportedName, binding.sourcePath, true, depth + 1);
       }
+      if (exported && source) return [];
       // Only source-bearing export-star evidence authorizes a barrel hop, never imports.
       const candidates = new Map<string, SymbolDefinition>();
-      if (exported) {
+      if (exported && head !== 'default') {
         for (const [local, target] of bindings ?? []) {
           if (!local.startsWith('*:') || target.exportedName !== '*') continue;
           for (const def of walk(member, target.sourcePath, true, depth + 1)) {
