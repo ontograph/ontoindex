@@ -91,6 +91,7 @@ ontoindex/vendor/**/build/
 ontoindex/vendor/**/node_modules/
 ontoindex-native/target/
 ontoindex-native/native/*.node
+ontoindex-native/native/build-provenance.json
 
 /github/scripts/triage/__pycache__/
 

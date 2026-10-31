@@ -378,8 +378,37 @@ describe('runApiQueryWithGuards', () => {
 
     expect(result).toEqual({
       status: 403,
-      body: { error: 'Write queries are not allowed via the HTTP API' },
+      body: { error: expect.stringContaining('unsupported opening clause') },
     });
     expect(lbugMocks.executeQuery).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['RETURN 1 AS create LIMIT 1', 'forbidden keyword CREATE'],
+    ['RETURN 1 LIMIT 1; RETURN 2 LIMIT 1', 'multiple statements'],
+    ['RETURN 1 LIMIT 1 /* secret-value', 'unterminated block comment'],
+    ["RETURN 'secret-value LIMIT 1", 'unterminated quoted text or identifier'],
+    ['EXPLAIN MATCH (n) RETURN n LIMIT 1', 'unsupported opening clause'],
+    ['PROFILE MATCH (n) RETURN n LIMIT 1', 'unsupported opening clause'],
+    ['CALL db.labels() RETURN label LIMIT 1', 'unsupported opening clause'],
+    ['EXPORT DATABASE "secret-value"', 'forbidden keyword EXPORT'],
+  ])('returns a sanitized HTTP 403 reason without execution: %s', async (query, reason) => {
+    const execute = vi.fn();
+    const result = await runApiQueryWithGuards(query, execute);
+
+    expect(result).toEqual({
+      status: 403,
+      body: { error: expect.stringContaining(reason) },
+    });
+    expect(JSON.stringify(result)).not.toContain('secret-value');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('executes a bounded read with a quoted keyword alias', async () => {
+    const execute = vi.fn().mockResolvedValue({ status: 200, body: { result: [{ create: 1 }] } });
+    const result = await runApiQueryWithGuards('RETURN 1 AS `create` LIMIT 1', execute);
+
+    expect(result).toEqual({ status: 200, body: { result: [{ create: 1 }] } });
+    expect(execute).toHaveBeenCalledOnce();
   });
 });

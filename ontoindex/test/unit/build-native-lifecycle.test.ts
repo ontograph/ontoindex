@@ -9,24 +9,51 @@ afterEach(() => {
   vi.resetModules();
 });
 
-async function runBuild(options: { nativeFailure?: Error; missingAfterBuild?: boolean } = {}) {
+async function runBuild(
+  options: {
+    nativeFailure?: Error;
+    missingAfterBuild?: boolean;
+    missingProvenance?: boolean;
+    reachCopy?: boolean;
+  } = {},
+) {
   vi.resetModules();
   vi.stubGlobal('process', { ...process, platform: 'linux' });
   vi.spyOn(console, 'log').mockImplementation(() => {});
-  const stop = new Error('reached TypeScript compilation');
+  const stop = new Error(
+    options.reachCopy ? 'reached shared copy' : 'reached TypeScript compilation',
+  );
   let built = false;
   const execSync = vi.fn((command: string) => {
-    if (command !== 'npm run build') throw stop;
+    if (command !== 'npm run build') {
+      if (options.reachCopy) return;
+      throw stop;
+    }
     if (options.nativeFailure) throw options.nativeFailure;
     built = true;
   });
   const rmSync = vi.fn();
   const copyFileSync = vi.fn();
-  const statSync = vi.fn(() => ({
-    isFile: () => !(built && options.missingAfterBuild),
+  const statSync = vi.fn((filename: string) => ({
+    isFile: () =>
+      !(
+        built &&
+        (options.missingAfterBuild ||
+          (options.missingProvenance && filename.endsWith('build-provenance.json')))
+      ),
   }));
   vi.doMock('node:child_process', () => ({ execSync }));
-  vi.doMock('node:fs', () => ({ default: { statSync, rmSync, copyFileSync } }));
+  vi.doMock('node:fs', () => ({
+    default: {
+      statSync,
+      rmSync,
+      copyFileSync,
+      mkdirSync: vi.fn(),
+      cpSync: () => {
+        throw stop;
+      },
+    },
+  }));
   const result = import('../../scripts/build.js');
   return { result, stop, execSync, statSync, rmSync, copyFileSync };
 }
@@ -65,5 +92,26 @@ describe('Linux native build lifecycle', () => {
     expect(build.execSync).toHaveBeenCalledTimes(1);
     expect(build.rmSync).not.toHaveBeenCalled();
     expect(build.copyFileSync).not.toHaveBeenCalled();
+  });
+
+  it('requires the provenance sidecar before deleting or copying output', async () => {
+    const build = await runBuild({ missingProvenance: true });
+    await expect(build.result).rejects.toThrow('build-provenance.json');
+    expect(build.rmSync).not.toHaveBeenCalled();
+    expect(build.copyFileSync).not.toHaveBeenCalled();
+  });
+
+  it('distributes the sidecar with the native addon', async () => {
+    const build = await runBuild({ reachCopy: true });
+    await expect(build.result).rejects.toThrow(build.stop);
+    expect(build.copyFileSync).toHaveBeenCalledWith(
+      expect.stringContaining(
+        `${path.sep}ontoindex-native${path.sep}native${path.sep}build-provenance.json`,
+      ),
+      expect.stringContaining(
+        `${path.sep}dist${path.sep}native${path.sep}addon${path.sep}native${path.sep}build-provenance.json`,
+      ),
+    );
+    expect(build.copyFileSync).toHaveBeenCalledTimes(4);
   });
 });

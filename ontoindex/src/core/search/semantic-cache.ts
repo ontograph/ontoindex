@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { link, mkdir, open, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { QueryExecutionDiagnostics } from '../runtime/query-diagnostics.js';
 import type { RetrievalCandidate } from '../../mcp/local/backend-search.js';
 import type { TypedQueryFilter } from './typed-query-document.js';
@@ -91,7 +91,12 @@ export class SemanticRetrievalCache {
     result: Omit<CachedQueryResult, 'timestamp'>,
   ): Promise<SemanticCacheSetResult> {
     try {
-      await mkdir(this.cacheDir, { recursive: true });
+      // Only analysis owns the index root; a late cache write must not recreate it.
+      for (const directory of [dirname(this.cacheDir), this.cacheDir]) {
+        await mkdir(directory).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== 'EEXIST') throw error;
+        });
+      }
       const path = join(this.cacheDir, `${key}.json`);
       const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
       const data = JSON.stringify({

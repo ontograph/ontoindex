@@ -2,7 +2,7 @@ import {
   executeParameterized,
   executeQuery,
   isLbugReady,
-  isWriteQuery,
+  getCypherReadOnlyError,
 } from '../../core/lbug/pool-adapter.js';
 import { collectBestChunks } from '../../core/embeddings/types.js';
 import { EMBEDDING_INDEX_NAME, EMBEDDING_TABLE_NAME } from '../../core/lbug/schema.js';
@@ -198,12 +198,8 @@ export async function queryCypher(
     return { error: 'LadybugDB not ready. Index may be corrupted.' };
   }
 
-  if (isWriteQuery(params.query)) {
-    return {
-      error:
-        'Write operations and non-read statements are not allowed. Send one statement that starts with MATCH, OPTIONAL MATCH, WITH, UNWIND, RETURN, or CALL <function>(...). The knowledge graph is read-only.',
-    };
-  }
+  const readOnlyError = getCypherReadOnlyError(params.query);
+  if (readOnlyError) return { error: readOnlyError };
 
   const limitError = validateMcpCypherLimit(params.query);
   if (limitError) return { error: limitError };

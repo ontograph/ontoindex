@@ -1,10 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { SemanticRetrievalCache } from '../../../src/core/search/semantic-cache.js';
 
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, mkdir: vi.fn(actual.mkdir) };
+});
+
 describe('SemanticRetrievalCache', () => {
   const repoPath = '.vitest-cache-test';
+  const indexDir = join(repoPath, '.ontoindex');
   const cacheDir = join(repoPath, '.ontoindex', 'cache', 'semantic');
   const entry = (indexedHead = 'head', label = '') => ({
     candidates: label ? ([{ id: label, label }] as any[]) : [],
@@ -15,11 +21,66 @@ describe('SemanticRetrievalCache', () => {
     Buffer.byteLength(JSON.stringify({ ...entry('head', label), timestamp }), 'utf8');
 
   beforeEach(async () => {
-    await mkdir(repoPath, { recursive: true });
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    vi.mocked(mkdir).mockReset().mockImplementation(actual.mkdir);
+    await mkdir(indexDir, { recursive: true });
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(repoPath, { recursive: true, force: true });
+  });
+
+  it('lazily creates cache descendants inside an existing index root', async () => {
+    const cache = new SemanticRetrievalCache(repoPath);
+    await expect(readdir(indexDir)).resolves.toEqual([]);
+
+    await expect(cache.set('first', entry())).resolves.toEqual({ evicted: 0 });
+    await expect(cache.set('second', entry())).resolves.toEqual({ evicted: 0 });
+
+    await expect(cache.get('first', 'head')).resolves.toMatchObject(entry());
+    await expect(cache.get('second', 'head')).resolves.toMatchObject(entry());
+    expect((await readdir(cacheDir)).sort()).toEqual(['first.json', 'second.json']);
+  });
+
+  it('does not recreate an index root removed before a late write', async () => {
+    const cache = new SemanticRetrievalCache(repoPath);
+    await cache.set('before', entry());
+    await rm(indexDir, { recursive: true });
+
+    await expect(cache.set('late', entry())).resolves.toEqual({ evicted: 0 });
+
+    await expect(readdir(indexDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readdir(repoPath)).resolves.toEqual([]);
+  });
+
+  it('does not recreate a repository removed before a late write', async () => {
+    const cache = new SemanticRetrievalCache(repoPath);
+    await cache.set('before', entry());
+    await rm(repoPath, { recursive: true });
+
+    await expect(cache.set('late', entry())).resolves.toEqual({ evicted: 0 });
+
+    await expect(readdir(repoPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not recreate the index root removed between cache directory creations', async () => {
+    const cache = new SemanticRetrievalCache(repoPath);
+    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    const mkdirMock = vi
+      .mocked(mkdir)
+      .mockClear()
+      .mockImplementationOnce(async (...args) => {
+        const created = await actual.mkdir(...args);
+        await rm(indexDir, { recursive: true });
+        return created;
+      });
+
+    await expect(cache.set('late', entry())).resolves.toEqual({ evicted: 0 });
+
+    expect(mkdirMock.mock.calls.map(([path]) => path)).toEqual([join(indexDir, 'cache'), cacheDir]);
+    await expect(readdir(indexDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readdir(repoPath)).resolves.toEqual([]);
   });
 
   it('computes stable deterministic keys', () => {

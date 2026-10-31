@@ -19,6 +19,32 @@ afterEach(async () => {
   await fs.rm(storage, { recursive: true, force: true });
 });
 const directory = (name = 'active') => path.join(storage, 'generations', name);
+it('does not create missing storage when acquiring a pin', async () => {
+  await fs.rm(storage, { recursive: true });
+  await expect(acquireIndexGenerationPin(path.join(storage, 'lbug'))).rejects.toMatchObject({
+    code: 'ENOENT',
+  });
+  await expect(fs.lstat(storage)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+it('does not recreate removed storage when releasing a pin', async () => {
+  const pin = await acquireIndexGenerationPin(path.join(directory(), 'lbug'));
+  await fs.rm(storage, { recursive: true });
+  await expect(pin.release()).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(fs.lstat(storage)).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(pin.release()).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(fs.lstat(storage)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+it('creates and releases a pin in existing storage', async () => {
+  const pin = await acquireIndexGenerationPin(path.join(directory(), 'lbug'));
+  expect(pin.published).toBe(true);
+  expect(pin.dbPath).toBe(path.join(directory(), 'lbug'));
+  expect(
+    (await fs.readdir(directory())).filter((name) => name.startsWith('.reader-')),
+  ).toHaveLength(1);
+  await pin.release();
+  expect((await fs.readdir(directory())).filter((name) => name.startsWith('.reader-'))).toEqual([]);
+  await pin.release();
+});
 it('sweeps dead pins on every generation during acquire while preserving other entries', async () => {
   for (const name of ['active', 'unmanaged'])
     await fs.writeFile(path.join(directory(name), `.reader-${deadPid}-dead`), '');
