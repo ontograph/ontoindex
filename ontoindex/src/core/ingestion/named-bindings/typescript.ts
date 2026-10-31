@@ -8,7 +8,19 @@ export function extractTsNamedBindings(importNode: SyntaxNode): NamedBinding[] |
     const namespaceImport = findChild(importClause, 'namespace_import');
     if (namespaceImport) {
       const alias = findChild(namespaceImport, 'identifier');
-      return alias ? [{ local: alias.text, exported: '*', isModuleAlias: true }] : undefined;
+      if (!alias) return undefined;
+      const bindings: NamedBinding[] = [{ local: alias.text, exported: '*', isModuleAlias: true }];
+      // Retain explicit local namespace exports separately from private imports.
+      for (const statement of importNode.parent?.namedChildren ?? []) {
+        if (statement.type !== 'export_statement' || statement.childForFieldName('source'))
+          continue;
+        for (const specifier of findChild(statement, 'export_clause')?.namedChildren ?? []) {
+          if (specifier.childForFieldName('name')?.text !== alias.text) continue;
+          const exported = specifier.childForFieldName('alias')?.text ?? alias.text;
+          bindings.push({ local: `#export:${exported}`, exported: '*', isModuleAlias: true });
+        }
+      }
+      return bindings;
     }
     const namedImports = findChild(importClause, 'named_imports');
     if (!namedImports) return undefined; // default import or side-effect
@@ -32,6 +44,16 @@ export function extractTsNamedBindings(importNode: SyntaxNode): NamedBinding[] |
       }
     }
     return bindings.length > 0 ? bindings : undefined;
+  }
+
+  if (importNode.type === 'export_statement' && importNode.childForFieldName('source')) {
+    const namespace = findChild(importNode, 'namespace_export');
+    const alias = namespace && findChild(namespace, 'identifier');
+    if (alias) return [{ local: `#export:${alias.text}`, exported: '*', isModuleAlias: true }];
+    if (!findChild(importNode, 'export_clause')) {
+      // A source-qualified key preserves every export-star target in the existing map.
+      return [{ local: `*:${importNode.childForFieldName('source')!.text}`, exported: '*' }];
+    }
   }
 
   // Re-export: export { X } from './y' → export_statement > export_clause > export_specifier

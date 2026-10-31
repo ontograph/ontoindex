@@ -47,6 +47,7 @@ export interface NamedImportBinding {
  * / Rust / Java-static / ...). Used to tighten Tier 2a resolution:
  * `import { User } from './models'` means only `User` (not `Repo`) is
  * visible from models.ts via this import.
+ * TS/JS `*:<source>` keys retain source-bearing export-star bindings.
  */
 export type NamedImportMap = Map<string, Map<string, NamedImportBinding>>;
 
@@ -148,7 +149,8 @@ export const TIER_CONFIDENCE: Record<ResolutionTier, number> = {
 type ImportMap = Map<string, Set<string>>;
 type PackageMap = Map<string, Set<string>>;
 /** Maps callerFile → (moduleAlias → sourceFilePath) for namespace imports.
- *  e.g. `import models` in app.py → moduleAliasMap.get('app.py')?.get('models') === 'models.py' */
+ *  e.g. `import models` in app.py → moduleAliasMap.get('app.py')?.get('models') === 'models.py'.
+ *  TS/JS `#export:<name>` keys distinguish exported namespaces from private imports. */
 export type ModuleAliasMap = Map<string, Map<string, string>>;
 
 export interface ResolutionContext {
@@ -483,6 +485,59 @@ export const createResolutionContext = (options?: {
 
   // --- Core resolution (single implementation of tier logic) ---
 
+  const resolveNamespaceMember = (
+    name: string,
+    fromFile: string,
+  ): readonly SymbolDefinition[] | null => {
+    const visited = new Set<string>();
+    let remaining = 64;
+    let incomplete = false;
+    const walk = (
+      member: string,
+      file: string,
+      exported: boolean,
+      depth: number,
+    ): readonly SymbolDefinition[] => {
+      const key = `${file}:${member}:${exported}`;
+      if (visited.has(key)) return [];
+      if (depth > MAX_BINDING_CHAIN_DEPTH || --remaining < 0) {
+        incomplete = true;
+        return [];
+      }
+      visited.add(key);
+      const parts = member.split('.');
+      const head = parts[0];
+      const tail = parts.slice(1).join('.');
+      const bindings = namedImportMap.get(file);
+      const binding = bindings?.get(head);
+      if (tail) {
+        const source = moduleAliasMap.get(file)?.get(exported ? `#export:${head}` : head);
+        if (source) return walk(tail, source, true, depth + 1);
+        if (binding)
+          return walk(`${binding.exportedName}.${tail}`, binding.sourcePath, true, depth + 1);
+      } else {
+        const direct = symbols.lookupExactAll(file, head);
+        if (direct.length > 0) return direct;
+        if (binding) return walk(binding.exportedName, binding.sourcePath, true, depth + 1);
+      }
+      // Only source-bearing export-star evidence authorizes a barrel hop, never imports.
+      const candidates = new Map<string, SymbolDefinition>();
+      if (exported) {
+        for (const [local, target] of bindings ?? []) {
+          if (!local.startsWith('*:') || target.exportedName !== '*') continue;
+          for (const def of walk(member, target.sourcePath, true, depth + 1)) {
+            candidates.set(def.nodeId, def);
+          }
+        }
+      }
+      return [...candidates.values()];
+    };
+    // The initial namespace import does not consume a re-export hop.
+    const candidates = walk(name, fromFile, false, -1);
+    // Conflicting export-star owners are ambiguous; do not invent inheritance.
+    return !incomplete && candidates.length === 1 ? candidates : null;
+  };
+
   const resolveUncached = (name: string, fromFile: string): TieredCandidates | null => {
     // Tier 1: Same file — authoritative match (returns all overloads)
     const localDefs = symbols.lookupExactAll(fromFile, name);
@@ -494,24 +549,18 @@ export const createResolutionContext = (options?: {
     if (name.includes('.')) {
       const language = getLanguageFromFilename(fromFile);
       if (language === 'typescript' || language === 'javascript') {
-        // Only static Alias.Member access has namespace-import authority.
+        // Only static Alias.Member chains have namespace-import authority.
         // A missing alias/member must never fall through to name-only tiers.
         const qualified =
-          /^\s*([$\p{ID_Start}_][$\p{ID_Continue}\u200c\u200d]*)\s*\.\s*([$\p{ID_Start}_][$\p{ID_Continue}\u200c\u200d]*)\s*$/u.exec(
+          /^\s*[$\p{ID_Start}_][$\p{ID_Continue}\u200c\u200d]*(?:\s*\.\s*[$\p{ID_Start}_][$\p{ID_Continue}\u200c\u200d]*)+\s*$/u.test(
             name,
           );
-        const sourcePath = qualified && moduleAliasMap.get(fromFile)?.get(qualified[1]);
-        if (sourcePath) {
-          const member = qualified![2];
-          const direct = symbols.lookupExactAll(sourcePath, member);
-          const candidates =
-            direct.length > 0
-              ? direct
-              : walkBindingChain(member, sourcePath, symbols, namedImportMap);
-          if (candidates && candidates.length > 0) {
-            tierImportScoped++;
-            return { candidates, tier: 'import-scoped' };
-          }
+        const candidates = qualified
+          ? resolveNamespaceMember(name.replace(/\s+/g, ''), fromFile)
+          : null;
+        if (candidates && candidates.length > 0) {
+          tierImportScoped++;
+          return { candidates, tier: 'import-scoped' };
         }
         tierMiss++;
         return null;
