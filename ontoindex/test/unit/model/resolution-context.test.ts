@@ -8,6 +8,69 @@
 
 import { describe, it, expect } from 'vitest';
 import { createResolutionContext } from '../../../src/core/ingestion/model/resolution-context.js';
+import { buildHeritageMap } from '../../../src/core/ingestion/model/heritage-map.js';
+
+describe('ResolutionContext.resolve() — namespace imports', () => {
+  it.each(['ts', 'js', 'tsx', 'jsx'])(
+    'resolves only the mapped module in %s files',
+    (extension) => {
+      const ctx = createResolutionContext();
+      const caller = `src/app.${extension}`;
+      ctx.model.symbols.add('src/base.ts', 'Base', 'class:correct', 'Class');
+      ctx.model.symbols.add('src/other.ts', 'Base', 'class:other', 'Class');
+      ctx.model.symbols.add(caller, 'Base', 'class:local', 'Class');
+      ctx.moduleAliasMap.set(caller, new Map([['models', 'src/base.ts']]));
+      ctx.importMap.set(caller, new Set(['src/base.ts', 'src/other.ts']));
+
+      const result = ctx.resolve('models . Base', caller);
+      expect(result?.tier).toBe('import-scoped');
+      expect(result?.candidates.map((candidate) => candidate.nodeId)).toEqual(['class:correct']);
+      expect(ctx.resolve('unknown.Base', caller)).toBeNull();
+      expect(ctx.resolve('models.Missing', caller)).toBeNull();
+      expect(ctx.resolve('models.nested.Base', caller)).toBeNull();
+    },
+  );
+
+  it('follows named barrel reexports and supports Unicode identifiers', () => {
+    const ctx = createResolutionContext();
+    ctx.moduleAliasMap.set('app.ts', new Map([['模型', 'index.ts']]));
+    ctx.namedImportMap.set(
+      'index.ts',
+      new Map([['基类', { sourcePath: 'base.ts', exportedName: 'Original' }]]),
+    );
+    ctx.model.symbols.add('base.ts', 'Original', 'class:original', 'Class');
+    expect(
+      ctx.resolve('模型.基类', 'app.ts')?.candidates.map((candidate) => candidate.nodeId),
+    ).toEqual(['class:original']);
+  });
+
+  it('does not recover unresolved qualified parents from global heritage lookup', () => {
+    const ctx = createResolutionContext();
+    ctx.model.symbols.add('app.ts', 'Child', 'class:child', 'Class');
+    ctx.model.symbols.add('other.ts', 'unknown.Base', 'class:wrong', 'Class');
+    const heritage = buildHeritageMap(
+      [{ filePath: 'app.ts', className: 'Child', parentName: 'unknown.Base', kind: 'extends' }],
+      ctx,
+    );
+    expect(heritage.getParents('class:child')).toEqual([]);
+  });
+
+  it('preserves qualified-name resolution for other languages', () => {
+    const ctx = createResolutionContext();
+    ctx.model.symbols.add('app.cs', 'Models.Base', 'class:csharp', 'Class');
+    expect(ctx.resolve('Models.Base', 'app.cs')?.candidates[0].nodeId).toBe('class:csharp');
+  });
+
+  it('preserves authoritative same-file full-name matches before namespace lookup', () => {
+    const ctx = createResolutionContext();
+    ctx.model.symbols.add('app.ts', 'Models.Base', 'class:local', 'Class');
+    ctx.model.symbols.add('base.ts', 'Base', 'class:imported', 'Class');
+    ctx.moduleAliasMap.set('app.ts', new Map([['Models', 'base.ts']]));
+    const result = ctx.resolve('Models.Base', 'app.ts');
+    expect(result?.tier).toBe('same-file');
+    expect(result?.candidates.map((candidate) => candidate.nodeId)).toEqual(['class:local']);
+  });
+});
 
 describe('ResolutionContext registration observation', () => {
   it('retains publication authority across cache resets and releases it on clear', () => {

@@ -30,9 +30,9 @@ const nativeArtifactReady = (artifact) => {
     return false;
   }
 };
-// The addon is gitignored, so a fresh checkout (CI, `npm ci` via `prepare`) has none. Native file
-// locking is Linux-only, so only Linux builds it; other platforms skip it and never load it.
-if (!NATIVE_ARTIFACTS.every(nativeArtifactReady) && process.platform === 'linux') {
+// Cargo owns freshness, including source changes behind an existing gitignored addon.
+// Native file locking is Linux-only, so other platforms skip the build.
+if (process.platform === 'linux') {
   console.log('[build] building ontoindex-native (cargo build --release)...');
   execSync('npm run build', {
     cwd: NATIVE_ROOT,

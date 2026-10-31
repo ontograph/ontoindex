@@ -4,6 +4,13 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-10-31
+
+- TypeScript and JavaScript namespace imports resolve static inheritance such as `class Child extends models.Base`, including named barrel reexports. Resolution preserves same-file precedence and avoids unrelated classes when an alias or member is missing.
+- Linux builds always ask Cargo to validate native-addon freshness and copy the artifact reported by Cargo, including custom target directories. This prevents stale native-addon reuse; cross-host byte reproducibility is not guaranteed.
+- Added regression coverage for imported and aliased ancestry, cross-language homonyms, Rust `values_mut()` receivers, and native build failures.
+- Includes the single-prepared-statement Cypher read enforcement added after 2.3.22.
+
 ## [2.3.22] - 2026-10-31
 
 - Inherited-method calls no longer bind to a same-named class in another file or another language. Before, the ancestor map used for method lookup linked every class with the child's name to every class with the parent's name across the whole repository. With `class Foo extends Base` in `a.ts` and a Python `class Base` in `b.py`, `f.greet()` on a `Foo` resolved to `b.py:Base.greet` at confidence 0.95; with two `Base` classes in `x/base.ts` and `y/base.ts`, the call could pick the one `Foo` does not import. The parent is now resolved through the declaring file's imports, the child is taken from its declaring file, and fallbacks stay within the same language family (JavaScript/TypeScript, C/C++). C# partial classes and Ruby reopenings still share ancestry across their files.

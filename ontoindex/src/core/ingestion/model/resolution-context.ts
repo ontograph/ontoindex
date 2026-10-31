@@ -18,7 +18,7 @@
  *   (three O(1) index lookups with a narrow, type-specific result set).
  */
 
-import type { SymbolDefinition } from 'ontoindex-shared';
+import { getLanguageFromFilename, type SymbolDefinition } from 'ontoindex-shared';
 import { isProxy } from 'node:util/types';
 import type { SymbolTableReader } from './symbol-table.js';
 import type { MutableSemanticModel } from './semantic-model.js';
@@ -147,7 +147,7 @@ export const TIER_CONFIDENCE: Record<ResolutionTier, number> = {
 // --- Map types ---
 type ImportMap = Map<string, Set<string>>;
 type PackageMap = Map<string, Set<string>>;
-/** Maps callerFile → (moduleAlias → sourceFilePath) for Python namespace imports.
+/** Maps callerFile → (moduleAlias → sourceFilePath) for namespace imports.
  *  e.g. `import models` in app.py → moduleAliasMap.get('app.py')?.get('models') === 'models.py' */
 export type ModuleAliasMap = Map<string, Map<string, string>>;
 
@@ -172,7 +172,7 @@ export interface ResolutionContext {
   readonly importMap: ImportMap;
   readonly packageMap: PackageMap;
   readonly namedImportMap: NamedImportMap;
-  /** Module-alias map for Python namespace imports: callerFile → (alias → sourceFile). */
+  /** Module-alias map for namespace imports: callerFile → (alias → sourceFile). */
   readonly moduleAliasMap: ModuleAliasMap;
   /** Exact per-site authority prepared once before calls and retained through refinement. */
   scopeCallPublication?: ScopeCallPublication;
@@ -489,6 +489,33 @@ export const createResolutionContext = (options?: {
     if (localDefs.length > 0) {
       tierSameFile++;
       return { candidates: localDefs, tier: 'same-file' };
+    }
+
+    if (name.includes('.')) {
+      const language = getLanguageFromFilename(fromFile);
+      if (language === 'typescript' || language === 'javascript') {
+        // Only static Alias.Member access has namespace-import authority.
+        // A missing alias/member must never fall through to name-only tiers.
+        const qualified =
+          /^\s*([$\p{ID_Start}_][$\p{ID_Continue}\u200c\u200d]*)\s*\.\s*([$\p{ID_Start}_][$\p{ID_Continue}\u200c\u200d]*)\s*$/u.exec(
+            name,
+          );
+        const sourcePath = qualified && moduleAliasMap.get(fromFile)?.get(qualified[1]);
+        if (sourcePath) {
+          const member = qualified![2];
+          const direct = symbols.lookupExactAll(sourcePath, member);
+          const candidates =
+            direct.length > 0
+              ? direct
+              : walkBindingChain(member, sourcePath, symbols, namedImportMap);
+          if (candidates && candidates.length > 0) {
+            tierImportScoped++;
+            return { candidates, tier: 'import-scoped' };
+          }
+        }
+        tierMiss++;
+        return null;
+      }
     }
 
     // Tier 2a-named: Named binding chain (aliased / re-exported imports)

@@ -5,7 +5,7 @@
   "description": "Optional native kernels for OntoIndex prototypes.",
   "main": "index.cjs",
   "scripts": {
-    "build": "cargo build --release && node scripts/copy-native.cjs",
+    "build": "node scripts/copy-native.cjs",
     "test": "npm run build && node test/native-csv-writer.test.cjs"
   },
   "files": [

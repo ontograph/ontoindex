@@ -220,7 +220,9 @@ export const buildHeritageMap = (
     const parentDefs =
       resolvedParents.length > 0
         ? resolvedParents
-        : ctx.model.types.lookupClassByName(h.parentName).filter(sameLanguage);
+        : family === 'js' && h.parentName.includes('.')
+          ? []
+          : ctx.model.types.lookupClassByName(h.parentName).filter(sameLanguage);
 
     if (childDefs.length > 0 && parentDefs.length > 0) {
       for (const child of childDefs) {
