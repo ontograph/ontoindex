@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Release gate: a commit that changes the ontoindex package version must
+# match a tree stamped by scripts/verify-release.sh (unit + integration).
+# Applies to [skip ci] and local-only releases, which no workflow tests.
+if ! git diff --cached -U0 -- ontoindex/package.json | grep -q '^+[[:space:]]*"version"'; then
+  exit 0
+fi
+STAMP="$(git rev-parse --git-path ontoindex-release-verified)"
+TREE="$(git write-tree)"
+if [ "$(cat "$STAMP" 2>/dev/null)" != "$TREE" ]; then
+  echo "commit-msg: version bump without a passing test run for this staged tree."
+  echo "Run scripts/verify-release.sh with the release fully staged, then commit again."
+  exit 1
+fi

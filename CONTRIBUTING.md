@@ -132,15 +132,18 @@ If you use coding agents, follow project context files (e.g. `AGENTS.md`, `CLAUD
 
 ## Releases
 
-Before you create a release commit, run the full unit suite on the release
-candidate and continue only when it reports no failures:
+Before you create a release commit, stage the complete release (version bump,
+changelog, lockfile) and run the release gate:
 
 ```bash
-cd ontoindex && npm run test:unit
+scripts/verify-release.sh
 ```
 
-This applies to local-only releases and to any commit marked `[skip ci]`,
-because no workflow runs the suite for those commits.
+It builds the package and runs the unit and integration suites, then records
+the staged tree that passed. The `commit-msg` hook refuses any commit that
+changes the `ontoindex/package.json` version unless its staged tree matches
+that record. This covers local-only releases and `[skip ci]` commits, which no
+workflow tests. Restaging anything afterwards requires another run.
 
 Two publish workflows ship `ontoindex` to npm:
 
