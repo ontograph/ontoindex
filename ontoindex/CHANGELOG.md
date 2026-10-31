@@ -4,6 +4,12 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.4.5] - 2026-11-01
+
+- TypeScript and JavaScript namespace inheritance follows explicit exports and distinguishes local imports from same-named source reexports. Private declarations no longer create false inheritance or inherited-call edges; exported aliases and default exports retain their coverage.
+- The release commit hook compares parsed manifest versions, so JSON formatting cannot bypass version-change validation.
+- Release verification checks tracked inputs again after the build and test suites, and refuses to stamp a staged tree when those inputs changed during validation.
+
 ## [2.4.4] - 2026-10-31
 
 - Releasing a generation read pin after `ontoindex clean` treats the missing pin, generation, or storage as already released instead of failing with `ENOENT`. Before this fix, a running MCP server that held a pin on a cleaned index rejected every later query for that repository until it restarted, even after the index was rebuilt. Release still never recreates removed storage.
