@@ -194,28 +194,47 @@ describe('explicit committed navigation over MCP', () => {
   });
 
   it.each(calls)(
-    'serves indexed evidence for $name while default preparation refuses',
+    'serves indexed evidence for $name above the workspace cap',
     async (call) => {
       const defaultResult = await client.callTool({
         ...call,
         arguments: { ...call.arguments, repo: repoName },
       });
-      expect(defaultResult.isError).toBe(true);
-      expect(payloadOf(defaultResult)).toMatchObject({
-        error: 'workspace_preparation_failed: workspace_too_large',
-        code: 'workspace_too_large',
-        retryable: false,
-        remediation: { read_mode: 'committed' },
-        diagnostics: {
-          observedIndexedFiles: 2,
-          maxIndexedFiles: 1,
-          requiredCapability: 'workspace-graph',
-        },
-      });
-      expect(payloadOf(defaultResult).remediation.message).toContain('Uncommitted source changes');
-      expect(payloadOf(defaultResult).remediation.message).toContain(
-        'Do not automatically retry or reindex',
-      );
+      const defaultPayload = payloadOf(defaultResult);
+      if (call.name === 'gn_explore') {
+        expect(defaultResult.isError).toBe(true);
+        expect(defaultPayload).toMatchObject({
+          error: 'workspace_preparation_failed: workspace_too_large',
+          code: 'workspace_too_large',
+          retryable: false,
+          remediation: { read_mode: 'committed' },
+          diagnostics: {
+            observedIndexedFiles: 2,
+            maxIndexedFiles: 1,
+            requiredCapability: 'workspace-graph',
+          },
+        });
+        expect(defaultPayload.remediation.message).toContain('Uncommitted source changes');
+        expect(defaultPayload.remediation.message).toContain('Do not automatically retry or reindex');
+      } else {
+        // Backend navigation falls back to committed evidence since 2.3.15 (#155).
+        expect(defaultResult.isError, JSON.stringify(defaultResult)).not.toBe(true);
+        expect(defaultPayload.readContext).toMatchObject({
+          mode: 'committed',
+          indexedCommit: committedSha,
+          workingTreeIncluded: false,
+        });
+        expect(defaultPayload.warnings).toEqual(
+          expect.arrayContaining([
+            expect.stringContaining('workspace_too_large'),
+            expect.stringContaining('answered from the committed index'),
+            expect.stringContaining('src/base.ts'),
+          ]),
+        );
+        expect(JSON.stringify(defaultPayload)).toContain('baseline');
+        expect(JSON.stringify(defaultPayload)).not.toContain('dirtyOnly');
+        expect(JSON.stringify(defaultPayload)).not.toContain('DIRTY_MARKER');
+      }
       const result = await client.callTool({
         ...call,
         arguments: { ...call.arguments, repo: repoName, read_mode: 'committed' },
@@ -586,7 +605,7 @@ describe('explicit committed navigation over MCP', () => {
     }
   });
 
-  it('isolates concurrent committed and workspace requests', async () => {
+  it('isolates explicit committed reads from concurrent default fallback', async () => {
     const call = calls[1];
     const [committed, workspace] = await Promise.all([
       client.callTool({
@@ -596,8 +615,22 @@ describe('explicit committed navigation over MCP', () => {
       client.callTool({ ...call, arguments: { ...call.arguments, repo: repoName } }),
     ]);
     expect(committed.isError, JSON.stringify(committed)).not.toBe(true);
-    expect(workspace.isError).toBe(true);
-    expect(JSON.stringify(workspace)).toContain('workspace_too_large');
+    expect(workspace.isError, JSON.stringify(workspace)).not.toBe(true);
+    for (const result of [committed, workspace]) {
+      expect(payloadOf(result).readContext).toMatchObject({
+        mode: 'committed',
+        indexedCommit: committedSha,
+        workingTreeIncluded: false,
+      });
+      expect(JSON.stringify(result)).not.toContain('dirtyOnly');
+      expect(JSON.stringify(result)).not.toContain('DIRTY_MARKER');
+    }
+    expect(payloadOf(workspace).warnings).toContainEqual(
+      expect.stringContaining('workspace_too_large'),
+    );
+    expect(payloadOf(committed).warnings).not.toContainEqual(
+      expect.stringContaining('workspace_too_large'),
+    );
   });
 
   it('excludes dirty parsing when automatic workspace is disabled', async () => {
