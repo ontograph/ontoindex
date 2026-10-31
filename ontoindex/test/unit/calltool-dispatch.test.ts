@@ -1008,7 +1008,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('dispatches cypher tool with valid read query', async () => {
-    (executeQuery as any).mockResolvedValue([{ name: 'test', filePath: 'src/test.ts' }]);
+    (executeParameterized as any).mockResolvedValue([{ name: 'test', filePath: 'src/test.ts' }]);
     const result = await backend.callTool('cypher', {
       query: 'MATCH (n:Function) RETURN n.name AS name, n.filePath AS filePath LIMIT 5',
     });
@@ -1805,7 +1805,7 @@ describe('callTool cypher write blocking', () => {
   }
 
   it('allows read query through callTool', async () => {
-    (executeQuery as any).mockResolvedValue([]);
+    (executeParameterized as any).mockResolvedValue([]);
     const result = await backend.callTool('cypher', {
       query: 'MATCH (n:Function) RETURN n.name LIMIT 5',
     });
@@ -1904,7 +1904,7 @@ describe('cypher result formatting', () => {
   });
 
   it('formats tabular results as markdown table', async () => {
-    (executeQuery as any).mockResolvedValue([
+    (executeParameterized as any).mockResolvedValue([
       { name: 'main', filePath: 'src/index.ts' },
       { name: 'helper', filePath: 'src/utils.ts' },
     ]);
@@ -1918,7 +1918,7 @@ describe('cypher result formatting', () => {
   });
 
   it('preserves empty array results without repo identity wrapping', async () => {
-    (executeQuery as any).mockResolvedValue([]);
+    (executeParameterized as any).mockResolvedValue([]);
     const result = await backend.callTool('cypher', {
       query: 'MATCH (n:Function) RETURN n.name LIMIT 1',
     });
@@ -1926,9 +1926,9 @@ describe('cypher result formatting', () => {
   });
 
   it('returns error object when cypher fails', async () => {
-    (executeQuery as any).mockRejectedValue(new Error('Syntax error'));
+    (executeParameterized as any).mockRejectedValue(new Error('Syntax error'));
     const result = await backend.callTool('cypher', {
-      query: 'INVALID CYPHER SYNTAX LIMIT 1',
+      query: 'MATCH (n:Missing) RETURN n LIMIT 1',
     });
     expect(result).toHaveProperty('error');
     expect(result.error).toContain('Syntax error');

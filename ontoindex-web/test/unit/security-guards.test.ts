@@ -8,7 +8,6 @@ import { NODE_TABLES, REL_TYPES } from 'ontoindex-shared';
 // Source locations:
 //   validLabel / validRelType  -- ontoindex-web/src/core/llm/tools.ts
 //   isSafeId                   -- ontoindex-web/src/components/ProcessesPanel.tsx
-//   readOnly guard (regex)     -- ontoindex-web/src/core/lbug/lbug-adapter.ts
 // ---------------------------------------------------------------------------
 
 const validLabel = (label: string): boolean => (NODE_TABLES as readonly string[]).includes(label);
@@ -16,11 +15,6 @@ const validLabel = (label: string): boolean => (NODE_TABLES as readonly string[]
 const validRelType = (t: string): boolean => (REL_TYPES as readonly string[]).includes(t);
 
 const isSafeId = (id: string): boolean => /^[a-zA-Z0-9_:.\-/@]+$/.test(id);
-
-const isWriteQuery = (cypher: string): boolean => {
-  const stripped = cypher.replace(/'[^']*'|"[^"]*"/g, '').toUpperCase();
-  return /\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|DETACH)\b/.test(stripped);
-};
 
 // ===========================================================================
 // validLabel
@@ -173,74 +167,5 @@ describe('isSafeId – identifier allowlist regex', () => {
     ['embedded backtick', 'id`inject'],
   ])('rejects id containing metacharacter: %s', (_desc, id) => {
     expect(isSafeId(id)).toBe(false);
-  });
-});
-
-// ===========================================================================
-// readOnly guard – write-operation regex
-// ===========================================================================
-describe('readOnly guard – write-operation detection', () => {
-  describe('allows read-only queries (should NOT match)', () => {
-    it.each([
-      ['simple match', 'MATCH (n) RETURN n'],
-      ['filtered match', 'MATCH (n:Function) WHERE n.name = "test" RETURN n'],
-      ['with relationship', 'MATCH (a)-[r:CodeRelation]->(b) RETURN a, r, b'],
-      ['with count', 'MATCH (n) RETURN count(n)'],
-      ['with ordering', 'MATCH (n) RETURN n ORDER BY n.name LIMIT 10'],
-      ['call procedure', 'CALL db.schema.nodeTypeProperties()'],
-    ])('%s', (_desc, cypher) => {
-      expect(isWriteQuery(cypher)).toBe(false);
-    });
-  });
-
-  describe('blocks write operations (should match)', () => {
-    it.each([
-      ['DELETE node', 'MATCH (n) DELETE n'],
-      ['CREATE node', 'CREATE (n:Test)'],
-      ['SET property', 'MATCH (n) SET n.x = 1'],
-      ['MERGE node', 'MERGE (n:Test {id: "1"})'],
-      ['REMOVE property', 'MATCH (n) REMOVE n.x'],
-      ['DETACH DELETE', 'MATCH (n) DETACH DELETE n'],
-      ['DROP (DDL)', 'DROP TABLE x'],
-    ])('%s', (_desc, cypher) => {
-      expect(isWriteQuery(cypher)).toBe(true);
-    });
-  });
-
-  describe('handles tricky cases', () => {
-    it('detects write keyword even when embedded in longer query', () => {
-      const cypher = 'MATCH (n:Function) WHERE n.name = "handler" DELETE n';
-      expect(isWriteQuery(cypher)).toBe(true);
-    });
-
-    it('detects mixed-case write keywords via toUpperCase()', () => {
-      expect(isWriteQuery('match (n) delete n')).toBe(true);
-      expect(isWriteQuery('Match (n) Set n.x = 1')).toBe(true);
-    });
-
-    // Keywords inside quoted strings are stripped before checking,
-    // so they don't trigger false positives.
-    it('allows "delete" inside a quoted string value', () => {
-      expect(isWriteQuery('MATCH (n) WHERE n.name CONTAINS "delete" RETURN n')).toBe(false);
-    });
-
-    it('allows "CREATE" inside single-quoted string', () => {
-      expect(isWriteQuery("MATCH (n) WHERE n.name = 'CREATE_USER' RETURN n")).toBe(false);
-    });
-
-    it('still blocks DELETE outside quotes', () => {
-      expect(isWriteQuery('MATCH (n) WHERE n.name = "foo" DELETE n')).toBe(true);
-    });
-
-    // Verify the word-boundary prevents false positives on substrings that
-    // are NOT Cypher write keywords.
-    it('does not match partial keywords like "CREATED" or "SETTING"', () => {
-      expect(isWriteQuery('MATCH (n) WHERE n.status = "CREATED" RETURN n')).toBe(false);
-      expect(isWriteQuery('MATCH (n) WHERE n.label = "SETTING" RETURN n')).toBe(false);
-    });
-
-    it('does not flag the word "create" inside a property name like "createdAt"', () => {
-      expect(isWriteQuery('MATCH (n) RETURN n.createdAt')).toBe(false);
-    });
   });
 });

@@ -1478,7 +1478,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
         try {
           const lbugPath = await resolveActiveLbugPath(entry.storagePath);
-          const result = await withLbugDb(lbugPath, () => executeQuery(cypher));
+          // Prepared execution: the engine refuses a second statement instead of running it.
+          const result = await withLbugDb(lbugPath, () => executePrepared(cypher, {}));
           return { status: 200, body: { result } };
         } finally {
           releaseRepoReadLock(repoStoragePath);

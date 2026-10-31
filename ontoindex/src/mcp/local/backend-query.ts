@@ -201,7 +201,7 @@ export async function queryCypher(
   if (isWriteQuery(params.query)) {
     return {
       error:
-        'Write operations (CREATE, DELETE, SET, MERGE, REMOVE, DROP, ALTER, COPY, DETACH, FOREACH, INSTALL, LOAD, EXPORT, IMPORT, ATTACH, USE, CHECKPOINT) and multiple statements are not allowed. The knowledge graph is read-only.',
+        'Write operations and non-read statements are not allowed. Send one statement that starts with MATCH, OPTIONAL MATCH, WITH, UNWIND, RETURN, or CALL <function>(...). The knowledge graph is read-only.',
     };
   }
 
@@ -209,7 +209,8 @@ export async function queryCypher(
   if (limitError) return { error: limitError };
 
   try {
-    return await executeQuery(repo.id, params.query);
+    // Prepared execution: the engine refuses a second statement instead of running it.
+    return await executeParameterized(repo.id, params.query, {});
   } catch (err) {
     return { error: errorMessage(err, 'Query failed') };
   }

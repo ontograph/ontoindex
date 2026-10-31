@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const poolMocks = vi.hoisted(() => ({
-  executeQuery: vi.fn(),
+  executeParameterized: vi.fn(),
   isLbugReady: vi.fn(),
   isWriteQuery: vi.fn(),
 }));
 
 vi.mock('../../src/core/lbug/pool-adapter.js', () => ({
-  executeParameterized: vi.fn(),
-  executeQuery: poolMocks.executeQuery,
+  executeParameterized: poolMocks.executeParameterized,
+  executeQuery: vi.fn(),
   isLbugReady: poolMocks.isLbugReady,
   isWriteQuery: poolMocks.isWriteQuery,
 }));
@@ -20,7 +20,7 @@ describe('MCP Cypher query limits', () => {
     vi.clearAllMocks();
     poolMocks.isLbugReady.mockReturnValue(true);
     poolMocks.isWriteQuery.mockReturnValue(false);
-    poolMocks.executeQuery.mockResolvedValue([{ ok: true }]);
+    poolMocks.executeParameterized.mockResolvedValue([{ ok: true }]);
   });
 
   it('rejects raw Cypher without LIMIT before executing it', async () => {
@@ -29,7 +29,7 @@ describe('MCP Cypher query limits', () => {
     expect(result).toEqual({
       error: 'MCP Cypher queries must include LIMIT 5000 or lower',
     });
-    expect(poolMocks.executeQuery).not.toHaveBeenCalled();
+    expect(poolMocks.executeParameterized).not.toHaveBeenCalled();
   });
 
   it('rejects raw Cypher above the configured maximum', () => {
@@ -44,7 +44,7 @@ describe('MCP Cypher query limits', () => {
     expect(result).toEqual({
       error: 'MCP Cypher query LIMIT 5001 exceeds maximum 5000',
     });
-    expect(poolMocks.executeQuery).not.toHaveBeenCalled();
+    expect(poolMocks.executeParameterized).not.toHaveBeenCalled();
   });
 
   it('ignores LIMIT inside string literals before executing it', async () => {
@@ -56,7 +56,7 @@ describe('MCP Cypher query limits', () => {
     expect(result).toEqual({
       error: 'MCP Cypher queries must include LIMIT 5000 or lower',
     });
-    expect(poolMocks.executeQuery).not.toHaveBeenCalled();
+    expect(poolMocks.executeParameterized).not.toHaveBeenCalled();
   });
 
   it('ignores LIMIT inside comments before executing it', async () => {
@@ -65,7 +65,7 @@ describe('MCP Cypher query limits', () => {
     expect(result).toEqual({
       error: 'MCP Cypher queries must include LIMIT 5000 or lower',
     });
-    expect(poolMocks.executeQuery).not.toHaveBeenCalled();
+    expect(poolMocks.executeParameterized).not.toHaveBeenCalled();
   });
 
   it('rejects subquery-only LIMIT before executing it', async () => {
@@ -77,14 +77,18 @@ describe('MCP Cypher query limits', () => {
     expect(result).toEqual({
       error: 'MCP Cypher queries must include LIMIT 5000 or lower',
     });
-    expect(poolMocks.executeQuery).not.toHaveBeenCalled();
+    expect(poolMocks.executeParameterized).not.toHaveBeenCalled();
   });
 
   it('executes read-only Cypher when LIMIT is bounded', async () => {
     const result = await queryCypher({ id: 'repo' }, { query: 'MATCH (n) RETURN n LIMIT 25' });
 
     expect(result).toEqual([{ ok: true }]);
-    expect(poolMocks.executeQuery).toHaveBeenCalledWith('repo', 'MATCH (n) RETURN n LIMIT 25');
+    expect(poolMocks.executeParameterized).toHaveBeenCalledWith(
+      'repo',
+      'MATCH (n) RETURN n LIMIT 25',
+      {},
+    );
   });
 
   it('executes read-only Cypher when a property named limit precedes the result LIMIT', async () => {
@@ -92,7 +96,7 @@ describe('MCP Cypher query limits', () => {
     const result = await queryCypher({ id: 'repo' }, { query });
 
     expect(result).toEqual([{ ok: true }]);
-    expect(poolMocks.executeQuery).toHaveBeenCalledWith('repo', query);
+    expect(poolMocks.executeParameterized).toHaveBeenCalledWith('repo', query, {});
   });
 
   it('executes read-only Cypher when a subquery and top-level result LIMIT are bounded', async () => {
@@ -100,6 +104,6 @@ describe('MCP Cypher query limits', () => {
     const result = await queryCypher({ id: 'repo' }, { query });
 
     expect(result).toEqual([{ ok: true }]);
-    expect(poolMocks.executeQuery).toHaveBeenCalledWith('repo', query);
+    expect(poolMocks.executeParameterized).toHaveBeenCalledWith('repo', query, {});
   });
 });

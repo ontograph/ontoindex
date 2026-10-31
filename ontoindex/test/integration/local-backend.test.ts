@@ -235,12 +235,12 @@ withTestLbugDB(
         expect(isWriteQuery('MATCH (n)\nDELETE n')).toBe(true);
       });
 
-      it('returns false for empty string', () => {
-        expect(isWriteQuery('')).toBe(false);
+      it('treats an empty string as non-read (fail closed)', () => {
+        expect(isWriteQuery('')).toBe(true);
       });
 
-      it('returns false for whitespace-only query', () => {
-        expect(isWriteQuery('   ')).toBe(false);
+      it('treats a whitespace-only query as non-read (fail closed)', () => {
+        expect(isWriteQuery('   ')).toBe(true);
       });
     });
 

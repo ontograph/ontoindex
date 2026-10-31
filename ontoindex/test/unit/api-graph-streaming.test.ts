@@ -355,8 +355,8 @@ describe('runApiQueryWithGuards', () => {
     expect(lbugMocks.executeQuery).not.toHaveBeenCalled();
   });
 
-  it('rejects HTTP API queries with only subquery LIMIT before executing them', async () => {
-    const query = 'CALL { MATCH (n) RETURN n LIMIT 1 } RETURN n';
+  it('rejects HTTP API queries whose only LIMIT is inside a comment before executing them', async () => {
+    const query = 'MATCH (n) WITH n, [x IN [1] | x] AS l RETURN n // LIMIT 1';
     const result = await runApiQueryWithGuards(query, async () => {
       await lbugMocks.executeQuery(query);
       return { status: 200, body: { result: [] } };
@@ -365,6 +365,20 @@ describe('runApiQueryWithGuards', () => {
     expect(result).toEqual({
       status: 400,
       body: { error: 'HTTP API queries must include LIMIT 5000 or lower' },
+    });
+    expect(lbugMocks.executeQuery).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-read statement as a write before the LIMIT check', async () => {
+    const query = 'CALL { MATCH (n) RETURN n LIMIT 1 } RETURN n LIMIT 5';
+    const result = await runApiQueryWithGuards(query, async () => {
+      await lbugMocks.executeQuery(query);
+      return { status: 200, body: { result: [] } };
+    });
+
+    expect(result).toEqual({
+      status: 403,
+      body: { error: 'Write queries are not allowed via the HTTP API' },
     });
     expect(lbugMocks.executeQuery).not.toHaveBeenCalled();
   });
