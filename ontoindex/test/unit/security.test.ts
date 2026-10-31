@@ -14,7 +14,11 @@ import {
   VALID_NODE_LABELS,
   isTestFilePath,
 } from '../../src/mcp/local/local-backend.js';
-import { CYPHER_WRITE_RE, isWriteQuery } from '../../src/mcp/core/lbug-adapter.js';
+import {
+  CYPHER_WRITE_RE,
+  getCypherReadOnlyError,
+  isWriteQuery,
+} from '../../src/mcp/core/lbug-adapter.js';
 
 // ─── Write-operation blocking (CYPHER_WRITE_RE) ──────────────────────
 
@@ -152,6 +156,56 @@ describe('isWriteQuery', () => {
       isWriteQuery("CALL QUERY_FTS_INDEX('Function', 'idx', 'auth') RETURN node LIMIT 5"),
     ).toBe(false);
     expect(isWriteQuery('  /* note */ match (n) RETURN n LIMIT 1')).toBe(false);
+  });
+});
+
+describe('getCypherReadOnlyError', () => {
+  it.each([
+    ['RETURN 1 /* secret-value', 'unterminated block comment'],
+    ["RETURN 'secret-value", 'unterminated quoted text or identifier'],
+    ['RETURN "secret-value', 'unterminated quoted text or identifier'],
+    ['RETURN 1 AS `secret-value', 'unterminated quoted text or identifier'],
+    ['RETURN 1; RETURN 2', 'multiple statements'],
+    ['RETURN 1 AS cReAtE LIMIT 1', 'forbidden keyword CREATE'],
+    ['EXPORT DATABASE "secret-value"', 'forbidden keyword EXPORT'],
+    ['EXPLAIN MATCH (n) RETURN n LIMIT 1', 'unsupported opening clause'],
+    ['PROFILE MATCH (n) RETURN n LIMIT 1', 'unsupported opening clause'],
+    ['CALL db.labels() RETURN label LIMIT 1', 'unsupported opening clause'],
+    ['CALL threads=1', 'unsupported opening clause'],
+    ['', 'unsupported opening clause'],
+  ])('identifies the rejected rule without echoing query text: %s', (query, reason) => {
+    const error = getCypherReadOnlyError(query);
+
+    expect(error).toContain(reason);
+    expect(error).not.toContain('secret-value');
+    expect(isWriteQuery(query)).toBe(true);
+  });
+
+  it('explains how to fix a forbidden keyword alias', () => {
+    expect(getCypherReadOnlyError('RETURN 1 AS create LIMIT 1')).toBe(
+      'Read-only Cypher rejected: forbidden keyword CREATE. If used as an alias or identifier, quote it with backticks or rename it.',
+    );
+  });
+
+  it('names unsupported diagnostic prefixes and dotted CALL names', () => {
+    expect(getCypherReadOnlyError('EXPLAIN RETURN 1')).toContain(
+      'EXPLAIN, PROFILE, and dotted CALL names are unsupported.',
+    );
+  });
+
+  it.each([
+    'RETURN 1 AS `create` LIMIT 1',
+    'RETURN 1 AS `escaped``create` LIMIT 1',
+    'RETURN "CREATE; secret-value" AS text LIMIT 1',
+    'MATCH (n:Import) RETURN n.use LIMIT 1;',
+    '/* CREATE */ MATCH (n) RETURN n LIMIT 1 // DELETE',
+    "CALL QUERY_FTS_INDEX('Function', 'idx', 'auth') RETURN node LIMIT 5",
+    'OPTIONAL MATCH (n) RETURN n LIMIT 1',
+    'WITH 1 AS x RETURN x LIMIT 1',
+    'UNWIND [1, 2] AS x RETURN x LIMIT 2',
+  ])('preserves an accepted read: %s', (query) => {
+    expect(getCypherReadOnlyError(query)).toBeNull();
+    expect(isWriteQuery(query)).toBe(false);
   });
 });
 

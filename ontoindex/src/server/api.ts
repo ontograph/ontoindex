@@ -37,7 +37,7 @@ import {
   type LbugProjectionRows,
   type LbugQueryParams,
 } from '../core/lbug/lbug-adapter.js';
-import { isWriteQuery } from '../core/lbug/pool-adapter.js';
+import { getCypherReadOnlyError } from '../core/lbug/pool-adapter.js';
 import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'ontoindex-shared';
 import {
   SUMMARY_NODE_TABLES,
@@ -269,8 +269,9 @@ export async function runApiQueryWithGuards(
   cypher: string,
   execute: () => Promise<ApiQueryRouteResponse>,
 ): Promise<ApiQueryRouteResponse> {
-  if (isWriteQuery(cypher)) {
-    return { status: 403, body: { error: 'Write queries are not allowed via the HTTP API' } };
+  const readOnlyError = getCypherReadOnlyError(cypher);
+  if (readOnlyError) {
+    return { status: 403, body: { error: readOnlyError } };
   }
 
   const limitError = validateApiQueryLimit(cypher);

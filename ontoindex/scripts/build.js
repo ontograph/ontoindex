@@ -22,7 +22,12 @@ const SHARED_DEST = path.join(DIST, '_shared');
 const DIST_SUPER_DISPATCH = path.join(DIST, 'mcp', 'super', 'dispatch.js');
 const LADYBUG_EXTENSIONS_VERSION = 'v0.17.0';
 const NATIVE_ROOT = path.resolve(ROOT, '..', 'ontoindex-native');
-const NATIVE_ARTIFACTS = ['index.cjs', 'native.cjs', 'native/ontoindex_native.node'];
+const NATIVE_ARTIFACTS = [
+  'index.cjs',
+  'native.cjs',
+  'native/ontoindex_native.node',
+  'native/build-provenance.json',
+];
 const nativeArtifactReady = (artifact) => {
   try {
     return fs.statSync(path.join(NATIVE_ROOT, artifact)).isFile();

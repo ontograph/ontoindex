@@ -349,8 +349,9 @@ async function migrateLegacyGeneration(storagePath: string): Promise<void> {
 async function withGenerationPointerLock<T>(
   storagePath: string,
   callback: () => Promise<T>,
+  createStorage = true,
 ): Promise<T> {
-  await fs.mkdir(storagePath, { recursive: true });
+  if (createStorage) await fs.mkdir(storagePath, { recursive: true });
   const lockPath = path.join(storagePath, GENERATION_POINTER_LOCK);
   const release = await acquireExclusiveFile(lockPath, GENERATION_POINTER_LOCK_TIMEOUT_MS);
   if (!release) throw new Error(`Timed out acquiring index generation pointer lock: ${lockPath}`);
@@ -1139,59 +1140,67 @@ export async function acquireIndexGenerationPin(
     if ((await fs.realpath(storagePath)) !== path.dirname(path.dirname(generation)))
       throw new Error('Database generation resolves outside its generations directory');
   }
-  return withGenerationPointerLock(storagePath, async () => {
-    await adoptActiveGenerationLocked(storagePath);
-    const resolved = await fs.realpath(absolute).catch(async (err: NodeJS.ErrnoException) => {
-      if (err.code === 'ENOENT' && parent === storagePath)
-        return path.join(await fs.realpath(parent), 'lbug');
-      throw err;
-    });
-    const root = await fs
-      .realpath(path.join(storagePath, GENERATIONS_DIR))
-      .catch(() => path.join(storagePath, GENERATIONS_DIR));
-    const rootStat = await fs.lstat(path.join(storagePath, GENERATIONS_DIR)).catch(() => null);
-    if (rootStat?.isSymbolicLink())
-      throw new Error('Generations directory must not be a symbolic link');
-    const generationPath = path.dirname(resolved);
-    const name = path.basename(generationPath);
-    if (path.dirname(generationPath) !== root) {
-      const canonicalStorage = await fs.realpath(storagePath);
-      if (parent !== storagePath || resolved !== path.join(canonicalStorage, 'lbug'))
-        throw new Error('Database generation resolves outside its generations directory');
-      return { dbPath: resolved, release: async () => {} };
-    }
-    const stat = await fs.lstat(generationPath);
-    if (
-      !stat.isDirectory() ||
-      stat.isSymbolicLink() ||
-      name.startsWith('.') ||
-      safeGenerationId(name) !== name
-    )
-      throw new Error('Invalid database generation directory');
-    const databaseStat = await fs.lstat(resolved);
-    if (!databaseStat.isFile() || databaseStat.isSymbolicLink())
-      throw new Error('Published generation database must be a regular file');
-    const pinPath = path.join(
-      generationPath,
-      `.reader-${process.pid}-${Math.random().toString(36).slice(2)}`,
-    );
-    await fs.writeFile(pinPath, '', { flag: 'wx', mode: 0o600 });
-    await sweepDeadReaderPins(storagePath).catch(() => {});
-    let released = false;
-    return {
-      dbPath: resolved,
-      published: true,
-      release: async () => {
-        if (released) return;
-        await withGenerationPointerLock(storagePath, async () => {
+  return withGenerationPointerLock(
+    storagePath,
+    async () => {
+      await adoptActiveGenerationLocked(storagePath);
+      const resolved = await fs.realpath(absolute).catch(async (err: NodeJS.ErrnoException) => {
+        if (err.code === 'ENOENT' && parent === storagePath)
+          return path.join(await fs.realpath(parent), 'lbug');
+        throw err;
+      });
+      const root = await fs
+        .realpath(path.join(storagePath, GENERATIONS_DIR))
+        .catch(() => path.join(storagePath, GENERATIONS_DIR));
+      const rootStat = await fs.lstat(path.join(storagePath, GENERATIONS_DIR)).catch(() => null);
+      if (rootStat?.isSymbolicLink())
+        throw new Error('Generations directory must not be a symbolic link');
+      const generationPath = path.dirname(resolved);
+      const name = path.basename(generationPath);
+      if (path.dirname(generationPath) !== root) {
+        const canonicalStorage = await fs.realpath(storagePath);
+        if (parent !== storagePath || resolved !== path.join(canonicalStorage, 'lbug'))
+          throw new Error('Database generation resolves outside its generations directory');
+        return { dbPath: resolved, release: async () => {} };
+      }
+      const stat = await fs.lstat(generationPath);
+      if (
+        !stat.isDirectory() ||
+        stat.isSymbolicLink() ||
+        name.startsWith('.') ||
+        safeGenerationId(name) !== name
+      )
+        throw new Error('Invalid database generation directory');
+      const databaseStat = await fs.lstat(resolved);
+      if (!databaseStat.isFile() || databaseStat.isSymbolicLink())
+        throw new Error('Published generation database must be a regular file');
+      const pinPath = path.join(
+        generationPath,
+        `.reader-${process.pid}-${Math.random().toString(36).slice(2)}`,
+      );
+      await fs.writeFile(pinPath, '', { flag: 'wx', mode: 0o600 });
+      await sweepDeadReaderPins(storagePath).catch(() => {});
+      let released = false;
+      return {
+        dbPath: resolved,
+        published: true,
+        release: async () => {
           if (released) return;
-          await fs.unlink(pinPath);
-          released = true;
-          await pruneIndexGenerationsLocked(storagePath).catch(() => {});
-        });
-      },
-    };
-  });
+          await withGenerationPointerLock(
+            storagePath,
+            async () => {
+              if (released) return;
+              await fs.unlink(pinPath);
+              released = true;
+              await pruneIndexGenerationsLocked(storagePath).catch(() => {});
+            },
+            false,
+          );
+        },
+      };
+    },
+    false,
+  );
 }
 
 async function readMetaFile(metaPath: string): Promise<RepoMeta | null> {

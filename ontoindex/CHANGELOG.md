@@ -4,6 +4,12 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.4.2] - 2026-10-31
+
+- Cypher rejections identify unterminated input, multiple statements, forbidden keywords, or unsupported opening clauses. Bare reserved aliases such as `AS use` remain blocked; rename the alias or quote it with backticks. `EXPLAIN`, `PROFILE`, and dotted `CALL` procedures remain unsupported by the read guard.
+- Semantic cache writes create directories only beneath an existing `.ontoindex`, and read-pin acquisition and release require existing storage. Late cache writes or stale read handles cannot recreate a cleaned index or deleted repository through these paths.
+- Native builds emit `native/build-provenance.json` beside the addon and include it in the distribution. It records source and artifact hashes and toolchain metadata; cross-host byte reproducibility is not guaranteed.
+
 ## [2.4.1] - 2026-10-31
 
 - TypeScript and JavaScript namespace imports resolve static inheritance such as `class Child extends models.Base`, including named barrel reexports. Resolution preserves same-file precedence and avoids unrelated classes when an alias or member is missing.

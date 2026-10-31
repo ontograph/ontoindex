@@ -1531,9 +1531,8 @@ export const executeQuery = async <TRow extends object = LbugQueryRow>(
     throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
   }
 
-  if (isWriteQuery(cypher)) {
-    throw new Error('Write operations are not allowed. The pool adapter is read-only.');
-  }
+  const readOnlyError = getCypherReadOnlyError(cypher);
+  if (readOnlyError) throw new Error(readOnlyError);
 
   entry.lastUsed = Date.now();
 
@@ -1786,8 +1785,8 @@ const CYPHER_MULTI_STATEMENT_RE = /;\s*\S/;
  * read-only flag nor the denylist alone bounds new statement kinds. */
 const CYPHER_READ_START_RE = /^\s*(?:MATCH|OPTIONAL\s+MATCH|WITH|UNWIND|RETURN|CALL\s+\w+\s*\()/i;
 
-/** Check if a Cypher query is anything other than one read statement */
-export function isWriteQuery(query: string): boolean {
+/** Return a sanitized reason when a query is not one supported read statement. */
+export function getCypherReadOnlyError(query: string): string | null {
   const code: string[] = [];
   let start = 0;
   for (let i = 0; i < query.length; i++) {
@@ -1802,7 +1801,7 @@ export function isWriteQuery(query: string): boolean {
       while (i < query.length && query[i] !== '\n' && query[i] !== '\r') i++;
     } else if (blockComment) {
       const end = query.indexOf('*/', i + 2);
-      if (end === -1) return true;
+      if (end === -1) return 'Read-only Cypher rejected: unterminated block comment.';
       i = end + 1;
     } else {
       let closed = false;
@@ -1818,15 +1817,26 @@ export function isWriteQuery(query: string): boolean {
           break;
         }
       }
-      if (!closed) return true;
+      if (!closed) return 'Read-only Cypher rejected: unterminated quoted text or identifier.';
     }
     start = i + 1;
   }
   code.push(query.slice(start));
   const stripped = code.join('');
-  return (
-    !CYPHER_READ_START_RE.test(stripped) ||
-    CYPHER_WRITE_RE.test(stripped) ||
-    CYPHER_MULTI_STATEMENT_RE.test(stripped)
-  );
+  if (CYPHER_MULTI_STATEMENT_RE.test(stripped)) {
+    return 'Read-only Cypher rejected: multiple statements are not allowed. Send one read statement.';
+  }
+  const forbiddenKeyword = CYPHER_WRITE_RE.exec(stripped);
+  if (forbiddenKeyword) {
+    return `Read-only Cypher rejected: forbidden keyword ${forbiddenKeyword[1].toUpperCase()}. If used as an alias or identifier, quote it with backticks or rename it.`;
+  }
+  if (!CYPHER_READ_START_RE.test(stripped)) {
+    return 'Read-only Cypher rejected: unsupported opening clause. Start with MATCH, OPTIONAL MATCH, WITH, UNWIND, RETURN, or CALL <function>(...). EXPLAIN, PROFILE, and dotted CALL names are unsupported.';
+  }
+  return null;
+}
+
+/** Check if a Cypher query is anything other than one read statement. */
+export function isWriteQuery(query: string): boolean {
+  return getCypherReadOnlyError(query) !== null;
 }
