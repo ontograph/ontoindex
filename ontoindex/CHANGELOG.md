@@ -4,8 +4,13 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.4.4] - 2026-10-31
+
 - Releasing a generation read pin after `ontoindex clean` treats the missing pin, generation, or storage as already released instead of failing with `ENOENT`. Before this fix, a running MCP server that held a pin on a cleaned index rejected every later query for that repository until it restarted, even after the index was rebuilt. Release still never recreates removed storage.
 - `local-backend-calltool.test.ts` asserts the reason-specific Cypher rejection introduced in 2.4.2.
+- TypeScript and JavaScript namespace-heritage resolution follows `export *` barrels, nested `export * as ns` namespaces, and namespaces re-exported with `export { ns }`. When two barrels export different owners of the same name, no edge is created. Default-import objects (`import M from ...; extends M.Base`) still give no edge.
+- `committed-navigation-sdk.test.ts` asserts the committed-index fallback that 2.3.15 (#155) introduced for `inspect`, `impact` and `search` when workspace preparation is refused; `gn_explore` still refuses. These four integration tests had failed since 2.3.15.
+- Release commits are gated: `scripts/verify-release.sh` runs the build and the unit and integration suites on the staged tree, and a `commit-msg` hook refuses an `ontoindex` version bump whose staged tree has not passed.
 
 ## [2.4.3] - 2026-10-31
 
