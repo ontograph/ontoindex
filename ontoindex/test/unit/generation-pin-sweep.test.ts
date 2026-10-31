@@ -26,13 +26,21 @@ it('does not create missing storage when acquiring a pin', async () => {
   });
   await expect(fs.lstat(storage)).rejects.toMatchObject({ code: 'ENOENT' });
 });
-it('does not recreate removed storage when releasing a pin', async () => {
+it('releases a pin after its storage was removed, without recreating it', async () => {
   const pin = await acquireIndexGenerationPin(path.join(directory(), 'lbug'));
   await fs.rm(storage, { recursive: true });
-  await expect(pin.release()).rejects.toMatchObject({ code: 'ENOENT' });
+  // `ontoindex clean` removes storage under a live reader. The pin protects
+  // nothing any more, so release must settle instead of wedging its owner.
+  await expect(pin.release()).resolves.toBeUndefined();
   await expect(fs.lstat(storage)).rejects.toMatchObject({ code: 'ENOENT' });
-  await expect(pin.release()).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(pin.release()).resolves.toBeUndefined();
   await expect(fs.lstat(storage)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+it('releases a pin after its generation was removed while storage remains', async () => {
+  const pin = await acquireIndexGenerationPin(path.join(directory(), 'lbug'));
+  await fs.rm(directory(), { recursive: true });
+  await expect(pin.release()).resolves.toBeUndefined();
+  await expect(fs.lstat(directory())).rejects.toMatchObject({ code: 'ENOENT' });
 });
 it('creates and releases a pin in existing storage', async () => {
   const pin = await acquireIndexGenerationPin(path.join(directory(), 'lbug'));

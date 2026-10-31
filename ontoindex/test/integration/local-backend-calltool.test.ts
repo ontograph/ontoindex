@@ -64,7 +64,7 @@ withTestLbugDB(
             "CREATE (n:Function {id: 'x', name: 'x', filePath: '', startLine: 0, endLine: 0, isExported: false, content: '', description: ''})",
         });
         expect(result).toHaveProperty('error');
-        expect(result.error).toMatch(/write operations/i);
+        expect(result.error).toMatch(/Read-only Cypher rejected: forbidden keyword CREATE/);
       });
 
       it('context tool returns symbol info with callers and callees', async () => {

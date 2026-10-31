@@ -1186,16 +1186,23 @@ export async function acquireIndexGenerationPin(
         published: true,
         release: async () => {
           if (released) return;
-          await withGenerationPointerLock(
-            storagePath,
-            async () => {
-              if (released) return;
-              await fs.unlink(pinPath);
-              released = true;
-              await pruneIndexGenerationsLocked(storagePath).catch(() => {});
-            },
-            false,
-          );
+          try {
+            await withGenerationPointerLock(
+              storagePath,
+              async () => {
+                if (released) return;
+                await fs.unlink(pinPath);
+                released = true;
+                await pruneIndexGenerationsLocked(storagePath).catch(() => {});
+              },
+              false,
+            );
+          } catch (err) {
+            // `ontoindex clean` removed the storage or generation under this reader.
+            // The pin protects nothing now; rejecting would wedge its owner forever.
+            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+            released = true;
+          }
         },
       };
     },

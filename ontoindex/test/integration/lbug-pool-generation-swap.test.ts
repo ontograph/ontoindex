@@ -228,6 +228,42 @@ describe('lbug pool generation swap', () => {
     return { a, b, current, stable: path.join(current, path.basename(template)), markers };
   }
 
+  it('reopens after storage is cleaned and republished under an open handle', async () => {
+    const { a, current, stable } = await pinnedFixture();
+    await initLbug(repoId, stable);
+    expect(await executeQuery(repoId, 'MATCH (f:File) RETURN f.name AS n')).toContainEqual({
+      n: 'pin-a',
+    });
+    // `ontoindex clean` deletes the generation that this pool entry still pins.
+    await fs.rm(a.generationPath, { recursive: true, force: true });
+    await fs.rm(current, { force: true });
+    // The stale pin's release must settle, or every later reinit fails with ENOENT.
+    await closeLbug(repoId);
+    const storage = path.dirname(current);
+    const generation = await createIndexGeneration(storage, 'pin-c');
+    const template = inject<'lbugDbPath'>('lbugDbPath');
+    await copyGeneration(path.dirname(template), generation.generationPath);
+    const db = new lbug.Database(generation.lbugPath);
+    const conn = new lbug.Connection(db);
+    try {
+      const result = await conn.query(`CREATE (:File {id: 'pin-c', name: 'pin-c'})`);
+      for (const item of Array.isArray(result) ? result : [result]) await item.close();
+    } finally {
+      await conn.close();
+      await db.close();
+    }
+    await fs.writeFile(
+      generation.metaPath,
+      JSON.stringify({ repoPath: '.', lastCommit: 'pin-c', indexedAt: 'pin-c', stats: {} }),
+    );
+    await fs.writeFile(generation.snapshotPath, '{}');
+    await publishIndexGenerationTransaction(storage, generation, async () => {});
+    await initLbug(repoId, stable);
+    const rows = await executeQuery(repoId, 'MATCH (f:File) RETURN f.name AS n');
+    expect(rows).toContainEqual({ n: 'pin-c' });
+    expect(rows).not.toContainEqual({ n: 'pin-a' });
+  });
+
   it('keeps both query paths pinned across publication and restores the mutable alias', async () => {
     const { a, b, current, stable, markers } = await pinnedFixture();
     await initLbug(repoId, stable);
