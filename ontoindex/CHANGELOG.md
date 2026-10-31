@@ -4,6 +4,9 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+- Releasing a generation read pin after `ontoindex clean` treats the missing pin, generation, or storage as already released instead of failing with `ENOENT`. Before this fix, a running MCP server that held a pin on a cleaned index rejected every later query for that repository until it restarted, even after the index was rebuilt. Release still never recreates removed storage.
+- `local-backend-calltool.test.ts` asserts the reason-specific Cypher rejection introduced in 2.4.2.
+
 ## [2.4.3] - 2026-10-31
 
 - No runtime change. Cypher rejection tests in `calltool-dispatch.test.ts` and `automatic-dirty-workspace.test.ts` assert the reason-specific errors introduced in 2.4.2 (for example `forbidden keyword DETACH`); 2.4.2 shipped with these 11 assertions still expecting the earlier generic text.
