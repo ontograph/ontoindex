@@ -355,7 +355,7 @@ describe('runApiQueryWithGuards', () => {
     expect(lbugMocks.executeQuery).not.toHaveBeenCalled();
   });
 
-  it('rejects HTTP API queries with only a list-comprehension LIMIT before executing them', async () => {
+  it('rejects HTTP API queries whose only LIMIT is inside a comment before executing them', async () => {
     const query = 'MATCH (n) WITH n, [x IN [1] | x] AS l RETURN n // LIMIT 1';
     const result = await runApiQueryWithGuards(query, async () => {
       await lbugMocks.executeQuery(query);
