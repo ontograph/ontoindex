@@ -83,7 +83,8 @@ interface CouplingMatrixResult {
 
 const MAX_COUPLING_EDGE_ROWS = (() => {
   const raw = Number.parseInt(process.env.ONTOINDEX_COUPLING_MATRIX_MAX_EDGES ?? '', 10);
-  return Number.isFinite(raw) ? Math.max(1000, Math.min(raw, 500_000)) : 50_000;
+  // The pool adapter rejects results with 50,000 or more rows.
+  return Number.isFinite(raw) ? Math.max(1000, Math.min(raw, 49_999)) : 49_999;
 })();
 
 function labelForCommunity(id: string, heuristicLabel: string | null | undefined): string {
@@ -250,7 +251,9 @@ export async function runCouplingMatrix(
       },
       warnings:
         edges.length >= MAX_COUPLING_EDGE_ROWS
-          ? [`Coupling edge scan capped at ${MAX_COUPLING_EDGE_ROWS} relationships`]
+          ? [
+              `Coupling edge scan reached ${MAX_COUPLING_EDGE_ROWS} relationships; metrics may be incomplete`,
+            ]
           : [],
     } as unknown as AnalysisResult & CouplingMatrixResult;
   } catch (err: unknown) {

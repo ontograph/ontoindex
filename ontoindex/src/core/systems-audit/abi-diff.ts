@@ -163,11 +163,19 @@ function compareFields(sourceResult: ParsedFields, targetResult: ParsedFields): 
     }
     const reasonCodes = typeReasonCodes(source, target);
     if (reasonCodes.length > 0) {
+      const losesWideIntegerPrecision =
+        reasonCodes.includes('BIGINT_NUMBER_MISMATCH') &&
+        /\b[ui]128\b/i.test(source.rawType) &&
+        /\bnumber\b/i.test(target.rawType);
       findings.push(
         finding(
           source.name,
-          reasonCodes.includes('UINT64_PRECISION_LOSS') ? 'high' : 'medium',
-          `field ${source.name} differs: ${source.rawType} vs ${target.rawType}`,
+          reasonCodes.includes('UINT64_PRECISION_LOSS') || losesWideIntegerPrecision
+            ? 'high'
+            : 'medium',
+          losesWideIntegerPrecision
+            ? `field ${source.name} may lose precision: ${source.rawType} exceeds JavaScript number's exact integer range`
+            : `field ${source.name} differs: ${source.rawType} vs ${target.rawType}`,
           reasonCodes,
           source,
           target,
@@ -435,7 +443,7 @@ function normalizeType(rawType: string): AbiField['normalizedType'] {
   const unqualified = type.replace(/\b(?:const|volatile)\b/g, '').trim();
   if (/^char\s*\*$/.test(unqualified)) return 'string';
   if (unqualified.includes('*')) return 'unknown';
-  if (/\b(bigint|u64|i64)\b/.test(type)) return 'bigint';
+  if (/\b(bigint|u64|i64|u128|i128)\b/.test(type)) return 'bigint';
   if (
     /\b(u?int\d*_t|uint\d*|int\d*|[ui](?:8|16|32|128)|size_t|usize|isize|long|short|number)\b/.test(
       type,

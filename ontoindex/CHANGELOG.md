@@ -4,6 +4,13 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.4.8] - 2026-11-01
+
+- Ambient TypeScript declarations retain export visibility. Route response shapes respect loop bindings, shadowed writes and assignments inside parameter initializers.
+- Rust 128-bit integers map to bigint; conversion to JavaScript number reports high-severity precision loss.
+- Coupling scans stay below the database adapter's 50,000-row rejection boundary and warn when metrics may be incomplete. Buffer-pool exhaustion remains under investigation.
+- Local tarball installation returns success after successful cleanup. Workspace replay tests verify MCP shutdown before exercising watcher-independent changes.
+
 ## [2.4.7] - 2026-11-01
 
 - Mutation consumers use zero-based indexed ranges consistently. Line-based JavaScript and TypeScript writes reject incomplete declarations and export wrappers before changing files.

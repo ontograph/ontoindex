@@ -31,6 +31,75 @@ interface Context {
   outgoing?: { calls?: Array<{ uid: string; name: string; filePath: string }> };
 }
 
+async function readFailureMarker(file: string) {
+  try {
+    const handle = await fs.open(file, 'r');
+    let raw: string;
+    try {
+      const buffer = Buffer.alloc(4097);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      if (bytesRead > 4096) return { state: 'oversized' };
+      raw = buffer.toString('utf8', 0, bytesRead);
+    } finally {
+      await handle.close();
+    }
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { state: 'invalid' };
+    const marker = parsed as Record<string, unknown>;
+    const result: Record<string, string | number> = { state: 'present' };
+    for (const key of ['pid', 'parentPid', 'childPid']) {
+      const value = marker[key];
+      if (typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= 2147483647)
+        result[key] = value;
+    }
+    for (const key of ['startedAt', 'processStartIdentity']) {
+      if (typeof marker[key] === 'string') result[key] = marker[key].slice(0, 128);
+    }
+    if (typeof marker.heartbeat === 'number' && Number.isFinite(marker.heartbeat))
+      result.heartbeat = marker.heartbeat;
+    if (marker.state === 'quarantined') result.state = marker.state;
+    return result;
+  } catch (error) {
+    if (error instanceof SyntaxError) return { state: 'invalid' };
+    const code = (error as NodeJS.ErrnoException).code ?? 'unknown';
+    return { state: code === 'ENOENT' ? 'absent' : 'unreadable', code };
+  }
+}
+
+it('bounds lock diagnostics and excludes tokens and artifact snapshots', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-adw-diagnostics-'));
+  const marker = path.join(root, 'marker');
+  try {
+    expect(await readFailureMarker(marker)).toMatchObject({ state: 'absent' });
+    await fs.writeFile(
+      marker,
+      JSON.stringify({ pid: 42, token: 'secret', before: ['private'], heartbeat: 7 }),
+    );
+    expect(await readFailureMarker(marker)).toEqual({ state: 'present', pid: 42, heartbeat: 7 });
+    await fs.writeFile(
+      marker,
+      JSON.stringify({
+        pid: -1,
+        childPid: 0,
+        parentPid: 1.5,
+        startedAt: 'x'.repeat(200),
+        processStartIdentity: 'y'.repeat(200),
+      }),
+    );
+    expect(await readFailureMarker(marker)).toEqual({
+      state: 'present',
+      startedAt: 'x'.repeat(128),
+      processStartIdentity: 'y'.repeat(128),
+    });
+    await fs.writeFile(marker, '{');
+    expect(await readFailureMarker(marker)).toEqual({ state: 'invalid' });
+    await fs.writeFile(marker, ' '.repeat(4097));
+    expect(await readFailureMarker(marker)).toEqual({ state: 'oversized' });
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 it('replays current workspace mutations through persistent stdio MCP and foreground CLI', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-adw-replay-'));
   const repo = path.join(root, 'repo');
@@ -38,6 +107,13 @@ it('replays current workspace mutations through persistent stdio MCP and foregro
   const storage = path.join(repo, '.ontoindex');
   const repoName = 'automatic-dirty-workspace-replay';
   const evidence: unknown[] = [];
+  async function writeEvidence() {
+    const output = process.env.ONTOINDEX_ADW_REPLAY_EVIDENCE;
+    if (output) {
+      await fs.mkdir(path.dirname(path.resolve(output)), { recursive: true });
+      await fs.writeFile(output, JSON.stringify(evidence, null, 2));
+    }
+  }
   const git = (...args: string[]) =>
     execFileSync(
       'git',
@@ -103,14 +179,45 @@ it('replays current workspace mutations through persistent stdio MCP and foregro
     child.stderr.on('data', (chunk) => {
       childStderr += String(chunk);
     });
-    const exit = await new Promise<number | null>((resolve, reject) => {
-      child.once('error', reject);
-      child.once('close', resolve);
-    });
-    evidence.push({ args, stdout, stderr: childStderr, exit });
-    expect(exit, childStderr + stdout).toBe(0);
-    expect(childStderr).not.toMatch(nativeError);
-    return parse(stdout);
+    try {
+      const exit = await new Promise<number | null>((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', resolve);
+      });
+      evidence.push({ args, stdout, stderr: childStderr, exit });
+      expect(exit, childStderr + stdout).toBe(0);
+      expect(childStderr).not.toMatch(nativeError);
+      return parse(stdout);
+    } catch (error) {
+      // Capture before shutdown removes the synthetic fixture's ownership markers.
+      try {
+        const [analyzeLock, recoveryLock, workspaceBuild, watchLease] = await Promise.all([
+          readFailureMarker(path.join(storage, 'analyze.lock')),
+          readFailureMarker(path.join(storage, 'analyze.lock.recovery')),
+          readFailureMarker(path.join(storage, 'workspace-build.owner.json')),
+          readFailureMarker(path.join(storage, 'watch.lease')),
+        ]);
+        evidence.push({
+          event: 'foreground-failure',
+          target,
+          capturedAt: new Date().toISOString(),
+          testPid: process.pid,
+          foregroundPid: child.pid,
+          mcpPid: transport?.pid,
+          analyzeLock,
+          recoveryLock,
+          workspaceBuild,
+          watchLease,
+        });
+        await writeEvidence();
+      } catch (diagnosticError) {
+        evidence.push({
+          event: 'foreground-diagnostic-failed',
+          code: (diagnosticError as NodeJS.ErrnoException).code ?? 'unknown',
+        });
+      }
+      throw error;
+    }
   }
   async function identity() {
     const generation = (await fs.readFile(path.join(storage, 'overlay/CURRENT'), 'utf8')).trim();
@@ -125,6 +232,70 @@ it('replays current workspace mutations through persistent stdio MCP and foregro
     incoming: (value.incoming?.calls ?? []).map(({ uid }) => uid).sort(),
     outgoing: (value.outgoing?.calls ?? []).map(({ uid }) => uid).sort(),
   });
+  async function assertReleased() {
+    if (
+      await fs.stat(storage).then(
+        () => true,
+        () => false,
+      )
+    ) {
+      for (const marker of [
+        'analyze.lock',
+        'analyze.lock.recovery',
+        'workspace-build.owner.json',
+        'watch.lease',
+      ])
+        await expect(fs.access(path.join(storage, marker))).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      expect(
+        await fs
+          .readdir(path.join(storage, 'workspace-inputs'))
+          .catch((error: NodeJS.ErrnoException) => {
+            if (error.code === 'ENOENT') return [];
+            throw error;
+          }),
+      ).toEqual([]);
+    }
+  }
+  let mcpShutdown: Promise<void> | undefined;
+  function stopMcp() {
+    return (mcpShutdown ??= (async () => {
+      const pid = transport?.pid;
+      const closeStart = performance.now();
+      try {
+        await client.close();
+      } finally {
+        await transport?.close();
+      }
+      if (pid)
+        await vi.waitFor(
+          () => {
+            expect(() => process.kill(pid, 0)).toThrow();
+          },
+          { timeout: 10_000 },
+        );
+      if (scope)
+        await vi.waitFor(
+          async () => {
+            expect(await fs.readFile(path.join(scope!.path, 'cgroup.events'), 'utf8')).toMatch(
+              /^populated 0$/m,
+            );
+          },
+          { timeout: 5_000 },
+        );
+      if (transport) expect((await fs.readFile(exitFile, 'utf8')).trim()).toBe('0');
+      const cleanupMs = performance.now() - closeStart;
+      evidence.push({
+        cleanupMs,
+        cleanupScope: scope ? 'all-owned-descendants' : 'root-process',
+        exit: transport ? await fs.readFile(exitFile, 'utf8') : null,
+      });
+      expect(cleanupMs).toBeLessThanOrEqual(5_000);
+      await assertReleased();
+      expect(stderr).not.toMatch(nativeError);
+    })());
+  }
   try {
     await fs.mkdir(path.join(repo, 'src'), { recursive: true });
     await fs.mkdir(home);
@@ -185,25 +356,21 @@ it('replays current workspace mutations through persistent stdio MCP and foregro
       code: 'ENOENT',
     });
     let previous: string | undefined;
-    async function check(target: string, filePath: string, cliFirst = false) {
+    async function check(target: string, filePath: string, foregroundOnly = false) {
       const beforeSource = await Promise.all(
         (await fs.readdir(path.join(repo, 'src')))
           .sort()
           .map(async (name) => [name, await fs.readFile(path.join(repo, 'src', name), 'utf8')]),
       );
       const status = git('status', '--porcelain');
-      // Most mutations must be prepared by the persistent MCP process itself.
-      // The preserved-timestamp case starts with the watcher-free foreground read.
-      const first = cliFirst ? await foreground(target) : await context(target);
+      const first = foregroundOnly ? await foreground(target) : await context(target);
       const before = await identity();
-      const second = cliFirst ? await context(target) : await foreground(target);
-      const [cliResult, mcpResult] = cliFirst ? [first, second] : [second, first];
-      expect(mcpResult).toMatchObject({
+      expect(first).toMatchObject({
         status: 'found',
         source: 'workspace-graph',
         symbol: { name: target, filePath },
       });
-      expect(normalize(cliResult)).toEqual(normalize(mcpResult));
+      if (!foregroundOnly) expect(normalize(await foreground(target))).toEqual(normalize(first));
       expect(await identity()).toEqual(before);
       expect(before.generation).not.toBe(previous);
       previous = before.generation;
@@ -225,15 +392,17 @@ it('replays current workspace mutations through persistent stdio MCP and foregro
             .map(async (name) => [name, await fs.readFile(path.join(repo, 'src', name), 'utf8')]),
         ),
       ).toEqual(beforeSource);
-      const deniedRequest = {
-        name: 'cypher',
-        arguments: { repo: repoName, query: 'CREATE (n:Function {name: "deniedMutation"})' },
-      };
-      const deniedResponse = await client.callTool(deniedRequest);
-      evidence.push({ request: deniedRequest, response: deniedResponse });
-      expect(JSON.stringify(deniedResponse)).toContain(
-        'Read-only Cypher rejected: forbidden keyword CREATE',
-      );
+      if (!foregroundOnly) {
+        const deniedRequest = {
+          name: 'cypher',
+          arguments: { repo: repoName, query: 'CREATE (n:Function {name: "deniedMutation"})' },
+        };
+        const deniedResponse = await client.callTool(deniedRequest);
+        evidence.push({ request: deniedRequest, response: deniedResponse });
+        expect(JSON.stringify(deniedResponse)).toContain(
+          'Read-only Cypher rejected: forbidden keyword CREATE',
+        );
+      }
       expect(await identity()).toEqual(before);
       expect(await fs.readFile(path.join(home, 'registry.json'))).toEqual(registry);
       expect(await fs.readFile(path.join(storage, 'meta.json'))).toEqual(meta);
@@ -272,73 +441,25 @@ it('replays current workspace mutations through persistent stdio MCP and foregro
     await write('src/save.tmp', 'export function atomicSaved() { return 3; }\n');
     await fs.rename(path.join(repo, 'src/save.tmp'), path.join(repo, 'src/callee.ts'));
     await check('atomicSaved', 'src/callee.ts');
+    // Stop the persistent watcher before the mutation so only the foreground can prepare it.
+    await stopMcp();
     const file = path.join(repo, 'src/callee.ts');
     const stat = await fs.stat(file);
     const bytes = await fs.readFile(file, 'utf8');
     await fs.writeFile(file, bytes.replace('atomicSaved', 'missedEvent'));
     await fs.utimes(file, stat.atime, stat.mtime);
     expect((await fs.stat(file)).size).toBe(stat.size);
+    expect((await fs.stat(file)).mtime.getTime()).toBe(stat.mtime.getTime());
     await check('missedEvent', 'src/callee.ts', true);
-    expect(await context('atomicSaved')).toMatchObject({
+    const missedIdentity = await identity();
+    expect(await foreground('atomicSaved')).toMatchObject({
       error: expect.stringContaining('not found'),
     });
+    expect(await identity()).toEqual(missedIdentity);
   } finally {
-    const pid = transport?.pid;
-    const closeStart = performance.now();
     try {
-      try {
-        await client.close();
-      } finally {
-        await transport?.close();
-      }
-      if (pid)
-        await vi.waitFor(
-          () => {
-            expect(() => process.kill(pid, 0)).toThrow();
-          },
-          { timeout: 10_000 },
-        );
-      if (scope) {
-        await vi.waitFor(
-          async () => {
-            expect(await fs.readFile(path.join(scope!.path, 'cgroup.events'), 'utf8')).toMatch(
-              /^populated 0$/m,
-            );
-          },
-          { timeout: 5_000 },
-        );
-        scope.close();
-      }
-      if (transport) expect((await fs.readFile(exitFile, 'utf8')).trim()).toBe('0');
-      const cleanupMs = performance.now() - closeStart;
-      evidence.push({
-        cleanupMs,
-        cleanupScope: scope ? 'all-owned-descendants' : 'root-process',
-        exit: transport ? await fs.readFile(exitFile, 'utf8') : null,
-      });
-      expect(cleanupMs).toBeLessThanOrEqual(5_000);
-      if (
-        await fs.stat(storage).then(
-          () => true,
-          () => false,
-        )
-      ) {
-        await expect(
-          fs.access(path.join(storage, 'workspace-build.owner.json')),
-        ).rejects.toMatchObject({ code: 'ENOENT' });
-        await expect(fs.access(path.join(storage, 'watch.lease'))).rejects.toMatchObject({
-          code: 'ENOENT',
-        });
-        expect(
-          await fs
-            .readdir(path.join(storage, 'workspace-inputs'))
-            .catch((error: NodeJS.ErrnoException) => {
-              if (error.code === 'ENOENT') return [];
-              throw error;
-            }),
-        ).toEqual([]);
-      }
-      expect(stderr).not.toMatch(nativeError);
+      await stopMcp();
+      await assertReleased();
     } finally {
       if (scope) {
         try {
@@ -348,11 +469,7 @@ it('replays current workspace mutations through persistent stdio MCP and foregro
         }
       }
       evidence.push({ stderr });
-      const output = process.env.ONTOINDEX_ADW_REPLAY_EVIDENCE;
-      if (output) {
-        await fs.mkdir(path.dirname(path.resolve(output)), { recursive: true });
-        await fs.writeFile(output, JSON.stringify(evidence, null, 2));
-      }
+      await writeEvidence();
       await closeLbug();
       vi.unstubAllEnvs();
       await fs.rm(root, { recursive: true, force: true });

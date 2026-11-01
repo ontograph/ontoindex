@@ -61,9 +61,18 @@ describe('parsing', () => {
     async (extension) => {
       const content = [
         'export function publicFunction() { function nestedFunction() {} const nestedArrow = () => 1; }',
+        ...(extension === 'ts'
+          ? [
+              'export declare function publicAmbient(): void;',
+              'declare function privateAmbient(): void;',
+            ]
+          : []),
         'function privateFunction() {}',
         'export const publicArrow = () => { function arrowLocal() {} };',
         'export class PublicClass { member() { function methodLocal() {} } }',
+        ...(extension === 'ts'
+          ? ['export declare class PublicAmbientClass {}', 'declare class PrivateAmbientClass {}']
+          : []),
         'export const object = { objectMember() {} };',
         'export const factory = function innerName() {};',
       ].join('\n');
@@ -80,7 +89,13 @@ describe('parsing', () => {
           ['publicFunction', true],
           ['publicArrow', true],
           ['PublicClass', true],
+          ...(extension === 'ts'
+            ? [['publicAmbient', true] as const, ['PublicAmbientClass', true] as const]
+            : []),
           ['privateFunction', false],
+          ...(extension === 'ts'
+            ? [['privateAmbient', false] as const, ['PrivateAmbientClass', false] as const]
+            : []),
           ['nestedFunction', false],
           ['nestedArrow', false],
           ['arrowLocal', false],

@@ -8,6 +8,26 @@ status: active
 
 # OntoIndex Current Forward Plan
 
+2026-11-01: review/simplification WS-1 and CAP-1 are DONE locally in
+`docs/plans/ONTOINDEX_247_REVIEW_SIMPLIFICATION_PLAN.md`. Workspace replay now
+passes3 tests after verified MCP shutdown before the preserved-timestamp mutation.
+Coupling default/maximum49,999 stays below the pool guard; at-cap metrics warn
+they may be incomplete. Coupling/pool suites pass47 tests including actual
+parameterized adapter49999/50000/50001 boundaries and result cleanup/reuse.
+Scoped lint exit0 with9 warnings and bounded OntoIndex scope verification pass.
+Remaining: pinned buffer-exhaustion measurement and broader GN qualification.
+Earlier repairs remain uncommitted; no version/install/push in this follow-up.
+
+2026-11-01: `docs/plans/ONTOINDEX_247_FOLLOWUP_PLAN.md` is closed; FIX-1 and
+DIAG-1 are DONE locally, active task null. Qualification repairs and installer
+cleanup pass the native build and226 focused tests. Bounded diagnostic projection
+passes1 test. Both workspace runs retain missedEvent workspace_busy evidence;
+the final run has2 passes/1 failure and matching analyze/watch PID2497565.
+Source review identified the persistent MCP watcher invalidating the foreground
+scenario's watcher-independent precondition; the subsequent correction above
+passes with the authorized third workspace run. Pinned buffer-query diagnosis
+remains open; the cap boundary regression and local clamp are complete above.
+
 2026-11-01: all-tools semantic repair REPAIR-1 delivered in 2.4.7 at `24b2eda`;
 full local release gate passed 15,529 unit and 3,033 integration tests. Clean-commit
 build and installed native/semantic/database/MCP smoke passed. CLI and both user

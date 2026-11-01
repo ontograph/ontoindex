@@ -44,19 +44,28 @@ export function createRouteResponseShapeExtractor(root: SyntaxNode) {
 }
 
 function buildRouteResponseShapeExtractor(root: SyntaxNode) {
+  type Binding = (SyntaxNode | null)[];
   type Scope = {
     parent?: Scope;
-    bindings: Map<string, (SyntaxNode | null)[]>;
+    bindings: Map<string, Binding>;
     functionScope: boolean;
   };
   const scopes = new Map<number, Scope>();
-  const mutatedNames = new Set<string>();
+  const declarationBindings = new Map<number, Binding>();
+  const mutatedBindings = new Set<Binding>();
+  const parameterWrittenNames = new Set<string>();
+  const writes: { name: string; scope: Scope }[] = [];
   let unresolvedAssignment = false;
   const rootScope: Scope = { bindings: new Map(), functionScope: true };
   const bind = (scope: Scope, name: string, callable: SyntaxNode | null) => {
     const values = scope.bindings.get(name) ?? [];
     values.push(callable);
     scope.bindings.set(name, values);
+    return values;
+  };
+  const resolveBinding = (scope: Scope | undefined, name: string): Binding | undefined => {
+    while (scope && !scope.bindings.has(name)) scope = scope.parent;
+    return scope?.bindings.get(name);
   };
   const visitPattern = (node: SyntaxNode | null, visitName: (name: string) => void): boolean => {
     if (!node) return false;
@@ -94,13 +103,16 @@ function buildRouteResponseShapeExtractor(root: SyntaxNode) {
   ): void => {
     visitPattern(node, (name) => bind(scope, name, callable));
   };
-  const pending: { node: SyntaxNode; scope: Scope }[] = [{ node: root, scope: rootScope }];
+  const pending: { node: SyntaxNode; scope: Scope; inParameters: boolean }[] = [
+    { node: root, scope: rootScope, inParameters: false },
+  ];
   while (pending.length > 0) {
-    const { node, scope: outer } = pending.pop()!;
+    const { node, scope: outer, inParameters } = pending.pop()!;
     let scope = outer;
     if (JS_CALLABLES.has(node.type)) {
       const name = node.childForFieldName('name');
-      if (name && node.type.endsWith('_declaration')) bind(outer, name.text, node);
+      if (name && node.type.endsWith('_declaration'))
+        declarationBindings.set(node.id, bind(outer, name.text, node));
       scope = { parent: outer, bindings: new Map(), functionScope: true };
       if (name && !node.type.endsWith('_declaration') && node.type !== 'method_definition') {
         bind(scope, name.text, node);
@@ -119,12 +131,20 @@ function buildRouteResponseShapeExtractor(root: SyntaxNode) {
         'for_in_statement',
       ].includes(node.type)
     ) {
-      scope = { parent: outer, bindings: new Map(), functionScope: false };
+      // The callable body shares its parameters' function scope; nested blocks do not.
+      if (node.type !== 'statement_block' || !JS_CALLABLES.has(node.parent?.type ?? ''))
+        scope = { parent: outer, bindings: new Map(), functionScope: false };
       if (node.type === 'catch_clause') bindPattern(scope, node.childForFieldName('parameter'));
       if (node.type === 'class_body')
         bindPattern(scope, node.parent?.childForFieldName('name') ?? null);
-      if (node.type === 'for_in_statement' && node.childForFieldName('kind')) {
-        bindPattern(scope, node.childForFieldName('left'));
+      const kind = node.type === 'for_in_statement' ? node.childForFieldName('kind') : null;
+      if (kind) {
+        let bindingScope = scope;
+        if (kind.text === 'var') {
+          while (!bindingScope.functionScope && bindingScope.parent)
+            bindingScope = bindingScope.parent;
+        }
+        bindPattern(bindingScope, node.childForFieldName('left'));
       }
     }
     scopes.set(node.id, scope);
@@ -149,31 +169,60 @@ function buildRouteResponseShapeExtractor(root: SyntaxNode) {
     } else if (
       ['assignment_expression', 'augmented_assignment_expression', 'update_expression'].includes(
         node.type,
-      )
+      ) ||
+      node.type === 'for_in_statement'
     ) {
       const target = node.childForFieldName('left') ?? node.childForFieldName('argument');
-      if (!visitPattern(target, (name) => mutatedNames.add(name))) unresolvedAssignment = true;
+      if (
+        !visitPattern(target, (name) => {
+          writes.push({ name, scope });
+          // Default initializers cannot see body var bindings. Until those environments
+          // are modeled separately, refuse shapes for names written in parameters.
+          if (inParameters) parameterWrittenNames.add(name);
+        })
+      )
+        unresolvedAssignment = true;
     }
+    const parameters = JS_CALLABLES.has(node.type)
+      ? (node.childForFieldName('parameters') ?? node.childForFieldName('parameter'))
+      : null;
     for (let i = node.namedChildren.length - 1; i >= 0; i--) {
-      pending.push({ node: node.namedChildren[i], scope });
+      const child = node.namedChildren[i];
+      pending.push({
+        node: child,
+        scope,
+        inParameters: inParameters || child.id === parameters?.id,
+      });
     }
+  }
+  // Resolve after collecting declarations, including function-scoped var hoisting.
+  for (const { name, scope } of writes) {
+    const binding = resolveBinding(scope, name);
+    if (binding) mutatedBindings.add(binding);
   }
 
   const cache = new Map<number, ResponseShape>();
   return (handler: SyntaxNode | null | undefined): ResponseShape => {
     if (!handler) return {};
     if (handler.type === 'identifier') {
-      if (unresolvedAssignment || mutatedNames.has(handler.text)) return {};
-      let scope = scopes.get(handler.id);
-      while (scope && !scope.bindings.has(handler.text)) scope = scope.parent;
-      const bindings = scope?.bindings.get(handler.text);
-      if (!bindings || bindings.length !== 1 || !bindings[0]) return {};
+      const bindings = resolveBinding(scopes.get(handler.id), handler.text);
+      if (
+        unresolvedAssignment ||
+        parameterWrittenNames.has(handler.text) ||
+        !bindings ||
+        mutatedBindings.has(bindings) ||
+        bindings.length !== 1 ||
+        !bindings[0]
+      )
+        return {};
       handler = bindings[0];
     }
     if (!JS_CALLABLES.has(handler.type)) return {};
     if (
       handler.type.endsWith('_declaration') &&
-      (unresolvedAssignment || mutatedNames.has(handler.childForFieldName('name')?.text ?? ''))
+      (unresolvedAssignment ||
+        parameterWrittenNames.has(handler.childForFieldName('name')?.text ?? '') ||
+        mutatedBindings.has(declarationBindings.get(handler.id)!))
     )
       return {};
     const cached = cache.get(handler.id);

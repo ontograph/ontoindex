@@ -132,6 +132,35 @@ describe('systems ABI diff analyzer', () => {
     ).toEqual([true, true]);
   });
 
+  it.each(['u128', 'i128'])(
+    'flags %s to JavaScript number as a high-severity precision loss',
+    (sourceType) => {
+      const numberReport = diffAbi({
+        sourceLanguage: 'rust',
+        sourceStruct: `pub struct Wire { pub id: ${sourceType} }`,
+        targetInterface: 'interface Wire { id: number; }',
+      });
+      expect(numberReport.findings).toEqual([
+        expect.objectContaining({
+          field: 'id',
+          severity: 'high',
+          message: expect.stringContaining("exceeds JavaScript number's exact integer range"),
+          reasonCodes: ['BIGINT_NUMBER_MISMATCH'],
+        }),
+      ]);
+
+      const bigintReport = diffAbi({
+        sourceLanguage: 'rust',
+        sourceStruct: `pub struct Wire { pub id: ${sourceType} }`,
+        targetInterface: 'interface Wire { id: bigint; }',
+      });
+      expect(bigintReport.findings).toEqual([]);
+      expect(
+        bigintReport.systemsEvidence.find((field) => field.origin === 'source')?.normalizedType,
+      ).toBe('bigint');
+    },
+  );
+
   it('preserves one-based source lines across comments and multiline fields', () => {
     const report = diffAbi({
       sourceStruct:

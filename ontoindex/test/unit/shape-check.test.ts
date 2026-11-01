@@ -124,6 +124,170 @@ describe('handler-owned AST response shapes', () => {
       ]);
     },
   );
+
+  it.each([SupportedLanguages.TypeScript, SupportedLanguages.JavaScript])(
+    'invalidates assignment-form loop targets, including destructuring, in %s',
+    async (language) => {
+      const parser = await createParserForLanguage(language);
+      for (const header of [
+        'handler of handlers',
+        'handler in handlers',
+        '[handler] of handlers',
+        '{ handler } of handlers',
+        '{ value: handler } of handlers',
+      ]) {
+        const tree = parser.parse(
+          [
+            'function handler(req, res) { return res.json({ stale: 1 }); }',
+            `for (${header}) {}`,
+            'app.get("/items", handler);',
+          ].join('\n'),
+        );
+        expect(tree.rootNode.hasError).toBe(false);
+        const call = tree.rootNode
+          .descendantsOfType('call_expression')
+          .find((node) => node.childForFieldName('function')?.text === 'app.get')!;
+        expect(
+          createRouteResponseShapeExtractor(tree.rootNode)(
+            call.childForFieldName('arguments')!.namedChildren.at(-1),
+          ),
+        ).toEqual({});
+      }
+    },
+  );
+
+  it.each([SupportedLanguages.TypeScript, SupportedLanguages.JavaScript])(
+    'keeps var loop bindings in the nearest function and let/const bindings local in %s',
+    async (language) => {
+      const parser = await createParserForLanguage(language);
+      const tree = parser.parse(
+        [
+          'function outer(req, res) { return res.json({ outer: 1 }); }',
+          'function local() {',
+          '  function handler(req, res) { return res.json({ stale: 1 }); }',
+          '  for (var handler of handlers) {}',
+          '  app.get("/var", handler);',
+          '  for (var outer in handlers) {}',
+          '  app.get("/function-var", outer);',
+          '}',
+          'for (let outer of handlers) {}',
+          'for (const outer in handlers) {}',
+          'for (let [outer] of handlers) {}',
+          'app.get("/outer", outer);',
+          'function topLevel(req, res) { return res.json({ staleTopLevel: 1 }); }',
+          'for (var topLevel in handlers) {}',
+          'app.get("/top-level-var", topLevel);',
+        ].join('\n'),
+      );
+      expect(tree.rootNode.hasError).toBe(false);
+      const extract = createRouteResponseShapeExtractor(tree.rootNode);
+      expect(
+        tree.rootNode
+          .descendantsOfType('call_expression')
+          .filter((node) => node.childForFieldName('function')?.text === 'app.get')
+          .map((node) => extract(node.childForFieldName('arguments')!.namedChildren.at(-1))),
+      ).toEqual([{}, {}, { responseKeys: ['outer'] }, {}]);
+    },
+  );
+
+  it.each([SupportedLanguages.TypeScript, SupportedLanguages.JavaScript])(
+    'resolves writes by binding after collecting shadowing declarations in %s',
+    async (language) => {
+      const parser = await createParserForLanguage(language);
+      const tree = parser.parse(
+        [
+          'function handler(req, res) { return res.json({ kept: 1 }); }',
+          'function parameterShadow(handler) { handler = replacement; for (handler of handlers) {} }',
+          'function hoistedShadow() { handler = replacement; var handler; }',
+          '{ handler = replacement; let handler; }',
+          '{ let handler = (req, res) => res.json({ localStale: 1 });',
+          '  handler = replacement; app.get("/local", handler); }',
+          'app.get("/outer", handler);',
+          'function closureHandler(req, res) { return res.json({ stale: 1 }); }',
+          'function closure() { closureHandler = replacement; }',
+          'app.get("/closure", closureHandler);',
+          'function loopClosureHandler(req, res) { return res.json({ loopStale: 1 }); }',
+          'function loopClosure() { for (loopClosureHandler of handlers) {} }',
+          'app.get("/loop-closure", loopClosureHandler);',
+        ].join('\n'),
+      );
+      expect(tree.rootNode.hasError).toBe(false);
+      const extract = createRouteResponseShapeExtractor(tree.rootNode);
+      expect(
+        tree.rootNode
+          .descendantsOfType('call_expression')
+          .filter((node) => node.childForFieldName('function')?.text === 'app.get')
+          .map((node) => extract(node.childForFieldName('arguments')!.namedChildren.at(-1))),
+      ).toEqual([{}, { responseKeys: ['kept'] }, {}, {}]);
+    },
+  );
+
+  it.each([SupportedLanguages.TypeScript, SupportedLanguages.JavaScript])(
+    'refuses parameter-initializer writes hidden by body declarations in %s',
+    async (language) => {
+      const parser = await createParserForLanguage(language);
+      const tree = parser.parse(
+        [
+          'export function GET() { return Response.json({ stale: 1 }); }',
+          'function initialize(arg = (GET = replacement)) { var GET; }',
+          'function named(req, res) { return res.json({ stale: 1 }); }',
+          'function nested(arg = (() => { named = replacement; })) { var named; }',
+          'function destructured(req, res) { return res.json({ stale: 1 }); }',
+          'function destructure(arg = ({ destructured } = source)) { var destructured; }',
+          'function kept(req, res) { return res.json({ kept: 1 }); }',
+          'app.get("/named", named); app.get("/destructured", destructured);',
+          'app.get("/kept", kept);',
+        ].join('\n'),
+      );
+      expect(tree.rootNode.hasError).toBe(false);
+      const extract = createRouteResponseShapeExtractor(tree.rootNode);
+      expect(
+        extractNextjsRouteShapes(tree.rootNode, 'app/api/items/route.ts', extract).map(
+          ({ httpMethod, responseKeys }) => ({ httpMethod, responseKeys }),
+        ),
+      ).toEqual([{ httpMethod: 'GET', responseKeys: undefined }]);
+      expect(
+        tree.rootNode
+          .descendantsOfType('call_expression')
+          .filter((node) => node.childForFieldName('function')?.text === 'app.get')
+          .map((node) => extract(node.childForFieldName('arguments')!.namedChildren.at(-1))),
+      ).toEqual([{}, {}, { responseKeys: ['kept'] }]);
+    },
+  );
+
+  it.each([SupportedLanguages.TypeScript, SupportedLanguages.JavaScript])(
+    'uses binding-owned writes for exported Next.js declarations in %s',
+    async (language) => {
+      const parser = await createParserForLanguage(language);
+      const tree = parser.parse(
+        [
+          'export function GET() { return Response.json({ kept: 1 }); }',
+          'function parameterShadow(GET) { GET = replacement; }',
+          'function hoistedShadow() { GET = replacement; var GET; }',
+          '{ GET = replacement; let GET; }',
+          'export function POST() { return Response.json({ stalePost: 1 }); }',
+          'function closure() { POST = replacement; }',
+          'export function PUT() { return Response.json({ stalePut: 1 }); }',
+          'for (PUT of handlers) {}',
+          'export function PATCH() { return Response.json({ stalePatch: 1 }); }',
+          'for (var PATCH in handlers) {}',
+        ].join('\n'),
+      );
+      expect(tree.rootNode.hasError).toBe(false);
+      expect(
+        extractNextjsRouteShapes(
+          tree.rootNode,
+          'app/api/items/route.ts',
+          createRouteResponseShapeExtractor(tree.rootNode),
+        ).map(({ httpMethod, responseKeys }) => ({ httpMethod, responseKeys })),
+      ).toEqual([
+        { httpMethod: 'GET', responseKeys: ['kept'] },
+        { httpMethod: 'POST', responseKeys: undefined },
+        { httpMethod: 'PUT', responseKeys: undefined },
+        { httpMethod: 'PATCH', responseKeys: undefined },
+      ]);
+    },
+  );
 });
 
 describe('extractResponseShapes', () => {

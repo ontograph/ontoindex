@@ -38,7 +38,12 @@ export const tsExportChecker: ExportChecker = (node, _name) => {
     if (type === 'export_statement' || type === 'export_specifier') return true;
     if (TS_EXPORT_DECLARATIONS.has(type)) {
       // Compatibility for declaration-only adapters that include the export token.
-      return current.parent?.type === 'export_statement' || current.text?.startsWith('export ');
+      if (current.text?.startsWith('export ')) return true;
+      const parent = current.parent;
+      return (
+        parent?.type === 'export_statement' ||
+        (parent?.type === 'ambient_declaration' && parent.parent?.type === 'export_statement')
+      );
     }
     if (
       ![

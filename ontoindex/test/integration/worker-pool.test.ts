@@ -89,7 +89,19 @@ describe('worker pool integration', () => {
       'export const object = { objectMember() {} };',
     ].join('\n');
     const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>(
-      ['ts', 'js'].map((extension) => ({ path: `exports.${extension}`, content })),
+      ['ts', 'js'].map((extension) => ({
+        path: `exports.${extension}`,
+        content:
+          extension === 'ts'
+            ? [
+                'export declare function publicAmbient(): void;',
+                'declare function privateAmbient(): void;',
+                'export declare class PublicAmbientClass {}',
+                'declare class PrivateAmbientClass {}',
+                content,
+              ].join('\n')
+            : content,
+      })),
     );
     for (const extension of ['ts', 'js']) {
       const nodes = results
@@ -99,7 +111,19 @@ describe('worker pool integration', () => {
         ['publicFunction', true],
         ['publicArrow', true],
         ['PublicClass', true],
+        ...(extension === 'ts'
+          ? ([
+              ['publicAmbient', true],
+              ['PublicAmbientClass', true],
+            ] as const)
+          : []),
         ['privateFunction', false],
+        ...(extension === 'ts'
+          ? ([
+              ['privateAmbient', false],
+              ['PrivateAmbientClass', false],
+            ] as const)
+          : []),
         ['nestedFunction', false],
         ['nestedArrow', false],
         ['arrowLocal', false],
