@@ -36,6 +36,38 @@ function populatedContext() {
 }
 
 describe('import-resolution state snapshots', () => {
+  it('preserves explicit namespace export authority across V1 replay', () => {
+    const ctx = createResolutionContext({ captureRegistrations: true });
+    ctx.model.symbols.add('base.ts', 'Local', 'class:local', 'Class');
+    ctx.model.symbols.add('base.ts', 'Private', 'class:private', 'Class');
+    ctx.moduleAliasMap.set('app.ts', new Map([['models', 'barrel.ts']]));
+    ctx.namedImportMap.set(
+      'barrel.ts',
+      new Map([
+        ['#export:Public', { sourcePath: 'base.ts', exportedName: 'Alias' }],
+        ['Private', { sourcePath: 'base.ts', exportedName: 'Private' }],
+      ]),
+    );
+    ctx.namedImportMap.set(
+      'base.ts',
+      new Map([['#local-export:Alias', { sourcePath: 'base.ts', exportedName: 'Local' }]]),
+    );
+    const replay = createResolutionContext({
+      model: restoreSemanticModelRegistrations(
+        JSON.parse(JSON.stringify(ctx.model.snapshotRegistrations())),
+      ),
+      importState: JSON.parse(JSON.stringify(snapshotImportResolutionState(ctx))),
+    });
+    for (const context of [ctx, replay]) {
+      expect(
+        context.resolve('models.Public', 'app.ts')?.candidates.map((def) => def.nodeId),
+      ).toEqual(['class:local']);
+      expect(context.resolve('models.Private', 'app.ts')).toBeNull();
+      expect(context.resolve('models.Local', 'app.ts')).toBeNull();
+      context.clear();
+    }
+  });
+
   describe('bounded capture', () => {
     const generousLimits = { maxBytes: 1_000_000, maxEntries: 1_000 };
 

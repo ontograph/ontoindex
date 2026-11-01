@@ -120,9 +120,8 @@ const MAX_TEXT_SEARCH_EDITS = 1000;
 const MAX_TEXT_SEARCH_FILE_BYTES = 1024 * 1024;
 const TEXT_SEARCH_EXTENSIONS = 'ts,tsx,js,jsx,py,go,rs,java,c,h,cpp,cc,cxx,hpp,hxx,hh,cs,php,swift';
 
-async function findTextSearchFiles(repoPath: string, name: string): Promise<string[]> {
+async function findTextSearchFiles(repoPath: string, excluded: Set<string>): Promise<string[]> {
   const extensions = new Set(TEXT_SEARCH_EXTENSIONS.split(',').map((ext) => `.${ext}`));
-  const regex = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
   const files: string[] = [];
   async function walk(directory: string): Promise<void> {
     const entries = await fs.readdir(path.join(repoPath, directory), { withFileTypes: true });
@@ -134,15 +133,12 @@ async function findTextSearchFiles(repoPath: string, name: string): Promise<stri
       const relative = directory ? `${directory}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         await walk(relative);
-      } else if (entry.isFile() && extensions.has(path.extname(entry.name))) {
-        try {
-          const fullPath = await resolveContainedRealPath(repoPath, relative);
-          if ((await fs.stat(fullPath)).size > MAX_TEXT_SEARCH_FILE_BYTES) continue;
-          const content = await fs.readFile(fullPath, 'utf8');
-          if (!content.includes('\0') && regex.test(content)) files.push(relative);
-        } catch (error) {
-          logQueryError('rename:text-search-read', error);
-        }
+      } else if (
+        entry.isFile() &&
+        extensions.has(path.extname(entry.name)) &&
+        !excluded.has(relative)
+      ) {
+        files.push(relative);
       }
     }
   }
@@ -230,40 +226,6 @@ export async function renameSymbol(
   }
 
   const changes = new Map<string, RenameChange>();
-
-  const addEdit = (
-    filePath: string,
-    line: number,
-    oldText: string,
-    newText: string,
-    confidence: RenameEditConfidence,
-  ) => {
-    if (!changes.has(filePath)) {
-      changes.set(filePath, { file_path: filePath, edits: [] });
-    }
-    changes.get(filePath)!.edits.push({ line, old_text: oldText, new_text: newText, confidence });
-  };
-
-  if (sym.filePath && sym.startLine) {
-    try {
-      const content = await fs.readFile(await assertSafePath(sym.filePath), 'utf-8');
-      const lines = content.split('\n');
-      const lineIdx = sym.startLine - 1;
-      if (lineIdx >= 0 && lineIdx < lines.length && lines[lineIdx].includes(oldName)) {
-        const defRegex = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
-        addEdit(
-          sym.filePath,
-          sym.startLine,
-          lines[lineIdx].trim(),
-          lines[lineIdx].replace(defRegex, new_name).trim(),
-          'graph',
-        );
-      }
-    } catch (e) {
-      logQueryError('rename:read-definition', e);
-    }
-  }
-
   const allIncoming = [
     ...((lookupResult as RenameLookupResolved).incoming.calls || []),
     ...((lookupResult as RenameLookupResolved).incoming.imports || []),
@@ -271,102 +233,97 @@ export async function renameSymbol(
     ...((lookupResult as RenameLookupResolved).incoming.implements || []),
   ];
 
-  let graphEdits = changes.size > 0 ? 1 : 0;
-
-  for (const ref of allIncoming) {
-    if (!ref.filePath) continue;
-    try {
-      const content = await fs.readFile(await assertSafePath(ref.filePath), 'utf-8');
-      const lines = content.split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].includes(oldName)) {
-          addEdit(
-            ref.filePath,
-            i + 1,
-            lines[i].trim(),
-            lines[i]
-              .replace(
-                new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g'),
-                new_name,
-              )
-              .trim(),
-            'graph',
-          );
-          graphEdits++;
-          break;
-        }
-      }
-    } catch (e) {
-      logQueryError('rename:read-ref', e);
-    }
-  }
-
-  let astSearchEdits = 0;
   const warnings: string[] = [];
-  const graphFiles = new Set([sym.filePath, ...allIncoming.map((r) => r.filePath)].filter(Boolean));
+  const normalizeFile = (file: string): string => path.posix.normalize(file.replace(/\\/g, '/'));
+  const graphFiles = new Set(
+    [sym.filePath, ...allIncoming.map((ref) => ref.filePath)]
+      .filter((file): file is string => Boolean(file))
+      .map(normalizeFile),
+  );
+  const scannedFiles = new Set<string>();
+  const escapedName = oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const token = new RegExp(`(?<![\\p{ID_Continue}$])${escapedName}(?![\\p{ID_Continue}$])`, 'gu');
+  const scanFiles = async (files: string[], confidence: RenameEditConfidence): Promise<number> => {
+    const candidates = [...new Set(files.map(normalizeFile))].filter(
+      (file) => !scannedFiles.has(file),
+    );
+    const label =
+      confidence === 'graph' ? 'Graph rename candidates' : 'Text-search rename fallback';
+    if (candidates.length > MAX_TEXT_SEARCH_FILES) {
+      warnings.push(`${label} capped at ${MAX_TEXT_SEARCH_FILES} files`);
+    }
+    let edits = 0;
+    for (const file of candidates.slice(0, MAX_TEXT_SEARCH_FILES)) {
+      if (edits >= MAX_TEXT_SEARCH_EDITS) break;
+      scannedFiles.add(file);
+      try {
+        const fullPath = await assertSafePath(file);
+        if ((await fs.stat(fullPath)).size > MAX_TEXT_SEARCH_FILE_BYTES) {
+          warnings.push(`Skipped oversized rename candidate: ${file}`);
+          continue;
+        }
+        const content = await fs.readFile(fullPath, 'utf-8');
+        if (content.includes('\0')) {
+          warnings.push(`Skipped binary rename candidate: ${file}`);
+          continue;
+        }
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          token.lastIndex = 0;
+          if (!token.test(lines[i])) continue;
+          token.lastIndex = 0;
+          if (!changes.has(file)) changes.set(file, { file_path: file, edits: [] });
+          changes.get(file)!.edits.push({
+            line: i + 1,
+            old_text: lines[i].trim(),
+            new_text: lines[i].replace(token, () => new_name).trim(),
+            confidence,
+          });
+          if (++edits >= MAX_TEXT_SEARCH_EDITS) {
+            warnings.push(`${label} capped at ${MAX_TEXT_SEARCH_EDITS} edits`);
+            break;
+          }
+        }
+      } catch (error) {
+        logQueryError('rename:read-candidate', error);
+        warnings.push(`Could not read rename candidate: ${file}`);
+      }
+    }
+    return edits;
+  };
+
+  const graphEdits = await scanFiles([...graphFiles], 'graph');
+  let astSearchEdits = 0;
 
   try {
     const rgArgs = [
       '-l',
+      '-0',
+      '-F',
       '--type-add',
       `code:*.{${TEXT_SEARCH_EXTENSIONS}}`,
       '-t',
       'code',
-      `\\b${oldName}\\b`,
+      '--',
+      oldName,
       '.',
     ];
     let files: string[];
     try {
       const output = await execFileCapture('rg', rgArgs, repo.repoPath);
-      files = output
-        .trim()
-        .split('\n')
-        .filter((f) => f.length > 0);
+      files = output.split('\0').filter((f) => f.length > 0);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      files = await findTextSearchFiles(repo.repoPath, oldName);
+      files = await findTextSearchFiles(repo.repoPath, graphFiles);
       warnings.push('ripgrep unavailable; used built-in text search');
     }
-    if (files.length > MAX_TEXT_SEARCH_FILES) {
-      warnings.push(`Text-search rename fallback capped at ${MAX_TEXT_SEARCH_FILES} files`);
-    }
-
-    for (const file of files.slice(0, MAX_TEXT_SEARCH_FILES)) {
-      if (astSearchEdits >= MAX_TEXT_SEARCH_EDITS) {
-        warnings.push(`Text-search rename fallback capped at ${MAX_TEXT_SEARCH_EDITS} edits`);
-        break;
-      }
-      const normalizedFile = file.replace(/\\/g, '/').replace(/^\.\//, '');
-      if (graphFiles.has(normalizedFile)) continue;
-
-      try {
-        const fullPath = await assertSafePath(normalizedFile);
-        const stat = await fs.stat(fullPath);
-        if (stat.size > MAX_TEXT_SEARCH_FILE_BYTES) continue;
-        const content = await fs.readFile(fullPath, 'utf-8');
-        const lines = content.split('\n');
-        const regex = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
-        for (let i = 0; i < lines.length; i++) {
-          regex.lastIndex = 0;
-          if (regex.test(lines[i])) {
-            regex.lastIndex = 0;
-            addEdit(
-              normalizedFile,
-              i + 1,
-              lines[i].trim(),
-              lines[i].replace(regex, new_name).trim(),
-              'text_search',
-            );
-            astSearchEdits++;
-            if (astSearchEdits >= MAX_TEXT_SEARCH_EDITS) break;
-          }
-        }
-      } catch (e) {
-        logQueryError('rename:text-search-read', e);
-      }
-    }
+    astSearchEdits = await scanFiles(
+      files.filter((file) => !graphFiles.has(normalizeFile(file))),
+      'text_search',
+    );
   } catch (e) {
     logQueryError('rename:ripgrep', e);
+    warnings.push('Supplemental rename search failed; candidates may be incomplete');
   }
 
   const allChanges = Array.from(changes.values());

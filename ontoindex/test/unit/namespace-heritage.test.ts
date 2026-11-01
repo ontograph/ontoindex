@@ -193,7 +193,12 @@ export class Explicit extends explicit.Base { inherited() { this.greet(); } }`,
       "import * as inner from './base'; export class Other {}",
       'models.inner.Base',
     ],
-    ['ordinary import', "import { Base } from './base'; export class Other {}", 'models.Missing'],
+    ['ordinary import', "import { Base } from './base'; export class Other {}", 'models.Base'],
+    [
+      'private self reexport',
+      "class Base { greet() {} } export { Base as Public } from './index';",
+      'models.Public',
+    ],
     ['missing nested member', "export * as inner from './base';", 'models.inner.Missing'],
     ['empty cycle', "export * from './cycle';", 'models.Base'],
   ])(
@@ -235,6 +240,104 @@ export class Child extends models.Base { inherited() { this.greet(); } }`,
         .map(({ rel }) => rel.targetId),
     ).toEqual(['Method:base.ts:Base.greet#0']);
   }, 60000);
+
+  it.each(['ts', 'js'])(
+    'enforces public names for nested namespaces, aliases and defaults in %s',
+    async (ext) => {
+      const result = await ingest({
+        [`base.${ext}`]: 'export class Base { greet() {} }',
+        [`private-import.${ext}`]: `import { Base } from './base.${ext}';`,
+        [`private-local.${ext}`]: 'class Base { greet() {} }',
+        [`public.${ext}`]: `import { Base as Imported } from './base.${ext}';
+class Local { greet() {} }
+export { Local as Public, Imported as Forwarded };`,
+        [`default.${ext}`]: 'export default class DefaultBase { greet() {} }',
+        [`star.${ext}`]: `export * from './default.${ext}';`,
+        [`index.${ext}`]: `export * as privateImport from './private-import.${ext}';
+export * as privateLocal from './private-local.${ext}';
+export * as visible from './public.${ext}';
+export * as defaults from './default.${ext}';
+export * as star from './star.${ext}';`,
+        [`app.${ext}`]: `import * as models from './index.${ext}';
+export class PrivateImport extends models.privateImport.Base { inherited() { this.greet(); } }
+export class PrivateLocal extends models.privateLocal.Base { inherited() { this.greet(); } }
+export class HiddenAlias extends models.visible.Local { inherited() { this.greet(); } }
+export class HiddenDefault extends models.defaults.DefaultBase { inherited() { this.greet(); } }
+export class StarDefault extends models.star.default { inherited() { this.greet(); } }
+export class Public extends models.visible.Public { inherited() { this.greet(); } }
+export class Forwarded extends models.visible.Forwarded { inherited() { this.greet(); } }
+export class Default extends models.defaults.default { inherited() { this.greet(); } }`,
+      });
+      const resolved = getRelationships(result, 'EXTENDS').filter(({ rel }) =>
+        result.graph.getNode(rel.targetId),
+      );
+      expect(resolved.map(({ rel }) => [rel.sourceId, rel.targetId]).sort()).toEqual([
+        [`Class:app.${ext}:Default`, `Class:default.${ext}:DefaultBase`],
+        [`Class:app.${ext}:Forwarded`, `Class:base.${ext}:Base`],
+        [`Class:app.${ext}:Public`, `Class:public.${ext}:Local`],
+      ]);
+      expect(
+        getRelationships(result, 'CALLS')
+          .filter((edge) => edge.target === 'greet')
+          .map(({ rel }) => [rel.sourceId, rel.targetId])
+          .sort(),
+      ).toEqual([
+        [`Method:app.${ext}:Default.inherited#0`, `Method:default.${ext}:DefaultBase.greet#0`],
+        [`Method:app.${ext}:Forwarded.inherited#0`, `Method:base.${ext}:Base.greet#0`],
+        [`Method:app.${ext}:Public.inherited#0`, `Method:public.${ext}:Local.greet#0`],
+      ]);
+      expect(
+        getRelationships(result, 'IMPORTS').filter(({ rel }) => rel.sourceId === rel.targetId),
+      ).toEqual([]);
+    },
+    60000,
+  );
+
+  it.each(['ts', 'js'])(
+    'keeps local imports distinct from same-name public reexports in %s',
+    async (ext) => {
+      const result = await ingest({
+        [`base.${ext}`]: 'export class A { greet() {} } export class B { greet() {} }',
+        [`other.${ext}`]: 'export class B { greet() {} }',
+        [`same.${ext}`]: `import { A as Local } from './base'; export { Local as Public }; export { B as Local } from './base';`,
+        [`different.${ext}`]: `import { A as Local } from './base'; export { Local as Public }; export { B as Local } from './other';`,
+        [`reverse.${ext}`]: `export { B as Local } from './base'; import { A as Local } from './base'; export { Local as Public };`,
+        [`invalid.${ext}`]: `export { A as Local } from './base'; export { Local as Public };`,
+        [`app.${ext}`]: `import * as same from './same';
+import * as different from './different';
+import * as reverse from './reverse';
+import * as invalid from './invalid';
+export class Same extends same.Public { inherited() { this.greet(); } }
+export class Different extends different.Public { inherited() { this.greet(); } }
+export class Reverse extends reverse.Public { inherited() { this.greet(); } }
+export class PublicLocal extends same.Local { inherited() { this.greet(); } }
+export class Invalid extends invalid.Public { inherited() { this.greet(); } }`,
+      });
+      expect(
+        getRelationships(result, 'EXTENDS')
+          .filter(({ rel }) => result.graph.getNode(rel.targetId))
+          .map(({ rel }) => [rel.sourceId, rel.targetId])
+          .sort(),
+      ).toEqual([
+        [`Class:app.${ext}:Different`, `Class:base.${ext}:A`],
+        [`Class:app.${ext}:PublicLocal`, `Class:base.${ext}:B`],
+        [`Class:app.${ext}:Reverse`, `Class:base.${ext}:A`],
+        [`Class:app.${ext}:Same`, `Class:base.${ext}:A`],
+      ]);
+      expect(
+        getRelationships(result, 'CALLS')
+          .filter((edge) => edge.target === 'greet')
+          .map(({ rel }) => [rel.sourceId, rel.targetId])
+          .sort(),
+      ).toEqual([
+        [`Method:app.${ext}:Different.inherited#0`, `Method:base.${ext}:A.greet#0`],
+        [`Method:app.${ext}:PublicLocal.inherited#0`, `Method:base.${ext}:B.greet#0`],
+        [`Method:app.${ext}:Reverse.inherited#0`, `Method:base.${ext}:A.greet#0`],
+        [`Method:app.${ext}:Same.inherited#0`, `Method:base.${ext}:A.greet#0`],
+      ]);
+    },
+    60000,
+  );
 
   it('preserves five named barrel hops after the initial namespace import', async () => {
     const files: Record<string, string> = {

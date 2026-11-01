@@ -25,6 +25,7 @@ import type {
   ImportConfigs,
 } from './import-resolvers/types.js';
 import type { NamedBinding } from './named-bindings/types.js';
+import { extractTsLocalExportBindings } from './named-bindings/typescript.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import { isDev } from './utils/env.js';
 
@@ -382,6 +383,17 @@ const processImportsForFile = async (
     return 0;
   }
 
+  if (
+    namedImportMap &&
+    (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript)
+  ) {
+    for (const binding of extractTsLocalExportBindings(tree.rootNode)) {
+      let bindings = namedImportMap.get(file.path);
+      if (!bindings) namedImportMap.set(file.path, (bindings = new Map()));
+      bindings.set(binding.local, { sourcePath: file.path, exportedName: binding.exported });
+    }
+  }
+
   let importsFound = 0;
   matches.forEach((match) => {
     const captureMap: CaptureMap = {};
@@ -546,6 +558,14 @@ export const processImportsFromExtracted = async (
     }
 
     for (const imp of fileImports) {
+      if (imp.isLocalExport) {
+        for (const binding of imp.namedBindings ?? []) {
+          let bindings = namedImportMap.get(filePath);
+          if (!bindings) namedImportMap.set(filePath, (bindings = new Map()));
+          bindings.set(binding.local, { sourcePath: filePath, exportedName: binding.exported });
+        }
+        continue;
+      }
       totalImportsFound++;
 
       const provider = getProvider(imp.language);

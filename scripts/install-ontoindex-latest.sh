@@ -330,7 +330,9 @@ default_prefix="$(npm config get prefix)"
 install_asset="${asset_url}"
 temp_asset_dir=""
 cleanup_temp_asset() {
-  [ -n "${temp_asset_dir}" ] && rm -rf "${temp_asset_dir}"
+  if [ -n "${temp_asset_dir}" ]; then
+    rm -rf "${temp_asset_dir}"
+  fi
 }
 trap cleanup_temp_asset EXIT
 

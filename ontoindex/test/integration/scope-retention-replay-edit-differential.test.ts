@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { parsePhase } from '../../src/core/ingestion/pipeline-phases/parse.js';
+import { reconstructScopeRetentionParse } from '../../src/core/ingestion/pipeline-phases/parse-replay.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { KnowledgeGraph } from '../../src/core/graph/types.js';
 import { BindingAccumulator } from '../../src/core/ingestion/binding-accumulator.js';
@@ -393,6 +394,45 @@ describe.sequential('scope retention replay after edits', () => {
     }
     return directory;
   };
+  it.each(['ts', 'js'])(
+    'restores public namespace heritage from persisted %s records',
+    async (ext) => {
+      const captured = await captureFamilies(
+        writeFixture({
+          [`base.${ext}`]: 'export class Base { greet() {} } export class Decoy { greet() {} }',
+          [`barrel.${ext}`]:
+            "import { Base as Local } from './base'; export { Local as Public }; export { Decoy as Local } from './base'; class Private { greet() {} }",
+          [`app.${ext}`]: `import * as models from './barrel';
+export class Child extends models.Public { inherited() { this.greet(); } }
+`,
+        }),
+      );
+      const graph = createKnowledgeGraph();
+      const restored = await reconstructScopeRetentionParse(captured.families, graph);
+      try {
+        expect(snapshot(graph)).toEqual(captured.producer);
+        expect(restored.resolutionContext.resolve('models.Private', `app.${ext}`)).toBeNull();
+        expect(
+          graph.relationships
+            .filter((edge) => edge.type === 'EXTENDS' && graph.getNode(edge.targetId))
+            .map((edge) => [edge.sourceId, edge.targetId]),
+        ).toEqual([[`Class:app.${ext}:Child`, `Class:base.${ext}:Base`]]);
+        expect(
+          graph.relationships
+            .filter(
+              (edge) =>
+                edge.type === 'CALLS' && graph.getNode(edge.targetId)?.properties.name === 'greet',
+            )
+            .map((edge) => [edge.sourceId, edge.targetId]),
+        ).toEqual([[`Method:app.${ext}:Child.inherited#0`, `Method:base.${ext}:Base.greet#0`]]);
+      } finally {
+        restored.resolutionContext.clear();
+        restored.bindingAccumulator.dispose();
+      }
+    },
+    60000,
+  );
+
   it.each(scenarios)(
     '$name compares reused records with a full edited run',
     async (scenario) => {

@@ -11,5 +11,9 @@ if ! git diff --quiet; then
 fi
 TREE="$(git write-tree)"
 (cd ontoindex && npm run build && npm run test:unit && npm run test:integration)
+if ! git diff --quiet || [ "$(git write-tree)" != "$TREE" ]; then
+  echo "verify-release: tracked inputs changed during validation; stage and verify again." >&2
+  exit 1
+fi
 echo "$TREE" > "$(git rev-parse --git-path ontoindex-release-verified)"
 echo "verify-release: tests passed for staged tree $TREE"

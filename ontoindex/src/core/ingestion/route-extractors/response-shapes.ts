@@ -4,6 +4,337 @@
  * extracts top-level keys, and classifies by HTTP status code.
  */
 
+import type { SyntaxNode } from '../utils/ast-helpers.js';
+import { nextjsFileToRouteURL } from './nextjs.js';
+import type { ExtractedDecoratorRoute } from '../workers/parse-types.js';
+
+type ResponseShape = { responseKeys?: string[]; errorKeys?: string[] };
+const JS_CALLABLES = new Set([
+  'function_declaration',
+  'generator_function_declaration',
+  'function_expression',
+  'generator_function',
+  'arrow_function',
+  'method_definition',
+]);
+
+/** Static object keys only; values, comments and computed keys provide no shape evidence. */
+function objectKey(node: SyntaxNode | null): string | undefined {
+  if (!node) return undefined;
+  if (['property_identifier', 'identifier', 'shorthand_property_identifier'].includes(node.type)) {
+    return node.text;
+  }
+  if (
+    node.type === 'string' &&
+    !node.namedChildren.some((child) => child.type === 'escape_sequence')
+  ) {
+    return node.namedChildren.map((child) => child.text).join('');
+  }
+  return undefined;
+}
+
+/** Reuse one parsed tree and one lexical lookup per file, with memoized handler shapes. */
+export function createRouteResponseShapeExtractor(root: SyntaxNode) {
+  let extract: ReturnType<typeof buildRouteResponseShapeExtractor> | undefined;
+  return (handler: SyntaxNode | null | undefined): ResponseShape => {
+    if (!handler) return {};
+    extract ??= buildRouteResponseShapeExtractor(root);
+    return extract(handler);
+  };
+}
+
+function buildRouteResponseShapeExtractor(root: SyntaxNode) {
+  type Binding = (SyntaxNode | null)[];
+  type Scope = {
+    parent?: Scope;
+    bindings: Map<string, Binding>;
+    functionScope: boolean;
+  };
+  const scopes = new Map<number, Scope>();
+  const declarationBindings = new Map<number, Binding>();
+  const mutatedBindings = new Set<Binding>();
+  const parameterWrittenNames = new Set<string>();
+  const writes: { name: string; scope: Scope }[] = [];
+  let unresolvedAssignment = false;
+  const rootScope: Scope = { bindings: new Map(), functionScope: true };
+  const bind = (scope: Scope, name: string, callable: SyntaxNode | null) => {
+    const values = scope.bindings.get(name) ?? [];
+    values.push(callable);
+    scope.bindings.set(name, values);
+    return values;
+  };
+  const resolveBinding = (scope: Scope | undefined, name: string): Binding | undefined => {
+    while (scope && !scope.bindings.has(name)) scope = scope.parent;
+    return scope?.bindings.get(name);
+  };
+  const visitPattern = (node: SyntaxNode | null, visitName: (name: string) => void): boolean => {
+    if (!node) return false;
+    if (
+      ['identifier', 'type_identifier', 'shorthand_property_identifier_pattern'].includes(node.type)
+    ) {
+      visitName(node.text);
+    } else if (['required_parameter', 'optional_parameter'].includes(node.type)) {
+      return visitPattern(
+        node.childForFieldName('pattern') ?? node.childForFieldName('name'),
+        visitName,
+      );
+    } else if (['assignment_pattern', 'object_assignment_pattern'].includes(node.type)) {
+      return visitPattern(node.childForFieldName('left'), visitName);
+    } else if (node.type === 'pair_pattern') {
+      return visitPattern(node.childForFieldName('value'), visitName);
+    } else if (
+      ['object_pattern', 'array_pattern', 'rest_pattern', 'formal_parameters'].includes(node.type)
+    ) {
+      let resolved = true;
+      for (const child of node.namedChildren) {
+        if (!visitPattern(child, visitName)) resolved = false;
+      }
+      return resolved;
+    } else if (!['member_expression', 'subscript_expression', 'comment'].includes(node.type)) {
+      return false;
+    }
+    // Property writes do not rebind their receiver or property name.
+    return true;
+  };
+  const bindPattern = (
+    scope: Scope,
+    node: SyntaxNode | null,
+    callable: SyntaxNode | null = null,
+  ): void => {
+    visitPattern(node, (name) => bind(scope, name, callable));
+  };
+  const pending: { node: SyntaxNode; scope: Scope; inParameters: boolean }[] = [
+    { node: root, scope: rootScope, inParameters: false },
+  ];
+  while (pending.length > 0) {
+    const { node, scope: outer, inParameters } = pending.pop()!;
+    let scope = outer;
+    if (JS_CALLABLES.has(node.type)) {
+      const name = node.childForFieldName('name');
+      if (name && node.type.endsWith('_declaration'))
+        declarationBindings.set(node.id, bind(outer, name.text, node));
+      scope = { parent: outer, bindings: new Map(), functionScope: true };
+      if (name && !node.type.endsWith('_declaration') && node.type !== 'method_definition') {
+        bind(scope, name.text, node);
+      }
+      bindPattern(
+        scope,
+        node.childForFieldName('parameters') ?? node.childForFieldName('parameter'),
+      );
+    } else if (
+      [
+        'statement_block',
+        'switch_body',
+        'class_body',
+        'catch_clause',
+        'for_statement',
+        'for_in_statement',
+      ].includes(node.type)
+    ) {
+      // The callable body shares its parameters' function scope; nested blocks do not.
+      if (node.type !== 'statement_block' || !JS_CALLABLES.has(node.parent?.type ?? ''))
+        scope = { parent: outer, bindings: new Map(), functionScope: false };
+      if (node.type === 'catch_clause') bindPattern(scope, node.childForFieldName('parameter'));
+      if (node.type === 'class_body')
+        bindPattern(scope, node.parent?.childForFieldName('name') ?? null);
+      const kind = node.type === 'for_in_statement' ? node.childForFieldName('kind') : null;
+      if (kind) {
+        let bindingScope = scope;
+        if (kind.text === 'var') {
+          while (!bindingScope.functionScope && bindingScope.parent)
+            bindingScope = bindingScope.parent;
+        }
+        bindPattern(bindingScope, node.childForFieldName('left'));
+      }
+    }
+    scopes.set(node.id, scope);
+    if (node.type === 'variable_declarator') {
+      let bindingScope = scope;
+      if (node.parent?.type === 'variable_declaration') {
+        while (!bindingScope.functionScope && bindingScope.parent)
+          bindingScope = bindingScope.parent;
+      }
+      const value = node.childForFieldName('value');
+      bindPattern(
+        bindingScope,
+        node.childForFieldName('name'),
+        value && JS_CALLABLES.has(value.type) ? value : null,
+      );
+    } else if (node.type === 'class_declaration') {
+      bindPattern(scope, node.childForFieldName('name'));
+    } else if (node.type === 'import_clause') {
+      // Every imported binding stays unresolved; it must never borrow a same-file callable.
+      for (const identifier of node.descendantsOfType('identifier'))
+        bind(scope, identifier.text, null);
+    } else if (
+      ['assignment_expression', 'augmented_assignment_expression', 'update_expression'].includes(
+        node.type,
+      ) ||
+      node.type === 'for_in_statement'
+    ) {
+      const target = node.childForFieldName('left') ?? node.childForFieldName('argument');
+      if (
+        !visitPattern(target, (name) => {
+          writes.push({ name, scope });
+          // Default initializers cannot see body var bindings. Until those environments
+          // are modeled separately, refuse shapes for names written in parameters.
+          if (inParameters) parameterWrittenNames.add(name);
+        })
+      )
+        unresolvedAssignment = true;
+    }
+    const parameters = JS_CALLABLES.has(node.type)
+      ? (node.childForFieldName('parameters') ?? node.childForFieldName('parameter'))
+      : null;
+    for (let i = node.namedChildren.length - 1; i >= 0; i--) {
+      const child = node.namedChildren[i];
+      pending.push({
+        node: child,
+        scope,
+        inParameters: inParameters || child.id === parameters?.id,
+      });
+    }
+  }
+  // Resolve after collecting declarations, including function-scoped var hoisting.
+  for (const { name, scope } of writes) {
+    const binding = resolveBinding(scope, name);
+    if (binding) mutatedBindings.add(binding);
+  }
+
+  const cache = new Map<number, ResponseShape>();
+  return (handler: SyntaxNode | null | undefined): ResponseShape => {
+    if (!handler) return {};
+    if (handler.type === 'identifier') {
+      const bindings = resolveBinding(scopes.get(handler.id), handler.text);
+      if (
+        unresolvedAssignment ||
+        parameterWrittenNames.has(handler.text) ||
+        !bindings ||
+        mutatedBindings.has(bindings) ||
+        bindings.length !== 1 ||
+        !bindings[0]
+      )
+        return {};
+      handler = bindings[0];
+    }
+    if (!JS_CALLABLES.has(handler.type)) return {};
+    if (
+      handler.type.endsWith('_declaration') &&
+      (unresolvedAssignment ||
+        parameterWrittenNames.has(handler.childForFieldName('name')?.text ?? '') ||
+        mutatedBindings.has(declarationBindings.get(handler.id)!))
+    )
+      return {};
+    const cached = cache.get(handler.id);
+    if (cached) return cached;
+    const successKeys: string[] = [];
+    const errorKeys: string[] = [];
+    const body = handler.childForFieldName('body');
+    const nodes = body ? [body] : [];
+    while (nodes.length > 0) {
+      const node = nodes.pop()!;
+      // Function/class declarations inside the handler are not executed by declaring them.
+      if (JS_CALLABLES.has(node.type) || ['class', 'class_declaration'].includes(node.type))
+        continue;
+      if (node.type === 'call_expression') {
+        const member = node.childForFieldName('function');
+        const args =
+          node
+            .childForFieldName('arguments')
+            ?.namedChildren.filter((child) => child.type !== 'comment') ?? [];
+        if (
+          member?.type === 'member_expression' &&
+          member.childForFieldName('property')?.text === 'json' &&
+          args[0]?.type === 'object'
+        ) {
+          let status: number | undefined;
+          const receiver = member.childForFieldName('object');
+          const statusMember =
+            receiver?.type === 'call_expression' ? receiver.childForFieldName('function') : null;
+          if (
+            statusMember?.type === 'member_expression' &&
+            statusMember.childForFieldName('property')?.text === 'status'
+          ) {
+            const code = receiver!.childForFieldName('arguments')?.namedChildren[0];
+            if (code?.type === 'number') status = Number(code.text);
+          }
+          if (status === undefined && args[1]?.type === 'object') {
+            const statusPair = args[1].namedChildren.find(
+              (child) =>
+                child.type === 'pair' && objectKey(child.childForFieldName('key')) === 'status',
+            );
+            const code = statusPair?.childForFieldName('value');
+            if (code?.type === 'number') status = Number(code.text);
+          }
+          const keys = status !== undefined && status >= 400 ? errorKeys : successKeys;
+          for (const property of args[0].namedChildren) {
+            const key = objectKey(
+              property.type === 'pair' ? property.childForFieldName('key') : property,
+            );
+            if (key !== undefined) keys.push(key);
+          }
+        }
+      }
+      for (let i = node.namedChildren.length - 1; i >= 0; i--) nodes.push(node.namedChildren[i]);
+    }
+    const shape = buildShapeResult(successKeys, errorKeys);
+    cache.set(handler.id, shape);
+    return shape;
+  };
+}
+
+/** Exported Next.js entrypoints only; unrelated helpers never contribute file-wide keys. */
+export function extractNextjsRouteShapes(
+  root: SyntaxNode,
+  filePath: string,
+  extract: ReturnType<typeof createRouteResponseShapeExtractor>,
+  lineOffset = 0,
+): ExtractedDecoratorRoute[] {
+  const routePath = nextjsFileToRouteURL(filePath);
+  if (!routePath) return [];
+  const pages = /(?:^|\/)pages\/api\//.test(filePath.replace(/\\/g, '/'));
+  const routes: ExtractedDecoratorRoute[] = [];
+  const add = (name: string, handler: SyntaxNode) => {
+    if (
+      pages
+        ? name !== 'default'
+        : !['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'].includes(name)
+    )
+      return;
+    routes.push({
+      filePath,
+      routePath,
+      httpMethod: pages ? 'GET' : name,
+      decoratorName: 'nextjs',
+      lineNumber: handler.startPosition.row + lineOffset,
+      ...extract(handler),
+    });
+  };
+  for (const statement of root.namedChildren) {
+    if (statement.type !== 'export_statement' || statement.childForFieldName('source')) continue;
+    const declaration = statement.childForFieldName('declaration');
+    if (pages && statement.children.some((child) => child.type === 'default')) {
+      const value = declaration ?? statement.childForFieldName('value');
+      if (value) add('default', value);
+    } else if (declaration?.type === 'function_declaration') {
+      const name = declaration.childForFieldName('name');
+      if (name) add(name.text, declaration);
+    } else if (declaration?.type === 'lexical_declaration') {
+      for (const binding of declaration.namedChildren) {
+        const name = binding.childForFieldName('name');
+        if (name?.type === 'identifier') add(name.text, name);
+      }
+    } else {
+      const clause = statement.namedChildren.find((child) => child.type === 'export_clause');
+      for (const specifier of clause?.namedChildren ?? []) {
+        const name = specifier.childForFieldName('name');
+        if (name) add(specifier.childForFieldName('alias')?.text ?? name.text, name);
+      }
+    }
+  }
+  return routes;
+}
+
 /** Return the status code (group 1) from the last match, or undefined. */
 function lastMatchGroup(text: string, pattern: RegExp): number | undefined {
   const matches = [...text.matchAll(pattern)];

@@ -86,12 +86,21 @@ export interface AbiDiffReport {
 const DEFAULT_MAX_FINDINGS = 50;
 const MAX_FINDINGS = 100;
 
+interface ParsedFields {
+  fields: AbiField[];
+  complete: boolean;
+  warnings: string[];
+}
+
 export function diffAbi(params: AbiDiffParams): AbiDiffReport {
   const maxFindings = normalizeLimit(params.maxFindings, DEFAULT_MAX_FINDINGS, MAX_FINDINGS);
-  const warnings: string[] = [];
-  const sourceFields = parseSourceFields(params.sourceStruct, params.sourceLanguage, warnings);
-  const targetFields = parseTargetFields(params.targetInterface, params.targetLanguage, warnings);
-  const findings = compareFields(sourceFields, targetFields);
+  const source = parseSourceFields(params.sourceStruct, params.sourceLanguage);
+  const target = parseTargetFields(params.targetInterface, params.targetLanguage);
+  const warnings = [...source.warnings, ...target.warnings];
+  const sourceFields = source.fields;
+  const targetFields = target.fields;
+  const noComparableFields = sourceFields.length === 0 || targetFields.length === 0;
+  const findings = compareFields(source, target);
   const boundedFindings = findings.slice(0, maxFindings);
   const truncated = findings.length > maxFindings;
   if (truncated) {
@@ -101,7 +110,8 @@ export function diffAbi(params: AbiDiffParams): AbiDiffReport {
   return {
     version: 1,
     tool: ABI_DIFF_ANALYZER_ID,
-    status: truncated ? 'partial' : 'ok',
+    status:
+      truncated || !source.complete || !target.complete || noComparableFields ? 'partial' : 'ok',
     sidecarRecord: {
       kind: ABI_DIFF_SIDECAR_RECORD_KIND,
       analyzerId: ABI_DIFF_ANALYZER_ID,
@@ -120,16 +130,17 @@ export function diffAbi(params: AbiDiffParams): AbiDiffReport {
       status: 'not-applicable',
       reason: 'ABI diff MVP consumes caller-supplied snippets only',
     },
-    skipReasons:
-      sourceFields.length === 0 || targetFields.length === 0
-        ? ['source or target snippet yielded no comparable fields']
-        : [],
+    skipReasons: noComparableFields
+      ? ['source or target snippet yielded no comparable fields']
+      : [],
     warnings,
     nextTools: ['gn_audit_verify'],
   };
 }
 
-function compareFields(sourceFields: AbiField[], targetFields: AbiField[]): AbiDiffFinding[] {
+function compareFields(sourceResult: ParsedFields, targetResult: ParsedFields): AbiDiffFinding[] {
+  const sourceFields = sourceResult.fields;
+  const targetFields = targetResult.fields;
   const findings: AbiDiffFinding[] = [];
   const sourceByName = new Map(sourceFields.map((field) => [field.name, field]));
   const targetByName = new Map(targetFields.map((field) => [field.name, field]));
@@ -137,6 +148,7 @@ function compareFields(sourceFields: AbiField[], targetFields: AbiField[]): AbiD
   for (const source of sourceFields) {
     const target = targetByName.get(source.name);
     if (!target) {
+      if (!targetResult.complete) continue;
       findings.push(
         finding(
           source.name,
@@ -151,11 +163,19 @@ function compareFields(sourceFields: AbiField[], targetFields: AbiField[]): AbiD
     }
     const reasonCodes = typeReasonCodes(source, target);
     if (reasonCodes.length > 0) {
+      const losesWideIntegerPrecision =
+        reasonCodes.includes('BIGINT_NUMBER_MISMATCH') &&
+        /\b[ui]128\b/i.test(source.rawType) &&
+        /\bnumber\b/i.test(target.rawType);
       findings.push(
         finding(
           source.name,
-          reasonCodes.includes('UINT64_PRECISION_LOSS') ? 'high' : 'medium',
-          `field ${source.name} differs: ${source.rawType} vs ${target.rawType}`,
+          reasonCodes.includes('UINT64_PRECISION_LOSS') || losesWideIntegerPrecision
+            ? 'high'
+            : 'medium',
+          losesWideIntegerPrecision
+            ? `field ${source.name} may lose precision: ${source.rawType} exceeds JavaScript number's exact integer range`
+            : `field ${source.name} differs: ${source.rawType} vs ${target.rawType}`,
           reasonCodes,
           source,
           target,
@@ -177,7 +197,7 @@ function compareFields(sourceFields: AbiField[], targetFields: AbiField[]): AbiD
   }
 
   for (const target of targetFields) {
-    if (!sourceByName.has(target.name)) {
+    if (sourceResult.complete && !sourceByName.has(target.name)) {
       findings.push(
         finding(
           target.name,
@@ -244,77 +264,167 @@ function finding(
 function parseSourceFields(
   snippet: string,
   language: AbiDiffParams['sourceLanguage'] | undefined,
-  warnings: string[],
-): AbiField[] {
-  if (language === 'json' || looksLikeJson(snippet)) {
-    warnings.push('source fields inferred from JSON values');
+): ParsedFields {
+  if (language === 'json' || (language === undefined && looksLikeJson(snippet))) {
     return parseJsonFields(snippet, 'source');
   }
-  return [...parseRustFields(snippet, 'source'), ...parseCppFields(snippet, 'source')].filter(
-    uniqueField,
-  );
+  const content = maskComments(snippet).trimStart();
+  const inferredLanguage =
+    /^(?:pub\s+)?(?:struct\s+\w+\s*\{|\w+\s*:)/.test(content) &&
+    (/^pub\b/.test(content) ||
+      /^\w+\s*:(?!:)/.test(content) ||
+      /\{\s*(?:pub\s+)?\w+\s*:(?!:)/.test(content))
+      ? 'rust'
+      : 'cpp';
+  return parseDeclarations(snippet, language ?? inferredLanguage, 'source');
 }
 
 function parseTargetFields(
   snippet: string,
   language: AbiDiffParams['targetLanguage'] | undefined,
-  warnings: string[],
-): AbiField[] {
-  if (language === 'json' || looksLikeJson(snippet)) {
-    warnings.push('target fields inferred from JSON values');
+): ParsedFields {
+  if (language === 'json' || (language === undefined && looksLikeJson(snippet))) {
     return parseJsonFields(snippet, 'target');
   }
-  return parseTypeScriptFields(snippet, 'target');
+  return parseDeclarations(snippet, 'typescript', 'target');
 }
 
-function parseCppFields(snippet: string, origin: AbiField['origin']): AbiField[] {
+function maskComments(snippet: string): string {
+  return snippet.replace(/\/\/[^\r\n]*|\/\*[\s\S]*?\*\//g, (comment) =>
+    comment.replace(/[^\r\n]/g, ' '),
+  );
+}
+
+function parseDeclarations(
+  snippet: string,
+  language: 'cpp' | 'rust' | 'typescript',
+  origin: AbiField['origin'],
+): ParsedFields {
+  // slim: recognize sequential simple declarations only; use a grammar if richer members are needed.
+  const content = maskComments(snippet);
   const fields: AbiField[] = [];
-  for (const [index, rawLine] of snippet.split('\n').entries()) {
-    const line = rawLine.replace(/\/\/.*$/, '').trim();
-    const match = line.match(
-      /^([A-Za-z_][\w:<>]*\s*(?:\*|&)?)\s+([A-Za-z_]\w*)\s*(?:\[[^\]]+\])?\s*;/,
-    );
-    if (!match) continue;
-    fields.push(field(match[2], match[1], index + 1, origin));
+  let offset = content.search(/\S/);
+  const incomplete = (reason: string): ParsedFields => ({
+    fields,
+    complete: false,
+    warnings: [`${origin} parsing incomplete: ${reason}`],
+  });
+  if (offset < 0) return incomplete('empty snippet');
+
+  const wrappers = {
+    cpp: /^(?:struct|class)\s+[A-Za-z_]\w*\s*\{/,
+    rust: /^(?:pub\s+)?struct\s+[A-Za-z_]\w*\s*\{/,
+    typescript: /^(?:export\s+)?(?:interface\s+[A-Za-z_]\w*\s*|type\s+[A-Za-z_]\w*\s*=\s*)\{/,
+  };
+  const wrapper = wrappers[language].exec(content.slice(offset));
+  if (wrapper) offset += wrapper[0].length;
+
+  while (offset < content.length) {
+    offset += /^\s*/.exec(content.slice(offset))![0].length;
+    if (wrapper && content[offset] === '}') {
+      const tail = content.slice(offset + 1).trim();
+      if (tail !== '' && tail !== ';') return incomplete('unsupported trailing syntax');
+      return { fields, complete: true, warnings: [] };
+    }
+    if (offset === content.length) break;
+    const line = content.slice(0, offset).split('\n').length;
+    const remaining = content.slice(offset);
+    let name: string;
+    let rawType: string;
+    let consumed: number;
+
+    if (language === 'cpp') {
+      const declaration = /^([^;{}]+);/.exec(remaining);
+      const member =
+        declaration && /^([\s\S]+[\s*&])([A-Za-z_]\w*)\s*$/.exec(declaration[1].trim());
+      if (!declaration || !member) return incomplete(`unsupported declaration at line ${line}`);
+      [, rawType, name] = member;
+      if (
+        !/^(?:(?:const|volatile|signed|unsigned|short|long)\s+)*[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*(?:\s+(?:const|volatile))*(?:\s*\*\s*(?:(?:const|volatile)\s*)*)?$/.test(
+          rawType.trim(),
+        )
+      ) {
+        return incomplete(`unsupported type at line ${line}`);
+      }
+      consumed = declaration[0].length;
+    } else {
+      const declaration =
+        language === 'rust'
+          ? /^(?:pub\s+)?([A-Za-z_]\w*)\s*:\s*([^,;\r\n{}]+)(?:,|(?=\s*(?:}|$)))/.exec(remaining)
+          : /^([A-Za-z_]\w*)(\?)?\s*:\s*([^,;\r\n{}]+)(?:[;,]|(?=\r?\n|}|$))/.exec(remaining);
+      if (!declaration) return incomplete(`unsupported declaration at line ${line}`);
+      name = declaration[1];
+      rawType = language === 'rust' ? declaration[2] : declaration[3];
+      const supportedType =
+        language === 'rust'
+          ? /^(?:[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*|Option\s*<\s*[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*\s*>)$/
+          : /^(?:number|bigint|string|boolean|object)(?:\s*\|\s*(?:null|undefined))*$/;
+      if (!supportedType.test(rawType.trim()))
+        return incomplete(`unsupported type at line ${line}`);
+      if (language === 'typescript' && declaration[2]) rawType += ' | undefined';
+      consumed = declaration[0].length;
+    }
+
+    const parsed = field(name, rawType, line, origin);
+    if (parsed.normalizedType === 'unknown') return incomplete(`unknown type at line ${line}`);
+    const duplicate = fields.findIndex((existing) => existing.name === name);
+    if (duplicate !== -1) {
+      fields.splice(duplicate, 1);
+      return incomplete(`duplicate field at line ${line}`);
+    }
+    fields.push(parsed);
+    offset += consumed;
   }
-  return fields;
+  return wrapper ? incomplete('unclosed declaration') : { fields, complete: true, warnings: [] };
 }
 
-function parseRustFields(snippet: string, origin: AbiField['origin']): AbiField[] {
-  const fields: AbiField[] = [];
-  for (const [index, rawLine] of snippet.split('\n').entries()) {
-    const line = rawLine
-      .replace(/\/\/.*$/, '')
-      .trim()
-      .replace(/^pub\s+/, '');
-    const match = line.match(/^([A-Za-z_]\w*)\s*:\s*([^,]+),?/);
-    if (!match) continue;
-    fields.push(field(match[1], match[2], index + 1, origin));
-  }
-  return fields;
-}
-
-function parseTypeScriptFields(snippet: string, origin: AbiField['origin']): AbiField[] {
-  const fields: AbiField[] = [];
-  for (const [index, rawLine] of snippet.split('\n').entries()) {
-    const line = rawLine.replace(/\/\/.*$/, '').trim();
-    const match = line.match(/^([A-Za-z_]\w*)(\?)?\s*:\s*([^;,\n]+)/);
-    if (!match) continue;
-    fields.push(field(match[1], `${match[3]}${match[2] ? ' | undefined' : ''}`, index + 1, origin));
-  }
-  return fields;
-}
-
-function parseJsonFields(snippet: string, origin: AbiField['origin']): AbiField[] {
+function parseJsonFields(snippet: string, origin: AbiField['origin']): ParsedFields {
+  const warnings = [`${origin} fields inferred from JSON values`];
   try {
     const value = JSON.parse(snippet) as Record<string, unknown>;
-    if (!value || Array.isArray(value) || typeof value !== 'object') return [];
-    return Object.entries(value).map(([name, jsonValue], index) =>
-      field(name, jsonType(jsonValue), index + 1, origin),
-    );
+    if (value && !Array.isArray(value) && typeof value === 'object') {
+      const fields: AbiField[] = [];
+      const names = new Set<string>();
+      let depth = 0;
+      let complete = true;
+      // JSON.parse validates syntax; tokens only recover top-level key locations and duplicates.
+      for (const token of snippet.matchAll(/"(?:\\.|[^"\\])*"|[{}\[\]]/g)) {
+        if (token[0] === '{' || token[0] === '[') depth += 1;
+        else if (token[0] === '}' || token[0] === ']') depth -= 1;
+        else if (depth === 1 && /^\s*:/.test(snippet.slice(token.index! + token[0].length))) {
+          const name = JSON.parse(token[0]) as string;
+          if (names.has(name)) {
+            const duplicate = fields.findIndex((existing) => existing.name === name);
+            if (duplicate !== -1) fields.splice(duplicate, 1);
+            complete = false;
+          } else {
+            names.add(name);
+            fields.push(
+              field(
+                name,
+                jsonType(value[name]),
+                snippet.slice(0, token.index).split('\n').length,
+                origin,
+              ),
+            );
+          }
+        }
+      }
+      if (!complete) warnings.push(`${origin} parsing incomplete: duplicate JSON field`);
+      return {
+        fields,
+        complete,
+        warnings,
+      };
+    }
   } catch {
-    return [];
+    // Invalid JSON cannot establish field absence.
   }
+  return {
+    fields: [],
+    complete: false,
+    warnings: [...warnings, `${origin} parsing incomplete: expected a JSON object`],
+  };
 }
 
 function field(name: string, rawType: string, line: number, origin: AbiField['origin']): AbiField {
@@ -322,7 +432,7 @@ function field(name: string, rawType: string, line: number, origin: AbiField['or
     name,
     rawType: rawType.trim(),
     normalizedType: normalizeType(rawType),
-    nullable: /\b(null|undefined|Option<|\?)\b/.test(rawType),
+    nullable: /\b(?:null|undefined)\b|\bOption\s*</.test(rawType),
     line,
     origin,
   };
@@ -330,11 +440,18 @@ function field(name: string, rawType: string, line: number, origin: AbiField['or
 
 function normalizeType(rawType: string): AbiField['normalizedType'] {
   const type = rawType.trim().toLowerCase();
-  if (/\b(bigint|u64|i64)\b/.test(type)) return 'bigint';
-  if (/\b(u?int\d*_t|uint\d*|int\d*|size_t|usize|isize|long|short|number)\b/.test(type))
+  const unqualified = type.replace(/\b(?:const|volatile)\b/g, '').trim();
+  if (/^char\s*\*$/.test(unqualified)) return 'string';
+  if (unqualified.includes('*')) return 'unknown';
+  if (/\b(bigint|u64|i64|u128|i128)\b/.test(type)) return 'bigint';
+  if (
+    /\b(u?int\d*_t|uint\d*|int\d*|[ui](?:8|16|32|128)|size_t|usize|isize|long|short|number)\b/.test(
+      type,
+    )
+  )
     return 'integer';
   if (/\b(float|double|f32|f64)\b/.test(type)) return 'float';
-  if (/\b(string|char\s*\*|std::string|str)\b/.test(type)) return 'string';
+  if (/\b(string|std::string|str)\b/.test(type)) return 'string';
   if (/\b(bool|boolean)\b/.test(type)) return 'boolean';
   if (/\[\]|array|vec<|vector</.test(type)) return 'array';
   if (/\b(object|record|struct)\b/.test(type)) return 'object';
@@ -349,10 +466,6 @@ function jsonType(value: unknown): string {
 
 function looksLikeJson(snippet: string): boolean {
   return snippet.trim().startsWith('{');
-}
-
-function uniqueField(fieldValue: AbiField, index: number, fields: AbiField[]): boolean {
-  return fields.findIndex((candidate) => candidate.name === fieldValue.name) === index;
 }
 
 function normalizeLimit(value: number | undefined, fallback: number, max: number): number {

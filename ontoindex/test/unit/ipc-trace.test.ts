@@ -45,12 +45,12 @@ describe('ipc_trace', () => {
     });
   });
 
-  it('returns flow steps when the bridge is resolvable', async () => {
+  it('preserves successful query status for observations with unverified connectivity', async () => {
     traceMock.mockResolvedValue({
-      summary: 'Successfully traced IPC bridge for "foo" across 3 steps',
+      summary: 'Collected 3 observations for "foo"; bridge connectivity unverified',
       flow: [
         { kind: 'JS Function', file: 'src/foo.js', line: 10, confidence: 'high' },
-        { kind: 'JS Bridge', file: 'src/bridge.js', line: 5, confidence: 'high' },
+        { kind: 'JS Bridge Candidate', file: 'src/bridge.js', line: 5, confidence: 'high' },
         { kind: 'C++ Registration', file: 'native/foo.cc', line: 42, confidence: 'high' },
       ],
     });
@@ -60,7 +60,7 @@ describe('ipc_trace', () => {
     expect(result.flow_count).toBe(3);
     expect(result.flow[0].kind).toBe('JS Function');
     expect(result.flow[2].kind).toBe('C++ Registration');
-    expect(result.summary).toMatch(/3 steps/);
+    expect(result.summary).toMatch(/3 observations.*connectivity unverified/);
   });
 
   it('returns an empty-success structure when no hits are found', async () => {

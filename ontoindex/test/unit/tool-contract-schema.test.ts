@@ -12,6 +12,30 @@ const FIXTURE_DIR = path.resolve(__dirname, '../../fixtures/mcp-tool-contract');
 const SNAPSHOT_PATH = path.join(FIXTURE_DIR, 'stable-tools.snapshot.json');
 
 describe('tool-contract-schema — snapshot (Phase 3)', () => {
+  it('advertises established refactor arguments with distinct action-specific defaults', () => {
+    const schema = serializeToolContract(getPublicToolRegistry({ includeFacades: true }), {
+      includeExperimental: false,
+    });
+    const input = schema.tools.find((tool) => tool.name === 'refactor')!.inputSchema;
+    const properties = input.properties as Record<string, { type: string; description: string }>;
+    expect(input.required).toEqual(['action']);
+    expect(input.properties).toMatchObject({
+      new_body: { type: 'string' },
+      new_name: { type: 'string' },
+      dry_run: { type: 'boolean' },
+      dryRun: { type: 'boolean' },
+    });
+    for (const key of ['new_body', 'new_name', 'dry_run', 'dryRun']) {
+      expect(properties[key]).not.toHaveProperty('default');
+    }
+    expect(properties.dry_run.description).toContain('For rename: defaults to true');
+    expect(properties.dry_run.description).toContain('For replace: only explicit true');
+    expect(properties.dryRun.description).toContain('For safe_refactor');
+    expect(properties.confirm.description).toContain('backend write permission');
+    expect(input.properties).not.toHaveProperty('newBody');
+    expect(input.properties).not.toHaveProperty('newName');
+  });
+
   it('keeps every facade registry action aligned with its input schema', () => {
     const facades = getPublicToolRegistry({ includeFacades: true }).filter(
       (entry) => entry.kind === 'facade',

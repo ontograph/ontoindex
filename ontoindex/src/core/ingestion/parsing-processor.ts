@@ -30,6 +30,10 @@ import {
 } from './utils/ast-helpers.js';
 import { detectFrameworkFromAST } from './framework-detection.js';
 import {
+  createRouteResponseShapeExtractor,
+  extractNextjsRouteShapes,
+} from './route-extractors/response-shapes.js';
+import {
   associateDefinitionDecorators,
   captureRouteOrDecorator,
   extractLaravelRoutes,
@@ -1081,6 +1085,14 @@ const processSequentialFileMatches = (
   declarationCorrespondence?: ReturnType<typeof createDeclarationCorrespondence>,
 ): void => {
   const { file, language, lineOffset, isVueSetup, provider, matches, typeEnv } = preparedFile;
+  const extractShape =
+    language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript
+      ? createRouteResponseShapeExtractor(preparedFile.rootNode)
+      : undefined;
+  if (extractShape)
+    extractions.decoratorRoutes.push(
+      ...extractNextjsRouteShapes(preparedFile.rootNode, file.path, extractShape, lineOffset),
+    );
   const fileDecorators: FileDecorators = new Map();
   const knownTypeOwnerHints = collectKnownTypeOwnerHints(matches, provider, file.path);
   // Mirrors parse-worker: drop Const/Static/Variable symbols for names already
@@ -1094,7 +1106,16 @@ const processSequentialFileMatches = (
       captureMap[c.name] = c.node;
     });
 
-    if (captureRouteOrDecorator(captureMap, file.path, lineOffset, fileDecorators, extractions))
+    if (
+      captureRouteOrDecorator(
+        captureMap,
+        file.path,
+        lineOffset,
+        fileDecorators,
+        extractions,
+        extractShape,
+      )
+    )
       return;
 
     const definitionNodeForRange = getDefinitionNodeFromCaptures(captureMap);

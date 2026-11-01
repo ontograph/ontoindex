@@ -2,13 +2,40 @@
 # Release gate: a commit that changes the ontoindex package version must
 # match a tree stamped by scripts/verify-release.sh (unit + integration).
 # Applies to [skip ci] and local-only releases, which no workflow tests.
-if ! git diff --cached -U0 -- ontoindex/package.json | grep -q '^+[[:space:]]*"version"'; then
-  exit 0
-fi
-STAMP="$(git rev-parse --git-path ontoindex-release-verified)"
-TREE="$(git write-tree)"
-if [ "$(cat "$STAMP" 2>/dev/null)" != "$TREE" ]; then
-  echo "commit-msg: version bump without a passing test run for this staged tree."
-  echo "Run scripts/verify-release.sh with the release fully staged, then commit again."
-  exit 1
-fi
+node --input-type=commonjs <<'NODE'
+const { execFileSync } = require('node:child_process');
+const { readFileSync } = require('node:fs');
+const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
+const manifest = 'ontoindex/package.json';
+function version(revision) {
+  const value = JSON.parse(git('show', `${revision}:${manifest}`));
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      !Object.hasOwn(value, 'version') || typeof value.version !== 'string' ||
+      !value.version.trim()) {
+    throw new Error(`${revision || 'index'}:${manifest} must contain a version string`);
+  }
+  return value.version;
+}
+try {
+  const change = git('diff', '--cached', '--name-status', '--no-renames', '--', manifest);
+  if (!change) process.exit(0);
+  const status = change.split('\t')[0];
+  if (status !== 'A' && status !== 'M') {
+    throw new Error(`unsupported staged manifest change: ${status}`);
+  }
+  const staged = version('');
+  if (status === 'M' && staged === version('HEAD')) process.exit(0);
+  const tree = git('write-tree');
+  const stampPath = git('rev-parse', '--git-path', 'ontoindex-release-verified');
+  let stamp;
+  try { stamp = readFileSync(stampPath, 'utf8').trim(); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (!tree || stamp !== tree) {
+    throw new Error('version change without a passing test run for this staged tree.\n' +
+      'Run scripts/verify-release.sh with the release fully staged, then commit again.');
+  }
+} catch (error) {
+  console.error(`commit-msg: ${error.message}`);
+  process.exitCode = 1;
+}
+NODE

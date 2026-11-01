@@ -74,7 +74,7 @@ function symbolDetail(symbolName: string, filePath: string): string {
 }
 
 /**
- * Trace execution flows across the JS-to-C++ bridge.
+ * Collect symbol and native bridge observations without proving connectivity.
  */
 export async function traceIPCBridges(options: IPCTraceOptions): Promise<AuditResponse> {
   const { repoId, repoPath, symbolName } = options;
@@ -117,12 +117,13 @@ export async function traceIPCBridges(options: IPCTraceOptions): Promise<AuditRe
 
   const activeBridges = new Set(bridgeScan.hits.map((h) => h.file));
   for (const bridgeFile of activeBridges) {
-    // If the bridge file mentions our symbol, it's a strong candidate
+    // Co-location with a native load is a candidate, not evidence of a call edge.
     const relBridgePath = path.relative(repoPath, bridgeFile);
     if (flow.some((f) => f.file === relBridgePath)) {
       const bridgeFlowIndex = flow.findIndex((f) => f.file === relBridgePath);
-      flow[bridgeFlowIndex].kind = 'JS Bridge';
-      flow[bridgeFlowIndex].detail = `Native bridge file loading a .node module`;
+      flow[bridgeFlowIndex].kind = 'JS Bridge Candidate';
+      flow[bridgeFlowIndex].detail =
+        `Symbol and .node module load observed in the same file; bridge connectivity unverified`;
       flow[bridgeFlowIndex].confidence = 'high';
     }
   }
@@ -154,7 +155,7 @@ export async function traceIPCBridges(options: IPCTraceOptions): Promise<AuditRe
         kind: 'C++ Registration',
         file: path.relative(repoPath, hit.file),
         line: hit.line,
-        detail: `Node-API registration site for "${symbolName}"`,
+        detail: `Possible Node-API registration for "${symbolName}" from a text match; bridge connectivity unverified`,
         confidence: 'high',
       });
 
@@ -179,7 +180,7 @@ export async function traceIPCBridges(options: IPCTraceOptions): Promise<AuditRe
           kind: 'C++ Implementation',
           file: path.relative(repoPath, hit.file),
           line: implementation.startLine || implementation[1],
-          detail: `Actual C++ implementation function: "${implementation.name || implementation[0]}" (found via heuristic name match)`,
+          detail: `Candidate C++ implementation: "${implementation.name || implementation[0]}" (heuristic name match; registration linkage unverified)`,
           confidence: 'medium',
         });
       }
@@ -189,7 +190,7 @@ export async function traceIPCBridges(options: IPCTraceOptions): Promise<AuditRe
   return {
     summary:
       flow.length > 0
-        ? `Successfully traced IPC bridge for "${symbolName}" across ${flow.length} steps`
+        ? `Collected ${flow.length} observations for "${symbolName}"; bridge connectivity unverified`
         : `No IPC bridge traces found for "${symbolName}"`,
     flow,
   };

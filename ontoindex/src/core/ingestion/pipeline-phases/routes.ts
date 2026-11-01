@@ -17,10 +17,7 @@ import type { ParseOutput } from './parse.js';
 import { nextjsFileToRouteURL, normalizeFetchURL } from '../route-extractors/nextjs.js';
 import { expoFileToRouteURL } from '../route-extractors/expo.js';
 import { phpFileToRouteURL } from '../route-extractors/php.js';
-import {
-  extractResponseShapes,
-  extractPHPResponseShapes,
-} from '../route-extractors/response-shapes.js';
+import { extractPHPResponseShapes } from '../route-extractors/response-shapes.js';
 import {
   extractMiddlewareChain,
   extractNextjsMiddlewareConfig,
@@ -41,6 +38,8 @@ const EXPO_NAV_PATTERNS = [
 interface RouteEntry {
   filePath: string;
   source: string;
+  responseKeys?: string[];
+  errorKeys?: string[];
 }
 
 export interface RoutesOutput {
@@ -119,41 +118,52 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     const ensureSlash = (path: string) => (path.startsWith('/') ? path : '/' + path);
     let duplicateRoutes = 0;
     const addRoute = (url: string, entry: RouteEntry) => {
-      if (routeRegistry.has(url)) {
+      const existing = routeRegistry.get(url);
+      if (existing) {
         duplicateRoutes++;
+        for (const field of ['responseKeys', 'errorKeys'] as const) {
+          if (entry[field]?.length)
+            existing[field] = [...new Set([...(existing[field] ?? []), ...entry[field]])];
+        }
         return;
       }
-      routeRegistry.set(url, entry);
+      routeRegistry.set(url, {
+        ...entry,
+        ...(entry.responseKeys ? { responseKeys: [...entry.responseKeys] } : {}),
+        ...(entry.errorKeys ? { errorKeys: [...entry.errorKeys] } : {}),
+      });
     };
     for (const route of allExtractedRoutes) {
       if (!route.routePath) continue;
       addRoute(ensureSlash(route.routePath), {
         filePath: route.filePath,
         source: 'framework-route',
+        responseKeys: route.responseKeys,
+        errorKeys: route.errorKeys,
       });
     }
     for (const dr of allDecoratorRoutes) {
+      if (!dr.routePath) continue;
       addRoute(ensureSlash(dr.routePath), {
         filePath: dr.filePath,
         source: `decorator-${dr.decoratorName}`,
+        responseKeys: dr.responseKeys,
+        errorKeys: dr.errorKeys,
       });
     }
     parseOutput.releaseRouteExtractionData?.();
 
     let handlerContents: Map<string, string> | undefined;
     if (routeRegistry.size > 0) {
-      const handlerPaths = [...routeRegistry.values()].map((e) => e.filePath);
+      const handlerPaths = [...new Set([...routeRegistry.values()].map((e) => e.filePath))];
       handlerContents = await readFileContents(ctx.repoPath, handlerPaths);
 
       for (const [routeURL, entry] of routeRegistry) {
         const { filePath: handlerPath, source: routeSource } = entry;
         const content = handlerContents.get(handlerPath);
 
-        const { responseKeys, errorKeys } = content
-          ? handlerPath.endsWith('.php')
-            ? extractPHPResponseShapes(content)
-            : extractResponseShapes(content)
-          : { responseKeys: undefined, errorKeys: undefined };
+        const { responseKeys, errorKeys } =
+          content && handlerPath.endsWith('.php') ? extractPHPResponseShapes(content) : entry;
 
         const mwResult = content ? extractMiddlewareChain(content) : undefined;
         const middleware = mwResult?.chain;

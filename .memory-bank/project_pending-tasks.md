@@ -19,6 +19,51 @@ status: active
 
 # OntoIndex Pending Tasks
 
+2026-11-01: qualification follow-ups and installer cleanup are delivered in
+locally installed 2.4.8 (`103228d`). Full release gate and installed smoke pass;
+CLI and both MCP configurations select 2.4.8. Remaining substantive work:
+pinned-database buffer-exhaustion measurements and broader GN qualification.
+Cleanup retains 2.4.4/2.4.7 for live processes and 2.4.5/2.4.6 for unresolved
+usage; zero bytes recovered. See `audit_session-2026-11-01-local-248.md`.
+
+2026-11-01: WS-1/CAP-1 complete locally in
+`docs/plans/ONTOINDEX_247_REVIEW_SIMPLIFICATION_PLAN.md`: workspace3/3 passes,
+coupling/pool47/47 pass, lint and scope checks pass. Next substantive task is
+pinned-database buffer-exhaustion measurement; do not raise memory, add retries,
+or change join semantics without evidence. Broader GN gates remain separate.
+
+2026-11-01: qualification follow-up FIX-1 is DONE locally in
+`docs/plans/ONTOINDEX_247_FOLLOWUP_PLAN.md`: ambient exports, route loop/shadow
+bindings,128-bit ABI and installer cleanup pass226 focused checks and native build.
+DIAG-1 is DONE; manager closed, active null. Final bounded capture records
+missedEvent workspace_busy with matching analyze/watch PID2497565; projection
+regression passes but workspace replay remains failed. The persistent MCP watcher
+violates the intended watcher-independent test precondition. Select graceful
+shutdown and lock-release proof before the preserved-timestamp mutation, preserving
+earlier persistent MCP scenarios and fail-closed production busy behavior.
+The subsequent WS-1 correction passes with the authorized third workspace run;
+CAP-1 repairs the boundary and tests the actual pool adapter. Isolate buffer
+queries on a pinned database. Broader GN gates remain open.
+
+2026-11-01: the local-asset installer EXIT-trap defect observed in 2.4.7 is
+fixed and verified by the successful 2.4.8 installation above.
+
+2026-11-01: semantic repair REPAIR-1 is DONE; its manager is closed in
+`docs/plans/ONTOINDEX_246_SEMANTIC_REPAIR_PLAN.md`. Native build and 804 focused
+regressions passed. Remaining: isolate internal coupling queries on a pinned
+database with effective settings, regress the 50,000-row cap boundary, and select
+serialization or a query rewrite from that evidence. Serial live exhaustion is
+reproduced; memory sizing is unproven. Complete live apply qualification and
+broader GN delivery gates remain open. Changes are committed and pushed; focused
+installed-runtime smoke passed, including native provenance and MCP identity.
+
+2026-11-01: destructured-export repair is delivered in locally installed 2.4.6
+(`91e99d2`, EXPORT-1 DONE, `docs/plans/ONTOINDEX_245_EXPORT_REPAIR_PLAN.md`). Full
+local release gate and installed-runtime smoke passed. CLI and user MCP targets
+select 2.4.6; already-running sessions retain their previous binaries. Cleanup
+defers 2.4.4 and 2.4.5 because live processes still use them. The GN tracker
+remains blocked on its existing dependencies.
+
 2026-10-27 production replay graph equality is established for the isolated
 33-file frozen TypeScript subset in both publication modes. All43 original
 source/config files remain verified; eight refused files remain excluded.

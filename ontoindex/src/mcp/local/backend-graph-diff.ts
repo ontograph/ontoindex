@@ -21,6 +21,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import type { LbugQueryRow } from '../../core/lbug/pool-adapter.js';
+import { markInvocationError } from '../shared/invocation-error.js';
 import {
   diffGraphEdgeSets,
   type CurrentEdge,
@@ -148,7 +149,7 @@ export async function runGraphDiff(
   try {
     currentEdges = await fetchCurrentEdges(repo.id);
   } catch (err: unknown) {
-    return {
+    return markInvocationError({
       status: 'error',
       tool: 'graph_diff',
       repo: repo.name,
@@ -161,7 +162,7 @@ export async function runGraphDiff(
       added: [],
       removed: [],
       error: `Failed to query current edges: ${legacyErrorMessage(err)}`,
-    };
+    });
   }
 
   const { added, removed, crossCommunityAddedCount } = diffGraphEdgeSets(snapshot, currentEdges);

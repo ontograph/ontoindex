@@ -6,6 +6,7 @@ import { extractStringContent, findDescendant, type SyntaxNode } from '../utils/
 import type Parser from 'tree-sitter';
 import type { ParseWorkerResult } from './parse-types.js';
 import type { FrameworkHint } from '../framework-detection.js';
+import type { createRouteResponseShapeExtractor } from '../route-extractors/response-shapes.js';
 
 // Route/decorator capture rules shared by worker and sequential parsing.
 const EXPRESS_ROUTE_METHODS = new Set([
@@ -75,6 +76,7 @@ export function captureRouteOrDecorator(
   lineOffset: number,
   fileDecorators: FileDecorators,
   result: RouteToolExtractions,
+  extractShape?: ReturnType<typeof createRouteResponseShapeExtractor>,
 ): boolean {
   // Store decorator metadata for later association with definitions
   if (captureMap['decorator'] && captureMap['decorator.name']) {
@@ -99,6 +101,11 @@ export function captureRouteOrDecorator(
         httpMethod,
         decoratorName,
         lineNumber: decoratorNode.startPosition.row + lineOffset,
+        ...extractShape?.(
+          decoratorNode.parent?.type === 'method_definition'
+            ? decoratorNode.parent
+            : decoratorNode.nextNamedSibling,
+        ),
       });
     }
     // MCP/RPC tool detection: @mcp.tool(), @app.tool(), @server.tool()
@@ -171,6 +178,12 @@ export function captureRouteOrDecorator(
         httpMethod,
         decoratorName: `express.${method}`,
         lineNumber: captureMap['express_route'].startPosition.row + lineOffset,
+        ...extractShape?.(
+          callNode
+            .childForFieldName('arguments')
+            ?.namedChildren.filter((child) => child.type !== 'comment')
+            .at(-1),
+        ),
       });
     }
     return true;

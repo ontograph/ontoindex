@@ -1,5 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { SupportedLanguages } from 'ontoindex-shared';
+import { createParserForLanguage } from '../../core/tree-sitter/parser-loader.js';
 import { resolveSymbolCandidates } from './backend-symbol-resolution.js';
 import { getOverlaySnapshot, isDirtyPath } from './backend-overlay.js';
 import { resolveContainedRealPath } from './path-util.js';
@@ -50,6 +52,66 @@ export async function guardMutationRange(
   return [warning];
 }
 
+/** Line-based apply must own one whole declaration, including its export wrapper. */
+export async function assertWholeSymbolLines(
+  source: string,
+  symbol: { filePath: string; name: string; startLine: number; endLine: number },
+): Promise<void> {
+  const { startLine, endLine } = symbol;
+  if (
+    !Number.isInteger(startLine) ||
+    !Number.isInteger(endLine) ||
+    startLine < 0 ||
+    endLine < startLine ||
+    endLine >= source.split('\n').length
+  ) {
+    throw new Error('Invalid symbol line range');
+  }
+  const extension = path.extname(symbol.filePath).toLowerCase();
+  const language = ['.ts', '.tsx'].includes(extension)
+    ? SupportedLanguages.TypeScript
+    : ['.js', '.jsx', '.mjs', '.cjs'].includes(extension)
+      ? SupportedLanguages.JavaScript
+      : undefined;
+  if (!language) return;
+  const parser = await createParserForLanguage(language, symbol.filePath);
+  const tree = parser.parse(source);
+  if (tree.rootNode.hasError) throw new Error('Source has syntax errors');
+  const intersecting = tree.rootNode.namedChildren.filter(
+    (node) => node.startPosition.row <= endLine && node.endPosition.row >= startLine,
+  );
+  const declarations = intersecting.filter((node) => node.type !== 'comment');
+  let declaration = declarations[0];
+  if (
+    declarations.length !== 1 ||
+    intersecting.some(
+      (node) => node.startPosition.row < startLine || node.endPosition.row > endLine,
+    ) ||
+    declaration.startPosition.row !== startLine ||
+    declaration.endPosition.row !== endLine
+  ) {
+    throw new Error('Line-based mutation requires one complete top-level declaration');
+  }
+  let previous = declaration.previousNamedSibling;
+  while (previous?.type === 'comment') previous = previous.previousNamedSibling;
+  // The grammar can parse a separate-line export as an identifier expression.
+  if (previous?.type === 'expression_statement' && previous.text.trim() === 'export') {
+    throw new Error('Line-based mutation requires one complete top-level declaration');
+  }
+  while (
+    ['export_statement', 'lexical_declaration', 'variable_declaration'].includes(declaration.type)
+  ) {
+    const children = declaration.namedChildren.filter((node) => node.type !== 'comment');
+    if (children.length !== 1) {
+      throw new Error('Line-based mutation requires one complete top-level declaration');
+    }
+    declaration = children[0];
+  }
+  if (declaration.childForFieldName('name')?.text !== symbol.name) {
+    throw new Error('Line-based mutation requires one complete top-level declaration');
+  }
+}
+
 function isEnoentError(error: unknown): error is { code: 'ENOENT' } {
   return (
     typeof error === 'object' &&
@@ -76,7 +138,9 @@ export async function moveSymbol(
     throw new Error(`Symbol not found: ${uid}`);
   }
 
-  const { filePath, startLine, endLine } = outcome.symbol;
+  const { filePath } = outcome.symbol;
+  const startLine = outcome.symbol.startLine + 1;
+  const endLine = outcome.symbol.endLine + 1;
   const warnings = await guardMutationRange(repo, outcome.symbol, dry_run);
 
   if (dry_run) {
@@ -104,6 +168,7 @@ export async function moveSymbol(
 
   // Read source, remove symbol lines (startLine..endLine inclusive, 1-indexed)
   const source = await fs.readFile(sourceAbsolute, 'utf-8');
+  await assertWholeSymbolLines(source, outcome.symbol);
   const lines = source.split('\n');
   const symbolLines = lines.slice(startLine - 1, endLine);
   const symbolText = symbolLines.join('\n');

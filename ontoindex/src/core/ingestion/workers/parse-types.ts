@@ -87,6 +87,8 @@ export interface ExtractedImport {
   rustDeclaredModules?: string[];
   /** Named bindings from the import (e.g., import {User as U} → [{local:'U', exported:'User'}]) */
   namedBindings?: NamedBinding[];
+  /** Explicit local exports; no module resolution or self IMPORTS edge is needed. */
+  isLocalExport?: true;
 }
 
 export interface ExtractedCall {
@@ -150,6 +152,8 @@ export interface ExtractedRoute {
   middleware: string[];
   prefix: string | null;
   lineNumber: number;
+  responseKeys?: string[];
+  errorKeys?: string[];
 }
 
 export interface ExtractedFetchCall {
@@ -164,6 +168,8 @@ export interface ExtractedDecoratorRoute {
   httpMethod: string;
   decoratorName: string;
   lineNumber: number;
+  responseKeys?: string[];
+  errorKeys?: string[];
 }
 
 export interface ExtractedToolDef {

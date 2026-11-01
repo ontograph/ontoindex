@@ -61,6 +61,7 @@ describe('routesPhase', () => {
           middleware: [],
           prefix: null,
           lineNumber: 1,
+          responseKeys: ['users'],
         },
       ],
       allDecoratorRoutes: [],
@@ -91,9 +92,68 @@ describe('routesPhase', () => {
 
     const routeNode = graph.getNode(generateId('Route', '/api/users'));
     expect(routeNode?.properties.modelPacks).toEqual(['core.framework-models']);
+    expect(routeNode?.properties.responseKeys).toEqual(['users']);
 
     const handleRel = graph.relationships.find((rel) => rel.type === 'HANDLES_ROUTE');
     expect(handleRel?.reason).toContain('model-packs:core.framework-models');
     expect(releaseCalls).toBe(1);
+  });
+
+  it('copies and unions handler evidence before release without scanning unrelated file responses', async () => {
+    repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-route-shapes-'));
+    await fs.writeFile(
+      path.join(repoDir, 'server.ts'),
+      'function unrelated() { return Response.json({ leaked: true }); }',
+    );
+    const getKeys = ['first'];
+    const postKeys = ['second', 'first'];
+    const errorKeys = ['invalid'];
+    const parseOutput = {
+      allPaths: ['server.ts'],
+      allFetchCalls: [],
+      allExtractedRoutes: [],
+      allDecoratorRoutes: [
+        {
+          filePath: 'server.ts',
+          routePath: '/one',
+          httpMethod: 'GET',
+          decoratorName: 'express.get',
+          lineNumber: 0,
+          responseKeys: getKeys,
+        },
+        {
+          filePath: 'server.ts',
+          routePath: '/one',
+          httpMethod: 'POST',
+          decoratorName: 'express.post',
+          lineNumber: 0,
+          responseKeys: postKeys,
+          errorKeys,
+        },
+        {
+          filePath: 'server.ts',
+          routePath: '/unknown',
+          httpMethod: 'GET',
+          decoratorName: 'express.get',
+          lineNumber: 0,
+        },
+      ],
+      releaseRouteExtractionData: () => {
+        getKeys.length = 0;
+        postKeys.length = 0;
+        errorKeys.length = 0;
+      },
+    } as unknown as ParseOutput;
+    const graph = createKnowledgeGraph();
+    await routesPhase.execute(
+      { repoPath: repoDir, graph, onProgress: () => {}, pipelineStart: Date.now() },
+      new Map([['parse', { phaseName: 'parse', output: parseOutput, durationMs: 0 }]]),
+    );
+    expect(graph.getNode(generateId('Route', '/one'))?.properties.responseKeys).toEqual([
+      'first',
+      'second',
+    ]);
+    expect(graph.getNode(generateId('Route', '/one'))?.properties.errorKeys).toEqual(['invalid']);
+    expect(graph.getNode(generateId('Route', '/unknown'))?.properties.responseKeys).toBeUndefined();
   });
 });

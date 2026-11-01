@@ -17,6 +17,7 @@ import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'ontoindex-shared';
 import { getProvider } from '../languages/index.js';
 import { collectRustDeclaredModules } from '../import-resolvers/rust-module-evidence.js';
+import { extractTsLocalExportBindings } from '../named-bindings/typescript.js';
 import {
   exceedsParseMaxAstDepth,
   getParseMaxAstDepth,
@@ -124,6 +125,10 @@ import {
   type FileDecorators,
 } from './route-extractor.js';
 import { extractORMQueries } from './orm-extractor.js';
+import {
+  createRouteResponseShapeExtractor,
+  extractNextjsRouteShapes,
+} from '../route-extractors/response-shapes.js';
 
 const sendToParent = (message: WorkerOutgoingMessage): void => {
   if (parentPort) {
@@ -1284,6 +1289,26 @@ const processFileMatches = (
   correspondence?: ReturnType<typeof createDeclarationCorrespondence>,
 ): void => {
   const { file, language, lineOffset, isVueSetup, matches, provider, typeEnv, callRouter } = state;
+  const extractShape =
+    language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript
+      ? createRouteResponseShapeExtractor(state.tree.rootNode)
+      : undefined;
+  if (extractShape)
+    result.decoratorRoutes.push(
+      ...extractNextjsRouteShapes(state.tree.rootNode, file.path, extractShape, lineOffset),
+    );
+  if (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) {
+    const namedBindings = extractTsLocalExportBindings(state.tree.rootNode);
+    if (namedBindings.length > 0) {
+      result.imports.push({
+        filePath: file.path,
+        rawImportPath: '',
+        language,
+        namedBindings,
+        isLocalExport: true,
+      });
+    }
+  }
 
   // Per-file map: decorator end-line → decorator info, for associating with definitions
   const fileDecorators: FileDecorators = new Map();
@@ -1350,7 +1375,16 @@ const processFileMatches = (
       if (!captureMap['call']) continue;
     }
 
-    if (captureRouteOrDecorator(captureMap, file.path, lineOffset, fileDecorators, result))
+    if (
+      captureRouteOrDecorator(
+        captureMap,
+        file.path,
+        lineOffset,
+        fileDecorators,
+        result,
+        extractShape,
+      )
+    )
       continue;
 
     // Extract HTTP consumer URLs: fetch(), axios.get(), $.get(), requests.get(), etc.

@@ -8,6 +8,67 @@ status: active
 
 # OntoIndex Current Forward Plan
 
+2026-11-01: 2.4.8 committed at `103228d`; local Linux release gate passed
+15,546 unit and 3,039 integration tests (one expected failure, 304 skips).
+Commit hooks, clean-commit build, local tarball installation and installed
+native/semantic/database/MCP smoke passed. CLI and both user MCP configurations
+select 2.4.8. Installation cleanup retains live 2.4.4/2.4.7 and uncertain
+2.4.5/2.4.6; zero installation bytes recovered. Release staging was removed.
+Both 247 follow-up managers remain closed with active task null. Buffer-exhaustion
+measurements and broader GN qualification remain open. Evidence:
+`audit_session-2026-11-01-local-248.md`.
+
+2026-11-01: review/simplification WS-1 and CAP-1 are DONE locally in
+`docs/plans/ONTOINDEX_247_REVIEW_SIMPLIFICATION_PLAN.md`. Workspace replay now
+passes3 tests after verified MCP shutdown before the preserved-timestamp mutation.
+Coupling default/maximum49,999 stays below the pool guard; at-cap metrics warn
+they may be incomplete. Coupling/pool suites pass47 tests including actual
+parameterized adapter49999/50000/50001 boundaries and result cleanup/reuse.
+Scoped lint exit0 with9 warnings and bounded OntoIndex scope verification pass.
+Remaining: pinned buffer-exhaustion measurement and broader GN qualification.
+These repairs are included in the validated 2.4.8 installation above.
+
+2026-11-01: `docs/plans/ONTOINDEX_247_FOLLOWUP_PLAN.md` is closed; FIX-1 and
+DIAG-1 are DONE locally, active task null. Qualification repairs and installer
+cleanup pass the native build and226 focused tests. Bounded diagnostic projection
+passes1 test. Both workspace runs retain missedEvent workspace_busy evidence;
+the final run has2 passes/1 failure and matching analyze/watch PID2497565.
+Source review identified the persistent MCP watcher invalidating the foreground
+scenario's watcher-independent precondition; the subsequent correction above
+passes with the authorized third workspace run. Pinned buffer-query diagnosis
+remains open; the cap boundary regression and local clamp are complete above.
+
+2026-11-01: all-tools semantic repair REPAIR-1 delivered in 2.4.7 at `24b2eda`;
+full local release gate passed 15,529 unit and 3,033 integration tests. Clean-commit
+build and installed native/semantic/database/MCP smoke passed. CLI and both user
+MCP configurations select 2.4.7; existing sessions retain their loaded versions.
+Branch pushed; remote builds skipped. Installer local-asset cleanup trap returns
+1 after successful installation; separately executed installed smoke passed.
+Retained 2.4.4/2.4.6 for live processes and 2.4.5 for unresolved usage; zero bytes
+recovered. Buffer-pool investigation and broader live qualification remain open.
+
+2026-11-01: all-tools semantic repair REPAIR-1 completed; manager closed,
+active task null in `docs/plans/ONTOINDEX_246_SEMANTIC_REPAIR_PLAN.md`. Real indexed
+mutation, export/route ownership, IPC/ABI and invocation errors are repaired.
+Native build and 804 tests across 23 files passed; scoped lint exit0 with
+229 warnings. Astra final source challenge and bounded OntoIndex file-scope audit
+passed. Release and installed smoke evidence is recorded above; complete live
+qualification remains open. The GN blocked plan is unchanged.
+
+2026-11-01: destructured-export metadata repair completed locally through
+`docs/plans/ONTOINDEX_245_EXPORT_REPAIR_PLAN.md` (EXPORT-1 DONE). One shared
+extractor and two test files changed; native build exit0, six focused files
+237 tests pass, final unit delta 41 tests pass. Four reviewers and bounded
+OntoIndex verification completed. Version 2.4.6 delivered at `91e99d2` on
+`fix/244-qualification`: full local release gate passed 15482 unit and 3006
+integration tests; commit hooks and clean-commit build passed. Installed CLI and
+Ontocode/Codex MCP configurations select 2.4.6. Installed native provenance,
+JS/TS export visibility, database extensions and MCP startup passed. Remote builds
+were skipped. Versions 2.4.4 and 2.4.5 remain in use by live processes; cleanup
+recovered zero bytes. GN blocked state is unchanged. Release log:
+`/tmp/ontoindex-246-release-gate-20261101.log`; installed proof:
+`/tmp/ontoindex-246-installed-smoke-final-20261101.log`.
+
 2026-10-27 frozen-subset replay qualification passes. All43 frozen source/config
 hashes and10 classifier provenance hashes match. Existing parity integration
 now has an opt-in33-file case exercising actual production replay in both

@@ -40,6 +40,8 @@ vi.mock('@ladybugdb/core', () => ({
         mocks.construct(db, numThreads);
       }
       query = mocks.query;
+      prepare = async () => ({ isSuccess: () => true });
+      execute = mocks.query;
       close = mocks.connClose;
     },
   },
@@ -48,6 +50,7 @@ vi.mock('@ladybugdb/core', () => ({
 import {
   closeLbug,
   executeQuery,
+  executeParameterized,
   initLbug,
   initLbugWithDb,
   isLbugDbPathReady,
@@ -74,6 +77,24 @@ function deferred() {
 }
 
 describe('pool lifecycle drain', () => {
+  it.each([49_999, 50_000, 50_001])(
+    'enforces the parameterized row boundary at %i',
+    async (count) => {
+      mocks.query.mockImplementation(async () => result());
+      await initLbugWithDb('row-boundary', { close: mocks.dbClose } as any, '/row-boundary');
+      const closeResult = vi.fn();
+      mocks.query.mockResolvedValueOnce({
+        getAll: async () => Array(count).fill({ id: 1 }),
+        close: closeResult,
+      });
+      const pending = executeParameterized('row-boundary', 'RETURN $value', { value: 1 });
+      if (count < 50_000) await expect(pending).resolves.toHaveLength(count);
+      else await expect(pending).rejects.toThrow('row safety limit');
+      expect(closeResult).toHaveBeenCalledOnce();
+      await expect(executeQuery('row-boundary', 'RETURN 1')).resolves.toEqual([]);
+    },
+  );
+
   it('caps native query threads for every initial pool connection', async () => {
     mocks.query.mockImplementation(async () => result());
     const external = { close: mocks.dbClose } as any;

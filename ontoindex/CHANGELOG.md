@@ -4,6 +4,31 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.4.8] - 2026-11-01
+
+- Ambient TypeScript declarations retain export visibility. Route response shapes respect loop bindings, shadowed writes and assignments inside parameter initializers.
+- Rust 128-bit integers map to bigint; conversion to JavaScript number reports high-severity precision loss.
+- Coupling scans stay below the database adapter's 50,000-row rejection boundary and warn when metrics may be incomplete. Buffer-pool exhaustion remains under investigation.
+- Local tarball installation returns success after successful cleanup. Workspace replay tests verify MCP shutdown before exercising watcher-independent changes.
+
+## [2.4.7] - 2026-11-01
+
+- Mutation consumers use zero-based indexed ranges consistently. Line-based JavaScript and TypeScript writes reject incomplete declarations and export wrappers before changing files.
+- Export visibility follows the declaration's own bindings. Route response shapes stay associated with their handlers through worker parsing and retained replay; reassigned handlers lose unproven shape evidence.
+- Rename previews include repeated occurrences from deduplicated candidate files and report bounded omissions. Refactor schemas advertise existing action-specific arguments.
+- IPC observations distinguish candidates from verified connectivity. ABI comparisons recognize qualified and compact declarations and preserve uncertainty when parsing is incomplete.
+- Coupling and graph-diff query failures set the MCP invocation-error marker while retaining their structured payloads. Buffer-pool exhaustion remains under investigation.
+
+## [2.4.6] - 2026-11-01
+
+- TypeScript and JavaScript destructured exports preserve public binding names through parsing, workers and import-state replay. Nested patterns, aliases, defaults and rest bindings are supported; property keys and default expressions do not grant export visibility. This change does not add variable type inference.
+
+## [2.4.5] - 2026-11-01
+
+- TypeScript and JavaScript namespace inheritance follows explicit exports and distinguishes local imports from same-named source reexports. Private declarations no longer create false inheritance or inherited-call edges; exported aliases and default exports retain their coverage.
+- The release commit hook compares parsed manifest versions, so JSON formatting cannot bypass version-change validation.
+- Release verification checks tracked inputs again after the build and test suites, and refuses to stamp a staged tree when those inputs changed during validation.
+
 ## [2.4.4] - 2026-10-31
 
 - Releasing a generation read pin after `ontoindex clean` treats the missing pin, generation, or storage as already released instead of failing with `ENOENT`. Before this fix, a running MCP server that held a pin on a cleaned index rejected every later query for that repository until it restarted, even after the index was rebuilt. Release still never recreates removed storage.

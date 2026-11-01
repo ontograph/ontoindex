@@ -47,6 +47,16 @@ describe('Express/Hono route detection', () => {
     expect(usersRoutes).toHaveLength(1);
   });
 
+  it('unions methods for one URL without leaking shapes from other routes in the file', () => {
+    const keys = (url: string) =>
+      result.graph.nodes.find((node) => node.label === 'Route' && node.properties.name === url)
+        ?.properties.responseKeys;
+    expect(keys('/api/users')).toEqual(['users', 'id', 'created']);
+    expect(keys('/api/users/:id')).toEqual(['updated', 'deleted']);
+    expect(keys('/api/health')).toEqual(['status']);
+    expect(keys('/api/items')).toEqual(['items', 'created']);
+  });
+
   it('detects router.get() routes (not just app.get())', () => {
     const routes = getNodesByLabel(result, 'Route');
     expect(routes).toContain('/api/health');
