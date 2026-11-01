@@ -8,13 +8,22 @@ status: active
 
 # OntoIndex Current Forward Plan
 
-2026-11-01: all-tools semantic repair REPAIR-1 completed locally; manager closed,
+2026-11-01: all-tools semantic repair REPAIR-1 delivered in 2.4.7 at `24b2eda`;
+full local release gate passed 15,529 unit and 3,033 integration tests. Clean-commit
+build and installed native/semantic/database/MCP smoke passed. CLI and both user
+MCP configurations select 2.4.7; existing sessions retain their loaded versions.
+Branch pushed; remote builds skipped. Installer local-asset cleanup trap returns
+1 after successful installation; separately executed installed smoke passed.
+Retained 2.4.4/2.4.6 for live processes and 2.4.5 for unresolved usage; zero bytes
+recovered. Buffer-pool investigation and broader live qualification remain open.
+
+2026-11-01: all-tools semantic repair REPAIR-1 completed; manager closed,
 active task null in `docs/plans/ONTOINDEX_246_SEMANTIC_REPAIR_PLAN.md`. Real indexed
 mutation, export/route ownership, IPC/ABI and invocation errors are repaired.
 Native build and 804 tests across 23 files passed; scoped lint exit0 with
 229 warnings. Astra final source challenge and bounded OntoIndex file-scope audit
-passed. Changes remain uncommitted; installed-runtime qualification and the buffer
-pool investigation remain open. The GN blocked plan is unchanged.
+passed. Release and installed smoke evidence is recorded above; complete live
+qualification remains open. The GN blocked plan is unchanged.
 
 2026-11-01: destructured-export metadata repair completed locally through
 `docs/plans/ONTOINDEX_245_EXPORT_REPAIR_PLAN.md` (EXPORT-1 DONE). One shared

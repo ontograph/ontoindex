@@ -19,13 +19,20 @@ status: active
 
 # OntoIndex Pending Tasks
 
+2026-11-01: 2.4.7 delivered at `24b2eda`; CLI and both MCP configurations select
+the validated local installation. Follow up the local-asset installer EXIT trap:
+its empty cleanup predicate returns 1 after successful installation. Installed
+smoke passed separately. Retain 2.4.4/2.4.6 while processes use them and 2.4.5
+until usage is verifiable; cleanup recovered zero bytes.
+
 2026-11-01: semantic repair REPAIR-1 is DONE; its manager is closed in
 `docs/plans/ONTOINDEX_246_SEMANTIC_REPAIR_PLAN.md`. Native build and 804 focused
 regressions passed. Remaining: isolate internal coupling queries on a pinned
 database with effective settings, regress the 50,000-row cap boundary, and select
 serialization or a query rewrite from that evidence. Serial live exhaustion is
-reproduced; memory sizing is unproven. Complete apply/installed qualification and
-broader GN delivery gates remain open. Changes are local and uncommitted.
+reproduced; memory sizing is unproven. Complete live apply qualification and
+broader GN delivery gates remain open. Changes are committed and pushed; focused
+installed-runtime smoke passed, including native provenance and MCP identity.
 
 2026-11-01: destructured-export repair is delivered in locally installed 2.4.6
 (`91e99d2`, EXPORT-1 DONE, `docs/plans/ONTOINDEX_245_EXPORT_REPAIR_PLAN.md`). Full
