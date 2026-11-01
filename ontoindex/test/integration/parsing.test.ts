@@ -12,6 +12,10 @@ import path from 'path';
 import { loadParser, loadLanguage } from '../../src/core/tree-sitter/parser-loader.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'ontoindex-shared';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
+import { processParsing } from '../../src/core/ingestion/parsing-processor.js';
+import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import { createSymbolTable } from '../../src/core/ingestion/model/index.js';
+import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
 
 const FIXTURES_DIR = path.join(process.cwd(), 'test', 'fixtures', 'sample-code');
 
@@ -52,6 +56,70 @@ function mockNode(
 // ─── isNodeExported per-language ─────────────────────────────────────
 
 describe('parsing', () => {
+  it.each(['ts', 'js'])(
+    'keeps export visibility on the own declaration in %s ingestion',
+    async (extension) => {
+      const content = [
+        'export function publicFunction() { function nestedFunction() {} const nestedArrow = () => 1; }',
+        'function privateFunction() {}',
+        'export const publicArrow = () => { function arrowLocal() {} };',
+        'export class PublicClass { member() { function methodLocal() {} } }',
+        'export const object = { objectMember() {} };',
+        'export const factory = function innerName() {};',
+      ].join('\n');
+      const graph = createKnowledgeGraph();
+      const cache = createASTCache(2);
+      try {
+        await processParsing(
+          graph,
+          [{ path: `exports.${extension}`, content }],
+          createSymbolTable(),
+          cache,
+        );
+        const expected = new Map([
+          ['publicFunction', true],
+          ['publicArrow', true],
+          ['PublicClass', true],
+          ['privateFunction', false],
+          ['nestedFunction', false],
+          ['nestedArrow', false],
+          ['arrowLocal', false],
+          ['member', false],
+          ['methodLocal', false],
+          ['objectMember', false],
+        ]);
+        for (const [name, exported] of expected) {
+          const symbols = graph.nodes.filter((node) => node.properties.name === name);
+          expect(symbols.length, name).toBeGreaterThan(0);
+          expect(
+            symbols.map((node) => node.properties.isExported),
+            name,
+          ).toEqual(symbols.map(() => exported));
+        }
+      } finally {
+        cache.clear();
+      }
+    },
+  );
+
+  it('recognizes exported destructured bindings without exporting keys or default values', async () => {
+    const parser = await loadParser();
+    await loadLanguage(SupportedLanguages.TypeScript, 'bindings.ts');
+    const tree = parser.parse(
+      'export const { value, key: local = fallback } = source; export const [item] = source;',
+    );
+    const exported = tree.rootNode
+      .descendantsOfType(['identifier', 'shorthand_property_identifier_pattern'])
+      .filter((node) => isNodeExported(node, node.text, 'typescript'))
+      .map((node) => node.text);
+    expect(exported).toEqual(['value', 'local', 'item']);
+    const nested = parser.parse('export const factory = function innerName() {};');
+    const inner = nested.rootNode
+      .descendantsOfType('identifier')
+      .find((node) => node.text === 'innerName')!;
+    expect(isNodeExported(inner, inner.text, 'typescript')).toBe(false);
+  });
+
   describe('isNodeExported', () => {
     // TypeScript/JavaScript
     describe('typescript', () => {

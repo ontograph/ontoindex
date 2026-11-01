@@ -152,6 +152,8 @@ export interface ExtractedRoute {
   middleware: string[];
   prefix: string | null;
   lineNumber: number;
+  responseKeys?: string[];
+  errorKeys?: string[];
 }
 
 export interface ExtractedFetchCall {
@@ -166,6 +168,8 @@ export interface ExtractedDecoratorRoute {
   httpMethod: string;
   decoratorName: string;
   lineNumber: number;
+  responseKeys?: string[];
+  errorKeys?: string[];
 }
 
 export interface ExtractedToolDef {

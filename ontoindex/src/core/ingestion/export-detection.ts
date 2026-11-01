@@ -16,22 +16,61 @@ export type ExportChecker = (node: SyntaxNode, name: string) => boolean;
 // Per-language export checkers
 // ============================================================================
 
-/** JS/TS: walk ancestors looking for export_statement or export_specifier. */
+const TS_EXPORT_DECLARATIONS = new Set([
+  'function_declaration',
+  'generator_function_declaration',
+  'function_signature',
+  'class_declaration',
+  'abstract_class_declaration',
+  'interface_declaration',
+  'type_alias_declaration',
+  'enum_declaration',
+  'internal_module',
+  'lexical_declaration',
+  'variable_declaration',
+]);
+
+/** JS/TS: follow only the binding's own declaration wrappers. */
 export const tsExportChecker: ExportChecker = (node, _name) => {
   let current: SyntaxNode | null = node;
   while (current) {
     const type = current.type;
+    if (type === 'export_statement' || type === 'export_specifier') return true;
+    if (TS_EXPORT_DECLARATIONS.has(type)) {
+      // Compatibility for declaration-only adapters that include the export token.
+      return current.parent?.type === 'export_statement' || current.text?.startsWith('export ');
+    }
     if (
-      type === 'export_statement' ||
-      type === 'export_specifier' ||
-      (type === 'lexical_declaration' && current.parent?.type === 'export_statement')
-    ) {
-      return true;
-    }
-    // Fallback: check if node text starts with 'export ' for edge cases
-    if (current.text?.startsWith('export ')) {
-      return true;
-    }
+      ![
+        'identifier',
+        'type_identifier',
+        'variable_declarator',
+        'object_pattern',
+        'array_pattern',
+        'rest_pattern',
+        'pair_pattern',
+        'assignment_pattern',
+        'object_assignment_pattern',
+        'shorthand_property_identifier_pattern',
+      ].includes(type)
+    )
+      return false;
+    // An initializer's internal name is not the exported binding's name.
+    if (
+      current.parent?.type === 'variable_declarator' &&
+      current.parent.childForFieldName('name')?.id !== current.id
+    )
+      return false;
+    if (
+      ['assignment_pattern', 'object_assignment_pattern'].includes(current.parent?.type ?? '') &&
+      current.parent!.childForFieldName('left')?.id !== current.id
+    )
+      return false;
+    if (
+      current.parent?.type === 'pair_pattern' &&
+      current.parent.childForFieldName('value')?.id !== current.id
+    )
+      return false;
     current = current.parent;
   }
   return false;

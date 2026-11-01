@@ -46,8 +46,8 @@ describe('mutation dirty guard', () => {
           operation === 'update' || operation === 'delete'
             ? path.relative(repo.repoPath, source)
             : 'src/a.ts',
-        startLine: overlay ? 4 : 1,
-        endLine: overlay ? 6 : 3,
+        startLine: overlay ? 3 : 0,
+        endLine: overlay ? 5 : 2,
         ...(overlay ? { source: 'overlay' as const } : {}),
       },
     });
@@ -262,6 +262,91 @@ describe('mutation dirty guard', () => {
     expect(result).toMatchObject({ success: true, uid });
     expect(result).not.toHaveProperty('warnings');
     await expectContents(operation);
+  });
+
+  it.each([
+    [-1, 2],
+    [0.5, 2],
+    [0, 99],
+    [2, 1],
+  ])(
+    'refuses invalid line endpoints %s..%s before line-based writes',
+    async (startLine, endLine) => {
+      vi.mocked(resolveSymbolCandidates).mockResolvedValue({
+        kind: 'ok',
+        resolvedLabel: 'Function',
+        symbol: {
+          id: uid,
+          name: 'first',
+          type: 'Function',
+          filePath: 'src/a.ts',
+          startLine,
+          endLine,
+        },
+      });
+      const write = vi.spyOn(fs, 'writeFile');
+      for (const operation of ['move', 'update'] as const) {
+        await expect(mutate(operation)).rejects.toThrow('Invalid symbol line range');
+      }
+      expect(write).not.toHaveBeenCalled();
+      expect(await fs.readFile(source, 'utf8')).toBe(original);
+      expect(await fs.readFile(target, 'utf8')).toBe('// target\n');
+    },
+  );
+
+  it.each([
+    { content: 'function first() {\n  return (;\n}', error: 'Source has syntax errors' },
+    {
+      content: 'function first() {\n  return 1;\n} /* comment\ncontinued */',
+      error: 'one complete top-level declaration',
+    },
+  ])('refuses unsafe live source before line-based writes: $error', async ({ content, error }) => {
+    await fs.writeFile(source, content);
+    vi.mocked(resolveSymbolCandidates).mockResolvedValue({
+      kind: 'ok',
+      resolvedLabel: 'Function',
+      symbol: {
+        id: uid,
+        name: 'first',
+        type: 'Function',
+        filePath: 'src/a.ts',
+        startLine: 0,
+        endLine: 2,
+        source: 'overlay',
+      },
+    });
+    const write = vi.spyOn(fs, 'writeFile');
+    for (const operation of ['move', 'update'] as const) {
+      await expect(mutate(operation)).rejects.toThrow(error);
+    }
+    expect(write).not.toHaveBeenCalled();
+    expect(await fs.readFile(source, 'utf8')).toBe(content);
+    expect(await fs.readFile(target, 'utf8')).toBe('// target\n');
+  });
+
+  it('refuses a separate-line export before an intervening comment', async () => {
+    const content = 'export\n// declaration comment\nfunction first() {\n  return 1;\n}\n';
+    await fs.writeFile(source, content);
+    vi.mocked(resolveSymbolCandidates).mockResolvedValue({
+      kind: 'ok',
+      resolvedLabel: 'Function',
+      symbol: {
+        id: uid,
+        name: 'first',
+        type: 'Function',
+        filePath: 'src/a.ts',
+        startLine: 2,
+        endLine: 4,
+        source: 'overlay',
+      },
+    });
+    const write = vi.spyOn(fs, 'writeFile');
+    for (const operation of ['move', 'update'] as const) {
+      await expect(mutate(operation)).rejects.toThrow('one complete top-level declaration');
+    }
+    expect(write).not.toHaveBeenCalled();
+    expect(await fs.readFile(source, 'utf8')).toBe(content);
+    expect(await fs.readFile(target, 'utf8')).toBe('// target\n');
   });
 
   it.each(['false', 'true', 1])(

@@ -6,7 +6,7 @@ import { SupportedLanguages } from 'ontoindex-shared';
 import { createParserForLanguage } from '../../core/tree-sitter/parser-loader.js';
 import { resolveSymbolCandidates } from './backend-symbol-resolution.js';
 import { extractFunction } from './backend-extract-function.js';
-import { guardMutationRange, moveSymbol } from './backend-move-symbol.js';
+import { assertWholeSymbolLines, guardMutationRange, moveSymbol } from './backend-move-symbol.js';
 import { resolveContainedRealPath } from './path-util.js';
 
 interface MutationRepoHandle {
@@ -157,8 +157,8 @@ export async function replaceSymbol(
     let container: Parser.SyntaxNode | null = node;
     while (container) {
       if (
-        container.startPosition.row + 1 === symbol.startLine &&
-        container.endPosition.row + 1 === symbol.endLine
+        container.startPosition.row === symbol.startLine &&
+        container.endPosition.row === symbol.endLine
       )
         return true;
       const parent: Parser.SyntaxNode | null = container.parent;
@@ -331,11 +331,15 @@ export async function updateSymbolBody(
     throw new Error(`Symbol not found: ${params.uid}`);
   }
 
-  const { filePath, startLine, endLine } = outcome.symbol;
+  const { filePath } = outcome.symbol;
+  // Indexed ranges are zero-based inclusive; returned mutation lines stay one-based.
+  const startLine = outcome.symbol.startLine + 1;
+  const endLine = outcome.symbol.endLine + 1;
   await guardMutationRange(repo, outcome.symbol, false);
   const fs = await import('fs/promises');
   const sourcePath = await resolveContainedRealPath(repo.repoPath, filePath);
   const source = await fs.readFile(sourcePath, 'utf-8');
+  await assertWholeSymbolLines(source, outcome.symbol);
   const lines = source.split('\n');
   // startLine and endLine are 1-indexed inclusive
   const before = lines.slice(0, startLine - 1);

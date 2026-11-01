@@ -29,10 +29,11 @@ describe('renameSymbol text-search fallback bounds', () => {
   let tmpDir: string;
 
   beforeEach(async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-rename-'));
+    tmpDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'gn-rename-')));
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     ripgrep.missing = false;
     ripgrep.noMatches = false;
     await fs.rm(tmpDir, { recursive: true, force: true });
@@ -53,7 +54,7 @@ describe('renameSymbol text-search fallback bounds', () => {
       { repoPath: tmpDir },
       { symbol_name: 'oldName', new_name: 'newName', dry_run: true },
       async () => ({
-        symbol: { name: 'oldName', filePath: 'src/def.ts', startLine: 1 },
+        symbol: { name: 'oldName', filePath: 'src/def.ts', startLine: 0 },
         incoming: { calls: [], imports: [], extends: [], implements: [] },
       }),
       { confirmWrites: false },
@@ -76,7 +77,7 @@ describe('renameSymbol text-search fallback bounds', () => {
       { repoPath: tmpDir },
       { symbol_name: 'oldName', new_name: 'newName', dry_run: true },
       async () => ({
-        symbol: { name: 'missingName', filePath: 'src/def.ts', startLine: 1 },
+        symbol: { name: 'missingName', filePath: 'src/def.ts', startLine: 0 },
         incoming: { calls: [], imports: [], extends: [], implements: [] },
       }),
       { confirmWrites: false },
@@ -99,7 +100,7 @@ describe('renameSymbol text-search fallback bounds', () => {
         { repoPath: tmpDir },
         { symbol_name: 'oldName', new_name: 'newName' },
         async () => ({
-          symbol: { name: 'oldName', filePath: 'def.ts', startLine: 1 },
+          symbol: { name: 'oldName', filePath: 'def.ts', startLine: 0 },
           incoming: {},
         }),
         { confirmWrites: false },
@@ -112,6 +113,148 @@ describe('renameSymbol text-search fallback bounds', () => {
         expect(result.warnings).toContain('ripgrep unavailable; used built-in text search');
     },
   );
+
+  it.each([false, true])(
+    'scans each graph or supplemental file once and replaces every token-bearing line (rg missing: %s)',
+    async (missing) => {
+      ripgrep.missing = missing;
+      const fixtures = {
+        'def.ts': 'export function oldName() {}\noldName(); oldName();\noldName();\n',
+        'ref.ts': 'oldNameSuffix();\noldName(); oldName();\noldName();\n',
+        'extra.ts': 'oldName();\noldName();\n',
+      };
+      for (const [file, source] of Object.entries(fixtures)) {
+        await fs.writeFile(path.join(tmpDir, file), source);
+      }
+      const read = vi.spyOn(fs, 'readFile');
+      const result = await renameSymbol(
+        { repoPath: tmpDir },
+        { symbol_name: 'oldName', new_name: 'newName' },
+        async () => ({
+          symbol: { name: 'oldName', filePath: 'def.ts', startLine: 0 },
+          incoming: {
+            calls: [{ filePath: './def.ts' }, { filePath: 'ref.ts' }, { filePath: 'ref.ts' }],
+            imports: [{ filePath: './ref.ts' }],
+          },
+        }),
+        { confirmWrites: false },
+      );
+      expect(result).toMatchObject({
+        applied: false,
+        files_affected: 3,
+        total_edits: 7,
+        graph_edits: 5,
+        text_search_edits: 2,
+        changes: [
+          {
+            file_path: 'def.ts',
+            edits: [
+              { line: 1, new_text: 'export function newName() {}', confidence: 'graph' },
+              { line: 2, new_text: 'newName(); newName();', confidence: 'graph' },
+              { line: 3, new_text: 'newName();', confidence: 'graph' },
+            ],
+          },
+          {
+            file_path: 'ref.ts',
+            edits: [
+              { line: 2, new_text: 'newName(); newName();', confidence: 'graph' },
+              { line: 3, new_text: 'newName();', confidence: 'graph' },
+            ],
+          },
+          {
+            file_path: 'extra.ts',
+            edits: [
+              { line: 1, new_text: 'newName();', confidence: 'text_search' },
+              { line: 2, new_text: 'newName();', confidence: 'text_search' },
+            ],
+          },
+        ],
+      });
+      for (const file of Object.keys(fixtures)) {
+        expect(read.mock.calls.filter(([name]) => name === path.join(tmpDir, file))).toHaveLength(
+          1,
+        );
+      }
+      read.mockRestore();
+      for (const [file, source] of Object.entries(fixtures)) {
+        expect(await fs.readFile(path.join(tmpDir, file), 'utf8')).toBe(source);
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'matches dollar identifiers literally without rewriting substrings or replacement escapes (rg missing: %s)',
+    async (missing) => {
+      ripgrep.missing = missing;
+      await fs.writeFile(path.join(tmpDir, 'def.ts'), 'function $old() {}\n');
+      await fs.writeFile(
+        path.join(tmpDir, 'ref.ts'),
+        '$old(); $old();\n$older(); x$old(); $oldSuffix(); é$old();\n',
+      );
+      const result = await renameSymbol(
+        { repoPath: tmpDir },
+        { symbol_name: '$old', new_name: '$&$$' },
+        async () => ({ symbol: { name: '$old', filePath: 'def.ts', startLine: 0 }, incoming: {} }),
+        { confirmWrites: false },
+      );
+      expect(result).toMatchObject({
+        total_edits: 2,
+        graph_edits: 1,
+        text_search_edits: 1,
+        changes: [
+          { file_path: 'def.ts', edits: [{ line: 1, new_text: 'function $&$$() {}' }] },
+          { file_path: 'ref.ts', edits: [{ line: 1, new_text: '$&$$(); $&$$();' }] },
+        ],
+      });
+    },
+  );
+
+  it('bounds graph reads and reports skipped large and unreadable graph files', async () => {
+    ripgrep.noMatches = true;
+    await fs.writeFile(path.join(tmpDir, 'large.ts'), `oldName\n${' '.repeat(1024 * 1024)}`);
+    await fs.writeFile(path.join(tmpDir, 'refs.ts'), 'oldName();\n'.repeat(1005));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const read = vi.spyOn(fs, 'readFile');
+    const result = await renameSymbol(
+      { repoPath: tmpDir },
+      { symbol_name: 'oldName', new_name: 'newName' },
+      async () => ({
+        symbol: { name: 'oldName', filePath: 'large.ts', startLine: 0 },
+        incoming: { calls: [{ filePath: 'missing.ts' }, { filePath: 'refs.ts' }] },
+      }),
+      { confirmWrites: false },
+    );
+    expect(result).toMatchObject({ graph_edits: 1000, text_search_edits: 0, total_edits: 1000 });
+    expect(result.warnings).toEqual([
+      'Skipped oversized rename candidate: large.ts',
+      'Could not read rename candidate: missing.ts',
+      'Graph rename candidates capped at 1000 edits',
+    ]);
+    expect(read.mock.calls.map(([file]) => file)).toEqual([path.join(tmpDir, 'refs.ts')]);
+  });
+
+  it('caps graph candidates before reading more than 200 distinct files', async () => {
+    ripgrep.noMatches = true;
+    const calls = [];
+    for (let i = 0; i < 205; i++) {
+      const filePath = `ref-${i}.ts`;
+      calls.push({ filePath });
+      await fs.writeFile(path.join(tmpDir, filePath), 'oldName();\n');
+    }
+    const read = vi.spyOn(fs, 'readFile');
+    const result = await renameSymbol(
+      { repoPath: tmpDir },
+      { symbol_name: 'oldName', new_name: 'newName' },
+      async () => ({
+        symbol: { name: 'oldName', filePath: calls[0].filePath, startLine: 0 },
+        incoming: { calls },
+      }),
+      { confirmWrites: false },
+    );
+    expect(read).toHaveBeenCalledTimes(200);
+    expect(result).toMatchObject({ graph_edits: 200, files_affected: 200 });
+    expect(result.warnings).toContain('Graph rename candidates capped at 200 files');
+  });
 });
 
 describe('renameSymbol apply safety', () => {
@@ -119,7 +262,7 @@ describe('renameSymbol apply safety', () => {
   let repoDir: string;
 
   const lookupDef = (filePath: string) => async () => ({
-    symbol: { name: 'oldName', filePath, startLine: 1 },
+    symbol: { name: 'oldName', filePath, startLine: 0 },
     incoming: { calls: [], imports: [], extends: [], implements: [] },
   });
 
@@ -191,7 +334,7 @@ describe('renameSymbol apply safety', () => {
       const read = vi.spyOn(fs, 'readFile');
       const write = vi.spyOn(fs, 'writeFile');
       const lookup = vi.fn(async () => ({
-        symbol: { name: 'oldName', filePath: 'def.ts', startLine: 1 },
+        symbol: { name: 'oldName', filePath: 'def.ts', startLine: 0 },
         incoming: { calls: [{ filePath: 'ref.ts' }] },
       }));
 

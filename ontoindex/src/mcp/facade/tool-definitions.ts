@@ -988,6 +988,19 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
           description:
             'Symbol name or UID alias for rename/replace actions; alias for symbol in safe_refactor.',
         },
+        new_body: {
+          type: 'string',
+          description: 'For replace: replacement body text, including an empty body.',
+        },
+        new_name: {
+          type: 'string',
+          description: 'For rename: proposed new symbol name.',
+        },
+        dry_run: {
+          type: 'boolean',
+          description:
+            'For rename: defaults to true; apply is unavailable. For replace: only explicit true previews; otherwise confirmation and backend write permission are required.',
+        },
         intent: {
           type: 'string',
           enum: ['rename', 'modify-body', 'extract', 'move', 'split-function', 'convert-to-method'],
@@ -1020,7 +1033,7 @@ export const ONTOINDEX_FACADE_TOOLS: ToolDefinition[] = [
         confirm: {
           type: 'boolean',
           description:
-            'For safe_refactor: required true with dryRun false to apply supported operations; rename apply is unavailable. Defaults to false in the handler.',
+            'For replace: required true together with backend write permission unless dry_run is true. For safe_refactor: required true with dryRun false to apply supported operations; rename apply is unavailable. Defaults to false in the handler.',
         },
       },
       required: ['action'],

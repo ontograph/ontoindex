@@ -93,9 +93,13 @@ export async function extractFunction(
       (node.parent?.type === 'program' || node.parent?.type === 'export_statement') &&
       (node.parent?.type !== 'export_statement' || node.parent.parent?.type === 'program'),
   );
-  let declaration = declarations.find(
-    (node) => node.startPosition.row + 1 === startLine && node.endPosition.row + 1 === endLine,
-  );
+  let declaration = declarations.find((node) => {
+    const container = node.parent?.type === 'export_statement' ? node.parent : node;
+    return [node, container].some(
+      (candidate) =>
+        candidate.startPosition.row === startLine && candidate.endPosition.row === endLine,
+    );
+  });
   if (!declaration && warnings && dry_run && declarations.length === 1) {
     declaration = declarations[0];
   }

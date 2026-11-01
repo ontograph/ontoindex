@@ -78,6 +78,45 @@ describe('worker pool integration', () => {
     }
   });
 
+  it('keeps exported declaration ownership in the compiled worker', async () => {
+    expect(fs.existsSync(DIST_WORKER)).toBe(true);
+    pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, { cooperativeShutdown: true });
+    const content = [
+      'export function publicFunction() { function nestedFunction() {} const nestedArrow = () => 1; }',
+      'function privateFunction() {}',
+      'export const publicArrow = () => { function arrowLocal() {} };',
+      'export class PublicClass { member() { function methodLocal() {} } }',
+      'export const object = { objectMember() {} };',
+    ].join('\n');
+    const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>(
+      ['ts', 'js'].map((extension) => ({ path: `exports.${extension}`, content })),
+    );
+    for (const extension of ['ts', 'js']) {
+      const nodes = results
+        .flatMap((result) => result.nodes)
+        .filter((node) => node.properties.filePath === `exports.${extension}`);
+      for (const [name, exported] of [
+        ['publicFunction', true],
+        ['publicArrow', true],
+        ['PublicClass', true],
+        ['privateFunction', false],
+        ['nestedFunction', false],
+        ['nestedArrow', false],
+        ['arrowLocal', false],
+        ['member', false],
+        ['methodLocal', false],
+        ['objectMember', false],
+      ] as const) {
+        const symbols = nodes.filter((node) => node.properties.name === name);
+        expect(symbols.length, name).toBeGreaterThan(0);
+        expect(
+          symbols.map((node) => node.properties.isExported),
+          name,
+        ).toEqual(symbols.map(() => exported));
+      }
+    }
+  });
+
   it('preserves destructured export metadata through the compiled TS/JS worker', async () => {
     expect(fs.existsSync(DIST_WORKER)).toBe(true);
     pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, { cooperativeShutdown: true });

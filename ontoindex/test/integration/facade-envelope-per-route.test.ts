@@ -5,8 +5,11 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import * as poolAdapter from '../../src/core/lbug/pool-adapter.js';
 import { createMCPServer } from '../../src/mcp/server.js';
 import { ONTOINDEX_FACADE_TOOLS } from '../../src/mcp/facade/tool-definitions.js';
+import { runCouplingMatrix } from '../../src/mcp/local/backend-coupling-matrix.js';
+import { runGraphDiff } from '../../src/mcp/local/backend-graph-diff.js';
 import {
   MCP_RESPONSE_MAX_BYTES,
   type ResponsePageEnvelope,
@@ -32,6 +35,116 @@ beforeEach(async () => {
   resultDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-facade-pages-'));
   vi.stubEnv('ONTOINDEX_MCP_RESULT_DIR', resultDir);
 });
+
+describe.each(['coupling', 'graph_diff'] as const)(
+  'audit %s real handler MCP envelope',
+  (action) => {
+    async function auditFixture() {
+      const repo = { id: 'audit-fixture', name: 'audit-fixture', storagePath: resultDir };
+      if (action === 'graph_diff') {
+        await fs.writeFile(
+          path.join(resultDir, 'snapshot.json'),
+          JSON.stringify({
+            savedAt: '2026-11-01T00:00:00Z',
+            lastCommit: 'fixture-commit',
+            calleesMap: { source: ['target'] },
+          }),
+        );
+      }
+      return fixture({
+        callTool(method: string, args: Record<string, unknown>) {
+          expect(method).toBe(action === 'coupling' ? 'coupling_matrix' : 'graph_diff');
+          return action === 'coupling' ? runCouplingMatrix(repo, args) : runGraphDiff(repo, args);
+        },
+      });
+    }
+
+    it('preserves caught query diagnostics as an MCP tool error inside a JSON-RPC result', async () => {
+      const query = vi
+        .spyOn(poolAdapter, 'executeParameterized')
+        .mockRejectedValue(new Error('fixture query unavailable'));
+      const f = await auditFixture();
+      try {
+        const response = await f.client.callTool({
+          name: 'audit',
+          arguments: { action, response_budget_bytes: 20_000 },
+        });
+        expect(query).toHaveBeenCalledTimes(action === 'coupling' ? 2 : 1);
+        expect(response.isError).toBe(true);
+        const payload = JSON.parse((response.content as Array<{ text: string }>)[0].text);
+        expect(payload).toEqual(
+          action === 'coupling'
+            ? {
+                status: 'error',
+                tool: 'coupling_matrix',
+                repo: 'audit-fixture',
+                min_symbols: 5,
+                flag_threshold: 0.8,
+                include_cross_edges: false,
+                rows: [],
+                summary: { module_count: 0, flagged_modules: 0, isolated_modules: 0 },
+                error: 'Coupling matrix failed: fixture query unavailable',
+                findings: [],
+                stats: { totalFindings: 0, durationMs: expect.any(Number) },
+                errors: ['Coupling matrix failed: fixture query unavailable'],
+              }
+            : {
+                status: 'error',
+                tool: 'graph_diff',
+                repo: 'audit-fixture',
+                snapshot_present: true,
+                snapshot_saved_at: '2026-11-01T00:00:00Z',
+                snapshot_commit: 'fixture-commit',
+                added_count: 0,
+                removed_count: 0,
+                cross_community_added_count: 0,
+                added: [],
+                removed: [],
+                error: 'Failed to query current edges: fixture query unavailable',
+              },
+        );
+        const wire = f.responses.find((message) => message.result?.content);
+        expect(wire).toBeDefined();
+        expect(wire.result).toMatchObject({ isError: true, content: response.content });
+        expect(wire.error).toBeUndefined();
+      } finally {
+        await f.close();
+      }
+    });
+
+    it('leaves successful domain results unmarked', async () => {
+      const query = vi.spyOn(poolAdapter, 'executeParameterized').mockResolvedValue([]);
+      if (action === 'coupling') {
+        query.mockResolvedValueOnce([
+          { id: 'community', heuristicLabel: 'Community', symbolCount: 6 },
+        ]);
+      }
+      const f = await auditFixture();
+      try {
+        const response = await f.client.callTool({
+          name: 'audit',
+          arguments: { action, response_budget_bytes: 20_000 },
+        });
+        expect(query).toHaveBeenCalledTimes(action === 'coupling' ? 2 : 1);
+        expect(response.isError).toBeUndefined();
+        const payload = JSON.parse((response.content as Array<{ text: string }>)[0].text);
+        expect(payload).toMatchObject({
+          status: 'success',
+          repo: 'audit-fixture',
+          ...(action === 'coupling'
+            ? { summary: { module_count: 1, isolated_modules: 1 } }
+            : { snapshot_present: true, added_count: 0, removed_count: 1 }),
+        });
+        const wire = f.responses.find((message) => message.result?.content);
+        expect(wire).toBeDefined();
+        expect(wire.result.isError).toBeUndefined();
+        expect(wire.error).toBeUndefined();
+      } finally {
+        await f.close();
+      }
+    });
+  },
+);
 
 afterEach(async () => {
   vi.restoreAllMocks();

@@ -8,6 +8,14 @@ status: active
 
 # OntoIndex Current Forward Plan
 
+2026-11-01: all-tools semantic repair REPAIR-1 completed locally; manager closed,
+active task null in `docs/plans/ONTOINDEX_246_SEMANTIC_REPAIR_PLAN.md`. Real indexed
+mutation, export/route ownership, IPC/ABI and invocation errors are repaired.
+Native build and 804 tests across 23 files passed; scoped lint exit0 with
+229 warnings. Astra final source challenge and bounded OntoIndex file-scope audit
+passed. Changes remain uncommitted; installed-runtime qualification and the buffer
+pool investigation remain open. The GN blocked plan is unchanged.
+
 2026-11-01: destructured-export metadata repair completed locally through
 `docs/plans/ONTOINDEX_245_EXPORT_REPAIR_PLAN.md` (EXPORT-1 DONE). One shared
 extractor and two test files changed; native build exit0, six focused files

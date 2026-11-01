@@ -13,16 +13,16 @@ vi.mock('../../src/mcp/local/backend-symbol-resolution.js', () => ({
 
 const fixturesDir = fileURLToPath(new URL('../fixtures/replace-symbol/', import.meta.url));
 const cases = [
-  ['ts-decorator', 'method', 7, 9],
-  ['ts-template-literal', 'template', 1, 7],
-  ['ts-as-const', 'getConst', 1, 6],
-  ['ts-generic', 'identity', 1, 4],
-  ['ts-arrow', 'myArrow', 1, 3],
-  ['ts-class-method', 'myMethod', 2, 5],
-  ['ts-async', 'fetchData', 1, 4],
-  ['ts-overload', 'overload', 3, 8],
-  ['ts-default-export', 'defaultExport', 1, 4],
-  ['ts-mixed', 'second', 5, 8],
+  ['ts-decorator', 'method', 6, 8],
+  ['ts-template-literal', 'template', 0, 6],
+  ['ts-as-const', 'getConst', 0, 5],
+  ['ts-generic', 'identity', 0, 3],
+  ['ts-arrow', 'myArrow', 0, 2],
+  ['ts-class-method', 'myMethod', 1, 4],
+  ['ts-async', 'fetchData', 0, 3],
+  ['ts-overload', 'overload', 2, 7],
+  ['ts-default-export', 'defaultExport', 0, 3],
+  ['ts-mixed', 'second', 4, 7],
 ] as const;
 
 describe('replace_symbol real filesystem round trips', () => {
@@ -103,18 +103,18 @@ describe('replace_symbol real filesystem round trips', () => {
     resolve(
       filePath,
       'target',
-      input.startsWith('//') ? 2 : 1,
-      filePath.endsWith('.py') ? 2 : input.startsWith('//') ? 4 : 3,
+      input.startsWith('//') ? 1 : 0,
+      filePath.endsWith('.py') ? 1 : input.startsWith('//') ? 3 : 2,
     );
     await replaceSymbol(repo, { uid: 'target', new_body, confirm: true }, true);
     expect(await fs.readFile(target, 'utf8')).toBe(expected);
   });
 
   it.each([
-    { body: 'return (;', start: 1, end: 3 },
-    { body: '} function injected() {', start: 1, end: 3 },
-    { body: 'return 2;', start: 2, end: 3 },
-    { body: 'return 2;', start: 1, end: 99 },
+    { body: 'return (;', start: 0, end: 2 },
+    { body: '} function injected() {', start: 0, end: 2 },
+    { body: 'return 2;', start: 1, end: 2 },
+    { body: 'return 2;', start: 0, end: 98 },
   ])('fails closed for malformed replacement or stale ranges: %j', async ({ body, start, end }) => {
     const input = 'function target() {\n  return 1;\n}\n';
     const target = path.join(repo.repoPath, 'source.ts');
@@ -130,7 +130,7 @@ describe('replace_symbol real filesystem round trips', () => {
     const input = 'def target(): return 1\n';
     const target = path.join(repo.repoPath, 'source.py');
     await fs.writeFile(target, input);
-    resolve('source.py', 'target', 1, 1);
+    resolve('source.py', 'target', 0, 0);
     await expect(
       replaceSymbol(repo, { uid: 'target', new_body: 'return 2', confirm: true }, true),
     ).rejects.toThrow();
@@ -148,7 +148,7 @@ describe('replace_symbol real filesystem round trips', () => {
     const target = path.join(repo.repoPath, 'source.go');
     const input = 'func target() int { return 1 }\n';
     await fs.writeFile(target, input);
-    resolve('source.go', 'target', 1, 1);
+    resolve('source.go', 'target', 0, 0);
     await expect(
       replaceSymbol(repo, { uid: 'target', new_body: 'return 2', confirm: true }, true),
     ).rejects.toThrow(/Unsupported replacement language/);
@@ -163,7 +163,7 @@ describe('replace_symbol real filesystem round trips', () => {
     async (filePath, input, new_body) => {
       const target = path.join(repo.repoPath, filePath);
       await fs.writeFile(target, input);
-      resolve(filePath, 'target', 1, filePath.endsWith('.py') ? 2 : 3);
+      resolve(filePath, 'target', 0, filePath.endsWith('.py') ? 1 : 2);
       for (const dry_run of [true, false]) {
         await expect(
           replaceSymbol(repo, { uid: 'target', new_body, confirm: true, dry_run }, true),
@@ -181,7 +181,7 @@ describe('replace_symbol real filesystem round trips', () => {
     const open = fs.open.bind(fs);
     await fs.writeFile(target, input);
     await fs.writeFile(outside, input);
-    resolve('source.ts', 'target', 1, 3);
+    resolve('source.ts', 'target', 0, 2);
     const spy = vi.spyOn(fs, 'open').mockImplementationOnce(async (...args) => {
       await fs.unlink(target);
       await fs.symlink(outside, target);

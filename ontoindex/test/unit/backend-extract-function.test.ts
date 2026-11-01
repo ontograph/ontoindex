@@ -20,7 +20,7 @@ let sourceFile: string;
 const original =
   '// λ prefix\nexport function sample(\n  value: number,\n  extra: number\n): number {\n  return this.base + value + arguments.length;\n}\n';
 
-async function fixture(source = original, filePath = 'sample.ts', startLine = 2) {
+async function fixture(source = original, filePath = 'sample.ts', startLine = 1) {
   sourceFile = path.join(repo.repoPath, filePath);
   await fs.writeFile(sourceFile, source);
   vi.mocked(resolveSymbolCandidates).mockResolvedValue({
@@ -32,7 +32,7 @@ async function fixture(source = original, filePath = 'sample.ts', startLine = 2)
       type: 'Function',
       filePath,
       startLine,
-      endLine: source.trimEnd().split('\n').length,
+      endLine: source.trimEnd().split('\n').length - 1,
     },
   });
 }
@@ -112,7 +112,7 @@ it.each([
   'function outer() { function sample() { return 1; } }',
   'const sample = () => 1;',
 ])('rejects unsupported extraction unchanged: %s', async (source) => {
-  await fixture(source, 'sample.ts', 1);
+  await fixture(source, 'sample.ts', 0);
   for (const dry_run of [true, false]) {
     await expect(
       extractFunction(repo, { uid: 'sample', new_name: 'helper', dry_run, confirm: true }),
@@ -137,7 +137,7 @@ it.each([
   'export function sample(value: number) { return value + arguments.length; }',
   'export function sample(this: { base: number }, value: number): number { return this.base + value; }',
 ])('generates semantically valid strict TypeScript: %s', async (source) => {
-  await fixture(source, 'sample.ts', 1);
+  await fixture(source, 'sample.ts', 0);
   const result = await extractFunction(repo, { uid: 'sample', new_name: 'helper' });
   const checkFile = path.join(repo.repoPath, 'generated.ts');
   await fs.writeFile(
@@ -158,19 +158,19 @@ it.each([
 });
 
 it('rejects a stale source range and unsupported language', async () => {
-  await fixture(original, 'sample.ts', 1);
+  await fixture(original, 'sample.ts', 0);
   vi.mocked(guardMutationRange).mockResolvedValueOnce(undefined);
   await expect(extractFunction(repo, { uid: 'sample', new_name: 'helper' })).rejects.toThrow(
     'Stale range',
   );
-  await fixture('def sample():\n  return 1\n', 'sample.py', 1);
+  await fixture('def sample():\n  return 1\n', 'sample.py', 0);
   await expect(extractFunction(repo, { uid: 'sample', new_name: 'helper' })).rejects.toThrow(
     'JavaScript and TypeScript',
   );
 });
 
 it('relocates a unique declaration for a warned dry run with a stale range', async () => {
-  await fixture(original, 'sample.ts', 1);
+  await fixture(original, 'sample.ts', 0);
 
   const result = await extractFunction(repo, { uid: 'sample', new_name: 'helper' });
 
@@ -185,7 +185,7 @@ it('copies body directives so strict functions retain an undefined receiver', as
   await fixture(
     'function sample(\n  value\n) {\n  "use strict";\n  return this === undefined && arguments.length === 1;\n}\n',
     'sample.js',
-    1,
+    0,
   );
   const result = await extractFunction(repo, { uid: 'sample', new_name: 'helper' });
   expect(vm.runInNewContext(result.preview! + '\nsample.call(undefined, 1)')).toBe(true);

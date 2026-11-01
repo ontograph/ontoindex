@@ -1284,6 +1284,8 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       ...nullable,
       ...(middleware ? ['middleware'] : []),
     ];
+    const optionalArrays =
+      family === 'routes' || family === 'decorator-routes' ? ['responseKeys', 'errorKeys'] : [];
     for (const record of records) {
       if (!this.check()) return;
       if (
@@ -1305,11 +1307,11 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       }
       const keys = Reflect.ownKeys(record);
       if (
-        keys.length !== fields.length ||
+        !fields.every((field) => keys.includes(field)) ||
         !keys.every(
           (key) =>
             typeof key === 'string' &&
-            fields.includes(key) &&
+            (fields.includes(key) || optionalArrays.includes(key)) &&
             Object.hasOwn(Object.getOwnPropertyDescriptor(record, key)!, 'value'),
         )
       ) {
@@ -1337,41 +1339,47 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
         }
         return true;
       };
-      let validMiddleware = true;
-      const copiedMiddleware: string[] = [];
-      if (middleware) {
-        const items = value.middleware;
-        validMiddleware =
+      let validArrays = true;
+      const copiedArrays = new Map<string, string[]>();
+      for (const field of [...(middleware ? ['middleware'] : []), ...optionalArrays]) {
+        if (!Object.hasOwn(value, field)) continue;
+        const items = value[field];
+        let validArray =
           Array.isArray(items) &&
           !types.isProxy(items) &&
           Object.getPrototypeOf(items) === Array.prototype;
-        if (validMiddleware) {
+        const copy: string[] = [];
+        if (validArray) {
           const array = items as unknown[];
           const length = Object.getOwnPropertyDescriptor(array, 'length')?.value;
-          validMiddleware =
+          validArray =
             Number.isSafeInteger(length) &&
             length <= available &&
             Reflect.ownKeys(array).length === length + 1;
-          for (let i = 0; validMiddleware && i < length; i++) {
+          for (let i = 0; validArray && i < length; i++) {
             const descriptor = Object.getOwnPropertyDescriptor(array, String(i));
-            validMiddleware =
+            validArray =
               !!descriptor && Object.hasOwn(descriptor, 'value') && validString(descriptor.value);
-            if (validMiddleware) copiedMiddleware.push(descriptor!.value as string);
+            if (validArray) copy.push(descriptor!.value as string);
           }
         }
+        validArrays &&= validArray;
+        copiedArrays.set(field, copy);
       }
       if (
         !['filePath', ...strings].every((field) => validString(value[field])) ||
         !nullable.every((field) => value[field] === null || validString(value[field])) ||
         !Number.isSafeInteger(record.lineNumber) ||
         record.lineNumber < 0 ||
-        !validMiddleware
+        !validArrays
       ) {
         this.issue(`${family}-${byteLimited ? 'byte-limit' : 'invalid'}`);
         continue;
       }
       const copy = Object.fromEntries(
-        fields.map((field) => [field, field === 'middleware' ? copiedMiddleware : value[field]]),
+        [...fields, ...optionalArrays.filter((field) => Object.hasOwn(value, field))].map(
+          (field) => [field, copiedArrays.get(field) ?? value[field]],
+        ),
       );
       const encoded = JSON.stringify(copy);
       const bytes = Buffer.byteLength(encoded, 'utf8');

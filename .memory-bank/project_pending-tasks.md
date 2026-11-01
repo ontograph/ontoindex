@@ -19,6 +19,14 @@ status: active
 
 # OntoIndex Pending Tasks
 
+2026-11-01: semantic repair REPAIR-1 is DONE; its manager is closed in
+`docs/plans/ONTOINDEX_246_SEMANTIC_REPAIR_PLAN.md`. Native build and 804 focused
+regressions passed. Remaining: isolate internal coupling queries on a pinned
+database with effective settings, regress the 50,000-row cap boundary, and select
+serialization or a query rewrite from that evidence. Serial live exhaustion is
+reproduced; memory sizing is unproven. Complete apply/installed qualification and
+broader GN delivery gates remain open. Changes are local and uncommitted.
+
 2026-11-01: destructured-export repair is delivered in locally installed 2.4.6
 (`91e99d2`, EXPORT-1 DONE, `docs/plans/ONTOINDEX_245_EXPORT_REPAIR_PLAN.md`). Full
 local release gate and installed-runtime smoke passed. CLI and user MCP targets

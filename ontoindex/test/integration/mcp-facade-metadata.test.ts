@@ -4,8 +4,61 @@ import { dispatchFacade } from '../../src/mcp/facade/dispatch.js';
 import { ONTOINDEX_FACADE_TOOLS } from '../../src/mcp/facade/tool-definitions.js';
 import type { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { gnHelp } from '../../src/mcp/super/help.js';
+import * as superDispatch from '../../src/mcp/super/dispatch.js';
 
 describe('MCP Facade Metadata Integration', () => {
+  it.each([
+    { action: 'replace', method: 'replace_symbol', fields: { new_body: '', dry_run: true } },
+    {
+      action: 'replace',
+      method: 'replace_symbol',
+      fields: { new_body: 'return 2;', confirm: true },
+    },
+    { action: 'rename', method: 'rename', fields: { new_name: 'renamed', dry_run: true } },
+    { action: 'rename', method: 'rename', fields: { new_name: 'renamed' } },
+  ])(
+    'forwards advertised $action fields without adding defaults',
+    async ({ action, method, fields }) => {
+      const backend = { callTool: vi.fn(async () => ({ success: true })) };
+      const target = 'Function:source.ts:target';
+      const args = { target, ...fields };
+      const original = structuredClone(args);
+      await dispatchFacade('refactor', action, args, backend as unknown as LocalBackend);
+      expect(backend.callTool).toHaveBeenCalledExactlyOnceWith(method, {
+        ...args,
+        ...(action === 'replace' ? { uid: target } : { symbol_uid: target }),
+      });
+      expect(args).toEqual(original);
+    },
+  );
+
+  it('keeps safe_refactor camelCase options independent of replacement preview defaults', async () => {
+    const dispatch = vi.spyOn(superDispatch, 'dispatchSuper').mockResolvedValue({ applied: false });
+    const backend = {
+      resolveRepo: vi.fn(async () => ({ id: 'fixture', repoPath: '/tmp/fixture' })),
+      ensureRepoInitialized: vi.fn(async () => {}),
+      callTool: vi.fn(),
+    };
+    const args = {
+      intent: 'modify-body',
+      symbol: 'Function:source.ts:target',
+      params: { newBody: '' },
+      dryRun: true,
+      preChecks: false,
+    };
+    try {
+      await dispatchFacade('refactor', 'safe_refactor', args, backend as unknown as LocalBackend);
+      expect(dispatch).toHaveBeenCalledExactlyOnceWith('gn_safe_refactor', args, 'fixture', {
+        repoPath: '/tmp/fixture',
+        callTool: expect.any(Function),
+      });
+      expect(dispatch.mock.calls[0][1]).not.toHaveProperty('dry_run');
+      expect(dispatch.mock.calls[0][1]).not.toHaveProperty('new_body');
+    } finally {
+      dispatch.mockRestore();
+    }
+  });
+
   it('facade search exposes Markdown RAG enrichment opt-ins', () => {
     const searchTool = ONTOINDEX_FACADE_TOOLS.find((tool) => tool.name === 'search')!;
 

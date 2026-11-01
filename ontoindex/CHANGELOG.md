@@ -4,6 +4,14 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.4.7] - 2026-11-01
+
+- Mutation consumers use zero-based indexed ranges consistently. Line-based JavaScript and TypeScript writes reject incomplete declarations and export wrappers before changing files.
+- Export visibility follows the declaration's own bindings. Route response shapes stay associated with their handlers through worker parsing and retained replay; reassigned handlers lose unproven shape evidence.
+- Rename previews include repeated occurrences from deduplicated candidate files and report bounded omissions. Refactor schemas advertise existing action-specific arguments.
+- IPC observations distinguish candidates from verified connectivity. ABI comparisons recognize qualified and compact declarations and preserve uncertainty when parsing is incomplete.
+- Coupling and graph-diff query failures set the MCP invocation-error marker while retaining their structured payloads. Buffer-pool exhaustion remains under investigation.
+
 ## [2.4.6] - 2026-11-01
 
 - TypeScript and JavaScript destructured exports preserve public binding names through parsing, workers and import-state replay. Nested patterns, aliases, defaults and rest bindings are supported; property keys and default expressions do not grant export visibility. This change does not add variable type inference.

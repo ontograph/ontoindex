@@ -17,6 +17,7 @@ import type { KnowledgeGraph } from '../../src/core/graph/types.js';
 import { persistScopeRetentionCandidate } from '../../src/core/ingestion/pipeline-phases/scope-retention-candidate.js';
 import { verifyScopeRetentionCandidate } from '../../src/core/ingestion/pipeline-phases/scope-retention-candidate-reader.js';
 import { loadPersistedReplayFamilies } from '../helpers/scope-retention-replay.js';
+import { ScopeRetentionStage } from '../../src/core/ingestion/pipeline-phases/scope-retention-stage.js';
 
 function snapshot(graph: KnowledgeGraph) {
   return {
@@ -43,6 +44,61 @@ describe('persisted parse extraction phase replay', () => {
     directories.forEach((directory) => fs.rmSync(directory, { recursive: true, force: true })),
   );
 
+  it('detaches optional shape arrays and rejects hostile fields without evaluating them', async () => {
+    const options = () => ({
+      deadline: Date.now() + 30_000,
+      artifactAllowance: { remainingBytes: 1024 * 1024 },
+    });
+    const request = options();
+    const stage = new ScopeRetentionStage(request);
+    const getter = vi.fn(() => 'hidden');
+    const record = {
+      filePath: 'server.ts',
+      httpMethod: 'GET',
+      routePath: '/one',
+      decoratorName: 'express.get',
+      lineNumber: 0,
+      responseKeys: ['one'],
+      errorKeys: ['bad'],
+    };
+    const expected = structuredClone(record);
+    try {
+      stage.captureDecoratorRoutes([record]);
+      record.responseKeys.push('mutated');
+      record.errorKeys.length = 0;
+      const retained = [];
+      for await (const batch of stage.iterateDecoratorRoutes()) retained.push(...batch);
+      expect(retained).toEqual([expected]);
+      expect(request.artifactAllowance.remainingBytes).toBe(1024 * 1024 - stage.bytes);
+      for (const responseKeys of [
+        new Proxy([], { get: getter }),
+        Object.defineProperty([], '0', { get: getter }),
+        [1],
+        new Array(1),
+        undefined,
+      ]) {
+        stage.captureDecoratorRoutes([{ ...record, responseKeys } as never]);
+      }
+      stage.captureDecoratorRoutes([
+        Object.defineProperty({ ...record }, 'responseKeys', { get: getter }),
+      ]);
+      stage.captureDecoratorRoutes([{ ...record, unexpected: [] } as never]);
+      expect(stage.decoratorRouteRecordCount).toBe(1);
+      expect(stage.reasons).toContain('decorator-routes-invalid');
+      expect(getter).not.toHaveBeenCalled();
+    } finally {
+      await stage.dispose();
+    }
+    const bounded = new ScopeRetentionStage(options(), { maxRecordBytes: 128 });
+    try {
+      bounded.captureDecoratorRoutes([{ ...record, responseKeys: ['x'.repeat(256)] }]);
+      expect(bounded.decoratorRouteRecordCount).toBe(0);
+      expect(bounded.reasons).toContain('decorator-routes-byte-limit');
+    } finally {
+      await bounded.dispose();
+    }
+  });
+
   it.each(['sequential', 'worker', 'recovery'] as const)(
     '%s preserves routes and tools at their live boundaries',
     async (mode) => {
@@ -51,9 +107,13 @@ describe('persisted parse extraction phase replay', () => {
       directories.push(repo, generation);
       const files = {
         'app/api/items/route.ts':
-          'export function GET() { return Response.json({ items: [], count: 1 }); }',
+          'function helper() { return Response.json({ helperOnly: 1 }); } export function GET() { return Response.json({ items: [], count: 1 }); } export const POST = () => Response.json({ failure: 1 }, { status: 400 });',
         'src/client.ts': 'export async function load() { return fetch("/api/items"); }',
-        'src/server.ts': 'app.get("/express-only", handler);',
+        'src/server.ts': [
+          'function handler(req, res) { function unused() { return res.json({ hidden: 1 }); } return res.json({ expressOnly: true }); }',
+          'app.get("/express-only", handler); app.post("/express-only", (req, res) => res.json({ posted: true }));',
+          'app.get("/separate", (req, res) => res.status(404).json({ missing: true })); app.get("/unknown", imported);',
+        ].join('\n'),
         'routes/web.php': "<?php\nRoute::get('/laravel-only', function () { return 'ok'; });",
         'src/registry.py':
           '@server.tool("Search retained input")\ndef retained_search():\n    return "ok"\n',
@@ -192,7 +252,13 @@ describe('persisted parse extraction phase replay', () => {
         expect.arrayContaining([expect.objectContaining({ routePath: '/laravel-only' })]),
       );
       expect(families.decoratorRoutes).toEqual(
-        expect.arrayContaining([expect.objectContaining({ routePath: '/express-only' })]),
+        expect.arrayContaining([
+          expect.objectContaining({ routePath: '/express-only', responseKeys: ['expressOnly'] }),
+          expect.objectContaining({ routePath: '/express-only', responseKeys: ['posted'] }),
+          expect.objectContaining({ routePath: '/separate', errorKeys: ['missing'] }),
+          expect.objectContaining({ routePath: '/api/items', responseKeys: ['items', 'count'] }),
+          expect.objectContaining({ routePath: '/api/items', errorKeys: ['failure'] }),
+        ]),
       );
       expect(families.toolDefinitions).toEqual(
         expect.arrayContaining([expect.objectContaining({ toolName: 'retained_search' })]),
@@ -222,10 +288,18 @@ describe('persisted parse extraction phase replay', () => {
             properties: expect.objectContaining({
               name: '/api/items',
               responseKeys: ['items', 'count'],
+              errorKeys: ['failure'],
             }),
           }),
         ]),
       );
+      const routeKeys = (name: string) =>
+        routeGraph.nodes.find((node) => node.label === 'Route' && node.properties.name === name)
+          ?.properties;
+      expect(routeKeys('/express-only')?.responseKeys).toEqual(['expressOnly', 'posted']);
+      expect(routeKeys('/separate')?.responseKeys).toBeUndefined();
+      expect(routeKeys('/separate')?.errorKeys).toEqual(['missing']);
+      expect(routeKeys('/unknown')?.responseKeys).toBeUndefined();
       expect(routeGraph.relationships).toEqual(
         expect.arrayContaining([
           expect.objectContaining({

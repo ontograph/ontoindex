@@ -1,5 +1,6 @@
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { AnalysisResult, DiagnosticFinding } from 'ontoindex-shared';
+import { markInvocationError } from '../shared/invocation-error.js';
 
 type RepoHandle = { readonly id: string; readonly name: string };
 
@@ -253,7 +254,7 @@ export async function runCouplingMatrix(
           : [],
     } as unknown as AnalysisResult & CouplingMatrixResult;
   } catch (err: unknown) {
-    return {
+    return markInvocationError({
       status: 'error',
       tool: 'coupling_matrix',
       repo: repo.name,
@@ -270,6 +271,6 @@ export async function runCouplingMatrix(
       findings: [],
       stats: { totalFindings: 0, durationMs: Date.now() - start },
       errors: [`Coupling matrix failed: ${caughtErrorMessageOperand(err)}`],
-    } as unknown as AnalysisResult & CouplingMatrixResult;
+    } as unknown as AnalysisResult & CouplingMatrixResult);
   }
 }
