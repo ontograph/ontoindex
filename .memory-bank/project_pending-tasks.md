@@ -19,6 +19,13 @@ status: active
 
 # OntoIndex Pending Tasks
 
+2026-11-01: qualification follow-ups and installer cleanup are delivered in
+locally installed 2.4.8 (`103228d`). Full release gate and installed smoke pass;
+CLI and both MCP configurations select 2.4.8. Remaining substantive work:
+pinned-database buffer-exhaustion measurements and broader GN qualification.
+Cleanup retains 2.4.4/2.4.7 for live processes and 2.4.5/2.4.6 for unresolved
+usage; zero bytes recovered. See `audit_session-2026-11-01-local-248.md`.
+
 2026-11-01: WS-1/CAP-1 complete locally in
 `docs/plans/ONTOINDEX_247_REVIEW_SIMPLIFICATION_PLAN.md`: workspace3/3 passes,
 coupling/pool47/47 pass, lint and scope checks pass. Next substantive task is
@@ -38,11 +45,8 @@ The subsequent WS-1 correction passes with the authorized third workspace run;
 CAP-1 repairs the boundary and tests the actual pool adapter. Isolate buffer
 queries on a pinned database. Broader GN gates remain open.
 
-2026-11-01: 2.4.7 delivered at `24b2eda`; CLI and both MCP configurations select
-the validated local installation. Follow up the local-asset installer EXIT trap:
-its empty cleanup predicate returns 1 after successful installation. Installed
-smoke passed separately. Retain 2.4.4/2.4.6 while processes use them and 2.4.5
-until usage is verifiable; cleanup recovered zero bytes.
+2026-11-01: the local-asset installer EXIT-trap defect observed in 2.4.7 is
+fixed and verified by the successful 2.4.8 installation above.
 
 2026-11-01: semantic repair REPAIR-1 is DONE; its manager is closed in
 `docs/plans/ONTOINDEX_246_SEMANTIC_REPAIR_PLAN.md`. Native build and 804 focused

@@ -8,6 +8,16 @@ status: active
 
 # OntoIndex Current Forward Plan
 
+2026-11-01: 2.4.8 committed at `103228d`; local Linux release gate passed
+15,546 unit and 3,039 integration tests (one expected failure, 304 skips).
+Commit hooks, clean-commit build, local tarball installation and installed
+native/semantic/database/MCP smoke passed. CLI and both user MCP configurations
+select 2.4.8. Installation cleanup retains live 2.4.4/2.4.7 and uncertain
+2.4.5/2.4.6; zero installation bytes recovered. Release staging was removed.
+Both 247 follow-up managers remain closed with active task null. Buffer-exhaustion
+measurements and broader GN qualification remain open. Evidence:
+`audit_session-2026-11-01-local-248.md`.
+
 2026-11-01: review/simplification WS-1 and CAP-1 are DONE locally in
 `docs/plans/ONTOINDEX_247_REVIEW_SIMPLIFICATION_PLAN.md`. Workspace replay now
 passes3 tests after verified MCP shutdown before the preserved-timestamp mutation.
@@ -16,7 +26,7 @@ they may be incomplete. Coupling/pool suites pass47 tests including actual
 parameterized adapter49999/50000/50001 boundaries and result cleanup/reuse.
 Scoped lint exit0 with9 warnings and bounded OntoIndex scope verification pass.
 Remaining: pinned buffer-exhaustion measurement and broader GN qualification.
-Earlier repairs remain uncommitted; no version/install/push in this follow-up.
+These repairs are included in the validated 2.4.8 installation above.
 
 2026-11-01: `docs/plans/ONTOINDEX_247_FOLLOWUP_PLAN.md` is closed; FIX-1 and
 DIAG-1 are DONE locally, active task null. Qualification repairs and installer
