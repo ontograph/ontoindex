@@ -8,6 +8,13 @@ status: active
 
 # OntoIndex Current Forward Plan
 
+2026-11-01: destructured-export metadata repair completed locally through
+`docs/plans/ONTOINDEX_245_EXPORT_REPAIR_PLAN.md` (EXPORT-1 DONE). One shared
+extractor and two test files changed; native build exit0, six focused files
+237 tests pass, final unit delta 41 tests pass. Four reviewers and bounded
+OntoIndex verification completed. Full release gate, commit and delivery of
+this patch remain separate; GN blocked state is unchanged.
+
 2026-10-27 frozen-subset replay qualification passes. All43 frozen source/config
 hashes and10 classifier provenance hashes match. Existing parity integration
 now has an opt-in33-file case exercising actual production replay in both

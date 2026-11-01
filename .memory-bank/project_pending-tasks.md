@@ -19,6 +19,11 @@ status: active
 
 # OntoIndex Pending Tasks
 
+2026-11-01: destructured-export repair is locally validated (EXPORT-1 DONE,
+`docs/plans/ONTOINDEX_245_EXPORT_REPAIR_PLAN.md`). Before delivering this patch,
+run the full release gate on its final tree; no new version or installation
+was produced. The GN tracker remains blocked on its existing dependencies.
+
 2026-10-27 production replay graph equality is established for the isolated
 33-file frozen TypeScript subset in both publication modes. All43 original
 source/config files remain verified; eight refused files remain excluded.

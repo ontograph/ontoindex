@@ -37,6 +37,11 @@ import { emitReferencesToGraph } from '../../src/core/ingestion/emit-references.
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { restoreSemanticModelRegistrations } from '../../src/core/ingestion/model/semantic-model.js';
 import { createResolutionContext } from '../../src/core/ingestion/model/resolution-context.js';
+import {
+  processImports,
+  processImportsFromExtracted,
+} from '../../src/core/ingestion/import-processor.js';
+import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
 import { BindingAccumulator } from '../../src/core/ingestion/binding-accumulator.js';
 import {
   processCallsFromExtracted,
@@ -70,6 +75,69 @@ describe('worker pool integration', () => {
     if (pool) {
       await pool.terminate();
       pool = undefined;
+    }
+  });
+
+  it('preserves destructured export metadata through the compiled TS/JS worker', async () => {
+    expect(fs.existsSync(DIST_WORKER)).toBe(true);
+    pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, { cooperativeShutdown: true });
+    const inputs = ['ts', 'js'].flatMap((extension) => [
+      {
+        path: `base.${extension}`,
+        content:
+          'export const { value, key: local = fallback } = source; export const [item] = source; const { privateName } = source;',
+      },
+      { path: `app.${extension}`, content: `import * as ns from './base.${extension}';` },
+    ]);
+    const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>(inputs);
+    const imports = results.flatMap((result) => result.imports);
+    for (const extension of ['ts', 'js']) {
+      expect(
+        imports
+          .filter((record) => record.filePath === `base.${extension}` && record.isLocalExport)
+          .flatMap((record) => record.namedBindings ?? []),
+      ).toEqual(
+        ['value', 'local', 'item'].map((name) => ({
+          local: `#local-export:${name}`,
+          exported: name,
+        })),
+      );
+    }
+    const serial = createResolutionContext();
+    const worker = createResolutionContext();
+    const cache = createASTCache(10);
+    try {
+      for (const context of [serial, worker]) {
+        for (const extension of ['ts', 'js']) {
+          for (const name of ['value', 'local', 'item', 'privateName', 'key', 'fallback']) {
+            // Seed symbols to isolate export visibility from variable type inference.
+            context.model.symbols.add(
+              `base.${extension}`,
+              name,
+              `${extension}:${name}`,
+              'Variable',
+            );
+          }
+        }
+      }
+      await processImports(createKnowledgeGraph(), inputs, cache, serial);
+      await processImportsFromExtracted(createKnowledgeGraph(), inputs, imports, worker);
+      expect(worker.namedImportMap).toEqual(serial.namedImportMap);
+      for (const context of [serial, worker]) {
+        for (const extension of ['ts', 'js']) {
+          for (const name of ['value', 'local', 'item', 'privateName', 'key', 'fallback']) {
+            expect(
+              context
+                .resolve(`ns.${name}`, `app.${extension}`)
+                ?.candidates.map((def) => def.nodeId) ?? [],
+            ).toEqual(['value', 'local', 'item'].includes(name) ? [`${extension}:${name}`] : []);
+          }
+        }
+      }
+    } finally {
+      cache.clear();
+      serial.clear();
+      worker.clear();
     }
   });
 

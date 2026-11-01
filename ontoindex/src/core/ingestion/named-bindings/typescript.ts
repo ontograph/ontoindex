@@ -32,7 +32,42 @@ export function extractTsLocalExportBindings(root: SyntaxNode): NamedBinding[] {
       for (const declarator of declaration.namedChildren) {
         if (declarator.type !== 'variable_declarator') continue;
         const name = declarator.childForFieldName('name');
-        if (name?.type === 'identifier') add(name.text, name.text);
+        if (!name || name.hasError || name.isMissing) continue;
+        const pending = [name];
+        const names: string[] = [];
+        let valid = true;
+        while (pending.length > 0 && valid) {
+          const binding = pending.pop()!;
+          switch (binding.type) {
+            case 'identifier':
+            case 'shorthand_property_identifier_pattern':
+              names.push(binding.text);
+              break;
+            case 'object_pattern':
+            case 'array_pattern':
+            case 'rest_pattern': {
+              const children = binding.namedChildren;
+              for (let index = children.length - 1; index >= 0; index--) {
+                if (children[index].type !== 'comment') pending.push(children[index]);
+              }
+              break;
+            }
+            case 'pair_pattern':
+            case 'assignment_pattern':
+            case 'object_assignment_pattern': {
+              // Only binding positions grant export authority; keys and defaults are expressions.
+              const target = binding.childForFieldName(
+                binding.type === 'pair_pattern' ? 'value' : 'left',
+              );
+              if (target) pending.push(target);
+              else valid = false;
+              break;
+            }
+            default:
+              valid = false;
+          }
+        }
+        if (valid) for (const local of names) add(local, local);
       }
     } else if (
       [

@@ -4,6 +4,10 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.4.6] - 2026-11-01
+
+- TypeScript and JavaScript destructured exports preserve public binding names through parsing, workers and import-state replay. Nested patterns, aliases, defaults and rest bindings are supported; property keys and default expressions do not grant export visibility. This change does not add variable type inference.
+
 ## [2.4.5] - 2026-11-01
 
 - TypeScript and JavaScript namespace inheritance follows explicit exports and distinguishes local imports from same-named source reexports. Private declarations no longer create false inheritance or inherited-call edges; exported aliases and default exports retain their coverage.
