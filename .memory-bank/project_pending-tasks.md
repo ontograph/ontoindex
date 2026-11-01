@@ -19,10 +19,12 @@ status: active
 
 # OntoIndex Pending Tasks
 
-2026-11-01: destructured-export repair is locally validated (EXPORT-1 DONE,
-`docs/plans/ONTOINDEX_245_EXPORT_REPAIR_PLAN.md`). Before delivering this patch,
-run the full release gate on its final tree; no new version or installation
-was produced. The GN tracker remains blocked on its existing dependencies.
+2026-11-01: destructured-export repair is delivered in locally installed 2.4.6
+(`91e99d2`, EXPORT-1 DONE, `docs/plans/ONTOINDEX_245_EXPORT_REPAIR_PLAN.md`). Full
+local release gate and installed-runtime smoke passed. CLI and user MCP targets
+select 2.4.6; already-running sessions retain their previous binaries. Cleanup
+defers 2.4.4 and 2.4.5 because live processes still use them. The GN tracker
+remains blocked on its existing dependencies.
 
 2026-10-27 production replay graph equality is established for the isolated
 33-file frozen TypeScript subset in both publication modes. All43 original

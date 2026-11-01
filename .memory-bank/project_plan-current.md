@@ -12,8 +12,15 @@ status: active
 `docs/plans/ONTOINDEX_245_EXPORT_REPAIR_PLAN.md` (EXPORT-1 DONE). One shared
 extractor and two test files changed; native build exit0, six focused files
 237 tests pass, final unit delta 41 tests pass. Four reviewers and bounded
-OntoIndex verification completed. Full release gate, commit and delivery of
-this patch remain separate; GN blocked state is unchanged.
+OntoIndex verification completed. Version 2.4.6 delivered at `91e99d2` on
+`fix/244-qualification`: full local release gate passed 15482 unit and 3006
+integration tests; commit hooks and clean-commit build passed. Installed CLI and
+Ontocode/Codex MCP configurations select 2.4.6. Installed native provenance,
+JS/TS export visibility, database extensions and MCP startup passed. Remote builds
+were skipped. Versions 2.4.4 and 2.4.5 remain in use by live processes; cleanup
+recovered zero bytes. GN blocked state is unchanged. Release log:
+`/tmp/ontoindex-246-release-gate-20261101.log`; installed proof:
+`/tmp/ontoindex-246-installed-smoke-final-20261101.log`.
 
 2026-10-27 frozen-subset replay qualification passes. All43 frozen source/config
 hashes and10 classifier provenance hashes match. Existing parity integration
