@@ -19,17 +19,23 @@ status: active
 
 # OntoIndex Pending Tasks
 
+2026-11-02 delivery is complete: 2.4.12 product commit `8a51cbb` is pushed to
+main and selected by the local CLI and Codex MCP. Versioned-tree gate,
+clean-commit build and installed smoke pass. No release publication or CI
+dispatch occurred. Older copies remain deferred due to unreadable process
+references. GN prerequisites and optional broader coverage retain their scope.
+Evidence: [2.4.12 delivery](audit_session-2026-11-02-local-2412.md).
+
 2026-11-02 latest full current-code Linux tests are complete: backend, web,
 native, Python, Chromium and available opt-ins all exit 0. Backend has 18,846
 ordinary passes and one expected failure; 297 default cases remain unrun after
 supplements (224 Kotlin, 68 Dart and five other type-environment cases).
-Delivery of uncommitted fixes, GN prerequisites and optional broader coverage
-retain their existing scope. Evidence: `/opt/d2/ontoindex-full-current-5QrET9Wq/REPORT.md`.
+GN prerequisites and optional broader coverage retain their existing scope.
+Evidence: `/opt/d2/ontoindex-full-current-5QrET9Wq/REPORT.md`.
 
 2026-11-02 installer isolation repair is source-complete with seven passing
-regressions. Include its prefix-selection and scoped-cleanup changes in future
-delivery. Active installations still require the accumulated uncommitted repairs;
-this review performed no build or installation. GN prerequisites remain unchanged.
+regressions. Its prefix-selection and scoped-cleanup changes are delivered in
+2.4.12 with the accumulated repairs. GN prerequisites remain unchanged.
 
 2026-11-02: declared-field and Ruby preparation-order repairs pass 1,912 source
 tests with 28 skips across 20 files. The original nine failing assertions are
@@ -47,8 +53,8 @@ ABI mismatch: the binding now targets Node-API 9 and one rebuilt addon passes
 Linux postinstall and normal builds now rebuild Tree-sitter before loading it;
 fresh-child verification checks application resolution and selected artifact.
 The real builder passes, with identical previously runtime-tested addon bytes,
-and 39 focused tests pass. Existing installations still need delivery of these
-uncommitted fixes. Isolated packed installation passes on Linux Node 24.21/npm
+and 39 focused tests pass. The selected 2.4.12 installation contains these
+fixes. Isolated packed installation passes on Linux Node 24.21/npm
 11.19 with linked vendor dependencies: Rust/TS/JS parsing, native loads, CLI
 version/help and ABI 9 verification. Copied-dependency installation and a fresh
 Node 22 install remain untested. Project-wide coverage and external corpus parity for
@@ -59,7 +65,7 @@ Native recovery is proven with a controlled JavaScript
 materialization delay; native-driver latency and buffer-exhaustion reproduction
 remain outside that evidence.
 Original supplemental Linux results remain historical. R1–R7 and follow-up
-repairs are uncommitted; no delivery occurred in this repair task.
+repairs are delivered in 2.4.12.
 See [current-tree test evidence](audit_session-2026-11-02-current-tests.md).
 
 2026-11-02: 2.4.11 repairs passed the full Linux unit/integration gate and are
