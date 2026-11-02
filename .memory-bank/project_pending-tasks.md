@@ -34,8 +34,12 @@ caller-ID defect previously accepted by the test. Fresh build, 341 focused tests
 match. Fresh full backend validation after that correction exits 0: 18,967
 passes, one expected failure, 304 skips; 803 passing files and three skipped
 files. All 5,824 source/artifact hashes and HEAD remain unchanged.
-Delivery remains pending; the broader qualification
-matrix was not repeated.
+Delivery is complete in 2.4.13 at `1faf4b1`, pushed to main and selected by the
+local CLI and Codex MCP. The staged-tree gate passed 15,914 unit and 3,053
+integration tests; hooks, clean-commit build, installed smoke and ten probes
+passed. The broader qualification matrix was not repeated. Older installation
+cleanup remains deferred because 22 processes have unreadable reference fields.
+Delivery evidence: [2.4.13 delivery](audit_session-2026-11-03-local-2413.md).
 GN state is unchanged. Evidence:
 [qualification repair](audit_session-2026-11-02-2412-qualification-repair.md).
 

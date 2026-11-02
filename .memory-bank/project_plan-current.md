@@ -8,6 +8,15 @@ status: active
 
 # OntoIndex Current Forward Plan
 
+2026-11-03 delivery: qualification repairs are committed and pushed to main at
+`1faf4b1` as 2.4.13. The versioned-tree gate passed 15,914 unit and 3,053
+integration tests (one expected failure, 304 skips). Hooks, clean-commit build,
+installed native/database/MCP smoke and all ten qualification probes passed.
+CLI and Codex MCP select 2.4.13. No release was published; GitHub listed no
+product-commit CI runs. Older installations remain deferred because 22 processes
+have unreadable reference fields. GN state is unchanged.
+Evidence: [2.4.13 delivery](audit_session-2026-11-03-local-2413.md).
+
 2026-11-02 qualification follow-up: R1–R3 and six formatting failures from the
 pinned 2.4.12 report are repaired locally. Follow-up review fixed error disclosure,
 opaque receiver fallback and invalid constructor captures. Fresh native build,
@@ -28,8 +37,8 @@ membership checks and overloaded callers. Ten probes, typecheck, lint and
 formatting pass; all 5,824 source/artifact hashes match. The full backend suite
 after the endpoint correction also exits 0: 18,967 passes, one expected failure,
 304 skips, 803 passing files and three skipped files, in 952.62 seconds.
-All 5,824 source/artifact hashes and HEAD remain unchanged. Repairs
-are uncommitted and not installed; GN state remains unchanged. Evidence:
+All 5,824 source/artifact hashes and HEAD remained unchanged during that run.
+Repairs are delivered in 2.4.13; GN state remains unchanged. Evidence:
 [qualification repair](audit_session-2026-11-02-2412-qualification-repair.md).
 
 2026-11-02 delivery: accumulated repairs are committed at `8a51cbb` and pushed
