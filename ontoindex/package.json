@@ -78,7 +78,7 @@
     "micromark-extension-gfm": "^3.0.0",
     "minimatch": "^10.2.2",
     "mnemonist": "^0.40.4",
-    "p-limit": "^7.3.0",
+    "p-limit": "^7.3.3",
     "pandemonium": "^2.4.1",
     "safe-regex": "^2.1.1",
     "seedrandom": "^3.0.5",
