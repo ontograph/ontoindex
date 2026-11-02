@@ -8,12 +8,12 @@ status: active
 
 # OntoIndex Current Forward Plan
 
-2026-11-02: 2.4.10 product commit `7b33dce` passed the full Linux delivery gate
-(15,668 unit and 3,044 integration tests), commit hooks, clean-commit build,
+2026-11-02: 2.4.11 product commit `0fc971a` passed the full Linux delivery gate
+(15,703 unit and 3,044 integration tests), commit hooks, clean-commit build,
 local installation and installed native/database/MCP smoke. CLI and Codex MCP
-select 2.4.10; live sessions retain 2.4.8. No release publication. Broader GN
+select 2.4.11; live sessions retain 2.4.8. Pushed to main; no release publication. Broader GN
 qualification and measurement remain open; manager state is unchanged.
-Evidence: [local delivery](audit_session-2026-11-02-local-2410.md).
+Evidence: [local delivery](audit_session-2026-11-02-local-2411.md).
 
 2026-11-01: 2.4.8 committed at `103228d`; local Linux release gate passed
 15,546 unit and 3,039 integration tests (one expected failure, 304 skips).

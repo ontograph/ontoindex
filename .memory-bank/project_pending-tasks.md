@@ -19,11 +19,11 @@ status: active
 
 # OntoIndex Pending Tasks
 
-2026-11-02: 2.4.10 repairs passed the full Linux unit/integration gate and are
+2026-11-02: 2.4.11 repairs passed the full Linux unit/integration gate and are
 installed locally. Broader GN qualification, buffer-exhaustion measurement,
 frozen fixture gaps and real second-caller timeout proof remain open. Historical
 install cleanup retains live or uncertain copies. No release was published.
-See [delivery evidence](audit_session-2026-11-02-local-2410.md).
+See [delivery evidence](audit_session-2026-11-02-local-2411.md).
 
 2026-11-01: qualification follow-ups and installer cleanup are delivered in
 locally installed 2.4.8 (`103228d`). Full release gate and installed smoke pass;
