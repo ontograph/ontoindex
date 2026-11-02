@@ -1596,10 +1596,10 @@ describe('TS instanceof narrowing resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
-// this.users member access iterable: for (const user of this.users)
+// Missing this.users/this.repos fields must not inherit same-named parameter types.
 // ---------------------------------------------------------------------------
 
-describe('TypeScript member access iterable for-loop', () => {
+describe('TypeScript missing member access iterable for-loop', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -1615,32 +1615,16 @@ describe('TypeScript member access iterable for-loop', () => {
     expect(getNodesByLabel(result, 'Method')).toContain('save');
   });
 
-  it('resolves user.save() via this.users to User#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('User'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('does NOT cross-resolve user.save() to Repo#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const wrong = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('Repo'),
-    );
-    expect(wrong).toBeUndefined();
-  });
-
-  it('resolves repo.save() via this.repos to Repo#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('Repo'),
-    );
-    expect(repoSave).toBeDefined();
-  });
+  it.each(['processUsers', 'processRepos'])(
+    'does not infer a save target from a parameter in %s',
+    (method) => {
+      expect(getNodesByLabel(result, 'Method')).toContain(method);
+      const saves = getRelationships(result, 'CALLS').filter(
+        (call) => call.source === method && call.target === 'save',
+      );
+      expect(saves).toEqual([]);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

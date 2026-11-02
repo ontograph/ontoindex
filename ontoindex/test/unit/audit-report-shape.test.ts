@@ -111,6 +111,7 @@ import { runHotspotAnalysis } from '../../src/mcp/local/backend-hotspot-analysis
 import { runBoundaryViolations } from '../../src/mcp/local/backend-boundary-violations.js';
 import { runVerificationGap } from '../../src/mcp/local/backend-verification-gap.js';
 import { runGraphDiff } from '../../src/mcp/local/backend-graph-diff.js';
+import { markInvocationError } from '../../src/mcp/shared/invocation-error.js';
 
 const repo = {
   id: 'fixture',
@@ -229,6 +230,40 @@ describe('AuditReportResult shape — structural drift gate', () => {
     expect(result.warnings).toEqual([]);
     expect(result.incompleteSections).toBeUndefined();
   });
+
+  it.each([
+    { error: 'coupling query failed', diagnostic: 'coupling query failed' },
+    { diagnostic: 'backend invocation failed' },
+    { error: { privateDetail: 'do not serialize' }, diagnostic: 'backend invocation failed' },
+  ])(
+    'marks a coupling invocation failure incomplete ($diagnostic)',
+    async ({ error, diagnostic }) => {
+      vi.mocked(runCouplingMatrix).mockResolvedValueOnce(
+        markInvocationError({
+          rows: [{ community: 'Auth', ca: 2, ce: 12, instability: 0.86 }],
+          ...(error === undefined ? {} : { error }),
+        }) as Awaited<ReturnType<typeof runCouplingMatrix>>,
+      );
+
+      const failed = await runAuditReport(repo, {});
+
+      expect(failed.couplingViolations).toEqual([]);
+      expect(failed.warnings).toEqual([`coupling-matrix: ${diagnostic}`]);
+      expect(failed.incompleteSections).toEqual(['coupling-matrix']);
+      expect(failed.deadCandidates).toEqual(result.deadCandidates);
+      expect(failed.riskSurface).toEqual(result.riskSurface);
+      expect(failed.openCycles).toEqual(result.openCycles);
+      expect(failed.boundaryViolations).toEqual(result.boundaryViolations);
+      expect(failed.verificationGaps).toEqual(result.verificationGaps);
+      expect(failed.recentDrift).toEqual(result.recentDrift);
+      const markdown = formatAuditReport(failed);
+      expect(markdown).toContain('> **Partial report**');
+      expect(markdown).toContain(`> - coupling-matrix: ${diagnostic}`);
+      expect(markdown).toContain('Unavailable: coupling-matrix did not complete (see warnings).');
+      expect(markdown).not.toContain('No high-instability modules.');
+      expect(markdown).not.toContain('do not serialize');
+    },
+  );
 
   it.each([{ rows: [] }, { rows: [{ community: 'Auth', ca: 2, ce: 12, instability: 0.86 }] }])(
     'preserves coupling rows and marks warning-bearing scans incomplete ($rows)',

@@ -2130,6 +2130,8 @@ export async function query(
     } catch (e) {
       grouped.clear();
       if (errorContext) logSearchQueryError(errorContext, e);
+      // Optional enrichment must not multiply a saturated query into N retries.
+      if (e instanceof Error && e.name === 'QueryTimeoutError') return grouped;
     }
     for (const nodeId of nodeIds) {
       try {
@@ -2137,6 +2139,7 @@ export async function query(
         if (rows.length > 0) grouped.set(nodeId, [rows[0] as T]);
       } catch (e) {
         if (errorContext) logSearchQueryError(errorContext, e);
+        if (e instanceof Error && e.name === 'QueryTimeoutError') break;
       }
     }
     return grouped;
@@ -2164,6 +2167,7 @@ export async function query(
       `
       MATCH (n {id: $nodeId})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
       RETURN c.cohesion AS cohesion, c.heuristicLabel AS module
+      ORDER BY c.id
       LIMIT 1
     `,
       'query:cluster-info',
@@ -2190,6 +2194,7 @@ export async function query(
       MATCH (m)-[r:CodeRelation]->(n {id: $nodeId})
       WHERE r.type IN ['CALLS', 'IMPORTS']
       RETURN m.name AS caller, r.type AS type, m.filePath AS callerPath
+      ORDER BY m.id, r.type
       LIMIT 1
     `,
     ),

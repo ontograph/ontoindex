@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
-import { processCalls } from '../../src/core/ingestion/call-processor.js';
+import {
+  processCalls,
+  processCallsFromExtracted,
+} from '../../src/core/ingestion/call-processor.js';
 import { createResolutionContext } from '../../src/core/ingestion/model/resolution-context.js';
 import type {
   ExtractedCall,
@@ -17,6 +20,48 @@ vi.mock('node:worker_threads', async (importOriginal) => ({
 }));
 
 describe('C++ worker argument count parity', () => {
+  it.each(['ts', 'tsx'])(
+    'preserves unknown generic receivers through worker dispatch in %s',
+    async (extension) => {
+      port.postMessage.mockClear();
+      const filePath = `src/generic.${extension}`;
+      const content = `
+class Service { save() {} }
+function unknown<TItem>(value: TItem) { value.save(); value.child.save(); }
+function constrained<TItem extends Service>(value: TItem) { value.save(); }
+`;
+      await import('../../src/core/ingestion/workers/parse-worker.js');
+      const handler = port.on.mock.calls.find(([event]) => event === 'message')?.[1];
+      expect(handler).toBeDefined();
+      await handler([{ path: filePath, content }]);
+      const messages = port.postMessage.mock.calls.map(
+        ([message]) => message as WorkerOutgoingMessage,
+      );
+      expect(messages.filter((message) => message.type === 'error')).toEqual([]);
+      const result = messages.find((message) => message.type === 'result');
+      if (result?.type !== 'result' || !result.data) throw new Error('Missing worker result');
+      const calls = result.data.calls.filter((call) => call.calledName === 'save');
+      expect(calls.map((call) => call.receiverTypeName)).toEqual(['unknown', 'unknown', 'Service']);
+      const graph = createKnowledgeGraph();
+      const ctx = createResolutionContext();
+      const ownerId = `Class:${filePath}:Service`;
+      const methodId = `Method:${filePath}:save`;
+      ctx.model.symbols.add(filePath, 'Service', ownerId, 'Class');
+      ctx.model.symbols.add(filePath, 'save', methodId, 'Method', { ownerId });
+      try {
+        await processCallsFromExtracted(graph, calls, ctx);
+        expect(graph.relationships.filter((edge) => edge.type === 'CALLS')).toEqual([
+          expect.objectContaining({
+            sourceId: `Function:${filePath}:constrained`,
+            targetId: methodId,
+          }),
+        ]);
+      } finally {
+        ctx.clear();
+      }
+    },
+  );
+
   it('retains arity for temporary receivers and ordinary call forms', async () => {
     port.postMessage.mockClear();
     const filePath = 'src/argcount.cpp';

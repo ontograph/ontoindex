@@ -20,6 +20,7 @@ import { runHotspotAnalysis } from './backend-hotspot-analysis.js';
 import { runBoundaryViolations } from './backend-boundary-violations.js';
 import { runVerificationGap } from './backend-verification-gap.js';
 import { runGraphDiff } from './backend-graph-diff.js';
+import { isMarkedInvocationError } from '../shared/invocation-error.js';
 
 type RepoHandle = {
   readonly id: string;
@@ -331,8 +332,11 @@ export async function runAuditReport(
     gapResult,
     diffResult,
   ] = rawResults.map((r, i) => {
-    if (r instanceof Error) {
-      warnings.push(`${BACKEND_NAMES[i]}: ${r.message}`);
+    if (r instanceof Error || isMarkedInvocationError(r)) {
+      const error = r instanceof Error ? r.message : (r as { error?: unknown }).error;
+      warnings.push(
+        `${BACKEND_NAMES[i]}: ${typeof error === 'string' ? error : 'backend invocation failed'}`,
+      );
       incompleteSections.push(BACKEND_NAMES[i]);
       return null;
     }

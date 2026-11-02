@@ -886,7 +886,9 @@ const captureSequentialCall = (
   sourceId: string,
 ): void => {
   let receiverTypeName =
-    callSite.receiverName && typeEnv ? typeEnv.lookup(callSite.receiverName, callNode) : undefined;
+    callSite.receiverName && typeEnv
+      ? typeEnv.lookup(callSite.receiverName, callNode, 'receiver')
+      : undefined;
   if (
     callSite.typeAsReceiverHeuristic &&
     callSite.receiverName !== undefined &&
@@ -941,7 +943,7 @@ const resolveExtractedLanguageCallSite = (
     findEnclosingFunction(callNode, file.path, ctx, provider) || generateId('File', file.path);
   const receiverName = langCallSite.callForm === 'member' ? langCallSite.receiverName : undefined;
   let receiverTypeName =
-    receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
+    receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode, 'receiver') : undefined;
 
   if (
     langCallSite.typeAsReceiverHeuristic &&
@@ -1211,7 +1213,7 @@ const resolvePreparedSequentialFile = (
       let callForm = inferCallForm(callNode, nameNode);
       let receiverName = callForm === 'member' ? extractReceiverName(nameNode) : undefined;
       let receiverTypeName =
-        receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
+        receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode, 'receiver') : undefined;
       let receiverSource: ReceiverSource = receiverTypeName ? 'typed-binding' : 'none';
       // Phase P: virtual dispatch override — when the declared type is a base class but
       // the constructor created a known subclass, prefer the more specific type.
@@ -1299,7 +1301,7 @@ const resolvePreparedSequentialFile = (
           if (extracted && extracted.chain.length > 0) {
             let currentType =
               extracted.baseReceiverName && typeEnv
-                ? typeEnv.lookup(extracted.baseReceiverName, callNode)
+                ? typeEnv.lookup(extracted.baseReceiverName, callNode, 'receiver')
                 : undefined;
             if (!currentType && extracted.baseReceiverName && receiverIndex.size > 0) {
               const funcName = enclosingFuncId ? extractFuncNameFromSourceId(enclosingFuncId) : '';
@@ -1320,15 +1322,16 @@ const resolvePreparedSequentialFile = (
               }
             }
             if (currentType) {
-              receiverTypeName = walkMixedChain(
-                extracted.chain,
-                currentType,
-                file.path,
-                ctx,
-                makeAccessEmitter(graph, sourceId),
-                heritageMap,
-                makeCallEmitter(graph, sourceId),
-              );
+              receiverTypeName =
+                walkMixedChain(
+                  extracted.chain,
+                  currentType,
+                  file.path,
+                  ctx,
+                  makeAccessEmitter(graph, sourceId),
+                  heritageMap,
+                  makeCallEmitter(graph, sourceId),
+                ) ?? (currentType === 'unknown' ? currentType : undefined);
               if (receiverTypeName) receiverSource = 'mixed-chain';
             }
           }

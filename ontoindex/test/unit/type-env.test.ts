@@ -262,6 +262,7 @@ describe('buildTypeEnv', () => {
       for (const name of ['value', 'local', 'valueCopy', 'localCopy']) {
         const call = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf(`${name}.save()`));
         expect(typeEnv.lookup(name, call)).toBeUndefined();
+        expect(typeEnv.lookup(name, call, 'receiver')).toBe('unknown');
       }
       expect(flatGet(typeEnv, 'valueCopy')).toBe('undefined');
       expect(flatGet(typeEnv, 'localCopy')).toBe('undefined');
@@ -294,6 +295,119 @@ describe('buildTypeEnv', () => {
     it('preserves ordinary multi-character class names', () => {
       const tree = parse('function use(server: TCPServer) {}', TypeScript.typescript);
       expect(flatGet(buildTypeEnv(tree, 'typescript'), 'server')).toBe('TCPServer');
+    });
+
+    describe.each([
+      ['TS', TypeScript.typescript],
+      ['TSX', TypeScript.tsx],
+    ])('%s generic fields and nullable wrappers', (_name, grammar) => {
+      it('keeps known and unknown class fields separate from lexical bindings', () => {
+        const tree = parse(
+          `const field: Outer = getOuter();
+           const unknown: Outer = getOuter();
+           class First<T extends Cache, U> {
+             field: T; unknown: U; onlyField: T;
+             use(field: Local, unknown: Local) {
+               const fieldCopy = field; const unknownCopy = unknown;
+               fieldCopy.save(); unknownCopy.save(); onlyField.save();
+             }
+           }
+           class Second<T extends Other> {
+             field: T;
+             use() { field.save(); unknown.save(); }
+           }
+           field.save(); unknown.save(); onlyField.save();`,
+          grammar,
+        );
+        const typeEnv = buildTypeEnv(tree, 'typescript');
+        for (const [text, expected] of [
+          ['fieldCopy.save()', 'Local'],
+          ['unknownCopy.save()', 'Local'],
+          ['field.save()', 'Outer'],
+          ['unknown.save()', 'Outer'],
+          ['onlyField.save()', undefined],
+        ] as const) {
+          const at = tree.rootNode.text.indexOf(text);
+          expect(typeEnv.lookup(text.split('.')[0], tree.rootNode.descendantForIndex(at))).toBe(
+            expected,
+          );
+        }
+        expect(typeEnv.fileScope().get('field')).toBe('Outer');
+        expect(typeEnv.fileScope().get('unknown')).toBe('Outer');
+        expect(typeEnv.fileScope().has('onlyField')).toBe(false);
+        const classes = [...typeEnv.allScopes()].filter(([scope]) =>
+          scope.startsWith('class_body@'),
+        );
+        expect(classes.map(([, bindings]) => bindings.get('field'))).toEqual(['Cache', 'Other']);
+        expect(classes[0][1].get('unknown')).toBe('undefined');
+      });
+
+      it('uses nearest class fields for arrays and Map methods regardless of declaration order', () => {
+        const tree = parse(
+          `class First {
+             use(users: Wrong[], repos: Map<WrongKey, WrongValue>) {
+               for (const user of this.users) { user.save(); }
+               for (const key of this.repos.keys()) { key.save(); }
+               for (const repo of this.repos.values()) { repo.save(); }
+               for (const localUser of users) { localUser.save(); }
+               class Nested {
+                 use(users: Wrong[]) {
+                   for (const absent of this.users) { absent.save(); }
+                 }
+               }
+             }
+             users: User[];
+             repos: Map<Key, Repo>;
+           }
+           class Second {
+             users: Other[];
+             use() { for (const other of this.users) { other.save(); } }
+           }`,
+          grammar,
+        );
+        const typeEnv = buildTypeEnv(tree, 'typescript');
+        for (const [name, expected] of [
+          ['user', 'User'],
+          ['key', 'Key'],
+          ['repo', 'Repo'],
+          ['localUser', 'Wrong'],
+          ['other', 'Other'],
+          ['absent', undefined],
+        ] as const) {
+          const at = tree.rootNode.text.indexOf(`${name}.save()`);
+          expect(typeEnv.lookup(name, tree.rootNode.descendantForIndex(at))).toBe(expected);
+        }
+      });
+
+      it.each([
+        ['T extends Cache', 'Optional<T>', 'Cache'],
+        ['T extends Cache', 'Option<Maybe<T>>', 'Cache'],
+        ['T extends Optional<U>, U extends Cache', 'T', 'Cache'],
+        ['T', 'Optional<T>', 'undefined'],
+        ['T extends Optional<T>', 'Optional<T>', 'undefined'],
+        ['T extends Optional<U>, U extends Maybe<T>', 'T', 'undefined'],
+        ['T', 'Optional<Models.T>', 'T'],
+        ['T', 'Optional<Models.T<User>>', 'T'],
+        ['T', 'Models.Optional<T>', 'Optional'],
+      ])(
+        'resolves %s through %s without losing qualification or cycles',
+        (parameters, type, expected) => {
+          const tree = parse(
+            `const value: Outer = getOuter();
+           function use<${parameters}>(value: ${type}) {
+             const copy = value; value.save(); copy.save();
+           }`,
+            grammar,
+          );
+          const typeEnv = buildTypeEnv(tree, 'typescript');
+          for (const name of ['value', 'copy']) {
+            const at = tree.rootNode.text.indexOf(`${name}.save()`);
+            expect(typeEnv.lookup(name, tree.rootNode.descendantForIndex(at))).toBe(
+              expected === 'undefined' ? undefined : expected,
+            );
+          }
+        },
+      );
     });
 
     it('extracts type from arrow function parameters', () => {
@@ -4675,7 +4789,7 @@ function process(users: User[]) {
       expect(flatGet(typeEnv, 'name')).toBeUndefined();
     });
 
-    it('TS member access: for (const user of this.users) with users: User[] param — resolves', () => {
+    it('TS member access does not use a same-named parameter without a class field', () => {
       const tree = parse(
         `
 function process(users: User[]) {
@@ -4687,7 +4801,7 @@ function process(users: User[]) {
         TypeScript.typescript,
       );
       const typeEnv = buildTypeEnv(tree, 'typescript');
-      expect(flatGet(typeEnv, 'user')).toBe('User');
+      expect(flatGet(typeEnv, 'user')).toBeUndefined();
     });
 
     it('Python member access: for user in self.users with users: List[User] param — resolves', () => {

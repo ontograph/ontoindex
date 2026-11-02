@@ -47,13 +47,20 @@ function mapRows(row: Row, key: string): Row {
   return Array.isArray(row[key]) ? { ...row, [key]: row[key].map(symbol) } : row;
 }
 
-function impact(result: unknown): unknown {
+function impactSymbols(result: unknown): unknown {
   if (!isRow(result)) return result;
   let projected = mapRows(result, 'candidates');
   if (isRow(result.sourceIdentity)) {
     projected = { ...projected, sourceIdentity: symbol(result.sourceIdentity) };
   }
   return isRow(result.target) ? { ...projected, target: symbol(result.target) } : projected;
+}
+
+function impact(result: unknown): unknown {
+  const projected = impactSymbols(result);
+  return isRow(projected) && isRow(projected.local)
+    ? { ...projected, local: impactSymbols(projected.local) }
+    : projected;
 }
 
 function context(result: Row): Row {

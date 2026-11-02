@@ -242,6 +242,42 @@ describe('batched search symbol lookup', () => {
     ]);
   });
 
+  it('does not amplify failed optional enrichment batches into per-node retries', async () => {
+    vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) => {
+      if (cypher.includes('MEMBER_OF') || cypher.includes('callerPath')) {
+        throw Object.assign(new Error('Execute timed out'), { name: 'QueryTimeoutError' });
+      }
+      return lookupRows(cypher, params.nodeId as string);
+    });
+    const result = await query(repo, options);
+    expect(result.process_symbols).toHaveLength(symbols.length);
+    expect(result.process_symbols![0]).toMatchObject({ id: nodeIds[0], content: 'alpha body' });
+    expect(enrichmentCalls()).toHaveLength(4);
+    expect(
+      vi.mocked(executeParameterized).mock.calls.filter(([, , params]) => 'nodeId' in params),
+    ).toHaveLength(0);
+  });
+
+  it.each(['MEMBER_OF', 'callerPath'])(
+    'stops %s fallback after a per-node timeout',
+    async (failedKind) => {
+      vi.mocked(executeParameterized).mockImplementation(async (_repo, cypher, params) => {
+        if (cypher.includes(failedKind)) {
+          if ('nodeIds' in params) throw new Error('batch unavailable');
+          throw Object.assign(new Error('Execute timed out'), { name: 'QueryTimeoutError' });
+        }
+        return lookupRows(cypher, params.nodeId as string);
+      });
+      const result = await query(repo, options);
+      expect(result.process_symbols).toHaveLength(symbols.length);
+      expect(result.process_symbols![1]).toMatchObject({ id: nodeIds[1], content: 'beta body' });
+      const retries = vi
+        .mocked(executeParameterized)
+        .mock.calls.filter(([, , params]) => 'nodeId' in params);
+      expect(retries.map(([, , params]) => params)).toEqual([{ nodeId: nodeIds[0] }]);
+    },
+  );
+
   it('does not query enrichment for an empty result set', async () => {
     setResults([]);
     const result = await query(repo, options);

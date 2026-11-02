@@ -2402,6 +2402,95 @@ class Child${index} extends Base {}
   });
 });
 
+describe('processCalls — generic receiver graph evidence', () => {
+  it.each(['same-file', 'imported'] as const)(
+    'does not connect an unconstrained generic receiver to an unrelated %s method',
+    async (location) => {
+      const filePath = 'src/consumer.ts';
+      const methodFilePath = location === 'same-file' ? filePath : 'src/unrelated.ts';
+      const ownerId = `Class:${methodFilePath}:Unrelated`;
+      const methodId = `Method:${methodFilePath}:save`;
+      const graph = createKnowledgeGraph();
+      const ctx = createResolutionContext();
+      const cache = createASTCache();
+      ctx.model.symbols.add(filePath, 'use', `Function:${filePath}:use`, 'Function');
+      ctx.model.symbols.add(methodFilePath, 'Unrelated', ownerId, 'Class');
+      ctx.model.symbols.add(methodFilePath, 'save', methodId, 'Method', { ownerId });
+      const classSource = 'export class Unrelated { save() {} }';
+      const useSource = 'function use<TItem>(value: TItem) { value.save(); value.child.save(); }';
+      const files =
+        location === 'same-file'
+          ? [{ path: filePath, content: `${classSource}\n${useSource}` }]
+          : [
+              { path: methodFilePath, content: classSource },
+              {
+                path: filePath,
+                content: `import { Unrelated } from "./unrelated";\n${useSource}`,
+              },
+            ];
+      if (location === 'imported') {
+        ctx.importMap.set(filePath, new Set([methodFilePath]));
+        ctx.namedImportMap.set(
+          filePath,
+          new Map([['Unrelated', { sourcePath: methodFilePath, exportedName: 'Unrelated' }]]),
+        );
+      }
+
+      try {
+        await processCalls(graph, files, cache, ctx);
+
+        expect(graph.relationships.filter((relationship) => relationship.type === 'CALLS')).toEqual(
+          [],
+        );
+      } finally {
+        cache.clear();
+      }
+    },
+  );
+
+  it('connects a constrained generic receiver to its owner despite an unrelated same-name method', async () => {
+    const filePath = 'src/consumer.ts';
+    const sourceId = `Function:${filePath}:use`;
+    const serviceId = `Class:${filePath}:Service`;
+    const unrelatedId = `Class:${filePath}:Unrelated`;
+    const methodId = `Method:${filePath}:Service.save`;
+    const graph = createKnowledgeGraph();
+    const ctx = createResolutionContext();
+    const cache = createASTCache();
+    ctx.model.symbols.add(filePath, 'use', sourceId, 'Function');
+    ctx.model.symbols.add(filePath, 'Service', serviceId, 'Class');
+    ctx.model.symbols.add(filePath, 'save', methodId, 'Method', { ownerId: serviceId });
+    ctx.model.symbols.add(filePath, 'Unrelated', unrelatedId, 'Class');
+    ctx.model.symbols.add(filePath, 'save', `Method:${filePath}:Unrelated.save`, 'Method', {
+      ownerId: unrelatedId,
+    });
+
+    try {
+      await processCalls(
+        graph,
+        [
+          {
+            path: filePath,
+            content: [
+              'class Service { save() {} }',
+              'class Unrelated { save() {} }',
+              'function use<TItem extends Service>(value: TItem) { value.save(); }',
+            ].join('\n'),
+          },
+        ],
+        cache,
+        ctx,
+      );
+
+      expect(graph.relationships.filter((relationship) => relationship.type === 'CALLS')).toEqual([
+        expect.objectContaining({ sourceId, targetId: methodId }),
+      ]);
+    } finally {
+      cache.clear();
+    }
+  });
+});
+
 describe('processCalls — Phase P class lookup fallback', () => {
   let graph: ReturnType<typeof createKnowledgeGraph>;
   let ctx: ResolutionContext;

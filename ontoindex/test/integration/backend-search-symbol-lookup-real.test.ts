@@ -111,18 +111,36 @@ withTestLbugDB(
         'src/importer.ts:importer -> IMPORTS -> mixed',
       );
       const multiple = byId.get('Function:multiple')!;
-      expect(['One', 'Two']).toContain(multiple.module);
-      expect([
-        'src/caller.ts:caller -> CALLS -> multiple',
-        'src/importer.ts:importer -> IMPORTS -> multiple',
-      ]).toContain(multiple.citation_path);
-      expect(byId.get('Function:fanIn')!.citation_path).toMatch(
-        /^src\/fan\.ts:fanCaller\d+ -> CALLS -> fanIn$/,
+      expect(multiple.module).toBe('One');
+      expect(multiple.citation_path).toBe('src/caller.ts:caller -> CALLS -> multiple');
+      expect(byId.get('Function:fanIn')!.citation_path).toBe(
+        'src/fan.ts:fanCaller1 -> CALLS -> fanIn',
       );
       expect(byId.get('Function:fanIn')!.module).toBe('Fan 1');
       for (const name of names)
         expect(byId.get(`Function:${name}`)).toHaveProperty('content', `${name} body`);
     });
+    it('selects the same neighbors after a non-timeout batch failure', async () => {
+      const expected = await search();
+      const execute = poolAdapter.executeParameterized;
+      const spy = vi
+        .spyOn(poolAdapter, 'executeParameterized')
+        .mockImplementation(async (repoId, cypher, params) => {
+          if (
+            'nodeIds' in params &&
+            (cypher.includes('MEMBER_OF') || cypher.includes('callerPath'))
+          ) {
+            throw new Error('batch unavailable');
+          }
+          return execute(repoId, cypher, params);
+        });
+      try {
+        expect((await search()).definitions).toEqual(expected.definitions);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it('keeps equal names separate and omits a citation with missing caller properties', async () => {
       vi.mocked(semanticSearch).mockResolvedValue([
         symbols[0],

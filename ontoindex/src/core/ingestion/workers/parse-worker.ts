@@ -1440,7 +1440,7 @@ const processFileMatches = (
             const receiverName =
               langCallSite.callForm === 'member' ? langCallSite.receiverName : undefined;
             let receiverTypeName = receiverName
-              ? typeEnv.lookup(receiverName, callNode)
+              ? typeEnv.lookup(receiverName, callNode, 'receiver')
               : undefined;
             // Type-as-receiver heuristic (e.g. Java `User::getName`)
             if (
@@ -1613,7 +1613,7 @@ const processFileMatches = (
                 findEnclosingFunctionId(callNode, file.path, provider) ||
                 generateId('File', file.path);
               let receiverTypeName = callSite.receiverName
-                ? typeEnv.lookup(callSite.receiverName, callNode)
+                ? typeEnv.lookup(callSite.receiverName, callNode, 'receiver')
                 : undefined;
 
               // Type-as-receiver heuristic

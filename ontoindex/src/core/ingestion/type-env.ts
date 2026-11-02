@@ -76,7 +76,7 @@ const findTypeIdentifierChild = (node: SyntaxNode): SyntaxNode | null => {
  */
 export interface TypeEnvironment {
   /** Look up a variable's resolved type, with self/this/super AST resolution. */
-  lookup(varName: string, callNode: SyntaxNode): string | undefined;
+  lookup(varName: string, callNode: SyntaxNode, mode?: 'receiver'): string | undefined;
   /** Unverified cross-file constructor bindings for SymbolTable verification. */
   readonly constructorBindings: readonly ConstructorBinding[];
   /** Get all file-scope bindings (scope key = '') as a read-only map. */
@@ -152,6 +152,7 @@ const lookupInEnv = (
   patternOverrides?: PatternOverrides,
   enclosingFunctionFinder?: (n: SyntaxNode) => { funcName: string; label: NodeLabel } | null,
   extractFunctionNameHook?: (n: SyntaxNode) => { funcName: string | null; label: NodeLabel } | null,
+  preserveUnknown = false,
 ): string | undefined => {
   // Self/this receiver: resolve to enclosing class name via AST walk
   if (varName === 'self' || varName === 'this' || varName === '$this') {
@@ -190,14 +191,19 @@ const lookupInEnv = (
     const scopeEnv = env.get(scopeKey);
     if (scopeEnv) {
       const result = scopeEnv.get(varName);
-      if (result) return fastStripNullable(result);
+      if (result)
+        return preserveUnknown && result === 'undefined' ? 'unknown' : fastStripNullable(result);
     }
   }
 
   // Fall back to file-level scope
   const fileEnv = env.get(FILE_SCOPE);
   const raw = fileEnv?.get(varName);
-  return raw ? fastStripNullable(raw) : undefined;
+  return raw
+    ? preserveUnknown && raw === 'undefined'
+      ? 'unknown'
+      : fastStripNullable(raw)
+    : undefined;
 };
 
 /** Per-file memoization caches for expensive parent-walk functions.
@@ -1173,9 +1179,17 @@ export const buildTypeEnv = (
     // Only create scope map and call extractTypeBinding for interesting node types.
     // Single Set.has() replaces 3 separate checks inside extractTypeBinding.
     if (interestingNodeTypes.has(node.type)) {
-      if (!env.has(scope)) env.set(scope, new Map());
-      const scopeEnv = env.get(scope)!;
-      extractTypeBinding(node, scopeEnv, scope);
+      // Class fields are members, not lexical bindings. Keep their annotations
+      // under the class body without passing that scope to methods or children.
+      const bindingScope =
+        language === 'typescript' &&
+        node.type === 'public_field_definition' &&
+        node.parent?.type === 'class_body'
+          ? `class_body@${node.parent.startIndex}`
+          : scope;
+      if (!env.has(bindingScope)) env.set(bindingScope, new Map());
+      const scopeEnv = env.get(bindingScope)!;
+      extractTypeBinding(node, scopeEnv, bindingScope);
     }
 
     // Pattern binding extraction: handles constructs that introduce NEW typed variables
@@ -1294,7 +1308,7 @@ export const buildTypeEnv = (
   );
 
   return {
-    lookup: (varName, callNode) =>
+    lookup: (varName, callNode, mode) =>
       lookupInEnv(
         env,
         varName,
@@ -1302,6 +1316,9 @@ export const buildTypeEnv = (
         patternOverrides,
         options?.enclosingFunctionFinder,
         extractFuncNameHook,
+        // Keep explicit TS unknowns distinct from missing metadata at dispatch.
+        // `unknown` is a real TS type and already prevents name-only resolution.
+        mode === 'receiver' && language === 'typescript',
       ),
     constructorBindings: bindings,
     fileScope: () => env.get(FILE_SCOPE) ?? emptyFileScope(),

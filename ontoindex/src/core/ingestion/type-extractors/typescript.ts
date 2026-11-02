@@ -22,6 +22,7 @@ import {
   extractGenericTypeArgs,
   resolveIterableElementType,
   methodToTypeArgPosition,
+  NULLABLE_WRAPPER_TYPES,
   type TypeArgPosition,
 } from './shared.js';
 
@@ -110,6 +111,19 @@ const resolveTypeParameter = (node: SyntaxNode, typeNode: SyntaxNode): string | 
     }
     // Keep qualified nominal types separate from bare generic references.
     const base = typeNode.type === 'generic_type' ? typeNode.childForFieldName('name') : typeNode;
+    if (
+      typeNode.type === 'generic_type' &&
+      base?.type === 'type_identifier' &&
+      NULLABLE_WRAPPER_TYPES.has(base.text)
+    ) {
+      const argument = typeNode.namedChildren.find(
+        (child) => child.type === 'type_arguments',
+      )?.firstNamedChild;
+      if (argument) {
+        typeNode = argument;
+        continue;
+      }
+    }
     const typeName =
       base?.type === 'nested_type_identifier'
         ? base.childForFieldName('name')?.text
@@ -405,11 +419,13 @@ const extractForLoopBinding: ForLoopExtractor = (
   let iterableName: string | undefined;
   let methodName: string | undefined;
   let callExprElementType: string | undefined;
+  let thisField = false;
   if (rightNode?.type === 'identifier') {
     iterableName = rightNode.text;
   } else if (rightNode?.type === 'member_expression') {
     const prop = rightNode.childForFieldName('property');
     if (prop) iterableName = prop.text;
+    thisField = rightNode.childForFieldName('object')?.type === 'this';
   } else if (rightNode?.type === 'call_expression') {
     // entries.values() → call_expression > function: member_expression > object + property
     // this.repos.values() → nested member_expression: extract property from inner member
@@ -424,6 +440,7 @@ const extractForLoopBinding: ForLoopExtractor = (
         // this.repos.values() → obj = this.repos → extract 'repos'
         const innerProp = obj.childForFieldName('property');
         if (innerProp) iterableName = innerProp.text;
+        thisField = obj.childForFieldName('object')?.type === 'this';
       }
       if (prop?.type === 'property_identifier') methodName = prop.text;
     } else if (fn?.type === 'identifier') {
@@ -437,6 +454,27 @@ const extractForLoopBinding: ForLoopExtractor = (
   let elementType: string | undefined;
   if (callExprElementType) {
     elementType = callExprElementType;
+  } else if (thisField) {
+    // Member access must use the nearest class, never a same-named local or
+    // parameter. Scan its fields too so declaration order does not matter.
+    for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
+      if (ancestor.type !== 'class_body') continue;
+      const field = ancestor.namedChildren.find(
+        (child) =>
+          child.type === 'public_field_definition' &&
+          child.childForFieldName('name')?.text === iterableName,
+      );
+      const annotation =
+        declarationTypeNodes.get(`class_body@${ancestor.startIndex}\0${iterableName}`) ??
+        field?.childForFieldName('type');
+      if (annotation) {
+        elementType = extractTsElementTypeFromAnnotation(
+          annotation,
+          methodToTypeArgPosition(methodName, extractSimpleTypeName(annotation)),
+        );
+      }
+      break;
+    }
   } else {
     // Look up the container's base type name for descriptor-aware resolution
     const containerTypeName = scopeEnv.get(iterableName!);
