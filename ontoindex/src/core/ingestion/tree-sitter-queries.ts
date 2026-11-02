@@ -840,7 +840,7 @@ export const PHP_QUERIES = `
   parameters: (formal_parameters
     (property_promotion_parameter
       name: (variable_name
-        (name) @name)))) @definition.property
+        (name) @name)) @definition.property))
 
 ; ── Imports: use statements ──────────────────────────────────────────────────
 ; Simple: use App\\Models\\User;

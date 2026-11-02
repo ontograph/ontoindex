@@ -1118,6 +1118,76 @@ const processSequentialFileMatches = (
     )
       return;
 
+    const callNode = captureMap['call'];
+    const callNameNode = captureMap['call.name'];
+    const routed =
+      callNode && callNameNode ? provider.callRouter?.(callNameNode.text, callNode) : undefined;
+    if (routed?.kind === 'properties') {
+      const owner = cachedFindEnclosingClassInfo(
+        callNode,
+        file.path,
+        provider.resolveEnclosingOwner,
+      );
+      const classNode = seqFindEnclosingOwnerNode(callNode, provider.resolveEnclosingOwner);
+      const fieldMap =
+        classNode && typeEnv
+          ? seqGetFieldInfo(classNode, provider, {
+              typeEnv,
+              symbolTable: NOOP_SYMBOL_TABLE_SEQ,
+              filePath: file.path,
+              language,
+            })
+          : undefined;
+      const fileId = generateId('File', file.path);
+      for (const item of routed.items) {
+        const fieldInfo = fieldMap?.get(item.propName);
+        const qualifiedName = owner ? `${owner.className}.${item.propName}` : item.propName;
+        const nodeId = generateId('Property', `${file.path}:${qualifiedName}`);
+        const declaredType = item.declaredType || fieldInfo?.type || undefined;
+        declarationCorrespondence?.observe(nodeId, item.propName, 'Property', callNode);
+        addOrMergeGraphNode(graph, {
+          id: nodeId,
+          label: 'Property',
+          properties: {
+            name: item.propName,
+            filePath: file.path,
+            startLine: item.startLine,
+            endLine: item.endLine,
+            language,
+            isExported: true,
+            description: item.accessorType,
+            ...(declaredType !== undefined ? { declaredType } : {}),
+            ...(fieldInfo?.visibility !== undefined ? { visibility: fieldInfo.visibility } : {}),
+            ...(fieldInfo?.isStatic !== undefined ? { isStatic: fieldInfo.isStatic } : {}),
+            ...(fieldInfo?.isReadonly !== undefined ? { isReadonly: fieldInfo.isReadonly } : {}),
+          },
+        });
+        symbolTable.add(file.path, item.propName, nodeId, 'Property', {
+          ownerId: owner?.classId,
+          declaredType,
+        });
+        graph.addRelationship({
+          id: generateId('DEFINES', `${fileId}->${nodeId}`),
+          sourceId: fileId,
+          targetId: nodeId,
+          type: 'DEFINES',
+          confidence: 1.0,
+          reason: '',
+        });
+        if (owner) {
+          graph.addRelationship({
+            id: generateId('HAS_PROPERTY', `${owner.classId}->${nodeId}`),
+            sourceId: owner.classId,
+            targetId: nodeId,
+            type: 'HAS_PROPERTY',
+            confidence: 1.0,
+            reason: '',
+          });
+        }
+      }
+      return;
+    }
+
     const definitionNodeForRange = getDefinitionNodeFromCaptures(captureMap);
     const definitionNode = getDefinitionNodeFromCaptures(captureMap);
     const defaultNodeLabel = getLabelFromCaptures(captureMap, provider);
@@ -1358,21 +1428,22 @@ const processSequentialFileMatches = (
     let seqIsStatic: boolean | undefined;
     let seqIsReadonly: boolean | undefined;
     if (nodeLabel === 'Property' && definitionNode && provider.fieldExtractor && typeEnv) {
+      const fieldContext: FieldExtractorContext = {
+        typeEnv,
+        symbolTable: NOOP_SYMBOL_TABLE_SEQ,
+        filePath: file.path,
+        language,
+      };
       const classNode = seqFindEnclosingOwnerNode(definitionNode, provider.resolveEnclosingOwner);
-      if (classNode) {
-        const fieldMap = seqGetFieldInfo(classNode, provider, {
-          typeEnv,
-          symbolTable: NOOP_SYMBOL_TABLE_SEQ,
-          filePath: file.path,
-          language,
-        });
-        const info = fieldMap?.get(nodeName);
-        if (info) {
-          declaredType = info.type ?? undefined;
-          seqVisibility = info.visibility;
-          seqIsStatic = info.isStatic;
-          seqIsReadonly = info.isReadonly;
-        }
+      const fieldMap = classNode ? seqGetFieldInfo(classNode, provider, fieldContext) : undefined;
+      const info =
+        fieldMap?.get(nodeName) ??
+        provider.fieldExtractor.extractFromNode?.(definitionNode, fieldContext, nodeName);
+      if (info) {
+        declaredType = info.type ?? undefined;
+        seqVisibility = info.visibility;
+        seqIsStatic = info.isStatic;
+        seqIsReadonly = info.isReadonly;
       }
     }
 

@@ -17,7 +17,7 @@ AGPL-3.0-or-later is used so modifications, including network-hosted versions, r
 ## Development setup
 
 1. Clone the repository.
-2. Use Node 20 or newer. The root [.nvmrc](.nvmrc) pins the local default major version.
+2. Use Node 22.12–25.x, as declared by the [CLI package engines](ontoindex/package.json). The root [.nvmrc](.nvmrc) pins the tested development default, Node 24.21.0.
 3. **CLI / MCP package:** `cd ontoindex && npm install && npm run build`
 4. **Web UI (if needed):** `cd ontoindex-web && npm install`
 5. **Shared types (if touched):** `cd ontoindex-shared && npm install && npm run build`

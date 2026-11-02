@@ -10,9 +10,6 @@
  * but is now handled by heritageExtractor.extractFromCall before the
  * call router runs.  The router still returns 'skip' for these calls.
  *
- * NOTE: This file is intentionally duplicated in ontoindex-web/ because the
- * two packages have separate build targets (Node native vs WASM/browser).
- * Keep both copies in sync until a shared package is introduced.
  */
 
 import type { SyntaxNode } from './utils/ast-helpers.js';
@@ -52,6 +49,38 @@ interface RubyPropertyItem {
 // ── Pre-allocated singletons for common return values ────────────────────────
 const CALL_RESULT: RubyCallRouting = { kind: 'call' };
 const SKIP_RESULT: RubyCallRouting = { kind: 'skip' };
+
+/** Extract the YARD @return type annotation preceding an accessor call. */
+export function extractRubyAccessorType(callNode: SyntaxNode): string | undefined {
+  // Extract YARD @return [Type] from preceding comment (e.g. `# @return [Address]`)
+  let yardType: string | undefined;
+  let sibling = callNode.previousSibling;
+  // Leading class-body comments are siblings of body_statement in Ruby's AST.
+  // Only its first statement may consume that annotation.
+  if (
+    !sibling &&
+    callNode.parent?.type === 'body_statement' &&
+    callNode.parent.firstNamedChild?.id === callNode.id
+  ) {
+    sibling = callNode.parent.previousSibling;
+  }
+  while (sibling) {
+    if (sibling.type === 'comment') {
+      const match = /@return\s+\[([^\]]+)\]/.exec(sibling.text);
+      if (match) {
+        const raw = match[1].trim();
+        // Extract simple type name: "User", "Array<User>" → "User"
+        const simple = raw.match(/^([A-Z]\w*)/);
+        if (simple) yardType = simple[1];
+        break;
+      }
+    } else if (sibling.isNamed) {
+      break; // stop at non-comment named sibling
+    }
+    sibling = sibling.previousSibling;
+  }
+  return yardType;
+}
 
 // ── Routing function ────────────────────────────────────────────────────────
 
@@ -96,24 +125,7 @@ export function routeRubyCall(calledName: string, callNode: SyntaxNode): RubyCal
     calledName === 'attr_reader' ||
     calledName === 'attr_writer'
   ) {
-    // Extract YARD @return [Type] from preceding comment (e.g. `# @return [Address]`)
-    let yardType: string | undefined;
-    let sibling = callNode.previousSibling;
-    while (sibling) {
-      if (sibling.type === 'comment') {
-        const match = /@return\s+\[([^\]]+)\]/.exec(sibling.text);
-        if (match) {
-          const raw = match[1].trim();
-          // Extract simple type name: "User", "Array<User>" → "User"
-          const simple = raw.match(/^([A-Z]\w*)/);
-          if (simple) yardType = simple[1];
-          break;
-        }
-      } else if (sibling.isNamed) {
-        break; // stop at non-comment named sibling
-      }
-      sibling = sibling.previousSibling;
-    }
+    const yardType = extractRubyAccessorType(callNode);
 
     const items: RubyPropertyItem[] = [];
     const argList = callNode.childForFieldName?.('arguments');

@@ -8,6 +8,54 @@ status: active
 
 # OntoIndex Current Forward Plan
 
+2026-11-02 latest full current-code validation: all suites exit 0. Backend
+18,846 ordinary passes, one expected failure, 304 skips; web 271, Rust 11,
+HTTP five, Python 146 and Chromium 28 pass. Native JavaScript and opt-in suites
+also pass; seven default skips were exercised, leaving 297. All 4,238 input
+hashes matched after testing. Evidence: `/opt/d2/ontoindex-full-current-5QrET9Wq/REPORT.md`.
+The current code was rebuilt for testing; active installations and GN state
+remain unchanged. No product source changed during this validation.
+
+2026-11-02 installer review: one selected npm prefix now governs cleanup,
+installation, validation and repair advice. Explicit overrides win over writable
+defaults; unrelated PATH shims are retained. Seven isolated installer regressions
+pass, with shell syntax and ESLint passing. No build or installation was run for
+this change. The repair is uncommitted; GN manager state is unchanged.
+
+2026-11-02 current-tree repair: R1–R7 and declared-field repairs remain
+uncommitted. Final source regression passes 1,912 tests with 28 skips across
+20 files, including eight language resolver suites. Strict incomplete-chain
+rejection is preserved; TS/Go/PHP metadata and Ruby preparation order are repaired.
+Ruby's positive grandparent fixture now declares its return type; a separate
+unannotated negative verifies refusal. The original full backend run failed nine
+assertions; the fresh full backend run now passes 18,820 ordinary tests with one
+expected failure and 304 skips. The native checkout recovery regression and
+two opt-in real-WAL cases pass separately. A subsequent authorized local build
+and rebuilt-worker IPC suite pass (43 tests; 43 excluded by selector), including
+declared-field transport and six sequential/worker/recovery parity fixtures. Scoped V8
+coverage passes for the 20 changed production files (69.43% lines, 56.53%
+branches; 1,913 tests passed, 28 skipped). Frozen TypeScript replay passes for
+41 sources in both registry modes. Four-reviewer challenge found no new code
+defect in the scoped repairs. Runtime selector now uses tested Node 24.21.0;
+contributor/runbook prerequisites and stale-index instructions are aligned.
+Node 22.12 validation exposed a Tree-sitter Node-API 10 artifact mismatch.
+The vendored binding now targets Node-API 9; the rebuilt identical addon passes
+61 focused tests on both Node 22.12 and 24.21 (43 excluded per run).
+Existing installations still require replacement of their old native artifact.
+The Linux build/postinstall lifecycle now rebuilds Tree-sitter before any runtime
+probe and verifies the application's selected artifact in a fresh child. Native
+builder smoke and 39 focused tests pass. An isolated packed install on Linux,
+Node 24.21/npm 11.19 now passes Rust/TS/JS parsing, native loads, CLI version/help
+and ABI 9 verification. Its rebuilt bytes match the previously Node 22/24-tested
+artifact. Disposable installation staging was removed; active installations
+still need delivery of these uncommitted fixes.
+Project-wide coverage and other-language external
+corpora are separate optional evidence extensions, not new repair gates.
+Evidence: [current-tree tests](audit_session-2026-11-02-current-tests.md).
+The follow-up rebuilt local artifacts and qualified a disposable installation;
+no active-installation replacement or delivery occurred.
+GN manager state is unchanged.
+
 2026-11-02: 2.4.11 product commit `0fc971a` passed the full Linux delivery gate
 (15,703 unit and 3,044 integration tests), commit hooks, clean-commit build,
 local installation and installed native/database/MCP smoke. CLI and Codex MCP

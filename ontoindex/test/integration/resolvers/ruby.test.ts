@@ -1036,9 +1036,17 @@ describe('Ruby grandparent method resolution via MRO (Phase B)', () => {
   it('resolves c.greet.save to Greeting#save via depth-2 MRO lookup', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find(
-      (c) => c.target === 'save' && c.targetFilePath.includes('greeting'),
+      (c) => c.source === 'process' && c.target === 'save' && c.targetFilePath.includes('greeting'),
     );
     expect(saveCall).toBeDefined();
+  });
+
+  it('keeps the inherited call but abstains after an unannotated return', () => {
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'process_untyped');
+    expect(
+      calls.some((c) => c.target === 'untyped_greet' && c.targetFilePath.endsWith('a.rb')),
+    ).toBe(true);
+    expect(calls.filter((c) => c.target === 'save')).toEqual([]);
   });
 
   it('resolves c.greet to A#greet (method found via MRO walk)', () => {

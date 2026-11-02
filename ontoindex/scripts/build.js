@@ -8,7 +8,7 @@
  *  3. Copy ontoindex-shared/dist to dist/_shared
  *  4. Rewrite bare 'ontoindex-shared' specifiers to relative paths
  */
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,6 +49,10 @@ if (process.platform === 'linux') {
       throw new Error(`Missing native build artifact: ${path.join(NATIVE_ROOT, artifact)}`);
     }
   }
+  execFileSync(process.execPath, [path.join(__dirname, 'build-vendored-natives.cjs')], {
+    cwd: ROOT,
+    stdio: 'inherit',
+  });
 }
 const NATIVE_AVAILABLE = NATIVE_ARTIFACTS.every(nativeArtifactReady);
 if (!NATIVE_AVAILABLE) {

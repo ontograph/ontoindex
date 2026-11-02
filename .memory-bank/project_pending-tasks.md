@@ -19,9 +19,54 @@ status: active
 
 # OntoIndex Pending Tasks
 
+2026-11-02 latest full current-code Linux tests are complete: backend, web,
+native, Python, Chromium and available opt-ins all exit 0. Backend has 18,846
+ordinary passes and one expected failure; 297 default cases remain unrun after
+supplements (224 Kotlin, 68 Dart and five other type-environment cases).
+Delivery of uncommitted fixes, GN prerequisites and optional broader coverage
+retain their existing scope. Evidence: `/opt/d2/ontoindex-full-current-5QrET9Wq/REPORT.md`.
+
+2026-11-02 installer isolation repair is source-complete with seven passing
+regressions. Include its prefix-selection and scoped-cleanup changes in future
+delivery. Active installations still require the accumulated uncommitted repairs;
+this review performed no build or installation. GN prerequisites remain unchanged.
+
+2026-11-02: declared-field and Ruby preparation-order repairs pass 1,912 source
+tests with 28 skips across 20 files. The original nine failing assertions are
+covered by the repaired resolver suites; Ruby's supported positive now has an
+explicit return annotation and an unannotated negative. Fresh full backend
+validation passes 18,820 ordinary tests with one expected failure and 304 skips.
+A separate native supplement passes checkout recovery and two real-WAL cases.
+Scoped instrumentation now passes for 20 changed production files, and frozen
+TypeScript replay passes for 41 sources in both registry modes. The authorized
+local rebuild and focused compiled-worker suite now pass 43 tests, including
+TS/Go/PHP/Ruby declared-field transport and six sequential/worker/recovery parity
+fixtures; 43 tests were excluded by the selector. Node 22.12 exposed a Tree-sitter
+ABI mismatch: the binding now targets Node-API 9 and one rebuilt addon passes
+61 focused tests on both Node 22.12 and 24.21, with 43 excluded per run.
+Linux postinstall and normal builds now rebuild Tree-sitter before loading it;
+fresh-child verification checks application resolution and selected artifact.
+The real builder passes, with identical previously runtime-tested addon bytes,
+and 39 focused tests pass. Existing installations still need delivery of these
+uncommitted fixes. Isolated packed installation passes on Linux Node 24.21/npm
+11.19 with linked vendor dependencies: Rust/TS/JS parsing, native loads, CLI
+version/help and ABI 9 verification. Copied-dependency installation and a fresh
+Node 22 install remain untested. Project-wide coverage and external corpus parity for
+other languages remain separate optional extensions. `.nvmrc` now selects tested
+Node 24.21.0; contributor/runbook guidance matches package engines and the
+OntoIndex-first stale-index policy.
+Native recovery is proven with a controlled JavaScript
+materialization delay; native-driver latency and buffer-exhaustion reproduction
+remain outside that evidence.
+Original supplemental Linux results remain historical. R1–R7 and follow-up
+repairs are uncommitted; no delivery occurred in this repair task.
+See [current-tree test evidence](audit_session-2026-11-02-current-tests.md).
+
 2026-11-02: 2.4.11 repairs passed the full Linux unit/integration gate and are
 installed locally. Broader GN qualification, buffer-exhaustion measurement,
-frozen fixture gaps and real second-caller timeout proof remain open. Historical
+frozen fixture gaps remain in their existing owners. The later native regression
+proves second-caller timeout recovery with a controlled materialization delay;
+it does not reproduce native latency or buffer exhaustion. Historical
 install cleanup retains live or uncertain copies. No release was published.
 See [delivery evidence](audit_session-2026-11-02-local-2411.md).
 

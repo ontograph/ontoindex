@@ -16,6 +16,7 @@ import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { commitsByFile } from './backend-git-history.js';
 import { normalizeLimit } from './tool-utils.js';
 import { AnalysisResult, DiagnosticFinding } from 'ontoindex-shared';
+import { markInvocationError } from '../shared/invocation-error.js';
 
 // Local RepoHandle alias — see backend-route.ts note.
 type RepoHandle = { readonly id: string; readonly name: string; readonly repoPath: string };
@@ -295,7 +296,7 @@ export async function runTechDebt(
       },
     } as AnalysisResult & TechDebtResult;
   } catch (err: unknown) {
-    return {
+    return markInvocationError({
       status: 'error',
       tool: 'tech_debt',
       repo: repo.name,
@@ -308,6 +309,6 @@ export async function runTechDebt(
       summary: '',
       stats: { totalFindings: 0, durationMs: Date.now() - start },
       errors: [`Tech debt analysis failed: ${legacyErrorMessage(err)}`],
-    } as AnalysisResult & TechDebtResult;
+    } as AnalysisResult & TechDebtResult);
   }
 }

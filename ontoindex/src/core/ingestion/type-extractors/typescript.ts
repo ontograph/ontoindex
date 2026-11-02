@@ -95,6 +95,7 @@ const collectJsDocParams = (funcNode: SyntaxNode): Map<string, string> => {
 /** Resolve declared type parameters in their nearest enclosing generic scope. */
 const resolveTypeParameter = (node: SyntaxNode, typeNode: SyntaxNode): string | undefined => {
   const visited = new Set<number>();
+  let unwrappedNullable = false;
   while (true) {
     if (typeNode.type === 'type_annotation' && typeNode.firstNamedChild) {
       typeNode = typeNode.firstNamedChild;
@@ -120,6 +121,7 @@ const resolveTypeParameter = (node: SyntaxNode, typeNode: SyntaxNode): string | 
         (child) => child.type === 'type_arguments',
       )?.firstNamedChild;
       if (argument) {
+        unwrappedNullable = true;
         typeNode = argument;
         continue;
       }
@@ -128,7 +130,7 @@ const resolveTypeParameter = (node: SyntaxNode, typeNode: SyntaxNode): string | 
       base?.type === 'nested_type_identifier'
         ? base.childForFieldName('name')?.text
         : extractSimpleTypeName(typeNode);
-    if (!typeName) return visited.size ? 'undefined' : undefined;
+    if (!typeName) return visited.size || unwrappedNullable ? 'undefined' : undefined;
     if (typeNode.type !== 'type_identifier') return typeName;
 
     let matched: SyntaxNode | undefined;
@@ -464,9 +466,27 @@ const extractForLoopBinding: ForLoopExtractor = (
           child.type === 'public_field_definition' &&
           child.childForFieldName('name')?.text === iterableName,
       );
+      const constructor = ancestor.namedChildren.find(
+        (child) =>
+          child.type === 'method_definition' &&
+          child.childForFieldName('name')?.text === 'constructor',
+      );
+      const parameterProperty = constructor
+        ?.childForFieldName('parameters')
+        ?.namedChildren.find(
+          (parameter) =>
+            (parameter.type === 'required_parameter' || parameter.type === 'optional_parameter') &&
+            parameter.childForFieldName('pattern')?.type === 'identifier' &&
+            parameter.childForFieldName('pattern')?.text === iterableName &&
+            parameter.children.some(
+              (modifier) =>
+                modifier.type === 'accessibility_modifier' || modifier.type === 'readonly',
+            ),
+        );
       const annotation =
         declarationTypeNodes.get(`class_body@${ancestor.startIndex}\0${iterableName}`) ??
-        field?.childForFieldName('type');
+        field?.childForFieldName('type') ??
+        parameterProperty?.childForFieldName('type');
       if (annotation) {
         elementType = extractTsElementTypeFromAnnotation(
           annotation,

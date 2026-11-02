@@ -180,7 +180,9 @@ const lookupInEnv = (
       const pos = callNode.startIndex;
       for (const override of varOverrides) {
         if (pos >= override.rangeStart && pos <= override.rangeEnd) {
-          return fastStripNullable(override.typeName);
+          return preserveUnknown && override.typeName === 'undefined'
+            ? 'unknown'
+            : fastStripNullable(override.typeName);
         }
       }
     }

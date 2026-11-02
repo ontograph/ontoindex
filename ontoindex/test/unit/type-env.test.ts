@@ -384,6 +384,9 @@ describe('buildTypeEnv', () => {
         ['T extends Cache', 'Option<Maybe<T>>', 'Cache'],
         ['T extends Optional<U>, U extends Cache', 'T', 'Cache'],
         ['T', 'Optional<T>', 'undefined'],
+        ['T', 'Optional<{ save(): void }>', 'undefined'],
+        ['T', 'Maybe<Cache | Other>', 'undefined'],
+        ['T', 'Option<Maybe<Cache & Other>>', 'undefined'],
         ['T extends Optional<T>', 'Optional<T>', 'undefined'],
         ['T extends Optional<U>, U extends Maybe<T>', 'T', 'undefined'],
         ['T', 'Optional<Models.T>', 'T'],
@@ -404,6 +407,106 @@ describe('buildTypeEnv', () => {
             const at = tree.rootNode.text.indexOf(`${name}.save()`);
             expect(typeEnv.lookup(name, tree.rootNode.descendantForIndex(at))).toBe(
               expected === 'undefined' ? undefined : expected,
+            );
+          }
+        },
+      );
+
+      it.each(['private', 'public', 'protected', 'readonly', 'private readonly'])(
+        'resolves %s constructor properties in sibling methods without lexical leakage',
+        (modifier) => {
+          const tree = parse(
+            `class Holder {
+               use(users: Wrong[], repos: Map<WrongKey, WrongValue>) {
+                 for (const user of this.users) { user.save(); }
+                 for (const key of this.repos.keys()) { key.save(); }
+                 for (const repo of this.repos.values()) { repo.save(); }
+                 for (const local of users) { local.save(); }
+               }
+               constructor(${modifier} users: User[], ${modifier} repos: Map<Key, Repo>) {
+                 for (const constructed of this.users) { constructed.save(); }
+               }
+               sibling() { for (const sibling of this.users) { sibling.save(); } }
+             }`,
+            grammar,
+          );
+          expect(tree.rootNode.hasError).toBe(false);
+          const typeEnv = buildTypeEnv(tree, 'typescript');
+          for (const [name, expected] of [
+            ['user', 'User'],
+            ['key', 'Key'],
+            ['repo', 'Repo'],
+            ['local', 'Wrong'],
+            ['sibling', 'User'],
+            ['constructed', 'User'],
+          ]) {
+            const at = tree.rootNode.text.indexOf(`${name}.save()`);
+            expect(typeEnv.lookup(name, tree.rootNode.descendantForIndex(at))).toBe(expected);
+          }
+        },
+      );
+
+      it('limits constructor property lookup to genuine properties in the nearest class', () => {
+        const tree = parse(
+          `class Outer {
+             constructor(private users: User[]) {}
+             use() {
+               class Nested {
+                 use(users: Wrong[]) {
+                   for (const absent of this.users) { absent.save(); }
+                 }
+               }
+             }
+           }
+           class Plain {
+             constructor(users: Wrong[]) {
+               for (const ordinary of this.users) { ordinary.save(); }
+             }
+             use(users: Wrong[]) {
+               for (const unrelated of this.users) { unrelated.save(); }
+             }
+           }
+           class Other {
+             constructor(private users: OtherUser[]) {}
+             use() { for (const other of this.users) { other.save(); } }
+           }`,
+          grammar,
+        );
+        const typeEnv = buildTypeEnv(tree, 'typescript');
+        for (const [name, expected] of [
+          ['absent', undefined],
+          ['ordinary', undefined],
+          ['unrelated', undefined],
+          ['other', 'OtherUser'],
+        ] as const) {
+          const at = tree.rootNode.text.indexOf(`${name}.save()`);
+          expect(typeEnv.lookup(name, tree.rootNode.descendantForIndex(at))).toBe(expected);
+        }
+      });
+
+      it.each([
+        ['T', 'T'],
+        ['T', 'T | null'],
+        ['T extends Cache', 'T'],
+        ['T extends Cache', 'T | null'],
+      ])(
+        'preserves receiver unknowns and known narrowing inside null guards: %s, %s',
+        (parameter, annotation) => {
+          const tree = parse(
+            `function use<${parameter}>(value: ${annotation}) {
+               if (value !== null) { value.save(); }
+               value.other();
+             }`,
+            grammar,
+          );
+          expect(tree.rootNode.hasError).toBe(false);
+          const typeEnv = buildTypeEnv(tree, 'typescript');
+          for (const method of ['save', 'other']) {
+            const at = tree.rootNode.text.indexOf(`value.${method}()`);
+            const call = tree.rootNode.descendantForIndex(at);
+            expect(typeEnv.lookup('value', call)).toBe(parameter === 'T' ? undefined : 'Cache');
+            expect(typeEnv.lookup('value', call, 'receiver')).toBe(
+              parameter === 'T' ? 'unknown' : 'Cache',
             );
           }
         },

@@ -78,6 +78,68 @@ describe('worker pool integration', () => {
     }
   });
 
+  it('preserves declared field metadata through compiled worker IPC', async () => {
+    expect(fs.existsSync(DIST_WORKER)).toBe(true);
+    pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, { cooperativeShutdown: true });
+    const inputs = [
+      {
+        path: 'fields.ts',
+        content: `class Store {
+          untyped;
+          constructor(public service: Service, ordinary: Ignored) {}
+        }
+        class OtherStore { constructor(public service: OtherService) {} }`,
+      },
+      { path: 'fields.go', content: 'package example\ntype Store struct { Service *Service }' },
+      {
+        path: 'fields.php',
+        content: `<?php class Store {
+          public $untyped;
+          public function __construct(public Service $service, Ignored $ordinary) {}
+        }`,
+      },
+      {
+        path: 'fields.rb',
+        content:
+          'class Store\n  # @return [Service]\n  attr_accessor :service\n  attr_accessor :untyped\nend',
+      },
+    ];
+    const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>(inputs);
+    expect(results.reduce((count, result) => count + result.fileCount, 0)).toBe(inputs.length);
+    const properties = results
+      .flatMap((result) => result.symbols)
+      .filter((symbol) => symbol.type === 'Property');
+    const expected = [
+      { name: 'service', ownerId: 'Class:fields.ts:Store', declaredType: 'Service' },
+      { name: 'service', ownerId: 'Class:fields.ts:OtherStore', declaredType: 'OtherService' },
+      { name: 'untyped', ownerId: 'Class:fields.ts:Store', declaredType: undefined },
+      { name: 'Service', ownerId: 'Struct:fields.go:Store', declaredType: 'Service' },
+      { name: 'service', ownerId: 'Class:fields.php:Store', declaredType: 'Service' },
+      { name: 'untyped', ownerId: 'Class:fields.php:Store', declaredType: undefined },
+      { name: 'service', ownerId: 'Class:fields.rb:Store', declaredType: 'Service' },
+      { name: 'untyped', ownerId: 'Class:fields.rb:Store', declaredType: undefined },
+    ];
+    expect(properties).toHaveLength(expected.length);
+    expect(
+      properties.map(({ name, ownerId, declaredType }) => ({ name, ownerId, declaredType })),
+    ).toEqual(expect.arrayContaining(expected));
+    expect(
+      properties
+        .filter(
+          ({ ownerId, name }) => ownerId?.startsWith('Class:fields.ts:') && name === 'service',
+        )
+        .map(({ nodeId }) => nodeId),
+    ).toEqual(
+      expect.arrayContaining([
+        'Property:fields.ts:Store.service',
+        'Property:fields.ts:OtherStore.service',
+      ]),
+    );
+    for (const property of properties.filter(({ name }) => name === 'untyped')) {
+      expect(property).not.toHaveProperty('declaredType');
+    }
+  });
+
   it('keeps exported declaration ownership in the compiled worker', async () => {
     expect(fs.existsSync(DIST_WORKER)).toBe(true);
     pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, { cooperativeShutdown: true });

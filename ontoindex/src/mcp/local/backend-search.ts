@@ -2131,7 +2131,12 @@ export async function query(
       grouped.clear();
       if (errorContext) logSearchQueryError(errorContext, e);
       // Optional enrichment must not multiply a saturated query into N retries.
-      if (e instanceof Error && e.name === 'QueryTimeoutError') return grouped;
+      if (
+        e instanceof Error &&
+        (e.name === 'QueryTimeoutError' || e.name === 'CheckoutTimeoutError')
+      ) {
+        return grouped;
+      }
     }
     for (const nodeId of nodeIds) {
       try {
@@ -2139,7 +2144,12 @@ export async function query(
         if (rows.length > 0) grouped.set(nodeId, [rows[0] as T]);
       } catch (e) {
         if (errorContext) logSearchQueryError(errorContext, e);
-        if (e instanceof Error && e.name === 'QueryTimeoutError') break;
+        if (
+          e instanceof Error &&
+          (e.name === 'QueryTimeoutError' || e.name === 'CheckoutTimeoutError')
+        ) {
+          break;
+        }
       }
     }
     return grouped;

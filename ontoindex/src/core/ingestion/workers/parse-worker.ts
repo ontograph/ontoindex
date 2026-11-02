@@ -1900,21 +1900,22 @@ const processFileMatches = (
     if (nodeLabel === 'Property' && definitionNode) {
       // FieldExtractor is the single source of truth when available
       if (provider.fieldExtractor && typeEnv) {
+        const fieldContext: FieldExtractorContext = {
+          typeEnv,
+          symbolTable: NOOP_SYMBOL_TABLE,
+          filePath: file.path,
+          language,
+        };
         const classNode = findEnclosingClassNode(definitionNode);
-        if (classNode) {
-          const fieldMap = getFieldInfo(classNode, provider, {
-            typeEnv,
-            symbolTable: NOOP_SYMBOL_TABLE,
-            filePath: file.path,
-            language,
-          });
-          const info = fieldMap?.get(nodeName);
-          if (info) {
-            declaredType = info.type ?? undefined;
-            methodProps.visibility = info.visibility;
-            methodProps.isStatic = info.isStatic;
-            methodProps.isReadonly = info.isReadonly;
-          }
+        const fieldMap = classNode ? getFieldInfo(classNode, provider, fieldContext) : undefined;
+        const info =
+          fieldMap?.get(nodeName) ??
+          provider.fieldExtractor.extractFromNode?.(definitionNode, fieldContext, nodeName);
+        if (info) {
+          declaredType = info.type ?? undefined;
+          methodProps.visibility = info.visibility;
+          methodProps.isStatic = info.isStatic;
+          methodProps.isReadonly = info.isReadonly;
         }
       }
     }

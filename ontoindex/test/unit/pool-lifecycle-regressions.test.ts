@@ -77,6 +77,53 @@ function deferred() {
 }
 
 describe('pool lifecycle drain', () => {
+  it.each(['query', 'parameterized'])(
+    'removes an expired %s checkout without retiring borrowed connections',
+    async (mode) => {
+      vi.useFakeTimers();
+      mocks.query.mockImplementation(async () => result());
+      await initLbug('lifecycle', '/db');
+      mocks.query.mockClear();
+      const first = deferred();
+      const second = deferred();
+      mocks.query
+        .mockImplementationOnce(() => first.promise)
+        .mockImplementationOnce(() => second.promise);
+      const active = [
+        track(executeQuery('lifecycle', 'RETURN 1')),
+        track(executeQuery('lifecycle', 'RETURN 2')),
+      ];
+      await vi.advanceTimersByTimeAsync(0);
+      const waiting = track(
+        mode === 'query'
+          ? executeQuery('lifecycle', 'RETURN 3')
+          : executeParameterized('lifecycle', 'RETURN $value', { value: 3 }),
+      );
+      const expired = track(
+        expect(waiting).rejects.toMatchObject({
+          name: 'CheckoutTimeoutError',
+          message:
+            'Connection pool exhausted: timed out after 15000ms waiting for a free connection',
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(15_000);
+      await expired;
+      expect(mocks.query).toHaveBeenCalledTimes(2);
+      expect(mocks.connClose).not.toHaveBeenCalled();
+      // A later waiter must receive the first returned connection, not be
+      // stranded behind the already rejected waiter.
+      const next = track(executeQuery('lifecycle', 'RETURN 4'));
+      first.resolve();
+      await active[0];
+      await expect(next).resolves.toEqual([]);
+      second.resolve();
+      await active[1];
+      expect(mocks.query).toHaveBeenCalledTimes(3);
+      expect(mocks.construct).toHaveBeenCalledTimes(2);
+      expect(mocks.connClose).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([49_999, 50_000, 50_001])(
     'enforces the parameterized row boundary at %i',
     async (count) => {

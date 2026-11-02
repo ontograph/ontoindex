@@ -41,7 +41,6 @@ import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import {
   FUNCTION_NODE_TYPES,
-  findEnclosingClassId,
   findEnclosingClassInfo,
   genericFuncName,
   inferFunctionLabel,
@@ -1142,9 +1141,18 @@ const resolvePreparedSequentialFile = (
 
           case 'properties': {
             const fileId = generateId('File', file.path);
-            const propEnclosingClassId = findEnclosingClassId(captureMap['call'], file.path);
+            const propEnclosingInfo = findEnclosingClassInfo(
+              captureMap['call'],
+              file.path,
+              provider.resolveEnclosingOwner,
+            );
+            const propEnclosingClassId = propEnclosingInfo?.classId;
             for (const item of routed.items) {
-              const nodeId = generateId('Property', `${file.path}:${item.propName}`);
+              const propQualifiedName = propEnclosingInfo
+                ? `${propEnclosingInfo.className}.${item.propName}`
+                : item.propName;
+              const nodeId = generateId('Property', `${file.path}:${propQualifiedName}`);
+              if (graph.getNode(nodeId)) continue;
               graph.addNode({
                 id: nodeId,
                 label: 'Property',
@@ -1322,18 +1330,20 @@ const resolvePreparedSequentialFile = (
               }
             }
             if (currentType) {
-              receiverTypeName =
-                walkMixedChain(
-                  extracted.chain,
-                  currentType,
-                  file.path,
-                  ctx,
-                  makeAccessEmitter(graph, sourceId),
-                  heritageMap,
-                  makeCallEmitter(graph, sourceId),
-                ) ?? (currentType === 'unknown' ? currentType : undefined);
+              receiverTypeName = walkMixedChain(
+                extracted.chain,
+                currentType,
+                file.path,
+                ctx,
+                makeAccessEmitter(graph, sourceId),
+                heritageMap,
+                makeCallEmitter(graph, sourceId),
+              );
               if (receiverTypeName) receiverSource = 'mixed-chain';
             }
+            // A recognized chain must resolve completely before outer dispatch.
+            // Otherwise name-only fallback can select an unrelated method.
+            if (!receiverTypeName) return;
           }
         }
       }
@@ -3134,7 +3144,7 @@ const resolveEffectiveExtractedCall = (
   ctx: ResolutionContext,
   graph: KnowledgeGraph,
   heritageMap?: HeritageMap,
-): ExtractedCall => {
+): ExtractedCall | null => {
   let effectiveCall = call;
 
   // Step 1: resolve receiver type from constructor bindings
@@ -3190,7 +3200,11 @@ const resolveEffectiveExtractedCall = (
       );
       if (walkedType) {
         effectiveCall = { ...effectiveCall, receiverTypeName: walkedType };
+      } else {
+        return null;
       }
+    } else {
+      return null;
     }
   }
 
@@ -3391,6 +3405,7 @@ const processExtractedCallsForFile = (
         graph,
         heritageMap,
       );
+      if (!effectiveCall) continue;
       const resolved = resolveCallTarget(
         effectiveCall,
         effectiveCall.filePath,

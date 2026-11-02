@@ -2018,6 +2018,254 @@ describe('processCallsFromExtracted', () => {
   });
 });
 
+describe('processCalls — unresolved receiver chains', () => {
+  const edges = (graph: ReturnType<typeof createKnowledgeGraph>) =>
+    graph.relationships
+      .map(({ type, sourceId, targetId, confidence, reason }) => ({
+        type,
+        sourceId,
+        targetId,
+        confidence,
+        reason,
+      }))
+      .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+
+  it.each([
+    ['missing first field', 'value.missing.save()', [], []],
+    ['missing later field', 'value.child.missing.save()', ['child'], []],
+    ['missing method return', 'value.load().save()', [], ['load']],
+    ['missing later method return', 'value.load().missing().save()', [], ['load']],
+    ['resolved child chain', 'value.child.save()', ['child'], []],
+    ['resolved depth-three chain', 'value.child.child.child.save()', ['child'], []],
+    ['over-depth known base', 'value.child.child.child.child.save()', ['child'], []],
+  ] as const)(
+    'keeps sequential/extracted graph parity for %s',
+    async (name, expression, fields, methods) => {
+      const filePath = 'src/chains.ts';
+      const file = {
+        path: filePath,
+        content: `class Service {}\nfunction use(value: Service) { ${expression}; }`,
+      };
+      const setup = () => {
+        const ctx = createResolutionContext();
+        const ownerId = `Class:${filePath}:Service`;
+        const addressId = `Class:${filePath}:Address`;
+        ctx.model.symbols.add(filePath, 'Service', ownerId, 'Class');
+        ctx.model.symbols.add(filePath, 'Address', addressId, 'Class');
+        ctx.model.symbols.add(filePath, 'use', `Function:${filePath}:use`, 'Function');
+        ctx.model.symbols.add(filePath, 'save', `Method:${filePath}:Service.save`, 'Method', {
+          ownerId,
+        });
+        ctx.model.symbols.add(filePath, 'save', `Method:${filePath}:Address.save`, 'Method', {
+          ownerId: addressId,
+        });
+        for (const field of fields) {
+          ctx.model.symbols.add(
+            filePath,
+            field,
+            `Property:${filePath}:Service.${field}`,
+            'Property',
+            {
+              ownerId,
+              declaredType: 'Address',
+            },
+          );
+          ctx.model.symbols.add(
+            filePath,
+            field,
+            `Property:${filePath}:Address.${field}`,
+            'Property',
+            {
+              ownerId: addressId,
+              declaredType: 'Address',
+            },
+          );
+        }
+        for (const method of methods) {
+          ctx.model.symbols.add(filePath, method, `Method:${filePath}:${method}`, 'Method', {
+            ownerId,
+            ...(name === 'missing later method return' ? { returnType: 'Service' } : {}),
+          });
+        }
+        return { ctx, graph: createKnowledgeGraph() };
+      };
+      const sequential = setup();
+      const extracted = setup();
+      const calls: ExtractedCall[] = [];
+      const cache = createASTCache();
+      try {
+        await processCalls(
+          sequential.graph,
+          [file],
+          cache,
+          sequential.ctx,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          (call) => calls.push(call),
+        );
+        expect(calls.some((call) => call.calledName === 'save')).toBe(true);
+        await processCallsFromExtracted(extracted.graph, calls, extracted.ctx);
+        for (const { graph } of [sequential, extracted]) {
+          const saveTargets = graph.relationships
+            .filter(
+              (edge) =>
+                edge.type === 'CALLS' &&
+                (edge.targetId === `Method:${filePath}:Service.save` ||
+                  edge.targetId === `Method:${filePath}:Address.save`),
+            )
+            .map((edge) => edge.targetId);
+          expect(saveTargets).toEqual(
+            name === 'resolved child chain' || name === 'resolved depth-three chain'
+              ? [`Method:${filePath}:Address.save`]
+              : [],
+          );
+          if (fields.length && name !== 'over-depth known base') {
+            expect(
+              graph.relationships.some(
+                (edge) =>
+                  edge.type === 'ACCESSES' &&
+                  edge.targetId === `Property:${filePath}:Service.child`,
+              ),
+            ).toBe(true);
+          }
+          if (name === 'missing later method return') {
+            expect(
+              graph.relationships.some(
+                (edge) => edge.type === 'CALLS' && edge.targetId === `Method:${filePath}:load`,
+              ),
+            ).toBe(true);
+          }
+        }
+        expect(edges(extracted.graph)).toEqual(edges(sequential.graph));
+      } finally {
+        cache.clear();
+      }
+    },
+  );
+
+  it.each([
+    'function use<T>(value:T) { value.a.b.c.d.save(); }',
+    'function use<T>(value:T|null) { if(value!==null) { value.save(); } }',
+    'type Optional<T>=T|null; function use(value:Optional<{save():void}>) { if(value!==null) value.save(); }',
+  ])('does not dispatch an unknown receiver to an unrelated method: %s', async (source) => {
+    const filePath = 'src/unknown.ts';
+    const setup = () => {
+      const ctx = createResolutionContext();
+      const ownerId = `Class:${filePath}:Unrelated`;
+      ctx.model.symbols.add(filePath, 'Unrelated', ownerId, 'Class');
+      ctx.model.symbols.add(filePath, 'use', `Function:${filePath}:use`, 'Function');
+      ctx.model.symbols.add(filePath, 'save', `Method:${filePath}:save`, 'Method', { ownerId });
+      return { ctx, graph: createKnowledgeGraph() };
+    };
+    const sequential = setup();
+    const extracted = setup();
+    const calls: ExtractedCall[] = [];
+    const cache = createASTCache();
+    try {
+      await processCalls(
+        sequential.graph,
+        [{ path: filePath, content: source }],
+        cache,
+        sequential.ctx,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        (call) => calls.push(call),
+      );
+      expect(calls.some((call) => call.calledName === 'save')).toBe(true);
+      await processCallsFromExtracted(extracted.graph, calls, extracted.ctx);
+      for (const { graph } of [sequential, extracted]) {
+        expect(graph.relationships.filter((edge) => edge.type === 'CALLS')).toEqual([]);
+      }
+      expect(edges(extracted.graph)).toEqual(edges(sequential.graph));
+    } finally {
+      cache.clear();
+    }
+  });
+
+  it('resolves constructor parameter properties through a for-of receiver', async () => {
+    const filePath = 'src/store.ts';
+    const ctx = createResolutionContext();
+    const graph = createKnowledgeGraph();
+    const cache = createASTCache();
+    const ownerId = `Class:${filePath}:User`;
+    const targetId = `Method:${filePath}:save`;
+    ctx.model.symbols.add(filePath, 'User', ownerId, 'Class');
+    ctx.model.symbols.add(filePath, 'save', targetId, 'Method', { ownerId });
+    try {
+      await processCalls(
+        graph,
+        [
+          {
+            path: filePath,
+            content:
+              'class User {save(){}} class Store {constructor(private users:User[]){for(const user of this.users){user.save()}}}',
+          },
+        ],
+        cache,
+        ctx,
+      );
+      expect(
+        graph.relationships.filter((edge) => edge.type === 'CALLS' && edge.targetId === targetId),
+      ).toHaveLength(1);
+    } finally {
+      cache.clear();
+    }
+  });
+
+  it('preserves direct module namespace calls in both paths', async () => {
+    const filePath = 'src/module-consumer.ts';
+    const modulePath = 'src/module.ts';
+    const targetId = `Function:${modulePath}:save`;
+    const ctx = createResolutionContext();
+    const graph = createKnowledgeGraph();
+    const replay = createKnowledgeGraph();
+    const cache = createASTCache();
+    const calls: ExtractedCall[] = [];
+    ctx.model.symbols.add(modulePath, 'save', targetId, 'Function');
+    ctx.importMap.set(filePath, new Set([modulePath]));
+    ctx.moduleAliasMap.set(filePath, new Map([['module', modulePath]]));
+    try {
+      await processCalls(
+        graph,
+        [{ path: filePath, content: 'module.save();' }],
+        cache,
+        ctx,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        (call) => calls.push(call),
+      );
+      await processCallsFromExtracted(replay, calls, ctx);
+      for (const result of [graph, replay]) {
+        expect(
+          result.relationships.filter(
+            (edge) => edge.type === 'CALLS' && edge.targetId === targetId,
+          ),
+        ).toHaveLength(1);
+      }
+    } finally {
+      cache.clear();
+    }
+  });
+});
+
 describe('processCalls — original sequential call evidence', () => {
   it('observes typed and unresolved writes before fallback without changing graph output', async () => {
     const file = {
