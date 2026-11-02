@@ -223,6 +223,38 @@ describe('handler-owned AST response shapes', () => {
   );
 
   it.each([SupportedLanguages.TypeScript, SupportedLanguages.JavaScript])(
+    'resolves default-parameter handlers outside body declarations in %s',
+    async (language) => {
+      const parser = await createParserForLanguage(language);
+      const tree = parser.parse(
+        [
+          'function handler(req, res) { return res.json({ outer: 1 }); }',
+          'function setup(x = app.get("/default", handler)) {',
+          '  function handler(req, res) { return res.json({ inner: 1 }); }',
+          '}',
+          'function setupVar(x = app.get("/default-var", handler)) {',
+          '  var handler = (req, res) => res.json({ inner: 1 });',
+          '}',
+          'function f(handler) { handler = x; }',
+          'app.get("/outer", handler);',
+        ].join('\n'),
+      );
+      expect(tree.rootNode.hasError).toBe(false);
+      const extract = createRouteResponseShapeExtractor(tree.rootNode);
+      expect(
+        tree.rootNode
+          .descendantsOfType('call_expression')
+          .filter((node) => node.childForFieldName('function')?.text === 'app.get')
+          .map((node) => extract(node.childForFieldName('arguments')!.namedChildren.at(-1))),
+      ).toEqual([
+        { responseKeys: ['outer'] },
+        { responseKeys: ['outer'] },
+        { responseKeys: ['outer'] },
+      ]);
+    },
+  );
+
+  it.each([SupportedLanguages.TypeScript, SupportedLanguages.JavaScript])(
     'refuses parameter-initializer writes hidden by body declarations in %s',
     async (language) => {
       const parser = await createParserForLanguage(language);

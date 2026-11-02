@@ -53,7 +53,6 @@ function buildRouteResponseShapeExtractor(root: SyntaxNode) {
   const scopes = new Map<number, Scope>();
   const declarationBindings = new Map<number, Binding>();
   const mutatedBindings = new Set<Binding>();
-  const parameterWrittenNames = new Set<string>();
   const writes: { name: string; scope: Scope }[] = [];
   let unresolvedAssignment = false;
   const rootScope: Scope = { bindings: new Map(), functionScope: true };
@@ -103,11 +102,9 @@ function buildRouteResponseShapeExtractor(root: SyntaxNode) {
   ): void => {
     visitPattern(node, (name) => bind(scope, name, callable));
   };
-  const pending: { node: SyntaxNode; scope: Scope; inParameters: boolean }[] = [
-    { node: root, scope: rootScope, inParameters: false },
-  ];
+  const pending: { node: SyntaxNode; scope: Scope }[] = [{ node: root, scope: rootScope }];
   while (pending.length > 0) {
-    const { node, scope: outer, inParameters } = pending.pop()!;
+    const { node, scope: outer } = pending.pop()!;
     let scope = outer;
     if (JS_CALLABLES.has(node.type)) {
       const name = node.childForFieldName('name');
@@ -131,9 +128,12 @@ function buildRouteResponseShapeExtractor(root: SyntaxNode) {
         'for_in_statement',
       ].includes(node.type)
     ) {
-      // The callable body shares its parameters' function scope; nested blocks do not.
-      if (node.type !== 'statement_block' || !JS_CALLABLES.has(node.parent?.type ?? ''))
-        scope = { parent: outer, bindings: new Map(), functionScope: false };
+      // Default parameter initializers cannot see declarations in the callable body.
+      scope = {
+        parent: outer,
+        bindings: new Map(),
+        functionScope: node.type === 'statement_block' && JS_CALLABLES.has(node.parent?.type ?? ''),
+      };
       if (node.type === 'catch_clause') bindPattern(scope, node.childForFieldName('parameter'));
       if (node.type === 'class_body')
         bindPattern(scope, node.parent?.childForFieldName('name') ?? null);
@@ -176,22 +176,15 @@ function buildRouteResponseShapeExtractor(root: SyntaxNode) {
       if (
         !visitPattern(target, (name) => {
           writes.push({ name, scope });
-          // Default initializers cannot see body var bindings. Until those environments
-          // are modeled separately, refuse shapes for names written in parameters.
-          if (inParameters) parameterWrittenNames.add(name);
         })
       )
         unresolvedAssignment = true;
     }
-    const parameters = JS_CALLABLES.has(node.type)
-      ? (node.childForFieldName('parameters') ?? node.childForFieldName('parameter'))
-      : null;
     for (let i = node.namedChildren.length - 1; i >= 0; i--) {
       const child = node.namedChildren[i];
       pending.push({
         node: child,
         scope,
-        inParameters: inParameters || child.id === parameters?.id,
       });
     }
   }
@@ -208,7 +201,6 @@ function buildRouteResponseShapeExtractor(root: SyntaxNode) {
       const bindings = resolveBinding(scopes.get(handler.id), handler.text);
       if (
         unresolvedAssignment ||
-        parameterWrittenNames.has(handler.text) ||
         !bindings ||
         mutatedBindings.has(bindings) ||
         bindings.length !== 1 ||
@@ -220,9 +212,7 @@ function buildRouteResponseShapeExtractor(root: SyntaxNode) {
     if (!JS_CALLABLES.has(handler.type)) return {};
     if (
       handler.type.endsWith('_declaration') &&
-      (unresolvedAssignment ||
-        parameterWrittenNames.has(handler.childForFieldName('name')?.text ?? '') ||
-        mutatedBindings.has(declarationBindings.get(handler.id)!))
+      (unresolvedAssignment || mutatedBindings.has(declarationBindings.get(handler.id)!))
     )
       return {};
     const cached = cache.get(handler.id);

@@ -154,7 +154,7 @@ async function expandClassLikeIncomingRefs(
         WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
         MATCH (caller)-[r:CodeRelation]->(ctor)
         WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'ACCESSES']
-        RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+        RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, label(caller) AS kind
         LIMIT ${MAX_CONTEXT_RELATIONSHIP_ROWS + 1}
       `,
       { symId },
@@ -165,7 +165,7 @@ async function expandClassLikeIncomingRefs(
         WHERE n.id = $symId AND rel.type = 'DEFINES'
         MATCH (caller)-[r:CodeRelation]->(f)
         WHERE r.type IN ['CALLS', 'IMPORTS']
-        RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+        RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, label(caller) AS kind
         LIMIT ${MAX_CONTEXT_RELATIONSHIP_ROWS + 1}
       `,
       { symId },
@@ -352,7 +352,7 @@ export async function context(
     `
     MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
     WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
-    RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
+    RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, label(caller) AS kind
     LIMIT ${MAX_CONTEXT_RELATIONSHIP_ROWS + 1}
   `,
     { symId },
@@ -377,7 +377,7 @@ export async function context(
     `
     MATCH (n {id: $symId})-[r:CodeRelation]->(target)
     WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
-    RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
+    RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, label(target) AS kind
     LIMIT ${MAX_CONTEXT_RELATIONSHIP_ROWS + 1}
   `,
     { symId },

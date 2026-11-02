@@ -74,7 +74,7 @@ describe('backend coupling/boundary tools', () => {
         await import('../../src/mcp/local/backend-coupling-matrix.js');
       const cap = override === '1000' ? 1000 : 49_999;
       executeParameterized.mockImplementation(async (_repo, query: string) => {
-        if (!query.includes('LIMIT'))
+        if (query.includes('MATCH (c:Community)'))
           return [
             { id: 'a', symbolCount: 5 },
             { id: 'b', symbolCount: 5 },
@@ -108,6 +108,19 @@ describe('backend coupling/boundary tools', () => {
       ).toHaveLength(5);
     },
   );
+
+  it('caps the community scan below the adapter row guard and warns when reached', async () => {
+    executeParameterized.mockImplementation(async (_repo, query: string) => {
+      if (!query.includes('MATCH (c:Community)')) return [];
+      expect(query).toMatch(/LIMIT\s+49999\b/);
+      return Array.from({ length: 49_999 }, (_, index) => ({ id: `c${index}`, symbolCount: 0 }));
+    });
+    const result = await runCouplingMatrix({ id: 'repo', name: 'test-repo' }, {});
+    expect(result.status).toBe('success');
+    expect(result.warnings).toEqual([
+      'Community scan reached 49999 communities; metrics may be incomplete',
+    ]);
+  });
 
   it('preserves adapter failures as invocation errors', async () => {
     executeParameterized.mockRejectedValue(new Error('row safety limit'));

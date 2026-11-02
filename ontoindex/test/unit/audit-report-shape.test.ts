@@ -226,7 +226,45 @@ describe('AuditReportResult shape — structural drift gate', () => {
     for (const w of result.warnings) {
       expect(typeof w).toBe('string');
     }
+    expect(result.warnings).toEqual([]);
     expect(result.incompleteSections).toBeUndefined();
+  });
+
+  it.each([{ rows: [] }, { rows: [{ community: 'Auth', ca: 2, ce: 12, instability: 0.86 }] }])(
+    'preserves coupling rows and marks warning-bearing scans incomplete ($rows)',
+    async ({ rows }) => {
+      vi.mocked(runCouplingMatrix).mockResolvedValueOnce({
+        rows,
+        warnings: ['dependency scan truncated', 'membership scan incomplete'],
+      });
+
+      const partial = await runAuditReport(repo, {});
+
+      expect(partial.couplingViolations).toEqual(
+        rows.map(({ community, ...row }) => ({ module: community, ...row })),
+      );
+      expect(partial.warnings).toEqual([
+        'coupling-matrix: dependency scan truncated',
+        'coupling-matrix: membership scan incomplete',
+      ]);
+      expect(partial.incompleteSections).toEqual(['coupling-matrix']);
+      const markdown = formatAuditReport(partial);
+      expect(markdown).toContain('> **Partial report**');
+      expect(markdown).toContain('> - coupling-matrix: dependency scan truncated');
+      expect(markdown).toContain('Unavailable: coupling-matrix did not complete (see warnings).');
+      expect(markdown).not.toContain('No high-instability modules.');
+    },
+  );
+
+  it('keeps coupling scans with empty warnings complete', async () => {
+    vi.mocked(runCouplingMatrix).mockResolvedValueOnce({ rows: [], warnings: [] });
+
+    const complete = await runAuditReport(repo, {});
+
+    expect(complete.warnings).toEqual([]);
+    expect(complete.incompleteSections).toBeUndefined();
+    expect(formatAuditReport(complete)).toContain('No high-instability modules.');
+    expect(formatAuditReport(complete)).not.toContain('Partial report');
   });
 
   it('annotation is undefined when annotate is not requested', () => {

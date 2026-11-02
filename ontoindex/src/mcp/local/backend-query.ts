@@ -276,7 +276,7 @@ export async function bm25Search(
             `
             MATCH (n)
             WHERE n.id IN $nodeIds
-            RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+            RETURN n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
           `,
             { nodeIds },
           )
@@ -285,7 +285,7 @@ export async function bm25Search(
             `
             MATCH (n)
             WHERE n.filePath = $filePath
-            RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+            RETURN n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
             LIMIT 3
           `,
             { filePath: fullPath },

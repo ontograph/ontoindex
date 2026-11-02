@@ -8,7 +8,6 @@ import {
   type ReadFirstFileFact,
   type ReadFirstProjection,
 } from '../shared/read-first-projection.js';
-import { enrichCandidateLabels } from './backend-symbol-resolution.js';
 
 // Only the fields repomap actually reads. Keeping this local avoids a
 // circular type import from the flat local-backend.ts on main.
@@ -171,7 +170,7 @@ async function resolveRepomapFocusRows(repo: RepoHandle, item: string): Promise<
     `
     MATCH (n)
     WHERE n.filePath = $item
-    RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath,
+    RETURN n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath,
            n.startLine AS startLine, n.endLine AS endLine, n.content AS content, n.description AS description
     LIMIT ${FILE_FOCUS_FETCH_LIMIT}
   `,
@@ -179,7 +178,6 @@ async function resolveRepomapFocusRows(repo: RepoHandle, item: string): Promise<
   );
   if (fileRowsRaw.length > 0) {
     const fileRows = fileRowsRaw.map(normalizeRepomapRow);
-    await enrichCandidateLabels({ ...repo, id: workspaceGraphPoolId(repo.id) }, fileRows);
     const symbolRows = fileRows.filter((row) => row.type !== 'File' && row.type !== 'Folder');
     return (symbolRows.length > 0 ? symbolRows : fileRows).sort(sortRepomapRows);
   }
@@ -189,7 +187,7 @@ async function resolveRepomapFocusRows(repo: RepoHandle, item: string): Promise<
     `
     MATCH (n)
     WHERE n.id = $item OR n.name = $item
-    RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath,
+    RETURN n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath,
            n.startLine AS startLine, n.endLine AS endLine, n.content AS content, n.description AS description
     LIMIT ${SYMBOL_FOCUS_FETCH_LIMIT}
   `,
@@ -198,7 +196,6 @@ async function resolveRepomapFocusRows(repo: RepoHandle, item: string): Promise<
   if (symbolRowsRaw.length === 0) return [];
 
   const symbolRows = symbolRowsRaw.map(normalizeRepomapRow);
-  await enrichCandidateLabels({ ...repo, id: workspaceGraphPoolId(repo.id) }, symbolRows);
   return symbolRows.sort(sortRepomapRows);
 }
 
@@ -327,13 +324,12 @@ export async function runRepomap(repo: RepoHandle, params: RepomapParams): Promi
     `
     MATCH (n)
     WHERE n.id IN $nodeIds
-    RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath,
+    RETURN n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath,
            n.startLine AS startLine, n.endLine AS endLine, n.content AS content, n.description AS description
   `,
     { nodeIds: rankedNodeIds.slice(0, META_FETCH_LIMIT) },
   );
   const normalizedMetaRows = metaRows.map(normalizeRepomapRow);
-  await enrichCandidateLabels({ ...repo, id: workspaceGraphPoolId(repo.id) }, normalizedMetaRows);
 
   const metaMap = new Map<string, RepomapNodeRow>();
   for (const row of normalizedMetaRows) metaMap.set(row.id, row);

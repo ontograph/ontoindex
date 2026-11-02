@@ -16,7 +16,10 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createTempDir } from '../helpers/test-db.js';
 import { initLbug, closeLbug } from '../../src/mcp/core/lbug-adapter.js';
 import { gnExplore } from '../../src/mcp/super/explore.js';
 import { gnExplainModule } from '../../src/mcp/super/explain-module.js';
@@ -516,10 +519,27 @@ describe.skipIf(!HAS_SELF_INDEX)('gnQualityMode', () => {
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!HAS_SELF_INDEX)('gnDiffImpact', () => {
-  it('returns a valid DiffImpactReport for staged scope (works on empty staged diff)', async () => {
-    // scope: 'staged' is safe to run in any CI state — an empty staged area
-    // yields an empty changedFiles list and no error.
-    const report = await gnDiffImpact(REPO_ID, { scope: 'staged' });
+  it('returns a valid DiffImpactReport for a guaranteed empty staged diff', async () => {
+    const temp = await createTempDir('ontoindex-empty-staged-');
+    const previousIndexFile = process.env.GIT_INDEX_FILE;
+    let report: Awaited<ReturnType<typeof gnDiffImpact>>;
+    try {
+      process.env.GIT_INDEX_FILE = path.join(temp.dbPath, 'index');
+      execFileSync('git', ['read-tree', 'HEAD'], {
+        cwd: fileURLToPath(new URL('../../../', import.meta.url)),
+      });
+      report = await gnDiffImpact(REPO_ID, { scope: 'staged' });
+    } finally {
+      if (previousIndexFile === undefined) {
+        delete process.env.GIT_INDEX_FILE;
+      } else {
+        process.env.GIT_INDEX_FILE = previousIndexFile;
+      }
+      await temp.cleanup();
+    }
+
+    expect(report.changedFiles).toEqual([]);
+    expect(report.totalSymbolsChanged).toBe(0);
 
     expect(report.version).toBe(1);
     expect(typeof report.commitRange).toBe('string');

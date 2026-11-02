@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import { runEvidencePack } from '../../src/mcp/local/backend-evidence-pack.js';
+import * as pool from '../../src/core/lbug/pool-adapter.js';
 
 describe('evidence_pack', () => {
   let tmpDir: string;
@@ -49,6 +50,64 @@ describe('evidence_pack', () => {
     expect(hit.start_line).toBe(1);
     expect(hit.end_line).toBe(3);
     expect(hit.snippet).toContain('issueToken(user)');
+  });
+
+  it.each([false, true])(
+    'converts graph coordinates before snippet extraction (snippet=%s)',
+    async (includeSnippet) => {
+      const lookup = vi.spyOn(pool, 'executeParameterized').mockResolvedValueOnce([
+        {
+          name: 'issueToken',
+          type: 'Function',
+          filePath: 'src/auth.ts',
+          startLine: 5,
+          endLine: 7,
+        },
+      ]);
+      try {
+        const result = await runEvidencePack(
+          { id: 'mock', name: 't', repoPath: tmpDir },
+          {
+            targets: ['issueToken'],
+            context_lines: 0,
+            include_snippet: includeSnippet,
+          },
+        );
+        expect(result.evidence[0]).toMatchObject({ start_line: 6, end_line: 8 });
+        expect(result.evidence[0].snippet).toBe(
+          includeSnippet
+            ? 'function issueToken(user: string) {\n  return `tok:${user}`;\n}'
+            : undefined,
+        );
+      } finally {
+        lookup.mockRestore();
+      }
+    },
+  );
+
+  it('preserves one-based Section graph coordinates', async () => {
+    await fs.writeFile(path.join(tmpDir, 'notes.md'), '# Notes\nBody\n');
+    const lookup = vi
+      .spyOn(pool, 'executeParameterized')
+      .mockResolvedValueOnce([
+        { name: 'Notes', type: 'Section', filePath: 'notes.md', startLine: 1, endLine: 2 },
+      ]);
+    try {
+      const result = await runEvidencePack(
+        { id: 'mock', name: 't', repoPath: tmpDir },
+        {
+          targets: ['Notes'],
+          context_lines: 0,
+        },
+      );
+      expect(result.evidence[0]).toMatchObject({
+        start_line: 1,
+        end_line: 2,
+        snippet: '# Notes\nBody',
+      });
+    } finally {
+      lookup.mockRestore();
+    }
   });
 
   it('resolves file-only targets with a leading window', async () => {

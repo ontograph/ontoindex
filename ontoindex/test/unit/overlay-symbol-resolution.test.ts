@@ -80,7 +80,8 @@ describe('symbol resolution with a dirty overlay', () => {
 
     expect(result).toMatchObject({
       kind: 'ok',
-      symbol: { id: 'overlay-id', filePath: 'src/dirty.ts', source: 'overlay' },
+      symbol: { id: 'overlay-id', type: 'Function', filePath: 'src/dirty.ts', source: 'overlay' },
+      resolvedLabel: 'Function',
     });
     expect(pool.executeParameterized).toHaveBeenCalledTimes(1);
     expect(overlay.queryOverlay).toHaveBeenCalledWith(
@@ -89,7 +90,7 @@ describe('symbol resolution with a dirty overlay', () => {
         repoPath: repo.repoPath,
         storagePath: repo.storagePath,
       }),
-      expect.stringContaining('WHERE n.name = $symName'),
+      expect.stringContaining('label(n) AS type'),
       { symName: 'lookup' },
       undefined,
     );

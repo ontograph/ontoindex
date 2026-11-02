@@ -165,8 +165,8 @@ describe('backend migration/type tools', () => {
         name: 'risky',
         kind: 'Function',
         filePath: 'src/types.ts',
-        startLine: 1,
-        endLine: 5,
+        startLine: 0,
+        endLine: 4,
         callerCount: 2,
       },
     ]);

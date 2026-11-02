@@ -163,7 +163,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
           `
           MATCH (n) WHERE n.filePath = '${escaped}'
           AND n.name CONTAINS '${pattern.replace(/'/g, "''").split(/\s+/)[0]}'
-          RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
+          RETURN n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath
           LIMIT 3
         `,
         );

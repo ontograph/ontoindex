@@ -346,7 +346,8 @@ describe('workspace mutations over the real MCP SDK', () => {
   }, 1_200_000);
 
   it('admits small symbol reads and rebuilds once after a clean HEAD advances', async () => {
-    await fs.unlink(path.join(repo, 'src/broken.ts'));
+    // Do not depend on the previous test reaching its final step.
+    await fs.rm(path.join(repo, 'src/broken.ts'), { force: true });
     await write('src/admission.ts', 'export function admissionCurrent() { return 42; }\n');
     const symbol = await call<{ name: string; filePath: string; content?: string }>(
       'get_symbol_info',

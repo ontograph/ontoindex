@@ -2,6 +2,7 @@ import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { parseDiffHunks, resolveCommitRange, type FileDiff } from '../../storage/git.js';
 import { execFile } from 'child_process';
 import type { ChangedFileSymbol } from '../../core/review/review-types.js';
+import { sourceLine } from '../shared/response-source-lines.js';
 
 interface DetectChangesRepoHandle {
   id: string;
@@ -288,10 +289,16 @@ export async function detectChanges(
     if (fileDiff.hunks.length === 0) continue;
 
     const overlapConditions = fileDiff.hunks
-      .map((_, i) => `(n.startLine <= $hunkEnd${i} AND n.endLine >= $hunkStart${i})`)
+      .map(
+        (_, i) =>
+          `(n.startLine + CASE WHEN label(n) = 'Section' THEN 0 ELSE $lineOffset END <= $hunkEnd${i} AND n.endLine + CASE WHEN label(n) = 'Section' THEN 0 ELSE $lineOffset END >= $hunkStart${i})`,
+      )
       .join(' OR ');
 
-    const queryParams: Record<string, unknown> = { filePath: fileDiff.filePath };
+    const queryParams: Record<string, unknown> = {
+      filePath: fileDiff.filePath,
+      lineOffset: sourceLine(0, fileDiff.filePath),
+    };
     fileDiff.hunks.forEach((hunk, i) => {
       queryParams[`hunkStart${i}`] = hunk.startLine;
       queryParams[`hunkEnd${i}`] = hunk.endLine;
@@ -301,7 +308,7 @@ export async function detectChanges(
       MATCH (n) WHERE n.filePath ENDS WITH $filePath
         AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
         AND (${overlapConditions})
-      RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
+      RETURN n.id AS id, n.name AS name, label(n) AS type,
              n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
       LIMIT ${Math.max(1, MAX_CHANGED_SYMBOLS - changedSymbols.length)}
     `;

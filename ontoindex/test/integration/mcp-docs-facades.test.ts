@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -510,8 +511,7 @@ describe('MCP Docs Facade Integration', () => {
 
     // 1. Run readiness normally
     const baseline = await runDocsMcpAction(repo, { action: 'readiness' });
-    // In temp environments, it might be 'stale' due to missing .git, which is fine for this test
-    expect(['available', 'stale']).toContain(baseline.sidecar.status);
+    expect(baseline.sidecar.status).toBe('complete');
     const baselineStatus = baseline.sidecar.status;
 
     // 2. Inject STALE state into the ledger
@@ -565,6 +565,30 @@ async function tempRepoHandle(): Promise<RepoHandle> {
   await mkdir(scratchRoot, { recursive: true });
   const repoPath = await mkdtemp(join(scratchRoot, 'ontoindex-docs-mcp-repo-'));
   repoPaths.push(repoPath);
+  execFileSync('git', ['init', '--quiet', '--template='], { cwd: repoPath });
+  execFileSync(
+    'git',
+    [
+      '-c',
+      'user.name=Fixture',
+      '-c',
+      'user.email=fixture@example.invalid',
+      '-c',
+      'core.hooksPath=/dev/null',
+      '-c',
+      'commit.gpgSign=false',
+      'commit',
+      '--quiet',
+      '--allow-empty',
+      '-m',
+      'Fixture identity',
+    ],
+    { cwd: repoPath },
+  );
+  const lastCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: repoPath,
+    encoding: 'utf8',
+  }).trim();
   const storagePath = join(repoPath, '.ontoindex');
   return {
     id: 'fixture',
@@ -574,7 +598,7 @@ async function tempRepoHandle(): Promise<RepoHandle> {
     storagePath,
     lbugPath: join(storagePath, 'graph.lbug'),
     indexedAt: 'index-1',
-    lastCommit: 'abc123',
+    lastCommit,
     stats: { files: 1, nodes: 1, edges: 0 },
   };
 }
@@ -595,7 +619,7 @@ async function writeSidecar(
       enrichments: [
         {
           sourceIndexId: 'index-1',
-          sourceCommitHash: 'abc123',
+          sourceCommitHash: repo.lastCommit,
           schemaVersion: 1,
           analyzerId: 'markdown-document-sidecar',
           analyzerVersion: '1.0.0',
@@ -603,7 +627,11 @@ async function writeSidecar(
           fileHash: 'hash-1',
           status: 'complete',
           confidence: 1,
-          records,
+          records: records.map((record) =>
+            record.sourceCommitHash === 'abc123'
+              ? { ...record, sourceCommitHash: repo.lastCommit }
+              : record,
+          ),
           ...overrides,
         },
       ],
@@ -619,17 +647,21 @@ async function writeMemory(
 ): Promise<void> {
   const dir = join(repo.storagePath, 'memories');
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, fileName), makeMemoryContent(overrides, bodyLines));
+  await writeFile(join(dir, fileName), makeMemoryContent(repo.lastCommit, overrides, bodyLines));
 }
 
-function makeMemoryContent(overrides: string[] = [], bodyLines: string[] = ['# Memory']): string {
+function makeMemoryContent(
+  commit: string,
+  overrides: string[] = [],
+  bodyLines: string[] = ['# Memory'],
+): string {
   return [
     '---',
     'version: 1',
     'repo: fixture',
     'created_at: 2026-01-01',
-    'source_commit: abc123',
-    'indexed_commit: abc123',
+    `source_commit: ${commit}`,
+    `indexed_commit: ${commit}`,
     'freshness: fresh',
     'kind: advisory',
     'not_audit_evidence: true',

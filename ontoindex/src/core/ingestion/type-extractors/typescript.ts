@@ -91,6 +91,52 @@ const collectJsDocParams = (funcNode: SyntaxNode): Map<string, string> => {
   return params;
 };
 
+/** Resolve declared type parameters in their nearest enclosing generic scope. */
+const resolveTypeParameter = (node: SyntaxNode, typeNode: SyntaxNode): string | undefined => {
+  const visited = new Set<number>();
+  while (true) {
+    if (typeNode.type === 'type_annotation' && typeNode.firstNamedChild) {
+      typeNode = typeNode.firstNamedChild;
+      continue;
+    }
+    if (typeNode.type === 'union_type') {
+      const members = typeNode.namedChildren.filter(
+        (child) => !['null', 'undefined', 'void'].includes(child.text),
+      );
+      if (members.length === 1) {
+        typeNode = members[0];
+        continue;
+      }
+    }
+    // Keep qualified nominal types separate from bare generic references.
+    const base = typeNode.type === 'generic_type' ? typeNode.childForFieldName('name') : typeNode;
+    const typeName =
+      base?.type === 'nested_type_identifier'
+        ? base.childForFieldName('name')?.text
+        : extractSimpleTypeName(typeNode);
+    if (!typeName) return visited.size ? 'undefined' : undefined;
+    if (typeNode.type !== 'type_identifier') return typeName;
+
+    let matched: SyntaxNode | undefined;
+    for (let ancestor: SyntaxNode | null = node.parent; ancestor; ancestor = ancestor.parent) {
+      const parameters = ancestor.childForFieldName('type_parameters');
+      matched = parameters?.namedChildren.find(
+        (parameter) => parameter.childForFieldName('name')?.text === typeName,
+      );
+      if (matched) break;
+    }
+    if (!matched) return typeName;
+    // An explicit unknown binding must shadow outer values, including copy inference.
+    if (visited.has(matched.id)) return 'undefined';
+    visited.add(matched.id);
+    const constraint = matched.childForFieldName('constraint')?.firstNamedChild;
+    if (!constraint) return 'undefined';
+    // Resolve the next reference where its parameter was declared, not at the use site.
+    node = matched;
+    typeNode = constraint;
+  }
+};
+
 /**
  * TypeScript: const x: Foo = ..., let x: Foo
  * Also: JSDoc @param annotations on function/method definitions (for .js files).
@@ -115,7 +161,7 @@ const extractDeclaration: TypeBindingExtractor = (
     if (!nameNode || !typeAnnotation) return;
     const varName = nameNode.text;
     if (!varName) return;
-    const typeName = extractSimpleTypeName(typeAnnotation);
+    const typeName = resolveTypeParameter(node, typeAnnotation);
     if (typeName) env.set(varName, typeName);
     return;
   }
@@ -127,7 +173,7 @@ const extractDeclaration: TypeBindingExtractor = (
     const typeAnnotation = declarator.childForFieldName('type');
     if (!nameNode || !typeAnnotation) continue;
     const varName = extractVarName(nameNode);
-    const typeName = extractSimpleTypeName(typeAnnotation);
+    const typeName = resolveTypeParameter(declarator, typeAnnotation);
     if (varName && typeName) env.set(varName, typeName);
   }
 };
@@ -148,7 +194,7 @@ const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string,
 
   if (!nameNode || !typeNode) return;
   const varName = extractVarName(nameNode);
-  const typeName = extractSimpleTypeName(typeNode);
+  const typeName = resolveTypeParameter(node, typeNode);
   if (varName && typeName) env.set(varName, typeName);
 };
 

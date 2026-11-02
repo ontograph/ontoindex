@@ -380,7 +380,7 @@ QUERY PATTERNS:
 8. Folder structure:
    MATCH (parent:Folder)-[:CodeRelation {type: 'CONTAINS'}]->(child)
    WHERE parent.name = 'src'
-   RETURN child.name, labels(child)[0] AS type
+   RETURN child.name, label(child) AS type
 
 9. Get all connections for a node:
    MATCH (f:File {name: 'index.ts'})-[r:CodeRelation]-(m)

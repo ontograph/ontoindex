@@ -3,6 +3,7 @@ import path from 'path';
 import { glob } from 'glob';
 import { normalizeLimit } from './tool-utils.js';
 import { executeParameterized, isLbugReady } from '../../core/lbug/pool-adapter.js';
+import { sourceLine } from '../shared/response-source-lines.js';
 
 type RepoHandle = { readonly id: string; readonly name: string; readonly repoPath: string };
 
@@ -169,7 +170,11 @@ function pickEnclosingSymbol(
   line: number,
 ): SymbolRow | undefined {
   if (!symbols) return undefined;
-  return symbols.find((symbol) => (symbol.startLine ?? 0) <= line && (symbol.endLine ?? 0) >= line);
+  return symbols.find(
+    (symbol) =>
+      sourceLine(symbol.startLine ?? 0, symbol.filePath ?? '', symbol.kind) <= line &&
+      sourceLine(symbol.endLine ?? 0, symbol.filePath ?? '', symbol.kind) >= line,
+  );
 }
 
 function pushMatches(

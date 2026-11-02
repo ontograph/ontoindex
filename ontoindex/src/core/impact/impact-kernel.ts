@@ -260,7 +260,7 @@ async function expandClassSeeds(
         `
         MATCH (n)-[hm:CodeRelation]->(c:Constructor)
         WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
-        RETURN c.id AS id, c.name AS name, labels(c)[0] AS type, c.filePath AS filePath
+        RETURN c.id AS id, c.name AS name, label(c) AS type, c.filePath AS filePath
         LIMIT 100
       `,
         { symId },
@@ -269,7 +269,7 @@ async function expandClassSeeds(
         `
         MATCH (f:File)-[rel:CodeRelation]->(n)
         WHERE n.id = $symId AND rel.type = 'DEFINES'
-        RETURN f.id AS id, f.name AS name, labels(f)[0] AS type, f.filePath AS filePath
+        RETURN f.id AS id, f.name AS name, label(f) AS type, f.filePath AS filePath
         LIMIT 100
       `,
         { symId },
@@ -334,8 +334,8 @@ export async function runImpactKernel(
 
     const query =
       opts.direction === 'upstream'
-        ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence LIMIT ${MAX_IMPACT_RESULTS_PER_DEPTH}`
-        : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence LIMIT ${MAX_IMPACT_RESULTS_PER_DEPTH}`;
+        ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, label(caller) AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence LIMIT ${MAX_IMPACT_RESULTS_PER_DEPTH}`
+        : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN [${relTypeFilter}]${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, label(callee) AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence LIMIT ${MAX_IMPACT_RESULTS_PER_DEPTH}`;
 
     let related: ImpactRelatedRow[];
     try {

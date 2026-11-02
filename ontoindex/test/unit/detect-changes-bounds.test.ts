@@ -83,6 +83,40 @@ describe('detect_changes performance bounds', () => {
     ]);
   });
 
+  it.each([
+    ['src/edge.ts', 1],
+    ['README.md', 0],
+    ['src/edge.cbl', 0],
+    ['src/edge.jcl', 0],
+  ])('normalizes graph bounds for a first-line hunk in %s', async (filePath, lineOffset) => {
+    childProcessMocks.execFile.mockImplementation((_cmd, _args, _options, callback) => {
+      callback(
+        null,
+        [
+          `diff --git a/${filePath} b/${filePath}`,
+          `--- a/${filePath}`,
+          `+++ b/${filePath}`,
+          '@@ -1 +1 @@',
+          '-before',
+          '+after',
+        ].join('\n'),
+      );
+    });
+    lbugMocks.executeParameterized.mockResolvedValue([]);
+    const { detectChanges } = await import('../../src/mcp/local/backend-detect-changes.js');
+
+    await detectChanges({ id: 'repo', repoPath: '/repo' }, {});
+
+    const [, cypher, params] = lbugMocks.executeParameterized.mock.calls[0];
+    expect(params).toMatchObject({ filePath, lineOffset, hunkStart0: 1, hunkEnd0: 1 });
+    expect(cypher).toContain(
+      "n.startLine + CASE WHEN label(n) = 'Section' THEN 0 ELSE $lineOffset END <= $hunkEnd0",
+    );
+    expect(cypher).toContain(
+      "n.endLine + CASE WHEN label(n) = 'Section' THEN 0 ELSE $lineOffset END >= $hunkStart0",
+    );
+  });
+
   it('keeps ambient capture when exact-file selection is absent', async () => {
     childProcessMocks.execFile.mockImplementation((_cmd, _args, _options, callback) => {
       callback(null, '');

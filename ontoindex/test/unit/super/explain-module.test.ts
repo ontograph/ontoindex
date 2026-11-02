@@ -103,6 +103,33 @@ describe('gnExplainModule', () => {
     await rm('.vitest-explain-module', { recursive: true, force: true });
   });
 
+  it('extracts the immediately preceding comment using zero-based graph symbol coordinates', async () => {
+    const filePath = '.vitest-explain-module/comment.ts';
+    await mkdir('.vitest-explain-module', { recursive: true });
+    await writeFile(
+      filePath,
+      '// First declaration\nexport function first() {}\nconst gap = 1;\n// Second declaration\nexport function second() {}\n',
+    );
+    mockSkeleton.mockResolvedValue('');
+    mockExecute.mockImplementation(async (_repoId, cypher) => {
+      if (cypher.includes('MATCH (f:File') && cypher.includes('RETURN f')) {
+        return [{ f: { filePath, lineCount: 5 } }];
+      }
+      if (cypher.includes("type: 'DEFINES'") && !cypher.includes('COUNT(')) {
+        return [
+          { name: 'first', kind: 'Function', startLine: 1, endLine: 1 },
+          { name: 'second', kind: 'Function', startLine: 4, endLine: 4 },
+        ];
+      }
+      return [];
+    });
+    const report = await gnExplainModule('test-repo', { filePath });
+    expect(report.publicAPI.map((entry) => entry.documentation)).toEqual([
+      '// First declaration',
+      '// Second declaration',
+    ]);
+  });
+
   it('returns warning and empty report when file is not in the index', async () => {
     mockExecute.mockResolvedValue([]);
 

@@ -83,6 +83,7 @@ import {
 import { getSemanticVectorBackendStatus } from '../../src/core/embeddings/zvec-semantic-backend.js';
 import { classifyIntent } from '../../src/core/search/intent-classifier.js';
 import { SemanticRetrievalCache } from '../../src/core/search/semantic-cache.js';
+import { lspBridge } from '../../src/core/lsp/bridge.js';
 
 const mockExecuteParameterized = vi.mocked(executeParameterized);
 const mockBm25Search = vi.mocked(bm25Search);
@@ -196,6 +197,27 @@ describe('backend-search typed input', () => {
 
   afterEach(() => {
     delete process.env.ONTOINDEX_VECTOR_BACKEND;
+  });
+
+  it.each([
+    ['src/core/cache.ts', 'Function', 0, 0],
+    ['README.md', 'Section', 1, 0],
+    ['src/cache.cbl', 'Function', 1, 0],
+    ['src/cache.jcl', 'Function', 1, 0],
+    ['src/core/cache.ts', 'Section', 1, 0],
+  ])('uses a zero-based LSP position for %s (%s)', async (filePath, type, startLine, lspLine) => {
+    mockBm25Search.mockResolvedValue({
+      results: [symbolRow({ filePath, type, startLine, endLine: startLine })],
+      ftsUsed: true,
+    });
+
+    await query({ id: 'repo-1', repoPath: '/repo', lastCommit: 'abc123' } as any, {
+      query: 'CacheStore',
+      include_lsp_refs: true,
+      include_skeleton: false,
+    });
+
+    expect(lspBridge.resolveSymbol).toHaveBeenCalledWith(filePath, lspLine, 0);
   });
 
   it('keeps plain query callers working unchanged', async () => {

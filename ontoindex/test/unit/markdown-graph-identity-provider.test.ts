@@ -113,7 +113,7 @@ describe('LbugGraphIdentityProvider', () => {
       repoId: 'repo-a',
       query: async (_repoId: string, cypher: string, params): Promise<GraphIdentityRow[]> => {
         expect(cypher).toContain('n.filePath CONTAINS $filePathHint');
-        expect(cypher).toContain('labels(n)[0] = $kindHint');
+        expect(cypher).toContain('label(n) = $kindHint');
         paramsSeen.push(params);
         return [
           {

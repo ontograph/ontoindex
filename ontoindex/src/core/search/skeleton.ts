@@ -1,4 +1,5 @@
 import { executeParameterized } from '../lbug/pool-adapter.js';
+import { sourceLine } from '../../mcp/shared/response-source-lines.js';
 
 interface SkeletonQueryRow {
   readonly [field: string]: unknown;
@@ -28,9 +29,9 @@ export async function getFileSkeleton(
     const query = `
       MATCH (n)
       WHERE n.filePath = $filePath 
-        AND labels(n)[0] IN ['Function', 'Method', 'Class', 'Interface']
+        AND label(n) IN ['Function', 'Method', 'Class', 'Interface']
         AND (n.isExported = true OR n.isExported IS NULL)
-      RETURN n.name AS name, labels(n)[0] AS type, n.startLine AS startLine, n.endLine AS endLine
+      RETURN n.name AS name, label(n) AS type, n.startLine AS startLine, n.endLine AS endLine
       ORDER BY n.startLine ASC
     `;
 
@@ -44,7 +45,13 @@ export async function getFileSkeleton(
       }
       const type = typeValue.toLowerCase();
       const name = r.name || r[0];
-      return `  - ${type} ${name} (lines ${r.startLine}-${r.endLine})`;
+      const startLine =
+        typeof r.startLine === 'number'
+          ? sourceLine(r.startLine, filePath, typeValue)
+          : r.startLine;
+      const endLine =
+        typeof r.endLine === 'number' ? sourceLine(r.endLine, filePath, typeValue) : r.endLine;
+      return `  - ${type} ${name} (lines ${startLine}-${endLine})`;
     });
 
     return `Symbols in ${filePath}:\n${lines.join('\n')}`;

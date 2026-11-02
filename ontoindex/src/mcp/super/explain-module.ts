@@ -1,4 +1,5 @@
 import { resolveRegistryEntry } from '../shared/target-context.js';
+import { sourceLine } from '../shared/response-source-lines.js';
 /**
  * gn_explain_module — File/module overview super-function.
  *
@@ -367,7 +368,10 @@ export async function gnExplainModule(
 
       let documentation: string | undefined;
       if (sourceLines.length > 0 && startLine !== undefined) {
-        documentation = extractLeadingComment(sourceLines, startLine);
+        documentation = extractLeadingComment(
+          sourceLines,
+          sourceLine(startLine, params.filePath, s.kind ?? s.type ?? s.label ?? s._label),
+        );
       }
 
       publicAPI.push({

@@ -9,6 +9,9 @@ import {
 } from '../../src/core/ingestion/model/resolution-context.js';
 import { buildHeritageMap } from '../../src/core/ingestion/model/heritage-map.js';
 import type { ExtractedHeritage } from '../../src/core/ingestion/model/heritage-map.js';
+import Parser from 'tree-sitter';
+import TypeScript from 'tree-sitter-typescript';
+import { buildTypeEnv } from '../../src/core/ingestion/type-env.js';
 
 describe('resolveCallTarget dispatch branches', () => {
   let ctx: ResolutionContext;
@@ -138,5 +141,91 @@ describe('resolveCallTarget dispatch branches', () => {
     );
 
     expect(result).toBeNull();
+  });
+
+  it('built-in receiver type (TS Map) does not bind to an unrelated indexed method', () => {
+    ctx.model.symbols.add('src/cache.ts', 'Cache', 'class:Cache', 'Class');
+    ctx.model.symbols.add('src/cache.ts', 'set', 'method:Cache:set', 'Method', {
+      ownerId: 'class:Cache',
+      parameterCount: 2,
+    });
+    ctx.importMap.set('src/app.ts', new Set(['src/cache.ts']));
+
+    const call = { calledName: 'set', callForm: 'member' as const, argCount: 2 };
+    expect(
+      _resolveCallTargetForTesting(
+        { ...call, receiverTypeName: 'Map', receiverName: 'lanes' },
+        'src/app.ts',
+        ctx,
+      ),
+    ).toBeNull();
+    expect(
+      _resolveCallTargetForTesting(
+        { ...call, receiverTypeName: 'Cache', receiverName: 'cache' },
+        'src/app.ts',
+        ctx,
+      )?.nodeId,
+    ).toBe('method:Cache:set');
+  });
+
+  it.each(['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'mts', 'cts'])(
+    'unindexed library receiver in .%s does not bind to an unrelated method',
+    (extension) => {
+      ctx.model.symbols.add('src/cache.ts', 'set', 'method:Cache:set', 'Method', {
+        ownerId: 'class:Cache',
+      });
+
+      expect(
+        _resolveCallTargetForTesting(
+          { calledName: 'set', callForm: 'member', receiverTypeName: 'URLSearchParams' },
+          `src/app.${extension}`,
+          ctx,
+        ),
+      ).toBeNull();
+    },
+  );
+
+  it('keeps the unindexed receiver fallback for PHP mixed', () => {
+    ctx.model.symbols.add('src/cache.php', 'save', 'method:Cache:save', 'Method', {
+      ownerId: 'class:Cache',
+    });
+
+    expect(
+      _resolveCallTargetForTesting(
+        { calledName: 'save', callForm: 'member', receiverTypeName: 'mixed' },
+        'src/app.php',
+        ctx,
+      )?.nodeId,
+    ).toBe('method:Cache:save');
+  });
+
+  it.each([
+    ['any', 'function use(value: any) { value.save(); }', null],
+    [
+      'Cache',
+      'function use<TItem extends Cache>(value: TItem) { value.save(); }',
+      'method:Cache:save',
+    ],
+  ])('uses the extracted %s receiver type consistently', (typeName, source, expected) => {
+    const parser = new Parser();
+    parser.setLanguage(TypeScript.typescript);
+    const tree = parser.parse(source);
+    const env = buildTypeEnv(tree, 'typescript');
+    const receiverTypeName = [...env.allScopes()]
+      .map(([, scope]) => scope.get('value'))
+      .find((type) => type !== undefined);
+    expect(receiverTypeName).toBe(typeName);
+    ctx.model.symbols.add('src/cache.ts', 'Cache', 'class:Cache', 'Class');
+    ctx.model.symbols.add('src/cache.ts', 'save', 'method:Cache:save', 'Method', {
+      ownerId: 'class:Cache',
+    });
+
+    expect(
+      _resolveCallTargetForTesting(
+        { calledName: 'save', callForm: 'member', receiverTypeName },
+        'src/app.ts',
+        ctx,
+      )?.nodeId ?? null,
+    ).toBe(expected);
   });
 });

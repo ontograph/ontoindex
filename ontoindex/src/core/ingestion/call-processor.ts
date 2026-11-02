@@ -34,7 +34,7 @@ import type { ResolutionContext } from './model/resolution-context.js';
 import { TIER_CONFIDENCE, type ResolutionTier } from './model/resolution-context.js';
 import type { TieredCandidates } from './model/resolution-context.js';
 import { isLanguageAvailable, loadParser, loadLanguage } from '../tree-sitter/parser-loader.js';
-import { getProvider } from './languages/index.js';
+import { getProvider, getProviderForFile } from './languages/index.js';
 import { generateId } from '../../lib/utils.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'ontoindex-shared';
 import { isVerboseIngestionEnabled } from './utils/verbose.js';
@@ -2249,8 +2249,8 @@ const resolveCallTarget = (
     // match, that's a genuine miss — refuse to emit a CALLS edge rather
     // than guess via an unscoped singleCandidate that ignores the class
     // hierarchy. When the type is NOT in the index (PHP `mixed`, dynamic
-    // types, unresolvable aliases), the scoped resolvers had nothing to
-    // work with and singleCandidate is the correct last resort.
+    // types, unresolvable aliases), language-specific guards below decide
+    // whether the unscoped singleCandidate fallback is safe.
     //
     // DAG fallback override: when `select-dispatch` returned
     // `fallback: 'free-arity-narrowed'` (today: Ruby implicit-self bare
@@ -2272,6 +2272,25 @@ const resolveCallTarget = (
         if (free) return free;
       }
       return null; // null-route: type resolved, no candidate matched
+    }
+    // A language built-in receiver (e.g. TS `Map`, Python `dict`) cannot own an indexed method.
+    if (
+      call.callForm === 'member' &&
+      getProviderForFile(currentFile)?.isBuiltInName(call.receiverTypeName)
+    ) {
+      return null;
+    }
+    // TS/JS library types are not necessarily built-ins (e.g. URLSearchParams).
+    // An unindexed receiver cannot justify a name-only method edge. Preserve
+    // conventional single-letter generic parameters: this stage has no
+    // declaration/constraint metadata with which to resolve them more precisely.
+    const language = getLanguageFromFilename(currentFile);
+    if (
+      call.callForm === 'member' &&
+      (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) &&
+      !/^[A-Z]$/.test(call.receiverTypeName)
+    ) {
+      return null;
     }
     // An external Rust receiver (e.g. HashMap) cannot own an arbitrary indexed method.
     if (call.callForm === 'member' && currentFile.endsWith('.rs')) return null;

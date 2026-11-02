@@ -1306,6 +1306,16 @@ function workspacePreparationError(error: unknown): Error & { code: string; retr
       {
         code: error.code,
         retryable: error.code === 'workspace_busy' || error.code === 'workspace_timeout',
+        ...(error.code === 'workspace_timeout' && error.timeout
+          ? {
+              diagnostics: {
+                phase: error.timeout.phase,
+                elapsedMs: error.timeout.elapsedMs,
+                budgetMs: error.timeout.budgetMs,
+                build: error.timeout.build,
+              },
+            }
+          : {}),
         ...(error.code === 'workspace_build_failed' && error.failure
           ? {
               diagnostics: {

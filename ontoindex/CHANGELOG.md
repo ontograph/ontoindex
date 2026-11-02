@@ -4,6 +4,26 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.4.10] - 2026-11-02
+
+- TypeScript generic bindings preserve shadowing and resolve supported constraint chains without following cycles.
+- Grouped context, impact source identities and pre-commit audit responses consistently project public source lines.
+- Aggregate audits preserve coupling warnings and incomplete-result evidence.
+- Search enrichment selects deterministic community and caller records with fixed-size batch queries and retains per-node fallback when a batch fails.
+- Database regression tests cover duplicate edges, high fanout and caller identity; documentation fixtures use deterministic Git identity.
+
+## [2.4.9] - 2026-11-01
+
+- Graph queries return each node's real label (`Function`, `Method`, `Class`, ...) in `type` and `kind` fields, fixing empty labels in affected queries. Requirement traces count only function, method, class, struct and interface nodes, impact traversal follows method callers, and file rows are classified as files.
+- `workspace_timeout` errors include `diagnostics` with `phase` (`planning`, `build` or `wait`), `elapsedMs`, `budgetMs` and `build` (`running` or `none`); `running` means a retry joins the build still in progress.
+- TypeScript parameters, fields and variables typed with a declared generic parameter bind to a supported simple constraint (`TItem extends Base` resolves calls on `Base`); unconstrained generics stay unbound.
+- Public MCP navigation and audit responses, and CLI query, context and impact results, report 1-based source lines. Markdown, COBOL and JCL keep their existing coordinates.
+- Evidence-pack excerpts, module documentation extraction, LSP lookups, type-coverage matching and changed-symbol detection use the correct source-line coordinates.
+- Semantic search batches process, community, content and citation lookups across results instead of querying each symbol separately.
+- Member calls on language built-in receivers no longer create name-only `CALLS` edges; TypeScript and JavaScript also reject that fallback for unindexed receiver types, except single-letter generic names.
+- Route response-shape extraction separates parameter initializers from function-body declarations.
+- Coupling scans cap community reads at 49,999 rows and warn when metrics may be incomplete.
+
 ## [2.4.8] - 2026-11-01
 
 - Ambient TypeScript declarations retain export visibility. Route response shapes respect loop bindings, shadowed writes and assignments inside parameter initializers.

@@ -291,7 +291,7 @@ withTestLbugDB(
 
         const adapter = await import('../../src/core/lbug/lbug-adapter.js');
         await adapter.executeQuery(
-          `CREATE (fn:Function {id: 'func:risky', name: 'risky', filePath: 'src/types.ts', startLine: 1, endLine: 5, isExported: true, content: '', description: ''})`,
+          `CREATE (fn:Function {id: 'func:risky', name: 'risky', filePath: 'src/types.ts', startLine: 0, endLine: 4, isExported: true, content: '', description: ''})`,
         );
         await adapter.executeQuery(
           `CREATE (fn:Function {id: 'func:caller', name: 'caller', filePath: 'src/caller.ts', startLine: 1, endLine: 1, isExported: true, content: '', description: ''})`,

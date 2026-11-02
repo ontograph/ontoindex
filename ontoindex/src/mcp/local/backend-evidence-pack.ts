@@ -17,6 +17,7 @@
  * that tries to climb outside the root is reported as unresolved.
  */
 import fs from 'fs/promises';
+import { sourceLine } from '../shared/response-source-lines.js';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { normalizeRepoRelativePath, resolveContainedRepoPath } from './backend-repo-paths.js';
 // Local RepoHandle alias — see backend-route.ts note.
@@ -200,7 +201,7 @@ async function resolveSymbol(
       `
         MATCH (n)
         WHERE n.name = $name
-        RETURN n.name AS name, labels(n)[0] AS type, n.filePath AS filePath,
+        RETURN n.name AS name, label(n) AS type, n.filePath AS filePath,
                n.startLine AS startLine, n.endLine AS endLine
         LIMIT 1
       `,
@@ -212,12 +213,14 @@ async function resolveSymbol(
   if (!rows || rows.length === 0) return null;
   const row = rows[0];
   const filePath = symbolRowValue(row, 'filePath', 2);
-  const startLine = symbolRowValue(row, 'startLine', 3);
-  const endLine = symbolRowValue(row, 'endLine', 4);
+  const rawStartLine = symbolRowValue(row, 'startLine', 3);
+  const rawEndLine = symbolRowValue(row, 'endLine', 4);
   const symbolType = symbolRowValue(row, 'type', 1);
-  if (!filePath || typeof startLine !== 'number' || typeof endLine !== 'number') {
+  if (!filePath || typeof rawStartLine !== 'number' || typeof rawEndLine !== 'number') {
     return null;
   }
+  const startLine = sourceLine(rawStartLine, filePath, symbolType);
+  const endLine = sourceLine(rawEndLine, filePath, symbolType);
 
   const abs = await resolveContainedRepoPath(repo.repoPath, filePath);
   if (!abs) {

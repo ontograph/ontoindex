@@ -150,6 +150,7 @@ interface CycleFanOut {
 
 interface CouplingFanOut {
   rows: Array<{ community: string; ca: number; ce: number; instability: number }>;
+  warnings?: string[];
 }
 
 interface TechDebtFanOut {
@@ -340,7 +341,12 @@ export async function runAuditReport(
 
   const dead = (deadResult as DeadCodeFanOut | null)?.entries ?? [];
   const cycles = (cycleResult as CycleFanOut | null)?.cycles ?? [];
-  const coupling = (couplingResult as CouplingFanOut | null)?.rows ?? [];
+  const couplingData = couplingResult as CouplingFanOut | null;
+  const coupling = couplingData?.rows ?? [];
+  if (couplingData?.warnings?.length) {
+    warnings.push(...couplingData.warnings.map((warning) => `coupling-matrix: ${warning}`));
+    incompleteSections.push('coupling-matrix');
+  }
   const debtSymbols = (debtResult as TechDebtFanOut | null)?.symbols ?? [];
   const hotspots = (hotspotResult as HotspotFanOut | null)?.hotspots ?? [];
   const violations = (violationsResult as BoundaryFanOut | null)?.violations ?? [];

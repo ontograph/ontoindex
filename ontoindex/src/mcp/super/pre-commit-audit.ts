@@ -36,6 +36,7 @@ import {
   type BasedOnReadsSummary,
 } from '../../core/runtime/evidence-read-ledger.js';
 import { resolveBranchComparisonBase } from '../../storage/git.js';
+import { sourceLine } from '../shared/response-source-lines.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -279,12 +280,15 @@ function parseChangedLineRanges(diffOutput: string): Map<string, LineRange[]> {
   return ranges;
 }
 
-function overlapsChangedRange(row: SymbolRow, ranges: LineRange[]): boolean {
+function overlapsChangedRange(row: SymbolRow, ranges: LineRange[], filePath: string): boolean {
   if (ranges.length === 0) return true;
   const startLine = rowOptionalNumber(row, 'startLine', 2);
   const endLine = rowOptionalNumber(row, 'endLine', 3) ?? startLine;
   if (startLine === undefined || endLine === undefined) return true;
-  return ranges.some((range) => startLine <= range.endLine && endLine >= range.startLine);
+  const type = rowValue(row, 'type', 4, undefined);
+  const sourceStart = sourceLine(startLine, filePath, type);
+  const sourceEnd = sourceLine(endLine, filePath, type);
+  return ranges.some((range) => sourceStart <= range.endLine && sourceEnd >= range.startLine);
 }
 
 function createEvidenceId(nextId: number): string {
@@ -690,7 +694,7 @@ export async function gnPreCommitAudit(
       symbolRows = (await executeParameterized(
         repoId,
         `MATCH (f:File {filePath: $path})-[r:CodeRelation {type: 'DEFINES'}]->(s)
-         RETURN s.id AS id, s.name AS name, s.startLine AS startLine, s.endLine AS endLine LIMIT ${MAX_SYMBOLS_PER_FILE + 1}`,
+         RETURN s.id AS id, s.name AS name, s.startLine AS startLine, s.endLine AS endLine, label(s) AS type LIMIT ${MAX_SYMBOLS_PER_FILE + 1}`,
         { path: filePath },
       )) as SymbolRow[];
       if (symbolRows.length > MAX_SYMBOLS_PER_FILE) {
@@ -699,7 +703,7 @@ export async function gnPreCommitAudit(
       }
       symbolRows = symbolRows
         .slice(0, MAX_SYMBOLS_PER_FILE)
-        .filter((row) => overlapsChangedRange(row, ranges));
+        .filter((row) => overlapsChangedRange(row, ranges, filePath));
     } catch (err) {
       graphQueryFailed = true;
       warnings.push(

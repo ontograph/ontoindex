@@ -180,6 +180,122 @@ describe('buildTypeEnv', () => {
       expect(flatGet(typeEnv, 'repo')).toBe('Repository');
     });
 
+    it.each([
+      'function use<TItem extends Base<User>>(value: TItem) {}',
+      'const use = <TItem extends Base<User>>(value: TItem) => {};',
+      'const use = function<TItem extends Base<User>>(value: TItem) {};',
+      'class Holder { use<TItem extends Base<User>>(value: TItem) {} }',
+    ])('binds a constrained generic parameter to its base in %s', (source) => {
+      const typeEnv = buildTypeEnv(parse(source, TypeScript.typescript), 'typescript');
+      expect(flatGet(typeEnv, 'value')).toBe('Base');
+    });
+
+    it('retains unknown bindings for unconstrained generic parameters and locals', () => {
+      const tree = parse(
+        'function use<TItem>(value: TItem) { let local: TItem; }',
+        TypeScript.typescript,
+      );
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'value')).toBe('undefined');
+      expect(flatGet(typeEnv, 'local')).toBe('undefined');
+    });
+
+    it('resolves class type parameters on fields, constructor parameters and locals', () => {
+      const tree = parse(
+        `class Holder<TItem extends Base> {
+          field: TItem;
+          constructor(value: TItem) { let local: TItem; }
+        }`,
+        TypeScript.typescript,
+      );
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      for (const name of ['field', 'value', 'local']) {
+        expect(flatGet(typeEnv, name)).toBe('Base');
+      }
+    });
+
+    it('uses the nearest generic declaration including unconstrained shadows', () => {
+      const tree = parse(
+        `class Holder<TItem extends Base> {
+          field: TItem;
+          use<TItem extends Other>(value: TItem) { let local: TItem; }
+          unknown<TItem>(unbound: TItem) {}
+        }`,
+        TypeScript.typescript,
+      );
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      expect(flatGet(typeEnv, 'field')).toBe('Base');
+      expect(flatGet(typeEnv, 'value')).toBe('Other');
+      expect(flatGet(typeEnv, 'local')).toBe('Other');
+      expect(flatGet(typeEnv, 'unbound')).toBe('undefined');
+    });
+
+    it('retains unknown bindings for unsupported generic constraints', () => {
+      const tree = parse(
+        'function use<TItem extends Base | Other>(value: TItem) {}',
+        TypeScript.typescript,
+      );
+      expect(flatGet(buildTypeEnv(tree, 'typescript'), 'value')).toBe('undefined');
+    });
+
+    it.each([
+      'TItem',
+      'TItem extends Base | Other',
+      'TItem extends { save(): void }',
+      'TItem extends TBase, TBase',
+      'TItem extends TBase, TBase extends Base & Other',
+      'TItem extends TItem',
+      'TItem extends TBase, TBase extends TItem',
+    ])('unknown generic bindings shadow file values and their copies: %s', (parameters) => {
+      const tree = parse(
+        `const value: Outer = getOuter();
+         const local: Outer = getOuter();
+         function use<${parameters}>(value: TItem) {
+           let local: TItem;
+           const valueCopy = value;
+           const localCopy = local;
+           value.save(); local.save(); valueCopy.save(); localCopy.save();
+         }`,
+        TypeScript.typescript,
+      );
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      for (const name of ['value', 'local', 'valueCopy', 'localCopy']) {
+        const call = tree.rootNode.descendantForIndex(tree.rootNode.text.indexOf(`${name}.save()`));
+        expect(typeEnv.lookup(name, call)).toBeUndefined();
+      }
+      expect(flatGet(typeEnv, 'valueCopy')).toBe('undefined');
+      expect(flatGet(typeEnv, 'localCopy')).toBe('undefined');
+    });
+
+    it.each([
+      'function use<TItem extends TBase, TBase extends Cache>(value: TItem) {}',
+      'class Holder<TBase extends Cache> { use<TItem extends TBase>(value: TItem) {} }',
+      `class Holder<TItem extends TBase, TBase extends Cache> {
+         use<TBase extends Other>(value: TItem) {}
+       }`,
+      `class Holder<TItem extends TBase, TBase extends Cache> {
+         use<TBase extends TItem>(value: TBase) {}
+       }`,
+    ])('follows constraints in their declaration scope: %s', (source) => {
+      const typeEnv = buildTypeEnv(parse(source, TypeScript.typescript), 'typescript');
+      expect(flatGet(typeEnv, 'value')).toBe('Cache');
+    });
+
+    it.each([
+      'function use<TItem>(value: Models.TItem) {}',
+      'function use<TItem>(value: Models.TItem<User>) {}',
+      'function use<TItem, TBase extends Models.TItem>(value: TBase) {}',
+      'function use<TItem, TBase extends Models.TItem<User>>(value: TBase) {}',
+    ])('does not treat qualified nominal tails as type parameters: %s', (source) => {
+      const typeEnv = buildTypeEnv(parse(source, TypeScript.typescript), 'typescript');
+      expect(flatGet(typeEnv, 'value')).toBe('TItem');
+    });
+
+    it('preserves ordinary multi-character class names', () => {
+      const tree = parse('function use(server: TCPServer) {}', TypeScript.typescript);
+      expect(flatGet(buildTypeEnv(tree, 'typescript'), 'server')).toBe('TCPServer');
+    });
+
     it('extracts type from arrow function parameters', () => {
       const tree = parse('const fn = (user: User) => user.save();', TypeScript.typescript);
       const typeEnv = buildTypeEnv(tree, 'typescript');

@@ -34,6 +34,7 @@ import { INTERNAL_TOOL_HANDLERS } from './tools.js';
 import { dispatchFacade, type FacadeTool } from './facade/dispatch.js';
 import { attachRepoScopeIdentity } from './shared/response-envelope.js';
 import { isMarkedInvocationError } from './shared/invocation-error.js';
+import { projectResponseSourceLines } from './shared/response-source-lines.js';
 import { SUPER_NAMES, withPreparedSuperRead, type SuperTool } from './super/names.js';
 import {
   getMcpStartupProfileFromEnv,
@@ -207,7 +208,24 @@ function formatToolCallErrorMessage(
             : {}),
         }
       : undefined;
-  const safeDiagnostics = diagnostics || failure ? { ...diagnostics, ...failure } : undefined;
+  const timeout =
+    code === 'workspace_timeout' &&
+    diagnostic &&
+    typeof diagnostic === 'object' &&
+    ['planning', 'build', 'wait'].includes(diagnostic.phase as string) &&
+    Number.isSafeInteger(diagnostic.elapsedMs) &&
+    (diagnostic.elapsedMs as number) >= 0 &&
+    Number.isSafeInteger(diagnostic.budgetMs) &&
+    (diagnostic.budgetMs as number) >= 0 &&
+    ['running', 'none'].includes(diagnostic.build as string)
+      ? {
+          phase: diagnostic.phase,
+          elapsedMs: diagnostic.elapsedMs,
+          budgetMs: diagnostic.budgetMs,
+          build: diagnostic.build,
+        }
+      : undefined;
+  const safeDiagnostics = diagnostics ?? failure ?? timeout;
   return boundMcpErrorText(
     (boundedMessage) =>
       repo || code
@@ -798,7 +816,11 @@ export function createMCPServer(
           } else {
             result = await execute();
           }
-          const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+          const projectedResult = projectResponseSourceLines(name, typedArgs.action, result);
+          const resultText =
+            typeof projectedResult === 'string'
+              ? projectedResult
+              : JSON.stringify(projectedResult, null, 2);
           const hint = responseBudgetBytes === undefined ? getNextStepHint(name, typedArgs) : '';
           const page = await pageMcpResponse({
             tool: name,

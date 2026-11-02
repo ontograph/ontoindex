@@ -12,6 +12,7 @@ import {
   resolveRepoFromHandles,
   committedGraphNotice,
   prepareWorkspaceRead,
+  WorkspacePreparationError,
   stopWorkspaceBuild,
   acquireWorkspaceWatch,
   WORKSPACE_PREPARATION_DEADLINE_MS,
@@ -642,7 +643,19 @@ describe('workspace read preparation', () => {
         signal: controller.signal,
         deadline: performance.now() + 50,
       });
-      const rejected = expect(pending).rejects.toMatchObject({ code: `workspace_${code}` });
+      const rejected = expect(pending).rejects.toMatchObject({
+        code: `workspace_${code}`,
+        ...(code === 'timeout'
+          ? {
+              timeout: {
+                phase: 'planning',
+                elapsedMs: 50,
+                budgetMs: 50,
+                build: 'none',
+              },
+            }
+          : {}),
+      });
       await probeEntered;
       if (code === 'timeout') await vi.advanceTimersByTimeAsync(50);
       else controller.abort();
@@ -1388,9 +1401,23 @@ describe('workspace read preparation', () => {
       f.dependencies.buildWorkspaceGraph.mockImplementation(
         () => new Promise<void>((resolve) => (finish = resolve)),
       );
-      await expect(
-        prepareWorkspaceRead({ ...f.options, deadline: performance.now() + 30 }),
-      ).rejects.toMatchObject({ code: 'workspace_timeout' });
+      const failure = await prepareWorkspaceRead({
+        ...f.options,
+        deadline: performance.now() + 30,
+      }).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(WorkspacePreparationError);
+      expect(failure).toMatchObject({
+        code: 'workspace_timeout',
+        timeout: {
+          phase: 'build',
+          elapsedMs: expect.any(Number),
+          budgetMs: expect.any(Number),
+          build: 'running',
+        },
+      });
+      const timeout = (failure as WorkspacePreparationError).timeout!;
+      expect(timeout.elapsedMs).toBeGreaterThanOrEqual(0);
+      expect(timeout.budgetMs).toBeGreaterThan(0);
       const second = prepareWorkspaceRead(f.options);
       await vi.waitFor(() => expect(f.dependencies.getSnapshot).toHaveBeenCalledTimes(3));
       f.dependencies.getSnapshot.mockResolvedValue(f.ready);

@@ -258,6 +258,17 @@ it('replays current workspace mutations through persistent stdio MCP and foregro
       ).toEqual([]);
     }
   }
+  async function assertScopeEmpty() {
+    if (scope)
+      await vi.waitFor(
+        async () => {
+          expect(await fs.readFile(path.join(scope!.path, 'cgroup.events'), 'utf8')).toMatch(
+            /^populated 0$/m,
+          );
+        },
+        { timeout: 5_000 },
+      );
+  }
   let mcpShutdown: Promise<void> | undefined;
   function stopMcp() {
     return (mcpShutdown ??= (async () => {
@@ -275,15 +286,7 @@ it('replays current workspace mutations through persistent stdio MCP and foregro
           },
           { timeout: 10_000 },
         );
-      if (scope)
-        await vi.waitFor(
-          async () => {
-            expect(await fs.readFile(path.join(scope!.path, 'cgroup.events'), 'utf8')).toMatch(
-              /^populated 0$/m,
-            );
-          },
-          { timeout: 5_000 },
-        );
+      await assertScopeEmpty();
       if (transport) expect((await fs.readFile(exitFile, 'utf8')).trim()).toBe('0');
       const cleanupMs = performance.now() - closeStart;
       evidence.push({
@@ -456,6 +459,11 @@ it('replays current workspace mutations through persistent stdio MCP and foregro
       error: expect.stringContaining('not found'),
     });
     expect(await identity()).toEqual(missedIdentity);
+    await assertScopeEmpty();
+    evidence.push({
+      event: 'final-scope-check',
+      cleanupScope: scope ? 'all-owned-descendants' : 'root-process',
+    });
   } finally {
     try {
       await stopMcp();

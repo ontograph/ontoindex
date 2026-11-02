@@ -40,7 +40,7 @@ withTestLbugDB(
         expect(coreHandler.type).toBe('Function');
       });
 
-      it('enriches empty Ladybug labels before serializing symbols', async () => {
+      it('projects the native Ladybug label before serializing symbols', async () => {
         const result = await runRepomap(
           { id: handle.repoId },
           { focus: ['src/focus.ts'], format: 'full', token_budget: 5000 },

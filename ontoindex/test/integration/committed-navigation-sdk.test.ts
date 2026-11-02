@@ -193,86 +193,83 @@ describe('explicit committed navigation over MCP', () => {
     expect(payload.actionsTaken).toEqual([]);
   });
 
-  it.each(calls)(
-    'serves indexed evidence for $name above the workspace cap',
-    async (call) => {
-      const defaultResult = await client.callTool({
-        ...call,
-        arguments: { ...call.arguments, repo: repoName },
+  it.each(calls)('serves indexed evidence for $name above the workspace cap', async (call) => {
+    const defaultResult = await client.callTool({
+      ...call,
+      arguments: { ...call.arguments, repo: repoName },
+    });
+    const defaultPayload = payloadOf(defaultResult);
+    if (call.name === 'gn_explore') {
+      expect(defaultResult.isError).toBe(true);
+      expect(defaultPayload).toMatchObject({
+        error: 'workspace_preparation_failed: workspace_too_large',
+        code: 'workspace_too_large',
+        retryable: false,
+        remediation: { read_mode: 'committed' },
+        diagnostics: {
+          observedIndexedFiles: 2,
+          maxIndexedFiles: 1,
+          requiredCapability: 'workspace-graph',
+        },
       });
-      const defaultPayload = payloadOf(defaultResult);
-      if (call.name === 'gn_explore') {
-        expect(defaultResult.isError).toBe(true);
-        expect(defaultPayload).toMatchObject({
-          error: 'workspace_preparation_failed: workspace_too_large',
-          code: 'workspace_too_large',
-          retryable: false,
-          remediation: { read_mode: 'committed' },
-          diagnostics: {
-            observedIndexedFiles: 2,
-            maxIndexedFiles: 1,
-            requiredCapability: 'workspace-graph',
-          },
-        });
-        expect(defaultPayload.remediation.message).toContain('Uncommitted source changes');
-        expect(defaultPayload.remediation.message).toContain('Do not automatically retry or reindex');
-      } else {
-        // Backend navigation falls back to committed evidence since 2.3.15 (#155).
-        expect(defaultResult.isError, JSON.stringify(defaultResult)).not.toBe(true);
-        expect(defaultPayload.readContext).toMatchObject({
-          mode: 'committed',
-          indexedCommit: committedSha,
-          workingTreeIncluded: false,
-        });
-        expect(defaultPayload.warnings).toEqual(
-          expect.arrayContaining([
-            expect.stringContaining('workspace_too_large'),
-            expect.stringContaining('answered from the committed index'),
-            expect.stringContaining('src/base.ts'),
-          ]),
-        );
-        expect(JSON.stringify(defaultPayload)).toContain('baseline');
-        expect(JSON.stringify(defaultPayload)).not.toContain('dirtyOnly');
-        expect(JSON.stringify(defaultPayload)).not.toContain('DIRTY_MARKER');
-      }
-      const result = await client.callTool({
-        ...call,
-        arguments: { ...call.arguments, repo: repoName, read_mode: 'committed' },
+      expect(defaultPayload.remediation.message).toContain('Uncommitted source changes');
+      expect(defaultPayload.remediation.message).toContain('Do not automatically retry or reindex');
+    } else {
+      // Backend navigation falls back to committed evidence since 2.3.15 (#155).
+      expect(defaultResult.isError, JSON.stringify(defaultResult)).not.toBe(true);
+      expect(defaultPayload.readContext).toMatchObject({
+        mode: 'committed',
+        indexedCommit: committedSha,
+        workingTreeIncluded: false,
       });
-      expect(result.isError, JSON.stringify(result)).not.toBe(true);
-      const text = (result.content as Array<{ text: string }>)[0].text;
-      const payload = JSON.parse(text.split('\n\n---')[0]);
-      expect(payload.readContext).toMatchObject({ mode: 'committed', workingTreeIncluded: false });
-      expect(payload.readContext.indexedCommit).toBe(committedSha);
-      expect(text).not.toContain('dirtyOnly');
-      expect(text).not.toContain('DIRTY_MARKER');
-      expect(text).toContain('baseline');
-      if (call.name === 'inspect') {
-        expect(payload).toMatchObject({
-          status: 'found',
-          symbol: {
-            uid: expect.any(String),
-            name: 'baseline',
-            kind: 'Function',
-            filePath: 'src/base.ts',
-            startLine: 0,
-            endLine: 0,
-          },
-          contextCompleteness: { sourceIncluded: true, truncated: false },
-        });
-        expect(payload.symbol.uid.length).toBeGreaterThan(0);
-        expect(payload.symbol.content).toContain('COMMITTED_MARKER');
-        expect(payload.symbol.content).not.toContain('DIRTY_MARKER');
-        expect(payload.contextCompleteness.missingReasons).not.toContain('source-unavailable');
-        expect(payload.incoming.calls).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({ name: 'caller', kind: 'Function', filePath: 'src/base.ts' }),
-          ]),
-        );
-      }
-      expect(analysisSpy).not.toHaveBeenCalled();
-    },
-  );
+      expect(defaultPayload.warnings).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('workspace_too_large'),
+          expect.stringContaining('answered from the committed index'),
+          expect.stringContaining('src/base.ts'),
+        ]),
+      );
+      expect(JSON.stringify(defaultPayload)).toContain('baseline');
+      expect(JSON.stringify(defaultPayload)).not.toContain('dirtyOnly');
+      expect(JSON.stringify(defaultPayload)).not.toContain('DIRTY_MARKER');
+    }
+    const result = await client.callTool({
+      ...call,
+      arguments: { ...call.arguments, repo: repoName, read_mode: 'committed' },
+    });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0].text;
+    const payload = JSON.parse(text.split('\n\n---')[0]);
+    expect(payload.readContext).toMatchObject({ mode: 'committed', workingTreeIncluded: false });
+    expect(payload.readContext.indexedCommit).toBe(committedSha);
+    expect(text).not.toContain('dirtyOnly');
+    expect(text).not.toContain('DIRTY_MARKER');
+    expect(text).toContain('baseline');
+    if (call.name === 'inspect') {
+      expect(payload).toMatchObject({
+        status: 'found',
+        symbol: {
+          uid: expect.any(String),
+          name: 'baseline',
+          kind: 'Function',
+          filePath: 'src/base.ts',
+          startLine: 1,
+          endLine: 1,
+        },
+        contextCompleteness: { sourceIncluded: true, truncated: false },
+      });
+      expect(payload.symbol.uid.length).toBeGreaterThan(0);
+      expect(payload.symbol.content).toContain('COMMITTED_MARKER');
+      expect(payload.symbol.content).not.toContain('DIRTY_MARKER');
+      expect(payload.contextCompleteness.missingReasons).not.toContain('source-unavailable');
+      expect(payload.incoming.calls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'caller', kind: 'Function', filePath: 'src/base.ts' }),
+        ]),
+      );
+    }
+    expect(analysisSpy).not.toHaveBeenCalled();
+  });
 
   it('executes a generated committed UID continuation', async () => {
     const result = await client.callTool({

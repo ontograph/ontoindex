@@ -974,6 +974,40 @@ describe('gnPreCommitAudit', () => {
     expect(report.changedFiles[0].perSymbolImpact.risk).toBe('MEDIUM');
   });
 
+  it.each([
+    ['src/edge.ts', 'Function', 0],
+    ['README.md', 'Section', 1],
+    ['src/edge.cbl', 'Function', 1],
+    ['src/edge.jcl', 'Function', 1],
+    ['src/edge.ts', 'Section', 1],
+  ])(
+    'matches a one-line hunk at the symbol boundary in %s (%s)',
+    async (filePath, type, startLine) => {
+      setupGitDiff(
+        `${filePath}\n`,
+        '',
+        [
+          `diff --git a/${filePath} b/${filePath}`,
+          `--- a/${filePath}`,
+          `+++ b/${filePath}`,
+          '@@ -1 +1 @@',
+          '-before',
+          '+after',
+        ].join('\n'),
+      );
+      setupGraphMocks({
+        symbolRows: [
+          { id: 'edge', name: 'edge', startLine, endLine: startLine, type },
+          { id: 'next', name: 'next', startLine: startLine + 1, endLine: startLine + 1, type },
+        ],
+      });
+
+      const report = await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
+
+      expect(report.changedFiles[0].changedSymbols).toEqual(['edge']);
+    },
+  );
+
   it('audits only symbols overlapping changed diff lines when line spans are indexed', async () => {
     setupGitDiff(
       'src/mixed.ts\n',

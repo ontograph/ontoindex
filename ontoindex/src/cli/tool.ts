@@ -18,9 +18,15 @@
 import { writeSync } from 'node:fs';
 import { parseTypedQueryDocument } from '../core/search/typed-query-document.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
+import { projectResponseSourceLines } from '../mcp/shared/response-source-lines.js';
 
 let _backend: LocalBackend | null = null;
 const NAVIGATION_PREPARATION_FAILED = Symbol('navigation-preparation-failed');
+const NAVIGATION_ROUTES = {
+  query: ['search', 'semantic'],
+  context: ['inspect', 'context'],
+  impact: ['impact', 'symbol'],
+} as const;
 
 async function getBackend(): Promise<LocalBackend> {
   if (_backend) return _backend;
@@ -55,18 +61,24 @@ async function callNavigationTool(
       throw new Error('Committed reads do not support live or external enrichment.');
     }
   }
+  // Report the same 1-based source lines as the equivalent MCP facade route.
+  const [tool, action] = NAVIGATION_ROUTES[name];
   try {
     const backend = await getBackend();
     if (params.read_mode === 'committed') {
       const repo = await backend.resolveRepo(params.repo as string);
       await backend.ensureRepoInitialized(repo.id);
-      return await backend.withPreparedRepoRead(
-        repo,
-        { needsRelationships: true, readMode: 'committed' },
-        () => backend.callTool(name, params),
+      return projectResponseSourceLines(
+        tool,
+        action,
+        await backend.withPreparedRepoRead(
+          repo,
+          { needsRelationships: true, readMode: 'committed' },
+          () => backend.callTool(name, params),
+        ),
       );
     }
-    return await backend.callTool(name, params);
+    return projectResponseSourceLines(tool, action, await backend.callTool(name, params));
   } catch (err) {
     const code = thrownCode(err);
     if (

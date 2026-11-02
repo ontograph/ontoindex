@@ -42,6 +42,7 @@ import type { SemanticVectorBackendStatus } from '../../core/embeddings/zvec-sem
 import { classifyIntent } from '../../core/search/intent-classifier.js';
 import type { Intent } from '../../core/search/intent-classifier.js';
 import { lspBridge } from '../../core/lsp/bridge.js';
+import { sourceLine } from '../shared/response-source-lines.js';
 import { EMBEDDING_TABLE_NAME } from '../../core/lbug/schema.js';
 import type {
   SearchableTypedQueryLineType,
@@ -87,7 +88,7 @@ interface ContentLookupRow extends QueryTuple {
   content?: string;
 }
 
-interface CitationLookupRow extends QueryTuple {
+interface CitationLookupRow extends QueryTuple, Record<string, unknown> {
   caller?: string;
   type?: string;
   callerPath?: string;
@@ -618,7 +619,7 @@ async function loadSymbolNodesByIds(
     `
       MATCH (n)
       WHERE n.id IN $nodeIds
-      RETURN n.id AS nodeId, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+      RETURN n.id AS nodeId, n.name AS name, label(n) AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
     `,
     { nodeIds: [...nodeIds] },
   );
@@ -1297,7 +1298,7 @@ async function exactSymbolLookup(
     `
       MATCH (n)
       WHERE n.id = $symbolQuery OR n.name = $symbolQuery
-      RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+      RETURN n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
       LIMIT ${Math.max(1, Math.min(limit, 20))}
     `,
     { symbolQuery },
@@ -1318,7 +1319,7 @@ async function exactFileLookup(
     `
       MATCH (n:File)
       WHERE n.filePath = $fileQuery OR n.name = $fileName OR n.filePath ENDS WITH $suffix
-      RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine,
+      RETURN n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine,
              CASE
                WHEN n.filePath = $fileQuery THEN 0
                WHEN n.name = $fileName THEN 1
@@ -1939,7 +1940,7 @@ export async function query(
               `MATCH (n)
              WHERE (${overlayPaths.map((_, i) => `n.filePath = $path${i}`).join(' OR ')})
                AND (${terms.map((_, i) => `(lower(n.name) CONTAINS $term${i} OR lower(n.filePath) CONTAINS $term${i})`).join(' OR ')})
-             RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
+             RETURN n.id AS id, n.name AS name, label(n) AS type,
                     n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
              ORDER BY n.filePath, n.id
              LIMIT $limit`,
@@ -2082,6 +2083,118 @@ export async function query(
   const processMap = new Map<string, ProcessBucket>();
   const definitions: Array<DefinitionEntry | SymbolEntry> = [];
 
+  const nodeIds = [
+    ...new Set(
+      mergedReordered.flatMap(([, { data }]) =>
+        data.source !== 'overlay' && data.nodeId ? [data.nodeId] : [],
+      ),
+    ),
+  ];
+  // Keep each lookup independent: a failed batch contributes no enrichment.
+  // nodeId is the last projection so existing tuple field offsets stay intact.
+  async function lookupByNode<T extends QueryTuple>(
+    cypher: string,
+    errorContext?: string,
+    enabled = true,
+  ): Promise<Map<string, T[]>> {
+    const grouped = new Map<string, T[]>();
+    if (!enabled || nodeIds.length === 0) return grouped;
+    try {
+      const rows = await executeParameterized(graphId, cypher, { nodeIds });
+      for (const row of rows) {
+        const nodeId = rowValue(row, 'nodeId', Array.isArray(row) ? row.length - 1 : 0) as string;
+        const bucket = grouped.get(nodeId);
+        if (bucket) bucket.push(row as T);
+        else grouped.set(nodeId, [row as T]);
+      }
+    } catch (e) {
+      if (errorContext) logSearchQueryError(errorContext, e);
+    }
+    return grouped;
+  }
+
+  async function lookupFirstByNode<T extends QueryTuple>(
+    batchCypher: string,
+    cypher: string,
+    errorContext?: string,
+  ): Promise<Map<string, T[]>> {
+    const grouped = new Map<string, T[]>();
+    if (nodeIds.length === 0) return grouped;
+    try {
+      const rows = await executeParameterized(graphId, batchCypher, { nodeIds });
+      for (const row of rows) {
+        const nodeId = rowValue(row, 'nodeId', Array.isArray(row) ? row.length - 1 : 0) as string;
+        if (!grouped.has(nodeId)) grouped.set(nodeId, [row as T]);
+      }
+      return grouped;
+    } catch (e) {
+      grouped.clear();
+      if (errorContext) logSearchQueryError(errorContext, e);
+    }
+    for (const nodeId of nodeIds) {
+      try {
+        const rows = await executeParameterized(graphId, cypher, { nodeId });
+        if (rows.length > 0) grouped.set(nodeId, [rows[0] as T]);
+      } catch (e) {
+        if (errorContext) logSearchQueryError(errorContext, e);
+      }
+    }
+    return grouped;
+  }
+
+  const [processesByNode, communitiesByNode, contentByNode, citationsByNode] = await Promise.all([
+    lookupByNode<ProcessLookupRow>(
+      `
+      MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+      WHERE n.id IN $nodeIds
+      RETURN p.id AS pid, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, r.step AS step, n.id AS nodeId
+    `,
+      'query:process-lookup',
+    ),
+    lookupFirstByNode<CohesionLookupRow>(
+      // Select one complete record per target without collecting every neighbor.
+      // Minimum IDs make selection stable; aggregation still scans matching edges.
+      `
+      MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+      WHERE n.id IN $nodeIds
+      WITH n.id AS nodeId, min(c.id) AS communityId
+      MATCH (c:Community {id: communityId})
+      RETURN c.cohesion AS cohesion, c.heuristicLabel AS module, nodeId
+    `,
+      `
+      MATCH (n {id: $nodeId})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+      RETURN c.cohesion AS cohesion, c.heuristicLabel AS module
+      LIMIT 1
+    `,
+      'query:cluster-info',
+    ),
+    lookupByNode<ContentLookupRow>(
+      `
+      MATCH (n)
+      WHERE n.id IN $nodeIds
+      RETURN n.content AS content, n.id AS nodeId
+    `,
+      'query:content-fetch',
+      includeContent,
+    ),
+    lookupFirstByNode<CitationLookupRow>(
+      `
+      MATCH (m)-[r:CodeRelation]->(n)
+      WHERE n.id IN $nodeIds AND r.type IN ['CALLS', 'IMPORTS']
+      WITH n.id AS nodeId, min(m.id) AS callerId
+      MATCH (m {id: callerId})-[r:CodeRelation]->(n {id: nodeId})
+      WHERE r.type IN ['CALLS', 'IMPORTS']
+      RETURN m.name AS caller, min(r.type) AS type, m.filePath AS callerPath, n.id AS nodeId
+    `,
+      `
+      MATCH (m)-[r:CodeRelation]->(n {id: $nodeId})
+      WHERE r.type IN ['CALLS', 'IMPORTS']
+      RETURN m.name AS caller, r.type AS type, m.filePath AS callerPath
+      LIMIT 1
+    `,
+    ),
+  ]);
+
   for (const [, item] of mergedReordered) {
     const sym = item.data;
     if (sym.source === 'overlay') {
@@ -2109,77 +2222,25 @@ export async function query(
       continue;
     }
 
-    let processRows: ProcessLookupRow[] = [];
-    try {
-      processRows = (await executeParameterized(
-        graphId,
-        `
-        MATCH (n {id: $nodeId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-        RETURN p.id AS pid, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
-      `,
-        { nodeId: sym.nodeId },
-      )) as ProcessLookupRow[];
-    } catch (e) {
-      logSearchQueryError('query:process-lookup', e);
-    }
-
-    let cohesion = 0;
-    let module: string | undefined;
-    try {
-      const cohesionRows = (await executeParameterized(
-        graphId,
-        `
-        MATCH (n {id: $nodeId})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-        RETURN c.cohesion AS cohesion, c.heuristicLabel AS module
-        LIMIT 1
-      `,
-        { nodeId: sym.nodeId },
-      )) as CohesionLookupRow[];
-      if (cohesionRows.length > 0) {
-        cohesion = ((cohesionRows[0].cohesion ?? cohesionRows[0][0]) as number) || 0;
-        module = (cohesionRows[0].module ?? cohesionRows[0][1]) as string | undefined;
-      }
-    } catch (e) {
-      logSearchQueryError('query:cluster-info', e);
-    }
-
-    let content: string | undefined;
-    if (includeContent) {
-      try {
-        const contentRows = (await executeParameterized(
-          graphId,
-          `
-          MATCH (n {id: $nodeId})
-          RETURN n.content AS content
-        `,
-          { nodeId: sym.nodeId },
-        )) as ContentLookupRow[];
-        if (contentRows.length > 0) {
-          content = (contentRows[0].content ?? contentRows[0][0]) as string | undefined;
-        }
-      } catch (e) {
-        logSearchQueryError('query:content-fetch', e);
-      }
-    }
-
+    const processRows = processesByNode.get(sym.nodeId) ?? [];
+    const community = communitiesByNode.get(sym.nodeId)?.[0];
+    const cohesion = community ? ((community.cohesion ?? community[0]) as number) || 0 : 0;
+    const module = (community?.module ?? community?.[1]) as string | undefined;
+    const contentRow = contentByNode.get(sym.nodeId)?.[0];
+    const content = (contentRow?.content ?? contentRow?.[0]) as string | undefined;
     let citationPath: string | undefined;
-    try {
-      const citationRows = (await executeParameterized(
-        graphId,
-        `
-        MATCH (m)-[r:CodeRelation]->(n {id: $nodeId})
-        WHERE r.type IN ['CALLS', 'IMPORTS']
-        RETURN m.name AS caller, r.type AS type, m.filePath AS callerPath
-        LIMIT 1
-      `,
-        { nodeId: sym.nodeId },
-      )) as CitationLookupRow[];
-      if (citationRows.length > 0) {
-        const r = citationRows[0];
-        citationPath = `${r.callerPath}:${r.caller} -> ${r.type} -> ${sym.name}`;
+    const citation = citationsByNode.get(sym.nodeId)?.[0];
+    if (citation) {
+      const caller = rowValue(citation, 'caller', 0);
+      const type = rowValue(citation, 'type', 1);
+      const callerPath = rowValue(citation, 'callerPath', 2);
+      if (
+        typeof caller === 'string' &&
+        typeof type === 'string' &&
+        typeof callerPath === 'string'
+      ) {
+        citationPath = `${callerPath}:${caller} -> ${type} -> ${sym.name}`;
       }
-    } catch (e) {
-      // citation is best-effort
     }
 
     const symbolEntry: SymbolEntry = {
@@ -2405,7 +2466,7 @@ export async function query(
       try {
         const refs = await lspBridge.resolveSymbol(
           topResult.filePath,
-          (topResult.startLine ?? 1) - 1, // convert 1-indexed to 0-indexed
+          sourceLine(topResult.startLine ?? 0, topResult.filePath, topResult.type) - 1,
           0,
         );
         if (refs) {

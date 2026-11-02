@@ -56,6 +56,12 @@ export interface WorkspaceFailureDiagnostics {
   reason: WorkspacePreparationReason;
   systemCode?: WorkspaceSystemCode;
 }
+export interface WorkspaceTimeoutDiagnostics {
+  phase: 'planning' | 'build' | 'wait';
+  elapsedMs: number;
+  budgetMs: number;
+  build: 'running' | 'none';
+}
 
 const SYSTEM_CODES = new Set<WorkspaceSystemCode>([
   'EACCES',
@@ -133,6 +139,7 @@ export class WorkspacePreparationError extends Error {
       requiredCapability: 'workspace-graph';
     },
     public readonly failure?: WorkspaceFailureDiagnostics,
+    public readonly timeout?: WorkspaceTimeoutDiagnostics,
   ) {
     super(message, options);
     this.name = 'WorkspacePreparationError';
@@ -455,13 +462,29 @@ export async function prepareWorkspaceRead(options: {
 }): Promise<OverlaySnapshot> {
   const dependencies = { ...workspaceDependencies, ...options.dependencies };
   if (!isAutomaticWorkspaceEnabled()) return dependencies.getSnapshot(options.repo);
+  const startedAt = performance.now();
   const deadline = Math.min(
     options.deadline ?? Infinity,
-    performance.now() + WORKSPACE_PREPARATION_DEADLINE_MS,
+    startedAt + WORKSPACE_PREPARATION_DEADLINE_MS,
   );
+  let phase: WorkspaceTimeoutDiagnostics['phase'] = 'planning';
+  const timeoutError = (cause?: unknown) =>
+    new WorkspacePreparationError(
+      'workspace_timeout',
+      undefined,
+      cause === undefined ? undefined : { cause },
+      undefined,
+      undefined,
+      {
+        phase,
+        elapsedMs: Math.max(0, Math.ceil(performance.now() - startedAt)),
+        budgetMs: Number.isFinite(deadline) ? Math.max(0, Math.ceil(deadline - startedAt)) : 0,
+        build: hasWorkspaceBuild(options.repo.id) ? 'running' : 'none',
+      },
+    );
   const assertCallerActive = () => {
     if (options.signal?.aborted) throw new WorkspacePreparationError('workspace_cancelled');
-    if (!(deadline > performance.now())) throw new WorkspacePreparationError('workspace_timeout');
+    if (!(deadline > performance.now())) throw timeoutError();
   };
   assertCallerActive();
   // Bound the entire preparation, including the initial snapshot probe, per caller.
@@ -560,12 +583,9 @@ export async function prepareWorkspaceRead(options: {
               ? 'timeout'
               : 'input_refused'
           : 'planning_failed';
+      if (reason === 'timeout') throw timeoutError(cause);
       throw new WorkspacePreparationError(
-        reason === 'cancelled'
-          ? 'workspace_cancelled'
-          : reason === 'timeout'
-            ? 'workspace_timeout'
-            : 'workspace_build_failed',
+        reason === 'cancelled' ? 'workspace_cancelled' : 'workspace_build_failed',
         undefined,
         { cause },
         undefined,
@@ -619,6 +639,7 @@ export async function prepareWorkspaceRead(options: {
       );
     }
     assertCallerActive();
+    phase = hasWorkspaceBuild(options.repo.id) ? 'wait' : 'build';
     const built = workspaceBuild(options.repo.id, identity, async (signal) => {
       const failed = failedBuilds.get(options.repo.id);
       if (failed && failed.identity === failureIdentity && failed.until > dependencies.now()) {
@@ -847,7 +868,7 @@ export async function prepareWorkspaceRead(options: {
     };
     const abort = () => finish(new WorkspacePreparationError('workspace_cancelled'));
     const timer = setTimeout(
-      () => finish(new WorkspacePreparationError('workspace_timeout')),
+      () => finish(timeoutError()),
       Math.max(0, deadline - performance.now()),
     );
     options.signal?.addEventListener('abort', abort, { once: true });
@@ -855,7 +876,7 @@ export async function prepareWorkspaceRead(options: {
     void work().then(
       (value) => {
         if (!(deadline > performance.now())) {
-          finish(new WorkspacePreparationError('workspace_timeout'));
+          finish(timeoutError());
         } else {
           finish(undefined, value);
         }

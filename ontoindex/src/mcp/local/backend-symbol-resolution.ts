@@ -13,11 +13,6 @@ interface SymbolResolutionRepoHandle {
   storagePath?: string;
 }
 
-interface CandidateWithType {
-  id: string;
-  type: string;
-}
-
 interface CandidateForScoring {
   kind: string;
   filePath: string;
@@ -82,46 +77,6 @@ function rowValue(row: QueryRow, key: string, index: number): unknown {
   const keyedValue = (row as Record<string, unknown>)[key];
   if (keyedValue != null) return keyedValue;
   return Array.isArray(row) ? row[index] : row[String(index)];
-}
-
-/**
- * Patch the `type` field on candidates whose `labels(n)[0]` projection
- * came back empty — a known LadybugDB behaviour for several node types.
- */
-export async function enrichCandidateLabels(
-  repo: SymbolResolutionRepoHandle,
-  candidates: CandidateWithType[],
-): Promise<void> {
-  const ids = candidates.filter((c) => c.type === '' && c.id).map((c) => c.id);
-  if (ids.length === 0) return;
-  try {
-    const rows = await executeParameterized(
-      repo.id,
-      `
-      MATCH (n:\`Class\`) WHERE n.id IN $ids RETURN n.id AS id, 'Class' AS label
-      UNION ALL
-      MATCH (n:\`Interface\`) WHERE n.id IN $ids RETURN n.id AS id, 'Interface' AS label
-      UNION ALL
-      MATCH (n:\`Function\`) WHERE n.id IN $ids RETURN n.id AS id, 'Function' AS label
-      UNION ALL
-      MATCH (n:\`Method\`) WHERE n.id IN $ids RETURN n.id AS id, 'Method' AS label
-      UNION ALL
-      MATCH (n:\`Constructor\`) WHERE n.id IN $ids RETURN n.id AS id, 'Constructor' AS label
-      `,
-      { ids },
-    );
-    const labelById = new Map<string, string>();
-    for (const r of rows as QueryRow[]) {
-      const id = rowValue(r, 'id', 0) as string;
-      const label = rowValue(r, 'label', 1) as string;
-      if (id && label && !labelById.has(id)) labelById.set(id, label);
-    }
-    for (const c of candidates) {
-      if (c.type === '' && labelById.has(c.id)) c.type = labelById.get(c.id) as string;
-    }
-  } catch {
-    /* best-effort — downstream resolvers still work without the label */
-  }
 }
 
 /**
@@ -281,7 +236,7 @@ export async function resolveSymbolCandidates(
   options: { snapshot?: OverlaySnapshot } = {},
 ): Promise<SymbolResolutionOutcome> {
   const { uid, name, include_content } = query;
-  const selectClause = `n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`;
+  const selectClause = `n.id AS id, n.name AS name, label(n) AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`;
 
   if (uid) {
     const cypher = `MATCH (n {id: $uid}) RETURN ${selectClause} LIMIT 1`;
@@ -308,7 +263,6 @@ export async function resolveSymbolCandidates(
     }
     if (candidates.length === 0) return notFoundForTombstones(filtered.tombstones);
     const symbol = candidates[0];
-    await enrichCandidateLabels(repo, [symbol]);
     return { kind: 'ok', symbol, resolvedLabel: symbol.type, snapshot: overlay?.snapshot };
   }
 
@@ -354,10 +308,8 @@ export async function resolveSymbolCandidates(
 
   if (normalized.length === 0) return notFoundForTombstones(filtered.tombstones);
 
-  await enrichCandidateLabels(repo, normalized);
-
   if (!hints.kind && normalized.length > 1) {
-    const ambiguousType = normalized.some((s) => s.type === '' || s.type === 'Constructor');
+    const ambiguousType = normalized.some((s) => s.type === 'Constructor');
     if (ambiguousType) {
       const candidateIds = normalized.map((s) => s.id).filter(Boolean);
       const workspaceSnapshot =
@@ -395,7 +347,7 @@ export async function resolveSymbolCandidates(
     return {
       kind: 'ok',
       symbol: normalized[0],
-      resolvedLabel: '',
+      resolvedLabel: normalized[0].type,
       snapshot: overlay?.snapshot,
     };
   }

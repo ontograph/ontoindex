@@ -87,6 +87,9 @@ const MAX_COUPLING_EDGE_ROWS = (() => {
   return Number.isFinite(raw) ? Math.max(1000, Math.min(raw, 49_999)) : 49_999;
 })();
 
+// Stays below the pool adapter's 50,000-row guard.
+const MAX_COMMUNITY_ROWS = 49_999;
+
 function labelForCommunity(id: string, heuristicLabel: string | null | undefined): string {
   return heuristicLabel?.trim() || id;
 }
@@ -125,6 +128,7 @@ export async function runCouplingMatrix(
         `
         MATCH (c:Community)
         RETURN c.id AS id, c.heuristicLabel AS heuristicLabel, c.symbolCount AS symbolCount
+        LIMIT ${MAX_COMMUNITY_ROWS}
         `,
         {},
       ) as Promise<CommunityRow[]>,
@@ -249,12 +253,16 @@ export async function runCouplingMatrix(
         minSymbols,
         flagThreshold,
       },
-      warnings:
-        edges.length >= MAX_COUPLING_EDGE_ROWS
+      warnings: [
+        ...(communities.length >= MAX_COMMUNITY_ROWS
+          ? [`Community scan reached ${MAX_COMMUNITY_ROWS} communities; metrics may be incomplete`]
+          : []),
+        ...(edges.length >= MAX_COUPLING_EDGE_ROWS
           ? [
               `Coupling edge scan reached ${MAX_COUPLING_EDGE_ROWS} relationships; metrics may be incomplete`,
             ]
-          : [],
+          : []),
+      ],
     } as unknown as AnalysisResult & CouplingMatrixResult;
   } catch (err: unknown) {
     return markInvocationError({

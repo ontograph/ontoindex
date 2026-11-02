@@ -445,6 +445,30 @@ describe('request workspace gate', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  it('preserves timeout diagnostics without copying private preparation fields', async () => {
+    const diagnostics = {
+      phase: 'build' as const,
+      elapsedMs: 120,
+      budgetMs: 100,
+      build: 'running' as const,
+    };
+    const original = new WorkspacePreparationError(
+      'workspace_timeout',
+      'secret=preparation-token source: private.ts',
+      undefined,
+      undefined,
+      undefined,
+      { ...diagnostics, privatePath: 'private.ts' } as typeof diagnostics,
+    );
+    vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(original);
+    const handler = vi.fn();
+    (backend as any).repoToolHandlers.overview = handler;
+    const failure = await backend.callTool('overview', {}).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: 'workspace_timeout', retryable: true, diagnostics });
+    expect(JSON.stringify(failure)).not.toMatch(/preparation-token|private\.ts/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   describe('committed fallback for a refused working-tree graph', () => {
     const tooLarge = () =>
       new WorkspacePreparationError('workspace_too_large', 'too large', undefined, {

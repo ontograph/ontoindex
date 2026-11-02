@@ -314,6 +314,47 @@ describe('MCP server tool-call errors', () => {
     },
   );
 
+  it('projects timeout diagnostics without copying private fields', async () => {
+    const diagnostics = {
+      phase: 'wait',
+      elapsedMs: 60_000,
+      budgetMs: 60_000,
+      build: 'running',
+    };
+    const { handler } = await createHarness({
+      callToolError: Object.assign(new Error('workspace unavailable'), {
+        code: 'workspace_timeout',
+        retryable: true,
+        diagnostics: { ...diagnostics, path: '/private/workspace' },
+      }),
+    });
+    const response = await handler({ params: { name: 'list_repos', arguments: {} } });
+    expect(response.isError).toBe(true);
+    expect(readErrorPayload(response.content[0].text)).toMatchObject({
+      code: 'workspace_timeout',
+      retryable: true,
+      diagnostics,
+    });
+    expect(readErrorPayload(response.content[0].text).diagnostics).toEqual(diagnostics);
+    expect(response.content[0].text).not.toContain('/private/workspace');
+  });
+
+  it.each([
+    { phase: 'unknown', elapsedMs: 60_000, budgetMs: 60_000, build: 'running' },
+    { phase: 'wait', elapsedMs: -1, budgetMs: 60_000, build: 'running' },
+    { phase: 'wait', elapsedMs: 60_000, budgetMs: 0.5, build: 'running' },
+    { phase: 'wait', elapsedMs: 60_000, budgetMs: 60_000, build: 'unknown' },
+  ])('omits malformed timeout diagnostics %j', async (diagnostics) => {
+    const { handler } = await createHarness({
+      callToolError: Object.assign(new Error('workspace unavailable'), {
+        code: 'workspace_timeout',
+        diagnostics,
+      }),
+    });
+    const response = await handler({ params: { name: 'list_repos', arguments: {} } });
+    expect(readErrorPayload(response.content[0].text)).not.toHaveProperty('diagnostics');
+  });
+
   it.each(['workspace_too_large', 'workspace_timeout'])(
     'rejects build diagnostics on %s',
     async (code) => {

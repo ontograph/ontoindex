@@ -60,6 +60,20 @@ describe('direct CLI tool commands', () => {
     expect(disposeMock).toHaveBeenCalledTimes(2);
   });
 
+  it('reports the same 1-based source lines as the MCP context route', async () => {
+    callToolMock.mockResolvedValue({
+      status: 'found',
+      symbol: { name: 'appended', filePath: 'src/callee.ts', startLine: 1, endLine: 1 },
+    });
+    const { contextCommand } = await import('../../src/cli/tool.js');
+
+    await contextCommand('appended');
+
+    expect(JSON.parse(writeSyncMock.mock.calls[0][1])).toMatchObject({
+      symbol: { startLine: 2, endLine: 2 },
+    });
+  });
+
   it('disposes the backend when a command fails', async () => {
     callToolMock.mockRejectedValue(new Error('tool failed'));
     const { contextCommand } = await import('../../src/cli/tool.js');
