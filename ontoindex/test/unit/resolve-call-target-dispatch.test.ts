@@ -66,7 +66,7 @@ describe('resolveCallTarget dispatch branches', () => {
     expect(result!.nodeId).toBe('method:User:save');
   });
 
-  it("primary === 'owner-scoped' without receiverTypeName: falls through to singleCandidate", () => {
+  it("primary === 'owner-scoped' without receiver evidence: rejects a unique candidate", () => {
     ctx.model.symbols.add('src/utils.ts', 'process', 'func:process', 'Function');
     ctx.importMap.set('src/app.ts', new Set(['src/utils.ts']));
 
@@ -76,8 +76,21 @@ describe('resolveCallTarget dispatch branches', () => {
       ctx,
     );
 
-    expect(result).not.toBeNull();
-    expect(result!.nodeId).toBe('func:process');
+    expect(result).toBeNull();
+  });
+
+  it('preserves untyped module-alias resolution with an explicit receiver name', () => {
+    ctx.model.symbols.add('src/utils.ts', 'process', 'func:process', 'Function');
+    ctx.importMap.set('src/app.ts', new Set(['src/utils.ts']));
+    ctx.moduleAliasMap.set('src/app.ts', new Map([['utils', 'src/utils.ts']]));
+
+    const result = _resolveCallTargetForTesting(
+      { calledName: 'process', callForm: 'member', receiverName: 'utils' },
+      'src/app.ts',
+      ctx,
+    );
+
+    expect(result?.nodeId).toBe('func:process');
   });
 
   it('singleton ancestryView: resolveMemberCall returns null for instance-only method (no extend parents)', () => {

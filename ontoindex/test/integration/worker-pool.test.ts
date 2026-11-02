@@ -21,12 +21,16 @@ import type {
 } from '../../src/core/ingestion/workers/parse-types.js';
 import {
   SupportedLanguages,
+  type GraphNode,
   type ParsedFile,
   type Scope,
   type SymbolDefinition,
 } from 'ontoindex-shared';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
-import { createParserForLanguage } from '../../src/core/tree-sitter/parser-loader.js';
+import {
+  createParserForLanguage,
+  isLanguageAvailable,
+} from '../../src/core/tree-sitter/parser-loader.js';
 import {
   extractParsedFileOutcome,
   type ScopeExtractionRecord,
@@ -139,6 +143,277 @@ describe('worker pool integration', () => {
       expect(property).not.toHaveProperty('declaredType');
     }
   });
+
+  it('publishes constructor properties and scope bindings through compiled worker IPC', async () => {
+    expect(fs.existsSync(DIST_WORKER)).toBe(true);
+    pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, { cooperativeShutdown: true });
+    const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>([
+      {
+        path: 'constructor.ts',
+        content: `class Service {} class Store {
+          constructor(public required: Service, readonly only: Service,
+            public optional?: Service, ordinary?: Service) {}
+        }`,
+      },
+    ]);
+    const properties = results
+      .flatMap((result) => result.symbols)
+      .filter((symbol) => symbol.type === 'Property');
+    expect(properties.map(({ name }) => name).sort()).toEqual(['only', 'optional', 'required']);
+    for (const property of properties) {
+      expect(property).toMatchObject({
+        ownerId: 'Class:constructor.ts:Store',
+        nodeId: `Property:constructor.ts:Store.${property.name}`,
+        declaredType: property.name === 'optional' ? 'Service | undefined' : 'Service',
+      });
+    }
+    expect(
+      results
+        .flatMap((result) => result.nodes)
+        .filter((node) => node.label === 'Property')
+        .map((node) => node.properties.name)
+        .sort(),
+    ).toEqual(['only', 'optional', 'required']);
+    expect(results.flatMap((result) => result.scopeExtractionOutcomes)).toEqual([
+      { filePath: 'constructor.ts', status: 'success' },
+    ]);
+    expect(results.flatMap((result) => result.parsedFiles).map((file) => file.filePath)).toEqual([
+      'constructor.ts',
+    ]);
+  });
+
+  it('excludes invalid constructor properties through compiled worker IPC', async () => {
+    expect(fs.existsSync(DIST_WORKER)).toBe(true);
+    pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, { cooperativeShutdown: true });
+    const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>([
+      {
+        path: 'invalid-constructor.ts',
+        content: `const object = { constructor(public objectOnly: string) {} };
+          class Store {
+            direct: string;
+            constructor(public valid: string) {}
+            static constructor(public staticOnly: string) {}
+            async constructor(public asyncOnly: string) {}
+          }`,
+      },
+    ]);
+    expect(
+      results
+        .flatMap((result) => result.symbols)
+        .filter((symbol) => symbol.type === 'Property')
+        .map((symbol) => symbol.name)
+        .sort(),
+    ).toEqual(['direct', 'valid']);
+    expect(
+      results
+        .flatMap((result) => result.nodes)
+        .filter((node) => node.label === 'Property')
+        .map((node) => node.properties.name)
+        .sort(),
+    ).toEqual(['direct', 'valid']);
+  });
+
+  it('preserves unknown and typed parenthesized receivers through compiled worker IPC', async () => {
+    expect(fs.existsSync(DIST_WORKER)).toBe(true);
+    pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, { cooperativeShutdown: true });
+    const inputs = [
+      'value',
+      '(value)',
+      '((value))',
+      '(value.a.b.c.d)',
+      `${'('.repeat(33)}value${')'.repeat(33)}`,
+      '(value as Unknown)',
+      'value!',
+    ].map((receiver, i) => ({
+      path: `unknown-${i}.ts`,
+      content: `class Unrelated { save() {} } function use<T>(value: T) { ${receiver}.save(); }`,
+    }));
+    inputs.push({
+      path: 'typed.ts',
+      content: 'class Known { save() {} } function typed(value: Known) { (value).save(); }',
+    });
+    const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>(inputs);
+    const calls = results.flatMap((result) => result.calls);
+    const symbols = results.flatMap((result) => result.symbols);
+    for (const input of inputs) {
+      expect(
+        calls.filter((call) => call.filePath === input.path && call.calledName === 'save'),
+      ).toHaveLength(1);
+    }
+    const context = createResolutionContext();
+    const graph = createKnowledgeGraph();
+    try {
+      for (const symbol of symbols) {
+        context.model.symbols.add(symbol.filePath, symbol.name, symbol.nodeId, symbol.type, {
+          ownerId: symbol.ownerId,
+        });
+      }
+      await processCallsFromExtracted(graph, calls, context);
+      const target = symbols.find(
+        (symbol) => symbol.filePath === 'typed.ts' && symbol.name === 'save',
+      );
+      const caller = symbols.find(
+        (symbol) => symbol.filePath === 'typed.ts' && symbol.name === 'typed',
+      );
+      expect(target).toBeDefined();
+      expect(caller).toBeDefined();
+      expect(
+        graph.relationships
+          .filter((edge) => edge.type === 'CALLS')
+          .map(({ sourceId, targetId }) => ({ sourceId, targetId })),
+      ).toEqual([{ sourceId: caller!.nodeId, targetId: target!.nodeId }]);
+    } finally {
+      context.clear();
+    }
+  });
+
+  it.each(['thread', 'process'] as const)(
+    'preserves Go indexed receivers through compiled worker IPC (%s)',
+    async (isolation) => {
+      expect(fs.existsSync(DIST_WORKER)).toBe(true);
+      pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, {
+        isolation,
+        cooperativeShutdown: true,
+      });
+      const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>([
+        {
+          path: 'indexed.go',
+          content: `package main
+type User struct {}
+func (u User) Save() {}
+func (u User) Greet() {}
+type Other struct {}
+func (o Other) Save() {}
+func caller() {
+  sl := make([]User, 1)
+  m := make(map[string]User)
+  sl[0].Save()
+  m["key"].Greet()
+}
+func unknownCaller() { unknown[0].Save() }
+`,
+        },
+      ]);
+      const calls = results
+        .flatMap((result) => result.calls)
+        .filter((call) => ['Save', 'Greet'].includes(call.calledName));
+      expect(calls).toEqual([
+        expect.objectContaining({
+          calledName: 'Save',
+          callForm: 'member',
+          receiverName: 'sl[0]',
+          receiverTypeName: 'User',
+        }),
+        expect.objectContaining({
+          calledName: 'Greet',
+          callForm: 'member',
+          receiverName: 'm["key"]',
+          receiverTypeName: 'User',
+        }),
+        expect.objectContaining({
+          calledName: 'Save',
+          callForm: 'member',
+          receiverName: 'unknown[0]',
+        }),
+      ]);
+      expect(calls[2]!.receiverTypeName).toBeUndefined();
+      const symbols = results.flatMap((result) => result.symbols);
+      const context = createResolutionContext();
+      const graph = createKnowledgeGraph();
+      try {
+        for (const symbol of symbols) {
+          context.model.symbols.add(symbol.filePath, symbol.name, symbol.nodeId, symbol.type, {
+            ownerId: symbol.ownerId,
+          });
+        }
+        await processCallsFromExtracted(graph, calls, context);
+        expect(
+          graph.relationships
+            .filter((edge) => edge.type === 'CALLS')
+            .map(({ sourceId, targetId }) => ({ sourceId, targetId }))
+            .sort((left, right) => left.targetId.localeCompare(right.targetId)),
+        ).toEqual([
+          {
+            sourceId: 'Function:indexed.go:caller',
+            targetId: 'Method:indexed.go:User.Greet#0',
+          },
+          {
+            sourceId: 'Function:indexed.go:caller',
+            targetId: 'Method:indexed.go:User.Save#0',
+          },
+        ]);
+      } finally {
+        context.clear();
+      }
+    },
+  );
+
+  it.skipIf(!isLanguageAvailable(SupportedLanguages.Swift)).each(['thread', 'process'] as const)(
+    'preserves Swift self receivers through compiled worker IPC (%s)',
+    async (isolation) => {
+      expect(fs.existsSync(DIST_WORKER)).toBe(true);
+      pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, {
+        isolation,
+        cooperativeShutdown: true,
+      });
+      const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>([
+        {
+          path: 'self.swift',
+          content: `class Service {
+  func save() {}
+  func caller() { self.save() }
+}
+class Other { func save() {} }`,
+        },
+      ]);
+      const calls = results
+        .flatMap((result) => result.calls)
+        .filter((call) => call.calledName === 'save');
+      expect(calls).toEqual([
+        expect.objectContaining({
+          calledName: 'save',
+          callForm: 'member',
+          receiverName: 'self',
+          receiverTypeName: 'Service',
+        }),
+      ]);
+      const symbols = results.flatMap((result) => result.symbols);
+      const context = createResolutionContext();
+      const graph = createKnowledgeGraph();
+      try {
+        for (const node of results.flatMap((result) => result.nodes)) {
+          graph.addNode(node as GraphNode);
+        }
+        for (const symbol of symbols) {
+          context.model.symbols.add(symbol.filePath, symbol.name, symbol.nodeId, symbol.type, {
+            ownerId: symbol.ownerId,
+          });
+        }
+        await processCallsFromExtracted(graph, calls, context);
+        const owner = symbols.find((symbol) => symbol.name === 'Service');
+        expect(owner).toBeDefined();
+        const target = symbols.find(
+          (symbol) => symbol.name === 'save' && symbol.ownerId === owner!.nodeId,
+        );
+        const caller = symbols.find(
+          (symbol) => symbol.name === 'caller' && symbol.ownerId === owner!.nodeId,
+        );
+        expect(target).toBeDefined();
+        expect(caller).toBeDefined();
+        expect(
+          graph.relationships
+            .filter((edge) => edge.type === 'CALLS')
+            .map(({ sourceId, targetId }) => ({ sourceId, targetId })),
+        ).toEqual([{ sourceId: caller!.nodeId, targetId: target!.nodeId }]);
+        for (const edge of graph.relationships.filter((edge) => edge.type === 'CALLS')) {
+          expect(graph.getNode(edge.sourceId)).toBeDefined();
+          expect(graph.getNode(edge.targetId)).toBeDefined();
+        }
+      } finally {
+        context.clear();
+      }
+    },
+  );
 
   it('keeps exported declaration ownership in the compiled worker', async () => {
     expect(fs.existsSync(DIST_WORKER)).toBe(true);

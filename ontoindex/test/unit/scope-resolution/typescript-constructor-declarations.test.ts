@@ -21,30 +21,46 @@ async function parse(source: string, filePath = 'fixture.ts') {
 }
 
 describe('TypeScript constructor declarations', () => {
-  it('captures constructor ownership, arity and readonly parameter annotations without properties', async () => {
-    const root = await parse(
-      'class ScopeTreeInvariantError { constructor(readonly invariant: X, message: string) {} }',
-    );
-    const captures = emitTypeScriptCaptures(root);
-    expect(structuredClone(captures)).toEqual(captures);
-    const result = extract(captures, 'fixture.ts', typescriptProvider);
-    const owner = result.localDefs.find((def) => def.type === 'Class')!;
-    expect(result.localDefs.filter((def) => def.type === 'Method')).toMatchObject([
-      {
-        qualifiedName: 'ScopeTreeInvariantError.constructor',
-        ownerId: owner.nodeId,
-        parameterCount: 2,
-        requiredParameterCount: 2,
-      },
-    ]);
-    expect(result.localDefs.filter((def) => def.type === 'Property')).toEqual([]);
-    const fn = result.scopes.find((scope) => scope.kind === 'Function')!;
-    expect([...fn.bindings.keys()]).toEqual(['invariant', 'message']);
-    expect([...fn.typeBindings.entries()].map(([name, type]) => [name, type.rawName])).toEqual([
-      ['invariant', 'X'],
-      ['message', 'string'],
-    ]);
-  });
+  it.each(
+    ['fixture.ts', 'fixture.tsx'].flatMap((filePath) =>
+      [
+        'readonly',
+        'public',
+        'private',
+        'protected',
+        'public readonly',
+        'private readonly',
+        'protected readonly',
+      ].map((modifiers) => ({ filePath, modifiers })),
+    ),
+  )(
+    'captures $modifiers parameter ownership, arity and types without properties in $filePath',
+    async ({ filePath, modifiers }) => {
+      const root = await parse(
+        `class ScopeTreeInvariantError { constructor(${modifiers} invariant: X, message: string) {} }`,
+        filePath,
+      );
+      const captures = emitTypeScriptCaptures(root);
+      expect(structuredClone(captures)).toEqual(captures);
+      const result = extract(captures, filePath, typescriptProvider);
+      const owner = result.localDefs.find((def) => def.type === 'Class')!;
+      expect(result.localDefs.filter((def) => def.type === 'Method')).toMatchObject([
+        {
+          qualifiedName: 'ScopeTreeInvariantError.constructor',
+          ownerId: owner.nodeId,
+          parameterCount: 2,
+          requiredParameterCount: 2,
+        },
+      ]);
+      expect(result.localDefs.filter((def) => def.type === 'Property')).toEqual([]);
+      const fn = result.scopes.find((scope) => scope.kind === 'Function')!;
+      expect([...fn.bindings.keys()]).toEqual(['invariant', 'message']);
+      expect([...fn.typeBindings.entries()].map(([name, type]) => [name, type.rawName])).toEqual([
+        ['invariant', 'X'],
+        ['message', 'string'],
+      ]);
+    },
+  );
 
   it.each(['fixture.ts', 'fixture.js'])(
     'captures an ordinary constructor in %s',
@@ -75,11 +91,7 @@ describe('TypeScript constructor declarations', () => {
   });
 
   it.each([
-    'public value: X',
-    'private value: X',
-    'protected value: X',
     'override value: X',
-    'public readonly value: X',
     'override readonly value: X',
     '@decorator value: X',
     'value = false, ...rest: X[]',

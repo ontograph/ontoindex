@@ -251,7 +251,11 @@ function emptyReport(
   };
 }
 
-export function currentCliCommand(): { command: string; argsPrefix: string[]; displayPrefix: string } {
+export function currentCliCommand(): {
+  command: string;
+  argsPrefix: string[];
+  displayPrefix: string;
+} {
   const cliEntry = process.env.ONTOINDEX_CLI_PATH || process.argv[1];
   if (cliEntry) {
     return {

@@ -14,7 +14,13 @@ const ensureFresh = vi.fn<typeof gnEnsureFresh>().mockResolvedValue({
 } as Awaited<ReturnType<typeof gnEnsureFresh>>);
 const spawnRefresh = vi.fn().mockResolvedValue(undefined);
 
-async function fixture(options: { commitless?: boolean; plain?: boolean; profile?: 'full' | 'symbols' | 'huge-repo-symbols' } = {}) {
+async function fixture(
+  options: {
+    commitless?: boolean;
+    plain?: boolean;
+    profile?: 'full' | 'symbols' | 'huge-repo-symbols';
+  } = {},
+) {
   const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-auto-refresh-'));
   roots.push(repoPath);
   const git = (args: string[]) => execFileText('git', args, { cwd: repoPath });
@@ -24,16 +30,28 @@ async function fixture(options: { commitless?: boolean; plain?: boolean; profile
   await fs.writeFile(path.join(repoPath, '.gitignore'), '.ontoindex/\n');
   const commit = async () => {
     await git(['add', '.']);
-    await git(['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'change']);
+    await git([
+      '-c',
+      'user.name=Test',
+      '-c',
+      'user.email=test@example.invalid',
+      'commit',
+      '-qm',
+      'change',
+    ]);
   };
   if (!options.commitless && !options.plain) await commit();
   const storagePath = path.join(repoPath, '.ontoindex');
   await fs.mkdir(storagePath);
   const sourceManifest = await computeSourceManifest(repoPath, {
-    includePaths: ['src'], pipelineProfile: options.profile ?? 'full',
+    includePaths: ['src'],
+    pipelineProfile: options.profile ?? 'full',
   });
   const meta: RepoMeta = {
-    repoPath, lastCommit: sourceManifest.head ?? '', indexedAt: new Date().toISOString(), sourceManifest,
+    repoPath,
+    lastCommit: sourceManifest.head ?? '',
+    indexedAt: new Date().toISOString(),
+    sourceManifest,
   };
   await fs.writeFile(path.join(storagePath, 'meta.json'), JSON.stringify(meta));
   const advance = async () => {
@@ -63,7 +81,9 @@ describe('automatic refresh', () => {
   it('shares one submission across concurrent calls', async () => {
     const { repo, advance } = await fixture();
     await advance();
-    const warnings = await Promise.all(Array.from({ length: 6 }, () => maybeScheduleAutoRefresh(repo, { ensureFresh })));
+    const warnings = await Promise.all(
+      Array.from({ length: 6 }, () => maybeScheduleAutoRefresh(repo, { ensureFresh })),
+    );
     expect(ensureFresh).toHaveBeenCalledTimes(1);
     expect(new Set(warnings).size).toBe(1);
   });
@@ -75,29 +95,36 @@ describe('automatic refresh', () => {
     expect(ensureFresh).not.toHaveBeenCalled();
   });
 
-  it.each([{ commitless: true }, { plain: true }])('checks only the recorded scope without commits (%j)', async (options) => {
-    const { repo } = await fixture({ ...options, profile: 'symbols' });
-    let now = Date.now();
-    const deps = { ensureFresh, spawnRefresh, now: () => now };
-    expect(await maybeScheduleAutoRefresh(repo, deps)).toBeUndefined();
-    await fs.writeFile(path.join(repo.repoPath, 'outside.ts'), 'outside\n');
-    now += 300001;
-    expect(await maybeScheduleAutoRefresh(repo, deps)).toBeUndefined();
-    await fs.writeFile(path.join(repo.repoPath, 'src', 'main.ts'), 'inside\n');
-    now += 300001;
-    expect(await maybeScheduleAutoRefresh(repo, deps)).toContain('started');
-    expect(spawnRefresh).toHaveBeenCalledWith(repo, { includePaths: ['src/'], pipelineProfile: 'symbols' });
-    expect(await maybeScheduleAutoRefresh(repo, deps)).toContain('stale');
-    expect(spawnRefresh).toHaveBeenCalledTimes(1);
-    expect(ensureFresh).not.toHaveBeenCalled();
-  });
+  it.each([{ commitless: true }, { plain: true }])(
+    'checks only the recorded scope without commits (%j)',
+    async (options) => {
+      const { repo } = await fixture({ ...options, profile: 'symbols' });
+      let now = Date.now();
+      const deps = { ensureFresh, spawnRefresh, now: () => now };
+      expect(await maybeScheduleAutoRefresh(repo, deps)).toBeUndefined();
+      await fs.writeFile(path.join(repo.repoPath, 'outside.ts'), 'outside\n');
+      now += 300001;
+      expect(await maybeScheduleAutoRefresh(repo, deps)).toBeUndefined();
+      await fs.writeFile(path.join(repo.repoPath, 'src', 'main.ts'), 'inside\n');
+      now += 300001;
+      expect(await maybeScheduleAutoRefresh(repo, deps)).toContain('started');
+      expect(spawnRefresh).toHaveBeenCalledWith(repo, {
+        includePaths: ['src/'],
+        pipelineProfile: 'symbols',
+      });
+      expect(await maybeScheduleAutoRefresh(repo, deps)).toContain('stale');
+      expect(spawnRefresh).toHaveBeenCalledTimes(1);
+      expect(ensureFresh).not.toHaveBeenCalled();
+    },
+  );
 
   it('passes the recorded include paths and symbols profile to ensure-fresh', async () => {
     const { repo, advance } = await fixture({ profile: 'symbols' });
     await advance();
     await maybeScheduleAutoRefresh(repo, { ensureFresh });
     expect(ensureFresh).toHaveBeenCalledWith(repo.repoPath, {
-      repo: repo.repoPath, autoAnalyze: true,
+      repo: repo.repoPath,
+      autoAnalyze: true,
       scope: { includePaths: ['src/'], pipelineProfile: 'symbols' },
     });
   });
@@ -129,14 +156,26 @@ describe('automatic refresh', () => {
   it('reports a running refresh and names other blockers in the stale warning', async () => {
     const { repo, advance } = await fixture();
     await advance();
-    ensureFresh.mockResolvedValueOnce({ analysisSubmission: {
-      status: 'blocked', reasonCode: 'ACTIVE_JOB_CONFLICT', message: 'another job is running',
-    } } as Awaited<ReturnType<typeof gnEnsureFresh>>);
-    expect(await maybeScheduleAutoRefresh(repo, { ensureFresh })).toContain('A refresh is already running');
+    ensureFresh.mockResolvedValueOnce({
+      analysisSubmission: {
+        status: 'blocked',
+        reasonCode: 'ACTIVE_JOB_CONFLICT',
+        message: 'another job is running',
+      },
+    } as Awaited<ReturnType<typeof gnEnsureFresh>>);
+    expect(await maybeScheduleAutoRefresh(repo, { ensureFresh })).toContain(
+      'A refresh is already running',
+    );
     await fs.rm(path.join(repo.storagePath, 'auto-refresh.stamp'));
-    ensureFresh.mockResolvedValueOnce({ analysisSubmission: {
-      status: 'blocked', reasonCode: 'untrusted', message: 'repair manually',
-    } } as Awaited<ReturnType<typeof gnEnsureFresh>>);
-    expect(await maybeScheduleAutoRefresh(repo, { ensureFresh })).toContain('Refresh blocked (untrusted)');
+    ensureFresh.mockResolvedValueOnce({
+      analysisSubmission: {
+        status: 'blocked',
+        reasonCode: 'untrusted',
+        message: 'repair manually',
+      },
+    } as Awaited<ReturnType<typeof gnEnsureFresh>>);
+    expect(await maybeScheduleAutoRefresh(repo, { ensureFresh })).toContain(
+      'Refresh blocked (untrusted)',
+    );
   });
 });

@@ -959,7 +959,7 @@ export function emitTypeScriptCatchBindingCaptures(node: SyntaxNode): CaptureMat
   ];
 }
 
-/** Detach a complete supported signature's ordinary parameter names. */
+/** Detach a complete supported signature's parameter names. */
 export function emitTypeScriptParameterBindingCaptures(node: SyntaxNode): CaptureMatch[] {
   if (
     ![
@@ -1030,14 +1030,23 @@ export function emitTypeScriptParameterBindingCaptures(node: SyntaxNode): Captur
       const value = binding.childForFieldName(assignment ? 'right' : 'value');
       if (annotation) typeScriptAnnotationType(annotation);
       const parts = binding.children.filter((child) => child.type !== 'comment');
-      const readonly = parts[0]?.type === 'readonly' && !parts[0].isNamed;
-      if (readonly) {
+      const visibility = parts[0]?.type === 'accessibility_modifier' ? parts[0] : undefined;
+      const readonly =
+        parts[Number(!!visibility)]?.type === 'readonly' && !parts[Number(!!visibility)]!.isNamed;
+      if (visibility || readonly) {
         const owner = node.parent?.parent;
-        if (binding.type !== 'required_parameter' || pattern?.type !== 'identifier' || !owner)
+        if (
+          assignment ||
+          pattern?.type !== 'identifier' ||
+          !owner ||
+          (visibility &&
+            (!visibility.isNamed || !['public', 'private', 'protected'].includes(visibility.text)))
+        )
           unsupported(binding);
         validateConstructorHeader(node, owner);
       }
       const expected = [
+        ...(visibility ? [visibility] : []),
         ...(readonly ? ['readonly'] : []),
         pattern,
         ...(binding.type === 'optional_parameter' ? ['?'] : []),

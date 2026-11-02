@@ -409,6 +409,53 @@ describe('borrowed TS/JS declaration captures', () => {
 });
 
 describe('borrowed TS/JS parameter binding captures', () => {
+  it.each(['fixture.ts', 'fixture.tsx'])(
+    'retains constructor parameter-property bindings in %s',
+    async (filePath) => {
+      const { root } = await parse(
+        `class Store {
+        constructor(
+          public service: Service,
+          private readonly secret: Secret,
+          protected readonly fallback: Service = new Service(),
+          readonly id?: string,
+          public optional?: Service,
+          ordinary?: Ignored
+        ) {}
+      }`,
+        filePath,
+      );
+      expect(root.hasError).toBe(false);
+      const constructor = root.descendantsOfType('method_definition')[0]!;
+      const captures = emitTypeScriptParameterBindingCaptures(constructor);
+      expect(captures.map((match) => match['@declaration.name']!.text)).toEqual([
+        'service',
+        'secret',
+        'fallback',
+        'id',
+        'optional',
+        'ordinary',
+      ]);
+      expect(captures.map((match) => match['@typescript.annotation']?.text)).toEqual([
+        'Service',
+        'Secret',
+        'Service',
+        'string',
+        'Service',
+        'Ignored',
+      ]);
+      const result = extract(emitTypeScriptCaptures(root), filePath, hooks);
+      const owner = scopeFor(result, constructor);
+      expect(
+        owner.ownedDefs.filter((def) => def.type === 'Variable').map((def) => def.qualifiedName),
+      ).toEqual(['service', 'secret', 'fallback', 'id', 'optional', 'ordinary']);
+      expect(
+        owner.ownedDefs.filter((def) => def.type === 'Method').map((def) => def.qualifiedName),
+      ).toEqual(['Store.constructor']);
+      expect(owner.ownedDefs).toHaveLength(7);
+    },
+  );
+
   it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
     'detaches trailing empty-object defaults in every Function form in %s',
     async (filePath) => {
@@ -663,7 +710,13 @@ describe('borrowed TS/JS parameter binding captures', () => {
     'function fn(valid, [[invalid]]) {}',
     'function fn(valid, valid) {}',
     'function fn(this: object, valid: string) {}',
-    'class C { constructor(public valid: string) {} }',
+    'class C { method(public invalid: string) {} }',
+    'class C { method(readonly invalid: string) {} }',
+    'class C { static constructor(public invalid: string) {} }',
+    "class C { ['constructor'](readonly invalid: string) {} }",
+    'class C { constructor(public public invalid: string) {} }',
+    'class C { constructor(readonly public invalid: string) {} }',
+    'class C { constructor(public { invalid }: Options) {} }',
     'class C { method(@decorator valid: string) {} }',
     String.raw`function fn(valid, esc\u0061ped) {}`,
     'function fn(valid, invalid: ) {}',

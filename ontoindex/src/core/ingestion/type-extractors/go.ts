@@ -6,6 +6,7 @@ import type {
   ParameterExtractor,
   TypeBindingExtractor,
   PendingAssignmentExtractor,
+  PatternBindingExtractor,
 } from './types.js';
 import {
   extractSimpleTypeName,
@@ -245,6 +246,87 @@ const extractGoElementTypeFromTypeNode = (
   }
   // Fallback: text-based extraction ([]User → User, User[] → User)
   return extractElementTypeFromString(typeNode.text, pos);
+};
+
+/** Retain make's container annotation without changing the existing element binding. */
+const getDeclarationTypeNode = (node: SyntaxNode): SyntaxNode | null => {
+  if (node.type !== 'short_var_declaration') return null;
+  const left = node.childForFieldName('left');
+  const right = node.childForFieldName('right');
+  if (!left || !right) return null;
+  const names = left.type === 'expression_list' ? left.namedChildren : [left];
+  const values = right.type === 'expression_list' ? right.namedChildren : [right];
+  if (names.length !== 1 || names[0].type !== 'identifier' || values.length !== 1) return null;
+  const value = values[0];
+  if (value.type !== 'call_expression' || value.childForFieldName('function')?.text !== 'make') {
+    return null;
+  }
+  const type = value.childForFieldName('arguments')?.firstNamedChild;
+  return type?.type === 'slice_type' || type?.type === 'map_type' ? type : null;
+};
+
+const extractPatternBinding: PatternBindingExtractor = (
+  node,
+  _scopeEnv,
+  declarationTypeNodes,
+  scope,
+) => {
+  const receiver = node.childForFieldName('operand');
+  if (receiver?.type !== 'index_expression') return undefined;
+  const base = receiver.childForFieldName('operand');
+  if (base?.type !== 'identifier') return undefined;
+  const call = node.parent;
+  if (call?.type !== 'call_expression' || call.childForFieldName('function')?.id !== node.id) {
+    return undefined;
+  }
+  const statement = call.parent;
+  if (statement?.type !== 'expression_statement') return undefined;
+  const body =
+    statement.parent?.type === 'statement_list' ? statement.parent.parent : statement.parent;
+  const fn = body?.parent;
+  if (
+    body?.type !== 'block' ||
+    (fn?.type !== 'function_declaration' && fn?.type !== 'method_declaration')
+  )
+    return undefined;
+
+  const type = declarationTypeNodes.get(`${scope}\0${base.text}`);
+  if (!type || !['slice_type', 'array_type', 'map_type'].includes(type.type)) return undefined;
+  const element = type.childForFieldName(type.type === 'map_type' ? 'value' : 'element');
+  const namedElement = element?.type === 'pointer_type' ? element.firstNamedChild : element;
+  if (namedElement?.type !== 'type_identifier') {
+    return undefined;
+  }
+  // The type environment flattens blocks: accept only a parameter or a prior
+  // declaration in this function's body, never a shadow from a nested block.
+  let declaration: SyntaxNode | null = type.parent;
+  while (
+    declaration &&
+    !['parameter_declaration', 'var_declaration', 'short_var_declaration'].includes(
+      declaration.type,
+    )
+  ) {
+    if (declaration.id === fn.id) return undefined;
+    declaration = declaration.parent;
+  }
+  if (!declaration || declaration.endIndex > call.startIndex) return undefined;
+  if (declaration.type === 'parameter_declaration') {
+    if (declaration.parent?.parent?.id !== fn.id) return undefined;
+  } else {
+    const declarationBody =
+      declaration.parent?.type === 'statement_list'
+        ? declaration.parent.parent
+        : declaration.parent;
+    if (declarationBody?.id !== body.id) return undefined;
+  }
+  const typeName = extractGoElementTypeFromTypeNode(type);
+  return typeName
+    ? {
+        varName: receiver.text,
+        typeName,
+        narrowingRange: { startIndex: call.startIndex, endIndex: call.endIndex },
+      }
+    : undefined;
 };
 
 /** Check if a Go type node represents a channel type. Used to determine
@@ -513,6 +595,9 @@ const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) =>
 
 export const typeConfig: LanguageTypeConfig = {
   declarationNodeTypes: DECLARATION_NODE_TYPES,
+  getDeclarationTypeNode,
+  patternBindingNodeTypes: new Set(['selector_expression']),
+  extractPatternBinding,
   forLoopNodeTypes: FOR_LOOP_NODE_TYPES,
   extractDeclaration,
   extractParameter,

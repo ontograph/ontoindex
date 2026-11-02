@@ -156,6 +156,7 @@ interface CouplingFanOut {
 
 interface TechDebtFanOut {
   symbols: Array<{ name: string; filePath: string; score: number; callerCount: number }>;
+  warnings?: string[];
 }
 
 interface HotspotFanOut {
@@ -351,7 +352,11 @@ export async function runAuditReport(
     warnings.push(...couplingData.warnings.map((warning) => `coupling-matrix: ${warning}`));
     incompleteSections.push('coupling-matrix');
   }
-  const debtSymbols = (debtResult as TechDebtFanOut | null)?.symbols ?? [];
+  const debtData = debtResult as TechDebtFanOut | null;
+  const debtSymbols = debtData?.symbols ?? [];
+  if (debtData?.warnings?.length) {
+    warnings.push(...debtData.warnings.map((warning) => `tech-debt: ${warning}`));
+  }
   const hotspots = (hotspotResult as HotspotFanOut | null)?.hotspots ?? [];
   const violations = (violationsResult as BoundaryFanOut | null)?.violations ?? [];
   const coverage = (gapResult as VerificationGapFanOut | null)?.coverage ?? [];

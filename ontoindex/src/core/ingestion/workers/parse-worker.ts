@@ -612,13 +612,17 @@ const findEnclosingFunctionId = (
           provider.resolveEnclosingOwner,
         );
         const qualifiedName = classInfo ? `${classInfo.className}.${funcName}` : funcName;
-        // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
+        // Match definition-phase arity IDs, including Swift member Functions.
         // Use the same MethodExtractor (getMethodInfo) as the definition phase.
         // When same-arity collisions exist, also append ~type1,type2.
         let arity: number | undefined;
         let encTypeTag = '';
-        if (finalLabel === 'Method' || finalLabel === 'Constructor') {
-          const encLang = getLanguageFromFilename(filePath);
+        const encLang = getLanguageFromFilename(filePath);
+        if (
+          finalLabel === 'Method' ||
+          finalLabel === 'Constructor' ||
+          (finalLabel === 'Function' && encLang === SupportedLanguages.Swift && !!classInfo)
+        ) {
           const classNode =
             findEnclosingClassNode(current) ?? findClassNodeByQualifiedName(current);
           let info: MethodInfo | undefined;

@@ -8,6 +8,30 @@ status: active
 
 # OntoIndex Current Forward Plan
 
+2026-11-02 qualification follow-up: R1–R3 and six formatting failures from the
+pinned 2.4.12 report are repaired locally. Follow-up review fixed error disclosure,
+opaque receiver fallback and invalid constructor captures. Fresh native build,
+728 tests, 10/10 probes, typecheck and root formatting pass; lint has zero errors.
+An additional six neighboring Rust/TS/JS and audit suites pass 528 tests.
+The full backend follow-up exposed 11 failing assertions in Swift, Go and
+TypeScript tests. Repairs now pass 731 affected tests and seven source-worker
+tests; typecheck, lint (zero errors) and root formatting pass. The final backend
+rerun exits 0: 18,960 passes, one expected failure, 304 skips; all 4,929 input
+hashes and HEAD match. The 2026-11-03 fresh Linux build and compiled-worker
+follow-up pass: 91 tests across three files, no skips, including Go and Swift
+thread/process IPC; retained qualification probes pass 10/10. All 5,824 recorded
+source/artifact inputs and HEAD match after validation. Historical evidence is
+preserved. A subsequent endpoint review found that the Swift test accepted a
+dangling caller ID. Both caller builders now follow declaration arity rules;
+fresh build and 341 focused tests pass with zero skips, including endpoint
+membership checks and overloaded callers. Ten probes, typecheck, lint and
+formatting pass; all 5,824 source/artifact hashes match. The full backend suite
+after the endpoint correction also exits 0: 18,967 passes, one expected failure,
+304 skips, 803 passing files and three skipped files, in 952.62 seconds.
+All 5,824 source/artifact hashes and HEAD remain unchanged. Repairs
+are uncommitted and not installed; GN state remains unchanged. Evidence:
+[qualification repair](audit_session-2026-11-02-2412-qualification-repair.md).
+
 2026-11-02 delivery: accumulated repairs are committed at `8a51cbb` and pushed
 to main as 2.4.12. Versioned-tree unit/integration gate, commit hooks,
 clean-commit build and installed parsing/native/database/MCP smoke pass.

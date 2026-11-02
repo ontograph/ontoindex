@@ -128,15 +128,19 @@ describe('real audit backend invocation failures', () => {
     },
     {
       name: 'tech-debt catch',
-      invoke: () => runTechDebt(repo, {}),
+      invoke: () => {
+        vi.mocked(executeParameterized).mockRejectedValue(failure);
+        vi.mocked(commitsByFile).mockResolvedValue(new Map());
+        return runTechDebt(repo, {});
+      },
       expected: {
         tool: 'tech_debt',
         since: '6 months',
         min_lines: 10,
         symbol_count: 0,
         symbols: [],
-        error: 'Tech debt analysis failed: inner dependency failed',
-        errors: ['Tech debt analysis failed: inner dependency failed'],
+        error: 'Tech debt analysis failed: Required structural query failed',
+        errors: ['Tech debt analysis failed: Required structural query failed'],
       },
     },
     {
@@ -232,8 +236,70 @@ describe('real audit backend invocation failures', () => {
     }
   });
 
-  it('keeps tech-debt query fallback and non-Git hotspot results successful and unmarked', async () => {
-    vi.mocked(executeParameterized).mockRejectedValue(failure);
+  it('real aggregation marks failed required tech-debt queries incomplete', async () => {
+    const privateError = 'query failed: secret-token /private/database';
+    vi.mocked(executeParameterized).mockImplementation(async (_repoId, query) => {
+      if (query.includes('AS parameterCount')) throw new Error(privateError);
+      return [];
+    });
+    vi.mocked(commitsByFile).mockResolvedValue(new Map());
+    const result = await runAuditReport(repo, {});
+    expect(result.incompleteSections).toContain('tech-debt');
+    expect(result.warnings).toContain(
+      'tech-debt: Tech debt analysis failed: Required structural query failed',
+    );
+    expect(result.riskSurface).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain('secret-token');
+    expect(JSON.stringify(result)).not.toContain('/private/database');
+    const markdown = formatAuditReport(result);
+    expect(markdown).not.toContain('secret-token');
+    expect(markdown).not.toContain('/private/database');
+    expect(markdown).toContain(
+      'Unavailable: tech-debt, hotspot-analysis did not complete (see warnings).',
+    );
+    expect(result.couplingViolations).toEqual([
+      { module: 'retained', ca: 1, ce: 9, instability: 0.9 },
+    ]);
+  });
+
+  it('real aggregation forwards optional caller-count warnings while retaining tech-debt rows', async () => {
+    const privateError = 'query failed: secret-token /private/database';
+    vi.mocked(executeParameterized).mockImplementation(async (_repoId, query) => {
+      if (query.includes('count(*) AS callerCount')) throw new Error(privateError);
+      if (query.includes('AS parameterCount')) {
+        return [
+          {
+            name: 'retainedFn',
+            type: 'Function',
+            filePath: 'src/retained.ts',
+            startLine: 1,
+            endLine: 120,
+            parameterCount: 6,
+          },
+        ];
+      }
+      return [];
+    });
+    vi.mocked(commitsByFile).mockResolvedValue(new Map([['src/retained.ts', 3]]));
+    vi.mocked(collectGitCommits).mockResolvedValue({ commits: [], warnings: [] });
+    const result = await runAuditReport(repo, {});
+    expect(result.incompleteSections).not.toContain('tech-debt');
+    expect(result.warnings).toContain('tech-debt: Caller counts unavailable; defaulted to zero.');
+    expect(result.riskSurface).toEqual([
+      expect.objectContaining({ symbol: 'retainedFn', file: 'src/retained.ts', callerCount: 0 }),
+    ]);
+    expect(JSON.stringify(result)).not.toContain(privateError);
+    const markdown = formatAuditReport(result);
+    expect(markdown).toContain('retainedFn');
+    expect(markdown).toContain('tech-debt: Caller counts unavailable; defaulted to zero.');
+    expect(markdown).not.toContain(privateError);
+  });
+
+  it('keeps a successful tech-debt compatibility fallback and non-Git hotspot results unmarked', async () => {
+    vi.mocked(executeParameterized).mockImplementation(async (_repoId, query) => {
+      if (query.includes('n.parameterCount')) throw failure;
+      return [];
+    });
     vi.mocked(commitsByFile).mockResolvedValue(new Map());
     vi.mocked(collectGitCommits).mockResolvedValue({
       commits: [],
@@ -242,6 +308,7 @@ describe('real audit backend invocation failures', () => {
     const debt = await runTechDebt(repo, {});
     const hotspot = await runHotspotAnalysis(repo, {});
     expect(debt).toMatchObject({ status: 'success', symbols: [] });
+    expect(debt.warnings).toBeUndefined();
     expect(hotspot).toMatchObject({
       status: 'success',
       hotspots: [],

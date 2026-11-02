@@ -19,6 +19,26 @@ status: active
 
 # OntoIndex Pending Tasks
 
+2026-11-02 qualification repairs R1–R3 and follow-up guards are locally validated
+with 728 tests, 10/10 probes, native build, typecheck and root formatting passing.
+An additional six neighboring Rust/TS/JS and audit suites pass 528 tests with
+all 3,176 recorded input hashes unchanged. The full backend follow-up found
+11 failing assertions; their Swift/Go repairs and TypeScript expectations pass
+731 affected tests plus seven source-worker tests. The final backend rerun exits
+0: 18,960 passes, one expected failure, 304 skips; all 4,929 input hashes and HEAD
+match. Fresh compiled-worker validation is complete on 2026-11-03: build exits 0,
+91 tests pass with no skips, retained probes pass 10/10, and all 5,824 recorded
+source/artifact inputs match. Subsequent Swift endpoint review corrected a real
+caller-ID defect previously accepted by the test. Fresh build, 341 focused tests
+(zero skips), ten probes, typecheck, lint and formatting pass; all 5,824 hashes
+match. Fresh full backend validation after that correction exits 0: 18,967
+passes, one expected failure, 304 skips; 803 passing files and three skipped
+files. All 5,824 source/artifact hashes and HEAD remain unchanged.
+Delivery remains pending; the broader qualification
+matrix was not repeated.
+GN state is unchanged. Evidence:
+[qualification repair](audit_session-2026-11-02-2412-qualification-repair.md).
+
 2026-11-02 delivery is complete: 2.4.12 product commit `8a51cbb` is pushed to
 main and selected by the local CLI and Codex MCP. Versioned-tree gate,
 clean-commit build and installed smoke pass. No release publication or CI

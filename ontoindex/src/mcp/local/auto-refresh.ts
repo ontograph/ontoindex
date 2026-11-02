@@ -28,7 +28,8 @@ interface RefreshDeps {
 
 const pending = new Map<string, Promise<string | undefined>>();
 const sourceChecks = new Map<string, { expiresAt: number; warning?: string }>();
-const STALE_DETAIL = 'This answer uses the existing index; results update after the background refresh finishes.';
+const STALE_DETAIL =
+  'This answer uses the existing index; results update after the background refresh finishes.';
 const STALE = `OntoIndex index is stale. ${STALE_DETAIL}`;
 
 async function spawnRefresh(repo: RefreshRepo, scope: RefreshScope): Promise<void> {
@@ -39,7 +40,8 @@ async function spawnRefresh(repo: RefreshRepo, scope: RefreshScope): Promise<voi
   // An empty Git repository supports analyze; only plain folders need --skip-git.
   try {
     await execFileText('git', ['rev-parse', '--show-toplevel'], {
-      cwd: repo.repoPath, timeoutMs: 1000,
+      cwd: repo.repoPath,
+      timeoutMs: 1000,
     });
   } catch {
     args.push('--skip-git');
@@ -65,11 +67,16 @@ async function schedule(repo: RefreshRepo, deps: RefreshDeps): Promise<string | 
   const { meta } = await readActiveGenerationMeta(repo.storagePath);
   if (!meta) return undefined;
   const head = await execFileText('git', ['rev-parse', 'HEAD'], {
-    cwd: repo.repoPath, timeoutMs: 1000,
-  }).then((value) => value.trim(), () => undefined);
+    cwd: repo.repoPath,
+    timeoutMs: 1000,
+  }).then(
+    (value) => value.trim(),
+    () => undefined,
+  );
   const commitless = !head && !meta.lastCommit && !!meta.sourceManifest;
   if (!commitless && (!head || !meta.lastCommit || head === meta.lastCommit)) return undefined;
-  const stale = commitless ? STALE
+  const stale = commitless
+    ? STALE
     : `OntoIndex index is stale (indexed ${meta.lastCommit.slice(0, 8)}, HEAD ${head!.slice(0, 8)}). ${STALE_DETAIL}`;
   const profile = meta.sourceManifest?.pipelineProfile ?? meta.pipelineProfile ?? 'full';
   if (profile === 'huge-repo-symbols') {
@@ -105,7 +112,10 @@ async function schedule(repo: RefreshRepo, deps: RefreshDeps): Promise<string | 
     await fs.writeFile(stamp, commitless ? 'checking' : 'stale', { mode: 0o600 });
     await fs.utimes(stamp, now / 1000, now / 1000);
     if (commitless) {
-      const health = await readRuntimeHealth(repo.repoPath, { storagePath: repo.storagePath, meta });
+      const health = await readRuntimeHealth(repo.repoPath, {
+        storagePath: repo.storagePath,
+        meta,
+      });
       const isStale = health.freshnessState === 'stale';
       await fs.writeFile(stamp, isStale ? 'stale' : 'clean');
       await fs.utimes(stamp, now / 1000, now / 1000);
@@ -118,9 +128,11 @@ async function schedule(repo: RefreshRepo, deps: RefreshDeps): Promise<string | 
       await (deps.spawnRefresh ?? spawnRefresh)(repo, scope);
       return `${stale} Refresh started in the background.`;
     }
-    const report = await (deps.ensureFresh ?? gnEnsureFresh)(repo.repoPath, {
-      repo: repo.repoPath, autoAnalyze: true, scope,
-    }) as EnsureFreshReport;
+    const report = (await (deps.ensureFresh ?? gnEnsureFresh)(repo.repoPath, {
+      repo: repo.repoPath,
+      autoAnalyze: true,
+      scope,
+    })) as EnsureFreshReport;
     const submission = report.analysisSubmission;
     if (submission.status === 'queued' || submission.status === 'reused') {
       return `${stale} Refresh ${submission.status === 'reused' ? 'already running' : 'started in the background'} (job ${submission.jobId}).`;
@@ -152,7 +164,9 @@ export function maybeScheduleAutoRefresh(
   const key = `${repo.id}:${repo.storagePath}`;
   const existing = pending.get(key);
   if (existing) return existing;
-  const result = schedule(repo, deps).catch(() => undefined).finally(() => pending.delete(key));
+  const result = schedule(repo, deps)
+    .catch(() => undefined)
+    .finally(() => pending.delete(key));
   pending.set(key, result);
   return result;
 }

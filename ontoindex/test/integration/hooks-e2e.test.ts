@@ -182,8 +182,8 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
       expect(output).not.toBeNull();
       expect(output!.additionalContext).toBe(
         'OntoIndex index is behind HEAD (last indexed: aaaaaaa). ' +
-        'The next OntoIndex query refreshes it automatically in the background; keep using OntoIndex. ' +
-        'To refresh now, run `ontoindex analyze`.',
+          'The next OntoIndex query refreshes it automatically in the background; keep using OntoIndex. ' +
+          'To refresh now, run `ontoindex analyze`.',
       );
     });
 

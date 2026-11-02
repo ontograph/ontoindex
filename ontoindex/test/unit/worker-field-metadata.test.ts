@@ -29,6 +29,63 @@ async function parseFile(path: string, content: string) {
 }
 
 describe('source parse-worker field metadata', () => {
+  it('publishes real constructor properties and direct fields without constructor lookalikes', async () => {
+    const properties = await parseFile(
+      'src/constructor-publication.ts',
+      `class Store {
+      direct: Service;
+      public /* static async get set * */ constructor(public value: Service, readonly optional?: Service) {}
+      static constructor(public fakeStatic: Service) {}
+      async constructor(public fakeAsync: Service) {}
+      get constructor(public fakeGet: Service) {}
+      set constructor(public fakeSet: Service) {}
+      *constructor(public fakeGenerator: Service) {}
+      update(public fakeOrdinary: Service) {}
+    }
+    const store = { constructor(public fakeObject: Service) {} };`,
+    );
+    expect(properties.map(({ name }) => name).sort()).toEqual(['direct', 'optional', 'value']);
+  });
+
+  it('publishes readonly-only, optional and default-valued constructor properties', async () => {
+    const filePath = 'src/constructor-modifiers.ts';
+    const properties = await parseFile(
+      filePath,
+      `class Store {
+      constructor(
+        public service: Service,
+        private readonly secret: Secret,
+        readonly id: string,
+        protected fallback: Service = new Service(),
+        readonly nickname?: string,
+        public optional?: Service,
+        ordinary?: Ignored
+      ) {}
+    }`,
+    );
+    expect(
+      properties.map(({ name, ownerId, declaredType }) => ({ name, ownerId, declaredType })),
+    ).toEqual(
+      expect.arrayContaining([
+        { name: 'service', ownerId: `Class:${filePath}:Store`, declaredType: 'Service' },
+        { name: 'secret', ownerId: `Class:${filePath}:Store`, declaredType: 'Secret' },
+        { name: 'id', ownerId: `Class:${filePath}:Store`, declaredType: 'string' },
+        { name: 'fallback', ownerId: `Class:${filePath}:Store`, declaredType: 'Service' },
+        {
+          name: 'nickname',
+          ownerId: `Class:${filePath}:Store`,
+          declaredType: 'string | undefined',
+        },
+        {
+          name: 'optional',
+          ownerId: `Class:${filePath}:Store`,
+          declaredType: 'Service | undefined',
+        },
+      ]),
+    );
+    expect(properties).toHaveLength(6);
+  });
+
   it('preserves constructor property types separately for each TypeScript owner', async () => {
     const filePath = 'src/constructor-fields.ts';
     const properties = await parseFile(

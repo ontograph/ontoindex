@@ -147,24 +147,37 @@ describe('Installed CLI PATH fallback', () => {
       }) as (...args: unknown[]) => unknown;
     }
 
-    for (const [platform, binary] of [['linux', 'ontoindex'], ['win32', 'ontoindex.cmd']]) {
+    for (const [platform, binary] of [
+      ['linux', 'ontoindex'],
+      ['win32', 'ontoindex.cmd'],
+    ]) {
       it(`${label}: runs the PATH binary on ${platform} exactly once`, () => {
         const result = { status: 0, stderr: 'context' };
         const spawn = vi.fn().mockReturnValue(result);
         const runner = loadRunner(platform, spawn);
         const args = ['augment', '--', 'login'];
-        expect(label === 'CJS' ? runner('', args, tmpDir, 1234) : runner(args, tmpDir, 1234)).toBe(result);
+        expect(label === 'CJS' ? runner('', args, tmpDir, 1234) : runner(args, tmpDir, 1234)).toBe(
+          result,
+        );
         expect(spawn).toHaveBeenCalledExactlyOnceWith(binary, args, {
-          encoding: 'utf-8', timeout: 1234, cwd: tmpDir, stdio: ['pipe', 'pipe', 'pipe'],
+          encoding: 'utf-8',
+          timeout: 1234,
+          cwd: tmpDir,
+          stdio: ['pipe', 'pipe', 'pipe'],
         });
       });
     }
 
     it(`${label}: returns a missing PATH binary failure without retrying`, () => {
-      const result = { status: null, error: Object.assign(new Error('missing'), { code: 'ENOENT' }) };
+      const result = {
+        status: null,
+        error: Object.assign(new Error('missing'), { code: 'ENOENT' }),
+      };
       const spawn = vi.fn().mockReturnValue(result);
       const runner = loadRunner('linux', spawn);
-      expect(label === 'CJS' ? runner('', [], tmpDir, 1234) : runner([], tmpDir, 1234)).toBe(result);
+      expect(label === 'CJS' ? runner('', [], tmpDir, 1234) : runner([], tmpDir, 1234)).toBe(
+        result,
+      );
       expect(spawn).toHaveBeenCalledTimes(1);
     });
   }
@@ -295,7 +308,10 @@ describe('PreToolUse augment hardening', () => {
           source.indexOf('function beginAugment('),
         );
         const augmentPaths = vm.runInNewContext(`${functions}\naugmentPaths`, {
-          fs, path, crypto, os: { tmpdir: () => root },
+          fs,
+          path,
+          crypto,
+          os: { tmpdir: () => root },
         }) as (cwd: string, pattern: string) => { stampPath: string; lockPath: string };
 
         const paths = augmentPaths(root, 'pattern');
@@ -443,8 +459,8 @@ describe('PostToolUse staleness detection (integration)', () => {
       expect(output!.hookEventName).toBe('PostToolUse');
       expect(output!.additionalContext).toBe(
         'OntoIndex index is behind HEAD (last indexed: aaaaaaa). ' +
-        'The next OntoIndex query refreshes it automatically in the background; keep using OntoIndex. ' +
-        'To refresh now, run `ontoindex analyze`.',
+          'The next OntoIndex query refreshes it automatically in the background; keep using OntoIndex. ' +
+          'To refresh now, run `ontoindex analyze`.',
       );
     });
 

@@ -2036,6 +2036,8 @@ describe('processCalls — unresolved receiver chains', () => {
     ['missing method return', 'value.load().save()', [], ['load']],
     ['missing later method return', 'value.load().missing().save()', [], ['load']],
     ['resolved child chain', 'value.child.save()', ['child'], []],
+    ['resolved parenthesized child chain', '(value.child).save()', ['child'], []],
+    ['resolved parenthesized inner base', '((value)).child.save()', ['child'], []],
     ['resolved depth-three chain', 'value.child.child.child.save()', ['child'], []],
     ['over-depth known base', 'value.child.child.child.child.save()', ['child'], []],
   ] as const)(
@@ -2121,9 +2123,7 @@ describe('processCalls — unresolved receiver chains', () => {
             )
             .map((edge) => edge.targetId);
           expect(saveTargets).toEqual(
-            name === 'resolved child chain' || name === 'resolved depth-three chain'
-              ? [`Method:${filePath}:Address.save`]
-              : [],
+            name.startsWith('resolved ') ? [`Method:${filePath}:Address.save`] : [],
           );
           if (fields.length && name !== 'over-depth known base') {
             expect(
@@ -2150,6 +2150,19 @@ describe('processCalls — unresolved receiver chains', () => {
   );
 
   it.each([
+    'function use<T>(value:T) { value.save(); }',
+    'function use<T>(value:T) { (value).save(); }',
+    'function use<T>(value:T) { (((value))).save(); }',
+    ...[33, 64].map(
+      (depth) =>
+        `function use<T>(value:T) { ${'('.repeat(depth)}value${')'.repeat(depth)}.save(); }`,
+    ),
+    'function use<T>(value:T) { (value as T).save(); }',
+    'function use<T>(value:T) { (value satisfies T).save(); }',
+    'function use<T>(value:T) { value!.save(); }',
+    'function use<T>(value:T) { (<T>value).save(); }',
+    'function use<T>(value:T) { (value.a.b.c.d).save(); }',
+    'function use<T>(value:T) { (value).a.b.c.d.save(); }',
     'function use<T>(value:T) { value.a.b.c.d.save(); }',
     'function use<T>(value:T|null) { if(value!==null) { value.save(); } }',
     'type Optional<T>=T|null; function use(value:Optional<{save():void}>) { if(value!==null) value.save(); }',
@@ -2193,6 +2206,52 @@ describe('processCalls — unresolved receiver chains', () => {
       cache.clear();
     }
   });
+
+  it.each(['value', '(value)', '(((value)))', `${'('.repeat(32)}value${')'.repeat(32)}`])(
+    'resolves a typed transparent receiver in both paths: %s',
+    async (receiver) => {
+      const filePath = 'src/parenthesized.ts';
+      const ctx = createResolutionContext();
+      const ownerId = `Class:${filePath}:Service`;
+      const targetId = `Method:${filePath}:save`;
+      ctx.model.symbols.add(filePath, 'Service', ownerId, 'Class');
+      ctx.model.symbols.add(filePath, 'use', `Function:${filePath}:use`, 'Function');
+      ctx.model.symbols.add(filePath, 'save', targetId, 'Method', { ownerId });
+      const graph = createKnowledgeGraph();
+      const replay = createKnowledgeGraph();
+      const calls: ExtractedCall[] = [];
+      const cache = createASTCache();
+      try {
+        await processCalls(
+          graph,
+          [{ path: filePath, content: `function use(value:Service) { ${receiver}.save(); }` }],
+          cache,
+          ctx,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          (call) => calls.push(call),
+        );
+        expect(calls.find((call) => call.calledName === 'save')?.receiverName).toBe('value');
+        await processCallsFromExtracted(replay, calls, ctx);
+        for (const result of [graph, replay]) {
+          expect(
+            result.relationships
+              .filter((edge) => edge.type === 'CALLS')
+              .map((edge) => edge.targetId),
+          ).toEqual([targetId]);
+        }
+        expect(edges(replay)).toEqual(edges(graph));
+      } finally {
+        cache.clear();
+      }
+    },
+  );
 
   it('resolves constructor parameter properties through a for-of receiver', async () => {
     const filePath = 'src/store.ts';

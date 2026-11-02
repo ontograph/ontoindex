@@ -263,7 +263,26 @@ export function getLabelFromCaptures(
   if (captureMap['definition.typedef']) return 'Typedef';
   if (captureMap['definition.macro']) return 'Macro';
   if (captureMap['definition.union']) return 'Union';
-  if (captureMap['definition.property']) return 'Property';
+  if (captureMap['definition.property']) {
+    const property = captureMap['definition.property'];
+    if (property.type === 'required_parameter' || property.type === 'optional_parameter') {
+      const parameters = property.parent;
+      const method = parameters?.parent;
+      const name = method?.childForFieldName('name');
+      // Only class constructors promote parameters; object methods and modified
+      // methods named constructor are accepted by the parser but are not constructors.
+      if (
+        parameters?.type !== 'formal_parameters' ||
+        method?.type !== 'method_definition' ||
+        method.parent?.type !== 'class_body' ||
+        name?.type !== 'property_identifier' ||
+        name.text !== 'constructor' ||
+        method.children.some((child) => ['static', 'async', 'get', 'set', '*'].includes(child.type))
+      )
+        return null;
+    }
+    return 'Property';
+  }
   if (captureMap['definition.record']) return 'Record';
   if (captureMap['definition.delegate']) return 'Delegate';
   if (captureMap['definition.annotation']) return 'Annotation';

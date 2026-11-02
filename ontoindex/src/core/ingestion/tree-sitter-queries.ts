@@ -125,10 +125,19 @@ export const TYPESCRIPT_QUERIES = `
 (public_field_definition
   name: (private_property_identifier) @name) @definition.property
 
-; Constructor parameter properties: constructor(public address: Address)
-(required_parameter
-  (accessibility_modifier)
-  pattern: (identifier) @name) @definition.property
+; Constructor parameter properties, including readonly-only and optional bindings.
+(method_definition
+  name: (property_identifier) @_constructor
+  parameters: (formal_parameters
+    [
+      (required_parameter
+        [(accessibility_modifier) "readonly"]
+        pattern: (identifier) @name)
+      (optional_parameter
+        [(accessibility_modifier) "readonly"]
+        pattern: (identifier) @name)
+    ] @definition.property)
+  (#eq? @_constructor "constructor"))
 
 ; Heritage queries - class extends
 (class_declaration

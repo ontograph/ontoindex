@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { SupportedLanguages, type GraphNode } from 'ontoindex-shared';
+import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
 import {
@@ -20,6 +22,155 @@ vi.mock('node:worker_threads', async (importOriginal) => ({
 }));
 
 describe('C++ worker argument count parity', () => {
+  it('retains proven Go indexed receiver types in source worker metadata', async () => {
+    port.postMessage.mockClear();
+    const content = `package main
+type User struct {}
+func (u User) Save() {}
+func (u User) Greet() {}
+func caller() {
+  sl := make([]User, 1)
+  m := make(map[string]User)
+  sl[0].Save()
+  m["key"].Greet()
+  unknown[0].Save()
+}
+`;
+    await import('../../src/core/ingestion/workers/parse-worker.js');
+    const handler = port.on.mock.calls.find(([event]) => event === 'message')?.[1] as
+      | ((message: WorkerIncomingMessage) => Promise<void>)
+      | undefined;
+    expect(handler).toBeDefined();
+    await handler!([{ path: 'src/indexed.go', content }]);
+    const messages = port.postMessage.mock.calls.map(
+      ([message]) => message as WorkerOutgoingMessage,
+    );
+    expect(messages.filter((message) => message.type === 'error')).toEqual([]);
+    const result = messages.find((message) => message.type === 'result');
+    if (result?.type !== 'result' || !result.data) throw new Error('Missing worker result');
+    expect(result.data.calls.filter((call) => ['Save', 'Greet'].includes(call.calledName))).toEqual(
+      [
+        expect.objectContaining({
+          calledName: 'Save',
+          callForm: 'member',
+          receiverName: 'sl[0]',
+          receiverTypeName: 'User',
+        }),
+        expect.objectContaining({
+          calledName: 'Greet',
+          callForm: 'member',
+          receiverName: 'm["key"]',
+          receiverTypeName: 'User',
+        }),
+        expect.objectContaining({
+          calledName: 'Save',
+          callForm: 'member',
+          receiverName: 'unknown[0]',
+        }),
+      ],
+    );
+    expect(
+      result.data.calls.find((call) => call.receiverName === 'unknown[0]')?.receiverTypeName,
+    ).toBeUndefined();
+  });
+
+  it.skipIf(!isLanguageAvailable(SupportedLanguages.Swift)).each([
+    {
+      name: 'zero argument caller',
+      declarations: ['  func caller() { self.save() }'],
+      topLevel: false,
+    },
+    {
+      name: 'one argument caller',
+      declarations: ['  func caller(_ value: Int) { self.save() }'],
+      topLevel: false,
+    },
+    {
+      name: 'same arity caller overloads',
+      declarations: [
+        '  func caller(_ value: Int) { self.save() }',
+        '  func caller(_ value: String) { self.save() }',
+      ],
+      topLevel: false,
+    },
+    {
+      name: 'top level caller',
+      declarations: ['func caller(_ svc: Service) { svc.save() }'],
+      topLevel: true,
+    },
+  ])('retains Swift caller declaration endpoints for $name', async ({ declarations, topLevel }) => {
+    port.postMessage.mockClear();
+    const filePath = 'src/self.swift';
+    const content = [
+      'class Service {',
+      '  func save() {}',
+      ...(topLevel ? [] : declarations),
+      '}',
+      ...(topLevel ? declarations : []),
+    ].join('\n');
+    await import('../../src/core/ingestion/workers/parse-worker.js');
+    const handler = port.on.mock.calls.find(([event]) => event === 'message')?.[1] as
+      | ((message: WorkerIncomingMessage) => Promise<void>)
+      | undefined;
+    expect(handler).toBeDefined();
+    await handler!([{ path: filePath, content }]);
+    const messages = port.postMessage.mock.calls.map(
+      ([message]) => message as WorkerOutgoingMessage,
+    );
+    expect(messages.filter((message) => message.type === 'error')).toEqual([]);
+    const result = messages.find((message) => message.type === 'result');
+    if (result?.type !== 'result' || !result.data) throw new Error('Missing worker result');
+    const calls = result.data.calls.filter((call) => call.calledName === 'save');
+    const callers = result.data.symbols.filter((symbol) => symbol.name === 'caller');
+    expect(callers).toHaveLength(declarations.length);
+    const callerNodes = callers
+      .map((caller) => {
+        const node = result.data!.nodes.find((node) => node.id === caller.nodeId);
+        expect(node).toBeDefined();
+        return node!;
+      })
+      .sort((left, right) => left.properties.startLine - right.properties.startLine);
+    expect(calls).toEqual(
+      callerNodes.map((caller) =>
+        expect.objectContaining({
+          sourceId: caller.id,
+          calledName: 'save',
+          callForm: 'member',
+          receiverName: topLevel ? 'svc' : 'self',
+          receiverTypeName: 'Service',
+        }),
+      ),
+    );
+
+    const graph = createKnowledgeGraph();
+    const cache = createASTCache();
+    const ctx = createResolutionContext();
+    try {
+      for (const node of result.data.nodes) graph.addNode(node as GraphNode);
+      for (const symbol of result.data.symbols) {
+        ctx.model.symbols.add(symbol.filePath, symbol.name, symbol.nodeId, symbol.type, {
+          ownerId: symbol.ownerId,
+          parameterCount: symbol.parameterCount,
+          parameterTypes: symbol.parameterTypes,
+        });
+      }
+      await processCalls(graph, [{ path: filePath, content }], cache, ctx);
+      const edges = graph.relationships.filter((edge) => edge.type === 'CALLS');
+      const target = result.data.symbols.find((symbol) => symbol.name === 'save');
+      expect(target).toBeDefined();
+      expect(edges.map(({ sourceId, targetId }) => ({ sourceId, targetId }))).toEqual(
+        callerNodes.map((caller) => ({ sourceId: caller.id, targetId: target!.nodeId })),
+      );
+      for (const edge of edges) {
+        expect(graph.getNode(edge.sourceId)).toBeDefined();
+        expect(graph.getNode(edge.targetId)).toBeDefined();
+      }
+    } finally {
+      cache.clear();
+      ctx.clear();
+    }
+  });
+
   it.each(['ts', 'tsx'])(
     'preserves unknown generic receivers through worker dispatch in %s',
     async (extension) => {

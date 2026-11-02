@@ -169,12 +169,26 @@ const SIMPLE_RECEIVER_TYPES = new Set([
   'name', // PHP name node
   'this', // TS/JS/Java/C# this.method()
   'self', // Rust/Python self.method()
+  'self_expression', // Swift self.method()
   'super', // TS/JS/Java/Kotlin/Ruby super.method()
   'super_expression', // Kotlin wraps super in super_expression
   'base', // C# base.Method()
   'parent', // PHP parent::method()
   'constant', // Ruby CONSTANT.method() (uppercase identifiers)
 ]);
+
+/** Parentheses preserve receiver identity; casts and other expressions do not. */
+const unwrapReceiverParentheses = (node: SyntaxNode): SyntaxNode | undefined => {
+  let current = node;
+  for (let depth = 0; depth < 32; depth++) {
+    if (current.type !== 'parenthesized_expression') return current;
+    if (current.hasError || current.isMissing) return undefined;
+    const expressions = current.namedChildren.filter((child) => child.type !== 'comment');
+    if (expressions.length !== 1) return undefined;
+    current = expressions[0];
+  }
+  return current.type === 'parenthesized_expression' ? undefined : current;
+};
 
 export const extractReceiverName = (nameNode: SyntaxNode): string | undefined => {
   const parent = nameNode.parent;
@@ -260,6 +274,8 @@ export const extractReceiverName = (nameNode: SyntaxNode): string | undefined =>
     }
   }
 
+  if (!receiver) return undefined;
+  receiver = unwrapReceiverParentheses(receiver) ?? null;
   if (!receiver) return undefined;
 
   // Only capture simple identifiers — refuse complex expressions
@@ -492,7 +508,8 @@ export function extractMixedChain(
   receiverNode: SyntaxNode,
 ): { chain: MixedChainStep[]; baseReceiverName: string | undefined } | undefined {
   const chain: MixedChainStep[] = [];
-  let current: SyntaxNode = receiverNode;
+  let current = unwrapReceiverParentheses(receiverNode);
+  if (!current) return undefined;
 
   while (chain.length < MAX_CHAIN_DEPTH) {
     if (CALL_EXPRESSION_TYPES.has(current.type)) {
@@ -550,6 +567,8 @@ export function extractMixedChain(
         innerReceiver = current.childForFieldName?.('receiver') ?? null;
       }
       if (!innerReceiver) break;
+      innerReceiver = unwrapReceiverParentheses(innerReceiver) ?? null;
+      if (!innerReceiver) break;
 
       if (
         CALL_EXPRESSION_TYPES.has(innerReceiver.type) ||
@@ -598,6 +617,8 @@ export function extractMixedChain(
       if (!propertyName) break;
       chain.unshift({ kind: 'field', name: propertyName });
 
+      if (!innerObject) break;
+      innerObject = unwrapReceiverParentheses(innerObject) ?? null;
       if (!innerObject) break;
 
       if (

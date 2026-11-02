@@ -382,12 +382,14 @@ const findEnclosingFunction = (
         }
         const classInfo2 = findEnclosingClassInfo(current, filePath);
         const qualifiedName = classInfo2 ? `${classInfo2.className}.${funcName}` : funcName;
-        // Include #<arity> and ~typeTag suffix to match definition-phase Method/Constructor IDs.
+        // Match definition-phase arity/type tags, including Swift member Functions.
         const language = getLanguageFromFilename(filePath);
         let arity: number | undefined;
         let encTypeTag = '';
         if (
-          (finalLabel === 'Method' || finalLabel === 'Constructor') &&
+          (finalLabel === 'Method' ||
+            finalLabel === 'Constructor' ||
+            (finalLabel === 'Function' && language === SupportedLanguages.Swift && !!classInfo2)) &&
           provider.methodExtractor &&
           language
         ) {
@@ -2309,6 +2311,13 @@ const resolveCallTarget = (
     if (call.callForm === 'member' && currentFile.endsWith('.rs')) return null;
     return singleCandidate(tiered, call.argCount, call.callForm);
   }
+  // An opaque explicit receiver provides no evidence for a name-only method match.
+  if (
+    call.callForm === 'member' &&
+    (!call.receiverName || (currentFile.endsWith('.go') && call.receiverName.includes('[')))
+  )
+    return null;
+
   // Member call with no inferred receiver type — e.g. Python `mod.fn()`
   // where `mod` is a module alias. Module-alias narrowing is the primary
   // disambiguation signal here. Also consulted from the typed-member

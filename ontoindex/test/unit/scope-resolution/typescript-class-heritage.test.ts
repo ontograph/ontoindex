@@ -7,11 +7,18 @@ import { extract } from '../../../src/core/ingestion/scope-extractor.js';
 import { ScopeUnsupportedSyntaxError } from '../../../src/core/ingestion/scope-unsupported-syntax.js';
 
 describe('bounded class heritage and constructors', () => {
-  it.each(['fixture.ts', 'fixture.tsx'])(
-    'admits the complete invariant-error class in %s',
-    async (filePath) => {
+  it.each(
+    ['fixture.ts', 'fixture.tsx'].flatMap((filePath) =>
+      ['readonly', 'public', 'private readonly', 'protected'].map((modifiers) => ({
+        filePath,
+        modifiers,
+      })),
+    ),
+  )(
+    'admits the complete invariant-error class with $modifiers parameters in $filePath',
+    async ({ filePath, modifiers }) => {
       const source = `export class ScopeTreeInvariantError extends Error {
-      constructor(readonly invariant: 'parent-not-found' | 'duplicate-scope-id', message: string) {
+      constructor(${modifiers} invariant: 'parent-not-found' | 'duplicate-scope-id', message: string) {
         super(message);
         this.name = 'ScopeTreeInvariantError';
       }
@@ -21,12 +28,14 @@ describe('bounded class heritage and constructors', () => {
       expect(root.hasError).toBe(false);
       const captures = emitTypeScriptCaptures(root);
       const result = extract(captures, filePath, typescriptProvider);
+      const owner = result.localDefs.find((def) => def.type === 'Class')!;
       expect(result.localDefs).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ type: 'Class', qualifiedName: 'ScopeTreeInvariantError' }),
           expect.objectContaining({
             type: 'Method',
             qualifiedName: 'ScopeTreeInvariantError.constructor',
+            ownerId: owner.nodeId,
             parameterCount: 2,
             requiredParameterCount: 2,
           }),
@@ -92,9 +101,6 @@ describe('bounded class heritage and constructors', () => {
         'class C { constructor: Value; }',
         'class C { static constructor() {} }',
         'class C { constructor() {} constructor(value) {} }',
-        'class C { constructor(public value: Value) {} }',
-        'class C { constructor(private readonly value: Value) {} }',
-        'class C { constructor(protected value: Value) {} }',
         'class C { constructor() { super(); } }',
         'class C extends Base { method() { super(); } }',
         'class C extends Base { constructor() { { super(); } } }',
