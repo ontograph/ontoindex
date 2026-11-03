@@ -8,6 +8,13 @@ status: active
 
 # OntoIndex Current Forward Plan
 
+2026-11-03: workspace-search warning repair is delivered in 2.4.14 at `b2159cb`,
+pushed to main and selected by CLI/Codex MCP. Versioned-tree gate passed 15,922
+unit and 3,053 integration tests; clean build, installed native/database smoke
+and twelve Rust/TS/JS dirty/committed navigation calls passed. No public release.
+Older installations remain deferred due to unreadable process references.
+GN tracker unchanged. Evidence: [2.4.14 delivery](audit_session-2026-11-03-local-2414.md).
+
 2026-11-03 delivery: qualification repairs are committed and pushed to main at
 `1faf4b1` as 2.4.13. The versioned-tree gate passed 15,914 unit and 3,053
 integration tests (one expected failure, 304 skips). Hooks, clean-commit build,

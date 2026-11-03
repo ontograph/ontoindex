@@ -19,6 +19,13 @@ status: active
 
 # OntoIndex Pending Tasks
 
+2026-11-03: the dirty-search warning repair is delivered in locally installed
+2.4.14 (`b2159cb`), pushed to main. Full versioned-tree gate, installed smoke and
+twelve Rust/TS/JS MCP checks passed. Cleanup still defers nine older copies:
+62 unreadable reference fields across 21 processes prevent proving non-use.
+GN qualification and buffer-exhaustion measurement retain their existing scope.
+Evidence: [2.4.14 delivery](audit_session-2026-11-03-local-2414.md).
+
 2026-11-02 qualification repairs R1–R3 and follow-up guards are locally validated
 with 728 tests, 10/10 probes, native build, typecheck and root formatting passing.
 An additional six neighboring Rust/TS/JS and audit suites pass 528 tests with
