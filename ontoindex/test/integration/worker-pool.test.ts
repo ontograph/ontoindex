@@ -377,6 +377,26 @@ func unknownCaller() { unknown[0].Save() }
           declaration: 'func caller[T any](items []User) { items[0].Save() }',
           receiverTypeName: 'User',
         },
+        {
+          path: 'parenthesized-shadowed-receiver.go',
+          declaration: 'func (box (Box[User])) caller(items []User) { items[0].Save() }',
+          receiverTypeName: undefined,
+        },
+        {
+          path: 'pointer-parenthesized-shadowed-receiver.go',
+          declaration: 'func (box *(Box[User])) caller(items []User) { items[0].Save() }',
+          receiverTypeName: undefined,
+        },
+        {
+          path: 'nested-shadowed-receiver.go',
+          declaration: 'func (box (*((Box[User])))) caller(items []User) { items[0].Save() }',
+          receiverTypeName: undefined,
+        },
+        {
+          path: 'wrapped-concrete-receiver.go',
+          declaration: 'func (box *(Box[T])) caller(items []User) { items[0].Save() }',
+          receiverTypeName: 'User',
+        },
       ];
       const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>(
         fixtures.map(({ path, declaration }) => ({
@@ -384,6 +404,7 @@ func unknownCaller() { unknown[0].Save() }
           content: `package main
 import remote "example.com/remote"
 type User struct {}
+type Box[T any] struct {}
 func (u User) Save() {}
 ${declaration}
 `,
@@ -415,6 +436,14 @@ ${declaration}
           const targets = symbols.filter((symbol) => symbol.name === 'Save');
           expect(targets).toHaveLength(1);
           expect(targets[0]!.nodeId).toBe(`Method:${fixture.path}:User.Save#0`);
+          const callers = symbols.filter((symbol) => symbol.name === 'caller');
+          expect(callers).toHaveLength(1);
+          if (fixture.declaration.startsWith('func (box ')) {
+            expect(callers[0]!.type).toBe('Method');
+            expect(callers[0]!.nodeId.startsWith(`Method:${fixture.path}:`)).toBe(true);
+          } else {
+            expect(callers[0]!.nodeId).toBe(`Function:${fixture.path}:caller`);
+          }
           await processCallsFromExtracted(graph, calls, context);
           expect(
             graph.relationships
@@ -425,7 +454,7 @@ ${declaration}
               ? []
               : [
                   {
-                    sourceId: `Function:${fixture.path}:caller`,
+                    sourceId: callers[0]!.nodeId,
                     targetId: `Method:${fixture.path}:User.Save#0`,
                   },
                 ],

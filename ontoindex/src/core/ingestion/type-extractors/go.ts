@@ -287,7 +287,9 @@ const getGoReceiverTypeParameterNames = (fn: SyntaxNode): Set<string> => {
   const receiver = fn.childForFieldName('receiver');
   const parameter = receiver?.namedChildren.find((child) => child.type === 'parameter_declaration');
   let type = parameter?.childForFieldName('type') ?? null;
-  while (type?.type === 'pointer_type') type = type.firstNamedChild;
+  while (type && ['pointer_type', 'parenthesized_type'].includes(type.type)) {
+    type = type.firstNamedChild;
+  }
   if (type?.type !== 'generic_type') return names;
   const argumentsNode = type.childForFieldName('type_arguments');
   for (const argument of argumentsNode?.namedChildren ?? []) {

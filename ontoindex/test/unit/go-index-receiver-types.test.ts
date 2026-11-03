@@ -46,7 +46,15 @@ func groupedTypeParameters[Other, User interface{ Greet() }](sl []User) { sl[0].
 type Box[T interface{ Greet() }] struct {}
 func (box Box[User]) genericReceiver(sl []User) { sl[0].Greet() }
 func (box *Box[User]) genericPointerReceiver(sl []User) { sl[0].Greet() }
+func (box (Box[User])) genericParenthesizedReceiver(sl []User) { sl[0].Greet() }
+func (box *(Box[User])) genericPointerParenthesizedReceiver(sl []User) { sl[0].Greet() }
+func (box ((Box[User]))) genericNestedParenthesizedReceiver(sl []User) { sl[0].Greet() }
+func (box (*Box[User])) genericParenthesizedPointerReceiver(sl []User) { sl[0].Greet() }
 func (box Box[T]) genericConcreteReceiver(sl []User) { sl[0].Greet() }
+func (box (Box[T])) genericConcreteParenthesizedReceiver(sl []User) { sl[0].Greet() }
+func (box *(Box[T])) genericConcretePointerParenthesizedReceiver(sl []User) { sl[0].Greet() }
+func (box ((Box[T]))) genericConcreteNestedParenthesizedReceiver(sl []User) { sl[0].Greet() }
+func (box (*Box[T])) genericConcreteParenthesizedPointerReceiver(sl []User) { sl[0].Greet() }
 func otherSlice(sl []Other) { sl[0].Save() }
 func qualifiedSlice(sl []remote.User) { sl[0].Save() }
 func qualifiedPointerSlice(sl []*remote.User) { sl[0].Save() }
@@ -74,7 +82,9 @@ func plain() { u := User{}; u.Save() }
     const parser = new Parser();
     parser.setLanguage(Go);
     tree = parser.parse(source);
+    expect(tree.rootNode.hasError).toBe(false);
     result = await runPipelineFromRepo(directory, () => {}, { skipGraphPhases: true });
+    expect(result.parseMode).toBe('full');
   }, 60000);
 
   afterAll(async () => {
@@ -99,6 +109,10 @@ func plain() { u := User{}; u.Save() }
     ['genericConcrete', 'Greet', 'User'],
     ['concreteConstraint', 'Greet', 'User'],
     ['genericConcreteReceiver', 'Greet', 'User'],
+    ['genericConcreteParenthesizedReceiver', 'Greet', 'User'],
+    ['genericConcretePointerParenthesizedReceiver', 'Greet', 'User'],
+    ['genericConcreteNestedParenthesizedReceiver', 'Greet', 'User'],
+    ['genericConcreteParenthesizedPointerReceiver', 'Greet', 'User'],
     ['otherSlice', 'Save', 'Other'],
   ])('%s binds the indexed expression to %s on %s', (caller, method, owner) => {
     const selector = selectorFor(caller);
@@ -143,6 +157,10 @@ func plain() { u := User{}; u.Save() }
     'groupedTypeParameters',
     'genericReceiver',
     'genericPointerReceiver',
+    'genericParenthesizedReceiver',
+    'genericPointerParenthesizedReceiver',
+    'genericNestedParenthesizedReceiver',
+    'genericParenthesizedPointerReceiver',
   ])('%s abstains instead of borrowing a name-only method', (caller) => {
     expect(
       getRelationships(result, 'CALLS').filter(
