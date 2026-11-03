@@ -41,6 +41,31 @@ async function parse(source: string, filePath = 'fixture.ts') {
 }
 
 describe('borrowed TS/JS module captures', () => {
+  it.each(filePaths)(
+    'accepts this evaluations inside nested value contexts in %s',
+    async (filePath) => {
+      for (const expression of [
+        '(() => this)()',
+        'obj[() => { return this; }]',
+        '(this ? left : right).field',
+        '(condition ? this : right).field',
+        '(condition ? left : this).field',
+        'this.field',
+        'factory(() => { return this; }).field',
+        '[() => { return this; }]',
+        '({key: () => { return this; }})',
+      ]) {
+        const { root } = await parse(`const result = ${expression};`, filePath);
+        expect(root.hasError, expression).toBe(false);
+        const result = extract(emitTypeScriptCaptures(root), filePath, hooks);
+        expect(
+          result.referenceSites.some((site) => site.name === 'this'),
+          expression,
+        ).toBe(false);
+      }
+    },
+  );
+
   it.each(filePaths)('admits async arrows in supported value contexts in %s', async (filePath) => {
     for (const arrow of [
       'async x => x',
@@ -402,7 +427,7 @@ describe('borrowed TS/JS module captures', () => {
         '(condition ? left : right)()',
         '(function () {})()',
         '(() => value)(...make())',
-        '(() => this)()',
+        '(() => class {})()',
         '(() => value)?.()',
         '(() => value)(,)',
       ]) {
@@ -842,7 +867,7 @@ describe('borrowed TS/JS module captures', () => {
         'const result = obj?.[key];',
         'const result = obj[value = 1];',
         'const result = obj[value++];',
-        'const result = obj[() => { return this; }];',
+        'const result = obj[() => { return class {}; }];',
         'const result = obj[delete value];',
         'const result = obj[obj?.[key]];',
         'const result = obj?.[key][other];',
@@ -1431,9 +1456,9 @@ describe('borrowed TS/JS module captures', () => {
         '(condition ? left : ).method()',
         '(condition ? : right).field',
         '(condition left : right).field',
-        '(this ? left : right).method()',
-        '(condition ? this : right).field',
-        '(condition ? left : this).field',
+        '(class {} ? left : right).method()',
+        '(condition ? class {} : right).field',
+        '(condition ? left : class {}).field',
         '(condition ? obj?.[key].deep : right).field',
         '(condition ? left : obj?.[key]).method()',
         '(condition ? first(...make()) : right).field',
@@ -1442,7 +1467,7 @@ describe('borrowed TS/JS module captures', () => {
         '(condition ? left : right)[key]?.()',
         ...(/\.tsx?$/.test(filePath)
           ? [
-              '(condition ? left : right).method<Type>()',
+              '(condition ? left : right).method<typeof Type>()',
               '(condition ? (obj as typeof Type) : right).field',
             ]
           : []),
@@ -1547,7 +1572,7 @@ describe('borrowed TS/JS module captures', () => {
 
   it.each(filePaths)('refuses excluded dynamic receivers atomically in %s', async (filePath) => {
     for (const receiver of [
-      '(left ? this : second)',
+      '(left ? class {} : second)',
       '(left || right)',
       '(left && right)',
       '(left + right)',
@@ -2277,7 +2302,7 @@ describe('borrowed TS/JS module captures', () => {
     'rejects unsupported arrow signatures, bodies and reference positions atomically in %s',
     async (filePath) => {
       const arrows = [
-        '() => { return this; }',
+        '() => { return class {}; }',
         '(value = 1) => value',
         '(...values) => values',
         '({value: {nested}}) => nested',
@@ -2570,7 +2595,7 @@ describe('borrowed TS/JS module captures', () => {
         'while (obj?.[key].deep) {}',
         'while (check(obj?.[key])) {}',
         'while (value = next()) {}',
-        'while (() => { return this; }) {}',
+        'while (() => { return class {}; }) {}',
         'while (check()) use(value);',
         'while (check());',
         'while (check()) { break label; }',
@@ -3075,7 +3100,7 @@ describe('borrowed TS/JS module captures', () => {
         'value = gate ? (other = 1) : 0;',
         'value = obj?.[key];',
         'value = inner(obj?.[key]);',
-        'value = (() => { return this; });',
+        'value = (() => { return class {}; });',
       ]) {
         for (const contents of [`before(); ${statement}`, `${statement} after();`]) {
           const source = `function owner() { ${contents} }`;
@@ -3731,7 +3756,7 @@ describe('borrowed TS/JS module captures', () => {
         ...[
           'obj?.[key]',
           'obj[key]?.()',
-          '() => { return this; }',
+          '() => { return class {}; }',
           'value = 1',
           'value++',
           'delete value',
@@ -3858,7 +3883,7 @@ describe('borrowed TS/JS module captures', () => {
       'obj[key]?.()',
       'obj.#field',
       'obj[key]()',
-      '() => { return this; }',
+      '() => { return class {}; }',
       'value = 1',
       'value++',
       'delete value',
@@ -3928,7 +3953,7 @@ describe('borrowed TS/JS module captures', () => {
         'obj[key]?.()',
         'obj.#field',
         'obj[key]()',
-        '() => { return this; }',
+        '() => { return class {}; }',
         'value = 1',
         'value++',
         'delete value',
@@ -4100,7 +4125,7 @@ describe('borrowed TS/JS module captures', () => {
       for (const bad of [
         'obj?.[key]',
         'obj?.[key].field',
-        '() => { return this; }',
+        '() => { return class {}; }',
         'value = 1',
         'delete value',
       ]) {
@@ -4536,14 +4561,14 @@ describe('borrowed TS/JS module captures', () => {
       for (const value of [
         'obj?.[key].field',
         'new Factory().field',
-        'this.field',
+        'super.field',
         'obj?.[key]',
         'obj.#field',
         'factory()().field',
-        '(factory() ? this : second).field',
+        '(factory() ? class {} : second).field',
         'factory(...make()).field',
         'factory(obj?.[key]).child.field',
-        'factory(() => { return this; }).field',
+        'factory(() => { return class {}; }).field',
         'factory(arg).child.method(obj?.[key]).field',
         ...(/\.tsx?$/.test(filePath) ? ['(factory() as typeof Type).field'] : []),
       ]) {
@@ -4877,11 +4902,17 @@ describe('borrowed TS/JS module captures', () => {
   it.each(['fixture.ts', 'fixture.tsx'])(
     'reports only bounded node context for unsupported syntax in %s',
     async (filePath) => {
-      for (const { source, suffix } of [
+      for (const {
+        source,
+        suffix,
+        message = 'TS/JS captures require the supported module subset',
+      } of [
         {
           source:
-            'const privateRuntime = "private-string:/private/source.ts";\nnamespace PrivateNamespace {}',
+            'const privateRuntime = "private-string:/private/source.ts";\nnamespace PrivateNamespace.Nested {}',
           suffix: 'internal_module at=2:1',
+          message:
+            'TS/JS declaration captures require supported named syntax and an exact lexical scope',
         },
         {
           source: '// private-marker /private/source.ts\nconst items = {__proto__: privateItems};',
@@ -4907,10 +4938,7 @@ describe('borrowed TS/JS module captures', () => {
           error = caught;
         }
         expect(error, source).toBeInstanceOf(ScopeUnsupportedSyntaxError);
-        expect(error, source).toHaveProperty(
-          'message',
-          `TS/JS captures require the supported module subset [node=${suffix}]`,
-        );
+        expect(error, source).toHaveProperty('message', `${message} [node=${suffix}]`);
       }
     },
   );
@@ -5075,7 +5103,7 @@ describe('borrowed TS/JS module captures', () => {
         'const enum E { A = "a" }',
         'declare enum E { A = "a" }',
         'export declare enum E { A = "a" }',
-        'enum E { A }',
+        'enum E { A, B = 1 }',
         'enum E { A = 1 }',
         'enum E { A = "a", B }',
         'enum E { A = value }',
@@ -6428,7 +6456,7 @@ describe('borrowed TS/JS module captures', () => {
       'new Box(good(1), bad(value?.[key].deep))',
       'new Box(bad(value?.[key].deep), good(1))',
       ...(/\.tsx?$/.test(filePath)
-        ? ['value<Type>()', 'obj.method<Type>()', 'new Box<() => typeof Type>()']
+        ? ['value<typeof Type>()', 'obj.method<typeof Type>()', 'new Box<() => typeof Type>()']
         : []),
     ];
     for (const prefix of ['', 'export ']) {
@@ -6656,7 +6684,9 @@ describe('borrowed TS/JS module captures', () => {
           'outer(good(), bad(value?.[key].deep))',
           'outer(bad(value?.[key].deep), good())',
           'new Box(...make())',
-          ...(/\.tsx?$/.test(filePath) ? ['value<Type>()', 'new Box<() => typeof Type>()'] : []),
+          ...(/\.tsx?$/.test(filePath)
+            ? ['value<typeof Type>()', 'new Box<() => typeof Type>()']
+            : []),
         ].map((value) => `throw ((${value}));`),
         'return;',
         'return value;',
@@ -6741,7 +6771,9 @@ describe('borrowed TS/JS module captures', () => {
           'outer(good(), bad(value?.[key].deep))',
           'outer(bad(value?.[key].deep), good())',
           'new Box(...make())',
-          ...(/\.tsx?$/.test(filePath) ? ['value<Type>()', 'new Box<() => typeof Type>()'] : []),
+          ...(/\.tsx?$/.test(filePath)
+            ? ['value<typeof Type>()', 'new Box<() => typeof Type>()']
+            : []),
         ].map((value) => `throw ((${value}));`),
       ];
       for (const token of ['function', 'function*']) {
@@ -6773,7 +6805,11 @@ describe('borrowed TS/JS module captures', () => {
         'outer(good(1), bad(value?.[key].deep));',
         'outer(bad(value?.[key].deep), good(1));',
         ...(/\.tsx?$/.test(filePath)
-          ? ['value<Type>();', 'object.method<Type>();', 'new Value<() => typeof Type>();']
+          ? [
+              'value<typeof Type>();',
+              'object.method<typeof Type>();',
+              'new Value<() => typeof Type>();',
+            ]
           : []),
       ];
       for (const statement of unsupported) {
@@ -6983,7 +7019,7 @@ describe('borrowed TS/JS module captures', () => {
           'bad = [...values?.[key].deep]',
           'bad = outer(good(1), bad(value?.[key].deep))',
           'bad = outer(bad(value?.[key].deep), good(1))',
-          'bad = () => { return this; }',
+          'bad = () => { return class {}; }',
           '{ bad: { nested } } = {}',
           ...(/\.tsx?$/.test(filePath)
             ? ['bad: number & string = 1', 'bad = new Box<() => typeof Type>()']
@@ -10045,7 +10081,7 @@ describe('borrowed TS/JS module captures', () => {
         'value()()',
         'outer(value?.[key].deep)',
         'outer(...make())',
-        'outer(() => { return this; })',
+        'outer(() => { return class {}; })',
         'outer({...value?.[key].deep})',
         'outer([...values?.[key].deep])',
         'outer(good(1), bad(object[key]()))',
@@ -10079,7 +10115,7 @@ describe('borrowed TS/JS module captures', () => {
     async (filePath) => {
       const unsupported = [
         'value?.[key].deep',
-        '() => { return this; }',
+        '() => { return class {}; }',
         '{...value?.[key].deep}',
         '[...values?.[key].deep]',
         '...make()',
@@ -10381,7 +10417,7 @@ describe('borrowed TS/JS module captures', () => {
         '[,] as const',
         '[value?.[key].deep] as const',
         '{[key?.[index].deep]: value} as const',
-        '{value: () => { return this; }} as const',
+        '{value: () => { return class {}; }} as const',
         '[] as',
         '[] as const Type',
         '[] as const<string>',
@@ -10521,7 +10557,7 @@ describe('borrowed TS/JS module captures', () => {
     async (filePath) => {
       const unsupported = [
         'value?.[key].deep',
-        '() => { return this; }',
+        '() => { return class {}; }',
         '...make()',
         'value = 1',
         'delete value',
@@ -10529,7 +10565,7 @@ describe('borrowed TS/JS module captures', () => {
         'obj[key]()',
         '/pattern/zz',
         'tag`text`',
-        ...(/\.tsx?$/.test(filePath) ? ['value as typeof Shape', 'value<Type>()'] : []),
+        ...(/\.tsx?$/.test(filePath) ? ['value as typeof Shape', 'value<typeof Type>()'] : []),
       ];
       const templates = [
         ...unsupported.flatMap((expression) => [
@@ -10878,8 +10914,8 @@ describe('borrowed TS/JS module captures', () => {
         'delete key',
         'key?.()',
         'object[key]()',
-        '() => { return this; }',
-        ...(/\.tsx?$/.test(filePath) ? ['key as typeof Shape', 'key<Type>()'] : []),
+        '() => { return class {}; }',
+        ...(/\.tsx?$/.test(filePath) ? ['key as typeof Shape', 'key<typeof Type>()'] : []),
       ];
       for (const bad of unsupported) {
         for (const property of [`[${bad}]: valid()`, `[valid()]: ${bad}`]) {
@@ -11357,7 +11393,7 @@ describe('borrowed TS/JS module captures', () => {
       'switch (value) { case 1: break; }',
       'switch (value) { default: one(); default: two(); }',
       'switch (value) { case label = 1: run(); }',
-      'switch (value) { case 1: const nested = () => { return this; }; }',
+      'switch (value) { case 1: const nested = () => { return class {}; }; }',
       'switch (value) { case 1: var shared = value; }',
       'switch (value) { case 1: let shared = value; case 2: let shared = value; }',
     ];
@@ -11428,7 +11464,7 @@ describe('borrowed TS/JS module captures', () => {
         'method(value, value) {}',
         'method(value) { let value; }',
         'method(value) { const value = 1; }',
-        'method() { return this; }',
+        'method() { return class {}; }',
         'method() { break; }',
         'method() { return value?.[key].deep; }',
         String.raw`escaped\u006bey() {}`,
@@ -11477,7 +11513,7 @@ describe('borrowed TS/JS module captures', () => {
         'set field(value) {}',
         '#private: value',
         'key: value?.[key].deep',
-        'key: () => { return this; }',
+        'key: () => { return class {}; }',
         'key: [...values?.[key].deep]',
         'key: delete value',
         'key: tag`text`',
@@ -12143,7 +12179,7 @@ describe('borrowed TS/JS module captures', () => {
         ].map((type) => `value as ${type}`),
         '/pattern/zz as Shape',
         'value?.[key].deep as Shape',
-        '(() => { return this; }) as Shape',
+        '(() => { return class {}; }) as Shape',
         '(value as Shape)()',
         '(value as const).field',
         '(value as const).method()',
@@ -12276,7 +12312,7 @@ describe('borrowed TS/JS module captures', () => {
     async (filePath) => {
       for (const expression of [
         '{...value?.[key].deep}',
-        '{...(() => { return this; })}',
+        '{...(() => { return class {}; })}',
         '{...value as typeof Shape}',
         '{...}',
         '{...values ...other}',
@@ -12333,7 +12369,7 @@ describe('borrowed TS/JS module captures', () => {
     async (filePath) => {
       for (const expression of [
         '[...value?.[key].deep]',
-        '[...(() => { return this; })]',
+        '[...(() => { return class {}; })]',
         '[...{...value?.[key].deep}]',
         'consume(...make())',
         'new Box(...[values])',
@@ -12368,7 +12404,7 @@ describe('borrowed TS/JS module captures', () => {
         '[{...value?.[key].deep}]',
         '[value?.[key].deep]',
         '[async function () {}]',
-        '[() => { return this; }]',
+        '[() => { return class {}; }]',
         '[delete value]',
         '[tag`text`]',
         '[delete value].method()',
@@ -12513,7 +12549,7 @@ describe('borrowed TS/JS module captures', () => {
         "import { Value } from './module';\nexport const literal = 1;\nvalue();\nobject.method(true);\nnew Value;";
       const nonliteral = [
         'value?.[key].deep',
-        '() => { return this; }',
+        '() => { return class {}; }',
         '{...value?.[key].deep}',
         '[...values?.[key].deep]',
         '...make()',
@@ -12622,7 +12658,6 @@ describe('borrowed TS/JS module captures', () => {
       for (const unsupported of [
         '{ function nested() {} }',
         'if (true) {}',
-        'async function* pending() {}',
         'async function* pending() {}',
         'return;',
         'return call();',
@@ -12821,11 +12856,11 @@ describe('borrowed TS/JS module captures', () => {
   );
 
   it.each(['fixture.ts', 'fixture.tsx'])(
-    'rejects nested TypeScript generic calls in %s',
+    'rejects unsupported type arguments in nested calls in %s',
     async (filePath) => {
       for (const expression of [
-        'inner<Type>()',
-        'obj.method<Type>()',
+        'inner<typeof Type>()',
+        'obj.method<typeof Type>()',
         'new Value<() => typeof Type>()',
       ]) {
         for (const argumentsText of [
@@ -12850,12 +12885,12 @@ describe('borrowed TS/JS module captures', () => {
     'rejects TypeScript extensions in %s',
     async (filePath) => {
       for (const source of [
-        'value<Type>();',
+        'value<typeof Type>();',
         'new Value<() => typeof Type>();',
-        'const initialized = value<Type>();',
-        'export let initialized = object.method<Type>();',
+        'const initialized = value<typeof Type>();',
+        'export let initialized = object.method<typeof Type>();',
         'var initialized = new Value<() => typeof Type>();',
-        'const initialized = outer(inner<Type>());',
+        'const initialized = outer(inner<typeof Type>());',
         'function generic<T>() {}',
         'function typed(): A | typeof other {}',
         'function parameter(value: Array<() => typeof value>) {}',

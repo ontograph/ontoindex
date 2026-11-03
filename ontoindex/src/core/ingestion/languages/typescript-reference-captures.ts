@@ -53,6 +53,23 @@ export function isTypeScriptLiteralReceiver(node: SyntaxNode): boolean {
   return ['array', 'regex', 'string', 'template_string', 'number'].includes(node.type);
 }
 
+/** `import.meta` is runtime metadata, never a lexical import or meta identifier. */
+export function validateTypeScriptImportMeta(node: SyntaxNode): void {
+  const children = node.children.filter((child) => child.type !== 'comment');
+  if (
+    node.type !== 'meta_property' ||
+    !node.isNamed ||
+    node.hasError ||
+    node.isMissing ||
+    children.length !== 3 ||
+    children[0]!.type !== 'import' ||
+    children[1]!.type !== '.' ||
+    children[2]!.type !== 'meta' ||
+    children.some((child) => child.isNamed || child.hasError || child.isMissing)
+  )
+    unsupported(node);
+}
+
 /** Validated assertions preserve the identity of a receiver, including dynamic operands. */
 export function unwrapTypeScriptReceiver(node: SyntaxNode): SyntaxNode {
   while (true) {
@@ -172,15 +189,15 @@ function callParts(node: SyntaxNode): {
   const optionalCall =
     !constructor &&
     callee?.type === 'member_expression' &&
-    children.length === 3 &&
+    children.length === 3 + Number(!!typeArguments) &&
     children[0]!.id === callee.id &&
     ((children[1]!.type === '?.' && !children[1]!.isNamed) ||
       (children[1]!.type === 'optional_chain' &&
         children[1]!.isNamed &&
         children[1]!.text === '?.')) &&
-    children[2]!.id === args?.id;
+    (!typeArguments || children[2]!.id === typeArguments.id) &&
+    children.at(-1)!.id === args?.id;
   if (typeArguments) {
-    if (!constructor) unsupported(typeArguments);
     typeScriptTypeArguments(typeArguments);
   }
   if (
@@ -264,7 +281,13 @@ function receiverCapture(
         receiver: { ...capture('@reference.receiver', node, ''), receiver: { kind: 'unknown' } },
         read: [],
       };
-    } else if (isTypeScriptLiteralReceiver(current)) {
+    } else if (
+      current.type === 'this' ||
+      current.type === 'meta_property' ||
+      isTypeScriptLiteralReceiver(current)
+    ) {
+      if (!current.isNamed || current.hasError || current.isMissing) unsupported(current);
+      if (current.type === 'meta_property') validateTypeScriptImportMeta(current);
       return {
         receiver: { ...capture('@reference.receiver', node, ''), receiver: { kind: 'unknown' } },
         read: [],
@@ -397,6 +420,8 @@ export function emitTypeScriptMemberReadCaptures(node: SyntaxNode): CaptureMatch
   }
   const terminalCall = current.type === 'call_expression';
   const terminalDynamic =
+    current.type === 'this' ||
+    current.type === 'meta_property' ||
     isTypeScriptLiteralReceiver(current) ||
     current.type === 'subscript_expression' ||
     current.type === 'ternary_expression' ||

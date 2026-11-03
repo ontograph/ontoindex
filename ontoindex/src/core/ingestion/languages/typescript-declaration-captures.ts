@@ -13,7 +13,10 @@ import type { LocalBindingCandidate } from '../language-provider.js';
 
 const DECLARATIONS = new Map<
   string,
-  readonly ['function' | 'class' | 'enum' | 'interface' | 'typealias', ('parent' | 'self')?]
+  readonly [
+    'function' | 'class' | 'enum' | 'interface' | 'typealias' | 'namespace',
+    ('parent' | 'self')?,
+  ]
 >([
   ['function_declaration', ['function', 'parent']],
   ['generator_function_declaration', ['function', 'parent']],
@@ -25,6 +28,7 @@ const DECLARATIONS = new Map<
   ['enum_declaration', ['enum']],
   ['interface_declaration', ['interface', 'parent']],
   ['type_alias_declaration', ['typealias']],
+  ['internal_module', ['namespace', 'parent']],
 ]);
 const IDENTIFIER = /^[$_\p{ID_Start}][$\u200c\u200d\p{ID_Continue}]*$/u;
 const METADATA = '@typescript.binding_scope';
@@ -434,13 +438,59 @@ function contains(outer: Range, inner: Range): boolean {
   );
 }
 
+function isDeclarationHost(node: SyntaxNode | null): boolean {
+  return (
+    node?.type === 'program' ||
+    (node?.type === 'statement_block' &&
+      node.parent?.type === 'internal_module' &&
+      node.parent.childForFieldName('body')?.id === node.id)
+  );
+}
+
+/** Ordinary namespaces only; merging and qualified member lookup remain unsupported. */
+export function typeScriptNamespaceBody(node: SyntaxNode): SyntaxNode {
+  const name = node.childForFieldName('name');
+  const body = node.childForFieldName('body');
+  const parts = node.children.filter((child) => child.type !== 'comment');
+  const wrapper = node.parent;
+  const wrapperParts = wrapper?.children.filter((child) => child.type !== 'comment') ?? [];
+  const topLevel =
+    wrapper?.type === 'program' ||
+    (wrapper?.type === 'expression_statement' &&
+      wrapper.parent?.type === 'program' &&
+      wrapperParts[0]?.id === node.id &&
+      wrapperParts.length <= 2 &&
+      (wrapperParts.length === 1 || (wrapperParts[1]!.type === ';' && !wrapperParts[1]!.isNamed)));
+  if (
+    node.type !== 'internal_module' ||
+    !node.isNamed ||
+    node.hasError ||
+    node.isMissing ||
+    !topLevel ||
+    parts.length !== 3 ||
+    !['namespace', 'module'].includes(parts[0]!.type) ||
+    parts[0]!.isNamed ||
+    name?.type !== 'identifier' ||
+    !name.isNamed ||
+    !IDENTIFIER.test(name.text) ||
+    parts[1]!.id !== name.id ||
+    body?.type !== 'statement_block' ||
+    !body.isNamed ||
+    parts[2]!.id !== body.id ||
+    parts.some((child) => child.hasError || child.isMissing)
+  )
+    unsupported(node);
+  return body;
+}
+
+/** String assignments or entirely implicit numeric members; no initializer evaluation. */
 function validateStringEnum(node: SyntaxNode): void {
   const parent = node.parent;
   if (
-    parent?.type !== 'program' &&
+    !isDeclarationHost(parent) &&
     !(
       parent?.type === 'export_statement' &&
-      parent.parent?.type === 'program' &&
+      isDeclarationHost(parent.parent) &&
       parent.childForFieldName('declaration')?.id === node.id
     )
   )
@@ -471,10 +521,20 @@ function validateStringEnum(node: SyntaxNode): void {
   )
     unsupported(body);
   const names = new Set<string>();
+  let implicit: boolean | undefined;
   for (let index = 1; index < members.length - 1; index++) {
     const member = members[index]!;
     if (index % 2 === 0) {
       if (member.type !== ',' || member.isNamed) unsupported(member);
+      continue;
+    }
+    const isImplicit = member.type === 'property_identifier';
+    if (implicit !== undefined && implicit !== isImplicit) unsupported(member);
+    implicit = isImplicit;
+    if (isImplicit) {
+      if (!member.isNamed || !IDENTIFIER.test(member.text) || names.has(member.text))
+        unsupported(member);
+      names.add(member.text);
       continue;
     }
     const memberName = member.childForFieldName('name');
@@ -506,10 +566,10 @@ function validateStringEnum(node: SyntaxNode): void {
 function validateNominalType(node: SyntaxNode): void {
   const parent = node.parent;
   if (
-    parent?.type !== 'program' &&
+    !isDeclarationHost(parent) &&
     !(
       parent?.type === 'export_statement' &&
-      parent.parent?.type === 'program' &&
+      isDeclarationHost(parent.parent) &&
       parent.childForFieldName('declaration')?.id === node.id
     )
   )
@@ -556,7 +616,7 @@ export function typeScriptDeclarationNamespace(
   candidate: LocalBindingCandidate,
 ): BindingRef['namespace'] {
   if (['Interface', 'TypeAlias'].includes(candidate.def.type)) return 'type';
-  return ['Class', 'Enum'].includes(candidate.def.type) ? 'both' : 'value';
+  return ['Class', 'Enum', 'Namespace'].includes(candidate.def.type) ? 'both' : 'value';
 }
 
 /** Detach one named declaration and its lexical binding placement when needed. */
@@ -564,6 +624,7 @@ export function emitTypeScriptDeclarationCaptures(node: SyntaxNode): CaptureMatc
   const declaration = DECLARATIONS.get(node.type);
   if (!declaration || !node.isNamed || node.hasError || node.isMissing) unsupported(node);
   const [kind, placement] = declaration;
+  if (kind === 'namespace') typeScriptNamespaceBody(node);
   if (kind === 'enum') validateStringEnum(node);
   if (kind === 'interface' || kind === 'typealias') validateNominalType(node);
   const name = node.childForFieldName('name');
@@ -1463,6 +1524,7 @@ export function typeScriptDeclarationBindingScope(
       '@declaration.class',
       '@declaration.method',
       '@declaration.interface',
+      '@declaration.namespace',
     ].includes(key),
   );
   if (anchors.length !== 1) unsupported();
@@ -1506,9 +1568,12 @@ export function typeScriptDeclarationBindingScope(
     (!callableBinding && !contains(anchor.range, name.range))
   )
     unsupported();
-  const kind = ['@declaration.class', '@declaration.interface'].includes(anchors[0])
-    ? 'Class'
-    : 'Function';
+  const kind =
+    anchors[0] === '@declaration.namespace'
+      ? 'Namespace'
+      : ['@declaration.class', '@declaration.interface'].includes(anchors[0])
+        ? 'Class'
+        : 'Function';
   const stored = tree.getScope(innermost.id);
   if (
     innermost.kind !== kind ||

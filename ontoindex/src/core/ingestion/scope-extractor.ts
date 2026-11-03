@@ -522,7 +522,9 @@ function pass2AttachDeclarations(
             def.type === 'Trait' ||
             def.type === 'Record'
           ? 'Class'
-          : undefined;
+          : def.type === 'Namespace'
+            ? 'Namespace'
+            : undefined;
     if (ownerKind !== undefined) {
       const owner = draftById.get(makeScopeId({ filePath, range: anchor.range, kind: ownerKind }));
       if (owner !== undefined && !ambiguousOwners.has(owner.id)) {

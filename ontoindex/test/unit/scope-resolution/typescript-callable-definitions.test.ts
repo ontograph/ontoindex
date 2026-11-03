@@ -75,10 +75,10 @@ describe('TypeScript callable lexical definitions', () => {
     expect(calls).toHaveLength(2);
   });
 
-  it.each(['const f = <T>(x: T): T => x;', 'namespace N { const f = (x: number) => x; }'])(
+  it.each(['const f = <T>(x: T): T => x;', 'export namespace N { const f = (x: number) => x; }'])(
     'atomically refuses unsupported callable syntax: %s',
     async (source) => {
-      // Generic arrows and namespaces currently fall outside the supported subset.
+      // Generic arrows and exported namespace declarations remain unsupported.
       await expect(parsed(`${source} function caller() { f(); }`)).rejects.toThrow(
         'TS/JS captures require the supported module subset',
       );

@@ -84,7 +84,7 @@ describe('TypeScript loops and writes', () => {
     'a?.b = rhs;',
     'make().b = rhs;',
     'a.b %= rhs;',
-    'outer(value = (() => { return this; }));',
+    'outer(value = (() => { return class {}; }));',
     'for (let i = 0; i < end; i++) { function nested() { break; } }',
   ])('refuses unsupported or invalid writes and transfers: %s', async (source) => {
     await expect(captures(source)).rejects.toThrow(ScopeUnsupportedSyntaxError);

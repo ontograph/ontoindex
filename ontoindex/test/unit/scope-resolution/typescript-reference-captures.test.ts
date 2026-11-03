@@ -32,6 +32,72 @@ function rangeOf(node: SyntaxNode) {
 
 describe('borrowed TS/JS ordinary free call reference captures', () => {
   it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
+    'detaches this-rooted calls and reads with unknown receivers in %s',
+    async (filePath) => {
+      for (const [expression, names, arity] of [
+        ['this.method()', ['method'], '0'],
+        ['this.field', ['field'], undefined],
+        ['this.state.field', ['field', 'state'], undefined],
+        [
+          "this.stateChangeHandler.getItemValue('InsertAnnotation')",
+          ['getItemValue', 'stateChangeHandler'],
+          '1',
+        ],
+        ['this.method(arg).field', ['field'], undefined],
+        ['(this).method(first, second)', ['method'], '2'],
+        ['this?.state.field', ['field', 'state'], undefined],
+      ] as const) {
+        const { parser, root } = await parse(`${expression};`, filePath);
+        expect(root.hasError, expression).toBe(false);
+        const node = root.namedChildren[0]!.namedChildren[0]!;
+        const isCall = node.type === 'call_expression';
+        const captures = isCall
+          ? emitTypeScriptReferenceCaptures(node)
+          : emitTypeScriptMemberReadCaptures(node);
+        expect(
+          captures.map((match) => match['@reference.name']!.text),
+          expression,
+        ).toEqual(names);
+        expect(captures[0]!['@reference.arity']?.text, expression).toBe(arity);
+        for (const match of captures) {
+          const anchor = match['@reference.call.member'] ?? match['@reference.read']!;
+          const selected = root
+            .descendantsOfType(
+              isCall ? ['call_expression', 'member_expression'] : 'member_expression',
+            )
+            .find(
+              (candidate) => JSON.stringify(rangeOf(candidate)) === JSON.stringify(anchor.range),
+            )!;
+          const member =
+            selected.type === 'call_expression'
+              ? selected.childForFieldName('function')!
+              : selected;
+          expect(match['@reference.receiver'], expression).toEqual({
+            name: '@reference.receiver',
+            text: '',
+            range: rangeOf(member.childForFieldName('object')!),
+            receiver: { kind: 'unknown' },
+          });
+        }
+        const scopes = emitTypeScriptLexicalScopeCaptures(root);
+        const extracted = extract([...scopes, ...captures], filePath, {});
+        expect(
+          extracted.referenceSites.map((site) => site.name),
+          expression,
+        ).toEqual(names);
+        expect(
+          extracted.referenceSites.map((site) => site.explicitReceiver),
+          expression,
+        ).toEqual(names.map(() => ({ kind: 'unknown' })));
+        const saved = JSON.stringify(captures);
+        parser.parse('replacement();');
+        expect(JSON.stringify(captures), expression).toBe(saved);
+        expect(extract([...scopes, ...JSON.parse(saved)], filePath, {})).toEqual(extracted);
+      }
+    },
+  );
+
+  it.each(['fixture.ts', 'fixture.tsx', 'fixture.js', 'fixture.jsx'])(
     'counts supported spread operands once in direct, nested and receiver calls in %s',
     async (filePath) => {
       for (const expression of [
@@ -447,7 +513,6 @@ describe('borrowed TS/JS ordinary free call reference captures', () => {
       for (const source of [
         'obj?.[key].field;',
         'new Factory().field;',
-        'this.field;',
         'obj[key];',
         'obj.#field;',
         'factory()().child.field;',
@@ -1263,7 +1328,8 @@ describe('borrowed TS/JS ordinary free call reference captures', () => {
       for (const source of [
         'object[key]();',
         'object.#private();',
-        'this.method();',
+        'this[key]();',
+        'this.method(...values());',
         'class Child extends Base { method() { super.method(); } }',
         '(object?.[key]).method();',
         'object.method(...values());',
@@ -1499,18 +1565,22 @@ describe('borrowed TS/JS ordinary free call reference captures', () => {
   );
 
   it.each(['fixture.ts', 'fixture.tsx'])(
-    'refuses explicit call type arguments in %s',
+    'validates explicit call type arguments in %s',
     async (filePath) => {
       const { root } = await parse('local<string>();', filePath);
       expect(root.hasError).toBe(false);
-      expect(() =>
-        emitTypeScriptReferenceCaptures(root.descendantsOfType('call_expression')[0]!),
-      ).toThrow();
+      expect(
+        emitTypeScriptReferenceCaptures(root.descendantsOfType('call_expression')[0]!)[0]![
+          '@reference.arity'
+        ]!.text,
+      ).toBe('0');
       const member = await parse('object.method<string>();', filePath);
       expect(member.root.hasError).toBe(false);
-      expect(() =>
-        emitTypeScriptReferenceCaptures(member.root.descendantsOfType('call_expression')[0]!),
-      ).toThrow();
+      expect(
+        emitTypeScriptReferenceCaptures(member.root.descendantsOfType('call_expression')[0]!)[0]![
+          '@reference.name'
+        ]!.text,
+      ).toBe('method');
       for (const source of [
         'new Local<<T>() => string>();',
         'new Local<<T>() => string>;',
@@ -1526,7 +1596,7 @@ describe('borrowed TS/JS ordinary free call reference captures', () => {
           emitTypeScriptReferenceCapturesForFile(constructor.root)[0]!['@reference.arity']!.text,
         ).toBe('0');
       }
-      for (const source of ['client.from<string>().select();', 'client.from<string>.select();']) {
+      for (const source of ['client.from<string>.select();']) {
         const parsed = await parse(source, filePath);
         expect(() =>
           emitTypeScriptReferenceCaptures(parsed.root.descendantsOfType('call_expression')[0]!),

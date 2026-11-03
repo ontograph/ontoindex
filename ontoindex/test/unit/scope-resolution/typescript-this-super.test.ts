@@ -55,9 +55,11 @@ describe('constructor this writes and super argument evaluations', () => {
       expect(root.hasError).toBe(false);
       const assignment = root.descendantsOfType('assignment_expression')[0]!;
       expect(typeScriptThisMemberWriteValue(assignment).text).toBe(expression.split(' = ')[1]);
-      expect(() => emitTypeScriptMemberReadCaptures(assignment.childForFieldName('left')!)).toThrow(
-        ScopeUnsupportedSyntaxError,
-      );
+      expect(
+        emitTypeScriptMemberReadCaptures(assignment.childForFieldName('left')!)[0]![
+          '@reference.receiver'
+        ]!.receiver,
+      ).toEqual({ kind: 'unknown' });
     },
   );
 
@@ -77,13 +79,15 @@ describe('constructor this writes and super argument evaluations', () => {
     );
   });
 
-  it('keeps this writes outside constructors and this reads unsupported', async () => {
+  it('keeps the constructor helper narrow while capturing dynamic this reads', async () => {
     const root = await parse('class Child { method() { this.x = value; return this.x; } }');
     expect(() =>
       typeScriptThisMemberWriteValue(root.descendantsOfType('assignment_expression')[0]!),
     ).toThrow(ScopeUnsupportedSyntaxError);
     for (const member of root.descendantsOfType('member_expression')) {
-      expect(() => emitTypeScriptMemberReadCaptures(member)).toThrow(ScopeUnsupportedSyntaxError);
+      expect(emitTypeScriptMemberReadCaptures(member)[0]!['@reference.receiver']!.receiver).toEqual(
+        { kind: 'unknown' },
+      );
     }
   });
 });

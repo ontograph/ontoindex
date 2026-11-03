@@ -14,6 +14,7 @@ import {
   typeScriptConstructorDeclarationCaptures,
   typeScriptSignatureCaptures,
   validateTypeScriptType,
+  typeScriptNamespaceBody,
 } from './typescript-declaration-captures.js';
 import { emitTypeScriptExportCapturesForFile } from './typescript-export-captures.js';
 import { emitTypeScriptImportCaptures } from './typescript-import-captures.js';
@@ -28,6 +29,7 @@ import {
   unwrapTypeScriptParenthesized,
   isTypeScriptLiteralReceiver,
   unwrapTypeScriptReceiver,
+  validateTypeScriptImportMeta,
 } from './typescript-reference-captures.js';
 import { emitTypeScriptLexicalScopeCaptures } from './typescript-scope-captures.js';
 
@@ -83,7 +85,8 @@ function appendWriteReferences(
       unsupported(receiver);
     receiver = object;
   }
-  if (receiver.type !== 'identifier') unsupported(receiver);
+  if (receiver.type === 'meta_property') validateTypeScriptImportMeta(receiver);
+  else if (!['identifier', 'this'].includes(receiver.type)) unsupported(receiver);
   if (computed) {
     // Computed element writes have no ReferenceSite form; retain operand evaluations and any element read.
     if (read) appendExpressionReferences(target, references, localCaptures);
@@ -110,6 +113,12 @@ function appendExpressionReferences(
   while (pending.length > 0) {
     const current = unwrapTypeScriptParenthesized(pending.pop()!);
     if (!current.isNamed || current.hasError || current.isMissing) unsupported(current);
+    // `this` evaluates without introducing a lexical identifier binding.
+    if (current.type === 'this') continue;
+    if (current.type === 'meta_property') {
+      validateTypeScriptImportMeta(current);
+      continue;
+    }
     if (
       current.type === 'assignment_expression' ||
       current.type === 'augmented_assignment_expression'
@@ -569,6 +578,7 @@ function appendExpressionReferences(
       references.push(...emitTypeScriptMemberReadCaptures(current));
       let terminal = current;
       while (true) {
+        if (terminal.type === 'this') break;
         terminal = unwrapTypeScriptReceiver(terminal);
         if (terminal.type !== 'member_expression') break;
         terminal = terminal.childForFieldName('object')!;
@@ -779,6 +789,7 @@ function appendExpressionStatementReferences(
     !value ||
     ![
       'identifier',
+      'meta_property',
       'member_expression',
       'subscript_expression',
       'call_expression',
@@ -1541,151 +1552,201 @@ function isLeadingShebang(root: SyntaxNode, statement: SyntaxNode): boolean {
 export function emitTypeScriptCaptures(root: SyntaxNode): CaptureMatch[] {
   if (root.type !== 'program' || !root.isNamed || root.hasError || root.isMissing)
     unsupported(root);
-  const declarations: SyntaxNode[] = [];
-  const imports: SyntaxNode[] = [];
   const references: CaptureMatch[] = [];
   const parameterCaptures: CaptureMatch[] = [];
   const localCaptures: CaptureMatch[] = [];
-  const moduleVarDeclarations: SyntaxNode[] = [];
-  for (const statement of root.children) {
-    if (
-      statement.type === 'comment' ||
-      statement.type === 'empty_statement' ||
-      isLeadingShebang(root, statement)
-    )
-      continue;
-    if (statement.type === 'expression_statement') {
-      appendExpressionStatementReferences(statement, references, localCaptures);
-      continue;
-    }
-    if (statement.type === 'throw_statement') {
-      appendReturnOrThrowReferences(statement, references, localCaptures);
-      continue;
-    }
-    if (
-      [
-        'try_statement',
-        'statement_block',
-        'for_statement',
-        'for_in_statement',
-        'while_statement',
-        'do_statement',
-        'switch_statement',
-      ].includes(statement.type)
-    ) {
-      appendFunctionBodyReferences(
-        statement,
-        references,
-        localCaptures,
-        new Set(),
-        false,
-        moduleVarDeclarations,
-      );
-      continue;
-    }
-    if (statement.type === 'import_statement') {
-      imports.push(statement);
-      continue;
-    }
-    if (statement.type === 'ambient_declaration') {
-      const children = statement.children.filter((child) => child.type !== 'comment');
-      const declaration = children[1];
+  function collectStatements(host: SyntaxNode): CaptureMatch[] {
+    const declarations: SyntaxNode[] = [];
+    const imports: SyntaxNode[] = [];
+    const namespaceCaptures: CaptureMatch[] = [];
+    const moduleVarDeclarations: SyntaxNode[] = [];
+    for (const child of host.children) {
+      let statement = child;
       if (
-        !statement.isNamed ||
-        statement.hasError ||
-        statement.isMissing ||
-        children.length !== 2 ||
-        children[0]!.type !== 'declare' ||
-        children[0]!.isNamed ||
-        (declaration?.type !== 'lexical_declaration' &&
-          declaration?.type !== 'variable_declaration') ||
-        !declaration.isNamed
+        child.type === 'expression_statement' &&
+        child.namedChildren.filter((node) => node.type !== 'comment')[0]?.type === 'internal_module'
+      ) {
+        statement = child.namedChildren.find((node) => node.type === 'internal_module')!;
+        typeScriptNamespaceBody(statement);
+      }
+      if (host.type !== 'program' && !statement.isNamed && ['{', '}'].includes(statement.type))
+        continue;
+      if (
+        statement.type === 'comment' ||
+        statement.type === 'empty_statement' ||
+        isLeadingShebang(root, statement)
       )
-        unsupported(statement);
-      validateDeclaration(declaration, references, parameterCaptures, localCaptures, true);
-      declarations.push(declaration);
-      if (declaration.type === 'variable_declaration') moduleVarDeclarations.push(declaration);
-      continue;
-    }
-    if (statement.type === 'export_statement') {
-      const declaration = statement.childForFieldName('declaration');
-      if (declaration) {
-        validateDeclaration(declaration, references, parameterCaptures, localCaptures);
-        declarations.push(declaration);
-        if (declaration.type === 'variable_declaration') moduleVarDeclarations.push(declaration);
-      } else {
-        const children = statement.namedChildren.filter((child) => child.type !== 'comment');
-        const source = statement.childForFieldName('source');
+        continue;
+      if (statement.type === 'expression_statement') {
+        appendExpressionStatementReferences(statement, references, localCaptures);
+        continue;
+      }
+      if (statement.type === 'throw_statement') {
+        appendReturnOrThrowReferences(statement, references, localCaptures);
+        continue;
+      }
+      if (
+        [
+          'try_statement',
+          'statement_block',
+          'for_statement',
+          'for_in_statement',
+          'while_statement',
+          'do_statement',
+          'switch_statement',
+        ].includes(statement.type)
+      ) {
+        appendFunctionBodyReferences(
+          statement,
+          references,
+          localCaptures,
+          new Set(),
+          false,
+          moduleVarDeclarations,
+        );
+        continue;
+      }
+      if (statement.type === 'import_statement') {
+        if (host.type !== 'program') unsupported(statement);
+        imports.push(statement);
+        continue;
+      }
+      if (statement.type === 'ambient_declaration') {
+        if (host.type !== 'program') unsupported(statement);
+        const children = statement.children.filter((child) => child.type !== 'comment');
+        const declaration = children[1];
         if (
-          children.length !== (source ? 2 : 1) ||
-          children[0]!.type !== 'export_clause' ||
-          (source && children[1]!.id !== source.id)
+          !statement.isNamed ||
+          statement.hasError ||
+          statement.isMissing ||
+          children.length !== 2 ||
+          children[0]!.type !== 'declare' ||
+          children[0]!.isNamed ||
+          (declaration?.type !== 'lexical_declaration' &&
+            declaration?.type !== 'variable_declaration') ||
+          !declaration.isNamed
         )
           unsupported(statement);
+        validateDeclaration(declaration, references, parameterCaptures, localCaptures, true);
+        declarations.push(declaration);
+        if (declaration.type === 'variable_declaration') moduleVarDeclarations.push(declaration);
+        continue;
       }
-      continue;
-    }
-    validateDeclaration(statement, references, parameterCaptures, localCaptures);
-    declarations.push(statement);
-    if (statement.type === 'variable_declaration') moduleVarDeclarations.push(statement);
-  }
-  appendNewDefaultReferences(root, references, localCaptures);
-  const varGroups = emitTypeScriptVarBindingCapturesForNodes(moduleVarDeclarations);
-  const varBindings = new Map(
-    moduleVarDeclarations.map((node, index) => [node.id, varGroups[index]!]),
-  );
-  const directDeclarationIds = new Set(declarations.map((node) => node.id));
-  const nonVarDeclarationNames = new Set<string>();
-  const captures = [
-    ...emitTypeScriptLexicalScopeCaptures(root),
-    ...declarations.flatMap((node) => {
-      const group =
-        node.type === 'lexical_declaration'
-          ? emitTypeScriptLexicalBindingCaptures(node)
-          : node.type === 'variable_declaration'
-            ? varBindings.get(node.id)!
-            : emitTypeScriptDeclarationCaptures(node).map((match) =>
-                [
-                  'class_declaration',
-                  'enum_declaration',
-                  'interface_declaration',
-                  'type_alias_declaration',
-                ].includes(node.type)
-                  ? match
-                  : { ...match, ...typeScriptSignatureCaptures(node) },
-              );
-      if (node.type !== 'variable_declaration') {
-        for (const match of group) {
-          const name = match['@declaration.name'];
-          if (!name) continue;
-          if (nonVarDeclarationNames.has(name.text)) unsupported();
-          nonVarDeclarationNames.add(name.text);
+      if (statement.type === 'export_statement') {
+        const declaration = statement.childForFieldName('declaration');
+        if (
+          host.type !== 'program' &&
+          (!declaration ||
+            statement.children.some(
+              (child) =>
+                child.type !== 'comment' &&
+                child.id !== declaration.id &&
+                (child.isNamed || !['export', ';'].includes(child.type)),
+            ))
+        )
+          unsupported(statement);
+        if (declaration) {
+          validateDeclaration(declaration, references, parameterCaptures, localCaptures);
+          declarations.push(declaration);
+          if (declaration.type === 'variable_declaration') moduleVarDeclarations.push(declaration);
+        } else {
+          const children = statement.namedChildren.filter((child) => child.type !== 'comment');
+          const source = statement.childForFieldName('source');
+          if (
+            children.length !== (source ? 2 : 1) ||
+            children[0]!.type !== 'export_clause' ||
+            (source && children[1]!.id !== source.id)
+          )
+            unsupported(statement);
         }
+        continue;
       }
-      return group;
-    }),
-    ...moduleVarDeclarations.flatMap((node) =>
-      directDeclarationIds.has(node.id) ? [] : varBindings.get(node.id)!,
-    ),
-    ...imports.flatMap(emitTypeScriptImportCaptures),
-    ...emitTypeScriptExportCapturesForFile(root),
-    ...references,
-  ];
-  const declarationNames = new Set<string>();
-  const importNames = new Set<string>();
-  for (const match of captures) {
-    const declaration = match['@declaration.name'];
-    if (declaration) {
-      if (importNames.has(declaration.text)) unsupported();
-      declarationNames.add(declaration.text);
+      if (statement.type === 'internal_module') {
+        if (host.type !== 'program') unsupported(statement);
+        const body = typeScriptNamespaceBody(statement);
+        declarations.push(statement);
+        // Keep children in the existing body Block; qualified N.member lookup is not modeled.
+        namespaceCaptures.push(...collectStatements(body));
+        continue;
+      }
+      validateDeclaration(statement, references, parameterCaptures, localCaptures);
+      declarations.push(statement);
+      if (statement.type === 'variable_declaration') moduleVarDeclarations.push(statement);
     }
-    const binding = match['@import.binding'];
-    if (binding && match['@import.kind']?.text !== 'reexport') {
-      if (importNames.has(binding.text) || declarationNames.has(binding.text)) unsupported();
-      importNames.add(binding.text);
+    const varGroups = emitTypeScriptVarBindingCapturesForNodes(moduleVarDeclarations);
+    const varBindings = new Map(
+      moduleVarDeclarations.map((node, index) => [node.id, varGroups[index]!]),
+    );
+    const directDeclarationIds = new Set(declarations.map((node) => node.id));
+    const namespaceNames = new Set(
+      declarations
+        .filter((node) => node.type === 'internal_module')
+        .map((node) => node.childForFieldName('name')!.text),
+    );
+    for (const group of varGroups) {
+      if (group.some((match) => namespaceNames.has(match['@declaration.name']!.text)))
+        unsupported();
     }
+    const nonVarDeclarationNames = new Set<string>();
+    const captures = [
+      ...declarations.flatMap((node) => {
+        const group =
+          node.type === 'lexical_declaration'
+            ? emitTypeScriptLexicalBindingCaptures(node)
+            : node.type === 'variable_declaration'
+              ? varBindings.get(node.id)!
+              : emitTypeScriptDeclarationCaptures(node).map((match) =>
+                  [
+                    'class_declaration',
+                    'enum_declaration',
+                    'interface_declaration',
+                    'type_alias_declaration',
+                    'internal_module',
+                  ].includes(node.type)
+                    ? match
+                    : { ...match, ...typeScriptSignatureCaptures(node) },
+                );
+        if (node.type !== 'variable_declaration') {
+          for (const match of group) {
+            const name = match['@declaration.name'];
+            if (!name) continue;
+            if (nonVarDeclarationNames.has(name.text)) unsupported();
+            nonVarDeclarationNames.add(name.text);
+          }
+        }
+        return group;
+      }),
+      ...moduleVarDeclarations.flatMap((node) =>
+        directDeclarationIds.has(node.id) ? [] : varBindings.get(node.id)!,
+      ),
+      ...imports.flatMap(emitTypeScriptImportCaptures),
+      ...(host.type === 'program' ? emitTypeScriptExportCapturesForFile(root) : []),
+    ];
+    const declarationNames = new Set<string>();
+    const importNames = new Set<string>();
+    for (const match of captures) {
+      const declaration = match['@declaration.name'];
+      if (declaration) {
+        if (importNames.has(declaration.text)) unsupported();
+        declarationNames.add(declaration.text);
+      }
+      const binding = match['@import.binding'];
+      if (binding && match['@import.kind']?.text !== 'reexport') {
+        if (importNames.has(binding.text) || declarationNames.has(binding.text)) unsupported();
+        importNames.add(binding.text);
+      }
+    }
+    return [...captures, ...namespaceCaptures];
   }
-  const allCaptures = [...captures, ...parameterCaptures, ...localCaptures];
+  const captures = collectStatements(root);
+  appendNewDefaultReferences(root, references, localCaptures);
+  const allCaptures = [
+    ...emitTypeScriptLexicalScopeCaptures(root),
+    ...captures,
+    ...references,
+    ...parameterCaptures,
+    ...localCaptures,
+  ];
   return [
     ...allCaptures,
     ...allCaptures.flatMap((match) => {

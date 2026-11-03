@@ -62,12 +62,12 @@ describe('TypeScript computed writes', () => {
     'a?.[k] = value;',
     'a?.b[k] = value;',
     'a.#private[k] = value;',
-    'a[k] = this;',
+    'a[k] = class {};',
     '[a[k]] = value;',
     '({ key: a[k] } = value);',
     'make()[k] = value;',
     'make().b[k] = value;',
-    'this[k] = value;',
+    'super[k] = value;',
     'a[k] %= value;',
   ])('refuses unsupported targets or operands: %s', async (source) => {
     await expect(captures(source)).rejects.toThrow(ScopeUnsupportedSyntaxError);
