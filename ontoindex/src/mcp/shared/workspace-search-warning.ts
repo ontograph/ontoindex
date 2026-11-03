@@ -1,5 +1,6 @@
 import { open, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { getPinnedOverlaySnapshot } from '../local/backend-overlay.js';
 import {
   dirtyWorkspaceSearchWarning,
   getUntrackedWorkspacePaths,
@@ -68,7 +69,10 @@ export async function attachWorkspaceSearchWarning(
   if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
   let context: Awaited<ReturnType<typeof resolveTargetContext>>;
   try {
-    context = await resolveTargetContext({ repo: repoId });
+    context = await resolveTargetContext({
+      repo: repoId,
+      verifyGraphAuthority: getPinnedOverlaySnapshot(repoId)?.capability === 'workspace-graph',
+    });
   } catch {
     return result;
   }

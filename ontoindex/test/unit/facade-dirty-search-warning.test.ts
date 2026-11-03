@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dispatchFacade } from '../../src/mcp/facade/dispatch.js';
+import { withPreparedSuperRead } from '../../src/mcp/super/names.js';
 import { attachWorkspaceSearchWarning } from '../../src/mcp/shared/workspace-search-warning.js';
 import {
   dirtyWorkspaceSearchWarning,
@@ -10,10 +11,19 @@ import {
 } from '../../src/mcp/shared/target-context.js';
 import type { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import type { TargetContextDirtyWorkspace } from '../../src/mcp/shared/target-context.js';
+import type { Ignore } from 'ignore';
+import {
+  getPinnedOverlaySnapshot,
+  type OverlaySnapshot,
+} from '../../src/mcp/local/backend-overlay.js';
 
 vi.mock('../../src/mcp/shared/target-context.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/mcp/shared/target-context.js')>()),
   resolveTargetContext: vi.fn(),
+}));
+vi.mock('../../src/mcp/local/backend-overlay.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/mcp/local/backend-overlay.js')>()),
+  getPinnedOverlaySnapshot: vi.fn(),
 }));
 vi.mock('../../src/mcp/super/dispatch.js', () => ({
   dispatchSuper: vi.fn(async () => ({ warnings: ['existing'], definitions: [] })),
@@ -39,8 +49,13 @@ function workspace(
 }
 
 beforeEach(() => {
-  vi.mocked(resolveTargetContext).mockClear();
+  vi.mocked(resolveTargetContext).mockReset();
   vi.mocked(resolveTargetContext).mockResolvedValue({ dirtyWorkspace: workspace() } as never);
+  vi.mocked(getPinnedOverlaySnapshot).mockReset();
+  vi.mocked(withPreparedSuperRead).mockReset();
+  vi.mocked(withPreparedSuperRead).mockImplementation(
+    async (_name, _args, _repo, _backend, _options, run) => run(),
+  );
 });
 
 const tempDirs: string[] = [];
@@ -54,6 +69,85 @@ async function tempRepo() {
   const repoPath = path.join(dir, 'repo');
   await mkdir(path.join(repoPath, 'src'), { recursive: true });
   return { dir, repoPath };
+}
+
+const CURRENT_COMMIT = 'abc123def456abc123def456abc123def456abc1';
+
+function workspaceSnapshot(overrides: Partial<OverlaySnapshot> = {}): OverlaySnapshot {
+  return {
+    usable: true,
+    capability: 'workspace-graph',
+    coverage: 'complete',
+    reason: null,
+    generation: 'workspace-1',
+    manifestDigest: 'validated-digest',
+    currentHead: CURRENT_COMMIT,
+    baseGenerationId: 'base-1',
+    baseCommit: CURRENT_COMMIT,
+    dirtyPaths: new Set(['src/a.ts']),
+    parseErrorPaths: new Set(),
+    overlayPaths: new Set(['src/a.ts']),
+    uncoveredPaths: new Set(),
+    tombstones: new Set(),
+    ...overrides,
+  };
+}
+
+async function useActualResolver(snapshot: OverlaySnapshot | undefined) {
+  const actual = await vi.importActual<typeof import('../../src/mcp/shared/target-context.js')>(
+    '../../src/mcp/shared/target-context.js',
+  );
+  vi.mocked(getPinnedOverlaySnapshot).mockReturnValue(snapshot);
+  const readActiveGenerationMeta = vi.fn(async () => ({
+    activeGeneration: null,
+    meta: {
+      repoPath: '.',
+      lastCommit: CURRENT_COMMIT,
+      indexedAt: 'graph-index-1',
+      sourceManifest: {
+        version: 1 as const,
+        head: CURRENT_COMMIT,
+        sourceDigest: 'source-1',
+        sourceEntryCount: 1,
+        includePaths: [],
+        scopeDigest: 'scope-1',
+        ignorePolicyDigest: 'ignore-1',
+        pipelineProfile: 'full' as const,
+        analyzerContractVersion: 'ontoindex-source-manifest-v1' as const,
+        coverage: 'complete' as const,
+      },
+    },
+    authority: 'legacy-root' as const,
+  }));
+  const computeSourceManifest = vi.fn(async () => {
+    throw new Error('search warnings must not scan the source manifest');
+  });
+  vi.mocked(resolveTargetContext).mockImplementation((options) =>
+    actual.resolveTargetContext(options, {
+      readRegistry: async () => [
+        {
+          name: 'fixture',
+          path: '/repo/fixture',
+          storagePath: '/repo/fixture/.ontoindex',
+          indexedAt: 'graph-index-1',
+          lastCommit: CURRENT_COMMIT,
+          stats: { embeddings: 3 },
+        },
+      ],
+      execGit: async (_cwd, args) => {
+        if (args.join(' ') === 'rev-parse --abbrev-ref HEAD') return 'main\n';
+        if (args.join(' ') === 'status --porcelain=v1 --untracked-files=all')
+          return ' M src/a.ts\n';
+        return `${CURRENT_COMMIT}\n`;
+      },
+      getPinnedOverlaySnapshot,
+      getPinnedGenerationDir: () => undefined,
+      readActiveGenerationMeta,
+      computeSourceManifest,
+      loadIgnoreRules: async () => ({ ignores: () => false }) as Ignore,
+    }),
+  );
+  return { readActiveGenerationMeta, computeSourceManifest };
 }
 
 describe('facade dirty search warnings', () => {
@@ -162,6 +256,7 @@ describe('facade dirty search warnings', () => {
   });
 
   it('keeps admitted workspace graph results unchanged', async () => {
+    vi.mocked(getPinnedOverlaySnapshot).mockReturnValue(workspaceSnapshot());
     vi.mocked(resolveTargetContext).mockResolvedValue({
       dirtyWorkspace: workspace(),
       graphAuthority: { state: 'authoritative', capability: 'workspace-graph' },
@@ -169,6 +264,105 @@ describe('facade dirty search warnings', () => {
     const original = { warnings: [] };
     expect(await attachWorkspaceSearchWarning(original, {}, 'fixture')).toBe(original);
   });
+
+  it.each([
+    ['complete current', {}, 'authoritative'],
+    ['partial', { coverage: 'partial' }, 'degraded'],
+    ['unusable', { usable: false }, 'degraded'],
+    ['stale', { currentHead: 'older-captured-head' }, 'review'],
+  ] as const)(
+    'uses real resolver authority for a %s pinned workspace graph',
+    async (_name, overrides, state) => {
+      const probes = await useActualResolver(workspaceSnapshot(overrides));
+      const original = { warnings: ['existing'], definitions: [{ name: 'a' }] };
+      const result = await attachWorkspaceSearchWarning(original, {}, 'fixture');
+      const context = await vi.mocked(resolveTargetContext).mock.results[0].value;
+      expect(resolveTargetContext).toHaveBeenCalledWith({
+        repo: 'fixture',
+        verifyGraphAuthority: true,
+      });
+      expect(context.graphAuthority).toMatchObject({ state, capability: 'workspace-graph' });
+      if (state === 'authoritative') {
+        expect(result).toBe(original);
+      } else {
+        expect(result).toEqual({
+          ...original,
+          warnings: [
+            'existing',
+            '1 dirty source file(s) are not in the graph; results may omit changes: src/a.ts',
+          ],
+        });
+      }
+      expect(getPinnedOverlaySnapshot).toHaveBeenCalledWith('fixture');
+      expect(probes.readActiveGenerationMeta).not.toHaveBeenCalled();
+      expect(probes.computeSourceManifest).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['absent', undefined],
+    [
+      'committed-view empty',
+      workspaceSnapshot({
+        usable: false,
+        capability: undefined,
+        coverage: undefined,
+        generation: undefined,
+        manifestDigest: undefined,
+        reason: 'no dirty files',
+      }),
+    ],
+  ] as const)('does not verify graph authority for an %s snapshot', async (_name, snapshot) => {
+    const probes = await useActualResolver(snapshot);
+    const original = { warnings: ['existing'], definitions: [{ name: 'a' }] };
+    expect(await attachWorkspaceSearchWarning(original, {}, 'fixture')).toEqual({
+      ...original,
+      warnings: [
+        'existing',
+        '1 dirty source file(s) are not in the graph; results may omit changes: src/a.ts',
+      ],
+    });
+    expect(resolveTargetContext).toHaveBeenCalledWith({
+      repo: 'fixture',
+      verifyGraphAuthority: false,
+    });
+    const context = await vi.mocked(resolveTargetContext).mock.results[0].value;
+    expect(context.graphAuthority).toBeUndefined();
+    expect(probes.computeSourceManifest).not.toHaveBeenCalled();
+  });
+
+  it.each(['explore', 'related'] as const)(
+    'checks %s warnings inside the prepared workspace read',
+    async (action) => {
+      await useActualResolver(undefined);
+      let insidePreparedRead = false;
+      vi.mocked(getPinnedOverlaySnapshot).mockImplementation(() =>
+        insidePreparedRead ? workspaceSnapshot() : undefined,
+      );
+      vi.mocked(withPreparedSuperRead).mockImplementation(
+        async (_name, _args, _repo, _backend, _options, run) => {
+          insidePreparedRead = true;
+          try {
+            return await run();
+          } finally {
+            insidePreparedRead = false;
+          }
+        },
+      );
+      const backend = {
+        resolveRepo: vi.fn(async () => ({ id: 'fixture', repoPath: '/repo/fixture' })),
+        callTool: vi.fn(async () => ({ warnings: ['existing'], definitions: [] })),
+      } as unknown as LocalBackend;
+      const result = await dispatchFacade('inspect', action, { repo: 'fixture' }, backend);
+      expect(result).toMatchObject({ warnings: ['existing'], definitions: [] });
+      expect(resolveTargetContext).toHaveBeenCalledTimes(1);
+      expect(resolveTargetContext).toHaveBeenCalledWith({
+        repo: 'fixture',
+        verifyGraphAuthority: true,
+      });
+      expect(insidePreparedRead).toBe(false);
+    },
+  );
 
   it('prioritizes full paths and preserves the capped summary remainder', () => {
     expect(

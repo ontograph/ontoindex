@@ -80,8 +80,8 @@ export async function dispatchFacade(
           automaticWorkspace: isAutomaticWorkspaceEnabled(),
           committedRead: args.read_mode === 'committed',
         },
-        () =>
-          superTool === 'gn_audit_logic'
+        async () => {
+          const result = await (superTool === 'gn_audit_logic'
             ? dispatchSuper(superTool, args, repo.id, undefined, { repoPath: repo.repoPath })
             : superTool === 'gn_test_gap' || superTool === 'gn_verify_diff'
               ? dispatchSuper(superTool, args, repo.id, undefined, undefined, backend)
@@ -90,12 +90,13 @@ export async function dispatchFacade(
                     repoPath: repo.repoPath,
                     callTool: backend.callTool.bind(backend),
                   })
-                : dispatchSuper(superTool, args, repo.id),
+                : dispatchSuper(superTool, args, repo.id));
+          return tool === 'inspect' && (action === 'explore' || action === 'related')
+            ? attachWorkspaceSearchWarning(result, args, repo.id)
+            : result;
+        },
       );
-      const result = attachRepoScopeIdentity(superResult, repo);
-      return tool === 'inspect' && (action === 'explore' || action === 'related')
-        ? await attachWorkspaceSearchWarning(result, args, repo.id)
-        : result;
+      return attachRepoScopeIdentity(superResult, repo);
     } catch (error) {
       throw attachRepoScopeIdentityToError(
         error instanceof Error ? error : new Error(String(error)),
