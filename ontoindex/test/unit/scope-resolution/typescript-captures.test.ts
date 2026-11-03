@@ -5339,7 +5339,6 @@ describe('borrowed TS/JS module captures', () => {
         'declare let value: A & B;',
         'declare let value: { method(): A };',
         'declare let value: readonly [A, B?];',
-        'declare var value: A;',
         'declare function value(): void;',
         'declare class Value {}',
         'declare namespace Value {}',

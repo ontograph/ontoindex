@@ -1597,12 +1597,14 @@ export function emitTypeScriptCaptures(root: SyntaxNode): CaptureMatch[] {
         children.length !== 2 ||
         children[0]!.type !== 'declare' ||
         children[0]!.isNamed ||
-        declaration?.type !== 'lexical_declaration' ||
+        (declaration?.type !== 'lexical_declaration' &&
+          declaration?.type !== 'variable_declaration') ||
         !declaration.isNamed
       )
         unsupported(statement);
       validateDeclaration(declaration, references, parameterCaptures, localCaptures, true);
       declarations.push(declaration);
+      if (declaration.type === 'variable_declaration') moduleVarDeclarations.push(declaration);
       continue;
     }
     if (statement.type === 'export_statement') {

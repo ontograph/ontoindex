@@ -1250,7 +1250,10 @@ function emitVarBindingCaptures(
               : sibling;
           if (declaration.type === 'ambient_declaration') {
             const children = declaration.namedChildren.filter((child) => child.type !== 'comment');
-            if (children.length !== 1 || children[0]!.type !== 'lexical_declaration')
+            if (
+              children.length !== 1 ||
+              !['lexical_declaration', 'variable_declaration'].includes(children[0]!.type)
+            )
               unsupported(declaration);
             declaration = children[0]!;
           }
