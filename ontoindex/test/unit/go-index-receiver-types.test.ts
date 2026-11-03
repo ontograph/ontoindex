@@ -17,6 +17,7 @@ describe('Go indexed receiver types', () => {
   let result: PipelineResult;
   let tree: Parser.Tree;
   const source = `package main
+import remote "example.invalid/constraints"
 type User struct {}
 func (u User) Save() {}
 func (u User) Greet() {}
@@ -32,6 +33,20 @@ func paramSlice(sl []User) { sl[0].Save() }
 func paramArray(sl [2]User) { sl[0].Save() }
 func paramMap(m map[string]User) { m["key"].Save() }
 func pointerSlice(sl []*User) { sl[0].Save() }
+func genericConcrete[T any](sl []User) { sl[0].Greet() }
+func concreteConstraint[T User](sl []User) { sl[0].Greet() }
+func externalConstraint[T remote.Greeter](sl []T) { sl[0].Greet() }
+func genericSlice[User interface{ Greet() }](sl []User) { sl[0].Greet() }
+func genericArray[User interface{ Greet() }](sl [2]User) { sl[0].Greet() }
+func genericMap[User interface{ Greet() }](sl map[string]User) { sl["key"].Greet() }
+// Pointers to type parameters do not inherit their constraint's methods.
+// This unsupported call must still abstain rather than borrow concrete User.Greet.
+func genericPointerSlice[User interface{ Greet() }](sl []*User) { sl[0].Greet() }
+func groupedTypeParameters[Other, User interface{ Greet() }](sl []User) { sl[0].Greet() }
+type Box[T interface{ Greet() }] struct {}
+func (box Box[User]) genericReceiver(sl []User) { sl[0].Greet() }
+func (box *Box[User]) genericPointerReceiver(sl []User) { sl[0].Greet() }
+func (box Box[T]) genericConcreteReceiver(sl []User) { sl[0].Greet() }
 func otherSlice(sl []Other) { sl[0].Save() }
 func qualifiedSlice(sl []remote.User) { sl[0].Save() }
 func qualifiedPointerSlice(sl []*remote.User) { sl[0].Save() }
@@ -81,6 +96,9 @@ func plain() { u := User{}; u.Save() }
     ['paramArray', 'Save', 'User'],
     ['paramMap', 'Save', 'User'],
     ['pointerSlice', 'Save', 'User'],
+    ['genericConcrete', 'Greet', 'User'],
+    ['concreteConstraint', 'Greet', 'User'],
+    ['genericConcreteReceiver', 'Greet', 'User'],
     ['otherSlice', 'Save', 'Other'],
   ])('%s binds the indexed expression to %s on %s', (caller, method, owner) => {
     const selector = selectorFor(caller);
@@ -117,6 +135,14 @@ func plain() { u := User{}; u.Save() }
     'multiMake',
     'qualifiedSlice',
     'qualifiedPointerSlice',
+    'externalConstraint',
+    'genericSlice',
+    'genericArray',
+    'genericMap',
+    'genericPointerSlice',
+    'groupedTypeParameters',
+    'genericReceiver',
+    'genericPointerReceiver',
   ])('%s abstains instead of borrowing a name-only method', (caller) => {
     expect(
       getRelationships(result, 'CALLS').filter(

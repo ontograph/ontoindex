@@ -265,6 +265,38 @@ const getDeclarationTypeNode = (node: SyntaxNode): SyntaxNode | null => {
   return type?.type === 'slice_type' || type?.type === 'map_type' ? type : null;
 };
 
+/** Return declared type-parameter names without mistaking constraint names for parameters. */
+const getGoTypeParameterNames = (fn: SyntaxNode): Set<string> => {
+  const names = new Set<string>();
+  const list = fn.childForFieldName('type_parameters');
+  if (!list) return names;
+  for (const parameter of list.namedChildren) {
+    if (parameter.type !== 'type_parameter_declaration') continue;
+    const constraint = parameter.childForFieldName('type');
+    for (const child of parameter.namedChildren) {
+      if (constraint && child.startIndex >= constraint.startIndex) break;
+      if (child.type === 'identifier') names.add(child.text);
+    }
+  }
+  return names;
+};
+
+/** Method receiver type arguments bind the receiver's declared type parameters. */
+const getGoReceiverTypeParameterNames = (fn: SyntaxNode): Set<string> => {
+  const names = new Set<string>();
+  const receiver = fn.childForFieldName('receiver');
+  const parameter = receiver?.namedChildren.find((child) => child.type === 'parameter_declaration');
+  let type = parameter?.childForFieldName('type') ?? null;
+  while (type?.type === 'pointer_type') type = type.firstNamedChild;
+  if (type?.type !== 'generic_type') return names;
+  const argumentsNode = type.childForFieldName('type_arguments');
+  for (const argument of argumentsNode?.namedChildren ?? []) {
+    const receiverType = argument.type === 'type_elem' ? argument.firstNamedChild : argument;
+    if (receiverType?.type === 'type_identifier') names.add(receiverType.text);
+  }
+  return names;
+};
+
 const extractPatternBinding: PatternBindingExtractor = (
   node,
   _scopeEnv,
@@ -297,6 +329,11 @@ const extractPatternBinding: PatternBindingExtractor = (
   if (namedElement?.type !== 'type_identifier') {
     return undefined;
   }
+  const genericNames = getGoTypeParameterNames(fn);
+  if (fn.type === 'method_declaration') {
+    for (const name of getGoReceiverTypeParameterNames(fn)) genericNames.add(name);
+  }
+  if (genericNames.has(namedElement.text)) return undefined;
   // The type environment flattens blocks: accept only a parameter or a prior
   // declaration in this function's body, never a shadow from a nested block.
   let declaration: SyntaxNode | null = type.parent;

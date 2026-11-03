@@ -348,6 +348,95 @@ func unknownCaller() { unknown[0].Save() }
     },
   );
 
+  it.each(['thread', 'process'] as const)(
+    'preserves Go generic indexed receiver abstention through compiled worker IPC (%s)',
+    async (isolation) => {
+      expect(fs.existsSync(DIST_WORKER)).toBe(true);
+      pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, {
+        isolation,
+        cooperativeShutdown: true,
+      });
+      const fixtures = [
+        {
+          path: 'external-constraint.go',
+          declaration: 'func caller[T remote.Saver](items []T) { items[0].Save() }',
+          receiverTypeName: undefined,
+        },
+        {
+          path: 'shadowed-type.go',
+          declaration: 'func caller[User interface{ Save() }](items []User) { items[0].Save() }',
+          receiverTypeName: undefined,
+        },
+        {
+          path: 'concrete-type.go',
+          declaration: 'func caller(items []User) { items[0].Save() }',
+          receiverTypeName: 'User',
+        },
+        {
+          path: 'generic-concrete-type.go',
+          declaration: 'func caller[T any](items []User) { items[0].Save() }',
+          receiverTypeName: 'User',
+        },
+      ];
+      const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>(
+        fixtures.map(({ path, declaration }) => ({
+          path,
+          content: `package main
+import remote "example.com/remote"
+type User struct {}
+func (u User) Save() {}
+${declaration}
+`,
+        })),
+      );
+      for (const fixture of fixtures) {
+        const calls = results
+          .flatMap((result) => result.calls)
+          .filter((call) => call.filePath === fixture.path && call.calledName === 'Save');
+        expect(calls).toEqual([
+          expect.objectContaining({
+            calledName: 'Save',
+            callForm: 'member',
+            receiverName: 'items[0]',
+          }),
+        ]);
+        expect(calls[0]!.receiverTypeName).toBe(fixture.receiverTypeName);
+        const symbols = results
+          .flatMap((result) => result.symbols)
+          .filter((symbol) => symbol.filePath === fixture.path);
+        const context = createResolutionContext();
+        const graph = createKnowledgeGraph();
+        try {
+          for (const symbol of symbols) {
+            context.model.symbols.add(symbol.filePath, symbol.name, symbol.nodeId, symbol.type, {
+              ownerId: symbol.ownerId,
+            });
+          }
+          const targets = symbols.filter((symbol) => symbol.name === 'Save');
+          expect(targets).toHaveLength(1);
+          expect(targets[0]!.nodeId).toBe(`Method:${fixture.path}:User.Save#0`);
+          await processCallsFromExtracted(graph, calls, context);
+          expect(
+            graph.relationships
+              .filter((edge) => edge.type === 'CALLS')
+              .map(({ sourceId, targetId }) => ({ sourceId, targetId })),
+          ).toEqual(
+            fixture.receiverTypeName === undefined
+              ? []
+              : [
+                  {
+                    sourceId: `Function:${fixture.path}:caller`,
+                    targetId: `Method:${fixture.path}:User.Save#0`,
+                  },
+                ],
+          );
+        } finally {
+          context.clear();
+        }
+      }
+    },
+  );
+
   it.skipIf(!isLanguageAvailable(SupportedLanguages.Swift)).each(['thread', 'process'] as const)(
     'preserves Swift self receivers through compiled worker IPC (%s)',
     async (isolation) => {
