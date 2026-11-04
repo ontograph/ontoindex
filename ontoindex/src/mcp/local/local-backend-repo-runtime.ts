@@ -468,6 +468,20 @@ export async function stopWorkspaceBuild(repo: WorkspaceReadRepo): Promise<void>
   await assertWorkspaceBuildAdmission(repo.storagePath);
 }
 
+/**
+ * Dirty inputs to capture. A symbols overlay leaves out paths the planner already reports as
+ * uncovered (over the scan size cap); the full graph keeps them so its capture can refuse them.
+ */
+function symbolInputPaths(
+  snapshot: Pick<OverlaySnapshot, 'dirtyPaths' | 'tombstones' | 'uncoveredPaths'>,
+  workspaceGraph: boolean,
+): string[] {
+  return [...snapshot.dirtyPaths].filter(
+    (item) =>
+      !snapshot.tombstones.has(item) && (workspaceGraph || !snapshot.uncoveredPaths.has(item)),
+  );
+}
+
 export async function prepareWorkspaceRead(options: {
   repo: WorkspaceReadRepo;
   needsRelationships: boolean;
@@ -626,7 +640,7 @@ export async function prepareWorkspaceRead(options: {
     }
     let inputDigest: string | undefined;
     try {
-      const inputPaths = [...snapshot.dirtyPaths].filter((item) => !snapshot.tombstones.has(item));
+      const inputPaths = symbolInputPaths(snapshot, workspaceGraph);
       const inputs = await dependencies.getInputIdentity(options.repo.repoPath, {
         inputPaths,
         ...(workspaceGraph ? {} : { includePaths: inputPaths }),
@@ -809,7 +823,7 @@ export async function prepareWorkspaceRead(options: {
             }
             await dependencies.buildWorkspaceGraph(options.repo, signal, {
               workspaceGraph,
-              includePaths: [...recheck.dirtyPaths].filter((item) => !recheck.tombstones.has(item)),
+              includePaths: symbolInputPaths(recheck, workspaceGraph),
             });
           }
         } finally {

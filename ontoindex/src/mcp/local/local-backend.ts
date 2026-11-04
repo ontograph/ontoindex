@@ -1274,9 +1274,10 @@ const RELATIONSHIP_TOOLS = new Set([
 // Plain search ranks on the working-tree graph once one exists, so it asks for the build too.
 // Unlike RELATIONSHIP_TOOLS it degrades to the committed index when the build is refused.
 const WORKSPACE_GRAPH_TOOLS = new Set([...RELATIONSHIP_TOOLS, 'query', 'repomap', 'search']);
-// Graph-preferring tools whose answers stay correct on the symbols overlay. Cypher and
-// repomap traverse edges, so they keep the committed fallback.
-const SYMBOL_OVERLAY_FALLBACK_TOOLS = new Set(['search']);
+// Graph-preferring tools whose answers stay correct on the symbols overlay. `query` is the
+// semantic search behind MCP search/semantic (raw Cypher is `cypher`); repomap traverses
+// edges, so it keeps the committed fallback.
+const SYMBOL_OVERLAY_FALLBACK_TOOLS = new Set(['query', 'search']);
 
 const COMMITTED_FALLBACK_CODES = new Set([
   'workspace_busy',
@@ -2590,11 +2591,17 @@ export class LocalBackend implements BackendPort {
         // Search only prefers the graph: the symbols overlay has no repository-size gate
         // and still covers bounded dirty edits, so try it before the committed index.
         if (code === 'workspace_too_large' && SYMBOL_OVERLAY_FALLBACK_TOOLS.has(method)) {
+          let overlayReady = false;
           try {
-            result = await this.withPreparedRepoRead(repo, { needsRelationships: false }, invoke);
+            result = await this.withPreparedRepoRead(repo, { needsRelationships: false }, () => {
+              overlayReady = true;
+              return invoke();
+            });
             committedFallbackNote = `Working-tree graph unavailable (${code}); answered from the committed index plus the uncommitted-symbols overlay. Ranking omits working-tree relationships.`;
-          } catch {
-            // Too many or unsupported dirty edits: use the labelled committed index below.
+          } catch (overlayError) {
+            // Only an unavailable overlay (too many or unsupported dirty edits) falls back;
+            // a failure of the search itself is reported as is.
+            if (overlayReady) throw overlayError;
           }
         }
         if (committedFallbackNote === undefined) {

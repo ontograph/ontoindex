@@ -445,7 +445,9 @@ async function computeSnapshot(
     return {
       ...base,
       usable: false,
-      ...(automatic ? { baseMatches: false } : {}),
+      // A stale overlay only needs rebuilding; base identity (HEAD vs indexed commit) is
+      // already in `identity`. Forcing baseMatches=false here escalated every stale overlay
+      // to a full workspace graph, which large repositories refuse.
       reason: `overlay was built on base ${short(recordedBase.baseGenerationId, recordedBase.baseCommit)} but the active base is ${short(baseGenerationId, baseCommit)}; rebuild: ontoindex analyze --dirty-overlay`,
     };
   }

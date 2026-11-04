@@ -4,6 +4,8 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+- The 2.4.21 symbols-overlay fallback never ran on real repositories: MCP `search/semantic` dispatches as `query`, which was not in the fallback set; a stale overlay forced a full workspace graph; and one dirty file over the scan size cap refused the whole overlay capture. Search now covers the remaining dirty files on large repositories (verified on a 7,073-file repository: 14 of 15 dirty files, the 15th over the size cap). A search error on the overlay is reported as is instead of being replaced by the size refusal.
+
 ## [2.4.21] - 2026-11-05
 
 - A `response_budget_bytes` below the smallest safe projection returns that projection with `effectiveBytes` and a warning; responses that cannot be projected still return an error.

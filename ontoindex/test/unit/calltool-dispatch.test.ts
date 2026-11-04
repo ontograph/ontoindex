@@ -545,6 +545,28 @@ describe('request workspace gate', () => {
       expect(prepareWorkspaceRead).toHaveBeenCalledTimes(2);
     });
 
+    it('uses the symbols overlay for MCP search/semantic (query)', async () => {
+      vi.mocked(prepareWorkspaceRead)
+        .mockRejectedValueOnce(tooLarge())
+        .mockResolvedValueOnce(cleanSnapshot());
+      (backend as any).repoToolHandlers.query = async () => ({ items: [], warnings: [] });
+      const result = (await backend.callTool('query', { query: 'x' })) as { warnings: string[] };
+      expect(result.warnings.some((w) => w.includes('uncommitted-symbols overlay'))).toBe(true);
+    });
+
+    it('reports a search failure on the symbols overlay instead of the size refusal', async () => {
+      vi.mocked(prepareWorkspaceRead)
+        .mockRejectedValueOnce(tooLarge())
+        .mockResolvedValueOnce(cleanSnapshot());
+      (backend as any).repoToolHandlers.search = async () => {
+        throw new Error('overlay query failed');
+      };
+      await expect(backend.callTool('search', { query: 'x' })).rejects.toThrow(
+        'overlay query failed',
+      );
+      expect(prepareWorkspaceRead).toHaveBeenCalledTimes(2);
+    });
+
     it('falls back to the committed index when the search symbols overlay also fails', async () => {
       vi.mocked(prepareWorkspaceRead)
         .mockRejectedValueOnce(tooLarge())
@@ -579,7 +601,7 @@ describe('request workspace gate', () => {
       expect(prepareWorkspaceRead).toHaveBeenCalledTimes(2);
     });
 
-    it('falls back directly to the committed index for query without a symbols overlay retry', async () => {
+    it('falls back directly to the committed index for cypher without a symbols overlay retry', async () => {
       vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(tooLarge());
       vi.mocked(planDirtyOverlay).mockResolvedValueOnce(dirtyPlan(0) as any);
       const real = backend.withPreparedRepoRead.bind(backend);
@@ -590,8 +612,8 @@ describe('request workspace gate', () => {
             ? ((await operation()) as any)
             : real(repo, options, operation),
         );
-      (backend as any).repoToolHandlers.query = async () => ({ rows: [], warnings: [] });
-      const result = (await backend.callTool('query', { query: 'RETURN 1' })) as {
+      (backend as any).repoToolHandlers.cypher = async () => ({ rows: [], warnings: [] });
+      const result = (await backend.callTool('cypher', { query: 'RETURN 1' })) as {
         warnings: string[];
       };
       expect(gate).toHaveBeenLastCalledWith(
