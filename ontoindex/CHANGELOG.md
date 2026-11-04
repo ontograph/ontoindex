@@ -4,6 +4,8 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.4.21] - 2026-11-05
+
 - A `response_budget_bytes` below the smallest safe projection returns that projection with `effectiveBytes` and a warning; responses that cannot be projected still return an error.
 - Argument type errors name the received type, for example `autoAnalyze: expected boolean, received string`. String booleans stay rejected so a string can never satisfy a boolean such as `confirm`.
 - The MCP server writes one stderr line naming the shutdown reason and exit code.
