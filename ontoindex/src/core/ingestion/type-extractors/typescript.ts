@@ -375,7 +375,9 @@ const findTsCallResultElementType = (
         // Map iteration yields entry tuples, so accept only single-element containers.
         if (
           !rawReturn ||
-          !/^(?:\w+\[\]|(?:Array|ReadonlyArray|Set|Iterable)\s*<\s*\w+\s*>)$/.test(rawReturn)
+          !/^(?:\w+\[\]|(?:Array|ReadonlyArray|Set|ReadonlySet|Iterable)\s*<\s*\w+\s*>)$/.test(
+            rawReturn,
+          )
         )
           return undefined;
         return extractElementTypeFromString(rawReturn);

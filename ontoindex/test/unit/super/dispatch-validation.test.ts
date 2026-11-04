@@ -121,10 +121,26 @@ describe('super argument validation', () => {
       Object.assign(property, original);
     }
   });
-  it('rejects string boolean before analysis submission', async () => {
-    await expect(
-      dispatchSuper('gn_ensure_fresh', { autoAnalyze: 'false' }, 'missing'),
-    ).rejects.toThrow('Invalid arguments for gn_ensure_fresh: autoAnalyze:');
+  it.each(['false', 'true', 'no', 'TRUE'])(
+    'rejects string boolean %j before analysis submission',
+    async (value) => {
+      const expected = 'autoAnalyze: expected boolean, received string';
+      await expect(
+        dispatchSuper('gn_ensure_fresh', { autoAnalyze: value }, 'fixture'),
+      ).rejects.toThrow(expected);
+      await expect(
+        dispatchFacade('manage', 'ensure_fresh', { autoAnalyze: value }, {} as LocalBackend),
+      ).rejects.toThrow(expected);
+    },
+  );
+  it.each([
+    [null, 'null'],
+    [[], 'array'],
+    [1, 'number'],
+  ] as const)('names the received type for %j', (value, received) => {
+    expect(() => validateSuperParams('gn_ensure_fresh', { autoAnalyze: value })).toThrow(
+      `autoAnalyze: expected boolean, received ${received}`,
+    );
   });
   it.each([
     ['module', 'gn_explain_module', {}, 'filePath'],
@@ -155,9 +171,9 @@ describe('super argument validation', () => {
     [{}, 'symbol: Required'],
     [{ symbol: 1 }, 'symbol: expected string'],
     [{ symbol: 'parseToken', intent: 'invalid' }, 'intent: expected one of'],
-    [{ symbol: 'parseToken', force: 'false' }, 'force: expected boolean'],
-    [{ symbol: 'parseToken', docsEvidence: 'false' }, 'docsEvidence: expected boolean'],
-    [{ symbol: 'parseToken', legacyResponse: 'false' }, 'legacyResponse: expected boolean'],
+    [{ symbol: 'parseToken', force: 'no' }, 'force: expected boolean'],
+    [{ symbol: 'parseToken', docsEvidence: 'no' }, 'docsEvidence: expected boolean'],
+    [{ symbol: 'parseToken', legacyResponse: 'no' }, 'legacyResponse: expected boolean'],
   ] as const)(
     'rejects invalid audit/safe_edit_check arguments through both dispatchers: %j',
     async (params, issue) => {
@@ -195,7 +211,7 @@ describe('super argument validation', () => {
       { session: 'a', strategy: 'invalid' },
       'strategy: expected one of',
     ],
-    ['bundle', 'gn_audit_bundle', { session: 'a', persist: 'false' }, 'persist: expected boolean'],
+    ['bundle', 'gn_audit_bundle', { session: 'a', persist: 'no' }, 'persist: expected boolean'],
     ['dispatch_prompt', 'gn_dispatch_prompt', {}, 'session or sessionId: Required'],
     ['dispatch_prompt', 'gn_dispatch_prompt', { sessionId: 1 }, 'sessionId: expected string'],
     [
@@ -213,19 +229,19 @@ describe('super argument validation', () => {
     [
       'dispatch_prompt',
       'gn_dispatch_prompt',
-      { session: 'a', forbidUnverifiedFindings: 'false' },
+      { session: 'a', forbidUnverifiedFindings: 'no' },
       'forbidUnverifiedFindings: expected boolean',
     ],
     [
       'dispatch_prompt',
       'gn_dispatch_prompt',
-      { session: 'a', allowRuntimeOnlyFindings: 'false' },
+      { session: 'a', allowRuntimeOnlyFindings: 'no' },
       'allowRuntimeOnlyFindings: expected boolean',
     ],
     [
       'dispatch_prompt',
       'gn_dispatch_prompt',
-      { session: 'a', persist: 'false' },
+      { session: 'a', persist: 'no' },
       'persist: expected boolean',
     ],
     ['diff', 'gn_audit_diff', { sessionB: 'b' }, 'sessionA: Required'],
@@ -288,11 +304,11 @@ describe('super argument validation', () => {
     ['lint', 'gn_audit_lint', { cursor: 1 }, 'cursor: expected string'],
     ['lint', 'gn_audit_lint', { session: 1 }, 'session: expected string'],
     ['lint', 'gn_audit_lint', { sessionId: 1 }, 'sessionId: expected string'],
-    ['lint', 'gn_audit_lint', { advisory: 'false' }, 'advisory: expected boolean'],
-    ['lint', 'gn_audit_lint', { summary: 'false' }, 'summary: expected boolean'],
-    ['lint', 'gn_audit_lint', { minimal: 'false' }, 'minimal: expected boolean'],
-    ['lint', 'gn_audit_lint', { includeIgnored: 'false' }, 'includeIgnored: expected boolean'],
-    ['lint', 'gn_audit_lint', { persist: 'false' }, 'persist: expected boolean'],
+    ['lint', 'gn_audit_lint', { advisory: 'no' }, 'advisory: expected boolean'],
+    ['lint', 'gn_audit_lint', { summary: 'no' }, 'summary: expected boolean'],
+    ['lint', 'gn_audit_lint', { minimal: 'no' }, 'minimal: expected boolean'],
+    ['lint', 'gn_audit_lint', { includeIgnored: 'no' }, 'includeIgnored: expected boolean'],
+    ['lint', 'gn_audit_lint', { persist: 'no' }, 'persist: expected boolean'],
   ] as const)(
     'rejects invalid audit/%s arguments through both dispatchers: %j',
     async (action, name, params, issue) => {

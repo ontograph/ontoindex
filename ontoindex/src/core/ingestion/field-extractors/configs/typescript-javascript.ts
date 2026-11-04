@@ -43,7 +43,13 @@ function constructorAssignmentName(node: SyntaxNode): string | undefined {
 
 /** Select one assignment capture, with explicit class declarations taking precedence. */
 export function isConstructorFieldDefinition(node: SyntaxNode): boolean {
-  const owner = node.parent?.parent?.parent?.parent?.parent;
+  // assignment_expression → expression_statement → statement_block →
+  // method_definition → class_body → class; any other shape is not a field.
+  const statement = node.parent;
+  const block = statement?.type === 'expression_statement' ? statement.parent : null;
+  const method = block?.type === 'statement_block' ? block.parent : null;
+  const classBody = method?.type === 'method_definition' ? method.parent : null;
+  const owner = classBody?.type === 'class_body' ? classBody.parent : null;
   if (!owner || !['class_declaration', 'class'].includes(owner.type)) return false;
   const name = constructorAssignmentName(node);
   if (!name) return false;

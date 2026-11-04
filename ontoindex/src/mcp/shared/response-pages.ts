@@ -190,26 +190,33 @@ export function applyLogicalResponseBudget(
   }
 
   let smallestProjectionBytes = Infinity;
+  let smallestProjection: string | undefined;
   const recordProjectionSize = (
     projectedBytes: number,
     projectionValue: Record<string, unknown>,
     fields: string[],
   ): void => {
-    // A retry changes requestedBytes in the metadata, so measure at the proposed retry budget.
+    // Include the raised-budget diagnostics when measuring the effective budget.
     let retryBytes = projectedBytes;
     while (true) {
       const retryProjection = withBudgetMetadata(
         projectionValue,
-        retryBytes,
+        requestedBytes,
         originalBytes,
         fields,
         isError,
+        retryBytes,
       );
       const actualBytes = serializedMcpToolResultBytes(retryProjection, isError);
-      if (actualBytes <= retryBytes) break;
+      if (actualBytes <= retryBytes) {
+        if (retryBytes < smallestProjectionBytes) {
+          smallestProjectionBytes = retryBytes;
+          smallestProjection = retryProjection;
+        }
+        break;
+      }
       retryBytes = actualBytes;
     }
-    smallestProjectionBytes = Math.min(smallestProjectionBytes, retryBytes);
   };
   const originalValue = { ...value };
   const omittedFields: string[] = [];
@@ -257,11 +264,9 @@ export function applyLogicalResponseBudget(
       recordProjectionSize(projectedBytes, nextValue, nextOmitted);
     }
   }
+  if (smallestProjection !== undefined) return smallestProjection;
   throw new Error(
-    'response_budget_bytes is too small to preserve the response diagnostics.' +
-      (smallestProjectionBytes === Infinity
-        ? fullSizeHint
-        : ` Requested ${requestedBytes} bytes; the smallest safe projection needs ${smallestProjectionBytes} bytes.`),
+    'response_budget_bytes is too small to preserve the response diagnostics.' + fullSizeHint,
   );
 }
 
@@ -275,8 +280,16 @@ function withBudgetMetadata(
   originalBytes: number,
   omittedFields: string[],
   isError: boolean,
+  effectiveBytes?: number,
 ): string {
   const result = { ...value };
+  const raisedBudget =
+    effectiveBytes === undefined
+      ? {}
+      : {
+          effectiveBytes,
+          warning: `response_budget_bytes ${requestedBytes} was below the smallest safe projection ${effectiveBytes}; returned the smallest safe projection.`,
+        };
   let returnedBytes = 0;
   let text = '';
   for (let i = 0; i < 8; i++) {
@@ -286,6 +299,7 @@ function withBudgetMetadata(
       returnedBytes: returnedBytes || 0,
       truncated: true,
       omittedFields: [...omittedFields],
+      ...raisedBudget,
     };
     text = JSON.stringify(result, null, 2);
     const actual = serializedMcpToolResultBytes(text, isError);
@@ -298,6 +312,7 @@ function withBudgetMetadata(
     returnedBytes,
     truncated: true,
     omittedFields: [...omittedFields],
+    ...raisedBudget,
   };
   return JSON.stringify(result, null, 2);
 }

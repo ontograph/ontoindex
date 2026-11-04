@@ -2135,6 +2135,38 @@ describe('TypeScript object destructuring resolution (Phase A)', () => {
 // Differs from ts-for-of-call-expression: iterable is an identifier, not inline call
 // ---------------------------------------------------------------------------
 
+describe('TypeScript post-fixpoint for-loop replay over generic containers', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ts-fixpoint-for-loop-generic'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves u.save() to User#save when the call returns Array<User>', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.target === 'save' && c.source === 'process');
+    expect(saveCalls).toHaveLength(1);
+    expect(saveCalls[0].targetLabel).toBe('Method');
+    expect(saveCalls[0].rel.targetId).toContain('User');
+    expect(saveCalls[0].rel.targetId).not.toContain('Admin');
+  });
+
+  it('resolves m.save() to User#save when the call returns ReadonlySet<User>', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.target === 'save' && c.source === 'processSet');
+    expect(saveCalls).toHaveLength(1);
+    expect(saveCalls[0].rel.targetId).toContain('User');
+  });
+
+  it('does not bind Map entries to the value type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.filter((c) => c.target === 'save' && c.source === 'processIndex')).toEqual([]);
+  });
+});
+
 describe('TypeScript post-fixpoint for-loop replay (Phase A ex-9B)', () => {
   let result: PipelineResult;
 

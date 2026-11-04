@@ -1052,11 +1052,17 @@ export async function startMCPServer(
   // may observe an already-closed stdio stream or emit errors while starting.
   let shuttingDown = false;
   let shutdownExitCode = 0;
-  const shutdown = async (exitCode = 0) => {
+  const shutdown = async (exitCode: number, reason: string) => {
     shutdownExitCode = Math.max(shutdownExitCode, exitCode);
     // Repeated signals do not cut cleanup short; the grace deadline is the only bound.
     if (shuttingDown) return;
     shuttingDown = true;
+    process.stderr.write(
+      boundMcpErrorText(
+        (message) => `[ontoindex:mcp] shutting down: ${message} (exit ${shutdownExitCode})\n`,
+        reason.replace(/[\r\n]/g, ' '),
+      ),
+    );
     const completed = await withShutdownGrace(
       (async () => {
         // close fences admission synchronously; disposal cancels builders that
@@ -1080,12 +1086,12 @@ export async function startMCPServer(
 
   // Wrapped: Node passes the signal name to handlers, and process.exit()
   // throws ERR_INVALID_ARG_TYPE on a string exit code.
-  process.on('SIGINT', () => void shutdown(0));
-  process.on('SIGTERM', () => void shutdown(0));
+  process.on('SIGINT', () => void shutdown(0, 'SIGINT'));
+  process.on('SIGTERM', () => void shutdown(0, 'SIGTERM'));
   // uncaughtException is fatal; unhandledRejection is logged but non-fatal (availability-first).
   process.on('uncaughtException', (err) => {
     process.stderr.write(`OntoIndex MCP uncaughtException: ${err?.stack || err}\n`);
-    shutdown(1);
+    shutdown(1, 'uncaughtException');
   });
   process.on('unhandledRejection', (reason: unknown) => {
     process.stderr.write(
@@ -1093,11 +1099,12 @@ export async function startMCPServer(
     );
   });
   // stdin end/close/error means the parent process is gone.
-  process.stdin.on('end', () => void shutdown());
-  process.stdin.on('close', () => void shutdown());
-  process.stdin.on('error', () => void shutdown());
-  process.stdout.on('error', () => void shutdown());
-  if (process.stdin.destroyed || process.stdin.readableEnded) void shutdown();
+  process.stdin.on('end', () => void shutdown(0, 'stdin end'));
+  process.stdin.on('close', () => void shutdown(0, 'stdin close'));
+  process.stdin.on('error', (error) => void shutdown(0, `stdin error: ${error.message}`));
+  process.stdout.on('error', (error) => void shutdown(0, `stdout error: ${error.message}`));
+  if (process.stdin.destroyed || process.stdin.readableEnded)
+    void shutdown(0, 'stdin already closed');
 
   const idleMs = resolveIdleExitMs(process.env.ONTOINDEX_MCP_IDLE_EXIT_MS);
   if (idleMs !== null) {
@@ -1112,7 +1119,7 @@ export async function startMCPServer(
         process.stderr.write(
           `[ontoindex] idle for ${idleMs} ms; exiting (restart the MCP client connection to resume)\n`,
         );
-        void shutdown(0);
+        void shutdown(0, 'idle');
       },
     });
     const checkIntervalMs = Math.min(30_000, idleMs / 4);

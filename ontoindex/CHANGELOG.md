@@ -4,11 +4,17 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+- A `response_budget_bytes` below the smallest safe projection returns that projection with `effectiveBytes` and a warning; responses that cannot be projected still return an error.
+- Argument type errors name the received type, for example `autoAnalyze: expected boolean, received string`. String booleans stay rejected so a string can never satisfy a boolean such as `confirm`.
+- The MCP server writes one stderr line naming the shutdown reason and exit code.
+- TypeScript for-of over a call result typed `ReadonlySet<T>` binds the element type.
+
 ## [2.4.20] - 2026-11-04
 
 - Persist parser-error evidence and report lightweight parser fallback as degraded coverage in base and workspace generations.
 - Refuse incomplete retained replay and oversized dirty inputs; complete rebuilt workspaces use their own coverage evidence.
-- Avoid unrelated TypeScript and JavaScript member-call fallback edges and handle comments in Go receiver wrappers.
+- Avoid unrelated TypeScript and JavaScript member-call fallback edges and handle comments in Go receiver wrappers. Receiver types now come from unannotated factories whose every return is the same `new X()`, from for-of over a `const` call result returning an array, set or iterable, and from JavaScript constructor `this.x =` assignments typed by JSDoc or `new X()`.
+- Committed-read remediation says it queries the last index and points to `readContext.sourceProvenance`; next-step hints keep `repo` and workspace `read_mode` and omit enrichment options that explicit read modes reject.
 - Deletion checks report generation-wide parser coverage conservatively, including truncated or missing evidence.
 - Expand parser, replay, worker, workspace, and deletion-coverage regression tests.
 

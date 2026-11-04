@@ -178,6 +178,44 @@ describe('pageMcpResponse', () => {
     ).rejects.toThrow('does not match');
   });
 
+  it('pages a raised logical budget while retaining diagnostics and the original request', async () => {
+    const args = { response_budget_bytes: 1 };
+    const warnings = ['retain this warning '.repeat(200)];
+    let response = await pageMcpResponse({
+      tool: 'search',
+      args,
+      text: JSON.stringify({ results: ['x'.repeat(10_000)], warnings }),
+      responseBudgetBytes: 1,
+      maxBytes: 1500,
+    });
+    let reconstructed = '';
+    while (true) {
+      expect(response.paged).toBe(true);
+      expect(serializedMcpToolResultBytes(response.text)).toBeLessThanOrEqual(1500);
+      const page = JSON.parse(response.text) as ResponsePageEnvelope;
+      reconstructed += page.chunk;
+      const cursor = page.responsePage.nextCursor;
+      if (!cursor) break;
+      response = await pageMcpResponse({
+        tool: 'search',
+        args,
+        cursor,
+        responseBudgetBytes: 1,
+        maxBytes: 1500,
+      });
+    }
+    const projected = JSON.parse(reconstructed);
+    expect(projected.warnings).toEqual(warnings);
+    expect(projected.results).toBeUndefined();
+    expect(projected.responseBudget.requestedBytes).toBe(1);
+    expect(projected.responseBudget.returnedBytes).toBe(
+      serializedMcpToolResultBytes(reconstructed),
+    );
+    expect(projected.responseBudget.returnedBytes).toBeLessThanOrEqual(
+      projected.responseBudget.effectiveBytes,
+    );
+  });
+
   it('returns responses that already fit without paging', async () => {
     const result = await pageMcpResponse({ tool: 'gn_test', args: {}, text: 'small' });
 

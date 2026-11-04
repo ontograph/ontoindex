@@ -118,7 +118,10 @@ export function validateSuperParams(name: SuperTool, params: Record<string, unkn
       if (type === 'number') return typeof value === 'number' && Number.isFinite(value);
       return typeof value === type;
     });
-    if (!validType) issues.push(`${key}: expected ${types.join(' or ')}`);
+    if (!validType)
+      issues.push(
+        `${key}: expected ${types.join(' or ')}, received ${value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value}`,
+      );
     else if (property.enum && !property.enum.includes(value as string))
       issues.push(`${key}: expected one of ${property.enum.join(', ')}`);
     if (validType && typeof value === 'string') {
