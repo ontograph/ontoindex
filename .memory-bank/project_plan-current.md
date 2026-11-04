@@ -104,6 +104,10 @@ The follow-up rebuilt local artifacts and qualified a disposable installation;
 active-installation replacement subsequently passed in the 2.4.12 delivery.
 GN manager state is unchanged.
 
+2026-11-05: 2.4.21 committed at `fcb1455` and installed locally (no release);
+adds symbols-overlay search on oversized workspaces. Evidence:
+[local delivery](audit_session-2026-11-05-local-2421.md).
+
 2026-11-05: 2.4.20 committed at `c0d765f` and installed locally (no release).
 Follow-up `e0dc1df` clamps small response budgets, names received argument
 types (string booleans stay rejected so `confirm` cannot be satisfied by a
