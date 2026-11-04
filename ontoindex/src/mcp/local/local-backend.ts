@@ -1274,6 +1274,9 @@ const RELATIONSHIP_TOOLS = new Set([
 // Plain search ranks on the working-tree graph once one exists, so it asks for the build too.
 // Unlike RELATIONSHIP_TOOLS it degrades to the committed index when the build is refused.
 const WORKSPACE_GRAPH_TOOLS = new Set([...RELATIONSHIP_TOOLS, 'query', 'repomap', 'search']);
+// Graph-preferring tools whose answers stay correct on the symbols overlay. Cypher and
+// repomap traverse edges, so they keep the committed fallback.
+const SYMBOL_OVERLAY_FALLBACK_TOOLS = new Set(['search']);
 
 const COMMITTED_FALLBACK_CODES = new Set([
   'workspace_busy',
@@ -2584,19 +2587,31 @@ export class LocalBackend implements BackendPort {
         ) {
           throw error;
         }
-        const dirtyNote = await describeUncoveredDirtyPaths(repo);
-        try {
-          result = await this.withPreparedRepoRead(
-            repo,
-            { needsRelationships: RELATIONSHIP_TOOLS.has(method), readMode: 'committed' },
-            invoke,
-          );
-        } catch {
-          // No trustworthy committed index either: report the original refusal.
-          throw error;
+        // Search only prefers the graph: the symbols overlay has no repository-size gate
+        // and still covers bounded dirty edits, so try it before the committed index.
+        if (code === 'workspace_too_large' && SYMBOL_OVERLAY_FALLBACK_TOOLS.has(method)) {
+          try {
+            result = await this.withPreparedRepoRead(repo, { needsRelationships: false }, invoke);
+            committedFallbackNote = `Working-tree graph unavailable (${code}); answered from the committed index plus the uncommitted-symbols overlay. Ranking omits working-tree relationships.`;
+          } catch {
+            // Too many or unsupported dirty edits: use the labelled committed index below.
+          }
         }
-        const refreshing = (await refreshWarning) !== undefined;
-        committedFallbackNote = `Working-tree ${code === 'workspace_too_large' ? 'graph' : 'read'} unavailable (${code}); answered from the committed index${refreshing ? ' while it refreshes' : ''} (see readContext.indexedCommit).${dirtyNote} Verify uncommitted and newly committed code from source.`;
+        if (committedFallbackNote === undefined) {
+          const dirtyNote = await describeUncoveredDirtyPaths(repo);
+          try {
+            result = await this.withPreparedRepoRead(
+              repo,
+              { needsRelationships: RELATIONSHIP_TOOLS.has(method), readMode: 'committed' },
+              invoke,
+            );
+          } catch {
+            // No trustworthy committed index either: report the original refusal.
+            throw error;
+          }
+          const refreshing = (await refreshWarning) !== undefined;
+          committedFallbackNote = `Working-tree ${code === 'workspace_too_large' ? 'graph' : 'read'} unavailable (${code}); answered from the committed index${refreshing ? ' while it refreshes' : ''} (see readContext.indexedCommit).${dirtyNote} Verify uncommitted and newly committed code from source.`;
+        }
       }
     }
     const autoRefreshNote = await refreshWarning;

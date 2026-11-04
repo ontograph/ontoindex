@@ -8,6 +8,7 @@ All notable changes to OntoIndex will be documented in this file.
 - Argument type errors name the received type, for example `autoAnalyze: expected boolean, received string`. String booleans stay rejected so a string can never satisfy a boolean such as `confirm`.
 - The MCP server writes one stderr line naming the shutdown reason and exit code.
 - TypeScript for-of over a call result typed `ReadonlySet<T>` binds the element type.
+- On a repository above `ONTOINDEX_WORKSPACE_MAX_FILES`, `search` answers from the committed index plus the uncommitted-symbols overlay (up to 50 changed files, unchanged base and configuration) instead of the committed index alone. Relationship tools, `query` and `repomap` keep the labelled committed fallback.
 
 ## [2.4.20] - 2026-11-04
 

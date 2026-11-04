@@ -520,6 +520,95 @@ describe('request workspace gate', () => {
       expect(note).not.toContain('src/dirty-11.rs');
     });
 
+    it('retries search with the symbols overlay when the workspace graph is too large', async () => {
+      vi.mocked(prepareWorkspaceRead)
+        .mockRejectedValueOnce(tooLarge())
+        .mockResolvedValueOnce(cleanSnapshot());
+      const gate = vi.spyOn(backend, 'withPreparedRepoRead');
+      (backend as any).repoToolHandlers.search = async () => ({ items: [], warnings: [] });
+      const result = (await backend.callTool('search', { query: 'x' })) as {
+        warnings: string[];
+      };
+      expect(result.warnings).toContain(
+        'Working-tree graph unavailable (workspace_too_large); answered from the committed index plus the uncommitted-symbols overlay. Ranking omits working-tree relationships.',
+      );
+      expect(gate).toHaveBeenCalledWith(
+        expect.anything(),
+        { needsRelationships: false },
+        expect.any(Function),
+      );
+      expect(gate).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ readMode: 'committed' }),
+        expect.any(Function),
+      );
+      expect(prepareWorkspaceRead).toHaveBeenCalledTimes(2);
+    });
+
+    it('falls back to the committed index when the search symbols overlay also fails', async () => {
+      vi.mocked(prepareWorkspaceRead)
+        .mockRejectedValueOnce(tooLarge())
+        .mockRejectedValueOnce(tooLarge());
+      vi.mocked(planDirtyOverlay).mockResolvedValueOnce(dirtyPlan(0) as any);
+      const real = backend.withPreparedRepoRead.bind(backend);
+      const gate = vi
+        .spyOn(backend, 'withPreparedRepoRead')
+        .mockImplementation(async (repo, options, operation) =>
+          options.readMode === 'committed'
+            ? ((await operation()) as any)
+            : real(repo, options, operation),
+        );
+      (backend as any).repoToolHandlers.search = async () => ({ items: [], warnings: [] });
+      const result = (await backend.callTool('search', { query: 'x' })) as {
+        warnings: string[];
+      };
+      expect(gate).toHaveBeenCalledWith(
+        expect.anything(),
+        { needsRelationships: false },
+        expect.any(Function),
+      );
+      expect(gate).toHaveBeenLastCalledWith(
+        expect.anything(),
+        { needsRelationships: false, readMode: 'committed' },
+        expect.any(Function),
+      );
+      const note = result.warnings.find((w) => w.includes('workspace_too_large'))!;
+      expect(note).toContain('answered from the committed index');
+      expect(note).toContain('readContext.indexedCommit');
+      expect(note).not.toContain('uncommitted-symbols overlay');
+      expect(prepareWorkspaceRead).toHaveBeenCalledTimes(2);
+    });
+
+    it('falls back directly to the committed index for query without a symbols overlay retry', async () => {
+      vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(tooLarge());
+      vi.mocked(planDirtyOverlay).mockResolvedValueOnce(dirtyPlan(0) as any);
+      const real = backend.withPreparedRepoRead.bind(backend);
+      const gate = vi
+        .spyOn(backend, 'withPreparedRepoRead')
+        .mockImplementation(async (repo, options, operation) =>
+          options.readMode === 'committed'
+            ? ((await operation()) as any)
+            : real(repo, options, operation),
+        );
+      (backend as any).repoToolHandlers.query = async () => ({ rows: [], warnings: [] });
+      const result = (await backend.callTool('query', { query: 'RETURN 1' })) as {
+        warnings: string[];
+      };
+      expect(gate).toHaveBeenLastCalledWith(
+        expect.anything(),
+        { needsRelationships: false, readMode: 'committed' },
+        expect.any(Function),
+      );
+      expect(gate).not.toHaveBeenCalledWith(
+        expect.anything(),
+        { needsRelationships: false },
+        expect.any(Function),
+      );
+      const note = result.warnings.find((w) => w.includes('workspace_too_large'))!;
+      expect(note).toContain('answered from the committed index');
+      expect(prepareWorkspaceRead).toHaveBeenCalledTimes(1);
+    });
+
     it('rethrows the original refusal when no committed index is readable', async () => {
       vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(tooLarge());
       vi.mocked(readActiveGenerationMeta).mockResolvedValueOnce({

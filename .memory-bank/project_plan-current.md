@@ -104,6 +104,12 @@ The follow-up rebuilt local artifacts and qualified a disposable installation;
 active-installation replacement subsequently passed in the 2.4.12 delivery.
 GN manager state is unchanged.
 
+2026-11-05: 2.4.20 committed at `c0d765f` and installed locally (no release).
+Follow-up `e0dc1df` clamps small response budgets, names received argument
+types (string booleans stay rejected so `confirm` cannot be satisfied by a
+string) and logs the MCP shutdown reason. Evidence:
+[local delivery](audit_session-2026-11-05-local-2420.md).
+
 2026-11-02: 2.4.11 product commit `0fc971a` passed the full Linux delivery gate
 (15,703 unit and 3,044 integration tests), commit hooks, clean-commit build,
 local installation and installed native/database/MCP smoke. CLI and Codex MCP
