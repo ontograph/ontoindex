@@ -212,7 +212,8 @@ describe('explicit committed navigation over MCP', () => {
           requiredCapability: 'workspace-graph',
         },
       });
-      expect(defaultPayload.remediation.message).toContain('Uncommitted source changes');
+      expect(defaultPayload.remediation.message).toContain('query the last index');
+      expect(defaultPayload.remediation.message).toContain('readContext.sourceProvenance');
       expect(defaultPayload.remediation.message).toContain('Do not automatically retry or reindex');
     } else {
       // Backend navigation falls back to committed evidence since 2.3.15 (#155).

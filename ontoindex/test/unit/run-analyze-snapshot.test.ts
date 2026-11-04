@@ -21,6 +21,10 @@ const { execFileTextMock } = vi.hoisted(() => ({
   execFileTextMock: vi.fn().mockResolvedValue(''),
 }));
 
+const { workingTreeMatchesHeadMock } = vi.hoisted(() => ({
+  workingTreeMatchesHeadMock: vi.fn(),
+}));
+
 const { repoManagerGenerationMockState } = vi.hoisted(() => ({
   repoManagerGenerationMockState: {
     canonicalGenerationId: null as string | null,
@@ -100,6 +104,11 @@ vi.mock('../../src/core/process/exec-file.js', () => ({
   execFileText: execFileTextMock,
 }));
 
+vi.mock('../../src/core/analyze-delta.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/analyze-delta.js')>()),
+  workingTreeMatchesHead: workingTreeMatchesHeadMock,
+}));
+
 vi.mock('../../src/core/analysis/analysis-coordinator.js', () => managedAnalysisCoordinatorMocks);
 
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
@@ -166,6 +175,29 @@ const commitManagedAnalysisPublicationMock =
 const MANAGED_TARGET_HEAD = 'a'.repeat(40);
 const MANAGED_OPTIONS_DIGEST = 'b'.repeat(64);
 const MANAGED_SOURCE_IDENTITY = `commit:${MANAGED_TARGET_HEAD}`;
+const managedStatusMock = vi.fn().mockResolvedValue('');
+
+function isManagedStatusCall(
+  command: string,
+  args: string[],
+  options: { timeoutMs?: number; maxBuffer?: number },
+): boolean {
+  return (
+    command === 'git' &&
+    args.length === 3 &&
+    args[0] === 'status' &&
+    args[1] === '--porcelain=v1' &&
+    args[2] === '--untracked-files=all' &&
+    options.timeoutMs === 5_000 &&
+    options.maxBuffer === 1024 * 1024
+  );
+}
+
+function managedStatusCalls() {
+  return execFileTextMock.mock.calls.filter(([command, args, options]) =>
+    isManagedStatusCall(command, args, options),
+  );
+}
 
 async function managedAnalysisContext(
   repoDir: string,
@@ -203,7 +235,17 @@ describe('runFullAnalysis snapshot persistence', () => {
     loadMetaMock.mockResolvedValue(null);
     getLbugStatsMock.mockResolvedValue({ nodes: 3, edges: 2 });
     getCurrentCommitMock.mockReturnValue('abc123');
-    execFileTextMock.mockResolvedValue('');
+    workingTreeMatchesHeadMock.mockReset().mockResolvedValue({
+      clean: true,
+      changedPathCount: 0,
+      changedPaths: [],
+    });
+    managedStatusMock.mockReset().mockResolvedValue('');
+    execFileTextMock
+      .mockReset()
+      .mockImplementation((command, args, options) =>
+        isManagedStatusCall(command, args, options) ? managedStatusMock() : Promise.resolve(''),
+      );
     claimManagedAnalysisAnalyzerMock.mockResolvedValue({});
     beginManagedAnalysisPublicationMock.mockResolvedValue({});
     commitManagedAnalysisPublicationMock.mockResolvedValue({});
@@ -256,7 +298,7 @@ describe('runFullAnalysis snapshot persistence', () => {
     const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-'));
     try {
       getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
-      execFileTextMock.mockResolvedValueOnce(' M source.ts\n');
+      managedStatusMock.mockResolvedValueOnce(' M source.ts\n');
 
       await expect(
         runFullAnalysis(
@@ -279,7 +321,7 @@ describe('runFullAnalysis snapshot persistence', () => {
     const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-managed-'));
     try {
       getCurrentCommitMock.mockReturnValue(MANAGED_TARGET_HEAD);
-      execFileTextMock.mockResolvedValueOnce('').mockResolvedValueOnce('?? generated-source.ts\n');
+      managedStatusMock.mockResolvedValueOnce('').mockResolvedValueOnce('?? generated-source.ts\n');
       runPipelineMock.mockResolvedValue({
         graph: createKnowledgeGraph(),
         repoPath: repoDir,
@@ -301,7 +343,7 @@ describe('runFullAnalysis snapshot persistence', () => {
         ),
       ).rejects.toThrow('Managed analysis requires a clean Git worktree before publication.');
       expect(runPipelineMock).toHaveBeenCalledTimes(1);
-      expect(execFileTextMock).toHaveBeenCalledTimes(2);
+      expect(managedStatusCalls()).toHaveLength(2);
       await expect(
         readAnalysisPublicationReceipt(
           path.join(repoDir, '.ontoindex', 'current'),
@@ -344,7 +386,7 @@ describe('runFullAnalysis snapshot persistence', () => {
         'Managed analysis target HEAD does not match the current repository HEAD before publication.',
       );
       expect(runPipelineMock).toHaveBeenCalledTimes(1);
-      expect(execFileTextMock).toHaveBeenCalledTimes(1);
+      expect(managedStatusCalls()).toHaveLength(1);
     } finally {
       await fs.rm(repoDir, { recursive: true, force: true });
     }
@@ -410,7 +452,7 @@ describe('runFullAnalysis snapshot persistence', () => {
         'Managed analysis requested embeddings, but no embeddings were successfully published.',
       );
       expect(embeddingPipelineMocks.runEmbeddingPipeline).toHaveBeenCalledTimes(1);
-      expect(execFileTextMock).toHaveBeenCalledTimes(1);
+      expect(managedStatusCalls()).toHaveLength(1);
     } finally {
       await fs.rm(repoDir, { recursive: true, force: true });
     }
@@ -480,12 +522,18 @@ describe('runFullAnalysis snapshot persistence', () => {
         'canonical-staged-generation',
         expect.stringMatching(/^[0-9a-f]{64}$/),
       );
-      expect(execFileTextMock).toHaveBeenCalledTimes(2);
-      expect(execFileTextMock).toHaveBeenCalledWith(
-        'git',
-        ['status', '--porcelain=v1', '--untracked-files=all'],
-        expect.objectContaining({ cwd: repoDir }),
-      );
+      expect(managedStatusCalls()).toEqual([
+        [
+          'git',
+          ['status', '--porcelain=v1', '--untracked-files=all'],
+          { cwd: repoDir, timeoutMs: 5_000, maxBuffer: 1024 * 1024 },
+        ],
+        [
+          'git',
+          ['status', '--porcelain=v1', '--untracked-files=all'],
+          { cwd: repoDir, timeoutMs: 5_000, maxBuffer: 1024 * 1024 },
+        ],
+      ]);
       expect(addToGitignoreMock).not.toHaveBeenCalled();
     } finally {
       await fs.rm(repoDir, { recursive: true, force: true });
@@ -1034,6 +1082,111 @@ describe('runFullAnalysis snapshot persistence', () => {
     }
   });
 
+  it.each([0, 2, 1005])('persists bounded parser evidence for %s failed paths', async (count) => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-parser-evidence-'));
+    try {
+      runPipelineMock.mockImplementation(
+        async (_repoPath: string, _onProgress: unknown, options?: PipelineOptions) => {
+          const files = Array.from({ length: count }, (_, i) => `src/bad${i}.ts`);
+          options?.onTelemetry?.({
+            event: 'parse-error-files',
+            phaseName: 'parsing',
+            parseErrorCount: count,
+            parseErrorFiles: [...files, ...files.slice(0, 1)],
+          } as Parameters<NonNullable<PipelineOptions['onTelemetry']>>[0]);
+          return { graph: createKnowledgeGraph(), repoPath: repoDir, totalFileCount: count };
+        },
+      );
+      executeQueryMock.mockResolvedValue([]);
+      await runFullAnalysis(repoDir, {}, { onProgress: vi.fn() });
+      const meta = saveMetaMock.mock.calls[0][1];
+      expect(meta.parserEvidence).toEqual({
+        version: 1,
+        parseErrorCount: count,
+        parseErrorFiles: Array.from(
+          { length: Math.min(count, 1000) },
+          (_, i) => `src/bad${i}.ts`,
+        ).sort(),
+        truncated: count > 1000,
+      });
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    undefined,
+    { version: 1 },
+    { version: 1, parseErrorCount: -1, parseErrorFiles: [], truncated: false },
+    { version: 1, parseErrorCount: 0.5, parseErrorFiles: [], truncated: false },
+    { version: 1, parseErrorCount: 0, parseErrorFiles: ['bad.ts'], truncated: false },
+  ])(
+    'regenerates absent or malformed parser evidence %j despite a matching source manifest',
+    async (parserEvidence) => {
+      const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-parser-legacy-'));
+      try {
+        await fs.writeFile(path.join(repoDir, 'good.ts'), 'export const good = 1;');
+        loadMetaMock.mockResolvedValue({
+          repoPath: repoDir,
+          lastCommit: 'abc123',
+          indexedAt: new Date().toISOString(),
+          pipelineProfile: 'full',
+          parserEvidence,
+          sourceManifest: await computeSourceManifest(repoDir, {
+            includePaths: [],
+            pipelineProfile: 'full',
+          }),
+        });
+        runPipelineMock.mockResolvedValue({
+          graph: createKnowledgeGraph(),
+          repoPath: repoDir,
+          totalFileCount: 1,
+        });
+        executeQueryMock.mockResolvedValue([]);
+        const result = await runFullAnalysis(repoDir, {}, { onProgress: vi.fn() });
+        expect(result.alreadyUpToDate).toBeUndefined();
+        expect(runPipelineMock).toHaveBeenCalledOnce();
+        expect(saveMetaMock.mock.calls[0][1].parserEvidence).toEqual({
+          version: 1,
+          parseErrorCount: 0,
+          parseErrorFiles: [],
+          truncated: false,
+        });
+      } finally {
+        await fs.rm(repoDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('reuses valid parser evidence with a matching source manifest', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-parser-valid-'));
+    try {
+      await fs.writeFile(path.join(repoDir, 'good.ts'), 'export const good = 1;');
+      loadMetaMock.mockResolvedValue({
+        repoPath: repoDir,
+        lastCommit: 'abc123',
+        indexedAt: new Date().toISOString(),
+        pipelineProfile: 'full',
+        parserEvidence: {
+          version: 1,
+          parseErrorCount: 0,
+          parseErrorFiles: [],
+          truncated: false,
+        },
+        sourceManifest: await computeSourceManifest(repoDir, {
+          includePaths: [],
+          pipelineProfile: 'full',
+        }),
+      });
+      const result = await runFullAnalysis(repoDir, {}, { onProgress: vi.fn() });
+      expect(result.alreadyUpToDate).toBe(true);
+      expect(runPipelineMock).not.toHaveBeenCalled();
+      expect(saveMetaMock).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
   it('records degraded file telemetry and grouped aggregates in metadata', async () => {
     const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
     try {
@@ -1128,6 +1281,61 @@ describe('runFullAnalysis snapshot persistence', () => {
         degradedFileAggregates: { sampleFiles?: unknown };
       };
       expect(savedMeta.degradedFileAggregates.sampleFiles).toBeUndefined();
+    } finally {
+      await fs.rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists lightweight parser fallback as degraded source coverage', async () => {
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-run-analyze-'));
+    try {
+      await fs.writeFile(path.join(repoDir, 'source.ts'), 'export const value = 1;\n');
+      runPipelineMock.mockImplementation(
+        async (_repoPath: string, _onProgress: unknown, options?: PipelineOptions) => {
+          options?.onTelemetry?.({
+            event: 'parse-degraded-files',
+            phaseName: 'parse',
+            elapsedMs: 10,
+            rssBytes: 0,
+            heapUsedBytes: 0,
+            heapTotalBytes: 0,
+            heapLimitBytes: 0,
+            graphNodes: 0,
+            graphRelationships: 0,
+            degradedReason: 'parser-lightweight-fallback',
+            degradedAction: 'lightweight-fallback',
+            degradedFiles: [
+              {
+                filePath: 'source.ts',
+                reason: 'full AST extraction unavailable; using lightweight fallback',
+              },
+            ],
+          });
+          return {
+            graph: createKnowledgeGraph(),
+            repoPath: repoDir,
+            totalFileCount: 1,
+            usedWorkerPool: false,
+          };
+        },
+      );
+
+      await runFullAnalysis(repoDir, { profile: 'symbols' }, { onProgress: vi.fn() });
+
+      expect(saveMetaMock).toHaveBeenCalledWith(
+        expect.stringContaining(path.join(repoDir, '.ontoindex', 'generations', '.staging-')),
+        expect.objectContaining({
+          sourceManifest: expect.objectContaining({ coverage: 'degraded' }),
+          degradedFiles: [
+            {
+              filePath: 'source.ts',
+              reason: 'full AST extraction unavailable; using lightweight fallback',
+              phase: 'parse',
+              language: 'typescript',
+            },
+          ],
+        }),
+      );
     } finally {
       await fs.rm(repoDir, { recursive: true, force: true });
     }
@@ -1713,29 +1921,6 @@ describe('runFullAnalysis snapshot persistence', () => {
             const retention = pipelineOptions!.scopeRetention!;
             const stage = (retainedStage = new ScopeRetentionStage(retention));
             try {
-              stage.capture([
-                {
-                  filePath: 'one.ts',
-                  moduleScope: 'scope:one.ts',
-                  scopes: [
-                    {
-                      id: 'scope:one.ts',
-                      parent: null,
-                      kind: 'Module',
-                      range: { startLine: 1, startCol: 0, endLine: 1, endCol: 21 },
-                      filePath: 'one.ts',
-                      bindings: new Map(),
-                      typeBindings: new Map(),
-                      ownedDefs: [],
-                      imports: [],
-                    },
-                  ],
-                  parsedImports: [],
-                  localDefs: [],
-                  referenceSites: [],
-                },
-              ]);
-              stage.recordOutcomes([{ filePath: 'one.ts', status: 'success' }]);
               stage.reconcile(['one.ts']);
               expect(stage.captureGraphNode(node)).toBe(true);
               stage.markGraphNodesCaptured();
@@ -1825,7 +2010,7 @@ describe('runFullAnalysis snapshot persistence', () => {
               expect.objectContaining({ name: 'graph-nodes', recordCount: 1 }),
             ]),
           });
-          expect(manifest.totalRecordCount).toBe(2);
+          expect(manifest.totalRecordCount).toBe(1);
           expect(request.artifactAllowance.remainingBytes).toBe(
             initialAllowance - manifest.artifactBytes,
           );

@@ -48,6 +48,32 @@ describe('buildHeritageMap', () => {
       expect(map.getParents('class:python.Child')).toEqual([]);
     });
 
+    it('orders cross-file reopening parents by file path regardless of input order', () => {
+      ctx.model.symbols.add('a.rb', 'C', 'class:a.C', 'Class');
+      ctx.model.symbols.add('b.rb', 'C', 'class:b.C', 'Class');
+      ctx.model.symbols.add('a.rb', 'A', 'class:A', 'Class');
+      ctx.model.symbols.add('b.rb', 'B', 'class:B', 'Class');
+      const fromA: ExtractedHeritage = {
+        filePath: 'a.rb',
+        className: 'C',
+        parentName: 'A',
+        kind: 'include',
+      };
+      const fromB: ExtractedHeritage = {
+        filePath: 'b.rb',
+        className: 'C',
+        parentName: 'B',
+        kind: 'include',
+      };
+
+      const forward = buildHeritageMap([fromA, fromB], ctx);
+      const reversed = buildHeritageMap([fromB, fromA], ctx);
+
+      expect(forward.getParents('class:a.C')).toEqual(['class:A', 'class:B']);
+      expect(reversed.getParents('class:a.C')).toEqual(forward.getParents('class:a.C'));
+      expect(reversed.getParents('class:b.C')).toEqual(forward.getParents('class:b.C'));
+    });
+
     it('falls back to same-language types when local resolution finds a callable', () => {
       ctx.model.symbols.add('child.ts', 'Child', 'class:Child', 'Class');
       ctx.model.symbols.add('child.ts', 'Parent', 'function:Parent', 'Function');

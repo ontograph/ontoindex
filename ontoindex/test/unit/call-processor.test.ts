@@ -22,8 +22,7 @@ import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { BindingAccumulator } from '../../src/core/ingestion/binding-accumulator.js';
 import { restoreSemanticModelRegistrations } from '../../src/core/ingestion/model/semantic-model.js';
 import { ScopeRetentionStage } from '../../src/core/ingestion/pipeline-phases/scope-retention-stage.js';
-import { processAssignmentsFromExtracted as processProductionAssignments } from '../../src/core/ingestion/call-resolution/assignment-processor.js';
-import type { ParsedFile } from 'ontoindex-shared';
+
 import type {
   ExtractedAssignment,
   ExtractedCall,
@@ -77,6 +76,42 @@ describe('processCallsFromExtracted', () => {
   beforeEach(() => {
     graph = createKnowledgeGraph();
     ctx = createResolutionContext();
+  });
+
+  it.each(['ts', 'js'])('does not guess a method for an unknown %s receiver', async (extension) => {
+    const filePath = `src/env.${extension}`;
+    const ownerId = `Class:${filePath}:Env`;
+    const targetId = `Method:${filePath}:Env.has`;
+    ctx.model.symbols.add(filePath, 'Env', ownerId, 'Class');
+    ctx.model.symbols.add(filePath, 'has', targetId, 'Method', { ownerId });
+
+    await processCallsFromExtracted(
+      graph,
+      [
+        {
+          filePath,
+          calledName: 'has',
+          callForm: 'member',
+          receiverName: 'CONTAINERS',
+          sourceId: `Function:${filePath}:find`,
+        },
+        {
+          filePath,
+          calledName: 'has',
+          callForm: 'member',
+          receiverName: 'env',
+          receiverTypeName: 'Env',
+          sourceId: `Function:${filePath}:check`,
+        },
+      ],
+      ctx,
+    );
+
+    expect(
+      graph.relationships
+        .filter((edge) => edge.type === 'CALLS')
+        .map((edge) => [edge.sourceId, edge.targetId]),
+    ).toEqual([[`Function:${filePath}:check`, targetId]]);
   });
 
   it('creates CALLS relationship for same-file resolution', async () => {
@@ -1505,467 +1540,6 @@ describe('processCallsFromExtracted', () => {
             .map((rel) => rel.targetId)
             .sort(),
         ).toEqual([`Property:${modelFile}:Cache.value`, `Property:${modelFile}:Database.value`]);
-      } finally {
-        await retained.dispose();
-      }
-      expect(allowance.remainingBytes).toBe(1024 * 1024);
-    },
-  );
-
-  it('replays nine retained input families into fresh call and production write resolution', async () => {
-    const filePath = 'src/retained-consumer.ts';
-    const modelFile = 'src/retained-models.ts';
-    const allowance = { remainingBytes: 1024 * 1024 };
-    const retained = new ScopeRetentionStage({
-      deadline: Date.now() + 30_000,
-      artifactAllowance: allowance,
-    });
-    let observing = true;
-    const original = createResolutionContext({
-      onRegistration: (event) => (observing ? retained.captureModelRegistration(event) : true),
-      onRegistrationError: () => {
-        if (observing) retained.markModelRegistrationsIncomplete();
-      },
-    });
-    const bindings = new BindingAccumulator();
-    const replayBindings = new BindingAccumulator();
-    try {
-      for (const name of ['Database', 'Cache', 'Base', 'Derived']) {
-        const ownerId = `Class:${modelFile}:${name}`;
-        original.model.symbols.add(modelFile, name, ownerId, 'Class');
-        if (name === 'Derived') continue;
-        const method = name === 'Base' ? 'inherited' : 'query';
-        original.model.symbols.add(
-          modelFile,
-          method,
-          `Method:${modelFile}:${name}.${method}`,
-          'Method',
-          { ownerId },
-        );
-        original.model.symbols.add(
-          modelFile,
-          'value',
-          `Property:${modelFile}:${name}.value`,
-          'Property',
-          { ownerId },
-        );
-      }
-      original.model.symbols.add(
-        'src/decoy.ts',
-        'Database',
-        'Class:src/decoy.ts:Database',
-        'Class',
-      );
-      original.model.symbols.add('src/decoy.ts', 'query', 'Method:src/decoy.ts:query', 'Method', {
-        ownerId: 'Class:src/decoy.ts:Database',
-      });
-      original.model.symbols.add(
-        modelFile,
-        'makeDatabase',
-        `Function:${modelFile}:makeDatabase`,
-        'Function',
-      );
-      original.importMap.set(filePath, new Set([modelFile]));
-      original.namedImportMap.set(
-        filePath,
-        new Map([
-          ['remote', { sourcePath: modelFile, exportedName: 'database' }],
-          ['make', { sourcePath: modelFile, exportedName: 'makeDatabase' }],
-        ]),
-      );
-      const constructors: FileConstructorBindings[] = [
-        {
-          filePath,
-          bindings: [
-            { scope: 'main@0', varName: 'db', calleeName: 'Database' },
-            { scope: 'main@0', varName: 'cache', calleeName: 'Cache' },
-            { scope: 'factory@10', varName: 'made', calleeName: 'make' },
-          ],
-        },
-      ];
-      const calls: ExtractedCall[] = [
-        ...['db', 'cache'].map((receiverName) => ({
-          filePath,
-          sourceId: `Function:${filePath}:main`,
-          calledName: 'query',
-          receiverName,
-          callForm: 'member' as const,
-        })),
-        {
-          filePath,
-          sourceId: `Function:${filePath}:exported`,
-          calledName: 'query',
-          receiverName: 'remote',
-          callForm: 'member',
-        },
-        {
-          filePath,
-          sourceId: `Function:${filePath}:factory`,
-          calledName: 'query',
-          receiverName: 'made',
-          callForm: 'member',
-        },
-        {
-          filePath,
-          sourceId: `Function:${filePath}:main`,
-          calledName: 'inherited',
-          receiverName: 'derived',
-          receiverTypeName: 'Derived',
-          callForm: 'member',
-        },
-        {
-          filePath,
-          sourceId: `Function:${filePath}:main`,
-          calledName: 'missing',
-          receiverName: 'db',
-          callForm: 'member',
-        },
-      ];
-      const assignments: ExtractedAssignment[] = [
-        ...['db', 'cache'].map((receiverText) => ({
-          filePath,
-          sourceId: `Function:${filePath}:main`,
-          receiverText,
-          propertyName: 'value',
-        })),
-        {
-          filePath,
-          sourceId: `Function:${filePath}:factory`,
-          receiverText: 'made',
-          propertyName: 'value',
-        },
-        {
-          filePath,
-          sourceId: `Function:${filePath}:main`,
-          receiverText: 'db',
-          propertyName: 'missing',
-        },
-      ];
-      const heritage: ExtractedHeritage[] = [
-        { filePath: modelFile, className: 'Derived', parentName: 'Base', kind: 'extends' },
-      ];
-      const exports = new Map([[modelFile, new Map([['database', 'Database']])]]);
-      bindings.appendFile(modelFile, [
-        { scope: '', varName: 'makeDatabase', typeName: 'Database' },
-      ]);
-      bindings.finalize();
-      const parsed: ParsedFile = {
-        filePath,
-        moduleScope: `scope:${filePath}`,
-        parsedImports: [],
-        localDefs: [],
-        referenceSites: [],
-        scopes: [
-          {
-            id: `scope:${filePath}`,
-            parent: null,
-            kind: 'Module',
-            filePath,
-            range: { startLine: 1, startCol: 0, endLine: 10, endCol: 0 },
-            bindings: new Map(),
-            typeBindings: new Map(),
-            ownedDefs: [],
-            imports: [],
-          },
-        ],
-      };
-      // Capture parser inputs before the normal enrichment pass mutates calls.
-      retained.capture([parsed]);
-      retained.captureCalls(calls);
-      retained.captureAssignments(assignments);
-      retained.captureHeritage(heritage);
-      retained.captureConstructorBindings(constructors);
-      retained.captureExportedTypes([
-        { filePath: modelFile, exportName: 'database', typeName: 'Database' },
-      ]);
-      retained.captureFileBindings([
-        { filePath: modelFile, varName: 'makeDatabase', typeName: 'Database' },
-      ]);
-      retained.captureImportState(original);
-      observing = false;
-      retained.recordOutcomes([{ filePath, status: 'success' }]);
-      retained.reconcile([filePath]);
-      seedCrossFileReceiverTypes(calls, original.namedImportMap, exports);
-      await processCallsFromExtracted(
-        graph,
-        calls,
-        original,
-        undefined,
-        constructors,
-        buildHeritageMap(heritage, original),
-        bindings,
-      );
-      processProductionAssignments(graph, assignments, original, constructors, bindings);
-      const normalize = (value: ReturnType<typeof createKnowledgeGraph>) =>
-        value.relationships
-          .filter(
-            (rel) => rel.type === 'CALLS' || (rel.type === 'ACCESSES' && rel.reason === 'write'),
-          )
-          .map(({ type, sourceId, targetId, confidence, reason }) => ({
-            type,
-            sourceId,
-            targetId,
-            confidence,
-            reason,
-          }))
-          .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-      const expected = normalize(graph);
-      expect(expected.filter((rel) => rel.type === 'CALLS')).toHaveLength(5);
-      expect(expected.filter((rel) => rel.type === 'ACCESSES')).toHaveLength(3);
-      expect(expected.map((rel) => rel.targetId)).not.toContain('Method:src/decoy.ts:query');
-      expect(expected.some((rel) => rel.targetId.endsWith('.missing'))).toBe(false);
-
-      original.clear();
-      bindings.dispose();
-      exports.clear();
-      calls.forEach((call) => {
-        call.calledName = 'mutated';
-      });
-      calls.length = assignments.length = heritage.length = constructors.length = 0;
-      parsed.scopes.length = 0;
-
-      const events = [];
-      for await (const batch of retained.iterateModelRegistrations()) events.push(...batch);
-      const imports = [];
-      for await (const batch of retained.iterateImportStates()) imports.push(...batch);
-      const restored = createResolutionContext({
-        model: restoreSemanticModelRegistrations({ version: 1, events }),
-        importState: imports[0]!,
-      });
-      const replayGraph = createKnowledgeGraph();
-      expect(replayGraph.relationships).toEqual([]);
-      const replayCalls = [];
-      for await (const batch of retained.iterateCalls()) replayCalls.push(...batch);
-      const replayAssignments = [];
-      for await (const batch of retained.iterateAssignments()) replayAssignments.push(...batch);
-      const replayConstructors = [];
-      for await (const batch of retained.iterateConstructorBindings())
-        replayConstructors.push(...batch);
-      expect(replayConstructors).toHaveLength(3);
-      expect(replayConstructors.every((group) => group.bindings.length === 1)).toBe(true);
-      const replayHeritage = [];
-      for await (const batch of retained.iterateHeritage()) replayHeritage.push(...batch);
-      const replayExports = new Map<string, Map<string, string>>();
-      for await (const batch of retained.iterateExportedTypes())
-        for (const record of batch) {
-          const fileExports = replayExports.get(record.filePath) ?? new Map<string, string>();
-          fileExports.set(record.exportName, record.typeName);
-          replayExports.set(record.filePath, fileExports);
-        }
-      for await (const batch of retained.iterateFileBindings())
-        for (const record of batch) {
-          replayBindings.appendFile(record.filePath, [
-            { scope: '', varName: record.varName, typeName: record.typeName },
-          ]);
-        }
-      replayBindings.finalize();
-      const replayScopes = [];
-      for await (const batch of retained.iterate()) replayScopes.push(...batch);
-      expect(replayScopes[0]!.scopes).toHaveLength(1);
-      expect(replayCalls.every((call) => call.filePath === replayScopes[0]!.filePath)).toBe(true);
-      expect(
-        replayCalls.find((call) => call.receiverName === 'remote')!.receiverTypeName,
-      ).toBeUndefined();
-      seedCrossFileReceiverTypes(replayCalls, restored.namedImportMap, replayExports);
-      await processCallsFromExtracted(
-        replayGraph,
-        replayCalls,
-        restored,
-        undefined,
-        replayConstructors,
-        buildHeritageMap(replayHeritage, restored),
-        replayBindings,
-      );
-      processProductionAssignments(
-        replayGraph,
-        replayAssignments,
-        restored,
-        replayConstructors,
-        replayBindings,
-      );
-      expect(normalize(replayGraph)).toEqual(expected);
-      expect(
-        replayGraph.relationships
-          .filter((rel) => rel.type === 'CALLS')
-          .map((rel) => rel.targetId)
-          .sort(),
-      ).toEqual(
-        [
-          `Method:${modelFile}:Base.inherited`,
-          `Method:${modelFile}:Cache.query`,
-          ...Array<string>(3).fill(`Method:${modelFile}:Database.query`),
-        ].sort(),
-      );
-      expect(retained.status).toBe('retained');
-      expect(retained.seedReady).toBe(false);
-    } finally {
-      bindings.dispose();
-      replayBindings.dispose();
-      await retained.dispose();
-    }
-    expect(allowance.remainingBytes).toBe(1024 * 1024);
-  });
-
-  it.each([false, true])(
-    'replays an unresolved retained call after targets arrive (ambiguous: %s)',
-    async (ambiguous) => {
-      const filePath = 'src/late-consumer.ts';
-      const targetFile = 'src/late-target.ts';
-      const otherTargetFile = 'src/other-target.ts';
-      const sourceId = `Function:${filePath}:main`;
-      const targetId = `Function:${targetFile}:lateTarget`;
-      const decoyId = 'Function:src/decoy.ts:lateTarget';
-      const allowance = { remainingBytes: 1024 * 1024 };
-      const retained = new ScopeRetentionStage({
-        deadline: Date.now() + 30_000,
-        artifactAllowance: allowance,
-      });
-      let observing = true;
-      const original = createResolutionContext({
-        onRegistration: (event) => (observing ? retained.captureModelRegistration(event) : true),
-        onRegistrationError: () => {
-          if (observing) retained.markModelRegistrationsIncomplete();
-        },
-      });
-      const calls: ExtractedCall[] = [
-        { filePath, sourceId, calledName: 'lateTarget', argCount: 1 },
-      ];
-      const parsed: ParsedFile = {
-        filePath,
-        moduleScope: `scope:${filePath}`,
-        parsedImports: [],
-        localDefs: [],
-        referenceSites: [],
-        scopes: [
-          {
-            id: `scope:${filePath}`,
-            parent: null,
-            kind: 'Module',
-            filePath,
-            range: { startLine: 1, startCol: 0, endLine: 3, endCol: 0 },
-            bindings: new Map(),
-            typeBindings: new Map(),
-            ownedDefs: [],
-            imports: [],
-          },
-        ],
-      };
-      try {
-        original.model.symbols.add(filePath, 'main', sourceId, 'Function');
-        original.model.symbols.add('src/decoy.ts', 'lateTarget', decoyId, 'Function', {
-          parameterCount: 1,
-        });
-        original.importMap.set(
-          filePath,
-          new Set(ambiguous ? [targetFile, otherTargetFile] : [targetFile]),
-        );
-        if (!ambiguous)
-          original.namedImportMap.set(
-            filePath,
-            new Map([['lateTarget', { sourcePath: targetFile, exportedName: 'lateTarget' }]]),
-          );
-        retained.capture([parsed]);
-        retained.captureCalls(calls);
-        retained.captureImportState(original);
-        observing = false;
-        retained.recordOutcomes([{ filePath, status: 'success' }]);
-        retained.reconcile([filePath]);
-        await processCallsFromExtracted(graph, calls, original);
-        expect(graph.relationships.filter((rel) => rel.type === 'CALLS')).toEqual([]);
-
-        original.clear();
-        calls[0]!.calledName = 'mutated';
-        calls.length = 0;
-        parsed.scopes.length = 0;
-        const events = [];
-        for await (const batch of retained.iterateModelRegistrations()) events.push(...batch);
-        const imports = [];
-        for await (const batch of retained.iterateImportStates()) imports.push(...batch);
-        const restored = createResolutionContext({
-          model: restoreSemanticModelRegistrations({ version: 1, events }),
-          importState: imports[0]!,
-        });
-        const replayCalls: ExtractedCall[] = [];
-        for await (const batch of retained.iterateCalls()) replayCalls.push(...batch);
-        expect(replayCalls).toEqual([
-          { filePath, sourceId, calledName: 'lateTarget', argCount: 1 },
-        ]);
-        expect(restored.importMap.get(filePath)).toEqual(
-          new Set(ambiguous ? [targetFile, otherTargetFile] : [targetFile]),
-        );
-        expect(restored.namedImportMap.get(filePath)?.get('lateTarget')).toEqual(
-          ambiguous
-            ? undefined
-            : {
-                sourcePath: targetFile,
-                exportedName: 'lateTarget',
-              },
-        );
-        const replayGraph = createKnowledgeGraph();
-        await processCallsFromExtracted(replayGraph, replayCalls, restored);
-        expect(replayGraph.relationships.filter((rel) => rel.type === 'CALLS')).toEqual([]);
-
-        restored.model.symbols.add(targetFile, 'lateTarget', targetId, 'Function', {
-          parameterCount: 1,
-        });
-        if (ambiguous)
-          restored.model.symbols.add(
-            otherTargetFile,
-            'lateTarget',
-            `Function:${otherTargetFile}:lateTarget`,
-            'Function',
-            { parameterCount: 1 },
-          );
-        await processCallsFromExtracted(replayGraph, replayCalls, restored);
-
-        const full = createResolutionContext();
-        full.model.symbols.add(filePath, 'main', sourceId, 'Function');
-        full.model.symbols.add('src/decoy.ts', 'lateTarget', decoyId, 'Function', {
-          parameterCount: 1,
-        });
-        full.model.symbols.add(targetFile, 'lateTarget', targetId, 'Function', {
-          parameterCount: 1,
-        });
-        if (ambiguous)
-          full.model.symbols.add(
-            otherTargetFile,
-            'lateTarget',
-            `Function:${otherTargetFile}:lateTarget`,
-            'Function',
-            { parameterCount: 1 },
-          );
-        full.importMap.set(
-          filePath,
-          new Set(ambiguous ? [targetFile, otherTargetFile] : [targetFile]),
-        );
-        if (!ambiguous)
-          full.namedImportMap.set(
-            filePath,
-            new Map([['lateTarget', { sourcePath: targetFile, exportedName: 'lateTarget' }]]),
-          );
-        const fullGraph = createKnowledgeGraph();
-        await processCallsFromExtracted(
-          fullGraph,
-          [{ filePath, sourceId, calledName: 'lateTarget', argCount: 1 }],
-          full,
-        );
-        const normalize = (value: ReturnType<typeof createKnowledgeGraph>) =>
-          value.relationships
-            .filter((rel) => rel.type === 'CALLS')
-            .map(({ sourceId, targetId, confidence, reason }) => ({
-              sourceId,
-              targetId,
-              confidence,
-              reason,
-            }));
-        const actual = normalize(replayGraph);
-        expect(actual).toEqual(normalize(fullGraph));
-        expect(actual).toEqual(
-          ambiguous ? [] : [{ sourceId, targetId, confidence: 0.9, reason: 'import-resolved' }],
-        );
-        expect(actual.some((rel) => rel.targetId === decoyId)).toBe(false);
-        expect(retained.status).toBe('retained');
-        expect(retained.seedReady).toBe(false);
       } finally {
         await retained.dispose();
       }

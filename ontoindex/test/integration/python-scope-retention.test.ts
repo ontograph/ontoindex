@@ -1,11 +1,7 @@
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { SupportedLanguages } from 'ontoindex-shared';
-import type { LanguageProvider } from '../../src/core/ingestion/language-provider.js';
-import * as providers from '../../src/core/ingestion/languages/index.js';
-import { pythonProvider } from '../../src/core/ingestion/languages/python.js';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { summarizeScopeRetentionCoverage } from '../../src/core/ingestion/pipeline-phases/scope-retention-coverage.js';
 
@@ -22,7 +18,7 @@ describe('production Python scope retention', () => {
     for (const directory of directories) fs.rmSync(directory, { recursive: true, force: true });
   });
 
-  it('retains supported scopes and refused legacy evidence without changing the live graph', async () => {
+  it('retains parser evidence without changing the live graph', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ontoindex-python-retention-'));
     directories.push(directory);
     fs.writeFileSync(
@@ -42,36 +38,7 @@ describe('production Python scope retention', () => {
     );
 
     const options = { skipGraphPhases: true, skipWorkers: true };
-    expect(pythonProvider.emitScopeCaptures).toBeTypeOf('function');
-    const baselineProvider: LanguageProvider = {
-      ...pythonProvider,
-      bindingScopeFor: undefined,
-      interpretExports: undefined,
-      interpretImport: undefined,
-      emitScopeCaptures: undefined,
-    };
-    const originalGetProvider = providers.getProvider;
-    const originalGetProviderForFile = providers.getProviderForFile;
-    const providerSpy = vi
-      .spyOn(providers, 'getProvider')
-      .mockImplementation((language) =>
-        language === SupportedLanguages.Python ? baselineProvider : originalGetProvider(language),
-      );
-    // Retention checks use the registry's prebuilt extension map, independently
-    // of the parser's language lookup. Disable both views for the baseline.
-    const fileProviderSpy = vi
-      .spyOn(providers, 'getProviderForFile')
-      .mockImplementation((filePath) => {
-        const original = originalGetProviderForFile(filePath);
-        return original === pythonProvider ? baselineProvider : original;
-      });
-    let baseline: Awaited<ReturnType<typeof runPipelineFromRepo>>;
-    try {
-      baseline = await runPipelineFromRepo(directory, () => {}, options);
-    } finally {
-      fileProviderSpy.mockRestore();
-      providerSpy.mockRestore();
-    }
+    const baseline = await runPipelineFromRepo(directory, () => {}, options);
     let consumed = false;
     const result = await runPipelineFromRepo(directory, () => {}, {
       ...options,
@@ -80,26 +47,6 @@ describe('production Python scope retention', () => {
         artifactAllowance: { remainingBytes: 64 * 1024 * 1024 },
         consume: async (handle) => {
           consumed = true;
-          const files = await collect(handle.iterate());
-          expect(files.map((file) => file.filePath)).toEqual(['supported.py']);
-          const file = files[0]!;
-          expect(file.localDefs.map((def) => def.qualifiedName)).toEqual(['first', 'second']);
-          const module = file.scopes.find((scope) => scope.id === file.moduleScope)!;
-          expect([...module.bindings]).toEqual(
-            file.localDefs.map((def) => [def.qualifiedName, [{ def, origin: 'local' }]]),
-          );
-          expect(file.exports).toEqual(
-            new Map(file.localDefs.map((def) => [def.qualifiedName, def.nodeId])),
-          );
-          expect(
-            file.referenceSites.map(({ name, arity, callForm }) => ({ name, arity, callForm })),
-          ).toEqual([
-            { name: 'first', arity: 0, callForm: 'free' },
-            { name: 'first', arity: 0, callForm: 'free' },
-            { name: 'second', arity: 0, callForm: 'free' },
-          ]);
-          expect(file.parsedImports).toEqual([]);
-
           const calls = await collect(handle.iterateCalls());
           for (const [filePath, calledName] of [
             ['supported.py', 'first'],
@@ -145,13 +92,14 @@ describe('production Python scope retention', () => {
               left.filePath.localeCompare(right.filePath),
             ),
           ).toEqual([
-            { filePath: 'refused.py', status: 'failed', reason: 'unsupported-syntax' },
+            { filePath: 'refused.py', status: 'retained' },
             { filePath: 'supported.py', status: 'retained' },
           ]);
-          expect(handle.status).toBe('incomplete');
-          expect(handle.reasons).toContain('unsupported-syntax');
+
+          expect(handle.status).toBe('retained');
+          expect(handle.reasons).not.toContain('unsupported-syntax');
           expect(handle.seedReady).toBe(false);
-          expect(summarizeScopeRetentionCoverage(handle.inventory).complete).toBe(false);
+          expect(summarizeScopeRetentionCoverage(handle.inventory).complete).toBe(true);
         },
       },
     });
@@ -164,6 +112,5 @@ describe('production Python scope retention', () => {
       ),
     });
     expect(normalize(result.graph)).toEqual(normalize(baseline.graph));
-    expect(pythonProvider.emitScopeCaptures).toBeTypeOf('function');
   }, 90_000);
 });

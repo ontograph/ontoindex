@@ -77,6 +77,8 @@ export interface OverlaySnapshot {
   repairInputDigest?: string;
   baseGenerationId?: string | null;
   baseCommit?: string | null;
+  baseProvenance?: 'commit' | 'working-tree' | 'unknown';
+  baseVerified?: boolean;
   currentHead?: string | null;
   baseMatches?: boolean;
   headChanged?: boolean;
@@ -342,12 +344,19 @@ async function computeSnapshot(
   const activeBase = await readActiveGenerationMeta(repo.storagePath);
   const baseGenerationId = activeBase.activeGeneration?.generationId ?? null;
   const baseCommit = activeBase.meta?.lastCommit ?? null;
+  const baseProvenance =
+    (
+      activeBase.meta as typeof activeBase.meta & {
+        sourceProvenance?: { kind: 'commit' | 'working-tree' | 'unknown' };
+      }
+    )?.sourceProvenance?.kind ?? 'unknown';
   const currentHead = automatic ? getCurrentCommit(repo.repoPath) || null : null;
   const identity = automatic
     ? {
         currentHead,
         baseGenerationId,
         baseCommit,
+        baseProvenance,
         baseMatches: currentHead !== null && baseCommit === currentHead,
         headChanged: currentHead === null || baseCommit !== currentHead,
       }
@@ -366,6 +375,7 @@ async function computeSnapshot(
     currentHead?: string | null;
     baseGenerationId?: string | null;
     baseCommit?: string | null;
+    baseProvenance?: OverlaySnapshot['baseProvenance'];
     baseMatches?: boolean;
     headChanged?: boolean;
   } = {
@@ -497,9 +507,12 @@ async function computeSnapshot(
     ) {
       base.ftsIndexes = recordedBase.ftsIndexes as string[];
     }
+    // A full graph can cover the symbol-overlay count cap, but not the scan size limit.
+    const sizeExcludedPaths = new Set(plan.skipped.filter((rel) => uncoveredPaths.has(rel)));
     overlayPaths.clear();
-    for (const rel of dirtyPaths) if (!tombstones.has(rel)) overlayPaths.add(rel);
-    uncoveredPaths.clear();
+    for (const rel of dirtyPaths)
+      if (!tombstones.has(rel) && !sizeExcludedPaths.has(rel)) overlayPaths.add(rel);
+    for (const rel of uncoveredPaths) if (!sizeExcludedPaths.has(rel)) uncoveredPaths.delete(rel);
     const sameSet = (recorded: unknown, current: ReadonlySet<string>) =>
       Array.isArray(recorded) &&
       recorded.every((item) => typeof item === 'string') &&

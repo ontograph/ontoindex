@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  MAX_SCOPE_RETENTION_BYTES,
+  MAX_SCOPE_RETENTION_TIMEOUT_MS,
+} from '../../src/core/ingestion/pipeline-phases/parse-scope-codec.js';
 
 const { events, runtimeImport, initialize, identity, analyze, exitCode } = vi.hoisted(() => ({
   events: [] as string[],
@@ -161,11 +165,11 @@ describe('supervised workspace child runtime admission', () => {
       '{"timeoutMs":1,"maxBytes":1e309}',
       '{"timeoutMs":1e309,"maxBytes":1}',
       '{"timeoutMs":NaN,"maxBytes":1}',
-      ...[0, -1, 1.5, 120001, Number.MAX_SAFE_INTEGER + 1].map((timeoutMs) =>
-        JSON.stringify({ timeoutMs, maxBytes: 1 }),
+      ...[0, -1, 1.5, MAX_SCOPE_RETENTION_TIMEOUT_MS + 1, Number.MAX_SAFE_INTEGER + 1].map(
+        (timeoutMs) => JSON.stringify({ timeoutMs, maxBytes: 1 }),
       ),
-      ...[0, -1, 1.5, 67108865, Number.MAX_SAFE_INTEGER + 1].map((maxBytes) =>
-        JSON.stringify({ timeoutMs: 1, maxBytes }),
+      ...[0, -1, 1.5, 2 * MAX_SCOPE_RETENTION_BYTES + 1, Number.MAX_SAFE_INTEGER + 1].map(
+        (maxBytes) => JSON.stringify({ timeoutMs: 1, maxBytes }),
       ),
       '{"timeoutMs":"1","maxBytes":1}',
       '{"timeoutMs":1,"maxBytes":"1"}',

@@ -56,6 +56,11 @@ export const scanPhase: PipelinePhase<ScanOutput> = {
       },
     );
 
+    const comparePaths = (a: { path: string }, b: { path: string }) =>
+      a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+    scannedFiles.sort(comparePaths);
+    skippedLargeFiles.sort(comparePaths);
+
     const totalFiles = scannedFiles.length;
     const allPaths = scannedFiles.map((f) => f.path);
     if (skippedLargeFiles.length > 0 && ctx.options?.onTelemetry) {

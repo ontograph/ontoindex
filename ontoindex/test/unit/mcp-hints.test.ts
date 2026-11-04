@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { getNextStepHint } from '../../src/mcp/server.js';
-import { ONTOINDEX_TOOLS } from '../../src/mcp/tools.js';
+import { INTERNAL_TOOL_HANDLERS, ONTOINDEX_TOOLS } from '../../src/mcp/tools.js';
 
 describe('MCP Next-Step Hints', () => {
   it('keeps committed navigation explicit without offering live enrichment', () => {
@@ -13,6 +13,45 @@ describe('MCP Next-Step Hints', () => {
       expect(hint).toContain('repo: "fixture"');
       expect(hint).not.toContain('consume_enrichment_facts: true');
     }
+    const hint = getNextStepHint('search', { action: 'semantic', read_mode: 'committed' });
+    expect(hint).toContain('last index');
+    expect(hint).toContain('readContext.sourceProvenance');
+    expect(hint).toContain('readContext.workingTreeIncluded');
+    expect(hint).toContain('Manual overlays and live enrichment remain excluded.');
+    expect(hint).not.toContain('Uncommitted source and live enrichment remain excluded.');
+  });
+
+  it.each([undefined, 'workspace'])(
+    'preserves repository and explicit %s mode throughout hints',
+    (read_mode) => {
+      for (const tool of [...ONTOINDEX_TOOLS, ...INTERNAL_TOOL_HANDLERS]) {
+        const hint = getNextStepHint(tool.name, { repo: 'my-repo', read_mode });
+        expect(hint, tool.name).toContain('repo: "my-repo"');
+        if (read_mode) expect(hint, tool.name).toContain('read_mode: "workspace"');
+        for (const call of hint.matchAll(/\(\{([^{}]*)\}\)/g)) {
+          expect(call[1], `${tool.name}: ${call[0]}`).toContain('repo: "my-repo"');
+          if (read_mode) {
+            expect(call[1], `${tool.name}: ${call[0]}`).toContain('read_mode: "workspace"');
+          }
+        }
+      }
+    },
+  );
+
+  it.each([
+    {},
+    { consume_enrichment_facts: true },
+    { consume_enrichment_facts: true, include_markdown_context: true },
+  ])('never suggests enrichment for explicit workspace navigation: %j', (enrichment) => {
+    const hint = getNextStepHint('search', {
+      action: 'semantic',
+      read_mode: 'workspace',
+      ...enrichment,
+    });
+    expect(hint).toContain('read_mode: "workspace"');
+    expect(hint).not.toMatch(
+      /consume_enrichment_facts|include_passive_related_facts|include_markdown_context|include_markdown_ppr|include_lsp_refs/,
+    );
   });
   it('provides a non-empty hint for every tool in ONTOINDEX_TOOLS', () => {
     for (const tool of ONTOINDEX_TOOLS) {

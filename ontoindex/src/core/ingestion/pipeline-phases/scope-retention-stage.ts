@@ -1,9 +1,7 @@
-import fs, { type FileHandle } from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { types } from 'node:util';
-import type { GraphNode, GraphRelationship, ParsedFile, Range } from 'ontoindex-shared';
+import type { GraphNode, GraphRelationship, Range } from 'ontoindex-shared';
 import type {
   ExtractedAssignment,
   ExtractedCall,
@@ -21,22 +19,29 @@ import {
   type ImportResolutionStateSnapshotV1,
 } from '../model/resolution-context.js';
 import type { ImportConfigObservations } from '../language-config.js';
-import {
-  isUnconsumedRustScopeFailure,
-  type ScopeExtractionRecord,
-} from '../scope-extractor-bridge.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'ontoindex-shared';
 import type { ScannedFile } from '../filesystem-walker.js';
-import { ANALYSIS_PACKS_ROOT } from '../../../analysis-packs/catalog.js';
+import { loadAnalysisCatalog } from '../../../analysis-packs/catalog.js';
 import {
-  decodeParsedFileRecord,
-  MAX_PARSED_FILE_RECORD_BYTES,
   MAX_GRAPH_RECORD_BYTES,
-  encodeParsedFileRecord,
+  MAX_IMPORT_STATE_RECORD_BYTES,
+  MAX_SCOPE_RETENTION_BYTES,
+  MAX_SCOPE_RETENTION_RECORDS,
   encodeGraphNodeRecord,
   encodeGraphRelationshipRecord,
   ParsedFileRecordError,
 } from './parse-scope-codec.js';
+
+/** Languages whose complete parse semantics are captured by retention. */
+export function isScopeRetentionLanguage(language: SupportedLanguages | null | undefined): boolean {
+  return (
+    language === SupportedLanguages.TypeScript ||
+    language === SupportedLanguages.JavaScript ||
+    language === SupportedLanguages.Python ||
+    language === SupportedLanguages.CPlusPlus ||
+    language === SupportedLanguages.Rust
+  );
+}
 
 export interface ScopeRetentionRequest {
   deadline: number;
@@ -59,20 +64,17 @@ export interface ScopeRetentionDiscovery {
   skipped: readonly Readonly<{ path: string; size: number }>[];
 }
 
-/** Pack contents affect parser producers but are outside retained input evidence. */
-export async function scopeRetentionAnalysisPacksAbsent(
+/** Identity of the parsed analysis catalog consumed by the pipeline. */
+export async function scopeRetentionAnalysisPacksIdentity(
   repoPath: string,
   check: () => void,
-): Promise<boolean> {
+): Promise<string> {
   check();
-  try {
-    await fs.lstat(path.join(repoPath, ANALYSIS_PACKS_ROOT));
-    check();
-    return false;
-  } catch (error) {
-    check();
-    return (error as NodeJS.ErrnoException).code === 'ENOENT';
-  }
+  const catalog = await loadAnalysisCatalog(repoPath);
+  check();
+  return createHash('sha256')
+    .update(JSON.stringify(['catalog-v1', catalog.packs, catalog.suites, catalog.errors]))
+    .digest('hex');
 }
 
 /** Canonical discovery identity, independently bounded from parser artifacts. */
@@ -141,7 +143,6 @@ export function snapshotScopeRetentionDiscovery(
   });
 }
 const retentionFamilies = [
-  'parsed-files',
   'calls',
   'heritage',
   'assignments',
@@ -205,10 +206,10 @@ export interface ScopeRetentionHandle {
     configuration: ImportConfigObservations | null;
     /** Bounded code evidence; source/configuration completeness does not establish a seed. */
     parserCodeIdentity: string | null;
+    analysisPacksIdentity: string | null;
     sources: readonly Readonly<{ filePath: string; sha256: string; byteLength: number }>[];
     reasons: readonly string[];
   }>;
-  iterate(): AsyncIterable<readonly ParsedFile[]>;
   iterateCalls(): AsyncIterable<readonly ExtractedCall[]>;
   iterateHeritage(): AsyncIterable<readonly ExtractedHeritage[]>;
   iterateAssignments(): AsyncIterable<readonly ExtractedAssignment[]>;
@@ -227,11 +228,11 @@ export interface ScopeRetentionHandle {
   dispose(): Promise<void>;
 }
 const ceilings = {
-  maxBytes: 64 * 1024 * 1024,
-  maxRecords: 100_000,
-  maxRecordBytes: MAX_PARSED_FILE_RECORD_BYTES,
+  maxBytes: MAX_SCOPE_RETENTION_BYTES,
+  maxRecords: MAX_SCOPE_RETENTION_RECORDS,
+  maxRecordBytes: MAX_GRAPH_RECORD_BYTES,
   readChunkBytes: 1024 * 1024,
-  batchBytes: 1024 * 1024,
+  batchBytes: MAX_IMPORT_STATE_RECORD_BYTES,
   batchRecords: 1000,
 };
 
@@ -255,27 +256,22 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
   private readonly completedProducers = new Set<ScopeRetentionFamily>();
   private readonly entries = new Map<
     string,
-    { artifact: boolean; outcome?: string; skipped?: boolean; expected?: boolean; reason?: string }
+    { skipped?: boolean; expected?: boolean; unsupported?: boolean }
   >();
   private inventoryBytes = 0;
   private discoverySnapshot: ScopeRetentionDiscovery | null = null;
   private inputBytes = 0;
   private configuration: ImportConfigObservations | null = null;
   private parserCodeIdentity: string | null = null;
+  private analysisPacksIdentity: string | null = null;
   private readonly sources = new Map<
     string,
     Readonly<{ filePath: string; sha256: string; byteLength: number }>
   >();
   private readonly inputIssues = new Set<string>();
-  private queued: string[] = [];
-  private directory?: string;
-  private filePath?: string;
-  private pending: Promise<void> = Promise.resolve();
   private disposing?: Promise<void>;
   private disposed = false;
   private retainedBytes = 0;
-  private retainedRecords = 0;
-  private reservedParsedFiles = 0;
   // Bounded in-memory observed inputs until a streaming seed owner exists.
   private callRecords: string[] = [];
   private callBytes = 0;
@@ -324,12 +320,8 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
   private graphRelationshipRecords: string[] = [];
   private graphRelationshipBytes = 0;
   private graphRelationshipCaptureAttempts = 0;
-  private captureAttempts = 0;
   private reconciled = false;
   private replayActive = false;
-  private pendingReader?: Promise<FileHandle | undefined>;
-  private readers = new Set<FileHandle>();
-  private closingReaders = new Map<FileHandle, Promise<void>>();
 
   constructor(
     private readonly request: ScopeRetentionRequest,
@@ -349,14 +341,8 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
     )
       throw new Error('Invalid scope retention request');
   }
-  reserveParsedFileRecords(count: number): void {
-    if (!Number.isSafeInteger(count) || count < 0)
-      throw new Error('Invalid parsed-file record reservation');
-    this.reservedParsedFiles = Math.min(count, this.limits.maxRecords);
-  }
   private get totalRetainedRecords(): number {
     return (
-      this.retainedRecords +
       this.callRecords.length +
       this.heritageRecords.length +
       this.assignmentRecords.length +
@@ -374,17 +360,14 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       this.toolDefinitionRecordCount
     );
   }
-  private recordCeilingReached(forParsedFiles: boolean): boolean {
-    const ceiling = forParsedFiles
-      ? this.limits.maxRecords
-      : this.limits.maxRecords - Math.max(0, this.reservedParsedFiles - this.retainedRecords);
-    return this.totalRetainedRecords >= ceiling;
+  private recordCeilingReached(): boolean {
+    return this.totalRetainedRecords >= this.limits.maxRecords;
   }
   get bytes(): number {
     return this.retainedBytes;
   }
   get recordCount(): number {
-    return this.retainedRecords;
+    return this.totalRetainedRecords;
   }
   get callRecordCount(): number {
     return this.callRecords.length;
@@ -470,6 +453,7 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       complete: reasons.size === 0,
       configuration: this.configuration,
       parserCodeIdentity: this.parserCodeIdentity,
+      analysisPacksIdentity: this.analysisPacksIdentity,
       sources: Object.freeze([...this.sources.values()]),
       reasons: Object.freeze([...reasons]),
     });
@@ -479,11 +463,14 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
   }
   async captureAnalysisPacksAbsence(repoPath: string): Promise<void> {
     if (!this.check()) return;
-    const absent = await scopeRetentionAnalysisPacksAbsent(repoPath, () => {
+    const identity = await scopeRetentionAnalysisPacksIdentity(repoPath, () => {
       if (!this.check()) throw new Error('scope-retention: unavailable');
-    }).catch(() => false);
+    }).catch(() => null);
     if (!this.check()) return;
-    if (!absent) this.inputIssue('unsupported-analysis-packs');
+    if (identity === null) this.inputIssue('unsupported-analysis-packs');
+    else if (this.analysisPacksIdentity !== null && this.analysisPacksIdentity !== identity)
+      this.inputIssue('analysis-packs-changed');
+    else this.analysisPacksIdentity = identity;
   }
   captureDiscovery(
     allPaths: readonly string[],
@@ -785,38 +772,25 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
   get inventory(): readonly { filePath: string; status: string; reason?: string }[] {
     return Array.from(this.entries, ([filePath, entry]) => ({
       filePath,
-      status: this.entryStatus(entry, filePath),
-      ...(entry.reason === undefined ? {} : { reason: entry.reason }),
+      status: this.entryStatus(entry),
     }));
   }
   get status(): 'retained' | 'incomplete' {
     if (!this.check() || !this.reconciled || !this.entries.size || this.issues.size)
       return 'incomplete';
     for (const [filePath, entry] of this.entries) {
-      const status = this.entryStatus(entry, filePath);
-      if (status !== 'retained' && status !== 'not-required') return 'incomplete';
+      const status = this.entryStatus(entry);
+      if (status !== 'retained') return 'incomplete';
     }
     return 'retained';
   }
-  private entryStatus(
-    entry: { artifact: boolean; outcome?: string; skipped?: boolean; reason?: string },
-    filePath: string,
-  ): string {
-    if (
-      !entry.skipped &&
-      !entry.artifact &&
-      isUnconsumedRustScopeFailure({ filePath, status: entry.outcome, reason: entry.reason })
-    )
-      return 'not-required';
-    return entry.skipped
-      ? 'skipped'
-      : entry.outcome === undefined
-        ? 'missing-outcome'
-        : entry.outcome !== 'success'
-          ? entry.outcome
-          : !entry.artifact
-            ? 'missing-artifact'
-            : 'retained';
+  private entryStatus(entry: {
+    skipped?: boolean;
+    expected?: boolean;
+    unsupported?: boolean;
+  }): string {
+    if (entry.unsupported) return 'unsupported';
+    return entry.skipped ? 'skipped' : entry.expected ? 'retained' : 'unexpected-entry';
   }
   private issue(reason: string): void {
     if (this.issues.size < 100) this.issues.add(reason);
@@ -852,63 +826,9 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       return;
     }
     this.inventoryBytes += size;
-    const entry: {
-      artifact: boolean;
-      outcome?: string;
-      skipped?: boolean;
-      expected?: boolean;
-      reason?: string;
-    } = {
-      artifact: false,
-    };
+    const entry: { skipped?: boolean; expected?: boolean; unsupported?: boolean } = {};
     this.entries.set(filePath, entry);
     return entry;
-  }
-  capture(files: readonly ParsedFile[]): void {
-    this.completedProducers.delete('parsed-files');
-    this.reconciled = false;
-    for (const file of files) {
-      if (!this.check()) return;
-      if (++this.captureAttempts > this.limits.maxRecords) {
-        this.issue('record-count-limit');
-        return;
-      }
-      if (this.recordCeilingReached(true)) {
-        this.issue('record-count-limit');
-        return;
-      }
-      let encoded: string;
-      try {
-        const available = Math.min(
-          this.limits.maxRecordBytes,
-          this.limits.batchBytes,
-          this.limits.maxBytes - this.retainedBytes - this.inputBytes,
-          this.request.artifactAllowance.remainingBytes,
-        );
-        if (available < 1) {
-          this.issue('artifact-byte-limit');
-          return;
-        }
-        encoded = encodeParsedFileRecord(file, available);
-      } catch (error) {
-        if (!(error instanceof ParsedFileRecordError)) throw error;
-        this.issue(error.reason);
-        continue;
-      }
-      const entry = this.entry(file.filePath);
-      if (!entry) continue;
-      if (entry.artifact) this.issue('duplicate-artifact');
-      const bytes = Buffer.byteLength(encoded, 'utf8');
-      if (!this.inputRoom(bytes)) {
-        this.issue('artifact-byte-limit');
-        return;
-      }
-      this.request.artifactAllowance.remainingBytes -= bytes;
-      this.retainedBytes += bytes;
-      this.retainedRecords++;
-      entry.artifact = true;
-      this.queued.push(encoded);
-    }
   }
   captureCalls(calls: readonly ExtractedCall[]): void {
     this.completedProducers.delete('calls');
@@ -973,7 +893,7 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
     });
     for (const call of calls) {
       if (!this.check()) return;
-      if (++this.callCaptureAttempts > this.limits.maxRecords || this.recordCeilingReached(false)) {
+      if (++this.callCaptureAttempts > this.limits.maxRecords || this.recordCeilingReached()) {
         this.issue('call-count-limit');
         return;
       }
@@ -1080,10 +1000,7 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
     const fields = ['filePath', 'className', 'parentName', 'kind'] as const;
     for (const record of records) {
       if (!this.check()) return;
-      if (
-        ++this.heritageCaptureAttempts > this.limits.maxRecords ||
-        this.recordCeilingReached(false)
-      ) {
+      if (++this.heritageCaptureAttempts > this.limits.maxRecords || this.recordCeilingReached()) {
         this.issue('heritage-count-limit');
         return;
       }
@@ -1163,7 +1080,7 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       if (!this.check()) return;
       if (
         ++this.assignmentCaptureAttempts > this.limits.maxRecords ||
-        this.recordCeilingReached(false)
+        this.recordCeilingReached()
       ) {
         this.issue('assignment-count-limit');
         return;
@@ -1290,7 +1207,7 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       if (!this.check()) return;
       if (
         ++this.extractionAttempts[family] > this.limits.maxRecords ||
-        this.recordCeilingReached(false)
+        this.recordCeilingReached()
       ) {
         this.issue(`${family}-count-limit`);
         return;
@@ -1442,10 +1359,7 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
     const fields = [...strings, 'lineNumber'];
     for (const record of records) {
       if (!this.check()) return;
-      if (
-        ++this.ormQueryCaptureAttempts > this.limits.maxRecords ||
-        this.recordCeilingReached(false)
-      ) {
+      if (++this.ormQueryCaptureAttempts > this.limits.maxRecords || this.recordCeilingReached()) {
         this.issue('orm-query-count-limit');
         return;
       }
@@ -1603,7 +1517,7 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
         if (!this.check()) return;
         if (
           ++this.constructorBindingCaptureAttempts > this.limits.maxRecords ||
-          this.recordCeilingReached(false)
+          this.recordCeilingReached()
         ) {
           this.issue('constructor-binding-count-limit');
           return;
@@ -1704,7 +1618,7 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       if (!this.check()) return;
       if (
         ++this.exportedTypeCaptureAttempts > this.limits.maxRecords ||
-        this.recordCeilingReached(false)
+        this.recordCeilingReached()
       ) {
         this.issue('exported-type-count-limit');
         return;
@@ -1847,7 +1761,7 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       if (!this.check()) return;
       if (
         ++this.fileBindingCaptureAttempts > this.limits.maxRecords ||
-        this.recordCeilingReached(false)
+        this.recordCeilingReached()
       ) {
         this.issue('file-binding-count-limit');
         return;
@@ -1959,7 +1873,7 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
     if (!this.check()) return false;
     if (
       ++this.graphRelationshipCaptureAttempts > this.limits.maxRecords ||
-      this.recordCeilingReached(false)
+      this.recordCeilingReached()
     ) {
       this.issue('graph-relationship-count-limit');
       return false;
@@ -2030,10 +1944,7 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
   captureGraphNode(node: unknown): boolean {
     this.completedProducers.delete('graph-nodes');
     if (!this.check()) return false;
-    if (
-      ++this.graphNodeCaptureAttempts > this.limits.maxRecords ||
-      this.recordCeilingReached(false)
-    ) {
+    if (++this.graphNodeCaptureAttempts > this.limits.maxRecords || this.recordCeilingReached()) {
       this.issue('graph-node-count-limit');
       return false;
     }
@@ -2100,13 +2011,12 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       return;
     }
     this.importStateCaptureAttempted = true;
-    if (this.recordCeilingReached(false)) {
+    if (this.recordCeilingReached()) {
       this.issue('import-state-count-limit');
       return;
     }
     const available = Math.min(
-      MAX_GRAPH_RECORD_BYTES,
-      this.limits.maxRecordBytes,
+      MAX_IMPORT_STATE_RECORD_BYTES,
       this.limits.batchBytes,
       this.limits.maxBytes - this.retainedBytes - this.inputBytes,
       this.request.artifactAllowance.remainingBytes,
@@ -2156,7 +2066,7 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       return false;
     }
     this.modelRegistrationCaptureAttempts++;
-    if (this.recordCeilingReached(false)) {
+    if (this.recordCeilingReached()) {
       this.issue('model-registration-count-limit');
       return false;
     }
@@ -2363,38 +2273,16 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       this.replayActive = false;
     }
   }
-  recordOutcomes(outcomes: readonly ScopeExtractionRecord[]): void {
-    this.completedProducers.delete('parsed-files');
-    this.reconciled = false;
-    let count = 0;
-    for (const outcome of outcomes) {
-      if (!this.check()) return;
-      if (++count > this.limits.maxRecords) {
-        this.issue('inventory-limit');
-        return;
-      }
-      const entry = this.entry(outcome.filePath);
-      if (!entry) continue;
-      if (entry.outcome !== undefined) this.issue('duplicate-outcome');
-      entry.outcome = ['success', 'failed', 'unsupported'].includes(outcome.status)
-        ? outcome.status
-        : 'invalid-outcome';
-      const unconsumed = isUnconsumedRustScopeFailure(outcome);
-      if (entry.outcome !== 'success' && !unconsumed) this.issue(entry.outcome);
-      if (outcome.status === 'failed' && outcome.reason === 'unsupported-syntax') {
-        entry.reason = 'unsupported-syntax';
-        if (!unconsumed) this.issue('unsupported-syntax');
-      } else {
-        delete entry.reason;
-      }
-    }
-  }
-  reconcile(expectedPaths: Iterable<string>, skippedPaths: Iterable<string> = []): void {
-    this.completedProducers.delete('parsed-files');
+  reconcile(
+    expectedPaths: Iterable<string>,
+    skippedPaths: Iterable<string> = [],
+    unsupportedPaths: Iterable<string> = [],
+  ): void {
     this.reconciled = false;
     for (const entry of this.entries.values()) {
       entry.expected = false;
       entry.skipped = false;
+      entry.unsupported = false;
     }
     let count = 0;
     for (const filePath of expectedPaths) {
@@ -2419,160 +2307,23 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
       const entry = this.entry(filePath);
       if (entry) entry.skipped = true;
     }
+    count = 0;
+    for (const filePath of unsupportedPaths) {
+      if (!this.check()) return;
+      if (++count > this.limits.maxRecords) {
+        this.issue('inventory-limit');
+        return;
+      }
+      const entry = this.entry(filePath);
+      if (entry) entry.unsupported = true;
+    }
     for (const [filePath, entry] of this.entries) {
-      const status = this.entryStatus(entry, filePath);
-      if (status !== 'retained' && status !== 'not-required') this.issue(status);
-      if (!entry.expected) this.issue('unexpected-artifact-or-outcome');
+      const status = this.entryStatus(entry);
+      if (status !== 'retained') this.issue(status);
+      if (!entry.expected && !entry.skipped) this.issue('unexpected-entry');
     }
     if (!this.entries.size) this.issue('empty-observed-inventory');
     this.reconciled = true;
-  }
-  flush(): Promise<void> {
-    this.pending = this.pending
-      .then(async () => {
-        if (!this.check()) return;
-        if (!this.queued.length) return;
-        if (!this.directory) {
-          this.directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ontoindex-parse-scopes-'));
-          this.filePath = path.join(this.directory, 'stage.jsonl');
-        }
-        // One bounded record per write; never construct a whole-chunk encoded copy.
-        let written = 0;
-        while (written < this.queued.length && this.check()) {
-          const record = this.queued[written];
-          await fs.appendFile(this.filePath!, record, { encoding: 'utf8', mode: 0o600 });
-          written++;
-        }
-        this.queued.splice(0, written);
-      })
-      .catch((error) => {
-        this.issue('write-failed');
-        throw error;
-      });
-    return this.pending;
-  }
-  async *iterate(): AsyncIterable<readonly ParsedFile[]> {
-    if (this.replayActive) throw new ParsedFileRecordError('concurrent-replay');
-    this.replayActive = true;
-    try {
-      await this.flush();
-      if (!this.check() || !this.filePath) return;
-      this.pendingReader = fs.open(this.filePath, 'r').then(async (reader) => {
-        this.readers.add(reader);
-        if (!this.check()) {
-          await this.closeReader(reader);
-          return;
-        }
-        return reader;
-      });
-      const reader = await this.pendingReader;
-      if (!reader) return;
-      const buffer = Buffer.alloc(this.limits.readChunkBytes);
-      let pieces: Buffer[] = [];
-      let lineBytes = 0;
-      let batch: ParsedFile[] = [];
-      let batchBytes = 0;
-      let count = 0;
-      let bytes = 0;
-      try {
-        while (this.check()) {
-          const { bytesRead } = await reader.read(buffer, 0, buffer.length, null);
-          if (!this.check()) return;
-          if (!bytesRead) break;
-          let start = 0;
-          for (let i = 0; i < bytesRead; i++) {
-            if (buffer[i] !== 10) continue;
-            const part = buffer.subarray(start, i + 1);
-            lineBytes += part.length;
-            if (lineBytes > this.limits.maxRecordBytes || lineBytes > this.limits.batchBytes)
-              throw new ParsedFileRecordError('record-byte-limit');
-            pieces.push(part);
-            const line = Buffer.concat(pieces, lineBytes).toString('utf8');
-            bytes += lineBytes;
-            count++;
-            if (
-              bytes >
-                this.retainedBytes -
-                  this.callBytes -
-                  this.heritageBytes -
-                  this.assignmentBytes -
-                  this.ormQueryBytes -
-                  this.extractionBytes -
-                  this.constructorBindingBytes -
-                  this.exportedTypeBytes -
-                  this.fileBindingBytes -
-                  this.modelRegistrationBytes -
-                  this.importStateBytes -
-                  this.graphNodeBytes -
-                  this.graphRelationshipBytes ||
-              count > this.retainedRecords
-            )
-              throw new ParsedFileRecordError('stage-size-mismatch');
-            if (
-              batch.length &&
-              (batch.length >= this.limits.batchRecords ||
-                batchBytes + lineBytes > this.limits.batchBytes)
-            ) {
-              yield batch;
-              batch = [];
-              batchBytes = 0;
-              if (!this.check()) return;
-            }
-            batch.push(decodeParsedFileRecord(line));
-            batchBytes += lineBytes;
-            pieces = [];
-            lineBytes = 0;
-            start = i + 1;
-          }
-          if (start < bytesRead) {
-            lineBytes += bytesRead - start;
-            if (lineBytes > this.limits.maxRecordBytes)
-              throw new ParsedFileRecordError('record-byte-limit');
-            pieces.push(Buffer.from(buffer.subarray(start, bytesRead)));
-          }
-        }
-        if (!this.check()) return;
-        if (
-          lineBytes ||
-          count !== this.retainedRecords ||
-          bytes !==
-            this.retainedBytes -
-              this.callBytes -
-              this.heritageBytes -
-              this.assignmentBytes -
-              this.ormQueryBytes -
-              this.extractionBytes -
-              this.constructorBindingBytes -
-              this.exportedTypeBytes -
-              this.fileBindingBytes -
-              this.modelRegistrationBytes -
-              this.importStateBytes -
-              this.graphNodeBytes -
-              this.graphRelationshipBytes
-        )
-          throw new ParsedFileRecordError('stage-size-mismatch');
-        if (batch.length) yield batch;
-      } catch (error) {
-        this.issue('replay-failed');
-        throw error;
-      } finally {
-        await this.closeReader(reader);
-      }
-    } finally {
-      this.pendingReader = undefined;
-      this.replayActive = false;
-    }
-  }
-  private closeReader(reader: FileHandle): Promise<void> {
-    const closing = this.closingReaders.get(reader);
-    if (closing) return closing;
-    if (!this.readers.has(reader)) return Promise.resolve();
-    const pending = reader.close().finally(() => {
-      this.readers.delete(reader);
-      this.closingReaders.delete(reader);
-    });
-    this.closingReaders.set(reader, pending);
-    return pending;
   }
   dispose(): Promise<void> {
     if (this.disposing) return this.disposing;
@@ -2596,23 +2347,10 @@ export class ScopeRetentionStage implements ScopeRetentionHandle {
     this.graphNodeRecords = [];
     this.completedProducers.clear();
     this.graphRelationshipRecords = [];
-    this.disposing = (async () => {
-      await this.pending.catch(() => undefined);
-      await this.pendingReader?.catch(() => undefined);
-      // Await active I/O before deleting its storage; close is idempotent on FileHandle.
-      const closed = await Promise.allSettled(
-        [...this.readers].map((reader) => this.closeReader(reader)),
-      );
-      this.readers.clear();
-      if (this.directory) await fs.rm(this.directory, { recursive: true, force: true });
-      this.directory = undefined;
-      this.filePath = undefined;
-      this.queued = [];
+    this.disposing = Promise.resolve().then(() => {
       this.request.artifactAllowance.remainingBytes += this.retainedBytes + this.inputBytes;
       this.inputBytes = 0;
-      const failed = closed.find((result) => result.status === 'rejected');
-      if (failed?.status === 'rejected') throw failed.reason;
-    })();
+    });
     return this.disposing;
   }
 }

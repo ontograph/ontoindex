@@ -17,6 +17,62 @@ describe('routesPhase', () => {
     }
   });
 
+  it('chooses duplicate route handlers deterministically across parse order', async () => {
+    repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-route-order-'));
+    for (const file of ['a.ts', 'z.ts']) await fs.writeFile(path.join(repoDir, file), '');
+
+    const frameworkRoutes = ['z.ts', 'a.ts'].map((filePath) => ({
+      filePath,
+      routePath: '/framework',
+      httpMethod: 'GET',
+      lineNumber: 1,
+      controllerName: null,
+      methodName: null,
+      middleware: [],
+      prefix: null,
+      responseKeys: [filePath],
+      errorKeys: [filePath],
+    }));
+    const decoratorRoutes = ['z.ts', 'a.ts'].map((filePath) => ({
+      filePath,
+      routePath: '/decorator',
+      httpMethod: 'GET',
+      lineNumber: 1,
+      decoratorName: 'express.get',
+      responseKeys: [filePath],
+      errorKeys: [filePath],
+    }));
+    const run = async (reverse: boolean) => {
+      const graph = createKnowledgeGraph();
+      const parseOutput = {
+        allPaths: ['a.ts', 'z.ts'],
+        allFetchCalls: [],
+        allExtractedRoutes: reverse ? [...frameworkRoutes].reverse() : frameworkRoutes,
+        allDecoratorRoutes: reverse ? [...decoratorRoutes].reverse() : decoratorRoutes,
+      } as unknown as ParseOutput;
+      await routesPhase.execute(
+        { repoPath: repoDir, graph, onProgress: () => {}, pipelineStart: Date.now() },
+        new Map([['parse', { phaseName: 'parse', output: parseOutput, durationMs: 0 }]]),
+      );
+      return {
+        nodes: ['/framework', '/decorator'].map(
+          (url) => graph.getNode(generateId('Route', url))?.properties,
+        ),
+        edges: graph.relationships.filter((rel) => rel.type === 'HANDLES_ROUTE'),
+      };
+    };
+
+    const forward = await run(false);
+    expect(await run(true)).toEqual(forward);
+    for (const node of forward.nodes) {
+      expect(node?.filePath).toBe('a.ts');
+      expect(node?.responseKeys).toEqual(['a.ts', 'z.ts']);
+      expect(node?.errorKeys).toEqual(['a.ts', 'z.ts']);
+    }
+    expect(forward.edges).toHaveLength(2);
+    expect(forward.edges.every((edge) => edge.sourceId === generateId('File', 'a.ts'))).toBe(true);
+  });
+
   it('annotates route nodes and HANDLES_ROUTE edges with active route model packs', async () => {
     repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-routes-phase-'));
     await fs.mkdir(path.join(repoDir, 'ontoindex-packs/core/framework-models'), {

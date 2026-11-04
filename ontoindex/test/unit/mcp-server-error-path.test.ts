@@ -11,6 +11,7 @@ type MockBackend = {
   callTool: ReturnType<typeof vi.fn>;
   resolveRepo: ReturnType<typeof vi.fn>;
   ensureRepoInitialized: ReturnType<typeof vi.fn>;
+  withPreparedRepoRead: ReturnType<typeof vi.fn>;
 };
 
 async function createHarness(
@@ -52,6 +53,7 @@ async function createHarness(
       return { id: 'repo-1', name: 'fixture', repoPath: '/repo/fixture' };
     }),
     ensureRepoInitialized: vi.fn(async () => undefined),
+    withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => operation()),
   };
 
   createMCPServer(backend as any);
@@ -87,6 +89,7 @@ async function createPublicHandlers(): Promise<{
     callTool: vi.fn(async () => ({ ok: true })),
     resolveRepo: vi.fn(async () => ({ id: 'repo-1', name: 'fixture', repoPath: '/repo/fixture' })),
     ensureRepoInitialized: vi.fn(async () => undefined),
+    withPreparedRepoRead: vi.fn(async (_repo, _options, operation) => operation()),
   };
   createMCPServer(backend as any);
   const call = setHandler.mock.calls.find(
@@ -143,7 +146,62 @@ describe('MCP server tool-call errors', () => {
     'workspace_too_large',
     'workspace_timeout',
     'workspace_cancelled',
+    'workspace_coverage_incomplete',
   ];
+
+  it.each(['  base verification failed  ', `  ${'x'.repeat(400)}  `, null, 42])(
+    'bounds incomplete-coverage reasons: %s',
+    async (reason) => {
+      const { handler } = await createHarness({
+        callToolError: Object.assign(new Error('workspace unavailable'), {
+          code: 'workspace_coverage_incomplete',
+          retryable: false,
+          diagnostics: { reason, privatePath: '/private/workspace' },
+        }),
+      });
+      const response = await handler({ params: { name: 'list_repos', arguments: {} } });
+      const payload = readErrorPayload(response.content[0].text);
+      expect(payload).toMatchObject({ code: 'workspace_coverage_incomplete', retryable: false });
+      if (typeof reason === 'string') {
+        expect(payload.diagnostics).toEqual({
+          reason: reason.length > 300 ? 'x'.repeat(300) : 'base verification failed',
+        });
+      } else {
+        expect(payload).not.toHaveProperty('diagnostics');
+      }
+    },
+  );
+
+  it.each(['workspace', 'committed'])(
+    'offers workspace prebuild advice only for explicit %s reads',
+    async (readMode) => {
+      const { backend, handler } = await createHarness();
+      backend.withPreparedRepoRead.mockRejectedValue(
+        Object.assign(new Error('workspace unavailable'), {
+          code: 'workspace_too_large',
+          retryable: false,
+        }),
+      );
+      const response = await handler({
+        params: {
+          name: 'inspect',
+          arguments: { repo: 'fixture', action: 'context', name: 'symbol', read_mode: readMode },
+        },
+      });
+      const payload = readErrorPayload(response.content[0].text);
+      expect(payload).toMatchObject({ code: 'workspace_too_large', retryable: false });
+      if (readMode === 'workspace') {
+        expect(payload.remediation).toMatchObject({
+          read_mode: 'committed',
+          message: expect.stringContaining(
+            'ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph',
+          ),
+        });
+      } else {
+        expect(payload).not.toHaveProperty('remediation');
+      }
+    },
+  );
 
   it.each(
     workspaceCodes.flatMap((code) =>
@@ -179,7 +237,7 @@ describe('MCP server tool-call errors', () => {
               remediation: {
                 read_mode: 'committed',
                 message:
-                  'Explicitly set read_mode="committed" to query the indexed commit. Uncommitted source changes, manual overlays and live enrichment are excluded. Do not automatically retry or reindex.' +
+                  'Explicitly set read_mode="committed" to query the last index. Check readContext.sourceProvenance and readContext.workingTreeIncluded to determine whether uncommitted source is included. Manual overlays and live enrichment are excluded. Do not automatically retry or reindex.' +
                   (code === 'workspace_too_large'
                     ? ' To prepare a separate bounded workspace graph while preserving the committed index, explicitly run `ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph` in the repository. Rerun this command after workspace inputs change.'
                     : ''),
@@ -238,7 +296,7 @@ describe('MCP server tool-call errors', () => {
     expect(payload.remediation).toEqual({
       read_mode: 'committed',
       message:
-        'Explicitly set read_mode="committed" to query the indexed commit. Uncommitted source changes, manual overlays and live enrichment are excluded. Do not automatically retry or reindex. The published workspace graph reports degraded coverage. Inspect the analysis diagnostics and correct the reported issues before explicitly rebuilding.',
+        'Explicitly set read_mode="committed" to query the last index. Check readContext.sourceProvenance and readContext.workingTreeIncluded to determine whether uncommitted source is included. Manual overlays and live enrichment are excluded. Do not automatically retry or reindex. The published workspace graph reports degraded coverage. Inspect the analysis diagnostics and correct the reported issues before explicitly rebuilding.',
     });
     expect(response.content[0].text).not.toMatch(
       /privateMetadata|privatePath|stderr|private\/workspace|SYNTHETIC_PRIVATE/,
@@ -265,7 +323,7 @@ describe('MCP server tool-call errors', () => {
     expect(payload.remediation).toEqual({
       read_mode: 'committed',
       message:
-        'Explicitly set read_mode="committed" to query the indexed commit. Uncommitted source changes, manual overlays and live enrichment are excluded. Do not automatically retry or reindex. The working tree contains an input the workspace capture refuses, such as a tracked symlink or a file over the scan cap; exclude it with .ontoindexignore where allowed or run ontoindex analyze.',
+        'Explicitly set read_mode="committed" to query the last index. Check readContext.sourceProvenance and readContext.workingTreeIncluded to determine whether uncommitted source is included. Manual overlays and live enrichment are excluded. Do not automatically retry or reindex. The working tree contains an input the workspace capture refuses, such as a tracked symlink or a file over the scan cap; exclude it with .ontoindexignore where allowed or run ontoindex analyze.',
     });
     expect(payload).not.toHaveProperty('privatePath');
     expect(response.content[0].text).not.toMatch(/privatePath|private\/workspace|private stderr/);

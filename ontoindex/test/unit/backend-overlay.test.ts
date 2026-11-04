@@ -167,6 +167,83 @@ describe('backend-overlay snapshot', () => {
     expect([...(await getOverlaySnapshot(handle())).parseErrorPaths]).toEqual([]);
   });
 
+  it.each(['cached', 'reset'] as const)(
+    'preserves oversized tracked input evidence and recovers after shrinking (%s)',
+    async (cache) => {
+      vi.stubEnv('ONTOINDEX_SCAN_MAX_FILE_KB', '1');
+      vi.spyOn(Date, 'now').mockReturnValue(1_000);
+      const contents = 'export const a = 2;\n';
+      fs.writeFileSync(path.join(repo, 'src/a.ts'), contents);
+      publishWorkspaceFixture();
+      expect((await getOverlaySnapshot(handle())).usable).toBe(true);
+
+      fs.writeFileSync(path.join(repo, 'src/a.ts'), 'x'.repeat(2048));
+      if (cache === 'reset') resetOverlaySnapshotCache();
+      const excluded = await getOverlaySnapshot(handle());
+      expect(excluded.usable).toBe(false);
+      expect([...excluded.dirtyPaths]).toEqual(['src/a.ts']);
+      expect([...excluded.uncoveredPaths]).toEqual(['src/a.ts']);
+      expect([...excluded.overlayPaths]).toEqual([]);
+      expect(excluded.reason).toContain('unreadable inputs');
+
+      fs.writeFileSync(path.join(repo, 'src/a.ts'), contents);
+      if (cache === 'reset') resetOverlaySnapshotCache();
+      const recovered = await getOverlaySnapshot(handle());
+      expect(recovered).toMatchObject({ usable: true, coverage: 'complete' });
+      expect([...recovered.uncoveredPaths]).toEqual([]);
+      expect([...recovered.overlayPaths]).toEqual(['src/a.ts']);
+    },
+  );
+
+  it('keeps untracked oversized sources uncovered when reusing a symbols overlay', async () => {
+    vi.stubEnv('ONTOINDEX_SCAN_MAX_FILE_KB', '1');
+    fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
+    publishFixture();
+    expect((await getOverlaySnapshot(handle())).usable).toBe(true);
+    fs.writeFileSync(path.join(repo, 'src/large.ts'), 'x'.repeat(2048));
+    const snapshot = await getOverlaySnapshot(handle());
+    expect(snapshot.usable).toBe(true);
+    expect([...snapshot.dirtyPaths]).toEqual(['src/a.ts', 'src/large.ts']);
+    expect([...snapshot.overlayPaths]).toEqual(['src/a.ts']);
+    expect([...snapshot.uncoveredPaths]).toEqual(['src/large.ts']);
+  });
+
+  it('lets a workspace graph cover count exclusions without clearing size exclusions', async () => {
+    vi.stubEnv('ONTOINDEX_SCAN_MAX_FILE_KB', '1');
+    fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
+    publishWorkspaceFixture();
+    const plan = await planDirtyOverlay(repo);
+    vi.mocked(planDirtyOverlay).mockResolvedValueOnce({
+      ...plan,
+      includePaths: [],
+      uncoveredPaths: ['src/a.ts'],
+      tooMany: true,
+    });
+    const snapshot = await getOverlaySnapshot(handle());
+    expect(snapshot.usable).toBe(true);
+    expect([...snapshot.uncoveredPaths]).toEqual([]);
+    expect([...snapshot.overlayPaths]).toEqual(['src/a.ts']);
+
+    fs.writeFileSync(path.join(repo, 'src/large.ts'), 'x'.repeat(2048));
+    const mixedPlan = await planDirtyOverlay(repo);
+    const metadataPath = path.join(storage, 'overlay', 'fixture', 'base.json');
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    fs.writeFileSync(
+      metadataPath,
+      JSON.stringify({ ...metadata, dirtyPaths: mixedPlan.allDirtyPaths }),
+    );
+    vi.mocked(planDirtyOverlay).mockResolvedValueOnce({
+      ...mixedPlan,
+      includePaths: [],
+      uncoveredPaths: ['src/a.ts', 'src/large.ts'],
+      tooMany: true,
+    });
+    const mixed = await getOverlaySnapshot(handle());
+    expect(mixed.usable).toBe(false);
+    expect([...mixed.uncoveredPaths]).toEqual(['src/large.ts']);
+    expect([...mixed.overlayPaths]).toEqual(['src/a.ts']);
+  });
+
   it.each([undefined, '', '   '])(
     'rejects a workspace graph without a nonempty manifest digest (%s)',
     async (manifestDigest) => {
@@ -341,17 +418,9 @@ describe('backend-overlay snapshot', () => {
     async (change) => {
       fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
       publishWorkspaceFixture();
-      git(repo, 'update-index', '--assume-unchanged', 'src/gone.ts');
       if (change === 'edited') fs.appendFileSync(path.join(repo, 'src/gone.ts'), '// changed\n');
       if (change === 'added') {
         fs.writeFileSync(path.join(repo, 'src/hidden.ts'), 'export const hidden = 1;');
-        // Hide from the dirty planner, while remaining eligible to the capture walker.
-        const plan = await planDirtyOverlay(repo);
-        vi.mocked(planDirtyOverlay).mockResolvedValueOnce({
-          ...plan,
-          allDirtyPaths: ['src/a.ts'],
-          includePaths: ['src/a.ts'],
-        });
       }
       if (change === 'deleted') fs.unlinkSync(path.join(repo, 'src/gone.ts'));
       if (change === 'touched')
@@ -362,6 +431,15 @@ describe('backend-overlay snapshot', () => {
         delete metadata.inventory;
         fs.writeFileSync(metadataPath, JSON.stringify(metadata));
       }
+      // Exercise inventory validation independently of the dirty-set guard.
+      const plan = await planDirtyOverlay(repo);
+      const visibleToPlanner = (rel: string) => rel !== 'src/gone.ts' && rel !== 'src/hidden.ts';
+      vi.mocked(planDirtyOverlay).mockResolvedValueOnce({
+        ...plan,
+        allDirtyPaths: plan.allDirtyPaths.filter(visibleToPlanner),
+        includePaths: plan.includePaths.filter(visibleToPlanner),
+        tombstones: plan.tombstones.filter(visibleToPlanner),
+      });
       const snapshot = await getOverlaySnapshot(handle());
       expect(snapshot.usable).toBe(change === 'touched');
       if (change === 'edited' || change === 'deleted')
@@ -402,16 +480,33 @@ describe('backend-overlay snapshot', () => {
   it('rejects changed bytes when a non-dirty input preserves size, mtime and inode', async () => {
     fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
     publishWorkspaceFixture();
-    git(repo, 'update-index', '--assume-unchanged', 'src/gone.ts');
     const metadataPath = path.join(storage, 'overlay', 'fixture', 'base.json');
     fs.writeFileSync(path.join(repo, 'src/gone.ts'), 'export const g = 2;\n');
     const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
     // Simulate exactly preserved stat identity without platform timestamp rounding.
     metadata.inventory['src/gone.ts'][1] = fs.statSync(path.join(repo, 'src/gone.ts')).mtimeMs;
     fs.writeFileSync(metadataPath, JSON.stringify(metadata));
+    const plan = await planDirtyOverlay(repo);
+    vi.mocked(planDirtyOverlay).mockResolvedValueOnce({
+      ...plan,
+      allDirtyPaths: plan.allDirtyPaths.filter((rel) => rel !== 'src/gone.ts'),
+      includePaths: plan.includePaths.filter((rel) => rel !== 'src/gone.ts'),
+    });
     expect(await getOverlaySnapshot(handle())).toMatchObject({
       usable: false,
       reason: expect.stringContaining('stale for src/gone.ts'),
+    });
+  });
+
+  it('rejects a workspace graph when an assume-unchanged source file is edited', async () => {
+    fs.writeFileSync(path.join(repo, 'src/a.ts'), 'export const a = 2;\n');
+    publishWorkspaceFixture();
+    git(repo, 'update-index', '--assume-unchanged', 'src/gone.ts');
+    fs.writeFileSync(path.join(repo, 'src/gone.ts'), 'export const g = 2;\n');
+    expect((await planDirtyOverlay(repo)).allDirtyPaths).toContain('src/gone.ts');
+    expect(await getOverlaySnapshot(handle())).toMatchObject({
+      usable: false,
+      reason: expect.stringContaining('dirty paths or tombstones differ'),
     });
   });
 

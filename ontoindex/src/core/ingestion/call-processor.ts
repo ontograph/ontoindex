@@ -991,16 +991,6 @@ const resolveExtractedLanguageCallSite = (
   )
     return true;
 
-  if (
-    ctx.scopeCallPublication?.owns(
-      file.path,
-      langCallSite.calledName,
-      callExpressionRange(callNode),
-      langCallSite.callForm,
-    )
-  )
-    return true;
-
   graph.addRelationship({
     id: generateId('CALLS', `${sourceId}:${langCallSite.calledName}->${resolved.nodeId}`),
     sourceId,
@@ -1414,15 +1404,6 @@ const resolvePreparedSequentialFile = (
       );
 
       if (!resolved) return;
-      if (
-        ctx.scopeCallPublication?.owns(
-          file.path,
-          calledName,
-          callExpressionRange(callNode),
-          callForm,
-        )
-      )
-        return;
       if (
         !canPublishCallEdge(
           callForm,
@@ -2322,11 +2303,16 @@ const resolveCallTarget = (
   // where `mod` is a module alias. Module-alias narrowing is the primary
   // disambiguation signal here. Also consulted from the typed-member
   // branch above as a guarded fallback after owner/file-scoped resolvers.
+  const language = getLanguageFromFilename(currentFile);
   return (
     resolveModuleAliasedCall(call, currentFile, ctx, widenCache, tiered) ??
+    // An unknown TS/JS receiver cannot justify an unrelated name-only match.
     // A same-file Rust method of that name does not prove it owns an unknown receiver;
     // import/global single candidates keep resolving (e.g. method-chain results).
-    (call.callForm === 'member' && currentFile.endsWith('.rs') && tiered?.tier === 'same-file'
+    (call.callForm === 'member' &&
+    (language === SupportedLanguages.TypeScript ||
+      language === SupportedLanguages.JavaScript ||
+      (currentFile.endsWith('.rs') && tiered?.tier === 'same-file'))
       ? null
       : singleCandidate(tiered, call.argCount, call.callForm))
   );
@@ -3249,15 +3235,6 @@ const emitVueTemplateComponentFallback = (
   if (!effectiveCall.filePath.endsWith('.vue') || !effectiveCall.sourceId.startsWith('File:')) {
     return;
   }
-  if (
-    ctx.scopeCallPublication?.owns(
-      effectiveCall.filePath,
-      effectiveCall.calledName,
-      effectiveCall.atRange,
-      effectiveCall.callForm,
-    )
-  )
-    return;
 
   const targetPath = findImportedComponentTargetPath(
     effectiveCall.filePath,
@@ -3294,15 +3271,6 @@ const emitJsxComponentFallback = (
   ) {
     return;
   }
-  if (
-    ctx.scopeCallPublication?.owns(
-      effectiveCall.filePath,
-      effectiveCall.calledName,
-      effectiveCall.atRange,
-      effectiveCall.callForm,
-    )
-  )
-    return;
 
   const targetPath = findImportedComponentTargetPath(
     effectiveCall.filePath,
@@ -3335,15 +3303,6 @@ const emitResolvedCallEdges = (
   ctx: ResolutionContext,
   heritageMap?: HeritageMap,
 ): void => {
-  if (
-    ctx.scopeCallPublication?.owns(
-      effectiveCall.filePath,
-      effectiveCall.calledName,
-      effectiveCall.atRange,
-      effectiveCall.callForm,
-    )
-  )
-    return;
   if (
     !canPublishCallEdge(
       effectiveCall.callForm,

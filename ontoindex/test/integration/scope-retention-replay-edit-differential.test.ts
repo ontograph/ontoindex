@@ -156,11 +156,15 @@ function compose(base: Families, edited: Families, changedPaths: readonly string
     changed.has(nodeFiles.get(edge.sourceId) ?? '') ||
     changed.has(nodeFiles.get(edge.targetId) ?? '');
   return {
-    parsedFiles: splice(base.parsedFiles, edited.parsedFiles),
     calls: splice(base.calls, edited.calls),
     assignments: splice(base.assignments, edited.assignments),
     constructors: splice(base.constructors, edited.constructors),
     heritage: splice(base.heritage, edited.heritage),
+    ormQueries: splice(base.ormQueries, edited.ormQueries),
+    fetchCalls: splice(base.fetchCalls, edited.fetchCalls),
+    routes: splice(base.routes, edited.routes),
+    decoratorRoutes: splice(base.decoratorRoutes, edited.decoratorRoutes),
+    toolDefinitions: splice(base.toolDefinitions, edited.toolDefinitions),
     fileBindings: splice(base.fileBindings, edited.fileBindings),
     exportedTypes: splice(base.exportedTypes, edited.exportedTypes),
     events: [
@@ -497,9 +501,6 @@ export class Child extends models.Public { inherited() { this.greet(); } }
         }
       }
       const combined = compose(base.families, edited.families, Object.keys(scenario.edits));
-      expect(combined.parsedFiles.map(({ filePath }) => filePath).sort()).toEqual(
-        Object.keys(files).sort(),
-      );
       expect(combined.calls).toHaveLength(edited.families.calls.length);
       for (const variant of variants) {
         const candidate = await replay({

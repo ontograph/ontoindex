@@ -381,8 +381,66 @@ function parseDirtyOverlayStatus(output: string): Array<{ status: string; paths:
   return entries;
 }
 
+// Git status deliberately omits these entries; conservatively treat present files as modified.
+async function hiddenIndexPaths(repoPath: string): Promise<string[]> {
+  const output = await execFileText('git', ['ls-files', '-v', '-z'], {
+    cwd: repoPath,
+    timeoutMs: GIT_TIMEOUT_MS,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const paths: string[] = [];
+  for (const entry of output.split('\0')) {
+    if (!/^[a-zS] /.test(entry)) continue;
+    const filePath = entry.slice(2);
+    try {
+      await fs.lstat(path.join(repoPath, filePath));
+      paths.push(filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+  return paths;
+}
+
+export async function workingTreeMatchesHead(
+  repoPath: string,
+): Promise<{ clean: boolean; changedPathCount: number; changedPaths: string[] }> {
+  const ignoreRules = await loadIgnoreRules(repoPath);
+  const statusOutput = await execFileText(
+    'git',
+    ['status', '--porcelain=v1', '--untracked-files=all'],
+    { cwd: repoPath, timeoutMs: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER },
+  );
+  const changedPaths = new Set<string>();
+  for (const { paths } of parseDirtyOverlayStatus(statusOutput)) {
+    for (const filePath of paths) {
+      if (
+        filePath &&
+        (filePath === '.gitignore' ||
+          (!shouldIgnorePath(filePath) && !ignoreRules?.ignores(filePath)))
+      ) {
+        changedPaths.add(filePath);
+      }
+    }
+  }
+  for (const filePath of await hiddenIndexPaths(repoPath)) {
+    if (
+      filePath === '.gitignore' ||
+      (!shouldIgnorePath(filePath) && !ignoreRules?.ignores(filePath))
+    ) {
+      changedPaths.add(filePath);
+    }
+  }
+  return {
+    clean: changedPaths.size === 0,
+    changedPathCount: changedPaths.size,
+    changedPaths: [...changedPaths].sort(),
+  };
+}
+
 export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPlan> {
   const includePaths = new Set<string>();
+  const sizeExcludedPaths = new Set<string>();
   const tombstones = new Set<string>();
   const skipped = new Set<string>();
   const ignoreRules = await loadIgnoreRules(repoPath);
@@ -427,6 +485,10 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
     }
   }
 
+  for (const filePath of await hiddenIndexPaths(repoPath)) {
+    if (isSourceFilePath(filePath) && !isIgnored(filePath)) includePaths.add(filePath);
+  }
+
   const maxFileSizeBytes = getScanMaxFileSizeBytes();
   if (maxFileSizeBytes !== null) {
     const candidates = [...includePaths];
@@ -438,6 +500,7 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
             const stat = await fs.stat(path.join(repoPath, filePath));
             if (stat.size > maxFileSizeBytes) {
               includePaths.delete(filePath);
+              sizeExcludedPaths.add(filePath);
               skipped.add(filePath);
             }
           } catch {
@@ -448,10 +511,10 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
     }
   }
 
-  const allDirtyPaths = [...new Set([...includePaths, ...tombstones])].sort();
+  const allDirtyPaths = [...new Set([...includePaths, ...sizeExcludedPaths, ...tombstones])].sort();
   const tooMany = allDirtyPaths.length > MAX_CHANGED_FILES_FOR_BOUNDED_REFRESH;
   let plannedIncludePaths = [...includePaths].sort();
-  let uncoveredPaths: string[] = [];
+  let uncoveredPaths = [...sizeExcludedPaths].sort();
   if (tooMany) {
     const newestFirst = await Promise.all(
       [...includePaths].map(async (filePath) => {
@@ -474,7 +537,10 @@ export async function planDirtyOverlay(repoPath: string): Promise<DirtyOverlayPl
       .slice(0, MAX_CHANGED_FILES_FOR_BOUNDED_REFRESH)
       .map(({ filePath }) => filePath);
     const covered = new Set(plannedIncludePaths);
-    uncoveredPaths = [...includePaths].filter((filePath) => !covered.has(filePath)).sort();
+    uncoveredPaths = [
+      ...sizeExcludedPaths,
+      ...[...includePaths].filter((filePath) => !covered.has(filePath)),
+    ].sort();
   }
   const configPaths = [...skipped]
     .filter((filePath) => CAPTURE_CONFIGURATION.test(path.posix.basename(filePath)))

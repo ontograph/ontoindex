@@ -23,7 +23,6 @@ import { isProxy } from 'node:util/types';
 import type { SymbolTableReader } from './symbol-table.js';
 import type { MutableSemanticModel } from './semantic-model.js';
 import { createSemanticModel } from './semantic-model.js';
-import type { ScopeCallPublication } from '../scope-call-publication.js';
 
 // ---------------------------------------------------------------------------
 // Named-import types — describe how a file imports specific names from a
@@ -179,8 +178,6 @@ export interface ResolutionContext {
   readonly namedImportMap: NamedImportMap;
   /** Module-alias map for namespace imports: callerFile → (alias → sourceFile). */
   readonly moduleAliasMap: ModuleAliasMap;
-  /** Exact per-site authority prepared once before calls and retained through refinement. */
-  scopeCallPublication?: ScopeCallPublication;
 
   // --- Per-file cache lifecycle ---
   enableCache(filePath: string): void;
@@ -781,7 +778,6 @@ export const createResolutionContext = (options?: {
   });
 
   const clear = (): void => {
-    context.scopeCallPublication = undefined;
     model.clear();
     importMap.clear();
     packageMap.clear();

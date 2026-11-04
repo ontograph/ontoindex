@@ -16,6 +16,7 @@ import Ruby from 'tree-sitter-ruby';
 import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'ontoindex-shared';
 import { getProvider } from '../languages/index.js';
+import { isConstructorFieldDefinition } from '../field-extractors/configs/typescript-javascript.js';
 import { collectRustDeclaredModules } from '../import-resolvers/rust-module-evidence.js';
 import { extractTsLocalExportBindings } from '../named-bindings/typescript.js';
 import {
@@ -116,8 +117,6 @@ import {
   buildCollisionGroups,
 } from '../utils/method-props.js';
 import type { LanguageProvider } from '../language-provider.js';
-import { extractParsedFileOutcome } from '../scope-extractor-bridge.js';
-import { createDeclarationCorrespondence } from '../declaration-correspondence.js';
 import {
   extractLaravelRoutes,
   captureRouteOrDecorator,
@@ -867,8 +866,6 @@ const processBatch = async (
     ormQueries: [],
     constructorBindings: [],
     fileScopeBindings: [],
-    parsedFiles: [],
-    scopeExtractionOutcomes: [],
     processedPaths: [],
     fileTimings: [],
     parseErrorPaths: [],
@@ -1236,31 +1233,6 @@ const prepareFileContext = (
   };
 };
 
-const appendParsedFileArtifact = (
-  filePath: string,
-  provider: LanguageProvider,
-  parseContent: string,
-  result: ParseWorkerResult,
-  rootNode: SyntaxNode,
-): void => {
-  // Skipped files and preparation failures never reach this attempt; inventory
-  // reconciliation must treat their absent records as unavailable evidence.
-  const outcome = extractParsedFileOutcome(
-    provider,
-    parseContent,
-    filePath,
-    emitWorkerWarning,
-    rootNode,
-  );
-  result.scopeExtractionOutcomes ??= [];
-  if (outcome.status === 'success') {
-    result.scopeExtractionOutcomes.push({ filePath, status: 'success' });
-    result.parsedFiles.push(outcome.parsedFile);
-  } else {
-    result.scopeExtractionOutcomes.push({ filePath, ...outcome });
-  }
-};
-
 const createFileProcessingState = (
   file: HydratedParseWorkerInput,
   language: SupportedLanguages,
@@ -1287,11 +1259,7 @@ const createFileProcessingState = (
   };
 };
 
-const processFileMatches = (
-  state: FileProcessingState,
-  result: ParseWorkerResult,
-  correspondence?: ReturnType<typeof createDeclarationCorrespondence>,
-): void => {
+const processFileMatches = (state: FileProcessingState, result: ParseWorkerResult): void => {
   const { file, language, lineOffset, isVueSetup, matches, provider, typeEnv, callRouter } = state;
   const extractShape =
     language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript
@@ -1534,7 +1502,6 @@ const processFileMatches = (
                   ? `${propEnclosingInfo.className}.${item.propName}`
                   : item.propName;
                 const nodeId = generateId('Property', `${file.path}:${propQualifiedName}`);
-                correspondence?.observe(nodeId, item.propName, 'Property', captureMap['call']);
                 result.nodes.push({
                   id: nodeId,
                   label: 'Property',
@@ -1856,7 +1823,6 @@ const processFileMatches = (
         ? qualifiedOwnerInfo.classFilePath
         : file.path;
     const nodeId = generateId(nodeLabel, `${nodeIdFilePath}:${qualifiedName}${arityTag}`);
-    correspondence?.observe(nodeId, nodeName, nodeLabel, definitionNode ?? nameNode);
     const isSplitCppDefinition = Boolean(
       qualifiedOwnerInfo?.classFilePath && qualifiedOwnerInfo.classFilePath !== file.path,
     );
@@ -1902,6 +1868,12 @@ const processFileMatches = (
 
     // Property metadata extraction (not needed before nodeId — Properties don't overload)
     if (nodeLabel === 'Property' && definitionNode) {
+      if (
+        language === SupportedLanguages.JavaScript &&
+        definitionNode.type === 'assignment_expression' &&
+        !isConstructorFieldDefinition(definitionNode)
+      )
+        continue;
       // FieldExtractor is the single source of truth when available
       if (provider.fieldExtractor && typeEnv) {
         const fieldContext: FieldExtractorContext = {
@@ -2103,7 +2075,6 @@ const processPreparedWorkerFile = (
       );
       const lightweightResult = extractImports(file.path, file.content, language);
       mergeParseWorkerResult(result, lightweightResult);
-      status = 'processed';
       return;
     }
 
@@ -2111,32 +2082,13 @@ const processPreparedWorkerFile = (
     result.processedPaths.push(file.path);
     onFileProcessed?.(file.path);
 
-    const parsedFileIndex = result.parsedFiles.length;
-    const correspondence = /\.[cm]?[jt]sx?$/i.test(file.path)
-      ? createDeclarationCorrespondence(file.path)
-      : undefined;
-    timeFamily('scope-artifact', () =>
-      appendParsedFileArtifact(
-        file.path,
-        fileContext.provider,
-        fileContext.parseContent,
-        result,
-        fileContext.tree.rootNode,
-      ),
-    );
     const fileState = timeFamily('type-env', () =>
       createFileProcessingState(file, language, fileContext),
     );
     timeFamily('type-env-artifacts', () =>
       appendTypeEnvArtifacts(file.path, fileState.typeEnv, result),
     );
-    timeFamily('query-match-extractors', () =>
-      processFileMatches(fileState, result, correspondence),
-    );
-    const parsedFile = result.parsedFiles[parsedFileIndex];
-    if (correspondence && parsedFile?.filePath === file.path) {
-      result.parsedFiles[parsedFileIndex] = correspondence.attach(parsedFile);
-    }
+    timeFamily('query-match-extractors', () => processFileMatches(fileState, result));
     timeFamily(
       'supplemental-extractors',
       () =>

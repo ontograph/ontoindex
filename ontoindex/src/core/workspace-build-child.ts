@@ -4,6 +4,10 @@
  */
 import { startParentWatchdog } from './parent-watchdog.js';
 import { workspaceBuildExitCode } from '../mcp/local/workspace-build-supervisor.js';
+import {
+  MAX_SCOPE_RETENTION_BYTES,
+  MAX_SCOPE_RETENTION_TIMEOUT_MS,
+} from './ingestion/pipeline-phases/parse-scope-codec.js';
 
 (async () => {
   const repoPath = process.argv[2];
@@ -41,11 +45,11 @@ import { workspaceBuildExitCode } from '../mcp/local/workspace-build-supervisor.
           typeof timeoutMs !== 'number' ||
           !Number.isSafeInteger(timeoutMs) ||
           timeoutMs < 1 ||
-          timeoutMs > 120_000 ||
+          timeoutMs > MAX_SCOPE_RETENTION_TIMEOUT_MS ||
           typeof maxBytes !== 'number' ||
           !Number.isSafeInteger(maxBytes) ||
           maxBytes < 1 ||
-          maxBytes > 64 * 1024 * 1024
+          maxBytes > 2 * MAX_SCOPE_RETENTION_BYTES
         ) {
           throw new Error('invalid bounded scope retention');
         }

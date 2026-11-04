@@ -190,12 +190,85 @@ function extractJsDocReturnType(node: SyntaxNode): string | undefined {
 }
 
 /**
- * Extract return type from return_type field, unwrapping type_annotation.
- * Falls back to JSDoc `@returns {Type}` when the AST has no return type annotation.
- *
- * tree-sitter-typescript uses `return_type` as the field name (not `type` like JVM).
- * The return_type field points to a type_annotation node that must be unwrapped.
+ * Infer a constructor name only from matching direct returns in this function's scope.
  */
+function inferConstructorReturnType(node: SyntaxNode): string | undefined {
+  const body = node.childForFieldName('body');
+  if (!body || node.type.startsWith('generator_function') || hasKeyword(node, '*'))
+    return undefined;
+
+  const bindings = new Set<string>();
+  const addBindings = (pattern: SyntaxNode | null) => {
+    const pending = pattern ? [pattern] : [];
+    while (pending.length) {
+      const current = pending.pop()!;
+      if (
+        current.type === 'identifier' ||
+        current.type === 'type_identifier' ||
+        current.type === 'shorthand_property_identifier_pattern'
+      ) {
+        bindings.add(current.text);
+      } else if (current.type === 'pair_pattern') {
+        const value = current.childForFieldName('value');
+        if (value) pending.push(value);
+      } else if (
+        current.type === 'assignment_pattern' ||
+        current.type === 'object_assignment_pattern'
+      ) {
+        const left = current.childForFieldName('left');
+        if (left) pending.push(left);
+      } else if (current.type === 'required_parameter' || current.type === 'optional_parameter') {
+        const name = current.childForFieldName('pattern');
+        if (name) pending.push(name);
+      } else if (
+        ['formal_parameters', 'rest_pattern', 'object_pattern', 'array_pattern'].includes(
+          current.type,
+        )
+      ) {
+        pending.push(...current.namedChildren);
+      }
+    }
+  };
+  addBindings(node.childForFieldName('parameters'));
+
+  let returnType: string | undefined;
+  const pending = [body];
+  while (pending.length) {
+    const current = pending.pop()!;
+    if (
+      current.type === 'variable_declarator' ||
+      current.type === 'class_declaration' ||
+      current.type === 'function_declaration' ||
+      current.type === 'generator_function_declaration'
+    ) {
+      addBindings(current.childForFieldName('name'));
+    }
+    if (
+      [
+        'function_declaration',
+        'function_expression',
+        'generator_function_declaration',
+        'generator_function',
+        'arrow_function',
+        'method_definition',
+        'class_body',
+      ].includes(current.type)
+    )
+      continue;
+    if (current.type === 'return_statement') {
+      const expression = current.namedChildren.find((child) => child.type !== 'comment');
+      const constructor =
+        expression?.type === 'new_expression' ? expression.childForFieldName('constructor') : null;
+      if (constructor?.type !== 'identifier') return undefined;
+      if (returnType !== undefined && returnType !== constructor.text) return undefined;
+      returnType = constructor.text;
+    }
+    pending.push(...current.namedChildren);
+  }
+  return returnType && !bindings.has(returnType) ? returnType : undefined;
+}
+
+/** Extract the TS return annotation, JSDoc type, or a conservative constructor return. */
 function extractTsJsReturnType(node: SyntaxNode): string | undefined {
   const returnType = node.childForFieldName('return_type');
   if (returnType) {
@@ -205,8 +278,8 @@ function extractTsJsReturnType(node: SyntaxNode): string | undefined {
     }
     return returnType.text?.trim();
   }
-  // AST has no return type annotation — try JSDoc fallback
-  return extractJsDocReturnType(node);
+  // Explicit types take precedence over conservative constructor-return inference.
+  return extractJsDocReturnType(node) ?? inferConstructorReturnType(node);
 }
 
 /**

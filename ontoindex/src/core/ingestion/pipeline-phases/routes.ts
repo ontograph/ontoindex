@@ -29,6 +29,7 @@ import { generateId } from '../../../lib/utils.js';
 import { readFileContents } from '../filesystem-walker.js';
 import { isDev } from '../utils/env.js';
 import { getActiveModelPacks } from '../../../analysis-packs/execution.js';
+import type { ExtractedRoute, ExtractedDecoratorRoute } from '../workers/parse-types.js';
 
 const EXPO_NAV_PATTERNS = [
   /router\.(push|replace|navigate)\(\s*['"`]([^'"`]+)['"`]/g,
@@ -41,6 +42,16 @@ interface RouteEntry {
   responseKeys?: string[];
   errorKeys?: string[];
 }
+
+const compareStrings = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+const compareRoutes = (
+  a: ExtractedRoute | ExtractedDecoratorRoute,
+  b: ExtractedRoute | ExtractedDecoratorRoute,
+) =>
+  compareStrings(a.filePath, b.filePath) ||
+  a.lineNumber - b.lineNumber ||
+  compareStrings(a.routePath ?? '', b.routePath ?? '') ||
+  compareStrings(a.httpMethod, b.httpMethod);
 
 export interface RoutesOutput {
   routeRegistry: Map<string, RouteEntry>;
@@ -133,7 +144,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         ...(entry.errorKeys ? { errorKeys: [...entry.errorKeys] } : {}),
       });
     };
-    for (const route of allExtractedRoutes) {
+    for (const route of [...allExtractedRoutes].sort(compareRoutes)) {
       if (!route.routePath) continue;
       addRoute(ensureSlash(route.routePath), {
         filePath: route.filePath,
@@ -142,7 +153,9 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         errorKeys: route.errorKeys,
       });
     }
-    for (const dr of allDecoratorRoutes) {
+    for (const dr of [...allDecoratorRoutes].sort(
+      (a, b) => compareRoutes(a, b) || compareStrings(a.decoratorName, b.decoratorName),
+    )) {
       if (!dr.routePath) continue;
       addRoute(ensureSlash(dr.routePath), {
         filePath: dr.filePath,

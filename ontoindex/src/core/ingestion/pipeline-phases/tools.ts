@@ -40,7 +40,15 @@ export const toolsPhase: PipelinePhase<ToolsOutput> = {
     const toolDefs: ToolDef[] = [];
     const seenToolNames = new Set<string>();
 
-    for (const td of allToolDefs) {
+    const compareStrings = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+    const sortedToolDefs = [...allToolDefs].sort(
+      (a, b) =>
+        compareStrings(a.filePath, b.filePath) ||
+        a.lineNumber - b.lineNumber ||
+        compareStrings(a.toolName, b.toolName) ||
+        compareStrings(a.description, b.description),
+    );
+    for (const td of sortedToolDefs) {
       if (seenToolNames.has(td.toolName)) continue;
       seenToolNames.add(td.toolName);
       toolDefs.push({ name: td.toolName, filePath: td.filePath, description: td.description });

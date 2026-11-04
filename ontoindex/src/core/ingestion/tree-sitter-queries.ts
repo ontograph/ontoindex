@@ -281,6 +281,20 @@ export const JAVASCRIPT_QUERIES = `
 (field_definition
   property: (property_identifier) @name) @definition.property
 
+; Direct constructor assignments are instance field declarations. The field
+; extractor validates modifiers and selects one canonical declaration per name.
+(class_body
+  (method_definition
+    name: (property_identifier) @_constructor
+    body: (statement_block
+      (expression_statement
+        (assignment_expression
+          left: (member_expression
+            object: (this)
+            property: (property_identifier) @name)
+          right: (_)) @definition.property)))
+  (#eq? @_constructor "constructor"))
+
 ; Heritage queries - class extends (JavaScript uses different AST than TypeScript)
 ; In tree-sitter-javascript, class_heritage directly contains the parent identifier
 (class_declaration

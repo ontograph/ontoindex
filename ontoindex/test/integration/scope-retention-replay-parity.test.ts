@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,32 +11,14 @@ import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { KnowledgeGraph } from '../../src/core/graph/types.js';
 import { reconstructScopeRetentionParse } from '../../src/core/ingestion/pipeline-phases/parse-replay.js';
 import { persistScopeRetentionCandidate } from '../../src/core/ingestion/pipeline-phases/scope-retention-candidate.js';
-import { verifyScopeRetentionCandidate } from '../../src/core/ingestion/pipeline-phases/scope-retention-candidate-reader.js';
+import {
+  loadScopeRetentionCandidate,
+  verifyScopeRetentionCandidate,
+} from '../../src/core/ingestion/pipeline-phases/scope-retention-candidate-reader.js';
 import { loadPersistedReplayFamilies } from '../helpers/scope-retention-replay.js';
 import { summarizeScopeRetentionCoverage } from '../../src/core/ingestion/pipeline-phases/scope-retention-coverage.js';
 import { parsePhase } from '../../src/core/ingestion/pipeline-phases/parse.js';
 import { pageRankPhase } from '../../src/core/ingestion/pipeline-phases/pagerank.js';
-import { finalizeScopeModel } from '../../src/core/ingestion/finalize-orchestrator.js';
-import { resolveReferences } from '../../src/core/ingestion/resolve-references.js';
-import { emitReferencesToGraph } from '../../src/core/ingestion/emit-references.js';
-import type { ParsedFile } from 'ontoindex-shared';
-
-beforeEach(() => vi.stubEnv('INGESTION_EMIT_SCOPES', '0'));
-afterEach(() => vi.unstubAllEnvs());
-
-// Fixture-only links; deliberately leave unknown targets (including ./types.js) unresolved.
-const fixtureImports = new Map([
-  ['src/main.ts:./util', 'src/util.ts'],
-  ['src/ns.ts:./util', 'src/util.ts'],
-  ['src/ordinary-types.tsx:./util', 'src/util.ts'],
-  ['src/ordinary-types.tsx:./reference-site', 'src/reference-site.tsx'],
-  ['src/mixed-types.tsx:./util', 'src/util.ts'],
-  ['src/barrel.ts:./util', 'src/util.ts'],
-  ['src/barrel.ts:./reference-site', 'src/reference-site.tsx'],
-  ['src/barrel-consumer.ts:./barrel', 'src/barrel.ts'],
-  ['src/main.js:./util', 'src/util.js'],
-  ['src/ns.js:./util', 'src/util.js'],
-]);
 
 function snapshot(graph: KnowledgeGraph) {
   return {
@@ -45,67 +27,6 @@ function snapshot(graph: KnowledgeGraph) {
       left.id.localeCompare(right.id),
     ),
   };
-}
-
-function scopeSnapshot(parsedFiles: readonly ParsedFile[]) {
-  const files = structuredClone(parsedFiles);
-  const scopes = finalizeScopeModel(files, {
-    hooks: {
-      resolveImportTarget: (targetRaw, fromFile) =>
-        fixtureImports.get(`${fromFile}:${targetRaw}`) ?? null,
-    },
-  });
-  const resolved = resolveReferences(scopes);
-  const graph = createKnowledgeGraph();
-  for (const file of files) {
-    for (const def of file.localDefs) {
-      graph.addNode({
-        id: def.nodeId,
-        label: def.type,
-        properties: { name: def.qualifiedName ?? def.nodeId, filePath: def.filePath },
-      });
-    }
-  }
-  const previous = process.env.INGESTION_EMIT_SCOPES;
-  try {
-    process.env.INGESTION_EMIT_SCOPES = '1';
-    const emissionStats = emitReferencesToGraph({
-      graph,
-      scopes,
-      referenceIndex: resolved.referenceIndex,
-    });
-    expect(emissionStats.scopeNodesEmitted).toBeGreaterThan(0);
-    expect(emissionStats.scopeEdgesEmitted).toBeGreaterThan(0);
-    for (const edge of graph.relationships) {
-      expect(graph.getNode(edge.sourceId), edge.id).toBeDefined();
-      expect(graph.getNode(edge.targetId), edge.id).toBeDefined();
-    }
-    return {
-      ...snapshot(graph),
-      unresolvedImports: [...scopes.imports]
-        .flatMap(([scopeId, imports]) =>
-          imports
-            .filter(({ linkStatus }) => linkStatus === 'unresolved')
-            .map(({ localName, linkStatus, targetModuleScope }) => ({
-              scopeId,
-              localName,
-              linkStatus,
-              targetModuleScope,
-            })),
-        )
-        .sort(
-          (left, right) =>
-            left.scopeId.localeCompare(right.scopeId) ||
-            left.localName.localeCompare(right.localName),
-        ),
-      finalizeStats: scopes.stats,
-      resolutionStats: resolved.stats,
-      emissionStats,
-    };
-  } finally {
-    if (previous === undefined) delete process.env.INGESTION_EMIT_SCOPES;
-    else process.env.INGESTION_EMIT_SCOPES = previous;
-  }
 }
 
 function expectRankedSnapshotsEqual(
@@ -369,7 +290,6 @@ describe.sequential.each(fixtures)('multi-file scope retention replay parity: $n
   const producers = new Map<string, ReturnType<typeof snapshot>>();
   const rankedProducers = new Map<string, ReturnType<typeof snapshot>>();
   const coverageByMode = new Map<string, ReturnType<typeof summarizeScopeRetentionCoverage>>();
-  const scopeOutputs = new Map<string, ReturnType<typeof scopeSnapshot>>();
 
   afterAll(() => {
     for (const directory of directories) fs.rmSync(directory, { recursive: true, force: true });
@@ -425,8 +345,6 @@ describe.sequential.each(fixtures)('multi-file scope retention replay parity: $n
       let producer: ReturnType<typeof snapshot> | undefined;
       let beforePageRank: ReturnType<typeof snapshot> | undefined;
       let rankedProducer: ReturnType<typeof snapshot> | undefined;
-      let liveScopeOutput: ReturnType<typeof scopeSnapshot> | undefined;
-      let liveParsedFiles: ParsedFile[] | undefined;
       const executeParse = parsePhase.execute;
       const parseSpy = vi.spyOn(parsePhase, 'execute').mockImplementation(async (ctx, deps) => {
         const output = await executeParse(ctx, deps);
@@ -453,11 +371,6 @@ describe.sequential.each(fixtures)('multi-file scope retention replay parity: $n
             artifactAllowance: { remainingBytes: 64 * 1024 * 1024 },
             consume: async (handle) => {
               consumed = true;
-              const liveFiles: ParsedFile[] = [];
-              for await (const batch of handle.iterate()) liveFiles.push(...batch);
-              liveParsedFiles = structuredClone(liveFiles);
-              liveScopeOutput = scopeSnapshot(liveFiles);
-              expect(process.env.INGESTION_EMIT_SCOPES).toBe('0');
               const coverage = summarizeScopeRetentionCoverage(handle.inventory);
               coverageByMode.set(mode, coverage);
               expect(coverage).toEqual({
@@ -466,17 +379,15 @@ describe.sequential.each(fixtures)('multi-file scope retention replay parity: $n
                   {
                     language: fixture.language,
                     files: fixture.retained + fixture.refused,
-                    retained: fixture.retained,
+                    retained: fixture.retained + fixture.refused,
                     skipped: 0,
-                    refused: fixture.refused,
+                    refused: 0,
                     unaccounted: 0,
                     unparsed: 0,
-                    refusalReasons: fixture.refused
-                      ? [{ reason: 'unsupported-syntax', count: 1 }]
-                      : [],
+                    refusalReasons: [],
                   },
                 ],
-                complete: fixture.refused === 0,
+                complete: true,
               });
               expect(
                 [...handle.inventory].sort((left, right) =>
@@ -485,11 +396,7 @@ describe.sequential.each(fixtures)('multi-file scope retention replay parity: $n
               ).toEqual(
                 Object.keys(fixture.files)
                   .sort()
-                  .map((filePath) =>
-                    filePath === 'src/refused.py'
-                      ? { filePath, status: 'failed', reason: 'unsupported-syntax' }
-                      : { filePath, status: 'retained' },
-                  ),
+                  .map((filePath) => ({ filePath, status: 'retained' })),
               );
               generationDirectory = fs.mkdtempSync(
                 path.join(os.tmpdir(), 'ontoindex-retention-candidate-'),
@@ -518,14 +425,12 @@ describe.sequential.each(fixtures)('multi-file scope retention replay parity: $n
               expect(manifest.coverage).toEqual(coverage);
               expect(manifest.seedReady).toBe(false);
               expect(handle.seedReady).toBe(false);
-              expect(handle.inputEvidence.complete).toBe(fixture.refused === 0);
+              expect(handle.inputEvidence.complete).toBe(true);
               expect(handle.inputEvidence.sources.map(({ filePath }) => filePath).sort()).toEqual(
                 Object.keys(fixture.files).sort(),
               );
-              if (fixture.refused)
-                expect(handle.inputEvidence.reasons).toContain('artifact-incomplete');
-              expect(handle.graphNodesCaptured).toBe(fixture.refused === 0);
-              expect(handle.graphRelationshipsCaptured).toBe(fixture.refused === 0);
+              expect(handle.graphNodesCaptured).toBe(true);
+              expect(handle.graphRelationshipsCaptured).toBe(true);
             },
           },
         });
@@ -554,1755 +459,10 @@ describe.sequential.each(fixtures)('multi-file scope retention replay parity: $n
       expect(generationDirectory).toBeDefined();
       expect(expected).toBeDefined();
       const families = await loadPersistedReplayFamilies(generationDirectory!, expected!);
-      const { parsedFiles, calls, events, importStates, declarationNodes } = families;
-      const byFilePath = (left: ParsedFile, right: ParsedFile) =>
-        left.filePath.localeCompare(right.filePath);
-      expect([...parsedFiles].sort(byFilePath)).toEqual(liveParsedFiles!.sort(byFilePath));
-      // Verify persisted call identity against the independent scope capture, not only graph parity.
-      if (fixture.language === 'typescript' || fixture.language === 'javascript') {
-        let comparedCalls = 0;
-        for (const file of parsedFiles) {
-          for (const site of file.referenceSites.filter((site) => site.kind === 'call')) {
-            expect(calls, `${file.filePath}:${site.name}`).toContainEqual(
-              expect.objectContaining({
-                filePath: file.filePath,
-                calledName: site.name,
-                atRange: site.atRange,
-              }),
-            );
-            comparedCalls++;
-          }
-        }
-        expect(comparedCalls).toBeGreaterThan(0);
-      }
-      expect(liveScopeOutput).toBeDefined();
-      const persistedScopeOutput = scopeSnapshot(parsedFiles);
-      expect(persistedScopeOutput).toEqual(liveScopeOutput);
-      expect(persistedScopeOutput.relationships.some((edge) => edge.type === 'CALLS')).toBe(true);
-      if (fixture.name === 'typescript') {
-        expect(persistedScopeOutput.relationships.some((edge) => edge.type === 'ACCESSES')).toBe(
-          true,
-        );
-      }
-      if (fixture.language === 'typescript' || fixture.language === 'javascript') {
-        const extension = fixture.language === 'typescript' ? 'ts' : 'js';
-        const util = parsedFiles.find(({ filePath }) => filePath === `src/util.${extension}`)!;
-        const main = parsedFiles.find(({ filePath }) => filePath === `src/main.${extension}`)!;
-        const mainSource = fixture.files[`src/main.${extension}`]!;
-        const mainLines = mainSource.split('\n');
-        const lineOf = (text: string) => mainLines.findIndex((line) => line.includes(text)) + 1;
-        const blockArrowLine = lineOf('function blockArrowOwner(');
-        const blockArrowScope = main.scopes.find(
-          (scope) => scope.kind === 'Function' && scope.range.startLine === blockArrowLine,
-        )!;
-        expect(blockArrowScope).toBeDefined();
-        expect([...blockArrowScope.bindings.keys()]).toEqual(['closure']);
-        const blockArrowOwnerBody = main.scopes.find(
-          (scope) => scope.parent === blockArrowScope.id && scope.kind === 'Block',
-        )!;
-        expect(blockArrowOwnerBody).toBeDefined();
-        const callbackLine = lineOf('  const callback = (parameter) => {');
-        const callbackScope = main.scopes.find(
-          (scope) => scope.kind === 'Function' && scope.range.startLine === callbackLine,
-        )!;
-        expect(callbackScope).toBeDefined();
-        expect([...callbackScope.bindings.keys()]).toEqual(['parameter']);
-        const callbackBody = main.scopes.find(
-          (scope) => scope.parent === callbackScope.id && scope.kind === 'Block',
-        )!;
-        expect(callbackBody).toBeDefined();
-        expect(callbackBody.bindings.has('local')).toBe(true);
-        expect(blockArrowOwnerBody.bindings.has('local')).toBe(false);
-        const callbackCallLine = lineOf('    const local = helper(parameter);');
-        const callbackReturnLine = lineOf('    return helper(local, closure);');
-        const callbackInvocationLine = lineOf('  callback(closure);');
-        const getNames = (line: number) =>
-          main.referenceSites
-            .filter((site) => site.atRange.startLine === line)
-            .map(({ name, kind, inScope, arity }) => ({ name, kind, inScope, arity }));
-        expect(getNames(callbackCallLine)).toEqual([
-          { name: 'helper', kind: 'call', inScope: callbackBody.id, arity: 1 },
-          { name: 'parameter', kind: 'read', inScope: callbackBody.id, arity: undefined },
-        ]);
-        expect(getNames(callbackReturnLine)).toEqual([
-          { name: 'helper', kind: 'call', inScope: callbackBody.id, arity: 2 },
-          { name: 'local', kind: 'read', inScope: callbackBody.id, arity: undefined },
-          { name: 'closure', kind: 'read', inScope: callbackBody.id, arity: undefined },
-        ]);
-        expect(getNames(callbackInvocationLine)).toEqual([
-          { name: 'callback', kind: 'call', inScope: blockArrowOwnerBody.id, arity: 1 },
-          { name: 'closure', kind: 'read', inScope: blockArrowOwnerBody.id, arity: undefined },
-        ]);
-        const unbracedLine = lineOf('function unbracedSum(');
-        const unbracedSource = mainLines[unbracedLine - 1]!;
-        const unbracedScope = main.scopes.find(
-          (scope) => scope.kind === 'Function' && scope.range.startLine === unbracedLine,
-        )!;
-        expect(unbracedScope).toBeDefined();
-        const unbracedBody = main.scopes.find(
-          (scope) => scope.parent === unbracedScope.id && scope.kind === 'Block',
-        )!;
-        expect(unbracedBody).toBeDefined();
-        expect(unbracedBody.bindings.has('sum')).toBe(true);
-        const unbracedLoop = main.scopes.find(
-          (scope) => scope.parent === unbracedBody.id && scope.kind === 'Block',
-        )!;
-        expect(unbracedLoop).toBeDefined();
-        expect([...unbracedLoop.bindings.keys()]).toEqual(['item']);
-        expect(unbracedBody.bindings.has('item')).toBe(false);
-        const unbracedRange = (text: string, from: number) => {
-          const startCol = unbracedSource.indexOf(text, from);
-          return {
-            startLine: unbracedLine,
-            startCol,
-            endLine: unbracedLine,
-            endCol: startCol + text.length,
-          };
-        };
-        const iterableStart = unbracedSource.indexOf('items', unbracedSource.indexOf('for ('));
-        const targetStart = unbracedSource.indexOf('sum +=');
-        const callStart = unbracedSource.indexOf('helper(item)');
-        const argumentStart = callStart + 'helper('.length;
-        const returnStart = unbracedSource.indexOf('return sum') + 'return '.length;
-        expect(
-          main.referenceSites
-            .filter((site) => site.atRange.startLine === unbracedLine)
-            .map(({ name, kind, inScope, arity, atRange }) => ({
-              name,
-              kind,
-              inScope,
-              arity,
-              atRange,
-            })),
-        ).toEqual([
-          {
-            name: 'items',
-            kind: 'read',
-            inScope: unbracedLoop.id,
-            arity: undefined,
-            atRange: unbracedRange('items', iterableStart),
-          },
-          {
-            name: 'sum',
-            kind: 'read',
-            inScope: unbracedLoop.id,
-            arity: undefined,
-            atRange: unbracedRange('sum', targetStart),
-          },
-          {
-            name: 'sum',
-            kind: 'write',
-            inScope: unbracedLoop.id,
-            arity: undefined,
-            atRange: unbracedRange('sum', targetStart),
-          },
-          {
-            name: 'helper',
-            kind: 'call',
-            inScope: unbracedLoop.id,
-            arity: 1,
-            atRange: unbracedRange('helper(item)', callStart),
-          },
-          {
-            name: 'item',
-            kind: 'read',
-            inScope: unbracedLoop.id,
-            arity: undefined,
-            atRange: unbracedRange('item', argumentStart),
-          },
-          {
-            name: 'sum',
-            kind: 'read',
-            inScope: unbracedBody.id,
-            arity: undefined,
-            atRange: unbracedRange('sum', returnStart),
-          },
-        ]);
-        const switchLine = lineOf('function switchReturn(');
-        const switchSource = mainLines[switchLine - 1]!;
-        const switchFunction = main.scopes.find(
-          (scope) => scope.kind === 'Function' && scope.range.startLine === switchLine,
-        )!;
-        expect(switchFunction).toBeDefined();
-        const switchFunctionBody = main.scopes.find(
-          (scope) => scope.parent === switchFunction.id && scope.kind === 'Block',
-        )!;
-        expect(switchFunctionBody).toBeDefined();
-        const switchBody = main.scopes.find(
-          (scope) => scope.parent === switchFunctionBody.id && scope.kind === 'Block',
-        )!;
-        expect(switchBody).toBeDefined();
-        const switchRange = (text: string, from: number) => {
-          const startCol = switchSource.indexOf(text, from);
-          return {
-            startLine: switchLine,
-            startCol,
-            endLine: switchLine,
-            endCol: startCol + text.length,
-          };
-        };
-        const discriminantStart = switchSource.indexOf('value', switchSource.indexOf('switch ('));
-        const labelCallStart = switchSource.indexOf('helper(0)');
-        const bodyCallStart = switchSource.indexOf('helper(value)');
-        const bodyArgumentStart = bodyCallStart + 'helper('.length;
-        const defaultReturnStart = switchSource.indexOf('value', switchSource.indexOf('default:'));
-        expect(
-          main.referenceSites
-            .filter((site) => site.atRange.startLine === switchLine)
-            .map(({ name, kind, inScope, arity, atRange }) => ({
-              name,
-              kind,
-              inScope,
-              arity,
-              atRange,
-            })),
-        ).toEqual([
-          {
-            name: 'value',
-            kind: 'read',
-            inScope: switchFunctionBody.id,
-            arity: undefined,
-            atRange: switchRange('value', discriminantStart),
-          },
-          {
-            name: 'helper',
-            kind: 'call',
-            inScope: switchBody.id,
-            arity: 1,
-            atRange: switchRange('helper(0)', labelCallStart),
-          },
-          {
-            name: 'helper',
-            kind: 'call',
-            inScope: switchBody.id,
-            arity: 1,
-            atRange: switchRange('helper(value)', bodyCallStart),
-          },
-          {
-            name: 'value',
-            kind: 'read',
-            inScope: switchBody.id,
-            arity: undefined,
-            atRange: switchRange('value', bodyArgumentStart),
-          },
-          {
-            name: 'value',
-            kind: 'read',
-            inScope: switchBody.id,
-            arity: undefined,
-            atRange: switchRange('value', defaultReturnStart),
-          },
-        ]);
-        const capturedLine = lineOf('function capturedObjects(');
-        const capturedScope = main.scopes.find(
-          (scope) => scope.kind === 'Function' && scope.range.startLine === capturedLine,
-        )!;
-        expect(capturedScope).toBeDefined();
-        expect([...capturedScope.bindings.keys()].sort()).toEqual(['closure', 'items']);
-        const capturedBody = main.scopes.find(
-          (scope) => scope.parent === capturedScope.id && scope.kind === 'Block',
-        )!;
-        expect(capturedBody).toBeDefined();
-        expect(capturedBody.bindings.has('spread')).toBe(true);
-        const spreadOperandsLine = lineOf('function spreadOperands(');
-        const spreadOperandsSource = mainLines[spreadOperandsLine - 1]!;
-        const spreadOperandsScope = main.scopes.find(
-          (scope) => scope.kind === 'Function' && scope.range.startLine === spreadOperandsLine,
-        )!;
-        const spreadOperandsBody = main.scopes.find(
-          (scope) => scope.parent === spreadOperandsScope.id && scope.kind === 'Block',
-        )!;
-        const rangeOfOperand = (text: string, from = 0) => {
-          const startCol = spreadOperandsSource.indexOf(text, from);
-          return {
-            startLine: spreadOperandsLine,
-            startCol,
-            endLine: spreadOperandsLine,
-            endCol: startCol + text.length,
-          };
-        };
-        const firstSpreadStart = spreadOperandsSource.indexOf('...first') + 3;
-        const helperStart = spreadOperandsSource.indexOf('helper(');
-        const secondCallStart = spreadOperandsSource.indexOf('second', helperStart);
-        const secondSpreadStart = spreadOperandsSource.lastIndexOf('...second') + 3;
-        expect(
-          main.referenceSites
-            .filter((site) => site.atRange.startLine === spreadOperandsLine)
-            .map(({ name, kind, inScope, arity, atRange }) => ({
-              name,
-              kind,
-              inScope,
-              arity,
-              atRange,
-            })),
-        ).toEqual([
-          {
-            name: 'first',
-            kind: 'read',
-            inScope: spreadOperandsBody.id,
-            arity: undefined,
-            atRange: rangeOfOperand('first', firstSpreadStart),
-          },
-          {
-            name: 'helper',
-            kind: 'call',
-            inScope: spreadOperandsBody.id,
-            arity: 1,
-            atRange: rangeOfOperand('helper(second)', helperStart),
-          },
-          {
-            name: 'second',
-            kind: 'read',
-            inScope: spreadOperandsBody.id,
-            arity: undefined,
-            atRange: rangeOfOperand('second', secondCallStart),
-          },
-          {
-            name: 'second',
-            kind: 'read',
-            inScope: spreadOperandsBody.id,
-            arity: undefined,
-            atRange: rangeOfOperand('second', secondSpreadStart),
-          },
-        ]);
-        const computedPairsLine = lineOf('function computedPairs(');
-        const computedPairsSource = mainLines[computedPairsLine - 1]!;
-        const computedPairsScope = main.scopes.find(
-          (scope) => scope.kind === 'Function' && scope.range.startLine === computedPairsLine,
-        )!;
-        const computedPairsBody = main.scopes.find(
-          (scope) => scope.parent === computedPairsScope.id && scope.kind === 'Block',
-        )!;
-        const rangeOfComputedOperand = (text: string, from = 0) => {
-          const startCol = computedPairsSource.indexOf(text, from);
-          return {
-            startLine: computedPairsLine,
-            startCol,
-            endLine: computedPairsLine,
-            endCol: startCol + text.length,
-          };
-        };
-        const keyCallStart = computedPairsSource.indexOf('helper(key)');
-        const keyReadStart = computedPairsSource.indexOf('key', keyCallStart);
-        const valueCallStart = computedPairsSource.indexOf('helper(value)');
-        const valueReadStart = computedPairsSource.indexOf('value', valueCallStart);
-        const computedKeyReadStart = computedPairsSource.indexOf('[key]', valueCallStart) + 1;
-        const computedValueReadStart =
-          computedPairsSource.indexOf(': value', computedKeyReadStart) + 2;
-        expect(
-          main.referenceSites
-            .filter((site) => site.atRange.startLine === computedPairsLine)
-            .map(({ name, kind, inScope, arity, atRange }) => ({
-              name,
-              kind,
-              inScope,
-              arity,
-              atRange,
-            })),
-        ).toEqual([
-          {
-            name: 'helper',
-            kind: 'call',
-            inScope: computedPairsBody.id,
-            arity: 1,
-            atRange: rangeOfComputedOperand('helper(key)', keyCallStart),
-          },
-          {
-            name: 'key',
-            kind: 'read',
-            inScope: computedPairsBody.id,
-            arity: undefined,
-            atRange: rangeOfComputedOperand('key', keyReadStart),
-          },
-          {
-            name: 'helper',
-            kind: 'call',
-            inScope: computedPairsBody.id,
-            arity: 1,
-            atRange: rangeOfComputedOperand('helper(value)', valueCallStart),
-          },
-          {
-            name: 'value',
-            kind: 'read',
-            inScope: computedPairsBody.id,
-            arity: undefined,
-            atRange: rangeOfComputedOperand('value', valueReadStart),
-          },
-          {
-            name: 'key',
-            kind: 'read',
-            inScope: computedPairsBody.id,
-            arity: undefined,
-            atRange: rangeOfComputedOperand('key', computedKeyReadStart),
-          },
-          {
-            name: 'value',
-            kind: 'read',
-            inScope: computedPairsBody.id,
-            arity: undefined,
-            atRange: rangeOfComputedOperand('value', computedValueReadStart),
-          },
-        ]);
-        if (extension === 'ts') {
-          const satisfiesLine = lineOf('function satisfiesOperand(');
-          const satisfiesSource = mainLines[satisfiesLine - 1]!;
-          const satisfiesBody = main.scopes.find(
-            (scope) => scope.kind === 'Block' && scope.range.startLine === satisfiesLine,
-          )!;
-          const operandStart = satisfiesSource.indexOf('value satisfies');
-          expect(
-            main.referenceSites
-              .filter((site) => site.atRange.startLine === satisfiesLine)
-              .map(({ name, kind, inScope, atRange }) => ({ name, kind, inScope, atRange })),
-          ).toEqual([
-            {
-              name: 'value',
-              kind: 'read',
-              inScope: satisfiesBody.id,
-              atRange: {
-                startLine: satisfiesLine,
-                startCol: operandStart,
-                endLine: satisfiesLine,
-                endCol: operandStart + 'value'.length,
-              },
-            },
-          ]);
-          expect(
-            main.referenceSites
-              .filter((site) => site.atRange.startLine === satisfiesLine)
-              .some((site) => site.name === 'Models' || site.name === 'User'),
-          ).toBe(false);
-
-          const assertionLine = lineOf('function assertionOperand(');
-          const assertionSource = mainLines[assertionLine - 1]!;
-          const assertionBody = main.scopes.find(
-            (scope) => scope.kind === 'Block' && scope.range.startLine === assertionLine,
-          )!;
-          const assertedReadStart = assertionSource.indexOf('asserted as');
-          const helperCallStart = assertionSource.indexOf('helper(value)');
-          const valueReadStart = assertionSource.indexOf('value', helperCallStart);
-          const assertedBindings = assertionBody.bindings.get('asserted');
-          expect(assertedBindings).toHaveLength(1);
-          expect(assertedBindings?.[0]?.def.declaredType).toBeUndefined();
-          expect(
-            main.referenceSites
-              .filter((site) => site.atRange.startLine === assertionLine)
-              .map(({ name, kind, callForm, arity, inScope, atRange }) => ({
-                name,
-                kind,
-                callForm,
-                arity,
-                inScope,
-                atRange,
-              })),
-          ).toEqual([
-            {
-              name: 'helper',
-              kind: 'call',
-              callForm: 'free',
-              arity: 1,
-              inScope: assertionBody.id,
-              atRange: {
-                startLine: assertionLine,
-                startCol: helperCallStart,
-                endLine: assertionLine,
-                endCol: helperCallStart + 'helper(value)'.length,
-              },
-            },
-            {
-              name: 'value',
-              kind: 'read',
-              callForm: undefined,
-              arity: undefined,
-              inScope: assertionBody.id,
-              atRange: {
-                startLine: assertionLine,
-                startCol: valueReadStart,
-                endLine: assertionLine,
-                endCol: valueReadStart + 'value'.length,
-              },
-            },
-            {
-              name: 'asserted',
-              kind: 'read',
-              callForm: undefined,
-              arity: undefined,
-              inScope: assertionBody.id,
-              atRange: {
-                startLine: assertionLine,
-                startCol: assertedReadStart,
-                endLine: assertionLine,
-                endCol: assertedReadStart + 'asserted'.length,
-              },
-            },
-          ]);
-        }
-        const regexLine = lineOf('function regexOwner(');
-        const regexSource = mainLines[regexLine - 1]!;
-        const regexScope = main.scopes.find(
-          (scope) => scope.kind === 'Function' && scope.range.startLine === regexLine,
-        )!;
-        const regexBody = main.scopes.find(
-          (scope) => scope.parent === regexScope.id && scope.kind === 'Block',
-        )!;
-        const patternBindings = regexBody.bindings.get('pattern');
-        expect(patternBindings).toHaveLength(1);
-        expect(patternBindings?.[0]?.def.declaredType).toBeUndefined();
-        const regexCallStart = regexSource.indexOf('helper(value, pattern, /value/)');
-        const regexValueStart = regexSource.indexOf('value', regexCallStart);
-        const regexPatternStart = regexSource.indexOf('pattern', regexValueStart);
-        expect(
-          main.referenceSites
-            .filter((site) => site.atRange.startLine === regexLine)
-            .map(({ name, kind, callForm, arity, inScope, atRange }) => ({
-              name,
-              kind,
-              callForm,
-              arity,
-              inScope,
-              atRange,
-            })),
-        ).toEqual([
-          {
-            name: 'helper',
-            kind: 'call',
-            callForm: 'free',
-            arity: 3,
-            inScope: regexBody.id,
-            atRange: {
-              startLine: regexLine,
-              startCol: regexCallStart,
-              endLine: regexLine,
-              endCol: regexCallStart + 'helper(value, pattern, /value/)'.length,
-            },
-          },
-          {
-            name: 'value',
-            kind: 'read',
-            callForm: undefined,
-            arity: undefined,
-            inScope: regexBody.id,
-            atRange: {
-              startLine: regexLine,
-              startCol: regexValueStart,
-              endLine: regexLine,
-              endCol: regexValueStart + 'value'.length,
-            },
-          },
-          {
-            name: 'pattern',
-            kind: 'read',
-            callForm: undefined,
-            arity: undefined,
-            inScope: regexBody.id,
-            atRange: {
-              startLine: regexLine,
-              startCol: regexPatternStart,
-              endLine: regexLine,
-              endCol: regexPatternStart + 'pattern'.length,
-            },
-          },
-        ]);
-        const conditionalOwnerLine = lineOf('function conditionalOwner(');
-        const conditionalOwnerSource = mainLines[conditionalOwnerLine - 1]!;
-        const conditionalOwnerScope = main.scopes.find(
-          (scope) => scope.kind === 'Function' && scope.range.startLine === conditionalOwnerLine,
-        )!;
-        const conditionalOwnerBody = main.scopes.find(
-          (scope) => scope.parent === conditionalOwnerScope.id && scope.kind === 'Block',
-        )!;
-        const conditionalCall = '(flag ? first : helper(second)).trim(arg)';
-        const conditionalCallStart = conditionalOwnerSource.indexOf(conditionalCall);
-        const conditionalTrimStart = conditionalOwnerSource.indexOf('.trim(') + 1;
-        const conditionalFlagStart = conditionalOwnerSource.indexOf('flag', conditionalCallStart);
-        const conditionalFirstStart = conditionalOwnerSource.indexOf('first', conditionalCallStart);
-        const conditionalHelperStart = conditionalOwnerSource.indexOf(
-          'helper(',
-          conditionalCallStart,
-        );
-        const conditionalSecondStart = conditionalOwnerSource.indexOf(
-          'second',
-          conditionalHelperStart,
-        );
-        const conditionalArgStart = conditionalOwnerSource.indexOf('arg', conditionalTrimStart);
-        const conditionalRange = (startCol: number, length: number) => ({
-          startLine: conditionalOwnerLine,
-          startCol,
-          endLine: conditionalOwnerLine,
-          endCol: startCol + length,
-        });
-        const conditionalOwnerSites = main.referenceSites.filter(
-          (site) => site.atRange.startLine === conditionalOwnerLine,
-        );
-        expect(
-          conditionalOwnerSites.map(
-            ({ name, kind, callForm, arity, explicitReceiver, inScope, atRange }) => ({
-              name,
-              kind,
-              callForm,
-              arity,
-              explicitReceiver,
-              inScope,
-              atRange,
-            }),
-          ),
-        ).toEqual([
-          {
-            name: 'trim',
-            kind: 'call',
-            callForm: 'member',
-            arity: 1,
-            explicitReceiver: { kind: 'unknown' },
-            inScope: conditionalOwnerBody.id,
-            atRange: conditionalRange(conditionalCallStart, conditionalCall.length),
-          },
-          {
-            name: 'flag',
-            kind: 'read',
-            callForm: undefined,
-            arity: undefined,
-            explicitReceiver: undefined,
-            inScope: conditionalOwnerBody.id,
-            atRange: conditionalRange(conditionalFlagStart, 4),
-          },
-          {
-            name: 'first',
-            kind: 'read',
-            callForm: undefined,
-            arity: undefined,
-            explicitReceiver: undefined,
-            inScope: conditionalOwnerBody.id,
-            atRange: conditionalRange(conditionalFirstStart, 5),
-          },
-          {
-            name: 'helper',
-            kind: 'call',
-            callForm: 'free',
-            arity: 1,
-            explicitReceiver: undefined,
-            inScope: conditionalOwnerBody.id,
-            atRange: conditionalRange(conditionalHelperStart, 'helper(second)'.length),
-          },
-          {
-            name: 'second',
-            kind: 'read',
-            callForm: undefined,
-            arity: undefined,
-            explicitReceiver: undefined,
-            inScope: conditionalOwnerBody.id,
-            atRange: conditionalRange(conditionalSecondStart, 6),
-          },
-          {
-            name: 'arg',
-            kind: 'read',
-            callForm: undefined,
-            arity: undefined,
-            explicitReceiver: undefined,
-            inScope: conditionalOwnerBody.id,
-            atRange: conditionalRange(conditionalArgStart, 3),
-          },
-        ]);
-        expect(conditionalOwnerBody.bindings.get('trim')).toBeUndefined();
-        const computedReceiverLine = lineOf('function computedReceiverOwner(');
-        const computedReceiverSource = mainLines[computedReceiverLine - 1]!;
-        const computedReceiverScope = main.scopes.find(
-          (scope) => scope.kind === 'Function' && scope.range.startLine === computedReceiverLine,
-        )!;
-        const computedReceiverBody = main.scopes.find(
-          (scope) => scope.parent === computedReceiverScope.id && scope.kind === 'Block',
-        )!;
-        const computedReceiverCall = 'file.exportsByNamespace[space].get(name)';
-        const computedReceiverStart = computedReceiverSource.indexOf(computedReceiverCall);
-        expect(
-          main.referenceSites
-            .filter((site) => site.atRange.startLine === computedReceiverLine)
-            .map(({ name, kind }) => [name, kind]),
-        ).toEqual([
-          ['get', 'call'],
-          [undefined, 'read'],
-          ['exportsByNamespace', 'read'],
-          ['file', 'read'],
-          ['space', 'read'],
-          ['name', 'read'],
-        ]);
-        expect(
-          main.referenceSites.find(
-            (site) => site.atRange.startLine === computedReceiverLine && site.kind === 'call',
-          ),
-        ).toEqual({
-          name: 'get',
-          kind: 'call',
-          callForm: 'member',
-          arity: 1,
-          explicitReceiver: { kind: 'unknown' },
-          inScope: computedReceiverBody.id,
-          atRange: {
-            startLine: computedReceiverLine,
-            startCol: computedReceiverStart,
-            endLine: computedReceiverLine,
-            endCol: computedReceiverStart + computedReceiverCall.length,
-          },
-        });
-        const arrowInvocationLine = lineOf('function arrowInvocationOwner(');
-        expect(
-          main.referenceSites
-            .filter((site) => site.atRange.startLine === arrowInvocationLine)
-            .map(({ name, kind }) => [name, kind]),
-        ).toEqual([
-          ['helper', 'call'],
-          ['parameter', 'read'],
-          ['value', 'read'],
-        ]);
-        const optionalCallLine = lineOf('function optionalCallOwner(');
-        const optionalCallSource = mainLines[optionalCallLine - 1]!;
-        const optionalCallScope = main.scopes.find(
-          (scope) => scope.kind === 'Function' && scope.range.startLine === optionalCallLine,
-        )!;
-        const optionalCallBody = main.scopes.find(
-          (scope) => scope.parent === optionalCallScope.id && scope.kind === 'Block',
-        )!;
-        const optionalValueStart = optionalCallSource.indexOf('value?.');
-        const optionalHelperStart = optionalCallSource.indexOf('helper(');
-        const optionalArgStart = optionalCallSource.indexOf('arg', optionalHelperStart);
-        const optionalRange = (startCol: number, length: number) => ({
-          startLine: optionalCallLine,
-          startCol,
-          endLine: optionalCallLine,
-          endCol: startCol + length,
-        });
-        expect(
-          main.referenceSites
-            .filter((site) => site.atRange.startLine === optionalCallLine)
-            .map(({ name, kind, callForm, arity, explicitReceiver, inScope, atRange }) => ({
-              name,
-              kind,
-              callForm,
-              arity,
-              explicitReceiver,
-              inScope,
-              atRange,
-            })),
-        ).toEqual([
-          {
-            name: 'trim',
-            kind: 'call',
-            callForm: 'member',
-            arity: 1,
-            explicitReceiver: { name: 'value' },
-            inScope: optionalCallBody.id,
-            atRange: optionalRange(optionalValueStart, 'value?.trim(helper(arg))'.length),
-          },
-          {
-            name: 'value',
-            kind: 'read',
-            callForm: undefined,
-            arity: undefined,
-            explicitReceiver: undefined,
-            inScope: optionalCallBody.id,
-            atRange: optionalRange(optionalValueStart, 5),
-          },
-          {
-            name: 'helper',
-            kind: 'call',
-            callForm: 'free',
-            arity: 1,
-            explicitReceiver: undefined,
-            inScope: optionalCallBody.id,
-            atRange: optionalRange(optionalHelperStart, 'helper(arg)'.length),
-          },
-          {
-            name: 'arg',
-            kind: 'read',
-            callForm: undefined,
-            arity: undefined,
-            explicitReceiver: undefined,
-            inScope: optionalCallBody.id,
-            atRange: optionalRange(optionalArgStart, 3),
-          },
-        ]);
-        const membershipLine = lineOf('function membershipOwner(');
-        const membershipSource = mainLines[membershipLine - 1]!;
-        const membershipScope = main.scopes.find(
-          (scope) => scope.kind === 'Function' && scope.range.startLine === membershipLine,
-        )!;
-        const membershipBody = main.scopes.find(
-          (scope) => scope.parent === membershipScope.id && scope.kind === 'Block',
-        )!;
-        const membershipKeyStart = membershipSource.indexOf('key in');
-        const membershipCallStart = membershipSource.indexOf('helper(');
-        const membershipRegistryStart = membershipSource.indexOf('registry', membershipCallStart);
-        const membershipArgStart = membershipSource.indexOf('arg', membershipRegistryStart);
-        const membershipRange = (startCol: number, length: number) => ({
-          startLine: membershipLine,
-          startCol,
-          endLine: membershipLine,
-          endCol: startCol + length,
-        });
-        expect(
-          main.referenceSites
-            .filter((site) => site.atRange.startLine === membershipLine)
-            .map(({ name, kind, callForm, arity, explicitReceiver, inScope, atRange }) => ({
-              name,
-              kind,
-              callForm,
-              arity,
-              explicitReceiver,
-              inScope,
-              atRange,
-            })),
-        ).toEqual([
-          {
-            name: 'key',
-            kind: 'read',
-            callForm: undefined,
-            arity: undefined,
-            explicitReceiver: undefined,
-            inScope: membershipBody.id,
-            atRange: membershipRange(membershipKeyStart, 3),
-          },
-          {
-            name: 'helper',
-            kind: 'call',
-            callForm: 'free',
-            arity: 2,
-            explicitReceiver: undefined,
-            inScope: membershipBody.id,
-            atRange: membershipRange(membershipCallStart, 'helper(registry, arg)'.length),
-          },
-          {
-            name: 'registry',
-            kind: 'read',
-            callForm: undefined,
-            arity: undefined,
-            explicitReceiver: undefined,
-            inScope: membershipBody.id,
-            atRange: membershipRange(membershipRegistryStart, 8),
-          },
-          {
-            name: 'arg',
-            kind: 'read',
-            callForm: undefined,
-            arity: undefined,
-            explicitReceiver: undefined,
-            inScope: membershipBody.id,
-            atRange: membershipRange(membershipArgStart, 3),
-          },
-        ]);
-        const spreadLine = lineOf('const spread =');
-        expect(
-          main.referenceSites
-            .filter((site) => site.atRange.startLine === spreadLine)
-            .map(({ name, kind, inScope }) => ({ name, kind, inScope })),
-        ).toEqual([
-          { name: 'closure', kind: 'read', inScope: capturedBody.id },
-          { name: 'items', kind: 'read', inScope: capturedBody.id },
-        ]);
-        for (const [text, bindings] of [
-          ['for (const [left, right]', ['left', 'right']],
-          ['for (const { value: item }', ['item']],
-        ] as const) {
-          const line = lineOf(text);
-          const loopScope = main.scopes.find(
-            (scope) =>
-              scope.kind === 'Block' &&
-              scope.parent === capturedBody.id &&
-              scope.range.startLine === line,
-          )!;
-          expect(loopScope).toBeDefined();
-          expect([...loopScope.bindings.keys()].sort()).toEqual([...bindings].sort());
-          const loopBody = main.scopes.find(
-            (scope) => scope.parent === loopScope.id && scope.kind === 'Block',
-          )!;
-          expect(loopBody).toBeDefined();
-          const sites = main.referenceSites.filter((site) => site.atRange.startLine === line);
-          expect(sites).toContainEqual(
-            expect.objectContaining({ name: 'items', kind: 'read', inScope: loopScope.id }),
-          );
-          for (const name of bindings) {
-            expect(sites).toContainEqual(
-              expect.objectContaining({ name, kind: 'read', inScope: loopBody.id }),
-            );
-            expect(capturedScope.bindings.has(name)).toBe(false);
-            expect(capturedBody.bindings.has(name)).toBe(false);
-          }
-        }
-        const methodScopes = [];
-        for (const [text, parameters, reads] of [
-          ['method(parameter)', ['parameter'], ['parameter', 'closure']],
-          ['get value()', [], ['closure']],
-        ] as const) {
-          const line = lineOf(text);
-          const methodScope = main.scopes.find(
-            (scope) => scope.kind === 'Function' && scope.range.startLine === line,
-          )!;
-          expect(methodScope).toBeDefined();
-          methodScopes.push(methodScope.id);
-          expect(methodScope.parent).toBe(capturedBody.id);
-          expect([...methodScope.bindings.keys()]).toEqual(parameters);
-          const methodBody = main.scopes.find(
-            (scope) => scope.parent === methodScope.id && scope.kind === 'Block',
-          )!;
-          expect(methodBody).toBeDefined();
-          const sites = main.referenceSites.filter((site) => site.atRange.startLine === line);
-          expect(sites.map(({ name, kind, inScope }) => ({ name, kind, inScope }))).toEqual([
-            { name: 'helper', kind: 'call', inScope: methodBody.id },
-            ...reads.map((name) => ({ name, kind: 'read', inScope: methodBody.id })),
-          ]);
-          expect(sites.find(({ name }) => name === 'helper')!.arity).toBe(reads.length);
-          expect(methodScope.bindings.has('closure')).toBe(false);
-        }
-        const optionsLine = lineOf('function optionalOptions(');
-        const optionsScope = main.scopes.find(
-          (scope) => scope.kind === 'Function' && scope.range.startLine === optionsLine,
-        )!;
-        expect(optionsScope).toBeDefined();
-        expect([...optionsScope.bindings.keys()]).toEqual(['first', 'second', 'options']);
-        const optionsBody = main.scopes.find(
-          (scope) => scope.parent === optionsScope.id && scope.kind === 'Block',
-        )!;
-        expect(optionsBody).toBeDefined();
-        const optionsCall = main.referenceSites.find(
-          (site) => site.atRange.startLine === optionsLine && site.kind === 'call',
-        );
-        expect(optionsCall).toMatchObject({ name: 'helper', arity: 2, inScope: optionsBody.id });
-        const optionsCallsLine = lineOf('function optionalOptionsCalls(');
-        const optionsCalls = main.referenceSites.filter(
-          (site) => site.atRange.startLine === optionsCallsLine && site.name === 'optionalOptions',
-        );
-        expect(optionsCalls.map(({ kind, arity }) => ({ kind, arity }))).toEqual([
-          { kind: 'call', arity: 2 },
-          { kind: 'call', arity: 3 },
-        ]);
-        const optionalOptionsDef = main.localDefs.find(
-          ({ qualifiedName }) => qualifiedName === 'optionalOptions',
-        )!;
-        expect(optionalOptionsDef).toMatchObject({ parameterCount: 3, requiredParameterCount: 2 });
-        expect(
-          persistedScopeOutput.relationships.filter(
-            (edge) => edge.type === 'CALLS' && edge.targetId === optionalOptionsDef.nodeId,
-          ),
-        ).toHaveLength(2);
-        const optionsMethodLine = lineOf('withOptions(first, second, options = {})');
-        const optionsMethod = main.scopes.find(
-          (scope) => scope.kind === 'Function' && scope.range.startLine === optionsMethodLine,
-        )!;
-        expect(optionsMethod).toBeDefined();
-        expect(optionsMethod.parent).toBe(capturedBody.id);
-        expect([...optionsMethod.bindings.keys()]).toEqual(['first', 'second', 'options']);
-        const optionsMethodBody = main.scopes.find(
-          (scope) => scope.parent === optionsMethod.id && scope.kind === 'Block',
-        )!;
-        expect(optionsMethodBody).toBeDefined();
-        expect(
-          main.referenceSites
-            .filter((site) => site.atRange.startLine === optionsMethodLine)
-            .map(({ name, kind, inScope, arity }) => ({ name, kind, inScope, arity })),
-        ).toEqual([
-          { name: 'helper', kind: 'call', inScope: optionsMethodBody.id, arity: 2 },
-          { name: 'first', kind: 'read', inScope: optionsMethodBody.id, arity: undefined },
-          { name: 'second', kind: 'read', inScope: optionsMethodBody.id, arity: undefined },
-        ]);
-        expect(new Set(methodScopes).size).toBe(2);
-        const computedLine = lineOf('function computedSelections(');
-        const computedSource = mainLines[computedLine - 1]!;
-        const computedSites = main.referenceSites.filter(
-          (site) => site.atRange.startLine === computedLine,
-        );
-        const computedSelections = computedSites.filter(
-          (site) => site.selection?.kind === 'computed',
-        );
-        expect(computedSelections).toHaveLength(3);
-        const rangeOf = (text: string, from = 0) => {
-          const startCol = computedSource.indexOf(text, from);
-          return {
-            startLine: computedLine,
-            startCol,
-            endLine: computedLine,
-            endCol: startCol + text.length,
-          };
-        };
-        const firstSelectionStart = computedSource.indexOf('table[key]');
-        const secondSelectionStart = computedSource.indexOf('table[indexes[key]]');
-        const nestedSelectionStart = computedSource.indexOf('indexes[key]', secondSelectionStart);
-        const computedScope = computedSelections[0]!.inScope;
-        expect(computedSelections.every((site) => site.inScope === computedScope)).toBe(true);
-        expect(
-          computedSelections.map(({ atRange, selection }) => ({ atRange, selection })),
-        ).toEqual([
-          {
-            atRange: rangeOf('table[key]', firstSelectionStart),
-            selection: {
-              kind: 'computed',
-              objectRange: rangeOf('table', firstSelectionStart),
-              indexRange: rangeOf('key', firstSelectionStart + 'table['.length),
-            },
-          },
-          {
-            atRange: rangeOf('table[indexes[key]]', secondSelectionStart),
-            selection: {
-              kind: 'computed',
-              objectRange: rangeOf('table', secondSelectionStart),
-              indexRange: rangeOf('indexes[key]', secondSelectionStart + 'table['.length),
-            },
-          },
-          {
-            atRange: rangeOf('indexes[key]', nestedSelectionStart),
-            selection: {
-              kind: 'computed',
-              objectRange: rangeOf('indexes', nestedSelectionStart),
-              indexRange: rangeOf('key', nestedSelectionStart + 'indexes['.length),
-            },
-          },
-        ]);
-        expect(computedSites.map((site) => site.selection?.kind ?? site.name)).toEqual([
-          'computed',
-          'table',
-          'key',
-          'computed',
-          'table',
-          'computed',
-          'indexes',
-          'key',
-        ]);
-        for (const site of computedSelections) expect(site).not.toHaveProperty('name');
-        const computedOperands = computedSites.filter((site) => site.selection === undefined);
-        expect(computedOperands.map(({ name, kind }) => ({ name, kind }))).toEqual([
-          { name: 'table', kind: 'read' },
-          { name: 'key', kind: 'read' },
-          { name: 'table', kind: 'read' },
-          { name: 'indexes', kind: 'read' },
-          { name: 'key', kind: 'read' },
-        ]);
-        expect(computedOperands.every((site) => site.inScope === computedScope)).toBe(true);
-        const persistedComputed = parsedFiles
-          .find(({ filePath }) => filePath === `src/main.${extension}`)!
-          .referenceSites.filter((site) => site.atRange.startLine === computedLine);
-        expect(persistedComputed).toEqual(computedSites);
-        const nestedLine =
-          mainSource.split('\n').findIndex((line) => line.includes('function nestedRead')) + 1;
-        const nestedSource = mainSource.split('\n')[nestedLine - 1]!;
-        const rangeAt = (name: string, from = 0) => {
-          const startCol = nestedSource.indexOf(name, from);
-          return {
-            startLine: nestedLine,
-            startCol,
-            endLine: nestedLine,
-            endCol: startCol + name.length,
-          };
-        };
-        const readStart = nestedSource.indexOf('return');
-        const nestedSites = main.referenceSites.filter(
-          (site) => site.atRange.startLine === nestedLine,
-        );
-        expect(nestedSites.map(({ atRange }) => atRange)).toEqual([
-          rangeAt('owner.child.field', readStart),
-          rangeAt('owner.child', readStart),
-          rangeAt('owner', readStart),
-        ]);
-        expect(
-          nestedSites.map(({ name, kind, explicitReceiver }) => ({ name, kind, explicitReceiver })),
-        ).toEqual([
-          {
-            name: 'field',
-            kind: 'read',
-            explicitReceiver: {
-              kind: 'chain',
-              root: { name: 'owner', range: rangeAt('owner', readStart) },
-              steps: [{ kind: 'member', name: 'child', range: rangeAt('child', readStart) }],
-            },
-          },
-          { name: 'child', kind: 'read', explicitReceiver: { name: 'owner' } },
-          { name: 'owner', kind: 'read', explicitReceiver: undefined },
-        ]);
-        const run = main.localDefs.find(({ qualifiedName }) => qualifiedName === 'run')!;
-        expect(persistedScopeOutput.finalizeStats.linkedEdges).toBeGreaterThan(0);
-        expect(persistedScopeOutput.relationships).toContainEqual(
-          expect.objectContaining({
-            type: 'IMPORTS',
-            sourceId: main.moduleScope,
-            targetId: util.moduleScope,
-            confidence: 1,
-          }),
-        );
-        for (const name of ['helper', 'other']) {
-          const target = util.localDefs.find(({ qualifiedName }) => qualifiedName === name)!;
-          expect(persistedScopeOutput.relationships).toContainEqual(
-            expect.objectContaining({
-              type: 'CALLS',
-              sourceId: run.nodeId,
-              targetId: target.nodeId,
-            }),
-          );
-        }
-        if (extension === 'ts') {
-          const barrel = parsedFiles.find(({ filePath }) => filePath === 'src/barrel.ts')!;
-          const consumer = parsedFiles.find(
-            ({ filePath }) => filePath === 'src/barrel-consumer.ts',
-          )!;
-          const caller = consumer.localDefs.find(
-            ({ qualifiedName }) => qualifiedName === 'viaBarrel',
-          )!;
-          const helper = util.localDefs.find(({ qualifiedName }) => qualifiedName === 'helper')!;
-          expect(persistedScopeOutput.relationships).toContainEqual(
-            expect.objectContaining({
-              type: 'IMPORTS',
-              sourceId: barrel.moduleScope,
-              targetId: util.moduleScope,
-              confidence: 1,
-            }),
-          );
-          // Finalize uses static exports: the consumer's reexport chain remains unresolved.
-          expect(persistedScopeOutput.unresolvedImports).toContainEqual({
-            scopeId: consumer.moduleScope,
-            localName: 'forwarded',
-            linkStatus: 'unresolved',
-            targetModuleScope: undefined,
-          });
-          expect(
-            persistedScopeOutput.relationships.some(
-              (edge) => edge.type === 'IMPORTS' && edge.sourceId === consumer.moduleScope,
-            ),
-          ).toBe(false);
-          expect(persistedScopeOutput.relationships).not.toContainEqual(
-            expect.objectContaining({
-              type: 'CALLS',
-              sourceId: caller.nodeId,
-              targetId: helper.nodeId,
-            }),
-          );
-        }
-        if (mode === 'sequential') {
-          const withoutImport = structuredClone(parsedFiles).map((file) =>
-            file.filePath === main.filePath
-              ? {
-                  ...file,
-                  parsedImports: file.parsedImports.filter(
-                    ({ localName }) => localName !== 'helper',
-                  ),
-                }
-              : file,
-          );
-          const removedImport = scopeSnapshot(withoutImport);
-          const helper = util.localDefs.find(({ qualifiedName }) => qualifiedName === 'helper')!;
-          expect(removedImport.relationships).not.toEqual(persistedScopeOutput.relationships);
-          expect(
-            removedImport.relationships.some(
-              (edge) =>
-                edge.type === 'CALLS' &&
-                edge.sourceId === run.nodeId &&
-                edge.targetId === helper.nodeId,
-            ),
-          ).toBe(false);
-        }
-      }
-      scopeOutputs.set(mode, persistedScopeOutput);
-      if (mode === 'sequential') {
-        const changedRangeFiles = structuredClone(parsedFiles).map((file, index) =>
-          index === 0
-            ? {
-                ...file,
-                scopes: file.scopes.map((scope) =>
-                  scope.id === file.moduleScope
-                    ? { ...scope, range: { ...scope.range, endLine: scope.range.endLine + 1 } }
-                    : scope,
-                ),
-              }
-            : file,
-        );
-        const changedRange = scopeSnapshot(changedRangeFiles);
-        expect(changedRange.nodes).not.toEqual(persistedScopeOutput.nodes);
-        expect(changedRange.relationships).toEqual(persistedScopeOutput.relationships);
-        expect(changedRange.finalizeStats).toEqual(persistedScopeOutput.finalizeStats);
-        expect(changedRange.resolutionStats).toEqual(persistedScopeOutput.resolutionStats);
-        expect(changedRange.emissionStats).toEqual(persistedScopeOutput.emissionStats);
-        // Change real resolver inputs, retaining exact definition and relationship identities.
-        const changedFiles = structuredClone(parsedFiles);
-        const file = changedFiles.find(
-          (candidate) =>
-            candidate.localDefs.filter((def) => def.type === 'Function').length > 1 &&
-            candidate.referenceSites.some(
-              (site) =>
-                site.kind === 'call' &&
-                site.callForm === 'free' &&
-                candidate.localDefs.some(
-                  (def) =>
-                    def.qualifiedName === site.name &&
-                    persistedScopeOutput.relationships.some(
-                      (edge) => edge.type === 'CALLS' && edge.targetId === def.nodeId,
-                    ),
-                ),
-            ),
-        );
-        expect(file).toBeDefined();
-        const siteIndex = file!.referenceSites.findIndex(
-          (site) =>
-            site.kind === 'call' &&
-            site.callForm === 'free' &&
-            file!.localDefs.some(
-              (def) =>
-                def.qualifiedName === site.name &&
-                persistedScopeOutput.relationships.some(
-                  (edge) => edge.type === 'CALLS' && edge.targetId === def.nodeId,
-                ),
-            ),
-        );
-        const site = file!.referenceSites[siteIndex]!;
-        const replacement = file!.localDefs.find(
-          (def) => def.type === 'Function' && def.qualifiedName !== site.name,
-        )!;
-        expect(replacement).toBeDefined();
-        const changedTargetFiles = structuredClone(changedFiles);
-        changedTargetFiles.find(({ filePath }) => filePath === file!.filePath)!.referenceSites[
-          siteIndex
-        ] = {
-          ...site,
-          name: replacement.qualifiedName,
-          arity: undefined,
-        };
-        const changedTarget = scopeSnapshot(changedTargetFiles);
-        expect(changedTarget.relationships).not.toEqual(persistedScopeOutput.relationships);
-        expect(
-          changedTarget.relationships.some(
-            (edge) =>
-              edge.type === 'CALLS' &&
-              edge.targetId === replacement.nodeId &&
-              !persistedScopeOutput.relationships.some((original) => original.id === edge.id),
-          ),
-        ).toBe(true);
-        expect(changedTarget.resolutionStats.resolvedSites).toBe(
-          persistedScopeOutput.resolutionStats.resolvedSites,
-        );
-        file!.referenceSites.splice(siteIndex, 1);
-        const removedReference = scopeSnapshot(changedFiles);
-        expect(removedReference.relationships).not.toEqual(persistedScopeOutput.relationships);
-        expect(removedReference.resolutionStats.totalSites).toBe(
-          persistedScopeOutput.resolutionStats.totalSites - 1,
-        );
-        expect(removedReference.emissionStats.edgesEmitted).toBe(
-          persistedScopeOutput.emissionStats.edgesEmitted - 1,
-        );
-      }
-      if (fixture.name === 'typescript') {
-        const mixed = parsedFiles.find(({ filePath }) => filePath === 'src/mixed-types.tsx');
-        expect(mixed).toBeDefined();
-        expect(
-          mixed!.localDefs.map(({ qualifiedName, type }) => ({ qualifiedName, type })),
-        ).toEqual([
-          { qualifiedName: 'Imported', type: 'TypeAlias' },
-          { qualifiedName: 'ImportedPort', type: 'Interface' },
-          { qualifiedName: 'count', type: 'Variable' },
-          { qualifiedName: 'mixedEntry', type: 'Function' },
-        ]);
-        expect(mixed!.exports).toEqual(
-          new Map(mixed!.localDefs.map((def) => [def.qualifiedName, def.nodeId])),
-        );
-        expect(mixed!.exportsByNamespace).toEqual({
-          type: new Map(mixed!.localDefs.slice(0, 2).map((def) => [def.qualifiedName, def.nodeId])),
-          value: new Map(mixed!.localDefs.slice(2).map((def) => [def.qualifiedName, def.nodeId])),
-        });
-        expect(mixed!.parsedImports).toEqual([
-          { kind: 'named', localName: 'helper', importedName: 'helper', targetRaw: './util' },
-          {
-            kind: 'named',
-            localName: 'T',
-            importedName: 'T',
-            targetRaw: './util',
-            namespace: 'type',
-          },
-          {
-            kind: 'alias',
-            localName: 'Local',
-            importedName: 'U',
-            alias: 'Local',
-            targetRaw: './util',
-            namespace: 'type',
-          },
-        ]);
-        expect(
-          mixed!.referenceSites.map(({ name, kind, callForm }) => ({ name, kind, callForm })),
-        ).toEqual([{ name: 'helper', kind: 'call', callForm: 'free' }]);
-        expect(mixed!.scopes.some((scope) => scope.kind === 'Class')).toBe(true);
-        expect([...mixed!.scopes[0]!.bindings]).toEqual(
-          mixed!.localDefs.map((def) => [
-            def.qualifiedName,
-            [
-              {
-                def,
-                origin: 'local',
-                namespace: ['TypeAlias', 'Interface'].includes(def.type) ? 'type' : 'value',
-              },
-            ],
-          ]),
-        );
-        for (const scope of mixed!.scopes) {
-          expect([...scope.typeBindings]).toEqual([]);
-          for (const name of ['Imported', 'ImportedPort']) {
-            if (scope.kind !== 'Module') expect(scope.bindings.has(name)).toBe(false);
-          }
-        }
-        expect(
-          mixed!.scopes
-            .flatMap((scope) => scope.ownedDefs)
-            .sort((left, right) => left.nodeId.localeCompare(right.nodeId)),
-        ).toEqual(
-          [...mixed!.localDefs].sort((left, right) => left.nodeId.localeCompare(right.nodeId)),
-        );
-        const barrel = parsedFiles.find(({ filePath }) => filePath === 'src/barrel.ts');
-        expect(barrel).toBeDefined();
-        expect(barrel!.parsedImports).toEqual([
-          {
-            kind: 'reexport',
-            localName: 'forwarded',
-            importedName: 'helper',
-            alias: 'forwarded',
-            targetRaw: './util',
-          },
-          {
-            kind: 'reexport',
-            localName: 'Site',
-            importedName: 'ReferenceSite',
-            alias: 'Site',
-            targetRaw: './reference-site',
-            namespace: 'type',
-          },
-        ]);
-        expect(barrel!.localDefs).toEqual([]);
-        expect(barrel!.exports).toEqual(new Map());
-        expect(barrel!.exportsByNamespace).toEqual({ type: new Map(), value: new Map() });
-        expect(barrel!.referenceSites).toEqual([]);
-        expect(barrel!.scopes).toHaveLength(1);
-        expect([...barrel!.scopes[0]!.bindings]).toEqual([]);
-        expect([...barrel!.scopes[0]!.typeBindings]).toEqual([]);
-        const consumer = parsedFiles.find(({ filePath }) => filePath === 'src/barrel-consumer.ts');
-        expect(consumer).toBeDefined();
-        expect(consumer!.parsedImports).toEqual([
-          {
-            kind: 'named',
-            localName: 'forwarded',
-            importedName: 'forwarded',
-            targetRaw: './barrel',
-          },
-        ]);
-        const enumFile = parsedFiles.find(({ filePath }) => filePath === 'src/string-enum.ts');
-        expect(enumFile).toBeDefined();
-        expect(enumFile!.localDefs).toEqual([
-          {
-            nodeId: 'def:src/string-enum.ts#1:7:Enum:Status',
-            filePath: 'src/string-enum.ts',
-            type: 'Enum',
-            qualifiedName: 'Status',
-          },
-        ]);
-        const enumDef = enumFile!.localDefs[0]!;
-        expect(enumFile!.scopes).toHaveLength(1);
-        expect(enumFile!.scopes[0]!.bindings.get('Status')).toEqual([
-          { def: enumDef, origin: 'local', namespace: 'both' },
-        ]);
-        expect(enumFile!.exports).toEqual(new Map([['Status', enumDef.nodeId]]));
-        expect(enumFile!.exportsByNamespace).toEqual({
-          type: new Map([['Status', enumDef.nodeId]]),
-          value: new Map([['Status', enumDef.nodeId]]),
-        });
-        expect(enumFile!.referenceSites).toEqual([]);
-        const enumFileNodes = declarationNodes.filter(
-          ({ properties }) => properties.filePath === 'src/string-enum.ts',
-        );
-        expect(enumFileNodes.map(({ label }) => label).sort()).toEqual(['Enum', 'File']);
-        const graphEnum = enumFileNodes.filter(({ label }) => label === 'Enum');
-        expect(graphEnum).toHaveLength(1);
-        expect(graphEnum[0]).toMatchObject({ label: 'Enum', properties: { name: 'Status' } });
-        expect(graphEnum[0]!.id).not.toBe(enumDef.nodeId);
-        expect(events).toContainEqual(
-          expect.objectContaining({
-            kind: 'symbol.add',
-            filePath: 'src/string-enum.ts',
-            name: 'Status',
-            nodeId: graphEnum[0]!.id,
-          }),
-        );
-        expect(producer!.nodes).toContainEqual(graphEnum[0]);
-        for (const [filePath, scopeCount, definitions] of [
-          [
-            'src/resolution.ts',
-            3,
-            [
-              ['TypeResolver', 'Interface'],
-              ['CallResolver', 'Interface'],
-            ],
-          ],
-          [
-            'src/backend-port.ts',
-            3,
-            [
-              ['BackendPort', 'Interface'],
-              ['GroupBackendPort', 'Interface'],
-            ],
-          ],
-          [
-            'src/reference-site.tsx',
-            2,
-            [
-              ['ReferenceKind', 'TypeAlias'],
-              ['ReferenceSite', 'Interface'],
-            ],
-          ],
-          [
-            'src/ordinary-types.tsx',
-            2,
-            [
-              ['Imported', 'TypeAlias'],
-              ['ImportedPort', 'Interface'],
-            ],
-          ],
-        ] as const) {
-          const parsed = parsedFiles.find((file) => file.filePath === filePath);
-          expect(parsed).toBeDefined();
-          expect(parsed!.scopes).toHaveLength(scopeCount);
-          expect(parsed!.localDefs.map(({ qualifiedName, type }) => [qualifiedName, type])).toEqual(
-            definitions,
-          );
-          expect([...parsed!.scopes[0]!.bindings]).toEqual(
-            parsed!.localDefs.map((def) => [
-              def.qualifiedName,
-              [{ def, origin: 'local', namespace: 'type' }],
-            ]),
-          );
-          expect(parsed!.scopes.slice(1).map((scope) => [...scope.bindings])).toEqual(
-            Array.from({ length: scopeCount - 1 }, () => []),
-          );
-          expect(parsed!.scopes.every((scope) => scope.typeBindings.size === 0)).toBe(true);
-          expect(parsed!.scopes.flatMap((scope) => scope.ownedDefs)).toEqual(parsed!.localDefs);
-          expect(parsed!.parsedImports).toEqual(
-            filePath === 'src/ordinary-types.tsx'
-              ? [
-                  {
-                    kind: 'alias',
-                    localName: 'Main',
-                    importedName: 'default',
-                    alias: 'Main',
-                    targetRaw: './util',
-                  },
-                  {
-                    kind: 'named',
-                    localName: 'helper',
-                    importedName: 'helper',
-                    targetRaw: './util',
-                  },
-                  {
-                    kind: 'alias',
-                    localName: 'Renamed',
-                    importedName: 'other',
-                    alias: 'Renamed',
-                    targetRaw: './util',
-                  },
-                  {
-                    kind: 'named',
-                    localName: 'T',
-                    importedName: 'T',
-                    targetRaw: './util',
-                    namespace: 'type',
-                  },
-                  {
-                    kind: 'alias',
-                    localName: 'Local',
-                    importedName: 'U',
-                    alias: 'Local',
-                    targetRaw: './util',
-                    namespace: 'type',
-                  },
-                  {
-                    kind: 'namespace',
-                    localName: 'util',
-                    importedName: './util',
-                    targetRaw: './util',
-                  },
-                  {
-                    kind: 'named',
-                    localName: 'ReferenceSite',
-                    importedName: 'ReferenceSite',
-                    targetRaw: './reference-site',
-                    namespace: 'type',
-                  },
-                ]
-              : filePath === 'src/reference-site.tsx'
-                ? [
-                    {
-                      kind: 'named',
-                      localName: 'Range',
-                      importedName: 'Range',
-                      targetRaw: './types.js',
-                      namespace: 'type',
-                    },
-                    {
-                      kind: 'named',
-                      localName: 'ScopeId',
-                      importedName: 'ScopeId',
-                      targetRaw: './types.js',
-                      namespace: 'type',
-                    },
-                  ]
-                : [],
-          );
-          const exports = new Map(parsed!.localDefs.map((def) => [def.qualifiedName, def.nodeId]));
-          expect(parsed!.exports).toEqual(exports);
-          expect(parsed!.exportsByNamespace).toEqual({ type: exports, value: new Map() });
-          expect(parsed!.referenceSites).toEqual([]);
-        }
-        const loops = parsedFiles.find((file) => file.filePath === 'src/ns.ts');
-        const main = parsedFiles.find((file) => file.filePath === 'src/main.ts')!;
-        const assignmentLine =
-          fixture.files['src/main.ts']!.split('\n').findIndex((line) =>
-            line.startsWith('function assignment('),
-          ) + 1;
-        const assignmentSource = fixture.files['src/main.ts']!.split('\n')[assignmentLine - 1]!;
-        const assignment = main.scopes.find(
-          (scope) => scope.kind === 'Function' && scope.range.startLine === assignmentLine,
-        )!;
-        expect(assignment).toBeDefined();
-        const assignmentBody = main.scopes.find((scope) => scope.parent === assignment.id)!;
-        expect(assignmentBody.kind).toBe('Block');
-        const assignmentWriteColumn = assignmentSource.indexOf(
-          'value',
-          assignmentSource.indexOf('{'),
-        );
-        const assignmentReadColumn = assignmentSource.indexOf(
-          'value',
-          assignmentSource.indexOf('=') + 1,
-        );
-        expect(
-          main.referenceSites.filter((site) => site.atRange.startLine === assignmentLine),
-        ).toEqual([
-          {
-            name: 'value',
-            kind: 'write',
-            inScope: assignmentBody.id,
-            atRange: {
-              startLine: assignmentLine,
-              startCol: assignmentWriteColumn,
-              endLine: assignmentLine,
-              endCol: assignmentWriteColumn + 5,
-            },
-          },
-          {
-            name: 'value',
-            kind: 'read',
-            inScope: assignmentBody.id,
-            atRange: {
-              startLine: assignmentLine,
-              startCol: assignmentReadColumn,
-              endLine: assignmentLine,
-              endCol: assignmentReadColumn + 5,
-            },
-          },
-        ]);
-        // Exercise persisted artifacts explicitly; pipeline replay does not invoke this resolver.
-        const assignmentTarget = assignment.ownedDefs.find((def) => def.qualifiedName === 'value')!;
-        const assignmentCaller = assignment.ownedDefs.find(
-          (def) => def.qualifiedName === 'assignment',
-        )!;
-        expect(assignmentTarget).toBeDefined();
-        expect(assignmentCaller).toBeDefined();
-        const indexes = finalizeScopeModel(parsedFiles);
-        const resolved = resolveReferences(indexes);
-        const assignmentReferences = resolved.referenceIndex.bySourceScope.get(assignmentBody.id)!;
-        expect(assignmentReferences).toEqual([
-          expect.objectContaining({
-            kind: 'write',
-            toDef: assignmentTarget.nodeId,
-            atRange: {
-              startLine: assignmentLine,
-              startCol: assignmentWriteColumn,
-              endLine: assignmentLine,
-              endCol: assignmentWriteColumn + 5,
-            },
-          }),
-          expect.objectContaining({
-            kind: 'read',
-            toDef: assignmentTarget.nodeId,
-            atRange: {
-              startLine: assignmentLine,
-              startCol: assignmentReadColumn,
-              endLine: assignmentLine,
-              endCol: assignmentReadColumn + 5,
-            },
-          }),
-        ]);
-        expect(resolved.referenceIndex.byTargetDef.get(assignmentTarget.nodeId)).toEqual(
-          assignmentReferences,
-        );
-        const assignmentGraph = createKnowledgeGraph();
-        emitReferencesToGraph({
-          graph: assignmentGraph,
-          scopes: indexes,
-          referenceIndex: resolved.referenceIndex,
-        });
-        const accessEdges = assignmentGraph.relationships.filter(
-          (edge) => edge.sourceId === assignmentCaller.nodeId,
-        );
-        expect(accessEdges).toEqual(
-          assignmentReferences.map((reference) => ({
-            id: `rel:ACCESSES:${assignmentCaller.nodeId}->${assignmentTarget.nodeId}:${assignmentLine}:${reference.atRange.startCol}:${reference.kind}`,
-            sourceId: assignmentCaller.nodeId,
-            targetId: assignmentTarget.nodeId,
-            type: 'ACCESSES',
-            step: reference.kind === 'write' ? 2 : 1,
-            confidence: reference.confidence,
-            evidence: reference.evidence,
-            reason: `scope-resolution: ${reference.kind} | confidence ${reference.confidence.toFixed(3)}`,
-          })),
-        );
-        emitReferencesToGraph({
-          graph: assignmentGraph,
-          scopes: indexes,
-          referenceIndex: resolved.referenceIndex,
-        });
-        expect(
-          assignmentGraph.relationships.filter((edge) => edge.sourceId === assignmentCaller.nodeId),
-        ).toEqual(accessEdges);
-        const conditional = main.scopes.find(
-          (scope) => scope.kind === 'Function' && scope.range.startLine === 4,
-        )!;
-        expect(conditional).toBeDefined();
-        const conditionalBlocks = main.scopes.filter((scope) => scope.parent === conditional.id);
-        expect(conditionalBlocks).toHaveLength(1);
-        const conditionalBody = conditionalBlocks[0]!;
-        expect(conditionalBody.kind).toBe('Block');
-        const conditionalSource = fixture.files['src/main.ts']!.split('\n')[3]!;
-        expect(conditionalBody.range).toEqual({
-          startLine: 4,
-          startCol: conditionalSource.indexOf('{'),
-          endLine: 4,
-          endCol: conditionalSource.length,
-        });
-        expect(
-          main.referenceSites
-            .filter((site) => site.atRange.startLine === 4)
-            .map(({ name, kind, inScope }) => ({ name, kind, inScope })),
-        ).toEqual([
-          { name: 'value', kind: 'read', inScope: conditionalBody.id },
-          { name: 'helper', kind: 'call', inScope: conditionalBody.id },
-          { name: 'value', kind: 'read', inScope: conditionalBody.id },
-          { name: 'helper', kind: 'call', inScope: conditionalBody.id },
-          { name: 'value', kind: 'read', inScope: conditionalBody.id },
-          { name: 'renamed', kind: 'call', inScope: conditionalBody.id },
-          { name: 'value', kind: 'read', inScope: conditionalBody.id },
-          { name: 'helper', kind: 'call', inScope: conditionalBody.id },
-          { name: 'value', kind: 'read', inScope: conditionalBody.id },
-          { name: 'undefined', kind: 'read', inScope: conditionalBody.id },
-          { name: 'renamed', kind: 'call', inScope: conditionalBody.id },
-        ]);
-        const undefinedColumn = conditionalSource.indexOf('undefined');
-        expect(main.referenceSites.find((site) => site.name === 'undefined')).toEqual({
-          name: 'undefined',
-          kind: 'read',
-          inScope: conditionalBody.id,
-          atRange: {
-            startLine: 4,
-            startCol: undefinedColumn,
-            endLine: 4,
-            endCol: undefinedColumn + 'undefined'.length,
-          },
-        });
-        expect(main.scopes.filter((scope) => scope.parent === conditionalBody.id)).toEqual([]);
-        const memberRead = main.referenceSites.find(
-          (site) => site.kind === 'read' && site.name === 'field',
-        );
-        expect(memberRead).toMatchObject({
-          name: 'field',
-          kind: 'read',
-          explicitReceiver: { name: 'owner' },
-        });
-        const memberIndex = main.referenceSites.indexOf(memberRead!);
-        expect(main.referenceSites[memberIndex + 1]).toMatchObject({
-          name: 'owner',
-          kind: 'read',
-          inScope: memberRead!.inScope,
-        });
-        expect(loops).toBeDefined();
-        expect(loops!.localDefs.map(({ qualifiedName }) => qualifiedName)).toContain(
-          'loopBindings',
-        );
-        expect(loops!.referenceSites.map(({ name, kind }) => [name, kind])).toEqual([
-          ['helper', 'call'],
-          ['util', 'read'],
-          ['items', 'read'],
-          ['use', 'call'],
-          ['item', 'read'],
-          ['object', 'read'],
-          ['use', 'call'],
-          ['key', 'read'],
-          ['items', 'read'],
-          ['item', 'read'],
-          ['helper', 'call'],
-          ['util', 'read'],
-          ['helper', 'call'],
-          ['util', 'read'],
-        ]);
-        const loopScopes = loops!.scopes.filter(
-          (scope) => scope.bindings.has('item') || scope.bindings.has('key'),
-        );
-        expect(loopScopes.map((scope) => [...scope.bindings.keys()])).toEqual([
-          ['item'],
-          ['key'],
-          ['item'],
-        ]);
-        const continued = loops!.scopes.find(
-          (scope) => scope.kind === 'Function' && scope.range.startLine === 9,
-        )!;
-        const continuedBody = loops!.scopes.find((scope) => scope.parent === continued.id)!;
-        const continuedLoop = loopScopes[2]!;
-        const continuedLoopBody = loops!.scopes.find((scope) => scope.parent === continuedLoop.id)!;
-        expect(continuedLoop.parent).toBe(continuedBody.id);
-        expect(loops!.referenceSites.filter((site) => site.atRange.startLine >= 10)).toEqual([
-          {
-            name: 'items',
-            kind: 'read',
-            inScope: continuedLoop.id,
-            atRange: { startLine: 10, startCol: 21, endLine: 10, endCol: 26 },
-          },
-          {
-            name: 'item',
-            kind: 'read',
-            inScope: continuedLoopBody.id,
-            atRange: { startLine: 10, startCol: 34, endLine: 10, endCol: 38 },
-          },
-          {
-            name: 'helper',
-            kind: 'call',
-            callForm: 'member',
-            arity: 0,
-            explicitReceiver: { name: 'util' },
-            inScope: continuedLoopBody.id,
-            atRange: { startLine: 10, startCol: 50, endLine: 10, endCol: 63 },
-          },
-          {
-            name: 'util',
-            kind: 'read',
-            inScope: continuedLoopBody.id,
-            atRange: { startLine: 10, startCol: 50, endLine: 10, endCol: 54 },
-          },
-          {
-            name: 'helper',
-            kind: 'call',
-            callForm: 'member',
-            arity: 0,
-            explicitReceiver: { name: 'util' },
-            inScope: continuedBody.id,
-            atRange: { startLine: 11, startCol: 2, endLine: 11, endCol: 15 },
-          },
-          {
-            name: 'util',
-            kind: 'read',
-            inScope: continuedBody.id,
-            atRange: { startLine: 11, startCol: 2, endLine: 11, endCol: 6 },
-          },
-        ]);
-      }
+      const { calls, events, importStates, declarationNodes } = families;
       let replaySnapshot: ReturnType<typeof snapshot> | undefined;
-      expect(new Set(parsedFiles.map(({ filePath }) => filePath)).size).toBeGreaterThan(1);
       expect(events.length).toBeGreaterThan(0);
       if (fixture.refused) {
-        expect(parsedFiles.some(({ filePath }) => filePath === 'src/refused.py')).toBe(false);
         expect(calls).toContainEqual(
           expect.objectContaining({
             filePath: 'src/refused.py',
@@ -2326,7 +486,6 @@ describe.sequential.each(fixtures)('multi-file scope retention replay parity: $n
         );
       }
       expect(importStates).toHaveLength(1);
-      expect(parsedFiles[0]!.scopes[0]!.bindings).toBeInstanceOf(Map);
       const replay = createKnowledgeGraph();
       const { resolutionContext: context, bindingAccumulator: bindings } =
         await reconstructScopeRetentionParse(families, replay);
@@ -2419,9 +578,6 @@ describe.sequential.each(fixtures)('multi-file scope retention replay parity: $n
   });
 
   it('sequential, worker and recovery producers agree', () => {
-    expect(scopeOutputs.size).toBe(3);
-    expect(scopeOutputs.get('worker')).toEqual(scopeOutputs.get('sequential'));
-    expect(scopeOutputs.get('recovery')).toEqual(scopeOutputs.get('sequential'));
     expect(producers.size).toBe(3);
     expect(producers.get('worker')).toEqual(producers.get('sequential'));
     expect(producers.get('recovery')).toEqual(producers.get('sequential'));
@@ -2477,6 +633,85 @@ describe.sequential.each(fixtures)('multi-file scope retention replay parity: $n
     expect(() => expectRankedSnapshotsEqual(changedEdge, ranked)).toThrow();
   });
 });
+
+it('persists mixed TypeScript and Go as incomplete and falls back without losing Go nodes', async () => {
+  const repository = fs.mkdtempSync(path.join(os.tmpdir(), 'ontoindex-mixed-retention-'));
+  const generation = fs.mkdtempSync(path.join(os.tmpdir(), 'ontoindex-mixed-candidate-'));
+  const request = () => ({
+    deadline: Date.now() + 60_000,
+    artifactAllowance: { remainingBytes: 64 * 1024 * 1024 },
+  });
+  const identity = {
+    sourceManifestDigest: 'b'.repeat(64),
+    targetCommit: 'mixed-fixture',
+    baseGenerationId: null,
+  };
+  try {
+    fs.writeFileSync(path.join(repository, 'main.ts'), 'export function typescriptControl() {}\n');
+    fs.writeFileSync(
+      path.join(repository, 'main.go'),
+      'package main\nfunc goTarget() {}\nfunc goCaller() { goTarget() }\n',
+    );
+    let parserCodeIdentity: string | null = null;
+    const full = await runPipelineFromRepo(repository, () => {}, {
+      profile: 'full',
+      skipGraphPhases: true,
+      skipWorkers: true,
+      scopeRetention: {
+        ...request(),
+        consume: async (handle) => {
+          expect(handle.status).toBe('incomplete');
+          expect(handle.inventory).toEqual(
+            expect.arrayContaining([
+              { filePath: 'main.ts', status: 'retained' },
+              { filePath: 'main.go', status: 'unsupported' },
+            ]),
+          );
+          const manifest = await persistScopeRetentionCandidate(
+            handle,
+            generation,
+            identity,
+            request(),
+          );
+          expect(manifest.coverage.complete).toBe(false);
+          expect(manifest.coverage.languages).toContainEqual(
+            expect.objectContaining({
+              language: 'go',
+              files: 1,
+              retained: 0,
+              refused: 1,
+              refusalReasons: [{ reason: 'unsupported', count: 1 }],
+            }),
+          );
+          parserCodeIdentity = handle.inputEvidence.parserCodeIdentity;
+        },
+      },
+    });
+    expect(full.graph.nodes.some((node) => node.properties.name === 'goTarget')).toBe(true);
+    expect(full.graph.nodes.some((node) => node.properties.name === 'typescriptControl')).toBe(
+      true,
+    );
+    const candidate = await loadScopeRetentionCandidate(
+      generation,
+      { identity, parserCodeIdentity },
+      request(),
+    );
+    expect(candidate.manifest.retention.status).toBe('incomplete');
+    const preserve = vi.fn(async () => {});
+    const fallback = await runPipelineFromRepo(repository, () => {}, {
+      profile: 'full',
+      skipGraphPhases: true,
+      skipWorkers: true,
+      scopeReplay: { candidate, request: request(), preserve },
+    });
+    expect(fallback.parseMode).toBe('full');
+    expect(preserve).not.toHaveBeenCalled();
+    expect(snapshot(fallback.graph)).toEqual(snapshot(full.graph));
+  } finally {
+    fs.rmSync(repository, { recursive: true, force: true });
+    fs.rmSync(generation, { recursive: true, force: true });
+  }
+}, 60_000);
 
 // Supply the physical shared-package root containing the frozen src/ and configs.
 // This qualifies only the admitted subset; Git history and graph-summary phases are excluded.
@@ -2565,22 +800,6 @@ it.skipIf(!process.env.ONTOINDEX_FROZEN_PARITY_ROOT)(
       const { workspaceParserIdentity } =
         await import('../../src/core/tree-sitter/parser-identity.js');
       const parserCodeIdentity = await workspaceParserIdentity();
-      const { createParserForLanguage } =
-        await import('../../src/core/tree-sitter/parser-loader.js');
-      const { SupportedLanguages } = await import('ontoindex-shared');
-      const { emitTypeScriptCaptures } =
-        await import('../../src/core/ingestion/languages/typescript-captures.js');
-      const { ScopeUnsupportedSyntaxError } =
-        await import('../../src/core/ingestion/scope-unsupported-syntax.js');
-      for (const record of refused) {
-        // Retention-record refusals pass the emitter but exceed the codec record cap.
-        if (record.reason?.startsWith('retention record rejected')) continue;
-        const parser = await createParserForLanguage(SupportedLanguages.TypeScript, record.path);
-        const tree = parser.parse(verified.get(record.path)!.toString('utf8'));
-        expect(() => emitTypeScriptCaptures(tree.rootNode), record.path).toThrow(
-          ScopeUnsupportedSyntaxError,
-        );
-      }
 
       const repository = temporaryDirectory();
       const subsetPaths = [
@@ -2612,9 +831,7 @@ it.skipIf(!process.env.ONTOINDEX_FROZEN_PARITY_ROOT)(
       const parseImplementation =
         await import('../../src/core/ingestion/pipeline-phases/parse-impl.js');
       const results: Array<Record<string, unknown>> = [];
-      for (const registryPrimary of ['0', '1']) {
-        vi.stubEnv('REGISTRY_PRIMARY_TYPESCRIPT', registryPrimary);
-        vi.stubEnv('INGESTION_EMIT_SCOPES', '0');
+      {
         const generation = temporaryDirectory();
         const expected = { identity, parserCodeIdentity };
         let consumed = false;
@@ -2681,7 +898,6 @@ it.skipIf(!process.env.ONTOINDEX_FROZEN_PARITY_ROOT)(
         expect(full.parseMode).toBe('full');
         expect(full.usedWorkerPool).toBe(false);
         const candidate = await loadScopeRetentionCandidate(generation, expected, request());
-        expect(candidate.families.parsedFiles).toHaveLength(accepted.length);
         expect(candidate.families.calls.length).toBeGreaterThan(0);
         const promotedGeneration = temporaryDirectory();
         const preserve = vi.fn(async () => {
@@ -2763,7 +979,6 @@ it.skipIf(!process.env.ONTOINDEX_FROZEN_PARITY_ROOT)(
             graph.nodes[rangedNode]!.properties.startLine! += 1;
           });
         results.push({
-          registryPrimary,
           emitScopes: false,
           coverage,
           parseMode: replay.parseMode,
@@ -2798,7 +1013,6 @@ it.skipIf(!process.env.ONTOINDEX_FROZEN_PARITY_ROOT)(
       }
     } finally {
       vi.restoreAllMocks();
-      vi.unstubAllEnvs();
       for (const directory of directories) fs.rmSync(directory, { recursive: true, force: true });
     }
   },

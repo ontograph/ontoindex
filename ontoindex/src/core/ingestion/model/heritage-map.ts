@@ -196,7 +196,13 @@ export const buildHeritageMap = (
   // interfaceName → Set<filePath>  (implementor lookup for interface dispatch)
   const implementorFiles = new Map<string, Set<string>>();
 
-  for (const h of heritage) {
+  // Heritage arrives in parse-chunk completion order. Stable-sort by file so
+  // cross-file reopenings get a deterministic parent order while each file
+  // keeps its own declaration order.
+  const orderedHeritage = [...heritage].sort((a, b) =>
+    a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0,
+  );
+  for (const h of orderedHeritage) {
     // ── Parent lookup (nodeId-based) ────────────────────────────────
     const family = languageFamily(h.filePath);
     const sameLanguage = (def: { filePath: string }) => languageFamily(def.filePath) === family;

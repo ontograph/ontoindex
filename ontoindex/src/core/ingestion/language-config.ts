@@ -357,8 +357,39 @@ export async function loadComposerConfig(
 export async function loadCSharpProjectConfig(
   repoRoot: string,
   observations?: ConfigObservationRecorder,
+  allPaths?: readonly string[],
 ): Promise<CSharpProjectConfig[]> {
   const configs: CSharpProjectConfig[] = [];
+  const loadProject = async (csprojPath: string) => {
+    try {
+      const name = path.basename(csprojPath);
+      const dir = path.dirname(csprojPath);
+      const content = await readConfigFile(csprojPath, observations);
+      const nsMatch = content.match(/<RootNamespace>\s*([^<]+)\s*<\/RootNamespace>/);
+      const rootNamespace = nsMatch ? nsMatch[1].trim() : name.replace(/\.csproj$/, '');
+      const projectDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
+      configs.push({ rootNamespace, projectDir });
+      if (isDev) {
+        console.log(
+          `📦 Loaded C# project: ${name} (namespace: ${rootNamespace}, dir: ${projectDir})`,
+        );
+      }
+    } catch {
+      // Can't read .csproj
+    }
+  };
+  if (allPaths !== undefined) {
+    for (const relativePath of [...new Set(allPaths)].sort()) {
+      const parts = relativePath.replace(/\\/g, '/').split('/');
+      if (
+        relativePath.endsWith('.csproj') &&
+        !parts.slice(0, -1).some((part) => ['node_modules', '.git', 'bin', 'obj'].includes(part))
+      ) {
+        await loadProject(path.join(repoRoot, relativePath));
+      }
+    }
+    return configs;
+  }
   // BFS scan for .csproj files up to 5 levels deep, cap at 100 dirs to avoid runaway scanning
   const scanQueue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
   const maxDepth = 5;
@@ -386,21 +417,7 @@ export async function loadCSharpProjectConfig(
           else depthLimited = true;
         }
         if (entry.isFile() && entry.name.endsWith('.csproj')) {
-          try {
-            const csprojPath = path.join(dir, entry.name);
-            const content = await readConfigFile(csprojPath, observations);
-            const nsMatch = content.match(/<RootNamespace>\s*([^<]+)\s*<\/RootNamespace>/);
-            const rootNamespace = nsMatch ? nsMatch[1].trim() : entry.name.replace(/\.csproj$/, '');
-            const projectDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
-            configs.push({ rootNamespace, projectDir });
-            if (isDev) {
-              console.log(
-                `📦 Loaded C# project: ${entry.name} (namespace: ${rootNamespace}, dir: ${projectDir})`,
-              );
-            }
-          } catch {
-            // Can't read .csproj
-          }
+          await loadProject(path.join(dir, entry.name));
         }
       }
     } catch {
@@ -462,10 +479,10 @@ export async function loadSwiftPackageConfig(
 /** Load all language-specific configs once for an ingestion run. */
 export async function loadImportConfigs(
   repoRoot: string,
-  allPaths: readonly string[] = [],
+  allPaths?: readonly string[],
 ): Promise<ImportConfigs> {
   const observations = new ConfigObservationRecorder(repoRoot);
-  const inventory = new Set(allPaths.filter(isCargoInventoryPath));
+  const inventory = new Set((allPaths ?? []).filter(isCargoInventoryPath));
   // Observe packaging/build inputs only; packaging roots and compile-db semantics
   // are not implemented by the import resolvers.
   const observedBasenames = [
@@ -596,7 +613,7 @@ export async function loadImportConfigs(
     goModule: await loadGoModulePath(repoRoot, observations),
     composerConfig: await loadComposerConfig(repoRoot, observations),
     swiftPackageConfig: await loadSwiftPackageConfig(repoRoot, observations),
-    csharpConfigs: await loadCSharpProjectConfig(repoRoot, observations),
+    csharpConfigs: await loadCSharpProjectConfig(repoRoot, observations, allPaths),
     ...(cargoPresent ? { rustCrateRoots: [...rustCrateRoots].sort(), rustWorkspaceCrates } : {}),
     observations: observations.snapshot(),
   };

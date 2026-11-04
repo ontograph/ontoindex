@@ -3,12 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ParsedFile } from 'ontoindex-shared';
 import {
   ScopeRetentionStage,
   type ScopeRetentionFamily,
 } from '../../src/core/ingestion/pipeline-phases/scope-retention-stage.js';
-import { decodeParsedFileRecord } from '../../src/core/ingestion/pipeline-phases/parse-scope-codec.js';
 import { persistScopeRetentionCandidate } from '../../src/core/ingestion/pipeline-phases/scope-retention-candidate.js';
 import { summarizeScopeRetentionCoverage } from '../../src/core/ingestion/pipeline-phases/scope-retention-coverage.js';
 
@@ -32,36 +30,8 @@ async function setup() {
   return { directory, request, stage };
 }
 
-function fixture(): ParsedFile {
-  return {
-    filePath: 'one.ts',
-    moduleScope: 'module',
-    parsedImports: [],
-    localDefs: [],
-    referenceSites: [],
-    scopes: [
-      {
-        id: 'module',
-        parent: null,
-        kind: 'Module',
-        filePath: 'one.ts',
-        range: { startLine: 1, startCol: 0, endLine: 1, endCol: 1 },
-        bindings: new Map(),
-        typeBindings: new Map([
-          [
-            'x',
-            {
-              rawName: 'User',
-              declaredAtScope: 'module',
-              source: 'annotation',
-            },
-          ],
-        ]),
-        ownedDefs: [],
-        imports: [],
-      },
-    ],
-  };
+function fixture() {
+  return { filePath: 'one.ts' };
 }
 
 afterEach(async () => {
@@ -95,11 +65,11 @@ describe('scope retention candidate persistence', () => {
     expect(manifest.seedReady).toBe(false);
   });
 
-  it('persists codec maps, hashes all sixteen families, and charges exact bytes after stage disposal', async () => {
+  it('hashes all fifteen retained families and charges exact bytes after stage disposal', async () => {
     const { directory, request, stage } = await setup();
     const initialAllowance = request.artifactAllowance.remainingBytes;
     const file = fixture();
-    stage.capture([file]);
+
     stage.captureORMQueries([
       { filePath: file.filePath, orm: 'prisma', model: 'user', method: 'findMany', lineNumber: 0 },
       {
@@ -110,9 +80,7 @@ describe('scope retention candidate persistence', () => {
         lineNumber: 12,
       },
     ]);
-    stage.recordOutcomes([{ filePath: file.filePath, status: 'success' }]);
     stage.reconcile([file.filePath]);
-    await stage.flush();
     stage.captureGraphNode({
       id: 'file',
       label: 'File',
@@ -126,8 +94,8 @@ describe('scope retention candidate persistence', () => {
       seedReady: false,
       evidenceScope: 'observed-parser-inputs',
     });
-    expect(manifest.version).toBe(5);
-    expect(manifest.families).toHaveLength(16);
+    expect(manifest.version).toBe(6);
+    expect(manifest.families).toHaveLength(15);
     expect(manifest.families.find((family) => family.name === 'orm-queries')).toMatchObject({
       name: 'orm-queries',
       recordCount: 2,
@@ -181,11 +149,6 @@ describe('scope retention candidate persistence', () => {
     }
     expect(manifest.artifactBytes).toBe(bytes);
     expect(manifest.totalBytes).toBe(bytes);
-    const restored = decodeParsedFileRecord(
-      await fs.readFile(path.join(candidate, 'parsed-files.jsonl'), 'utf8'),
-    );
-    expect(restored).toEqual(file);
-    expect(restored.scopes[0]!.typeBindings).toBeInstanceOf(Map);
     expect((await fs.stat(candidate)).mode & 0o777).toBe(0o700);
     expect((await fs.stat(path.join(candidate, 'manifest.json'))).mode & 0o777).toBe(0o600);
     await stage.dispose();
@@ -204,7 +167,7 @@ describe('scope retention candidate persistence', () => {
     expect(manifest.coverage).toEqual({ version: 1, languages: [], complete: false });
     expect(manifest.seedReady).toBe(false);
     expect(manifest.retention.inputEvidence.complete).toBe(false);
-    expect(Object.values(manifest.retention.producerCompletion)).toEqual(Array(16).fill(false));
+    expect(Object.values(manifest.retention.producerCompletion)).toEqual(Array(15).fill(false));
   });
 
   it('persists and verifies a manifest above 1 MiB for a large workspace inventory', async () => {
@@ -214,15 +177,7 @@ describe('scope retention candidate persistence', () => {
       { length: 7000 },
       (_, index) => `pkg/${'d'.repeat(180)}/file${index}.ts`,
     );
-    stage.recordOutcomes(
-      paths.map((filePath) => ({
-        filePath,
-        status: 'failed' as const,
-        reason: 'unsupported-syntax',
-      })),
-    );
     stage.reconcile(paths);
-    await stage.flush();
     const manifest = await persistScopeRetentionCandidate(stage, directory, identity, request);
     const bytes = (
       await fs.stat(path.join(directory, 'scope-retention-candidate', 'manifest.json'))
@@ -239,7 +194,7 @@ describe('scope retention candidate persistence', () => {
     stage.markProducerCompleted('graph-nodes');
     stage.markProducerCompleted('orm-queries');
     const manifest = await persistScopeRetentionCandidate(stage, directory, identity, request);
-    expect(manifest.version).toBe(5);
+    expect(manifest.version).toBe(6);
     expect(manifest.retention.producerCompletion).toEqual(stage.producerCompletion);
     expect(manifest.retention.producerCompletion.calls).toBe(true);
     expect(manifest.retention.producerCompletion.heritage).toBe(false);

@@ -19,6 +19,7 @@ import { execFileText } from '../../core/process/exec-file.js';
 import { getCurrentCommit } from '../../storage/git.js';
 import {
   getStoragePaths,
+  isValidParserEvidence,
   listRegisteredRepos,
   loadMeta,
   type RepoMeta,
@@ -236,14 +237,29 @@ async function resolveRepoRoot(repoId: string): Promise<string | null> {
   return result.status === 'ok' ? result.entry.path : null;
 }
 
-function parserCoverage(
-  meta: RepoMeta | null,
-  filePath: string,
-): CanDeleteReport['evidence']['parserCoverage'] {
+function parserCoverage(meta: RepoMeta | null): CanDeleteReport['evidence']['parserCoverage'] {
   if (!meta) return 'unavailable';
   if (meta.indexMode === 'symbols-only' || meta.pipelineProfile !== 'full') return 'incomplete';
   if (meta.skippedPhases?.includes('parse')) return 'incomplete';
-  if (meta.degradedFiles?.some((file) => file.filePath === filePath)) return 'incomplete';
+  if (meta.sourceManifest?.coverage === 'degraded' || meta.degradedFiles?.length) {
+    return 'incomplete';
+  }
+  const aggregates = meta.degradedFileAggregates;
+  if (
+    aggregates &&
+    (aggregates.sampledDegradedCount > 0 ||
+      aggregates.omittedGroupCount > 0 ||
+      aggregates.groups.some((group) => group.count > 0))
+  ) {
+    return 'incomplete';
+  }
+  const evidence = meta.parserEvidence;
+  if (isValidParserEvidence(evidence)) {
+    if (evidence.parseErrorCount > 0 || evidence.truncated) return 'incomplete';
+  } else {
+    return 'unavailable';
+  }
+  if (meta.sourceManifest?.coverage !== 'complete') return 'unavailable';
   return 'complete';
 }
 
@@ -421,7 +437,7 @@ export async function gnCanDelete(
   const repositoryMembership = repoRoot
     ? await checkTracked(repoRoot, resolved.filePath)
     : ('unavailable' as const);
-  const coverage = parserCoverage(meta, resolved.filePath);
+  const coverage = parserCoverage(meta);
 
   for (const reference of sourceEvidence.references) {
     blockers.push({

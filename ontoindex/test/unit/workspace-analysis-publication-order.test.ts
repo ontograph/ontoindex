@@ -237,6 +237,39 @@ describe('workspace analysis publication ordering', () => {
     },
   );
 
+  it('publishes lightweight parser fallback as degraded workspace coverage', async () => {
+    const analyze = analyzeRepo.getMockImplementation()!;
+    analyzeRepo.mockImplementation(async (...args) => {
+      const { options } = args[0] as { options?: PipelineOptions };
+      options?.onTelemetry?.({
+        event: 'parse-degraded-files',
+        phaseName: 'parse',
+        elapsedMs: 10,
+        rssBytes: 0,
+        heapUsedBytes: 0,
+        heapTotalBytes: 0,
+        heapLimitBytes: 0,
+        graphNodes: 0,
+        graphRelationships: 0,
+        degradedReason: 'parser-lightweight-fallback',
+        degradedAction: 'lightweight-fallback',
+        degradedFiles: [
+          {
+            filePath: 'source.ts',
+            reason: 'full AST extraction unavailable; using lightweight fallback',
+          },
+        ],
+      });
+      return analyze(...args);
+    });
+
+    await build();
+
+    const current = (await fs.readFile(path.join(overlay, 'CURRENT'), 'utf8')).trim();
+    const base = JSON.parse(await fs.readFile(path.join(overlay, current, 'base.json'), 'utf8'));
+    expect(base.coverage).toBe('degraded');
+  });
+
   const prepareReplay = async () => {
     const previous = '1-1-previous';
     const sourcePath = path.join(overlay, previous);
@@ -497,7 +530,7 @@ describe('workspace analysis publication ordering', () => {
       request,
     );
     expect(manifest).toMatchObject({
-      version: 5,
+      version: 6,
       status: 'candidate',
       seedReady: false,
       identity,

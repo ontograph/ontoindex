@@ -66,8 +66,9 @@ describe('scope retention model registration filtering', () => {
           ).toStrictEqual([
             { filePath: 'a.ts', status: 'retained' },
             { filePath: 'lib.go', status: 'unsupported' },
-            { filePath: 'tool.py', status: 'failed', reason: 'unsupported-syntax' },
+            { filePath: 'tool.py', status: 'retained' },
           ]);
+          expect(handle.status).toBe('incomplete');
           expect(handle.seedReady).toBe(false);
           expect(handle.reasons).not.toContain('model-registration-incomplete');
           expect(handle.reasons).not.toContain('model-registration-count-limit');

@@ -13,9 +13,10 @@ import {
   type ScopeRetentionCoverage,
 } from './scope-retention-coverage.js';
 import {
-  encodeParsedFileRecord,
-  MAX_PARSED_FILE_RECORD_BYTES,
   MAX_GRAPH_RECORD_BYTES,
+  MAX_IMPORT_STATE_RECORD_BYTES,
+  MAX_SCOPE_RETENTION_BYTES,
+  MAX_SCOPE_RETENTION_RECORDS,
   encodeGraphNodeRecord,
   encodeGraphRelationshipRecord,
 } from './parse-scope-codec.js';
@@ -35,7 +36,7 @@ interface CandidateFamily {
 }
 
 export interface ScopeRetentionCandidateManifest {
-  version: 5;
+  version: 6;
   status: 'candidate';
   seedReady: false;
   evidenceScope: 'observed-parser-inputs';
@@ -57,9 +58,9 @@ export interface ScopeRetentionCandidateManifest {
   artifactBytes: number;
 }
 
-const MAX_BYTES = 64 * 1024 * 1024;
+const MAX_BYTES = MAX_SCOPE_RETENTION_BYTES;
 const MAX_LINE_BYTES = MAX_GRAPH_RECORD_BYTES;
-const MAX_RECORDS = 100_000;
+const MAX_RECORDS = MAX_SCOPE_RETENTION_RECORDS;
 const COPY_CHUNK_BYTES = 64 * 1024;
 const sameStat = (before: Stats, after: Stats): boolean =>
   before.dev === after.dev &&
@@ -275,7 +276,6 @@ export async function persistScopeRetentionCandidate(
   check();
   const initial = metadata();
   const counts = () => [
-    handle.recordCount,
     handle.callRecordCount,
     handle.heritageRecordCount,
     handle.assignmentRecordCount,
@@ -353,43 +353,42 @@ export async function persistScopeRetentionCandidate(
         throw new Error(`scope-retention-candidate: ${name} count mismatch`);
       families.push({ name, fileName, recordCount, bytes, sha256: hash.digest('hex') });
     };
-    await writeFamily(
-      'parsed-files',
-      handle.iterate(),
-      expectedCounts[0]!,
-      (record) => encodeParsedFileRecord(record),
-      MAX_PARSED_FILE_RECORD_BYTES,
-    );
-    await writeFamily('calls', handle.iterateCalls(), expectedCounts[1]!);
-    await writeFamily('heritage', handle.iterateHeritage(), expectedCounts[2]!);
-    await writeFamily('assignments', handle.iterateAssignments(), expectedCounts[3]!);
+    await writeFamily('calls', handle.iterateCalls(), expectedCounts[0]!);
+    await writeFamily('heritage', handle.iterateHeritage(), expectedCounts[1]!);
+    await writeFamily('assignments', handle.iterateAssignments(), expectedCounts[2]!);
     await writeFamily(
       'constructor-bindings',
       handle.iterateConstructorBindings(),
-      expectedCounts[4]!,
+      expectedCounts[3]!,
     );
-    await writeFamily('exported-types', handle.iterateExportedTypes(), expectedCounts[5]!);
-    await writeFamily('file-bindings', handle.iterateFileBindings(), expectedCounts[6]!);
+    await writeFamily('exported-types', handle.iterateExportedTypes(), expectedCounts[4]!);
+    await writeFamily('file-bindings', handle.iterateFileBindings(), expectedCounts[5]!);
     await writeFamily(
       'model-registrations',
       handle.iterateModelRegistrations(),
-      expectedCounts[7]!,
+      expectedCounts[6]!,
     );
-    await writeFamily('import-states', handle.iterateImportStates(), expectedCounts[8]!);
-    await writeFamily('graph-nodes', handle.iterateGraphNodes(), expectedCounts[9]!, (record) =>
+    await writeFamily(
+      'import-states',
+      handle.iterateImportStates(),
+      expectedCounts[7]!,
+      JSON.stringify,
+      MAX_IMPORT_STATE_RECORD_BYTES,
+    );
+    await writeFamily('graph-nodes', handle.iterateGraphNodes(), expectedCounts[8]!, (record) =>
       encodeGraphNodeRecord(record, MAX_LINE_BYTES - 1),
     );
     await writeFamily(
       'graph-relationships',
       handle.iterateGraphRelationships(),
-      expectedCounts[10]!,
+      expectedCounts[9]!,
       (record) => encodeGraphRelationshipRecord(record, MAX_LINE_BYTES - 1),
     );
-    await writeFamily('orm-queries', handle.iterateORMQueries(), expectedCounts[11]!);
-    await writeFamily('fetch-calls', handle.iterateFetchCalls(), expectedCounts[12]!);
-    await writeFamily('routes', handle.iterateRoutes(), expectedCounts[13]!);
-    await writeFamily('decorator-routes', handle.iterateDecoratorRoutes(), expectedCounts[14]!);
-    await writeFamily('tool-definitions', handle.iterateToolDefinitions(), expectedCounts[15]!);
+    await writeFamily('orm-queries', handle.iterateORMQueries(), expectedCounts[10]!);
+    await writeFamily('fetch-calls', handle.iterateFetchCalls(), expectedCounts[11]!);
+    await writeFamily('routes', handle.iterateRoutes(), expectedCounts[12]!);
+    await writeFamily('decorator-routes', handle.iterateDecoratorRoutes(), expectedCounts[13]!);
+    await writeFamily('tool-definitions', handle.iterateToolDefinitions(), expectedCounts[14]!);
     if (
       metadata().encoded !== initial.encoded ||
       JSON.stringify(counts()) !== JSON.stringify(expectedCounts)
@@ -397,7 +396,7 @@ export async function persistScopeRetentionCandidate(
       throw new Error('scope-retention-candidate: handle changed during persistence');
     }
     const manifest: ScopeRetentionCandidateManifest = {
-      version: 5,
+      version: 6,
       status: 'candidate',
       seedReady: false,
       evidenceScope: 'observed-parser-inputs',

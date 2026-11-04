@@ -804,68 +804,49 @@ describe('workspace input capture', () => {
     });
   });
 
-  it.each([
-    'scope-extractor',
-    'languages/typescript-captures',
-    'languages/typescript-declaration-captures',
-    'languages/typescript-import-captures',
-    'languages/typescript-export-captures',
-    'languages/typescript-reference-captures',
-    'languages/python',
-    'languages/python-captures',
-    'languages/c-cpp',
-    'languages/cpp-captures',
-    'languages/rust',
-    'languages/rust-captures',
-    'resolve-references',
-  ])('binds parser identity to %s implementation bytes', async (implementation) => {
-    const root = await makeRepo();
-    const before = await workspaceConfigurationIdentity(root);
-    const extension = path.extname(fileURLToPath(import.meta.url));
-    const implementationPath = fileURLToPath(
-      new URL(`../../src/core/ingestion/${implementation}${extension}`, import.meta.url),
-    );
-    const originalOpen = fs.open;
-    let observed = false;
-    const read = vi
-      .spyOn(fs, 'open')
-      .mockImplementation(async (...args: Parameters<typeof fs.open>) => {
-        const handle = await originalOpen(...args);
-        if (args[0] === implementationPath) {
-          observed = true;
-          const originalRead = handle.read.bind(handle);
-          vi.spyOn(handle, 'read').mockImplementation((async (
-            ...readArgs: Parameters<typeof handle.read>
-          ) => {
-            const result = await originalRead(...readArgs);
-            if (result.bytesRead) result.buffer[0] ^= 1;
-            return result;
-          }) as typeof handle.read);
-        }
-        return handle;
-      });
-    try {
-      const after = await workspaceConfigurationIdentity(root);
-      expect(after.parserIdentity).not.toBe(before.parserIdentity);
-      expect(after.configurationDigest).toBe(before.configurationDigest);
-      const result = await capture(root, { parserIdentity: undefined });
-      expect(result.parserIdentity).toBe(after.parserIdentity);
-      expect(result.configurationDigest).toBe(after.configurationDigest);
-      expect(observed).toBe(true);
-    } finally {
-      read.mockRestore();
-    }
-  });
+  it.each(['languages/typescript', 'languages/python', 'languages/c-cpp', 'languages/rust'])(
+    'binds parser identity to %s implementation bytes',
+    async (implementation) => {
+      const root = await makeRepo();
+      const before = await workspaceConfigurationIdentity(root);
+      const extension = path.extname(fileURLToPath(import.meta.url));
+      const implementationPath = fileURLToPath(
+        new URL(`../../src/core/ingestion/${implementation}${extension}`, import.meta.url),
+      );
+      const originalOpen = fs.open;
+      let observed = false;
+      const read = vi
+        .spyOn(fs, 'open')
+        .mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+          const handle = await originalOpen(...args);
+          if (args[0] === implementationPath) {
+            observed = true;
+            const originalRead = handle.read.bind(handle);
+            vi.spyOn(handle, 'read').mockImplementation((async (
+              ...readArgs: Parameters<typeof handle.read>
+            ) => {
+              const result = await originalRead(...readArgs);
+              if (result.bytesRead) result.buffer[0] ^= 1;
+              return result;
+            }) as typeof handle.read);
+          }
+          return handle;
+        });
+      try {
+        const after = await workspaceConfigurationIdentity(root);
+        expect(after.parserIdentity).not.toBe(before.parserIdentity);
+        expect(after.configurationDigest).toBe(before.configurationDigest);
+        const result = await capture(root, { parserIdentity: undefined });
+        expect(result.parserIdentity).toBe(after.parserIdentity);
+        expect(result.configurationDigest).toBe(after.configurationDigest);
+        expect(observed).toBe(true);
+      } finally {
+        read.mockRestore();
+      }
+    },
+  );
 
-  it.each([
-    'scope-extractor',
-    'languages/python',
-    'languages/python-captures',
-    'languages/c-cpp',
-    'languages/cpp-captures',
-    'languages/rust',
-    'languages/rust-captures',
-  ])(
+  it.each(['languages/typescript', 'languages/python', 'languages/c-cpp', 'languages/rust'])(
     'rejects missing %s implementation bytes instead of using an identity fallback',
     async (implementation) => {
       const root = await makeRepo();

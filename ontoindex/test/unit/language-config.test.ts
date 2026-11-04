@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { loadImportConfigs } from '../../src/core/ingestion/language-config.js';
+import { walkRepositoryPaths } from '../../src/core/ingestion/filesystem-walker.js';
 
 const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 
@@ -167,6 +168,38 @@ describe('import configuration observations', () => {
       expect.objectContaining({ kind: 'traversal', dirsScanned: 100, directoryLimited: true }),
     );
     expect(limited.observations).toMatchObject({ complete: false, digest: null });
+  });
+
+  it('uses the scanned inventory without imposing a directory budget', async () => {
+    for (let i = 0; i < 105; i++) await fs.mkdir(path.join(root, `project-${i}`));
+    const paths = (await walkRepositoryPaths(root)).map((file) => file.path);
+    const configs = await loadImportConfigs(root, paths);
+    expect(configs.csharpConfigs).toEqual([]);
+    expect(configs.observations).toMatchObject({ complete: true, issues: [] });
+    expect(configs.observations!.records.some((record) => record.kind === 'traversal')).toBe(false);
+  });
+
+  it('loads deep scanned projects and skips ignored and excluded directories', async () => {
+    await write('.gitignore', 'ignored/\n');
+    await write('a/b/c/d/e/f/Deep.csproj', '<RootNamespace>Deep.Space</RootNamespace>');
+    await write('ignored/Hidden.csproj', '<Project/>');
+    await write('bin/Skipped.csproj', '<Project/>');
+    const paths = (await walkRepositoryPaths(root)).map((file) => file.path);
+    expect(paths).toContain('a/b/c/d/e/f/Deep.csproj');
+    expect(paths).not.toContain('ignored/Hidden.csproj');
+    const configs = await loadImportConfigs(root, [...paths, 'bin/Skipped.csproj']);
+    expect(configs.csharpConfigs).toEqual([
+      { rootNamespace: 'Deep.Space', projectDir: 'a/b/c/d/e/f' },
+    ]);
+    expect(configs.observations!.records).toContainEqual(
+      expect.objectContaining({ kind: 'file', path: 'a/b/c/d/e/f/Deep.csproj', status: 'present' }),
+    );
+    expect(
+      configs.observations!.records.some(
+        (record) => record.path.endsWith('Hidden.csproj') || record.path.endsWith('Skipped.csproj'),
+      ),
+    ).toBe(false);
+    expect(configs.observations).toMatchObject({ complete: true, issues: [] });
   });
 
   it.each(['directory entries', 'metadata bytes'] as const)(

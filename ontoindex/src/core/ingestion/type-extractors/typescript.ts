@@ -344,6 +344,47 @@ const findTsLocalDeclElementType = (
   return undefined;
 };
 
+/** Recover a const call-result iterable without changing its stored receiver type. */
+const findTsCallResultElementType = (
+  iterableName: string,
+  startNode: SyntaxNode,
+  lookupRawReturnType: (callee: string) => string | undefined,
+): string | undefined => {
+  for (let current = startNode.parent; current; current = current.parent) {
+    if (TS_FUNCTION_NODE_TYPES.has(current.type)) break;
+    if (current.type !== 'statement_block' && current.type !== 'program') continue;
+    for (let i = current.namedChildCount - 1; i >= 0; i--) {
+      const stmt = current.namedChild(i);
+      if (!stmt || stmt.startIndex >= startNode.startIndex) continue;
+      if (stmt.type !== 'lexical_declaration' && stmt.type !== 'variable_declaration') continue;
+      for (const decl of stmt.namedChildren) {
+        if (decl.type !== 'variable_declarator') continue;
+        if (decl.childForFieldName('name')?.text !== iterableName) continue;
+        // The nearest declaration wins even when it cannot supply an element type.
+        if (
+          stmt.type !== 'lexical_declaration' ||
+          !stmt.children.some((child) => child.type === 'const') ||
+          decl.childForFieldName('type')
+        )
+          return undefined;
+        const value = decl.childForFieldName('value');
+        if (value?.type !== 'call_expression') return undefined;
+        const callee = value.childForFieldName('function');
+        if (callee?.type !== 'identifier') return undefined;
+        const rawReturn = lookupRawReturnType(callee.text)?.trim();
+        // Map iteration yields entry tuples, so accept only single-element containers.
+        if (
+          !rawReturn ||
+          !/^(?:\w+\[\]|(?:Array|ReadonlyArray|Set|Iterable)\s*<\s*\w+\s*>)$/.test(rawReturn)
+        )
+          return undefined;
+        return extractElementTypeFromString(rawReturn);
+      }
+    }
+  }
+  return undefined;
+};
+
 /**
  * Walk up the AST from a for-loop node to find the enclosing function scope,
  * then search (1) its parameter list and (2) local declarations in the body
@@ -509,6 +550,13 @@ const extractForLoopBinding: ForLoopExtractor = (
       findTsIterableElementType,
       typeArgPos,
     );
+    if (!elementType && rightNode?.type === 'identifier') {
+      elementType = findTsCallResultElementType(
+        iterableName!,
+        node,
+        returnTypeLookup.lookupRawReturnType,
+      );
+    }
   }
   if (!elementType) return;
 

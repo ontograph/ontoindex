@@ -97,8 +97,9 @@ describe('scope retention observed input filtering', () => {
           ).toStrictEqual([
             { filePath: 'a.ts', status: 'retained' },
             { filePath: 'lib.go', status: 'unsupported' },
-            { filePath: 'tool.py', status: 'failed', reason: 'unsupported-syntax' },
+            { filePath: 'tool.py', status: 'retained' },
           ]);
+          expect(handle.status).toBe('incomplete');
           expect(handle.seedReady).toBe(false);
         },
       },

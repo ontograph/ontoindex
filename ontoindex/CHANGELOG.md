@@ -4,6 +4,25 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.4.20] - 2026-11-04
+
+- Persist parser-error evidence and report lightweight parser fallback as degraded coverage in base and workspace generations.
+- Refuse incomplete retained replay and oversized dirty inputs; complete rebuilt workspaces use their own coverage evidence.
+- Avoid unrelated TypeScript and JavaScript member-call fallback edges and handle comments in Go receiver wrappers.
+- Deletion checks report generation-wide parser coverage conservatively, including truncated or missing evidence.
+- Expand parser, replay, worker, workspace, and deletion-coverage regression tests.
+
+## [2.4.19] - 2026-11-04
+
+- CLI `context`, `impact` and `query` accept `--read-mode committed|workspace`; supported MCP navigation reads accept the matching `read_mode`.
+- Committed read responses report source provenance and whether indexed source includes working-tree bytes.
+- Workspace-size errors provide the explicit command to prepare a bounded workspace graph while preserving the committed index.
+- Workspace replay preserves graph parity, including supported module extensions, receiver seeding and deterministic unsupported-syntax refusals.
+- C# project discovery uses the scanned inventory, and analysis-pack identity comes from the parsed pack catalog.
+- Dirty detection includes assume-unchanged and skip-worktree edits; clean-base workspace reads report complete coverage and an input digest.
+- MCP reads report why coverage is incomplete, and route, tool, scan and heritage results use deterministic ordering.
+- The experimental scope reader and the `REGISTRY_PRIMARY_TYPESCRIPT`/`REGISTRY_PRIMARY_JAVASCRIPT` flags were removed. The default graph is unchanged on the measured frozen snapshot; a current-source build and 69 worker, fallback and protocol tests passed. Indexing no longer prints `scope extraction failed` warnings, and workspace retention candidates moved to format 6, so older candidates are rebuilt on the next analyze.
+
 ## [2.4.10] - 2026-11-02
 
 - TypeScript generic bindings preserve shadowing and resolve supported constraint chains without following cycles.

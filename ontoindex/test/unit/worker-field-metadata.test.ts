@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { processParsing } from '../../src/core/ingestion/parsing-processor.js';
+import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
+import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
 import type {
   WorkerIncomingMessage,
   WorkerOutgoingMessage,
@@ -29,6 +33,67 @@ async function parseFile(path: string, content: string) {
 }
 
 describe('source parse-worker field metadata', () => {
+  it.each(['worker', 'sequential'])(
+    'publishes conservative JavaScript constructor fields through %s parsing',
+    async (mode) => {
+      const path = 'src/constructor-assigned.js';
+      const content = `class Store {
+      declared = new Declared();
+      constructor() {
+        /** @type {Documented} */
+        this.documented = load();
+        this.inferred = new Inferred();
+        /** @type {Left} */
+        this.conflict = new Right();
+        this.repeated = new First();
+        this.repeated = new First();
+        this.declared = new Other();
+        function nested() { this.nested = new Nested(); }
+        const arrow = () => { this.arrow = new Arrow(); };
+        { this.block = new Block(); }
+      }
+      update() { this.ordinary = new Ordinary(); }
+    }
+    class Other { constructor() { this.inferred = new OtherType(); } }
+    class Static { static constructor() { this.fakeStatic = new Wrong(); } }
+    const object = { constructor() { this.fakeObject = new Wrong(); } };`;
+      let properties: { name: string; declaredType?: string; ownerId?: string }[];
+      if (mode === 'worker') {
+        properties = await parseFile(path, content);
+      } else {
+        const graph = createKnowledgeGraph();
+        const cache = createASTCache();
+        const model = createSemanticModel();
+        try {
+          await processParsing(graph, [{ path, content }], model.symbols, cache);
+          properties = graph.nodes
+            .filter(({ label }) => label === 'Property')
+            .map(({ properties }) => properties as { name: string; declaredType?: string });
+        } finally {
+          cache.clear();
+        }
+      }
+      expect(properties.map(({ name }) => name).sort()).toEqual([
+        'conflict',
+        'declared',
+        'documented',
+        'inferred',
+        'inferred',
+        'repeated',
+      ]);
+      expect(properties.find(({ name }) => name === 'documented')?.declaredType).toBe('Documented');
+      expect(
+        properties
+          .filter(({ name }) => name === 'inferred')
+          .map(({ declaredType }) => declaredType)
+          .sort(),
+      ).toEqual(['Inferred', 'OtherType']);
+      expect(properties.find(({ name }) => name === 'conflict')?.declaredType).toBeUndefined();
+      expect(properties.find(({ name }) => name === 'repeated')?.declaredType).toBeUndefined();
+      expect(properties.filter(({ name }) => name === 'declared')).toHaveLength(1);
+    },
+  );
+
   it('publishes real constructor properties and direct fields without constructor lookalikes', async () => {
     const properties = await parseFile(
       'src/constructor-publication.ts',

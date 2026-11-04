@@ -74,8 +74,13 @@ describe.skipIf(process.platform !== 'linux')('Linux process-tree RSS extraction
     expect(await sampleProcessTreeMemory(100)).toBeNull();
   });
 
-  it('rejects missing RSS for a live root', async () => {
+  it('returns unavailable when an exiting root has released its address space', async () => {
     mockProc({ 100: procStatus(1, null) });
+    expect(await sampleProcessTreeMemory(100)).toBeNull();
+  });
+
+  it('rejects a non-positive RSS for a live root', async () => {
+    mockProc({ 100: procStatus(1, 0) });
     await expect(sampleProcessTreeMemory(100)).rejects.toThrow(
       /Incomplete RSS data for root process 100/,
     );

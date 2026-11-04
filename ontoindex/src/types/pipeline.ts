@@ -19,6 +19,4 @@ export interface PipelineResult {
    * so regression suites can prove which path executed.
    */
   usedWorkerPool: boolean;
-  /** Rust files whose scope extraction was skipped because of unsupported syntax. */
-  scopeSkippedUnsupportedRustFiles?: number;
 }

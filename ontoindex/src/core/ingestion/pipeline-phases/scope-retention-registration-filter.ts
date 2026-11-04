@@ -2,13 +2,13 @@
 export function retainableByFile<T>(
   items: readonly T[],
   filePathOf: (item: T) => unknown,
-  hasScopeHook: (filePath: string) => boolean,
+  isRetainedLanguage: (filePath: string) => boolean,
 ): readonly T[] {
   let retained: T[] | undefined;
   for (let index = 0; index < items.length; index++) {
     const item = items[index];
     const filePath = filePathOf(item);
-    if (typeof filePath === 'string' && !hasScopeHook(filePath)) {
+    if (typeof filePath === 'string' && !isRetainedLanguage(filePath)) {
       retained ??= items.slice(0, index);
     } else {
       retained?.push(item);
@@ -59,7 +59,7 @@ export function createGraphRetentionFilter(isRefusedFile: (filePath: string) => 
 /** Keep malformed events for the retention stage's own validation and limits. */
 export function shouldRetainRegistration(
   encoded: string,
-  hasScopeHook: (filePath: string) => boolean,
+  isRetainedLanguage: (filePath: string) => boolean,
 ): boolean {
   try {
     const event: unknown = JSON.parse(encoded);
@@ -82,7 +82,7 @@ export function shouldRetainRegistration(
       default:
         return true;
     }
-    return typeof filePath !== 'string' || hasScopeHook(filePath);
+    return typeof filePath !== 'string' || isRetainedLanguage(filePath);
   } catch {
     return true;
   }

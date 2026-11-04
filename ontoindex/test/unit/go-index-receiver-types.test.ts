@@ -50,6 +50,9 @@ func (box (Box[User])) genericParenthesizedReceiver(sl []User) { sl[0].Greet() }
 func (box *(Box[User])) genericPointerParenthesizedReceiver(sl []User) { sl[0].Greet() }
 func (box ((Box[User]))) genericNestedParenthesizedReceiver(sl []User) { sl[0].Greet() }
 func (box (*Box[User])) genericParenthesizedPointerReceiver(sl []User) { sl[0].Greet() }
+func (box (/* comment */ Box[User])) genericCommentParenthesizedReceiver(sl []User) { sl[0].Greet() }
+func (box * /* comment */ Box[User]) genericCommentPointerReceiver(sl []User) { sl[0].Greet() }
+func (box (* (/* comment */ Box[User]))) genericCommentNestedReceiver(sl []User) { sl[0].Greet() }
 func (box Box[T]) genericConcreteReceiver(sl []User) { sl[0].Greet() }
 func (box (Box[T])) genericConcreteParenthesizedReceiver(sl []User) { sl[0].Greet() }
 func (box *(Box[T])) genericConcretePointerParenthesizedReceiver(sl []User) { sl[0].Greet() }
@@ -161,6 +164,9 @@ func plain() { u := User{}; u.Save() }
     'genericPointerParenthesizedReceiver',
     'genericNestedParenthesizedReceiver',
     'genericParenthesizedPointerReceiver',
+    'genericCommentParenthesizedReceiver',
+    'genericCommentPointerReceiver',
+    'genericCommentNestedReceiver',
   ])('%s abstains instead of borrowing a name-only method', (caller) => {
     expect(
       getRelationships(result, 'CALLS').filter(

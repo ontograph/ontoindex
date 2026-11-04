@@ -292,7 +292,7 @@ void caller(T obj) {
   });
 
   it.each(['ts', 'js'])(
-    'retains exact expression ranges and reference parity in %s',
+    'retains exact expression ranges and worker parity in %s',
     async (extension) => {
       port.postMessage.mockClear();
       const filePath = `src/call-ranges.${extension}`;
@@ -366,15 +366,6 @@ void caller(T obj) {
       ];
       expect(identities(result.data.calls)).toEqual(expected);
       expect(identities(calls)).toEqual(expected);
-      const parsedFile = result.data.parsedFiles.find((file) => file.filePath === filePath);
-      expect(parsedFile).toBeDefined();
-      expect(
-        identities(
-          parsedFile!.referenceSites
-            .filter((site) => site.kind === 'call')
-            .map(({ name, atRange }) => ({ filePath, sourceId: '', calledName: name, atRange })),
-        ),
-      ).toEqual(expected);
       expect(
         result.data.calls.find((call) => call.calledName === 'save')?.receiverMixedChain,
       ).toEqual([{ kind: 'call', name: 'lookup', atRange: expected[4]!.atRange }]);

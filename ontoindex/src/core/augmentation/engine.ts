@@ -73,9 +73,10 @@ async function findRepoForCwd(cwd: string): Promise<{
     const normalizedCwd = isWindows ? resolved.toLowerCase() : resolved;
     const sep = path.sep;
 
-    // Find the LONGEST matching repo path (most specific match wins)
+    // Prefer a repo containing cwd; otherwise use the longest repo inside cwd.
     let bestMatch: (typeof entries)[0] | null = null;
     let bestLen = 0;
+    let bestContainsCwd = false;
 
     for (const entry of entries) {
       const repoResolved = path.resolve(entry.path);
@@ -84,18 +85,18 @@ async function findRepoForCwd(cwd: string): Promise<{
       // Check if cwd is inside repo OR repo is inside cwd
       // Must match at a path separator boundary to avoid false positives
       // (e.g. /projects/ontoindexv2 should NOT match /projects/ontoindex)
-      let matched = false;
-      if (normalizedCwd === normalizedRepo) {
-        matched = true;
-      } else if (normalizedCwd.startsWith(normalizedRepo + sep)) {
-        matched = true;
-      } else if (normalizedRepo.startsWith(normalizedCwd + sep)) {
-        matched = true;
-      }
+      const containsCwd =
+        normalizedCwd === normalizedRepo || normalizedCwd.startsWith(normalizedRepo + sep);
+      const matched = containsCwd || normalizedRepo.startsWith(normalizedCwd + sep);
 
-      if (matched && normalizedRepo.length > bestLen) {
+      if (
+        matched &&
+        ((containsCwd && !bestContainsCwd) ||
+          (containsCwd === bestContainsCwd && normalizedRepo.length > bestLen))
+      ) {
         bestMatch = entry;
         bestLen = normalizedRepo.length;
+        bestContainsCwd = containsCwd;
       }
     }
 

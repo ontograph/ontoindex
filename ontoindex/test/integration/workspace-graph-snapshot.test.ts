@@ -293,7 +293,7 @@ it('publishes a partial captured workspace graph with parse-error paths without 
       await getOverlaySnapshot({ id: 'inventory-integration', repoPath: repo, storagePath }),
     ).toMatchObject({
       usable: false,
-      reason: expect.stringContaining('src/caller.ts'),
+      reason: 'workspace graph dirty paths or tombstones differ; rebuild required',
     });
     await fs.writeFile(
       path.join(repo, 'src/caller.ts'),

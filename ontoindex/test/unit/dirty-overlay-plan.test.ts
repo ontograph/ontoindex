@@ -190,7 +190,8 @@ describe('dirty overlay planner', () => {
           const plan = await planDirtyOverlay(repoDir);
 
           expect(plan.includePaths).toEqual(includePaths);
-          expect(plan.allDirtyPaths).toEqual(includePaths);
+          expect(plan.allDirtyPaths).toEqual(['src/large.ts', 'src/small.ts']);
+          expect(plan.uncoveredPaths).toEqual(skipped);
           expect(plan.skipped).toEqual(skipped);
         })();
       } finally {
@@ -198,6 +199,62 @@ describe('dirty overlay planner', () => {
         else process.env.ONTOINDEX_SCAN_MAX_FILE_KB = previousCap;
       }
     },
+  );
+
+  it(
+    'retains untracked large sources as uncovered and restores coverage after shrinking',
+    withGitRepo(async (repoDir) => {
+      vi.stubEnv('ONTOINDEX_SCAN_MAX_FILE_KB', '1');
+      try {
+        writeFile(repoDir, '.ontoindexignore', 'private/**\n');
+        commitFiles(repoDir);
+        writeFile(repoDir, 'src/large.ts', 'x'.repeat(2048));
+        writeFile(repoDir, 'private/large.ts', 'x'.repeat(2048));
+        const plan = await planDirtyOverlay(repoDir);
+        expect(plan.includePaths).toEqual([]);
+        expect(plan.allDirtyPaths).toEqual(['src/large.ts']);
+        expect(plan.uncoveredPaths).toEqual(['src/large.ts']);
+        expect(plan.tooMany).toBe(false);
+
+        writeFile(repoDir, 'src/large.ts', 'export const small = 1;\n');
+        const shrunk = await planDirtyOverlay(repoDir);
+        expect(shrunk.includePaths).toEqual(['src/large.ts']);
+        expect(shrunk.allDirtyPaths).toEqual(['src/large.ts']);
+        expect(shrunk.uncoveredPaths).toEqual([]);
+        expect(shrunk.skipped).toEqual(['private/large.ts']);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    }),
+  );
+
+  it(
+    'combines size and count exclusions without dropping deletion tombstones',
+    withGitRepo(async (repoDir) => {
+      vi.stubEnv('ONTOINDEX_SCAN_MAX_FILE_KB', '1');
+      try {
+        writeFile(repoDir, 'src/deleted.ts', 'export const deleted = 1;\n');
+        commitFiles(repoDir);
+        fs.unlinkSync(path.join(repoDir, 'src/deleted.ts'));
+        writeFile(repoDir, 'src/large.ts', 'x'.repeat(2048));
+        for (let index = 0; index < 51; index++) {
+          const rel = `src/file-${index}.ts`;
+          writeFile(repoDir, rel, `export const value = ${index};\n`);
+          const mtime = new Date(1_700_000_000_000 + index * 1000);
+          fs.utimesSync(path.join(repoDir, rel), mtime, mtime);
+        }
+        const plan = await planDirtyOverlay(repoDir);
+        expect(plan.tooMany).toBe(true);
+        expect(plan.includePaths).toHaveLength(50);
+        expect(plan.includePaths).not.toContain('src/large.ts');
+        expect(plan.uncoveredPaths).toEqual(['src/file-0.ts', 'src/large.ts']);
+        expect(plan.allDirtyPaths).toHaveLength(53);
+        expect(plan.tombstones).toEqual(['src/deleted.ts']);
+        expect(plan.skipped).toEqual(['src/large.ts']);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    }),
   );
 
   it(

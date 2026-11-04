@@ -16,7 +16,6 @@ import { persistScopeRetentionCandidate } from '../../src/core/ingestion/pipelin
 import { verifyScopeRetentionCandidate } from '../../src/core/ingestion/pipeline-phases/scope-retention-candidate-reader.js';
 import { loadPersistedReplayFamilies } from '../helpers/scope-retention-replay.js';
 import { pathToFileURL } from 'node:url';
-import type { ParsedFile } from 'ontoindex-shared';
 
 function snapshot(graph: KnowledgeGraph) {
   return {
@@ -54,7 +53,6 @@ describe.each(['ambient', 'supported'] as const)(
       string,
       { before: ReturnType<typeof snapshot>; after: ReturnType<typeof snapshot> }
     >();
-    const parsedFilesByMode = new Map<string, ParsedFile[]>();
     afterAll(() =>
       directories.forEach((directory) => fs.rmSync(directory, { recursive: true, force: true })),
     );
@@ -115,7 +113,6 @@ describe.each(['ambient', 'supported'] as const)(
         let parseSnapshot: ReturnType<typeof snapshot> | undefined;
         let liveAfterOrm: ReturnType<typeof snapshot> | undefined;
         let liveBeforeOrm: ReturnType<typeof snapshot> | undefined;
-        const retainedFiles: ParsedFile[] = [];
         const executeParse = parsePhase.execute;
         const executeORM = ormPhase.execute;
         const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -152,7 +149,6 @@ describe.each(['ambient', 'supported'] as const)(
                 expect(handle.producerCompletion['orm-queries']).toBe(true);
                 expect(handle.reasons).not.toContain('unsupported-syntax');
                 expect(handle.ormQueryRecordCount).toBe(3);
-                for await (const batch of handle.iterate()) retainedFiles.push(...batch);
                 const manifest = await persistScopeRetentionCandidate(
                   handle,
                   generation,
@@ -212,72 +208,6 @@ describe.each(['ambient', 'supported'] as const)(
             lineNumber: prefix.length + 1,
           },
         ]);
-        expect(families.parsedFiles).toEqual(retainedFiles);
-        parsedFilesByMode.set(mode, families.parsedFiles);
-        {
-          expect(families.parsedFiles).toHaveLength(1);
-          const range = (line: number, startCol: number, endCol: number) => ({
-            startLine: line + prefix.length,
-            startCol,
-            endLine: line + prefix.length,
-            endCol,
-          });
-          const parsed = families.parsedFiles[0];
-          const module = parsed.scopes.find((scope) => scope.id === parsed.moduleScope)!;
-          expect([...module.typeBindings]).toEqual(
-            fixture === 'ambient'
-              ? [
-                  ['prisma', { rawName: 'any', declaredAtScope: module.id, source: 'annotation' }],
-                  [
-                    'supabase',
-                    { rawName: 'any', declaredAtScope: module.id, source: 'annotation' },
-                  ],
-                  [
-                    'ambientLet',
-                    { rawName: 'number', declaredAtScope: module.id, source: 'annotation' },
-                  ],
-                  [
-                    'exportedConst',
-                    { rawName: 'boolean', declaredAtScope: module.id, source: 'annotation' },
-                  ],
-                ]
-              : [],
-          );
-          expect(
-            families.parsedFiles[0].referenceSites
-              .filter(({ explicitReceiver }) => explicitReceiver && 'kind' in explicitReceiver)
-              .map(({ name, explicitReceiver }) => ({ name, explicitReceiver })),
-          ).toEqual([
-            {
-              name: 'findMany',
-              explicitReceiver: {
-                kind: 'chain',
-                root: { name: 'prisma', range: range(1, 0, 6) },
-                steps: [{ kind: 'member', name: 'user', range: range(1, 7, 11) }],
-              },
-            },
-            {
-              name: 'select',
-              explicitReceiver: {
-                kind: 'chain',
-                root: { name: 'supabase', range: range(2, 0, 8) },
-                steps: [
-                  { kind: 'member', name: 'from', range: range(2, 9, 13) },
-                  { kind: 'call', arity: 1, range: range(2, 0, 25) },
-                ],
-              },
-            },
-            {
-              name: 'findMany',
-              explicitReceiver: {
-                kind: 'chain',
-                root: { name: 'prisma', range: range(3, 0, 6) },
-                steps: [{ kind: 'member', name: 'user', range: range(3, 7, 11) }],
-              },
-            },
-          ]);
-        }
-
         const replay = createKnowledgeGraph();
         for (const node of families.declarationNodes) replay.addNode(node);
         for (const edge of families.structuralRelationships) replay.addRelationship(edge);
@@ -352,9 +282,6 @@ describe.each(['ambient', 'supported'] as const)(
       expect(producers.size).toBe(3);
       expect(producers.get('worker')).toEqual(producers.get('sequential'));
       expect(producers.get('recovery')).toEqual(producers.get('sequential'));
-      expect(parsedFilesByMode.size).toBe(3);
-      expect(parsedFilesByMode.get('worker')).toEqual(parsedFilesByMode.get('sequential'));
-      expect(parsedFilesByMode.get('recovery')).toEqual(parsedFilesByMode.get('sequential'));
     });
   },
 );

@@ -26,6 +26,7 @@ import { RepoHandle, BackendPort } from 'ontoindex-shared';
 import { recordToolCall } from './tool-telemetry.js';
 import { maybeScheduleAutoRefresh } from './auto-refresh.js';
 import { planDirtyOverlay } from '../../core/analyze-delta.js';
+import { sourceManifestDigest } from '../../core/indexing/source-manifest.js';
 import {
   initLbug,
   closeLbug,
@@ -42,6 +43,7 @@ import { LbugOpenError } from '../../core/lbug/open-error.js';
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
 import {
   listRegisteredRepos,
+  isValidParserEvidence,
   resolveActiveIndexGeneration,
   readActiveGenerationMeta,
   acquireIndexGenerationPin,
@@ -1325,6 +1327,9 @@ function workspacePreparationError(error: unknown): Error & { code: string; retr
               },
             }
           : {}),
+        ...(error.code === 'workspace_coverage_incomplete' && error.diagnostics
+          ? { diagnostics: { reason: error.diagnostics.reason } }
+          : {}),
         ...(error.code === 'workspace_too_large' && error.diagnostics
           ? {
               diagnostics: {
@@ -2285,7 +2290,11 @@ export class LocalBackend implements BackendPort {
   /** Admit a callback through the same prepared, pinned read scope as tool dispatch. */
   async withPreparedRepoRead<T>(
     repo: RepoHandle,
-    options: { needsRelationships: boolean; wantsWorkspaceGraph?: boolean; readMode?: 'committed' },
+    options: {
+      needsRelationships: boolean;
+      wantsWorkspaceGraph?: boolean;
+      readMode?: 'committed' | 'workspace';
+    },
     operation: () => Promise<T>,
   ): Promise<T> {
     const endUse = this.trackRepoUse(repo.id);
@@ -2319,15 +2328,22 @@ export class LocalBackend implements BackendPort {
                     if (!result || typeof result !== 'object' || Array.isArray(result)) {
                       throw new Error('Committed read requires a structured result.');
                     }
+                    const provenance = selected.meta?.sourceProvenance?.kind ?? 'unknown';
                     return {
                       ...result,
                       readContext: {
                         mode: 'committed',
                         indexedCommit: selected.meta!.lastCommit,
                         generation: selected.activeGeneration?.generationId ?? null,
-                        workingTreeIncluded: false,
+                        sourceProvenance: provenance,
+                        workingTreeIncluded:
+                          provenance === 'commit'
+                            ? false
+                            : provenance === 'working-tree'
+                              ? true
+                              : null,
                         excludedEvidence: [
-                          'uncommitted source changes',
+                          ...(provenance !== 'working-tree' ? ['uncommitted source changes'] : []),
                           'manual overlays',
                           'live LSP references',
                         ],
@@ -2336,7 +2352,9 @@ export class LocalBackend implements BackendPort {
                         ...(Array.isArray((result as any).warnings)
                           ? (result as any).warnings
                           : []),
-                        'Explicit committed-index read: uncommitted source changes and live enrichment are excluded.',
+                        provenance === 'commit'
+                          ? 'Explicit committed-index read: uncommitted source changes and live enrichment are excluded.'
+                          : 'Committed index provenance is not verified; working-tree bytes may be included.',
                       ],
                     } as T;
                   },
@@ -2348,20 +2366,50 @@ export class LocalBackend implements BackendPort {
           await pin.release();
         }
       }
+      if (options.readMode === 'workspace' && !isAutomaticWorkspaceEnabled()) {
+        throw workspacePreparationError(
+          new WorkspacePreparationError('workspace_coverage_incomplete', undefined, undefined, {
+            reason: 'automatic workspace is disabled (ONTOINDEX_AUTO_WORKSPACE)',
+          }),
+        );
+      }
       const deadline = performance.now() + WORKSPACE_PREPARATION_DEADLINE_MS;
       const signal = this.operationContext.getStore()?.signal;
       let snapshot: OverlaySnapshot;
       try {
         snapshot = await prepareWorkspaceRead({
           repo,
-          needsRelationships: options.needsRelationships,
-          wantsWorkspaceGraph: options.wantsWorkspaceGraph,
+          needsRelationships: options.readMode === 'workspace' || options.needsRelationships,
+          wantsWorkspaceGraph: options.readMode === 'workspace' || options.wantsWorkspaceGraph,
+          ...(options.readMode === 'workspace' ? { requireVerifiedBase: true } : {}),
           deadline,
           signal,
           beforeSnapshot: () => this.retainWorkspaceWatch(repo),
         });
       } catch (error) {
         throw workspacePreparationError(error);
+      }
+      let workspaceMeta: Awaited<ReturnType<typeof readActiveGenerationMeta>> | undefined;
+      if (options.readMode === 'workspace') {
+        workspaceMeta = await readActiveGenerationMeta(repo.storagePath);
+        const graph =
+          snapshot.usable &&
+          snapshot.capability === 'workspace-graph' &&
+          snapshot.coverage !== 'degraded' &&
+          snapshot.uncoveredPaths.size === 0;
+        const base =
+          !snapshot.usable &&
+          snapshot.dirtyPaths.size === 0 &&
+          (snapshot.configPaths?.size ?? 0) === 0 &&
+          snapshot.baseMatches === true &&
+          (snapshot.baseProvenance === 'commit' || snapshot.baseVerified === true);
+        if (!graph && !base) {
+          throw workspacePreparationError(
+            new WorkspacePreparationError('workspace_coverage_incomplete', undefined, undefined, {
+              reason: snapshot.reason ?? 'workspace graph coverage is incomplete',
+            }),
+          );
+        }
       }
       // withPinnedOverlay owns the actual generation lease and releases it on exit.
       // Keep the request hook idempotent for downstream preparation ownership.
@@ -2378,12 +2426,95 @@ export class LocalBackend implements BackendPort {
       };
       try {
         return await readRequestContext.run(context, async () => {
-          if (!snapshot.usable) return operation();
+          const runOperation = async () => {
+            const result = await operation();
+            if (options.readMode !== 'workspace') return result;
+            if (!result || typeof result !== 'object' || Array.isArray(result)) {
+              throw new Error('Workspace read requires a structured result.');
+            }
+            const sourceManifest = workspaceMeta?.meta?.sourceManifest;
+            const coverage = snapshot.usable ? snapshot.coverage : sourceManifest?.coverage;
+            const parserEvidence = workspaceMeta?.meta?.parserEvidence;
+            const validParserEvidence = isValidParserEvidence(parserEvidence);
+            const parseErrorPathCount = snapshot.usable
+              ? snapshot.parseErrorPaths.size
+              : validParserEvidence
+                ? parserEvidence!.parseErrorCount
+                : null;
+            const parseErrorPaths = snapshot.usable
+              ? [...snapshot.parseErrorPaths]
+              : validParserEvidence
+                ? [...new Set(parserEvidence!.parseErrorFiles)]
+                : [];
+            const parseErrorPathSample = parseErrorPaths.sort().slice(0, 10);
+            const partial =
+              parseErrorPathCount === null ||
+              parseErrorPathCount > 0 ||
+              (!snapshot.usable && parserEvidence?.truncated === true) ||
+              coverage !== 'complete';
+            return {
+              ...result,
+              readContext: {
+                mode: 'workspace',
+                workingTreeIncluded: true,
+                source: snapshot.usable ? 'workspace-graph' : 'base',
+                generation: snapshot.usable
+                  ? (snapshot.generation ?? null)
+                  : (workspaceMeta?.activeGeneration?.generationId ?? null),
+                baseCommit: snapshot.baseCommit ?? null,
+                inputDigest: snapshot.usable
+                  ? (snapshot.manifestDigest ?? null)
+                  : sourceManifest
+                    ? sourceManifestDigest(sourceManifest)
+                    : null,
+                semanticCoverage: partial ? 'partial' : 'complete',
+                parseErrorPathCount,
+                parseErrorPathSample,
+                parseErrorPathSampleTruncated:
+                  parseErrorPathCount === null
+                    ? null
+                    : parseErrorPathCount > parseErrorPathSample.length ||
+                      (!snapshot.usable && parserEvidence?.truncated === true),
+              },
+              ...(partial
+                ? {
+                    warnings: [
+                      ...(Array.isArray((result as any).warnings) ? (result as any).warnings : []),
+                      'Negative lookups and impact completeness are not authoritative because semantic coverage is partial.',
+                    ],
+                  }
+                : {}),
+            } as T;
+          };
+          if (!snapshot.usable) {
+            if (options.readMode !== 'workspace') return runOperation();
+            if (
+              (workspaceMeta?.activeGeneration?.generationId ?? null) !==
+              (snapshot.baseGenerationId ?? null)
+            ) {
+              throw workspacePreparationError(
+                new WorkspacePreparationError(
+                  'workspace_coverage_incomplete',
+                  undefined,
+                  undefined,
+                  { reason: 'index generation changed during preparation; retry' },
+                ),
+              );
+            }
+            const pin = await acquireIndexGenerationPin(
+              workspaceMeta?.activeGeneration?.lbugPath ?? path.join(repo.storagePath, 'lbug'),
+            );
+            try {
+              return await withPinnedGeneration(repo.id, pin.dbPath, runOperation);
+            } finally {
+              await pin.release();
+            }
+          }
           let enteredHandler = false;
           try {
             return await withPinnedOverlay(repo, snapshot, () => {
               enteredHandler = true;
-              return operation();
+              return runOperation();
             });
           } catch (error) {
             if (

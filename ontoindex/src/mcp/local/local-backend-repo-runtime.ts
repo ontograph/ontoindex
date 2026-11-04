@@ -7,6 +7,11 @@ import { RepoHandle } from 'ontoindex-shared';
 import { resolveActiveIndexGeneration } from '../../storage/repo-manager.js';
 import { readActiveGenerationMeta } from '../../storage/repo-manager.js';
 import {
+  computeSourceManifest,
+  sourceInputsMatch,
+  workspaceIgnorePolicyDigest,
+} from '../../core/indexing/source-manifest.js';
+import {
   isAutomaticWorkspaceEnabled,
   evictOverlayState,
   getOverlaySnapshot,
@@ -107,6 +112,7 @@ export interface WorkspaceReadRepo {
 
 export interface WorkspacePreparationDependencies {
   getSnapshot(repo: WorkspaceReadRepo): Promise<OverlaySnapshot>;
+  verifyBaseMatchesWorkingTree(repo: WorkspaceReadRepo): Promise<boolean>;
   acquireLock(repoPath: string): Promise<{ release(): Promise<void> }>;
   buildWorkspaceGraph(
     repo: WorkspaceReadRepo,
@@ -129,14 +135,16 @@ export class WorkspacePreparationError extends Error {
       | 'workspace_busy'
       | 'workspace_build_failed'
       | 'workspace_too_large'
+      | 'workspace_coverage_incomplete'
       | 'workspace_timeout'
       | 'workspace_cancelled',
     message: string = code,
     options?: ErrorOptions,
     public readonly diagnostics?: {
-      observedIndexedFiles: number;
-      maxIndexedFiles: number;
-      requiredCapability: 'workspace-graph';
+      observedIndexedFiles?: number;
+      maxIndexedFiles?: number;
+      requiredCapability?: 'workspace-graph';
+      reason?: string;
     },
     public readonly failure?: WorkspaceFailureDiagnostics,
     public readonly timeout?: WorkspaceTimeoutDiagnostics,
@@ -213,6 +221,15 @@ export async function buildWorkspaceGraph(
 
 const workspaceDependencies: WorkspacePreparationDependencies = {
   getSnapshot: getOverlaySnapshot,
+  verifyBaseMatchesWorkingTree: async (repo) => {
+    const { meta } = await readActiveGenerationMeta(repo.storagePath);
+    if (!meta?.sourceManifest) return false;
+    const current = await computeSourceManifest(repo.repoPath, {
+      includePaths: meta.includePaths ?? meta.sourceManifest.includePaths,
+      pipelineProfile: meta.sourceManifest.pipelineProfile,
+    });
+    return sourceInputsMatch(meta.sourceManifest, current);
+  },
   acquireLock: async (repoPath) =>
     (await import('../../cli/analyze.js')).acquireAnalyzeLock(repoPath),
   buildWorkspaceGraph,
@@ -222,6 +239,8 @@ const workspaceDependencies: WorkspacePreparationDependencies = {
   getInputIdentity: workspaceConfigurationIdentity,
   now: () => Date.now(),
 };
+
+const verifiedBases = new Map<string, boolean>();
 
 const FAILED_BUILD_COOLDOWN_MS = 30_000;
 // A held analyze lock usually means the user is running `ontoindex analyze`; recheck soon, not per request.
@@ -454,6 +473,7 @@ export async function prepareWorkspaceRead(options: {
   needsRelationships: boolean;
   /** Require the working-tree graph even when no relationships are needed. */
   wantsWorkspaceGraph?: boolean;
+  requireVerifiedBase?: boolean;
   signal?: AbortSignal;
   deadline?: number;
   /** Shared watcher startup is awaited inside the caller's preparation budget. */
@@ -527,6 +547,48 @@ export async function prepareWorkspaceRead(options: {
       baseMatches: snapshot.baseMatches ?? true,
       headChanged: snapshot.headChanged ?? false,
     });
+    if (
+      options.requireVerifiedBase &&
+      decision.action === 'reuse-base' &&
+      snapshot.baseProvenance !== 'commit'
+    ) {
+      let verified: boolean | undefined;
+      try {
+        const { meta } = await readActiveGenerationMeta(options.repo.storagePath);
+        const key = JSON.stringify([
+          options.repo.id,
+          snapshot.baseGenerationId ?? null,
+          snapshot.currentHead ?? null,
+          await workspaceIgnorePolicyDigest(options.repo.repoPath),
+          meta?.includePaths ?? meta?.sourceManifest?.includePaths ?? null,
+        ]);
+        verified = options.dependencies?.verifyBaseMatchesWorkingTree
+          ? undefined
+          : verifiedBases.get(key);
+        if (verified === undefined) {
+          verified = await dependencies.verifyBaseMatchesWorkingTree(options.repo);
+          // Injected verifiers are request-local and must not share cached results.
+          if (!options.dependencies?.verifyBaseMatchesWorkingTree && snapshot.currentHead) {
+            if (verifiedBases.size >= 64) verifiedBases.delete(verifiedBases.keys().next().value!);
+            verifiedBases.set(key, verified);
+          }
+        }
+      } catch (cause) {
+        throw new WorkspacePreparationError(
+          'workspace_coverage_incomplete',
+          undefined,
+          { cause },
+          { reason: 'committed index verification failed' },
+        );
+      }
+      assertCallerActive();
+      if (!verified)
+        throw new WorkspacePreparationError('workspace_coverage_incomplete', undefined, undefined, {
+          reason:
+            'committed index bytes differ from the clean working tree; refresh with ontoindex analyze',
+        });
+      return { ...snapshot, baseVerified: true };
+    }
     if (decision.action !== 'build-workspace-graph' && decision.action !== 'build-symbols-overlay')
       return snapshot;
     const workspaceGraph = decision.action === 'build-workspace-graph';
@@ -552,7 +614,7 @@ export async function prepareWorkspaceRead(options: {
     if (fileCount !== undefined && fileCount > maxFiles) {
       throw new WorkspacePreparationError(
         'workspace_too_large',
-        `Repository has ${fileCount} indexed files (limit ${maxFiles}); a full workspace graph build is refused. To prepare a separate bounded workspace graph while preserving the committed index, explicitly run \`ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph\` in the repository. Rerun this command after workspace inputs change.`,
+        `Repository has ${fileCount} indexed files (limit ${maxFiles}); a full workspace graph build is refused (configure ONTOINDEX_WORKSPACE_MAX_FILES to change the limit). To prepare a separate bounded workspace graph while preserving the committed index, explicitly run \`ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph\` in the repository. Rerun this command after workspace inputs change.`,
         undefined,
         {
           observedIndexedFiles: fileCount,
@@ -598,6 +660,7 @@ export async function prepareWorkspaceRead(options: {
       snapshot.currentHead,
       snapshot.baseGenerationId,
       snapshot.baseCommit,
+      snapshot.baseProvenance,
       snapshot.generation,
       snapshot.reason,
       [...snapshot.dirtyPaths].sort(),
@@ -612,6 +675,7 @@ export async function prepareWorkspaceRead(options: {
       snapshot.currentHead,
       snapshot.baseGenerationId,
       snapshot.baseCommit,
+      snapshot.baseProvenance,
       [...snapshot.dirtyPaths].sort(),
       [...snapshot.tombstones].sort(),
       [...configPaths].sort(),
