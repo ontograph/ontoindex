@@ -64,7 +64,9 @@ export interface ResourceContractSummaryEntry {
 const yaml = createRequire(import.meta.url)('js-yaml') as typeof import('js-yaml');
 
 function yamlString(value: unknown): string {
-  return yaml.dump(String(value), { forceQuotes: true, quotingType: '"', lineWidth: -1 }).trimEnd();
+  return yaml
+    .dump(String(value), { forceQuotes: true, quoteStyle: 'double', lineWidth: -1 })
+    .trimEnd();
 }
 
 function errorMessage(err: unknown): string {
@@ -984,7 +986,7 @@ async function getAnalysisPlanResource(
       lines.push(`  - pack: ${yamlString(step.packId)}`);
       lines.push(`    tool: ${yamlString(step.tool)}`);
       lines.push(
-        `    params: ${yaml.dump(step.params, { flowLevel: 0, forceQuotes: true, quotingType: '"', lineWidth: -1 }).trimEnd()}`,
+        `    params: ${yaml.dump(step.params, { flowLevel: 0, forceQuotes: true, quoteStyle: 'double', lineWidth: -1 }).trimEnd()}`,
       );
     }
 

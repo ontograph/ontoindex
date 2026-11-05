@@ -10,6 +10,7 @@ All notable changes to OntoIndex will be documented in this file.
 - On an oversized dirty workspace, a relationship read that falls back to the committed index also starts the existing `analyze --workspace-graph` preparation in the background. It runs once per working-tree state (retried after an edit, or after an hour), waits while the committed index is behind HEAD so the regular refresh goes first, and is skipped while analysis runs or when `ONTOINDEX_AUTO_REFRESH=0` or `ONTOINDEX_AUTO_WORKSPACE=0`. Later reads reuse that graph and include uncommitted files.
 - Workspace-graph builds get an 8 GB V8 heap, the same as `analyze`, instead of inheriting the MCP server's smaller `--max-old-space-size`; a larger configured heap is kept.
 - Committed `inspect` explore and related follow-up hints keep `read_mode: "committed"`.
+- Dependencies: `js-yaml` 5.5 (the generated YAML resources keep the same double-quoted output) and `p-limit` 7.3.3.
 
 ## [2.4.22] - 2026-11-05
 

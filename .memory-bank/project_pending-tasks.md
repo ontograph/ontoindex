@@ -19,6 +19,12 @@ status: active
 
 # OntoIndex Pending Tasks
 
+2026-11-05: post-2.4.22 fixes and dependency bumps are on main, unbuilt.
+Open: build and install with a dirty-workspace prebuild smoke, removal of
+2.4.18 and 2.4.19 after the Nov 4 session restarts, and an owner decision on
+retiring the GN tracker (NEXT-3 blockers cite closed PRs).
+Evidence: [post-2.4.22 fixes](audit_session-2026-11-05-post-2422-fixes.md).
+
 2026-11-03: the dirty-search warning repair is delivered in locally installed
 2.4.14 (`b2159cb`), pushed to main. Full versioned-tree gate, installed smoke and
 twelve Rust/TS/JS MCP checks passed. Cleanup still defers nine older copies:
