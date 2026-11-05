@@ -4,8 +4,9 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
-- TS/JS shadowing checks promote a nested block function only when Annex B allows it: generators, async functions, and code in modules or class bodies no longer count as shadowing the outer class, so their constructor and factory return inference is restored.
+- TS/JS shadowing checks promote a nested block function only when Annex B allows it: generators, async functions, and code in modules, class bodies, or under a `"use strict"` directive no longer count as shadowing the outer class, so their constructor and factory return inference is restored.
 - Automatic generation retention keeps an old legacy generation that lacks a regular `meta.json`, `snapshot.json`, or `lbug` file, matching `ontoindex clean --generations`.
+- The workspace prebuild cooldown also compares each dirty file's change time, so an equal-size edit that restores the file's modification time is retried after the normal interval instead of waiting an hour.
 - Upgrade note: readers from before 2.2.9 do not write reader pins, so stop those processes before upgrading; automatic retention cannot detect them.
 
 ## [2.5.3] - 2026-11-05

@@ -36,15 +36,22 @@ export function forEachPatternName(
   return false;
 }
 
+// Parsed tree -> whether its program is ES module code, so wide files scan top-level once.
+const moduleByProgram = new WeakMap<object, boolean>();
+
 /** Whether a nearer TS/JS value binding hides a program-level name. */
 export function isNameShadowed(node: SyntaxNode, name: string): boolean {
   const binds = (pattern: SyntaxNode | null): boolean =>
     forEachPatternName(pattern, (binding) => binding === name);
   let root = node;
   while (root.parent) root = root.parent;
-  const isModule = root.namedChildren.some((child) =>
-    ['import_statement', 'export_statement'].includes(child.type),
-  );
+  let isModule = moduleByProgram.get(root.tree);
+  if (isModule === undefined) {
+    isModule = root.namedChildren.some((child) =>
+      ['import_statement', 'export_statement'].includes(child.type),
+    );
+    moduleByProgram.set(root.tree, isModule);
+  }
 
   for (
     let current: SyntaxNode | null = node;
@@ -77,14 +84,26 @@ export function isNameShadowed(node: SyntaxNode, name: string): boolean {
           isStrict = true;
           break;
         }
-        if (ancestor.type === 'statement_block' || ancestor.type === 'program') {
-          // A "use strict" directive prologue makes this body and everything inside it strict.
+        if (
+          ancestor.type === 'program' ||
+          (ancestor.type === 'statement_block' &&
+            ancestor.parent?.childForFieldName('body')?.id === ancestor.id &&
+            [
+              'function_declaration',
+              'function_expression',
+              'generator_function_declaration',
+              'generator_function',
+              'arrow_function',
+              'method_definition',
+            ].includes(ancestor.parent.type))
+        ) {
+          // Only program and function bodies have directive prologues; an escaped spelling is not "use strict".
           for (const statement of ancestor.namedChildren) {
-            if (statement.type === 'comment') continue;
+            if (statement.type === 'comment' || statement.type === 'hash_bang_line') continue;
             const directive =
               statement.type === 'expression_statement' && statement.firstNamedChild;
             if (!directive || directive.type !== 'string') break;
-            if (directive.text.slice(1, -1) === 'use strict') isStrict = true;
+            if (['"use strict"', "'use strict'"].includes(directive.text)) isStrict = true;
           }
           if (isStrict) break;
         }

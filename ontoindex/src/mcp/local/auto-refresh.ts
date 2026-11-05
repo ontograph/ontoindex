@@ -222,7 +222,7 @@ async function scheduleWorkspacePrebuild(
             if (error.code !== 'ENOENT') throw error;
             return null;
           });
-        files.push([file, stat ? [stat.size, stat.mtimeMs] : null]);
+        files.push([file, stat ? [stat.size, stat.mtimeMs, stat.ctimeMs] : null]);
       }
     }
     const identity = createHash('sha256')
