@@ -7,6 +7,7 @@ All notable changes to OntoIndex will be documented in this file.
 - TypeScript and JavaScript shadowing checks follow JavaScript scope: a `catch` or loop binding no longer hides a factory's `return new User()` outside it, a `var` declared in a nested block shadows the whole function, and all cases of one `switch` share a scope. Factory return inference reuses the same check.
 - Automatic workspace-graph preparation is skipped for `huge-repo-symbols` and include-path-scoped indexes, and retries when the active base generation changes.
 - Overlay `readContext.uncoveredPathSample` entries are capped at 256 characters, with `uncoveredPathSampleTruncated` when the sample is incomplete.
+- Dependencies: `minimatch` 11.0.4 (same match results as 10.2.4 for every glob form the code uses) and `@types/node` 26.6.6.
 
 ## [2.5.1] - 2026-11-05
 

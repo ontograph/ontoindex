@@ -19,9 +19,9 @@ status: active
 
 # OntoIndex Pending Tasks
 
-2026-11-05: post-2.4.22 fixes and dependency bumps are on main, unbuilt.
+2026-11-05: 2.5.1 is installed locally; its qualification fixes (`26dfd8d`) are on main and master, unbuilt.
 Open: build and install with a dirty-workspace prebuild smoke, removal of
-2.4.18 and 2.4.19 after the Nov 4 session restarts, and an owner decision on
+2.4.19 after the Nov 4 session restarts, and an owner decision on
 retiring the GN tracker (NEXT-3 blockers cite closed PRs).
 Evidence: [post-2.4.22 fixes](audit_session-2026-11-05-post-2422-fixes.md).
 
