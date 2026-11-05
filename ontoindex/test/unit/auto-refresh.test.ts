@@ -283,6 +283,32 @@ describe('automatic workspace prebuild', () => {
     expect(await fs.readFile(stamp, 'utf8')).not.toBe(firstIdentity);
   });
 
+  it('retries a same-length dirty edit with its mtime restored after the interval', async () => {
+    const { repo } = await fullFixture();
+    const file = path.join(repo.repoPath, 'src', 'main.ts');
+    await fs.writeFile(file, 'dirty\n');
+    // Use a whole-second mtime so fs.utimes restores it without rounding loss.
+    const timestamp = Math.floor(Date.now() / 1000);
+    await fs.utimes(file, timestamp, timestamp);
+    const before = await fs.stat(file);
+    let now = Date.now();
+    const deps = { spawnRefresh, now: () => now };
+    expect(await maybeScheduleWorkspacePrebuild(repo, deps)).toContain('started in the background');
+    expect(spawnRefresh).toHaveBeenCalledTimes(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await fs.writeFile(file, 'other\n');
+    await fs.utimes(file, before.atime, before.mtime);
+    const after = await fs.stat(file);
+    expect(after.size).toBe(before.size);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+    expect(after.ctimeMs).not.toBe(before.ctimeMs);
+
+    now += 300001;
+    expect(await maybeScheduleWorkspacePrebuild(repo, deps)).toContain('started in the background');
+    expect(spawnRefresh).toHaveBeenCalledTimes(2);
+  });
+
   it('allows another attempt for unchanged inputs after one hour', async () => {
     const { repo } = await fullFixture();
     let now = Date.now();

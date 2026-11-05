@@ -57,6 +57,26 @@ describe.each([
       true,
     ],
     [
+      'plain block "use strict" is not a directive',
+      'function f() { { "use strict"; } if (true) { function User() {} } probe(); }',
+      true,
+    ],
+    [
+      'escaped "use strict" is not strict',
+      'function f() { "use\\x20strict"; if (true) { function User() {} } probe(); }',
+      true,
+    ],
+    [
+      'single-quoted strict function block function',
+      "function f() { 'use strict'; if (true) { function User() {} } probe(); }",
+      false,
+    ],
+    [
+      'hashbang strict script block function',
+      '#!/usr/bin/env node\n"use strict"; function f() { if (true) { function User() {} } probe(); }',
+      false,
+    ],
+    [
       'hoisted async block function',
       'function f() { if (true) { async function User() {} } probe(); }',
       false,
