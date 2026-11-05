@@ -560,6 +560,7 @@ describe('request workspace gate', () => {
         excludedEvidence: ['working-tree relationships', 'uncovered dirty paths'],
         uncoveredPathCount: 12,
         uncoveredPathSample: uncoveredPaths.slice(0, 10),
+        uncoveredPathSampleTruncated: true,
       });
       expect(result.warnings).toContain(
         'Working-tree graph unavailable (workspace_too_large); answered from the committed index plus the uncommitted-symbols overlay. Ranking omits working-tree relationships.',
@@ -576,6 +577,23 @@ describe('request workspace gate', () => {
       );
       expect(prepareWorkspaceRead).toHaveBeenCalledTimes(2);
       expect(maybeScheduleWorkspacePrebuild).not.toHaveBeenCalled();
+    });
+
+    it.each([0, 256, 257])('bounds uncovered path samples of length %i', async (length) => {
+      const file = 'x'.repeat(length);
+      vi.mocked(prepareWorkspaceRead)
+        .mockRejectedValueOnce(tooLarge())
+        .mockResolvedValueOnce({
+          ...cleanSnapshot(),
+          uncoveredPaths: new Set(length ? [file] : []),
+        });
+      (backend as any).repoToolHandlers.search = async () => ({ items: [], warnings: [] });
+      const result = (await backend.callTool('search', { query: 'x' })) as { readContext: unknown };
+      expect(result.readContext).toMatchObject({
+        uncoveredPathCount: length ? 1 : 0,
+        uncoveredPathSample: length ? [length > 256 ? `${file.slice(0, 255)}…` : file] : [],
+        uncoveredPathSampleTruncated: length > 256,
+      });
     });
 
     it('excludes only working-tree relationships when the symbols overlay has no uncovered paths', async () => {

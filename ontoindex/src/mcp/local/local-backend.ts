@@ -2607,6 +2607,10 @@ export class LocalBackend implements BackendPort {
                 ) {
                   return overlayResult;
                 }
+                const uncoveredPaths = [...(snapshot?.uncoveredPaths ?? [])].sort();
+                const uncoveredPathSample = uncoveredPaths
+                  .slice(0, 10)
+                  .map((file) => (file.length > 256 ? `${file.slice(0, 255)}…` : file));
                 return {
                   ...overlayResult,
                   readContext: {
@@ -2623,7 +2627,10 @@ export class LocalBackend implements BackendPort {
                         : []),
                     ],
                     uncoveredPathCount: snapshot?.uncoveredPaths.size ?? 0,
-                    uncoveredPathSample: [...(snapshot?.uncoveredPaths ?? [])].sort().slice(0, 10),
+                    uncoveredPathSample,
+                    uncoveredPathSampleTruncated:
+                      uncoveredPaths.length > 10 ||
+                      uncoveredPaths.some((file) => file.length > 256),
                   },
                 };
               },

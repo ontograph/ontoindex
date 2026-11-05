@@ -8,7 +8,7 @@ import type {
   MethodVisibility,
 } from '../../method-types.js';
 import { hasKeyword } from '../../field-extractors/configs/helpers.js';
-import { extractSimpleTypeName, forEachPatternName } from '../../type-extractors/shared.js';
+import { extractSimpleTypeName, isNameShadowed } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -197,28 +197,10 @@ function inferConstructorReturnType(node: SyntaxNode): string | undefined {
   if (!body || node.type.startsWith('generator_function') || hasKeyword(node, '*'))
     return undefined;
 
-  const bindings = new Set<string>();
-  const addBindings = (pattern: SyntaxNode | null) => {
-    forEachPatternName(pattern, (name) => {
-      bindings.add(name);
-    });
-  };
-  addBindings(node.childForFieldName('parameters'));
-
   let returnType: string | undefined;
   const pending = [body];
   while (pending.length) {
     const current = pending.pop()!;
-    if (current.type === 'catch_clause') addBindings(current.childForFieldName('parameter'));
-    if (current.type === 'for_in_statement') addBindings(current.childForFieldName('left'));
-    if (
-      current.type === 'variable_declarator' ||
-      current.type === 'class_declaration' ||
-      current.type === 'function_declaration' ||
-      current.type === 'generator_function_declaration'
-    ) {
-      addBindings(current.childForFieldName('name'));
-    }
     if (
       [
         'function_declaration',
@@ -236,12 +218,13 @@ function inferConstructorReturnType(node: SyntaxNode): string | undefined {
       const constructor =
         expression?.type === 'new_expression' ? expression.childForFieldName('constructor') : null;
       if (constructor?.type !== 'identifier') return undefined;
+      if (isNameShadowed(constructor, constructor.text)) return undefined;
       if (returnType !== undefined && returnType !== constructor.text) return undefined;
       returnType = constructor.text;
     }
     pending.push(...current.namedChildren);
   }
-  return returnType && !bindings.has(returnType) ? returnType : undefined;
+  return returnType;
 }
 
 /** Extract the TS return annotation, JSDoc type, or a conservative constructor return. */
