@@ -24,6 +24,8 @@ import {
   loadFTSExtension,
   loadVectorExtension,
 } from '../../src/core/lbug/lbug-adapter.js';
+import * as adapter from '../../src/core/lbug/lbug-adapter.js';
+import * as pool from '../../src/core/lbug/pool-adapter.js';
 
 describe('LadybugDB extension loading', () => {
   const dbPath = '/tmp/ontoindex-extension-loading.test.lbug';
@@ -33,6 +35,7 @@ describe('LadybugDB extension loading', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(adapter, 'resolveLocalLbugExtensionPath').mockResolvedValue(null);
     delete process.env.ONTOINDEX_ALLOW_EXTENSION_INSTALL;
     process.env.ONTOINDEX_LADYBUG_EXTENSION_DIR = '/tmp/ontoindex-missing-extensions';
     process.env.ONTOINDEX_LADYBUG_EXTENSIONS_CACHE = '/tmp/ontoindex-missing-extension-cache';
@@ -44,6 +47,8 @@ describe('LadybugDB extension loading', () => {
 
   afterEach(async () => {
     await closeLbug();
+    await pool.closeLbug('pool-vector-loading');
+    vi.restoreAllMocks();
     for (const [key, value] of [
       ['ONTOINDEX_ALLOW_EXTENSION_INSTALL', originalInstallFlag],
       ['ONTOINDEX_LADYBUG_EXTENSION_DIR', originalExtensionDir],
@@ -119,6 +124,53 @@ describe('LadybugDB extension loading', () => {
     });
 
     await initLbug(dbPath);
+
+    expect(extensionQueries(/EXTENSION VECTOR|INSTALL VECTOR/)).toEqual([
+      'LOAD EXTENSION VECTOR',
+      'INSTALL VECTOR',
+      'LOAD EXTENSION VECTOR',
+    ]);
+  });
+
+  it('loads pooled VECTOR from an escaped local path without installing', async () => {
+    const localPath = "/tmp/onto'index/libvector.lbug_extension";
+    vi.mocked(adapter.resolveLocalLbugExtensionPath).mockImplementation(async (extension) =>
+      extension === 'vector' ? localPath : null,
+    );
+    mocks.query.mockResolvedValue({ getAll: async () => [], close: vi.fn() });
+
+    await pool.initLbugWithDb('pool-vector-loading', {} as never, dbPath);
+
+    expect(
+      mocks.query.mock.calls.map(([query]) => query).filter((query) => /vector/i.test(query)),
+    ).toEqual(["LOAD EXTENSION '/tmp/onto\\'index/libvector.lbug_extension'"]);
+  });
+
+  it('leaves pooled VECTOR unavailable without installing by default', async () => {
+    mocks.query.mockImplementation(async (query: string) => {
+      if (query === 'LOAD EXTENSION VECTOR') throw new Error('extension vector not found');
+      return { getAll: async () => [], close: vi.fn() };
+    });
+
+    await expect(
+      pool.initLbugWithDb('pool-vector-loading', {} as never, dbPath),
+    ).resolves.toBeUndefined();
+
+    expect(extensionQueries(/EXTENSION VECTOR|INSTALL VECTOR/)).toEqual(['LOAD EXTENSION VECTOR']);
+  });
+
+  it('installs pooled VECTOR only after bare loading fails and installation is enabled', async () => {
+    process.env.ONTOINDEX_ALLOW_EXTENSION_INSTALL = '1';
+    let installed = false;
+    mocks.query.mockImplementation(async (query: string) => {
+      if (query === 'LOAD EXTENSION VECTOR' && !installed) {
+        throw new Error('extension vector not found');
+      }
+      if (query === 'INSTALL VECTOR') installed = true;
+      return { getAll: async () => [], close: vi.fn() };
+    });
+
+    await pool.initLbugWithDb('pool-vector-loading', {} as never, dbPath);
 
     expect(extensionQueries(/EXTENSION VECTOR|INSTALL VECTOR/)).toEqual([
       'LOAD EXTENSION VECTOR',

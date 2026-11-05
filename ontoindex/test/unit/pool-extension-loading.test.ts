@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   resolveLocalLbugExtensionPath: mocks.resolveLocalLbugExtensionPath,
+  lbugExtensionInstallAllowed: () => false,
 }));
 
 vi.mock('@ladybugdb/core', () => ({
@@ -47,8 +48,9 @@ describe('pool extension loading', () => {
   it('tries an escaped resolved FTS path before the bare fallback', async () => {
     await initLbugWithDb(repoId, {} as never, '/tmp/pool-extension-loading.lbug');
 
-    expect(mocks.resolveLocalLbugExtensionPath).toHaveBeenCalledOnce();
+    expect(mocks.resolveLocalLbugExtensionPath).toHaveBeenCalledTimes(2);
     expect(mocks.resolveLocalLbugExtensionPath).toHaveBeenCalledWith('fts');
+    expect(mocks.resolveLocalLbugExtensionPath).toHaveBeenCalledWith('vector');
     expect(mocks.query.mock.calls.slice(0, 2).map(([query]) => query)).toEqual([
       "LOAD EXTENSION '/tmp/onto\\'index/libfts.lbug_extension'",
       'LOAD EXTENSION fts',
