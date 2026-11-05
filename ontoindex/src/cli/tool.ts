@@ -45,12 +45,16 @@ async function callNavigationTool(
 ): Promise<unknown> {
   if (params.read_mode !== undefined) {
     if (
-      params.read_mode !== 'committed' ||
+      (params.read_mode !== 'committed' && params.read_mode !== 'workspace') ||
       typeof params.repo !== 'string' ||
       !params.repo.trim() ||
       params.repo.startsWith('@')
     ) {
-      throw new Error('Committed reads require an explicit single repository (--repo <name>).');
+      throw new Error(
+        params.read_mode === 'committed'
+          ? 'Committed reads require an explicit single repository (--repo <name>).'
+          : 'Read mode must be committed or workspace and requires an explicit single repository (--repo <name>).',
+      );
     }
     if (
       params.consume_enrichment_facts === true ||
@@ -58,14 +62,16 @@ async function callNavigationTool(
       params.include_markdown_context === true ||
       params.include_markdown_ppr === true
     ) {
-      throw new Error('Committed reads do not support live or external enrichment.');
+      throw new Error(
+        `${params.read_mode === 'committed' ? 'Committed' : 'Workspace'} reads do not support live or external enrichment.`,
+      );
     }
   }
   // Report the same 1-based source lines as the equivalent MCP facade route.
   const [tool, action] = NAVIGATION_ROUTES[name];
   try {
     const backend = await getBackend();
-    if (params.read_mode === 'committed') {
+    if (params.read_mode === 'committed' || params.read_mode === 'workspace') {
       const repo = await backend.resolveRepo(params.repo as string);
       await backend.ensureRepoInitialized(repo.id);
       return projectResponseSourceLines(
@@ -73,7 +79,7 @@ async function callNavigationTool(
         action,
         await backend.withPreparedRepoRead(
           repo,
-          { needsRelationships: true, readMode: 'committed' },
+          { needsRelationships: true, readMode: params.read_mode },
           () => backend.callTool(name, params),
         ),
       );
@@ -91,7 +97,9 @@ async function callNavigationTool(
     const diagnostics = recordField(err, 'diagnostics');
     console.error(
       `OntoIndex: ${code}${diagnostics ? ` ${JSON.stringify(diagnostics)}` : ''}. ` +
-        'Use --repo <name> --read-mode committed to read the indexed commit only (uncommitted changes excluded).',
+        (params.read_mode === 'workspace'
+          ? 'As an explicit alternative, use --repo <name> --read-mode committed to read the last index; readContext.sourceProvenance reports whether it includes uncommitted changes.'
+          : 'Use --repo <name> --read-mode committed to read the last index; readContext.sourceProvenance reports whether it includes uncommitted changes.'),
     );
     process.exitCode = 1;
     return NAVIGATION_PREPARATION_FAILED;
@@ -186,7 +194,7 @@ export async function queryCommand(
     includePath?: string[];
     excludePath?: string[];
     typed?: boolean;
-    readMode?: 'committed';
+    readMode?: 'committed' | 'workspace';
     consumeEnrichmentFacts?: boolean;
     includePassiveRelatedFacts?: boolean;
     includeMarkdownContext?: boolean;
@@ -242,7 +250,7 @@ export async function contextCommand(
     repo?: string;
     file?: string;
     uid?: string;
-    readMode?: 'committed';
+    readMode?: 'committed' | 'workspace';
     content?: boolean;
   },
 ): Promise<void> {
@@ -274,7 +282,7 @@ export async function impactCommand(
     repo?: string;
     depth?: string;
     includeTests?: boolean;
-    readMode?: 'committed';
+    readMode?: 'committed' | 'workspace';
     uid?: string;
   },
 ): Promise<void> {

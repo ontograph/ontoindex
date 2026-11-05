@@ -1,10 +1,9 @@
 /**
  * `LanguageClassification` — RFC §6.1 Ring 3 / Ring 4 governance.
  *
- * Classifies each `SupportedLanguages` member for the rollout. Ring 4 (DAG
- * retirement) is gated on *all production languages* being registry-primary
- * and stable for one release cycle; `experimental` and `quarantined`
- * languages do not block.
+ * Classifies each `SupportedLanguages` member. This was the rollout gate for
+ * the registry-primary scope reader; OntoIndex removed that reader, so the
+ * classification is historical and has no consumer in the indexer.
  *
  * Initial classification (locked in Ring 1 #910):
  *   - production: javascript, typescript, python, java, c, cpp, csharp, go,

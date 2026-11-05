@@ -18,7 +18,6 @@ function fixture(): ScopeRetentionCandidateFamilies {
     },
   ] as const;
   return {
-    parsedFiles: [],
     calls: [{ filePath, sourceId: declarations[0].nodeId, calledName: 'target', callForm: 'free' }],
     assignments: [
       {
@@ -58,15 +57,6 @@ function snapshot(graph: ReturnType<typeof createKnowledgeGraph>) {
 describe('retained parse reconstruction', () => {
   it('reruns calls and writes and returns live parse owners and extraction arrays', async () => {
     const families = fixture();
-    // Scope DefIds use a different identity space from legacy graph node IDs.
-    families.parsedFiles.push({
-      filePath: 'src/example.ts',
-      moduleScope: 'module:scope-id',
-      parsedImports: [],
-      localDefs: [],
-      referenceSites: [],
-      scopes: [],
-    });
     families.fileBindings.push({ ...families.fileBindings[0]! });
     families.exportedTypes.push({ ...families.exportedTypes[0]! });
     const graph = createKnowledgeGraph();

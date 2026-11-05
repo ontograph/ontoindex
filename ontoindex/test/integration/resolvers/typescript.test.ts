@@ -3,6 +3,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
+
 import {
   FIXTURES,
   getRelationships,
@@ -12,6 +13,31 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+describe('TypeScript shadowed inference names', () => {
+  describe.each([
+    ['ts-shadow-iterable-factory', false],
+    ['ts-shadow-iterable-binding', false],
+    ['ts-shadow-iterable-positive', true],
+  ] as const)('%s', (fixture, resolvesUser) => {
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, fixture), () => {}, {
+        skipGraphPhases: true,
+        skipWorkers: true,
+      });
+    }, 60000);
+
+    it('resolves User.save only for unshadowed inference', () => {
+      const saves = getRelationships(result, 'CALLS').filter(
+        (call) => call.source === 'probe' && call.target === 'save',
+      );
+      expect(saves).toHaveLength(resolvesUser ? 1 : 0);
+      if (resolvesUser) expect(saves[0].rel.targetId).toContain('User');
+    });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Heritage: class extends + implements interface
@@ -1596,10 +1622,10 @@ describe('TS instanceof narrowing resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
-// this.users member access iterable: for (const user of this.users)
+// Missing this.users/this.repos fields must not inherit same-named parameter types.
 // ---------------------------------------------------------------------------
 
-describe('TypeScript member access iterable for-loop', () => {
+describe('TypeScript missing member access iterable for-loop', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -1615,32 +1641,16 @@ describe('TypeScript member access iterable for-loop', () => {
     expect(getNodesByLabel(result, 'Method')).toContain('save');
   });
 
-  it('resolves user.save() via this.users to User#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('User'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('does NOT cross-resolve user.save() to Repo#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const wrong = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processUsers' && c.targetFilePath?.includes('Repo'),
-    );
-    expect(wrong).toBeUndefined();
-  });
-
-  it('resolves repo.save() via this.repos to Repo#save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processRepos' && c.targetFilePath?.includes('Repo'),
-    );
-    expect(repoSave).toBeDefined();
-  });
+  it.each(['processUsers', 'processRepos'])(
+    'does not infer a save target from a parameter in %s',
+    (method) => {
+      expect(getNodesByLabel(result, 'Method')).toContain(method);
+      const saves = getRelationships(result, 'CALLS').filter(
+        (call) => call.source === method && call.target === 'save',
+      );
+      expect(saves).toEqual([]);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -2150,6 +2160,38 @@ describe('TypeScript object destructuring resolution (Phase A)', () => {
 // Phase A: Post-fixpoint for-loop replay — iterable resolved via callResult fixpoint
 // Differs from ts-for-of-call-expression: iterable is an identifier, not inline call
 // ---------------------------------------------------------------------------
+
+describe('TypeScript post-fixpoint for-loop replay over generic containers', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ts-fixpoint-for-loop-generic'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves u.save() to User#save when the call returns Array<User>', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.target === 'save' && c.source === 'process');
+    expect(saveCalls).toHaveLength(1);
+    expect(saveCalls[0].targetLabel).toBe('Method');
+    expect(saveCalls[0].rel.targetId).toContain('User');
+    expect(saveCalls[0].rel.targetId).not.toContain('Admin');
+  });
+
+  it('resolves m.save() to User#save when the call returns ReadonlySet<User>', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCalls = calls.filter((c) => c.target === 'save' && c.source === 'processSet');
+    expect(saveCalls).toHaveLength(1);
+    expect(saveCalls[0].rel.targetId).toContain('User');
+  });
+
+  it('does not bind Map entries to the value type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.filter((c) => c.target === 'save' && c.source === 'processIndex')).toEqual([]);
+  });
+});
 
 describe('TypeScript post-fixpoint for-loop replay (Phase A ex-9B)', () => {
   let result: PipelineResult;

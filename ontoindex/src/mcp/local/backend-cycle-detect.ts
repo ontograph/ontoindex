@@ -2,6 +2,7 @@ import { minimatch } from 'minimatch';
 import { tarjanSccs } from 'ontoindex-shared';
 import { executeParameterized, isLbugReady } from '../../core/lbug/pool-adapter.js';
 import { DiagnosticFinding } from 'ontoindex-shared';
+import { markInvocationError } from '../shared/invocation-error.js';
 
 type RepoHandle = { readonly id: string; readonly name: string };
 
@@ -250,7 +251,7 @@ export async function runCycleDetect(
   };
 
   if (edgeTypes.length === 0) {
-    return {
+    return markInvocationError({
       status: 'error',
       tool: 'cycle_detect',
       repo: repo.name,
@@ -262,11 +263,11 @@ export async function runCycleDetect(
       cycles: [],
       summary: emptySummary,
       error: '`edge_types` must contain at least one non-empty string.',
-    };
+    });
   }
 
   if (!isLbugReady(repo.id)) {
-    return {
+    return markInvocationError({
       status: 'error',
       tool: 'cycle_detect',
       repo: repo.name,
@@ -278,7 +279,7 @@ export async function runCycleDetect(
       cycles: [],
       summary: emptySummary,
       error: 'LadybugDB not initialized for this repo.',
-    };
+    });
   }
 
   try {
@@ -404,7 +405,7 @@ export async function runCycleDetect(
       },
     };
   } catch (err: unknown) {
-    return {
+    return markInvocationError({
       status: 'error',
       tool: 'cycle_detect',
       repo: repo.name,
@@ -416,6 +417,6 @@ export async function runCycleDetect(
       cycles: [],
       summary: emptySummary,
       error: `Cycle detection failed: ${formatCaughtMessage(err)}`,
-    };
+    });
   }
 }

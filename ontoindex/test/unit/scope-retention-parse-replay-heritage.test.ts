@@ -8,7 +8,6 @@ const sourceId = 'Class:src/scope-tree.ts:ScopeTreeInvariantError';
 
 function fixture(): ScopeRetentionCandidateFamilies {
   return {
-    parsedFiles: [],
     calls: [],
     assignments: [],
     heritage: [],

@@ -16,6 +16,7 @@ import Ruby from 'tree-sitter-ruby';
 import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'ontoindex-shared';
 import { getProvider } from '../languages/index.js';
+import { isConstructorFieldDefinition } from '../field-extractors/configs/typescript-javascript.js';
 import { collectRustDeclaredModules } from '../import-resolvers/rust-module-evidence.js';
 import { extractTsLocalExportBindings } from '../named-bindings/typescript.js';
 import {
@@ -116,8 +117,6 @@ import {
   buildCollisionGroups,
 } from '../utils/method-props.js';
 import type { LanguageProvider } from '../language-provider.js';
-import { extractParsedFileOutcome } from '../scope-extractor-bridge.js';
-import { createDeclarationCorrespondence } from '../declaration-correspondence.js';
 import {
   extractLaravelRoutes,
   captureRouteOrDecorator,
@@ -612,13 +611,17 @@ const findEnclosingFunctionId = (
           provider.resolveEnclosingOwner,
         );
         const qualifiedName = classInfo ? `${classInfo.className}.${funcName}` : funcName;
-        // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
+        // Match definition-phase arity IDs, including Swift member Functions.
         // Use the same MethodExtractor (getMethodInfo) as the definition phase.
         // When same-arity collisions exist, also append ~type1,type2.
         let arity: number | undefined;
         let encTypeTag = '';
-        if (finalLabel === 'Method' || finalLabel === 'Constructor') {
-          const encLang = getLanguageFromFilename(filePath);
+        const encLang = getLanguageFromFilename(filePath);
+        if (
+          finalLabel === 'Method' ||
+          finalLabel === 'Constructor' ||
+          (finalLabel === 'Function' && encLang === SupportedLanguages.Swift && !!classInfo)
+        ) {
           const classNode =
             findEnclosingClassNode(current) ?? findClassNodeByQualifiedName(current);
           let info: MethodInfo | undefined;
@@ -863,8 +866,6 @@ const processBatch = async (
     ormQueries: [],
     constructorBindings: [],
     fileScopeBindings: [],
-    parsedFiles: [],
-    scopeExtractionOutcomes: [],
     processedPaths: [],
     fileTimings: [],
     parseErrorPaths: [],
@@ -1232,31 +1233,6 @@ const prepareFileContext = (
   };
 };
 
-const appendParsedFileArtifact = (
-  filePath: string,
-  provider: LanguageProvider,
-  parseContent: string,
-  result: ParseWorkerResult,
-  rootNode: SyntaxNode,
-): void => {
-  // Skipped files and preparation failures never reach this attempt; inventory
-  // reconciliation must treat their absent records as unavailable evidence.
-  const outcome = extractParsedFileOutcome(
-    provider,
-    parseContent,
-    filePath,
-    emitWorkerWarning,
-    rootNode,
-  );
-  result.scopeExtractionOutcomes ??= [];
-  if (outcome.status === 'success') {
-    result.scopeExtractionOutcomes.push({ filePath, status: 'success' });
-    result.parsedFiles.push(outcome.parsedFile);
-  } else {
-    result.scopeExtractionOutcomes.push({ filePath, ...outcome });
-  }
-};
-
 const createFileProcessingState = (
   file: HydratedParseWorkerInput,
   language: SupportedLanguages,
@@ -1283,11 +1259,7 @@ const createFileProcessingState = (
   };
 };
 
-const processFileMatches = (
-  state: FileProcessingState,
-  result: ParseWorkerResult,
-  correspondence?: ReturnType<typeof createDeclarationCorrespondence>,
-): void => {
+const processFileMatches = (state: FileProcessingState, result: ParseWorkerResult): void => {
   const { file, language, lineOffset, isVueSetup, matches, provider, typeEnv, callRouter } = state;
   const extractShape =
     language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript
@@ -1440,7 +1412,7 @@ const processFileMatches = (
             const receiverName =
               langCallSite.callForm === 'member' ? langCallSite.receiverName : undefined;
             let receiverTypeName = receiverName
-              ? typeEnv.lookup(receiverName, callNode)
+              ? typeEnv.lookup(receiverName, callNode, 'receiver')
               : undefined;
             // Type-as-receiver heuristic (e.g. Java `User::getName`)
             if (
@@ -1530,7 +1502,6 @@ const processFileMatches = (
                   ? `${propEnclosingInfo.className}.${item.propName}`
                   : item.propName;
                 const nodeId = generateId('Property', `${file.path}:${propQualifiedName}`);
-                correspondence?.observe(nodeId, item.propName, 'Property', captureMap['call']);
                 result.nodes.push({
                   id: nodeId,
                   label: 'Property',
@@ -1613,7 +1584,7 @@ const processFileMatches = (
                 findEnclosingFunctionId(callNode, file.path, provider) ||
                 generateId('File', file.path);
               let receiverTypeName = callSite.receiverName
-                ? typeEnv.lookup(callSite.receiverName, callNode)
+                ? typeEnv.lookup(callSite.receiverName, callNode, 'receiver')
                 : undefined;
 
               // Type-as-receiver heuristic
@@ -1852,7 +1823,6 @@ const processFileMatches = (
         ? qualifiedOwnerInfo.classFilePath
         : file.path;
     const nodeId = generateId(nodeLabel, `${nodeIdFilePath}:${qualifiedName}${arityTag}`);
-    correspondence?.observe(nodeId, nodeName, nodeLabel, definitionNode ?? nameNode);
     const isSplitCppDefinition = Boolean(
       qualifiedOwnerInfo?.classFilePath && qualifiedOwnerInfo.classFilePath !== file.path,
     );
@@ -1898,23 +1868,30 @@ const processFileMatches = (
 
     // Property metadata extraction (not needed before nodeId — Properties don't overload)
     if (nodeLabel === 'Property' && definitionNode) {
+      if (
+        language === SupportedLanguages.JavaScript &&
+        definitionNode.type === 'assignment_expression' &&
+        !isConstructorFieldDefinition(definitionNode)
+      )
+        continue;
       // FieldExtractor is the single source of truth when available
       if (provider.fieldExtractor && typeEnv) {
+        const fieldContext: FieldExtractorContext = {
+          typeEnv,
+          symbolTable: NOOP_SYMBOL_TABLE,
+          filePath: file.path,
+          language,
+        };
         const classNode = findEnclosingClassNode(definitionNode);
-        if (classNode) {
-          const fieldMap = getFieldInfo(classNode, provider, {
-            typeEnv,
-            symbolTable: NOOP_SYMBOL_TABLE,
-            filePath: file.path,
-            language,
-          });
-          const info = fieldMap?.get(nodeName);
-          if (info) {
-            declaredType = info.type ?? undefined;
-            methodProps.visibility = info.visibility;
-            methodProps.isStatic = info.isStatic;
-            methodProps.isReadonly = info.isReadonly;
-          }
+        const fieldMap = classNode ? getFieldInfo(classNode, provider, fieldContext) : undefined;
+        const info =
+          fieldMap?.get(nodeName) ??
+          provider.fieldExtractor.extractFromNode?.(definitionNode, fieldContext, nodeName);
+        if (info) {
+          declaredType = info.type ?? undefined;
+          methodProps.visibility = info.visibility;
+          methodProps.isStatic = info.isStatic;
+          methodProps.isReadonly = info.isReadonly;
         }
       }
     }
@@ -2098,7 +2075,6 @@ const processPreparedWorkerFile = (
       );
       const lightweightResult = extractImports(file.path, file.content, language);
       mergeParseWorkerResult(result, lightweightResult);
-      status = 'processed';
       return;
     }
 
@@ -2106,32 +2082,13 @@ const processPreparedWorkerFile = (
     result.processedPaths.push(file.path);
     onFileProcessed?.(file.path);
 
-    const parsedFileIndex = result.parsedFiles.length;
-    const correspondence = /\.[cm]?[jt]sx?$/i.test(file.path)
-      ? createDeclarationCorrespondence(file.path)
-      : undefined;
-    timeFamily('scope-artifact', () =>
-      appendParsedFileArtifact(
-        file.path,
-        fileContext.provider,
-        fileContext.parseContent,
-        result,
-        fileContext.tree.rootNode,
-      ),
-    );
     const fileState = timeFamily('type-env', () =>
       createFileProcessingState(file, language, fileContext),
     );
     timeFamily('type-env-artifacts', () =>
       appendTypeEnvArtifacts(file.path, fileState.typeEnv, result),
     );
-    timeFamily('query-match-extractors', () =>
-      processFileMatches(fileState, result, correspondence),
-    );
-    const parsedFile = result.parsedFiles[parsedFileIndex];
-    if (correspondence && parsedFile?.filePath === file.path) {
-      result.parsedFiles[parsedFileIndex] = correspondence.attach(parsedFile);
-    }
+    timeFamily('query-match-extractors', () => processFileMatches(fileState, result));
     timeFamily(
       'supplemental-extractors',
       () =>

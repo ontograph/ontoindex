@@ -22,8 +22,7 @@ import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { BindingAccumulator } from '../../src/core/ingestion/binding-accumulator.js';
 import { restoreSemanticModelRegistrations } from '../../src/core/ingestion/model/semantic-model.js';
 import { ScopeRetentionStage } from '../../src/core/ingestion/pipeline-phases/scope-retention-stage.js';
-import { processAssignmentsFromExtracted as processProductionAssignments } from '../../src/core/ingestion/call-resolution/assignment-processor.js';
-import type { ParsedFile } from 'ontoindex-shared';
+
 import type {
   ExtractedAssignment,
   ExtractedCall,
@@ -77,6 +76,42 @@ describe('processCallsFromExtracted', () => {
   beforeEach(() => {
     graph = createKnowledgeGraph();
     ctx = createResolutionContext();
+  });
+
+  it.each(['ts', 'js'])('does not guess a method for an unknown %s receiver', async (extension) => {
+    const filePath = `src/env.${extension}`;
+    const ownerId = `Class:${filePath}:Env`;
+    const targetId = `Method:${filePath}:Env.has`;
+    ctx.model.symbols.add(filePath, 'Env', ownerId, 'Class');
+    ctx.model.symbols.add(filePath, 'has', targetId, 'Method', { ownerId });
+
+    await processCallsFromExtracted(
+      graph,
+      [
+        {
+          filePath,
+          calledName: 'has',
+          callForm: 'member',
+          receiverName: 'CONTAINERS',
+          sourceId: `Function:${filePath}:find`,
+        },
+        {
+          filePath,
+          calledName: 'has',
+          callForm: 'member',
+          receiverName: 'env',
+          receiverTypeName: 'Env',
+          sourceId: `Function:${filePath}:check`,
+        },
+      ],
+      ctx,
+    );
+
+    expect(
+      graph.relationships
+        .filter((edge) => edge.type === 'CALLS')
+        .map((edge) => [edge.sourceId, edge.targetId]),
+    ).toEqual([[`Function:${filePath}:check`, targetId]]);
   });
 
   it('creates CALLS relationship for same-file resolution', async () => {
@@ -1512,467 +1547,6 @@ describe('processCallsFromExtracted', () => {
     },
   );
 
-  it('replays nine retained input families into fresh call and production write resolution', async () => {
-    const filePath = 'src/retained-consumer.ts';
-    const modelFile = 'src/retained-models.ts';
-    const allowance = { remainingBytes: 1024 * 1024 };
-    const retained = new ScopeRetentionStage({
-      deadline: Date.now() + 30_000,
-      artifactAllowance: allowance,
-    });
-    let observing = true;
-    const original = createResolutionContext({
-      onRegistration: (event) => (observing ? retained.captureModelRegistration(event) : true),
-      onRegistrationError: () => {
-        if (observing) retained.markModelRegistrationsIncomplete();
-      },
-    });
-    const bindings = new BindingAccumulator();
-    const replayBindings = new BindingAccumulator();
-    try {
-      for (const name of ['Database', 'Cache', 'Base', 'Derived']) {
-        const ownerId = `Class:${modelFile}:${name}`;
-        original.model.symbols.add(modelFile, name, ownerId, 'Class');
-        if (name === 'Derived') continue;
-        const method = name === 'Base' ? 'inherited' : 'query';
-        original.model.symbols.add(
-          modelFile,
-          method,
-          `Method:${modelFile}:${name}.${method}`,
-          'Method',
-          { ownerId },
-        );
-        original.model.symbols.add(
-          modelFile,
-          'value',
-          `Property:${modelFile}:${name}.value`,
-          'Property',
-          { ownerId },
-        );
-      }
-      original.model.symbols.add(
-        'src/decoy.ts',
-        'Database',
-        'Class:src/decoy.ts:Database',
-        'Class',
-      );
-      original.model.symbols.add('src/decoy.ts', 'query', 'Method:src/decoy.ts:query', 'Method', {
-        ownerId: 'Class:src/decoy.ts:Database',
-      });
-      original.model.symbols.add(
-        modelFile,
-        'makeDatabase',
-        `Function:${modelFile}:makeDatabase`,
-        'Function',
-      );
-      original.importMap.set(filePath, new Set([modelFile]));
-      original.namedImportMap.set(
-        filePath,
-        new Map([
-          ['remote', { sourcePath: modelFile, exportedName: 'database' }],
-          ['make', { sourcePath: modelFile, exportedName: 'makeDatabase' }],
-        ]),
-      );
-      const constructors: FileConstructorBindings[] = [
-        {
-          filePath,
-          bindings: [
-            { scope: 'main@0', varName: 'db', calleeName: 'Database' },
-            { scope: 'main@0', varName: 'cache', calleeName: 'Cache' },
-            { scope: 'factory@10', varName: 'made', calleeName: 'make' },
-          ],
-        },
-      ];
-      const calls: ExtractedCall[] = [
-        ...['db', 'cache'].map((receiverName) => ({
-          filePath,
-          sourceId: `Function:${filePath}:main`,
-          calledName: 'query',
-          receiverName,
-          callForm: 'member' as const,
-        })),
-        {
-          filePath,
-          sourceId: `Function:${filePath}:exported`,
-          calledName: 'query',
-          receiverName: 'remote',
-          callForm: 'member',
-        },
-        {
-          filePath,
-          sourceId: `Function:${filePath}:factory`,
-          calledName: 'query',
-          receiverName: 'made',
-          callForm: 'member',
-        },
-        {
-          filePath,
-          sourceId: `Function:${filePath}:main`,
-          calledName: 'inherited',
-          receiverName: 'derived',
-          receiverTypeName: 'Derived',
-          callForm: 'member',
-        },
-        {
-          filePath,
-          sourceId: `Function:${filePath}:main`,
-          calledName: 'missing',
-          receiverName: 'db',
-          callForm: 'member',
-        },
-      ];
-      const assignments: ExtractedAssignment[] = [
-        ...['db', 'cache'].map((receiverText) => ({
-          filePath,
-          sourceId: `Function:${filePath}:main`,
-          receiverText,
-          propertyName: 'value',
-        })),
-        {
-          filePath,
-          sourceId: `Function:${filePath}:factory`,
-          receiverText: 'made',
-          propertyName: 'value',
-        },
-        {
-          filePath,
-          sourceId: `Function:${filePath}:main`,
-          receiverText: 'db',
-          propertyName: 'missing',
-        },
-      ];
-      const heritage: ExtractedHeritage[] = [
-        { filePath: modelFile, className: 'Derived', parentName: 'Base', kind: 'extends' },
-      ];
-      const exports = new Map([[modelFile, new Map([['database', 'Database']])]]);
-      bindings.appendFile(modelFile, [
-        { scope: '', varName: 'makeDatabase', typeName: 'Database' },
-      ]);
-      bindings.finalize();
-      const parsed: ParsedFile = {
-        filePath,
-        moduleScope: `scope:${filePath}`,
-        parsedImports: [],
-        localDefs: [],
-        referenceSites: [],
-        scopes: [
-          {
-            id: `scope:${filePath}`,
-            parent: null,
-            kind: 'Module',
-            filePath,
-            range: { startLine: 1, startCol: 0, endLine: 10, endCol: 0 },
-            bindings: new Map(),
-            typeBindings: new Map(),
-            ownedDefs: [],
-            imports: [],
-          },
-        ],
-      };
-      // Capture parser inputs before the normal enrichment pass mutates calls.
-      retained.capture([parsed]);
-      retained.captureCalls(calls);
-      retained.captureAssignments(assignments);
-      retained.captureHeritage(heritage);
-      retained.captureConstructorBindings(constructors);
-      retained.captureExportedTypes([
-        { filePath: modelFile, exportName: 'database', typeName: 'Database' },
-      ]);
-      retained.captureFileBindings([
-        { filePath: modelFile, varName: 'makeDatabase', typeName: 'Database' },
-      ]);
-      retained.captureImportState(original);
-      observing = false;
-      retained.recordOutcomes([{ filePath, status: 'success' }]);
-      retained.reconcile([filePath]);
-      seedCrossFileReceiverTypes(calls, original.namedImportMap, exports);
-      await processCallsFromExtracted(
-        graph,
-        calls,
-        original,
-        undefined,
-        constructors,
-        buildHeritageMap(heritage, original),
-        bindings,
-      );
-      processProductionAssignments(graph, assignments, original, constructors, bindings);
-      const normalize = (value: ReturnType<typeof createKnowledgeGraph>) =>
-        value.relationships
-          .filter(
-            (rel) => rel.type === 'CALLS' || (rel.type === 'ACCESSES' && rel.reason === 'write'),
-          )
-          .map(({ type, sourceId, targetId, confidence, reason }) => ({
-            type,
-            sourceId,
-            targetId,
-            confidence,
-            reason,
-          }))
-          .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-      const expected = normalize(graph);
-      expect(expected.filter((rel) => rel.type === 'CALLS')).toHaveLength(5);
-      expect(expected.filter((rel) => rel.type === 'ACCESSES')).toHaveLength(3);
-      expect(expected.map((rel) => rel.targetId)).not.toContain('Method:src/decoy.ts:query');
-      expect(expected.some((rel) => rel.targetId.endsWith('.missing'))).toBe(false);
-
-      original.clear();
-      bindings.dispose();
-      exports.clear();
-      calls.forEach((call) => {
-        call.calledName = 'mutated';
-      });
-      calls.length = assignments.length = heritage.length = constructors.length = 0;
-      parsed.scopes.length = 0;
-
-      const events = [];
-      for await (const batch of retained.iterateModelRegistrations()) events.push(...batch);
-      const imports = [];
-      for await (const batch of retained.iterateImportStates()) imports.push(...batch);
-      const restored = createResolutionContext({
-        model: restoreSemanticModelRegistrations({ version: 1, events }),
-        importState: imports[0]!,
-      });
-      const replayGraph = createKnowledgeGraph();
-      expect(replayGraph.relationships).toEqual([]);
-      const replayCalls = [];
-      for await (const batch of retained.iterateCalls()) replayCalls.push(...batch);
-      const replayAssignments = [];
-      for await (const batch of retained.iterateAssignments()) replayAssignments.push(...batch);
-      const replayConstructors = [];
-      for await (const batch of retained.iterateConstructorBindings())
-        replayConstructors.push(...batch);
-      expect(replayConstructors).toHaveLength(3);
-      expect(replayConstructors.every((group) => group.bindings.length === 1)).toBe(true);
-      const replayHeritage = [];
-      for await (const batch of retained.iterateHeritage()) replayHeritage.push(...batch);
-      const replayExports = new Map<string, Map<string, string>>();
-      for await (const batch of retained.iterateExportedTypes())
-        for (const record of batch) {
-          const fileExports = replayExports.get(record.filePath) ?? new Map<string, string>();
-          fileExports.set(record.exportName, record.typeName);
-          replayExports.set(record.filePath, fileExports);
-        }
-      for await (const batch of retained.iterateFileBindings())
-        for (const record of batch) {
-          replayBindings.appendFile(record.filePath, [
-            { scope: '', varName: record.varName, typeName: record.typeName },
-          ]);
-        }
-      replayBindings.finalize();
-      const replayScopes = [];
-      for await (const batch of retained.iterate()) replayScopes.push(...batch);
-      expect(replayScopes[0]!.scopes).toHaveLength(1);
-      expect(replayCalls.every((call) => call.filePath === replayScopes[0]!.filePath)).toBe(true);
-      expect(
-        replayCalls.find((call) => call.receiverName === 'remote')!.receiverTypeName,
-      ).toBeUndefined();
-      seedCrossFileReceiverTypes(replayCalls, restored.namedImportMap, replayExports);
-      await processCallsFromExtracted(
-        replayGraph,
-        replayCalls,
-        restored,
-        undefined,
-        replayConstructors,
-        buildHeritageMap(replayHeritage, restored),
-        replayBindings,
-      );
-      processProductionAssignments(
-        replayGraph,
-        replayAssignments,
-        restored,
-        replayConstructors,
-        replayBindings,
-      );
-      expect(normalize(replayGraph)).toEqual(expected);
-      expect(
-        replayGraph.relationships
-          .filter((rel) => rel.type === 'CALLS')
-          .map((rel) => rel.targetId)
-          .sort(),
-      ).toEqual(
-        [
-          `Method:${modelFile}:Base.inherited`,
-          `Method:${modelFile}:Cache.query`,
-          ...Array<string>(3).fill(`Method:${modelFile}:Database.query`),
-        ].sort(),
-      );
-      expect(retained.status).toBe('retained');
-      expect(retained.seedReady).toBe(false);
-    } finally {
-      bindings.dispose();
-      replayBindings.dispose();
-      await retained.dispose();
-    }
-    expect(allowance.remainingBytes).toBe(1024 * 1024);
-  });
-
-  it.each([false, true])(
-    'replays an unresolved retained call after targets arrive (ambiguous: %s)',
-    async (ambiguous) => {
-      const filePath = 'src/late-consumer.ts';
-      const targetFile = 'src/late-target.ts';
-      const otherTargetFile = 'src/other-target.ts';
-      const sourceId = `Function:${filePath}:main`;
-      const targetId = `Function:${targetFile}:lateTarget`;
-      const decoyId = 'Function:src/decoy.ts:lateTarget';
-      const allowance = { remainingBytes: 1024 * 1024 };
-      const retained = new ScopeRetentionStage({
-        deadline: Date.now() + 30_000,
-        artifactAllowance: allowance,
-      });
-      let observing = true;
-      const original = createResolutionContext({
-        onRegistration: (event) => (observing ? retained.captureModelRegistration(event) : true),
-        onRegistrationError: () => {
-          if (observing) retained.markModelRegistrationsIncomplete();
-        },
-      });
-      const calls: ExtractedCall[] = [
-        { filePath, sourceId, calledName: 'lateTarget', argCount: 1 },
-      ];
-      const parsed: ParsedFile = {
-        filePath,
-        moduleScope: `scope:${filePath}`,
-        parsedImports: [],
-        localDefs: [],
-        referenceSites: [],
-        scopes: [
-          {
-            id: `scope:${filePath}`,
-            parent: null,
-            kind: 'Module',
-            filePath,
-            range: { startLine: 1, startCol: 0, endLine: 3, endCol: 0 },
-            bindings: new Map(),
-            typeBindings: new Map(),
-            ownedDefs: [],
-            imports: [],
-          },
-        ],
-      };
-      try {
-        original.model.symbols.add(filePath, 'main', sourceId, 'Function');
-        original.model.symbols.add('src/decoy.ts', 'lateTarget', decoyId, 'Function', {
-          parameterCount: 1,
-        });
-        original.importMap.set(
-          filePath,
-          new Set(ambiguous ? [targetFile, otherTargetFile] : [targetFile]),
-        );
-        if (!ambiguous)
-          original.namedImportMap.set(
-            filePath,
-            new Map([['lateTarget', { sourcePath: targetFile, exportedName: 'lateTarget' }]]),
-          );
-        retained.capture([parsed]);
-        retained.captureCalls(calls);
-        retained.captureImportState(original);
-        observing = false;
-        retained.recordOutcomes([{ filePath, status: 'success' }]);
-        retained.reconcile([filePath]);
-        await processCallsFromExtracted(graph, calls, original);
-        expect(graph.relationships.filter((rel) => rel.type === 'CALLS')).toEqual([]);
-
-        original.clear();
-        calls[0]!.calledName = 'mutated';
-        calls.length = 0;
-        parsed.scopes.length = 0;
-        const events = [];
-        for await (const batch of retained.iterateModelRegistrations()) events.push(...batch);
-        const imports = [];
-        for await (const batch of retained.iterateImportStates()) imports.push(...batch);
-        const restored = createResolutionContext({
-          model: restoreSemanticModelRegistrations({ version: 1, events }),
-          importState: imports[0]!,
-        });
-        const replayCalls: ExtractedCall[] = [];
-        for await (const batch of retained.iterateCalls()) replayCalls.push(...batch);
-        expect(replayCalls).toEqual([
-          { filePath, sourceId, calledName: 'lateTarget', argCount: 1 },
-        ]);
-        expect(restored.importMap.get(filePath)).toEqual(
-          new Set(ambiguous ? [targetFile, otherTargetFile] : [targetFile]),
-        );
-        expect(restored.namedImportMap.get(filePath)?.get('lateTarget')).toEqual(
-          ambiguous
-            ? undefined
-            : {
-                sourcePath: targetFile,
-                exportedName: 'lateTarget',
-              },
-        );
-        const replayGraph = createKnowledgeGraph();
-        await processCallsFromExtracted(replayGraph, replayCalls, restored);
-        expect(replayGraph.relationships.filter((rel) => rel.type === 'CALLS')).toEqual([]);
-
-        restored.model.symbols.add(targetFile, 'lateTarget', targetId, 'Function', {
-          parameterCount: 1,
-        });
-        if (ambiguous)
-          restored.model.symbols.add(
-            otherTargetFile,
-            'lateTarget',
-            `Function:${otherTargetFile}:lateTarget`,
-            'Function',
-            { parameterCount: 1 },
-          );
-        await processCallsFromExtracted(replayGraph, replayCalls, restored);
-
-        const full = createResolutionContext();
-        full.model.symbols.add(filePath, 'main', sourceId, 'Function');
-        full.model.symbols.add('src/decoy.ts', 'lateTarget', decoyId, 'Function', {
-          parameterCount: 1,
-        });
-        full.model.symbols.add(targetFile, 'lateTarget', targetId, 'Function', {
-          parameterCount: 1,
-        });
-        if (ambiguous)
-          full.model.symbols.add(
-            otherTargetFile,
-            'lateTarget',
-            `Function:${otherTargetFile}:lateTarget`,
-            'Function',
-            { parameterCount: 1 },
-          );
-        full.importMap.set(
-          filePath,
-          new Set(ambiguous ? [targetFile, otherTargetFile] : [targetFile]),
-        );
-        if (!ambiguous)
-          full.namedImportMap.set(
-            filePath,
-            new Map([['lateTarget', { sourcePath: targetFile, exportedName: 'lateTarget' }]]),
-          );
-        const fullGraph = createKnowledgeGraph();
-        await processCallsFromExtracted(
-          fullGraph,
-          [{ filePath, sourceId, calledName: 'lateTarget', argCount: 1 }],
-          full,
-        );
-        const normalize = (value: ReturnType<typeof createKnowledgeGraph>) =>
-          value.relationships
-            .filter((rel) => rel.type === 'CALLS')
-            .map(({ sourceId, targetId, confidence, reason }) => ({
-              sourceId,
-              targetId,
-              confidence,
-              reason,
-            }));
-        const actual = normalize(replayGraph);
-        expect(actual).toEqual(normalize(fullGraph));
-        expect(actual).toEqual(
-          ambiguous ? [] : [{ sourceId, targetId, confidence: 0.9, reason: 'import-resolved' }],
-        );
-        expect(actual.some((rel) => rel.targetId === decoyId)).toBe(false);
-        expect(retained.status).toBe('retained');
-        expect(retained.seedReady).toBe(false);
-      } finally {
-        await retained.dispose();
-      }
-      expect(allowance.remainingBytes).toBe(1024 * 1024);
-    },
-  );
-
   it('scope-aware bindings: same varName in different functions resolves to correct type', async () => {
     ctx.model.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
     ctx.model.symbols.add('src/models.ts', 'Repo', 'Class:src/models.ts:Repo', 'Class');
@@ -2015,6 +1589,313 @@ describe('processCallsFromExtracted', () => {
     // last-write-wins would give both calls the same receiver type)
     expect(rels[0].sourceId).toBe('Function:src/index.ts:processUser');
     expect(rels[1].sourceId).toBe('Function:src/index.ts:processRepo');
+  });
+});
+
+describe('processCalls — unresolved receiver chains', () => {
+  const edges = (graph: ReturnType<typeof createKnowledgeGraph>) =>
+    graph.relationships
+      .map(({ type, sourceId, targetId, confidence, reason }) => ({
+        type,
+        sourceId,
+        targetId,
+        confidence,
+        reason,
+      }))
+      .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+
+  it.each([
+    ['missing first field', 'value.missing.save()', [], []],
+    ['missing later field', 'value.child.missing.save()', ['child'], []],
+    ['missing method return', 'value.load().save()', [], ['load']],
+    ['missing later method return', 'value.load().missing().save()', [], ['load']],
+    ['resolved child chain', 'value.child.save()', ['child'], []],
+    ['resolved parenthesized child chain', '(value.child).save()', ['child'], []],
+    ['resolved parenthesized inner base', '((value)).child.save()', ['child'], []],
+    ['resolved depth-three chain', 'value.child.child.child.save()', ['child'], []],
+    ['over-depth known base', 'value.child.child.child.child.save()', ['child'], []],
+  ] as const)(
+    'keeps sequential/extracted graph parity for %s',
+    async (name, expression, fields, methods) => {
+      const filePath = 'src/chains.ts';
+      const file = {
+        path: filePath,
+        content: `class Service {}\nfunction use(value: Service) { ${expression}; }`,
+      };
+      const setup = () => {
+        const ctx = createResolutionContext();
+        const ownerId = `Class:${filePath}:Service`;
+        const addressId = `Class:${filePath}:Address`;
+        ctx.model.symbols.add(filePath, 'Service', ownerId, 'Class');
+        ctx.model.symbols.add(filePath, 'Address', addressId, 'Class');
+        ctx.model.symbols.add(filePath, 'use', `Function:${filePath}:use`, 'Function');
+        ctx.model.symbols.add(filePath, 'save', `Method:${filePath}:Service.save`, 'Method', {
+          ownerId,
+        });
+        ctx.model.symbols.add(filePath, 'save', `Method:${filePath}:Address.save`, 'Method', {
+          ownerId: addressId,
+        });
+        for (const field of fields) {
+          ctx.model.symbols.add(
+            filePath,
+            field,
+            `Property:${filePath}:Service.${field}`,
+            'Property',
+            {
+              ownerId,
+              declaredType: 'Address',
+            },
+          );
+          ctx.model.symbols.add(
+            filePath,
+            field,
+            `Property:${filePath}:Address.${field}`,
+            'Property',
+            {
+              ownerId: addressId,
+              declaredType: 'Address',
+            },
+          );
+        }
+        for (const method of methods) {
+          ctx.model.symbols.add(filePath, method, `Method:${filePath}:${method}`, 'Method', {
+            ownerId,
+            ...(name === 'missing later method return' ? { returnType: 'Service' } : {}),
+          });
+        }
+        return { ctx, graph: createKnowledgeGraph() };
+      };
+      const sequential = setup();
+      const extracted = setup();
+      const calls: ExtractedCall[] = [];
+      const cache = createASTCache();
+      try {
+        await processCalls(
+          sequential.graph,
+          [file],
+          cache,
+          sequential.ctx,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          (call) => calls.push(call),
+        );
+        expect(calls.some((call) => call.calledName === 'save')).toBe(true);
+        await processCallsFromExtracted(extracted.graph, calls, extracted.ctx);
+        for (const { graph } of [sequential, extracted]) {
+          const saveTargets = graph.relationships
+            .filter(
+              (edge) =>
+                edge.type === 'CALLS' &&
+                (edge.targetId === `Method:${filePath}:Service.save` ||
+                  edge.targetId === `Method:${filePath}:Address.save`),
+            )
+            .map((edge) => edge.targetId);
+          expect(saveTargets).toEqual(
+            name.startsWith('resolved ') ? [`Method:${filePath}:Address.save`] : [],
+          );
+          if (fields.length && name !== 'over-depth known base') {
+            expect(
+              graph.relationships.some(
+                (edge) =>
+                  edge.type === 'ACCESSES' &&
+                  edge.targetId === `Property:${filePath}:Service.child`,
+              ),
+            ).toBe(true);
+          }
+          if (name === 'missing later method return') {
+            expect(
+              graph.relationships.some(
+                (edge) => edge.type === 'CALLS' && edge.targetId === `Method:${filePath}:load`,
+              ),
+            ).toBe(true);
+          }
+        }
+        expect(edges(extracted.graph)).toEqual(edges(sequential.graph));
+      } finally {
+        cache.clear();
+      }
+    },
+  );
+
+  it.each([
+    'function use<T>(value:T) { value.save(); }',
+    'function use<T>(value:T) { (value).save(); }',
+    'function use<T>(value:T) { (((value))).save(); }',
+    ...[33, 64].map(
+      (depth) =>
+        `function use<T>(value:T) { ${'('.repeat(depth)}value${')'.repeat(depth)}.save(); }`,
+    ),
+    'function use<T>(value:T) { (value as T).save(); }',
+    'function use<T>(value:T) { (value satisfies T).save(); }',
+    'function use<T>(value:T) { value!.save(); }',
+    'function use<T>(value:T) { (<T>value).save(); }',
+    'function use<T>(value:T) { (value.a.b.c.d).save(); }',
+    'function use<T>(value:T) { (value).a.b.c.d.save(); }',
+    'function use<T>(value:T) { value.a.b.c.d.save(); }',
+    'function use<T>(value:T|null) { if(value!==null) { value.save(); } }',
+    'type Optional<T>=T|null; function use(value:Optional<{save():void}>) { if(value!==null) value.save(); }',
+  ])('does not dispatch an unknown receiver to an unrelated method: %s', async (source) => {
+    const filePath = 'src/unknown.ts';
+    const setup = () => {
+      const ctx = createResolutionContext();
+      const ownerId = `Class:${filePath}:Unrelated`;
+      ctx.model.symbols.add(filePath, 'Unrelated', ownerId, 'Class');
+      ctx.model.symbols.add(filePath, 'use', `Function:${filePath}:use`, 'Function');
+      ctx.model.symbols.add(filePath, 'save', `Method:${filePath}:save`, 'Method', { ownerId });
+      return { ctx, graph: createKnowledgeGraph() };
+    };
+    const sequential = setup();
+    const extracted = setup();
+    const calls: ExtractedCall[] = [];
+    const cache = createASTCache();
+    try {
+      await processCalls(
+        sequential.graph,
+        [{ path: filePath, content: source }],
+        cache,
+        sequential.ctx,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        (call) => calls.push(call),
+      );
+      expect(calls.some((call) => call.calledName === 'save')).toBe(true);
+      await processCallsFromExtracted(extracted.graph, calls, extracted.ctx);
+      for (const { graph } of [sequential, extracted]) {
+        expect(graph.relationships.filter((edge) => edge.type === 'CALLS')).toEqual([]);
+      }
+      expect(edges(extracted.graph)).toEqual(edges(sequential.graph));
+    } finally {
+      cache.clear();
+    }
+  });
+
+  it.each(['value', '(value)', '(((value)))', `${'('.repeat(32)}value${')'.repeat(32)}`])(
+    'resolves a typed transparent receiver in both paths: %s',
+    async (receiver) => {
+      const filePath = 'src/parenthesized.ts';
+      const ctx = createResolutionContext();
+      const ownerId = `Class:${filePath}:Service`;
+      const targetId = `Method:${filePath}:save`;
+      ctx.model.symbols.add(filePath, 'Service', ownerId, 'Class');
+      ctx.model.symbols.add(filePath, 'use', `Function:${filePath}:use`, 'Function');
+      ctx.model.symbols.add(filePath, 'save', targetId, 'Method', { ownerId });
+      const graph = createKnowledgeGraph();
+      const replay = createKnowledgeGraph();
+      const calls: ExtractedCall[] = [];
+      const cache = createASTCache();
+      try {
+        await processCalls(
+          graph,
+          [{ path: filePath, content: `function use(value:Service) { ${receiver}.save(); }` }],
+          cache,
+          ctx,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          (call) => calls.push(call),
+        );
+        expect(calls.find((call) => call.calledName === 'save')?.receiverName).toBe('value');
+        await processCallsFromExtracted(replay, calls, ctx);
+        for (const result of [graph, replay]) {
+          expect(
+            result.relationships
+              .filter((edge) => edge.type === 'CALLS')
+              .map((edge) => edge.targetId),
+          ).toEqual([targetId]);
+        }
+        expect(edges(replay)).toEqual(edges(graph));
+      } finally {
+        cache.clear();
+      }
+    },
+  );
+
+  it('resolves constructor parameter properties through a for-of receiver', async () => {
+    const filePath = 'src/store.ts';
+    const ctx = createResolutionContext();
+    const graph = createKnowledgeGraph();
+    const cache = createASTCache();
+    const ownerId = `Class:${filePath}:User`;
+    const targetId = `Method:${filePath}:save`;
+    ctx.model.symbols.add(filePath, 'User', ownerId, 'Class');
+    ctx.model.symbols.add(filePath, 'save', targetId, 'Method', { ownerId });
+    try {
+      await processCalls(
+        graph,
+        [
+          {
+            path: filePath,
+            content:
+              'class User {save(){}} class Store {constructor(private users:User[]){for(const user of this.users){user.save()}}}',
+          },
+        ],
+        cache,
+        ctx,
+      );
+      expect(
+        graph.relationships.filter((edge) => edge.type === 'CALLS' && edge.targetId === targetId),
+      ).toHaveLength(1);
+    } finally {
+      cache.clear();
+    }
+  });
+
+  it('preserves direct module namespace calls in both paths', async () => {
+    const filePath = 'src/module-consumer.ts';
+    const modulePath = 'src/module.ts';
+    const targetId = `Function:${modulePath}:save`;
+    const ctx = createResolutionContext();
+    const graph = createKnowledgeGraph();
+    const replay = createKnowledgeGraph();
+    const cache = createASTCache();
+    const calls: ExtractedCall[] = [];
+    ctx.model.symbols.add(modulePath, 'save', targetId, 'Function');
+    ctx.importMap.set(filePath, new Set([modulePath]));
+    ctx.moduleAliasMap.set(filePath, new Map([['module', modulePath]]));
+    try {
+      await processCalls(
+        graph,
+        [{ path: filePath, content: 'module.save();' }],
+        cache,
+        ctx,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        (call) => calls.push(call),
+      );
+      await processCallsFromExtracted(replay, calls, ctx);
+      for (const result of [graph, replay]) {
+        expect(
+          result.relationships.filter(
+            (edge) => edge.type === 'CALLS' && edge.targetId === targetId,
+          ),
+        ).toHaveLength(1);
+      }
+    } finally {
+      cache.clear();
+    }
   });
 });
 
@@ -2398,6 +2279,95 @@ class Child${index} extends Base {}
       expect(nextPassHeritage).toEqual(combinedHeritage);
     } finally {
       querySpy.mockRestore();
+    }
+  });
+});
+
+describe('processCalls — generic receiver graph evidence', () => {
+  it.each(['same-file', 'imported'] as const)(
+    'does not connect an unconstrained generic receiver to an unrelated %s method',
+    async (location) => {
+      const filePath = 'src/consumer.ts';
+      const methodFilePath = location === 'same-file' ? filePath : 'src/unrelated.ts';
+      const ownerId = `Class:${methodFilePath}:Unrelated`;
+      const methodId = `Method:${methodFilePath}:save`;
+      const graph = createKnowledgeGraph();
+      const ctx = createResolutionContext();
+      const cache = createASTCache();
+      ctx.model.symbols.add(filePath, 'use', `Function:${filePath}:use`, 'Function');
+      ctx.model.symbols.add(methodFilePath, 'Unrelated', ownerId, 'Class');
+      ctx.model.symbols.add(methodFilePath, 'save', methodId, 'Method', { ownerId });
+      const classSource = 'export class Unrelated { save() {} }';
+      const useSource = 'function use<TItem>(value: TItem) { value.save(); value.child.save(); }';
+      const files =
+        location === 'same-file'
+          ? [{ path: filePath, content: `${classSource}\n${useSource}` }]
+          : [
+              { path: methodFilePath, content: classSource },
+              {
+                path: filePath,
+                content: `import { Unrelated } from "./unrelated";\n${useSource}`,
+              },
+            ];
+      if (location === 'imported') {
+        ctx.importMap.set(filePath, new Set([methodFilePath]));
+        ctx.namedImportMap.set(
+          filePath,
+          new Map([['Unrelated', { sourcePath: methodFilePath, exportedName: 'Unrelated' }]]),
+        );
+      }
+
+      try {
+        await processCalls(graph, files, cache, ctx);
+
+        expect(graph.relationships.filter((relationship) => relationship.type === 'CALLS')).toEqual(
+          [],
+        );
+      } finally {
+        cache.clear();
+      }
+    },
+  );
+
+  it('connects a constrained generic receiver to its owner despite an unrelated same-name method', async () => {
+    const filePath = 'src/consumer.ts';
+    const sourceId = `Function:${filePath}:use`;
+    const serviceId = `Class:${filePath}:Service`;
+    const unrelatedId = `Class:${filePath}:Unrelated`;
+    const methodId = `Method:${filePath}:Service.save`;
+    const graph = createKnowledgeGraph();
+    const ctx = createResolutionContext();
+    const cache = createASTCache();
+    ctx.model.symbols.add(filePath, 'use', sourceId, 'Function');
+    ctx.model.symbols.add(filePath, 'Service', serviceId, 'Class');
+    ctx.model.symbols.add(filePath, 'save', methodId, 'Method', { ownerId: serviceId });
+    ctx.model.symbols.add(filePath, 'Unrelated', unrelatedId, 'Class');
+    ctx.model.symbols.add(filePath, 'save', `Method:${filePath}:Unrelated.save`, 'Method', {
+      ownerId: unrelatedId,
+    });
+
+    try {
+      await processCalls(
+        graph,
+        [
+          {
+            path: filePath,
+            content: [
+              'class Service { save() {} }',
+              'class Unrelated { save() {} }',
+              'function use<TItem extends Service>(value: TItem) { value.save(); }',
+            ].join('\n'),
+          },
+        ],
+        cache,
+        ctx,
+      );
+
+      expect(graph.relationships.filter((relationship) => relationship.type === 'CALLS')).toEqual([
+        expect.objectContaining({ sourceId, targetId: methodId }),
+      ]);
+    } finally {
+      cache.clear();
     }
   });
 });

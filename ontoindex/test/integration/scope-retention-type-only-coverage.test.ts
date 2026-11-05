@@ -73,7 +73,7 @@ describe('type-only scope retention coverage', () => {
           ).toStrictEqual([
             { filePath: 'a.ts', status: 'retained' },
             { filePath: 'b.ts', status: 'retained' },
-            { filePath: 'm.ts', status: 'failed', reason: 'unsupported-syntax' },
+            { filePath: 'm.ts', status: 'retained' },
             { filePath: 'ordinary.ts', status: 'retained' },
             { filePath: 'ports.ts', status: 'retained' },
             { filePath: 'reference-site.tsx', status: 'retained' },
@@ -84,15 +84,15 @@ describe('type-only scope retention coverage', () => {
               {
                 language: 'typescript',
                 files: 6,
-                retained: 5,
+                retained: 6,
                 skipped: 0,
-                refused: 1,
+                refused: 0,
                 unaccounted: 0,
                 unparsed: 0,
-                refusalReasons: [{ reason: 'unsupported-syntax', count: 1 }],
+                refusalReasons: [],
               },
             ],
-            complete: false,
+            complete: true,
           });
         },
       },

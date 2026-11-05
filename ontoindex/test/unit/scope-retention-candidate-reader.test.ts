@@ -3,7 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ParsedFile } from 'ontoindex-shared';
 import type { ImportConfigObservations } from '../../src/core/ingestion/language-config.js';
 import { ScopeRetentionStage } from '../../src/core/ingestion/pipeline-phases/scope-retention-stage.js';
 import {
@@ -14,7 +13,6 @@ import {
   loadScopeRetentionCandidate,
   verifyScopeRetentionCandidate,
 } from '../../src/core/ingestion/pipeline-phases/scope-retention-candidate-reader.js';
-import { summarizeScopeRetentionCoverage } from '../../src/core/ingestion/pipeline-phases/scope-retention-coverage.js';
 import { createResolutionContext } from '../../src/core/ingestion/model/resolution-context.js';
 
 const identity = {
@@ -148,26 +146,7 @@ const ormQuery = {
   method: 'findMany',
   lineNumber: 0,
 };
-const parsedFile: ParsedFile = {
-  filePath: 'src/example.ts',
-  moduleScope: 'module:example',
-  parsedImports: [],
-  localDefs: [],
-  referenceSites: [],
-  scopes: [
-    {
-      id: 'module:example',
-      parent: null,
-      kind: 'Module',
-      filePath: 'src/example.ts',
-      range: { startLine: 1, startCol: 0, endLine: 1, endCol: 1 },
-      bindings: new Map(),
-      typeBindings: new Map(),
-      ownedDefs: [],
-      imports: [],
-    },
-  ],
-};
+const parsedFile = { filePath: 'src/example.ts' };
 
 function captureCompleteInputs(stage: ScopeRetentionStage) {
   stage.captureDiscovery(
@@ -196,8 +175,7 @@ function captureCompleteInputs(stage: ScopeRetentionStage) {
       .digest('hex'),
   });
   stage.captureParserInputs([{ path: parsedFile.filePath, content: 'export {};' }]);
-  stage.capture([parsedFile]);
-  stage.recordOutcomes([{ filePath: parsedFile.filePath, status: 'success' }]);
+  stage.reconcile([parsedFile.filePath]);
   stage.reconcile([parsedFile.filePath]);
   stage.captureImportState(createResolutionContext());
   for (const family of Object.keys(stage.producerCompletion)) {
@@ -213,24 +191,6 @@ afterEach(async () => {
 });
 
 describe('scope retention candidate verification', () => {
-  it('retains, persists and hydrates a parsed file above the former 256 KiB bound', async () => {
-    const large: ParsedFile = {
-      ...parsedFile,
-      referenceSites: Array.from({ length: 3100 }, (_, index) => ({
-        name: `reference${index}`,
-        inScope: parsedFile.moduleScope,
-        kind: 'read' as const,
-        atRange: { startLine: 1, startCol: 0, endLine: 1, endCol: 1 },
-      })),
-    };
-    const { directory, request, manifest } = await setup((stage) => stage.capture([large]));
-    expect(manifest.families[0]!.bytes).toBeGreaterThan(350 * 1024);
-    expect(manifest.families[0]!.recordCount).toBe(1);
-    expect(
-      (await loadScopeRetentionCandidate(directory, expected, request)).families.parsedFiles,
-    ).toEqual([large]);
-  });
-
   const extractionCases = [
     [
       'fetch-calls',
@@ -268,7 +228,7 @@ describe('scope retention candidate verification', () => {
       { filePath: 'src/example.ts', toolName: 'search', description: 'é😀', lineNumber: 3 },
     ],
   ] as const;
-  it('hydrates all sixteen families from the verified read with owned decoded records', async () => {
+  it('hydrates all fifteen families from the verified read with owned decoded records', async () => {
     const node: Parameters<ScopeRetentionStage['captureGraphNode']>[0] = {
       id: 'file:example',
       label: 'File',
@@ -301,7 +261,6 @@ describe('scope retention candidate verification', () => {
     expect(loaded).toEqual({
       manifest,
       families: {
-        parsedFiles: [parsedFile],
         calls: [auxiliaryCall],
         heritage: [auxiliaryHeritage],
         assignments: [auxiliaryAssignment],
@@ -323,7 +282,6 @@ describe('scope retention candidate verification', () => {
       const familyPath = path.join(directory, 'scope-retention-candidate', family.fileName);
       expect(open.mock.calls.filter(([file]) => String(file) === familyPath)).toHaveLength(1);
     }
-    loaded.families.parsedFiles[0]!.filePath = 'changed.ts';
     expect(parsedFile.filePath).toBe('src/example.ts');
     expect(await verifyScopeRetentionCandidate(directory, expected, request)).toEqual(manifest);
   });
@@ -388,8 +346,8 @@ describe('scope retention candidate verification', () => {
       stage[capture]([record] as never);
       captureCompleteInputs(stage);
     });
-    expect(manifest.version).toBe(5);
-    expect(manifest.families).toHaveLength(16);
+    expect(manifest.version).toBe(6);
+    expect(manifest.families).toHaveLength(15);
     expect(manifest.retention.producerCompletion[family]).toBe(true);
     expect(JSON.parse(await fs.readFile(path.join(candidate, `${family}.jsonl`), 'utf8'))).toEqual(
       record,
@@ -537,7 +495,7 @@ describe('scope retention candidate verification', () => {
   ];
   it.each(malformedCoverage)('rejects coverage tampering: %s', async (_name, mutate) => {
     const { directory, candidate, request, manifest } = await setup((stage) =>
-      stage.capture([parsedFile]),
+      stage.reconcile([parsedFile.filePath]),
     );
     await mutateManifest(candidate, mutate);
     await expect(verifyScopeRetentionCandidate(directory, expected, request)).rejects.toThrow(
@@ -546,58 +504,6 @@ describe('scope retention candidate verification', () => {
     expect(manifest.seedReady).toBe(false);
   });
 
-  it('verifies coverage with reordered object keys and an explicit unsupported-syntax reason', async () => {
-    const { directory, candidate, request } = await setup();
-    await mutateManifest(candidate, (manifest) => {
-      manifest.retention.inventory = [
-        { filePath: 'refused.py', status: 'failed', reason: 'unsupported-syntax' },
-      ];
-      const coverage = summarizeScopeRetentionCoverage(manifest.retention.inventory);
-      manifest.coverage = {
-        complete: coverage.complete,
-        languages: coverage.languages,
-        version: coverage.version,
-      };
-    });
-    const verified = await verifyScopeRetentionCandidate(directory, expected, request);
-    expect(verified.coverage.languages[0]!.refusalReasons).toEqual([
-      { reason: 'unsupported-syntax', count: 1 },
-    ]);
-    expect(verified.seedReady).toBe(false);
-  });
-
-  it.each([42, null, 'other-reason'])('rejects invalid inventory reason %s', async (reason) => {
-    const { directory, candidate, request } = await setup();
-    await mutateManifest(candidate, (manifest) => {
-      Object.assign(manifest.retention, {
-        inventory: [{ filePath: 'refused.py', status: 'failed', reason }],
-      });
-    });
-    await expect(verifyScopeRetentionCandidate(directory, expected, request)).rejects.toThrow(
-      'invalid retention metadata',
-    );
-  });
-
-  it.each(['changed count', 'extra key', 'missing reason'])(
-    'rejects refusal reason tampering: %s',
-    async (kind) => {
-      const { directory, candidate, request } = await setup();
-      await mutateManifest(candidate, (manifest) => {
-        manifest.retention.inventory = [
-          { filePath: 'refused.py', status: 'unsupported', reason: 'unsupported-syntax' },
-        ];
-        manifest.coverage = summarizeScopeRetentionCoverage(manifest.retention.inventory);
-        const reason = manifest.coverage.languages[0]!.refusalReasons[0]!;
-        if (kind === 'changed count') reason.count++;
-        else if (kind === 'extra key') Object.assign(reason, { extra: true });
-        else Reflect.deleteProperty(reason, 'reason');
-      });
-      await expect(verifyScopeRetentionCandidate(directory, expected, request)).rejects.toThrow(
-        'coverage mismatch',
-      );
-    },
-  );
-
   it('verifies persisted incomplete evidence without charging allowance or claiming seed readiness', async () => {
     const { directory, candidate, request, manifest } = await setup();
     const allowance = request.artifactAllowance.remainingBytes;
@@ -605,7 +511,7 @@ describe('scope retention candidate verification', () => {
     expect(await verifyScopeRetentionCandidate(directory, expected, request)).toEqual(manifest);
     expect(manifest.retention.status).toBe('incomplete');
     expect(manifest.seedReady).toBe(false);
-    expect(Object.values(manifest.retention.producerCompletion)).toEqual(Array(16).fill(false));
+    expect(Object.values(manifest.retention.producerCompletion)).toEqual(Array(15).fill(false));
     expect(request.artifactAllowance.remainingBytes).toBe(allowance);
     expect(await fs.readFile(path.join(candidate, 'manifest.json'))).toEqual(before);
   });
@@ -615,7 +521,7 @@ describe('scope retention candidate verification', () => {
     expect(manifest.retention.status).toBe('retained');
     expect(manifest.retention.inputEvidence.complete).toBe(true);
     expect(manifest.retention.inputEvidence.reasons).toEqual([]);
-    expect(Object.values(manifest.retention.producerCompletion)).toEqual(Array(16).fill(true));
+    expect(Object.values(manifest.retention.producerCompletion)).toEqual(Array(15).fill(true));
     expect(await verifyScopeRetentionCandidate(directory, expected, request)).toEqual(manifest);
   });
 
@@ -811,7 +717,7 @@ describe('scope retention candidate verification', () => {
     });
     const verified = await verifyScopeRetentionCandidate(directory, expected, request);
     expect(verified).toEqual(manifest);
-    expect(Object.values(verified.retention.producerCompletion)).toEqual(Array(16).fill(true));
+    expect(Object.values(verified.retention.producerCompletion)).toEqual(Array(15).fill(true));
     expect(
       verified.families.filter((family) => family.recordCount > 0).map((family) => family.name),
     ).toEqual(['import-states']);
@@ -822,7 +728,7 @@ describe('scope retention candidate verification', () => {
     'rejects duplicate file paths in %s',
     async (kind) => {
       const { directory, candidate, request } = await setup((stage) => {
-        stage.capture([parsedFile]);
+        stage.reconcile([parsedFile.filePath]);
         stage.captureParserInputs([{ path: parsedFile.filePath, content: 'export {};' }]);
       });
       await mutateManifest(candidate, (manifest) => {
@@ -837,182 +743,6 @@ describe('scope retention candidate verification', () => {
         }
       });
       await expect(verifyScopeRetentionCandidate(directory, expected, request)).rejects.toThrow();
-    },
-  );
-
-  it.each(['duplicate path', 'path outside inventory'] as const)(
-    'rejects correctly hashed parsed files: %s',
-    async (kind) => {
-      const { directory, candidate, request } = await setup((stage) => stage.capture([parsedFile]));
-      const record = JSON.parse(
-        await fs.readFile(path.join(candidate, 'parsed-files.jsonl'), 'utf8'),
-      );
-      await replaceFamilyRecords(
-        candidate,
-        'parsed-files',
-        kind === 'duplicate path'
-          ? [record, record]
-          : [
-              {
-                ...record,
-                parsedFile: { ...record.parsedFile, filePath: 'src/other.ts' },
-              },
-            ],
-      );
-      await expect(verifyScopeRetentionCandidate(directory, expected, request)).rejects.toThrow();
-    },
-  );
-
-  it.each([
-    'empty scopes',
-    'missing root',
-    'wrong module id',
-    'module id names child',
-    'non-module root',
-    'duplicate scope id',
-    'missing parent',
-    'foreign root owner',
-    'foreign child owner',
-    'multiple roots',
-    'overlapping siblings',
-    'child outside parent',
-  ] as const)('rejects correctly hashed scope tree: %s', async (kind) => {
-    const { directory, candidate, request } = await setup((stage) => stage.capture([parsedFile]));
-    const record = JSON.parse(
-      await fs.readFile(path.join(candidate, 'parsed-files.jsonl'), 'utf8'),
-    );
-    const file = record.parsedFile;
-    const root = file.scopes[0];
-    root.range.endLine = 20;
-    const child = {
-      ...root,
-      id: 'function:example',
-      parent: root.id,
-      kind: 'Function',
-      range: { startLine: 2, startCol: 0, endLine: 8, endCol: 0 },
-    };
-    file.scopes.push(child);
-    if (kind === 'empty scopes') file.scopes = [];
-    else if (kind === 'missing root') file.scopes.shift();
-    else if (kind === 'wrong module id') file.moduleScope = 'module:missing';
-    else if (kind === 'module id names child') file.moduleScope = child.id;
-    else if (kind === 'non-module root') root.kind = 'Function';
-    else if (kind === 'duplicate scope id') file.scopes.push({ ...child });
-    else if (kind === 'missing parent') child.parent = 'scope:missing';
-    else if (kind === 'foreign root owner') {
-      for (const scope of file.scopes) scope.filePath = 'src/foreign.ts';
-    } else if (kind === 'foreign child owner') child.filePath = 'src/foreign.ts';
-    else if (kind === 'multiple roots') file.scopes.push({ ...root, id: 'module:other' });
-    else if (kind === 'overlapping siblings')
-      file.scopes.push({
-        ...child,
-        id: 'function:other',
-        range: { startLine: 7, startCol: 0, endLine: 10, endCol: 0 },
-      });
-    else child.range.endLine = 21;
-    await replaceFamilyRecords(candidate, 'parsed-files', [record]);
-    await expect(verifyScopeRetentionCandidate(directory, expected, request)).rejects.toThrow();
-  });
-
-  it('verifies correctly hashed nested scope records', async () => {
-    const { directory, candidate, request, manifest } = await setup((stage) =>
-      stage.capture([parsedFile]),
-    );
-    const record = JSON.parse(
-      await fs.readFile(path.join(candidate, 'parsed-files.jsonl'), 'utf8'),
-    );
-    const root = record.parsedFile.scopes[0];
-    root.range.endLine = 20;
-    record.parsedFile.scopes.push(
-      {
-        ...root,
-        id: 'function:example',
-        parent: root.id,
-        kind: 'Function',
-        range: { startLine: 2, startCol: 0, endLine: 8, endCol: 0 },
-      },
-      {
-        ...root,
-        id: 'block:example',
-        parent: 'function:example',
-        kind: 'Block',
-        range: { startLine: 3, startCol: 0, endLine: 5, endCol: 0 },
-      },
-      {
-        ...root,
-        id: 'function:other',
-        parent: root.id,
-        kind: 'Function',
-        range: { startLine: 10, startCol: 0, endLine: 15, endCol: 0 },
-      },
-    );
-    await replaceFamilyRecords(candidate, 'parsed-files', [record]);
-    const verified = await verifyScopeRetentionCandidate(directory, expected, request);
-    expect(verified.retention).toEqual(manifest.retention);
-    expect(verified.seedReady).toBe(false);
-  });
-
-  const crossFileScopeFiles = ['first', 'second'].map((name): ParsedFile => {
-    const filePath = `src/${name}.ts`;
-    const root = {
-      ...parsedFile.scopes[0]!,
-      id: `root:${name}`,
-      filePath,
-      range: { startLine: 1, startCol: 0, endLine: 20, endCol: 0 },
-    };
-    return {
-      ...parsedFile,
-      filePath,
-      moduleScope: root.id,
-      scopes: [
-        root,
-        {
-          ...root,
-          id: `child:${name}`,
-          parent: root.id,
-          kind: 'Function',
-          range: { startLine: 2, startCol: 0, endLine: 8, endCol: 0 },
-        },
-      ],
-    };
-  });
-
-  it('verifies distinct cross-file scope ids with equal ranges without claiming seed readiness', async () => {
-    const { directory, request, manifest } = await setup((stage) =>
-      stage.capture(crossFileScopeFiles),
-    );
-    expect(manifest.retention.inventory.map((entry) => entry.filePath)).toEqual(
-      crossFileScopeFiles.map((file) => file.filePath),
-    );
-    expect(manifest.families.find((family) => family.name === 'parsed-files')?.recordCount).toBe(2);
-    expect(await verifyScopeRetentionCandidate(directory, expected, request)).toEqual(manifest);
-    expect(manifest.seedReady).toBe(false);
-  });
-
-  it.each(['root/root', 'child/child', 'root/child'] as const)(
-    'rejects correctly hashed cross-file scope id reuse: %s',
-    async (collision) => {
-      const { directory, candidate, request, manifest } = await setup((stage) =>
-        stage.capture(crossFileScopeFiles),
-      );
-      expect(await verifyScopeRetentionCandidate(directory, expected, request)).toEqual(manifest);
-      const records = (await fs.readFile(path.join(candidate, 'parsed-files.jsonl'), 'utf8'))
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line));
-      const first = records[0].parsedFile;
-      const second = records[1].parsedFile;
-      if (collision === 'root/root') {
-        second.moduleScope = first.moduleScope;
-        second.scopes[0].id = first.moduleScope;
-        second.scopes[1].parent = first.moduleScope;
-      } else {
-        second.scopes[1].id = first.scopes[collision === 'child/child' ? 1 : 0].id;
-      }
-      await replaceFamilyRecords(candidate, 'parsed-files', records);
-      await expect(verifyScopeRetentionCandidate(directory, expected, request)).rejects.toThrow(
-        'duplicate parsed file scope id',
-      );
     },
   );
 
@@ -1044,92 +774,9 @@ describe('scope retention candidate verification', () => {
     },
   );
 
-  it.each([
-    ['retained', true],
-    ['retained', false],
-    ['incomplete', true],
-  ] as const)(
-    'rejects missing parsed records with %s retention and producer completion %s',
-    async (status, complete) => {
-      const { directory, candidate, request, manifest } = await setup((stage) => {
-        stage.capture([parsedFile]);
-        stage.recordOutcomes([{ filePath: parsedFile.filePath, status: 'success' }]);
-        if (status === 'retained') stage.reconcile([parsedFile.filePath]);
-        if (complete) stage.markProducerCompleted('parsed-files');
-      });
-      expect(manifest.retention.status).toBe(status);
-      expect(manifest.retention.producerCompletion['parsed-files']).toBe(complete);
-      await replaceFamilyRecords(candidate, 'parsed-files', []);
-      await expect(verifyScopeRetentionCandidate(directory, expected, request)).rejects.toThrow();
-    },
-  );
-
-  it.each([
-    ['completed B-only records', true, false],
-    ['completed A+B records', true, true],
-    ['partial B-only records', false, false],
-  ] as const)(
-    'checks retained parsed-file membership for %s',
-    async (_name, complete, includeRetained) => {
-      const otherFile: ParsedFile = {
-        ...parsedFile,
-        filePath: 'src/other.ts',
-        moduleScope: 'module:other',
-        scopes: parsedFile.scopes.map((scope) => ({
-          ...scope,
-          id: 'module:other',
-          filePath: 'src/other.ts',
-        })),
-      };
-      const { directory, candidate, request, manifest } = await setup((stage) => {
-        stage.capture([parsedFile, otherFile]);
-        stage.recordOutcomes([{ filePath: parsedFile.filePath, status: 'success' }]);
-        if (complete) stage.markProducerCompleted('parsed-files');
-      });
-      expect(manifest.retention.status).toBe('incomplete');
-      expect(manifest.retention.producerCompletion['parsed-files']).toBe(complete);
-      expect(manifest.retention.inventory).toEqual([
-        { filePath: parsedFile.filePath, status: 'retained' },
-        { filePath: otherFile.filePath, status: 'missing-outcome' },
-      ]);
-      expect(manifest.seedReady).toBe(false);
-      const records = (await fs.readFile(path.join(candidate, 'parsed-files.jsonl'), 'utf8'))
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line));
-      const selected = includeRetained
-        ? records
-        : records.filter((record) => record.parsedFile.filePath === otherFile.filePath);
-      expect(selected).toHaveLength(includeRetained ? 2 : 1);
-      await replaceFamilyRecords(candidate, 'parsed-files', selected);
-      if (complete && !includeRetained) {
-        await expect(verifyScopeRetentionCandidate(directory, expected, request)).rejects.toThrow(
-          'completed parsed files inventory mismatch',
-        );
-      } else {
-        const verified = await verifyScopeRetentionCandidate(directory, expected, request);
-        expect(verified.retention.status).toBe('incomplete');
-        expect(verified.retention.producerCompletion['parsed-files']).toBe(complete);
-        expect(verified.seedReady).toBe(false);
-      }
-    },
-  );
-
-  it('rejects completed parsed records exceeding the inventory count', async () => {
-    const { directory, candidate, request } = await setup((stage) => {
-      stage.capture([parsedFile]);
-      stage.markProducerCompleted('parsed-files');
-    });
-    await mutateManifest(candidate, (manifest) => {
-      manifest.retention.inventory = [];
-    });
-    await expect(verifyScopeRetentionCandidate(directory, expected, request)).rejects.toThrow();
-  });
-
   it('rejects retained metadata with a non-retained inventory entry', async () => {
     const { directory, candidate, request } = await setup((stage) => {
-      stage.capture([parsedFile]);
-      stage.recordOutcomes([{ filePath: parsedFile.filePath, status: 'success' }]);
+      stage.reconcile([parsedFile.filePath]);
       stage.reconcile([parsedFile.filePath]);
     });
     await mutateManifest(candidate, (manifest) => {
@@ -1212,9 +859,8 @@ describe('scope retention candidate verification', () => {
     },
   );
 
-  it('verifies auxiliary file paths outside the parsed-file inventory', async () => {
+  it('verifies auxiliary file paths outside an unreconciled inventory', async () => {
     const { directory, request, manifest } = await setup((stage) => {
-      stage.capture([parsedFile]);
       stage.captureCalls([
         {
           ...auxiliaryCall,
@@ -1323,14 +969,14 @@ describe('scope retention candidate verification', () => {
     },
   );
 
-  it.each([1, 2, 3, 4])('rejects legacy version %s candidates explicitly', async (version) => {
+  it.each([1, 2, 3, 4, 5])('rejects legacy version %s candidates explicitly', async (version) => {
     const { directory, candidate, request } = await setup();
     await mutateManifest(candidate, (manifest) => {
       Object.assign(manifest, { version });
       Reflect.deleteProperty(manifest.retention, 'producerCompletion');
     });
     await expect(verifyScopeRetentionCandidate(directory, expected, request)).rejects.toThrow(
-      'unsupported legacy manifest version',
+      version === 5 ? 'invalid manifest' : 'unsupported legacy manifest version',
     );
   });
 
@@ -1364,7 +1010,7 @@ describe('scope retention candidate verification', () => {
       stage.captureORMQueries(queries);
       captureCompleteInputs(stage);
     });
-    expect(manifest.version).toBe(5);
+    expect(manifest.version).toBe(6);
     expect(manifest.retention.producerCompletion['orm-queries']).toBe(true);
     expect(manifest.families.find((family) => family.name === 'orm-queries')).toMatchObject({
       name: 'orm-queries',
@@ -1790,55 +1436,6 @@ describe('scope retention candidate verification', () => {
         request,
       ),
     ).rejects.toThrow();
-  });
-
-  it.each([
-    [
-      'missing family',
-      (m: ScopeRetentionCandidateManifest) => {
-        m.families.pop();
-      },
-    ],
-    [
-      'duplicate family',
-      (m: ScopeRetentionCandidateManifest) => {
-        m.families[1] = { ...m.families[0]! };
-      },
-    ],
-    [
-      'traversal filename',
-      (m: ScopeRetentionCandidateManifest) => {
-        m.families[0]!.fileName = '../parsed-files.jsonl';
-      },
-    ],
-    [
-      'seed readiness',
-      (m: ScopeRetentionCandidateManifest) => {
-        Object.assign(m, { seedReady: true });
-      },
-    ],
-    [
-      'format version',
-      (m: ScopeRetentionCandidateManifest) => {
-        Object.assign(m, { version: 999 });
-      },
-    ],
-    [
-      'record count',
-      (m: ScopeRetentionCandidateManifest) => {
-        m.totalRecordCount = 1;
-      },
-    ],
-    [
-      'family hash',
-      (m: ScopeRetentionCandidateManifest) => {
-        m.families[0]!.sha256 = 'c'.repeat(64);
-      },
-    ],
-  ])('rejects manifest tampering: %s', async (_name, mutate) => {
-    const { directory, candidate, request } = await setup();
-    await mutateManifest(candidate, mutate);
-    await expect(verifyScopeRetentionCandidate(directory, expected, request)).rejects.toThrow();
   });
 
   it.each(['missing file', 'changed bytes', 'malformed record'])(

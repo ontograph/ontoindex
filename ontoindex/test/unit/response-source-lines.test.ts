@@ -103,22 +103,62 @@ describe('public source line projection', () => {
     },
   );
 
-  it('serializes once before paging and reuses projected pages without another backend call', async () => {
+  it.each([false, true])(
+    'projects grouped impact locations including ambiguity errors (%s)',
+    (ambiguous) => {
+      const symbol = { ...row, citations: [{ lineSpan: { start: 0, end: 3 } }] };
+      const expectedSymbol = { ...publicRow, citations: [{ lineSpan: { start: 1, end: 4 } }] };
+      const local = {
+        ...(ambiguous ? { error: 'Ambiguous target' } : {}),
+        target: symbol,
+        sourceIdentity: { ...symbol, kind: symbol.type },
+        candidates: auditRows.map((entry) => ({
+          ...entry,
+          citations: [{ lineSpan: { start: 0, end: 3 } }],
+        })),
+        metadata: { target: symbol },
+        local: { target: symbol },
+      };
+      const result = { group: 'group', local, metadata: { local } };
+      const original = structuredClone(result);
+      const expected = {
+        ...result,
+        local: {
+          ...local,
+          target: expectedSymbol,
+          sourceIdentity: { ...expectedSymbol, kind: symbol.type },
+          candidates: [expectedSymbol, ...local.candidates.slice(1)],
+        },
+      };
+      expect(projectResponseSourceLines('impact', 'symbol', result)).toEqual(expected);
+      expect(
+        projectResponseSourceLines('impact', 'batch', { perSymbol: [{ target: 'a', result }] }),
+      ).toEqual({ perSymbol: [{ target: 'a', result: expected }] });
+      expect(result).toEqual(original);
+    },
+  );
+
+  it('serializes grouped impact once before paging and reuses projected pages without another backend call', async () => {
     const { Server } = await import('@modelcontextprotocol/sdk/server/index.js');
     const { CallToolRequestSchema } = await import('@modelcontextprotocol/sdk/types.js');
     const { createMCPServer } = await import('../../src/mcp/server.js');
     const setHandler = vi.spyOn(Server.prototype, 'setRequestHandler');
-    const result = { symbol: { ...row, content: 'x'.repeat(70000) } };
+    const result = { group: 'group', local: { target: { ...row, content: 'x'.repeat(70000) } } };
     const backend = { callTool: vi.fn(async () => result) };
     const server = createMCPServer(backend as never);
     try {
       const handler = setHandler.mock.calls.find(
         ([schema]) => schema === CallToolRequestSchema,
       )![1];
-      const args = { action: 'context', name: 'a', response_budget_bytes: 1000000 };
+      const args = {
+        action: 'symbol',
+        target: 'a',
+        repo: '@group',
+        response_budget_bytes: 1000000,
+      };
       const call = async (arguments_: Record<string, unknown>) => {
         const response = await (handler as (request: unknown) => Promise<any>)({
-          params: { name: 'inspect', arguments: arguments_ },
+          params: { name: 'impact', arguments: arguments_ },
         });
         expect(response.isError).toBeUndefined();
         return JSON.parse(response.content[0].text);
@@ -130,9 +170,9 @@ describe('public source line projection', () => {
         page = await call({ ...args, response_cursor: page.responsePage.nextCursor });
         serialized += page.chunk;
       }
-      expect(JSON.parse(serialized).symbol).toMatchObject(publicRow);
+      expect(JSON.parse(serialized).local.target).toMatchObject(publicRow);
       expect(backend.callTool).toHaveBeenCalledTimes(1);
-      expect(result.symbol.startLine).toBe(0);
+      expect(result.local.target.startLine).toBe(0);
     } finally {
       setHandler.mockRestore();
       await server.close();

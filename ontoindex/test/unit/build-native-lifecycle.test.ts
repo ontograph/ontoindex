@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 afterEach(() => {
@@ -12,6 +13,7 @@ afterEach(() => {
 async function runBuild(
   options: {
     nativeFailure?: Error;
+    vendoredFailure?: Error;
     missingAfterBuild?: boolean;
     missingProvenance?: boolean;
     reachCopy?: boolean;
@@ -33,6 +35,9 @@ async function runBuild(
     built = true;
   });
   const rmSync = vi.fn();
+  const execFileSync = vi.fn(() => {
+    if (options.vendoredFailure) throw options.vendoredFailure;
+  });
   const copyFileSync = vi.fn();
   const statSync = vi.fn((filename: string) => ({
     isFile: () =>
@@ -42,7 +47,7 @@ async function runBuild(
           (options.missingProvenance && filename.endsWith('build-provenance.json')))
       ),
   }));
-  vi.doMock('node:child_process', () => ({ execSync }));
+  vi.doMock('node:child_process', () => ({ execSync, execFileSync }));
   vi.doMock('node:fs', () => ({
     default: {
       statSync,
@@ -55,7 +60,7 @@ async function runBuild(
     },
   }));
   const result = import('../../scripts/build.js');
-  return { result, stop, execSync, statSync, rmSync, copyFileSync };
+  return { result, stop, execSync, execFileSync, statSync, rmSync, copyFileSync };
 }
 
 describe('Linux native build lifecycle', () => {
@@ -75,6 +80,28 @@ describe('Linux native build lifecycle', () => {
       }),
     );
     expect(build.statSync).toHaveBeenCalled();
+    const root = fileURLToPath(new URL('../../', import.meta.url));
+    expect(build.execFileSync).toHaveBeenCalledTimes(1);
+    expect(build.execFileSync).toHaveBeenCalledWith(
+      process.execPath,
+      [path.join(root, 'scripts', 'build-vendored-natives.cjs')],
+      { cwd: path.resolve(root), stdio: 'inherit' },
+    );
+    const vendoredCall = build.execFileSync.mock.invocationCallOrder[0];
+    expect(build.execSync.mock.invocationCallOrder[0]).toBeLessThan(vendoredCall);
+    expect(build.statSync.mock.invocationCallOrder[3]).toBeLessThan(vendoredCall);
+    expect(vendoredCall).toBeLessThan(build.rmSync.mock.invocationCallOrder[0]);
+    expect(vendoredCall).toBeLessThan(build.execSync.mock.invocationCallOrder[1]);
+  });
+
+  it('propagates a vendored native build failure before deleting or copying output', async () => {
+    const failure = new Error('vendored native build failed');
+    const build = await runBuild({ vendoredFailure: failure });
+    await expect(build.result).rejects.toThrow(failure);
+    expect(build.execFileSync).toHaveBeenCalledTimes(1);
+    expect(build.execSync.mock.calls.map(([command]) => command)).toEqual(['npm run build']);
+    expect(build.rmSync).not.toHaveBeenCalled();
+    expect(build.copyFileSync).not.toHaveBeenCalled();
   });
 
   it('propagates a native build failure before deleting or copying output', async () => {

@@ -26,6 +26,7 @@ import { normalizeRepoRelativePath, resolveRepoFilePath } from './backend-repo-p
 import { normalizeLimit } from './tool-utils.js';
 import { AnalysisResult } from 'ontoindex-shared';
 import { createPolicyFilter, resolveRepositoryPolicy } from '../../core/repository-policy.js';
+import { markInvocationError } from '../shared/invocation-error.js';
 
 type RepoHandle = {
   readonly id: string;
@@ -1012,6 +1013,6 @@ export async function runDeadCode(
       error: `Dead-code analysis failed: ${deadCodeErrorMessage(err)}`,
       summary: '',
     };
-    return result as AnalysisResult & DeadCodeResult;
+    return markInvocationError(result as AnalysisResult & DeadCodeResult);
   }
 }

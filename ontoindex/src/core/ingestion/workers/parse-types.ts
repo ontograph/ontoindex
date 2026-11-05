@@ -1,9 +1,8 @@
 import type Parser from 'tree-sitter';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { SupportedLanguages, type NodeLabel, type ParsedFile, type Range } from 'ontoindex-shared';
+import { SupportedLanguages, type NodeLabel, type Range } from 'ontoindex-shared';
 import type { MixedChainStep } from '../utils/call-analysis.js';
-import type { ScopeExtractionRecord } from '../scope-extractor-bridge.js';
 import type { ConstructorBinding } from '../type-env.js';
 import type { NamedBinding } from '../named-bindings/types.js';
 import type { ExtractedHeritage } from '../model/heritage-map.js';
@@ -232,13 +231,6 @@ export interface ParseWorkerResult {
   constructorBindings: FileConstructorBindings[];
   /** All-scope type bindings from TypeEnv for BindingAccumulator (includes function-local). */
   fileScopeBindings: FileScopeBindings[];
-  /**
-   * Per-file `ParsedFile` artifacts from the new scope-based resolution
-   * pipeline (RFC #909 Ring 2).
-   */
-  parsedFiles: ParsedFile[];
-  /** Attempted scope extractions only; missing fields/records mean unavailable evidence. */
-  scopeExtractionOutcomes?: ScopeExtractionRecord[];
   /** Paths of every file successfully processed by this worker, populated unconditionally. */
   processedPaths: string[];
   /** Per-file worker timing for large-repo failure and hotspot localization. */
@@ -377,11 +369,6 @@ export const mergeParseWorkerResult = (target: ParseWorkerResult, src: ParseWork
   appendAll(target.ormQueries, src.ormQueries);
   appendAll(target.constructorBindings, src.constructorBindings);
   appendAll(target.fileScopeBindings, src.fileScopeBindings);
-  appendAll(target.parsedFiles, src.parsedFiles);
-  if (src.scopeExtractionOutcomes) {
-    target.scopeExtractionOutcomes ??= [];
-    for (const outcome of src.scopeExtractionOutcomes) target.scopeExtractionOutcomes.push(outcome);
-  }
   appendAll(target.processedPaths, src.processedPaths);
   appendAll(target.fileTimings, src.fileTimings);
   appendAll(target.parseErrorPaths, src.parseErrorPaths);
@@ -410,8 +397,6 @@ export const createEmptyResult = (): ParseWorkerResult => ({
   ormQueries: [],
   constructorBindings: [],
   fileScopeBindings: [],
-  parsedFiles: [],
-  scopeExtractionOutcomes: [],
   processedPaths: [],
   fileTimings: [],
   parseErrorPaths: [],

@@ -92,13 +92,16 @@ describe('ORM producer completion', () => {
             consume: async (handle) => {
               consumed = true;
               expect(handle.seedReady).toBe(false);
-              const unsupported = mode === 'computed';
-              expect(handle.producerCompletion['orm-queries']).toBe(
-                mode !== 'missing-final-read' && !unsupported,
-              );
-              if (unsupported) expect(handle.reasons).toContain('unsupported-syntax');
-              else if (mode !== 'missing-final-read')
+              expect(handle.producerCompletion['orm-queries']).toBe(mode !== 'missing-final-read');
+              if (mode !== 'missing-final-read')
                 expect(handle.reasons).not.toContain('unsupported-syntax');
+              if (mode === 'computed')
+                expect(handle.inventory).toContainEqual(
+                  expect.objectContaining({
+                    filePath: 'query.ts',
+                    status: 'retained',
+                  }),
+                );
               expect(handle.ormQueryRecordCount).toBe(expectedQueries.length);
               const queries: ExtractedORMQuery[] = [];
               for await (const batch of handle.iterateORMQueries()) queries.push(...batch);

@@ -4,6 +4,44 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+- TypeScript and JavaScript inference ignores a constructor or factory name that a nearer binding shadows: a constructor parameter, a `catch` parameter, a for-of/for-in binding, a destructured local or a parameter named like the factory no longer produce a type for the outer class.
+- A `response_budget_bytes` below the smallest safe projection is raised only up to the 48 KiB response ceiling. Above that, the error names the smallest safe projection size.
+- On an oversized workspace, the symbols-overlay search keeps exact typed-ID hits from dirty files and returns a structured `readContext` with the same `indexedCommit`, `generation` and `excludedEvidence` fields as committed reads, plus `source: "symbols-overlay"`, partial semantic coverage and uncovered paths.
+- On an oversized dirty workspace, a relationship read that falls back to the committed index also starts the existing `analyze --workspace-graph` preparation in the background (once per refresh interval, skipped while analysis runs or when `ONTOINDEX_AUTO_REFRESH=0` or `ONTOINDEX_AUTO_WORKSPACE=0`). Later reads reuse that graph and include uncommitted files.
+- Committed `inspect` explore and related follow-up hints keep `read_mode: "committed"`.
+
+## [2.4.22] - 2026-11-05
+
+- The 2.4.21 symbols-overlay fallback never ran on real repositories: MCP `search/semantic` dispatches as `query`, which was not in the fallback set; a stale overlay forced a full workspace graph; and one dirty file over the scan size cap refused the whole overlay capture. Search now covers the remaining dirty files on large repositories (verified on a 7,073-file repository: 14 of 15 dirty files, the 15th over the size cap). A search error on the overlay is reported as is instead of being replaced by the size refusal.
+
+## [2.4.21] - 2026-11-05
+
+- A `response_budget_bytes` below the smallest safe projection returns that projection with `effectiveBytes` and a warning; responses that cannot be projected still return an error.
+- Argument type errors name the received type, for example `autoAnalyze: expected boolean, received string`. String booleans stay rejected so a string can never satisfy a boolean such as `confirm`.
+- The MCP server writes one stderr line naming the shutdown reason and exit code.
+- TypeScript for-of over a call result typed `ReadonlySet<T>` binds the element type.
+- On a repository above `ONTOINDEX_WORKSPACE_MAX_FILES`, `search` answers from the committed index plus the uncommitted-symbols overlay (up to 50 changed files, unchanged base and configuration) instead of the committed index alone. Relationship tools, `query` and `repomap` keep the labelled committed fallback.
+
+## [2.4.20] - 2026-11-04
+
+- Persist parser-error evidence and report lightweight parser fallback as degraded coverage in base and workspace generations.
+- Refuse incomplete retained replay and oversized dirty inputs; complete rebuilt workspaces use their own coverage evidence.
+- Avoid unrelated TypeScript and JavaScript member-call fallback edges and handle comments in Go receiver wrappers. Receiver types now come from unannotated factories whose every return is the same `new X()`, from for-of over a `const` call result returning an array, set or iterable, and from JavaScript constructor `this.x =` assignments typed by JSDoc or `new X()`.
+- Committed-read remediation says it queries the last index and points to `readContext.sourceProvenance`; next-step hints keep `repo` and workspace `read_mode` and omit enrichment options that explicit read modes reject.
+- Deletion checks report generation-wide parser coverage conservatively, including truncated or missing evidence.
+- Expand parser, replay, worker, workspace, and deletion-coverage regression tests.
+
+## [2.4.19] - 2026-11-04
+
+- CLI `context`, `impact` and `query` accept `--read-mode committed|workspace`; supported MCP navigation reads accept the matching `read_mode`.
+- Committed read responses report source provenance and whether indexed source includes working-tree bytes.
+- Workspace-size errors provide the explicit command to prepare a bounded workspace graph while preserving the committed index.
+- Workspace replay preserves graph parity, including supported module extensions, receiver seeding and deterministic unsupported-syntax refusals.
+- C# project discovery uses the scanned inventory, and analysis-pack identity comes from the parsed pack catalog.
+- Dirty detection includes assume-unchanged and skip-worktree edits; clean-base workspace reads report complete coverage and an input digest.
+- MCP reads report why coverage is incomplete, and route, tool, scan and heritage results use deterministic ordering.
+- The experimental scope reader and the `REGISTRY_PRIMARY_TYPESCRIPT`/`REGISTRY_PRIMARY_JAVASCRIPT` flags were removed. The default graph is unchanged on the measured frozen snapshot; a current-source build and 69 worker, fallback and protocol tests passed. Indexing no longer prints `scope extraction failed` warnings, and workspace retention candidates moved to format 6, so older candidates are rebuilt on the next analyze.
+
 ## [2.4.10] - 2026-11-02
 
 - TypeScript generic bindings preserve shadowing and resolve supported constraint chains without following cycles.

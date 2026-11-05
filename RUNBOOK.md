@@ -4,7 +4,7 @@ Short, copy-paste operations for **local development**, **MCP**, and **CI**. Com
 
 ## Prerequisites
 
-- **Node.js** ≥ 20 (`ontoindex-web/package.json` `engines`).
+- **Node.js** 22.12–25.x (`ontoindex/package.json` `engines`); [.nvmrc](.nvmrc) selects the tested development default, 24.21.0.
 - **Git** (analyze requires a git repository).
 - From repo root, install and build the CLI package:
 
@@ -14,7 +14,7 @@ npm install
 npm run build
 ```
 
-Use `npx ontoindex …` from any path after global/published install, or `node dist/cli/index.js …` when developing from `ontoindex/` with a local build.
+Use the installed `ontoindex …` from any path, or `node dist/cli/index.js …` when developing from `ontoindex/` with a local build.
 
 ---
 
@@ -22,30 +22,27 @@ Use `npx ontoindex …` from any path after global/published install, or `node d
 
 **Symptom:** MCP or resources warn the index is behind `HEAD`, or results don’t reflect recent commits.
 
-**Multi-agent rule:** pick one coordinator to run `analyze`. Worker agents should not auto-refresh the index during integration or cherry-pick work; they should either use the existing index with explicit stale-index consent or use git-only workflows.
+Query OntoIndex and use the result with its reported freshness. Repository queries
+schedule refresh when needed; a stale warning alone does not require manual
+reindexing. Verify edited or new code directly from source when the response
+says those changes are excluded.
 
-**Fix (from the target repo root):**
-
-```bash
-npx ontoindex analyze
-```
-
-**Force full rebuild** (same commit but suspect corruption or changed ignore rules):
-
-```bash
-npx ontoindex analyze --force
-```
+Only the active coordinator may request an immediate manual refresh, and only
+when no refresh job is already active. Prefer
+`gn_ensure_fresh({repo: "<registered-repo>", autoAnalyze: true})`; otherwise run
+the installed `ontoindex analyze` from the target repository root. Sub-agents
+never start reindex jobs. See [AGENTS.md](AGENTS.md) for navigation policy.
 
 **Check status:**
 
 ```bash
-npx ontoindex status
+ontoindex status
 ```
 
 **List what MCP knows about:**
 
 ```bash
-npx ontoindex list
+ontoindex list
 ```
 
 ---

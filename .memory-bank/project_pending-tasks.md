@@ -19,11 +19,93 @@ status: active
 
 # OntoIndex Pending Tasks
 
-2026-11-02: 2.4.10 repairs passed the full Linux unit/integration gate and are
+2026-11-03: the dirty-search warning repair is delivered in locally installed
+2.4.14 (`b2159cb`), pushed to main. Full versioned-tree gate, installed smoke and
+twelve Rust/TS/JS MCP checks passed. Cleanup still defers nine older copies:
+62 unreadable reference fields across 21 processes prevent proving non-use.
+GN qualification and buffer-exhaustion measurement retain their existing scope.
+Evidence: [2.4.14 delivery](audit_session-2026-11-03-local-2414.md).
+
+2026-11-02 qualification repairs R1–R3 and follow-up guards are locally validated
+with 728 tests, 10/10 probes, native build, typecheck and root formatting passing.
+An additional six neighboring Rust/TS/JS and audit suites pass 528 tests with
+all 3,176 recorded input hashes unchanged. The full backend follow-up found
+11 failing assertions; their Swift/Go repairs and TypeScript expectations pass
+731 affected tests plus seven source-worker tests. The final backend rerun exits
+0: 18,960 passes, one expected failure, 304 skips; all 4,929 input hashes and HEAD
+match. Fresh compiled-worker validation is complete on 2026-11-03: build exits 0,
+91 tests pass with no skips, retained probes pass 10/10, and all 5,824 recorded
+source/artifact inputs match. Subsequent Swift endpoint review corrected a real
+caller-ID defect previously accepted by the test. Fresh build, 341 focused tests
+(zero skips), ten probes, typecheck, lint and formatting pass; all 5,824 hashes
+match. Fresh full backend validation after that correction exits 0: 18,967
+passes, one expected failure, 304 skips; 803 passing files and three skipped
+files. All 5,824 source/artifact hashes and HEAD remain unchanged.
+Delivery is complete in 2.4.13 at `1faf4b1`, pushed to main and selected by the
+local CLI and Codex MCP. The staged-tree gate passed 15,914 unit and 3,053
+integration tests; hooks, clean-commit build, installed smoke and ten probes
+passed. The broader qualification matrix was not repeated. Older installation
+cleanup remains deferred because 22 processes have unreadable reference fields.
+Delivery evidence: [2.4.13 delivery](audit_session-2026-11-03-local-2413.md).
+GN state is unchanged. Evidence:
+[qualification repair](audit_session-2026-11-02-2412-qualification-repair.md).
+
+2026-11-02 delivery is complete: 2.4.12 product commit `8a51cbb` is pushed to
+main and selected by the local CLI and Codex MCP. Versioned-tree gate,
+clean-commit build and installed smoke pass. No release publication or CI
+dispatch occurred. Older copies remain deferred due to unreadable process
+references. GN prerequisites and optional broader coverage retain their scope.
+Evidence: [2.4.12 delivery](audit_session-2026-11-02-local-2412.md).
+
+2026-11-02 latest full current-code Linux tests are complete: backend, web,
+native, Python, Chromium and available opt-ins all exit 0. Backend has 18,846
+ordinary passes and one expected failure; 297 default cases remain unrun after
+supplements (224 Kotlin, 68 Dart and five other type-environment cases).
+GN prerequisites and optional broader coverage retain their existing scope.
+Evidence: `/opt/d2/ontoindex-full-current-5QrET9Wq/REPORT.md`.
+
+2026-11-02 installer isolation repair is source-complete with seven passing
+regressions. Its prefix-selection and scoped-cleanup changes are delivered in
+2.4.12 with the accumulated repairs. GN prerequisites remain unchanged.
+
+2026-11-02: declared-field and Ruby preparation-order repairs pass 1,912 source
+tests with 28 skips across 20 files. The original nine failing assertions are
+covered by the repaired resolver suites; Ruby's supported positive now has an
+explicit return annotation and an unannotated negative. Fresh full backend
+validation passes 18,820 ordinary tests with one expected failure and 304 skips.
+A separate native supplement passes checkout recovery and two real-WAL cases.
+Scoped instrumentation now passes for 20 changed production files, and frozen
+TypeScript replay passes for 41 sources in both registry modes. The authorized
+local rebuild and focused compiled-worker suite now pass 43 tests, including
+TS/Go/PHP/Ruby declared-field transport and six sequential/worker/recovery parity
+fixtures; 43 tests were excluded by the selector. Node 22.12 exposed a Tree-sitter
+ABI mismatch: the binding now targets Node-API 9 and one rebuilt addon passes
+61 focused tests on both Node 22.12 and 24.21, with 43 excluded per run.
+Linux postinstall and normal builds now rebuild Tree-sitter before loading it;
+fresh-child verification checks application resolution and selected artifact.
+The real builder passes, with identical previously runtime-tested addon bytes,
+and 39 focused tests pass. The selected 2.4.12 installation contains these
+fixes. Isolated packed installation passes on Linux Node 24.21/npm
+11.19 with linked vendor dependencies: Rust/TS/JS parsing, native loads, CLI
+version/help and ABI 9 verification. Copied-dependency installation and a fresh
+Node 22 install remain untested. Project-wide coverage and external corpus parity for
+other languages remain separate optional extensions. `.nvmrc` now selects tested
+Node 24.21.0; contributor/runbook guidance matches package engines and the
+OntoIndex-first stale-index policy.
+Native recovery is proven with a controlled JavaScript
+materialization delay; native-driver latency and buffer-exhaustion reproduction
+remain outside that evidence.
+Original supplemental Linux results remain historical. R1–R7 and follow-up
+repairs are delivered in 2.4.12.
+See [current-tree test evidence](audit_session-2026-11-02-current-tests.md).
+
+2026-11-02: 2.4.11 repairs passed the full Linux unit/integration gate and are
 installed locally. Broader GN qualification, buffer-exhaustion measurement,
-frozen fixture gaps and real second-caller timeout proof remain open. Historical
+frozen fixture gaps remain in their existing owners. The later native regression
+proves second-caller timeout recovery with a controlled materialization delay;
+it does not reproduce native latency or buffer exhaustion. Historical
 install cleanup retains live or uncertain copies. No release was published.
-See [delivery evidence](audit_session-2026-11-02-local-2410.md).
+See [delivery evidence](audit_session-2026-11-02-local-2411.md).
 
 2026-11-01: qualification follow-ups and installer cleanup are delivered in
 locally installed 2.4.8 (`103228d`). Full release gate and installed smoke pass;

@@ -542,13 +542,25 @@ describe('gnEnsureFresh', () => {
     setupExecFile();
     mockReadFileSync.mockReturnValue(makeRegistry() as any);
     mockLoadMeta.mockResolvedValue(makeMeta({ lastCommit: STALE_INDEXED_COMMIT }) as any);
-    const scope = { includePaths: ['extension/aso/', 'test/sql/aso/'], pipelineProfile: 'symbols' as const };
+    const scope = {
+      includePaths: ['extension/aso/', 'test/sql/aso/'],
+      pipelineProfile: 'symbols' as const,
+    };
     await gnEnsureFresh(REPO_ID, { autoAnalyze: true, scope });
     expect(mockComputeSourceManifest).toHaveBeenCalledWith(REPO_PATH, scope);
-    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toEqual(expect.arrayContaining([
-      '--include-path', 'extension/aso/', '--include-path', 'test/sql/aso/', '--symbols-only',
-    ]));
-    expect(mockSubmitAnalysisJob.mock.calls[0][0].options).toEqual({ withEmbeddings: false, scope });
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].args).toEqual(
+      expect.arrayContaining([
+        '--include-path',
+        'extension/aso/',
+        '--include-path',
+        'test/sql/aso/',
+        '--symbols-only',
+      ]),
+    );
+    expect(mockSubmitAnalysisJob.mock.calls[0][0].options).toEqual({
+      withEmbeddings: false,
+      scope,
+    });
   });
 
   it('does not autoAnalyze when runtime health is untrusted', async () => {

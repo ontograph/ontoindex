@@ -344,14 +344,29 @@ describe.skipIf(!HAS_SELF_INDEX)('gnCanDelete', () => {
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!HAS_SELF_INDEX)('gnPreCommitAudit', () => {
-  it('returns a valid CommitAuditReport for staged scope on a clean tree', async () => {
-    // The working tree is clean on main (no staged changes) — expect READY.
-    // If there are staged changes (unlikely in CI), the verdict may be REVIEW or
-    // DO-NOT-COMMIT, which is also acceptable.
-    const report = await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
+  it('returns a valid CommitAuditReport for a guaranteed empty staged diff', async () => {
+    const temp = await createTempDir('ontoindex-empty-staged-');
+    const previousIndexFile = process.env.GIT_INDEX_FILE;
+    let report: Awaited<ReturnType<typeof gnPreCommitAudit>>;
+    try {
+      process.env.GIT_INDEX_FILE = path.join(temp.dbPath, 'index');
+      execFileSync('git', ['read-tree', 'HEAD'], {
+        cwd: fileURLToPath(new URL('../../../', import.meta.url)),
+      });
+      report = await gnPreCommitAudit(REPO_ID, { scope: 'staged' });
+    } finally {
+      if (previousIndexFile === undefined) {
+        delete process.env.GIT_INDEX_FILE;
+      } else {
+        process.env.GIT_INDEX_FILE = previousIndexFile;
+      }
+      await temp.cleanup();
+    }
 
     expect(report.version).toBe(1);
-    expect(['READY', 'REVIEW', 'DO-NOT-COMMIT']).toContain(report.verdict);
+    expect(report.verdict).toBe('READY');
+    expect(report.changedFiles).toEqual([]);
+    expect(report.evaluation.status).toBe('skipped');
     expect(typeof report.reasoning).toBe('string');
     expect(Array.isArray(report.changedFiles)).toBe(true);
     expect(Array.isArray(report.unexpectedSymbols)).toBe(true);
@@ -365,16 +380,6 @@ describe.skipIf(!HAS_SELF_INDEX)('gnPreCommitAudit', () => {
     expect(Array.isArray(report.affectedProcesses)).toBe(true);
     expect(typeof report.graphSections.processesAvailable).toBe('boolean');
     expect(typeof report.graphSections.hunkCoverageAvailable).toBe('boolean');
-
-    // On a clean staged area, changedFiles should be empty and verdict READY.
-    // We only assert shape — not exact verdict — to stay resilient to CI state.
-    for (const cf of report.changedFiles) {
-      expect(typeof cf.path).toBe('string');
-      expect(Array.isArray(cf.changedSymbols)).toBe(true);
-      expect(typeof cf.perSymbolImpact.upstream).toBe('number');
-      expect(typeof cf.perSymbolImpact.downstream).toBe('number');
-      expect(['LOW', 'MEDIUM', 'HIGH']).toContain(cf.perSymbolImpact.risk);
-    }
 
     const evidenceIds = new Set(report.evidence.map((entry) => entry.id));
     for (const recommendation of report.recommendations) {

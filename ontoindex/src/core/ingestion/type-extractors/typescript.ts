@@ -15,6 +15,8 @@ import type {
 import {
   extractSimpleTypeName,
   extractVarName,
+  isNameShadowed,
+  forEachPatternName,
   hasTypeAnnotation,
   unwrapAwait,
   extractCalleeName,
@@ -22,6 +24,7 @@ import {
   extractGenericTypeArgs,
   resolveIterableElementType,
   methodToTypeArgPosition,
+  NULLABLE_WRAPPER_TYPES,
   type TypeArgPosition,
 } from './shared.js';
 
@@ -94,6 +97,7 @@ const collectJsDocParams = (funcNode: SyntaxNode): Map<string, string> => {
 /** Resolve declared type parameters in their nearest enclosing generic scope. */
 const resolveTypeParameter = (node: SyntaxNode, typeNode: SyntaxNode): string | undefined => {
   const visited = new Set<number>();
+  let unwrappedNullable = false;
   while (true) {
     if (typeNode.type === 'type_annotation' && typeNode.firstNamedChild) {
       typeNode = typeNode.firstNamedChild;
@@ -110,11 +114,25 @@ const resolveTypeParameter = (node: SyntaxNode, typeNode: SyntaxNode): string | 
     }
     // Keep qualified nominal types separate from bare generic references.
     const base = typeNode.type === 'generic_type' ? typeNode.childForFieldName('name') : typeNode;
+    if (
+      typeNode.type === 'generic_type' &&
+      base?.type === 'type_identifier' &&
+      NULLABLE_WRAPPER_TYPES.has(base.text)
+    ) {
+      const argument = typeNode.namedChildren.find(
+        (child) => child.type === 'type_arguments',
+      )?.firstNamedChild;
+      if (argument) {
+        unwrappedNullable = true;
+        typeNode = argument;
+        continue;
+      }
+    }
     const typeName =
       base?.type === 'nested_type_identifier'
         ? base.childForFieldName('name')?.text
         : extractSimpleTypeName(typeNode);
-    if (!typeName) return visited.size ? 'undefined' : undefined;
+    if (!typeName) return visited.size || unwrappedNullable ? 'undefined' : undefined;
     if (typeNode.type !== 'type_identifier') return typeName;
 
     let matched: SyntaxNode | undefined;
@@ -328,6 +346,55 @@ const findTsLocalDeclElementType = (
   return undefined;
 };
 
+/** Recover a const call-result iterable without changing its stored receiver type. */
+const findTsCallResultElementType = (
+  iterableName: string,
+  startNode: SyntaxNode,
+  lookupRawReturnType: (callee: string) => string | undefined,
+): string | undefined => {
+  for (let current = startNode.parent; current; current = current.parent) {
+    if (TS_FUNCTION_NODE_TYPES.has(current.type)) break;
+    if (current.type !== 'statement_block' && current.type !== 'program') continue;
+    for (let i = current.namedChildCount - 1; i >= 0; i--) {
+      const stmt = current.namedChild(i);
+      if (!stmt || stmt.startIndex >= startNode.startIndex) continue;
+      if (stmt.type !== 'lexical_declaration' && stmt.type !== 'variable_declaration') continue;
+      for (const decl of stmt.namedChildren) {
+        if (decl.type !== 'variable_declarator') continue;
+        const name = decl.childForFieldName('name');
+        if (
+          (name?.type === 'object_pattern' || name?.type === 'array_pattern') &&
+          forEachPatternName(name, (binding) => binding === iterableName)
+        )
+          return undefined;
+        if (name?.text !== iterableName) continue;
+        // The nearest declaration wins even when it cannot supply an element type.
+        if (
+          stmt.type !== 'lexical_declaration' ||
+          !stmt.children.some((child) => child.type === 'const') ||
+          decl.childForFieldName('type')
+        )
+          return undefined;
+        const value = decl.childForFieldName('value');
+        if (value?.type !== 'call_expression') return undefined;
+        const callee = value.childForFieldName('function');
+        if (callee?.type !== 'identifier' || isNameShadowed(callee, callee.text)) return undefined;
+        const rawReturn = lookupRawReturnType(callee.text)?.trim();
+        // Map iteration yields entry tuples, so accept only single-element containers.
+        if (
+          !rawReturn ||
+          !/^(?:\w+\[\]|(?:Array|ReadonlyArray|Set|ReadonlySet|Iterable)\s*<\s*\w+\s*>)$/.test(
+            rawReturn,
+          )
+        )
+          return undefined;
+        return extractElementTypeFromString(rawReturn);
+      }
+    }
+  }
+  return undefined;
+};
+
 /**
  * Walk up the AST from a for-loop node to find the enclosing function scope,
  * then search (1) its parameter list and (2) local declarations in the body
@@ -405,11 +472,13 @@ const extractForLoopBinding: ForLoopExtractor = (
   let iterableName: string | undefined;
   let methodName: string | undefined;
   let callExprElementType: string | undefined;
+  let thisField = false;
   if (rightNode?.type === 'identifier') {
     iterableName = rightNode.text;
   } else if (rightNode?.type === 'member_expression') {
     const prop = rightNode.childForFieldName('property');
     if (prop) iterableName = prop.text;
+    thisField = rightNode.childForFieldName('object')?.type === 'this';
   } else if (rightNode?.type === 'call_expression') {
     // entries.values() → call_expression > function: member_expression > object + property
     // this.repos.values() → nested member_expression: extract property from inner member
@@ -424,6 +493,7 @@ const extractForLoopBinding: ForLoopExtractor = (
         // this.repos.values() → obj = this.repos → extract 'repos'
         const innerProp = obj.childForFieldName('property');
         if (innerProp) iterableName = innerProp.text;
+        thisField = obj.childForFieldName('object')?.type === 'this';
       }
       if (prop?.type === 'property_identifier') methodName = prop.text;
     } else if (fn?.type === 'identifier') {
@@ -437,6 +507,45 @@ const extractForLoopBinding: ForLoopExtractor = (
   let elementType: string | undefined;
   if (callExprElementType) {
     elementType = callExprElementType;
+  } else if (thisField) {
+    // Member access must use the nearest class, never a same-named local or
+    // parameter. Scan its fields too so declaration order does not matter.
+    for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
+      if (ancestor.type !== 'class_body') continue;
+      const field = ancestor.namedChildren.find(
+        (child) =>
+          child.type === 'public_field_definition' &&
+          child.childForFieldName('name')?.text === iterableName,
+      );
+      const constructor = ancestor.namedChildren.find(
+        (child) =>
+          child.type === 'method_definition' &&
+          child.childForFieldName('name')?.text === 'constructor',
+      );
+      const parameterProperty = constructor
+        ?.childForFieldName('parameters')
+        ?.namedChildren.find(
+          (parameter) =>
+            (parameter.type === 'required_parameter' || parameter.type === 'optional_parameter') &&
+            parameter.childForFieldName('pattern')?.type === 'identifier' &&
+            parameter.childForFieldName('pattern')?.text === iterableName &&
+            parameter.children.some(
+              (modifier) =>
+                modifier.type === 'accessibility_modifier' || modifier.type === 'readonly',
+            ),
+        );
+      const annotation =
+        declarationTypeNodes.get(`class_body@${ancestor.startIndex}\0${iterableName}`) ??
+        field?.childForFieldName('type') ??
+        parameterProperty?.childForFieldName('type');
+      if (annotation) {
+        elementType = extractTsElementTypeFromAnnotation(
+          annotation,
+          methodToTypeArgPosition(methodName, extractSimpleTypeName(annotation)),
+        );
+      }
+      break;
+    }
   } else {
     // Look up the container's base type name for descriptor-aware resolution
     const containerTypeName = scopeEnv.get(iterableName!);
@@ -451,6 +560,13 @@ const extractForLoopBinding: ForLoopExtractor = (
       findTsIterableElementType,
       typeArgPos,
     );
+    if (!elementType && rightNode?.type === 'identifier') {
+      elementType = findTsCallResultElementType(
+        iterableName!,
+        node,
+        returnTypeLookup.lookupRawReturnType,
+      );
+    }
   }
   if (!elementType) return;
 

@@ -16,6 +16,7 @@ import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { commitsByFile } from './backend-git-history.js';
 import { normalizeLimit } from './tool-utils.js';
 import { AnalysisResult, DiagnosticFinding } from 'ontoindex-shared';
+import { markInvocationError } from '../shared/invocation-error.js';
 
 // Local RepoHandle alias — see backend-route.ts note.
 type RepoHandle = { readonly id: string; readonly name: string; readonly repoPath: string };
@@ -132,7 +133,7 @@ async function loadStructuralSymbols(
       });
       return normalizeStructuralRows(rows);
     } catch {
-      return [];
+      throw new Error('Required structural query failed');
     }
   }
 }
@@ -204,7 +205,10 @@ function normalizeStructuralRows(rows: readonly StructuralRow[]): Array<{
   return out;
 }
 
-async function callerCountsByName(repoId: string): Promise<Map<string, number>> {
+async function callerCountsByName(
+  repoId: string,
+  warnings: string[],
+): Promise<Map<string, number>> {
   const counts = new Map<string, number>();
   try {
     const rows = await executeParameterized(
@@ -225,7 +229,7 @@ async function callerCountsByName(repoId: string): Promise<Map<string, number>> 
       if (Number.isFinite(num)) counts.set(`${filePath}\x00${name}`, num);
     }
   } catch {
-    /* DB unreachable — caller count degrades to 0 for all symbols */
+    warnings.push('Caller counts unavailable; defaulted to zero.');
   }
   return counts;
 }
@@ -242,9 +246,10 @@ export async function runTechDebt(
     typeof params?.since === 'string' && params.since.trim().length > 0 ? params.since : '6 months';
 
   try {
+    const warnings: string[] = [];
     const [symbols, callerCounts] = await Promise.all([
       loadStructuralSymbols(repo.id, minLines),
-      callerCountsByName(repo.id),
+      callerCountsByName(repo.id, warnings),
     ]);
     const fileCommits = await commitsByFile(repo.repoPath, since);
 
@@ -284,6 +289,7 @@ export async function runTechDebt(
       min_lines: minLines,
       symbol_count: entries.length,
       symbols: topEntries,
+      ...(warnings.length > 0 ? { warnings } : {}),
       findings: mapTechDebtToFindings(topEntries),
       summary,
       stats: {
@@ -295,7 +301,7 @@ export async function runTechDebt(
       },
     } as AnalysisResult & TechDebtResult;
   } catch (err: unknown) {
-    return {
+    return markInvocationError({
       status: 'error',
       tool: 'tech_debt',
       repo: repo.name,
@@ -308,6 +314,6 @@ export async function runTechDebt(
       summary: '',
       stats: { totalFindings: 0, durationMs: Date.now() - start },
       errors: [`Tech debt analysis failed: ${legacyErrorMessage(err)}`],
-    } as AnalysisResult & TechDebtResult;
+    } as AnalysisResult & TechDebtResult);
   }
 }

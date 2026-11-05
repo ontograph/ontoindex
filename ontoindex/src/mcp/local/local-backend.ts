@@ -24,8 +24,9 @@ import {
 } from './backend-overlay.js';
 import { RepoHandle, BackendPort } from 'ontoindex-shared';
 import { recordToolCall } from './tool-telemetry.js';
-import { maybeScheduleAutoRefresh } from './auto-refresh.js';
+import { maybeScheduleAutoRefresh, maybeScheduleWorkspacePrebuild } from './auto-refresh.js';
 import { planDirtyOverlay } from '../../core/analyze-delta.js';
+import { sourceManifestDigest } from '../../core/indexing/source-manifest.js';
 import {
   initLbug,
   closeLbug,
@@ -42,6 +43,7 @@ import { LbugOpenError } from '../../core/lbug/open-error.js';
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
 import {
   listRegisteredRepos,
+  isValidParserEvidence,
   resolveActiveIndexGeneration,
   readActiveGenerationMeta,
   acquireIndexGenerationPin,
@@ -1272,6 +1274,10 @@ const RELATIONSHIP_TOOLS = new Set([
 // Plain search ranks on the working-tree graph once one exists, so it asks for the build too.
 // Unlike RELATIONSHIP_TOOLS it degrades to the committed index when the build is refused.
 const WORKSPACE_GRAPH_TOOLS = new Set([...RELATIONSHIP_TOOLS, 'query', 'repomap', 'search']);
+// Graph-preferring tools whose answers stay correct on the symbols overlay. `query` is the
+// semantic search behind MCP search/semantic (raw Cypher is `cypher`); repomap traverses
+// edges, so it keeps the committed fallback.
+const SYMBOL_OVERLAY_FALLBACK_TOOLS = new Set(['query', 'search']);
 
 const COMMITTED_FALLBACK_CODES = new Set([
   'workspace_busy',
@@ -1324,6 +1330,9 @@ function workspacePreparationError(error: unknown): Error & { code: string; retr
                 ...(error.failure.systemCode ? { systemCode: error.failure.systemCode } : {}),
               },
             }
+          : {}),
+        ...(error.code === 'workspace_coverage_incomplete' && error.diagnostics
+          ? { diagnostics: { reason: error.diagnostics.reason } }
           : {}),
         ...(error.code === 'workspace_too_large' && error.diagnostics
           ? {
@@ -2285,7 +2294,11 @@ export class LocalBackend implements BackendPort {
   /** Admit a callback through the same prepared, pinned read scope as tool dispatch. */
   async withPreparedRepoRead<T>(
     repo: RepoHandle,
-    options: { needsRelationships: boolean; wantsWorkspaceGraph?: boolean; readMode?: 'committed' },
+    options: {
+      needsRelationships: boolean;
+      wantsWorkspaceGraph?: boolean;
+      readMode?: 'committed' | 'workspace';
+    },
     operation: () => Promise<T>,
   ): Promise<T> {
     const endUse = this.trackRepoUse(repo.id);
@@ -2319,15 +2332,22 @@ export class LocalBackend implements BackendPort {
                     if (!result || typeof result !== 'object' || Array.isArray(result)) {
                       throw new Error('Committed read requires a structured result.');
                     }
+                    const provenance = selected.meta?.sourceProvenance?.kind ?? 'unknown';
                     return {
                       ...result,
                       readContext: {
                         mode: 'committed',
                         indexedCommit: selected.meta!.lastCommit,
                         generation: selected.activeGeneration?.generationId ?? null,
-                        workingTreeIncluded: false,
+                        sourceProvenance: provenance,
+                        workingTreeIncluded:
+                          provenance === 'commit'
+                            ? false
+                            : provenance === 'working-tree'
+                              ? true
+                              : null,
                         excludedEvidence: [
-                          'uncommitted source changes',
+                          ...(provenance !== 'working-tree' ? ['uncommitted source changes'] : []),
                           'manual overlays',
                           'live LSP references',
                         ],
@@ -2336,7 +2356,9 @@ export class LocalBackend implements BackendPort {
                         ...(Array.isArray((result as any).warnings)
                           ? (result as any).warnings
                           : []),
-                        'Explicit committed-index read: uncommitted source changes and live enrichment are excluded.',
+                        provenance === 'commit'
+                          ? 'Explicit committed-index read: uncommitted source changes and live enrichment are excluded.'
+                          : 'Committed index provenance is not verified; working-tree bytes may be included.',
                       ],
                     } as T;
                   },
@@ -2348,20 +2370,50 @@ export class LocalBackend implements BackendPort {
           await pin.release();
         }
       }
+      if (options.readMode === 'workspace' && !isAutomaticWorkspaceEnabled()) {
+        throw workspacePreparationError(
+          new WorkspacePreparationError('workspace_coverage_incomplete', undefined, undefined, {
+            reason: 'automatic workspace is disabled (ONTOINDEX_AUTO_WORKSPACE)',
+          }),
+        );
+      }
       const deadline = performance.now() + WORKSPACE_PREPARATION_DEADLINE_MS;
       const signal = this.operationContext.getStore()?.signal;
       let snapshot: OverlaySnapshot;
       try {
         snapshot = await prepareWorkspaceRead({
           repo,
-          needsRelationships: options.needsRelationships,
-          wantsWorkspaceGraph: options.wantsWorkspaceGraph,
+          needsRelationships: options.readMode === 'workspace' || options.needsRelationships,
+          wantsWorkspaceGraph: options.readMode === 'workspace' || options.wantsWorkspaceGraph,
+          ...(options.readMode === 'workspace' ? { requireVerifiedBase: true } : {}),
           deadline,
           signal,
           beforeSnapshot: () => this.retainWorkspaceWatch(repo),
         });
       } catch (error) {
         throw workspacePreparationError(error);
+      }
+      let workspaceMeta: Awaited<ReturnType<typeof readActiveGenerationMeta>> | undefined;
+      if (options.readMode === 'workspace') {
+        workspaceMeta = await readActiveGenerationMeta(repo.storagePath);
+        const graph =
+          snapshot.usable &&
+          snapshot.capability === 'workspace-graph' &&
+          snapshot.coverage !== 'degraded' &&
+          snapshot.uncoveredPaths.size === 0;
+        const base =
+          !snapshot.usable &&
+          snapshot.dirtyPaths.size === 0 &&
+          (snapshot.configPaths?.size ?? 0) === 0 &&
+          snapshot.baseMatches === true &&
+          (snapshot.baseProvenance === 'commit' || snapshot.baseVerified === true);
+        if (!graph && !base) {
+          throw workspacePreparationError(
+            new WorkspacePreparationError('workspace_coverage_incomplete', undefined, undefined, {
+              reason: snapshot.reason ?? 'workspace graph coverage is incomplete',
+            }),
+          );
+        }
       }
       // withPinnedOverlay owns the actual generation lease and releases it on exit.
       // Keep the request hook idempotent for downstream preparation ownership.
@@ -2378,12 +2430,95 @@ export class LocalBackend implements BackendPort {
       };
       try {
         return await readRequestContext.run(context, async () => {
-          if (!snapshot.usable) return operation();
+          const runOperation = async () => {
+            const result = await operation();
+            if (options.readMode !== 'workspace') return result;
+            if (!result || typeof result !== 'object' || Array.isArray(result)) {
+              throw new Error('Workspace read requires a structured result.');
+            }
+            const sourceManifest = workspaceMeta?.meta?.sourceManifest;
+            const coverage = snapshot.usable ? snapshot.coverage : sourceManifest?.coverage;
+            const parserEvidence = workspaceMeta?.meta?.parserEvidence;
+            const validParserEvidence = isValidParserEvidence(parserEvidence);
+            const parseErrorPathCount = snapshot.usable
+              ? snapshot.parseErrorPaths.size
+              : validParserEvidence
+                ? parserEvidence!.parseErrorCount
+                : null;
+            const parseErrorPaths = snapshot.usable
+              ? [...snapshot.parseErrorPaths]
+              : validParserEvidence
+                ? [...new Set(parserEvidence!.parseErrorFiles)]
+                : [];
+            const parseErrorPathSample = parseErrorPaths.sort().slice(0, 10);
+            const partial =
+              parseErrorPathCount === null ||
+              parseErrorPathCount > 0 ||
+              (!snapshot.usable && parserEvidence?.truncated === true) ||
+              coverage !== 'complete';
+            return {
+              ...result,
+              readContext: {
+                mode: 'workspace',
+                workingTreeIncluded: true,
+                source: snapshot.usable ? 'workspace-graph' : 'base',
+                generation: snapshot.usable
+                  ? (snapshot.generation ?? null)
+                  : (workspaceMeta?.activeGeneration?.generationId ?? null),
+                baseCommit: snapshot.baseCommit ?? null,
+                inputDigest: snapshot.usable
+                  ? (snapshot.manifestDigest ?? null)
+                  : sourceManifest
+                    ? sourceManifestDigest(sourceManifest)
+                    : null,
+                semanticCoverage: partial ? 'partial' : 'complete',
+                parseErrorPathCount,
+                parseErrorPathSample,
+                parseErrorPathSampleTruncated:
+                  parseErrorPathCount === null
+                    ? null
+                    : parseErrorPathCount > parseErrorPathSample.length ||
+                      (!snapshot.usable && parserEvidence?.truncated === true),
+              },
+              ...(partial
+                ? {
+                    warnings: [
+                      ...(Array.isArray((result as any).warnings) ? (result as any).warnings : []),
+                      'Negative lookups and impact completeness are not authoritative because semantic coverage is partial.',
+                    ],
+                  }
+                : {}),
+            } as T;
+          };
+          if (!snapshot.usable) {
+            if (options.readMode !== 'workspace') return runOperation();
+            if (
+              (workspaceMeta?.activeGeneration?.generationId ?? null) !==
+              (snapshot.baseGenerationId ?? null)
+            ) {
+              throw workspacePreparationError(
+                new WorkspacePreparationError(
+                  'workspace_coverage_incomplete',
+                  undefined,
+                  undefined,
+                  { reason: 'index generation changed during preparation; retry' },
+                ),
+              );
+            }
+            const pin = await acquireIndexGenerationPin(
+              workspaceMeta?.activeGeneration?.lbugPath ?? path.join(repo.storagePath, 'lbug'),
+            );
+            try {
+              return await withPinnedGeneration(repo.id, pin.dbPath, runOperation);
+            } finally {
+              await pin.release();
+            }
+          }
           let enteredHandler = false;
           try {
             return await withPinnedOverlay(repo, snapshot, () => {
               enteredHandler = true;
-              return operation();
+              return runOperation();
             });
           } catch (error) {
             if (
@@ -2453,19 +2588,80 @@ export class LocalBackend implements BackendPort {
         ) {
           throw error;
         }
-        const dirtyNote = await describeUncoveredDirtyPaths(repo);
-        try {
-          result = await this.withPreparedRepoRead(
-            repo,
-            { needsRelationships: RELATIONSHIP_TOOLS.has(method), readMode: 'committed' },
-            invoke,
-          );
-        } catch {
-          // No trustworthy committed index either: report the original refusal.
-          throw error;
+        // Search only prefers the graph: the symbols overlay has no repository-size gate
+        // and still covers bounded dirty edits, so try it before the committed index.
+        if (code === 'workspace_too_large' && SYMBOL_OVERLAY_FALLBACK_TOOLS.has(method)) {
+          let overlayReady = false;
+          try {
+            result = await this.withPreparedRepoRead(
+              repo,
+              { needsRelationships: false },
+              async () => {
+                overlayReady = true;
+                const snapshot = getReadRequestContext()?.snapshot;
+                const overlayResult = await invoke();
+                if (
+                  !overlayResult ||
+                  typeof overlayResult !== 'object' ||
+                  Array.isArray(overlayResult)
+                ) {
+                  return overlayResult;
+                }
+                return {
+                  ...overlayResult,
+                  readContext: {
+                    mode: 'workspace',
+                    source: 'symbols-overlay',
+                    semanticCoverage: 'partial',
+                    workingTreeIncluded: true,
+                    indexedCommit: snapshot?.baseCommit ?? null,
+                    generation: snapshot?.generation ?? null,
+                    excludedEvidence: [
+                      'working-tree relationships',
+                      ...((snapshot?.uncoveredPaths.size ?? 0) > 0
+                        ? ['uncovered dirty paths']
+                        : []),
+                    ],
+                    uncoveredPathCount: snapshot?.uncoveredPaths.size ?? 0,
+                    uncoveredPathSample: [...(snapshot?.uncoveredPaths ?? [])].sort().slice(0, 10),
+                  },
+                };
+              },
+            );
+            committedFallbackNote = `Working-tree graph unavailable (${code}); answered from the committed index plus the uncommitted-symbols overlay. Ranking omits working-tree relationships.`;
+          } catch (overlayError) {
+            // Only an unavailable overlay (too many or unsupported dirty edits) falls back;
+            // a failure of the search itself is reported as is.
+            if (overlayReady) throw overlayError;
+          }
         }
-        const refreshing = (await refreshWarning) !== undefined;
-        committedFallbackNote = `Working-tree ${code === 'workspace_too_large' ? 'graph' : 'read'} unavailable (${code}); answered from the committed index${refreshing ? ' while it refreshes' : ''} (see readContext.indexedCommit).${dirtyNote} Verify uncommitted and newly committed code from source.`;
+        if (committedFallbackNote === undefined) {
+          const dirtyNote = await describeUncoveredDirtyPaths(repo);
+          try {
+            result = await this.withPreparedRepoRead(
+              repo,
+              { needsRelationships: RELATIONSHIP_TOOLS.has(method), readMode: 'committed' },
+              invoke,
+            );
+          } catch {
+            // No trustworthy committed index either: report the original refusal.
+            throw error;
+          }
+          const refreshing = (await refreshWarning) !== undefined;
+          committedFallbackNote = `Working-tree ${code === 'workspace_too_large' ? 'graph' : 'read'} unavailable (${code}); answered from the committed index${refreshing ? ' while it refreshes' : ''} (see readContext.indexedCommit).${dirtyNote} Verify uncommitted and newly committed code from source.`;
+          if (code === 'workspace_too_large' && RELATIONSHIP_TOOLS.has(method)) {
+            const note = await new Promise<string | undefined>((resolve) => {
+              const timer = setTimeout(() => resolve(undefined), 1500);
+              void maybeScheduleWorkspacePrebuild(repo)
+                .catch(() => undefined)
+                .then((warning) => {
+                  clearTimeout(timer);
+                  resolve(warning);
+                });
+            });
+            if (note) committedFallbackNote += ` ${note}`;
+          }
+        }
       }
     }
     const autoRefreshNote = await refreshWarning;

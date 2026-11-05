@@ -42,9 +42,9 @@ describe('Query compilation smoke tests', () => {
   for (const [lang, filename] of Object.entries(languageFiles)) {
     const testFn = knownFailures.has(lang) ? it.fails : it;
 
-    testFn(`compiles query for ${lang}`, async () => {
+    testFn(`compiles query for ${lang}`, async (ctx) => {
       if (!isLanguageAvailable(lang as SupportedLanguages)) {
-        return; // parser binary not available in this environment
+        ctx.skip(`Parser binary for ${lang} is not available in this environment`);
       }
 
       await loadLanguage(lang as SupportedLanguages, filename);

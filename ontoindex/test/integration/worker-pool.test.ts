@@ -12,45 +12,26 @@ import {
   WorkerPool,
   WORKER_SUB_BATCH_TIMEOUT_MS,
 } from '../../src/core/ingestion/workers/worker-pool.js';
-import * as workerPoolModule from '../../src/core/ingestion/workers/worker-pool.js';
-import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
+
 import { createEmptyResult } from '../../src/core/ingestion/workers/parse-types.js';
 import type {
   ParseWorkerInput,
   ParseWorkerResult,
 } from '../../src/core/ingestion/workers/parse-types.js';
-import {
-  SupportedLanguages,
-  type ParsedFile,
-  type Scope,
-  type SymbolDefinition,
-} from 'ontoindex-shared';
-import { getProvider } from '../../src/core/ingestion/languages/index.js';
-import { createParserForLanguage } from '../../src/core/tree-sitter/parser-loader.js';
-import {
-  extractParsedFileOutcome,
-  type ScopeExtractionRecord,
-} from '../../src/core/ingestion/scope-extractor-bridge.js';
-import { finalizeScopeModel } from '../../src/core/ingestion/finalize-orchestrator.js';
-import { resolveFreeCallReferences } from '../../src/core/ingestion/resolve-references.js';
-import { emitReferencesToGraph } from '../../src/core/ingestion/emit-references.js';
+import { SupportedLanguages, type GraphNode } from 'ontoindex-shared';
+
+import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import { restoreSemanticModelRegistrations } from '../../src/core/ingestion/model/semantic-model.js';
+
 import { createResolutionContext } from '../../src/core/ingestion/model/resolution-context.js';
 import {
   processImports,
   processImportsFromExtracted,
 } from '../../src/core/ingestion/import-processor.js';
 import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
-import { BindingAccumulator } from '../../src/core/ingestion/binding-accumulator.js';
-import {
-  processCallsFromExtracted,
-  seedCrossFileReceiverTypes,
-} from '../../src/core/ingestion/call-processor.js';
-import { processAssignmentsFromExtracted } from '../../src/core/ingestion/call-resolution/assignment-processor.js';
-import { buildHeritageMap } from '../../src/core/ingestion/model/heritage-map.js';
-import { getHeritageStrategyForLanguage } from '../../src/core/ingestion/heritage-processor.js';
-import { createHash } from 'node:crypto';
+
+import { processCallsFromExtracted } from '../../src/core/ingestion/call-processor.js';
+
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -77,6 +58,451 @@ describe('worker pool integration', () => {
       pool = undefined;
     }
   });
+
+  it('preserves declared field metadata through compiled worker IPC', async () => {
+    expect(fs.existsSync(DIST_WORKER)).toBe(true);
+    pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, { cooperativeShutdown: true });
+    const inputs = [
+      {
+        path: 'fields.ts',
+        content: `class Store {
+          untyped;
+          constructor(public service: Service, ordinary: Ignored) {}
+        }
+        class OtherStore { constructor(public service: OtherService) {} }`,
+      },
+      { path: 'fields.go', content: 'package example\ntype Store struct { Service *Service }' },
+      {
+        path: 'fields.php',
+        content: `<?php class Store {
+          public $untyped;
+          public function __construct(public Service $service, Ignored $ordinary) {}
+        }`,
+      },
+      {
+        path: 'fields.rb',
+        content:
+          'class Store\n  # @return [Service]\n  attr_accessor :service\n  attr_accessor :untyped\nend',
+      },
+    ];
+    const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>(inputs);
+    expect(results.reduce((count, result) => count + result.fileCount, 0)).toBe(inputs.length);
+    const properties = results
+      .flatMap((result) => result.symbols)
+      .filter((symbol) => symbol.type === 'Property');
+    const expected = [
+      { name: 'service', ownerId: 'Class:fields.ts:Store', declaredType: 'Service' },
+      { name: 'service', ownerId: 'Class:fields.ts:OtherStore', declaredType: 'OtherService' },
+      { name: 'untyped', ownerId: 'Class:fields.ts:Store', declaredType: undefined },
+      { name: 'Service', ownerId: 'Struct:fields.go:Store', declaredType: 'Service' },
+      { name: 'service', ownerId: 'Class:fields.php:Store', declaredType: 'Service' },
+      { name: 'untyped', ownerId: 'Class:fields.php:Store', declaredType: undefined },
+      { name: 'service', ownerId: 'Class:fields.rb:Store', declaredType: 'Service' },
+      { name: 'untyped', ownerId: 'Class:fields.rb:Store', declaredType: undefined },
+    ];
+    expect(properties).toHaveLength(expected.length);
+    expect(
+      properties.map(({ name, ownerId, declaredType }) => ({ name, ownerId, declaredType })),
+    ).toEqual(expect.arrayContaining(expected));
+    expect(
+      properties
+        .filter(
+          ({ ownerId, name }) => ownerId?.startsWith('Class:fields.ts:') && name === 'service',
+        )
+        .map(({ nodeId }) => nodeId),
+    ).toEqual(
+      expect.arrayContaining([
+        'Property:fields.ts:Store.service',
+        'Property:fields.ts:OtherStore.service',
+      ]),
+    );
+    for (const property of properties.filter(({ name }) => name === 'untyped')) {
+      expect(property).not.toHaveProperty('declaredType');
+    }
+  });
+
+  it('publishes constructor properties through compiled worker IPC', async () => {
+    expect(fs.existsSync(DIST_WORKER)).toBe(true);
+    pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, { cooperativeShutdown: true });
+    const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>([
+      {
+        path: 'constructor.ts',
+        content: `class Service {} class Store {
+          constructor(public required: Service, readonly only: Service,
+            public optional?: Service, ordinary?: Service) {}
+        }`,
+      },
+    ]);
+    const properties = results
+      .flatMap((result) => result.symbols)
+      .filter((symbol) => symbol.type === 'Property');
+    expect(properties.map(({ name }) => name).sort()).toEqual(['only', 'optional', 'required']);
+    for (const property of properties) {
+      expect(property).toMatchObject({
+        ownerId: 'Class:constructor.ts:Store',
+        nodeId: `Property:constructor.ts:Store.${property.name}`,
+        declaredType: property.name === 'optional' ? 'Service | undefined' : 'Service',
+      });
+    }
+    expect(
+      results
+        .flatMap((result) => result.nodes)
+        .filter((node) => node.label === 'Property')
+        .map((node) => node.properties.name)
+        .sort(),
+    ).toEqual(['only', 'optional', 'required']);
+  });
+
+  it('excludes invalid constructor properties through compiled worker IPC', async () => {
+    expect(fs.existsSync(DIST_WORKER)).toBe(true);
+    pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, { cooperativeShutdown: true });
+    const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>([
+      {
+        path: 'invalid-constructor.ts',
+        content: `const object = { constructor(public objectOnly: string) {} };
+          class Store {
+            direct: string;
+            constructor(public valid: string) {}
+            static constructor(public staticOnly: string) {}
+            async constructor(public asyncOnly: string) {}
+          }`,
+      },
+    ]);
+    expect(
+      results
+        .flatMap((result) => result.symbols)
+        .filter((symbol) => symbol.type === 'Property')
+        .map((symbol) => symbol.name)
+        .sort(),
+    ).toEqual(['direct', 'valid']);
+    expect(
+      results
+        .flatMap((result) => result.nodes)
+        .filter((node) => node.label === 'Property')
+        .map((node) => node.properties.name)
+        .sort(),
+    ).toEqual(['direct', 'valid']);
+  });
+
+  it('preserves unknown and typed parenthesized receivers through compiled worker IPC', async () => {
+    expect(fs.existsSync(DIST_WORKER)).toBe(true);
+    pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, { cooperativeShutdown: true });
+    const inputs = [
+      'value',
+      '(value)',
+      '((value))',
+      '(value.a.b.c.d)',
+      `${'('.repeat(33)}value${')'.repeat(33)}`,
+      '(value as Unknown)',
+      'value!',
+    ].map((receiver, i) => ({
+      path: `unknown-${i}.ts`,
+      content: `class Unrelated { save() {} } function use<T>(value: T) { ${receiver}.save(); }`,
+    }));
+    inputs.push({
+      path: 'typed.ts',
+      content: 'class Known { save() {} } function typed(value: Known) { (value).save(); }',
+    });
+    const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>(inputs);
+    const calls = results.flatMap((result) => result.calls);
+    const symbols = results.flatMap((result) => result.symbols);
+    for (const input of inputs) {
+      expect(
+        calls.filter((call) => call.filePath === input.path && call.calledName === 'save'),
+      ).toHaveLength(1);
+    }
+    const context = createResolutionContext();
+    const graph = createKnowledgeGraph();
+    try {
+      for (const symbol of symbols) {
+        context.model.symbols.add(symbol.filePath, symbol.name, symbol.nodeId, symbol.type, {
+          ownerId: symbol.ownerId,
+        });
+      }
+      await processCallsFromExtracted(graph, calls, context);
+      const target = symbols.find(
+        (symbol) => symbol.filePath === 'typed.ts' && symbol.name === 'save',
+      );
+      const caller = symbols.find(
+        (symbol) => symbol.filePath === 'typed.ts' && symbol.name === 'typed',
+      );
+      expect(target).toBeDefined();
+      expect(caller).toBeDefined();
+      expect(
+        graph.relationships
+          .filter((edge) => edge.type === 'CALLS')
+          .map(({ sourceId, targetId }) => ({ sourceId, targetId })),
+      ).toEqual([{ sourceId: caller!.nodeId, targetId: target!.nodeId }]);
+    } finally {
+      context.clear();
+    }
+  });
+
+  it.each(['thread', 'process'] as const)(
+    'preserves Go indexed receivers through compiled worker IPC (%s)',
+    async (isolation) => {
+      expect(fs.existsSync(DIST_WORKER)).toBe(true);
+      pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, {
+        isolation,
+        cooperativeShutdown: true,
+      });
+      const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>([
+        {
+          path: 'indexed.go',
+          content: `package main
+type User struct {}
+func (u User) Save() {}
+func (u User) Greet() {}
+type Other struct {}
+func (o Other) Save() {}
+func caller() {
+  sl := make([]User, 1)
+  m := make(map[string]User)
+  sl[0].Save()
+  m["key"].Greet()
+}
+func unknownCaller() { unknown[0].Save() }
+`,
+        },
+      ]);
+      const calls = results
+        .flatMap((result) => result.calls)
+        .filter((call) => ['Save', 'Greet'].includes(call.calledName));
+      expect(calls).toEqual([
+        expect.objectContaining({
+          calledName: 'Save',
+          callForm: 'member',
+          receiverName: 'sl[0]',
+          receiverTypeName: 'User',
+        }),
+        expect.objectContaining({
+          calledName: 'Greet',
+          callForm: 'member',
+          receiverName: 'm["key"]',
+          receiverTypeName: 'User',
+        }),
+        expect.objectContaining({
+          calledName: 'Save',
+          callForm: 'member',
+          receiverName: 'unknown[0]',
+        }),
+      ]);
+      expect(calls[2]!.receiverTypeName).toBeUndefined();
+      const symbols = results.flatMap((result) => result.symbols);
+      const context = createResolutionContext();
+      const graph = createKnowledgeGraph();
+      try {
+        for (const symbol of symbols) {
+          context.model.symbols.add(symbol.filePath, symbol.name, symbol.nodeId, symbol.type, {
+            ownerId: symbol.ownerId,
+          });
+        }
+        await processCallsFromExtracted(graph, calls, context);
+        expect(
+          graph.relationships
+            .filter((edge) => edge.type === 'CALLS')
+            .map(({ sourceId, targetId }) => ({ sourceId, targetId }))
+            .sort((left, right) => left.targetId.localeCompare(right.targetId)),
+        ).toEqual([
+          {
+            sourceId: 'Function:indexed.go:caller',
+            targetId: 'Method:indexed.go:User.Greet#0',
+          },
+          {
+            sourceId: 'Function:indexed.go:caller',
+            targetId: 'Method:indexed.go:User.Save#0',
+          },
+        ]);
+      } finally {
+        context.clear();
+      }
+    },
+  );
+
+  it.each(['thread', 'process'] as const)(
+    'preserves Go generic indexed receiver abstention through compiled worker IPC (%s)',
+    async (isolation) => {
+      expect(fs.existsSync(DIST_WORKER)).toBe(true);
+      pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, {
+        isolation,
+        cooperativeShutdown: true,
+      });
+      const fixtures = [
+        {
+          path: 'external-constraint.go',
+          declaration: 'func caller[T remote.Saver](items []T) { items[0].Save() }',
+          receiverTypeName: undefined,
+        },
+        {
+          path: 'shadowed-type.go',
+          declaration: 'func caller[User interface{ Save() }](items []User) { items[0].Save() }',
+          receiverTypeName: undefined,
+        },
+        {
+          path: 'concrete-type.go',
+          declaration: 'func caller(items []User) { items[0].Save() }',
+          receiverTypeName: 'User',
+        },
+        {
+          path: 'generic-concrete-type.go',
+          declaration: 'func caller[T any](items []User) { items[0].Save() }',
+          receiverTypeName: 'User',
+        },
+        {
+          path: 'parenthesized-shadowed-receiver.go',
+          declaration: 'func (box (Box[User])) caller(items []User) { items[0].Save() }',
+          receiverTypeName: undefined,
+        },
+        {
+          path: 'pointer-parenthesized-shadowed-receiver.go',
+          declaration: 'func (box *(Box[User])) caller(items []User) { items[0].Save() }',
+          receiverTypeName: undefined,
+        },
+        {
+          path: 'nested-shadowed-receiver.go',
+          declaration: 'func (box (*((Box[User])))) caller(items []User) { items[0].Save() }',
+          receiverTypeName: undefined,
+        },
+        {
+          path: 'wrapped-concrete-receiver.go',
+          declaration: 'func (box *(Box[T])) caller(items []User) { items[0].Save() }',
+          receiverTypeName: 'User',
+        },
+      ];
+      const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>(
+        fixtures.map(({ path, declaration }) => ({
+          path,
+          content: `package main
+import remote "example.com/remote"
+type User struct {}
+type Box[T any] struct {}
+func (u User) Save() {}
+${declaration}
+`,
+        })),
+      );
+      for (const fixture of fixtures) {
+        const calls = results
+          .flatMap((result) => result.calls)
+          .filter((call) => call.filePath === fixture.path && call.calledName === 'Save');
+        expect(calls).toEqual([
+          expect.objectContaining({
+            calledName: 'Save',
+            callForm: 'member',
+            receiverName: 'items[0]',
+          }),
+        ]);
+        expect(calls[0]!.receiverTypeName).toBe(fixture.receiverTypeName);
+        const symbols = results
+          .flatMap((result) => result.symbols)
+          .filter((symbol) => symbol.filePath === fixture.path);
+        const context = createResolutionContext();
+        const graph = createKnowledgeGraph();
+        try {
+          for (const symbol of symbols) {
+            context.model.symbols.add(symbol.filePath, symbol.name, symbol.nodeId, symbol.type, {
+              ownerId: symbol.ownerId,
+            });
+          }
+          const targets = symbols.filter((symbol) => symbol.name === 'Save');
+          expect(targets).toHaveLength(1);
+          expect(targets[0]!.nodeId).toBe(`Method:${fixture.path}:User.Save#0`);
+          const callers = symbols.filter((symbol) => symbol.name === 'caller');
+          expect(callers).toHaveLength(1);
+          if (fixture.declaration.startsWith('func (box ')) {
+            expect(callers[0]!.type).toBe('Method');
+            expect(callers[0]!.nodeId.startsWith(`Method:${fixture.path}:`)).toBe(true);
+          } else {
+            expect(callers[0]!.nodeId).toBe(`Function:${fixture.path}:caller`);
+          }
+          await processCallsFromExtracted(graph, calls, context);
+          expect(
+            graph.relationships
+              .filter((edge) => edge.type === 'CALLS')
+              .map(({ sourceId, targetId }) => ({ sourceId, targetId })),
+          ).toEqual(
+            fixture.receiverTypeName === undefined
+              ? []
+              : [
+                  {
+                    sourceId: callers[0]!.nodeId,
+                    targetId: `Method:${fixture.path}:User.Save#0`,
+                  },
+                ],
+          );
+        } finally {
+          context.clear();
+        }
+      }
+    },
+  );
+
+  it.skipIf(!isLanguageAvailable(SupportedLanguages.Swift)).each(['thread', 'process'] as const)(
+    'preserves Swift self receivers through compiled worker IPC (%s)',
+    async (isolation) => {
+      expect(fs.existsSync(DIST_WORKER)).toBe(true);
+      pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, {
+        isolation,
+        cooperativeShutdown: true,
+      });
+      const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>([
+        {
+          path: 'self.swift',
+          content: `class Service {
+  func save() {}
+  func caller() { self.save() }
+}
+class Other { func save() {} }`,
+        },
+      ]);
+      const calls = results
+        .flatMap((result) => result.calls)
+        .filter((call) => call.calledName === 'save');
+      expect(calls).toEqual([
+        expect.objectContaining({
+          calledName: 'save',
+          callForm: 'member',
+          receiverName: 'self',
+          receiverTypeName: 'Service',
+        }),
+      ]);
+      const symbols = results.flatMap((result) => result.symbols);
+      const context = createResolutionContext();
+      const graph = createKnowledgeGraph();
+      try {
+        for (const node of results.flatMap((result) => result.nodes)) {
+          graph.addNode(node as GraphNode);
+        }
+        for (const symbol of symbols) {
+          context.model.symbols.add(symbol.filePath, symbol.name, symbol.nodeId, symbol.type, {
+            ownerId: symbol.ownerId,
+          });
+        }
+        await processCallsFromExtracted(graph, calls, context);
+        const owner = symbols.find((symbol) => symbol.name === 'Service');
+        expect(owner).toBeDefined();
+        const target = symbols.find(
+          (symbol) => symbol.name === 'save' && symbol.ownerId === owner!.nodeId,
+        );
+        const caller = symbols.find(
+          (symbol) => symbol.name === 'caller' && symbol.ownerId === owner!.nodeId,
+        );
+        expect(target).toBeDefined();
+        expect(caller).toBeDefined();
+        expect(
+          graph.relationships
+            .filter((edge) => edge.type === 'CALLS')
+            .map(({ sourceId, targetId }) => ({ sourceId, targetId })),
+        ).toEqual([{ sourceId: caller!.nodeId, targetId: target!.nodeId }]);
+        for (const edge of graph.relationships.filter((edge) => edge.type === 'CALLS')) {
+          expect(graph.getNode(edge.sourceId)).toBeDefined();
+          expect(graph.getNode(edge.targetId)).toBeDefined();
+        }
+      } finally {
+        context.clear();
+      }
+    },
+  );
 
   it('keeps exported declaration ownership in the compiled worker', async () => {
     expect(fs.existsSync(DIST_WORKER)).toBe(true);
@@ -203,467 +629,6 @@ describe('worker pool integration', () => {
       worker.clear();
     }
   });
-
-  it.each([true, false])(
-    'extracts production TS/JS scope artifacts (collect=%s)',
-    async (collectResultParts) => {
-      expect(
-        fs.existsSync(DIST_WORKER),
-        'Build the production dist/ worker before this integration suite',
-      ).toBe(true);
-      const content = [
-        "import Main from './module';",
-        'export function target(value) {}',
-        'export function caller(value) {',
-        '  try { target(value); } catch (error) { recover(error); } finally { cleanup(value); }',
-        '}',
-        'var repeated;',
-        'try { var repeated; } finally {}',
-        'export { repeated };',
-      ].join('\n');
-      const inputs = ['ts', 'tsx', 'js', 'jsx'].map((extension) => ({
-        path: `production.${extension}`,
-        content,
-      }));
-      inputs.push({
-        path: 'unsupported.ts',
-        content: 'export function retained() {}\nexport function unsupported(value = 1) {}',
-      });
-      const expectedFiles: ParsedFile[] = [];
-      const expectedOutcomes: ScopeExtractionRecord[] = [];
-      for (const input of inputs) {
-        const language = /\.jsx?$/.test(input.path)
-          ? SupportedLanguages.JavaScript
-          : SupportedLanguages.TypeScript;
-        const provider = getProvider(language);
-        const parser = await createParserForLanguage(language, input.path);
-        const tree = parser.parse(input.content);
-        expect(tree.rootNode.hasError, input.path).toBe(false);
-        const outcome = extractParsedFileOutcome(
-          provider,
-          input.content,
-          input.path,
-          () => {},
-          tree.rootNode,
-        );
-        if (outcome.status === 'success') {
-          expectedFiles.push(structuredClone(outcome.parsedFile));
-          expectedOutcomes.push({ filePath: input.path, status: 'success' });
-          parser.parse('export function replacement() {}');
-          expect(outcome.parsedFile).toEqual(expectedFiles.at(-1));
-        } else {
-          expectedOutcomes.push({ filePath: input.path, ...outcome });
-        }
-      }
-      expect(expectedFiles.map((file) => file.filePath)).toEqual(
-        inputs.slice(0, 4).map((file) => file.path),
-      );
-      expect(expectedOutcomes).toEqual([
-        ...inputs.slice(0, 4).map((file) => ({ filePath: file.path, status: 'success' })),
-        { filePath: 'unsupported.ts', status: 'failed', reason: 'unsupported-syntax' },
-      ]);
-
-      pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, { cooperativeShutdown: true });
-      const streamed = createEmptyResult();
-      let partCount = 0;
-      const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>(
-        inputs,
-        undefined,
-        undefined,
-        undefined,
-        {
-          collectResultParts,
-          createEmptyResult,
-          onResultPart: (part) => {
-            partCount++;
-            streamed.parsedFiles.push(...part.parsedFiles);
-            streamed.scopeExtractionOutcomes!.push(...(part.scopeExtractionOutcomes ?? []));
-            streamed.nodes.push(...part.nodes);
-            streamed.calls.push(...part.calls);
-          },
-        },
-      );
-      expect(partCount).toBeGreaterThan(0);
-      expect(streamed.parsedFiles).toHaveLength(4);
-      expect(results).toHaveLength(1);
-      if (!collectResultParts) {
-        expect(results[0]!.parsedFiles).toEqual([]);
-        expect(results[0]!.scopeExtractionOutcomes).toEqual([]);
-      }
-      const actual = collectResultParts ? results[0]! : streamed;
-      expect(actual.parsedFiles.map(({ definitionNodeIds: _mapping, ...scope }) => scope)).toEqual(
-        expectedFiles,
-      );
-      const outcomes = actual.scopeExtractionOutcomes ?? [];
-      expect(outcomes).toHaveLength(inputs.length);
-      expect(new Set(outcomes.map((outcome) => outcome.filePath)).size).toBe(inputs.length);
-      // Worker batches group languages to minimize parser switches.
-      const byPath = (a: ScopeExtractionRecord, b: ScopeExtractionRecord) =>
-        a.filePath.localeCompare(b.filePath);
-      expect([...outcomes].sort(byPath)).toEqual([...expectedOutcomes].sort(byPath));
-      expect(actual.parsedFiles.some((file) => file.filePath === 'unsupported.ts')).toBe(false);
-      expect(
-        actual.nodes
-          .filter((node) => node.properties.filePath === 'unsupported.ts')
-          .map((node) => node.properties.name),
-      ).toEqual(expect.arrayContaining(['retained', 'unsupported']));
-      for (const file of actual.parsedFiles) {
-        expect(
-          actual.calls
-            .filter((call) => call.filePath === file.filePath)
-            .map(({ calledName, atRange }) => ({ name: calledName, atRange })),
-        ).toEqual(
-          file.referenceSites
-            .filter((site) => site.kind === 'call')
-            .map(({ name, atRange }) => ({ name, atRange })),
-        );
-        const sources = file.declarationSources!;
-        const expectedMappings = ['target', 'caller'].map((name) => {
-          const declarations = sources.filter((source) => source.name === name);
-          expect(declarations).toHaveLength(1);
-          const nodes = actual.nodes.filter(
-            (node) =>
-              node.properties.filePath === file.filePath &&
-              node.properties.name === name &&
-              node.label === 'Function',
-          );
-          expect(nodes).toHaveLength(1);
-          return { defId: declarations[0]!.defId, nodeId: nodes[0]!.id };
-        });
-        expect(file.definitionNodeIds).toEqual(expectedMappings);
-        expect(file.exports).toBeInstanceOf(Map);
-        for (const scope of file.scopes) {
-          expect(scope.bindings).toBeInstanceOf(Map);
-          expect(scope.typeBindings).toBeInstanceOf(Map);
-        }
-        const module = file.scopes.find((scope) => scope.id === file.moduleScope)!;
-        const repeated = module.bindings.get('repeated')!;
-        expect(repeated).toHaveLength(1);
-        expect(file.localDefs.filter((def) => def.qualifiedName === 'repeated')).toHaveLength(2);
-        expect(file.exports!.get('repeated')).toBe(repeated[0]!.def.nodeId);
-        expect([...file.exports!.keys()]).toEqual(['target', 'caller', 'repeated']);
-        expect(file.parsedImports).toEqual([
-          {
-            kind: 'alias',
-            localName: 'Main',
-            importedName: 'default',
-            alias: 'Main',
-            targetRaw: './module',
-          },
-        ]);
-        const catchScope = file.scopes.find((scope) => scope.bindings.has('error'))!;
-        expect(catchScope).toBeDefined();
-        const catchBody = file.scopes.find((scope) => scope.parent === catchScope.id)!;
-        expect(catchBody).toBeDefined();
-        expect(module.bindings.has('error')).toBe(false);
-        expect(
-          file.referenceSites.filter((site) => site.kind === 'call').map((site) => site.name),
-        ).toEqual(['target', 'recover', 'cleanup']);
-        expect(file.referenceSites).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({ name: 'recover', inScope: catchBody.id, kind: 'call' }),
-            expect.objectContaining({ name: 'error', inScope: catchBody.id, kind: 'read' }),
-          ]),
-        );
-      }
-    },
-  );
-
-  it.each([true, false])(
-    'extracts production Python scope artifacts and retains refused legacy data (collect=%s)',
-    async (collectResultParts) => {
-      expect(
-        fs.existsSync(DIST_WORKER),
-        'Build the production dist/ worker before this integration suite',
-      ).toBe(true);
-      const inputs = [
-        {
-          path: 'production.py',
-          content:
-            'def target():\n    target()\n    return 1\ndef caller():\n    target()\ncaller()\n',
-        },
-        {
-          path: 'parameterized.py',
-          content: 'def retained():\n    pass\ndef parameterized(value):\n    retained()\n',
-        },
-        {
-          path: 'imported.py',
-          content: 'import os\ndef retained():\n    pass\ndef caller():\n    retained()\n',
-        },
-      ];
-      const provider = getProvider(SupportedLanguages.Python);
-      const parser = await createParserForLanguage(SupportedLanguages.Python, inputs[0]!.path);
-      const expectedFiles: ParsedFile[] = [];
-      const expectedOutcomes: ScopeExtractionRecord[] = [];
-      for (const input of inputs) {
-        const tree = parser.parse(input.content);
-        expect(tree.rootNode.hasError, input.path).toBe(false);
-        const outcome = extractParsedFileOutcome(
-          provider,
-          input.content,
-          input.path,
-          () => {},
-          tree.rootNode,
-        );
-        if (outcome.status === 'success') {
-          expectedFiles.push(structuredClone(outcome.parsedFile));
-          expectedOutcomes.push({ filePath: input.path, status: 'success' });
-          parser.parse('def replacement():\n    pass\n');
-          expect(outcome.parsedFile).toEqual(expectedFiles.at(-1));
-        } else {
-          expectedOutcomes.push({ filePath: input.path, ...outcome });
-        }
-      }
-      expect(expectedFiles.map((file) => file.filePath)).toEqual(['production.py']);
-      expect(expectedOutcomes).toEqual([
-        { filePath: 'production.py', status: 'success' },
-        { filePath: 'parameterized.py', status: 'failed', reason: 'unsupported-syntax' },
-        { filePath: 'imported.py', status: 'failed', reason: 'unsupported-syntax' },
-      ]);
-
-      pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, { cooperativeShutdown: true });
-      const streamed = createEmptyResult();
-      let partCount = 0;
-      const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>(
-        inputs,
-        undefined,
-        undefined,
-        undefined,
-        {
-          collectResultParts,
-          createEmptyResult,
-          onResultPart: (part) => {
-            partCount++;
-            streamed.parsedFiles.push(...part.parsedFiles);
-            streamed.scopeExtractionOutcomes!.push(...(part.scopeExtractionOutcomes ?? []));
-            streamed.nodes.push(...part.nodes);
-            streamed.calls.push(...part.calls);
-          },
-        },
-      );
-      expect(partCount).toBeGreaterThan(0);
-      expect(results).toHaveLength(1);
-      expect(streamed.parsedFiles).toEqual(expectedFiles);
-      if (!collectResultParts) {
-        expect(results[0]!.parsedFiles).toEqual([]);
-        expect(results[0]!.scopeExtractionOutcomes).toEqual([]);
-      }
-      const actual = collectResultParts ? results[0]! : streamed;
-      expect(actual.parsedFiles).toEqual(expectedFiles);
-      const byPath = (a: ScopeExtractionRecord, b: ScopeExtractionRecord) =>
-        a.filePath.localeCompare(b.filePath);
-      expect([...(actual.scopeExtractionOutcomes ?? [])].sort(byPath)).toEqual(
-        [...expectedOutcomes].sort(byPath),
-      );
-      const file = actual.parsedFiles[0]!;
-      expect(file.exports).toBeInstanceOf(Map);
-      for (const scope of file.scopes) {
-        expect(scope.bindings).toBeInstanceOf(Map);
-        expect(scope.typeBindings).toBeInstanceOf(Map);
-      }
-      const module = file.scopes.find((scope) => scope.id === file.moduleScope)!;
-      expect([...module.bindings.keys()]).toEqual(['target', 'caller']);
-      expect([...file.exports!.keys()]).toEqual(['target', 'caller']);
-      for (const name of ['target', 'caller']) {
-        expect(file.exports!.get(name)).toBe(module.bindings.get(name)![0]!.def.nodeId);
-      }
-      expect(file.parsedImports).toEqual([]);
-      expect(
-        file.referenceSites.filter((site) => site.kind === 'call').map((site) => site.name),
-      ).toEqual(['target', 'target', 'caller']);
-      for (const [filePath, names] of [
-        ['parameterized.py', ['retained', 'parameterized']],
-        ['imported.py', ['retained', 'caller']],
-      ] as const) {
-        expect(actual.parsedFiles.some((parsed) => parsed.filePath === filePath)).toBe(false);
-        expect(
-          actual.nodes
-            .filter((node) => node.properties.filePath === filePath)
-            .map((node) => node.properties.name),
-        ).toEqual(expect.arrayContaining([...names]));
-        expect(actual.calls.filter((call) => call.filePath === filePath)).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({ calledName: 'retained', callForm: 'free', argCount: 0 }),
-          ]),
-        );
-      }
-    },
-  );
-
-  it.each([
-    { collectResultParts: true, delivery: 'result-part' },
-    { collectResultParts: false, delivery: 'result-part' },
-    { collectResultParts: true, delivery: 'result' },
-    { collectResultParts: false, delivery: 'result' },
-  ] as const)(
-    'preserves synthetic scope artifacts via $delivery transport (collect=$collectResultParts)',
-    async ({ collectResultParts, delivery }) => {
-      // Synthetic artifact transport: this does not activate production parser extraction.
-      const filePath = 'synthetic.ts';
-      const moduleId = 'scope:synthetic.ts#module';
-      const callerScopeId = 'scope:synthetic.ts#caller';
-      const caller: SymbolDefinition = {
-        nodeId: 'Function:synthetic.ts:caller',
-        filePath,
-        type: 'Function',
-        qualifiedName: 'caller',
-      };
-      const target: SymbolDefinition = {
-        nodeId: 'Function:synthetic.ts:target',
-        filePath,
-        type: 'Function',
-        qualifiedName: 'target',
-      };
-      const range = { startLine: 1, startCol: 0, endLine: 4, endCol: 0 };
-      const moduleScope: Scope = {
-        id: moduleId,
-        parent: null,
-        kind: 'Module',
-        filePath,
-        range,
-        bindings: new Map([
-          ['caller', [{ def: caller, origin: 'local' as const }]],
-          ['target', [{ def: target, origin: 'local' as const }]],
-        ]),
-        ownedDefs: [caller, target],
-        imports: [],
-        typeBindings: new Map([
-          [
-            'value',
-            {
-              rawName: 'string',
-              declaredAtScope: moduleId,
-              source: 'annotation' as const,
-            },
-          ],
-        ]),
-      };
-      const callerScope: Scope = {
-        ...moduleScope,
-        id: callerScopeId,
-        parent: moduleId,
-        kind: 'Function',
-        bindings: new Map(),
-        ownedDefs: [caller],
-      };
-      const artifact: ParsedFile = {
-        filePath,
-        moduleScope: moduleId,
-        scopes: [moduleScope, callerScope],
-        localDefs: [caller, target],
-        parsedImports: [],
-        exports: new Map([['target', target.nodeId]]),
-        referenceSites: ['target', 'missing'].map((name, index) => ({
-          name,
-          inScope: callerScopeId,
-          kind: 'call',
-          callForm: 'free',
-          atRange: { startLine: index + 2, startCol: 0, endLine: index + 2, endCol: 9 },
-        })),
-      };
-      const payload = { ...createEmptyResult(), parsedFiles: [artifact], fileCount: 1 };
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ontoindex-scope-transport-'));
-      const workerPath = path.join(tempDir, 'artifact-worker.js');
-      fs.writeFileSync(
-        workerPath,
-        `
-        const { parentPort } = require('node:worker_threads');
-        let finalResult;
-        parentPort.on('message', (msg) => {
-          if (msg && msg.type === 'sub-batch') {
-            const input = msg.files[0];
-            finalResult = input.emptyResult;
-            if (input.delivery === 'result-part') {
-              parentPort.postMessage({ type: 'result-part', data: input.payload });
-            } else {
-              finalResult = input.payload;
-            }
-            parentPort.postMessage({ type: 'sub-batch-done' });
-          } else if (msg && msg.type === 'flush') {
-            parentPort.postMessage({ type: 'result', data: finalResult });
-          }
-        });
-      `,
-      );
-      const streamed: ParsedFile[] = [];
-      try {
-        pool = createWorkerPool(pathToFileURL(workerPath), 1);
-        const results = await pool.dispatch<
-          {
-            path: string;
-            payload: ParseWorkerResult;
-            emptyResult: ParseWorkerResult;
-            delivery: string;
-          },
-          ParseWorkerResult
-        >(
-          [{ path: filePath, payload, emptyResult: createEmptyResult(), delivery }],
-          undefined,
-          undefined,
-          undefined,
-          {
-            collectResultParts,
-            createEmptyResult,
-            onResultPart: (part) => {
-              streamed.push(...part.parsedFiles);
-              if (!collectResultParts) part.parsedFiles.length = 0;
-            },
-          },
-        );
-        expect(results).toHaveLength(1);
-        expect(streamed).toHaveLength(delivery === 'result-part' ? 1 : 0);
-        const files =
-          !collectResultParts && delivery === 'result-part' ? streamed : results[0]!.parsedFiles;
-        expect(results[0]!.parsedFiles).toHaveLength(
-          !collectResultParts && delivery === 'result-part' ? 0 : 1,
-        );
-        expect(files).toEqual([artifact]);
-        expect(files[0]).not.toBe(artifact);
-        expect(files[0]!.scopes[0]!.bindings).toBeInstanceOf(Map);
-        expect(files[0]!.scopes[0]!.typeBindings).toBeInstanceOf(Map);
-        expect(files[0]!.exports).toBeInstanceOf(Map);
-        expect(files[0]!.scopes[0]!.bindings.get('target')![0]!.def).toEqual(target);
-        expect(files[0]!.exports!.get('target')).toBe(target.nodeId);
-
-        const emit = (parsedFiles: readonly ParsedFile[]) => {
-          const scopes = finalizeScopeModel(parsedFiles);
-          const resolved = resolveFreeCallReferences(scopes);
-          const graph = createKnowledgeGraph();
-          const stats = emitReferencesToGraph({
-            graph,
-            scopes,
-            referenceIndex: resolved.referenceIndex,
-          });
-          return {
-            nodes: graph.nodes,
-            relationships: graph.relationships,
-            stats,
-            resolution: resolved.stats,
-          };
-        };
-        const transported = emit(files);
-        expect(transported).toEqual(emit([artifact]));
-        expect(transported.resolution).toEqual({
-          totalSites: 2,
-          resolvedSites: 1,
-          unresolvedSites: 1,
-          ambiguousSites: 0,
-          unsupportedSites: 0,
-        });
-        expect(transported.stats.edgesEmitted).toBe(1);
-        expect(transported.relationships.filter((edge) => edge.type === 'CALLS')).toEqual([
-          expect.objectContaining({ sourceId: caller.nodeId, targetId: target.nodeId }),
-        ]);
-      } finally {
-        try {
-          await pool?.terminate();
-        } finally {
-          pool = undefined;
-          fs.rmSync(tempDir, { recursive: true, force: true });
-        }
-      }
-    },
-  );
 
   it.each(['thread', 'process'] as const)(
     'repeats four-worker native startup, dispatch and teardown (%s)',
@@ -995,6 +960,32 @@ describe('worker pool integration', () => {
     expect(names).toContain('validateInput');
   });
 
+  it.skipIf(!hasDistWorker)(
+    'reports AST resource fallback as skipped without syntax errors',
+    async () => {
+      const originalCap = process.env.ONTOINDEX_PARSE_MAX_AST_NODES;
+      process.env.ONTOINDEX_PARSE_MAX_AST_NODES = '5';
+      try {
+        pool = createWorkerPool(pathToFileURL(DIST_WORKER), 1, { cooperativeShutdown: true });
+        const results = await pool.dispatch<ParseWorkerInput, ParseWorkerResult>([
+          {
+            path: 'guarded.ts',
+            content: 'export function guarded() { return 1; }',
+          },
+        ]);
+        expect(results.flatMap((result) => result.fileTimings)).toEqual([
+          expect.objectContaining({ filePath: 'guarded.ts', status: 'skipped' }),
+        ]);
+        expect(results.flatMap((result) => result.parseErrorPaths)).toEqual([]);
+      } finally {
+        await pool?.terminate();
+        pool = undefined;
+        if (originalCap === undefined) delete process.env.ONTOINDEX_PARSE_MAX_AST_NODES;
+        else process.env.ONTOINDEX_PARSE_MAX_AST_NODES = originalCap;
+      }
+    },
+  );
+
   it.skipIf(!hasDistWorker)('can stream result parts without retaining them', async () => {
     const workerUrl = pathToFileURL(DIST_WORKER) as URL;
     pool = createWorkerPool(workerUrl, 1, { cooperativeShutdown: true });
@@ -1306,216 +1297,6 @@ describe('worker pool integration', () => {
   });
 
   // ─── Unhappy paths ──────────────────────────────────────────────────
-
-  it.each(['ts', 'tsx', 'js', 'jsx'] as const)(
-    'rebuilds the original .%s graph from retained inputs after a real worker protocol error and sequential recovery',
-    async (extension) => {
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ontoindex-worker-recovery-'));
-      const workerPath = path.join(tempDir, 'error-worker.cjs');
-      const filePath = `recovery.${extension}`;
-      const content =
-        [
-          'function target() {}',
-          'function caller() {',
-          '  target();',
-          '  missing(unknownArg, "original", 42);',
-          '  console.log("builtin");',
-          '}',
-        ].join('\n') + '\n';
-      fs.writeFileSync(path.join(tempDir, filePath), content);
-      // Controlled protocol failure; parsing and recovery use production source.
-      fs.writeFileSync(
-        workerPath,
-        `
-        const { parentPort } = require('node:worker_threads');
-        parentPort.on('message', (msg) => {
-          if (msg && msg.type === 'sub-batch') {
-            parentPort.postMessage({
-              type: 'diagnostic',
-              diagnostics: {
-                ...msg.diagnostics,
-                phase: 'process-file',
-                currentFilePath: msg.files[0].path,
-              },
-            });
-            parentPort.postMessage({ type: 'error', error: 'Controlled recovery protocol error' });
-          }
-        });
-      `,
-      );
-      const originalFactory = workerPoolModule.createWorkerPool;
-      const factory = vi.spyOn(workerPoolModule, 'createWorkerPool').mockImplementationOnce(() => {
-        pool = originalFactory(pathToFileURL(workerPath), 1, { isolation: 'thread' });
-        return pool;
-      });
-      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const allowance = { remainingBytes: 1024 * 1024 };
-      const graph = createKnowledgeGraph();
-      const bindings = new BindingAccumulator();
-      let replayContext: ReturnType<typeof createResolutionContext> | undefined;
-      let result: Awaited<ReturnType<typeof runChunkedParseAndResolve>> | undefined;
-      try {
-        result = await runChunkedParseAndResolve(
-          graph,
-          [{ path: filePath, size: Buffer.byteLength(content) }],
-          [filePath],
-          1,
-          tempDir,
-          Date.now(),
-          () => {},
-          {
-            workerThresholdsForTest: { minFiles: 1, minBytes: 0 },
-            scopeRetention: {
-              deadline: Date.now() + 30_000,
-              artifactAllowance: allowance,
-              consume: async () => {},
-            },
-          },
-        );
-        expect(factory).toHaveBeenCalledTimes(1);
-        expect(warning).toHaveBeenCalledWith(
-          'Worker pool parsing failed, falling back to sequential:',
-          expect.stringMatching(/Controlled recovery protocol error.*sub-batch: 1 size 1/),
-        );
-        expect(warning).toHaveBeenCalledWith(
-          'Worker pool disabled for remaining parse chunks after fallback to sequential parsing.',
-        );
-        expect(result.usedWorkerPool).toBe(false);
-        const retained = result.scopeRetention!;
-        async function collect<T>(batches: AsyncIterable<readonly T[]>): Promise<T[]> {
-          const records: T[] = [];
-          for await (const batch of batches) records.push(...batch);
-          return records;
-        }
-        const normalize = <T extends { id: string }>(records: readonly T[]): T[] =>
-          JSON.parse(JSON.stringify(records)).sort((left: T, right: T) =>
-            left.id.localeCompare(right.id),
-          );
-        const expectedNodes = normalize(graph.nodes);
-        const expectedRelationships = normalize(graph.relationships);
-        const identity = structuredClone(retained.inputEvidence);
-        expect(identity.complete).toBe(true);
-        expect(identity.sources).toEqual([
-          {
-            filePath,
-            sha256: createHash('sha256').update(content, 'utf8').digest('hex'),
-            byteLength: Buffer.byteLength(content, 'utf8'),
-          },
-        ]);
-        // Decode all eleven families before clear() records a model lifecycle event.
-        const parsedFiles = await collect(retained.iterate());
-        const calls = await collect(retained.iterateCalls());
-        const assignments = await collect(retained.iterateAssignments());
-        const constructors = await collect(retained.iterateConstructorBindings());
-        const heritage = await collect(retained.iterateHeritage());
-        const fileBindings = await collect(retained.iterateFileBindings());
-        const exportedTypes = await collect(retained.iterateExportedTypes());
-        const events = await collect(retained.iterateModelRegistrations());
-        const importStates = await collect(retained.iterateImportStates());
-        const declarationNodes = await collect(retained.iterateGraphNodes());
-        const structuralRelationships = await collect(retained.iterateGraphRelationships());
-        expect(parsedFiles).toHaveLength(1);
-        expect(parsedFiles[0]!.filePath).toBe(filePath);
-        expect(retained.recordCount).toBe(1);
-        expect(events.length).toBeGreaterThan(0);
-        expect(importStates).toHaveLength(1);
-        expect(retained.graphNodesCaptured).toBe(true);
-        expect(retained.graphRelationshipsCaptured).toBe(true);
-        expect(normalize(declarationNodes)).toEqual(expectedNodes);
-        expect(calls).toEqual([
-          {
-            filePath,
-            calledName: 'target',
-            sourceId: `Function:${filePath}:caller`,
-            callForm: 'free',
-            argCount: 0,
-            atRange: { startLine: 3, startCol: 2, endLine: 3, endCol: 10 },
-          },
-          {
-            filePath,
-            calledName: 'missing',
-            sourceId: `Function:${filePath}:caller`,
-            callForm: 'free',
-            argCount: 3,
-            argTypes: [undefined, 'string', 'number'],
-            atRange: { startLine: 4, startCol: 2, endLine: 4, endCol: 37 },
-          },
-        ]);
-        expect(retained.callRecordCount).toBe(2);
-        expect(retained.evidenceScope).toBe('observed-inventory');
-        expect(retained.callEvidenceScope).toBe('observed-parser-inputs');
-        expect(retained.seedReady).toBe(false);
-        expect(
-          graph.relationships
-            .filter((edge) => edge.type === 'CALLS')
-            .map((edge) => ({
-              sourceId: edge.sourceId,
-              targetId: edge.targetId,
-            })),
-        ).toEqual([
-          { sourceId: `Function:${filePath}:caller`, targetId: `Function:${filePath}:target` },
-        ]);
-        result.resolutionContext.clear();
-        result.bindingAccumulator.dispose();
-        result.exportedTypeMap.clear();
-        for (const node of graph.iterNodes()) node.properties.name = 'producer-mutated';
-        for (const edge of graph.iterRelationships()) edge.reason = 'producer-mutated';
-
-        for (const { filePath, varName, typeName } of fileBindings) {
-          bindings.appendFile(filePath, [{ scope: '', varName, typeName }]);
-        }
-        bindings.finalize();
-        const exportedTypeMap = new Map<string, Map<string, string>>();
-        for (const { filePath, exportName, typeName } of exportedTypes) {
-          if (!exportedTypeMap.has(filePath)) exportedTypeMap.set(filePath, new Map());
-          exportedTypeMap.get(filePath)!.set(exportName, typeName);
-        }
-        replayContext = createResolutionContext({
-          model: restoreSemanticModelRegistrations({ version: 1, events }),
-          importState: importStates[0]!,
-        });
-        const replay = createKnowledgeGraph();
-        for (const node of declarationNodes) replay.addNode(node);
-        for (const edge of structuralRelationships) replay.addRelationship(edge);
-        seedCrossFileReceiverTypes(calls, replayContext.namedImportMap, exportedTypeMap);
-        await processCallsFromExtracted(
-          replay,
-          calls,
-          replayContext,
-          undefined,
-          constructors,
-          buildHeritageMap(heritage, replayContext, getHeritageStrategyForLanguage),
-          bindings,
-        );
-        processAssignmentsFromExtracted(replay, assignments, replayContext, constructors, bindings);
-        expect(normalize(replay.nodes)).toEqual(expectedNodes);
-        expect(normalize(replay.relationships)).toEqual(expectedRelationships);
-        expect(replay.relationships.some((edge) => edge.targetId.includes('missing'))).toBe(false);
-        expect(retained.inputEvidence).toEqual(identity);
-        expect(retained.seedReady).toBe(false);
-        expect(allowance.remainingBytes).toBeLessThan(1024 * 1024);
-      } finally {
-        factory.mockRestore();
-        warning.mockRestore();
-        try {
-          replayContext?.clear();
-          bindings.dispose();
-          result?.resolutionContext.clear();
-          await result?.scopeRetention?.dispose();
-          result?.bindingAccumulator.dispose();
-        } finally {
-          // The pipeline owns normal termination; also cover assertions/early failures.
-          try {
-            await pool?.terminate();
-          } finally {
-            pool = undefined;
-            fs.rmSync(tempDir, { recursive: true, force: true });
-          }
-        }
-      }
-      expect(allowance.remainingBytes).toBe(1024 * 1024);
-    },
-  );
 
   it('throws when a worker thread encounters an error', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ontoindex-worker-error-'));

@@ -1,29 +1,14 @@
-import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import type {
-  BindingRef,
-  ExplicitReceiver,
-  GraphNode,
-  GraphRelationship,
-  ParsedFile,
-  TypeRef,
-} from 'ontoindex-shared';
-import { SupportedLanguages } from 'ontoindex-shared';
-import { createParserForLanguage } from '../../src/core/tree-sitter/parser-loader.js';
-import { getProvider } from '../../src/core/ingestion/languages/index.js';
-import { extractParsedFileOutcome } from '../../src/core/ingestion/scope-extractor-bridge.js';
+import type { GraphNode, GraphRelationship } from 'ontoindex-shared';
 import {
-  decodeParsedFileRecord,
-  encodeParsedFileRecord,
   encodeGraphNodeRecord,
   encodeGraphRelationshipRecord,
   ParsedFileRecordError,
-  MAX_PARSED_FILE_RECORD_BYTES,
-  MAX_GRAPH_RECORD_BYTES,
 } from '../../src/core/ingestion/pipeline-phases/parse-scope-codec.js';
 import {
   ScopeRetentionStage,
+  isScopeRetentionLanguage,
   type RetainedExportedType,
   type RetainedFileBinding,
   type ScopeRetentionFamily,
@@ -32,7 +17,6 @@ import {
   createResolutionContext,
   snapshotImportResolutionState,
 } from '../../src/core/ingestion/model/resolution-context.js';
-import { finalizeScopeModel } from '../../src/core/ingestion/finalize-orchestrator.js';
 import type { ImportConfigObservations } from '../../src/core/ingestion/language-config.js';
 import type {
   ExtractedAssignment,
@@ -46,87 +30,55 @@ import {
   restoreSemanticModelRegistrations,
   type SemanticModelRegistrationEvent,
 } from '../../src/core/ingestion/model/semantic-model.js';
-
-function fixture(filePath = 'src/é😀\\"\n.ts'): ParsedFile {
-  const moduleScope = `scope:${filePath}#module`;
-  const child = `scope:${filePath}#child`;
-  const range = { startLine: 1, startCol: 0, endLine: 20, endCol: 3 };
-  const childRange = { startLine: 2, startCol: 0, endLine: 19, endCol: 0 };
-  const def = {
-    nodeId: `def:${filePath}:User`,
-    filePath,
-    type: 'Class' as const,
-    qualifiedName: 'sample.User',
-    parameterTypes: ['é', '\ud800'],
-  };
-  const imported = {
-    localName: 'Alias',
-    targetFile: 'other.ts',
-    targetExportedName: 'Other',
-    kind: 'alias' as const,
-  };
-  return {
-    filePath,
-    moduleScope,
-    scopes: [
-      {
-        id: moduleScope,
-        parent: null,
-        kind: 'Module',
-        range,
-        filePath,
-        bindings: new Map<string, readonly BindingRef[]>([
-          ['z', [{ def, origin: 'local' as const }]],
-          ['a', [{ def, origin: 'import' as const, via: imported }]],
-        ]),
-        ownedDefs: [def],
-        imports: [imported],
-        typeBindings: new Map<string, TypeRef>([
-          [
-            'z',
-            {
-              rawName: 'List',
-              declaredAtScope: moduleScope,
-              source: 'annotation' as const,
-              typeArgs: [
-                { rawName: 'User', declaredAtScope: moduleScope, source: 'annotation' as const },
-              ],
-            },
-          ],
-          ['a', { rawName: 'User', declaredAtScope: child, source: 'self' as const }],
-        ]),
-      },
-      {
-        id: child,
-        parent: moduleScope,
-        kind: 'Class',
-        range: childRange,
-        filePath,
-        bindings: new Map(),
-        typeBindings: new Map(),
-        ownedDefs: [],
-        imports: [],
-      },
-    ],
-    parsedImports: [],
-    localDefs: [def],
-    referenceSites: [
-      {
-        name: 'save',
-        atRange: { startLine: 3, startCol: 2, endLine: 3, endCol: 6 },
-        inScope: child,
-        kind: 'call',
-        callForm: 'member',
-        explicitReceiver: { name: 'user' },
-        arity: 2,
-      },
-    ],
-  };
-}
+import { SupportedLanguages } from 'ontoindex-shared';
 
 const options = (remainingBytes = 1024 * 1024) => ({
   deadline: Date.now() + 30_000,
   artifactAllowance: { remainingBytes },
+});
+
+describe('retained language eligibility', () => {
+  it.each([
+    SupportedLanguages.TypeScript,
+    SupportedLanguages.JavaScript,
+    SupportedLanguages.Python,
+    SupportedLanguages.CPlusPlus,
+    SupportedLanguages.Rust,
+  ])('retains the supported %s language', (language) => {
+    expect(isScopeRetentionLanguage(language)).toBe(true);
+  });
+
+  it.each([SupportedLanguages.Go, null, undefined])('refuses %s semantics', (language) => {
+    expect(isScopeRetentionLanguage(language)).toBe(false);
+  });
+
+  it('marks recognized unsupported paths incomplete without claiming retained semantics', async () => {
+    const stage = new ScopeRetentionStage(options());
+    try {
+      stage.reconcile(['main.ts', 'main.go', 'script'], [], ['main.go', 'script']);
+      expect(stage.inventory).toEqual([
+        { filePath: 'main.ts', status: 'retained' },
+        { filePath: 'main.go', status: 'unsupported' },
+        { filePath: 'script', status: 'unsupported' },
+      ]);
+      expect(stage.status).toBe('incomplete');
+      expect(stage.reasons).toContain('unsupported');
+    } finally {
+      await stage.dispose();
+    }
+  });
+
+  it('bounds unsupported-path reconciliation', async () => {
+    const stage = new ScopeRetentionStage(options(), { maxRecords: 1 });
+    try {
+      stage.reconcile(['main.ts'], [], ['main.go', 'other.go']);
+      expect(stage.inventory).toHaveLength(1);
+      expect(stage.status).toBe('incomplete');
+      expect(stage.reasons).toContain('inventory-limit');
+    } finally {
+      await stage.dispose();
+    }
+  });
 });
 
 describe('remaining parse extraction retention', () => {
@@ -266,7 +218,6 @@ describe('remaining parse extraction retention', () => {
 
 describe('observed producer completion', () => {
   const families: ScopeRetentionFamily[] = [
-    'parsed-files',
     'calls',
     'heritage',
     'assignments',
@@ -299,8 +250,6 @@ describe('observed producer completion', () => {
       expect(stage.graphNodesCaptured).toBe(true);
       expect(stage.graphRelationshipsCaptured).toBe(true);
       expect(stage.seedReady).toBe(false);
-
-      stage.capture([]);
       stage.captureCalls([]);
       stage.captureHeritage([]);
       stage.captureAssignments([]);
@@ -309,7 +258,6 @@ describe('observed producer completion', () => {
       stage.captureExportedTypes([]);
       stage.captureFileBindings([]);
       expect(stage.producerCompletion).toEqual({
-        'parsed-files': false,
         calls: false,
         heritage: false,
         assignments: false,
@@ -581,17 +529,13 @@ describe('observed parse structural graph relationship retention', () => {
     }
   });
 
-  const captureFamily = (
-    stage: ScopeRetentionStage,
-    family: 'node' | 'scope' | 'model' | 'import',
-  ) => {
+  const captureFamily = (stage: ScopeRetentionStage, family: 'node' | 'model' | 'import') => {
     if (family === 'node') stage.captureGraphNode(graphNodeFixture());
-    if (family === 'scope') stage.capture([fixture('one.ts')]);
     if (family === 'model') stage.captureModelRegistration(modelRegistrationFixture());
     if (family === 'import') stage.captureImportState(createResolutionContext());
   };
 
-  it.each(['node', 'scope', 'model', 'import'] as const)(
+  it.each(['node', 'model', 'import'] as const)(
     'shares record limits and exact bytes with %s in both directions',
     async (family) => {
       const probe = new ScopeRetentionStage(options());
@@ -614,7 +558,6 @@ describe('observed parse structural graph relationship retention', () => {
             expect(stage.graphRelationshipRecordCount).toBe(edgeFirst || maxRecords === 2 ? 1 : 0);
             const otherCount = {
               node: stage.graphNodeRecordCount,
-              scope: stage.recordCount,
               model: stage.modelRegistrationRecordCount,
               import: stage.importStateRecordCount,
             }[family];
@@ -636,13 +579,11 @@ describe('observed parse structural graph relationship retention', () => {
     const stage = new ScopeRetentionStage(options());
     try {
       stage.captureGraphRelationship(graphRelationshipFixture());
-      for (const family of ['node', 'scope', 'model', 'import'] as const)
-        captureFamily(stage, family);
+      for (const family of ['node', 'model', 'import'] as const) captureFamily(stage, family);
       const iterator = stage.iterateGraphRelationships()[Symbol.asyncIterator]();
       expect((await iterator.next()).done).toBe(false);
       for (const other of [
         stage.iterateGraphNodes(),
-        stage.iterate(),
         stage.iterateCalls(),
         stage.iterateHeritage(),
         stage.iterateAssignments(),
@@ -659,7 +600,6 @@ describe('observed parse structural graph relationship retention', () => {
       await iterator.return?.();
       for (const other of [
         stage.iterateGraphNodes(),
-        stage.iterate(),
         stage.iterateModelRegistrations(),
         stage.iterateImportStates(),
       ]) {
@@ -911,76 +851,13 @@ describe('observed parse graph node retention', () => {
     }
   });
 
-  it.each(['scope', 'model', 'import'] as const)(
-    'shares record admission with %s in both directions',
-    async (family) => {
-      for (const graphFirst of [false, true]) {
-        const stage = new ScopeRetentionStage(options(), { maxRecords: 1 });
-        const capture = () => {
-          if (family === 'scope') stage.capture([fixture('one.ts')]);
-          if (family === 'model') stage.captureModelRegistration(modelRegistrationFixture());
-          if (family === 'import') stage.captureImportState(createResolutionContext());
-        };
-        try {
-          if (graphFirst) expect(stage.captureGraphNode(graphNodeFixture())).toBe(true);
-          capture();
-          if (!graphFirst) expect(stage.captureGraphNode(graphNodeFixture())).toBe(false);
-          expect(stage.graphNodeRecordCount).toBe(graphFirst ? 1 : 0);
-          expect(
-            {
-              scope: stage.recordCount,
-              model: stage.modelRegistrationRecordCount,
-              import: stage.importStateRecordCount,
-            }[family],
-          ).toBe(graphFirst ? 0 : 1);
-          expect(stage.status).toBe('incomplete');
-        } finally {
-          await stage.dispose();
-        }
-      }
-    },
-  );
-
-  it.each(['scope', 'model', 'import'] as const)(
-    'shares aggregate bytes and allowance with %s in both directions',
-    async (family) => {
-      const capture = (stage: ScopeRetentionStage) => {
-        if (family === 'scope') stage.capture([fixture('one.ts')]);
-        if (family === 'model') stage.captureModelRegistration(modelRegistrationFixture());
-        if (family === 'import') stage.captureImportState(createResolutionContext());
-      };
-      const probe = new ScopeRetentionStage(options());
-      capture(probe);
-      const totalBytes = probe.bytes + Buffer.byteLength(encodeGraphNodeRecord(graphNodeFixture()));
-      await probe.dispose();
-      for (const graphFirst of [false, true]) {
-        const request = options(totalBytes);
-        const stage = new ScopeRetentionStage(request, { maxBytes: totalBytes });
-        try {
-          if (graphFirst) expect(stage.captureGraphNode(graphNodeFixture())).toBe(true);
-          capture(stage);
-          if (!graphFirst) expect(stage.captureGraphNode(graphNodeFixture())).toBe(true);
-          expect(stage.bytes).toBe(totalBytes);
-          expect(request.artifactAllowance.remainingBytes).toBe(0);
-          expect(stage.captureGraphNode(graphNodeFixture())).toBe(false);
-          expect(stage.bytes).toBe(totalBytes);
-        } finally {
-          await stage.dispose();
-        }
-        expect(request.artifactAllowance.remainingBytes).toBe(totalBytes);
-      }
-    },
-  );
-
   it('shares replay exclusion with every retained family in both directions', async () => {
     const stage = new ScopeRetentionStage(options());
     try {
       stage.captureGraphNode(graphNodeFixture());
-      stage.capture([fixture('one.ts')]);
       stage.captureModelRegistration(modelRegistrationFixture());
       stage.captureImportState(createResolutionContext());
       const families = () => [
-        stage.iterate(),
         stage.iterateCalls(),
         stage.iterateHeritage(),
         stage.iterateAssignments(),
@@ -998,11 +875,7 @@ describe('observed parse graph node retention', () => {
         });
       }
       await graph.return?.();
-      for (const other of [
-        stage.iterate(),
-        stage.iterateModelRegistrations(),
-        stage.iterateImportStates(),
-      ]) {
+      for (const other of [stage.iterateModelRegistrations(), stage.iterateImportStates()]) {
         const iterator = other[Symbol.asyncIterator]();
         expect((await iterator.next()).done).toBe(false);
         await expect(
@@ -1155,36 +1028,7 @@ describe('retained final import state', () => {
     await limited.dispose();
     expect(request.artifactAllowance.remainingBytes).toBe(bytes);
   });
-
-  it('keeps scope disk accounting, replay exclusion and cancellation intact', async () => {
-    const controller = new AbortController();
-    const request = { ...options(), signal: controller.signal };
-    const stage = new ScopeRetentionStage(request);
-    stage.capture([fixture()]);
-    stage.captureImportState(createResolutionContext());
-    await stage.flush();
-    const imports = stage.iterateImportStates()[Symbol.asyncIterator]();
-    expect((await imports.next()).done).toBe(false);
-    await expect(stage.iterate().next()).rejects.toThrow();
-    await imports.return?.();
-    const files = [];
-    for await (const batch of stage.iterate()) files.push(...batch);
-    expect(files).toEqual([fixture()]);
-    controller.abort();
-    const cancelled = [];
-    for await (const batch of stage.iterateImportStates()) cancelled.push(...batch);
-    expect(cancelled).toEqual([]);
-    expect(stage.reasons).toContain('cancelled');
-    await stage.dispose();
-    expect(request.artifactAllowance.remainingBytes).toBe(1024 * 1024);
-  });
 });
-
-async function replay(stage: ScopeRetentionStage): Promise<ParsedFile[]> {
-  const files: ParsedFile[] = [];
-  for await (const batch of stage.iterate()) files.push(...batch);
-  return files;
-}
 
 function callFixture(): ExtractedCall {
   return {
@@ -1381,7 +1225,6 @@ describe('original parser call retention', () => {
       batches[0]![0]!.argTypes![0] = 'boolean';
       expect(await replayCalls(stage)).toEqual(expected);
       expect(stage.callRecordCount).toBe(2);
-      expect(stage.recordCount).toBe(0);
       expect(stage.callEvidenceScope).toBe('observed-parser-inputs');
       expect(stage.seedReady).toBe(false);
       expect(request.artifactAllowance.remainingBytes).toBeLessThan(allowance);
@@ -1408,31 +1251,6 @@ describe('original parser call retention', () => {
       await stage.dispose();
     }
   });
-
-  it.each(['scope first', 'call first'] as const)(
-    'shares the record ceiling with scopes: %s',
-    async (order) => {
-      const stage = new ScopeRetentionStage(options(), { maxRecords: 1 });
-      try {
-        if (order === 'scope first') {
-          stage.capture([fixture('one.ts')]);
-          stage.captureCalls([{ ...callFixture(), argTypes: [] }]);
-        } else {
-          stage.captureCalls([{ ...callFixture(), argTypes: [] }]);
-          stage.capture([fixture('one.ts')]);
-        }
-        expect(stage.callRecordCount + stage.recordCount).toBe(1);
-        expect(stage.callRecordCount).toBe(order === 'call first' ? 1 : 0);
-        expect(stage.status).toBe('incomplete');
-        expect(stage.reasons).toContain(
-          order === 'scope first' ? 'call-count-limit' : 'record-count-limit',
-        );
-        expect(stage.seedReady).toBe(false);
-      } finally {
-        await stage.dispose();
-      }
-    },
-  );
 
   it.each(['allowance', 'aggregate bytes', 'record bytes'] as const)(
     'refuses calls above the %s ceiling',
@@ -1608,33 +1426,6 @@ describe('original parser call retention', () => {
     }
   });
 
-  it('admits exact combined scope and call bytes and refunds them once', async () => {
-    const probe = new ScopeRetentionStage(options());
-    probe.captureCalls([callFixture()]);
-    const callBytes = probe.bytes;
-    await probe.dispose();
-    const file = fixture('one.ts');
-    const totalBytes = callBytes + Buffer.byteLength(encodeParsedFileRecord(file));
-    const request = options(totalBytes);
-    const stage = new ScopeRetentionStage(request, { maxBytes: totalBytes });
-    try {
-      stage.capture([file]);
-      stage.captureCalls([callFixture()]);
-      expect(stage.recordCount).toBe(1);
-      expect(stage.callRecordCount).toBe(1);
-      expect(stage.bytes).toBe(totalBytes);
-      expect(request.artifactAllowance.remainingBytes).toBe(0);
-      stage.captureCalls([callFixture()]);
-      expect(stage.callRecordCount).toBe(1);
-      expect(stage.reasons).toContain('call-byte-limit');
-    } finally {
-      await stage.dispose();
-    }
-    expect(request.artifactAllowance.remainingBytes).toBe(totalBytes);
-    await stage.dispose();
-    expect(request.artifactAllowance.remainingBytes).toBe(totalBytes);
-  });
-
   it.each(['cancelled', 'deadline', 'disposed'] as const)(
     'guards call capture and replay after %s',
     async (guard) => {
@@ -1678,21 +1469,6 @@ describe('original parser call retention', () => {
       await stage.dispose();
     }
   });
-
-  it('rejects concurrent call and scope replays and releases the replay guard on return', async () => {
-    const stage = new ScopeRetentionStage(options(), { batchRecords: 1 });
-    try {
-      stage.captureCalls([callFixture(), callFixture()]);
-      const first = stage.iterateCalls()[Symbol.asyncIterator]();
-      expect((await first.next()).value).toHaveLength(1);
-      await expect(stage.iterateCalls()[Symbol.asyncIterator]().next()).rejects.toThrow();
-      await expect(stage.iterate()[Symbol.asyncIterator]().next()).rejects.toThrow();
-      await first.return?.();
-      expect(await replayCalls(stage)).toEqual([callFixture(), callFixture()]);
-    } finally {
-      await stage.dispose();
-    }
-  });
 });
 
 function heritageFixture(): ExtractedHeritage {
@@ -1724,7 +1500,6 @@ describe('original parser heritage retention', () => {
       batches[0]![0]!.parentName = 'ReplayMutation';
       expect(await replayHeritage(stage)).toEqual(expected);
       expect(stage.heritageRecordCount).toBe(2);
-      expect(stage.recordCount + stage.callRecordCount).toBe(0);
       expect(stage.heritageEvidenceScope).toBe('observed-parser-inputs');
       expect(stage.seedReady).toBe(false);
       expect(request.artifactAllowance.remainingBytes).toBeLessThan(allowance);
@@ -1750,31 +1525,6 @@ describe('original parser heritage retention', () => {
       await stage.dispose();
     }
   });
-
-  it.each(['scope', 'call', 'heritage'] as const)(
-    'counts heritage with both scopes and calls when %s reaches the ceiling last',
-    async (last) => {
-      const stage = new ScopeRetentionStage(options(), { maxRecords: 2 });
-      const capture = {
-        scope: () => stage.capture([fixture('one.ts')]),
-        call: () => stage.captureCalls([callFixture()]),
-        heritage: () => stage.captureHeritage([heritageFixture()]),
-      };
-      try {
-        for (const kind of ['scope', 'call', 'heritage'] as const)
-          if (kind !== last) capture[kind]();
-        capture[last]();
-        expect(stage.recordCount + stage.callRecordCount + stage.heritageRecordCount).toBe(2);
-        expect(stage.reasons).toContain(
-          last === 'scope' ? 'record-count-limit' : `${last}-count-limit`,
-        );
-        expect(stage.status).toBe('incomplete');
-        expect(stage.seedReady).toBe(false);
-      } finally {
-        await stage.dispose();
-      }
-    },
-  );
 
   it.each(['allowance', 'aggregate bytes', 'record bytes', 'batch bytes'] as const)(
     'refuses heritage above the %s ceiling',
@@ -1802,35 +1552,6 @@ describe('original parser heritage retention', () => {
       expect(request.artifactAllowance.remainingBytes).toBe(allowance);
     },
   );
-
-  it('shares exact aggregate bytes across scopes, calls, and heritage', async () => {
-    const probe = new ScopeRetentionStage(options());
-    probe.captureCalls([callFixture()]);
-    probe.captureHeritage([heritageFixture()]);
-    const totalBytes = probe.bytes + Buffer.byteLength(encodeParsedFileRecord(fixture('one.ts')));
-    await probe.dispose();
-    const request = options(totalBytes + 1);
-    const stage = new ScopeRetentionStage(request, { maxBytes: totalBytes });
-    try {
-      stage.capture([fixture('one.ts')]);
-      stage.captureCalls([callFixture()]);
-      stage.captureHeritage([heritageFixture()]);
-      expect([stage.recordCount, stage.callRecordCount, stage.heritageRecordCount]).toEqual([
-        1, 1, 1,
-      ]);
-      expect(stage.bytes).toBe(totalBytes);
-      expect(request.artifactAllowance.remainingBytes).toBe(1);
-      expect(await replay(stage)).toEqual([fixture('one.ts')]);
-      expect(await replayCalls(stage)).toEqual([callFixture()]);
-      expect(await replayHeritage(stage)).toEqual([heritageFixture()]);
-      stage.captureHeritage([heritageFixture()]);
-      expect(stage.heritageRecordCount).toBe(1);
-      expect(stage.reasons).toContain('heritage-byte-limit');
-    } finally {
-      await stage.dispose();
-    }
-    expect(request.artifactAllowance.remainingBytes).toBe(totalBytes + 1);
-  });
 
   it('rejects malformed, inherited, accessor, and proxy records without invoking their code', async () => {
     const getter = vi.fn(() => 'Base');
@@ -1904,22 +1625,6 @@ describe('original parser heritage retention', () => {
       controller.abort();
       expect((await next).done).toBe(true);
       expect(stage.reasons).toContain('cancelled');
-    } finally {
-      await stage.dispose();
-    }
-  });
-
-  it('shares the replay guard with calls and scopes and releases it on return', async () => {
-    const stage = new ScopeRetentionStage(options(), { batchRecords: 1 });
-    try {
-      stage.captureHeritage([heritageFixture(), heritageFixture()]);
-      const iterator = stage.iterateHeritage()[Symbol.asyncIterator]();
-      expect((await iterator.next()).value).toHaveLength(1);
-      await expect(stage.iterateHeritage()[Symbol.asyncIterator]().next()).rejects.toThrow();
-      await expect(stage.iterateCalls()[Symbol.asyncIterator]().next()).rejects.toThrow();
-      await expect(stage.iterate()[Symbol.asyncIterator]().next()).rejects.toThrow();
-      await iterator.return?.();
-      expect(await replayHeritage(stage)).toEqual([heritageFixture(), heritageFixture()]);
     } finally {
       await stage.dispose();
     }
@@ -2002,7 +1707,6 @@ describe('observed resolution exported type retention', () => {
       batches[0]![0]!.exportName = 'ReplayMutation';
       expect(await replayExportedTypes(stage)).toEqual(expected);
       expect(stage.exportedTypeRecordCount).toBe(3);
-      expect(stage.recordCount).toBe(0);
       expect(stage.exportedTypeEvidenceScope).toBe('observed-resolution-inputs');
       expect(stage.seedReady).toBe(false);
       expect(request.artifactAllowance.remainingBytes).toBeLessThan(allowance);
@@ -2032,53 +1736,6 @@ describe('observed resolution exported type retention', () => {
     }
   });
 
-  it.each(['scope', 'call', 'heritage', 'assignment', 'constructor', 'exported type'] as const)(
-    'shares the record ceiling across six families with %s last',
-    async (last) => {
-      const stage = new ScopeRetentionStage(options(), { maxRecords: 5 });
-      const capture = {
-        scope: () => stage.capture([fixture('one.ts')]),
-        call: () => stage.captureCalls([callFixture()]),
-        heritage: () => stage.captureHeritage([heritageFixture()]),
-        assignment: () => stage.captureAssignments([assignmentFixture()]),
-        constructor: () => stage.captureConstructorBindings([constructorFixture()]),
-        'exported type': () => stage.captureExportedTypes([exportedTypeFixture()]),
-      };
-      try {
-        for (const kind of [
-          'scope',
-          'call',
-          'heritage',
-          'assignment',
-          'constructor',
-          'exported type',
-        ] as const)
-          if (kind !== last) capture[kind]();
-        capture[last]();
-        expect(
-          stage.recordCount +
-            stage.callRecordCount +
-            stage.heritageRecordCount +
-            stage.assignmentRecordCount +
-            stage.constructorBindingRecordCount +
-            stage.exportedTypeRecordCount,
-        ).toBe(5);
-        expect(stage.status).toBe('incomplete');
-        expect(stage.reasons).toContain(
-          last === 'scope'
-            ? 'record-count-limit'
-            : last === 'constructor'
-              ? 'constructor-binding-count-limit'
-              : last === 'exported type'
-                ? 'exported-type-count-limit'
-                : `${last}-count-limit`,
-        );
-      } finally {
-        await stage.dispose();
-      }
-    },
-  );
-
   it.each(['allowance', 'aggregate bytes', 'record bytes', 'batch bytes'] as const)(
     'refuses exported types above the %s ceiling without leaking reservations',
     async (ceiling) => {
@@ -2103,67 +1760,6 @@ describe('observed resolution exported type retention', () => {
         await stage.dispose();
       }
       expect(request.artifactAllowance.remainingBytes).toBe(allowance);
-    },
-  );
-
-  it.each(['scope', 'call', 'heritage', 'assignment', 'constructor', 'exported type'] as const)(
-    'shares exact aggregate bytes and preserves scope disk replay with %s last',
-    async (last) => {
-      const probe = new ScopeRetentionStage(options());
-      probe.captureCalls([callFixture()]);
-      probe.captureHeritage([heritageFixture()]);
-      probe.captureAssignments([assignmentFixture()]);
-      probe.captureConstructorBindings([constructorFixture()]);
-      probe.captureExportedTypes([exportedTypeFixture()]);
-      const totalBytes = probe.bytes + Buffer.byteLength(encodeParsedFileRecord(fixture('one.ts')));
-      await probe.dispose();
-      const request = options(totalBytes);
-      const stage = new ScopeRetentionStage(request, { maxBytes: totalBytes });
-      const capture = {
-        scope: () => stage.capture([fixture('one.ts')]),
-        call: () => stage.captureCalls([callFixture()]),
-        heritage: () => stage.captureHeritage([heritageFixture()]),
-        assignment: () => stage.captureAssignments([assignmentFixture()]),
-        constructor: () => stage.captureConstructorBindings([constructorFixture()]),
-        'exported type': () => stage.captureExportedTypes([exportedTypeFixture()]),
-      };
-      try {
-        for (const kind of [
-          'scope',
-          'call',
-          'heritage',
-          'assignment',
-          'constructor',
-          'exported type',
-        ] as const)
-          if (kind !== last) capture[kind]();
-        capture[last]();
-        expect([
-          stage.recordCount,
-          stage.callRecordCount,
-          stage.heritageRecordCount,
-          stage.assignmentRecordCount,
-          stage.constructorBindingRecordCount,
-          stage.exportedTypeRecordCount,
-        ]).toEqual([1, 1, 1, 1, 1, 1]);
-        expect(stage.bytes).toBe(totalBytes);
-        expect(request.artifactAllowance.remainingBytes).toBe(0);
-        expect(await replay(stage)).toEqual([fixture('one.ts')]);
-        expect(await replayCalls(stage)).toEqual([callFixture()]);
-        expect(await replayHeritage(stage)).toEqual([heritageFixture()]);
-        expect(await replayAssignments(stage)).toEqual([assignmentFixture()]);
-        expect(await replayConstructors(stage)).toEqual([constructorFixture()]);
-        expect(await replayExportedTypes(stage)).toEqual([exportedTypeFixture()]);
-        stage.captureExportedTypes([exportedTypeFixture()]);
-        expect(stage.exportedTypeRecordCount).toBe(1);
-        expect(stage.bytes).toBe(totalBytes);
-        expect(stage.reasons).toContain('exported-type-byte-limit');
-      } finally {
-        await stage.dispose();
-      }
-      expect(request.artifactAllowance.remainingBytes).toBe(totalBytes);
-      await stage.dispose();
-      expect(request.artifactAllowance.remainingBytes).toBe(totalBytes);
     },
   );
 
@@ -2288,7 +1884,6 @@ describe('observed resolution exported type retention', () => {
         stage.iterateAssignments(),
         stage.iterateHeritage(),
         stage.iterateCalls(),
-        stage.iterate(),
       ]) {
         await expect(other[Symbol.asyncIterator]().next()).rejects.toThrow();
       }
@@ -2386,74 +1981,6 @@ describe('observed semantic model registration retention', () => {
     expect(request.artifactAllowance.remainingBytes).toBe(1024 * 1024);
   });
 
-  it.each(['scope', 'call', 'model'] as const)(
-    'shares the record ceiling with %s last',
-    async (last) => {
-      const stage = new ScopeRetentionStage(options(), { maxRecords: 2 });
-      const encoded = modelRegistrationFixture();
-      const capture = {
-        scope: () => stage.capture([fixture('one.ts')]),
-        call: () => stage.captureCalls([callFixture()]),
-        model: () => stage.captureModelRegistration(encoded),
-      };
-      try {
-        for (const family of ['scope', 'call', 'model'] as const)
-          if (family !== last) capture[family]();
-        const accepted = capture[last]();
-        if (last === 'model') expect(accepted).toBe(false);
-        expect([
-          stage.recordCount,
-          stage.callRecordCount,
-          stage.modelRegistrationRecordCount,
-        ]).toEqual(['scope', 'call', 'model'].map((family) => (family === last ? 0 : 1)));
-        expect(stage.status).toBe('incomplete');
-      } finally {
-        await stage.dispose();
-      }
-    },
-  );
-
-  it.each(['scope', 'call', 'model'] as const)(
-    'shares aggregate bytes and allowance with %s last and refunds once',
-    async (last) => {
-      const encoded = modelRegistrationFixture();
-      const probe = new ScopeRetentionStage(options());
-      probe.captureCalls([callFixture()]);
-      probe.captureModelRegistration(encoded);
-      const totalBytes = probe.bytes + Buffer.byteLength(encodeParsedFileRecord(fixture('one.ts')));
-      await probe.dispose();
-      const request = options(totalBytes);
-      const stage = new ScopeRetentionStage(request, { maxBytes: totalBytes });
-      const capture = {
-        scope: () => stage.capture([fixture('one.ts')]),
-        call: () => stage.captureCalls([callFixture()]),
-        model: () => stage.captureModelRegistration(encoded),
-      };
-      try {
-        for (const family of ['scope', 'call', 'model'] as const)
-          if (family !== last) capture[family]();
-        capture[last]();
-        expect([
-          stage.recordCount,
-          stage.callRecordCount,
-          stage.modelRegistrationRecordCount,
-        ]).toEqual([1, 1, 1]);
-        expect(stage.bytes).toBe(totalBytes);
-        expect(request.artifactAllowance.remainingBytes).toBe(0);
-        expect(await replay(stage)).toEqual([fixture('one.ts')]);
-        expect(await replayCalls(stage)).toEqual([callFixture()]);
-        expect(await replayModelRegistrations(stage)).toEqual([JSON.parse(encoded)]);
-        expect(stage.captureModelRegistration(encoded)).toBe(false);
-        expect(stage.bytes).toBe(totalBytes);
-        expect(stage.modelRegistrationRecordCount).toBe(1);
-      } finally {
-        await stage.dispose();
-      }
-      await stage.dispose();
-      expect(request.artifactAllowance.remainingBytes).toBe(totalBytes);
-    },
-  );
-
   it('refuses byte capture and disables the model observer while preserving legacy additions', async () => {
     const request = options(0);
     const stage = new ScopeRetentionStage(request);
@@ -2523,38 +2050,6 @@ describe('observed semantic model registration retention', () => {
       expect(await replayModelRegistrations(stage)).toEqual([]);
     },
   );
-
-  it('shares replay exclusion with disk scopes and calls in both directions', async () => {
-    const request = options();
-    const stage = new ScopeRetentionStage(request, { batchRecords: 1 });
-    try {
-      stage.capture([fixture('one.ts')]);
-      stage.captureCalls([callFixture()]);
-      const encoded = modelRegistrationFixture();
-      stage.captureModelRegistration(encoded);
-      const iterator = stage.iterateModelRegistrations()[Symbol.asyncIterator]();
-      expect((await iterator.next()).done).toBe(false);
-      for (const other of [
-        stage.iterate(),
-        stage.iterateCalls(),
-        stage.iterateModelRegistrations(),
-      ])
-        await expect(other[Symbol.asyncIterator]().next()).rejects.toThrow();
-      await iterator.return?.();
-      for (const other of [stage.iterate(), stage.iterateCalls()]) {
-        const active = other[Symbol.asyncIterator]();
-        expect((await active.next()).done).toBe(false);
-        await expect(
-          stage.iterateModelRegistrations()[Symbol.asyncIterator]().next(),
-        ).rejects.toThrow();
-        await active.return?.();
-      }
-      expect(await replayModelRegistrations(stage)).toEqual([JSON.parse(encoded)]);
-    } finally {
-      await stage.dispose();
-    }
-    expect(request.artifactAllowance.remainingBytes).toBe(1024 * 1024);
-  });
 });
 
 function fileBindingFixture(): RetainedFileBinding {
@@ -2569,7 +2064,6 @@ async function replayFileBindings(stage: ScopeRetentionStage): Promise<RetainedF
 
 describe('observed resolution file binding retention', () => {
   const families = [
-    'scope',
     'call',
     'heritage',
     'assignment',
@@ -2579,7 +2073,6 @@ describe('observed resolution file binding retention', () => {
   ] as const;
   function captures(stage: ScopeRetentionStage) {
     return {
-      scope: () => stage.capture([fixture('one.ts')]),
       call: () => stage.captureCalls([callFixture()]),
       heritage: () => stage.captureHeritage([heritageFixture()]),
       assignment: () => stage.captureAssignments([assignmentFixture()]),
@@ -2589,7 +2082,6 @@ describe('observed resolution file binding retention', () => {
     };
   }
   const counts = (stage: ScopeRetentionStage) => [
-    stage.recordCount,
     stage.callRecordCount,
     stage.heritageRecordCount,
     stage.assignmentRecordCount,
@@ -2598,11 +2090,7 @@ describe('observed resolution file binding retention', () => {
     stage.fileBindingRecordCount,
   ];
   const reasonPrefix = (family: (typeof families)[number]) =>
-    family === 'scope'
-      ? 'record'
-      : family === 'constructor'
-        ? 'constructor-binding'
-        : family.replace(' ', '-');
+    family === 'constructor' ? 'constructor-binding' : family.replace(' ', '-');
 
   it('detaches records and every replay while preserving duplicate order and Unicode', async () => {
     const request = options();
@@ -2692,8 +2180,8 @@ describe('observed resolution file binding retention', () => {
     },
   );
 
-  it.each(families)('shares the seven-family record ceiling with %s refused last', async (last) => {
-    const stage = new ScopeRetentionStage(options(), { maxRecords: 6 });
+  it.each(families)('shares the six-family record ceiling with %s refused last', async (last) => {
+    const stage = new ScopeRetentionStage(options(), { maxRecords: families.length - 1 });
     try {
       const capture = captures(stage);
       for (const family of families) if (family !== last) capture[family]();
@@ -2704,36 +2192,6 @@ describe('observed resolution file binding retention', () => {
     } finally {
       await stage.dispose();
     }
-  });
-
-  it.each(families)('shares exact byte admission and refuses the next %s record', async (last) => {
-    const probe = new ScopeRetentionStage(options());
-    for (const [family, capture] of Object.entries(captures(probe)))
-      if (family !== 'scope') capture();
-    const totalBytes = probe.bytes + Buffer.byteLength(encodeParsedFileRecord(fixture('one.ts')));
-    await probe.dispose();
-    const request = options(totalBytes);
-    const stage = new ScopeRetentionStage(request, { maxBytes: totalBytes });
-    try {
-      const capture = captures(stage);
-      for (const family of families) if (family !== last) capture[family]();
-      capture[last]();
-      expect(counts(stage)).toEqual([1, 1, 1, 1, 1, 1, 1]);
-      expect(stage.bytes).toBe(totalBytes);
-      expect(request.artifactAllowance.remainingBytes).toBe(0);
-      expect(await replay(stage)).toEqual([fixture('one.ts')]);
-      expect(await replayFileBindings(stage)).toEqual([fileBindingFixture()]);
-      capture[last]();
-      expect(counts(stage)).toEqual([1, 1, 1, 1, 1, 1, 1]);
-      expect(stage.bytes).toBe(totalBytes);
-      expect(stage.reasons).toContain(
-        `${last === 'scope' ? 'artifact' : reasonPrefix(last)}-byte-limit`,
-      );
-    } finally {
-      await stage.dispose();
-    }
-    await stage.dispose();
-    expect(request.artifactAllowance.remainingBytes).toBe(totalBytes);
   });
 
   it.each(['allowance', 'aggregate bytes', 'record bytes', 'batch bytes'] as const)(
@@ -2875,7 +2333,6 @@ describe('observed resolution file binding retention', () => {
     try {
       for (const capture of Object.values(captures(stage))) capture();
       const others = [
-        () => stage.iterate(),
         () => stage.iterateCalls(),
         () => stage.iterateHeritage(),
         () => stage.iterateAssignments(),
@@ -2993,7 +2450,6 @@ describe('original parser constructor binding retention', () => {
       batches[1]![0]!.bindings.length = 0;
       expect(await replayConstructors(stage)).toEqual(expected);
       expect(stage.constructorBindingRecordCount).toBe(2);
-      expect(stage.recordCount).toBe(0);
       expect(stage.constructorBindingEvidenceScope).toBe('observed-parser-inputs');
       expect(stage.seedReady).toBe(false);
       expect(request.artifactAllowance.remainingBytes).toBeLessThan(allowance);
@@ -3027,42 +2483,6 @@ describe('original parser constructor binding retention', () => {
     }
   });
 
-  it.each(['scope', 'call', 'heritage', 'assignment', 'constructor'] as const)(
-    'shares the record ceiling across all five families with %s last',
-    async (last) => {
-      const stage = new ScopeRetentionStage(options(), { maxRecords: 4 });
-      const capture = {
-        scope: () => stage.capture([fixture('one.ts')]),
-        call: () => stage.captureCalls([callFixture()]),
-        heritage: () => stage.captureHeritage([heritageFixture()]),
-        assignment: () => stage.captureAssignments([assignmentFixture()]),
-        constructor: () => stage.captureConstructorBindings([constructorFixture()]),
-      };
-      try {
-        for (const kind of ['scope', 'call', 'heritage', 'assignment', 'constructor'] as const)
-          if (kind !== last) capture[kind]();
-        capture[last]();
-        expect(
-          stage.recordCount +
-            stage.callRecordCount +
-            stage.heritageRecordCount +
-            stage.assignmentRecordCount +
-            stage.constructorBindingRecordCount,
-        ).toBe(4);
-        expect(stage.status).toBe('incomplete');
-        expect(stage.reasons).toContain(
-          last === 'scope'
-            ? 'record-count-limit'
-            : last === 'constructor'
-              ? 'constructor-binding-count-limit'
-              : `${last}-count-limit`,
-        );
-      } finally {
-        await stage.dispose();
-      }
-    },
-  );
-
   it.each(['allowance', 'aggregate bytes', 'record bytes', 'batch bytes'] as const)(
     'refuses constructor bindings above the %s ceiling without leaking reservations',
     async (ceiling) => {
@@ -3087,56 +2507,6 @@ describe('original parser constructor binding retention', () => {
         await stage.dispose();
       }
       expect(request.artifactAllowance.remainingBytes).toBe(allowance);
-    },
-  );
-
-  it.each(['scope', 'call', 'heritage', 'assignment', 'constructor'] as const)(
-    'shares exact aggregate bytes and preserves scope artifacts with %s admitted last',
-    async (last) => {
-      const probe = new ScopeRetentionStage(options());
-      probe.captureCalls([callFixture()]);
-      probe.captureHeritage([heritageFixture()]);
-      probe.captureAssignments([assignmentFixture()]);
-      probe.captureConstructorBindings([constructorFixture()]);
-      const totalBytes = probe.bytes + Buffer.byteLength(encodeParsedFileRecord(fixture('one.ts')));
-      await probe.dispose();
-      const request = options(totalBytes);
-      const stage = new ScopeRetentionStage(request, { maxBytes: totalBytes });
-      const capture = {
-        scope: () => stage.capture([fixture('one.ts')]),
-        call: () => stage.captureCalls([callFixture()]),
-        heritage: () => stage.captureHeritage([heritageFixture()]),
-        assignment: () => stage.captureAssignments([assignmentFixture()]),
-        constructor: () => stage.captureConstructorBindings([constructorFixture()]),
-      };
-      try {
-        for (const kind of ['scope', 'call', 'heritage', 'assignment', 'constructor'] as const)
-          if (kind !== last) capture[kind]();
-        capture[last]();
-        expect([
-          stage.recordCount,
-          stage.callRecordCount,
-          stage.heritageRecordCount,
-          stage.assignmentRecordCount,
-          stage.constructorBindingRecordCount,
-        ]).toEqual([1, 1, 1, 1, 1]);
-        expect(stage.bytes).toBe(totalBytes);
-        expect(request.artifactAllowance.remainingBytes).toBe(0);
-        expect(await replay(stage)).toEqual([fixture('one.ts')]);
-        expect(await replayCalls(stage)).toEqual([callFixture()]);
-        expect(await replayHeritage(stage)).toEqual([heritageFixture()]);
-        expect(await replayAssignments(stage)).toEqual([assignmentFixture()]);
-        expect(await replayConstructors(stage)).toEqual([constructorFixture()]);
-        stage.captureConstructorBindings([constructorFixture()]);
-        expect(stage.constructorBindingRecordCount).toBe(1);
-        expect(stage.bytes).toBe(totalBytes);
-        expect(stage.reasons).toContain('constructor-binding-byte-limit');
-      } finally {
-        await stage.dispose();
-      }
-      expect(request.artifactAllowance.remainingBytes).toBe(totalBytes);
-      await stage.dispose();
-      expect(request.artifactAllowance.remainingBytes).toBe(totalBytes);
     },
   );
 
@@ -3267,7 +2637,6 @@ describe('original parser constructor binding retention', () => {
         stage.iterateAssignments(),
         stage.iterateHeritage(),
         stage.iterateCalls(),
-        stage.iterate(),
       ]) {
         await expect(other[Symbol.asyncIterator]().next()).rejects.toThrow();
       }
@@ -3317,7 +2686,6 @@ describe('original parser assignment retention', () => {
       batches[0]![0]!.propertyName = 'ReplayMutation';
       expect(await replayAssignments(stage)).toEqual(expected);
       expect(stage.assignmentRecordCount).toBe(2);
-      expect(stage.recordCount + stage.callRecordCount).toBe(0);
       expect(stage.assignmentEvidenceScope).toBe('observed-parser-inputs');
       expect(stage.seedReady).toBe(false);
       expect(request.artifactAllowance.remainingBytes).toBeLessThan(allowance);
@@ -3344,37 +2712,6 @@ describe('original parser assignment retention', () => {
     }
   });
 
-  it.each(['scope', 'call', 'heritage', 'assignment'] as const)(
-    'counts assignment with both scopes and calls when %s reaches the ceiling last',
-    async (last) => {
-      const stage = new ScopeRetentionStage(options(), { maxRecords: 3 });
-      const capture = {
-        scope: () => stage.capture([fixture('one.ts')]),
-        call: () => stage.captureCalls([callFixture()]),
-        heritage: () => stage.captureHeritage([heritageFixture()]),
-        assignment: () => stage.captureAssignments([assignmentFixture()]),
-      };
-      try {
-        for (const kind of ['scope', 'call', 'heritage', 'assignment'] as const)
-          if (kind !== last) capture[kind]();
-        capture[last]();
-        expect(
-          stage.recordCount +
-            stage.callRecordCount +
-            stage.heritageRecordCount +
-            stage.assignmentRecordCount,
-        ).toBe(3);
-        expect(stage.reasons).toContain(
-          last === 'scope' ? 'record-count-limit' : `${last}-count-limit`,
-        );
-        expect(stage.status).toBe('incomplete');
-        expect(stage.seedReady).toBe(false);
-      } finally {
-        await stage.dispose();
-      }
-    },
-  );
-
   it.each(['allowance', 'aggregate bytes', 'record bytes', 'batch bytes'] as const)(
     'refuses assignment above the %s ceiling',
     async (ceiling) => {
@@ -3399,49 +2736,6 @@ describe('original parser assignment retention', () => {
         await stage.dispose();
       }
       expect(request.artifactAllowance.remainingBytes).toBe(allowance);
-    },
-  );
-
-  it.each(['scope', 'call', 'heritage', 'assignment'] as const)(
-    'shares exact aggregate bytes across all four families with %s admitted last',
-    async (last) => {
-      const probe = new ScopeRetentionStage(options());
-      probe.captureCalls([callFixture()]);
-      probe.captureHeritage([heritageFixture()]);
-      probe.captureAssignments([assignmentFixture()]);
-      const totalBytes = probe.bytes + Buffer.byteLength(encodeParsedFileRecord(fixture('one.ts')));
-      await probe.dispose();
-      const request = options(totalBytes + 1);
-      const stage = new ScopeRetentionStage(request, { maxBytes: totalBytes });
-      const capture = {
-        scope: () => stage.capture([fixture('one.ts')]),
-        call: () => stage.captureCalls([callFixture()]),
-        heritage: () => stage.captureHeritage([heritageFixture()]),
-        assignment: () => stage.captureAssignments([assignmentFixture()]),
-      };
-      try {
-        for (const kind of ['scope', 'call', 'heritage', 'assignment'] as const)
-          if (kind !== last) capture[kind]();
-        capture[last]();
-        expect([
-          stage.recordCount,
-          stage.callRecordCount,
-          stage.heritageRecordCount,
-          stage.assignmentRecordCount,
-        ]).toEqual([1, 1, 1, 1]);
-        expect(stage.bytes).toBe(totalBytes);
-        expect(request.artifactAllowance.remainingBytes).toBe(1);
-        expect(await replay(stage)).toEqual([fixture('one.ts')]);
-        expect(await replayCalls(stage)).toEqual([callFixture()]);
-        expect(await replayHeritage(stage)).toEqual([heritageFixture()]);
-        expect(await replayAssignments(stage)).toEqual([assignmentFixture()]);
-        stage.captureAssignments([assignmentFixture()]);
-        expect(stage.assignmentRecordCount).toBe(1);
-        expect(stage.reasons).toContain('assignment-byte-limit');
-      } finally {
-        await stage.dispose();
-      }
-      expect(request.artifactAllowance.remainingBytes).toBe(totalBytes + 1);
     },
   );
 
@@ -3530,23 +2824,6 @@ describe('original parser assignment retention', () => {
       controller.abort();
       expect((await next).done).toBe(true);
       expect(stage.reasons).toContain('cancelled');
-    } finally {
-      await stage.dispose();
-    }
-  });
-
-  it('shares the replay guard with calls and scopes and releases it on return', async () => {
-    const stage = new ScopeRetentionStage(options(), { batchRecords: 1 });
-    try {
-      stage.captureAssignments([assignmentFixture(), assignmentFixture()]);
-      const iterator = stage.iterateAssignments()[Symbol.asyncIterator]();
-      expect((await iterator.next()).value).toHaveLength(1);
-      await expect(stage.iterateAssignments()[Symbol.asyncIterator]().next()).rejects.toThrow();
-      await expect(stage.iterateCalls()[Symbol.asyncIterator]().next()).rejects.toThrow();
-      await expect(stage.iterateHeritage()[Symbol.asyncIterator]().next()).rejects.toThrow();
-      await expect(stage.iterate()[Symbol.asyncIterator]().next()).rejects.toThrow();
-      await iterator.return?.();
-      expect(await replayAssignments(stage)).toEqual([assignmentFixture(), assignmentFixture()]);
     } finally {
       await stage.dispose();
     }
@@ -3702,84 +2979,6 @@ describe('original parser ORM query retention', () => {
     },
   );
 
-  it('counts rejected attempts and preserves parsed-file record reservations', async () => {
-    const rejected = new ScopeRetentionStage(options(), { maxRecords: 1 });
-    const reserved = new ScopeRetentionStage(options(), { maxRecords: 2 });
-    try {
-      rejected.captureORMQueries([{ ...ormQueryFixture(), lineNumber: -1 }]);
-      rejected.captureORMQueries([ormQueryFixture()]);
-      expect(rejected.ormQueryRecordCount).toBe(0);
-      expect(rejected.reasons).toContain('orm-query-count-limit');
-      reserved.reserveParsedFileRecords(1);
-      reserved.captureORMQueries([ormQueryFixture(), ormQueryFixture()]);
-      reserved.capture([fixture('one.ts')]);
-      expect(reserved.ormQueryRecordCount).toBe(1);
-      expect(reserved.recordCount).toBe(1);
-      expect(await replay(reserved)).toEqual([fixture('one.ts')]);
-    } finally {
-      await rejected.dispose();
-      await reserved.dispose();
-    }
-  });
-
-  it.each(['scope', 'call', 'assignment', 'orm'] as const)(
-    'shares record ceilings when %s is admitted last',
-    async (last) => {
-      const stage = new ScopeRetentionStage(options(), { maxRecords: 3 });
-      const capture = {
-        scope: () => stage.capture([fixture('one.ts')]),
-        call: () => stage.captureCalls([callFixture()]),
-        assignment: () => stage.captureAssignments([assignmentFixture()]),
-        orm: () => stage.captureORMQueries([ormQueryFixture()]),
-      };
-      try {
-        for (const kind of ['scope', 'call', 'assignment', 'orm'] as const)
-          if (kind !== last) capture[kind]();
-        capture[last]();
-        expect(
-          stage.recordCount +
-            stage.callRecordCount +
-            stage.assignmentRecordCount +
-            stage.ormQueryRecordCount,
-        ).toBe(3);
-        expect(stage.reasons).toContain(
-          last === 'scope'
-            ? 'record-count-limit'
-            : last === 'orm'
-              ? 'orm-query-count-limit'
-              : `${last}-count-limit`,
-        );
-      } finally {
-        await stage.dispose();
-      }
-    },
-  );
-
-  it.each(['scope', 'orm'] as const)(
-    'replays mixed parsed and ORM records at the exact shared byte ceiling with %s last',
-    async (last) => {
-      const ormBytes = Buffer.byteLength(JSON.stringify(ormQueryFixture()));
-      const totalBytes = ormBytes + Buffer.byteLength(encodeParsedFileRecord(fixture('one.ts')));
-      const request = options(totalBytes + 1);
-      const stage = new ScopeRetentionStage(request, { maxBytes: totalBytes });
-      try {
-        if (last === 'scope') stage.captureORMQueries([ormQueryFixture()]);
-        stage.capture([fixture('one.ts')]);
-        if (last === 'orm') stage.captureORMQueries([ormQueryFixture()]);
-        expect(stage.bytes).toBe(totalBytes);
-        expect(request.artifactAllowance.remainingBytes).toBe(1);
-        expect(await replay(stage)).toEqual([fixture('one.ts')]);
-        expect(await replayORMQueries(stage)).toEqual([ormQueryFixture()]);
-        stage.captureORMQueries([ormQueryFixture()]);
-        expect(stage.ormQueryRecordCount).toBe(1);
-        expect(stage.reasons).toContain('orm-query-byte-limit');
-      } finally {
-        await stage.dispose();
-      }
-      expect(request.artifactAllowance.remainingBytes).toBe(totalBytes + 1);
-    },
-  );
-
   it.each(['cancelled', 'deadline', 'disposed'] as const)(
     'stops active ORM replay and capture after %s',
     async (guard) => {
@@ -3819,7 +3018,6 @@ describe('original parser ORM query retention', () => {
         stage.iterateORMQueries(),
         stage.iterateCalls(),
         stage.iterateAssignments(),
-        stage.iterate(),
       ]) {
         await expect(other[Symbol.asyncIterator]().next()).rejects.toMatchObject({
           reason: 'concurrent-replay',
@@ -3836,14 +3034,6 @@ describe('original parser ORM query retention', () => {
     }
   });
 });
-
-function deferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
 
 function configuration(): ImportConfigObservations {
   const records: ImportConfigObservations['records'] = [
@@ -3919,40 +3109,6 @@ describe('scope retention consumed input evidence', () => {
     }
   });
 
-  it.each(['conflicting', 'unavailable'] as const)(
-    'keeps the first parser code identity after a %s observation',
-    async (observation) => {
-      const request = options();
-      const stage = new ScopeRetentionStage(request);
-      try {
-        stage.captureDiscovery(['one.ts'], [{ path: 'one.ts', size: 8 }], []);
-        stage.captureConfigObservations(configuration());
-        stage.captureParserInputs([{ path: 'one.ts', content: 'original' }]);
-        stage.capture([fixture('one.ts')]);
-        stage.recordOutcomes([{ filePath: 'one.ts', status: 'success' }]);
-        stage.reconcile(['one.ts']);
-        stage.captureParserCodeIdentity('a'.repeat(64));
-        expect(stage.inputEvidence.complete).toBe(true);
-        const remaining = request.artifactAllowance.remainingBytes;
-        if (observation === 'conflicting') stage.captureParserCodeIdentity('b'.repeat(64));
-        else stage.markParserCodeIdentityUnavailable();
-        stage.captureParserCodeIdentity('a'.repeat(64));
-        expect(stage.inputEvidence.parserCodeIdentity).toBe('a'.repeat(64));
-        expect(stage.inputEvidence.complete).toBe(false);
-        expect(stage.inputEvidence.reasons).toContain(
-          observation === 'conflicting'
-            ? 'parser-code-identity-conflict'
-            : 'parser-code-identity-unavailable',
-        );
-        expect(request.artifactAllowance.remainingBytes).toBe(remaining);
-        expect(stage.status).toBe('retained');
-        expect(await replay(stage)).toEqual([fixture('one.ts')]);
-      } finally {
-        await stage.dispose();
-      }
-    },
-  );
-
   it('refuses parser code identity without byte allowance', async () => {
     const request = options(0);
     const stage = new ScopeRetentionStage(request);
@@ -4004,8 +3160,6 @@ describe('scope retention consumed input evidence', () => {
       );
       stage.captureConfigObservations(config);
       stage.captureParserInputs([source]);
-      stage.capture([fixture('one.ts')]);
-      stage.recordOutcomes([{ filePath: 'one.ts', status: 'success' }]);
       stage.reconcile(['one.ts']);
       source.path = 'changed.ts';
       source.content = 'changed';
@@ -4018,6 +3172,7 @@ describe('scope retention consumed input evidence', () => {
         domain: 'parser-text-utf8',
         complete: true,
         parserCodeIdentity: null,
+        analysisPacksIdentity: null,
         configuration: expectedConfig,
         sources: [
           {
@@ -4051,8 +3206,6 @@ describe('scope retention consumed input evidence', () => {
       stage.captureDiscovery(['one.ts'], [{ path: 'one.ts', size: 8 }], []);
       stage.captureConfigObservations(configuration());
       stage.captureParserInputs([source, source]);
-      stage.capture([fixture('one.ts')]);
-      stage.recordOutcomes([{ filePath: 'one.ts', status: 'success' }]);
       stage.reconcile(['one.ts']);
       const originalEvidence = stage.inputEvidence;
       expect(originalEvidence.complete).toBe(true);
@@ -4065,56 +3218,6 @@ describe('scope retention consumed input evidence', () => {
       expect(stage.inputEvidence.sources).toEqual(originalEvidence.sources);
       expect(originalEvidence.complete).toBe(true);
       expect(stage.status).toBe('retained');
-    } finally {
-      await stage.dispose();
-    }
-  });
-
-  it.each(['missing source', 'missing configuration', 'incomplete configuration'] as const)(
-    'refuses input completeness for %s while preserving retained artifacts',
-    async (gap) => {
-      const stage = new ScopeRetentionStage(options());
-      try {
-        const config = configuration();
-        stage.captureConfigObservations(
-          gap === 'missing configuration'
-            ? undefined
-            : gap === 'incomplete configuration'
-              ? { ...config, complete: false, digest: null, issues: ['parse-error'] }
-              : config,
-        );
-        if (gap !== 'missing source')
-          stage.captureParserInputs([{ path: 'one.ts', content: 'original' }]);
-        stage.capture([fixture('one.ts')]);
-        stage.recordOutcomes([{ filePath: 'one.ts', status: 'success' }]);
-        stage.reconcile(['one.ts']);
-        expect(stage.inputEvidence.complete).toBe(false);
-        expect(stage.inputEvidence.reasons.length).toBeGreaterThan(0);
-        expect(stage.status).toBe('retained');
-        expect(await replay(stage)).toEqual([fixture('one.ts')]);
-      } finally {
-        await stage.dispose();
-      }
-    },
-  );
-
-  it('rejects a source outside the reconciled inventory without losing retained artifacts', async () => {
-    const stage = new ScopeRetentionStage(options());
-    try {
-      stage.captureDiscovery(['one.ts'], [{ path: 'one.ts', size: 8 }], []);
-      stage.captureConfigObservations(configuration());
-      stage.captureParserInputs([
-        { path: 'one.ts', content: 'original' },
-        { path: 'extra.ts', content: 'extra' },
-      ]);
-      stage.capture([fixture('one.ts')]);
-      stage.recordOutcomes([{ filePath: 'one.ts', status: 'success' }]);
-      stage.reconcile(['one.ts']);
-      expect(stage.inputEvidence.complete).toBe(false);
-      expect(stage.inputEvidence.reasons).toEqual(['unexpected-source']);
-      expect(stage.status).toBe('retained');
-      expect(stage.seedReady).toBe(false);
-      expect(await replay(stage)).toEqual([fixture('one.ts')]);
     } finally {
       await stage.dispose();
     }
@@ -4134,8 +3237,6 @@ describe('scope retention consumed input evidence', () => {
       const beforeSource = request.artifactAllowance.remainingBytes;
       stage.captureParserInputs([source]);
       expect(request.artifactAllowance.remainingBytes).toBe(beforeSource);
-      stage.capture([fixture(source.path)]);
-      stage.recordOutcomes([{ filePath: source.path, status: 'success' }]);
       stage.reconcile([source.path]);
       expect(stage.inputEvidence.complete).toBe(false);
       expect(stage.inputEvidence.sources).toEqual([]);
@@ -4165,8 +3266,6 @@ describe('scope retention consumed input evidence', () => {
             : { ...config, digest: invalidity === 'malformed digest' ? 'invalid' : '0'.repeat(64) };
         stage.captureConfigObservations(invalid);
         stage.captureParserInputs([{ path: 'one.ts', content: 'original' }]);
-        stage.capture([fixture('one.ts')]);
-        stage.recordOutcomes([{ filePath: 'one.ts', status: 'success' }]);
         stage.reconcile(['one.ts']);
         expect(stage.inputEvidence.complete).toBe(false);
         expect(stage.inputEvidence.configuration).toBeNull();
@@ -4200,8 +3299,6 @@ describe('scope retention consumed input evidence', () => {
       stage.captureConfigObservations(original);
       stage.captureConfigObservations(configuration());
       stage.captureParserInputs([{ path: 'one.ts', content: 'original' }]);
-      stage.capture([fixture('one.ts')]);
-      stage.recordOutcomes([{ filePath: 'one.ts', status: 'success' }]);
       stage.reconcile(['one.ts']);
       expect(stage.inputEvidence.complete).toBe(true);
       stage.captureConfigObservations(changed);
@@ -4234,7 +3331,6 @@ describe('scope retention consumed input evidence', () => {
     try {
       stage.captureConfigObservations(configuration());
       stage.captureParserInputs([{ path: 'one.ts', content: 'original' }]);
-      stage.capture([fixture('one.ts')]);
       expect(request.artifactAllowance.remainingBytes).toBeLessThan(allowance);
     } finally {
       await stage.dispose();
@@ -4248,752 +3344,15 @@ describe('scope retention consumed input evidence', () => {
   });
 });
 
-describe('scope retention codec', () => {
-  it('round trips a 400 KiB parsed file while retaining separate hard graph and parsed-file bounds', () => {
-    const input = fixture('large.ts');
-    input.referenceSites = Array.from({ length: 3100 }, (_, index) => ({
-      name: `reference${index}`,
-      inScope: input.moduleScope,
-      kind: 'read' as const,
-      atRange: { startLine: 1, startCol: 0, endLine: 1, endCol: 1 },
-    }));
-    const encoded = encodeParsedFileRecord(input);
-    expect(Buffer.byteLength(encoded)).toBeGreaterThan(350 * 1024);
-    expect(Buffer.byteLength(encoded)).toBeLessThan(450 * 1024);
-    expect(decodeParsedFileRecord(encoded)).toEqual(input);
-    expect(() => encodeParsedFileRecord(input, MAX_PARSED_FILE_RECORD_BYTES + 1)).toThrow(
-      'invalid-limit',
-    );
-    expect(() => encodeGraphNodeRecord({}, MAX_GRAPH_RECORD_BYTES + 1)).toThrow('invalid-limit');
-    expect(() => encodeGraphRelationshipRecord({}, MAX_GRAPH_RECORD_BYTES + 1)).toThrow(
-      'invalid-limit',
-    );
-    input.referenceSites[0]!.name = 'x'.repeat(MAX_PARSED_FILE_RECORD_BYTES);
-    expect(() => encodeParsedFileRecord(input)).toThrow('record-byte-limit');
-    expect(() => decodeParsedFileRecord(' '.repeat(MAX_PARSED_FILE_RECORD_BYTES + 1))).toThrow(
-      'record-byte-limit',
-    );
-  });
-
-  it.each([undefined, null, 'def:exact-owner'] as const)(
-    'round trips scope owner metadata %s without conflating absent and null',
-    (ownerDefId) => {
-      const input = fixture();
-      if (ownerDefId !== undefined) Object.assign(input.scopes[1]!, { ownerDefId });
-      const encoded = encodeParsedFileRecord(input);
-      const restored = decodeParsedFileRecord(encoded);
-      expect(restored).toEqual(input);
-      expect(Object.hasOwn(restored.scopes[1]!, 'ownerDefId')).toBe(ownerDefId !== undefined);
-      expect(restored.scopes[1]!.ownerDefId).toBe(ownerDefId);
-      expect(encodeParsedFileRecord(restored)).toBe(encoded);
-    },
-  );
-
-  it.each([42, true, {}, []])(
-    'rejects invalid scope owner metadata during capture and replay: %j',
-    (ownerDefId) => {
-      const input = fixture();
-      Object.assign(input.scopes[1]!, { ownerDefId });
-      expect(() => encodeParsedFileRecord(input)).toThrow(ParsedFileRecordError);
-      const wire = JSON.parse(encodeParsedFileRecord(fixture()));
-      wire.parsedFile.scopes[1].ownerDefId = ownerDefId;
-      expect(() => decodeParsedFileRecord(JSON.stringify(wire))).toThrow(ParsedFileRecordError);
-    },
-  );
-
-  const receiverRange = { startLine: 3, startCol: 0, endLine: 3, endCol: 4 };
-  const chainReceiver = () => ({
-    kind: 'chain' as const,
-    root: { name: 'user', range: { ...receiverRange } },
-    steps: [
-      { kind: 'member' as const, name: 'profile', range: { ...receiverRange } },
-      { kind: 'call' as const, arity: 0, range: { ...receiverRange } },
-    ],
-  });
-  const withReceiver = (receiver: unknown) => {
-    const file = fixture();
-    (file.referenceSites[0] as { explicitReceiver: ExplicitReceiver }).explicitReceiver =
-      receiver as ExplicitReceiver;
-    return file;
-  };
-
-  it('preserves legacy receiver encoding and envelope version', () => {
-    const encoded = encodeParsedFileRecord(fixture());
-    expect(encoded).toContain('"explicitReceiver":{"name":"user"},"arity":2');
-    expect(JSON.parse(encoded).version).toBe(1);
-    expect(encodeParsedFileRecord(decodeParsedFileRecord(encoded))).toBe(encoded);
-  });
-
-  it('round trips detached receiver chains and includes them in exact byte admission', () => {
-    const receiver = chainReceiver();
-    const input = withReceiver(receiver);
-    const encoded = encodeParsedFileRecord(input);
-    const bytes = Buffer.byteLength(encoded);
-    expect(encodeParsedFileRecord(input, bytes)).toBe(encoded);
-    expect(() => encodeParsedFileRecord(input, bytes - 1)).toThrow(ParsedFileRecordError);
-    const restored = decodeParsedFileRecord(encoded);
-    expect(restored).toEqual(input);
-    expect(restored.referenceSites[0]!.explicitReceiver).not.toBe(receiver);
-    receiver.root.name = 'changed';
-    receiver.root.range.startCol = 100;
-    receiver.steps[0]!.range.startCol = 100;
-    receiver.steps.splice(0);
-    expect(restored.referenceSites[0]!.explicitReceiver).toEqual(chainReceiver());
-  });
-
-  it('accepts the inclusive receiver step and arity bounds', () => {
-    const receiver = chainReceiver();
-    receiver.steps = Array.from({ length: 64 }, () => ({
-      kind: 'call' as const,
-      arity: Number.MAX_SAFE_INTEGER,
-      range: { ...receiverRange },
-    }));
-    const input = withReceiver(receiver);
-    expect(decodeParsedFileRecord(encodeParsedFileRecord(input))).toEqual(input);
-  });
-
-  it.each([
-    { name: 'user', kind: 'unknown' },
-    { kind: null, name: 'user' },
-    { kind: 'member', name: 'user' },
-    { ...chainReceiver(), name: 'extra' },
-    { ...chainReceiver(), root: { name: 'user' } },
-    { ...chainReceiver(), steps: [] },
-    { ...chainReceiver(), steps: Array.from({ length: 65 }, () => chainReceiver().steps[0]) },
-    { ...chainReceiver(), steps: [{ kind: 'unknown', range: receiverRange }] },
-    { ...chainReceiver(), steps: [{ kind: 'member', name: 'x', range: receiverRange, arity: 0 }] },
-    ...[-1, 0.5, Number.MAX_SAFE_INTEGER + 1].map((arity) => ({
-      ...chainReceiver(),
-      steps: [{ kind: 'call', arity, range: receiverRange }],
-    })),
-    { ...chainReceiver(), steps: [{ kind: 'call', range: receiverRange }] },
-  ])('rejects malformed receivers during capture and replay: %j', (receiver) => {
-    expect(() => encodeParsedFileRecord(withReceiver(receiver))).toThrow(ParsedFileRecordError);
-    const wire = JSON.parse(encodeParsedFileRecord(fixture()));
-    wire.parsedFile.referenceSites[0].explicitReceiver = receiver;
-    expect(() => decodeParsedFileRecord(JSON.stringify(wire))).toThrow(ParsedFileRecordError);
-  });
-
-  it.each([NaN, Infinity, -Infinity, -0])('rejects invalid receiver arity %s', (arity) => {
-    const receiver = { ...chainReceiver(), steps: [{ kind: 'call', arity, range: receiverRange }] };
-    expect(() => encodeParsedFileRecord(withReceiver(receiver))).toThrow(ParsedFileRecordError);
-  });
-
-  it('rejects an explicitly undefined receiver discriminator', () => {
-    expect(() => encodeParsedFileRecord(withReceiver({ kind: undefined, name: 'user' }))).toThrow(
-      ParsedFileRecordError,
-    );
-    const wire = JSON.parse(encodeParsedFileRecord(fixture()));
-    wire.parsedFile.referenceSites[0].explicitReceiver.kind = { $undefined: true };
-    expect(() => decodeParsedFileRecord(JSON.stringify(wire))).toThrow(ParsedFileRecordError);
-  });
-
-  it('rejects receiver accessors and proxies without invoking them', () => {
-    const getter = vi.fn(() => {
-      throw new Error('must not execute');
-    });
-    const proxy = (value: object) =>
-      new Proxy(value, {
-        get: getter,
-        getOwnPropertyDescriptor: getter,
-        getPrototypeOf: getter,
-        ownKeys: getter,
-      });
-    const malformed: unknown[] = [proxy(chainReceiver())];
-    for (const key of ['kind', 'root', 'steps']) {
-      malformed.push(Object.defineProperty(chainReceiver(), key, { get: getter }));
-    }
-    malformed.push({ ...chainReceiver(), root: proxy(chainReceiver().root) });
-    malformed.push({ ...chainReceiver(), steps: proxy(chainReceiver().steps) });
-    malformed.push({ ...chainReceiver(), steps: [proxy(chainReceiver().steps[0]!)] });
-    malformed.push({
-      ...chainReceiver(),
-      steps: [Object.defineProperty(chainReceiver().steps[0]!, 'kind', { get: getter })],
-    });
-    malformed.push({
-      ...chainReceiver(),
-      steps: [Object.defineProperty(chainReceiver().steps[1]!, 'arity', { get: getter })],
-    });
-    malformed.push({
-      ...chainReceiver(),
-      root: {
-        name: 'user',
-        range: Object.defineProperty({ ...receiverRange }, 'startLine', { get: getter }),
-      },
-    });
-    malformed.push({ ...chainReceiver(), steps: Object.defineProperty([], '0', { get: getter }) });
-    malformed.push({
-      ...chainReceiver(),
-      steps: Object.defineProperty([], '0', {
-        value: chainReceiver().steps[0],
-        enumerable: false,
-      }),
-    });
-    for (const receiver of malformed)
-      expect(() => encodeParsedFileRecord(withReceiver(receiver))).toThrow(ParsedFileRecordError);
-    expect(getter).not.toHaveBeenCalled();
-  });
-
-  it.each(['absent', 'undefined', 'empty', 'populated'] as const)(
-    'round trips %s export metadata without collapsing presence or order',
-    (state) => {
-      const input = fixture();
-      if (state !== 'absent')
-        input.exports =
-          state === 'undefined'
-            ? undefined
-            : new Map(
-                state === 'empty'
-                  ? []
-                  : [
-                      ['PublicZ', 'def:z'],
-                      ['PublicA', 'def:a'],
-                    ],
-              );
-      const output = decodeParsedFileRecord(encodeParsedFileRecord(input));
-      expect(output).toEqual(input);
-      expect(Object.hasOwn(output, 'exports')).toBe(state !== 'absent');
-      if (state === 'populated') {
-        expect([...output.exports!]).toEqual([
-          ['PublicZ', 'def:z'],
-          ['PublicA', 'def:a'],
-        ]);
-        (input.exports as Map<string, string>).clear();
-        expect(output.exports!.size).toBe(2);
-      }
-    },
-  );
-
-  it('includes export names and definition IDs in the exact byte allowance', () => {
-    const input = fixture();
-    const withoutExports = Buffer.byteLength(encodeParsedFileRecord(input), 'utf8');
-    input.exports = new Map([['é😀\\"\n', 'def:é😀']]);
-    const encoded = encodeParsedFileRecord(input);
-    const bytes = Buffer.byteLength(encoded, 'utf8');
-    expect(bytes).toBeGreaterThan(withoutExports);
-    expect(encodeParsedFileRecord(input, bytes)).toBe(encoded);
-    expect(() => encodeParsedFileRecord(input, bytes - 1)).toThrow(ParsedFileRecordError);
-    expect(() => encodeParsedFileRecord(input, withoutExports)).toThrow(ParsedFileRecordError);
-  });
-
-  it.each([
-    { $map: [[1, 'def:X']] },
-    { $map: [['X', 1]] },
-    {
-      $map: [
-        ['X', 'def:X'],
-        ['X', 'def:Y'],
-      ],
-    },
-    { $map: [['X']] },
-    { $map: 'invalid' },
-    { $map: [['X', 'def:X']], extra: true },
-  ])('rejects malformed export map tags on replay: %j', (exports) => {
-    const wire = JSON.parse(encodeParsedFileRecord(fixture()));
-    wire.parsedFile.exports = exports;
-    expect(() => decodeParsedFileRecord(JSON.stringify(wire))).toThrow(ParsedFileRecordError);
-  });
-
-  it.each([new Map([[1, 'def:X']]), new Map([['X', 1]])])(
-    'rejects malformed export keys or values during capture: %j',
-    (exports) => {
-      expect(() => encodeParsedFileRecord({ ...fixture(), exports })).toThrow(
-        ParsedFileRecordError,
-      );
-    },
-  );
-
-  it('round trips ordered nested Maps, arrays and UTF-8 facts with isolated ownership', () => {
-    const input = fixture();
-    const restored = decodeParsedFileRecord(encodeParsedFileRecord(input));
-    expect(restored).toEqual(input);
-    expect([...restored.scopes[0]!.bindings.keys()]).toEqual(['z', 'a']);
-    expect([...restored.scopes[0]!.typeBindings.keys()]).toEqual(['z', 'a']);
-    (input.scopes[0]!.bindings as Map<string, unknown>).clear();
-    expect(restored.scopes[0]!.bindings.size).toBe(2);
-  });
-
-  it('counts newline, escaping, multibyte characters and lone surrogates at the inclusive byte bound', () => {
-    const input = fixture();
-    const encoded = encodeParsedFileRecord(input);
-    const bytes = Buffer.byteLength(encoded, 'utf8');
-    expect(encoded.endsWith('\n')).toBe(true);
-    expect(encodeParsedFileRecord(input, bytes)).toBe(encoded);
-    expect(() => encodeParsedFileRecord(input, bytes - 1)).toThrow(ParsedFileRecordError);
-  });
-
-  it('preserves explicit optional undefined values', () => {
-    const input = fixture('undefined.ts');
-    input.localDefs[0]!.returnType = undefined;
-    const output = decodeParsedFileRecord(encodeParsedFileRecord(input));
-    expect(Object.hasOwn(output.localDefs[0]!, 'returnType')).toBe(true);
-    expect(output).toEqual(input);
-  });
-
-  it('rejects cycles, unknown properties, malformed values and unsupported versions', () => {
-    const cyclic = fixture() as unknown as Record<string, unknown>;
-    cyclic.scopes = cyclic;
-    expect(() => encodeParsedFileRecord(cyclic)).toThrow(ParsedFileRecordError);
-    expect(() => encodeParsedFileRecord({ ...fixture(), unknown: true })).toThrow(
-      ParsedFileRecordError,
-    );
-    expect(() =>
-      encodeParsedFileRecord({ ...fixture(), toString: 'unexpected own field' }),
-    ).toThrow(ParsedFileRecordError);
-    expect(() => encodeParsedFileRecord({ ...fixture(), scopes: null })).toThrow(
-      ParsedFileRecordError,
-    );
-    expect(() => decodeParsedFileRecord('{')).toThrow();
-    const wire = JSON.parse(encodeParsedFileRecord(fixture()));
-    wire.version = 2;
-    expect(() => decodeParsedFileRecord(JSON.stringify(wire))).toThrow(ParsedFileRecordError);
-  });
-
-  it('rejects duplicate Map keys and malformed tagged maps on replay', () => {
-    const wire = JSON.parse(encodeParsedFileRecord(fixture()));
-    const bindings = wire.parsedFile.scopes[0].bindings;
-    bindings.$map.push(bindings.$map[0]);
-    expect(() => decodeParsedFileRecord(JSON.stringify(wire))).toThrow(ParsedFileRecordError);
-    bindings.$map = [['bad']];
-    expect(() => decodeParsedFileRecord(JSON.stringify(wire))).toThrow(ParsedFileRecordError);
-  });
-});
-
-describe('bounded scope retention stage', () => {
-  it.each(['ts', 'tsx', 'js', 'jsx'])(
-    'replays real %s module captures with detached exports and cross-file finalization parity',
-    async (extension) => {
-      const libPath = `lib.${extension}`;
-      const appPath = `app.${extension}`;
-      const sources = [
-        { filePath: libPath, content: 'export function Public() {}\nfunction Private() {}' },
-        {
-          filePath: appPath,
-          content: "import { Public as Alias, Private } from './lib';\nAlias();\nmissing();",
-        },
-      ];
-      const files: ParsedFile[] = [];
-      for (const { filePath, content } of sources) {
-        const provider = getProvider(
-          extension === 'js' || extension === 'jsx'
-            ? SupportedLanguages.JavaScript
-            : SupportedLanguages.TypeScript,
-        );
-        const parser = await createParserForLanguage(provider.id, filePath);
-        const root = parser.parse(content).rootNode;
-        expect(root.hasError).toBe(false);
-        const outcome = extractParsedFileOutcome(provider, content, filePath, undefined, root);
-        expect(outcome.status).toBe('success');
-        if (outcome.status !== 'success')
-          throw new Error(`scope extraction failed for ${filePath}`);
-        const detached = structuredClone(outcome.parsedFile);
-        parser.parse('export function replacement() {}');
-        expect(outcome.parsedFile).toEqual(detached);
-        files.push(outcome.parsedFile);
-      }
-      const expected = structuredClone(files);
-      const [lib, app] = expected;
-      const publicDef = lib!.localDefs.find((def) => def.qualifiedName === 'Public')!;
-      expect(lib!.exports).toEqual(new Map([['Public', publicDef.nodeId]]));
-      expect(lib!.localDefs.map((def) => def.qualifiedName)).toEqual(['Public', 'Private']);
-      expect(app!.exports).toEqual(new Map());
-      expect(app!.referenceSites.map((site) => site.name)).toEqual(['Alias', 'missing']);
-
-      // Fixture target resolution only; production import resolution is outside this fixture.
-      const finalizeFiles = (input: readonly ParsedFile[]) =>
-        finalizeScopeModel(input, {
-          hooks: { resolveImportTarget: (raw) => (raw === './lib' ? libPath : null) },
-        });
-      const contents = (model: ReturnType<typeof finalizeScopeModel>) => ({
-        scopes: model.scopeTree.byId,
-        defs: model.defs.byId,
-        qualifiedNames: model.qualifiedNames.byQualifiedName,
-        moduleScopes: model.moduleScopes.byFilePath,
-        imports: model.imports,
-        bindings: model.bindings,
-        referenceSites: model.referenceSites,
-        sccs: model.sccs,
-        stats: model.stats,
-      });
-      const direct = finalizeFiles(files);
-      expect(files).toEqual(expected);
-      const expectedContents = structuredClone(contents(direct));
-      const stage = new ScopeRetentionStage(options(), { batchRecords: 1, readChunkBytes: 7 });
-      try {
-        stage.capture(files);
-        stage.recordOutcomes(files.map(({ filePath }) => ({ filePath, status: 'success' })));
-        stage.reconcile(files.map(({ filePath }) => filePath));
-        for (const file of files) {
-          const exports = file.exports as Map<string, string>;
-          exports.clear();
-          exports.set('mutated', 'def:mutated');
-          for (const scope of file.scopes) {
-            (scope.bindings as Map<string, readonly BindingRef[]>).clear();
-            (scope.typeBindings as Map<string, TypeRef>).clear();
-          }
-        }
-        await stage.flush();
-        const replayed = await replay(stage);
-        expect(replayed).toEqual(expected);
-        expect(stage.status).toBe('retained');
-        expect(stage.seedReady).toBe(false);
-        const actual = finalizeFiles(replayed);
-        expect(contents(actual)).toEqual(expectedContents);
-        expect(replayed).toEqual(expected);
-        const imports = actual.imports.get(app!.moduleScope)!;
-        expect(imports).toHaveLength(2);
-        expect(imports.find((edge) => edge.localName === 'Alias')).toMatchObject({
-          targetFile: libPath,
-          targetDefId: publicDef.nodeId,
-          targetExportedName: 'Public',
-        });
-        expect(imports.find((edge) => edge.localName === 'Private')).toMatchObject({
-          linkStatus: 'unresolved',
-        });
-        const bindings = actual.bindings.get(app!.moduleScope)!;
-        expect(bindings.get('Alias')).toMatchObject([{ def: publicDef, origin: 'import' }]);
-        expect(bindings.has('Private')).toBe(false);
-        expect(bindings.has('missing')).toBe(false);
-      } finally {
-        await stage.dispose();
-      }
-    },
-  );
-
-  it('requires reconciliation before claiming retained status and after new observations', async () => {
+describe('retention inventory', () => {
+  it('records retained and skipped paths during reconciliation', async () => {
     const stage = new ScopeRetentionStage(options());
     try {
-      expect(stage.status).toBe('incomplete');
-      stage.capture([fixture('one.ts')]);
-      stage.recordOutcomes([{ filePath: 'one.ts', status: 'success' }]);
-      expect(stage.status).toBe('incomplete');
-      stage.reconcile(['one.ts']);
-      expect(stage.status).toBe('retained');
-      stage.capture([fixture('two.ts')]);
-      stage.recordOutcomes([{ filePath: 'two.ts', status: 'success' }]);
-      expect(stage.status).toBe('incomplete');
-      stage.reconcile(['one.ts', 'two.ts']);
-      expect(stage.status).toBe('retained');
-    } finally {
-      await stage.dispose();
-    }
-  });
-
-  it('rejects duplicate expected paths even when their artifact and outcome are retained', async () => {
-    const stage = new ScopeRetentionStage(options());
-    try {
-      stage.capture([fixture('one.ts')]);
-      stage.recordOutcomes([{ filePath: 'one.ts', status: 'success' }]);
-      stage.reconcile(['one.ts', 'one.ts']);
-      expect(stage.status).toBe('incomplete');
-      expect(stage.reasons).toContain('duplicate-expected-path');
-    } finally {
-      await stage.dispose();
-    }
-  });
-
-  it('rejects concurrent replay without preventing later sequential replay', async () => {
-    const files = [fixture('one.ts'), fixture('two.ts')];
-    const stage = new ScopeRetentionStage(options(), { batchRecords: 1 });
-    try {
-      stage.capture(files);
-      stage.recordOutcomes(files.map(({ filePath }) => ({ filePath, status: 'success' })));
-      stage.reconcile(files.map(({ filePath }) => filePath));
-      const first = stage.iterate()[Symbol.asyncIterator]();
-      expect((await first.next()).value).toEqual([files[0]]);
-      const second = stage.iterate()[Symbol.asyncIterator]();
-      await expect(second.next()).rejects.toBeInstanceOf(ParsedFileRecordError);
-      const third = stage.iterate()[Symbol.asyncIterator]();
-      await expect(third.next()).rejects.toMatchObject({ reason: 'concurrent-replay' });
-      expect(stage.status).toBe('retained');
-      expect((await first.next()).value).toEqual([files[1]]);
-      expect((await first.next()).done).toBe(true);
-      expect(await replay(stage)).toEqual(files);
-    } finally {
-      await stage.dispose();
-    }
-  });
-
-  it('disposes a suspended yielded replay without waiting for its consumer and clears inventory', async () => {
-    const config = options();
-    const initialAllowance = config.artifactAllowance.remainingBytes;
-    const stage = new ScopeRetentionStage(config, { batchRecords: 1 });
-    try {
-      stage.capture([fixture('one.ts'), fixture('two.ts')]);
-      const iterator = stage.iterate()[Symbol.asyncIterator]();
-      expect((await iterator.next()).value).toHaveLength(1);
-      await stage.dispose();
-      expect(stage.inventory).toEqual([]);
-      expect(config.artifactAllowance.remainingBytes).toBe(initialAllowance);
-      expect((await iterator.next()).done).toBe(true);
-    } finally {
-      await stage.dispose();
-    }
-  });
-
-  it('waits for a pending replay open and its late handle close before disposal settles', async () => {
-    const stage = new ScopeRetentionStage(options());
-    const opened = deferred();
-    const releaseOpen = deferred();
-    const closing = deferred();
-    const releaseClose = deferred();
-    const originalOpen = fs.open.bind(fs);
-    const originalRm = fs.rm.bind(fs);
-    let restoreClose: (() => void) | undefined;
-    let handleClosed = false;
-    let disposal: Promise<void> | undefined;
-    let settled = false;
-    stage.capture([fixture('one.ts')]);
-    await stage.flush();
-    const openSpy = vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
-      const handle = await originalOpen(...args);
-      const originalClose = handle.close.bind(handle);
-      const closeSpy = vi.spyOn(handle, 'close').mockImplementation(async () => {
-        closing.resolve();
-        await releaseClose.promise;
-        await originalClose();
-        handleClosed = true;
-      });
-      restoreClose = () => closeSpy.mockRestore();
-      opened.resolve();
-      await releaseOpen.promise;
-      return handle;
-    });
-    const rmSpy = vi.spyOn(fs, 'rm').mockImplementation(async (...args) => {
-      expect(handleClosed).toBe(true);
-      await originalRm(...args);
-    });
-    try {
-      const next = stage.iterate()[Symbol.asyncIterator]().next();
-      await opened.promise;
-      disposal = stage.dispose().then(() => {
-        settled = true;
-      });
-      expect(settled).toBe(false);
-      releaseOpen.resolve();
-      await closing.promise;
-      expect(settled).toBe(false);
-      releaseClose.resolve();
-      await disposal;
-      expect((await next).done).toBe(true);
-      expect(settled).toBe(true);
-      expect(stage.inventory).toEqual([]);
-    } finally {
-      releaseOpen.resolve();
-      releaseClose.resolve();
-      await (disposal ?? stage.dispose());
-      restoreClose?.();
-      openSpy.mockRestore();
-      rmSpy.mockRestore();
-    }
-  });
-
-  it('marks write failures incomplete even after inventory reconciliation', async () => {
-    const stage = new ScopeRetentionStage(options());
-    const failure = new Error('append failed');
-    const appendSpy = vi.spyOn(fs, 'appendFile').mockRejectedValueOnce(failure);
-    try {
-      stage.capture([fixture('one.ts')]);
-      stage.recordOutcomes([{ filePath: 'one.ts', status: 'success' }]);
-      stage.reconcile(['one.ts']);
-      expect(stage.status).toBe('retained');
-      await expect(stage.flush()).rejects.toBe(failure);
-      expect(stage.status).toBe('incomplete');
-      expect(stage.reasons).toContain('write-failed');
-    } finally {
-      appendSpy.mockRestore();
-      await stage.dispose();
-    }
-  });
-
-  it('detaches synchronously before caller cleanup and replays ordered bounded batches', async () => {
-    const input = [fixture('z.ts'), fixture('a.ts'), fixture('m.ts')];
-    const expected = input.map((file) => decodeParsedFileRecord(encodeParsedFileRecord(file)));
-    const stage = new ScopeRetentionStage(options(), { batchRecords: 1, readChunkBytes: 7 });
-    try {
-      stage.capture(input);
-      stage.recordOutcomes(input.map(({ filePath }) => ({ filePath, status: 'success' })));
-      stage.reconcile(input.map(({ filePath }) => filePath));
-      for (const file of input) (file.scopes[0]!.bindings as Map<string, unknown>).clear();
-      input.length = 0;
-      await stage.flush();
-      const batches: (readonly ParsedFile[])[] = [];
-      for await (const batch of stage.iterate()) batches.push(batch);
-      expect(batches.map((batch) => batch.length)).toEqual([1, 1, 1]);
-      expect(batches.flat()).toEqual(expected);
-      expect(stage.status).toBe('retained');
-      // This parity check uses a small fixture; finalization itself collects all files.
-      const actualModel = finalizeScopeModel(batches.flat());
-      const expectedModel = finalizeScopeModel(expected);
-      expect(actualModel.stats).toEqual(expectedModel.stats);
-      expect(actualModel.defs.byId).toEqual(expectedModel.defs.byId);
-      expect(actualModel.defs.size).toBe(expectedModel.defs.size);
-      expect(actualModel.moduleScopes.byFilePath).toEqual(expectedModel.moduleScopes.byFilePath);
-      expect(actualModel.moduleScopes.size).toBe(expectedModel.moduleScopes.size);
-      expect(actualModel.referenceSites).toEqual(expectedModel.referenceSites);
-    } finally {
-      await stage.dispose();
-    }
-  });
-
-  it('enforces inclusive aggregate and record-count bounds without claiming complete inventory', async () => {
-    const one = fixture('one.ts');
-    const bytes = Buffer.byteLength(encodeParsedFileRecord(one));
-    const shared = options(bytes);
-    const stage = new ScopeRetentionStage(shared, { maxBytes: bytes, maxRecords: 1 });
-    try {
-      stage.capture([one]);
-      expect(stage.bytes).toBe(bytes);
-      expect(shared.artifactAllowance.remainingBytes).toBe(0);
-      stage.capture([fixture('two.ts')]);
-      stage.reconcile(['one.ts', 'two.ts']);
-      await stage.flush();
-      expect(stage.recordCount).toBe(1);
-      expect(stage.status).toBe('incomplete');
-      expect(stage.reasons.length).toBeGreaterThan(0);
-    } finally {
-      await stage.dispose();
-    }
-  });
-
-  it.each(['missing', 'failed', 'unsupported', 'skipped'] as const)(
-    'records %s extraction as incomplete inventory',
-    async (outcome) => {
-      const stage = new ScopeRetentionStage(options());
-      try {
-        if (outcome === 'failed')
-          stage.recordOutcomes([
-            { filePath: 'gap.ts', status: 'failed', reason: 'scope-extraction-error' },
-          ]);
-        if (outcome === 'unsupported')
-          stage.recordOutcomes([
-            { filePath: 'gap.ts', status: 'unsupported', reason: 'missing-scope-hook' },
-          ]);
-        stage.reconcile(['gap.ts'], outcome === 'skipped' ? ['gap.ts'] : []);
-        await stage.flush();
-        expect(stage.status).toBe('incomplete');
-        expect(stage.inventory).toEqual([expect.objectContaining({ filePath: 'gap.ts' })]);
-        expect(await replay(stage)).toEqual([]);
-      } finally {
-        await stage.dispose();
-      }
-    },
-  );
-
-  it.each(['deadline', 'cancelled', 'shared allowance', 'record bytes'])(
-    'refuses capture after %s admission fails',
-    async (reason) => {
-      const config = options(reason === 'shared allowance' ? 0 : 1024 * 1024);
-      const controller = new AbortController();
-      if (reason === 'deadline') config.deadline = Date.now() - 1;
-      if (reason === 'cancelled') controller.abort();
-      const stage = new ScopeRetentionStage(
-        { ...config, signal: controller.signal },
-        reason === 'record bytes' ? { maxRecordBytes: 1 } : undefined,
-      );
-      try {
-        stage.capture([fixture('refused.ts')]);
-        stage.reconcile(['refused.ts']);
-        await stage.flush();
-        expect(stage.status).toBe('incomplete');
-        expect(stage.recordCount).toBe(0);
-        expect(stage.reasons.length).toBeGreaterThan(0);
-      } finally {
-        await stage.dispose();
-      }
-    },
-  );
-
-  it('shares the caller allowance across stage instances', async () => {
-    const file = fixture('one.ts');
-    const shared = options(Buffer.byteLength(encodeParsedFileRecord(file)));
-    const first = new ScopeRetentionStage(shared);
-    const second = new ScopeRetentionStage(shared);
-    try {
-      first.capture([file]);
-      second.capture([file]);
-      await first.flush();
-      await second.flush();
-      expect(first.recordCount).toBe(1);
-      expect(second.recordCount).toBe(0);
-      expect(second.status).toBe('incomplete');
-    } finally {
-      await first.dispose();
-      await second.dispose();
-    }
-    expect(shared.artifactAllowance.remainingBytes).toBe(
-      Buffer.byteLength(encodeParsedFileRecord(file)),
-    );
-    await first.dispose();
-    expect(shared.artifactAllowance.remainingBytes).toBe(
-      Buffer.byteLength(encodeParsedFileRecord(file)),
-    );
-  });
-
-  it.each(['bytes', 'records'] as const)(
-    'enforces the independent %s ceiling exactly and one over',
-    async (ceiling) => {
-      const files = [fixture('one.ts'), fixture('two.ts')];
-      const bytes = Buffer.byteLength(encodeParsedFileRecord(files[0]));
-      const stage = new ScopeRetentionStage(
-        options(),
-        ceiling === 'bytes' ? { maxBytes: bytes } : { maxRecords: 1 },
-      );
-      try {
-        stage.capture([files[0]]);
-        expect(stage.recordCount).toBe(1);
-        stage.capture([files[1]]);
-        expect(stage.recordCount).toBe(1);
-        expect(stage.bytes).toBe(bytes);
-        expect(stage.status).toBe('incomplete');
-      } finally {
-        await stage.dispose();
-      }
-    },
-  );
-
-  it.each(['duplicate', 'unexpected'] as const)(
-    'refuses a complete claim for %s artifacts',
-    async (kind) => {
-      const stage = new ScopeRetentionStage(options());
-      try {
-        stage.capture([fixture('one.ts')]);
-        stage.recordOutcomes([{ filePath: 'one.ts', status: 'success' }]);
-        if (kind === 'duplicate') stage.capture([fixture('one.ts')]);
-        stage.reconcile(kind === 'unexpected' ? [] : ['one.ts']);
-        expect(stage.status).toBe('incomplete');
-      } finally {
-        await stage.dispose();
-      }
-    },
-  );
-
-  it('labels an empty observed inventory without claiming seed readiness', async () => {
-    const stage = new ScopeRetentionStage(options());
-    try {
-      stage.reconcile([]);
-      expect(stage.inventory).toEqual([]);
-      expect(stage.seedReady).toBe(false);
-      expect(stage.evidenceScope).toBe('observed-inventory');
-      expect(await replay(stage)).toEqual([]);
-    } finally {
-      await stage.dispose();
-    }
-  });
-
-  it('stops replay after cancellation between yielded batches', async () => {
-    const controller = new AbortController();
-    const stage = new ScopeRetentionStage(
-      { ...options(), signal: controller.signal },
-      { batchRecords: 1 },
-    );
-    try {
-      stage.capture([fixture('one.ts'), fixture('two.ts')]);
-      await stage.flush();
-      const iterator = stage.iterate()[Symbol.asyncIterator]();
-      expect((await iterator.next()).value).toHaveLength(1);
-      controller.abort();
-      expect((await iterator.next()).done).toBe(true);
+      stage.reconcile(['one.ts'], ['large.py']);
+      expect(stage.inventory).toEqual([
+        { filePath: 'one.ts', status: 'retained' },
+        { filePath: 'large.py', status: 'skipped' },
+      ]);
       expect(stage.status).toBe('incomplete');
     } finally {
       await stage.dispose();

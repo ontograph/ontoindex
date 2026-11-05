@@ -3,7 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { ParsedFile } from 'ontoindex-shared';
 import { ScopeRetentionStage } from '../../src/core/ingestion/pipeline-phases/scope-retention-stage.js';
 import {
   persistScopeRetentionCandidate,
@@ -80,26 +79,7 @@ async function replaceFamilyRecords(candidate: string, name: string, records: un
   });
 }
 
-const parsedFile: ParsedFile = {
-  filePath: 'src/example.ts',
-  moduleScope: 'module:example',
-  parsedImports: [],
-  localDefs: [],
-  referenceSites: [],
-  scopes: [
-    {
-      id: 'module:example',
-      parent: null,
-      kind: 'Module',
-      filePath: 'src/example.ts',
-      range: { startLine: 1, startCol: 0, endLine: 1, endCol: 1 },
-      bindings: new Map(),
-      typeBindings: new Map(),
-      ownedDefs: [],
-      imports: [],
-    },
-  ],
-};
+const parsedFile = { filePath: 'src/example.ts' };
 const auxiliaryCall: Parameters<ScopeRetentionStage['captureCalls']>[0][number] = {
   filePath: 'src/example.ts',
   calledName: 'save',
@@ -146,7 +126,7 @@ const auxiliaryFamilies: [string, Record<string, unknown>][] = [
 ];
 
 function captureRetained(stage: ScopeRetentionStage) {
-  stage.capture([parsedFile]);
+  stage.reconcile([parsedFile.filePath]);
   stage.captureCalls([auxiliaryCall]);
   stage.captureHeritage([auxiliaryHeritage]);
   stage.captureAssignments([auxiliaryAssignment]);
@@ -154,7 +134,6 @@ function captureRetained(stage: ScopeRetentionStage) {
   stage.captureExportedTypes([auxiliaryExport]);
   stage.captureFileBindings([auxiliaryFileBinding]);
   stage.captureImportState(createResolutionContext());
-  stage.recordOutcomes([{ filePath: parsedFile.filePath, status: 'success' }]);
   stage.reconcile([parsedFile.filePath]);
   for (const family of Object.keys(stage.producerCompletion)) {
     stage.markProducerCompleted(family as keyof typeof stage.producerCompletion);
@@ -179,7 +158,7 @@ describe('scope retention candidate auxiliary file paths', () => {
     expect(manifest.retention.inventory).toEqual([
       { filePath: parsedFile.filePath, status: 'retained' },
     ]);
-    expect(Object.values(manifest.retention.producerCompletion)).toEqual(Array(16).fill(true));
+    expect(Object.values(manifest.retention.producerCompletion)).toEqual(Array(15).fill(true));
     for (const [family] of auxiliaryFamilies) {
       expect(manifest.families.find((entry) => entry.name === family)?.recordCount).toBe(1);
     }
@@ -220,9 +199,7 @@ describe('scope retention candidate auxiliary file paths', () => {
   it.each(auxiliaryFamilies)(
     'still verifies incomplete %s records outside the inventory',
     async (family, record) => {
-      const { directory, candidate, request, manifest } = await setup((stage) =>
-        stage.capture([parsedFile]),
-      );
+      const { directory, candidate, request, manifest } = await setup(() => {});
       expect(manifest.retention.status).toBe('incomplete');
       await replaceFamilyRecords(candidate, family, [onFile(record, 'src/auxiliary-only.ts')]);
       const persisted = JSON.parse(
@@ -315,9 +292,7 @@ describe('scope retention candidate auxiliary source IDs', () => {
   it.each(sourceFamilies)(
     'rejects incomplete %s File source IDs with a foreign suffix',
     async (family) => {
-      const { directory, candidate, request, manifest } = await setup((stage) =>
-        stage.capture([parsedFile]),
-      );
+      const { directory, candidate, request, manifest } = await setup(() => {});
       expect(manifest.retention.status).toBe('incomplete');
       await replaceFamilyRecords(candidate, family, [
         {
@@ -334,9 +309,7 @@ describe('scope retention candidate auxiliary source IDs', () => {
   it.each(sourceFamilies)(
     'verifies incomplete %s File source IDs with a colon in the file path',
     async (family) => {
-      const { directory, candidate, request, manifest } = await setup((stage) =>
-        stage.capture([parsedFile]),
-      );
+      const { directory, candidate, request, manifest } = await setup(() => {});
       expect(manifest.retention.status).toBe('incomplete');
       await replaceFamilyRecords(candidate, family, [
         {
@@ -369,9 +342,7 @@ describe('scope retention candidate auxiliary source IDs', () => {
   });
 
   it('rejects incomplete calls source IDs belonging to another file', async () => {
-    const { directory, candidate, request, manifest } = await setup((stage) =>
-      stage.capture([parsedFile]),
-    );
+    const { directory, candidate, request, manifest } = await setup(() => {});
     expect(manifest.retention.status).toBe('incomplete');
     await replaceFamilyRecords(candidate, 'calls', [
       {
@@ -499,9 +470,7 @@ describe('scope retention candidate registration owners and import callers', () 
   it.each(ownerCases)(
     'verifies incomplete %s owners outside the inventory',
     async (_label, family, record) => {
-      const { directory, candidate, request, manifest } = await setup((stage) =>
-        stage.capture([parsedFile]),
-      );
+      const { directory, candidate, request, manifest } = await setup(() => {});
       expect(manifest.retention.status).toBe('incomplete');
       await replaceFamilyRecords(candidate, family, [record('src/outside.ts')]);
       const persisted = JSON.parse(

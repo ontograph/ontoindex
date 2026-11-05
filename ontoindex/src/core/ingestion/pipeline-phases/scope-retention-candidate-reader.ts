@@ -3,7 +3,7 @@ import { constants, type Stats } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual, TextDecoder } from 'node:util';
-import { buildScopeTree, getLanguageFromFilename, type GraphRelationship } from 'ontoindex-shared';
+import { getLanguageFromFilename, type GraphRelationship } from 'ontoindex-shared';
 import type {
   ScopeRetentionCandidateIdentity,
   ScopeRetentionCandidateManifest,
@@ -15,27 +15,26 @@ import {
   type ScopeRetentionRequest,
 } from './scope-retention-stage.js';
 import { summarizeScopeRetentionCoverage } from './scope-retention-coverage.js';
-import { isUnconsumedRustScopeFailure } from '../scope-extractor-bridge.js';
 import { cloneRegistrationEvent } from '../model/semantic-model.js';
 import { restoreImportResolutionState } from '../model/resolution-context.js';
 import {
-  decodeParsedFileRecord,
-  MAX_PARSED_FILE_RECORD_BYTES,
   MAX_GRAPH_RECORD_BYTES,
+  MAX_IMPORT_STATE_RECORD_BYTES,
+  MAX_SCOPE_RETENTION_BYTES,
+  MAX_SCOPE_RETENTION_RECORDS,
   encodeGraphNodeRecord,
   encodeGraphRelationshipRecord,
 } from './parse-scope-codec.js';
 
-const MAX_BYTES = 64 * 1024 * 1024;
+const MAX_BYTES = MAX_SCOPE_RETENTION_BYTES;
 /**
  * Shared by the writer and this reader. The manifest carries one inventory and one input-evidence
  * entry per file (about 200 bytes each), so 1 MiB refused a real 7033-file workspace (1.44 MB).
  */
 export const MAX_MANIFEST_BYTES = 8 * 1024 * 1024;
 const MAX_LINE_BYTES = MAX_GRAPH_RECORD_BYTES;
-const MAX_RECORDS = 100_000;
+const MAX_RECORDS = MAX_SCOPE_RETENTION_RECORDS;
 const FAMILY_NAMES = [
-  'parsed-files',
   'calls',
   'heritage',
   'assignments',
@@ -53,7 +52,6 @@ const FAMILY_NAMES = [
   'tool-definitions',
 ] as const;
 const FAMILY_KEYS = {
-  'parsed-files': 'parsedFiles',
   calls: 'calls',
   heritage: 'heritage',
   assignments: 'assignments',
@@ -73,7 +71,6 @@ const FAMILY_KEYS = {
 type RecordsOf<K extends keyof ScopeRetentionHandle> =
   ScopeRetentionHandle[K] extends () => AsyncIterable<readonly (infer T)[]> ? T[] : never;
 export interface ScopeRetentionCandidateFamilies {
-  parsedFiles: RecordsOf<'iterate'>;
   calls: RecordsOf<'iterateCalls'>;
   heritage: RecordsOf<'iterateHeritage'>;
   assignments: RecordsOf<'iterateAssignments'>;
@@ -157,7 +154,6 @@ async function readScopeRetentionCandidate(
   // Provisional state remains private until every final integrity check succeeds.
   const families: ScopeRetentionCandidateFamilies | undefined = hydrate
     ? {
-        parsedFiles: [],
         calls: [],
         heritage: [],
         assignments: [],
@@ -253,7 +249,7 @@ async function readScopeRetentionCandidate(
     fail('unsupported legacy manifest version');
   if (
     !object(value) ||
-    value.version !== 5 ||
+    value.version !== 6 ||
     value.status !== 'candidate' ||
     value.seedReady !== false ||
     value.evidenceScope !== 'observed-parser-inputs' ||
@@ -356,6 +352,7 @@ async function readScopeRetentionCandidate(
     typeof evidence.complete !== 'boolean' ||
     (evidence.configuration !== null && !object(evidence.configuration)) ||
     (evidence.parserCodeIdentity !== null && !digest(evidence.parserCodeIdentity)) ||
+    (evidence.analysisPacksIdentity !== null && !digest(evidence.analysisPacksIdentity)) ||
     evidence.parserCodeIdentity !== expected.parserCodeIdentity ||
     !strings(evidence.reasons) ||
     !Array.isArray(evidence.sources) ||
@@ -393,16 +390,10 @@ async function readScopeRetentionCandidate(
   }
   const inventoryPaths = new Set<string>();
   const retainedInventoryPaths = new Set<string>();
-  const optionalScopePaths = new Set<string>();
-  let retainedInventoryCount = 0;
   for (const item of retention.inventory) {
-    if (item.status === 'not-required' && !isUnconsumedRustScopeFailure(item))
-      fail('invalid optional scope inventory');
-    if (item.status === 'not-required') optionalScopePaths.add(item.filePath);
     if (inventoryPaths.has(item.filePath)) fail('duplicate inventory file path');
     inventoryPaths.add(item.filePath);
     if (item.status === 'retained') {
-      retainedInventoryCount++;
       retainedInventoryPaths.add(item.filePath);
     }
   }
@@ -476,8 +467,6 @@ async function readScopeRetentionCandidate(
   const observed: { filePath: string; stat: Stats }[] = [];
   let totalRecords = 0;
   let totalBytes = manifestBytes.length;
-  const parsedFilePaths = new Set<string>();
-  const scopeIds = new Set<string>();
   const auxiliaryPaths = new Set<string>();
   const graphNodeIds = new Set<string>();
   const graphRelationshipIds = new Set<string>();
@@ -613,7 +602,7 @@ async function readScopeRetentionCandidate(
         const hash = createHash('sha256');
         const chunk = Buffer.alloc(64 * 1024);
         const maxLineBytes =
-          family.name === 'parsed-files' ? MAX_PARSED_FILE_RECORD_BYTES : MAX_LINE_BYTES;
+          family.name === 'import-states' ? MAX_IMPORT_STATE_RECORD_BYTES : MAX_LINE_BYTES;
         const pending = Buffer.alloc(maxLineBytes);
         let pendingBytes = 0;
         let bytes = 0;
@@ -671,33 +660,6 @@ async function readScopeRetentionCandidate(
                 fail('auxiliary source id does not belong to its file');
               }
               if (typeof record.filePath === 'string') auxiliaryPaths.add(record.filePath);
-            }
-            if (family.name === 'parsed-files') {
-              const parsedFile = decodeParsedFileRecord(line);
-              if (parsedFilePaths.has(parsedFile.filePath)) fail('duplicate parsed file path');
-              if (!inventoryPaths.has(parsedFile.filePath))
-                fail('parsed file missing from inventory');
-              try {
-                const tree = buildScopeTree(parsedFile.scopes);
-                const moduleScope = tree.getScope(parsedFile.moduleScope);
-                if (
-                  moduleScope?.kind !== 'Module' ||
-                  moduleScope.parent !== null ||
-                  parsedFile.scopes.some((scope) => scope.filePath !== parsedFile.filePath) ||
-                  parsedFile.scopes.filter((scope) => scope.parent === null).length !== 1
-                ) {
-                  fail('invalid parsed file scope tree');
-                }
-              } catch {
-                // Shared invariant errors contain persisted identifiers; keep the boundary bounded.
-                fail('invalid parsed file scope tree');
-              }
-              for (const scope of parsedFile.scopes) {
-                if (scopeIds.has(scope.id)) fail('duplicate parsed file scope id');
-                scopeIds.add(scope.id);
-              }
-              parsedFilePaths.add(parsedFile.filePath);
-              decoded = parsedFile;
             }
             if (family.name === 'model-registrations') {
               const { event } = cloneRegistrationEvent(record);
@@ -773,29 +735,10 @@ async function readScopeRetentionCandidate(
     }
     if (retention.status === 'retained') {
       for (const filePath of auxiliaryPaths) {
-        if (!retainedInventoryPaths.has(filePath) && !optionalScopePaths.has(filePath))
-          fail('auxiliary record file not retained');
+        if (!retainedInventoryPaths.has(filePath)) fail('auxiliary record file not retained');
       }
-      if (
-        parsedFilePaths.size !== retainedInventoryCount ||
-        [...retainedInventoryPaths].some((filePath) => !parsedFilePaths.has(filePath)) ||
-        retention.inventory.some(
-          (item) =>
-            item.status !== 'retained' &&
-            !(item.status === 'not-required' && isUnconsumedRustScopeFailure(item)),
-        )
-      ) {
+      if (retention.inventory.some((item) => item.status !== 'retained')) {
         fail('retained inventory mismatch');
-      }
-    } else if (completion['parsed-files']) {
-      if (
-        parsedFilePaths.size < retainedInventoryCount ||
-        parsedFilePaths.size > retention.inventory.length
-      ) {
-        fail('completed parsed files inventory mismatch');
-      }
-      for (const filePath of retainedInventoryPaths) {
-        if (!parsedFilePaths.has(filePath)) fail('completed parsed files inventory mismatch');
       }
     }
     if (totalBytes !== manifest.totalBytes || totalRecords !== manifest.totalRecordCount) {

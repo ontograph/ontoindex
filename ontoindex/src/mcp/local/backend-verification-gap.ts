@@ -8,6 +8,7 @@
  */
 import { auditVerificationGap } from '../../audit/verification-gap.js';
 import { AnalysisResult, DiagnosticFinding } from 'ontoindex-shared';
+import { markInvocationError } from '../shared/invocation-error.js';
 
 // Local RepoHandle alias — see backend-route.ts note.
 type RepoHandle = { readonly id: string; readonly name: string; readonly repoPath: string };
@@ -82,7 +83,7 @@ export async function runVerificationGap(
       },
     } as VerificationGapResult;
   } catch (err: unknown) {
-    return {
+    return markInvocationError({
       status: 'error',
       tool: 'verification_gap',
       repo: repo.name,
@@ -94,6 +95,6 @@ export async function runVerificationGap(
       summary: '',
       stats: { totalFindings: 0, durationMs: Date.now() - start },
       errors: [`Verification gap audit failed: ${caughtErrorMessage(err)}`],
-    } as VerificationGapResult;
+    } as VerificationGapResult);
   }
 }

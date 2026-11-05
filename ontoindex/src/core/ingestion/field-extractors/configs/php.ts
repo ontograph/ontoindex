@@ -17,7 +17,7 @@ const PHP_VIS = new Set<FieldVisibility>(['public', 'private', 'protected']);
 export const phpConfig: FieldExtractionConfig = {
   language: SupportedLanguages.PHP,
   typeDeclarationNodes: ['class_declaration', 'interface_declaration', 'trait_declaration'],
-  fieldNodeTypes: ['property_declaration'],
+  fieldNodeTypes: ['property_declaration', 'property_promotion_parameter'],
   bodyNodeTypes: ['declaration_list'],
   defaultVisibility: 'public',
 

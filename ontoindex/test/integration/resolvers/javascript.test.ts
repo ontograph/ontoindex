@@ -3,6 +3,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
+
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
@@ -13,6 +14,46 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+describe('JavaScript shadowed inference names', () => {
+  describe.each([
+    ['js-shadow-field', false],
+    ['js-shadow-field-positive', true],
+    ['js-shadow-factory-catch', false],
+    ['js-shadow-factory-for-of', false],
+    ['js-shadow-factory-for-in', false],
+    ['js-shadow-factory-positive', true],
+  ] as const)('%s', (fixture, resolvesUser) => {
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, fixture), () => {}, {
+        skipGraphPhases: true,
+        skipWorkers: true,
+      });
+    }, 60000);
+
+    it('resolves User.save only for unshadowed inference', () => {
+      const saves = getRelationships(result, 'CALLS').filter(
+        (call) => call.source === 'probe' && call.target === 'save',
+      );
+      expect(saves).toHaveLength(resolvesUser ? 1 : 0);
+      if (resolvesUser) expect(saves[0].rel.targetId).toContain('User');
+    });
+
+    it('publishes User metadata only for unshadowed inference', () => {
+      const node = fixture.includes('field')
+        ? getNodesByLabelFull(result, 'Property').find((entry) => entry.name === 'item')
+        : getNodesByLabelFull(result, 'Function').find((entry) => entry.name === 'factory');
+      expect(node).toBeDefined();
+      const type = fixture.includes('field')
+        ? node!.properties.declaredType
+        : node!.properties.returnType;
+      if (resolvesUser) expect(type).toBe('User');
+      else expect(type).not.toBe('User');
+    });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // skipGraphPhases: verify pipeline works correctly when graph phases are skipped

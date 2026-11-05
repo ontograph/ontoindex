@@ -81,6 +81,18 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
       return config.extractVisibility(node);
     }
 
+    extractFromNode(
+      node: SyntaxNode,
+      context: FieldExtractorContext,
+      name?: string,
+    ): FieldInfo | null {
+      if (!fieldNodeSet.has(node.type)) return null;
+      const names = config.extractNames ? config.extractNames(node) : [config.extractName(node)];
+      const selected = name ?? names[0];
+      if (!selected || !names.includes(selected)) return null;
+      return this.buildField(node, selected, context);
+    }
+
     extract(node: SyntaxNode, context: FieldExtractorContext): ExtractedFields | null {
       if (!this.isTypeDeclaration(node)) return null;
 

@@ -1,5 +1,4 @@
 import { getLanguageFromFilename } from 'ontoindex-shared';
-import { isUnconsumedRustScopeFailure } from '../scope-extractor-bridge.js';
 
 export interface ScopeRetentionCoverage {
   version: 1;
@@ -39,8 +38,6 @@ export function summarizeScopeRetentionCoverage(
     }
     bucket.files++;
     if (item.status === 'retained') bucket.retained++;
-    else if (item.status === 'not-required' && isUnconsumedRustScopeFailure(item))
-      bucket.unparsed++;
     else if (item.status === 'skipped') bucket.skipped++;
     else if (['failed', 'unsupported', 'invalid-outcome'].includes(item.status)) {
       bucket.refused++;
@@ -48,8 +45,7 @@ export function summarizeScopeRetentionCoverage(
       const existing = bucket.refusalReasons.find((entry) => entry.reason === reason);
       if (existing) existing.count++;
       else bucket.refusalReasons.push({ reason, count: 1 });
-    } else if (language === 'unknown' && item.status === 'missing-outcome') bucket.unparsed++;
-    else bucket.unaccounted++;
+    } else bucket.unaccounted++;
   }
   const languages = [...buckets.values()].sort((a, b) =>
     a.language < b.language ? -1 : a.language > b.language ? 1 : 0,

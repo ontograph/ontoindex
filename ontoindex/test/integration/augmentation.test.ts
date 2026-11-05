@@ -84,6 +84,28 @@ withTestLbugDB(
   'augment',
   (handle) => {
     describe('augment()', () => {
+      it('prefers the containing repo over a nested registered repo', async () => {
+        const { listRegisteredRepos } = await import('../../src/storage/repo-manager.js');
+        (listRegisteredRepos as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+          {
+            name: handle.repoId,
+            path: handle.dbPath,
+            storagePath: handle.tmpHandle.dbPath,
+            indexedAt: new Date().toISOString(),
+            lastCommit: 'abc123',
+          },
+          {
+            name: 'nested',
+            path: `${handle.dbPath}/nested`,
+            storagePath: `${handle.dbPath}/nonexistent`,
+            indexedAt: new Date().toISOString(),
+            lastCommit: 'abc123',
+          },
+        ]);
+
+        expect(await augment('login', handle.dbPath)).toContain('[OntoIndex]');
+      });
+
       it('returns non-empty string with relationship info for a matching pattern', async () => {
         const result = await augment('login', handle.dbPath);
 

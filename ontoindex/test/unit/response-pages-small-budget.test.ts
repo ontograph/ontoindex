@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   applyLogicalResponseBudget,
+  MCP_RESPONSE_MAX_BYTES,
   pageMcpResponse,
   serializedMcpToolResultBytes,
   type ResponsePageEnvelope,
@@ -44,7 +45,22 @@ async function collect(text: string, maxBytes?: number): Promise<string> {
   return (await collectPages(text, maxBytes)).reconstructed;
 }
 
-describe('applyLogicalResponseBudget retry hints', () => {
+describe('applyLogicalResponseBudget small budgets', () => {
+  it('refuses a raised projection above the response ceiling while reporting its minimum', () => {
+    const text = JSON.stringify({
+      warnings: ['diagnostic '.repeat(10000)],
+      results: [{ name: 'omit' }],
+    });
+    expect(() => applyLogicalResponseBudget(text, 'search', 1024)).toThrow(
+      `response_budget_bytes is too small to preserve the response diagnostics. Requested 1024 bytes; this response cannot be projected and needs at least ${serializedMcpToolResultBytes(text)} bytes (its full size).`,
+    );
+    expect(() => applyLogicalResponseBudget(text, 'search', 1024)).toThrow(
+      new RegExp(
+        `The smallest safe projection needs \\d+ bytes, above the ${MCP_RESPONSE_MAX_BYTES}-byte ceiling\\.`,
+      ),
+    );
+  });
+
   it.each([false, true])(
     'reports the full size for an unsupported tool (isError=%s)',
     (isError) => {
@@ -57,29 +73,64 @@ describe('applyLogicalResponseBudget retry hints', () => {
     },
   );
 
-  it.each([false, true])('reports a retryable smallest projection (wrapped=%s)', (wrapped) => {
-    const result = { results: [{ name: '日本語🙂'.repeat(500) }], evidence: ['x'.repeat(500)] };
+  it.each([false, true])('returns the smallest safe projection (wrapped=%s)', (wrapped) => {
+    const diagnostics = {
+      warnings: ['retain this warning'],
+      freshness: { status: 'fresh' },
+      capabilitiesMissing: ['retain this capability'],
+    };
+    const result = {
+      ...diagnostics,
+      results: [{ name: '日本語🙂'.repeat(500) }],
+      evidence: ['x'.repeat(500)],
+    };
     const text = JSON.stringify(
       wrapped ? { repoLabel: 'test', repoPath: '/test', result } : result,
     );
-    let message = '';
-    try {
-      applyLogicalResponseBudget(text, 'search', 1);
-    } catch (error) {
-      message = (error as Error).message;
+    const omittedFields = wrapped ? ['result.results', 'result.evidence'] : ['results', 'evidence'];
+    // Reproduce the previous retry minimum without the new raised-budget metadata.
+    let minimumBytes = 0;
+    while (true) {
+      const retry = JSON.stringify(
+        {
+          ...(wrapped
+            ? { repoLabel: 'test', repoPath: '/test', result: diagnostics }
+            : diagnostics),
+          responseBudget: {
+            requestedBytes: minimumBytes,
+            originalBytes: serializedMcpToolResultBytes(text),
+            returnedBytes: minimumBytes,
+            truncated: true,
+            omittedFields,
+          },
+        },
+        null,
+        2,
+      );
+      const actualBytes = serializedMcpToolResultBytes(retry);
+      if (actualBytes === minimumBytes) break;
+      minimumBytes = actualBytes;
     }
-    expect(message).toMatch(
-      /^response_budget_bytes is too small to preserve the response diagnostics\. Requested 1 bytes; the smallest safe projection needs \d+ bytes\.$/,
-    );
-    const minimumBytes = Number(message.match(/needs (\d+) bytes/)?.[1]);
-    const projected = applyLogicalResponseBudget(text, 'search', minimumBytes);
-    expect(serializedMcpToolResultBytes(projected)).toBe(minimumBytes);
-    expect(JSON.parse(projected).responseBudget).toMatchObject({
-      requestedBytes: minimumBytes,
-      returnedBytes: minimumBytes,
-      truncated: true,
-      omittedFields: wrapped ? ['result.results', 'result.evidence'] : ['results', 'evidence'],
-    });
+    for (const requestedBytes of [1, minimumBytes - 1]) {
+      const projected = applyLogicalResponseBudget(text, 'search', requestedBytes);
+      const parsed = JSON.parse(projected);
+      const budget = parsed.responseBudget;
+      expect(budget).toMatchObject({
+        requestedBytes,
+        returnedBytes: serializedMcpToolResultBytes(projected),
+        truncated: true,
+        omittedFields,
+      });
+      expect(budget.effectiveBytes).toBeGreaterThanOrEqual(minimumBytes);
+      expect(budget.returnedBytes).toBeLessThanOrEqual(budget.effectiveBytes);
+      expect(budget.warning).toBe(
+        `response_budget_bytes ${requestedBytes} was below the smallest safe projection ${budget.effectiveBytes}; returned the smallest safe projection.`,
+      );
+      expect(wrapped ? parsed.result : parsed).toMatchObject(diagnostics);
+    }
+    const fitting = JSON.parse(applyLogicalResponseBudget(text, 'search', minimumBytes));
+    expect(fitting.responseBudget).not.toHaveProperty('effectiveBytes');
+    expect(fitting.responseBudget).not.toHaveProperty('warning');
   });
 
   it('reports the full size when diagnostic-bearing detail cannot be removed', () => {
@@ -98,6 +149,24 @@ describe('applyLogicalResponseBudget retry hints', () => {
       `response_budget_bytes cannot fit this non-JSON response without losing diagnostics. Requested 1 bytes; the response needs ${fullSize} bytes.`,
     );
     expect(applyLogicalResponseBudget(text, 'search', fullSize)).toBe(text);
+  });
+
+  it('keeps non-ok capability envelopes unprojectable', () => {
+    const text = JSON.stringify({
+      envelopeVersion: '1',
+      tool: 'search',
+      status: 'partial',
+      targetContext: {},
+      capabilitiesUsed: [],
+      capabilitiesMissing: ['graph'],
+      freshness: {},
+      results: ['x'.repeat(1000)],
+      evidence: [],
+      warnings: ['retain partial evidence'],
+    });
+    expect(() => applyLogicalResponseBudget(text, 'search', 1)).toThrow(
+      `response_budget_bytes is too small to preserve the response diagnostics. Requested 1 bytes; this response cannot be projected and needs at least ${serializedMcpToolResultBytes(text)} bytes (its full size).`,
+    );
   });
 });
 

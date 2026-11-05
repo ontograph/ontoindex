@@ -125,10 +125,19 @@ export const TYPESCRIPT_QUERIES = `
 (public_field_definition
   name: (private_property_identifier) @name) @definition.property
 
-; Constructor parameter properties: constructor(public address: Address)
-(required_parameter
-  (accessibility_modifier)
-  pattern: (identifier) @name) @definition.property
+; Constructor parameter properties, including readonly-only and optional bindings.
+(method_definition
+  name: (property_identifier) @_constructor
+  parameters: (formal_parameters
+    [
+      (required_parameter
+        [(accessibility_modifier) "readonly"]
+        pattern: (identifier) @name)
+      (optional_parameter
+        [(accessibility_modifier) "readonly"]
+        pattern: (identifier) @name)
+    ] @definition.property)
+  (#eq? @_constructor "constructor"))
 
 ; Heritage queries - class extends
 (class_declaration
@@ -271,6 +280,20 @@ export const JAVASCRIPT_QUERIES = `
 ; Class fields — field_definition captures JS class fields (class User { address = ... })
 (field_definition
   property: (property_identifier) @name) @definition.property
+
+; Direct constructor assignments are instance field declarations. The field
+; extractor validates modifiers and selects one canonical declaration per name.
+(class_body
+  (method_definition
+    name: (property_identifier) @_constructor
+    body: (statement_block
+      (expression_statement
+        (assignment_expression
+          left: (member_expression
+            object: (this)
+            property: (property_identifier) @name)
+          right: (_)) @definition.property)))
+  (#eq? @_constructor "constructor"))
 
 ; Heritage queries - class extends (JavaScript uses different AST than TypeScript)
 ; In tree-sitter-javascript, class_heritage directly contains the parent identifier
@@ -840,7 +863,7 @@ export const PHP_QUERIES = `
   parameters: (formal_parameters
     (property_promotion_parameter
       name: (variable_name
-        (name) @name)))) @definition.property
+        (name) @name)) @definition.property))
 
 ; ── Imports: use statements ──────────────────────────────────────────────────
 ; Simple: use App\\Models\\User;

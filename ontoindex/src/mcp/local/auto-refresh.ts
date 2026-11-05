@@ -5,6 +5,7 @@ import { execFileText } from '../../core/process/exec-file.js';
 import { readAnalyzeLock, readRuntimeHealth } from '../../core/runtime/runtime-health.js';
 import { acquireNativeFileLock } from '../../native/file-lock.js';
 import { readActiveGenerationMeta } from '../../storage/repo-manager.js';
+import { isAutomaticWorkspaceEnabled } from './backend-overlay.js';
 import {
   currentCliCommand,
   gnEnsureFresh,
@@ -20,26 +21,34 @@ interface RefreshRepo {
 }
 
 type RefreshScope = NonNullable<EnsureFreshParams['scope']>;
+type RefreshOptions = RefreshScope | readonly string[];
 interface RefreshDeps {
   ensureFresh?: typeof gnEnsureFresh;
-  spawnRefresh?: (repo: RefreshRepo, scope: RefreshScope) => Promise<void>;
+  spawnRefresh?: (repo: RefreshRepo, scope: RefreshOptions) => Promise<void>;
   now?: () => number;
 }
 
 const pending = new Map<string, Promise<string | undefined>>();
+const pendingWorkspace = new Map<string, Promise<string | undefined>>();
 const sourceChecks = new Map<string, { expiresAt: number; warning?: string }>();
-const STALE_DETAIL = 'This answer uses the existing index; results update after the background refresh finishes.';
+const STALE_DETAIL =
+  'This answer uses the existing index; results update after the background refresh finishes.';
 const STALE = `OntoIndex index is stale. ${STALE_DETAIL}`;
 
-async function spawnRefresh(repo: RefreshRepo, scope: RefreshScope): Promise<void> {
+async function spawnRefresh(repo: RefreshRepo, options: RefreshOptions): Promise<void> {
   const cli = currentCliCommand();
   const args = [...cli.argsPrefix, 'analyze', repo.repoPath];
-  for (const includePath of scope.includePaths) args.push('--include-path', includePath);
-  if (scope.pipelineProfile === 'symbols') args.push('--symbols-only');
+  if ('includePaths' in options) {
+    for (const includePath of options.includePaths) args.push('--include-path', includePath);
+    if (options.pipelineProfile === 'symbols') args.push('--symbols-only');
+  } else {
+    args.push(...options);
+  }
   // An empty Git repository supports analyze; only plain folders need --skip-git.
   try {
     await execFileText('git', ['rev-parse', '--show-toplevel'], {
-      cwd: repo.repoPath, timeoutMs: 1000,
+      cwd: repo.repoPath,
+      timeoutMs: 1000,
     });
   } catch {
     args.push('--skip-git');
@@ -65,11 +74,16 @@ async function schedule(repo: RefreshRepo, deps: RefreshDeps): Promise<string | 
   const { meta } = await readActiveGenerationMeta(repo.storagePath);
   if (!meta) return undefined;
   const head = await execFileText('git', ['rev-parse', 'HEAD'], {
-    cwd: repo.repoPath, timeoutMs: 1000,
-  }).then((value) => value.trim(), () => undefined);
+    cwd: repo.repoPath,
+    timeoutMs: 1000,
+  }).then(
+    (value) => value.trim(),
+    () => undefined,
+  );
   const commitless = !head && !meta.lastCommit && !!meta.sourceManifest;
   if (!commitless && (!head || !meta.lastCommit || head === meta.lastCommit)) return undefined;
-  const stale = commitless ? STALE
+  const stale = commitless
+    ? STALE
     : `OntoIndex index is stale (indexed ${meta.lastCommit.slice(0, 8)}, HEAD ${head!.slice(0, 8)}). ${STALE_DETAIL}`;
   const profile = meta.sourceManifest?.pipelineProfile ?? meta.pipelineProfile ?? 'full';
   if (profile === 'huge-repo-symbols') {
@@ -105,7 +119,10 @@ async function schedule(repo: RefreshRepo, deps: RefreshDeps): Promise<string | 
     await fs.writeFile(stamp, commitless ? 'checking' : 'stale', { mode: 0o600 });
     await fs.utimes(stamp, now / 1000, now / 1000);
     if (commitless) {
-      const health = await readRuntimeHealth(repo.repoPath, { storagePath: repo.storagePath, meta });
+      const health = await readRuntimeHealth(repo.repoPath, {
+        storagePath: repo.storagePath,
+        meta,
+      });
       const isStale = health.freshnessState === 'stale';
       await fs.writeFile(stamp, isStale ? 'stale' : 'clean');
       await fs.utimes(stamp, now / 1000, now / 1000);
@@ -118,9 +135,11 @@ async function schedule(repo: RefreshRepo, deps: RefreshDeps): Promise<string | 
       await (deps.spawnRefresh ?? spawnRefresh)(repo, scope);
       return `${stale} Refresh started in the background.`;
     }
-    const report = await (deps.ensureFresh ?? gnEnsureFresh)(repo.repoPath, {
-      repo: repo.repoPath, autoAnalyze: true, scope,
-    }) as EnsureFreshReport;
+    const report = (await (deps.ensureFresh ?? gnEnsureFresh)(repo.repoPath, {
+      repo: repo.repoPath,
+      autoAnalyze: true,
+      scope,
+    })) as EnsureFreshReport;
     const submission = report.analysisSubmission;
     if (submission.status === 'queued' || submission.status === 'reused') {
       return `${stale} Refresh ${submission.status === 'reused' ? 'already running' : 'started in the background'} (job ${submission.jobId}).`;
@@ -152,7 +171,57 @@ export function maybeScheduleAutoRefresh(
   const key = `${repo.id}:${repo.storagePath}`;
   const existing = pending.get(key);
   if (existing) return existing;
-  const result = schedule(repo, deps).catch(() => undefined).finally(() => pending.delete(key));
+  const result = schedule(repo, deps)
+    .catch(() => undefined)
+    .finally(() => pending.delete(key));
   pending.set(key, result);
+  return result;
+}
+
+async function scheduleWorkspacePrebuild(
+  repo: RefreshRepo,
+  deps: RefreshDeps,
+): Promise<string | undefined> {
+  const lock = await acquireNativeFileLock(
+    path.join(repo.storagePath, 'workspace-prebuild.stamp.lock'),
+  );
+  try {
+    const analyzeLock = await readAnalyzeLock(repo.storagePath, []);
+    if (analyzeLock.state === 'active' || analyzeLock.state === 'unknown') return undefined;
+    const configured = Number(process.env.ONTOINDEX_AUTO_REFRESH_INTERVAL_MS ?? 300000);
+    const interval = Number.isFinite(configured) && configured >= 0 ? configured : 300000;
+    const now = (deps.now ?? Date.now)();
+    const stamp = path.join(repo.storagePath, 'workspace-prebuild.stamp');
+    const stat = await fs.stat(stamp).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+      return undefined;
+    });
+    if (stat && now - stat.mtimeMs < interval) {
+      return 'Workspace graph preparation was started recently; reads include uncommitted files once it finishes.';
+    }
+    await (deps.spawnRefresh ?? spawnRefresh)(repo, ['--workspace-graph']);
+    await fs.writeFile(stamp, '', { mode: 0o600 });
+    await fs.utimes(stamp, now / 1000, now / 1000);
+    return 'Workspace graph preparation started in the background; later reads include uncommitted files.';
+  } finally {
+    lock.release();
+  }
+}
+
+/** Best-effort preparation must never prevent a committed fallback read. */
+export function maybeScheduleWorkspacePrebuild(
+  repo: RefreshRepo,
+  deps: RefreshDeps = {},
+): Promise<string | undefined> {
+  if (process.env.ONTOINDEX_AUTO_REFRESH === '0' || !isAutomaticWorkspaceEnabled()) {
+    return Promise.resolve(undefined);
+  }
+  const key = `${repo.id}:${repo.storagePath}`;
+  const existing = pendingWorkspace.get(key);
+  if (existing) return existing;
+  const result = scheduleWorkspacePrebuild(repo, deps)
+    .catch(() => undefined)
+    .finally(() => pendingWorkspace.delete(key));
+  pendingWorkspace.set(key, result);
   return result;
 }

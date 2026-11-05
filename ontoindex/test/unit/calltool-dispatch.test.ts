@@ -48,6 +48,11 @@ vi.mock('../../src/mcp/super/diagnose.js', () => ({
   gnDiagnose: vi.fn().mockResolvedValue({ misconfiguration: { status: 'ok' } }),
 }));
 
+vi.mock('../../src/mcp/local/auto-refresh.js', () => ({
+  maybeScheduleAutoRefresh: vi.fn<() => Promise<string | undefined>>(async () => undefined),
+  maybeScheduleWorkspacePrebuild: vi.fn<() => Promise<string | undefined>>(async () => undefined),
+}));
+
 vi.mock('../../src/core/analyze-delta.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/core/analyze-delta.js')>();
   return { ...actual, planDirtyOverlay: vi.fn(actual.planDirtyOverlay) };
@@ -91,6 +96,7 @@ vi.mock('../../src/mcp/local/local-backend-repo-runtime.js', async (importOrigin
 
 import { LocalBackend, getReadRequestContext } from '../../src/mcp/local/local-backend.js';
 import { gnDiagnose } from '../../src/mcp/super/diagnose.js';
+import { maybeScheduleWorkspacePrebuild } from '../../src/mcp/local/auto-refresh.js';
 import {
   prepareWorkspaceRead,
   WorkspacePreparationError,
@@ -489,6 +495,9 @@ describe('request workspace gate', () => {
     });
 
     it('answers from the committed index and names the uncovered dirty files', async () => {
+      const prebuildNote =
+        'Workspace graph preparation started in the background; later reads include uncommitted files.';
+      vi.mocked(maybeScheduleWorkspacePrebuild).mockResolvedValueOnce(prebuildNote);
       vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(tooLarge());
       vi.mocked(planDirtyOverlay).mockResolvedValueOnce(dirtyPlan(12) as any);
       const real = backend.withPreparedRepoRead.bind(backend);
@@ -518,6 +527,153 @@ describe('request workspace gate', () => {
       expect(note).toContain('src/dirty-00.rs');
       expect(note).toContain('and 2 more');
       expect(note).not.toContain('src/dirty-11.rs');
+      expect(note).toContain(prebuildNote);
+      expect(maybeScheduleWorkspacePrebuild).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries search with the symbols overlay when the workspace graph is too large', async () => {
+      const uncoveredPaths = Array.from(
+        { length: 12 },
+        (_, i) => `src/uncovered-${String(i).padStart(2, '0')}.ts`,
+      );
+      vi.mocked(prepareWorkspaceRead)
+        .mockRejectedValueOnce(tooLarge())
+        .mockResolvedValueOnce({
+          ...cleanSnapshot(),
+          baseCommit: 'pinned-base',
+          generation: 'pinned-overlay',
+          uncoveredPaths: new Set([...uncoveredPaths].reverse()),
+        });
+      const gate = vi.spyOn(backend, 'withPreparedRepoRead');
+      (backend as any).repoToolHandlers.search = async () => ({ items: [], warnings: [] });
+      const result = (await backend.callTool('search', { query: 'x' })) as {
+        warnings: string[];
+        readContext: unknown;
+      };
+      expect(result.readContext).toEqual({
+        mode: 'workspace',
+        source: 'symbols-overlay',
+        semanticCoverage: 'partial',
+        workingTreeIncluded: true,
+        indexedCommit: 'pinned-base',
+        generation: 'pinned-overlay',
+        excludedEvidence: ['working-tree relationships', 'uncovered dirty paths'],
+        uncoveredPathCount: 12,
+        uncoveredPathSample: uncoveredPaths.slice(0, 10),
+      });
+      expect(result.warnings).toContain(
+        'Working-tree graph unavailable (workspace_too_large); answered from the committed index plus the uncommitted-symbols overlay. Ranking omits working-tree relationships.',
+      );
+      expect(gate).toHaveBeenCalledWith(
+        expect.anything(),
+        { needsRelationships: false },
+        expect.any(Function),
+      );
+      expect(gate).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ readMode: 'committed' }),
+        expect.any(Function),
+      );
+      expect(prepareWorkspaceRead).toHaveBeenCalledTimes(2);
+      expect(maybeScheduleWorkspacePrebuild).not.toHaveBeenCalled();
+    });
+
+    it('excludes only working-tree relationships when the symbols overlay has no uncovered paths', async () => {
+      vi.mocked(prepareWorkspaceRead)
+        .mockRejectedValueOnce(tooLarge())
+        .mockResolvedValueOnce(cleanSnapshot());
+      (backend as any).repoToolHandlers.search = async () => ({ items: [], warnings: [] });
+      const result = (await backend.callTool('search', { query: 'x' })) as {
+        readContext: { uncoveredPathCount: number; excludedEvidence: string[] };
+      };
+      expect(result.readContext.uncoveredPathCount).toBe(0);
+      expect(result.readContext.excludedEvidence).toEqual(['working-tree relationships']);
+    });
+
+    it('uses the symbols overlay for MCP search/semantic (query)', async () => {
+      vi.mocked(prepareWorkspaceRead)
+        .mockRejectedValueOnce(tooLarge())
+        .mockResolvedValueOnce(cleanSnapshot());
+      (backend as any).repoToolHandlers.query = async () => ({ items: [], warnings: [] });
+      const result = (await backend.callTool('query', { query: 'x' })) as { warnings: string[] };
+      expect(result.warnings.some((w) => w.includes('uncommitted-symbols overlay'))).toBe(true);
+    });
+
+    it('reports a search failure on the symbols overlay instead of the size refusal', async () => {
+      vi.mocked(prepareWorkspaceRead)
+        .mockRejectedValueOnce(tooLarge())
+        .mockResolvedValueOnce(cleanSnapshot());
+      (backend as any).repoToolHandlers.search = async () => {
+        throw new Error('overlay query failed');
+      };
+      await expect(backend.callTool('search', { query: 'x' })).rejects.toThrow(
+        'overlay query failed',
+      );
+      expect(prepareWorkspaceRead).toHaveBeenCalledTimes(2);
+    });
+
+    it('falls back to the committed index when the search symbols overlay also fails', async () => {
+      vi.mocked(prepareWorkspaceRead)
+        .mockRejectedValueOnce(tooLarge())
+        .mockRejectedValueOnce(tooLarge());
+      vi.mocked(planDirtyOverlay).mockResolvedValueOnce(dirtyPlan(0) as any);
+      const real = backend.withPreparedRepoRead.bind(backend);
+      const gate = vi
+        .spyOn(backend, 'withPreparedRepoRead')
+        .mockImplementation(async (repo, options, operation) =>
+          options.readMode === 'committed'
+            ? ((await operation()) as any)
+            : real(repo, options, operation),
+        );
+      (backend as any).repoToolHandlers.search = async () => ({ items: [], warnings: [] });
+      const result = (await backend.callTool('search', { query: 'x' })) as {
+        warnings: string[];
+      };
+      expect(gate).toHaveBeenCalledWith(
+        expect.anything(),
+        { needsRelationships: false },
+        expect.any(Function),
+      );
+      expect(gate).toHaveBeenLastCalledWith(
+        expect.anything(),
+        { needsRelationships: false, readMode: 'committed' },
+        expect.any(Function),
+      );
+      const note = result.warnings.find((w) => w.includes('workspace_too_large'))!;
+      expect(note).toContain('answered from the committed index');
+      expect(note).toContain('readContext.indexedCommit');
+      expect(note).not.toContain('uncommitted-symbols overlay');
+      expect(prepareWorkspaceRead).toHaveBeenCalledTimes(2);
+    });
+
+    it('falls back directly to the committed index for cypher without a symbols overlay retry', async () => {
+      vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(tooLarge());
+      vi.mocked(planDirtyOverlay).mockResolvedValueOnce(dirtyPlan(0) as any);
+      const real = backend.withPreparedRepoRead.bind(backend);
+      const gate = vi
+        .spyOn(backend, 'withPreparedRepoRead')
+        .mockImplementation(async (repo, options, operation) =>
+          options.readMode === 'committed'
+            ? ((await operation()) as any)
+            : real(repo, options, operation),
+        );
+      (backend as any).repoToolHandlers.cypher = async () => ({ rows: [], warnings: [] });
+      const result = (await backend.callTool('cypher', { query: 'RETURN 1' })) as {
+        warnings: string[];
+      };
+      expect(gate).toHaveBeenLastCalledWith(
+        expect.anything(),
+        { needsRelationships: false, readMode: 'committed' },
+        expect.any(Function),
+      );
+      expect(gate).not.toHaveBeenCalledWith(
+        expect.anything(),
+        { needsRelationships: false },
+        expect.any(Function),
+      );
+      const note = result.warnings.find((w) => w.includes('workspace_too_large'))!;
+      expect(note).toContain('answered from the committed index');
+      expect(prepareWorkspaceRead).toHaveBeenCalledTimes(1);
     });
 
     it('rethrows the original refusal when no committed index is readable', async () => {

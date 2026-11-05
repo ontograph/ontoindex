@@ -1821,6 +1821,88 @@ const jsCtx: MethodExtractorContext = {
   language: SupportedLanguages.JavaScript,
 };
 
+describe.each([
+  ['JavaScript', javascriptMethodConfig, parseJavaScript],
+  ['TypeScript', typescriptMethodConfig, parseTypeScript],
+] as const)('%s constructor return inference', (_language, config, parse) => {
+  it.each([
+    ['single return', 'function factory() { return new User(); }', 'User'],
+    [
+      'matching returns',
+      'function factory() { if (ok) return new User(); return new User(); }',
+      'User',
+    ],
+    [
+      'different constructors',
+      'function factory() { if (ok) return new User(); return new Other(); }',
+      undefined,
+    ],
+    ['null return', 'function factory() { if (ok) return new User(); return null; }', undefined],
+    ['bare return', 'function factory() { if (ok) return new User(); return; }', undefined],
+    [
+      'nested returns only',
+      'function factory() { function nested() { return new User(); } }',
+      undefined,
+    ],
+    [
+      'nested return excluded',
+      'function factory() { function nested() { return new Other(); } return new User(); }',
+      'User',
+    ],
+    ['parameter shadows constructor', 'function factory(User) { return new User(); }', undefined],
+    [
+      'local shadows constructor',
+      'function factory() { const User = x; return new User(); }',
+      undefined,
+    ],
+    ['qualified constructor', 'function factory() { return new ns.User(); }', undefined],
+    ['JSDoc wins', '/** @returns {Other} */ function factory() { return new User(); }', 'Other'],
+    [
+      'arrow return excluded',
+      'function factory() { const nested = () => { return new Other(); }; return new User(); }',
+      'User',
+    ],
+    [
+      'class return excluded',
+      'function factory() { class Nested { make() { return new Other(); } } return new User(); }',
+      'User',
+    ],
+    [
+      'function shadows constructor',
+      'function factory() { function User() {} return new User(); }',
+      undefined,
+    ],
+    [
+      'class shadows constructor',
+      'function factory() { class User {} return new User(); }',
+      undefined,
+    ],
+    ['generator excluded', 'function* factory() { return new User(); }', undefined],
+    [
+      'destructured parameter shadows constructor',
+      'function factory({User}) { return new User(); }',
+      undefined,
+    ],
+    [
+      'destructured local shadows constructor',
+      'function factory() { const {model: User} = x; return new User(); }',
+      undefined,
+    ],
+  ])('%s', (_description, code, expected) => {
+    const tree = parse(code);
+    expect(tree.rootNode.hasError).toBe(false);
+    const node = tree.rootNode.namedChildren.find((child) => child.type !== 'comment')!;
+    expect(config.extractReturnType(node)).toBe(expected);
+  });
+
+  if (_language === 'TypeScript') {
+    it('annotation wins over constructor return', () => {
+      const tree = parse('function factory(): Other { return new User(); }');
+      expect(config.extractReturnType(tree.rootNode.firstNamedChild!)).toBe('Other');
+    });
+  }
+});
+
 describe('JavaScript MethodExtractor', () => {
   const extractor = createMethodExtractor(javascriptMethodConfig);
 

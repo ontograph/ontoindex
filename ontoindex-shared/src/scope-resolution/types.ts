@@ -46,11 +46,10 @@ export interface Range {
 }
 
 /**
- * Tagged capture emitted by a LanguageProvider's `emitScopeCaptures` hook.
+ * Tagged capture produced by a parser-agnostic scope query.
  *
- * Parser-agnostic: tree-sitter queries and COBOL's regex tagger both produce
- * `Capture[]`. The central `ScopeExtractor` consumes captures without
- * knowing which parser produced them.
+ * Tree-sitter queries and regex taggers can both produce `Capture[]`;
+ * consumers handle captures without knowing which parser produced them.
  */
 export interface Capture {
   /** Capture name, including leading `@` (e.g., `'@scope.module'`, `'@declaration.class'`). */

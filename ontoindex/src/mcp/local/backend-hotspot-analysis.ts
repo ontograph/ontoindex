@@ -20,6 +20,7 @@ import { normalizeLimit } from './tool-utils.js';
 import { AnalysisResult } from 'ontoindex-shared';
 import { collectGitCommits, type GitCommitRecord } from './backend-git-history.js';
 import { computeCoupling, type HotspotCouplingEntry } from './backend-hotspot-coupling-kernel.js';
+import { markInvocationError } from '../shared/invocation-error.js';
 // Local RepoHandle alias — see backend-route.ts note.
 type RepoHandle = { readonly id: string; readonly name: string; readonly repoPath: string };
 
@@ -190,7 +191,7 @@ export async function runHotspotAnalysis(
       warnings: history.warnings,
     } as AnalysisResult & HotspotResult;
   } catch (err) {
-    return {
+    return markInvocationError({
       status: 'error',
       tool: 'hotspot_analysis',
       repo: repo.name,
@@ -202,6 +203,6 @@ export async function runHotspotAnalysis(
       hotspots: [],
       error: `Hotspot analysis failed: ${legacyErrorMessage(err)}`,
       warnings: [],
-    } as AnalysisResult & HotspotResult;
+    } as AnalysisResult & HotspotResult);
   }
 }

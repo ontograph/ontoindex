@@ -155,7 +155,7 @@ describe('direct CLI tool commands', () => {
 
         expect(errorSpy).toHaveBeenCalledExactlyOnceWith(
           'OntoIndex: workspace_too_large {"observedIndexedFiles":6997,"maxIndexedFiles":5000}. ' +
-            'Use --repo <name> --read-mode committed to read the indexed commit only (uncommitted changes excluded).',
+            'Use --repo <name> --read-mode committed to read the last index; readContext.sourceProvenance reports whether it includes uncommitted changes.',
         );
         expect(process.exitCode).toBe(1);
         expect(writeSyncMock).not.toHaveBeenCalled();

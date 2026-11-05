@@ -28,7 +28,8 @@ vi.mock('../../../src/storage/git.js', () => ({
   getCurrentCommit: vi.fn(),
 }));
 
-vi.mock('../../../src/storage/repo-manager.js', () => ({
+vi.mock('../../../src/storage/repo-manager.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/storage/repo-manager.js')>()),
   getStoragePaths: vi.fn(() => ({ storagePath: '/repo/.ontoindex' })),
   listRegisteredRepos: vi.fn(),
   loadMeta: vi.fn(),
@@ -42,7 +43,7 @@ import { executeParameterized } from '../../../src/core/lbug/pool-adapter.js';
 import { findTestFiles } from '../../../src/mcp/super/_helpers/test-coverage.js';
 import { execFileText } from '../../../src/core/process/exec-file.js';
 import { getCurrentCommit } from '../../../src/storage/git.js';
-import { listRegisteredRepos, loadMeta } from '../../../src/storage/repo-manager.js';
+import { listRegisteredRepos, loadMeta, type RepoMeta } from '../../../src/storage/repo-manager.js';
 import { gnCanDelete } from '../../../src/mcp/super/can-delete.js';
 import { dispatchSuper } from '../../../src/mcp/super/dispatch.js';
 import { dispatchFacade } from '../../../src/mcp/facade/dispatch.js';
@@ -62,6 +63,26 @@ const mockLoadMeta = vi.mocked(loadMeta);
 // ---------------------------------------------------------------------------
 
 const REPO_ID = 'test-repo';
+
+const COMPLETE_META: RepoMeta = {
+  repoPath: '/repo',
+  lastCommit: 'abc123',
+  indexedAt: '2026-07-25T00:00:00.000Z',
+  pipelineProfile: 'full',
+  sourceManifest: {
+    version: 1,
+    head: 'abc123',
+    sourceDigest: 'source',
+    sourceEntryCount: 2,
+    includePaths: [],
+    scopeDigest: 'scope',
+    ignorePolicyDigest: 'ignore',
+    pipelineProfile: 'full',
+    analyzerContractVersion: 'ontoindex-source-manifest-v1',
+    coverage: 'complete',
+  },
+  parserEvidence: { version: 1, parseErrorCount: 0, parseErrorFiles: [], truncated: false },
+};
 
 /** A resolved-symbol row (fuzzy lookup result). */
 function resolvedRow(
@@ -133,12 +154,7 @@ describe('gnCanDelete', () => {
         lastCommit: 'abc123',
       },
     ]);
-    mockLoadMeta.mockResolvedValue({
-      repoPath: '/repo',
-      lastCommit: 'abc123',
-      indexedAt: '2026-07-25T00:00:00.000Z',
-      pipelineProfile: 'full',
-    });
+    mockLoadMeta.mockResolvedValue(COMPLETE_META);
     mockGetCurrentCommit.mockReturnValue('abc123');
     mockExecFileText.mockImplementation(async (_command, args) => {
       if (args[0] === 'git' || args[0] === 'grep') return '';
@@ -149,6 +165,130 @@ describe('gnCanDelete', () => {
   });
 
   // ---- Test 1: fail closed for a reference-free symbol ----------------------
+
+  it.each<[string, Partial<RepoMeta>, 'complete' | 'incomplete' | 'unavailable']>([
+    ['complete generation', {}, 'complete'],
+    ['symbols-only index', { indexMode: 'symbols-only' }, 'incomplete'],
+    ['symbols profile', { pipelineProfile: 'symbols' }, 'incomplete'],
+    ['missing full profile', { pipelineProfile: undefined }, 'incomplete'],
+    ['skipped parsing', { skippedPhases: ['parse'] }, 'incomplete'],
+    [
+      'unrelated degraded file',
+      { degradedFiles: [{ filePath: 'src/other.ts', reason: 'parse failed' }] },
+      'incomplete',
+    ],
+    [
+      'degraded manifest without a target-file entry',
+      { sourceManifest: { ...COMPLETE_META.sourceManifest!, coverage: 'degraded' } },
+      'incomplete',
+    ],
+    [
+      'aggregate sample count only',
+      { degradedFileAggregates: { sampledDegradedCount: 1, groups: [], omittedGroupCount: 0 } },
+      'incomplete',
+    ],
+    [
+      'aggregate omitted group count only',
+      { degradedFileAggregates: { sampledDegradedCount: 0, groups: [], omittedGroupCount: 1 } },
+      'incomplete',
+    ],
+    [
+      'aggregate group count only',
+      {
+        degradedFileAggregates: {
+          sampledDegradedCount: 0,
+          groups: [{ cause: 'parse failed', phase: 'parse', language: 'typescript', count: 1 }],
+          omittedGroupCount: 0,
+        },
+      },
+      'incomplete',
+    ],
+    [
+      'unrelated parser error',
+      {
+        parserEvidence: {
+          version: 1,
+          parseErrorCount: 1,
+          parseErrorFiles: ['src/other.ts'],
+          truncated: false,
+        },
+      },
+      'incomplete',
+    ],
+    [
+      'truncated parser evidence',
+      {
+        parserEvidence: { version: 1, parseErrorCount: 0, parseErrorFiles: [], truncated: true },
+      },
+      'incomplete',
+    ],
+    ['missing parser evidence', { parserEvidence: undefined }, 'unavailable'],
+    [
+      'invalid parser evidence',
+      { parserEvidence: { version: 1 } as RepoMeta['parserEvidence'] },
+      'unavailable',
+    ],
+    [
+      'contradictory zero-error parser evidence',
+      {
+        parserEvidence: {
+          version: 1,
+          parseErrorCount: 0,
+          parseErrorFiles: ['src/other.ts'],
+          truncated: false,
+        },
+      },
+      'unavailable',
+    ],
+    ['missing source manifest', { sourceManifest: undefined }, 'unavailable'],
+    [
+      'unknown source manifest coverage',
+      { sourceManifest: { ...COMPLETE_META.sourceManifest!, coverage: 'unknown' } },
+      'unavailable',
+    ],
+    [
+      'known degradation with missing parser evidence',
+      {
+        parserEvidence: undefined,
+        degradedFiles: [{ filePath: 'src/other.ts', reason: 'parse failed' }],
+      },
+      'incomplete',
+    ],
+    [
+      'known parser error with missing manifest',
+      {
+        sourceManifest: undefined,
+        parserEvidence: {
+          version: 1,
+          parseErrorCount: 1,
+          parseErrorFiles: ['src/other.ts'],
+          truncated: false,
+        },
+      },
+      'incomplete',
+    ],
+    [
+      'zero degradation aggregates',
+      { degradedFileAggregates: { sampledDegradedCount: 0, groups: [], omittedGroupCount: 0 } },
+      'complete',
+    ],
+  ])('reports generation-wide parser coverage for %s', async (_name, metadata, expected) => {
+    mockOrphanSymbol();
+    mockLoadMeta.mockResolvedValue({ ...COMPLETE_META, ...metadata });
+
+    const report = await gnCanDelete(REPO_ID, { symbol: 'orphanHelper' });
+
+    expect(report.evidence.parserCoverage).toBe(expected);
+    const coverageBlockers = report.blockers.filter(
+      (blocker) =>
+        blocker.type === 'incomplete-evidence' && blocker.detail.startsWith('parser coverage '),
+    );
+    expect(coverageBlockers).toEqual(
+      expected === 'complete'
+        ? []
+        : [{ type: 'incomplete-evidence', detail: `parser coverage ${expected}` }],
+    );
+  });
 
   it.each(['caller', 'unresolved'] as const)(
     'preserves the real %s handler report through the facade adapter',

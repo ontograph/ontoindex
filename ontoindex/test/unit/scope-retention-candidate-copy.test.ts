@@ -2,7 +2,6 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ParsedFile } from 'ontoindex-shared';
 import { ScopeRetentionStage } from '../../src/core/ingestion/pipeline-phases/scope-retention-stage.js';
 import {
   copyScopeRetentionCandidate,
@@ -16,29 +15,6 @@ const identity = {
 };
 const directories: string[] = [];
 const stages: ScopeRetentionStage[] = [];
-
-function fixture(): ParsedFile {
-  return {
-    filePath: 'one.ts',
-    moduleScope: 'module',
-    parsedImports: [],
-    localDefs: [],
-    referenceSites: [],
-    scopes: [
-      {
-        id: 'module',
-        parent: null,
-        kind: 'Module',
-        filePath: 'one.ts',
-        range: { startLine: 1, startCol: 0, endLine: 1, endCol: 1 },
-        bindings: new Map(),
-        typeBindings: new Map(),
-        ownedDefs: [],
-        imports: [],
-      },
-    ],
-  };
-}
 
 async function setup(allowance = 64 * 1024 * 1024) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'scope-candidate-copy-'));
@@ -57,8 +33,10 @@ async function setup(allowance = 64 * 1024 * 1024) {
   };
   const stage = new ScopeRetentionStage(request);
   stages.push(stage);
-  stage.capture([fixture()]);
-  await stage.flush();
+  stage.captureORMQueries([
+    { filePath: 'one.ts', orm: 'prisma', model: 'user', method: 'findMany', lineNumber: 0 },
+  ]);
+  stage.reconcile(['one.ts']);
   const manifest = await persistScopeRetentionCandidate(stage, source, identity, request);
   return { source, destination, request, manifest };
 }

@@ -50,8 +50,8 @@ describe('scope retention coverage', () => {
           retained: 0,
           skipped: 0,
           refused: 0,
-          unaccounted: 0,
-          unparsed: 1,
+          unaccounted: 1,
+          unparsed: 0,
           refusalReasons: [],
         },
       ],
@@ -76,7 +76,7 @@ describe('scope retention coverage', () => {
     });
   });
 
-  it('counts missing outcomes for unknown languages as unparsed without blocking completeness', () => {
+  it('keeps missing outcomes for unknown languages unaccounted and incomplete', () => {
     expect(
       summarizeScopeRetentionCoverage([
         { filePath: 'a.ts', status: 'retained' },
@@ -101,12 +101,12 @@ describe('scope retention coverage', () => {
           retained: 0,
           skipped: 0,
           refused: 0,
-          unaccounted: 0,
-          unparsed: 1,
+          unaccounted: 1,
+          unparsed: 0,
           refusalReasons: [],
         },
       ],
-      complete: true,
+      complete: false,
     });
   });
 

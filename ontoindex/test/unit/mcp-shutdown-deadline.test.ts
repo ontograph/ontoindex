@@ -62,19 +62,51 @@ describe('MCP shutdown deadline', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(exit).toHaveBeenCalledWith(0);
     expect(vi.getTimerCount()).toBe(0);
-    expect(stderr).not.toHaveBeenCalled();
+    expect(stderr).toHaveBeenCalledExactlyOnceWith(
+      '[ontoindex:mcp] shutting down: stdin end (exit 0)\n',
+    );
+  });
+
+  it('logs stdin close once even when end follows', async () => {
+    const { exit, stderr } = await harness();
+    process.stdin.emit('close');
+    process.stdin.emit('end');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(0);
+    expect(stderr).toHaveBeenCalledExactlyOnceWith(
+      '[ontoindex:mcp] shutting down: stdin close (exit 0)\n',
+    );
   });
 
   it('a repeated signal waits for the same grace deadline', async () => {
-    const { exit } = await harness(vi.fn(() => new Promise<void>(() => {})));
+    const { exit, stderr } = await harness(vi.fn(() => new Promise<void>(() => {})));
     process.emit('SIGTERM');
     await vi.advanceTimersByTimeAsync(0);
     process.emit('SIGTERM');
     await vi.advanceTimersByTimeAsync(0);
     expect(exit).not.toHaveBeenCalled();
+    expect(stderr).toHaveBeenCalledExactlyOnceWith(
+      '[ontoindex:mcp] shutting down: SIGTERM (exit 0)\n',
+    );
     await vi.advanceTimersByTimeAsync(5000);
     expect(exit).toHaveBeenCalledTimes(1);
   });
+
+  it.each(['stdin', 'stdout'] as const)(
+    'bounds the %s error reason to one line',
+    async (stream) => {
+      const { exit, stderr } = await harness();
+      process[stream].emit('error', new Error('broken\nstream' + 'x'.repeat(100_000)));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(exit).toHaveBeenCalledExactlyOnceWith(0);
+      expect(stderr).toHaveBeenCalledTimes(1);
+      const message = String(stderr.mock.calls[0][0]);
+      expect(message).toContain(`shutting down: ${stream} error: broken stream`);
+      expect(message).toContain('[truncated]');
+      expect(message.split('\n')).toHaveLength(2);
+      expect(Buffer.byteLength(message)).toBeLessThanOrEqual(48 * 1024);
+    },
+  );
 
   it('bounds startup timeout cleanup even when disposal hangs', async () => {
     vi.resetModules();

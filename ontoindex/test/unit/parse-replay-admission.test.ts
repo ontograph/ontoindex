@@ -10,6 +10,7 @@ import { admitScopeRetentionParseReplay } from '../../src/core/ingestion/pipelin
 import { persistScopeRetentionCandidate } from '../../src/core/ingestion/pipeline-phases/scope-retention-candidate.js';
 import { loadScopeRetentionCandidate } from '../../src/core/ingestion/pipeline-phases/scope-retention-candidate-reader.js';
 import { ANALYSIS_PACKS_ROOT } from '../../src/analysis-packs/catalog.js';
+import { SupportedLanguages } from 'ontoindex-shared';
 
 type Candidate = Parameters<typeof admitScopeRetentionParseReplay>[0];
 type Current = {
@@ -39,6 +40,8 @@ describe.sequential('strict parse replay admission against live inputs', () => {
     const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'parse-replay-admission-repo-'));
     directories.push(repoPath);
     await fs.mkdir(path.join(repoPath, 'src'));
+    await fs.mkdir(path.join(repoPath, ANALYSIS_PACKS_ROOT));
+    await fs.writeFile(path.join(repoPath, ANALYSIS_PACKS_ROOT, 'fixture.txt'), 'original');
     for (const [filePath, content] of Object.entries(sources)) {
       await fs.writeFile(path.join(repoPath, filePath), content);
     }
@@ -156,93 +159,76 @@ describe.sequential('strict parse replay admission against live inputs', () => {
     expect(loaded.manifest.retention.discovery!.allPaths).toContain('package.json');
   }, 60_000);
 
-  it('keeps refused Rust scopes neutral while retaining source and legacy graph evidence', () => {
-    expect(candidate.manifest.retention.inventory).toContainEqual({
-      filePath: 'src/legacy.rs',
-      status: 'not-required',
-      reason: 'unsupported-syntax',
-    });
-    expect(candidate.families.parsedFiles.some((file) => file.filePath === 'src/legacy.rs')).toBe(
-      false,
-    );
-    expect(
-      candidate.manifest.retention.inputEvidence.sources.some(
-        (file) => file.filePath === 'src/legacy.rs',
-      ),
-    ).toBe(true);
-    expect(
-      candidate.families.declarationNodes.some(
-        (node) => node.properties.filePath === 'src/legacy.rs',
-      ),
-    ).toBe(true);
-  });
-
-  it('refuses to exempt a consumed TypeScript scope from the inventory', async () => {
-    const changed = structuredClone(candidate);
-    const item = changed.manifest.retention.inventory.find(
-      (file) => file.filePath === 'src/main.ts',
-    )!;
-    item.status = 'not-required';
-    item.reason = 'unsupported-syntax';
-    await refuses(changed);
-  });
-
-  it.each(['directory', 'file', 'symlink'] as const)(
-    'refuses a newly present ignored analysis pack root: %s',
-    async (kind) => {
-      const root = path.join(current.repoPath, ANALYSIS_PACKS_ROOT);
-      try {
-        if (kind === 'directory') await fs.mkdir(root);
-        else if (kind === 'file') await fs.writeFile(root, '');
-        else await fs.symlink('missing-pack-root', root);
-        await expect(
-          admitScopeRetentionParseReplay(
-            structuredClone(candidate),
-            structuredClone(current),
-            request(),
-          ),
-        ).rejects.toThrow('unsupported-analysis-packs');
-      } finally {
-        await fs.rm(root, { recursive: true, force: true });
-      }
+  it.each(['src/legacy.go', 'script'])(
+    'independently refuses unsupported semantics despite claimed complete evidence: %s',
+    async (filePath) => {
+      const changed = structuredClone(candidate);
+      const inputs = structuredClone(current);
+      const previous = 'src/legacy.rs';
+      inputs.allPaths = inputs.allPaths.map((file) => (file === previous ? filePath : file));
+      inputs.scannedFiles = inputs.scannedFiles.map((file) =>
+        file.path === previous
+          ? { ...file, path: filePath, shebangLanguage: SupportedLanguages.Go }
+          : file,
+      );
+      const retention = changed.manifest.retention;
+      Object.assign(retention, {
+        inventory: retention.inventory.map((file) =>
+          file.filePath === previous ? { ...file, filePath } : file,
+        ),
+        discovery: {
+          ...retention.discovery!,
+          allPaths: retention
+            .discovery!.allPaths.map((file) => (file === previous ? filePath : file))
+            .sort(),
+          scanned: retention
+            .discovery!.scanned.map((file) =>
+              file.path === previous ? { path: filePath, language: SupportedLanguages.Go } : file,
+            )
+            .sort((a, b) => a.path.localeCompare(b.path)),
+        },
+      });
+      Object.assign(retention.inputEvidence, {
+        sources: retention.inputEvidence.sources.map((file) =>
+          file.filePath === previous ? { ...file, filePath } : file,
+        ),
+      });
+      const before = structuredClone(changed.families);
+      await expect(admitScopeRetentionParseReplay(changed, inputs, request())).rejects.toThrow(
+        'unsupported retained language',
+      );
+      expect(changed.families).toEqual(before);
     },
   );
 
-  it('keeps a capture with an ignored pack root incomplete after the root is removed', async () => {
+  it('admits unrelated analysis-pack files and symlinks but refuses catalog changes', async () => {
     const root = path.join(current.repoPath, ANALYSIS_PACKS_ROOT);
-    await fs.mkdir(root);
-    let result: Awaited<ReturnType<typeof runChunkedParseAndResolve>> | undefined;
+    const file = path.join(root, 'fixture.txt');
+    const link = path.join(root, 'link');
+    const packDirectory = path.join(root, 'x');
     try {
-      const graph = createKnowledgeGraph();
-      processStructure(graph, current.allPaths);
-      result = await runChunkedParseAndResolve(
-        graph,
-        current.scannedFiles,
-        current.allPaths,
-        current.allPaths.length,
-        current.repoPath,
-        Date.now(),
-        () => {},
-        {
-          skipWorkers: true,
-          scopeRetention: {
-            ...request(),
-            artifactAllowance: { remainingBytes: 64 * 1024 * 1024 },
-            consume: async () => {},
-          },
-        },
+      await expect(
+        admitScopeRetentionParseReplay(candidate, current, request()),
+      ).resolves.toBeUndefined();
+      await fs.writeFile(file, 'changed');
+      await expect(
+        admitScopeRetentionParseReplay(candidate, current, request()),
+      ).resolves.toBeUndefined();
+      await fs.symlink('fixture.txt', link);
+      await expect(
+        admitScopeRetentionParseReplay(candidate, current, request()),
+      ).resolves.toBeUndefined();
+      await fs.mkdir(packDirectory);
+      await fs.writeFile(path.join(packDirectory, 'pack.yml'), 'id: fixture\n');
+      await expect(admitScopeRetentionParseReplay(candidate, current, request())).rejects.toThrow(
+        'analysis-packs input mismatch',
       );
-      await fs.rm(root, { recursive: true });
-      expect(result.scopeRetention!.inputEvidence.complete).toBe(false);
-      expect(result.scopeRetention!.inputEvidence.reasons).toContain('unsupported-analysis-packs');
-      expect(result.scopeRetention!.seedReady).toBe(false);
     } finally {
-      result?.resolutionContext.clear();
-      result?.bindingAccumulator.dispose();
-      await result?.scopeRetention?.dispose();
-      await fs.rm(root, { recursive: true, force: true });
+      await fs.rm(packDirectory, { recursive: true, force: true });
+      await fs.rm(link, { force: true });
+      await fs.writeFile(file, 'original');
     }
-  }, 60_000);
+  });
 
   it.each(['added', 'removed', 'renamed'] as const)('refuses %s JSON discovery', async (mode) => {
     const inputs = structuredClone(current);
@@ -352,33 +338,29 @@ describe.sequential('strict parse replay admission against live inputs', () => {
     await refuses(structuredClone(candidate), inputs);
   });
 
-  it.each([
-    'missing-source',
-    'duplicate-source',
-    'unsafe-source',
-    'duplicate-parsed',
-    'missing-inventory',
-  ] as const)('refuses inconsistent retained paths: %s', async (mode) => {
-    const changed = structuredClone(candidate);
-    const evidence = changed.manifest.retention.inputEvidence;
-    if (mode === 'missing-source') Object.assign(evidence, { sources: evidence.sources.slice(1) });
-    if (mode === 'duplicate-source')
-      Object.assign(evidence, { sources: [...evidence.sources, evidence.sources[0]!] });
-    if (mode === 'unsafe-source')
-      Object.assign(evidence, {
-        sources: [
-          { ...evidence.sources[0]!, filePath: '../outside.ts' },
-          ...evidence.sources.slice(1),
-        ],
-      });
-    if (mode === 'duplicate-parsed')
-      changed.families.parsedFiles.push(structuredClone(changed.families.parsedFiles[0]!));
-    if (mode === 'missing-inventory')
-      Object.assign(changed.manifest.retention, {
-        inventory: changed.manifest.retention.inventory.slice(1),
-      });
-    await refuses(changed);
-  });
+  it.each(['missing-source', 'duplicate-source', 'unsafe-source', 'missing-inventory'] as const)(
+    'refuses inconsistent retained paths: %s',
+    async (mode) => {
+      const changed = structuredClone(candidate);
+      const evidence = changed.manifest.retention.inputEvidence;
+      if (mode === 'missing-source')
+        Object.assign(evidence, { sources: evidence.sources.slice(1) });
+      if (mode === 'duplicate-source')
+        Object.assign(evidence, { sources: [...evidence.sources, evidence.sources[0]!] });
+      if (mode === 'unsafe-source')
+        Object.assign(evidence, {
+          sources: [
+            { ...evidence.sources[0]!, filePath: '../outside.ts' },
+            ...evidence.sources.slice(1),
+          ],
+        });
+      if (mode === 'missing-inventory')
+        Object.assign(changed.manifest.retention, {
+          inventory: changed.manifest.retention.inventory.slice(1),
+        });
+      await refuses(changed);
+    },
+  );
 
   it.each(['../outside.ts', '/tmp/outside.ts', 'src/../util.ts', 'src\\util.ts'])(
     'refuses unsafe current paths: %s',

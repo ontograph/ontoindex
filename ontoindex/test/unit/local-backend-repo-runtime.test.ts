@@ -19,6 +19,7 @@ import {
   workspaceBuildChildEnv,
 } from '../../src/mcp/local/local-backend-repo-runtime.js';
 import type { OverlaySnapshot } from '../../src/mcp/local/backend-overlay.js';
+import { computeSourceManifest } from '../../src/core/indexing/source-manifest.js';
 import { getOverlaySnapshot, evictOverlayState } from '../../src/mcp/local/backend-overlay.js';
 import {
   superviseWorkspaceBuild,
@@ -535,6 +536,47 @@ describe('compiled surviving-build admission', () => {
 describe('workspace read preparation', () => {
   afterEach(() => vi.unstubAllEnvs());
   let sequence = 0;
+  it('invalidates cached clean-base verification when the ignore environment changes', async () => {
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    vi.stubEnv('ONTOINDEX_NO_GITIGNORE', '0');
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-base-policy-'));
+    const repo = { id: root, repoPath: root, storagePath: path.join(root, '.ontoindex') };
+    try {
+      await fs.writeFile(path.join(root, 'source.ts'), 'export const baseline = 1;');
+      const sourceManifest = await computeSourceManifest(root);
+      await fs.mkdir(repo.storagePath);
+      await fs.writeFile(
+        path.join(repo.storagePath, 'meta.json'),
+        JSON.stringify({ sourceManifest }),
+      );
+      const snapshot = {
+        usable: false,
+        reason: null,
+        dirtyPaths: new Set<string>(),
+        tombstones: new Set<string>(),
+        currentHead: 'same-head',
+        baseProvenance: 'working-tree',
+      } as OverlaySnapshot;
+      const options = {
+        repo,
+        needsRelationships: false,
+        requireVerifiedBase: true,
+        dependencies: { getSnapshot: async () => snapshot },
+      };
+      await expect(prepareWorkspaceRead(options)).resolves.toMatchObject({ baseVerified: true });
+      await fs.writeFile(path.join(root, 'source.ts'), 'export const edited = 2;');
+      await expect(prepareWorkspaceRead(options)).resolves.toMatchObject({ baseVerified: true });
+      vi.stubEnv('ONTOINDEX_NO_GITIGNORE', '1');
+      await expect(prepareWorkspaceRead(options)).rejects.toMatchObject({
+        code: 'workspace_coverage_incomplete',
+      });
+      vi.stubEnv('ONTOINDEX_NO_GITIGNORE', '0');
+      await expect(prepareWorkspaceRead(options)).resolves.toMatchObject({ baseVerified: true });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     ['flag off', '0', 2, undefined],
     ['clean tree', '1', 0, undefined],

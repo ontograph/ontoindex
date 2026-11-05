@@ -81,17 +81,6 @@ describe('ResolutionContext.resolve() — namespace imports', () => {
 });
 
 describe('ResolutionContext registration observation', () => {
-  it('retains publication authority across cache resets and releases it on clear', () => {
-    const ctx = createResolutionContext();
-    const authority = { owns: () => true, emit: () => {} };
-    ctx.scopeCallPublication = authority;
-    ctx.enableCache('app.ts');
-    ctx.clearCache();
-    expect(ctx.scopeCallPublication).toBe(authority);
-    ctx.clear();
-    expect(ctx.scopeCallPublication).toBeUndefined();
-  });
-
   it('forwards bounded observation and failure notification without local journaling', () => {
     const events: string[] = [];
     let failures = 0;

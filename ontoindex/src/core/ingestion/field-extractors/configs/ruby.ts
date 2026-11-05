@@ -3,6 +3,7 @@
 import { SupportedLanguages } from 'ontoindex-shared';
 import type { FieldExtractionConfig } from '../generic.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { extractRubyAccessorType } from '../../call-routing.js';
 
 /**
  * Collect all field names declared by an `attr_accessor`, `attr_reader`, or
@@ -64,9 +65,16 @@ export const rubyConfig: FieldExtractionConfig = {
     return extractAttrNames(node);
   },
 
-  extractType(_node) {
-    // Ruby is dynamically typed; no type annotations in standard Ruby
-    return undefined;
+  extractType(node) {
+    // Preserve explicit YARD metadata at the first property registration.
+    const method = node.childForFieldName('method');
+    if (
+      method?.text !== 'attr_accessor' &&
+      method?.text !== 'attr_reader' &&
+      method?.text !== 'attr_writer'
+    )
+      return undefined;
+    return extractRubyAccessorType(node);
   },
 
   extractVisibility(_node) {

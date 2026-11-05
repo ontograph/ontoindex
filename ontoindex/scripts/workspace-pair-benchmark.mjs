@@ -6,7 +6,8 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { startMemorySampling } from './benchmark-memory.mjs';
 
-const retention = { timeoutMs: 120000, maxBytes: 67108864 };
+// MAX_SCOPE_RETENTION_TIMEOUT_MS and twice MAX_SCOPE_RETENTION_BYTES in parse-scope-codec.ts.
+const retention = { timeoutMs: 600000, maxBytes: 1073741824 };
 const kinds = ['full', 'capture', 'replay'];
 
 export function evaluateWorkspacePair(legs) {

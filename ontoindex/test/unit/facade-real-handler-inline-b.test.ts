@@ -178,7 +178,7 @@ describe.each(routes)('real inline audit/$action facade parity', (route) => {
     await assertErrorParity(
       route,
       { ...route.params, [route.inlineField]: 42 },
-      `${route.inlineField}: expected string`,
+      `${route.inlineField}: expected string, received number`,
     );
   });
 
@@ -186,7 +186,7 @@ describe.each(routes)('real inline audit/$action facade parity', (route) => {
     await assertErrorParity(
       route,
       { ...route.params, [route.limitField]: 'many' },
-      `${route.limitField}: expected number`,
+      `${route.limitField}: expected number, received string`,
     );
   });
 
@@ -194,7 +194,7 @@ describe.each(routes)('real inline audit/$action facade parity', (route) => {
     await assertErrorParity(
       route,
       { ...route.params, legacyResponse: 'false' },
-      'legacyResponse: expected boolean',
+      'legacyResponse: expected boolean, received string',
     );
   });
 });

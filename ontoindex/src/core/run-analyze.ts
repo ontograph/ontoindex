@@ -16,6 +16,7 @@ import { type PipelineOptions, type PipelineProfile } from './ingestion/pipeline
 import { normalizeRepositoryIncludePaths } from './ingestion/filesystem-walker.js';
 import {
   planDirtyOverlay,
+  workingTreeMatchesHead,
   captureWorkspaceInputs,
   type WorkspaceInputCapture,
 } from './analyze-delta.js';
@@ -36,6 +37,7 @@ import {
 } from './lbug/lbug-adapter.js';
 import {
   getStoragePaths,
+  isValidParserEvidence,
   OVERLAY_ARTIFACT_BUDGET_BYTES,
   overlayArtifactBytes,
   pruneOverlayGenerations,
@@ -51,7 +53,7 @@ import {
   publishIndexGenerationTransaction,
   type IndexGenerationPaths,
 } from '../storage/repo-manager.js';
-import type { DegradedFileGroupCount } from '../storage/repo-manager.js';
+import type { DegradedFileGroupCount, RepoMeta } from '../storage/repo-manager.js';
 import { getCurrentCommit, hasGitDir } from '../storage/git.js';
 import { getLanguageFromFilename } from 'ontoindex-shared';
 import type { CachedEmbedding } from './embeddings/types.js';
@@ -111,6 +113,36 @@ import {
   copyScopeRetentionCandidate,
 } from './ingestion/pipeline-phases/scope-retention-candidate.js';
 import { loadScopeRetentionCandidate } from './ingestion/pipeline-phases/scope-retention-candidate-reader.js';
+
+/** Whether the working .gitignore contains exactly the edit made by addToGitignore. */
+export async function isOwnGitignoreEdit(repoPath: string): Promise<boolean> {
+  try {
+    const options = { cwd: repoPath, timeoutMs: 10_000, maxBuffer: 10 * 1024 * 1024 };
+    const entry = await execFileText('git', ['ls-tree', 'HEAD', '--', '.gitignore'], options);
+    const original = entry ? await execFileText('git', ['show', 'HEAD:.gitignore'], options) : '';
+    const expected = original.includes('.ontoindex')
+      ? original
+      : original
+        ? `${original}${original.endsWith('\n') ? '' : '\n'}.ontoindex\n`
+        : '.ontoindex\n';
+    return (await fs.readFile(path.join(repoPath, '.gitignore'), 'utf8')) === expected;
+  } catch {
+    return false;
+  }
+}
+
+async function provenanceWithoutOwnGitignore(repoPath: string) {
+  const result = await workingTreeMatchesHead(repoPath);
+  if (result.changedPaths.includes('.gitignore') && (await isOwnGitignoreEdit(repoPath))) {
+    const changedPaths = result.changedPaths.filter((filePath) => filePath !== '.gitignore');
+    return {
+      clean: changedPaths.length === 0,
+      changedPathCount: changedPaths.length,
+      changedPaths,
+    };
+  }
+  return result;
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -191,7 +223,6 @@ export interface AnalyzeResult {
     communities?: number;
     processes?: number;
     embeddings?: number;
-    scopeSkippedUnsupportedRustFiles?: number;
   };
   embeddingLifecycle?: EmbeddingLifecycleSummary;
   alreadyUpToDate?: boolean;
@@ -1253,7 +1284,6 @@ async function runWorkspaceAnalysis(
         ...stats,
         files: pipelineResult.totalFileCount,
         embeddings: 0,
-        scopeSkippedUnsupportedRustFiles: pipelineResult.scopeSkippedUnsupportedRustFiles,
       },
       embeddingLifecycle: { mode: 'off', state: 'absent' },
       pipelineResult,
@@ -1372,6 +1402,14 @@ export async function runFullAnalysis(
   }
   const includePaths = await normalizeRepositoryIncludePaths(repoPath, options.includePaths);
   const requestedProfile = requestedPipelineProfile(options.profile);
+  let initialProvenance: Awaited<ReturnType<typeof workingTreeMatchesHead>> | undefined;
+  if (repoHasGit) {
+    try {
+      initialProvenance = await provenanceWithoutOwnGitignore(repoPath);
+    } catch {
+      // Provenance is advisory and must not prevent analysis.
+    }
+  }
   const inputManifest = await computeSourceManifest(repoPath, {
     includePaths,
     pipelineProfile: requestedProfile,
@@ -1427,6 +1465,7 @@ export async function runFullAnalysis(
     persistedPipelineProfile(existingMeta) === requestedProfile &&
     sameStringList(existingMeta.includePaths, includePaths) &&
     manifestsMatch(existingMeta.sourceManifest, inputManifest) &&
+    isValidParserEvidence(existingMeta.parserEvidence) &&
     existingMeta.sourceManifest?.coverage === 'complete'
   ) {
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
@@ -1485,6 +1524,8 @@ export async function runFullAnalysis(
   let stagedGeneration: IndexGenerationPaths | null = null;
   let persistedCandidateBytes = 0;
   const degradedFiles = new Map<string, { reason: string; phase: string; language: string }>();
+  let parseErrorCount = 0;
+  const parseErrorFiles = new Set<string>();
   const recordDegradedFiles = (
     files?: readonly AnalyzeDegradedFile[],
     phaseName?: string,
@@ -1506,6 +1547,12 @@ export async function runFullAnalysis(
   try {
     const pipelineOptions: PipelineOptions = {};
     pipelineOptions.onTelemetry = (event) => {
+      if (event.event === 'parse-error-files') {
+        parseErrorCount += event.parseErrorCount ?? 0;
+        for (const filePath of event.parseErrorFiles ?? []) {
+          if (parseErrorFiles.size < 1000) parseErrorFiles.add(filePath.replace(/\\/g, '/'));
+        }
+      }
       recordDegradedFiles(event.degradedFiles, event.phaseName);
       if (checkpointEnabled || telemetryEnabled) {
         partialCheckpoint?.record(event);
@@ -1984,12 +2031,45 @@ export async function runFullAnalysis(
         'Managed analysis final source manifest does not match the submission-time manifest digest.',
       );
     }
+    let sourceProvenance: NonNullable<RepoMeta['sourceProvenance']> = {
+      kind: 'unknown',
+      head: currentCommit || null,
+      changedPathCount: initialProvenance?.changedPathCount ?? 0,
+    };
+    if (repoHasGit) {
+      try {
+        const finalProvenance = await provenanceWithoutOwnGitignore(repoPath);
+        const finalHead = getCurrentCommit(repoPath);
+        sourceProvenance = {
+          kind:
+            initialProvenance && (!initialProvenance.clean || !finalProvenance.clean)
+              ? 'working-tree'
+              : initialProvenance && currentCommit && finalHead === currentCommit
+                ? 'commit'
+                : 'unknown',
+          head: finalHead || null,
+          changedPathCount: Math.max(
+            initialProvenance?.changedPathCount ?? 0,
+            finalProvenance.changedPathCount,
+          ),
+        };
+      } catch {
+        // A failed Git probe leaves provenance unknown.
+      }
+    }
     const meta = {
       repoPath,
       lastCommit: currentCommit,
       indexedAt,
       generationId: stagedGeneration.generationId,
       sourceManifest: finalManifest,
+      parserEvidence: {
+        version: 1 as const,
+        parseErrorCount,
+        parseErrorFiles: [...parseErrorFiles].sort(),
+        truncated: parseErrorCount > parseErrorFiles.size,
+      },
+      sourceProvenance,
       stats: {
         files: pipelineResult.totalFileCount,
         nodes: stats.nodes,
@@ -1997,7 +2077,6 @@ export async function runFullAnalysis(
         communities: pipelineResult.communityResult?.stats.totalCommunities,
         processes: pipelineResult.processResult?.stats.totalProcesses,
         embeddings: embeddingCount,
-        scopeSkippedUnsupportedRustFiles: pipelineResult.scopeSkippedUnsupportedRustFiles,
       },
       relationshipDistributions,
       ...(includePaths.length > 0 ? { includePaths } : {}),

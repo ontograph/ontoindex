@@ -1299,6 +1299,13 @@ async function doInitLbugWithDb(
   ensureIdleTimer();
 }
 
+class CheckoutTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CheckoutTimeoutError';
+  }
+}
+
 /**
  * Checkout a connection from the pool.
  * Returns an available connection, or creates a new one if under the cap.
@@ -1333,7 +1340,7 @@ function checkout(entry: PoolEntry): Promise<lbug.Connection> {
       const idx = entry.waiters.indexOf(waiter);
       if (idx !== -1) entry.waiters.splice(idx, 1);
       reject(
-        new Error(
+        new CheckoutTimeoutError(
           `Connection pool exhausted: timed out after ${WAITER_TIMEOUT_MS}ms waiting for a free connection`,
         ),
       );

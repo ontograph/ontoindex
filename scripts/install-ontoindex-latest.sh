@@ -221,7 +221,7 @@ write_linux_repair_instructions() {
 
   echo >&2
   echo "Repair commands for a broken partial install:" >&2
-  echo "  npm uninstall -g ontoindex" >&2
+  echo "  npm uninstall --prefix \"${prefix}\" -g ontoindex" >&2
   echo "  [ -d \"${package_dir}\" ] && rm -rf \"${package_dir}\"" >&2
   echo "  [ -f \"${bin_path}\" ] && rm -f \"${bin_path}\"" >&2
 }
@@ -231,21 +231,14 @@ remove_existing_install() {
   local node_modules_root
   local package_dir
   local bin_path
-  local resolved_command
 
   node_modules_root="$(npm root -g --prefix "${prefix}")"
   package_dir="${node_modules_root}/ontoindex"
   bin_path="${prefix}/bin/ontoindex"
 
-  if [ -d "${package_dir}" ] || [ -f "${bin_path}" ]; then
+  if [ -d "${package_dir}" ] || [ -f "${bin_path}" ] || [ -L "${bin_path}" ]; then
     log "Removing previous OntoIndex install from ${prefix}"
     rm -rf "${package_dir}" "${bin_path}"
-  fi
-
-  resolved_command="$(command -v ontoindex 2>/dev/null || true)"
-  if [ -n "${resolved_command}" ] && [ -L "${resolved_command}" ] && [ ! -e "${resolved_command}" ]; then
-    log "Removing broken ontoindex shim from PATH: ${resolved_command}"
-    rm -f "${resolved_command}"
   fi
 }
 
@@ -351,32 +344,25 @@ if [ ! -f "${asset_url}" ]; then
   fi
 fi
 install_args=(-g ${npm_script_args[@]+"${npm_script_args[@]}"} "${install_asset}")
-bin_path=""
-install_prefix="${default_prefix}"
 log "npm global prefix: ${default_prefix}"
 
-if [ -w "${default_prefix}" ]; then
-  log "Installing OntoIndex ${version} from ${asset_url}"
-  remove_existing_install "${default_prefix}"
-  log "Running npm install -g; native package install can take a few minutes"
-  npm install "${install_args[@]}" || {
-    write_linux_repair_instructions "${default_prefix}"
-    exit 1
-  }
-  bin_path="$(command -v ontoindex || true)"
+if [ -n "${ONTOINDEX_NPM_PREFIX:-}" ]; then
+  install_prefix="${ONTOINDEX_NPM_PREFIX}"
+elif [ -w "${default_prefix}" ]; then
+  install_prefix="${default_prefix}"
 else
-  mkdir -p "${USER_PREFIX}"
   log "Default npm prefix is not writable: ${default_prefix}"
-  log "Installing OntoIndex ${version} into user prefix: ${USER_PREFIX}"
-  remove_existing_install "${USER_PREFIX}"
-  log "Running npm install --prefix ${USER_PREFIX} -g; native package install can take a few minutes"
-  npm install --prefix "${USER_PREFIX}" "${install_args[@]}" || {
-    write_linux_repair_instructions "${USER_PREFIX}"
-    exit 1
-  }
   install_prefix="${USER_PREFIX}"
-  bin_path="${USER_PREFIX}/bin/ontoindex"
 fi
+mkdir -p "${install_prefix}"
+bin_path="${install_prefix}/bin/ontoindex"
+log "Installing OntoIndex ${version} into prefix: ${install_prefix}"
+remove_existing_install "${install_prefix}"
+log "Running npm install --prefix ${install_prefix} -g; native package install can take a few minutes"
+npm install --prefix "${install_prefix}" "${install_args[@]}" || {
+  write_linux_repair_instructions "${install_prefix}"
+  exit 1
+}
 
 if [ ! -x "${bin_path}" ]; then
   echo "error: installed ontoindex binary not found: ${bin_path}" >&2

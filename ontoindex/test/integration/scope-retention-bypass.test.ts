@@ -21,10 +21,9 @@ function snapshot(graph: KnowledgeGraph) {
   };
 }
 
-const fixtures: Array<{ language: string; files: Record<string, string>; primaryFlag?: string }> = [
+const fixtures: Array<{ language: string; files: Record<string, string> }> = [
   {
     language: 'typescript',
-    primaryFlag: 'REGISTRY_PRIMARY_TYPESCRIPT',
     files: {
       'src/main.ts':
         [
@@ -37,7 +36,6 @@ const fixtures: Array<{ language: string; files: Record<string, string>; primary
   },
   {
     language: 'javascript',
-    primaryFlag: 'REGISTRY_PRIMARY_JAVASCRIPT',
     files: {
       'src/main.js':
         [
@@ -158,10 +156,6 @@ describe.sequential('real scope-retention parser bypass', () => {
   it.each(fixtures)(
     '$language bypass survives promotion into the next generation',
     async (fixture) => {
-      if (fixture.primaryFlag) {
-        vi.stubEnv(fixture.primaryFlag, '1');
-        vi.stubEnv('INGESTION_EMIT_SCOPES', '0');
-      }
       const first = await capture(fixture.files);
       const expectedGraph = snapshot(first.result.graph);
       const parser = vi.spyOn(parseImplementation, 'runChunkedParseAndResolve');
@@ -209,35 +203,6 @@ describe.sequential('real scope-retention parser bypass', () => {
       expect(
         (await loadScopeRetentionCandidate(thirdGeneration, first.expected, request())).manifest,
       ).toEqual(first.candidate.manifest);
-
-      if (fixture.primaryFlag) {
-        const graph = third.graph;
-        const functionNode = (name: string) =>
-          graph.nodes.find(
-            ({ label, properties }) =>
-              label === 'Function' &&
-              properties.filePath === Object.keys(fixture.files)[0] &&
-              properties.name === name,
-          );
-        const target = functionNode('target');
-        const invoke = functionNode('invoke');
-        const shadowOnly = functionNode('shadowOnly');
-        const wrongArityOnly = functionNode('wrongArityOnly');
-        expect(target).toBeDefined();
-        expect(invoke).toBeDefined();
-        expect(shadowOnly).toBeDefined();
-        expect(wrongArityOnly).toBeDefined();
-        const targetCalls = graph.relationships.filter(
-          (edge) => edge.type === 'CALLS' && edge.targetId === target!.id,
-        );
-        expect(
-          targetCalls.some(
-            (edge) => edge.sourceId === invoke!.id && edge.reason?.startsWith('scope-resolution:'),
-          ),
-        ).toBe(true);
-        expect(targetCalls.some((edge) => edge.sourceId === shadowOnly!.id)).toBe(false);
-        expect(targetCalls.some((edge) => edge.sourceId === wrongArityOnly!.id)).toBe(false);
-      }
     },
   );
 

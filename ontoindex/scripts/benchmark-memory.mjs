@@ -40,6 +40,9 @@ export async function sampleProcessTreeMemory(rootPid) {
   if (failure) throw failure.reason;
   const root = processes.get(rootPid);
   if (!root || root.state === 'Z' || root.state === 'X') return null;
+  // The kernel omits VmRSS once a process has released its address space, which
+  // happens during exit before the zombie state is visible. Treat it as gone.
+  if (root.rssKiB === null) return null;
   if (!Number.isFinite(root.rssKiB) || root.rssKiB <= 0)
     throw new Error(`Incomplete RSS data for root process ${rootPid}`);
   const samples = [];

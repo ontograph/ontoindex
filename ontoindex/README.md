@@ -188,7 +188,7 @@ ontoindex mcp --project /path/to/target/repo
 - `ONTOINDEX_LBUG_POOL_SIZE` sets the per-repository read connection pool size; it defaults to `2` and accepts `1` through `16`.
 - `ONTOINDEX_AUTO_WORKSPACE` controls automatic preparation of current workspace reads. An absent setting or exactly `1` enables it; `0`, an empty setting, or any other value disables it. Supported CLI and MCP reads prepare an immutable workspace generation when eligible source, configuration or base identity changes. Matching clean inputs reuse the committed index without a workspace build. Relationship reads use the full supported workspace graph; fresh lexical search has no new semantic vectors. Graph resources, lazy read tools, docs code facts and group reads share the preparation boundary. Diagnostics and explicit historical references retain their own scope. See [Working with uncommitted code](#working-with-uncommitted-code) for coverage and recovery.
 - `ONTOINDEX_WORKSPACE_BUILD_TIMEOUT_MS` limits one supervised workspace build; the default is `120000` ms. The request preparation deadline is `60000` ms and covers capture and waiting. Cancelling one waiter does not cancel a shared build still needed by another waiter. Failed preparation returns its typed error; retry only where the response says the error is retryable.
-- `ONTOINDEX_WORKSPACE_MAX_FILES` limits the indexed file count admitted to a full workspace build; the default is `1600`. A required graph above the limit returns `workspace_too_large`. Refresh the committed index with `ontoindex analyze`, reduce the input scope, or deliberately adjust the limit for available resources. An ordinary read does not substitute a stale committed success for failed required preparation. Benchmark runs that raise this gate must say so.
+- `ONTOINDEX_WORKSPACE_MAX_FILES` limits the indexed file count admitted to a full workspace build; the default is `1600`. A required graph above the limit returns `workspace_too_large`. To prepare a separate bounded workspace graph while preserving the committed index, explicitly run `ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph` in the repository, then rerun the read after workspace inputs change. An ordinary read does not substitute a stale committed success for failed required preparation. Benchmark runs that raise this gate must say so. Above the limit, `search` still sees uncommitted symbols through the symbols overlay when at most 50 source files changed and the base and resolver configuration are unchanged; relationship tools, `query` and `repomap` answer from the labelled committed index.
 
 ## Working with uncommitted code
 
@@ -196,8 +196,11 @@ For an explicit view of the indexed commit, add `read_mode: "committed"` and an
 explicit repository to MCP `inspect/explore`, `inspect/context`, `impact/symbol`, or
 `search/semantic`. This bypasses workspace preparation and excludes uncommitted
 source, manual overlays and live LSP references. Responses include `readContext`
-with indexed commit and generation. Live or external enrichment options and
-repository groups are rejected. Omission retains automatic workspace reads.
+with indexed commit, generation, `sourceProvenance` (`commit`, `working-tree`, or
+`unknown`), and `workingTreeIncluded` (`false`, `true`, or `null`). A committed
+index analyzed from a dirty tree can include working-tree source, as these fields
+report. Live or external enrichment options and repository groups are rejected.
+Omission retains automatic workspace reads.
 Repeat the same mode when following a pagination cursor.
 
 Freshness `dirtyCoverage` describes symbol-overlay eligibility.

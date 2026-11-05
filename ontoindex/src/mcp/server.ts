@@ -68,6 +68,14 @@ const COMMITTED_READ_OPERATIONS: ReadonlyArray<{ tool: string; actions?: readonl
   { tool: 'gn_safe_edit_check' },
   { tool: 'gn_can_delete' },
 ];
+const WORKSPACE_READ_OPERATIONS = [
+  { tool: 'search', actions: ['semantic'] },
+  { tool: 'inspect', actions: ['context'] },
+  { tool: 'impact', actions: ['symbol'] },
+] as const;
+const WORKSPACE_READ_SUPPORTED = WORKSPACE_READ_OPERATIONS.map(
+  ({ tool, actions }) => `${tool} ${actions.join('|')}`,
+).join(', ');
 const COMMITTED_READ_SUPPORTED = COMMITTED_READ_OPERATIONS.map(({ tool, actions }) =>
   actions ? `${tool} ${actions.join('|')}` : tool,
 ).join(', ');
@@ -157,6 +165,7 @@ function formatToolCallErrorMessage(
       'workspace_too_large',
       'workspace_timeout',
       'workspace_cancelled',
+      'workspace_coverage_incomplete',
     ].includes(candidate.code)
       ? candidate.code
       : undefined;
@@ -225,7 +234,11 @@ function formatToolCallErrorMessage(
           build: diagnostic.build,
         }
       : undefined;
-  const safeDiagnostics = diagnostics ?? failure ?? timeout;
+  const coverage =
+    code === 'workspace_coverage_incomplete' && typeof diagnostic?.reason === 'string'
+      ? { reason: diagnostic.reason.trim().slice(0, 300) }
+      : undefined;
+  const safeDiagnostics = diagnostics ?? failure ?? timeout ?? coverage;
   return boundMcpErrorText(
     (boundedMessage) =>
       repo || code
@@ -241,7 +254,7 @@ function formatToolCallErrorMessage(
                     remediation: {
                       read_mode: 'committed',
                       message:
-                        'Explicitly set read_mode="committed" to query the indexed commit. Uncommitted source changes, manual overlays and live enrichment are excluded. Do not automatically retry or reindex.' +
+                        'Explicitly set read_mode="committed" to query the last index. Check readContext.sourceProvenance and readContext.workingTreeIncluded to determine whether uncommitted source is included. Manual overlays and live enrichment are excluded. Do not automatically retry or reindex.' +
                         (code === 'workspace_too_large'
                           ? ' To prepare a separate bounded workspace graph while preserving the committed index, explicitly run `ONTOINDEX_AUTO_WORKSPACE=1 ontoindex analyze --workspace-graph` in the repository. Rerun this command after workspace inputs change.'
                           : '') +
@@ -280,21 +293,27 @@ export function getNextStepHint(
   args: Record<string, unknown> | undefined,
 ): string {
   const repo = args?.repo;
-  const repoParam = repo ? `, repo: "${repo}"` : '';
+  const repoParam =
+    (repo ? `, repo: "${repo}"` : '') +
+    (args?.read_mode === 'workspace' ? ', read_mode: "workspace"' : '');
+  const scopeHint = repoParam ? ` Keep ${repoParam.slice(2)} in subsequent calls.` : '';
   const repoPath = repo || '{name}';
   if (args?.read_mode === 'committed') {
     const committedParam = `${repoParam}, read_mode: "committed"`;
     if (toolName === 'search' && args.action === 'semantic') {
-      return `\n\n---\n**Next:** Use inspect({action: "context", uid: "<result_uid>"${committedParam}}) to inspect an indexed result. Uncommitted source and live enrichment remain excluded.`;
+      return `\n\n---\n**Next:** Use inspect({action: "context", uid: "<result_uid>"${committedParam}}) to inspect a result from the last index. Check readContext.sourceProvenance and readContext.workingTreeIncluded to determine whether uncommitted source is included. Manual overlays and live enrichment remain excluded.`;
     }
     if (toolName === 'inspect' && args.action === 'context') {
-      return `\n\n---\n**Next:** Use impact({action: "symbol", target_uid: "<result_uid>", direction: "upstream"${committedParam}}) to inspect committed dependents.`;
+      return `\n\n---\n**Next:** Use impact({action: "symbol", target_uid: "<result_uid>", direction: "upstream"${committedParam}}) to inspect indexed dependents.`;
+    }
+    if (toolName === 'inspect') {
+      return `\n\n---\n**Next:** If planning changes, use impact({action: "symbol", target: "<name>", direction: "upstream"${committedParam}}) to check blast radius.`;
     }
   }
 
   switch (toolName) {
     case 'list_repos':
-      return `\n\n---\n**Next:** READ ontoindex://repo/{name}/context for any repo above to get its overview and check staleness. Outside MCP, the CLI equivalent is \`ontoindex list\`.`;
+      return `\n\n---\n**Next:** READ ontoindex://repo/${repoPath}/context for any repo above to get its overview and check staleness. Outside MCP, the CLI equivalent is \`ontoindex list\`.${scopeHint}`;
 
     case 'query':
       return `\n\n---\n**Next:** To understand a specific symbol in depth, use inspect({action: "context", name: "<symbol_name>"${repoParam}}) to see categorized refs and process participation.`;
@@ -303,10 +322,10 @@ export function getNextStepHint(
       return `\n\n---\n**Next:** If planning changes, use impact({action: "symbol", target: "${args?.name || '<name>'}", direction: "upstream"${repoParam}}) to check blast radius. To see execution flows, READ ontoindex://repo/${repoPath}/processes.`;
 
     case 'impact':
-      return `\n\n---\n**Next:** Review depth-1 direct dependents first; they are the closest dependents, not proof of breakage. To check affected execution flows, READ ontoindex://repo/${repoPath}/processes.`;
+      return `\n\n---\n**Next:** Review depth-1 direct dependents first; they are the closest dependents, not proof of breakage. To check affected execution flows, READ ontoindex://repo/${repoPath}/processes.${scopeHint}`;
 
     case 'detect_changes':
-      return `\n\n---\n**Next:** Review affected processes. Use inspect({action: "context", ...}) on high-risk changed symbols. READ ontoindex://repo/${repoPath}/process/{name} for full execution traces. For explicit post-edit verification, then run gn_verify_diff({ expectedFiles: ["<file>"], expectedSymbols: ["<symbol>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }).`;
+      return `\n\n---\n**Next:** Review affected processes. Use inspect({action: "context", ...${repoParam}}) on high-risk changed symbols. READ ontoindex://repo/${repoPath}/process/{name} for full execution traces. For explicit post-edit verification, then run gn_verify_diff({ expectedFiles: ["<file>"], expectedSymbols: ["<symbol>"]${repoParam} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam} }).`;
 
     case 'cycle_detect':
       return `\n\n---\n**Next:** Pick a representative cycle member and run impact({action: "symbol", target: "<name>", direction: "upstream"${repoParam}}) to see what keeps the cycle relevant. Use inspect({action: "context", name: "<name>"${repoParam}}) to inspect the concrete edges inside the cycle.`;
@@ -315,7 +334,7 @@ export function getNextStepHint(
       return `\n\n---\n**Next:** Inspect the most unstable module, then use search({action: "semantic", query: "<module name>"${repoParam}}) or search({action: "cypher", query: "MATCH ... RETURN ... LIMIT 50"${repoParam}}) to see the concrete cross-module edges behind its Ca/Ce score.`;
 
     case 'migration_progress':
-      return `\n\n---\n**Next:** Start with remaining_files[0], then use gn_verify_diff({ expectedFiles: ["<file>"], expectedSymbols: ["<symbol>"]${repoParam ? `, repo: "${repo}"` : ''} }) after each migration slice to keep the blast radius controlled.`;
+      return `\n\n---\n**Next:** Start with remaining_files[0], then use gn_verify_diff({ expectedFiles: ["<file>"], expectedSymbols: ["<symbol>"]${repoParam} }) after each migration slice to keep the blast radius controlled.`;
 
     case 'boundary_violations':
       return `\n\n---\n**Next:** Pick one violating source file and run inspect({action: "context", name: "<symbol>", file_path: "<source_file>"${repoParam}}) or impact({action: "symbol", target: "<symbol>", direction: "downstream"${repoParam}}) before untangling the dependency.`;
@@ -324,10 +343,10 @@ export function getNextStepHint(
       return `\n\n---\n**Next:** Start with the highest-risk finding, then use inspect({action: "context", name: "<enclosing_symbol>"${repoParam}}) to inspect callers before tightening the type boundary.`;
 
     case 'rename':
-      return `\n\n---\n**Next:** Rename is preview-only (refactor({action: "rename", target: "<symbol>", new_name: "<new>", dry_run: true${repoParam}})); review the candidate list, edit the affected files directly, then run gn_verify_diff({ expectedSymbols: ["<renamed_symbol>"], expectedFiles: ["<expected_file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }).`;
+      return `\n\n---\n**Next:** Rename is preview-only (refactor({action: "rename", target: "<symbol>", new_name: "<new>", dry_run: true${repoParam}})); review the candidate list, edit the affected files directly, then run gn_verify_diff({ expectedSymbols: ["<renamed_symbol>"], expectedFiles: ["<expected_file>"]${repoParam} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam} }).`;
 
     case 'rename_symbol':
-      return `\n\n---\n**Next:** Rename is preview-only (refactor({action: "rename", target: "<symbol>", new_name: "<new>", dry_run: true${repoParam}})); review the candidate list, edit the affected files directly, then run gn_verify_diff({ expectedSymbols: ["<renamed_symbol>"], expectedFiles: ["<expected_file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }).`;
+      return `\n\n---\n**Next:** Rename is preview-only (refactor({action: "rename", target: "<symbol>", new_name: "<new>", dry_run: true${repoParam}})); review the candidate list, edit the affected files directly, then run gn_verify_diff({ expectedSymbols: ["<renamed_symbol>"], expectedFiles: ["<expected_file>"]${repoParam} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam} }).`;
 
     case 'cypher':
       return `\n\n---\n**Next:** To explore a result symbol, use inspect({action: "context", name: "<name>"${repoParam}}). For schema reference, READ ontoindex://repo/${repoPath}/schema.`;
@@ -339,16 +358,16 @@ export function getNextStepHint(
       return `\n\n---\n**Next:** For details on any discovered tool, use inspect({action: "context", name: "<tool_name>"${repoParam}}).`;
 
     case 'analysis_catalog':
-      return `\n\n---\n**Next:** READ ontoindex://repo/${repoPath}/analysis-packs and ontoindex://repo/${repoPath}/analysis-suites to inspect the discovered pack and suite manifests in resource form.`;
+      return `\n\n---\n**Next:** READ ontoindex://repo/${repoPath}/analysis-packs and ontoindex://repo/${repoPath}/analysis-suites to inspect the discovered pack and suite manifests in resource form.${scopeHint}`;
 
     case 'audit_rerun':
-      return `\n\n---\n**Next:** Review the rerun status for each finding, then update the source audit file or fix the still-live findings before rerunning the audit.`;
+      return `\n\n---\n**Next:** Review the rerun status for each finding, then update the source audit file or fix the still-live findings before rerunning the audit.${scopeHint}`;
 
     case 'pattern_audit':
       return `\n\n---\n**Next:** Start with the highest-signal finding, then use inspect({action: "evidence", targets: ["<file>:<line>"]${repoParam}}) or inspect({action: "context", name: "<symbol>"${repoParam}}) to inspect the risky code in place.`;
 
     case 'build_residue_audit':
-      return `\n\n---\n**Next:** Triage build-output matches first. If they are real leakage, inspect the source file and the emitting build path before changing filters or bundling logic.`;
+      return `\n\n---\n**Next:** Triage build-output matches first. If they are real leakage, inspect the source file and the emitting build path before changing filters or bundling logic.${scopeHint}`;
 
     case 'cross_doc_drift':
       return `\n\n---\n**Next:** Update the stale plan/audit docs or fix the still-open findings, then rerun audit({action: "drift"${repoParam}}) to confirm the documentation matches reality.`;
@@ -369,7 +388,7 @@ export function getNextStepHint(
       return `\n\n---\n**Next:** Start with the top-ranked symbol, then use impact({action: "symbol", target: "<name>", direction: "upstream"${repoParam}}) to confirm the real blast radius before refactoring it.`;
 
     case 'verification_gap':
-      return `\n\n---\n**Next:** Add or update tests for the uncovered files, then rerun gn_test_gap({${repoParam ? ` repo: "${repo}" ` : ''}}) to confirm coverage moved from uncovered to covered.`;
+      return `\n\n---\n**Next:** Add or update tests for the uncovered files, then rerun gn_test_gap({${repoParam ? ` ${repoParam.slice(2)} ` : ''}}) to confirm coverage moved from uncovered to covered.`;
 
     case 'ipc_trace':
       return `\n\n---\n**Next:** Follow the traced bridge steps into inspect({action: "context", name: "<symbol>"${repoParam}}) or inspect({action: "evidence", targets: ["<file>:<line>"]${repoParam}}) to inspect the native boundary in detail.`;
@@ -396,53 +415,61 @@ export function getNextStepHint(
       return `\n\n---\n**Next:** After set/get, use list({ action: "list", session_id: "${args?.session_id || '<id>'}"${repoParam} }) to see all keys for this session.`;
 
     case 'group_list':
-      return `\n\n---\n**Next:** For cross-member impact, call impact({action: "symbol", target: "<symbol>", repo: "@<groupName>"}).`;
+      return `\n\n---\n**Next:** For cross-member impact, call impact({action: "symbol", target: "<symbol>"${repo ? repoParam : `, repo: "@<groupName>"${repoParam}`}}).`;
 
     case 'group_sync':
-      return `\n\n---\n**Next:** After sync, discover({action: "repos"}) to verify fresh indexedAt. For a fresh query, use search({action: "semantic", query: "<term>", repo: "@<groupName>"}).`;
+      return `\n\n---\n**Next:** After sync, discover({action: "repos"${repoParam}}) to verify fresh indexedAt. For a fresh query, use search({action: "semantic", query: "<term>"${repo ? repoParam : `, repo: "@<groupName>"${repoParam}`}}).`;
 
     case 'sandbox':
       return `\n\n---\n**Next:** Sandbox apply is unavailable. Review the staged preview, edit files directly, then verify with gn_verify_diff({ changedFiles: [...], expectedFiles: [...]${repoParam} }).`;
 
     case 'replace_symbol':
-      return `\n\n---\n**Next:** Previewed with dry_run? Rerun replace_symbol({ uid: "${args?.uid || '<uid>'}", new_body: "...", dry_run: false, confirm: true${repoParam} }) to write. Then run gn_verify_diff({ expectedSymbols: ["<symbol>"], expectedFiles: ["<file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }) to verify the rewrite didn't regress callers.`;
+      return `\n\n---\n**Next:** Previewed with dry_run? Rerun replace_symbol({ uid: "${args?.uid || '<uid>'}", new_body: "...", dry_run: false, confirm: true${repoParam} }) to write. Then run gn_verify_diff({ expectedSymbols: ["<symbol>"], expectedFiles: ["<file>"]${repoParam} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam} }) to verify the rewrite didn't regress callers.`;
 
     case 'get_symbol_info':
       return `\n\n---\n**Next:** Use the returned UID with refactor({action: "rename", uid: "<uid>", new_name: "...", dry_run: true${repoParam}}) to review zero-ambiguity rename candidates; then edit files directly and verify. Use update_symbol_body({ uid: "<uid>", new_body: "..."${repoParam} }) to rewrite the implementation.`;
 
     case 'update_symbol_body':
-      return `\n\n---\n**Next:** Run gn_verify_diff({ expectedSymbols: ["<symbol>"], expectedFiles: ["<file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }) to verify the rewrite didn't regress callers.`;
+      return `\n\n---\n**Next:** Run gn_verify_diff({ expectedSymbols: ["<symbol>"], expectedFiles: ["<file>"]${repoParam} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam} }) to verify the rewrite didn't regress callers.`;
 
     case 'extract_function':
-      return `\n\n---\n**Next:** Run gn_verify_diff({ expectedSymbols: ["<source_symbol>", "<extracted_symbol>"], expectedFiles: ["<file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }) to verify no unexpected side effects from the extraction.`;
+      return `\n\n---\n**Next:** Run gn_verify_diff({ expectedSymbols: ["<source_symbol>", "<extracted_symbol>"], expectedFiles: ["<file>"]${repoParam} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam} }) to verify no unexpected side effects from the extraction.`;
 
     case 'move_symbol':
-      return `\n\n---\n**Next:** Run gn_verify_diff({ expectedSymbols: ["<moved_symbol>"], expectedFiles: ["<old_file>", "<new_file>"]${repoParam ? `, repo: "${repo}"` : ''} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam ? `, repo: "${repo}"` : ''} }) to verify no unexpected side effects from the move.`;
+      return `\n\n---\n**Next:** Run gn_verify_diff({ expectedSymbols: ["<moved_symbol>"], expectedFiles: ["<old_file>", "<new_file>"]${repoParam} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam} }) to verify no unexpected side effects from the move.`;
 
     case 'discover':
-      return `\n\n---\n**Next:** Use search({action: "semantic", query: "..."}) to find code, or inspect({action: "context", name: "..."}) for a symbol deep-dive.`;
+      return `\n\n---\n**Next:** Use search({action: "semantic", query: "..."${repoParam}}) to find code, or inspect({action: "context", name: "..."${repoParam}}) for a symbol deep-dive.`;
     case 'search':
-      if (args?.action === 'semantic' && args?.consume_enrichment_facts !== true) {
+      if (
+        !args?.read_mode &&
+        args?.action === 'semantic' &&
+        args?.consume_enrichment_facts !== true
+      ) {
         return `\n\n---\n**Next:** To include opt-in sidecar context, rerun search({action: "semantic", query: "...", consume_enrichment_facts: true, include_passive_related_facts: true, include_markdown_context: true${repoParam}}), then inspect({action: "context", target: "<symbol>"${repoParam}}) for a result.`;
       }
-      if (args?.action === 'semantic' && args?.include_markdown_context === true) {
+      if (
+        !args?.read_mode &&
+        args?.action === 'semantic' &&
+        args?.include_markdown_context === true
+      ) {
         return `\n\n---\n**Next:** Use inspect({action: "context", target: "<symbol>", consume_enrichment_facts: true${repoParam}}) for code refs, or rerun search with include_markdown_ppr: true to include bounded Markdown document PPR metadata.`;
       }
-      return `\n\n---\n**Next:** Use inspect({action: "context", name: "<symbol>"}) to explore a result in depth.`;
+      return `\n\n---\n**Next:** Use inspect({action: "context", name: "<symbol>"${repoParam}}) to explore a result in depth.`;
     case 'inspect':
-      return `\n\n---\n**Next:** If planning changes, use impact({action: "symbol", target: "<name>", direction: "upstream"}) to check blast radius.`;
+      return `\n\n---\n**Next:** If planning changes, use impact({action: "symbol", target: "<name>", direction: "upstream"${repoParam}}) to check blast radius.`;
     case 'audit':
-      return `\n\n---\n**Next:** Use inspect({action: "evidence", targets: ["<file>:<line>"]}) to collect code snippets for the top finding.`;
+      return `\n\n---\n**Next:** Use inspect({action: "evidence", targets: ["<file>:<line>"]${repoParam}}) to collect code snippets for the top finding.`;
     case 'refactor':
-      return `\n\n---\n**Next:** Run gn_verify_diff({ expectedFiles: ["<file>"], expectedSymbols: ["<symbol>"] }) and gn_test_gap({ executedTests: ["<test>"] }) to verify no unexpected side effects from the change.`;
+      return `\n\n---\n**Next:** Run gn_verify_diff({ expectedFiles: ["<file>"], expectedSymbols: ["<symbol>"]${repoParam} }) and gn_test_gap({ executedTests: ["<test>"]${repoParam} }) to verify no unexpected side effects from the change.`;
     case 'manage':
-      return `\n\n---\n**Next:** Use search({action: "semantic", query: "..."}) to continue exploring the codebase.`;
+      return `\n\n---\n**Next:** Use search({action: "semantic", query: "..."${repoParam}}) to continue exploring the codebase.`;
 
     // Legacy tool names — still return useful hints
     case 'explore':
       return `\n\n---\n**Next:** If planning changes, use impact({action: "symbol", target: "<name>", direction: "upstream"${repoParam}}).`;
     case 'overview':
-      return `\n\n---\n**Next:** To drill into an area, READ ontoindex://repo/${repoPath}/cluster/{name}. To see execution flows, READ ontoindex://repo/${repoPath}/processes.`;
+      return `\n\n---\n**Next:** To drill into an area, READ ontoindex://repo/${repoPath}/cluster/{name}. To see execution flows, READ ontoindex://repo/${repoPath}/processes.${scopeHint}`;
 
     default:
       return '';
@@ -654,8 +681,12 @@ export function createMCPServer(
                     ...(tool.inputSchema as any).properties,
                     read_mode: {
                       type: 'string',
-                      enum: ['committed'],
-                      description: `Explicit indexed-commit view; excludes uncommitted source and live enrichment. Supported: ${COMMITTED_READ_SUPPORTED}.`,
+                      enum: WORKSPACE_READ_OPERATIONS.some(
+                        (operation) => operation.tool === tool.name,
+                      )
+                        ? ['committed', 'workspace']
+                        : ['committed'],
+                      description: `Explicit indexed-commit or workspace view; both exclude live enrichment. Committed supports: ${COMMITTED_READ_SUPPORTED}. Workspace supports: ${WORKSPACE_READ_SUPPORTED}.`,
                     },
                   },
                 }
@@ -690,10 +721,14 @@ export function createMCPServer(
           ({ tool, actions }) =>
             name === tool && (!actions || actions.some((action) => action === typedArgs.action)),
         );
+        const supportedWorkspaceRead = WORKSPACE_READ_OPERATIONS.some(
+          ({ tool, actions }) =>
+            name === tool && actions.some((action) => action === typedArgs.action),
+        );
         const committedFallbackAvailable =
           supportedCommittedRead &&
           !options.full &&
-          typedArgs.read_mode === undefined &&
+          (typedArgs.read_mode === undefined || typedArgs.read_mode === 'workspace') &&
           typeof typedArgs.repo === 'string' &&
           typedArgs.repo.trim().length > 0 &&
           !typedArgs.repo.startsWith('@') &&
@@ -707,25 +742,27 @@ export function createMCPServer(
           const oversized = findOversizedArgument(typedArgs);
           if (oversized) throw new Error(`Invalid arguments for ${name}: ${oversized}`);
           const responseBudgetBytes = validateResponseBudget(typedArgs.response_budget_bytes);
-          const committedRead = typedArgs.read_mode !== undefined;
-          if (committedRead) {
+          const committedRead = typedArgs.read_mode === 'committed';
+          const workspaceRead = typedArgs.read_mode === 'workspace';
+          if (typedArgs.read_mode !== undefined) {
             if (
-              typedArgs.read_mode !== 'committed' ||
-              !supportedCommittedRead ||
+              (!committedRead && !workspaceRead) ||
+              !(committedRead ? supportedCommittedRead : supportedWorkspaceRead) ||
               options.full ||
               typeof typedArgs.repo !== 'string' ||
+              !typedArgs.repo.trim() ||
               typedArgs.repo.startsWith('@')
             ) {
               const reason =
-                typedArgs.read_mode !== 'committed'
+                !committedRead && !workspaceRead
                   ? `Unsupported read_mode value: ${String(typedArgs.read_mode)}.`
-                  : !supportedCommittedRead
+                  : !(committedRead ? supportedCommittedRead : supportedWorkspaceRead)
                     ? `Received ${name}/${String(typedArgs.action)}.`
                     : options.full
-                      ? 'Committed reads are unavailable in full-backend mode.'
+                      ? 'Explicit reads are unavailable in full-backend mode.'
                       : 'Missing single repository or received a repository group.';
               throw new Error(
-                `read_mode=committed requires an explicit single repository and a supported navigation operation. ${reason} Supported: ${COMMITTED_READ_SUPPORTED}.`,
+                `read_mode=${workspaceRead ? 'workspace' : 'committed'} requires an explicit single repository and a supported navigation operation. ${reason} Committed supported: ${COMMITTED_READ_SUPPORTED}. Workspace supported: ${WORKSPACE_READ_SUPPORTED}.`,
               );
             }
             if (
@@ -733,9 +770,12 @@ export function createMCPServer(
               typedArgs.consume_enrichment_facts === true ||
               typedArgs.include_passive_related_facts === true ||
               typedArgs.include_markdown_context === true ||
+              typedArgs.include_markdown_ppr === true ||
               (typedArgs.retrieval_policy && typedArgs.retrieval_policy !== 'graph-only')
             ) {
-              throw new Error('Committed reads do not support live or external enrichment.');
+              throw new Error(
+                `${committedRead ? 'Committed' : 'Workspace'} reads do not support live or external enrichment.`,
+              );
             }
           }
           if (options.transport === 'http' && name === 'gn_quality_mode') {
@@ -804,13 +844,13 @@ export function createMCPServer(
             return result;
           };
           let result: unknown;
-          if (committedRead) {
+          if (committedRead || workspaceRead) {
             const repo = await backend.resolveRepo(typedArgs.repo as string);
             repoIdentity = { repoLabel: repo.name ?? repo.id, repoPath: repo.repoPath };
             await backend.ensureRepoInitialized(repo.id);
             result = await backend.withPreparedRepoRead(
               repo,
-              { needsRelationships: true, readMode: 'committed' },
+              { needsRelationships: true, readMode: committedRead ? 'committed' : 'workspace' },
               execute,
             );
           } else {
@@ -1015,11 +1055,17 @@ export async function startMCPServer(
   // may observe an already-closed stdio stream or emit errors while starting.
   let shuttingDown = false;
   let shutdownExitCode = 0;
-  const shutdown = async (exitCode = 0) => {
+  const shutdown = async (exitCode: number, reason: string) => {
     shutdownExitCode = Math.max(shutdownExitCode, exitCode);
     // Repeated signals do not cut cleanup short; the grace deadline is the only bound.
     if (shuttingDown) return;
     shuttingDown = true;
+    process.stderr.write(
+      boundMcpErrorText(
+        (message) => `[ontoindex:mcp] shutting down: ${message} (exit ${shutdownExitCode})\n`,
+        reason.replace(/[\r\n]/g, ' '),
+      ),
+    );
     const completed = await withShutdownGrace(
       (async () => {
         // close fences admission synchronously; disposal cancels builders that
@@ -1043,12 +1089,12 @@ export async function startMCPServer(
 
   // Wrapped: Node passes the signal name to handlers, and process.exit()
   // throws ERR_INVALID_ARG_TYPE on a string exit code.
-  process.on('SIGINT', () => void shutdown(0));
-  process.on('SIGTERM', () => void shutdown(0));
+  process.on('SIGINT', () => void shutdown(0, 'SIGINT'));
+  process.on('SIGTERM', () => void shutdown(0, 'SIGTERM'));
   // uncaughtException is fatal; unhandledRejection is logged but non-fatal (availability-first).
   process.on('uncaughtException', (err) => {
     process.stderr.write(`OntoIndex MCP uncaughtException: ${err?.stack || err}\n`);
-    shutdown(1);
+    shutdown(1, 'uncaughtException');
   });
   process.on('unhandledRejection', (reason: unknown) => {
     process.stderr.write(
@@ -1056,11 +1102,12 @@ export async function startMCPServer(
     );
   });
   // stdin end/close/error means the parent process is gone.
-  process.stdin.on('end', () => void shutdown());
-  process.stdin.on('close', () => void shutdown());
-  process.stdin.on('error', () => void shutdown());
-  process.stdout.on('error', () => void shutdown());
-  if (process.stdin.destroyed || process.stdin.readableEnded) void shutdown();
+  process.stdin.on('end', () => void shutdown(0, 'stdin end'));
+  process.stdin.on('close', () => void shutdown(0, 'stdin close'));
+  process.stdin.on('error', (error) => void shutdown(0, `stdin error: ${error.message}`));
+  process.stdout.on('error', (error) => void shutdown(0, `stdout error: ${error.message}`));
+  if (process.stdin.destroyed || process.stdin.readableEnded)
+    void shutdown(0, 'stdin already closed');
 
   const idleMs = resolveIdleExitMs(process.env.ONTOINDEX_MCP_IDLE_EXIT_MS);
   if (idleMs !== null) {
@@ -1075,7 +1122,7 @@ export async function startMCPServer(
         process.stderr.write(
           `[ontoindex] idle for ${idleMs} ms; exiting (restart the MCP client connection to resume)\n`,
         );
-        void shutdown(0);
+        void shutdown(0, 'idle');
       },
     });
     const checkIntervalMs = Math.min(30_000, idleMs / 4);

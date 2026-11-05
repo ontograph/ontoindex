@@ -429,9 +429,10 @@ program
   .command('query <search_query>')
   .description('Search the knowledge graph for execution flows related to a concept')
   .addOption(
-    new Option('--read-mode <mode>', 'Read the indexed commit only; requires --repo').choices([
-      'committed',
-    ]),
+    new Option(
+      '--read-mode <mode>',
+      'Read the indexed commit or workspace including uncommitted changes; requires --repo',
+    ).choices(['committed', 'workspace']),
   )
   .option('-r, --repo <name>', 'Target repository (omit if only one indexed)')
   .option('-c, --context <text>', 'Task context to improve ranking')
@@ -471,9 +472,10 @@ program
   .command('context [name]')
   .description('360-degree view of a code symbol: callers, callees, processes')
   .addOption(
-    new Option('--read-mode <mode>', 'Read the indexed commit only; requires --repo').choices([
-      'committed',
-    ]),
+    new Option(
+      '--read-mode <mode>',
+      'Read the indexed commit or workspace including uncommitted changes; requires --repo',
+    ).choices(['committed', 'workspace']),
   )
   .option('-r, --repo <name>', 'Target repository')
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
@@ -485,9 +487,10 @@ program
   .command('impact <target>')
   .description('Blast radius analysis: what breaks if you change a symbol')
   .addOption(
-    new Option('--read-mode <mode>', 'Read the indexed commit only; requires --repo').choices([
-      'committed',
-    ]),
+    new Option(
+      '--read-mode <mode>',
+      'Read the indexed commit or workspace including uncommitted changes; requires --repo',
+    ).choices(['committed', 'workspace']),
   )
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-d, --direction <dir>', 'upstream (dependants) or downstream (dependencies)', 'upstream')

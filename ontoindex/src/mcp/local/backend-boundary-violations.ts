@@ -4,6 +4,7 @@ import { minimatch } from 'minimatch';
 import { normalizeLimit } from './tool-utils.js';
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { AnalysisResult, DiagnosticFinding } from 'ontoindex-shared';
+import { markInvocationError } from '../shared/invocation-error.js';
 
 type RepoHandle = { readonly id: string; readonly name: string; readonly repoPath: string };
 
@@ -232,7 +233,7 @@ export async function runBoundaryViolations(
       warnings: cleanRules.length > 0 ? [`Rules passed: ${cleanRules.join(', ')}`] : [],
     } as unknown as AnalysisResult & BoundaryViolationsResult;
   } catch (err: unknown) {
-    return {
+    return markInvocationError({
       status: 'error',
       tool: 'boundary_violations',
       repo: repo.name,
@@ -249,6 +250,6 @@ export async function runBoundaryViolations(
       findings: [],
       stats: { totalFindings: 0, durationMs: Date.now() - start },
       errors: [`Boundary violation analysis failed: ${formatCaughtError(err)}`],
-    } as unknown as AnalysisResult & BoundaryViolationsResult;
+    } as unknown as AnalysisResult & BoundaryViolationsResult);
   }
 }

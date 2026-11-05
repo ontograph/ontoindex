@@ -343,15 +343,6 @@ const emitVueTemplateComponentFallback = (
   effectiveCall: ExtractedCall,
   ctx: ResolutionContext,
 ): void => {
-  if (
-    ctx.scopeCallPublication?.owns(
-      effectiveCall.filePath,
-      effectiveCall.calledName,
-      effectiveCall.atRange,
-      effectiveCall.callForm,
-    )
-  )
-    return;
   if (!effectiveCall.filePath.endsWith('.vue') || !effectiveCall.sourceId.startsWith('File:')) {
     return;
   }
@@ -385,15 +376,6 @@ const emitJsxComponentFallback = (
   effectiveCall: ExtractedCall,
   ctx: ResolutionContext,
 ): void => {
-  if (
-    ctx.scopeCallPublication?.owns(
-      effectiveCall.filePath,
-      effectiveCall.calledName,
-      effectiveCall.atRange,
-      effectiveCall.callForm,
-    )
-  )
-    return;
   if (
     (!effectiveCall.filePath.endsWith('.tsx') && !effectiveCall.filePath.endsWith('.jsx')) ||
     !effectiveCall.sourceId.startsWith('File:')
@@ -432,15 +414,6 @@ const emitResolvedCallEdges = (
   ctx: ResolutionContext,
   heritageMap?: HeritageMap,
 ): void => {
-  if (
-    ctx.scopeCallPublication?.owns(
-      effectiveCall.filePath,
-      effectiveCall.calledName,
-      effectiveCall.atRange,
-      effectiveCall.callForm,
-    )
-  )
-    return;
   if (
     !canPublishCallEdge(
       effectiveCall.callForm,

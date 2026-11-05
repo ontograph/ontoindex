@@ -86,7 +86,6 @@ export function extractImports(
           ormQueries: [],
           constructorBindings: [],
           fileScopeBindings: [],
-          parsedFiles: [],
           processedPaths: [filePath],
           parseErrorPaths: [],
           fileTimings: [],

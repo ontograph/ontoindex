@@ -41,7 +41,6 @@ import { isVerboseIngestionEnabled } from './utils/verbose.js';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import {
   FUNCTION_NODE_TYPES,
-  findEnclosingClassId,
   findEnclosingClassInfo,
   genericFuncName,
   inferFunctionLabel,
@@ -383,12 +382,14 @@ const findEnclosingFunction = (
         }
         const classInfo2 = findEnclosingClassInfo(current, filePath);
         const qualifiedName = classInfo2 ? `${classInfo2.className}.${funcName}` : funcName;
-        // Include #<arity> and ~typeTag suffix to match definition-phase Method/Constructor IDs.
+        // Match definition-phase arity/type tags, including Swift member Functions.
         const language = getLanguageFromFilename(filePath);
         let arity: number | undefined;
         let encTypeTag = '';
         if (
-          (finalLabel === 'Method' || finalLabel === 'Constructor') &&
+          (finalLabel === 'Method' ||
+            finalLabel === 'Constructor' ||
+            (finalLabel === 'Function' && language === SupportedLanguages.Swift && !!classInfo2)) &&
           provider.methodExtractor &&
           language
         ) {
@@ -886,7 +887,9 @@ const captureSequentialCall = (
   sourceId: string,
 ): void => {
   let receiverTypeName =
-    callSite.receiverName && typeEnv ? typeEnv.lookup(callSite.receiverName, callNode) : undefined;
+    callSite.receiverName && typeEnv
+      ? typeEnv.lookup(callSite.receiverName, callNode, 'receiver')
+      : undefined;
   if (
     callSite.typeAsReceiverHeuristic &&
     callSite.receiverName !== undefined &&
@@ -941,7 +944,7 @@ const resolveExtractedLanguageCallSite = (
     findEnclosingFunction(callNode, file.path, ctx, provider) || generateId('File', file.path);
   const receiverName = langCallSite.callForm === 'member' ? langCallSite.receiverName : undefined;
   let receiverTypeName =
-    receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
+    receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode, 'receiver') : undefined;
 
   if (
     langCallSite.typeAsReceiverHeuristic &&
@@ -984,16 +987,6 @@ const resolveExtractedLanguageCallSite = (
       resolved.filePath,
       process.env,
       ctx.importMap.get(file.path),
-    )
-  )
-    return true;
-
-  if (
-    ctx.scopeCallPublication?.owns(
-      file.path,
-      langCallSite.calledName,
-      callExpressionRange(callNode),
-      langCallSite.callForm,
     )
   )
     return true;
@@ -1140,9 +1133,18 @@ const resolvePreparedSequentialFile = (
 
           case 'properties': {
             const fileId = generateId('File', file.path);
-            const propEnclosingClassId = findEnclosingClassId(captureMap['call'], file.path);
+            const propEnclosingInfo = findEnclosingClassInfo(
+              captureMap['call'],
+              file.path,
+              provider.resolveEnclosingOwner,
+            );
+            const propEnclosingClassId = propEnclosingInfo?.classId;
             for (const item of routed.items) {
-              const nodeId = generateId('Property', `${file.path}:${item.propName}`);
+              const propQualifiedName = propEnclosingInfo
+                ? `${propEnclosingInfo.className}.${item.propName}`
+                : item.propName;
+              const nodeId = generateId('Property', `${file.path}:${propQualifiedName}`);
+              if (graph.getNode(nodeId)) continue;
               graph.addNode({
                 id: nodeId,
                 label: 'Property',
@@ -1211,7 +1213,7 @@ const resolvePreparedSequentialFile = (
       let callForm = inferCallForm(callNode, nameNode);
       let receiverName = callForm === 'member' ? extractReceiverName(nameNode) : undefined;
       let receiverTypeName =
-        receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode) : undefined;
+        receiverName && typeEnv ? typeEnv.lookup(receiverName, callNode, 'receiver') : undefined;
       let receiverSource: ReceiverSource = receiverTypeName ? 'typed-binding' : 'none';
       // Phase P: virtual dispatch override — when the declared type is a base class but
       // the constructor created a known subclass, prefer the more specific type.
@@ -1299,7 +1301,7 @@ const resolvePreparedSequentialFile = (
           if (extracted && extracted.chain.length > 0) {
             let currentType =
               extracted.baseReceiverName && typeEnv
-                ? typeEnv.lookup(extracted.baseReceiverName, callNode)
+                ? typeEnv.lookup(extracted.baseReceiverName, callNode, 'receiver')
                 : undefined;
             if (!currentType && extracted.baseReceiverName && receiverIndex.size > 0) {
               const funcName = enclosingFuncId ? extractFuncNameFromSourceId(enclosingFuncId) : '';
@@ -1331,6 +1333,9 @@ const resolvePreparedSequentialFile = (
               );
               if (receiverTypeName) receiverSource = 'mixed-chain';
             }
+            // A recognized chain must resolve completely before outer dispatch.
+            // Otherwise name-only fallback can select an unrelated method.
+            if (!receiverTypeName) return;
           }
         }
       }
@@ -1399,15 +1404,6 @@ const resolvePreparedSequentialFile = (
       );
 
       if (!resolved) return;
-      if (
-        ctx.scopeCallPublication?.owns(
-          file.path,
-          calledName,
-          callExpressionRange(callNode),
-          callForm,
-        )
-      )
-        return;
       if (
         !canPublishCallEdge(
           callForm,
@@ -2296,15 +2292,27 @@ const resolveCallTarget = (
     if (call.callForm === 'member' && currentFile.endsWith('.rs')) return null;
     return singleCandidate(tiered, call.argCount, call.callForm);
   }
+  // An opaque explicit receiver provides no evidence for a name-only method match.
+  if (
+    call.callForm === 'member' &&
+    (!call.receiverName || (currentFile.endsWith('.go') && call.receiverName.includes('[')))
+  )
+    return null;
+
   // Member call with no inferred receiver type — e.g. Python `mod.fn()`
   // where `mod` is a module alias. Module-alias narrowing is the primary
   // disambiguation signal here. Also consulted from the typed-member
   // branch above as a guarded fallback after owner/file-scoped resolvers.
+  const language = getLanguageFromFilename(currentFile);
   return (
     resolveModuleAliasedCall(call, currentFile, ctx, widenCache, tiered) ??
+    // An unknown TS/JS receiver cannot justify an unrelated name-only match.
     // A same-file Rust method of that name does not prove it owns an unknown receiver;
     // import/global single candidates keep resolving (e.g. method-chain results).
-    (call.callForm === 'member' && currentFile.endsWith('.rs') && tiered?.tier === 'same-file'
+    (call.callForm === 'member' &&
+    (language === SupportedLanguages.TypeScript ||
+      language === SupportedLanguages.JavaScript ||
+      (currentFile.endsWith('.rs') && tiered?.tier === 'same-file'))
       ? null
       : singleCandidate(tiered, call.argCount, call.callForm))
   );
@@ -3131,7 +3139,7 @@ const resolveEffectiveExtractedCall = (
   ctx: ResolutionContext,
   graph: KnowledgeGraph,
   heritageMap?: HeritageMap,
-): ExtractedCall => {
+): ExtractedCall | null => {
   let effectiveCall = call;
 
   // Step 1: resolve receiver type from constructor bindings
@@ -3187,7 +3195,11 @@ const resolveEffectiveExtractedCall = (
       );
       if (walkedType) {
         effectiveCall = { ...effectiveCall, receiverTypeName: walkedType };
+      } else {
+        return null;
       }
+    } else {
+      return null;
     }
   }
 
@@ -3223,15 +3235,6 @@ const emitVueTemplateComponentFallback = (
   if (!effectiveCall.filePath.endsWith('.vue') || !effectiveCall.sourceId.startsWith('File:')) {
     return;
   }
-  if (
-    ctx.scopeCallPublication?.owns(
-      effectiveCall.filePath,
-      effectiveCall.calledName,
-      effectiveCall.atRange,
-      effectiveCall.callForm,
-    )
-  )
-    return;
 
   const targetPath = findImportedComponentTargetPath(
     effectiveCall.filePath,
@@ -3268,15 +3271,6 @@ const emitJsxComponentFallback = (
   ) {
     return;
   }
-  if (
-    ctx.scopeCallPublication?.owns(
-      effectiveCall.filePath,
-      effectiveCall.calledName,
-      effectiveCall.atRange,
-      effectiveCall.callForm,
-    )
-  )
-    return;
 
   const targetPath = findImportedComponentTargetPath(
     effectiveCall.filePath,
@@ -3309,15 +3303,6 @@ const emitResolvedCallEdges = (
   ctx: ResolutionContext,
   heritageMap?: HeritageMap,
 ): void => {
-  if (
-    ctx.scopeCallPublication?.owns(
-      effectiveCall.filePath,
-      effectiveCall.calledName,
-      effectiveCall.atRange,
-      effectiveCall.callForm,
-    )
-  )
-    return;
   if (
     !canPublishCallEdge(
       effectiveCall.callForm,
@@ -3388,6 +3373,7 @@ const processExtractedCallsForFile = (
         graph,
         heritageMap,
       );
+      if (!effectiveCall) continue;
       const resolved = resolveCallTarget(
         effectiveCall,
         effectiveCall.filePath,

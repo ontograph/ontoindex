@@ -399,16 +399,28 @@ describe('CLI help surface', () => {
     (command) => {
       const result = spawnSync(
         process.execPath,
-        ['--import', 'tsx', cliEntry, command, 'symbol', '--read-mode', 'workspace'],
+        ['--import', 'tsx', cliEntry, command, 'symbol', '--read-mode', 'bogus'],
         { cwd: repoRoot, encoding: 'utf8' },
       );
 
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain('Allowed choices are committed');
+      expect(result.stderr).toContain('Allowed choices are committed, workspace');
       expect(result.stderr).not.toContain('No indexed repositories found');
       expect(result.stderr).not.toContain('tree-sitter-kotlin');
     },
   );
+
+  it('requires an explicit repository for workspace read mode', () => {
+    const result = spawnSync(
+      process.execPath,
+      ['--import', 'tsx', cliEntry, 'query', 'symbol', '--read-mode', 'workspace'],
+      { cwd: repoRoot, encoding: 'utf8' },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('requires an explicit single repository');
+    expect(result.stderr).not.toContain('No indexed repositories found');
+  });
 
   it('detect-changes help exposes compare scope and base-ref flags', () => {
     const result = runHelp('detect-changes');

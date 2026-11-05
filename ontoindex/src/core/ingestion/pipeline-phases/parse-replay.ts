@@ -7,14 +7,11 @@ import { createKnowledgeGraph } from '../../graph/graph.js';
 import type { GraphRelationship } from 'ontoindex-shared';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import { BindingAccumulator } from '../binding-accumulator.js';
-import { processCallsFromExtracted, seedCrossFileReceiverTypes } from '../call-processor.js';
+import { processCallsFromExtracted } from '../call-processor.js';
 import { processAssignmentsFromExtracted } from '../call-resolution/assignment-processor.js';
 import { getHeritageStrategyForLanguage } from '../heritage-processor.js';
 import { buildHeritageMap } from '../model/heritage-map.js';
 import { createResolutionContext } from '../model/resolution-context.js';
-import { prepareScopeCallPublication } from '../scope-call-publication.js';
-import { isUnconsumedRustScopeFailure } from '../scope-extractor-bridge.js';
-import { isRegistryPrimary } from '../registry-primary-flag.js';
 import { restoreSemanticModelRegistrations } from '../model/semantic-model.js';
 import type { runChunkedParseAndResolve } from './parse-impl.js';
 import { getScanMaxFileSizeBytes, type ScannedFile } from '../filesystem-walker.js';
@@ -26,10 +23,12 @@ import type {
 } from './scope-retention-candidate-reader.js';
 import {
   snapshotScopeRetentionDiscovery,
-  scopeRetentionAnalysisPacksAbsent,
+  isScopeRetentionLanguage,
+  scopeRetentionAnalysisPacksIdentity,
+  type ScopeRetentionDiscovery,
   type ScopeRetentionRequest,
 } from './scope-retention-stage.js';
-import { getLanguageFromFilename, SupportedLanguages } from 'ontoindex-shared';
+import { getLanguageFromFilename } from 'ontoindex-shared';
 
 function fail(reason: string): never {
   throw new Error(`scope-retention-parse-replay: ${reason}`);
@@ -52,12 +51,20 @@ export async function admitScopeRetentionParseReplay(
     if (Date.now() >= request.deadline) fail('deadline');
   };
   check();
-  if (!(await scopeRetentionAnalysisPacksAbsent(current.repoPath, check)))
-    fail('unsupported-analysis-packs');
   const { retention } = candidate.manifest;
   const evidence = retention.inputEvidence;
+  try {
+    if (
+      !evidence.analysisPacksIdentity ||
+      (await scopeRetentionAnalysisPacksIdentity(current.repoPath, check)) !==
+        evidence.analysisPacksIdentity
+    )
+      fail('analysis-packs input mismatch');
+  } catch (error) {
+    check();
+    fail('analysis-packs input mismatch');
+  }
   const producers = [
-    'parsed-files',
     'calls',
     'heritage',
     'assignments',
@@ -114,8 +121,7 @@ export async function admitScopeRetentionParseReplay(
   };
   const inventory = paths(retention.inventory.map((file) => file.filePath));
   const sources = paths(evidence.sources.map((file) => file.filePath));
-  const parsed = paths(candidate.families.parsedFiles.map((file) => file.filePath));
-  let discovery;
+  let discovery: ScopeRetentionDiscovery;
   try {
     discovery = snapshotScopeRetentionDiscovery(
       current.allPaths,
@@ -136,20 +142,14 @@ export async function admitScopeRetentionParseReplay(
       (file) => (getLanguageFromFilename(file) ?? scannedLanguages.get(file)) != null,
     ),
   );
-  if (
-    retention.inventory.some(
-      (file) =>
-        file.status !== 'retained' &&
-        !(file.status === 'not-required' && isUnconsumedRustScopeFailure(file)),
-    )
-  )
+  for (const file of parserPaths) {
+    check();
+    if (!isScopeRetentionLanguage(getLanguageFromFilename(file) ?? scannedLanguages.get(file)))
+      fail('unsupported retained language');
+  }
+  if (retention.inventory.some((file) => file.status !== 'retained'))
     fail('incomplete retained inventory');
-  const requiredParsed = paths(
-    retention.inventory.filter((file) => file.status === 'retained').map((file) => file.filePath),
-  );
   if (
-    parsed.size !== requiredParsed.size ||
-    [...requiredParsed].some((file) => !parsed.has(file)) ||
     [sources, parserPaths].some(
       (set) => set.size !== inventory.size || [...inventory].some((file) => !set.has(file)),
     )
@@ -251,8 +251,11 @@ export async function admitScopeRetentionParseReplay(
     const afterIdentity = await workspaceParserIdentity();
     check();
     if (!afterIdentity || afterIdentity !== beforeIdentity) fail('parser identity changed');
-    if (!(await scopeRetentionAnalysisPacksAbsent(current.repoPath, check)))
-      fail('unsupported-analysis-packs');
+    if (
+      (await scopeRetentionAnalysisPacksIdentity(current.repoPath, check)) !==
+      evidence.analysisPacksIdentity
+    )
+      fail('analysis-packs input mismatch');
   } catch (error) {
     check();
     if (error instanceof Error && error.message.startsWith('scope-retention-parse-replay: '))
@@ -262,7 +265,7 @@ export async function admitScopeRetentionParseReplay(
 }
 
 /** Rebuild parse-owned state from verified, loader-owned records.
- * Consumes the families: receiver seeding mutates calls and returned extraction arrays retain ownership.
+ * Consumes the families: returned extraction arrays retain ownership.
  * The caller's graph is updated only after all reconstruction and resolution succeeds.
  */
 export async function reconstructScopeRetentionParse(
@@ -270,9 +273,6 @@ export async function reconstructScopeRetentionParse(
   graph: KnowledgeGraph,
   onProgress?: Parameters<typeof runChunkedParseAndResolve>[6],
 ): Promise<Awaited<ReturnType<typeof runChunkedParseAndResolve>>> {
-  const scopeCallLanguages = new Set(
-    [SupportedLanguages.TypeScript, SupportedLanguages.JavaScript].filter(isRegistryPrimary),
-  );
   if (families.importStates.length !== 1) fail('expected exactly one import state');
 
   const staged = createKnowledgeGraph();
@@ -355,11 +355,6 @@ export async function reconstructScopeRetentionParse(
   let resolutionContext: ReturnType<typeof createResolutionContext> | undefined;
   try {
     resolutionContext = createResolutionContext({ model, importState: families.importStates[0]! });
-    resolutionContext.scopeCallPublication = prepareScopeCallPublication(
-      families.parsedFiles,
-      scopeCallLanguages,
-    );
-    resolutionContext.scopeCallPublication?.emit(staged);
     for (const [filePath, bindings] of fileBindings) {
       bindingAccumulator.appendFile(
         filePath,
@@ -372,7 +367,7 @@ export async function reconstructScopeRetentionParse(
       resolutionContext,
       getHeritageStrategyForLanguage,
     );
-    seedCrossFileReceiverTypes(families.calls, resolutionContext.namedImportMap, exportedTypeMap);
+    // Retained calls already carry the receiver types live parse seeded before resolution.
     await processCallsFromExtracted(
       staged,
       families.calls,

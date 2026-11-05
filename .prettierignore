@@ -1,5 +1,6 @@
 dist/
 coverage/
+/eval/results/
 **/.venv/
 ontoindex/vendor/
 ontoindex/test/fixtures/

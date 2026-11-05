@@ -41,7 +41,7 @@ describe('planScopeRetentionReplay', () => {
       inventory: [
         { filePath: 'src/caller.ts', status: 'retained' },
         { filePath: 'src/skipped.ts', status: 'skipped' },
-        { filePath: 'README.md', status: 'missing-outcome' },
+        { filePath: 'README.md', status: 'skipped' },
       ],
     },
   ])('does not admit replay from complete inventory coverage alone: %j', ({ inventory }) => {
@@ -67,6 +67,18 @@ describe('planScopeRetentionReplay', () => {
       });
     },
   );
+
+  it('requires full analysis for unknown missing outcomes even with proven admission', () => {
+    const coverage = summarizeScopeRetentionCoverage([
+      { filePath: 'src/caller.ts', status: 'retained' },
+      { filePath: 'README.md', status: 'missing-outcome' },
+    ]);
+    expect(coverage.complete).toBe(false);
+    expect(planScopeRetentionReplay(input({ coverage }))).toEqual({
+      kind: 'full-analysis-required',
+      reason: 'coverage-incomplete',
+    });
+  });
 
   it('replays the sorted unique union with real retained coverage and proven admission', () => {
     const inventory = [

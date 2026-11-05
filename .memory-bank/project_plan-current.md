@@ -8,12 +8,122 @@ status: active
 
 # OntoIndex Current Forward Plan
 
-2026-11-02: 2.4.10 product commit `7b33dce` passed the full Linux delivery gate
-(15,668 unit and 3,044 integration tests), commit hooks, clean-commit build,
+2026-11-03: workspace-search warning repair is delivered in 2.4.14 at `b2159cb`,
+pushed to main and selected by CLI/Codex MCP. Versioned-tree gate passed 15,922
+unit and 3,053 integration tests; clean build, installed native/database smoke
+and twelve Rust/TS/JS dirty/committed navigation calls passed. No public release.
+Older installations remain deferred due to unreadable process references.
+GN tracker unchanged. Evidence: [2.4.14 delivery](audit_session-2026-11-03-local-2414.md).
+
+2026-11-03 delivery: qualification repairs are committed and pushed to main at
+`1faf4b1` as 2.4.13. The versioned-tree gate passed 15,914 unit and 3,053
+integration tests (one expected failure, 304 skips). Hooks, clean-commit build,
+installed native/database/MCP smoke and all ten qualification probes passed.
+CLI and Codex MCP select 2.4.13. No release was published; GitHub listed no
+product-commit CI runs. Older installations remain deferred because 22 processes
+have unreadable reference fields. GN state is unchanged.
+Evidence: [2.4.13 delivery](audit_session-2026-11-03-local-2413.md).
+
+2026-11-02 qualification follow-up: R1–R3 and six formatting failures from the
+pinned 2.4.12 report are repaired locally. Follow-up review fixed error disclosure,
+opaque receiver fallback and invalid constructor captures. Fresh native build,
+728 tests, 10/10 probes, typecheck and root formatting pass; lint has zero errors.
+An additional six neighboring Rust/TS/JS and audit suites pass 528 tests.
+The full backend follow-up exposed 11 failing assertions in Swift, Go and
+TypeScript tests. Repairs now pass 731 affected tests and seven source-worker
+tests; typecheck, lint (zero errors) and root formatting pass. The final backend
+rerun exits 0: 18,960 passes, one expected failure, 304 skips; all 4,929 input
+hashes and HEAD match. The 2026-11-03 fresh Linux build and compiled-worker
+follow-up pass: 91 tests across three files, no skips, including Go and Swift
+thread/process IPC; retained qualification probes pass 10/10. All 5,824 recorded
+source/artifact inputs and HEAD match after validation. Historical evidence is
+preserved. A subsequent endpoint review found that the Swift test accepted a
+dangling caller ID. Both caller builders now follow declaration arity rules;
+fresh build and 341 focused tests pass with zero skips, including endpoint
+membership checks and overloaded callers. Ten probes, typecheck, lint and
+formatting pass; all 5,824 source/artifact hashes match. The full backend suite
+after the endpoint correction also exits 0: 18,967 passes, one expected failure,
+304 skips, 803 passing files and three skipped files, in 952.62 seconds.
+All 5,824 source/artifact hashes and HEAD remained unchanged during that run.
+Repairs are delivered in 2.4.13; GN state remains unchanged. Evidence:
+[qualification repair](audit_session-2026-11-02-2412-qualification-repair.md).
+
+2026-11-02 delivery: accumulated repairs are committed at `8a51cbb` and pushed
+to main as 2.4.12. Versioned-tree unit/integration gate, commit hooks,
+clean-commit build and installed parsing/native/database/MCP smoke pass.
+CLI and Codex MCP select 2.4.12; no release was published or CI dispatched.
+Older copies are retained because 22 same-user processes have unreadable
+reference fields. GN state remains unchanged.
+Evidence: [2.4.12 delivery](audit_session-2026-11-02-local-2412.md).
+
+2026-11-02 latest full current-code validation: all suites exit 0. Backend
+18,846 ordinary passes, one expected failure, 304 skips; web 271, Rust 11,
+HTTP five, Python 146 and Chromium 28 pass. Native JavaScript and opt-in suites
+also pass; seven default skips were exercised, leaving 297. All 4,238 input
+hashes matched after testing. Evidence: `/opt/d2/ontoindex-full-current-5QrET9Wq/REPORT.md`.
+No product source changed during that validation. The subsequent 2.4.12
+delivery installed the repairs; GN state remains unchanged.
+
+2026-11-02 installer review: one selected npm prefix now governs cleanup,
+installation, validation and repair advice. Explicit overrides win over writable
+defaults; unrelated PATH shims are retained. Seven isolated installer regressions
+pass, with shell syntax and ESLint passing. No build or installation was run for
+this change's review. The repair is now delivered in 2.4.12; GN state is unchanged.
+
+2026-11-02 current-tree repair: R1–R7 and declared-field repairs remain
+delivered in 2.4.12. Final source regression passes 1,912 tests with 28 skips across
+20 files, including eight language resolver suites. Strict incomplete-chain
+rejection is preserved; TS/Go/PHP metadata and Ruby preparation order are repaired.
+Ruby's positive grandparent fixture now declares its return type; a separate
+unannotated negative verifies refusal. The original full backend run failed nine
+assertions; the fresh full backend run now passes 18,820 ordinary tests with one
+expected failure and 304 skips. The native checkout recovery regression and
+two opt-in real-WAL cases pass separately. A subsequent authorized local build
+and rebuilt-worker IPC suite pass (43 tests; 43 excluded by selector), including
+declared-field transport and six sequential/worker/recovery parity fixtures. Scoped V8
+coverage passes for the 20 changed production files (69.43% lines, 56.53%
+branches; 1,913 tests passed, 28 skipped). Frozen TypeScript replay passes for
+41 sources in both registry modes. Four-reviewer challenge found no new code
+defect in the scoped repairs. Runtime selector now uses tested Node 24.21.0;
+contributor/runbook prerequisites and stale-index instructions are aligned.
+Node 22.12 validation exposed a Tree-sitter Node-API 10 artifact mismatch.
+The vendored binding now targets Node-API 9; the rebuilt identical addon passes
+61 focused tests on both Node 22.12 and 24.21 (43 excluded per run).
+The selected 2.4.12 installation contains the rebuilt native artifact.
+The Linux build/postinstall lifecycle now rebuilds Tree-sitter before any runtime
+probe and verifies the application's selected artifact in a fresh child. Native
+builder smoke and 39 focused tests pass. An isolated packed install on Linux,
+Node 24.21/npm 11.19 now passes Rust/TS/JS parsing, native loads, CLI version/help
+and ABI 9 verification. Its rebuilt bytes match the previously Node 22/24-tested
+artifact. Disposable installation staging was removed; the selected 2.4.12
+installation includes these fixes.
+Project-wide coverage and other-language external
+corpora are separate optional evidence extensions, not new repair gates.
+Evidence: [current-tree tests](audit_session-2026-11-02-current-tests.md).
+The follow-up rebuilt local artifacts and qualified a disposable installation;
+active-installation replacement subsequently passed in the 2.4.12 delivery.
+GN manager state is unchanged.
+
+2026-11-05: 2.4.22 committed at `6e76840` and installed locally (no release);
+symbols-overlay search verified end to end on codex. Evidence:
+[local delivery](audit_session-2026-11-05-local-2422.md).
+
+2026-11-05: 2.4.21 committed at `fcb1455` and installed locally (no release);
+adds symbols-overlay search on oversized workspaces. Evidence:
+[local delivery](audit_session-2026-11-05-local-2421.md).
+
+2026-11-05: 2.4.20 committed at `c0d765f` and installed locally (no release).
+Follow-up `e0dc1df` clamps small response budgets, names received argument
+types (string booleans stay rejected so `confirm` cannot be satisfied by a
+string) and logs the MCP shutdown reason. Evidence:
+[local delivery](audit_session-2026-11-05-local-2420.md).
+
+2026-11-02: 2.4.11 product commit `0fc971a` passed the full Linux delivery gate
+(15,703 unit and 3,044 integration tests), commit hooks, clean-commit build,
 local installation and installed native/database/MCP smoke. CLI and Codex MCP
-select 2.4.10; live sessions retain 2.4.8. No release publication. Broader GN
+select 2.4.11; live sessions retain 2.4.8. Pushed to main; no release publication. Broader GN
 qualification and measurement remain open; manager state is unchanged.
-Evidence: [local delivery](audit_session-2026-11-02-local-2410.md).
+Evidence: [local delivery](audit_session-2026-11-02-local-2411.md).
 
 2026-11-01: 2.4.8 committed at `103228d`; local Linux release gate passed
 15,546 unit and 3,039 integration tests (one expected failure, 304 skips).

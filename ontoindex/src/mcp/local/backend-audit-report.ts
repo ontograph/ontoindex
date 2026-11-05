@@ -20,6 +20,7 @@ import { runHotspotAnalysis } from './backend-hotspot-analysis.js';
 import { runBoundaryViolations } from './backend-boundary-violations.js';
 import { runVerificationGap } from './backend-verification-gap.js';
 import { runGraphDiff } from './backend-graph-diff.js';
+import { isMarkedInvocationError } from '../shared/invocation-error.js';
 
 type RepoHandle = {
   readonly id: string;
@@ -155,6 +156,7 @@ interface CouplingFanOut {
 
 interface TechDebtFanOut {
   symbols: Array<{ name: string; filePath: string; score: number; callerCount: number }>;
+  warnings?: string[];
 }
 
 interface HotspotFanOut {
@@ -331,8 +333,11 @@ export async function runAuditReport(
     gapResult,
     diffResult,
   ] = rawResults.map((r, i) => {
-    if (r instanceof Error) {
-      warnings.push(`${BACKEND_NAMES[i]}: ${r.message}`);
+    if (r instanceof Error || isMarkedInvocationError(r)) {
+      const error = r instanceof Error ? r.message : (r as { error?: unknown }).error;
+      warnings.push(
+        `${BACKEND_NAMES[i]}: ${typeof error === 'string' ? error : 'backend invocation failed'}`,
+      );
       incompleteSections.push(BACKEND_NAMES[i]);
       return null;
     }
@@ -347,7 +352,11 @@ export async function runAuditReport(
     warnings.push(...couplingData.warnings.map((warning) => `coupling-matrix: ${warning}`));
     incompleteSections.push('coupling-matrix');
   }
-  const debtSymbols = (debtResult as TechDebtFanOut | null)?.symbols ?? [];
+  const debtData = debtResult as TechDebtFanOut | null;
+  const debtSymbols = debtData?.symbols ?? [];
+  if (debtData?.warnings?.length) {
+    warnings.push(...debtData.warnings.map((warning) => `tech-debt: ${warning}`));
+  }
   const hotspots = (hotspotResult as HotspotFanOut | null)?.hotspots ?? [];
   const violations = (violationsResult as BoundaryFanOut | null)?.violations ?? [];
   const coverage = (gapResult as VerificationGapFanOut | null)?.coverage ?? [];

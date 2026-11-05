@@ -2,7 +2,12 @@
 
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import { SupportedLanguages } from 'ontoindex-shared';
-import type { FieldExtractorContext, ExtractedFields, FieldVisibility } from './field-types.js';
+import type {
+  FieldExtractorContext,
+  ExtractedFields,
+  FieldInfo,
+  FieldVisibility,
+} from './field-types.js';
 
 /**
  * Language-specific field extractor
@@ -15,6 +20,13 @@ export interface FieldExtractor {
    * Extract fields from a class/struct/interface declaration
    */
   extract(node: SyntaxNode, context: FieldExtractorContext): ExtractedFields | null;
+
+  /** Extract a captured field declaration, optionally selecting a declared name. */
+  extractFromNode?(
+    node: SyntaxNode,
+    context: FieldExtractorContext,
+    name?: string,
+  ): FieldInfo | null;
 
   /**
    * Check if this node represents a type declaration with fields

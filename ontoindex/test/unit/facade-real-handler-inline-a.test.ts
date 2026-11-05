@@ -224,7 +224,7 @@ describe('real inline audit handlers through facade and direct dispatch', () => 
       await errorParity(
         'test_suggestions',
         { path: 1 },
-        'Invalid arguments for gn_test_suggestions: path: expected string',
+        'Invalid arguments for gn_test_suggestions: path: expected string, received number',
       );
     });
 

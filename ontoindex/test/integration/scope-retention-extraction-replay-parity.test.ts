@@ -223,7 +223,7 @@ describe('persisted parse extraction phase replay', () => {
                   artifactAllowance: { remainingBytes: 64 * 1024 * 1024 },
                 },
               );
-              expect(manifest.version).toBe(5);
+              expect(manifest.version).toBe(6);
               expect(manifest.seedReady).toBe(false);
             },
           },

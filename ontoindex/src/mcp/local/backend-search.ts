@@ -1928,6 +1928,15 @@ export async function query(
   if (overlaySnapshot?.usable && !workspaceLane) {
     try {
       const terms = [...new Set(searchQuery.toLowerCase().split(/\s+/).filter(Boolean))];
+      const exactSymbolQueries =
+        searchInput.mode === 'typed'
+          ? searchInput.document.lines
+              .filter((line) => line.type === 'symbol')
+              .map((line) => line.query)
+          : [];
+      const exactPredicate = exactSymbolQueries
+        .map((_, i) => `(n.id = $symbol${i} OR n.name = $symbol${i})`)
+        .join(' OR ');
       // Scalar predicates avoid unreliable untyped IN-list scans while retaining
       // the database result limit.
       const overlayPathSet = overlaySnapshot.overlayPaths;
@@ -1939,15 +1948,18 @@ export async function query(
               repo,
               `MATCH (n)
              WHERE (${overlayPaths.map((_, i) => `n.filePath = $path${i}`).join(' OR ')})
-               AND (${terms.map((_, i) => `(lower(n.name) CONTAINS $term${i} OR lower(n.filePath) CONTAINS $term${i})`).join(' OR ')})
+               AND (${[exactPredicate, ...terms.map((_, i) => `(lower(n.name) CONTAINS $term${i} OR lower(n.filePath) CONTAINS $term${i})`)].filter(Boolean).join(' OR ')})
              RETURN n.id AS id, n.name AS name, label(n) AS type,
                     n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
-             ORDER BY n.filePath, n.id
+             ORDER BY ${exactPredicate ? `CASE WHEN ${exactPredicate} THEN 0 ELSE 1 END, ` : ''}n.filePath, n.id
              LIMIT $limit`,
               {
                 limit: searchLimit,
                 ...Object.fromEntries(overlayPaths.map((filePath, i) => [`path${i}`, filePath])),
                 ...Object.fromEntries(terms.map((term, i) => [`term${i}`, term])),
+                ...Object.fromEntries(
+                  exactSymbolQueries.map((symbol, i) => [`symbol${i}`, symbol]),
+                ),
               },
               overlaySnapshot.generation,
             );
@@ -1978,7 +1990,12 @@ export async function query(
       bm25Results = mergedBm25;
       semanticResults = cleanSemantic;
       graphResults = cleanGraph;
-      lockedResults = cleanLocked;
+      lockedResults = dedupeSymbolRows([
+        ...cleanLocked,
+        ...overlayResults.filter((row) =>
+          exactSymbolQueries.some((symbol) => row.nodeId === symbol || row.name === symbol),
+        ),
+      ]);
       if (typedCandidateMap) {
         for (const [key, candidate] of typedCandidateMap) {
           if (isOverlayReplacedPath(overlaySnapshot, candidate.filePath))
@@ -2130,6 +2147,13 @@ export async function query(
     } catch (e) {
       grouped.clear();
       if (errorContext) logSearchQueryError(errorContext, e);
+      // Optional enrichment must not multiply a saturated query into N retries.
+      if (
+        e instanceof Error &&
+        (e.name === 'QueryTimeoutError' || e.name === 'CheckoutTimeoutError')
+      ) {
+        return grouped;
+      }
     }
     for (const nodeId of nodeIds) {
       try {
@@ -2137,6 +2161,12 @@ export async function query(
         if (rows.length > 0) grouped.set(nodeId, [rows[0] as T]);
       } catch (e) {
         if (errorContext) logSearchQueryError(errorContext, e);
+        if (
+          e instanceof Error &&
+          (e.name === 'QueryTimeoutError' || e.name === 'CheckoutTimeoutError')
+        ) {
+          break;
+        }
       }
     }
     return grouped;
@@ -2164,6 +2194,7 @@ export async function query(
       `
       MATCH (n {id: $nodeId})-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
       RETURN c.cohesion AS cohesion, c.heuristicLabel AS module
+      ORDER BY c.id
       LIMIT 1
     `,
       'query:cluster-info',
@@ -2190,6 +2221,7 @@ export async function query(
       MATCH (m)-[r:CodeRelation]->(n {id: $nodeId})
       WHERE r.type IN ['CALLS', 'IMPORTS']
       RETURN m.name AS caller, r.type AS type, m.filePath AS callerPath
+      ORDER BY m.id, r.type
       LIMIT 1
     `,
     ),

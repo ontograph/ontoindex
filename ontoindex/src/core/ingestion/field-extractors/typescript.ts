@@ -193,7 +193,11 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
    */
   private extractField(node: SyntaxNode, context: FieldExtractorContext): FieldInfo | null {
     // Get the field name
-    const nameNode = node.childForFieldName('name') ?? node.childForFieldName('property');
+    const isParameter = node.type === 'required_parameter' || node.type === 'optional_parameter';
+    const nameNode =
+      node.childForFieldName('name') ??
+      node.childForFieldName('property') ??
+      (isParameter ? node.childForFieldName('pattern') : null);
     if (!nameNode) return null;
 
     const name = nameNode.text;
@@ -235,6 +239,30 @@ export class TypeScriptFieldExtractor extends BaseFieldExtractor {
         const field = this.extractField(child, context);
         if (field) {
           fields.push(field);
+        }
+      } else if (child.type === 'method_definition' && !this.isStatic(child)) {
+        const name = child.childForFieldName('name');
+        if (name?.type !== 'property_identifier' || name.text !== 'constructor') continue;
+
+        const parameters = child.childForFieldName('parameters');
+        if (!parameters) continue;
+        for (const parameter of parameters.namedChildren) {
+          if (parameter.type !== 'required_parameter' && parameter.type !== 'optional_parameter')
+            continue;
+          const hasVisibility = parameter.namedChildren.some(
+            (modifier) =>
+              modifier.type === 'accessibility_modifier' &&
+              TypeScriptFieldExtractor.VISIBILITY_MODIFIERS.has(
+                modifier.text.trim() as FieldVisibility,
+              ),
+          );
+          if (!hasVisibility && !this.isReadonly(parameter)) continue;
+
+          const field = this.extractField(parameter, context);
+          if (field) {
+            if (this.isOptional(parameter) && field.type) field.type += ' | undefined';
+            fields.push(field);
+          }
         }
       }
     }

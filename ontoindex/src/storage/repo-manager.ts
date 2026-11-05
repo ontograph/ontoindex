@@ -55,6 +55,19 @@ export interface RepoMeta {
   indexedAt: string;
   generationId?: string;
   sourceManifest?: IndexSourceManifest;
+  /** Generation-owned parser evidence; absent on legacy indexes. */
+  parserEvidence?: {
+    version: 1;
+    parseErrorCount: number;
+    /** Sorted, unique sample bounded to 1,000 paths. */
+    parseErrorFiles: string[];
+    truncated: boolean;
+  };
+  sourceProvenance?: {
+    kind: 'commit' | 'working-tree' | 'unknown';
+    head: string | null;
+    changedPathCount: number;
+  };
   indexMode?: 'full' | 'symbols-only';
   pipelineProfile?: 'full' | 'symbols' | 'huge-repo-symbols';
   capabilities?: {
@@ -89,6 +102,24 @@ export interface RepoMeta {
     processes?: number;
     embeddings?: number;
   };
+}
+
+export function isValidParserEvidence(
+  value: unknown,
+): value is NonNullable<RepoMeta['parserEvidence']> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const evidence = value as Record<string, unknown>;
+  return (
+    evidence.version === 1 &&
+    typeof evidence.parseErrorCount === 'number' &&
+    Number.isSafeInteger(evidence.parseErrorCount) &&
+    evidence.parseErrorCount >= 0 &&
+    Array.isArray(evidence.parseErrorFiles) &&
+    evidence.parseErrorFiles.length <= 1000 &&
+    evidence.parseErrorFiles.every((file) => typeof file === 'string') &&
+    new Set(evidence.parseErrorFiles).size <= evidence.parseErrorCount &&
+    typeof evidence.truncated === 'boolean'
+  );
 }
 
 interface IndexedRepo {

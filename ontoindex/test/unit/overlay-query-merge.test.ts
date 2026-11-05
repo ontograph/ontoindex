@@ -320,6 +320,36 @@ describe('query dirty-overlay merge', () => {
     });
   });
 
+  it.each(['Method:src/dirty.ts:Cls.foo', 'Method:src/dirty.ts:Cls.foo#2'])(
+    'keeps an existing overlaid exact symbol locked for %s and drops it when deleted',
+    async (id) => {
+      const current = { ...overlayRow, id, name: 'foo' };
+      vi.mocked(getOverlaySnapshot).mockResolvedValue(snapshot(true));
+      vi.mocked(executeParameterized).mockImplementation(async (_repoId, cypher) =>
+        cypher.includes('n.id = $symbolQuery') ? [{ ...current, name: 'OldFoo' }] : [],
+      );
+      let exists = true;
+      vi.mocked(queryOverlay).mockImplementation(async (_repo, cypher, params) => {
+        const exact = Object.entries(params ?? {}).some(
+          ([key, value]) => value === id && cypher.includes(`n.id = $${key}`),
+        );
+        return exists && exact ? [current] : [];
+      });
+      const input = {
+        typedQuery: { lines: [{ type: 'symbol' as const, query: id, lineNumber: 1 }], filters: [] },
+        include_skeleton: false,
+        intent_ensemble: false,
+        structured_output: true,
+      };
+      const retained = await query(repo, input);
+      expect(retained.definitions[0]).toMatchObject({ ...current, source: 'overlay' });
+      expect(JSON.stringify(retained)).not.toContain('OldFoo');
+      exists = false;
+      const deleted = await query(repo, input);
+      expect(deleted.definitions).toEqual([]);
+    },
+  );
+
   it('does not reintroduce stale dirty symbols through base skeletons', async () => {
     vi.mocked(getOverlaySnapshot).mockResolvedValue(snapshot(true));
     vi.mocked(getFileSkeleton).mockImplementation(async (_repoId, filePath) =>

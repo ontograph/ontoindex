@@ -10,6 +10,7 @@ vi.mock('../../src/core/lbug/pool-adapter.js', () => ({
 
 import { executeParameterized } from '../../src/core/lbug/pool-adapter.js';
 import { runTechDebt } from '../../src/mcp/local/backend-tech-debt.js';
+import { isMarkedInvocationError } from '../../src/mcp/shared/invocation-error.js';
 
 const execMock = executeParameterized as unknown as ReturnType<typeof vi.fn>;
 
@@ -130,13 +131,54 @@ describe('tech_debt', () => {
     expect(execMock.mock.calls[0]?.[1]).not.toContain('labels(n)[0]');
   });
 
-  it('degrades gracefully when DB is unreachable', async () => {
-    execMock.mockRejectedValue(new Error('pool not initialised'));
+  it('reports an invocation failure when both required structural queries fail', async () => {
+    const privateError = 'pool not initialised: secret-token /private/database';
+    execMock.mockRejectedValue(new Error(privateError));
     const result = await runTechDebt(makeRepo(), { since: '10 years' });
-    // Both queries fail, so the symbol list is empty — but the tool itself
-    // must still report success with a 0-count list, not crash.
-    expect(result.status).toBe('success');
+    expect(result.status).toBe('error');
     expect(result.symbol_count).toBe(0);
+    expect(result.error).toBe('Tech debt analysis failed: Required structural query failed');
+    expect(isMarkedInvocationError(result)).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('secret-token');
+    expect(JSON.stringify(result)).not.toContain('/private/database');
+    const queries = execMock.mock.calls.map((call) => String(call[1]));
+    expect(queries.some((query) => query.includes('n.parameterCount'))).toBe(true);
+    expect(queries.some((query) => query.includes('0 AS parameterCount'))).toBe(true);
+  });
+
+  it('keeps a legitimate empty structural result successful and unmarked', async () => {
+    execMock.mockResolvedValue([]);
+    const result = await runTechDebt(makeRepo(), {});
+    expect(result).toMatchObject({ status: 'success', symbol_count: 0, symbols: [] });
+    expect(result.warnings).toBeUndefined();
+    expect(isMarkedInvocationError(result)).toBe(false);
+  });
+
+  it('retains symbols and emits only a fixed warning when optional caller counts fail', async () => {
+    const privateError = 'database query failed: secret-token /private/database';
+    execMock.mockImplementation(async (_repoId, query) => {
+      if (query.includes('count(*) AS callerCount')) throw new Error(privateError);
+      return [
+        {
+          name: 'hotFn',
+          type: 'Function',
+          filePath: 'src/hot.ts',
+          startLine: 1,
+          endLine: 120,
+          parameterCount: 6,
+        },
+      ];
+    });
+    const result = await runTechDebt(makeRepo(), { since: '10 years' });
+    expect(result).toMatchObject({
+      status: 'success',
+      symbol_count: 1,
+      symbols: [expect.objectContaining({ name: 'hotFn', callerCount: 0, commits: 3 })],
+      warnings: ['Caller counts unavailable; defaulted to zero.'],
+    });
+    expect(isMarkedInvocationError(result)).toBe(false);
+    expect(JSON.stringify(result)).not.toContain(privateError);
+    expect(result.findings).toHaveLength(1);
   });
 
   it('falls back when parameterCount is unavailable in the graph schema', async () => {
@@ -167,6 +209,8 @@ describe('tech_debt', () => {
     expect(result.symbol_count).toBe(1);
     expect(result.symbols[0].name).toBe('fallbackFn');
     expect(result.symbols[0].parameterCount).toBe(0);
+    expect(result.warnings).toBeUndefined();
+    expect(isMarkedInvocationError(result)).toBe(false);
     const queries = execMock.mock.calls.map((call) => String(call[1]));
     expect(queries.some((query) => query.includes('n.parameterCount'))).toBe(true);
     expect(queries.some((query) => query.includes('0 AS parameterCount'))).toBe(true);

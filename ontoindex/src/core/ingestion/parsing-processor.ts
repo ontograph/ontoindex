@@ -5,6 +5,7 @@ import path from 'node:path';
 import { minimatch } from 'minimatch';
 import { loadParser, loadLanguage, isLanguageAvailable } from '../tree-sitter/parser-loader.js';
 import { getProvider } from './languages/index.js';
+import { isConstructorFieldDefinition } from './field-extractors/configs/typescript-javascript.js';
 import { generateId } from '../../lib/utils.js';
 import type { SymbolTableReader, SymbolTableWriter, ExtractedHeritage } from './model/index.js';
 // SymbolTableReader is used for the FieldExtractorContext stub; the
@@ -51,9 +52,6 @@ import {
   buildCollisionGroups,
 } from './utils/method-props.js';
 import type { LanguageProvider } from './language-provider.js';
-import type { ParsedFile } from 'ontoindex-shared';
-import { extractParsedFileOutcome, type ScopeExtractionRecord } from './scope-extractor-bridge.js';
-import { createDeclarationCorrespondence } from './declaration-correspondence.js';
 import {
   WorkerPool,
   type WorkerResultEvent,
@@ -368,16 +366,6 @@ interface WorkerExtractedData {
     recoveryWindowSize: number;
     fatal?: boolean;
   };
-  /**
-   * Per-file `ParsedFile` artifacts from the new scope-based resolution
-   * pipeline (RFC #909 Ring 2). Empty until a provider implements
-   * `emitScopeCaptures` — additive to the legacy DAG path. Aggregated
-   * from every worker chunk; consumed downstream by #921's
-   * finalize-orchestrator.
-   */
-  parsedFiles: ParsedFile[];
-  /** Attempted scope extractions only; missing fields/records mean unavailable evidence. */
-  scopeExtractionOutcomes?: ScopeExtractionRecord[];
 }
 
 interface WorkerGraphMutationBuffer {
@@ -401,8 +389,6 @@ const createEmptyWorkerExtractedData = (): WorkerExtractedData => ({
   fileTimings: [],
   parseErrorPaths: [],
   extractorTimings: [],
-  parsedFiles: [],
-  scopeExtractionOutcomes: [],
 });
 
 const createEmptyWorkerGraphMutationBuffer = (): WorkerGraphMutationBuffer => ({
@@ -451,11 +437,6 @@ const appendWorkerExtractedData = (
   for (const item of src.fileTimings) target.fileTimings.push(item);
   for (const item of src.parseErrorPaths) target.parseErrorPaths.push(item);
   for (const item of src.extractorTimings) target.extractorTimings.push(item);
-  for (const item of src.parsedFiles) target.parsedFiles.push(item);
-  if (src.scopeExtractionOutcomes) {
-    target.scopeExtractionOutcomes ??= [];
-    for (const outcome of src.scopeExtractionOutcomes) target.scopeExtractionOutcomes.push(outcome);
-  }
   if (src.degraded) {
     const existing = target.degraded;
     target.degraded = {
@@ -543,15 +524,6 @@ const mergeWorkerChunkResults = (
     if (result.fileScopeBindings) {
       for (const item of result.fileScopeBindings) extracted.fileScopeBindings.push(item);
     }
-    if (result.parsedFiles) {
-      for (const item of result.parsedFiles) extracted.parsedFiles.push(item);
-    }
-    if (result.scopeExtractionOutcomes) {
-      extracted.scopeExtractionOutcomes ??= [];
-      for (const outcome of result.scopeExtractionOutcomes) {
-        extracted.scopeExtractionOutcomes.push(outcome);
-      }
-    }
     if (result.parseErrorPaths) {
       for (const item of result.parseErrorPaths) extracted.parseErrorPaths.push(item);
     }
@@ -632,8 +604,6 @@ const clearParseWorkerResult = (result: ParseWorkerResult): void => {
   result.ormQueries.length = 0;
   result.constructorBindings.length = 0;
   result.fileScopeBindings.length = 0;
-  result.parsedFiles.length = 0;
-  if (result.scopeExtractionOutcomes) result.scopeExtractionOutcomes.length = 0;
   result.processedPaths.length = 0;
   result.fileTimings.length = 0;
   result.parseErrorPaths.length = 0;
@@ -1082,7 +1052,6 @@ const processSequentialFileMatches = (
   preparedFile: PreparedSequentialFile,
   extractions: RouteToolExtractions,
   cppTypeOwnerHints: readonly CppTypeOwnerHint[] = [],
-  declarationCorrespondence?: ReturnType<typeof createDeclarationCorrespondence>,
 ): void => {
   const { file, language, lineOffset, isVueSetup, provider, matches, typeEnv } = preparedFile;
   const extractShape =
@@ -1117,6 +1086,75 @@ const processSequentialFileMatches = (
       )
     )
       return;
+
+    const callNode = captureMap['call'];
+    const callNameNode = captureMap['call.name'];
+    const routed =
+      callNode && callNameNode ? provider.callRouter?.(callNameNode.text, callNode) : undefined;
+    if (routed?.kind === 'properties') {
+      const owner = cachedFindEnclosingClassInfo(
+        callNode,
+        file.path,
+        provider.resolveEnclosingOwner,
+      );
+      const classNode = seqFindEnclosingOwnerNode(callNode, provider.resolveEnclosingOwner);
+      const fieldMap =
+        classNode && typeEnv
+          ? seqGetFieldInfo(classNode, provider, {
+              typeEnv,
+              symbolTable: NOOP_SYMBOL_TABLE_SEQ,
+              filePath: file.path,
+              language,
+            })
+          : undefined;
+      const fileId = generateId('File', file.path);
+      for (const item of routed.items) {
+        const fieldInfo = fieldMap?.get(item.propName);
+        const qualifiedName = owner ? `${owner.className}.${item.propName}` : item.propName;
+        const nodeId = generateId('Property', `${file.path}:${qualifiedName}`);
+        const declaredType = item.declaredType || fieldInfo?.type || undefined;
+        addOrMergeGraphNode(graph, {
+          id: nodeId,
+          label: 'Property',
+          properties: {
+            name: item.propName,
+            filePath: file.path,
+            startLine: item.startLine,
+            endLine: item.endLine,
+            language,
+            isExported: true,
+            description: item.accessorType,
+            ...(declaredType !== undefined ? { declaredType } : {}),
+            ...(fieldInfo?.visibility !== undefined ? { visibility: fieldInfo.visibility } : {}),
+            ...(fieldInfo?.isStatic !== undefined ? { isStatic: fieldInfo.isStatic } : {}),
+            ...(fieldInfo?.isReadonly !== undefined ? { isReadonly: fieldInfo.isReadonly } : {}),
+          },
+        });
+        symbolTable.add(file.path, item.propName, nodeId, 'Property', {
+          ownerId: owner?.classId,
+          declaredType,
+        });
+        graph.addRelationship({
+          id: generateId('DEFINES', `${fileId}->${nodeId}`),
+          sourceId: fileId,
+          targetId: nodeId,
+          type: 'DEFINES',
+          confidence: 1.0,
+          reason: '',
+        });
+        if (owner) {
+          graph.addRelationship({
+            id: generateId('HAS_PROPERTY', `${owner.classId}->${nodeId}`),
+            sourceId: owner.classId,
+            targetId: nodeId,
+            type: 'HAS_PROPERTY',
+            confidence: 1.0,
+            reason: '',
+          });
+        }
+      }
+      return;
+    }
 
     const definitionNodeForRange = getDefinitionNodeFromCaptures(captureMap);
     const definitionNode = getDefinitionNodeFromCaptures(captureMap);
@@ -1274,12 +1312,6 @@ const processSequentialFileMatches = (
         ? qualifiedOwnerInfo.classFilePath
         : file.path;
     const nodeId = generateId(nodeLabel, `${nodeIdFilePath}:${qualifiedName}${arityTag}`);
-    declarationCorrespondence?.observe(
-      nodeId,
-      nodeName,
-      nodeLabel,
-      definitionNodeForRange || definitionNode || nameNode,
-    );
     const isSplitCppDefinition = Boolean(
       qualifiedOwnerInfo?.classFilePath && qualifiedOwnerInfo.classFilePath !== file.path,
     );
@@ -1358,21 +1390,28 @@ const processSequentialFileMatches = (
     let seqIsStatic: boolean | undefined;
     let seqIsReadonly: boolean | undefined;
     if (nodeLabel === 'Property' && definitionNode && provider.fieldExtractor && typeEnv) {
+      if (
+        language === SupportedLanguages.JavaScript &&
+        definitionNode.type === 'assignment_expression' &&
+        !isConstructorFieldDefinition(definitionNode)
+      )
+        return;
+      const fieldContext: FieldExtractorContext = {
+        typeEnv,
+        symbolTable: NOOP_SYMBOL_TABLE_SEQ,
+        filePath: file.path,
+        language,
+      };
       const classNode = seqFindEnclosingOwnerNode(definitionNode, provider.resolveEnclosingOwner);
-      if (classNode) {
-        const fieldMap = seqGetFieldInfo(classNode, provider, {
-          typeEnv,
-          symbolTable: NOOP_SYMBOL_TABLE_SEQ,
-          filePath: file.path,
-          language,
-        });
-        const info = fieldMap?.get(nodeName);
-        if (info) {
-          declaredType = info.type ?? undefined;
-          seqVisibility = info.visibility;
-          seqIsStatic = info.isStatic;
-          seqIsReadonly = info.isReadonly;
-        }
+      const fieldMap = classNode ? seqGetFieldInfo(classNode, provider, fieldContext) : undefined;
+      const info =
+        fieldMap?.get(nodeName) ??
+        provider.fieldExtractor.extractFromNode?.(definitionNode, fieldContext, nodeName);
+      if (info) {
+        declaredType = info.type ?? undefined;
+        seqVisibility = info.visibility;
+        seqIsStatic = info.isStatic;
+        seqIsReadonly = info.isReadonly;
       }
     }
 
@@ -1565,6 +1604,7 @@ const processSequentialFiles = async (
 
     if (i % 20 === 0) await yieldToEventLoop();
 
+    const started = Date.now();
     const preparedFile = await prepareSequentialFile(
       parser,
       file,
@@ -1576,6 +1616,12 @@ const processSequentialFiles = async (
       // Lightweight fallback for oversized or unparseable files
       const language = getLanguageFromFilename(file.path) ?? getLanguageFromShebang(file.content);
       if (language && isLanguageAvailable(language)) {
+        combinedData.fileTimings.push({
+          filePath: file.path,
+          language,
+          durationMs: Date.now() - started,
+          status: 'skipped',
+        });
         const lightweightResult = extractLightweight(file.path, file.content, language);
         appendWorkerExtractedData(
           combinedData,
@@ -1594,37 +1640,13 @@ const processSequentialFiles = async (
         ...extractLaravelRoutes({ rootNode: preparedFile.rootNode }, file.path),
       );
     }
-    // Skipped/preparation failures above have no outcome; inventory reconciliation
-    // must retain that absence as unavailable evidence.
-    const outcome = extractParsedFileOutcome(
-      preparedFile.provider,
-      preparedFile.parseContent,
-      file.path,
-      undefined,
-      preparedFile.rootNode,
-    );
-    combinedData.scopeExtractionOutcomes ??= [];
-    if (outcome.status === 'success') {
-      combinedData.scopeExtractionOutcomes.push({ filePath: file.path, status: 'success' });
-    } else {
-      combinedData.scopeExtractionOutcomes.push({ filePath: file.path, ...outcome });
-    }
-    const declarationCorrespondence = /\.[cm]?[jt]sx?$/i.test(file.path)
-      ? createDeclarationCorrespondence(file.path)
-      : undefined;
     processSequentialFileMatches(
       graph,
       symbolTable,
       preparedFile,
       combinedData,
       selectCppTypeOwnerHintsForFile(file, cppTypeOwnerIndex),
-      declarationCorrespondence,
     );
-    if (outcome.status === 'success') {
-      combinedData.parsedFiles.push(
-        declarationCorrespondence?.attach(outcome.parsedFile) ?? outcome.parsedFile,
-      );
-    }
   }
 
   applyWorkerGraphMutationBuffer(graph, symbolTable, mutationBuffer);
@@ -1672,12 +1694,9 @@ export const processParsing = async (
   onWorkerResult?: WorkerResultCallback,
   workerFailureMode: ParseWorkerRetryPolicy = PARSE_WORKER_RETRY_POLICY_SEQUENTIAL,
   onSequentialParseErrors?: (paths: string[]) => void,
-  /** Synchronously transfers transient artifacts; clone to retain. Does not guarantee completeness. */
-  onSequentialParsedFiles?: (files: readonly ParsedFile[]) => void,
-  /** Attempted scope extractions only; absence does not guarantee completeness. Clone to retain. */
-  onSequentialScopeOutcomes?: (outcomes: readonly ScopeExtractionRecord[]) => void,
-  /** Awaited after scope callbacks; transfers only supplemental extraction arrays. */
+  /** Transfers supplemental extraction arrays after sequential parsing. */
   onSequentialExtractions?: (extractions: RouteToolExtractions) => void | Promise<void>,
+  onSequentialSkippedFiles?: (paths: string[]) => void,
 ): Promise<WorkerExtractedData | null> => {
   const legacySignature = typeof repoPathOrSymbolTable !== 'string';
   const repoPath = legacySignature ? '' : repoPathOrSymbolTable;
@@ -1744,8 +1763,11 @@ export const processParsing = async (
     repoPath,
   );
   onSequentialParseErrors?.(sequentialData.parseErrorPaths);
-  onSequentialParsedFiles?.(sequentialData.parsedFiles);
-  onSequentialScopeOutcomes?.(sequentialData.scopeExtractionOutcomes ?? []);
+  onSequentialSkippedFiles?.(
+    sequentialData.fileTimings
+      .filter((timing) => timing.status === 'skipped')
+      .map((timing) => timing.filePath),
+  );
   await onSequentialExtractions?.({
     routes: sequentialData.routes,
     decoratorRoutes: sequentialData.decoratorRoutes,

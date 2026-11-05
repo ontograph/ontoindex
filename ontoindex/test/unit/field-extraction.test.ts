@@ -851,6 +851,21 @@ describe('GenericFieldExtractor — Ruby', () => {
   mockContext.language = SupportedLanguages.Ruby;
   mockContext.filePath = 'test.rb';
 
+  it('preserves explicit YARD types for each accessor name at field extraction', () => {
+    parser.setLanguage(Ruby);
+    const tree = parser.parse(`class User
+  # @return [Address]
+  attr_accessor :address, :billing
+  attr_accessor :untyped
+end`);
+    const result = extractor.extract(tree.rootNode.namedChild(0)!, mockContext);
+    expect(result?.fields.map(({ name, type }) => ({ name, type }))).toEqual([
+      { name: 'address', type: 'Address' },
+      { name: 'billing', type: 'Address' },
+      { name: 'untyped', type: null },
+    ]);
+  });
+
   it('extracts multiple fields from attr_accessor', () => {
     parser.setLanguage(Ruby);
     const tree = parser.parse(`class User
