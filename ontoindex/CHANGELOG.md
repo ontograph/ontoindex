@@ -4,6 +4,11 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+- A corrupt or incompatible bundled FTS or VECTOR extension now fails graph opening with its own load error instead of being hidden when the bare `LOAD` fallback reports the extension as not installed. Genuine absence still degrades to BM25.
+- TS/JS shadowing checks count a function declared in a nested block (sloppy-mode Annex B hoisting) and `using` declarations, so neither lets the outer class leak into constructor or factory return inference.
+- Each entry in `parseErrorPathSample` and in the uncovered dirty-path message is capped at 256 characters, like `uncoveredPathSample`; `parseErrorPathSampleTruncated` reports shortened entries.
+- `@types/node` is pinned to 24.x to match the supported `<26` Node runtime range.
+
 ## [2.5.2] - 2026-11-05
 
 - TypeScript and JavaScript shadowing checks follow JavaScript scope: a `catch` or loop binding no longer hides a factory's `return new User()` outside it, a `var` declared in a nested block shadows the whole function, and all cases of one `switch` share a scope. Factory return inference reuses the same check.
