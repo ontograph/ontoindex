@@ -19,6 +19,8 @@ status: active
 
 # OntoIndex Pending Tasks
 
+2026-11-05: 2.5.2 is installed locally. Post-2.5.2 fixes (#197, #198: shadowing, path caps, bundled-extension degrade-and-report, pooled VECTOR test, @types/node 24) are on main and master, unbuilt. The GN remaining tracker is retired (loop closed; NEXT-3..8 stay BLOCKED as unfinished record; PRs #129/#130/#134 closed). PR #127 closed as stale. Open: build and install when requested; remove 2.4.19 and 2.5.1 once their live MCP sessions exit.
+
 2026-11-05: 2.5.1 is installed locally; its qualification fixes (`26dfd8d`) are on main and master, unbuilt.
 Open: build and install with a dirty-workspace prebuild smoke, removal of
 2.4.19 after the Nov 4 session restarts, and an owner decision on
