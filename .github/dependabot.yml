@@ -48,6 +48,10 @@ updates:
       # tree-sitter-cli follows the runtime's version cadence. Bump when
       # regenerating vendor/tree-sitter-proto/src/parser.c, not on a schedule.
       - dependency-name: tree-sitter-cli
+      # Typings must match the supported runtime range (engines: node <26).
+      - dependency-name: '@types/node'
+        update-types:
+          - version-update:semver-major
 
   # ontoindex-web (thin frontend client).
   - package-ecosystem: npm

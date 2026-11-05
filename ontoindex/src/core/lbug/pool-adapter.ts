@@ -312,6 +312,8 @@ interface SharedDB {
   refCount: number;
   ftsLoaded: boolean;
   vectorLoaded: boolean;
+  /** Extensions whose bundled-file failure was already reported, so retries per connection stay quiet. */
+  reportedLoadFailures?: Set<'FTS' | 'VECTOR'>;
   /** When true, closeOne skips db.close() — the Database is owned externally. */
   external?: boolean;
   closed?: boolean;
@@ -795,16 +797,30 @@ export function isUnavailableExtension(error: unknown): boolean {
  * timer doesn't prematurely restore stdout while loads are in flight.
  */
 async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): Promise<void> {
-  const rethrowLoadFailure = (error: unknown, localFailure?: { error: unknown }): void => {
+  const rethrowLoadFailure = (
+    error: unknown,
+    extension: 'FTS' | 'VECTOR',
+    localFailure?: { error: unknown; path: string },
+  ): void => {
     if (!isUnavailableExtension(error)) throw error;
-    // Absence in a fallback must not hide a corrupt or incompatible local file.
-    if (localFailure && !isUnavailableExtension(localFailure.error)) throw localFailure.error;
+    if (localFailure && !isUnavailableExtension(localFailure.error)) {
+      shared.reportedLoadFailures ??= new Set();
+      if (shared.reportedLoadFailures.has(extension)) return;
+      shared.reportedLoadFailures.add(extension);
+      const message =
+        localFailure.error instanceof Error
+          ? localFailure.error.message
+          : String(localFailure.error);
+      console.error(
+        `OntoIndex: bundled ${extension} extension at ${localFailure.path} failed to load: ${message.replace(/\s*[\r\n]+\s*/g, ' ')}; continuing without ${extension}`,
+      );
+    }
   };
   silenceStdout();
   activeQueryCount++;
   try {
     if (!shared.ftsLoaded) {
-      let localFailure: { error: unknown } | undefined;
+      let localFailure: { error: unknown; path: string } | undefined;
       try {
         const localFtsPath = await resolveLocalLbugExtensionPath('fts');
         if (localFtsPath) {
@@ -813,7 +829,7 @@ async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): 
             await runStatement(conn, loadQuery);
             shared.ftsLoaded = true;
           } catch (error) {
-            localFailure = { error };
+            localFailure = { error, path: localFtsPath };
           }
         }
         if (!shared.ftsLoaded) {
@@ -821,12 +837,12 @@ async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): 
           shared.ftsLoaded = true;
         }
       } catch (err) {
-        rethrowLoadFailure(err, localFailure);
+        rethrowLoadFailure(err, 'FTS', localFailure);
         // FTS extension may not be installed — FTS queries will fail gracefully
       }
     }
     if (!shared.vectorLoaded) {
-      let localFailure: { error: unknown } | undefined;
+      let localFailure: { error: unknown; path: string } | undefined;
       try {
         const localVectorPath = await resolveLocalLbugExtensionPath('vector');
         if (localVectorPath) {
@@ -834,7 +850,7 @@ async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): 
             await runStatement(conn, `LOAD EXTENSION '${quoteLbugString(localVectorPath)}'`);
             shared.vectorLoaded = true;
           } catch (error) {
-            localFailure = { error };
+            localFailure = { error, path: localVectorPath };
           }
         }
         if (!shared.vectorLoaded) {
@@ -848,7 +864,7 @@ async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): 
           shared.vectorLoaded = true;
         }
       } catch (err) {
-        rethrowLoadFailure(err, localFailure);
+        rethrowLoadFailure(err, 'VECTOR', localFailure);
         // VECTOR extension may not be available
       }
     }

@@ -30,6 +30,7 @@ import {
 
 describe('pool extension loading', () => {
   const repoId = 'pool-extension-loading';
+  const database = {} as never;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -44,11 +45,13 @@ describe('pool extension loading', () => {
   });
 
   afterEach(async () => {
+    await closeLbug(`${repoId}-retry`);
     await closeLbug(repoId);
+    vi.restoreAllMocks();
   });
 
   it('tries an escaped resolved FTS path before the bare fallback', async () => {
-    await initLbugWithDb(repoId, {} as never, '/tmp/pool-extension-loading.lbug');
+    await initLbugWithDb(repoId, database, '/tmp/pool-extension-loading.lbug');
 
     expect(mocks.resolveLocalLbugExtensionPath).toHaveBeenCalledTimes(2);
     expect(mocks.resolveLocalLbugExtensionPath).toHaveBeenCalledWith('fts');
@@ -70,7 +73,7 @@ describe('pool extension loading', () => {
       return undefined;
     });
     await expect(
-      initLbugWithDb(repoId, {} as never, '/tmp/pool-extension-loading.lbug'),
+      initLbugWithDb(repoId, database, '/tmp/pool-extension-loading.lbug'),
     ).resolves.toBeUndefined();
   });
 
@@ -82,13 +85,14 @@ describe('pool extension loading', () => {
       return undefined;
     });
     await expect(
-      initLbugWithDb(repoId, {} as never, '/tmp/pool-extension-loading.lbug'),
+      initLbugWithDb(repoId, database, '/tmp/pool-extension-loading.lbug'),
     ).rejects.toThrow('corrupted');
   });
 
   it.each(['fts', 'vector'])(
-    'preserves the corrupt local %s error when the bare fallback is absent',
+    'reports the corrupt local %s error and degrades when the bare fallback is absent',
     async (extension) => {
+      const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
       const localError = new Error('invalid ELF header');
       mocks.resolveLocalLbugExtensionPath.mockImplementation(async (name: string) =>
         name === extension ? `/tmp/lib${name}.lbug_extension` : null,
@@ -102,8 +106,21 @@ describe('pool extension loading', () => {
       });
 
       await expect(
-        initLbugWithDb(repoId, {} as never, '/tmp/pool-extension-loading.lbug'),
-      ).rejects.toBe(localError);
+        initLbugWithDb(repoId, database, '/tmp/pool-extension-loading.lbug'),
+      ).resolves.toBeUndefined();
+      expect(stderr).toHaveBeenCalledExactlyOnceWith(
+        `OntoIndex: bundled ${extension.toUpperCase()} extension at /tmp/lib${extension}.lbug_extension failed to load: ${localError.message}; continuing without ${extension.toUpperCase()}`,
+      );
+
+      // A second pool sharing the database retries the extension: its loaded flag stayed false.
+      mocks.query.mockResolvedValue(undefined);
+      await initLbugWithDb(`${repoId}-retry`, database, '/tmp/pool-extension-loading.lbug');
+      expect(
+        mocks.query.mock.calls.filter(
+          ([query]) => query === `LOAD EXTENSION '/tmp/lib${extension}.lbug_extension'`,
+        ),
+      ).toHaveLength(2);
+      expect(stderr).toHaveBeenCalledTimes(1);
     },
   );
 
@@ -114,7 +131,7 @@ describe('pool extension loading', () => {
         name === extension ? `/tmp/lib${name}.lbug_extension` : null,
       );
       await expect(
-        initLbugWithDb(repoId, {} as never, '/tmp/pool-extension-loading.lbug'),
+        initLbugWithDb(repoId, database, '/tmp/pool-extension-loading.lbug'),
       ).resolves.toBeUndefined();
       expect(mocks.query).toHaveBeenCalledWith(
         `LOAD EXTENSION '/tmp/lib${extension}.lbug_extension'`,
@@ -138,7 +155,7 @@ describe('pool extension loading', () => {
         return undefined;
       });
       await expect(
-        initLbugWithDb(repoId, {} as never, '/tmp/pool-extension-loading.lbug'),
+        initLbugWithDb(repoId, database, '/tmp/pool-extension-loading.lbug'),
       ).resolves.toBeUndefined();
     },
   );
@@ -146,6 +163,7 @@ describe('pool extension loading', () => {
   it.each(['install absent', 'reload absent', 'success'])(
     'handles VECTOR install fallback: %s',
     async (outcome) => {
+      const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
       const localError = new Error('invalid ELF header');
       mocks.lbugExtensionInstallAllowed.mockReturnValue(true);
       mocks.resolveLocalLbugExtensionPath.mockImplementation(async (name: string) =>
@@ -165,19 +183,51 @@ describe('pool extension loading', () => {
         }
         return undefined;
       });
-      const initialization = initLbugWithDb(
-        repoId,
-        {} as never,
-        '/tmp/pool-extension-loading.lbug',
-      );
-      if (outcome === 'success') {
-        await expect(initialization).resolves.toBeUndefined();
-      } else {
-        await expect(initialization).rejects.toBe(localError);
-      }
+      const initialization = initLbugWithDb(repoId, database, '/tmp/pool-extension-loading.lbug');
+      await expect(initialization).resolves.toBeUndefined();
+      if (outcome === 'success') expect(stderr).not.toHaveBeenCalled();
+      else
+        expect(stderr).toHaveBeenCalledExactlyOnceWith(
+          `OntoIndex: bundled VECTOR extension at /tmp/libvector.lbug_extension failed to load: ${localError.message}; continuing without VECTOR`,
+        );
       expect(mocks.query).toHaveBeenCalledWith('INSTALL VECTOR');
+      mocks.query.mockResolvedValue(undefined);
+      await initLbugWithDb(`${repoId}-retry`, database, '/tmp/pool-extension-loading.lbug');
+      expect(
+        mocks.query.mock.calls.filter(
+          ([query]) => query === "LOAD EXTENSION '/tmp/libvector.lbug_extension'",
+        ),
+      ).toHaveLength(outcome === 'success' ? 1 : 2);
     },
   );
+
+  it('reports a persistent bundled-file failure once per shared database, on one line', async () => {
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mocks.resolveLocalLbugExtensionPath.mockImplementation(async (name: string) =>
+      name === 'vector' ? '/tmp/libvector.lbug_extension' : null,
+    );
+    mocks.query.mockImplementation(async (query: string) => {
+      if (query === "LOAD EXTENSION '/tmp/libvector.lbug_extension'") {
+        throw new Error('invalid ELF header\n  at dlopen');
+      }
+      if (query === 'LOAD EXTENSION VECTOR') {
+        throw new Error('Extension: vector has not been installed');
+      }
+      return undefined;
+    });
+
+    await initLbugWithDb(repoId, database, '/tmp/pool-extension-loading.lbug');
+    await initLbugWithDb(`${repoId}-retry`, database, '/tmp/pool-extension-loading.lbug');
+
+    expect(
+      mocks.query.mock.calls.filter(
+        ([query]) => query === "LOAD EXTENSION '/tmp/libvector.lbug_extension'",
+      ).length,
+    ).toBeGreaterThan(1);
+    expect(stderr).toHaveBeenCalledExactlyOnceWith(
+      'OntoIndex: bundled VECTOR extension at /tmp/libvector.lbug_extension failed to load: invalid ELF header at dlopen; continuing without VECTOR',
+    );
+  });
 });
 
 describe('isUnavailableExtension', () => {

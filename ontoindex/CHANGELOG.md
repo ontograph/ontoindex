@@ -4,7 +4,8 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
-- A corrupt or incompatible bundled FTS or VECTOR extension now fails graph opening with its own load error instead of being hidden when the bare `LOAD` fallback reports the extension as not installed. Genuine absence still degrades to BM25.
+- A corrupt or incompatible bundled FTS or VECTOR extension is no longer hidden when the bare `LOAD` fallback reports the extension as not installed: the pool logs the bundled file's path and load error to stderr and continues without that extension, like the CLI loader. Other fallback errors stay fatal.
+- An integration test now runs a real `QUERY_VECTOR_INDEX` through a pooled connection, so a broken pooled VECTOR load fails the suite.
 - TS/JS shadowing checks count a function declared in a nested block (sloppy-mode Annex B hoisting) and `using` declarations, so neither lets the outer class leak into constructor or factory return inference.
 - Each entry in `parseErrorPathSample` and in the uncovered dirty-path message is capped at 256 characters, like `uncoveredPathSample`; `parseErrorPathSampleTruncated` reports shortened entries.
 - `@types/node` is pinned to 24.x to match the supported `<26` Node runtime range.
