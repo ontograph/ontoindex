@@ -35,6 +35,13 @@ describe('committed index generation retention', () => {
       .filter((n) => !n.startsWith('.'))
       .sort();
   }
+  async function createLegacy(name: string) {
+    const directory = path.join(storage, 'generations', name);
+    await fs.mkdir(directory);
+    for (const file of ['meta.json', 'snapshot.json', 'lbug'])
+      await fs.writeFile(path.join(directory, file), '{}');
+    return directory;
+  }
   async function activateUnmanaged(name: string, metadataId = name) {
     const generation = await createIndexGeneration(storage, name);
     await fs.writeFile(generation.lbugPath, name);
@@ -147,18 +154,35 @@ describe('committed index generation retention', () => {
     await publish('a');
     await publish('b');
     await publish('c');
-    for (const name of ['1-legacy', '2-legacy'])
-      await fs.mkdir(path.join(storage, 'generations', name));
+    for (const name of ['1-legacy', '2-legacy']) await createLegacy(name);
 
     await publish('d');
 
     expect(await names()).toEqual(['b', 'c', 'd']);
   });
+  it.each(['meta.json', 'snapshot.json', 'lbug'])(
+    'preserves old unmarked generations without a regular %s while pruning complete siblings',
+    async (file) => {
+      vi.spyOn(Date, 'now').mockReturnValue(1000);
+      await publish('a');
+      await createLegacy('1-complete');
+      for (const kind of ['missing', 'directory', 'symlink']) {
+        const directory = await createLegacy(`2-${kind}`);
+        const target = path.join(directory, file);
+        await fs.unlink(target);
+        if (kind === 'directory') await fs.mkdir(target);
+        if (kind === 'symlink') await fs.symlink(path.join(directory, '.target'), target);
+      }
+
+      await publish('b');
+
+      expect(await names()).toEqual(['2-directory', '2-missing', '2-symlink', 'a', 'b']);
+    },
+  );
   it('preserves old unmarked generations with live reader pins until release', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1000);
     await publish('a');
-    const directory = path.join(storage, 'generations', '1-legacy');
-    await fs.mkdir(directory);
+    const directory = await createLegacy('1-legacy');
     const pinPath = path.join(directory, `.reader-${process.pid}-live`);
     await fs.writeFile(pinPath, '');
 
@@ -173,8 +197,7 @@ describe('committed index generation retention', () => {
   it('preserves unmarked generations whose epochs are not older than active', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1000);
     await publish('a');
-    for (const name of ['1001-same', '1002-newer'])
-      await fs.mkdir(path.join(storage, 'generations', name));
+    for (const name of ['1001-same', '1002-newer']) await createLegacy(name);
 
     await publish('b');
 
@@ -184,7 +207,7 @@ describe('committed index generation retention', () => {
     vi.spyOn(Date, 'now').mockReturnValue(1000);
     await publish('a');
     const preserved = ['legacy', '0-zero', '9007199254740992-unsafe', '1-bad name', '2-'];
-    for (const name of preserved) await fs.mkdir(path.join(storage, 'generations', name));
+    for (const name of preserved) await createLegacy(name);
     const link = path.join(storage, 'generations', '1-linked');
     await fs.symlink(storage, link);
 
@@ -197,8 +220,7 @@ describe('committed index generation retention', () => {
     vi.spyOn(Date, 'now').mockReturnValue(1000);
     await publish('a');
     await publish('b');
-    for (const name of ['999-older', '1000-same', '1001-newer'])
-      await fs.mkdir(path.join(storage, 'generations', name));
+    for (const name of ['999-older', '1000-same', '1001-newer']) await createLegacy(name);
 
     await publish('c');
 
@@ -207,8 +229,7 @@ describe('committed index generation retention', () => {
   it('preserves unmarked generations with unknown or symlink reader pins', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(1000);
     await publish('a');
-    for (const name of ['1-unknown', '2-linked'])
-      await fs.mkdir(path.join(storage, 'generations', name));
+    for (const name of ['1-unknown', '2-linked']) await createLegacy(name);
     await fs.writeFile(path.join(storage, 'generations', '1-unknown', '.reader-unknown'), '');
     await fs.symlink(storage, path.join(storage, 'generations', '2-linked', '.reader-1-link'));
 

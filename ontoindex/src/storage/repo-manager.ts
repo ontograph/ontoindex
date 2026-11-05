@@ -1156,8 +1156,14 @@ async function pruneIndexGenerationsLocked(storagePath: string): Promise<void> {
       }
       await fs.unlink(pinPath);
     }
-    if (!pinned && !retained.has(generation.name))
+    if (!pinned && !retained.has(generation.name)) {
+      if (
+        legacy.includes(generation) &&
+        (await generationCleanupReason(directory)) === 'unverified'
+      )
+        continue;
       await fs.rm(directory, { recursive: true, force: true });
+    }
   }
 }
 
