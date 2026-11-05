@@ -19,6 +19,8 @@ status: active
 
 # OntoIndex Pending Tasks
 
+2026-11-05 (late): legacy pre-2.2.9 index generations are now pruned automatically (unbuilt). One-time `ontoindex clean --generations --all --force` removed 74 generations (~5.5 GB across ontoindex, hypbase, essbase-foundation-tools, llm). Five stale Oct 14-15 worktrees removed; dirty state preserved on pushed branches recovery/feat-search-max-tokens-2026-11-05 (24ac8d2) and recovery/fix-overlay-lexical-in-paths-2026-11-05 (d37f8f1). Gap: integration tests that spawn dist/ run against the 2.5.2 build, not post-2.5.2 source, until the next build.
+
 2026-11-05: 2.5.2 is installed locally. Post-2.5.2 fixes (#197, #198: shadowing, path caps, bundled-extension degrade-and-report, pooled VECTOR test, @types/node 24) are on main and master, unbuilt. The GN remaining tracker is retired (loop closed; NEXT-3..8 stay BLOCKED as unfinished record; PRs #129/#130/#134 closed). PR #127 closed as stale. Open: build and install when requested; remove 2.4.19 and 2.5.1 once their live MCP sessions exit.
 
 2026-11-05: 2.5.1 is installed locally; its qualification fixes (`26dfd8d`) are on main and master, unbuilt.

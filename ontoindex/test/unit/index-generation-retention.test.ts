@@ -142,6 +142,80 @@ describe('committed index generation retention', () => {
     expect(await names()).toEqual(['b', 'c', 'd']);
     await pin.release();
   });
+  it('prunes old unmarked generations without consuming managed rollback slots', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1000);
+    await publish('a');
+    await publish('b');
+    await publish('c');
+    for (const name of ['1-legacy', '2-legacy'])
+      await fs.mkdir(path.join(storage, 'generations', name));
+
+    await publish('d');
+
+    expect(await names()).toEqual(['b', 'c', 'd']);
+  });
+  it('preserves old unmarked generations with live reader pins until release', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1000);
+    await publish('a');
+    const directory = path.join(storage, 'generations', '1-legacy');
+    await fs.mkdir(directory);
+    const pinPath = path.join(directory, `.reader-${process.pid}-live`);
+    await fs.writeFile(pinPath, '');
+
+    await publish('b');
+    expect(await names()).toContain('1-legacy');
+    expect(await fs.readFile(pinPath, 'utf8')).toBe('');
+
+    await fs.unlink(pinPath);
+    await publish('c');
+    expect(await names()).toEqual(['a', 'b', 'c']);
+  });
+  it('preserves unmarked generations whose epochs are not older than active', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1000);
+    await publish('a');
+    for (const name of ['1001-same', '1002-newer'])
+      await fs.mkdir(path.join(storage, 'generations', name));
+
+    await publish('b');
+
+    expect(await names()).toEqual(['1001-same', '1002-newer', 'a', 'b']);
+  });
+  it('preserves unmarked symlinks, odd names, and invalid epochs', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1000);
+    await publish('a');
+    const preserved = ['legacy', '0-zero', '9007199254740992-unsafe', '1-bad name', '2-'];
+    for (const name of preserved) await fs.mkdir(path.join(storage, 'generations', name));
+    const link = path.join(storage, 'generations', '1-linked');
+    await fs.symlink(storage, link);
+
+    await publish('b');
+
+    expect(await names()).toEqual([...preserved, '1-linked', 'a', 'b'].sort());
+    expect((await fs.lstat(link)).isSymbolicLink()).toBe(true);
+  });
+  it('only prunes unmarked generations older than every managed generation', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1000);
+    await publish('a');
+    await publish('b');
+    for (const name of ['999-older', '1000-same', '1001-newer'])
+      await fs.mkdir(path.join(storage, 'generations', name));
+
+    await publish('c');
+
+    expect(await names()).toEqual(['1000-same', '1001-newer', 'a', 'b', 'c']);
+  });
+  it('preserves unmarked generations with unknown or symlink reader pins', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1000);
+    await publish('a');
+    for (const name of ['1-unknown', '2-linked'])
+      await fs.mkdir(path.join(storage, 'generations', name));
+    await fs.writeFile(path.join(storage, 'generations', '1-unknown', '.reader-unknown'), '');
+    await fs.symlink(storage, path.join(storage, 'generations', '2-linked', '.reader-1-link'));
+
+    await publish('b');
+
+    expect(await names()).toEqual(['1-unknown', '2-linked', 'a', 'b']);
+  });
   it('pins published file aliases until concurrent releases finish', async () => {
     await publish('a');
     const alias = path.join(storage, 'alias.lbug');

@@ -1073,7 +1073,7 @@ async function sweepDeadReaderPins(storagePath: string): Promise<void> {
   }
 }
 
-/** Only generations published after reader pin adoption are eligible for removal. */
+/** Retain managed rollback generations and conservatively prune older legacy generations. */
 async function pruneIndexGenerationsLocked(storagePath: string): Promise<void> {
   await sweepDeadReaderPins(storagePath);
   const root = path.join(storagePath, GENERATIONS_DIR);
@@ -1083,6 +1083,7 @@ async function pruneIndexGenerationsLocked(storagePath: string): Promise<void> {
   if (!active) return;
   const entries = await fs.readdir(root, { withFileTypes: true });
   const managed: Array<{ name: string; committedAt: number }> = [];
+  const legacy: Array<{ name: string; committedAt: number }> = [];
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
     const directory = path.join(root, entry.name);
@@ -1098,7 +1099,16 @@ async function pruneIndexGenerationsLocked(storagePath: string): Promise<void> {
     }
     if (entry.name.startsWith('.') || !/^[A-Za-z0-9._-]+$/.test(entry.name)) continue;
     const marker = path.join(directory, '.retention-managed');
-    const stat = await fs.lstat(marker).catch(() => null);
+    const stat = await fs
+      .lstat(marker)
+      .catch((err: NodeJS.ErrnoException) => (err.code === 'ENOENT' ? null : undefined));
+    if (stat === null) {
+      const epoch = /^(\d+)-[A-Za-z0-9._-]+$/.exec(entry.name);
+      const committedAt = Number(epoch?.[1]);
+      if (Number.isSafeInteger(committedAt) && committedAt > 0)
+        legacy.push({ name: entry.name, committedAt });
+      continue;
+    }
     if (!stat?.isFile() || stat.isSymbolicLink()) continue;
     const committedAt = Number(await fs.readFile(marker, 'utf8'));
     if (Number.isSafeInteger(committedAt) && committedAt > 0)
@@ -1112,7 +1122,19 @@ async function pruneIndexGenerationsLocked(storagePath: string): Promise<void> {
       .slice(0, 2)
       .map((g) => g.name),
   ]);
-  for (const generation of managed) {
+  const activeEpoch = (
+    managed.find((g) => g.name === active.generationId) ??
+    legacy.find((g) => g.name === active.generationId)
+  )?.committedAt;
+  // Legacy generations must predate both the active generation and every managed one.
+  const legacyBefore = managed.reduce(
+    (oldest, generation) => Math.min(oldest, generation.committedAt),
+    activeEpoch ?? 0,
+  );
+  for (const generation of [
+    ...managed,
+    ...legacy.filter((g) => g.name !== active.generationId && g.committedAt < legacyBefore),
+  ]) {
     const directory = path.join(root, generation.name);
     let pinned = false;
     for (const name of await fs.readdir(directory)) {

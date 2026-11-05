@@ -10,6 +10,7 @@ All notable changes to OntoIndex will be documented in this file.
 - Each entry in `parseErrorPathSample` and in the uncovered dirty-path message is capped at 256 characters, like `uncoveredPathSample`; `parseErrorPathSampleTruncated` reports shortened entries.
 - `@types/node` is pinned to 24.x to match the supported `<26` Node runtime range.
 - Dependencies: `mnemonist` 0.40.7 (Leiden community detection).
+- Automatic generation retention also removes legacy index generations published before the retention marker (pre-2.2.9) when they are older than the active and every managed generation and have no live reader pin. Previously they accumulated forever (4 GB in one repository) until `ontoindex clean --generations --force`.
 
 ## [2.5.2] - 2026-11-05
 
