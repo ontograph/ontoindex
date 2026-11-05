@@ -63,7 +63,7 @@ interface TechDebtEntry {
   score: number;
 }
 
-interface TechDebtResult {
+export interface TechDebtResult {
   status: 'success' | 'error';
   tool: 'tech_debt';
   repo: string;
@@ -237,7 +237,7 @@ async function callerCountsByName(
 export async function runTechDebt(
   repo: RepoHandle,
   params: { limit?: number; min_lines?: number; since?: string },
-): Promise<AnalysisResult> {
+): Promise<AnalysisResult & TechDebtResult> {
   const start = Date.now();
   const limit = normalizeLimit(params?.limit, 20, 1000);
   const minLines =

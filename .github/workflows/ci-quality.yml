@@ -38,6 +38,8 @@ jobs:
       - uses: ./.github/actions/setup-ontoindex
       - run: npx tsc --noEmit
         working-directory: ontoindex
+      - run: npx tsc -p tsconfig.test.json --noEmit
+        working-directory: ontoindex
 
   typecheck-web:
     runs-on: ubuntu-latest

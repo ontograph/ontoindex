@@ -43,6 +43,14 @@ if [ -n "$CLI_CHANGED" ]; then
   elif [ "$CURRENT" -lt "$BASELINE" ]; then
     echo "pre-commit: tsc ratchet available in ontoindex — $CURRENT errors (baseline: $BASELINE). Consider lowering .husky/tsc-baseline.ontoindex.txt to $CURRENT."
   fi
+
+  echo "pre-commit: typechecking ontoindex tests..."
+  TEST_TSC_OUT=$(cd "$ROOT/ontoindex" && ./node_modules/.bin/tsc -p tsconfig.test.json --noEmit 2>&1 || true)
+  if echo "$TEST_TSC_OUT" | grep -q "error TS"; then
+    echo "pre-commit: test sources have type errors:"
+    echo "$TEST_TSC_OUT" | grep "error TS" | head -20
+    exit 1
+  fi
 fi
 
 echo "pre-commit: all checks passed"

@@ -56,7 +56,7 @@ describe('backend coupling/boundary tools', () => {
 
     expect(result.status).toBe('success');
     expect(result.warnings).toEqual([]);
-    expect((result as unknown as Record<string, any>).rows).toEqual(
+    expect(result.rows).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ community: 'Browser', ca: 0, ce: 1, instability: 1 }),
         expect.objectContaining({ community: 'Protocol', ca: 1, ce: 1, instability: 0.5 }),
@@ -97,17 +97,13 @@ describe('backend coupling/boundary tools', () => {
       expect(result.warnings).toEqual([
         `Coupling edge scan reached ${cap} relationships; metrics may be incomplete`,
       ]);
-      expect((result as unknown as Record<string, any>).rows).toEqual(
+      expect(result.rows).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ community_id: 'a', ca: 0, ce: 1 }),
           expect.objectContaining({ community_id: 'b', ca: 1, ce: 0 }),
         ]),
       );
-      expect(
-        (result as unknown as Record<string, any>).rows.find(
-          (row: { community_id: string }) => row.community_id === 'a',
-        ).cross_edges,
-      ).toHaveLength(5);
+      expect(result.rows.find((row) => row.community_id === 'a')?.cross_edges).toHaveLength(5);
     },
   );
 
@@ -167,10 +163,10 @@ describe('backend coupling/boundary tools', () => {
     );
 
     expect(result.status).toBe('success');
-    expect((result.summary as unknown as Record<string, any>).rules_checked).toBe(2);
-    expect((result.summary as unknown as Record<string, any>).rules_violated).toBe(1);
-    expect((result as unknown as Record<string, any>).clean_rules).toEqual(['common -> browser']);
-    expect((result as unknown as Record<string, any>).violations[0]).toMatchObject({
+    expect(result.summary.rules_checked).toBe(2);
+    expect(result.summary.rules_violated).toBe(1);
+    expect(result.clean_rules).toEqual(['common -> browser']);
+    expect(result.violations[0]).toMatchObject({
       rule_label: 'browser -> wsd',
       source_file: 'browser/index.ts',
       target_file: 'wsd/client.ts',
