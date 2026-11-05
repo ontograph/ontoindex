@@ -9,6 +9,7 @@ All notable changes to OntoIndex will be documented in this file.
 - TS/JS shadowing checks count a function declared in a nested block (sloppy-mode Annex B hoisting) and `using` declarations, so neither lets the outer class leak into constructor or factory return inference.
 - Each entry in `parseErrorPathSample` and in the uncovered dirty-path message is capped at 256 characters, like `uncoveredPathSample`; `parseErrorPathSampleTruncated` reports shortened entries.
 - `@types/node` is pinned to 24.x to match the supported `<26` Node runtime range.
+- Dependencies: `mnemonist` 0.40.7 (Leiden community detection).
 
 ## [2.5.2] - 2026-11-05
 
