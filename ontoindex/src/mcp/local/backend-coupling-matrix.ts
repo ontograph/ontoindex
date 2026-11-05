@@ -62,7 +62,7 @@ interface CouplingMatrixRow {
   }>;
 }
 
-interface CouplingMatrixResult {
+export interface CouplingMatrixResult {
   status: 'success' | 'error';
   tool: 'coupling_matrix';
   repo: string;
@@ -109,7 +109,7 @@ export async function runCouplingMatrix(
     flag_threshold?: number;
     include_cross_edges?: boolean;
   },
-): Promise<AnalysisResult> {
+): Promise<Omit<AnalysisResult, 'summary'> & CouplingMatrixResult> {
   const start = Date.now();
   const minSymbols =
     typeof params?.min_symbols === 'number' && Number.isFinite(params.min_symbols)

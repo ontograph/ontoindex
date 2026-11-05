@@ -1,18 +1,3 @@
-type TechDebtTestResult = Awaited<ReturnType<typeof runTechDebt>> & {
-  symbol_count: number;
-  symbols: {
-    name: string;
-    lineCount: number;
-    parameterCount: number;
-    callerCount: number;
-    commits: number;
-    score: number;
-  }[];
-  min_lines: number;
-  since: string;
-  error?: string;
-};
-
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -99,7 +84,7 @@ describe('tech_debt', () => {
       ];
     });
 
-    const result = (await runTechDebt(makeRepo(), { since: '10 years' })) as TechDebtTestResult;
+    const result = await runTechDebt(makeRepo(), { since: '10 years' });
     expect(result.status).toBe('success');
     expect(result.symbol_count).toBe(2);
     expect(result.symbols[0].name).toBe('hotFn');
@@ -108,10 +93,10 @@ describe('tech_debt', () => {
     expect(result.symbols[0].commits).toBe(3);
     expect(result.symbols[0].score).toBeGreaterThan(result.symbols[1].score);
 
-    const limited = (await runTechDebt(makeRepo(), {
+    const limited = await runTechDebt(makeRepo(), {
       since: '10 years',
       limit: 1,
-    })) as TechDebtTestResult;
+    });
     expect(limited.symbols).toHaveLength(1);
     expect(limited.symbol_count).toBe(2);
   });
@@ -135,10 +120,10 @@ describe('tech_debt', () => {
       }
       return [];
     });
-    const result = (await runTechDebt(makeRepo(), {
+    const result = await runTechDebt(makeRepo(), {
       since: '10 years',
       min_lines: 50,
-    })) as TechDebtTestResult;
+    });
     expect(result.min_lines).toBe(50);
     expect(result.symbol_count).toBe(1);
     expect(result.symbols[0].lineCount).toBe(80);
@@ -155,7 +140,7 @@ describe('tech_debt', () => {
   it('reports an invocation failure when both required structural queries fail', async () => {
     const privateError = 'pool not initialised: secret-token /private/database';
     execMock.mockRejectedValue(new Error(privateError));
-    const result = (await runTechDebt(makeRepo(), { since: '10 years' })) as TechDebtTestResult;
+    const result = await runTechDebt(makeRepo(), { since: '10 years' });
     expect(result.status).toBe('error');
     expect(result.symbol_count).toBe(0);
     expect(result.error).toBe('Tech debt analysis failed: Required structural query failed');
@@ -169,7 +154,7 @@ describe('tech_debt', () => {
 
   it('keeps a legitimate empty structural result successful and unmarked', async () => {
     execMock.mockResolvedValue([]);
-    const result = (await runTechDebt(makeRepo(), {})) as TechDebtTestResult;
+    const result = await runTechDebt(makeRepo(), {});
     expect(result).toMatchObject({ status: 'success', symbol_count: 0, symbols: [] });
     expect(result.warnings).toBeUndefined();
     expect(isMarkedInvocationError(result)).toBe(false);
@@ -190,7 +175,7 @@ describe('tech_debt', () => {
         },
       ];
     });
-    const result = (await runTechDebt(makeRepo(), { since: '10 years' })) as TechDebtTestResult;
+    const result = await runTechDebt(makeRepo(), { since: '10 years' });
     expect(result).toMatchObject({
       status: 'success',
       symbol_count: 1,
@@ -225,7 +210,7 @@ describe('tech_debt', () => {
       return [];
     });
 
-    const result = (await runTechDebt(makeRepo(), { since: '10 years' })) as TechDebtTestResult;
+    const result = await runTechDebt(makeRepo(), { since: '10 years' });
     expect(result.status).toBe('success');
     expect(result.symbol_count).toBe(1);
     expect(result.symbols[0].name).toBe('fallbackFn');
@@ -242,7 +227,7 @@ describe('tech_debt', () => {
       if (query.includes('parameterCount')) return [];
       return [];
     });
-    const result = (await runTechDebt(makeRepo(), {})) as TechDebtTestResult;
+    const result = await runTechDebt(makeRepo(), {});
     expect(result.since).toBe('6 months');
     expect(result.min_lines).toBe(10);
   });
@@ -264,7 +249,7 @@ describe('tech_debt', () => {
       return [];
     });
     // Pick a window in the future — no commits since then.
-    const result = (await runTechDebt(makeRepo(), { since: '2099-01-01' })) as TechDebtTestResult;
+    const result = await runTechDebt(makeRepo(), { since: '2099-01-01' });
     expect(result.status).toBe('success');
     expect(result.symbols[0].commits).toBe(0);
   });

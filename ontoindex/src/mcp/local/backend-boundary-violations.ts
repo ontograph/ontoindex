@@ -64,7 +64,7 @@ interface NormalizedRule {
   forbidden_edge_types: string[];
 }
 
-interface BoundaryViolationsResult {
+export interface BoundaryViolationsResult {
   status: 'success' | 'error';
   tool: 'boundary_violations';
   repo: string;
@@ -140,7 +140,7 @@ async function loadRules(
 export async function runBoundaryViolations(
   repo: RepoHandle,
   params: { rules?: unknown; rules_file?: unknown; limit_per_rule?: number },
-): Promise<AnalysisResult> {
+): Promise<Omit<AnalysisResult, 'summary'> & BoundaryViolationsResult> {
   const start = Date.now();
   const limitPerRule = normalizeLimit(params?.limit_per_rule, 20, 200);
 
