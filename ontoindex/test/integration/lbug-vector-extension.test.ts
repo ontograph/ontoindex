@@ -9,6 +9,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
+import {
+  CREATE_VECTOR_INDEX_QUERY,
+  EMBEDDING_DIMS,
+  EMBEDDING_INDEX_NAME,
+  EMBEDDING_TABLE_NAME,
+} from '../../src/core/lbug/schema.js';
 
 withTestLbugDB('vector-extension', (handle) => {
   describe('loadVectorExtension', () => {
@@ -71,5 +77,49 @@ withTestLbugDB('vector-extension', (handle) => {
       // (the flag was reset and re-loaded during re-init)
       await expect(adapter.loadVectorExtension()).resolves.toBeUndefined();
     });
+  });
+
+  it('queries a real vector index through the production read-only pool', async (context) => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const localVectorPath = await adapter.resolveLocalLbugExtensionPath('vector');
+    if (!localVectorPath) {
+      const reason =
+        'Optional VECTOR unavailable; network installation is disabled. ' +
+        'Pool VECTOR acceptance needs a local libvector.lbug_extension via ONTOINDEX_LADYBUG_EXTENSION_DIR.';
+      console.warn(reason);
+      context.skip(reason);
+      return;
+    }
+
+    // Pool queries are read-only: persist the fixture with the writable adapter,
+    // then reopen through initLbug so the pool must load VECTOR itself.
+    const vector = Array.from({ length: EMBEDDING_DIMS }, (_, i) => (i === 0 ? 1 : 0));
+    const vectorLiteral = `CAST([${vector.join(',')}] AS FLOAT[${EMBEDDING_DIMS}])`;
+    try {
+      await adapter.executeQuery(
+        `CREATE (e:${EMBEDDING_TABLE_NAME} {id: 'pool-vector', nodeId: 'function:pool-vector', embedding: ${vectorLiteral}})`,
+      );
+      await adapter.executeQuery(CREATE_VECTOR_INDEX_QUERY);
+      await adapter.closeLbug();
+
+      const pool = await import('../../src/core/lbug/pool-adapter.js');
+      try {
+        await pool.initLbug(handle.repoId, handle.dbPath);
+        const rows = await pool.executeQuery<{ nodeId: string; distance: number }>(
+          handle.repoId,
+          `CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}', ${vectorLiteral}, 1)
+           YIELD node AS emb, distance RETURN emb.nodeId AS nodeId, distance`,
+        );
+        expect(rows).toHaveLength(1);
+        expect(rows[0].nodeId).toBe('function:pool-vector');
+        expect(rows[0].distance).toBeCloseTo(0);
+      } finally {
+        await pool.closeLbug(handle.repoId);
+      }
+    } finally {
+      // Restore the writable adapter the rest of this file and its cleanup expect.
+      await adapter.closeLbug();
+      await adapter.initLbug(handle.dbPath);
+    }
   });
 });
