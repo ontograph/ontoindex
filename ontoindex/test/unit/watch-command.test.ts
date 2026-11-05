@@ -44,19 +44,24 @@ function makeHarness(
     return true;
   });
 
-  const spawn = vi.fn(() => child as never);
+  const spawn = vi.fn((_command: string, _args: string[], _options: unknown) => child as never);
   const log = vi.fn();
   const error = vi.fn();
   const onSignal = vi.fn();
   const offSignal = vi.fn();
-  const planDirtyOverlay = vi.fn(async () => ({
-    includePaths: options.initiallyDirty ? ['src/dirty.ts'] : [],
-    uncoveredPaths: [],
-    allDirtyPaths: options.initiallyDirty ? ['src/dirty.ts'] : [],
-    tombstones: [],
-    tooMany: false,
-    skipped: [],
-  }));
+  const planDirtyOverlay = vi.fn(
+    async () =>
+      ({
+        includePaths: options.initiallyDirty ? ['src/dirty.ts'] : [],
+        uncoveredPaths: [],
+        allDirtyPaths: options.initiallyDirty ? ['src/dirty.ts'] : [],
+        tombstones: [],
+        tooMany: false,
+        skipped: [],
+      }) as unknown as Awaited<
+        ReturnType<NonNullable<Parameters<typeof createWatchCommand>[1]['planDirtyOverlay']>>
+      >,
+  );
   const createWatcher = vi.fn((opts: DebouncedWatcherOptions) =>
     createDebouncedWatcher({
       ...opts,
@@ -64,7 +69,7 @@ function makeHarness(
       watchImpl: ((_root, _options, listener) => {
         emit = (filename) => listener('change', filename);
         return { close: vi.fn() } as never;
-      }) as typeof import('node:fs').watch,
+      }) as unknown as typeof import('node:fs').watch,
     }),
   );
 
@@ -82,7 +87,7 @@ function makeHarness(
     async start(overrides: Parameters<typeof createWatchCommand>[1] = {}) {
       const command = await createWatchCommand(repoPath, {
         leasePath,
-        spawn,
+        spawn: spawn as unknown as NonNullable<Parameters<typeof createWatchCommand>[1]>['spawn'],
         createWatcher,
         isLockHeld: () => options.lockHeld ?? false,
         readHead: async () => {
@@ -743,7 +748,7 @@ describe('watch command', () => {
       tombstones: [],
       tooMany: true,
       skipped: [],
-    });
+    } as unknown as Awaited<ReturnType<typeof harness.planDirtyOverlay>>);
     const command = await harness.start();
 
     expect(harness.log).toHaveBeenCalledWith(

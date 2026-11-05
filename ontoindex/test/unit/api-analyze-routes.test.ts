@@ -116,8 +116,8 @@ describe('mountAnalyzeRoutes cancellation lifecycle', () => {
       send: ReturnType<typeof vi.fn>;
       kill: ReturnType<typeof vi.fn>;
     };
-    child.stderr = new EventEmitter();
-    child.send = vi.fn();
+    child.stderr = new EventEmitter() as typeof child.stderr;
+    child.send = vi.fn() as typeof child.send;
     child.kill = vi.fn(() => true);
     forkMockState.fork.mockReturnValue(child);
 

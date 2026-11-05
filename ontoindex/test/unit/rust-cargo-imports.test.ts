@@ -10,7 +10,7 @@ import { loadImportConfigs } from '../../src/core/ingestion/language-config.js';
 
 const resolve = createImportResolver(rustImportConfig);
 
-function context(files: string[], roots: string[], modules = ['helper']): ResolveCtx {
+function context(files: string[], roots: readonly string[], modules = ['helper']): ResolveCtx {
   return {
     ...buildImportResolutionContext(files),
     configs: {

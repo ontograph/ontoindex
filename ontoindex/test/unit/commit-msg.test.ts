@@ -11,7 +11,7 @@ afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true
 function fixture(initial: string | null = '{"version":"2.4.3"}') {
   const root = mkdtempSync(path.join(tmpdir(), 'ontoindex-commit-msg-'));
   roots.push(root);
-  const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1' };
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: '1' };
   // Fixtures own their Git state even when Vitest is launched by a Git hook.
   for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE']) delete env[key];
   const git = (...args: string[]) =>

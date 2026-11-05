@@ -83,7 +83,9 @@ import { LocalBackend } from '../../../src/mcp/local/local-backend.js';
 const mockExecuteParameterized = executeParameterized as unknown as ReturnType<typeof vi.fn>;
 const mockGetClient = lspBridge.getClient as unknown as ReturnType<typeof vi.fn>;
 const mockFindTestFiles = findTestFiles as unknown as ReturnType<typeof vi.fn>;
-const mockRenameSymbol = renameSymbol as unknown as ReturnType<typeof vi.fn>;
+const mockRenameSymbol = renameSymbol as unknown as ReturnType<
+  typeof vi.fn<(...args: unknown[]) => Promise<unknown>>
+>;
 const _mockExtractFunction = extractFunction as unknown as ReturnType<typeof vi.fn>;
 const _mockMoveSymbol = moveSymbol as unknown as ReturnType<typeof vi.fn>;
 const mockDetectChanges = detectChanges as unknown as ReturnType<typeof vi.fn>;

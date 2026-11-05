@@ -10,12 +10,13 @@ const { lbugMocks, resolveMocks } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/core/lbug/pool-adapter.js')>();
   return { ...actual, ...lbugMocks };
 });
 
 vi.mock('../../src/mcp/local/backend-symbol-resolution.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual =
+    await importOriginal<typeof import('../../src/mcp/local/backend-symbol-resolution.js')>();
   return { ...actual, ...resolveMocks };
 });
 

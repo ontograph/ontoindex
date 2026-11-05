@@ -1,3 +1,11 @@
+type TestFields<T> = {
+  [K in T extends unknown ? keyof T : never]: T extends unknown
+    ? K extends keyof T
+      ? T[K]
+      : never
+    : never;
+};
+
 /**
  * E2E Integration Tests: Deep Flow Detection (api_impact, route_map, shape_check)
  *
@@ -43,7 +51,13 @@ withTestLbugDB(
 
     describe('api_impact round-trip', () => {
       it('returns response shape with success and error keys for /api/grants', async () => {
-        const result = await backend.callTool('api_impact', { route: '/api/grants' });
+        const result = (await backend.callTool('api_impact', {
+          route: '/api/grants',
+        })) as TestFields<
+          Awaited<
+            ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>
+          >
+        >;
 
         expect(result).not.toHaveProperty('error');
         expect(result.route).toBe('/api/grants');
@@ -60,7 +74,13 @@ withTestLbugDB(
       });
 
       it('includes GrantsList and useGrants as consumers', async () => {
-        const result = await backend.callTool('api_impact', { route: '/api/grants' });
+        const result = (await backend.callTool('api_impact', {
+          route: '/api/grants',
+        })) as TestFields<
+          Awaited<
+            ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>
+          >
+        >;
 
         expect(result.consumers).toBeDefined();
         expect(result.consumers.length).toBeGreaterThanOrEqual(2);
@@ -71,7 +91,13 @@ withTestLbugDB(
       });
 
       it('returns impact summary with risk level', async () => {
-        const result = await backend.callTool('api_impact', { route: '/api/grants' });
+        const result = (await backend.callTool('api_impact', {
+          route: '/api/grants',
+        })) as TestFields<
+          Awaited<
+            ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>
+          >
+        >;
 
         expect(result.impactSummary).toBeDefined();
         expect(result.impactSummary.directConsumers).toBeGreaterThanOrEqual(2);
@@ -83,7 +109,13 @@ withTestLbugDB(
 
     describe('mismatch detection e2e', () => {
       it('detects mismatches when consumer accesses field not in handler response', async () => {
-        const result = await backend.callTool('api_impact', { route: '/api/grants' });
+        const result = (await backend.callTool('api_impact', {
+          route: '/api/grants',
+        })) as TestFields<
+          Awaited<
+            ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>
+          >
+        >;
 
         // useGrants accesses 'items' which is not in grants route responseKeys [data, pagination]
         // useMulti accesses 'meta' which is not in grants route responseKeys
@@ -99,7 +131,13 @@ withTestLbugDB(
       });
 
       it('flags items access from useGrants as a mismatch with high confidence', async () => {
-        const result = await backend.callTool('api_impact', { route: '/api/grants' });
+        const result = (await backend.callTool('api_impact', {
+          route: '/api/grants',
+        })) as TestFields<
+          Awaited<
+            ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>
+          >
+        >;
 
         const itemsMismatch = result.mismatches.find(
           (m: any) => m.field === 'items' && m.consumer === 'hooks/useGrants.ts',
@@ -110,7 +148,13 @@ withTestLbugDB(
       });
 
       it('bumps risk level when mismatches exist', async () => {
-        const result = await backend.callTool('api_impact', { route: '/api/grants' });
+        const result = (await backend.callTool('api_impact', {
+          route: '/api/grants',
+        })) as TestFields<
+          Awaited<
+            ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>
+          >
+        >;
 
         // With 3 consumers (LOW base) + mismatches → should be at least MEDIUM
         expect(['MEDIUM', 'HIGH']).toContain(result.impactSummary.riskLevel);
@@ -121,7 +165,13 @@ withTestLbugDB(
 
     describe('multi-fetch attribution', () => {
       it('adds attributionNote for multi-fetch consumers', async () => {
-        const result = await backend.callTool('api_impact', { route: '/api/grants' });
+        const result = (await backend.callTool('api_impact', {
+          route: '/api/grants',
+        })) as TestFields<
+          Awaited<
+            ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>
+          >
+        >;
 
         const multiConsumer = result.consumers.find((c: any) => c.file === 'hooks/useMulti.ts');
         expect(multiConsumer).toBeDefined();
@@ -130,7 +180,13 @@ withTestLbugDB(
       });
 
       it('marks multi-fetch mismatches with low confidence', async () => {
-        const result = await backend.callTool('api_impact', { route: '/api/grants' });
+        const result = (await backend.callTool('api_impact', {
+          route: '/api/grants',
+        })) as TestFields<
+          Awaited<
+            ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>
+          >
+        >;
 
         // useMulti accesses 'meta' on /api/grants — but since it fetches 2 routes,
         // the mismatch confidence should be 'low'
@@ -146,7 +202,13 @@ withTestLbugDB(
 
     describe('middleware chain round-trip', () => {
       it('returns middleware array for wrapped route', async () => {
-        const result = await backend.callTool('api_impact', { route: '/api/secure' });
+        const result = (await backend.callTool('api_impact', {
+          route: '/api/secure',
+        })) as TestFields<
+          Awaited<
+            ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>
+          >
+        >;
 
         expect(result).not.toHaveProperty('error');
         expect(result.middleware).toBeDefined();
@@ -159,7 +221,13 @@ withTestLbugDB(
         // The route appears twice in results (one per method export via HANDLES_ROUTE)
         // but fetchRoutesWithConsumers deduplicates by Route node ID, so we get one
         // Route node with 2 HANDLES_ROUTE edges → routeCountByHandler > 1
-        const result = await backend.callTool('api_impact', { route: '/api/secure' });
+        const result = (await backend.callTool('api_impact', {
+          route: '/api/secure',
+        })) as TestFields<
+          Awaited<
+            ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>
+          >
+        >;
 
         // Since two route handler functions point to the same file,
         // and there's only one Route node, middlewareDetection should be partial
@@ -170,7 +238,9 @@ withTestLbugDB(
       });
 
       it('route_map also shows middleware', async () => {
-        const result = await backend.callTool('route_map', { route: '/api/secure' });
+        const result = (await backend.callTool('route_map', { route: '/api/secure' })) as Awaited<
+          ReturnType<typeof import('../../src/mcp/local/backend-overview.js').routeMap>
+        >;
 
         expect(result.routes).toBeDefined();
         const secureRoute = result.routes.find((r: any) => r.route === '/api/secure');
@@ -184,7 +254,13 @@ withTestLbugDB(
 
     describe('error shape separation', () => {
       it('stores responseKeys and errorKeys separately', async () => {
-        const result = await backend.callTool('api_impact', { route: '/api/grants' });
+        const result = (await backend.callTool('api_impact', {
+          route: '/api/grants',
+        })) as TestFields<
+          Awaited<
+            ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>
+          >
+        >;
 
         // Success keys
         expect(result.responseShape.success).toEqual(
@@ -204,7 +280,13 @@ withTestLbugDB(
       it('consumer accessing error key does not trigger mismatch', async () => {
         // GrantsList accesses 'data' and 'pagination' — both in success keys
         // Neither triggers a mismatch
-        const result = await backend.callTool('api_impact', { route: '/api/grants' });
+        const result = (await backend.callTool('api_impact', {
+          route: '/api/grants',
+        })) as TestFields<
+          Awaited<
+            ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>
+          >
+        >;
 
         const grantsListMismatches =
           result.mismatches?.filter((m: any) => m.consumer === 'components/GrantsList.tsx') ?? [];
@@ -212,7 +294,9 @@ withTestLbugDB(
       });
 
       it('shape_check shows both responseKeys and errorKeys', async () => {
-        const result = await backend.callTool('shape_check', { route: '/api/grants' });
+        const result = (await backend.callTool('shape_check', { route: '/api/grants' })) as Awaited<
+          ReturnType<typeof import('../../src/mcp/local/backend-overview.js').shapeCheck>
+        >;
 
         expect(result.routes).toBeDefined();
         const grantsRoute = result.routes.find((r: any) => r.route === '/api/grants');
@@ -235,9 +319,20 @@ withTestLbugDB(
     describe('tool consistency across route_map, shape_check, api_impact', () => {
       it('consumer counts match across all 3 tools for /api/grants', async () => {
         const [routeMapResult, shapeCheckResult, apiImpactResult] = await Promise.all([
-          backend.callTool('route_map', { route: '/api/grants' }),
-          backend.callTool('shape_check', { route: '/api/grants' }),
-          backend.callTool('api_impact', { route: '/api/grants' }),
+          backend.callTool('route_map', { route: '/api/grants' }) as Promise<
+            Awaited<ReturnType<typeof import('../../src/mcp/local/backend-overview.js').routeMap>>
+          >,
+          backend.callTool('shape_check', { route: '/api/grants' }) as Promise<
+            Awaited<ReturnType<typeof import('../../src/mcp/local/backend-overview.js').shapeCheck>>
+          >,
+          backend.callTool('api_impact', { route: '/api/grants' }) as Promise<
+            Extract<
+              Awaited<
+                ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>
+              >,
+              { handler: string }
+            >
+          >,
         ]);
 
         // route_map consumers
@@ -260,9 +355,20 @@ withTestLbugDB(
 
       it('all tools return the same handler file', async () => {
         const [routeMapResult, shapeCheckResult, apiImpactResult] = await Promise.all([
-          backend.callTool('route_map', { route: '/api/grants' }),
-          backend.callTool('shape_check', { route: '/api/grants' }),
-          backend.callTool('api_impact', { route: '/api/grants' }),
+          backend.callTool('route_map', { route: '/api/grants' }) as Promise<
+            Awaited<ReturnType<typeof import('../../src/mcp/local/backend-overview.js').routeMap>>
+          >,
+          backend.callTool('shape_check', { route: '/api/grants' }) as Promise<
+            Awaited<ReturnType<typeof import('../../src/mcp/local/backend-overview.js').shapeCheck>>
+          >,
+          backend.callTool('api_impact', { route: '/api/grants' }) as Promise<
+            Extract<
+              Awaited<
+                ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>
+              >,
+              { handler: string }
+            >
+          >,
         ]);
 
         const rmHandler = routeMapResult.routes.find(
@@ -283,19 +389,35 @@ withTestLbugDB(
 
     describe('api_impact edge cases', () => {
       it('returns error when neither route nor file is provided', async () => {
-        const result = await backend.callTool('api_impact', {});
+        const result = (await backend.callTool('api_impact', {})) as TestFields<
+          Awaited<
+            ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>
+          >
+        >;
         expect(result).toHaveProperty('error');
         expect(result.error).toMatch(/required/i);
       });
 
       it('returns error for nonexistent route', async () => {
-        const result = await backend.callTool('api_impact', { route: '/api/nonexistent' });
+        const result = (await backend.callTool('api_impact', {
+          route: '/api/nonexistent',
+        })) as TestFields<
+          Awaited<
+            ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>
+          >
+        >;
         expect(result).toHaveProperty('error');
         expect(result.error).toMatch(/no routes found/i);
       });
 
       it('can look up route by file path', async () => {
-        const result = await backend.callTool('api_impact', { file: 'app/api/grants/route.ts' });
+        const result = (await backend.callTool('api_impact', {
+          file: 'app/api/grants/route.ts',
+        })) as TestFields<
+          Awaited<
+            ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>
+          >
+        >;
         expect(result).not.toHaveProperty('error');
         expect(result.route).toBe('/api/grants');
       });

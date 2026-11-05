@@ -39,7 +39,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
-import type { GraphRelationship } from '../../../src/core/graph/types.js';
+import type { GraphRelationship } from 'ontoindex-shared';
 import {
   FIXTURES,
   getRelationships,

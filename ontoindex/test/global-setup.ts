@@ -9,7 +9,7 @@
  */
 import path from 'path';
 import lbug from '@ladybugdb/core';
-import type { GlobalSetupContext } from 'vitest/node';
+import type { TestProject } from 'vitest/node';
 import { createTempDir } from './helpers/test-db.js';
 import { resolveLocalLbugExtensionPath } from '../src/core/lbug/lbug-adapter.js';
 import { quoteLbugString } from '../src/core/lbug/quote-string.js';
@@ -20,7 +20,7 @@ import {
   EMBEDDING_SCHEMA,
 } from '../src/core/lbug/schema.js';
 
-export default async function setup({ provide }: GlobalSetupContext) {
+export default async function setup({ provide }: TestProject) {
   const timeoutMs = Number(process.env.ONTOINDEX_TEST_FTS_SETUP_TIMEOUT_MS ?? '10000');
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
     throw new Error(

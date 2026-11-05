@@ -29,7 +29,7 @@ describe.skipIf(!isLanguageAvailable(SupportedLanguages.Swift))('Swift literal r
 describe('transparent receiver parentheses', () => {
   const extract = (receiver: string) => {
     const parser = new Parser();
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse(`${receiver}.save();`);
     const name = tree.rootNode
       .descendantsOfType('property_identifier')

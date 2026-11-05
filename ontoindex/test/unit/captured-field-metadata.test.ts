@@ -14,7 +14,7 @@ import type { TypeEnvironment } from '../../src/core/ingestion/type-env.js';
 
 function context(language: SupportedLanguages, filePath: string): FieldExtractorContext {
   return {
-    typeEnv: { fileScope: () => new Map() } as TypeEnvironment,
+    typeEnv: { fileScope: () => new Map() } as unknown as TypeEnvironment,
     symbolTable: createSemanticModel().symbols,
     filePath,
     language,
@@ -36,7 +36,10 @@ describe('captured field declaration metadata', () => {
     ['models.Address', 'Address'],
     ['*models.Address', 'Address'],
   ])('extracts Go %s without an enclosing owner', (annotation, type) => {
-    const tree = parse(Go, `package sample\ntype User struct { Home ${annotation} }\n`);
+    const tree = parse(
+      Go as Parser.Language,
+      `package sample\ntype User struct { Home ${annotation} }\n`,
+    );
     const field = tree.rootNode.descendantsOfType('field_declaration')[0];
     const extractor = createFieldExtractor(goConfig);
     expect(
@@ -53,7 +56,10 @@ describe('captured field declaration metadata', () => {
   });
 
   it('rejects unrecognized Go names and node kinds', () => {
-    const tree = parse(Go, 'package sample\ntype User struct { Home, Work Address }\n');
+    const tree = parse(
+      Go as Parser.Language,
+      'package sample\ntype User struct { Home, Work Address }\n',
+    );
     const field = tree.rootNode.descendantsOfType('field_declaration')[0];
     const extractor = createFieldExtractor(goConfig);
     const ctx = context(SupportedLanguages.Go, 'user.go');
@@ -66,7 +72,7 @@ describe('captured field declaration metadata', () => {
 
   it('extracts PHP promoted property type, visibility and readonly metadata', () => {
     const tree = parse(
-      PHP.php,
+      PHP.php as Parser.Language,
       `<?php
 class User {
   public function __construct(private readonly Address $home, protected Service $service, string $ordinary) {}
@@ -103,7 +109,10 @@ class User {
   });
 
   it('uses the same metadata for a directly captured and owner-collected PHP field', () => {
-    const tree = parse(PHP.php, '<?php class User { protected static Address $home; }');
+    const tree = parse(
+      PHP.php as Parser.Language,
+      '<?php class User { protected static Address $home; }',
+    );
     const owner = tree.rootNode.descendantsOfType('class_declaration')[0];
     const field = tree.rootNode.descendantsOfType('property_declaration')[0];
     const extractor = createFieldExtractor(phpConfig);
@@ -114,7 +123,7 @@ class User {
   });
 
   it('selects only config-declared names from a multi-name Ruby declaration', () => {
-    const tree = parse(Ruby, 'class User\n attr_reader :home, :work\nend');
+    const tree = parse(Ruby as Parser.Language, 'class User\n attr_reader :home, :work\nend');
     const field = tree.rootNode.descendantsOfType('call')[0];
     const extractor = createFieldExtractor(rubyConfig);
     const ctx = context(SupportedLanguages.Ruby, 'user.rb');

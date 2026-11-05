@@ -34,7 +34,6 @@ describe('symbol-first workflow plan', () => {
     expect(() =>
       buildSymbolFirstWorkflowPlan({
         target: baseTarget,
-        // @ts-expect-error invalid intent used for validation coverage
         intent: 'delete-it-all',
         evidence: {},
       }),

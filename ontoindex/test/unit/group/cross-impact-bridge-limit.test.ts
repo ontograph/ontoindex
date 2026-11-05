@@ -46,7 +46,7 @@ describe('cross-impact bridge fan-out bounds', () => {
         },
       };
 
-      const queryBridge = vi.fn(async () => [
+      const queryBridge = vi.fn(async (_path: string, _query: string) => [
         {
           neighborRepo: 'app/dep',
           neighborUid: 'dep-1',

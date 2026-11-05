@@ -504,7 +504,7 @@ setTimeout(() => {}, 30000);
         command: process.execPath,
         args: [],
         options: {},
-      }),
+      } as Parameters<typeof submitAnalysisJob>[0]),
     ).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fs.access(repoPath)).rejects.toThrow();
   });

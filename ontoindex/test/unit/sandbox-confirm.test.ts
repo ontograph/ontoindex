@@ -47,10 +47,10 @@ describe('sandbox tool confirmation gating', () => {
   });
 
   it('allows "stage" action without confirmation', async () => {
-    const result = await backend.callTool('sandbox', {
+    const result = (await backend.callTool('sandbox', {
       action: 'stage',
       payload: { file: 'foo.ts' },
-    });
+    })) as TestBackendResponse;
     expect(result.success).toBe(true);
   });
 
@@ -66,3 +66,5 @@ describe('sandbox tool confirmation gating', () => {
     );
   });
 });
+
+type TestBackendResponse = { success: boolean };

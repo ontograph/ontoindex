@@ -5,7 +5,7 @@ import {
   COMMUNITY_COLORS,
   processCommunities,
 } from '../../src/core/ingestion/community-processor.js';
-import type { GraphNode, GraphRelationship } from '../../src/core/graph/types.js';
+import type { GraphNode, GraphRelationship } from 'ontoindex-shared';
 
 describe('community-processor', () => {
   afterEach(() => {

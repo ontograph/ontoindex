@@ -76,8 +76,16 @@ describe('automatic refresh', () => {
   it('schedules a new commit once and warns when the stamp suppresses another submission', async () => {
     const { repo, advance } = await fixture();
     await advance();
-    expect(await maybeScheduleAutoRefresh(repo, { ensureFresh })).toContain('test-job');
-    expect(await maybeScheduleAutoRefresh(repo, { ensureFresh })).toContain('stale');
+    expect(
+      await maybeScheduleAutoRefresh(repo, {
+        ensureFresh: ensureFresh as unknown as typeof gnEnsureFresh,
+      }),
+    ).toContain('test-job');
+    expect(
+      await maybeScheduleAutoRefresh(repo, {
+        ensureFresh: ensureFresh as unknown as typeof gnEnsureFresh,
+      }),
+    ).toContain('stale');
     expect(ensureFresh).toHaveBeenCalledTimes(1);
     expect(await fs.stat(path.join(repo.storagePath, 'auto-refresh.stamp'))).toBeDefined();
   });
@@ -86,7 +94,11 @@ describe('automatic refresh', () => {
     const { repo, advance } = await fixture();
     await advance();
     const warnings = await Promise.all(
-      Array.from({ length: 6 }, () => maybeScheduleAutoRefresh(repo, { ensureFresh })),
+      Array.from({ length: 6 }, () =>
+        maybeScheduleAutoRefresh(repo, {
+          ensureFresh: ensureFresh as unknown as typeof gnEnsureFresh,
+        }),
+      ),
     );
     expect(ensureFresh).toHaveBeenCalledTimes(1);
     expect(new Set(warnings).size).toBe(1);
@@ -95,7 +107,11 @@ describe('automatic refresh', () => {
   it('does nothing for dirty-only changes on the same HEAD', async () => {
     const { repo } = await fixture();
     await fs.writeFile(path.join(repo.repoPath, 'src', 'main.ts'), 'dirty\n');
-    expect(await maybeScheduleAutoRefresh(repo, { ensureFresh })).toBeUndefined();
+    expect(
+      await maybeScheduleAutoRefresh(repo, {
+        ensureFresh: ensureFresh as unknown as typeof gnEnsureFresh,
+      }),
+    ).toBeUndefined();
     expect(ensureFresh).not.toHaveBeenCalled();
   });
 
@@ -104,7 +120,9 @@ describe('automatic refresh', () => {
     async (options) => {
       const { repo } = await fixture({ ...options, profile: 'symbols' });
       let now = Date.now();
-      const deps = { ensureFresh, spawnRefresh, now: () => now };
+      const deps = { ensureFresh, spawnRefresh, now: () => now } as unknown as NonNullable<
+        Parameters<typeof maybeScheduleAutoRefresh>[1]
+      >;
       expect(await maybeScheduleAutoRefresh(repo, deps)).toBeUndefined();
       await fs.writeFile(path.join(repo.repoPath, 'outside.ts'), 'outside\n');
       now += 300001;
@@ -125,7 +143,9 @@ describe('automatic refresh', () => {
   it('passes the recorded include paths and symbols profile to ensure-fresh', async () => {
     const { repo, advance } = await fixture({ profile: 'symbols' });
     await advance();
-    await maybeScheduleAutoRefresh(repo, { ensureFresh });
+    await maybeScheduleAutoRefresh(repo, {
+      ensureFresh: ensureFresh as unknown as typeof gnEnsureFresh,
+    });
     expect(ensureFresh).toHaveBeenCalledWith(repo.repoPath, {
       repo: repo.repoPath,
       autoAnalyze: true,
@@ -136,7 +156,11 @@ describe('automatic refresh', () => {
   it('never refreshes huge-repo-symbols indexes', async () => {
     const { repo, advance } = await fixture({ profile: 'huge-repo-symbols' });
     await advance();
-    expect(await maybeScheduleAutoRefresh(repo, { ensureFresh })).toContain('manually');
+    expect(
+      await maybeScheduleAutoRefresh(repo, {
+        ensureFresh: ensureFresh as unknown as typeof gnEnsureFresh,
+      }),
+    ).toContain('manually');
     expect(ensureFresh).not.toHaveBeenCalled();
   });
 
@@ -144,7 +168,11 @@ describe('automatic refresh', () => {
     const { repo, advance } = await fixture();
     await advance();
     vi.stubEnv('ONTOINDEX_AUTO_REFRESH', '0');
-    expect(await maybeScheduleAutoRefresh(repo, { ensureFresh })).toBeUndefined();
+    expect(
+      await maybeScheduleAutoRefresh(repo, {
+        ensureFresh: ensureFresh as unknown as typeof gnEnsureFresh,
+      }),
+    ).toBeUndefined();
     expect(ensureFresh).not.toHaveBeenCalled();
   });
 
@@ -152,9 +180,17 @@ describe('automatic refresh', () => {
     const { repo, advance } = await fixture();
     await advance();
     ensureFresh.mockRejectedValueOnce(new Error('submission failed'));
-    await expect(maybeScheduleAutoRefresh(repo, { ensureFresh })).resolves.toBeUndefined();
+    await expect(
+      maybeScheduleAutoRefresh(repo, {
+        ensureFresh: ensureFresh as unknown as typeof gnEnsureFresh,
+      }),
+    ).resolves.toBeUndefined();
     await fs.rm(path.join(repo.storagePath, 'meta.json'));
-    await expect(maybeScheduleAutoRefresh(repo, { ensureFresh })).resolves.toBeUndefined();
+    await expect(
+      maybeScheduleAutoRefresh(repo, {
+        ensureFresh: ensureFresh as unknown as typeof gnEnsureFresh,
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it('reports a running refresh and names other blockers in the stale warning', async () => {
@@ -167,9 +203,11 @@ describe('automatic refresh', () => {
         message: 'another job is running',
       },
     } as Awaited<ReturnType<typeof gnEnsureFresh>>);
-    expect(await maybeScheduleAutoRefresh(repo, { ensureFresh })).toContain(
-      'A refresh is already running',
-    );
+    expect(
+      await maybeScheduleAutoRefresh(repo, {
+        ensureFresh: ensureFresh as unknown as typeof gnEnsureFresh,
+      }),
+    ).toContain('A refresh is already running');
     await fs.rm(path.join(repo.storagePath, 'auto-refresh.stamp'));
     ensureFresh.mockResolvedValueOnce({
       analysisSubmission: {
@@ -178,9 +216,11 @@ describe('automatic refresh', () => {
         message: 'repair manually',
       },
     } as Awaited<ReturnType<typeof gnEnsureFresh>>);
-    expect(await maybeScheduleAutoRefresh(repo, { ensureFresh })).toContain(
-      'Refresh blocked (untrusted)',
-    );
+    expect(
+      await maybeScheduleAutoRefresh(repo, {
+        ensureFresh: ensureFresh as unknown as typeof gnEnsureFresh,
+      }),
+    ).toContain('Refresh blocked (untrusted)');
   });
 });
 

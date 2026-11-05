@@ -19,7 +19,9 @@ vi.mock('../../src/server/analyze-job.js', () => ({
 let server: Server | undefined;
 let client: Client | undefined;
 let groupHome: string | undefined;
-const signals = new Map(['SIGINT', 'SIGTERM'].map((signal) => [signal, process.listeners(signal)]));
+const signals = new Map(
+  (['SIGINT', 'SIGTERM'] as const).map((signal) => [signal, process.listeners(signal)]),
+);
 
 afterEach(async () => {
   try {

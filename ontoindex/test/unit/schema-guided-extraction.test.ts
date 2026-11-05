@@ -67,11 +67,11 @@ describe('schema-guided extraction report', () => {
     const schema = extractionSchema({
       id: '',
       rootClass: 'Missing',
-    } as ExtractionSchemaDocument);
+    } as unknown as ExtractionSchemaDocument);
 
     expect(() =>
       buildSchemaGuidedExtractionReport({
-        schema: schema as ExtractionSchemaDocument,
+        schema: schema as unknown as ExtractionSchemaDocument,
         candidates: [],
       }),
     ).toThrow('schema.id must be a non-empty string');
@@ -84,7 +84,7 @@ describe('schema-guided extraction report', () => {
     };
     expect(() =>
       buildSchemaGuidedExtractionReport({
-        schema: classNameMissing as ExtractionSchemaDocument,
+        schema: classNameMissing as unknown as ExtractionSchemaDocument,
         candidates: [],
       }),
     ).toThrow('schema root class Missing must exist in classes');
@@ -97,7 +97,7 @@ describe('schema-guided extraction report', () => {
         },
       ],
       rootClass: 'Root',
-    } as ExtractionSchemaDocument);
+    } as unknown as ExtractionSchemaDocument);
     expect(() =>
       buildSchemaGuidedExtractionReport({
         schema: unknownRange,

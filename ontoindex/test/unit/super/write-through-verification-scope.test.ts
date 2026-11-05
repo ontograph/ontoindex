@@ -81,7 +81,7 @@ describe('cold diff verification dispatch', () => {
         'scope',
         undefined,
         undefined,
-        backend,
+        backend as unknown as Parameters<typeof dispatchSuper>[5],
       );
 
       expect(backend.resolveRepo).toHaveBeenCalledExactlyOnceWith('/repo');
@@ -126,7 +126,7 @@ describe('cold diff verification dispatch', () => {
             'scope',
             undefined,
             undefined,
-            backend,
+            backend as unknown as Parameters<typeof dispatchSuper>[5],
           ),
         ).rejects.toBe(error);
         expect(backend.withPreparedRepoRead).toHaveBeenCalledTimes(failure === 'prepare' ? 1 : 0);
@@ -153,7 +153,7 @@ describe('cold diff verification dispatch', () => {
         'scope',
         undefined,
         undefined,
-        backend,
+        backend as unknown as Parameters<typeof dispatchSuper>[5],
       );
       expect(report).toMatchObject({ status: 'PASS' });
       expect(backend.resolveRepo).not.toHaveBeenCalled();
@@ -196,7 +196,7 @@ describe('cold diff verification dispatch', () => {
           'scope',
           undefined,
           undefined,
-          backend,
+          backend as unknown as Parameters<typeof dispatchSuper>[5],
         ),
       ).rejects.toBe(error);
       expect(backend.ensureRepoInitialized).toHaveBeenCalledExactlyOnceWith('scope');
@@ -367,7 +367,7 @@ describe('collectVerificationDiff changedFiles scope', () => {
       const report = await gnVerifyDiff('scope', {
         changedFiles: ['src/selected.ts'],
         expectedFiles: ['src/selected.ts'],
-        expectedSymbols,
+        expectedSymbols: expectedSymbols as unknown as string[],
       });
       expect(report.status).toBe('FAIL');
       expect(report.warnings).toContain('Detector failed.');

@@ -341,7 +341,8 @@ describe('superviseWorkspaceBuild', () => {
     }> = [];
     const realKill = process.kill.bind(process);
     vi.spyOn(process, 'kill').mockImplementation((target, signal) => {
-      if (signal !== 0) signals.push({ target, signal, at: Date.now() });
+      if (signal !== 0)
+        signals.push({ target, signal: signal as NodeJS.Signals | number, at: Date.now() });
       return realKill(target, signal);
     });
     const ready = path.join(storage, 'ready');
@@ -537,9 +538,11 @@ describe('superviseWorkspaceBuild', () => {
       (error: WorkspaceBuildError) => error,
     );
     expect(error).toMatchObject({ kind: 'unstoppable' });
-    expect(error!.termination).toBeUndefined();
+    expect((error as WorkspaceBuildError).termination).toBeUndefined();
     expect(onSpawn).not.toHaveBeenCalled();
-    expect(error!.message).toContain('owner identity could not be recorded');
+    expect((error as WorkspaceBuildError).message).toContain(
+      'owner identity could not be recorded',
+    );
     expect(childPid).toBeGreaterThan(0);
     expect(() => process.kill(childPid!, 0)).toThrow();
     const marker = JSON.parse(

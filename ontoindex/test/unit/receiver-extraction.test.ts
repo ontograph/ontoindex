@@ -70,7 +70,7 @@ function extractExpressRouteReceivers(parser: Parser, code: string) {
 
 describe('receiver extraction (express_route walk)', () => {
   const parser = new Parser();
-  parser.setLanguage(TypeScript.typescript);
+  parser.setLanguage(TypeScript.typescript as Parser.Language);
 
   it('bare identifier: app.get()', () => {
     const r = extractExpressRouteReceivers(parser, 'app.get("/api/users", h);');

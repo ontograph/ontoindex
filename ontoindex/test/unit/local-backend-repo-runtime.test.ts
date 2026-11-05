@@ -165,7 +165,7 @@ describe('shared workspace watcher lifecycle', () => {
       overlayPaths: new Set(),
       uncoveredPaths: new Set(),
       tombstones: new Set(),
-    } as OverlaySnapshot;
+    } as unknown as OverlaySnapshot;
     const signals: AbortSignal[] = [];
     const drains: (() => void)[] = [];
     const dependencies = {
@@ -268,7 +268,9 @@ async function compiledAdmissionFixture(config: {
   const fs = (await load('node:fs/promises')) as typeof import('node:fs/promises');
   const syncFs = (await load('node:fs')) as typeof import('node:fs');
   const path = (await load('node:path')) as typeof import('node:path');
-  const cp = (await load('node:child_process')) as typeof import('node:child_process');
+  const cp = (await load('node:child_process')) as typeof import('node:child_process') & {
+    default: typeof import('node:child_process');
+  };
   const { fileURLToPath } = (await load('node:url')) as typeof import('node:url');
   const { syncBuiltinESMExports } = (await load('node:module')) as typeof import('node:module');
   const storagePath = path.join(config.repoPath, '.ontoindex');
@@ -609,7 +611,7 @@ describe('workspace read preparation', () => {
         tombstones: new Set<string>(),
         currentHead: 'same-head',
         baseProvenance: 'working-tree',
-      } as OverlaySnapshot;
+      } as unknown as OverlaySnapshot;
       const options = {
         repo,
         needsRelationships: false,

@@ -193,7 +193,7 @@ describe('sidecar runner scaffold', () => {
       ...createEmptySidecarStoreState(),
       requests: [request],
     });
-    harness.callbacks.executeRequest = vi.fn(async () => ({ status: 'running' }));
+    harness.callbacks.executeRequest = vi.fn(async () => ({ status: 'running' as const }));
 
     const outcome = await runSidecarRunnerOnce(harness.callbacks, runnerOptions);
 
@@ -223,7 +223,7 @@ describe('sidecar runner scaffold', () => {
         heartbeatAt: '2026-05-13T10:20:00.000Z',
         leaseExpiresAt: '2026-05-13T10:21:00.000Z',
       });
-    });
+    }) as unknown as SidecarRunnerCallbacks['executeRequest'];
     harness.callbacks.now = vi
       .fn()
       .mockReturnValueOnce('2026-05-13T10:00:00.000Z')
@@ -274,7 +274,7 @@ describe('sidecar runner scaffold', () => {
       observeThrottle: vi.fn(async () => throttle),
       executeRequest: vi.fn(async () => {
         throw new Error('adapter analyzer failed');
-      }),
+      }) as unknown as SidecarRunnerCallbacks['executeRequest'],
       now: vi.fn(() => '2026-05-13T10:00:00.000Z'),
       pid: vi.fn(() => 1234),
       ownerId: vi.fn(() => 'runner-a'),
@@ -306,7 +306,7 @@ describe('sidecar runner scaffold', () => {
             leaseExpiresAt: '2026-05-13T10:21:00.000Z',
           },
         });
-      }),
+      }) as unknown as SidecarRunnerCallbacks['executeRequest'],
       now: vi
         .fn()
         .mockReturnValueOnce('2026-05-13T10:00:00.000Z')

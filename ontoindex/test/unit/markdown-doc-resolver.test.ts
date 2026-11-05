@@ -273,7 +273,8 @@ function apiSpec(method: MarkdownApiSpecFact['method'], path: string): MarkdownA
 function typedFactBase(kind: string, normalizedKey: string) {
   return {
     kind,
-    schemaVersion: CURRENT_MARKDOWN_DOCUMENT_FACT_SCHEMA_VERSION,
+    schemaVersion:
+      CURRENT_MARKDOWN_DOCUMENT_FACT_SCHEMA_VERSION as typeof CURRENT_MARKDOWN_DOCUMENT_FACT_SCHEMA_VERSION,
     docPath: 'docs/requirements.md',
     headingPath: ['M2'],
     lineSpan: { start: 1, end: 1 },

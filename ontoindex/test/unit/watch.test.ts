@@ -14,7 +14,7 @@ function makeWatchHarness() {
       onChange?.('change', filename);
     },
     close,
-    watchImpl,
+    watchImpl: watchImpl as unknown as typeof import('node:fs').watch,
   };
 }
 
@@ -166,7 +166,10 @@ describe('createDebouncedWatcher', () => {
   it('logs refresh rejection and continues handling later changes', async () => {
     vi.useFakeTimers();
     const events = makeWatchHarness();
-    const refresh = vi.fn().mockRejectedValueOnce(new Error('refresh failed')).mockResolvedValue();
+    const refresh = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('refresh failed'))
+      .mockResolvedValue(undefined);
     const log = vi.fn();
     const watcher = createDebouncedWatcher({
       root: '/repo',

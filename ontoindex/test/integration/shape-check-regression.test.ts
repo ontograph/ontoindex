@@ -1,3 +1,11 @@
+type TestFields<T> = {
+  [K in T extends unknown ? keyof T : never]: T extends unknown
+    ? K extends keyof T
+      ? T[K]
+      : never
+    : never;
+};
+
 /**
  * Regression tests for shape_check false positives.
  *
@@ -89,7 +97,9 @@ withTestLbugDB(
 
     describe('errorPathKeys exclusion from mismatched', () => {
       it('error-path key appears in errorPathKeys, not mismatched', async () => {
-        const result = await backend.callTool('shape_check', { route: '/api/orders' });
+        const result = (await backend.callTool('shape_check', { route: '/api/orders' })) as Awaited<
+          ReturnType<typeof import('../../src/mcp/local/backend-overview.js').shapeCheck>
+        >;
 
         expect(result.routes).toBeDefined();
         const ordersRoute = result.routes.find((r: any) => r.route === '/api/orders');
@@ -112,7 +122,9 @@ withTestLbugDB(
       });
 
       it('route with only error-path differences has no MISMATCH status', async () => {
-        const result = await backend.callTool('shape_check', { route: '/api/orders' });
+        const result = (await backend.callTool('shape_check', { route: '/api/orders' })) as Awaited<
+          ReturnType<typeof import('../../src/mcp/local/backend-overview.js').shapeCheck>
+        >;
 
         const ordersRoute = result.routes.find((r: any) => r.route === '/api/orders');
         expect(ordersRoute).toBeDefined();
@@ -123,7 +135,9 @@ withTestLbugDB(
       });
 
       it('no global mismatches count when only error-path keys differ', async () => {
-        const result = await backend.callTool('shape_check', { route: '/api/orders' });
+        const result = (await backend.callTool('shape_check', { route: '/api/orders' })) as Awaited<
+          ReturnType<typeof import('../../src/mcp/local/backend-overview.js').shapeCheck>
+        >;
 
         // Top-level mismatches count should be absent (0 mismatches)
         expect(result.mismatches).toBeUndefined();
@@ -134,7 +148,9 @@ withTestLbugDB(
 
     describe('blocklist does not suppress legitimate API fields', () => {
       it('DOM-like field names in route response are valid matches', async () => {
-        const result = await backend.callTool('shape_check', { route: '/api/links' });
+        const result = (await backend.callTool('shape_check', { route: '/api/links' })) as Awaited<
+          ReturnType<typeof import('../../src/mcp/local/backend-overview.js').shapeCheck>
+        >;
 
         expect(result.routes).toBeDefined();
         const linksRoute = result.routes.find((r: any) => r.route === '/api/links');
@@ -156,7 +172,9 @@ withTestLbugDB(
       });
 
       it('route with DOM-like fields has no MISMATCH status', async () => {
-        const result = await backend.callTool('shape_check', { route: '/api/links' });
+        const result = (await backend.callTool('shape_check', { route: '/api/links' })) as Awaited<
+          ReturnType<typeof import('../../src/mcp/local/backend-overview.js').shapeCheck>
+        >;
 
         const linksRoute = result.routes.find((r: any) => r.route === '/api/links');
         expect(linksRoute).toBeDefined();
@@ -166,7 +184,9 @@ withTestLbugDB(
       });
 
       it('no errorPathKeys when all accessed keys are in responseKeys', async () => {
-        const result = await backend.callTool('shape_check', { route: '/api/links' });
+        const result = (await backend.callTool('shape_check', { route: '/api/links' })) as Awaited<
+          ReturnType<typeof import('../../src/mcp/local/backend-overview.js').shapeCheck>
+        >;
 
         const linksRoute = result.routes.find((r: any) => r.route === '/api/links');
         const consumer = linksRoute!.consumers.find(

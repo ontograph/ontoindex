@@ -90,7 +90,9 @@ describe('Windows-style path handling', () => {
       leasePath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'watch-win-')), 'watch.lease'),
       createWatcher: (options) => {
         watcherOptions = options;
-        return { start: vi.fn(), stop: vi.fn() };
+        return { start: vi.fn(), stop: vi.fn() } as unknown as ReturnType<
+          typeof import('../../src/cli/watch.js').createDebouncedWatcher
+        >;
       },
       createIgnoreFilter: vi.fn(async () => ({
         ignored: ignoreFilter,
@@ -103,7 +105,7 @@ describe('Windows-style path handling', () => {
         tombstones: [],
         tooMany: false,
         skipped: [],
-      })),
+      })) as unknown as NonNullable<Parameters<typeof createWatchCommand>[1]>['planDirtyOverlay'],
       log: vi.fn(),
       error: vi.fn(),
       onSignal: vi.fn(),

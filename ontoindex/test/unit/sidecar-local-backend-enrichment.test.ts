@@ -75,7 +75,7 @@ vi.mock(
 function mentionSidecarState() {
   const state = markdownSidecarState();
   const base = state.enrichments[0];
-  const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')!;
+  const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')! as TestMarkdownChunk;
   return {
     ...state,
     enrichments: [
@@ -120,7 +120,7 @@ describe('MR2- Markdown mention backend wiring', () => {
   it('MR2-A attaches resolved graph targets to returned chunk evidence', async () => {
     const repo = await createRepo();
     await writeSidecarStore(repo.storagePath, mentionSidecarState());
-    const result = await new LocalBackend().callTool('query', options);
+    const result = (await new LocalBackend().callTool('query', options)) as TestBackendResponse;
     expect(result.enrichment.relatedChunks).toHaveLength(1);
     expect(result.enrichment.relatedChunks[0].evidence).toEqual([
       expect.objectContaining({
@@ -154,13 +154,13 @@ describe('MR2- Markdown mention backend wiring', () => {
       enrichments: [{ ...base, records: [chunk, secondChunk] }],
     });
     const backend = new LocalBackend();
-    const baseline = await backend.callTool('query', options);
+    const baseline = (await backend.callTool('query', options)) as TestBackendResponse;
     await writeSidecarStore(repo.storagePath, {
       ...state,
       enrichments: [{ ...base, records: [...base.records, secondChunk] }],
     });
     mentionMocks.findSymbols.mockRejectedValue(new Error('graph unavailable'));
-    const result = await backend.callTool('query', options);
+    const result = (await backend.callTool('query', options)) as TestBackendResponse;
     expect(baseline.enrichment.relatedChunks).toHaveLength(2);
     expect(result.enrichment.relatedChunks.map((value: any) => value.chunkKey)).toEqual(
       baseline.enrichment.relatedChunks.map((value: any) => value.chunkKey),
@@ -193,7 +193,7 @@ describe('MR2- Markdown mention backend wiring', () => {
         },
       ],
     });
-    const result = await new LocalBackend().callTool('query', options);
+    const result = (await new LocalBackend().callTool('query', options)) as TestBackendResponse;
     expect(result.enrichment.relatedChunks).toHaveLength(10);
     expect(result.enrichment.relatedChunks.map((value: any) => value.chunkKey)).not.toContain(
       hiddenChunk.chunkKey,
@@ -206,7 +206,10 @@ describe('MR2- Markdown mention backend wiring', () => {
     const repo = await createRepo();
     await writeSidecarStore(repo.storagePath, mentionSidecarState());
     const { include_markdown_context: _includeMarkdownContext, ...withoutMarkdown } = options;
-    const result = await new LocalBackend().callTool('query', withoutMarkdown);
+    const result = (await new LocalBackend().callTool(
+      'query',
+      withoutMarkdown,
+    )) as TestBackendResponse;
     expect(mentionMocks.findSymbols).not.toHaveBeenCalled();
     expect(result.enrichment).not.toHaveProperty('mentionResolution');
   });
@@ -230,7 +233,7 @@ describe('MR2- Markdown mention backend wiring', () => {
         },
       ],
     });
-    const result = await new LocalBackend().callTool('query', options);
+    const result = (await new LocalBackend().callTool('query', options)) as TestBackendResponse;
     expect(result.enrichment.relatedChunks).toHaveLength(2);
     for (const returnedChunk of result.enrichment.relatedChunks) {
       expect(returnedChunk.evidence).toEqual([
@@ -247,7 +250,7 @@ describe('MR2- Markdown mention backend wiring', () => {
     const repo = await createRepo();
     await writeSidecarStore(repo.storagePath, mentionSidecarState());
     mentionMocks.findSymbols.mockResolvedValue([]);
-    const result = await new LocalBackend().callTool('query', options);
+    const result = (await new LocalBackend().callTool('query', options)) as TestBackendResponse;
     expect(result.enrichment.relatedChunks[0].evidence).toEqual([
       expect.objectContaining({ mention: 'buildPhaseList' }),
     ]);
@@ -286,7 +289,7 @@ describe('MR2- Markdown mention backend wiring', () => {
       ...state,
       enrichments: [{ ...base, records: [...chunks, ...mentions] }],
     });
-    const result = await new LocalBackend().callTool('query', options);
+    const result = (await new LocalBackend().callTool('query', options)) as TestBackendResponse;
     expect(result.enrichment.relatedChunks).toHaveLength(10);
     const returnedMentions = new Set(
       result.enrichment.relatedChunks.flatMap((chunk: any) =>
@@ -673,7 +676,7 @@ describe('FC Markdown per-chunk fact cap', () => {
   function fixture(mentionCount: number, linkCount = 0, chunkCount = 1) {
     const state = markdownSidecarState();
     const base = state.enrichments[0];
-    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')!;
+    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')! as TestMarkdownChunk;
     const chunks = Array.from({ length: chunkCount }, (_, index) => ({
       ...chunk,
       chunkKey: `${chunk.chunkKey}:${index}`,
@@ -728,7 +731,7 @@ describe('FC Markdown per-chunk fact cap', () => {
     const repo = await createRepo();
     const { state, mentions } = fixture(60);
     await writeSidecarStore(repo.storagePath, state);
-    const result = await new LocalBackend().callTool('query', options);
+    const result = (await new LocalBackend().callTool('query', options)) as TestBackendResponse;
 
     expect(result.enrichment.relatedChunks).toHaveLength(1);
     expect(
@@ -745,7 +748,7 @@ describe('FC Markdown per-chunk fact cap', () => {
     const repo = await createRepo();
     const { state, mentions, links, chunks } = fixture(30, 30);
     await writeSidecarStore(repo.storagePath, state);
-    const result = await new LocalBackend().callTool('query', options);
+    const result = (await new LocalBackend().callTool('query', options)) as TestBackendResponse;
 
     expect(result.enrichment.facts).toEqual([
       ...chunks,
@@ -766,7 +769,7 @@ describe('FC Markdown per-chunk fact cap', () => {
     const repo = await createRepo();
     const { state, chunks, mentions } = fixture(10);
     await writeSidecarStore(repo.storagePath, state);
-    const result = await new LocalBackend().callTool('query', options);
+    const result = (await new LocalBackend().callTool('query', options)) as TestBackendResponse;
 
     expect(result.enrichment.facts).toEqual([...chunks, ...mentions]);
     expect(result.enrichment.factsBound).toMatchObject({
@@ -780,9 +783,9 @@ describe('FC Markdown per-chunk fact cap', () => {
     const repo = await createRepo();
     const backend = new LocalBackend();
     await writeSidecarStore(repo.storagePath, fixture(0, 0, 12).state);
-    const baseline = await backend.callTool('query', options);
+    const baseline = (await backend.callTool('query', options)) as TestBackendResponse;
     await writeSidecarStore(repo.storagePath, fixture(60, 30, 12).state);
-    const result = await backend.callTool('query', options);
+    const result = (await backend.callTool('query', options)) as TestBackendResponse;
 
     expect(baseline.enrichment.relatedChunks).toHaveLength(10);
     expect(result.enrichment.relatedChunks).toHaveLength(baseline.enrichment.relatedChunks.length);
@@ -799,9 +802,12 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     await writeSidecarStore(repo.storagePath, sidecarState());
     const backend = new LocalBackend();
 
-    const query = await backend.callTool('query', { query: 'auth' });
-    const context = await backend.callTool('context', { name: 'main' });
-    const impact = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    const query = (await backend.callTool('query', { query: 'auth' })) as TestBackendResponse;
+    const context = (await backend.callTool('context', { name: 'main' })) as TestBackendResponse;
+    const impact = (await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+    })) as TestBackendResponse;
 
     for (const result of [query, context, impact]) {
       expect(result).toMatchObject({
@@ -827,10 +833,10 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     await writeSidecarStore(repo.storagePath, sidecarState());
     const backend = new LocalBackend();
 
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'auth',
       consume_enrichment_facts: true,
-    });
+    })) as TestBackendResponse;
 
     expect(result.definitions).toEqual([]);
     expect(result.enrichment).toMatchObject({
@@ -871,14 +877,14 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     await writeSidecarStore(repo.storagePath, sidecarState());
     const backend = new LocalBackend();
 
-    const passiveOnly = await backend.callTool('query', {
+    const passiveOnly = (await backend.callTool('query', {
       query: 'auth',
       include_passive_related_facts: true,
-    });
-    const factOnly = await backend.callTool('query', {
+    })) as TestBackendResponse;
+    const factOnly = (await backend.callTool('query', {
       query: 'auth',
       consume_enrichment_facts: true,
-    });
+    })) as TestBackendResponse;
 
     for (const result of [passiveOnly, factOnly]) {
       expect(result.definitions).toEqual([]);
@@ -908,11 +914,11 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     });
     const backend = new LocalBackend();
 
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'main',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
-    });
+    })) as TestBackendResponse;
 
     expect(result.definitions).toEqual([
       {
@@ -971,11 +977,11 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     });
     const backend = new LocalBackend();
 
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'main',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
-    });
+    })) as TestBackendResponse;
 
     expect(result.enrichment).not.toHaveProperty('relatedDocs');
     expect(result.enrichment).not.toHaveProperty('relatedChunks');
@@ -1001,12 +1007,12 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     });
     const backend = new LocalBackend();
 
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'login flow',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
-    });
+    })) as TestBackendResponse;
 
     expect(result.enrichment.relatedDocs).toEqual([
       expect.objectContaining({
@@ -1050,10 +1056,10 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     });
     const backend = new LocalBackend();
 
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'main',
       retrieval_policy: 'graph-only',
-    });
+    })) as TestBackendResponse;
 
     expect(result.definitions).toEqual([
       {
@@ -1090,10 +1096,10 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     });
     const backend = new LocalBackend();
 
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'main',
       retrieval_policy: 'graph-with-passive-docs',
-    });
+    })) as TestBackendResponse;
 
     expect(result.retrievalPolicy).toMatchObject({
       name: 'graph-with-passive-docs',
@@ -1136,14 +1142,14 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     });
     const backend = new LocalBackend();
 
-    const requirement = await backend.callTool('query', {
+    const requirement = (await backend.callTool('query', {
       query: 'main',
       retrieval_policy: 'requirement-neighborhood',
-    });
-    const route = await backend.callTool('query', {
+    })) as TestBackendResponse;
+    const route = (await backend.callTool('query', {
       query: 'main',
       retrieval_policy: 'api-route-neighborhood',
-    });
+    })) as TestBackendResponse;
 
     expect(requirement.retrievalPolicy).toMatchObject({
       name: 'requirement-neighborhood',
@@ -1195,7 +1201,11 @@ describe('LocalBackend sidecar enrichment metadata', () => {
       { neighborhood_mode: 'route-neighborhood', route: 'GET /m7' },
       { neighborhood_mode: 'process-neighborhood', process_id: 'Process:login' },
     ]) {
-      const result = await backend.callTool('context', { ...params, depth: 2, limit: 1 });
+      const result = (await backend.callTool('context', {
+        ...params,
+        depth: 2,
+        limit: 1,
+      })) as TestBackendResponse;
       expect(result).toMatchObject({
         status: 'ok',
         mode: params.neighborhood_mode,
@@ -1213,15 +1223,15 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     await writeSidecarStore(repo.storagePath, docsEvidenceSidecarState());
     const backend = new LocalBackend();
 
-    const plain = await backend.callTool('context', { name: 'main' });
-    const requirement = await backend.callTool('context', {
+    const plain = (await backend.callTool('context', { name: 'main' })) as TestBackendResponse;
+    const requirement = (await backend.callTool('context', {
       neighborhood_mode: 'requirement-neighborhood',
       requirement_id: 'REQ-M7-1',
-    });
-    const apiDoc = await backend.callTool('context', {
+    })) as TestBackendResponse;
+    const apiDoc = (await backend.callTool('context', {
       neighborhood_mode: 'api-doc-neighborhood',
       api_doc_id: 'GET /m7',
-    });
+    })) as TestBackendResponse;
 
     expect(plain).not.toHaveProperty('docsEvidence');
     expect(requirement.docsEvidence).toEqual([
@@ -1245,18 +1255,18 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     await writeSidecarStore(repo.storagePath, docsEvidenceSidecarState());
     const backend = new LocalBackend();
 
-    const missingRequirement = await backend.callTool('context', {
+    const missingRequirement = (await backend.callTool('context', {
       neighborhood_mode: 'requirement-neighborhood',
       requirement_id: 'REQ-MISSING',
-    });
-    const missingApiDoc = await backend.callTool('context', {
+    })) as TestBackendResponse;
+    const missingApiDoc = (await backend.callTool('context', {
       neighborhood_mode: 'api-doc-neighborhood',
       api_doc_id: 'GET /missing',
-    });
-    const missingDocPath = await backend.callTool('context', {
+    })) as TestBackendResponse;
+    const missingDocPath = (await backend.callTool('context', {
       neighborhood_mode: 'api-doc-neighborhood',
       doc_path: 'docs/missing.md',
-    });
+    })) as TestBackendResponse;
 
     expect(missingRequirement).toMatchObject({
       status: 'unresolved',
@@ -1289,17 +1299,22 @@ describe('LocalBackend sidecar enrichment metadata', () => {
       kind: 'markdown-doc-resolution',
       factKey: 'REQ-M7-1',
       status: 'ambiguous',
-      candidates: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+      candidates: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] as unknown as Array<{
+        type: string;
+        id: string;
+        filePath: string;
+        confidence: number;
+      }>,
       reasons: ['multiple-candidates'],
-    });
+    } as unknown as (typeof state.enrichments)[0]['records'][number]);
     await writeSidecarStore(repo.storagePath, state);
     const backend = new LocalBackend();
 
-    const ambiguous = await backend.callTool('context', {
+    const ambiguous = (await backend.callTool('context', {
       neighborhood_mode: 'requirement-neighborhood',
       requirement_id: 'REQ-M7-1',
       maxCandidates: 2,
-    });
+    })) as TestBackendResponse;
 
     expect(ambiguous).toMatchObject({
       status: 'ambiguous',
@@ -1322,10 +1337,10 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     await createRepo();
     const backend = new LocalBackend();
 
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'main',
       retrieval_policy: 'graph-with-passive-docs',
-    });
+    })) as TestBackendResponse;
 
     expect(result.retrievalPolicy).toMatchObject({
       name: 'graph-with-passive-docs',
@@ -1361,7 +1376,7 @@ describe('LocalBackend sidecar enrichment metadata', () => {
           source: '# Auth\n\n## Login Flow\n\n`main` owns the login flow.\n',
         },
       ],
-      resolveCodeMention(mention) {
+      resolveCodeMention: function (mention: string) {
         if (mention !== 'main') {
           return undefined;
         }
@@ -1373,7 +1388,9 @@ describe('LocalBackend sidecar enrichment metadata', () => {
           },
           confidence: 0.95,
         };
-      },
+      } as unknown as NonNullable<
+        Parameters<typeof createMarkdownSidecarRunnerExecutor>[0]['resolveCodeMention']
+      >,
     });
     await executeMarkdownSidecar(request, { heartbeat: async () => true });
     backendMocks.queryImpl.mockResolvedValue({
@@ -1390,24 +1407,24 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     });
     const backend = new LocalBackend();
 
-    const withoutMarkdownOptIn = await backend.callTool('query', {
+    const withoutMarkdownOptIn = (await backend.callTool('query', {
       query: 'login flow',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
-    });
-    const withMarkdownOptIn = await backend.callTool('query', {
+    })) as TestBackendResponse;
+    const withMarkdownOptIn = (await backend.callTool('query', {
       query: 'login flow',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
-    });
-    const withMarkdownPpr = await backend.callTool('query', {
+    })) as TestBackendResponse;
+    const withMarkdownPpr = (await backend.callTool('query', {
       query: 'login flow',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
       include_markdown_ppr: true,
-    });
+    })) as TestBackendResponse;
 
     expect(withoutMarkdownOptIn.enrichment).not.toHaveProperty('relatedDocs');
     expect(withoutMarkdownOptIn.enrichment).not.toHaveProperty('relatedChunks');
@@ -1473,12 +1490,12 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     });
     const backend = new LocalBackend();
 
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'M7 docs evidence',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
-    });
+    })) as TestBackendResponse;
 
     expect(result.definitions).toEqual([
       {
@@ -1556,11 +1573,11 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     await writeSidecarStore(repo.storagePath, sidecarState());
     const backend = new LocalBackend();
 
-    const result = await backend.callTool('context', {
+    const result = (await backend.callTool('context', {
       name: 'main',
       consume_enrichment_facts: true,
       allow_low_confidence: true,
-    });
+    })) as TestBackendResponse;
 
     expect(result.symbol).toEqual({ name: 'main' });
     expect(result.enrichment).toMatchObject({
@@ -1595,17 +1612,17 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     });
     const backend = new LocalBackend();
 
-    const withoutMarkdownOptIn = await backend.callTool('context', {
+    const withoutMarkdownOptIn = (await backend.callTool('context', {
       name: 'main',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
-    });
-    const withMarkdownOptIn = await backend.callTool('context', {
+    })) as TestBackendResponse;
+    const withMarkdownOptIn = (await backend.callTool('context', {
       name: 'main',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
-    });
+    })) as TestBackendResponse;
 
     expect(withoutMarkdownOptIn.enrichment).not.toHaveProperty('relatedDocs');
     expect(withoutMarkdownOptIn.enrichment).not.toHaveProperty('docsEvidence');
@@ -1638,17 +1655,17 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     await writeSidecarStore(repo.storagePath, sidecarState());
     const backend = new LocalBackend();
 
-    const strict = await backend.callTool('impact', {
+    const strict = (await backend.callTool('impact', {
       target: 'main',
       direction: 'upstream',
       consume_enrichment_facts: true,
-    });
-    const allowed = await backend.callTool('impact', {
+    })) as TestBackendResponse;
+    const allowed = (await backend.callTool('impact', {
       target: 'main',
       direction: 'upstream',
       consume_enrichment_facts: true,
       allow_safety_critical_enrichment: true,
-    });
+    })) as TestBackendResponse;
 
     expect(strict.risk).toBe('LOW');
     expect(strict.impactedCount).toBe(0);
@@ -1685,7 +1702,7 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     await createRepo();
     const backend = new LocalBackend();
 
-    const result = await backend.callTool('query', { query: 'auth' });
+    const result = (await backend.callTool('query', { query: 'auth' })) as TestBackendResponse;
 
     expect(result).toMatchObject({
       definitions: [],
@@ -1704,7 +1721,7 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     await fs.writeFile(storePath, '{not-json', 'utf8');
     const backend = new LocalBackend();
 
-    const result = await backend.callTool('context', { name: 'main' });
+    const result = (await backend.callTool('context', { name: 'main' })) as TestBackendResponse;
 
     expect(result).toMatchObject({
       symbol: { name: 'main' },
@@ -1732,12 +1749,12 @@ describe('LocalBackend sidecar enrichment metadata', () => {
       ],
     });
     const backend = new LocalBackend();
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'how to add a new pipeline phase',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
-    });
+    })) as TestBackendResponse;
     expect(result.enrichment.relatedChunks[0].docPath).toBe('docs/zz-architecture.md');
     expect(result.enrichment.relatedChunks[1].docPath).toBe('.memory-bank/archive/old-plan.md');
     expect(result.enrichment.relatedChunks).toHaveLength(2);
@@ -1760,12 +1777,12 @@ describe('LocalBackend sidecar enrichment metadata', () => {
       ],
     });
     const backend = new LocalBackend();
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'docker compose deployment',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
-    });
+    })) as TestBackendResponse;
     expect(result.enrichment.relatedChunks).toEqual([]);
     expect(result.enrichment.relatedDocs).toEqual([]);
   });
@@ -1781,8 +1798,14 @@ describe('LocalBackend sidecar enrichment metadata', () => {
         include_passive_related_facts: true,
         include_markdown_context: true,
       };
-      const empty = await backend.callTool('query', { ...options, query: '' });
-      const result = await backend.callTool('query', { ...options, query });
+      const empty = (await backend.callTool('query', {
+        ...options,
+        query: '',
+      })) as TestBackendResponse;
+      const result = (await backend.callTool('query', {
+        ...options,
+        query,
+      })) as TestBackendResponse;
       expect(result.enrichment.relatedChunks.length).toBeGreaterThan(0);
       expect(result.enrichment.relatedChunks).toEqual(empty.enrichment.relatedChunks);
       expect(result.enrichment.relatedDocs).toEqual(empty.enrichment.relatedDocs);
@@ -1793,7 +1816,7 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     const repo = await createRepo();
     const state = markdownSidecarState();
     const base = state.enrichments[0];
-    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')!;
+    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')! as TestMarkdownChunk;
     const chunks = Array.from({ length: 150_001 }, (_, index) => ({
       ...chunk,
       chunkKey: `chunk-${index}`,
@@ -1810,12 +1833,12 @@ describe('LocalBackend sidecar enrichment metadata', () => {
       })),
     });
     const backend = new LocalBackend();
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'login',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
-    });
+    })) as TestBackendResponse;
     expect(result.enrichment.error).toBeUndefined();
     expect(result.enrichment.relatedChunks).toHaveLength(10);
     expect(result.enrichment.relatedDocs).toEqual([
@@ -1839,12 +1862,12 @@ describe('LocalBackend sidecar enrichment metadata', () => {
       ],
     });
     const backend = new LocalBackend();
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'how to add a new pipeline phase',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
-    });
+    })) as TestBackendResponse;
     expect(JSON.stringify(result).length).toBeLessThan(200_000);
   });
 
@@ -1852,7 +1875,7 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     const repo = await createRepo();
     const state = markdownSidecarState();
     const base = state.enrichments[0];
-    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')!;
+    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')! as TestMarkdownChunk;
     const codeRecord = { ...base, records: [base.records[0]] };
     const markdownRecord = {
       ...base,
@@ -1873,12 +1896,12 @@ describe('LocalBackend sidecar enrichment metadata', () => {
       { query: 'login', records: [codeRecord], markdownCount: 0 },
     ]) {
       await writeSidecarStore(repo.storagePath, { ...state, enrichments: scenario.records });
-      const result = await backend.callTool('query', {
+      const result = (await backend.callTool('query', {
         query: scenario.query,
         consume_enrichment_facts: true,
         include_passive_related_facts: true,
         include_markdown_context: true,
-      });
+      })) as TestBackendResponse;
 
       expect(result.enrichment.visibleRecords).toHaveLength(1 + scenario.markdownCount);
       expect(result.enrichment.visibleRecords).toEqual(
@@ -1896,7 +1919,9 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     const repo = await createRepo();
     const state = docsEvidenceSidecarState();
     const base = state.enrichments[0];
-    const chunks = base.records.filter((fact) => fact.kind === 'markdown-chunk').slice(0, 6);
+    const chunks = base.records
+      .filter((fact) => fact.kind === 'markdown-chunk')
+      .slice(0, 6) as TestMarkdownChunk[];
     await writeSidecarStore(repo.storagePath, {
       ...state,
       enrichments: chunks.map((chunk) => ({
@@ -1908,12 +1933,12 @@ describe('LocalBackend sidecar enrichment metadata', () => {
       })),
     });
     const backend = new LocalBackend();
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'M7 docs evidence',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
-    });
+    })) as TestBackendResponse;
 
     expect(result.enrichment.facts).toEqual(chunks);
     expect(result.enrichment.relatedChunks).toHaveLength(6);
@@ -1927,7 +1952,7 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     const repo = await createRepo();
     const state = markdownSidecarState();
     const base = state.enrichments[0];
-    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')!;
+    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')! as TestMarkdownChunk;
     const chunks = ['cache', 'logs'].map((topic, index) => ({
       ...chunk,
       headingPath: [topic],
@@ -1940,12 +1965,12 @@ describe('LocalBackend sidecar enrichment metadata', () => {
       enrichments: [{ ...base, records: chunks }],
     });
     const backend = new LocalBackend();
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'cache',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
-    });
+    })) as TestBackendResponse;
 
     expect(result.enrichment.relatedChunks).toEqual([
       expect.objectContaining({ chunkKey: chunks[0].chunkKey }),
@@ -1958,7 +1983,7 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     const repo = await createRepo();
     const state = markdownSidecarState();
     const base = state.enrichments[0];
-    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')!;
+    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')! as TestMarkdownChunk;
     await writeSidecarStore(repo.storagePath, {
       ...state,
       enrichments: [{ ...base, records: [chunk] }],
@@ -1968,12 +1993,12 @@ describe('LocalBackend sidecar enrichment metadata', () => {
       ['login', false],
       ['docker compose deployment', true],
     ] as const) {
-      const result = await backend.callTool('query', {
+      const result = (await backend.callTool('query', {
         query,
         consume_enrichment_facts: true,
         include_passive_related_facts: true,
         include_markdown_context: true,
-      });
+      })) as TestBackendResponse;
 
       expect(result.enrichment.facts).toEqual(truncated ? [] : [chunk]);
       expect(result.enrichment.factsBound).toEqual({
@@ -1991,7 +2016,7 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     const repo = await createRepo();
     const state = markdownSidecarState();
     const base = state.enrichments[0];
-    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')!;
+    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')! as TestMarkdownChunk;
     const chunks = [0, 1, 2].map((index) => ({
       ...chunk,
       headingPath: ['Auth', `Login Flow ${index}`],
@@ -2014,12 +2039,12 @@ describe('LocalBackend sidecar enrichment metadata', () => {
       ],
     });
     const backend = new LocalBackend();
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'login flow',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
-    });
+    })) as TestBackendResponse;
     const freshness = result.enrichment.relatedDocs[0].freshness;
 
     expect(result.enrichment.relatedDocs[0].chunkCount).toBe(3);
@@ -2031,7 +2056,9 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     const repo = await createRepo();
     const state = docsEvidenceSidecarState();
     const base = state.enrichments[0];
-    const chunks = base.records.filter((fact) => fact.kind === 'markdown-chunk').slice(0, 12);
+    const chunks = base.records
+      .filter((fact) => fact.kind === 'markdown-chunk')
+      .slice(0, 12) as TestMarkdownChunk[];
     const codeRecord = { ...base, records: [base.records[0]] };
     const markdownRecords = chunks.map((chunk) => ({
       ...base,
@@ -2045,12 +2072,12 @@ describe('LocalBackend sidecar enrichment metadata', () => {
       enrichments: [codeRecord, ...markdownRecords],
     });
     const backend = new LocalBackend();
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'M7 docs evidence',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
-    });
+    })) as TestBackendResponse;
     const returnedDocPaths = result.enrichment.relatedChunks.map((chunk: any) => chunk.docPath);
     const visiblePaths = new Set(
       result.enrichment.visibleRecords.map((record: any) => record.filePath),
@@ -2072,7 +2099,7 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     const repo = await createRepo();
     const state = docsEvidenceSidecarState();
     const base = state.enrichments[0];
-    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')!;
+    const chunk = base.records.find((fact) => fact.kind === 'markdown-chunk')! as TestMarkdownChunk;
     const ambiguousMention = {
       ...base.records.find((fact) => fact.kind === 'markdown-code-mention')!,
       chunkKey: chunk.chunkKey,
@@ -2088,12 +2115,12 @@ describe('LocalBackend sidecar enrichment metadata', () => {
       enrichments: [{ ...base, records: [chunk, unresolvedMention, ambiguousMention] }],
     });
     const backend = new LocalBackend();
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'M7 docs evidence',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
-    });
+    })) as TestBackendResponse;
 
     expect(result.enrichment.facts).toEqual([chunk, ambiguousMention]);
     expect(result.enrichment.relatedChunks).toHaveLength(1);
@@ -2107,10 +2134,10 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     const repo = await createRepo();
     await writeSidecarStore(repo.storagePath, markdownSidecarState());
     const backend = new LocalBackend();
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'docker compose deployment',
       retrieval_policy: 'graph-with-passive-docs',
-    });
+    })) as TestBackendResponse;
 
     expect(result.enrichment.relatedChunks).toEqual([
       expect.objectContaining({ docPath: 'docs/auth.md', excerpt: 'Login flow notes' }),
@@ -2125,12 +2152,12 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     const repo = await createRepo();
     await writeSidecarStore(repo.storagePath, rankingSidecarState());
     const backend = new LocalBackend();
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'how to add a new pipeline phase',
       consume_enrichment_facts: true,
       include_passive_related_facts: true,
       include_markdown_context: true,
-    });
+    })) as TestBackendResponse;
 
     const keys = new Set(result.enrichment.relatedChunks.map((chunk: any) => chunk.chunkKey));
     const markdownFacts = result.enrichment.facts.filter((fact: any) =>
@@ -2145,3 +2172,31 @@ describe('LocalBackend sidecar enrichment metadata', () => {
     );
   });
 });
+
+type UnionFields<T> = {
+  [K in T extends T ? keyof T : never]: T extends T ? (K extends keyof T ? T[K] : never) : never;
+};
+type TestBackendResponse = {
+  enrichment: UnionFields<Awaited<ReturnType<LocalBackend['readLocalEnrichmentMetadata']>>> & {
+    factsBound: { omittedByChunkCap: number; [key: string]: unknown };
+  };
+  definitions: unknown[];
+  relatedDocs: unknown[];
+  explanation: { retrievers: unknown[] };
+  retrievalPolicy: unknown;
+  docsEvidence: unknown[];
+  symbol: unknown;
+  risk: string;
+  impactedCount: number;
+};
+
+type TestMarkdownChunk = {
+  kind: string;
+  docPath: string;
+  fileHash: string;
+  chunkKey: string;
+  chunkIndex: number;
+  headingPath: string[];
+  lineSpan: { start: number; end: number };
+  excerpt: string;
+};

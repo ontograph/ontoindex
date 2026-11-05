@@ -147,11 +147,14 @@ describe('processParsing fallback', () => {
       workerStartupDurationsMs: [0],
       terminate: async () => {},
       dispatch: async (_items, _progress, _subBatchStart, _workerResult, options) => {
-        options?.onResultPart?.(streamedPart, {
-          workerIndex: 0,
-          workerChunkSize: 1,
-          workerIsolation: 'process',
-        });
+        options?.onResultPart?.(
+          streamedPart as unknown as Parameters<NonNullable<typeof options.onResultPart>>[0],
+          {
+            workerIndex: 0,
+            workerChunkSize: 1,
+            workerIsolation: 'process',
+          },
+        );
         throw new Error('Simulated late worker exit');
       },
     };

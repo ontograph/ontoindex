@@ -23,7 +23,7 @@ try {
 const parser = new Parser();
 
 const parseRuby = (code: string) => {
-  parser.setLanguage(Ruby);
+  parser.setLanguage(Ruby as Parser.Language);
   return parser.parse(code);
 };
 

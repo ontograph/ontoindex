@@ -43,7 +43,7 @@ function makeParseOutput(acc: BindingAccumulator): ParseOutput {
     resolutionContext: {} as ParseOutput['resolutionContext'],
     allPaths: [],
     totalFiles: 0,
-  };
+  } as unknown as ParseOutput;
 }
 
 function makeDeps(acc: BindingAccumulator): ReadonlyMap<string, PhaseResult<unknown>> {

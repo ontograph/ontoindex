@@ -346,7 +346,7 @@ describe('status command behavior', () => {
       return {
         ...actual,
         computeAuditFreshness: (...args: any[]) =>
-          auditFreshnessMocks.computeAuditFreshness(...args),
+          (auditFreshnessMocks.computeAuditFreshness as (...args: unknown[]) => unknown)(...args),
       };
     });
     vi.doMock('../../src/core/runtime/runtime-health.js', async () => {

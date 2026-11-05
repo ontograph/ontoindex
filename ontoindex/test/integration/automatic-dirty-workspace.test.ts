@@ -11,7 +11,6 @@ import { expect, it, vi } from 'vitest';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import { closeLbug } from '../../src/core/lbug/lbug-adapter.js';
 import { captureWorkspaceInputs } from '../../src/core/analyze-delta.js';
-// @ts-expect-error plain .mjs script without declarations
 import { createCpuScope } from '../../scripts/overlay-benchmark-automatic.mjs';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));

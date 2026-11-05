@@ -4,6 +4,7 @@ import {
   InMemoryGraphIdentityProvider,
   LbugGraphIdentityProvider,
   type GraphIdentityRow,
+  type GraphIdentityQueryExecutor,
 } from '../../src/core/ingestion/enrichment/markdown-graph-identity-provider.js';
 import type { SourceIndexIdentity } from '../../src/core/ingestion/enrichment/docs-contracts.js';
 
@@ -78,7 +79,7 @@ describe('LbugGraphIdentityProvider', () => {
     const provider = new LbugGraphIdentityProvider({
       repoId: 'repo-a',
       sourceIndex,
-      query: async (_repoId: string, cypher: string): Promise<GraphIdentityRow[]> => {
+      query: (async (_repoId: string, cypher: string): Promise<GraphIdentityRow[]> => {
         queries.push(cypher);
         return [
           {
@@ -90,7 +91,7 @@ describe('LbugGraphIdentityProvider', () => {
             endLine: 20,
           },
         ];
-      },
+      }) as GraphIdentityQueryExecutor,
     });
 
     const candidates = await provider.findSymbols({ mention: 'resolveDoc', maxCandidates: 5 });
@@ -111,7 +112,11 @@ describe('LbugGraphIdentityProvider', () => {
     const paramsSeen: unknown[] = [];
     const provider = new LbugGraphIdentityProvider({
       repoId: 'repo-a',
-      query: async (_repoId: string, cypher: string, params): Promise<GraphIdentityRow[]> => {
+      query: (async (
+        _repoId: string,
+        cypher: string,
+        params: Parameters<GraphIdentityQueryExecutor>[2],
+      ): Promise<GraphIdentityRow[]> => {
         expect(cypher).toContain('n.filePath CONTAINS $filePathHint');
         expect(cypher).toContain('label(n) = $kindHint');
         paramsSeen.push(params);
@@ -122,7 +127,7 @@ describe('LbugGraphIdentityProvider', () => {
             filePath: 'src/docs/resolve.ts',
           },
         ];
-      },
+      }) as GraphIdentityQueryExecutor,
     });
 
     await expect(
@@ -151,10 +156,10 @@ describe('LbugGraphIdentityProvider', () => {
   it('filters production test-file lookup to indexed test paths', async () => {
     const provider = new LbugGraphIdentityProvider({
       repoId: 'repo-a',
-      query: async (): Promise<GraphIdentityRow[]> => [
+      query: (async (): Promise<GraphIdentityRow[]> => [
         { id: 'File:src/user.ts', name: 'user.ts', filePath: 'src/user.ts' },
         { id: 'File:test/user.test.ts', name: 'user.test.ts', filePath: 'test/user.test.ts' },
-      ],
+      ]) as GraphIdentityQueryExecutor,
     });
 
     await expect(provider.findTestFiles({ mention: 'user', maxCandidates: 5 })).resolves.toEqual([
@@ -165,9 +170,13 @@ describe('LbugGraphIdentityProvider', () => {
   it('looks up route candidates by method and path key', async () => {
     const provider = new LbugGraphIdentityProvider({
       repoId: 'repo-a',
-      query: async (_repoId, _cypher, params): Promise<GraphIdentityRow[]> => [
+      query: (async (
+        _repoId: string,
+        _cypher: string,
+        params: Parameters<GraphIdentityQueryExecutor>[2],
+      ): Promise<GraphIdentityRow[]> => [
         { id: String(params.routeKey), name: String(params.routeKey), filePath: 'src/routes.ts' },
-      ],
+      ]) as GraphIdentityQueryExecutor,
     });
 
     await expect(

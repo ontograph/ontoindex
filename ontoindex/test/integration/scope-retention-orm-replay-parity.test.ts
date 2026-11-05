@@ -212,7 +212,7 @@ describe.each(['ambient', 'supported'] as const)(
         for (const node of families.declarationNodes) replay.addNode(node);
         for (const edge of families.structuralRelationships) replay.addRelationship(edge);
         expect(snapshot(replay)).toEqual(parseSnapshot);
-        const parseOutput = { allORMQueries: families.ormQueries } as ParseOutput;
+        const parseOutput = { allORMQueries: families.ormQueries } as unknown as ParseOutput;
         const context = {
           repoPath: repo,
           graph: replay,
@@ -240,7 +240,7 @@ describe.each(['ambient', 'supported'] as const)(
                   phaseName: 'parse',
                   output: {
                     allORMQueries: families.ormQueries.filter(({ orm }) => orm !== 'supabase'),
-                  } as ParseOutput,
+                  } as unknown as ParseOutput,
                   durationMs: 0,
                 },
               ],
@@ -263,7 +263,7 @@ describe.each(['ambient', 'supported'] as const)(
                       ...query,
                       method: 'changedMethod',
                     })),
-                  } as ParseOutput,
+                  } as unknown as ParseOutput,
                   durationMs: 0,
                 },
               ],

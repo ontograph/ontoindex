@@ -74,7 +74,9 @@ describe('extractCSharpNamedBindings', () => {
       // Passing a synthetic object that is not a using_directive node.
       const fakeNode = { type: 'import_declaration', namedChildCount: 0 };
 
-      const result = extractCSharpNamedBindings(fakeNode);
+      const result = extractCSharpNamedBindings(
+        fakeNode as unknown as Parameters<typeof extractCSharpNamedBindings>[0],
+      );
 
       expect(result).toBeUndefined();
     });

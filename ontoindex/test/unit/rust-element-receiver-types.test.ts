@@ -1,3 +1,4 @@
+import { SupportedLanguages } from 'ontoindex-shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -69,7 +70,7 @@ fn rc_map_tuple(m: std::collections::HashMap<Other, Foo>) { m.iter().map(|x| x.b
 `;
     await writeFile(path.join(directory, 'main.rs'), source);
     const parser = new Parser();
-    parser.setLanguage(Rust);
+    parser.setLanguage(Rust as Parser.Language);
     tree = parser.parse(source);
     result = await runPipelineFromRepo(directory, () => {}, { skipGraphPhases: true });
   }, 60000);
@@ -118,7 +119,9 @@ fn rc_map_tuple(m: std::collections::HashMap<Other, Foo>) { m.iter().map(|x| x.b
       .descendantsOfType('field_expression')
       .find((node) => node.childForFieldName('field')?.text === 'bar')!;
     const receiver = method.childForFieldName('value')!;
-    expect(buildTypeEnv(tree, 'rust').lookup(receiver.text, method.parent!)).toBe('Foo');
+    expect(buildTypeEnv(tree, SupportedLanguages.Rust).lookup(receiver.text, method.parent!)).toBe(
+      'Foo',
+    );
   });
 
   it.each([

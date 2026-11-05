@@ -28,7 +28,9 @@ vi.mock('@ladybugdb/core', () => ({
   },
 }));
 vi.mock('fs/promises', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('fs/promises')>();
+  const actual = await importOriginal<
+    typeof import('fs/promises') & { default: typeof import('fs/promises') }
+  >();
   return {
     ...actual,
     default: {

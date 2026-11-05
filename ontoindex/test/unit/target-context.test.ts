@@ -702,7 +702,7 @@ describe('resolveTargetContext', () => {
         loadIgnoreRules: async () =>
           ({
             ignores: (filePath: string) => filePath === 'src/owner/generated.ts',
-          }) as Ignore,
+          }) as unknown as Ignore,
       },
     );
 

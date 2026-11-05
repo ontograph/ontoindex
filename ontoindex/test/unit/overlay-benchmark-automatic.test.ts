@@ -22,9 +22,7 @@ import {
   parseAutomaticArgs,
   runSample,
   selfCheck,
-  // @ts-expect-error plain .mjs script without declarations
 } from '../../scripts/overlay-benchmark-automatic.mjs';
-// @ts-expect-error plain .mjs script without declarations
 import { evaluateBudgets, summarize } from '../../scripts/overlay-benchmark-stats.mjs';
 
 describe('automatic overlay benchmark', () => {

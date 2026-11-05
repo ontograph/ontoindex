@@ -402,7 +402,7 @@ function tombstone(
     }),
     evidence: [negativeEvidence],
     negativeEvidence: [negativeEvidence],
-  });
+  } as unknown as Parameters<typeof createAuditTombstoneRecord>[0]);
 }
 
 async function git(args: string[]): Promise<string> {

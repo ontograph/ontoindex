@@ -72,9 +72,9 @@ describe('commitless runtime health', () => {
   });
 
   it.each(
-    (process.platform === 'win32'
-      ? ['edit', 'add', 'delete']
-      : ['edit', 'add', 'delete', 'mode']) as const,
+    process.platform === 'win32'
+      ? (['edit', 'add', 'delete'] as const)
+      : (['edit', 'add', 'delete', 'mode'] as const),
   )('detects selected source %s', async (change) => {
     const filename = path.join(repoPath, 'src/main.py');
     if (change === 'edit') await fs.appendFile(filename, '\nchanged = True\n');

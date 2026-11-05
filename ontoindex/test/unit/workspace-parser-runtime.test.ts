@@ -34,12 +34,12 @@ beforeEach(() => {
       isDirectory: () => directory,
     }) as Stats;
   vi.spyOn(fs, 'lstat').mockImplementation((async (filename: string) =>
-    stat(!path.extname(filename))) as typeof fs.lstat);
+    stat(!path.extname(filename))) as unknown as typeof fs.lstat);
   vi.spyOn(fs, 'opendir').mockImplementation((async () => ({
     async *[Symbol.asyncIterator]() {
       yield { name: 'runtime.ts' };
     },
-  })) as typeof fs.opendir);
+  })) as unknown as typeof fs.opendir);
   vi.spyOn(fs, 'open').mockImplementation((async () => {
     const content = Buffer.from(bytes);
     let offset = 0;
@@ -52,9 +52,9 @@ beforeEach(() => {
         return { bytesRead, buffer };
       },
     };
-  }) as typeof fs.open);
+  }) as unknown as typeof fs.open);
   vi.spyOn(fs, 'readFile').mockImplementation((async () =>
-    Buffer.from('native')) as typeof fs.readFile);
+    Buffer.from('native')) as unknown as typeof fs.readFile);
 });
 
 afterEach(() => {

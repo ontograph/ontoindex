@@ -34,7 +34,7 @@ describe('extractLaravelRoutes', () => {
 
   it('extracts nested route groups without recursive traversal', () => {
     const parser = new Parser();
-    parser.setLanguage(PHP.php);
+    parser.setLanguage(PHP.php as Parser.Language);
     const code = `<?php
 Route::prefix('api')->middleware('auth')->group(function () {
   Route::prefix('v1')->group(function () {

@@ -352,7 +352,7 @@ describe('backend-overlay snapshot', () => {
         started.push(rel);
         active++;
         maximumActive = Math.max(maximumActive, active);
-        return new Promise<Buffer>((resolve, reject) => {
+        return new Promise<Buffer<ArrayBuffer>>((resolve, reject) => {
           const release = (failure = false) => {
             pending.delete(rel);
             active--;
@@ -906,7 +906,7 @@ describe('backend-overlay snapshot single-flight', () => {
     tombstones: [],
     tooMany: false,
     skipped: [],
-  };
+  } as unknown as Awaited<ReturnType<typeof planDirtyOverlay>>;
 
   beforeEach(() => {
     vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '0');

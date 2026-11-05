@@ -140,10 +140,10 @@ withTestLbugDB(
       it('default call (no includeTests) finds the 1 production caller and excludes test callers', async () => {
         // Exact call from the issue: ontoindex_impact({target: "SessionTracker", direction: "upstream"})
         // Before fix: impactedCount: 0, risk: LOW, byDepth: {}
-        const result = await backend.callTool('impact', {
+        const result = (await backend.callTool('impact', {
           target: 'SessionTracker',
           direction: 'upstream',
-        });
+        })) as TestBackendResponse;
 
         expect(result).not.toHaveProperty('error');
         // At minimum: 1 production caller (registerSessionTracker) + 1 file
@@ -164,11 +164,11 @@ withTestLbugDB(
       });
 
       it('with includeTests finds all 5 callers (1 prod + 4 tests)', async () => {
-        const result = await backend.callTool('impact', {
+        const result = (await backend.callTool('impact', {
           target: 'SessionTracker',
           direction: 'upstream',
           includeTests: true,
-        });
+        })) as TestBackendResponse;
 
         expect(result).not.toHaveProperty('error');
         expect(result.impactedCount).toBeGreaterThanOrEqual(5);
@@ -190,11 +190,11 @@ withTestLbugDB(
       });
 
       it('RankPermissionHandler: 1 caller via Constructor + 10 importers via File (was 0 before fix)', async () => {
-        const result = await backend.callTool('impact', {
+        const result = (await backend.callTool('impact', {
           target: 'RankPermissionHandler',
           direction: 'upstream',
           includeTests: true,
-        });
+        })) as TestBackendResponse;
 
         expect(result).not.toHaveProperty('error');
         // 1 caller (depth 1 via Constructor) + 10 importers (depth 2 via File)
@@ -212,10 +212,10 @@ withTestLbugDB(
       });
 
       it('RankPermissionHandler: default call (no includeTests) excludes test importers', async () => {
-        const result = await backend.callTool('impact', {
+        const result = (await backend.callTool('impact', {
           target: 'RankPermissionHandler',
           direction: 'upstream',
-        });
+        })) as TestBackendResponse;
 
         expect(result).not.toHaveProperty('error');
 
@@ -246,10 +246,10 @@ withTestLbugDB(
       it('incoming.calls contains Constructor callers (was empty before fix)', async () => {
         // Exact call from issue: ontoindex_context({name: "SessionTracker", file_path: "api/.../SessionTracker.java"})
         // Before fix: incoming: {}
-        const result = await backend.callTool('context', {
+        const result = (await backend.callTool('context', {
           name: 'SessionTracker',
           file_path: 'api/session/SessionTracker.java',
-        });
+        })) as TestBackendResponse;
 
         expect(result.status).toBe('found');
         expect(result.symbol.kind).toBe('Class');
@@ -263,10 +263,10 @@ withTestLbugDB(
       });
 
       it('incoming.imports contains File importers', async () => {
-        const result = await backend.callTool('context', {
+        const result = (await backend.callTool('context', {
           name: 'SessionTracker',
           file_path: 'api/session/SessionTracker.java',
-        });
+        })) as TestBackendResponse;
 
         expect(result.status).toBe('found');
         const imports = result.incoming.imports || [];
@@ -277,19 +277,19 @@ withTestLbugDB(
 
       it('contrast: context() on a Method still works (regression check)', async () => {
         // The issue notes context() on methods worked before — must still work after fix
-        const result = await backend.callTool('context', {
+        const result = (await backend.callTool('context', {
           name: 'registerSessionTracker',
-        });
+        })) as TestBackendResponse;
         expect(result.status).toBe('found');
         // registerSessionTracker calls SessionTracker constructor — should appear in outgoing
         expect(result.outgoing).toBeDefined();
       });
 
       it('RankPermissionHandler: incoming shows caller and importers', async () => {
-        const result = await backend.callTool('context', {
+        const result = (await backend.callTool('context', {
           name: 'RankPermissionHandler',
           file_path: 'core/rank/RankPermissionHandler.java',
-        });
+        })) as TestBackendResponse;
 
         expect(result.status).toBe('found');
         expect(result.symbol.kind).toBe('Class');
@@ -322,3 +322,13 @@ withTestLbugDB(
     },
   },
 );
+
+type TestBackendResponse = {
+  impactedCount: number;
+  byDepth: Record<string, { name: string }[]>;
+  status: string;
+  symbol: { kind: string };
+  incoming: { calls: { name: string }[]; imports: { name: string }[] };
+  outgoing: unknown;
+  row_count: number;
+};

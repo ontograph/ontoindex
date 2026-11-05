@@ -194,7 +194,11 @@ describe('audit lifecycle MCP integration', () => {
         'gn_audit_session_bundle',
         'gn_audit_session_dispatch',
       ]) {
-        const report = (await dispatchSuper(name, { repo, session }, repo)) as Record<string, any>;
+        const report = (await dispatchSuper(
+          name as Parameters<typeof dispatchSuper>[0],
+          { repo, session },
+          repo,
+        )) as Record<string, any>;
         expect(report).toMatchObject({ ok: false, code: 'STALE_SESSION' });
       }
       expect(paths.map((file) => readFileSync(file))).toEqual(before);

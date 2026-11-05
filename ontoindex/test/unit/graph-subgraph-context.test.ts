@@ -280,7 +280,7 @@ describe('subgraph context builder', () => {
             fn: () => 42,
             sym: Symbol('node'),
             cyc: circular,
-          } as Record<string, unknown>,
+          } as unknown as Parameters<typeof buildSubgraphContext>[0]['nodes'][number]['properties'],
         },
       ],
       edges: [],

@@ -144,7 +144,7 @@ async function useActualResolver(snapshot: OverlaySnapshot | undefined) {
       getPinnedGenerationDir: () => undefined,
       readActiveGenerationMeta,
       computeSourceManifest,
-      loadIgnoreRules: async () => ({ ignores: () => false }) as Ignore,
+      loadIgnoreRules: async () => ({ ignores: () => false }) as unknown as Ignore,
     }),
   );
   return { readActiveGenerationMeta, computeSourceManifest };

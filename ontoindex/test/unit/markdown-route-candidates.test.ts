@@ -197,7 +197,7 @@ function apiSpec(
       raw: `${method ?? '*'} ${path ?? '<missing-path>'}`,
       lineSpan: { start: 10, end: 10 },
     },
-    ...(method ? { method } : {}),
+    ...(method ? { method: method as MarkdownApiSpecFact['method'] } : {}),
     ...(path ? { path } : {}),
     routeKey: `${method ?? '*'} ${path ?? '<missing-path>'}`,
     ...overrides,

@@ -77,9 +77,9 @@ describe('workspace analysis durability', () => {
     vi.mocked(getCurrentCommit).mockReset().mockReturnValue('stable-head');
     vi.mocked(pruneOverlayGenerations).mockReset().mockResolvedValue(false);
     vi.mocked(closeLbugForPath).mockReset().mockResolvedValue(undefined);
-    vi.mocked(initLbug).mockImplementation(async (dbPath) => {
+    vi.mocked(initLbug).mockImplementation((async (dbPath: string) => {
       await fs.writeFile(dbPath, 'generation database');
-    });
+    }) as unknown as typeof initLbug);
     vi.mocked(syncTree)
       .mockReset()
       .mockImplementation(async (target) => {

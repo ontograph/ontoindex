@@ -67,7 +67,13 @@ describe('ConsolidatedMemoryManager', () => {
       'Consolidated memory is advisory context only and is not authoritative graph, docs, or audit evidence.',
     );
     expect(memory.prMarkers).toHaveLength(1);
-    expect(memory.prMarkers[0].markers[0].kind).toBe('TODO');
+    expect(
+      (
+        memory.prMarkers[0].markers[0] as (typeof memory.prMarkers)[0]['markers'][0] & {
+          kind: string;
+        }
+      ).kind,
+    ).toBe('TODO');
 
     const persisted = JSON.parse(
       await readFile(join(repoRoot, '.ontoindex', 'memory', 'consolidated-memory.json'), 'utf8'),
@@ -203,7 +209,7 @@ describe('ConsolidatedMemoryManager', () => {
 
     await expect(manager.consolidate(options)).rejects.toMatchObject({
       name: 'AuthoritativeMemoryDeniedError',
-      reason,
+      reason: reason as AuthoritativeMemoryDeniedError['reason'],
     } satisfies Partial<AuthoritativeMemoryDeniedError>);
     await expect(
       readFile(join(repoRoot, '.ontoindex', 'memory', 'consolidated-memory.json'), 'utf8'),

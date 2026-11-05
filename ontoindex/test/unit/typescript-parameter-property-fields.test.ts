@@ -15,11 +15,11 @@ import type { TypeEnvironment } from '../../src/core/ingestion/type-env.js';
 
 function extractFields(code: string) {
   const parser = new Parser();
-  parser.setLanguage(TypeScript.typescript);
+  parser.setLanguage(TypeScript.typescript as Parser.Language);
   const tree = parser.parse(code);
   expect(tree.rootNode.hasError).toBe(false);
   const context: FieldExtractorContext = {
-    typeEnv: { fileScope: () => new Map() } as TypeEnvironment,
+    typeEnv: { fileScope: () => new Map() } as unknown as TypeEnvironment,
     symbolTable: createSemanticModel().symbols,
     filePath: 'parameter-properties.ts',
     language: SupportedLanguages.TypeScript,
@@ -30,7 +30,7 @@ function extractFields(code: string) {
 describe('TypeScript constructor parameter property fields', () => {
   it('captures required, optional and readonly-only properties without ordinary parameters', () => {
     const parser = new Parser();
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse(`class Store {
       constructor(
         public service: Service,
@@ -44,7 +44,7 @@ describe('TypeScript constructor parameter property fields', () => {
       update(readonly unrelated: Service) {}
     }`);
     expect(tree.rootNode.hasError).toBe(false);
-    const query = new Parser.Query(TypeScript.typescript, TYPESCRIPT_QUERIES);
+    const query = new Parser.Query(TypeScript.typescript as Parser.Language, TYPESCRIPT_QUERIES);
     const properties = query
       .matches(tree.rootNode)
       .filter(
@@ -84,9 +84,9 @@ describe('TypeScript constructor parameter property fields', () => {
     ['class Store { update(public value: Service) {} }', false],
   ])('publishes parameter properties only for real constructors: %s', (code, accepted) => {
     const parser = new Parser();
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse(code);
-    const query = new Parser.Query(TypeScript.typescript, TYPESCRIPT_QUERIES);
+    const query = new Parser.Query(TypeScript.typescript as Parser.Language, TYPESCRIPT_QUERIES);
     const properties = query
       .matches(tree.rootNode)
       .filter(

@@ -8,7 +8,7 @@ const { lbugMocks } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, ...lbugMocks };
 });
 
@@ -308,8 +308,8 @@ describe('process detail bounds', () => {
     const { queryProcessDetail } = await import('../../src/mcp/local/backend-resources.js');
     const result = await queryProcessDetail({ id: 'repo' }, 'LoginFlow');
 
-    expect(result.truncated).toBe(true);
-    expect(result.stepLimit).toBe(1000);
+    expect((result as unknown as Record<string, any>).truncated).toBe(true);
+    expect((result as unknown as Record<string, any>).stepLimit).toBe(1000);
     expect(lbugMocks.executeParameterized.mock.calls[1][1]).toContain('LIMIT 1000');
   });
 
@@ -336,7 +336,7 @@ describe('process detail bounds', () => {
     const { queryProcessDetail } = await import('../../src/mcp/local/backend-resources.js');
     const result = await queryProcessDetail({ id: 'repo' }, 'HugeFlow');
 
-    expect(result.truncated).toBe(true);
-    expect(result.steps).toHaveLength(1000);
+    expect((result as unknown as Record<string, any>).truncated).toBe(true);
+    expect((result as unknown as Record<string, any>).steps).toHaveLength(1000);
   });
 });

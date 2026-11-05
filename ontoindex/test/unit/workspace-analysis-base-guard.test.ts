@@ -67,9 +67,9 @@ describe('workspace analysis base guards', () => {
     await fs.writeFile(path.join(root, 'source.ts'), 'export const value = 1;\n');
     dispose.mockResolvedValue(undefined);
     vi.mocked(getCurrentCommit).mockReset().mockReturnValue('stable-head');
-    vi.mocked(initLbug).mockImplementation(async (dbPath) => {
+    vi.mocked(initLbug).mockImplementation((async (dbPath) => {
       await fs.writeFile(dbPath, 'partial generation database');
-    });
+    }) as unknown as typeof initLbug);
     vi.mocked(planDirtyOverlay).mockResolvedValue({
       includePaths: ['source.ts'],
       uncoveredPaths: [],
@@ -78,7 +78,7 @@ describe('workspace analysis base guards', () => {
       tooMany: false,
       skipped: [],
       configPaths: [],
-    });
+    } as unknown as Awaited<ReturnType<typeof planDirtyOverlay>>);
     capture = {
       canonicalRepoPath: root,
       captureRoot: root,
@@ -111,10 +111,10 @@ describe('workspace analysis base guards', () => {
       totalBytes: 24,
       dispose,
     };
-    vi.mocked(captureWorkspaceInputs).mockImplementation(async () => {
+    vi.mocked(captureWorkspaceInputs).mockImplementation((async () => {
       capture.head = getCurrentCommit(root) || null;
       return capture;
-    });
+    }) as unknown as typeof captureWorkspaceInputs);
     analyzeRepo.mockReset().mockResolvedValue({
       graph: buildTestGraph([
         { id: 'File:source.ts', label: 'File', name: 'source.ts', filePath: 'source.ts' },

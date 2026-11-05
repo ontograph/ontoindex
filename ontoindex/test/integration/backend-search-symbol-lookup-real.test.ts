@@ -22,7 +22,9 @@ import * as poolAdapter from '../../src/core/lbug/pool-adapter.js';
 import type { EnrichedSymbolRow } from '../../src/core/search/symbol-merge.js';
 
 const names = ['singleton', 'noEdge', 'mixed', 'multiple', 'fanIn'];
-const symbols: EnrichedSymbolRow[] = names.map((name) => ({
+const symbols: Array<
+  Required<Pick<EnrichedSymbolRow, 'name' | 'type' | 'filePath'>> & EnrichedSymbolRow
+> = names.map((name) => ({
   nodeId: `Function:${name}`,
   name,
   type: 'Function',
@@ -74,7 +76,7 @@ withTestLbugDB(
         include_skeleton: false,
         include_citations: false,
         intent_ensemble: false,
-      });
+      }) as Promise<Extract<Awaited<ReturnType<typeof query>>, { query_intent: unknown }>>;
     }
 
     it('enriches a singleton edge through the production search and real adapter', async () => {

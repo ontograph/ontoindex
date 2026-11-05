@@ -15,12 +15,12 @@ describe('replay identity normalization', () => {
         uid: 'Route:GET:/users/{id}',
       },
       {
-        kind: 'symbol',
+        kind: 'symbol' as const,
         uid: 'Function:src/cache.ts:CacheStore',
         filePath: 'src/cache.ts',
       },
       {
-        kind: 'symbol',
+        kind: 'symbol' as const,
         uid: 'Function:src/cache.ts:CacheStore',
         filePath: 'src/cache.ts',
       },
@@ -33,13 +33,13 @@ describe('replay identity normalization', () => {
 
   it('uses semantic identity fields (not score/order) for stable key generation', () => {
     const symbolOne = {
-      kind: 'symbol',
+      kind: 'symbol' as const,
       uid: 'Function:src/a.ts:Beta',
       filePath: 'src/a.ts',
       name: 'Beta',
     };
     const symbolTwo = {
-      kind: 'symbol',
+      kind: 'symbol' as const,
       uid: 'Function:src/b.ts:Alpha',
       filePath: 'src/b.ts',
       name: 'Alpha',
@@ -53,11 +53,11 @@ describe('replay identity normalization', () => {
 
   it('flags unknown identities as not matching strict expected identities', () => {
     const expected = {
-      kind: 'symbol',
+      kind: 'symbol' as const,
       uid: 'Function:src/main.ts:main',
     };
     const actualUnknown = {
-      kind: 'unknown',
+      kind: 'unknown' as const,
       reason: 'result collapsed to doc section',
     };
     expect(isReplayIdentityStrictMatch(actualUnknown, expected)).toBe(false);
@@ -65,7 +65,7 @@ describe('replay identity normalization', () => {
 
   it('only allows explicit unknown-to-unknown strict matches', () => {
     const validation = validateRetrievalReplayIdentity({
-      kind: 'unknown',
+      kind: 'unknown' as const,
       reason: 'route-level ambiguity',
     });
     expect(validation.ok).toBe(true);

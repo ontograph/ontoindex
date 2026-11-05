@@ -4,7 +4,7 @@ import {
   defaultEvidenceReadLedger,
   resetEvidenceReadLedgerForTests,
 } from '../../src/core/runtime/evidence-read-ledger.js';
-import type { LocalBackend } from '../../src/local/local-backend.js';
+import type { LocalBackend } from '../../src/mcp/local/local-backend.js';
 
 vi.mock('../../src/mcp/memory-parser.js', () => ({
   loadMemory: vi.fn(),

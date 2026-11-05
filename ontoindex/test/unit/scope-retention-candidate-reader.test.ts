@@ -669,7 +669,7 @@ describe('scope retention candidate verification', () => {
     [
       'complete with incomplete configuration',
       (manifest) => {
-        manifest.retention.inputEvidence.configuration!.complete = false;
+        (manifest.retention.inputEvidence.configuration! as { complete: boolean }).complete = false;
       },
     ],
     [
@@ -1173,7 +1173,7 @@ describe('scope retention candidate verification', () => {
   });
 
   const auxiliaryFamilies: [string, Record<string, unknown>, string][] = [
-    ['calls', auxiliaryCall, 'calledName'],
+    ['calls', auxiliaryCall as unknown as Record<string, unknown>, 'calledName'],
     ['heritage', auxiliaryHeritage, 'parentName'],
     ['assignments', auxiliaryAssignment, 'propertyName'],
     ['constructor-bindings', auxiliaryConstructor, 'filePath'],

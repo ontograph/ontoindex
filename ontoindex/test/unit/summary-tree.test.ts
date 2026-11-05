@@ -268,7 +268,9 @@ function makeCtx(graph: KnowledgeGraph): PipelineContext {
   };
 }
 
-function makeDeps(output: CommunitiesOutput['communityResult']): Map<string, PhaseResult<unknown>> {
+function makeDeps(
+  output: Pick<CommunitiesOutput['communityResult'], 'communities' | 'memberships'>,
+): Map<string, PhaseResult<unknown>> {
   return new Map([
     [
       'communities',

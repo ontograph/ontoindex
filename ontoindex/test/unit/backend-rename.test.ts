@@ -50,7 +50,7 @@ describe('renameSymbol text-search fallback bounds', () => {
       );
     }
 
-    const result = await renameSymbol(
+    const result = (await renameSymbol(
       { repoPath: tmpDir },
       { symbol_name: 'oldName', new_name: 'newName', dry_run: true },
       async () => ({
@@ -58,7 +58,7 @@ describe('renameSymbol text-search fallback bounds', () => {
         incoming: { calls: [], imports: [], extends: [], implements: [] },
       }),
       { confirmWrites: false },
-    );
+    )) as Extract<Awaited<ReturnType<typeof renameSymbol>>, { changes: unknown }>;
 
     expect(result.status).toBe('success');
     expect(result.text_search_edits).toBeLessThanOrEqual(200);
@@ -73,7 +73,7 @@ describe('renameSymbol text-search fallback bounds', () => {
     await fs.mkdir(path.join(tmpDir, 'src'));
     await fs.writeFile(path.join(tmpDir, 'src', 'def.ts'), 'export const oldName = 1;\n', 'utf8');
 
-    const result = await renameSymbol(
+    const result = (await renameSymbol(
       { repoPath: tmpDir },
       { symbol_name: 'oldName', new_name: 'newName', dry_run: true },
       async () => ({
@@ -81,7 +81,7 @@ describe('renameSymbol text-search fallback bounds', () => {
         incoming: { calls: [], imports: [], extends: [], implements: [] },
       }),
       { confirmWrites: false },
-    );
+    )) as Extract<Awaited<ReturnType<typeof renameSymbol>>, { changes: unknown }>;
 
     expect(result.status).toBe('success');
     expect(result.text_search_edits).toBe(0);
@@ -96,7 +96,7 @@ describe('renameSymbol text-search fallback bounds', () => {
       await fs.writeFile(path.join(tmpDir, 'refs.ts'), 'console.log(oldName);\n'.repeat(1005));
       await fs.writeFile(path.join(tmpDir, 'large.ts'), `oldName\n${' '.repeat(1024 * 1024)}`);
 
-      const result = await renameSymbol(
+      const result = (await renameSymbol(
         { repoPath: tmpDir },
         { symbol_name: 'oldName', new_name: 'newName' },
         async () => ({
@@ -104,7 +104,7 @@ describe('renameSymbol text-search fallback bounds', () => {
           incoming: {},
         }),
         { confirmWrites: false },
-      );
+      )) as Extract<Awaited<ReturnType<typeof renameSymbol>>, { changes: unknown }>;
 
       expect(result).toMatchObject({ applied: false, text_search_edits: 1000 });
       expect(result.changes.map((change) => change.file_path)).not.toContain('large.ts');
@@ -127,7 +127,7 @@ describe('renameSymbol text-search fallback bounds', () => {
         await fs.writeFile(path.join(tmpDir, file), source);
       }
       const read = vi.spyOn(fs, 'readFile');
-      const result = await renameSymbol(
+      const result = (await renameSymbol(
         { repoPath: tmpDir },
         { symbol_name: 'oldName', new_name: 'newName' },
         async () => ({
@@ -138,7 +138,7 @@ describe('renameSymbol text-search fallback bounds', () => {
           },
         }),
         { confirmWrites: false },
-      );
+      )) as Extract<Awaited<ReturnType<typeof renameSymbol>>, { changes: unknown }>;
       expect(result).toMatchObject({
         applied: false,
         files_affected: 3,
@@ -191,12 +191,12 @@ describe('renameSymbol text-search fallback bounds', () => {
         path.join(tmpDir, 'ref.ts'),
         '$old(); $old();\n$older(); x$old(); $oldSuffix(); é$old();\n',
       );
-      const result = await renameSymbol(
+      const result = (await renameSymbol(
         { repoPath: tmpDir },
         { symbol_name: '$old', new_name: '$&$$' },
         async () => ({ symbol: { name: '$old', filePath: 'def.ts', startLine: 0 }, incoming: {} }),
         { confirmWrites: false },
-      );
+      )) as Extract<Awaited<ReturnType<typeof renameSymbol>>, { changes: unknown }>;
       expect(result).toMatchObject({
         total_edits: 2,
         graph_edits: 1,
@@ -215,7 +215,7 @@ describe('renameSymbol text-search fallback bounds', () => {
     await fs.writeFile(path.join(tmpDir, 'refs.ts'), 'oldName();\n'.repeat(1005));
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const read = vi.spyOn(fs, 'readFile');
-    const result = await renameSymbol(
+    const result = (await renameSymbol(
       { repoPath: tmpDir },
       { symbol_name: 'oldName', new_name: 'newName' },
       async () => ({
@@ -223,7 +223,7 @@ describe('renameSymbol text-search fallback bounds', () => {
         incoming: { calls: [{ filePath: 'missing.ts' }, { filePath: 'refs.ts' }] },
       }),
       { confirmWrites: false },
-    );
+    )) as Extract<Awaited<ReturnType<typeof renameSymbol>>, { changes: unknown }>;
     expect(result).toMatchObject({ graph_edits: 1000, text_search_edits: 0, total_edits: 1000 });
     expect(result.warnings).toEqual([
       'Skipped oversized rename candidate: large.ts',
@@ -242,7 +242,7 @@ describe('renameSymbol text-search fallback bounds', () => {
       await fs.writeFile(path.join(tmpDir, filePath), 'oldName();\n');
     }
     const read = vi.spyOn(fs, 'readFile');
-    const result = await renameSymbol(
+    const result = (await renameSymbol(
       { repoPath: tmpDir },
       { symbol_name: 'oldName', new_name: 'newName' },
       async () => ({
@@ -250,7 +250,7 @@ describe('renameSymbol text-search fallback bounds', () => {
         incoming: { calls },
       }),
       { confirmWrites: false },
-    );
+    )) as Extract<Awaited<ReturnType<typeof renameSymbol>>, { changes: unknown }>;
     expect(read).toHaveBeenCalledTimes(200);
     expect(result).toMatchObject({ graph_edits: 200, files_affected: 200 });
     expect(result.warnings).toContain('Graph rename candidates capped at 200 files');
@@ -307,12 +307,12 @@ describe('renameSymbol apply safety', () => {
       await fs.symlink(outside, path.join(repoDir, 'linked.ts'));
 
       vi.spyOn(console, 'error').mockImplementation(() => {});
-      const result = await renameSymbol(
+      const result = (await renameSymbol(
         { repoPath: repoDir },
         { symbol_name: 'oldName', new_name: 'newName', dry_run: true },
         lookupDef(filePath),
         { confirmWrites: false },
-      );
+      )) as Extract<Awaited<ReturnType<typeof renameSymbol>>, { changes: unknown }>;
 
       expect(await fs.readFile(outside, 'utf8')).toBe('export const oldName = 1;\n');
       expect(result).toMatchObject({ applied: false, files_affected: 0 });
@@ -338,12 +338,12 @@ describe('renameSymbol apply safety', () => {
         incoming: { calls: [{ filePath: 'ref.ts' }] },
       }));
 
-      const result = await renameSymbol(
+      const result = (await renameSymbol(
         { repoPath: repoDir },
         { ...selector, new_name: 'newName', dry_run: false, confirm: true },
         lookup,
         { confirmWrites: true },
-      );
+      )) as Extract<Awaited<ReturnType<typeof renameSymbol>>, { changes: unknown }>;
 
       expect(result).toEqual({
         error:

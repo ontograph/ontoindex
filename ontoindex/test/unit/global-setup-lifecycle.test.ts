@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { GlobalSetupContext } from 'vitest/node';
+type GlobalSetupContext = Parameters<typeof setup>[0];
 
 const mocks = vi.hoisted(() => ({
   events: [] as string[],

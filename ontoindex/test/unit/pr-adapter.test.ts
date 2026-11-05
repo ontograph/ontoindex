@@ -217,7 +217,7 @@ describe('prImpactCommand — gh error paths', () => {
 
   it('sets exitCode=1 and emits fetch hint when base ref is missing locally', async () => {
     // First call: gh pr view succeeds
-    vi.mocked(execFileSync).mockReturnValueOnce(VALID_GH_JSON as unknown as Buffer);
+    vi.mocked(execFileSync).mockReturnValueOnce(VALID_GH_JSON);
     // Second call: git rev-parse for baseRefName fails
     vi.mocked(execFileSync).mockImplementationOnce(() => {
       throw new Error('unknown revision');
@@ -232,9 +232,9 @@ describe('prImpactCommand — gh error paths', () => {
 
   it('sets exitCode=1 and emits fetch hint when head SHA is missing locally', async () => {
     // gh pr view succeeds
-    vi.mocked(execFileSync).mockReturnValueOnce(VALID_GH_JSON as unknown as Buffer);
+    vi.mocked(execFileSync).mockReturnValueOnce(VALID_GH_JSON);
     // git rev-parse baseRefName succeeds
-    vi.mocked(execFileSync).mockReturnValueOnce('abc123\n' as unknown as Buffer);
+    vi.mocked(execFileSync).mockReturnValueOnce('abc123\n');
     // git rev-parse headSha fails
     vi.mocked(execFileSync).mockImplementationOnce(() => {
       throw new Error('unknown revision');
@@ -248,7 +248,7 @@ describe('prImpactCommand — gh error paths', () => {
   });
 
   it('sets exitCode=1 when gh returns invalid JSON', async () => {
-    vi.mocked(execFileSync).mockReturnValueOnce('this is not json' as unknown as Buffer);
+    vi.mocked(execFileSync).mockReturnValueOnce('this is not json');
 
     await prImpactCommand('42', {});
 

@@ -173,7 +173,9 @@ describe('installed committed-navigation smoke', () => {
     });
     expect(recordServerIdentity(manifest, { getServerVersion: () => server })).toEqual({
       ...manifest,
-      serverInfo: server ? { name: server.name, version: server.version } : null,
+      serverInfo: server
+        ? { name: server.name, version: (server as { version?: string }).version }
+        : null,
       serverIdentityMatches: matches,
     });
     expect(manifest).not.toHaveProperty('serverInfo');

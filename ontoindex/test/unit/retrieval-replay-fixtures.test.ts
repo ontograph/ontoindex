@@ -24,7 +24,10 @@ describe('retrieval replay fixture corpus', () => {
       const validationMessage = validation.ok
         ? ''
         : validation.errors
-            ?.map((error) => `${error.path}: ${error.message ?? error.msg}`)
+            ?.map(
+              (error) =>
+                `${error.path}: ${error.message ?? (error as typeof error & { msg?: string }).msg}`,
+            )
             .join('; ');
 
       expect(validation.ok, validationMessage).toBe(true);

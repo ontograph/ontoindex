@@ -180,8 +180,12 @@ describe('analysis catalog', () => {
     expect(result.packs[0].id).toBe('model.pack');
     expect(result.suites).toHaveLength(1);
     expect(result.suites[0].id).toBe('suite.demo');
-    expect(result.counts.stablePacks).toBe(0);
-    expect(result.counts.experimentalPacks).toBe(1);
+    expect((result.counts as { stablePacks: number; experimentalPacks: number }).stablePacks).toBe(
+      0,
+    );
+    expect(
+      (result.counts as { stablePacks: number; experimentalPacks: number }).experimentalPacks,
+    ).toBe(1);
   });
 
   it('returns execution plan when target is provided', async () => {
@@ -219,7 +223,10 @@ describe('analysis catalog', () => {
       'utf8',
     );
 
-    const result = await runAnalysisCatalog({ repoPath: repoDir }, { target: 'suite.demo' });
+    const result = (await runAnalysisCatalog(
+      { repoPath: repoDir },
+      { target: 'suite.demo' },
+    )) as Extract<Awaited<ReturnType<typeof runAnalysisCatalog>>, { target: unknown }>;
     expect(result.target).toMatchObject({ type: 'suite', id: 'suite.demo' });
     expect(result.steps).toEqual([
       { packId: 'demo.pack', packName: 'Demo Pack', tool: 'graph_diff', params: { limit: 3 } },

@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { readResource } from '../../src/mcp/resources.js';
-import { runDocsMcpAction } from '../../src/mcp/super/docs.js';
+import { runDocsMcpAction, type DocsMcpFullReport } from '../../src/mcp/super/docs.js';
 
 describe('memory consumer coverage', () => {
   let root: string;
@@ -40,12 +40,12 @@ describe('memory consumer coverage', () => {
     expect(list).toContain('total: 129');
     expect(list).toContain('emitted: 128');
     expect(list).not.toContain('private-body-marker');
-    const baseline = await runDocsMcpAction(repo, { action: 'readiness' });
-    const docs = await runDocsMcpAction(repo, {
+    const baseline = (await runDocsMcpAction(repo, { action: 'readiness' })) as DocsMcpFullReport;
+    const docs = (await runDocsMcpAction(repo, {
       action: 'readiness',
       includeMemories: true,
       format: 'both',
-    });
+    })) as DocsMcpFullReport;
     expect(docs.advisoryMemories).toMatchObject({
       availability: { status: 'partial', total: 129 },
       coverage: { truncated: true, emitted: 128, countsScope: 'acquired-memories' },
@@ -68,11 +68,11 @@ describe('memory consumer coverage', () => {
     const list = await readResource('ontoindex://repo/fixture/memories', backend);
     expect(list).toContain('total: null');
     expect(list).not.toContain('No advisory memories found');
-    const docs = await runDocsMcpAction(repo, {
+    const docs = (await runDocsMcpAction(repo, {
       action: 'context',
       includeMemories: true,
       format: 'both',
-    });
+    })) as DocsMcpFullReport;
     expect(docs.advisoryMemories).toMatchObject({
       availability: { status: 'partial', total: null },
       coverage: { emitted: 0, truncated: true },
@@ -86,7 +86,10 @@ describe('memory consumer coverage', () => {
     expect(await readResource('ontoindex://repo/fixture/onboarding', backend)).toContain(
       'No advisory memories found',
     );
-    const docs = await runDocsMcpAction(repo, { action: 'context', includeMemories: true });
+    const docs = (await runDocsMcpAction(repo, {
+      action: 'context',
+      includeMemories: true,
+    })) as DocsMcpFullReport;
     expect(docs.advisoryMemories?.availability).toMatchObject({ status: 'missing', total: 0 });
   });
 });

@@ -298,7 +298,7 @@ describe('audit lifecycle lint', () => {
       nextCursor: (result.cursor as { next?: string }).next,
       expandHint: `Rerun gn_audit_lint with cursor:"${(result.cursor as { next?: string }).next}" to fetch the next page.`,
     });
-    expect(result.responseContract.anchors).toEqual([
+    expect((result.responseContract as { anchors: string[] }).anchors).toEqual([
       'repo:A-1:report:open-requires-fresh-evidence',
     ]);
     expect(result.issues).toEqual([expect.objectContaining({ findingId: 'A-1' })]);
@@ -322,7 +322,7 @@ describe('audit lifecycle lint', () => {
       omittedItems: 0,
       expandHint: 'No additional audit page is available.',
     });
-    expect(nextPage.responseContract.anchors).toEqual([
+    expect((nextPage.responseContract as { anchors: string[] }).anchors).toEqual([
       'repo:B-1:report:open-requires-fresh-evidence',
     ]);
     expect(nextPage.issues).toEqual([expect.objectContaining({ findingId: 'B-1' })]);
@@ -348,7 +348,7 @@ describe('audit lifecycle lint', () => {
       omittedItems: 0,
       expandHint: 'No additional audit page is available.',
     });
-    expect(summary.responseContract.anchors).toEqual([
+    expect((summary.responseContract as { anchors: string[] }).anchors).toEqual([
       'repo:AUDIT-M5-001:report:open-requires-fresh-evidence',
     ]);
     expect(summary.issues).toEqual([

@@ -49,7 +49,7 @@ describe('VariableExtractor — TypeScript', () => {
   };
 
   it('extracts const declaration', () => {
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse('const MAX_SIZE = 100;');
     const node = tree.rootNode.child(0)!;
     expect(extractor.isVariableDeclaration(node)).toBe(true);
@@ -63,7 +63,7 @@ describe('VariableExtractor — TypeScript', () => {
   });
 
   it('extracts let declaration as mutable', () => {
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse('let counter = 0;');
     const node = tree.rootNode.child(0)!;
     expect(extractor.isVariableDeclaration(node)).toBe(true);
@@ -76,7 +76,7 @@ describe('VariableExtractor — TypeScript', () => {
   });
 
   it('extracts typed const declaration', () => {
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse('const name: string = "hello";');
     const node = tree.rootNode.child(0)!;
 
@@ -88,7 +88,7 @@ describe('VariableExtractor — TypeScript', () => {
   });
 
   it('detects export as public visibility', () => {
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse('export const API_KEY = "abc";');
     // export_statement wraps lexical_declaration
     const exportStatement = tree.rootNode.child(0)!;
@@ -102,7 +102,7 @@ describe('VariableExtractor — TypeScript', () => {
   });
 
   it('rejects non-variable nodes', () => {
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse('function foo() {}');
     const node = tree.rootNode.child(0)!;
     expect(extractor.isVariableDeclaration(node)).toBe(false);
@@ -110,7 +110,7 @@ describe('VariableExtractor — TypeScript', () => {
   });
 
   it('extracts var declaration as mutable variable', () => {
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse('var x = 5;');
     const node = tree.rootNode.child(0)!;
 
@@ -134,7 +134,7 @@ describe('VariableExtractor — JavaScript', () => {
   };
 
   it('extracts const declaration', () => {
-    parser.setLanguage(TypeScript.typescript); // JS subset of TS grammar
+    parser.setLanguage(TypeScript.typescript as Parser.Language); // JS subset of TS grammar
     const tree = parser.parse('const PORT = 3000;');
     const node = tree.rootNode.child(0)!;
 
@@ -157,7 +157,7 @@ describe('VariableExtractor — Python', () => {
   };
 
   it('extracts UPPER_CASE constant', () => {
-    parser.setLanguage(Python);
+    parser.setLanguage(Python as Parser.Language);
     const tree = parser.parse('MAX_SIZE = 100');
     const node = tree.rootNode.child(0)!;
     expect(extractor.isVariableDeclaration(node)).toBe(true);
@@ -171,7 +171,7 @@ describe('VariableExtractor — Python', () => {
   });
 
   it('extracts regular assignment as mutable', () => {
-    parser.setLanguage(Python);
+    parser.setLanguage(Python as Parser.Language);
     const tree = parser.parse('counter = 0');
     const node = tree.rootNode.child(0)!;
 
@@ -183,7 +183,7 @@ describe('VariableExtractor — Python', () => {
   });
 
   it('extracts annotated assignment with type', () => {
-    parser.setLanguage(Python);
+    parser.setLanguage(Python as Parser.Language);
     const tree = parser.parse('name: str = "hello"');
     const node = tree.rootNode.child(0)!;
 
@@ -194,7 +194,7 @@ describe('VariableExtractor — Python', () => {
   });
 
   it('detects underscore prefix as protected', () => {
-    parser.setLanguage(Python);
+    parser.setLanguage(Python as Parser.Language);
     const tree = parser.parse('_internal = 42');
     const node = tree.rootNode.child(0)!;
 
@@ -204,7 +204,7 @@ describe('VariableExtractor — Python', () => {
   });
 
   it('detects double underscore prefix as private', () => {
-    parser.setLanguage(Python);
+    parser.setLanguage(Python as Parser.Language);
     const tree = parser.parse('__secret = 42');
     const node = tree.rootNode.child(0)!;
 
@@ -214,7 +214,7 @@ describe('VariableExtractor — Python', () => {
   });
 
   it('does not treat dunder names as private', () => {
-    parser.setLanguage(Python);
+    parser.setLanguage(Python as Parser.Language);
     const tree = parser.parse('__name__ = "main"');
     const node = tree.rootNode.child(0)!;
 
@@ -236,7 +236,7 @@ describe('VariableExtractor — Go', () => {
   };
 
   it('extracts const declaration', () => {
-    parser.setLanguage(Go);
+    parser.setLanguage(Go as Parser.Language);
     const tree = parser.parse('package main\nconst MaxSize = 100');
     // Find const_declaration
     let constNode = null;
@@ -259,7 +259,7 @@ describe('VariableExtractor — Go', () => {
   });
 
   it('extracts var declaration', () => {
-    parser.setLanguage(Go);
+    parser.setLanguage(Go as Parser.Language);
     const tree = parser.parse('package main\nvar counter int = 0');
     let varNode = null;
     for (let i = 0; i < tree.rootNode.namedChildCount; i++) {
@@ -280,7 +280,7 @@ describe('VariableExtractor — Go', () => {
   });
 
   it('detects lowercase as package-private', () => {
-    parser.setLanguage(Go);
+    parser.setLanguage(Go as Parser.Language);
     const tree = parser.parse('package main\nconst maxSize = 100');
     let constNode = null;
     for (let i = 0; i < tree.rootNode.namedChildCount; i++) {
@@ -310,7 +310,7 @@ describe('VariableExtractor — Rust', () => {
   };
 
   it('extracts const_item', () => {
-    parser.setLanguage(Rust);
+    parser.setLanguage(Rust as Parser.Language);
     const tree = parser.parse('const MAX_SIZE: usize = 100;');
     const node = tree.rootNode.child(0)!;
     expect(extractor.isVariableDeclaration(node)).toBe(true);
@@ -326,7 +326,7 @@ describe('VariableExtractor — Rust', () => {
   });
 
   it('extracts static_item', () => {
-    parser.setLanguage(Rust);
+    parser.setLanguage(Rust as Parser.Language);
     const tree = parser.parse('static COUNTER: i32 = 0;');
     const node = tree.rootNode.child(0)!;
 
@@ -339,7 +339,7 @@ describe('VariableExtractor — Rust', () => {
   });
 
   it('extracts pub const as public', () => {
-    parser.setLanguage(Rust);
+    parser.setLanguage(Rust as Parser.Language);
     const tree = parser.parse('pub const API_VERSION: &str = "v1";');
     const node = tree.rootNode.child(0)!;
 
@@ -350,7 +350,7 @@ describe('VariableExtractor — Rust', () => {
   });
 
   it('extracts static mut as mutable', () => {
-    parser.setLanguage(Rust);
+    parser.setLanguage(Rust as Parser.Language);
     const tree = parser.parse('static mut BUFFER: Vec<u8> = Vec::new();');
     const node = tree.rootNode.child(0)!;
 
@@ -373,7 +373,7 @@ describe('VariableExtractor — C', () => {
   };
 
   it('extracts const declaration', () => {
-    parser.setLanguage(C);
+    parser.setLanguage(C as Parser.Language);
     const tree = parser.parse('const int MAX_SIZE = 100;');
     const node = tree.rootNode.child(0)!;
     expect(extractor.isVariableDeclaration(node)).toBe(true);
@@ -386,7 +386,7 @@ describe('VariableExtractor — C', () => {
   });
 
   it('extracts static variable', () => {
-    parser.setLanguage(C);
+    parser.setLanguage(C as Parser.Language);
     const tree = parser.parse('static int counter = 0;');
     const node = tree.rootNode.child(0)!;
 
@@ -406,7 +406,7 @@ describe('VariableExtractor — C++', () => {
   };
 
   it('extracts constexpr declaration', () => {
-    parser.setLanguage(Cpp);
+    parser.setLanguage(Cpp as Parser.Language);
     const tree = parser.parse('constexpr int SIZE = 10;');
     const node = tree.rootNode.child(0)!;
 
@@ -429,7 +429,7 @@ describe('VariableExtractor — Ruby', () => {
   };
 
   it('extracts Ruby constant assignment', () => {
-    parser.setLanguage(Ruby);
+    parser.setLanguage(Ruby as Parser.Language);
     const tree = parser.parse('MAX_SIZE = 100');
     const node = tree.rootNode.child(0)!;
 
@@ -442,7 +442,7 @@ describe('VariableExtractor — Ruby', () => {
   });
 
   it('extracts regular variable assignment', () => {
-    parser.setLanguage(Ruby);
+    parser.setLanguage(Ruby as Parser.Language);
     const tree = parser.parse('counter = 0');
     const node = tree.rootNode.child(0)!;
 
@@ -472,7 +472,7 @@ describe('createVariableExtractor — factory', () => {
 
   it('returns null for non-variable nodes', () => {
     const extractor = createVariableExtractor(typescriptVariableConfig);
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse('class Foo {}');
     const node = tree.rootNode.child(0)!;
     expect(extractor.extract(node, factoryCtx)).toBeNull();
@@ -480,7 +480,7 @@ describe('createVariableExtractor — factory', () => {
 
   it('line number is 1-based', () => {
     const extractor = createVariableExtractor(typescriptVariableConfig);
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse('const x = 1;');
     const node = tree.rootNode.child(0)!;
     const info = extractor.extract(node, factoryCtx);
@@ -491,7 +491,7 @@ describe('createVariableExtractor — factory', () => {
 
   it('sets scope to module for top-level declarations', () => {
     const extractor = createVariableExtractor(typescriptVariableConfig);
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse('const x = 1;');
     const node = tree.rootNode.child(0)!;
     const info = extractor.extract(node, factoryCtx);
@@ -512,7 +512,7 @@ describe('VariableExtractor — block-scoped declarations', () => {
       filePath: 'test.ts',
       language: SupportedLanguages.TypeScript,
     };
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse('function foo() { const x = 5; }');
     // program > function_declaration > statement_block > lexical_declaration
     const fnBody = tree.rootNode.child(0)!.childForFieldName('body')!;
@@ -532,7 +532,7 @@ describe('VariableExtractor — block-scoped declarations', () => {
       filePath: 'test.ts',
       language: SupportedLanguages.TypeScript,
     };
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse('const fn = () => { let y = 10; };');
     // program > lexical_declaration > variable_declarator > arrow_function > statement_block
     const lexDecl = tree.rootNode.child(0)!;
@@ -555,7 +555,7 @@ describe('VariableExtractor — block-scoped declarations', () => {
       filePath: 'test.go',
       language: SupportedLanguages.Go,
     };
-    parser.setLanguage(Go);
+    parser.setLanguage(Go as Parser.Language);
     const tree = parser.parse('package main\nfunc foo() { x := 5 }');
     // source_file > function_declaration > block > short_var_declaration
     const funcDecl = tree.rootNode.namedChildren.find((c) => c.type === 'function_declaration')!;
@@ -575,7 +575,7 @@ describe('VariableExtractor — block-scoped declarations', () => {
       filePath: 'test.rs',
       language: SupportedLanguages.Rust,
     };
-    parser.setLanguage(Rust);
+    parser.setLanguage(Rust as Parser.Language);
     const tree = parser.parse('fn foo() { let mut x = 5; }');
     // source_file > function_item > block > let_declaration
     const funcItem = tree.rootNode.namedChildren.find((c) => c.type === 'function_item')!;
@@ -595,7 +595,7 @@ describe('VariableExtractor — block-scoped declarations', () => {
       filePath: 'test.c',
       language: SupportedLanguages.C,
     };
-    parser.setLanguage(C);
+    parser.setLanguage(C as Parser.Language);
     const tree = parser.parse('void foo() { int x = 5; }');
     // translation_unit > function_definition > compound_statement > declaration
     const funcDef = tree.rootNode.namedChildren.find((c) => c.type === 'function_definition')!;
@@ -615,7 +615,7 @@ describe('VariableExtractor — block-scoped declarations', () => {
       filePath: 'test.py',
       language: SupportedLanguages.Python,
     };
-    parser.setLanguage(Python);
+    parser.setLanguage(Python as Parser.Language);
     const tree = parser.parse('def foo():\n    x = 5');
     // module > function_definition > block > expression_statement > assignment
     const funcDef = tree.rootNode.namedChildren.find((c) => c.type === 'function_definition')!;
@@ -634,7 +634,7 @@ describe('VariableExtractor — block-scoped declarations', () => {
       filePath: 'test.py',
       language: SupportedLanguages.Python,
     };
-    parser.setLanguage(Python);
+    parser.setLanguage(Python as Parser.Language);
     const tree = parser.parse('print("hello")');
     const exprStmt = tree.rootNode.child(0)!;
     expect(exprStmt.type).toBe('expression_statement');

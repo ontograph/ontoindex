@@ -16,12 +16,12 @@ const runtime = (env: NodeJS.ProcessEnv): GraphWriterRuntime => ({
   nativeModule: nativeModule(),
 });
 
-const node: GraphNode = {
+const node = {
   id: 'Function:test.ts:run',
   type: 'Function',
   label: 'Function',
   properties: { name: 'run' },
-};
+} as unknown as GraphNode;
 
 describe('native graph writer selection', () => {
   it('treats the native graph writer feature flag as opt-in', () => {
