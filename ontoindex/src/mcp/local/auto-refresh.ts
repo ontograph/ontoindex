@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFileText } from '../../core/process/exec-file.js';
@@ -188,6 +189,42 @@ async function scheduleWorkspacePrebuild(
   try {
     const analyzeLock = await readAnalyzeLock(repo.storagePath, []);
     if (analyzeLock.state === 'active' || analyzeLock.state === 'unknown') return undefined;
+    const { meta } = await readActiveGenerationMeta(repo.storagePath);
+    if (!meta) return undefined;
+    const head = await execFileText('git', ['rev-parse', 'HEAD'], {
+      cwd: repo.repoPath,
+      timeoutMs: 1000,
+    }).then(
+      (value) => value.trim(),
+      () => undefined,
+    );
+    if (!head || head !== meta.lastCommit) return undefined;
+    const status = await execFileText(
+      'git',
+      ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
+      { cwd: repo.repoPath, timeoutMs: 2000 },
+    );
+    const entries = status.split('\0');
+    const files = [];
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (!entry) continue;
+      const paths = [entry.slice(3)];
+      // In -z output a rename/copy has a second, unprefixed source path.
+      if (/[RC]/.test(entry.slice(0, 2))) paths.push(entries[++i]);
+      for (const file of paths) {
+        const stat = await fs
+          .stat(path.join(repo.repoPath, file))
+          .catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== 'ENOENT') throw error;
+            return null;
+          });
+        files.push([file, stat ? [stat.size, stat.mtimeMs] : null]);
+      }
+    }
+    const identity = createHash('sha256')
+      .update(JSON.stringify([head, meta.lastCommit, status, files]))
+      .digest('hex');
     const configured = Number(process.env.ONTOINDEX_AUTO_REFRESH_INTERVAL_MS ?? 300000);
     const interval = Number.isFinite(configured) && configured >= 0 ? configured : 300000;
     const now = (deps.now ?? Date.now)();
@@ -196,11 +233,15 @@ async function scheduleWorkspacePrebuild(
       if (error.code !== 'ENOENT') throw error;
       return undefined;
     });
-    if (stat && now - stat.mtimeMs < interval) {
+    const previousIdentity = stat ? await fs.readFile(stamp, 'utf8') : undefined;
+    if (stat && previousIdentity === identity && now - stat.mtimeMs < 60 * 60 * 1000) {
+      return 'Workspace graph preparation was already attempted for this working tree; edit or commit to retry, or run `ontoindex analyze --workspace-graph`.';
+    }
+    if (stat && previousIdentity !== identity && now - stat.mtimeMs < interval) {
       return 'Workspace graph preparation was started recently; reads include uncommitted files once it finishes.';
     }
     await (deps.spawnRefresh ?? spawnRefresh)(repo, ['--workspace-graph']);
-    await fs.writeFile(stamp, '', { mode: 0o600 });
+    await fs.writeFile(stamp, identity, { mode: 0o600 });
     await fs.utimes(stamp, now / 1000, now / 1000);
     return 'Workspace graph preparation started in the background; later reads include uncommitted files.';
   } finally {

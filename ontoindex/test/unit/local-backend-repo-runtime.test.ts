@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
+import syncFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -17,6 +18,8 @@ import {
   acquireWorkspaceWatch,
   WORKSPACE_PREPARATION_DEADLINE_MS,
   workspaceBuildChildEnv,
+  workspaceBuildNodeOptions,
+  buildWorkspaceGraph,
 } from '../../src/mcp/local/local-backend-repo-runtime.js';
 import type { OverlaySnapshot } from '../../src/mcp/local/backend-overlay.js';
 import { computeSourceManifest } from '../../src/core/indexing/source-manifest.js';
@@ -25,11 +28,61 @@ import {
   superviseWorkspaceBuild,
   WorkspaceBuildError,
 } from '../../src/mcp/local/workspace-build-supervisor.js';
+import * as workspaceBuildSupervisor from '../../src/mcp/local/workspace-build-supervisor.js';
 
 const { createWatchCommand } = vi.hoisted(() => ({ createWatchCommand: vi.fn() }));
 vi.mock('../../src/cli/watch.js', () => ({ createWatchCommand }));
 
 describe('workspace build child environment', () => {
+  it.each([
+    ['', '--max-old-space-size=8192'],
+    ['--max-old-space-size=1536', '--max-old-space-size=8192'],
+    ['--max-old-space-size=8192', '--max-old-space-size=8192'],
+    ['--max-old-space-size=16384', '--max-old-space-size=16384'],
+    [
+      '--enable-source-maps --max-old-space-size=1536',
+      '--enable-source-maps --max-old-space-size=8192',
+    ],
+    ['--enable-source-maps', '--enable-source-maps --max-old-space-size=8192'],
+    [
+      '--max-old-space-size=16384 --enable-source-maps',
+      '--max-old-space-size=16384 --enable-source-maps',
+    ],
+  ])('gives workspace builds sufficient heap for %j', (input, expected) => {
+    expect(workspaceBuildNodeOptions(input)).toBe(expected);
+  });
+
+  it.each(['', '3'])(
+    'passes the heap override to the supervised child with worker override %j',
+    async (workers) => {
+      vi.stubEnv('NODE_OPTIONS', '--enable-source-maps --max-old-space-size=1536');
+      vi.stubEnv('ONTOINDEX_MAX_WORKERS', workers);
+      const exists = vi.spyOn(syncFs, 'existsSync').mockReturnValue(true);
+      const supervise = vi
+        .spyOn(workspaceBuildSupervisor, 'superviseWorkspaceBuild')
+        .mockResolvedValue(undefined);
+      try {
+        await buildWorkspaceGraph({
+          id: 'fixture',
+          repoPath: '/fixture',
+          storagePath: '/fixture/.ontoindex',
+        });
+        expect(supervise).toHaveBeenCalledWith(
+          expect.objectContaining({
+            env: {
+              ...(workspaceBuildChildEnv() ?? {}),
+              NODE_OPTIONS: '--enable-source-maps --max-old-space-size=8192',
+            },
+          }),
+        );
+      } finally {
+        exists.mockRestore();
+        supervise.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
   it.each([
     [8, '4'],
     [64, '4'],
