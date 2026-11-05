@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   applyLogicalResponseBudget,
+  MCP_RESPONSE_MAX_BYTES,
   pageMcpResponse,
   serializedMcpToolResultBytes,
   type ResponsePageEnvelope,
@@ -45,6 +46,21 @@ async function collect(text: string, maxBytes?: number): Promise<string> {
 }
 
 describe('applyLogicalResponseBudget small budgets', () => {
+  it('refuses a raised projection above the response ceiling while reporting its minimum', () => {
+    const text = JSON.stringify({
+      warnings: ['diagnostic '.repeat(10000)],
+      results: [{ name: 'omit' }],
+    });
+    expect(() => applyLogicalResponseBudget(text, 'search', 1024)).toThrow(
+      `response_budget_bytes is too small to preserve the response diagnostics. Requested 1024 bytes; this response cannot be projected and needs at least ${serializedMcpToolResultBytes(text)} bytes (its full size).`,
+    );
+    expect(() => applyLogicalResponseBudget(text, 'search', 1024)).toThrow(
+      new RegExp(
+        `The smallest safe projection needs \\d+ bytes, above the ${MCP_RESPONSE_MAX_BYTES}-byte ceiling\\.`,
+      ),
+    );
+  });
+
   it.each([false, true])(
     'reports the full size for an unsupported tool (isError=%s)',
     (isError) => {

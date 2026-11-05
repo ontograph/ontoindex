@@ -4,6 +4,11 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+- TypeScript and JavaScript inference ignores a constructor or factory name that a nearer binding shadows: a constructor parameter, a `catch` parameter, a for-of/for-in binding, a destructured local or a parameter named like the factory no longer produce a type for the outer class.
+- A `response_budget_bytes` below the smallest safe projection is raised only up to the 48 KiB response ceiling. Above that, the error names the smallest safe projection size.
+- On an oversized workspace, the symbols-overlay search keeps exact typed-ID hits from dirty files and returns a structured `readContext` (`source: "symbols-overlay"`, partial semantic coverage, base commit and uncovered paths).
+- Committed `inspect` explore and related follow-up hints keep `read_mode: "committed"`.
+
 ## [2.4.22] - 2026-11-05
 
 - The 2.4.21 symbols-overlay fallback never ran on real repositories: MCP `search/semantic` dispatches as `query`, which was not in the fallback set; a stale overlay forced a full workspace graph; and one dirty file over the scan size cap refused the whole overlay capture. Search now covers the remaining dirty files on large repositories (verified on a 7,073-file repository: 14 of 15 dirty files, the 15th over the size cap). A search error on the overlay is reported as is instead of being replaced by the size refusal.

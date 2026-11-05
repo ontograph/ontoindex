@@ -306,6 +306,9 @@ export function getNextStepHint(
     if (toolName === 'inspect' && args.action === 'context') {
       return `\n\n---\n**Next:** Use impact({action: "symbol", target_uid: "<result_uid>", direction: "upstream"${committedParam}}) to inspect indexed dependents.`;
     }
+    if (toolName === 'inspect') {
+      return `\n\n---\n**Next:** If planning changes, use impact({action: "symbol", target: "<name>", direction: "upstream"${committedParam}}) to check blast radius.`;
+    }
   }
 
   switch (toolName) {

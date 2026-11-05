@@ -521,14 +521,34 @@ describe('request workspace gate', () => {
     });
 
     it('retries search with the symbols overlay when the workspace graph is too large', async () => {
+      const uncoveredPaths = Array.from(
+        { length: 12 },
+        (_, i) => `src/uncovered-${String(i).padStart(2, '0')}.ts`,
+      );
       vi.mocked(prepareWorkspaceRead)
         .mockRejectedValueOnce(tooLarge())
-        .mockResolvedValueOnce(cleanSnapshot());
+        .mockResolvedValueOnce({
+          ...cleanSnapshot(),
+          baseCommit: 'pinned-base',
+          generation: 'pinned-overlay',
+          uncoveredPaths: new Set([...uncoveredPaths].reverse()),
+        });
       const gate = vi.spyOn(backend, 'withPreparedRepoRead');
       (backend as any).repoToolHandlers.search = async () => ({ items: [], warnings: [] });
       const result = (await backend.callTool('search', { query: 'x' })) as {
         warnings: string[];
+        readContext: unknown;
       };
+      expect(result.readContext).toEqual({
+        mode: 'workspace',
+        source: 'symbols-overlay',
+        semanticCoverage: 'partial',
+        workingTreeIncluded: true,
+        baseCommit: 'pinned-base',
+        generation: 'pinned-overlay',
+        uncoveredPathCount: 12,
+        uncoveredPathSample: uncoveredPaths.slice(0, 10),
+      });
       expect(result.warnings).toContain(
         'Working-tree graph unavailable (workspace_too_large); answered from the committed index plus the uncommitted-symbols overlay. Ranking omits working-tree relationships.',
       );

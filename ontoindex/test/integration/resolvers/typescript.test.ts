@@ -3,6 +3,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
+
 import {
   FIXTURES,
   getRelationships,
@@ -12,6 +13,31 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+describe('TypeScript shadowed inference names', () => {
+  describe.each([
+    ['ts-shadow-iterable-factory', false],
+    ['ts-shadow-iterable-binding', false],
+    ['ts-shadow-iterable-positive', true],
+  ] as const)('%s', (fixture, resolvesUser) => {
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, fixture), () => {}, {
+        skipGraphPhases: true,
+        skipWorkers: true,
+      });
+    }, 60000);
+
+    it('resolves User.save only for unshadowed inference', () => {
+      const saves = getRelationships(result, 'CALLS').filter(
+        (call) => call.source === 'probe' && call.target === 'save',
+      );
+      expect(saves).toHaveLength(resolvesUser ? 1 : 0);
+      if (resolvesUser) expect(saves[0].rel.targetId).toContain('User');
+    });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Heritage: class extends + implements interface

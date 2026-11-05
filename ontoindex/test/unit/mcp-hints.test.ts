@@ -3,6 +3,18 @@ import { getNextStepHint } from '../../src/mcp/server.js';
 import { INTERNAL_TOOL_HANDLERS, ONTOINDEX_TOOLS } from '../../src/mcp/tools.js';
 
 describe('MCP Next-Step Hints', () => {
+  it.each(['explore', 'related'])('keeps committed mode in inspect/%s impact hints', (action) => {
+    const hint = getNextStepHint('inspect', { action, repo: 'fixture', read_mode: 'committed' });
+    expect(hint).toContain('impact({action: "symbol"');
+    expect(hint).toContain('repo: "fixture", read_mode: "committed"');
+  });
+
+  it('keeps the default inspect hint unchanged', () => {
+    expect(getNextStepHint('inspect', { action: 'explore', repo: 'fixture' })).toBe(
+      '\n\n---\n**Next:** If planning changes, use impact({action: "symbol", target: "<name>", direction: "upstream", repo: "fixture"}) to check blast radius.',
+    );
+  });
+
   it('keeps committed navigation explicit without offering live enrichment', () => {
     for (const [tool, action] of [
       ['search', 'semantic'],

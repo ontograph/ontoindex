@@ -5,6 +5,7 @@ import type { FieldExtractionConfig } from '../generic.js';
 import { hasKeyword, findVisibility, typeFromAnnotation } from './helpers.js';
 import type { FieldInfo, FieldVisibility } from '../../field-types.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { isNameShadowed } from '../../type-extractors/shared.js';
 
 const VISIBILITY_KEYWORDS = new Set<FieldVisibility>(['public', 'private', 'protected']);
 
@@ -153,7 +154,10 @@ export const javascriptConfig: FieldExtractionConfig = {
       const right = assignment.childForFieldName('right');
       const constructor =
         right?.type === 'new_expression' ? right.childForFieldName('constructor') : null;
-      const inferred = constructor?.type === 'identifier' ? constructor.text : undefined;
+      const inferred =
+        constructor?.type === 'identifier' && !isNameShadowed(constructor, constructor.text)
+          ? constructor.text
+          : undefined;
       fields.set(name, {
         name,
         type: jsdoc && inferred && jsdoc !== inferred ? null : (jsdoc ?? inferred ?? null),

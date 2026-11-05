@@ -15,6 +15,7 @@ import type {
 import {
   extractSimpleTypeName,
   extractVarName,
+  isNameShadowed,
   hasTypeAnnotation,
   unwrapAwait,
   extractCalleeName,
@@ -359,7 +360,25 @@ const findTsCallResultElementType = (
       if (stmt.type !== 'lexical_declaration' && stmt.type !== 'variable_declaration') continue;
       for (const decl of stmt.namedChildren) {
         if (decl.type !== 'variable_declarator') continue;
-        if (decl.childForFieldName('name')?.text !== iterableName) continue;
+        const name = decl.childForFieldName('name');
+        if (name?.type === 'object_pattern' || name?.type === 'array_pattern') {
+          const pending = [name];
+          while (pending.length) {
+            const pattern = pending.pop()!;
+            if (['identifier', 'shorthand_property_identifier_pattern'].includes(pattern.type)) {
+              if (pattern.text === iterableName) return undefined;
+            } else if (pattern.type === 'pair_pattern') {
+              const value = pattern.childForFieldName('value');
+              if (value) pending.push(value);
+            } else if (['assignment_pattern', 'object_assignment_pattern'].includes(pattern.type)) {
+              const left = pattern.childForFieldName('left');
+              if (left) pending.push(left);
+            } else if (['object_pattern', 'array_pattern', 'rest_pattern'].includes(pattern.type)) {
+              pending.push(...pattern.namedChildren);
+            }
+          }
+        }
+        if (name?.text !== iterableName) continue;
         // The nearest declaration wins even when it cannot supply an element type.
         if (
           stmt.type !== 'lexical_declaration' ||
@@ -370,7 +389,7 @@ const findTsCallResultElementType = (
         const value = decl.childForFieldName('value');
         if (value?.type !== 'call_expression') return undefined;
         const callee = value.childForFieldName('function');
-        if (callee?.type !== 'identifier') return undefined;
+        if (callee?.type !== 'identifier' || isNameShadowed(callee, callee.text)) return undefined;
         const rawReturn = lookupRawReturnType(callee.text)?.trim();
         // Map iteration yields entry tuples, so accept only single-element containers.
         if (

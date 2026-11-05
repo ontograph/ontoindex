@@ -264,9 +264,15 @@ export function applyLogicalResponseBudget(
       recordProjectionSize(projectedBytes, nextValue, nextOmitted);
     }
   }
-  if (smallestProjection !== undefined) return smallestProjection;
+  if (smallestProjection !== undefined && smallestProjectionBytes <= MCP_RESPONSE_MAX_BYTES) {
+    return smallestProjection;
+  }
   throw new Error(
-    'response_budget_bytes is too small to preserve the response diagnostics.' + fullSizeHint,
+    'response_budget_bytes is too small to preserve the response diagnostics.' +
+      fullSizeHint +
+      (smallestProjection !== undefined
+        ? ` The smallest safe projection needs ${smallestProjectionBytes} bytes, above the ${MCP_RESPONSE_MAX_BYTES}-byte ceiling.`
+        : ''),
   );
 }
 

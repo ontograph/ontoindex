@@ -235,6 +235,8 @@ function inferConstructorReturnType(node: SyntaxNode): string | undefined {
   const pending = [body];
   while (pending.length) {
     const current = pending.pop()!;
+    if (current.type === 'catch_clause') addBindings(current.childForFieldName('parameter'));
+    if (current.type === 'for_in_statement') addBindings(current.childForFieldName('left'));
     if (
       current.type === 'variable_declarator' ||
       current.type === 'class_declaration' ||

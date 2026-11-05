@@ -2593,10 +2593,35 @@ export class LocalBackend implements BackendPort {
         if (code === 'workspace_too_large' && SYMBOL_OVERLAY_FALLBACK_TOOLS.has(method)) {
           let overlayReady = false;
           try {
-            result = await this.withPreparedRepoRead(repo, { needsRelationships: false }, () => {
-              overlayReady = true;
-              return invoke();
-            });
+            result = await this.withPreparedRepoRead(
+              repo,
+              { needsRelationships: false },
+              async () => {
+                overlayReady = true;
+                const snapshot = getReadRequestContext()?.snapshot;
+                const overlayResult = await invoke();
+                if (
+                  !overlayResult ||
+                  typeof overlayResult !== 'object' ||
+                  Array.isArray(overlayResult)
+                ) {
+                  return overlayResult;
+                }
+                return {
+                  ...overlayResult,
+                  readContext: {
+                    mode: 'workspace',
+                    source: 'symbols-overlay',
+                    semanticCoverage: 'partial',
+                    workingTreeIncluded: true,
+                    baseCommit: snapshot?.baseCommit ?? null,
+                    generation: snapshot?.generation ?? null,
+                    uncoveredPathCount: snapshot?.uncoveredPaths.size ?? 0,
+                    uncoveredPathSample: [...(snapshot?.uncoveredPaths ?? [])].sort().slice(0, 10),
+                  },
+                };
+              },
+            );
             committedFallbackNote = `Working-tree graph unavailable (${code}); answered from the committed index plus the uncommitted-symbols overlay. Ranking omits working-tree relationships.`;
           } catch (overlayError) {
             // Only an unavailable overlay (too many or unsupported dirty edits) falls back;
