@@ -2,6 +2,10 @@ import { describe, it, expect } from 'vitest';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import JavaScript from 'tree-sitter-javascript';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import {
   forEachPatternName,
   isNameShadowed,
@@ -23,7 +27,26 @@ describe.each([
     ['for initializer', 'for (let User = factory();;) { probe(); }', true],
     ['switch case', 'switch (value) { case 1: const User = factory(); probe(); }', true],
     ['switch default', 'switch (value) { default: const User = factory(); probe(); }', true],
+    [
+      'sibling switch case',
+      'switch (value) { case 1: const User = factory(); case 2: { probe(); } }',
+      true,
+    ],
+    ['sibling switch default', 'switch (value) { case 1: probe(); default: let User; }', true],
     ['block const', '{ const User = factory(); probe(); }', true],
+    ['hoisted block var', 'function f() { probe(); if (true) { var User; } }', true],
+    ['hoisted for-of var', 'function f() { for (var User of []) {} probe(); }', true],
+    [
+      'hoisted destructured var',
+      'function f() { if (true) { var { key: User } = other; } probe(); }',
+      true,
+    ],
+    ['sibling block let', 'function f() { { let User; } probe(); }', false],
+    ['expired catch parameter', 'function f() { try {} catch (User) {} probe(); }', false],
+    ['expired loop const', 'function f() { for (const User of []) {} probe(); }', false],
+    ['nested function var', 'function f() { function inner() { var User; } probe(); }', false],
+    ['nested arrow var', 'function f() { const inner = () => { var User; }; probe(); }', false],
+    ['nested class var', 'function f() { class Inner { method() { var User; } } probe(); }', false],
     ['top-level class', 'class User {} function f() { probe(); }', false],
     ['unrelated inner name', 'function f(Other) { const other = 1; probe(); }', false],
     ['property key', 'function f({ User: Other }) { probe(); }', false],
@@ -61,4 +84,59 @@ describe.each([
       }),
     ).toBe(false);
   });
+});
+
+describe('scope-aware constructor and factory call inference', () => {
+  it.each([
+    [
+      'catch binding ends before factory return',
+      'js',
+      'function factory(){try{throw Other}catch(User){} return new User()} function probe(){const u=factory();u.save()}',
+      true,
+    ],
+    [
+      'loop binding ends before factory return',
+      'js',
+      'function factory(){for(const User of []){} return new User()} function probe(){const u=factory();u.save()}',
+      true,
+    ],
+    [
+      'hoisted var shadows constructor field type',
+      'js',
+      'class Store{constructor(){if(true){var User=Other;} this.item=new User()}} function probe(){const s=new Store();const {item}=s;item.save()}',
+      false,
+    ],
+    [
+      'sibling switch binding shadows iterable factory',
+      'ts',
+      'function getUsers(): Array<User>{return []} function probe(){switch(1){case 1: const getUsers=()=>[new Other()];case 2:{const users=getUsers();for(const u of users){u.save()}}}}',
+      false,
+    ],
+  ] as const)(
+    '%s',
+    async (_name, extension, source, expected) => {
+      const directory = await mkdtemp(path.join(tmpdir(), 'ontoindex-name-shadowing-'));
+      try {
+        await writeFile(
+          path.join(directory, `main.${extension}`),
+          `class User{save(){}} class Other{save(){}}\n${source}`,
+        );
+        const { graph } = await runPipelineFromRepo(directory, () => {}, {
+          skipGraphPhases: true,
+          skipWorkers: true,
+        });
+        const userCalls = graph.relationships.filter(
+          (edge) =>
+            edge.type === 'CALLS' &&
+            graph.getNode(edge.sourceId)?.properties.name === 'probe' &&
+            graph.getNode(edge.targetId)?.properties.name === 'save' &&
+            /User[.#]save/.test(edge.targetId),
+        );
+        expect(userCalls.length > 0).toBe(expected);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+    60000,
+  );
 });

@@ -53,13 +53,59 @@ export function isNameShadowed(node: SyntaxNode, name: string): boolean {
       return true;
     if (current.type === 'for_in_statement' && binds(current.childForFieldName('left')))
       return true;
+    if (
+      current.type === 'statement_block' &&
+      current.parent?.childForFieldName('body')?.id === current.id &&
+      [
+        'function_declaration',
+        'function_expression',
+        'generator_function_declaration',
+        'generator_function',
+        'arrow_function',
+        'method_definition',
+      ].includes(current.parent.type)
+    ) {
+      // var is hoisted through blocks, but never out of a nested function or class.
+      const pending = [...current.namedChildren];
+      while (pending.length) {
+        const descendant = pending.pop()!;
+        if (
+          [
+            'function_declaration',
+            'function_expression',
+            'generator_function_declaration',
+            'generator_function',
+            'arrow_function',
+            'method_definition',
+            'class_declaration',
+            'class',
+            'class_body',
+          ].includes(descendant.type)
+        )
+          continue;
+        if (descendant.type === 'variable_declaration') {
+          for (const declaration of descendant.namedChildren) {
+            if (binds(declaration.childForFieldName('name'))) return true;
+          }
+        }
+        if (
+          descendant.type === 'for_in_statement' &&
+          descendant.children.some((child) => child.type === 'var') &&
+          binds(descendant.childForFieldName('left'))
+        )
+          return true;
+        pending.push(...descendant.namedChildren);
+      }
+    }
     const initializer =
       current.type === 'for_statement' ? current.childForFieldName('initializer') : null;
     const statements = initializer
       ? [initializer]
-      : ['statement_block', 'switch_case', 'switch_default'].includes(current.type)
-        ? current.namedChildren
-        : [];
+      : current.type === 'switch_body'
+        ? current.namedChildren.flatMap((clause) => clause.namedChildren)
+        : ['statement_block', 'switch_case', 'switch_default'].includes(current.type)
+          ? current.namedChildren
+          : [];
     for (const statement of statements) {
       if (
         ['class_declaration', 'function_declaration', 'generator_function_declaration'].includes(

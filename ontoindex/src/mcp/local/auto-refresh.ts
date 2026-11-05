@@ -189,8 +189,11 @@ async function scheduleWorkspacePrebuild(
   try {
     const analyzeLock = await readAnalyzeLock(repo.storagePath, []);
     if (analyzeLock.state === 'active' || analyzeLock.state === 'unknown') return undefined;
-    const { meta } = await readActiveGenerationMeta(repo.storagePath);
+    const { meta, activeGeneration } = await readActiveGenerationMeta(repo.storagePath);
     if (!meta) return undefined;
+    const profile = meta.sourceManifest?.pipelineProfile ?? meta.pipelineProfile ?? 'full';
+    const includePaths = meta.sourceManifest?.includePaths ?? meta.includePaths ?? [];
+    if (profile === 'huge-repo-symbols' || includePaths.length > 0) return undefined;
     const head = await execFileText('git', ['rev-parse', 'HEAD'], {
       cwd: repo.repoPath,
       timeoutMs: 1000,
@@ -223,7 +226,15 @@ async function scheduleWorkspacePrebuild(
       }
     }
     const identity = createHash('sha256')
-      .update(JSON.stringify([head, meta.lastCommit, status, files]))
+      .update(
+        JSON.stringify([
+          head,
+          meta.lastCommit,
+          activeGeneration?.generationId ?? null,
+          status,
+          files,
+        ]),
+      )
       .digest('hex');
     const configured = Number(process.env.ONTOINDEX_AUTO_REFRESH_INTERVAL_MS ?? 300000);
     const interval = Number.isFinite(configured) && configured >= 0 ? configured : 300000;
