@@ -4,6 +4,8 @@ All notable changes to OntoIndex will be documented in this file.
 
 ## [Unreleased]
 
+## [2.5.1] - 2026-11-05
+
 - TypeScript and JavaScript inference ignores a constructor or factory name that a nearer binding shadows: a constructor parameter, a `catch` parameter, a for-of/for-in binding, a destructured local or a parameter named like the factory no longer produce a type for the outer class.
 - A `response_budget_bytes` below the smallest safe projection is raised only up to the 48 KiB response ceiling. Above that, the error names the smallest safe projection size.
 - On an oversized workspace, the symbols-overlay search keeps exact typed-ID hits from dirty files and returns a structured `readContext` with the same `indexedCommit`, `generation` and `excludedEvidence` fields as committed reads, plus `source: "symbols-overlay"`, partial semantic coverage and uncovered paths.
