@@ -24,3 +24,9 @@ CLI symlink, `~/.ontocode/config.toml`, `~/.codex/config.toml` and
 2.4.19 (1), 2.5.1 (4), 2.5.2 (3); no configuration references remain.
 Dependabot #201 (node-gyp 13) was not included: the repo pins node-gyp 12.2.0
 via `overrides`, and the upgrade needs its own native-build qualification.
+
+Cleanup 2026-11-06 (user-directed "kill and delete other ontoindex versions"):
+seven MCP server processes on 2.4.19, 2.5.1 and 2.5.2 exited on SIGTERM. With no
+processes, mappings or configuration references left, those three directories
+were removed (1,508 MiB recovered). Only 2.5.3 remains; CLI and both MCP targets
+resolve to it.
