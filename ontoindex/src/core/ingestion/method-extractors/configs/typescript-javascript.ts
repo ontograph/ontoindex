@@ -8,7 +8,7 @@ import type {
   MethodVisibility,
 } from '../../method-types.js';
 import { hasKeyword } from '../../field-extractors/configs/helpers.js';
-import { extractSimpleTypeName } from '../../type-extractors/shared.js';
+import { extractSimpleTypeName, forEachPatternName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -199,35 +199,9 @@ function inferConstructorReturnType(node: SyntaxNode): string | undefined {
 
   const bindings = new Set<string>();
   const addBindings = (pattern: SyntaxNode | null) => {
-    const pending = pattern ? [pattern] : [];
-    while (pending.length) {
-      const current = pending.pop()!;
-      if (
-        current.type === 'identifier' ||
-        current.type === 'type_identifier' ||
-        current.type === 'shorthand_property_identifier_pattern'
-      ) {
-        bindings.add(current.text);
-      } else if (current.type === 'pair_pattern') {
-        const value = current.childForFieldName('value');
-        if (value) pending.push(value);
-      } else if (
-        current.type === 'assignment_pattern' ||
-        current.type === 'object_assignment_pattern'
-      ) {
-        const left = current.childForFieldName('left');
-        if (left) pending.push(left);
-      } else if (current.type === 'required_parameter' || current.type === 'optional_parameter') {
-        const name = current.childForFieldName('pattern');
-        if (name) pending.push(name);
-      } else if (
-        ['formal_parameters', 'rest_pattern', 'object_pattern', 'array_pattern'].includes(
-          current.type,
-        )
-      ) {
-        pending.push(...current.namedChildren);
-      }
-    }
+    forEachPatternName(pattern, (name) => {
+      bindings.add(name);
+    });
   };
   addBindings(node.childForFieldName('parameters'));
 

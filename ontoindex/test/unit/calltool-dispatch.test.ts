@@ -48,6 +48,11 @@ vi.mock('../../src/mcp/super/diagnose.js', () => ({
   gnDiagnose: vi.fn().mockResolvedValue({ misconfiguration: { status: 'ok' } }),
 }));
 
+vi.mock('../../src/mcp/local/auto-refresh.js', () => ({
+  maybeScheduleAutoRefresh: vi.fn<() => Promise<string | undefined>>(async () => undefined),
+  maybeScheduleWorkspacePrebuild: vi.fn<() => Promise<string | undefined>>(async () => undefined),
+}));
+
 vi.mock('../../src/core/analyze-delta.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/core/analyze-delta.js')>();
   return { ...actual, planDirtyOverlay: vi.fn(actual.planDirtyOverlay) };
@@ -91,6 +96,7 @@ vi.mock('../../src/mcp/local/local-backend-repo-runtime.js', async (importOrigin
 
 import { LocalBackend, getReadRequestContext } from '../../src/mcp/local/local-backend.js';
 import { gnDiagnose } from '../../src/mcp/super/diagnose.js';
+import { maybeScheduleWorkspacePrebuild } from '../../src/mcp/local/auto-refresh.js';
 import {
   prepareWorkspaceRead,
   WorkspacePreparationError,
@@ -489,6 +495,9 @@ describe('request workspace gate', () => {
     });
 
     it('answers from the committed index and names the uncovered dirty files', async () => {
+      const prebuildNote =
+        'Workspace graph preparation started in the background; later reads include uncommitted files.';
+      vi.mocked(maybeScheduleWorkspacePrebuild).mockResolvedValueOnce(prebuildNote);
       vi.mocked(prepareWorkspaceRead).mockRejectedValueOnce(tooLarge());
       vi.mocked(planDirtyOverlay).mockResolvedValueOnce(dirtyPlan(12) as any);
       const real = backend.withPreparedRepoRead.bind(backend);
@@ -518,6 +527,8 @@ describe('request workspace gate', () => {
       expect(note).toContain('src/dirty-00.rs');
       expect(note).toContain('and 2 more');
       expect(note).not.toContain('src/dirty-11.rs');
+      expect(note).toContain(prebuildNote);
+      expect(maybeScheduleWorkspacePrebuild).toHaveBeenCalledTimes(1);
     });
 
     it('retries search with the symbols overlay when the workspace graph is too large', async () => {
@@ -544,8 +555,9 @@ describe('request workspace gate', () => {
         source: 'symbols-overlay',
         semanticCoverage: 'partial',
         workingTreeIncluded: true,
-        baseCommit: 'pinned-base',
+        indexedCommit: 'pinned-base',
         generation: 'pinned-overlay',
+        excludedEvidence: ['working-tree relationships', 'uncovered dirty paths'],
         uncoveredPathCount: 12,
         uncoveredPathSample: uncoveredPaths.slice(0, 10),
       });
@@ -563,6 +575,19 @@ describe('request workspace gate', () => {
         expect.any(Function),
       );
       expect(prepareWorkspaceRead).toHaveBeenCalledTimes(2);
+      expect(maybeScheduleWorkspacePrebuild).not.toHaveBeenCalled();
+    });
+
+    it('excludes only working-tree relationships when the symbols overlay has no uncovered paths', async () => {
+      vi.mocked(prepareWorkspaceRead)
+        .mockRejectedValueOnce(tooLarge())
+        .mockResolvedValueOnce(cleanSnapshot());
+      (backend as any).repoToolHandlers.search = async () => ({ items: [], warnings: [] });
+      const result = (await backend.callTool('search', { query: 'x' })) as {
+        readContext: { uncoveredPathCount: number; excludedEvidence: string[] };
+      };
+      expect(result.readContext.uncoveredPathCount).toBe(0);
+      expect(result.readContext.excludedEvidence).toEqual(['working-tree relationships']);
     });
 
     it('uses the symbols overlay for MCP search/semantic (query)', async () => {

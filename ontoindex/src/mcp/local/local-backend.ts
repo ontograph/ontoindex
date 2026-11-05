@@ -24,7 +24,7 @@ import {
 } from './backend-overlay.js';
 import { RepoHandle, BackendPort } from 'ontoindex-shared';
 import { recordToolCall } from './tool-telemetry.js';
-import { maybeScheduleAutoRefresh } from './auto-refresh.js';
+import { maybeScheduleAutoRefresh, maybeScheduleWorkspacePrebuild } from './auto-refresh.js';
 import { planDirtyOverlay } from '../../core/analyze-delta.js';
 import { sourceManifestDigest } from '../../core/indexing/source-manifest.js';
 import {
@@ -2614,8 +2614,14 @@ export class LocalBackend implements BackendPort {
                     source: 'symbols-overlay',
                     semanticCoverage: 'partial',
                     workingTreeIncluded: true,
-                    baseCommit: snapshot?.baseCommit ?? null,
+                    indexedCommit: snapshot?.baseCommit ?? null,
                     generation: snapshot?.generation ?? null,
+                    excludedEvidence: [
+                      'working-tree relationships',
+                      ...((snapshot?.uncoveredPaths.size ?? 0) > 0
+                        ? ['uncovered dirty paths']
+                        : []),
+                    ],
                     uncoveredPathCount: snapshot?.uncoveredPaths.size ?? 0,
                     uncoveredPathSample: [...(snapshot?.uncoveredPaths ?? [])].sort().slice(0, 10),
                   },
@@ -2643,6 +2649,18 @@ export class LocalBackend implements BackendPort {
           }
           const refreshing = (await refreshWarning) !== undefined;
           committedFallbackNote = `Working-tree ${code === 'workspace_too_large' ? 'graph' : 'read'} unavailable (${code}); answered from the committed index${refreshing ? ' while it refreshes' : ''} (see readContext.indexedCommit).${dirtyNote} Verify uncommitted and newly committed code from source.`;
+          if (code === 'workspace_too_large' && RELATIONSHIP_TOOLS.has(method)) {
+            const note = await new Promise<string | undefined>((resolve) => {
+              const timer = setTimeout(() => resolve(undefined), 1500);
+              void maybeScheduleWorkspacePrebuild(repo)
+                .catch(() => undefined)
+                .then((warning) => {
+                  clearTimeout(timer);
+                  resolve(warning);
+                });
+            });
+            if (note) committedFallbackNote += ` ${note}`;
+          }
         }
       }
     }

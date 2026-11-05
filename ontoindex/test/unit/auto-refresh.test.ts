@@ -4,7 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileText } from '../../src/core/process/exec-file.js';
 import { computeSourceManifest } from '../../src/core/indexing/source-manifest.js';
-import { maybeScheduleAutoRefresh } from '../../src/mcp/local/auto-refresh.js';
+import {
+  maybeScheduleAutoRefresh,
+  maybeScheduleWorkspacePrebuild,
+} from '../../src/mcp/local/auto-refresh.js';
 import type { RepoMeta } from '../../src/storage/repo-manager.js';
 import type { gnEnsureFresh } from '../../src/mcp/super/ensure-fresh.js';
 
@@ -177,5 +180,62 @@ describe('automatic refresh', () => {
     expect(await maybeScheduleAutoRefresh(repo, { ensureFresh })).toContain(
       'Refresh blocked (untrusted)',
     );
+  });
+});
+
+describe('automatic workspace prebuild', () => {
+  it('shares concurrent launches and throttles later calls with a separate stamp', async () => {
+    const { repo } = await fixture();
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    const now = Date.now();
+    const deps = { spawnRefresh, now: () => now };
+    const notes = await Promise.all(
+      Array.from({ length: 6 }, () => maybeScheduleWorkspacePrebuild(repo, deps)),
+    );
+    expect(notes).toEqual(
+      Array(6).fill(
+        'Workspace graph preparation started in the background; later reads include uncommitted files.',
+      ),
+    );
+    expect(spawnRefresh).toHaveBeenCalledExactlyOnceWith(repo, ['--workspace-graph']);
+    expect(await maybeScheduleWorkspacePrebuild(repo, deps)).toContain('started recently');
+    expect(spawnRefresh).toHaveBeenCalledTimes(1);
+    expect(await fs.stat(path.join(repo.storagePath, 'workspace-prebuild.stamp'))).toBeDefined();
+    await expect(fs.stat(path.join(repo.storagePath, 'auto-refresh.stamp'))).rejects.toThrow();
+  });
+
+  it.each(['ONTOINDEX_AUTO_REFRESH', 'ONTOINDEX_AUTO_WORKSPACE'])('honors %s=0', async (name) => {
+    const { repo } = await fixture();
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    vi.stubEnv(name, '0');
+    expect(await maybeScheduleWorkspacePrebuild(repo, { spawnRefresh })).toBeUndefined();
+    expect(spawnRefresh).not.toHaveBeenCalled();
+  });
+
+  it.each(['active', 'unknown'])('skips an %s analyze lock', async (state) => {
+    const { repo } = await fixture();
+    vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
+    const stat = await fs.readFile(`/proc/${process.pid}/stat`, 'utf8');
+    const processStartIdentity = stat
+      .slice(stat.lastIndexOf(')') + 1)
+      .trim()
+      .split(/\s+/)[19];
+    await fs.writeFile(
+      path.join(repo.storagePath, 'analyze.lock'),
+      JSON.stringify({
+        pid: process.pid,
+        ...(state === 'active' ? { processStartIdentity } : {}),
+      }),
+    );
+    expect(await maybeScheduleWorkspacePrebuild(repo, { spawnRefresh })).toBeUndefined();
+    expect(spawnRefresh).not.toHaveBeenCalled();
+  });
+
+  it('never throws on a failed launch and allows retrying it', async () => {
+    const { repo } = await fixture();
+    spawnRefresh.mockRejectedValueOnce(new Error('spawn failed'));
+    await expect(maybeScheduleWorkspacePrebuild(repo, { spawnRefresh })).resolves.toBeUndefined();
+    expect(await maybeScheduleWorkspacePrebuild(repo, { spawnRefresh })).toContain('started');
+    expect(spawnRefresh).toHaveBeenCalledTimes(2);
   });
 });

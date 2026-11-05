@@ -1,38 +1,45 @@
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 
+/** Visit TS/JS binding names, stopping when the visitor returns true. */
+export function forEachPatternName(
+  pattern: SyntaxNode | null,
+  visit: (name: string) => boolean | void,
+): boolean {
+  const pending = pattern ? [pattern] : [];
+  while (pending.length) {
+    const current = pending.pop()!;
+    if (
+      ['identifier', 'type_identifier', 'shorthand_property_identifier_pattern'].includes(
+        current.type,
+      )
+    ) {
+      if (visit(current.text) === true) return true;
+    } else if (current.type === 'pair_pattern') {
+      const value = current.childForFieldName('value');
+      if (value) pending.push(value);
+    } else if (['assignment_pattern', 'object_assignment_pattern'].includes(current.type)) {
+      const left = current.childForFieldName('left');
+      if (left) pending.push(left);
+    } else if (
+      ['required_parameter', 'optional_parameter', 'rest_parameter'].includes(current.type)
+    ) {
+      const parameter = current.childForFieldName('pattern');
+      if (parameter) pending.push(parameter);
+    } else if (
+      ['formal_parameters', 'rest_pattern', 'object_pattern', 'array_pattern'].includes(
+        current.type,
+      )
+    ) {
+      pending.push(...current.namedChildren);
+    }
+  }
+  return false;
+}
+
 /** Whether a nearer TS/JS value binding hides a program-level name. */
 export function isNameShadowed(node: SyntaxNode, name: string): boolean {
-  const binds = (pattern: SyntaxNode | null): boolean => {
-    const pending = pattern ? [pattern] : [];
-    while (pending.length) {
-      const current = pending.pop()!;
-      if (
-        ['identifier', 'type_identifier', 'shorthand_property_identifier_pattern'].includes(
-          current.type,
-        )
-      ) {
-        if (current.text === name) return true;
-      } else if (current.type === 'pair_pattern') {
-        const value = current.childForFieldName('value');
-        if (value) pending.push(value);
-      } else if (['assignment_pattern', 'object_assignment_pattern'].includes(current.type)) {
-        const left = current.childForFieldName('left');
-        if (left) pending.push(left);
-      } else if (
-        ['required_parameter', 'optional_parameter', 'rest_parameter'].includes(current.type)
-      ) {
-        const parameter = current.childForFieldName('pattern');
-        if (parameter) pending.push(parameter);
-      } else if (
-        ['formal_parameters', 'rest_pattern', 'object_pattern', 'array_pattern'].includes(
-          current.type,
-        )
-      ) {
-        pending.push(...current.namedChildren);
-      }
-    }
-    return false;
-  };
+  const binds = (pattern: SyntaxNode | null): boolean =>
+    forEachPatternName(pattern, (binding) => binding === name);
 
   for (
     let current: SyntaxNode | null = node;
@@ -46,8 +53,14 @@ export function isNameShadowed(node: SyntaxNode, name: string): boolean {
       return true;
     if (current.type === 'for_in_statement' && binds(current.childForFieldName('left')))
       return true;
-    if (current.type !== 'statement_block') continue;
-    for (const statement of current.namedChildren) {
+    const initializer =
+      current.type === 'for_statement' ? current.childForFieldName('initializer') : null;
+    const statements = initializer
+      ? [initializer]
+      : ['statement_block', 'switch_case', 'switch_default'].includes(current.type)
+        ? current.namedChildren
+        : [];
+    for (const statement of statements) {
       if (
         ['class_declaration', 'function_declaration', 'generator_function_declaration'].includes(
           statement.type,

@@ -29,6 +29,8 @@ describe('explicit committed navigation over MCP', () => {
     vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
     vi.stubEnv('ONTOINDEX_VECTOR_BACKEND', 'lbug');
     vi.stubEnv('ONTOINDEX_MCP_AUTO_ANALYZE', '0');
+    // The over-limit fallback would otherwise spawn a detached workspace prebuild.
+    vi.stubEnv('ONTOINDEX_AUTO_REFRESH', '0');
     await fs.mkdir(path.join(repo, 'src'), { recursive: true });
     await fs.writeFile(path.join(repo, '.gitignore'), '.ontoindex/\n');
     await fs.writeFile(

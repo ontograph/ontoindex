@@ -16,6 +16,7 @@ import {
   extractSimpleTypeName,
   extractVarName,
   isNameShadowed,
+  forEachPatternName,
   hasTypeAnnotation,
   unwrapAwait,
   extractCalleeName,
@@ -361,23 +362,11 @@ const findTsCallResultElementType = (
       for (const decl of stmt.namedChildren) {
         if (decl.type !== 'variable_declarator') continue;
         const name = decl.childForFieldName('name');
-        if (name?.type === 'object_pattern' || name?.type === 'array_pattern') {
-          const pending = [name];
-          while (pending.length) {
-            const pattern = pending.pop()!;
-            if (['identifier', 'shorthand_property_identifier_pattern'].includes(pattern.type)) {
-              if (pattern.text === iterableName) return undefined;
-            } else if (pattern.type === 'pair_pattern') {
-              const value = pattern.childForFieldName('value');
-              if (value) pending.push(value);
-            } else if (['assignment_pattern', 'object_assignment_pattern'].includes(pattern.type)) {
-              const left = pattern.childForFieldName('left');
-              if (left) pending.push(left);
-            } else if (['object_pattern', 'array_pattern', 'rest_pattern'].includes(pattern.type)) {
-              pending.push(...pattern.namedChildren);
-            }
-          }
-        }
+        if (
+          (name?.type === 'object_pattern' || name?.type === 'array_pattern') &&
+          forEachPatternName(name, (binding) => binding === iterableName)
+        )
+          return undefined;
         if (name?.text !== iterableName) continue;
         // The nearest declaration wins even when it cannot supply an element type.
         if (

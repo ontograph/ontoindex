@@ -6,7 +6,8 @@ All notable changes to OntoIndex will be documented in this file.
 
 - TypeScript and JavaScript inference ignores a constructor or factory name that a nearer binding shadows: a constructor parameter, a `catch` parameter, a for-of/for-in binding, a destructured local or a parameter named like the factory no longer produce a type for the outer class.
 - A `response_budget_bytes` below the smallest safe projection is raised only up to the 48 KiB response ceiling. Above that, the error names the smallest safe projection size.
-- On an oversized workspace, the symbols-overlay search keeps exact typed-ID hits from dirty files and returns a structured `readContext` (`source: "symbols-overlay"`, partial semantic coverage, base commit and uncovered paths).
+- On an oversized workspace, the symbols-overlay search keeps exact typed-ID hits from dirty files and returns a structured `readContext` with the same `indexedCommit`, `generation` and `excludedEvidence` fields as committed reads, plus `source: "symbols-overlay"`, partial semantic coverage and uncovered paths.
+- On an oversized dirty workspace, a relationship read that falls back to the committed index also starts the existing `analyze --workspace-graph` preparation in the background (once per refresh interval, skipped while analysis runs or when `ONTOINDEX_AUTO_REFRESH=0` or `ONTOINDEX_AUTO_WORKSPACE=0`). Later reads reuse that graph and include uncommitted files.
 - Committed `inspect` explore and related follow-up hints keep `read_mode: "committed"`.
 
 ## [2.4.22] - 2026-11-05
