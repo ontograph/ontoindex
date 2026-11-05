@@ -29,3 +29,9 @@ CLI symlink, `~/.ontocode/config.toml` and `~/.codex/config.toml` select
 2.5.1 (backups `.bak-ontoindex-251`). `~/.local/bin/ontoindex-refresh-ontocode`
 moved from 2.4.18 to 2.5.1. 2.4.18, 2.4.19 and 2.4.22 are retained because
 each still serves a live `ontocode` session over MCP.
+
+Cleanup later on 2026-11-05: 2.4.18 and 2.4.22 had no processes, no open
+handles and no configuration references, and were removed (about 1 GB). Both
+configured MCP targets and the CLI still resolve to 2.5.1. 2.4.19 is retained
+while session `01a16caf…` still runs its MCP server.
+Qualification fixes `26dfd8d` were merged to master in PR #191 (`50ac607`).
