@@ -184,10 +184,10 @@ describe('automatic refresh', () => {
 });
 
 describe('automatic workspace prebuild', () => {
-  it('shares concurrent launches and throttles later calls with a separate stamp', async () => {
+  it('shares concurrent launches and suppresses unchanged attempts beyond the interval', async () => {
     const { repo } = await fixture();
     vi.stubEnv('ONTOINDEX_AUTO_WORKSPACE', '1');
-    const now = Date.now();
+    let now = Date.now();
     const deps = { spawnRefresh, now: () => now };
     const notes = await Promise.all(
       Array.from({ length: 6 }, () => maybeScheduleWorkspacePrebuild(repo, deps)),
@@ -198,10 +198,72 @@ describe('automatic workspace prebuild', () => {
       ),
     );
     expect(spawnRefresh).toHaveBeenCalledExactlyOnceWith(repo, ['--workspace-graph']);
-    expect(await maybeScheduleWorkspacePrebuild(repo, deps)).toContain('started recently');
+    now += 300001;
+    expect(await maybeScheduleWorkspacePrebuild(repo, deps)).toBe(
+      'Workspace graph preparation was already attempted for this working tree; edit or commit to retry, or run `ontoindex analyze --workspace-graph`.',
+    );
     expect(spawnRefresh).toHaveBeenCalledTimes(1);
     expect(await fs.stat(path.join(repo.storagePath, 'workspace-prebuild.stamp'))).toBeDefined();
     await expect(fs.stat(path.join(repo.storagePath, 'auto-refresh.stamp'))).rejects.toThrow();
+  });
+
+  it('throttles rapid edits and retries an edited dirty file after the interval', async () => {
+    const { repo } = await fixture();
+    const file = path.join(repo.repoPath, 'src', 'main.ts');
+    await fs.writeFile(file, 'dirty\n');
+    let now = Date.now();
+    const deps = { spawnRefresh, now: () => now };
+    expect(await maybeScheduleWorkspacePrebuild(repo, deps)).toContain('started in the background');
+    const stamp = path.join(repo.storagePath, 'workspace-prebuild.stamp');
+    const firstIdentity = await fs.readFile(stamp, 'utf8');
+    expect(firstIdentity).toMatch(/^[a-f0-9]{64}$/);
+    await fs.writeFile(file, 'edited dirty file\n');
+    expect(await maybeScheduleWorkspacePrebuild(repo, deps)).toContain('started recently');
+    now += 300001;
+    expect(await maybeScheduleWorkspacePrebuild(repo, deps)).toContain('started in the background');
+    expect(spawnRefresh).toHaveBeenCalledTimes(2);
+    expect(await fs.readFile(stamp, 'utf8')).not.toBe(firstIdentity);
+  });
+
+  it('allows another attempt for unchanged inputs after one hour', async () => {
+    const { repo } = await fixture();
+    let now = Date.now();
+    const deps = { spawnRefresh, now: () => now };
+    await maybeScheduleWorkspacePrebuild(repo, deps);
+    now += 60 * 60 * 1000;
+    expect(await maybeScheduleWorkspacePrebuild(repo, deps)).toContain('started in the background');
+    expect(spawnRefresh).toHaveBeenCalledTimes(2);
+  });
+
+  it('leaves a HEAD ahead of the indexed commit to regular refresh', async () => {
+    const { repo, advance } = await fixture();
+    await advance();
+    expect(await maybeScheduleWorkspacePrebuild(repo, { spawnRefresh })).toBeUndefined();
+    expect(spawnRefresh).not.toHaveBeenCalled();
+  });
+
+  it.each([{ commitless: true }, { plain: true }])(
+    'does not spawn when HEAD is unknown (%j)',
+    async (options) => {
+      const { repo } = await fixture(options);
+      expect(await maybeScheduleWorkspacePrebuild(repo, { spawnRefresh })).toBeUndefined();
+      expect(spawnRefresh).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not spawn without metadata or when identity computation fails', async () => {
+    const { repo } = await fixture();
+    const stat = vi.spyOn(fs, 'stat').mockRejectedValueOnce(new Error('stat failed'));
+    try {
+      await fs.writeFile(path.join(repo.repoPath, 'untracked file.ts'), 'dirty\n');
+      expect(await maybeScheduleWorkspacePrebuild(repo, { spawnRefresh })).toBeUndefined();
+      expect(spawnRefresh).not.toHaveBeenCalled();
+    } finally {
+      stat.mockRestore();
+    }
+    await fs.rm(path.join(repo.storagePath, 'meta.json'));
+    expect(await maybeScheduleWorkspacePrebuild(repo, { spawnRefresh })).toBeUndefined();
+    expect(spawnRefresh).not.toHaveBeenCalled();
   });
 
   it.each(['ONTOINDEX_AUTO_REFRESH', 'ONTOINDEX_AUTO_WORKSPACE'])('honors %s=0', async (name) => {

@@ -171,6 +171,21 @@ export function workspaceBuildChildEnv(
   };
 }
 
+export function workspaceBuildNodeOptions(nodeOptions = process.env.NODE_OPTIONS ?? ''): string {
+  let hasSufficientHeap = false;
+  const options = nodeOptions.replace(
+    /(^|\s)--max-old-space-size=(\d+)(?=\s|$)/g,
+    (flag, prefix, heap) => {
+      if (Number(heap) >= 8192) {
+        hasSufficientHeap = true;
+        return flag;
+      }
+      return prefix;
+    },
+  );
+  return hasSufficientHeap ? options : `${options.trimEnd()} --max-old-space-size=8192`.trimStart();
+}
+
 export async function buildWorkspaceGraph(
   repo: WorkspaceReadRepo,
   signal?: AbortSignal,
@@ -191,7 +206,7 @@ export async function buildWorkspaceGraph(
           : []),
       ],
       cwd: repo.repoPath,
-      env: workspaceBuildChildEnv(),
+      env: { ...(workspaceBuildChildEnv() ?? {}), NODE_OPTIONS: workspaceBuildNodeOptions() },
       storagePath: repo.storagePath,
       signal,
       retryNativeCrash: true,
