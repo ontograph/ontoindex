@@ -116,3 +116,6 @@ pilot/
 
 # Local test result dump
 /.post-authority.json
+
+# npm pack output (local install assets)
+ontoindex/ontoindex-*.tgz
