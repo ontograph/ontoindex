@@ -1858,20 +1858,25 @@ export async function query(
   if (overlaySnapshot?.usable) {
     try {
       const terms = [...new Set(searchQuery.toLowerCase().split(/\s+/).filter(Boolean))];
-      // The overlay DB holds only overlay files. Filtering by path in JS avoids an
-      // untyped `n.filePath IN $list` scan that returned no rows on LadybugDB.
+      // Scalar predicates avoid unreliable untyped IN-list scans while retaining
+      // the database result limit.
       const overlayPathSet = overlaySnapshot.overlayPaths;
+      const overlayPaths = [...overlayPathSet];
       const overlayRawRows =
         overlaySnapshot.overlayPaths.size === 0
           ? []
           : await queryOverlay<LookupRow>(
               repo,
               `MATCH (n)
-             WHERE (${terms.map((_, i) => `(lower(n.name) CONTAINS $term${i} OR lower(n.filePath) CONTAINS $term${i})`).join(' OR ')})
+             WHERE (${overlayPaths.map((_, i) => `n.filePath = $path${i}`).join(' OR ')})
+               AND (${terms.map((_, i) => `(lower(n.name) CONTAINS $term${i} OR lower(n.filePath) CONTAINS $term${i})`).join(' OR ')})
              RETURN n.id AS id, n.name AS name, labels(n)[0] AS type,
                     n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
-             ORDER BY n.filePath, n.id`,
+             ORDER BY n.filePath, n.id
+             LIMIT $limit`,
               {
+                limit: searchLimit,
+                ...Object.fromEntries(overlayPaths.map((filePath, i) => [`path${i}`, filePath])),
                 ...Object.fromEntries(terms.map((term, i) => [`term${i}`, term])),
               },
             );
@@ -1892,7 +1897,14 @@ export async function query(
       const cleanSemantic = semanticResults.filter(keepBase);
       const cleanGraph = graphResults.filter(keepBase);
       const cleanLocked = lockedResults.filter(keepBase);
-      bm25Results = [...cleanBm25, ...overlayResults];
+      const mergedBm25: EnrichedSymbolRow[] = [];
+      for (let i = 0; i < cleanBm25.length || i < overlayResults.length; i += 1) {
+        const overlayRow = overlayResults[i];
+        const cleanRow = cleanBm25[i];
+        if (overlayRow) mergedBm25.push(overlayRow);
+        if (cleanRow) mergedBm25.push(cleanRow);
+      }
+      bm25Results = mergedBm25;
       semanticResults = cleanSemantic;
       graphResults = cleanGraph;
       lockedResults = cleanLocked;
