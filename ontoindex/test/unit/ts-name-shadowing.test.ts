@@ -42,6 +42,21 @@ describe.each([
       false,
     ],
     [
+      'strict function block function',
+      'function f() { "use strict"; if (true) { function User() {} } probe(); }',
+      false,
+    ],
+    [
+      'strict script block function',
+      '"use strict"; function f() { if (true) { function User() {} } probe(); }',
+      false,
+    ],
+    [
+      'non-directive string block function',
+      'function f() { x(); "use strict"; if (true) { function User() {} } probe(); }',
+      true,
+    ],
+    [
       'hoisted async block function',
       'function f() { if (true) { async function User() {} } probe(); }',
       false,

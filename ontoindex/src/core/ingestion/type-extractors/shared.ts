@@ -77,6 +77,17 @@ export function isNameShadowed(node: SyntaxNode, name: string): boolean {
           isStrict = true;
           break;
         }
+        if (ancestor.type === 'statement_block' || ancestor.type === 'program') {
+          // A "use strict" directive prologue makes this body and everything inside it strict.
+          for (const statement of ancestor.namedChildren) {
+            if (statement.type === 'comment') continue;
+            const directive =
+              statement.type === 'expression_statement' && statement.firstNamedChild;
+            if (!directive || directive.type !== 'string') break;
+            if (directive.text.slice(1, -1) === 'use strict') isStrict = true;
+          }
+          if (isStrict) break;
+        }
       }
       // var is hoisted through blocks, but never out of a nested function, class, or static block.
       const pending = [...current.namedChildren];
