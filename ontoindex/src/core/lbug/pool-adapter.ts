@@ -19,7 +19,7 @@ import fs from 'fs/promises';
 import path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import lbug, { type LbugValue } from '@ladybugdb/core';
-import { resolveLocalLbugExtensionPath } from './lbug-adapter.js';
+import { lbugExtensionInstallAllowed, resolveLocalLbugExtensionPath } from './lbug-adapter.js';
 import { quoteLbugString } from './quote-string.js';
 import {
   LbugOpenError,
@@ -822,9 +822,25 @@ async function loadExtensionsSilenced(conn: lbug.Connection, shared: SharedDB): 
     }
     if (!shared.vectorLoaded) {
       try {
-        await runStatement(conn, 'INSTALL VECTOR');
-        await runStatement(conn, 'LOAD EXTENSION VECTOR');
-        shared.vectorLoaded = true;
+        const localVectorPath = await resolveLocalLbugExtensionPath('vector');
+        if (localVectorPath) {
+          try {
+            await runStatement(conn, `LOAD EXTENSION '${quoteLbugString(localVectorPath)}'`);
+            shared.vectorLoaded = true;
+          } catch {
+            // A failed explicit-path load falls through to the bare LOAD below.
+          }
+        }
+        if (!shared.vectorLoaded) {
+          try {
+            await runStatement(conn, 'LOAD EXTENSION VECTOR');
+          } catch (err) {
+            if (!isUnavailableExtension(err) || !lbugExtensionInstallAllowed()) throw err;
+            await runStatement(conn, 'INSTALL VECTOR');
+            await runStatement(conn, 'LOAD EXTENSION VECTOR');
+          }
+          shared.vectorLoaded = true;
+        }
       } catch (err) {
         if (!isUnavailableExtension(err)) throw err;
         // VECTOR extension may not be available

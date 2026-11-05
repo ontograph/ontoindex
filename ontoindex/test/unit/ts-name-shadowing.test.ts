@@ -36,6 +36,23 @@ describe.each([
     ['block const', '{ const User = factory(); probe(); }', true],
     ['hoisted block var', 'function f() { probe(); if (true) { var User; } }', true],
     ['hoisted for-of var', 'function f() { for (var User of []) {} probe(); }', true],
+    ['hoisted static block var', 'class Holder { static { probe(); { var User; } } }', true],
+    ['static block sibling let', 'class Holder { static { { let User; } probe(); } }', false],
+    [
+      'static block nested function var',
+      'class Holder { static { function f() { var User; } probe(); } }',
+      false,
+    ],
+    [
+      'static block nested class var',
+      'class Holder { static { class Inner { static { var User; } } probe(); } }',
+      false,
+    ],
+    [
+      'static block var stays inside class',
+      'function f() { class Holder { static { { var User; } } } probe(); }',
+      false,
+    ],
     [
       'hoisted destructured var',
       'function f() { if (true) { var { key: User } = other; } probe(); }',
@@ -58,6 +75,19 @@ describe.each([
       .descendantsOfType('call_expression')
       .find((node) => node.childForFieldName('function')?.text === 'probe')!;
     expect(isNameShadowed(call, 'User')).toBe(expected);
+  });
+
+  it('recognizes a local class in a static block at the constructor use', () => {
+    const tree = parser.parse(`
+      class User { save() {} }
+      class Other { save() {} }
+      class Holder { static { class User { save() {} } const u = new User(); u.save(); } }
+    `);
+    expect(tree.rootNode.hasError).toBe(false);
+    const constructor = tree.rootNode
+      .descendantsOfType('new_expression')[0]
+      .childForFieldName('constructor')!;
+    expect(isNameShadowed(constructor, 'User')).toBe(true);
   });
 
   it('visits bindings only and stops as soon as requested', () => {

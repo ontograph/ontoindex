@@ -54,18 +54,19 @@ export function isNameShadowed(node: SyntaxNode, name: string): boolean {
     if (current.type === 'for_in_statement' && binds(current.childForFieldName('left')))
       return true;
     if (
-      current.type === 'statement_block' &&
-      current.parent?.childForFieldName('body')?.id === current.id &&
-      [
-        'function_declaration',
-        'function_expression',
-        'generator_function_declaration',
-        'generator_function',
-        'arrow_function',
-        'method_definition',
-      ].includes(current.parent.type)
+      current.type === 'class_static_block' ||
+      (current.type === 'statement_block' &&
+        current.parent?.childForFieldName('body')?.id === current.id &&
+        [
+          'function_declaration',
+          'function_expression',
+          'generator_function_declaration',
+          'generator_function',
+          'arrow_function',
+          'method_definition',
+        ].includes(current.parent.type))
     ) {
-      // var is hoisted through blocks, but never out of a nested function or class.
+      // var is hoisted through blocks, but never out of a nested function, class, or static block.
       const pending = [...current.namedChildren];
       while (pending.length) {
         const descendant = pending.pop()!;
@@ -80,6 +81,7 @@ export function isNameShadowed(node: SyntaxNode, name: string): boolean {
             'class_declaration',
             'class',
             'class_body',
+            'class_static_block',
           ].includes(descendant.type)
         )
           continue;
@@ -103,7 +105,9 @@ export function isNameShadowed(node: SyntaxNode, name: string): boolean {
       ? [initializer]
       : current.type === 'switch_body'
         ? current.namedChildren.flatMap((clause) => clause.namedChildren)
-        : ['statement_block', 'switch_case', 'switch_default'].includes(current.type)
+        : ['statement_block', 'class_static_block', 'switch_case', 'switch_default'].includes(
+              current.type,
+            )
           ? current.namedChildren
           : [];
     for (const statement of statements) {

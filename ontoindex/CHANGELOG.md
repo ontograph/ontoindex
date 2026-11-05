@@ -8,6 +8,8 @@ All notable changes to OntoIndex will be documented in this file.
 - Automatic workspace-graph preparation is skipped for `huge-repo-symbols` and include-path-scoped indexes, and retries when the active base generation changes.
 - Overlay `readContext.uncoveredPathSample` entries are capped at 256 characters, with `uncoveredPathSampleTruncated` when the sample is incomplete.
 - Dependencies: `minimatch` 11.0.4 (same match results as 10.2.4 for every glob form the code uses) and `@types/node` 26.6.6.
+- Opening a graph no longer downloads the LadybugDB VECTOR extension on every new machine or `HOME`: the pool loads the bundled or cached copy first, like FTS, and installs from the network only with `ONTOINDEX_ALLOW_EXTENSION_INSTALL=1`. A committed `context` read with an empty extension cache drops from about 10.8 s to under 1 s.
+- Class static blocks are their own scope for TS/JS shadowing checks, and a `var` inside one does not leak into the enclosing function.
 
 ## [2.5.1] - 2026-11-05
 

@@ -306,7 +306,7 @@ let ftsUnavailable = false;
 let vectorExtensionLoaded = false;
 let vectorExtensionUnavailable = false;
 
-const lbugExtensionInstallAllowed = (): boolean =>
+export const lbugExtensionInstallAllowed = (): boolean =>
   process.env.ONTOINDEX_ALLOW_EXTENSION_INSTALL === '1';
 
 /**
