@@ -24,7 +24,7 @@ vi.mock('../../src/core/ingestion/pipeline-phases/parse-replay.js', () => ({
   reconstructScopeRetentionParse: mocks.reconstructScopeRetentionParse,
 }));
 
-function makeCtx(): PipelineContext {
+function makeCtx(): { -readonly [K in keyof PipelineContext]: PipelineContext[K] } {
   return {
     repoPath: '/tmp/repo',
     graph: createKnowledgeGraph(),

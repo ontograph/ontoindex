@@ -382,13 +382,13 @@ describe('observed parse structural graph relationship retention', () => {
       expect(stage.graphRelationshipsCaptured).toBe(false);
       expect(stage.captureGraphRelationship(input)).toBe(true);
       input.reason = 'producer mutation';
-      (input.evidence as { kind: string }[])[0]!.kind = 'producer mutation';
+      (input.evidence as readonly { kind: string }[])[0]!.kind = 'producer mutation';
       const batches: (readonly GraphRelationship[])[] = [];
       for await (const batch of stage.iterateGraphRelationships()) batches.push(batch);
       expect(batches).toEqual([[expected], [expected]]);
       expect(Object.hasOwn(batches[0]![0]!.evidence![1]!, 'note')).toBe(false);
       batches[0]![0]!.step = 99;
-      (batches[0]![0]!.evidence as { kind: string }[])[0]!.kind = 'replay mutation';
+      (batches[0]![0]!.evidence as readonly { kind: string }[])[0]!.kind = 'replay mutation';
       expect(await replayGraphRelationships(stage)).toEqual([expected, expected]);
       expect(stage.graphRelationshipRecordCount).toBe(2);
       expect(stage.graphRelationshipEvidenceScope).toBe('observed-parse-structural-graph');

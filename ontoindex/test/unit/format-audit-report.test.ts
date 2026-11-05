@@ -4,7 +4,7 @@ import {
   type AuditReportResult,
 } from '../../src/mcp/local/backend-audit-report.js';
 
-const fixture: AuditReportResult = {
+const fixture = {
   generatedAt: '2026-01-01T00:00:00.000Z',
   repo: 'test-repo',
   commitId: 'abc1234',
@@ -32,7 +32,7 @@ const fixture: AuditReportResult = {
   verificationGaps: ['src/payments.ts'],
   deadCandidates: ['legacyHelper (src/legacy.ts)'],
   recentDrift: [{ type: 'added', source: 'newFn', target: 'otherFn' }],
-};
+} as unknown as AuditReportResult;
 
 describe('formatAuditReport', () => {
   it('leaves complete reports unchanged when completion metadata is empty', () => {

@@ -30,14 +30,25 @@ const controlScores = Array.from(
 );
 
 describe('Query Benchmarks', () => {
-  bench(PRODUCTION_BENCHMARK, () => mergeWithRRF(bm25Results, semanticResults, RESULT_COUNT), {
-    time: 2000,
-    warmupTime: 1000,
-  });
+  bench(
+    PRODUCTION_BENCHMARK,
+    (() => mergeWithRRF(bm25Results, semanticResults, RESULT_COUNT)) as () => void,
+    {
+      time: 2000,
+      warmupTime: 1000,
+    },
+  );
 
   bench(
     CONTROL_BENCHMARK,
-    () => controlScores.toSorted((left, right) => right - left).slice(0, RESULT_COUNT),
+    (() =>
+      (
+        controlScores as number[] & {
+          toSorted(compare: (left: number, right: number) => number): number[];
+        }
+      )
+        .toSorted((left, right) => right - left)
+        .slice(0, RESULT_COUNT)) as () => void,
     { time: 2000, warmupTime: 1000 },
   );
 });

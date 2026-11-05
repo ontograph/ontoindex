@@ -117,8 +117,12 @@ describe('explicit committed navigation over MCP', () => {
       arguments: { action: 'semantic', query: 'baseline', limit: 3, include_content: true },
     },
   ];
-  const payloadOf = (result: { content?: unknown }) =>
-    JSON.parse((result.content as Array<{ text: string }>)[0].text.split('\n\n---')[0]);
+  const payloadOf = (result: unknown) =>
+    JSON.parse(
+      ((result as { content?: unknown }).content as Array<{ text: string }>)[0].text.split(
+        '\n\n---',
+      )[0],
+    );
 
   it.each(['gn_test_gap', 'audit'])(
     'initializes cold target reads through %s and preserves absolute-path identity',

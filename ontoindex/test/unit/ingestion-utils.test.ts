@@ -443,7 +443,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
 
   describe('C', () => {
     it('extracts function name from C function definition', () => {
-      parser.setLanguage(C);
+      parser.setLanguage(C as Parser.Language);
       const code = `int main() { return 0; }`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -455,7 +455,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
     });
 
     it('extracts function name with parameters', () => {
-      parser.setLanguage(C);
+      parser.setLanguage(C as Parser.Language);
       const code = `void helper(int a, char* b) {}`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -469,7 +469,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
 
   describe('C++', () => {
     it('extracts method name from C++ class method definition', () => {
-      parser.setLanguage(CPP);
+      parser.setLanguage(CPP as Parser.Language);
       const code = `int MyClass::OnEncryptData() { return 0; }`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -481,7 +481,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
     });
 
     it('extracts method name with namespace', () => {
-      parser.setLanguage(CPP);
+      parser.setLanguage(CPP as Parser.Language);
       const code = `void HuksListener::OnDataOprEvent(int type, DataInfo& info) {}`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -493,7 +493,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
     });
 
     it('extracts C function (not method)', () => {
-      parser.setLanguage(CPP);
+      parser.setLanguage(CPP as Parser.Language);
       const code = `void standalone_function() {}`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -505,7 +505,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
     });
 
     it('extracts method with parenthesized declarator', () => {
-      parser.setLanguage(CPP);
+      parser.setLanguage(CPP as Parser.Language);
       const code = `void (MyClass::handler)() {}`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -519,7 +519,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
 
   describe('C pointer returns', () => {
     it('extracts name from function returning pointer', () => {
-      parser.setLanguage(C);
+      parser.setLanguage(C as Parser.Language);
       const code = `int* get_data() { return 0; }`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -531,7 +531,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
     });
 
     it('extracts name from function returning double pointer', () => {
-      parser.setLanguage(C);
+      parser.setLanguage(C as Parser.Language);
       const code = `char** get_strings() { return 0; }`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -543,7 +543,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
     });
 
     it('extracts name from struct pointer return', () => {
-      parser.setLanguage(C);
+      parser.setLanguage(C as Parser.Language);
       const code = `struct Node* create_node(int val) { return 0; }`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -557,7 +557,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
 
   describe('C++ pointer/reference returns', () => {
     it('extracts name from method returning pointer', () => {
-      parser.setLanguage(CPP);
+      parser.setLanguage(CPP as Parser.Language);
       const code = `int* MyClass::getData() { return nullptr; }`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -569,7 +569,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
     });
 
     it('extracts name from function returning reference', () => {
-      parser.setLanguage(CPP);
+      parser.setLanguage(CPP as Parser.Language);
       const code = `std::string& get_name() { static std::string s; return s; }`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -581,7 +581,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
     });
 
     it('extracts name from method returning reference', () => {
-      parser.setLanguage(CPP);
+      parser.setLanguage(CPP as Parser.Language);
       const code = `int& Container::at(int i) { return data[i]; }`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -593,7 +593,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
     });
 
     it('extracts name from method returning const reference', () => {
-      parser.setLanguage(CPP);
+      parser.setLanguage(CPP as Parser.Language);
       const code = `const std::string& Config::getName() const { return name_; }`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -607,7 +607,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
 
   describe('C++ destructors', () => {
     it('extracts destructor name from out-of-line definition', () => {
-      parser.setLanguage(CPP);
+      parser.setLanguage(CPP as Parser.Language);
       const code = `MyClass::~MyClass() { cleanup(); }`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -622,7 +622,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
 
   describe('TypeScript', () => {
     it('extracts arrow function name from variable declarator', () => {
-      parser.setLanguage(TypeScript.typescript);
+      parser.setLanguage(TypeScript.typescript as Parser.Language);
       const code = `const myHandler = () => { return 1; }`;
       const tree = parser.parse(code);
       const program = tree.rootNode;
@@ -637,7 +637,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
     });
 
     it('extracts function expression name from variable declarator', () => {
-      parser.setLanguage(TypeScript.typescript);
+      parser.setLanguage(TypeScript.typescript as Parser.Language);
       const code = `const processItem = function() { }`;
       const tree = parser.parse(code);
       const program = tree.rootNode;
@@ -654,7 +654,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
 
   describe('Python', () => {
     it('extracts function name from Python function definition', () => {
-      parser.setLanguage(Python);
+      parser.setLanguage(Python as Parser.Language);
       const code = `def hello_world():\n    pass`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -666,7 +666,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
     });
 
     it('extracts function name with parameters', () => {
-      parser.setLanguage(Python);
+      parser.setLanguage(Python as Parser.Language);
       const code = `def calculate_sum(a, b):\n    return a + b`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -678,7 +678,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
     });
 
     it('extracts async function name', () => {
-      parser.setLanguage(Python);
+      parser.setLanguage(Python as Parser.Language);
       const code = `async def fetch_data():\n    pass`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -690,7 +690,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
     });
 
     it('extracts function name with type hints', () => {
-      parser.setLanguage(Python);
+      parser.setLanguage(Python as Parser.Language);
       const code = `def process_data(items: list[int]) -> bool:\n    return True`;
       const tree = parser.parse(code);
       const funcNode = tree.rootNode.child(0);
@@ -702,7 +702,7 @@ describe('extractFunctionName (via methodExtractor)', () => {
     });
 
     it('extracts nested function name', () => {
-      parser.setLanguage(Python);
+      parser.setLanguage(Python as Parser.Language);
       const code = `def outer():\n    def inner():\n        pass`;
       const tree = parser.parse(code);
       const outerFunc = tree.rootNode.child(0);

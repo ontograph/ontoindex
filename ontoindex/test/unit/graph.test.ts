@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import type { GraphNode, GraphRelationship } from '../../src/core/graph/types.js';
+import type { GraphNode, GraphRelationship } from 'ontoindex-shared';
 
 function makeNode(id: string, name: string, filePath: string = 'src/test.ts'): GraphNode {
   return {

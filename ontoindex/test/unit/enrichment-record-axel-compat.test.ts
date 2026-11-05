@@ -88,7 +88,7 @@ describe('enrichment record Axel compatibility', () => {
     const fact = normalizeAxelEnrichmentFact(domainClassificationFact);
     const record = createEnrichmentRecord({
       ...baseRecordInput,
-      records: [fact],
+      records: [fact as unknown as EnrichmentFact],
     });
 
     expect(record.records).toEqual([fact]);
@@ -99,7 +99,7 @@ describe('enrichment record Axel compatibility', () => {
     const fact = normalizeAxelEnrichmentFact(semanticBridgeFact);
     const record = createEnrichmentRecord({
       ...baseRecordInput,
-      records: [fact],
+      records: [fact as unknown as EnrichmentFact],
     });
 
     expect(record.records).toEqual([fact]);
@@ -117,7 +117,7 @@ describe('enrichment record Axel compatibility', () => {
     const record = createEnrichmentRecord({
       ...baseRecordInput,
       fileHash: 'record-file-hash-stale',
-      records: [fact],
+      records: [fact as unknown as EnrichmentFact],
     });
 
     expect(decideEnrichmentFreshness(record, freshSnapshot)).toEqual({
@@ -131,7 +131,7 @@ describe('enrichment record Axel compatibility', () => {
     const record = createEnrichmentRecord({
       ...baseRecordInput,
       fileHash: 'record-file-hash-stale',
-      records: [fact],
+      records: [fact as unknown as EnrichmentFact],
     });
 
     expect(invalidateEnrichmentForNewAnalyze(record, freshSnapshot)).toEqual({

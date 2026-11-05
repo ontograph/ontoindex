@@ -27,13 +27,13 @@ const { lbugMocks } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/core/lbug/pool-adapter.js')>();
   return { ...actual, ...lbugMocks };
 });
 
 // Re-export shim must use the same mocks
 vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/mcp/core/lbug-adapter.js')>();
   return { ...actual, ...lbugMocks };
 });
 
@@ -97,7 +97,7 @@ describe('MCP tool integration pilot — 5 tools via LocalBackend.callTool', () 
     expect(result).not.toBeNull();
     expect(result).not.toBeUndefined();
     expect(Array.isArray(result)).toBe(true);
-    expect(result.length).toBeGreaterThanOrEqual(1);
+    expect((result as unknown[]).length).toBeGreaterThanOrEqual(1);
     // Spot-check shape: each entry must have a name string
     for (const repo of result as Array<Record<string, unknown>>) {
       expect(typeof repo.name).toBe('string');

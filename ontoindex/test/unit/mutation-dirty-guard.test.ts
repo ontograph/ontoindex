@@ -219,7 +219,11 @@ describe('mutation dirty guard', () => {
       vi.spyOn(
         await import('../../src/mcp/local/backend-overlay.js'),
         'getOverlaySnapshot',
-      ).mockResolvedValue(snapshot);
+      ).mockResolvedValue(
+        snapshot as unknown as Awaited<
+          ReturnType<typeof import('../../src/mcp/local/backend-overlay.js').getOverlaySnapshot>
+        >,
+      );
 
       await expect(guardMutationRange(repo, { filePath }, false)).rejects.toThrow(
         /Dirty file .*src[\\/]a\.ts:.*line range may be stale/,

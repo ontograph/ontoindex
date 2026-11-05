@@ -110,7 +110,10 @@ describe('ann-neighbor-store persist/load', () => {
       makeEdge(3),
     ] as const;
 
-    await persistAnnNeighborEdges(executeWithReusedStatement, edges);
+    await persistAnnNeighborEdges(
+      executeWithReusedStatement,
+      edges as unknown as Parameters<typeof persistAnnNeighborEdges>[1],
+    );
     const calls = executeWithReusedStatement.mock.calls[0];
     expect(calls[0]).toContain('MATCH (source), (target)');
     expect(calls[1]).toHaveLength(2);

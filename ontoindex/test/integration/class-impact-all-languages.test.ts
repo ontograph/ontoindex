@@ -262,11 +262,11 @@ function suiteFor(
 ) {
   describe(`${lang}: Class impact/context via ${topology}`, () => {
     it(`impact(upstream) surfaces the caller`, async () => {
-      const result = await getBackend().callTool('impact', {
+      const result = (await getBackend().callTool('impact', {
         target: className,
         direction: 'upstream',
         includeTests: true,
-      });
+      })) as TestBackendResponse;
       expect(result).not.toHaveProperty('error');
       expect(result.impactedCount).toBeGreaterThanOrEqual(1);
       const allNames = Object.values(result.byDepth as Record<string, any[]>)
@@ -276,11 +276,11 @@ function suiteFor(
     });
 
     it(`impact(upstream) surfaces the file importer`, async () => {
-      const result = await getBackend().callTool('impact', {
+      const result = (await getBackend().callTool('impact', {
         target: className,
         direction: 'upstream',
         includeTests: true,
-      });
+      })) as TestBackendResponse;
       expect(result).not.toHaveProperty('error');
       const allNames = Object.values(result.byDepth as Record<string, any[]>)
         .flat()
@@ -289,19 +289,19 @@ function suiteFor(
     });
 
     it(`context() returns found with kind Class`, async () => {
-      const result = await getBackend().callTool('context', {
+      const result = (await getBackend().callTool('context', {
         name: className,
         file_path: classFilePath,
-      });
+      })) as TestBackendResponse;
       expect(result.status).toBe('found');
       expect(result.symbol.kind).toBe('Class');
     });
 
     it(`context() has non-empty incoming containing the caller`, async () => {
-      const result = await getBackend().callTool('context', {
+      const result = (await getBackend().callTool('context', {
         name: className,
         file_path: classFilePath,
-      });
+      })) as TestBackendResponse;
       expect(result.status).toBe('found');
       const allIncoming = [...(result.incoming.calls || []), ...(result.incoming.imports || [])];
       expect(allIncoming.length).toBeGreaterThanOrEqual(1);
@@ -461,3 +461,13 @@ withTestLbugDB(
     },
   },
 );
+
+type TestBackendResponse = {
+  impactedCount: number;
+  byDepth: Record<string, { name: string }[]>;
+  status: string;
+  symbol: { kind: string };
+  incoming: { calls: { name: string }[]; imports: { name: string }[] };
+  outgoing: unknown;
+  row_count: number;
+};

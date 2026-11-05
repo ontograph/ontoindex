@@ -61,7 +61,7 @@ vi.mock('../../src/mcp/local/local-backend.js', () => ({
   },
 }));
 
-const baseDiagnose: DiagnoseReport = {
+const baseDiagnose = {
   version: 1,
   classification: {
     evidenceClasses: [],
@@ -123,7 +123,7 @@ const baseDiagnose: DiagnoseReport = {
   envVars: {},
   recommendations: [],
   warnings: [],
-};
+} as unknown as DiagnoseReport;
 
 // probeSetupHealth inspects agent config directories under the home directory.
 // Point HOME at an empty directory so the developer's own setup cannot change

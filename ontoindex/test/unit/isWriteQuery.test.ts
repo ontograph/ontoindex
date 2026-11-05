@@ -1,7 +1,7 @@
 // ...existing code...
 import { describe, it, expect } from 'vitest';
-import { isWriteQuery as isWriteQueryAdapter } from '../../src/mcp/core/lbug-adapter';
-import { isWriteQuery as isWriteQueryBackend } from '../../src/mcp/local/local-backend';
+import { isWriteQuery as isWriteQueryAdapter } from '../../src/mcp/core/lbug-adapter.js';
+import { isWriteQuery as isWriteQueryBackend } from '../../src/mcp/local/local-backend.js';
 
 describe('isWriteQuery regex tests', () => {
   const writeQueries = [

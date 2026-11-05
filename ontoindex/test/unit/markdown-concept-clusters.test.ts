@@ -382,7 +382,7 @@ function typedFactBase(
   docPath = 'docs/adr/0029-native-knowledge-graph-document-sidecar.md',
 ) {
   return {
-    schemaVersion: CURRENT_MARKDOWN_DOCUMENT_FACT_SCHEMA_VERSION,
+    schemaVersion: CURRENT_MARKDOWN_DOCUMENT_FACT_SCHEMA_VERSION as 1,
     docPath,
     headingPath: ['MCP Startup Profile'],
     lineSpan: { start: 1, end: 1 },
@@ -413,7 +413,7 @@ function resolution(input: {
     sourceIndexId: 'index-a',
     sourceCommitHash: 'commit-a',
     graphSchemaVersion: 7,
-    docPath: 'docPath' in input.fact ? input.fact.docPath : 'docs/adr/0029.md',
+    docPath: 'docPath' in input.fact ? (input.fact.docPath as string) : 'docs/adr/0029.md',
     factKey: input.factKey,
     factKind: input.fact.kind,
     subjectKind: input.subjectKind,
@@ -425,7 +425,10 @@ function resolution(input: {
     reasons: ['single-candidate'],
     targetGraphIdentity: input.targetGraphIdentity,
     candidates: [input.targetGraphIdentity],
-    lineSpan: 'lineSpan' in input.fact ? input.fact.lineSpan : undefined,
+    lineSpan:
+      'lineSpan' in input.fact
+        ? (input.fact.lineSpan as { start: number; end: number })
+        : undefined,
   };
 }
 

@@ -104,7 +104,7 @@ describe('routesPhase', () => {
     );
 
     let releaseCalls = 0;
-    const parseOutput: ParseOutput = {
+    const parseOutput = {
       exportedTypeMap: new Map(),
       allFetchCalls: [],
       allExtractedRoutes: [
@@ -132,7 +132,7 @@ describe('routesPhase', () => {
       releaseRouteExtractionData: () => {
         releaseCalls++;
       },
-    };
+    } as unknown as ParseOutput;
 
     const graph = createKnowledgeGraph();
     await routesPhase.execute(

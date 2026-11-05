@@ -28,13 +28,17 @@ withTestLbugDB(
           { focus: ['src/focus.ts'], format: 'full', token_budget: 5000 },
         );
 
-        expect(result.status).toBe('success');
-        expect(result.symbol_count).toBeGreaterThanOrEqual(2);
+        expect((result as unknown as Record<string, any>).status).toBe('success');
+        expect((result as unknown as Record<string, any>).symbol_count).toBeGreaterThanOrEqual(2);
 
-        const names = result.symbols.map((symbol: any) => symbol.name);
+        const names = (result as unknown as Record<string, any>).symbols.map(
+          (symbol: any) => symbol.name,
+        );
         expect(names).toContain('coreHandler');
 
-        const coreHandler = result.symbols.find((symbol: any) => symbol.name === 'coreHandler');
+        const coreHandler = (result as unknown as Record<string, any>).symbols.find(
+          (symbol: any) => symbol.name === 'coreHandler',
+        );
         expect(coreHandler).toBeDefined();
         expect(coreHandler.isFocus).toBe(true);
         expect(coreHandler.type).toBe('Function');
@@ -46,7 +50,9 @@ withTestLbugDB(
           { focus: ['src/focus.ts'], format: 'full', token_budget: 5000 },
         );
 
-        const focusShape = result.symbols.find((symbol: any) => symbol.name === 'FocusShapeA');
+        const focusShape = (result as unknown as Record<string, any>).symbols.find(
+          (symbol: any) => symbol.name === 'FocusShapeA',
+        );
         expect(focusShape).toBeDefined();
         expect(focusShape.type).toBe('Interface');
       });
@@ -57,18 +63,26 @@ withTestLbugDB(
           { focus: ['src/focus.ts'], format: 'files', token_budget: 5000 },
         );
 
-        expect(result.status).toBe('success');
-        expect(result.format).toBe('files');
-        expect(result.readFirstFiles.map((entry) => entry.filePath).includes('src/focus.ts')).toBe(
-          true,
-        );
-        expect(result.readFirstFiles.map((entry) => entry.filePath).includes('src/util.ts')).toBe(
-          true,
-        );
-        expect(result.omittedCounts.total).toBeGreaterThanOrEqual(0);
-        expect(result.readFirstFiles.length).toBeGreaterThanOrEqual(1);
-        expect(result.symbol_count).toBeGreaterThan(0);
-        expect(result.tokens_used).toBeGreaterThan(0);
+        expect((result as unknown as Record<string, any>).status).toBe('success');
+        expect((result as unknown as Record<string, any>).format).toBe('files');
+        expect(
+          (result as unknown as Record<string, any>).readFirstFiles
+            .map((entry) => entry.filePath)
+            .includes('src/focus.ts'),
+        ).toBe(true);
+        expect(
+          (result as unknown as Record<string, any>).readFirstFiles
+            .map((entry) => entry.filePath)
+            .includes('src/util.ts'),
+        ).toBe(true);
+        expect(
+          (result as unknown as Record<string, any>).omittedCounts.total,
+        ).toBeGreaterThanOrEqual(0);
+        expect(
+          (result as unknown as Record<string, any>).readFirstFiles.length,
+        ).toBeGreaterThanOrEqual(1);
+        expect((result as unknown as Record<string, any>).symbol_count).toBeGreaterThan(0);
+        expect((result as unknown as Record<string, any>).tokens_used).toBeGreaterThan(0);
         expect('symbols' in result).toBe(false);
       });
     });

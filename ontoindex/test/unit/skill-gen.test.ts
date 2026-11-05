@@ -11,7 +11,8 @@ import path from 'path';
 import os from 'os';
 import { generateSkillFiles, parseSkillTargets } from '../../src/cli/skill-gen.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import type { GraphNode, GraphRelationship, KnowledgeGraph } from '../../src/core/graph/types.js';
+import type { GraphNode, GraphRelationship } from 'ontoindex-shared';
+import type { KnowledgeGraph } from '../../src/core/graph/types.js';
 import type {
   CommunityNode,
   CommunityMembership,
@@ -130,6 +131,7 @@ function buildPipelineResult(opts: {
     graph: opts.graph,
     repoPath: opts.repoPath,
     totalFileCount: 0,
+    usedWorkerPool: false,
     communityResult,
     processResult,
   };
@@ -426,6 +428,7 @@ describe('generateSkillFiles — return values', () => {
       graph,
       repoPath: tmpDir,
       totalFileCount: 0,
+      usedWorkerPool: false,
       communityResult: {
         communities,
         memberships,

@@ -117,7 +117,7 @@ const auxiliaryConstructor = {
 const auxiliaryExport = { filePath: 'src/example.ts', exportName: 'PublicUser', typeName: 'User' };
 const auxiliaryFileBinding = { filePath: 'src/example.ts', varName: 'user', typeName: 'User' };
 const auxiliaryFamilies: [string, Record<string, unknown>][] = [
-  ['calls', auxiliaryCall],
+  ['calls', auxiliaryCall as unknown as Record<string, unknown>],
   ['heritage', auxiliaryHeritage],
   ['assignments', auxiliaryAssignment],
   ['constructor-bindings', auxiliaryConstructor],

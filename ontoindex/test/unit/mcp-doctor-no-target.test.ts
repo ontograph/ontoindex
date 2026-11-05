@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMcpDoctorReport, formatMcpDoctorText } from '../../src/cli/mcp-doctor.js';
 import type { DiagnoseReport } from '../../src/mcp/super/diagnose.js';
 vi.mock('../../src/storage/git.js', () => ({ getGitRoot: () => null }));
-const baseDiagnose: DiagnoseReport = {
+const baseDiagnose = {
   version: 1,
   classification: {
     evidenceClasses: [],
@@ -64,7 +64,7 @@ const baseDiagnose: DiagnoseReport = {
   envVars: {},
   recommendations: [],
   warnings: [],
-};
+} as DiagnoseReport;
 
 async function probe(
   status: 'ok' | 'not-found' | 'ambiguous',

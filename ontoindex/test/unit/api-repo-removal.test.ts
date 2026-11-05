@@ -49,9 +49,9 @@ beforeEach(async () => {
   mocks.unregister.mockReset().mockImplementation(async () => {
     expect(removing).toBe(true);
   });
-  vi.spyOn(LocalBackend.prototype, 'init').mockImplementation(async () => {
+  vi.spyOn(LocalBackend.prototype, 'init').mockImplementation((async () => {
     expect(removing).toBe(false);
-  });
+  }) as unknown as LocalBackend['init']);
   vi.spyOn(LocalBackend.prototype, 'withRepoRemoval').mockImplementation(
     async (_name, _path, operation) => {
       removing = true;

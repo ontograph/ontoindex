@@ -712,7 +712,10 @@ describe('parse-impl extensionless shebang agreement', () => {
   // the file and the sequential parser must agree via getLanguageFromShebang.
   const scannedWithShebang = (
     repo: string,
-    files: { rel: string; shebangLanguage?: string | null }[],
+    files: {
+      rel: string;
+      shebangLanguage?: import('ontoindex-shared').SupportedLanguages | null;
+    }[],
   ) =>
     files.map(({ rel, shebangLanguage }) => ({
       path: rel,
@@ -727,7 +730,7 @@ describe('parse-impl extensionless shebang agreement', () => {
     const graph = createKnowledgeGraph();
     const result = await runChunkedParseAndResolve(
       graph,
-      scannedWithShebang(repoPath, [{ rel: 'manage', shebangLanguage: 'python' }]),
+      scannedWithShebang(repoPath, [{ rel: 'manage', shebangLanguage: SupportedLanguages.Python }]),
       ['manage'],
       1,
       repoPath,
@@ -820,7 +823,8 @@ describe('parse-impl scope retention capture', () => {
       extractorTimings: [],
     };
     if (mode === 'parse-error') lifetimeConfig.workerData.parseErrorPaths.push(extra);
-    if (mode === 'degraded') lifetimeConfig.workerData.degraded = true;
+    if (mode === 'degraded')
+      lifetimeConfig.workerData.degraded = true as unknown as NonNullable<WorkerData['degraded']>;
     if (mode === 'lightweight')
       lifetimeConfig.workerData.fileTimings.push({
         filePath: extra,

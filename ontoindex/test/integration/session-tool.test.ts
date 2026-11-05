@@ -41,33 +41,33 @@ describe('Session MCP Tool Integration', () => {
 
   it('performs a round-trip set and get via callTool', async () => {
     // 1. Set a value
-    const setResult = await backend.callTool('session', {
+    const setResult = (await backend.callTool('session', {
       action: 'set',
       session_id: 'test-session-123',
       key: 'my_key',
       value: 'my_value',
-    });
+    })) as TestBackendResponse;
 
     expect(setResult).toBeDefined();
     expect(setResult.status).toBe('success');
     expect(setResult.action).toBe('set');
 
     // 2. Get the value
-    const getResult = await backend.callTool('session', {
+    const getResult = (await backend.callTool('session', {
       action: 'get',
       session_id: 'test-session-123',
       key: 'my_key',
-    });
+    })) as TestBackendResponse;
 
     expect(getResult).toBeDefined();
     expect(getResult.value).toBe('my_value');
     expect(getResult.action).toBe('get');
 
     // 3. List keys
-    const listResult = await backend.callTool('session', {
+    const listResult = (await backend.callTool('session', {
       action: 'list',
       session_id: 'test-session-123',
-    });
+    })) as TestBackendResponse;
 
     expect(listResult).toBeDefined();
     expect(listResult.keys).toContain('my_key');
@@ -83,3 +83,5 @@ describe('Session MCP Tool Integration', () => {
     ).rejects.toThrow('Invalid arguments for session: action:');
   });
 });
+
+type TestBackendResponse = { status: string; action: string; value: string; keys: string[] };

@@ -242,7 +242,9 @@ describe('AuditReportResult shape — structural drift gate', () => {
         markInvocationError({
           rows: [{ community: 'Auth', ca: 2, ce: 12, instability: 0.86 }],
           ...(error === undefined ? {} : { error }),
-        }) as Awaited<ReturnType<typeof runCouplingMatrix>>,
+        }) as unknown as Awaited<ReturnType<typeof runCouplingMatrix>> as unknown as Awaited<
+          ReturnType<typeof runCouplingMatrix>
+        >,
       );
 
       const failed = await runAuditReport(repo, {});
@@ -271,7 +273,7 @@ describe('AuditReportResult shape — structural drift gate', () => {
       vi.mocked(runCouplingMatrix).mockResolvedValueOnce({
         rows,
         warnings: ['dependency scan truncated', 'membership scan incomplete'],
-      });
+      } as unknown as Awaited<ReturnType<typeof runCouplingMatrix>>);
 
       const partial = await runAuditReport(repo, {});
 
@@ -292,7 +294,10 @@ describe('AuditReportResult shape — structural drift gate', () => {
   );
 
   it('keeps coupling scans with empty warnings complete', async () => {
-    vi.mocked(runCouplingMatrix).mockResolvedValueOnce({ rows: [], warnings: [] });
+    vi.mocked(runCouplingMatrix).mockResolvedValueOnce({
+      rows: [],
+      warnings: [],
+    } as unknown as Awaited<ReturnType<typeof runCouplingMatrix>>);
 
     const complete = await runAuditReport(repo, {});
 
@@ -340,14 +345,30 @@ describe('AuditReportResult shape — structural drift gate', () => {
         return value;
       });
 
-    vi.mocked(runDeadCode).mockImplementation(delayed({ entries: [] }));
-    vi.mocked(runCycleDetect).mockImplementation(delayed({ cycles: [] }));
-    vi.mocked(runCouplingMatrix).mockImplementation(delayed({ rows: [] }));
-    vi.mocked(runTechDebt).mockImplementation(delayed({ symbols: [] }));
-    vi.mocked(runHotspotAnalysis).mockImplementation(delayed({ hotspots: [] }));
-    vi.mocked(runBoundaryViolations).mockImplementation(delayed({ violations: [] }));
-    vi.mocked(runVerificationGap).mockImplementation(delayed({ coverage: [] }));
-    vi.mocked(runGraphDiff).mockImplementation(delayed({ added: [], removed: [] }));
+    vi.mocked(runDeadCode).mockImplementation(
+      delayed({ entries: [] }) as unknown as typeof runDeadCode,
+    );
+    vi.mocked(runCycleDetect).mockImplementation(
+      delayed({ cycles: [] }) as unknown as typeof runCycleDetect,
+    );
+    vi.mocked(runCouplingMatrix).mockImplementation(
+      delayed({ rows: [] }) as unknown as typeof runCouplingMatrix,
+    );
+    vi.mocked(runTechDebt).mockImplementation(
+      delayed({ symbols: [] }) as unknown as typeof runTechDebt,
+    );
+    vi.mocked(runHotspotAnalysis).mockImplementation(
+      delayed({ hotspots: [] }) as unknown as typeof runHotspotAnalysis,
+    );
+    vi.mocked(runBoundaryViolations).mockImplementation(
+      delayed({ violations: [] }) as unknown as typeof runBoundaryViolations,
+    );
+    vi.mocked(runVerificationGap).mockImplementation(
+      delayed({ coverage: [] }) as unknown as typeof runVerificationGap,
+    );
+    vi.mocked(runGraphDiff).mockImplementation(
+      delayed({ added: [], removed: [] }) as unknown as typeof runGraphDiff,
+    );
 
     await runAuditReport(repo, {});
 
@@ -370,15 +391,29 @@ describe('AuditReportResult shape — structural drift gate', () => {
               30,
             ),
           ),
-      ),
+      ) as unknown as typeof runDeadCode,
     );
-    vi.mocked(runCycleDetect).mockResolvedValue({ cycles: [] });
-    vi.mocked(runCouplingMatrix).mockResolvedValue({ rows: [] });
-    vi.mocked(runTechDebt).mockResolvedValue({ symbols: [] });
-    vi.mocked(runHotspotAnalysis).mockResolvedValue({ hotspots: [] });
-    vi.mocked(runBoundaryViolations).mockResolvedValue({ violations: [] });
-    vi.mocked(runVerificationGap).mockResolvedValue({ coverage: [] });
-    vi.mocked(runGraphDiff).mockResolvedValue({ added: [], removed: [] });
+    vi.mocked(runCycleDetect).mockResolvedValue({ cycles: [] } as unknown as Awaited<
+      ReturnType<typeof runCycleDetect>
+    >);
+    vi.mocked(runCouplingMatrix).mockResolvedValue({ rows: [] } as unknown as Awaited<
+      ReturnType<typeof runCouplingMatrix>
+    >);
+    vi.mocked(runTechDebt).mockResolvedValue({ symbols: [] } as unknown as Awaited<
+      ReturnType<typeof runTechDebt>
+    >);
+    vi.mocked(runHotspotAnalysis).mockResolvedValue({ hotspots: [] } as unknown as Awaited<
+      ReturnType<typeof runHotspotAnalysis>
+    >);
+    vi.mocked(runBoundaryViolations).mockResolvedValue({ violations: [] } as unknown as Awaited<
+      ReturnType<typeof runBoundaryViolations>
+    >);
+    vi.mocked(runVerificationGap).mockResolvedValue({ coverage: [] } as unknown as Awaited<
+      ReturnType<typeof runVerificationGap>
+    >);
+    vi.mocked(runGraphDiff).mockResolvedValue({ added: [], removed: [] } as unknown as Awaited<
+      ReturnType<typeof runGraphDiff>
+    >);
 
     try {
       const timed = await runAuditReport(repo, {});

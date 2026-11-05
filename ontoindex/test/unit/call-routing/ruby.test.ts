@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { routeRubyCall } from '../../../src/core/ingestion/call-routing.js';
+import { routeRubyCall as routeRubyCallImpl } from '../../../src/core/ingestion/call-routing.js';
+
+const routeRubyCall = routeRubyCallImpl as unknown as (
+  name: string,
+  node: MockNode,
+  ...rest: Parameters<typeof routeRubyCallImpl> extends [unknown, unknown, ...infer R] ? R : never
+) => ReturnType<typeof routeRubyCallImpl>;
 
 // ── Mock AST node helpers ────────────────────────────────────────────────────
 

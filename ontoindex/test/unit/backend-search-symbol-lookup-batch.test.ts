@@ -27,7 +27,7 @@ import { query } from '../../src/mcp/local/backend-search.js';
 import type { EnrichedSymbolRow } from '../../src/core/search/symbol-merge.js';
 
 const repo = { id: 'batch-test', repoPath: '/repo', lastCommit: 'abc123' } as any;
-const symbols: EnrichedSymbolRow[] = ['alpha', 'beta'].map((name, index) => ({
+const symbols = ['alpha', 'beta'].map((name, index) => ({
   nodeId: `Function:src/${name}.ts:${name}`,
   name,
   type: 'Function',
@@ -131,7 +131,7 @@ describe('batched search symbol lookup', () => {
       expect(cypher).not.toMatch(/collect\s*\(|\bUNION\b/i);
       expect(params).toEqual({ nodeIds });
     }
-    expect(result.processes).toEqual([
+    expect((result as unknown as Record<string, any>).processes).toEqual([
       {
         id: 'p',
         summary: 'Pipeline',
@@ -141,7 +141,7 @@ describe('batched search symbol lookup', () => {
         step_count: 2,
       },
     ]);
-    expect(result.process_symbols).toEqual(
+    expect((result as unknown as Record<string, any>).process_symbols).toEqual(
       symbols.map((symbol, index) => ({
         id: symbol.nodeId,
         name: symbol.name,
@@ -159,7 +159,7 @@ describe('batched search symbol lookup', () => {
             : 'src/beta-main.ts:betaMain -> IMPORTS -> beta',
       })),
     );
-    expect(result.definitions).toEqual([]);
+    expect((result as unknown as Record<string, any>).definitions).toEqual([]);
   });
 
   it.each(['STEP_IN_PROCESS', 'MEMBER_OF', 'n.content AS content', 'callerPath'])(
@@ -171,7 +171,10 @@ describe('batched search symbol lookup', () => {
       });
       const result = await query(repo, options);
       expect(enrichmentCalls()).toHaveLength(4);
-      const output = failedKind === 'STEP_IN_PROCESS' ? result.definitions : result.process_symbols;
+      const output =
+        failedKind === 'STEP_IN_PROCESS'
+          ? (result as unknown as Record<string, any>).definitions
+          : (result as unknown as Record<string, any>).process_symbols;
       expect(output).toHaveLength(2);
       const first = output![0];
       expect(first).toMatchObject({ id: nodeIds[0], name: 'alpha' });
@@ -194,10 +197,10 @@ describe('batched search symbol lookup', () => {
         return lookupRows(cypher, params.nodeId as string);
       });
       const result = await query(repo, options);
-      expect(result.process_symbols![0]).not.toHaveProperty(
+      expect((result as unknown as Record<string, any>).process_symbols![0]).not.toHaveProperty(
         failedKind === 'MEMBER_OF' ? 'module' : 'citation_path',
       );
-      expect(result.process_symbols![1]).toMatchObject({
+      expect((result as unknown as Record<string, any>).process_symbols![1]).toMatchObject({
         id: nodeIds[1],
         module: 'Beta module',
         content: 'beta body',
@@ -227,8 +230,10 @@ describe('batched search symbol lookup', () => {
       .mocked(executeParameterized)
       .mock.calls.filter(([, , params]) => 'nodeId' in params);
     expect(perNodeCalls).toHaveLength(0);
-    expect(result.process_symbols![0]).not.toHaveProperty('content');
-    expect(result.definitions).toEqual([
+    expect((result as unknown as Record<string, any>).process_symbols![0]).not.toHaveProperty(
+      'content',
+    );
+    expect((result as unknown as Record<string, any>).definitions).toEqual([
       {
         id: 'overlay-id',
         name: 'alpha',
@@ -252,8 +257,13 @@ describe('batched search symbol lookup', () => {
         return lookupRows(cypher, params.nodeId as string);
       });
       const result = await query(repo, options);
-      expect(result.process_symbols).toHaveLength(symbols.length);
-      expect(result.process_symbols![0]).toMatchObject({ id: nodeIds[0], content: 'alpha body' });
+      expect((result as unknown as Record<string, any>).process_symbols).toHaveLength(
+        symbols.length,
+      );
+      expect((result as unknown as Record<string, any>).process_symbols![0]).toMatchObject({
+        id: nodeIds[0],
+        content: 'alpha body',
+      });
       expect(enrichmentCalls()).toHaveLength(4);
       expect(
         vi.mocked(executeParameterized).mock.calls.filter(([, , params]) => 'nodeId' in params),
@@ -275,8 +285,11 @@ describe('batched search symbol lookup', () => {
       return lookupRows(cypher, params.nodeId as string);
     });
     const result = await query(repo, options);
-    expect(result.process_symbols).toHaveLength(symbols.length);
-    expect(result.process_symbols![1]).toMatchObject({ id: nodeIds[1], content: 'beta body' });
+    expect((result as unknown as Record<string, any>).process_symbols).toHaveLength(symbols.length);
+    expect((result as unknown as Record<string, any>).process_symbols![1]).toMatchObject({
+      id: nodeIds[1],
+      content: 'beta body',
+    });
     const retries = vi
       .mocked(executeParameterized)
       .mock.calls.filter(([, , params]) => 'nodeId' in params);
@@ -288,7 +301,7 @@ describe('batched search symbol lookup', () => {
     const result = await query(repo, options);
     expect(enrichmentCalls()).toEqual([]);
     expect(executeParameterized).not.toHaveBeenCalled();
-    expect(result.definitions).toEqual([]);
+    expect((result as unknown as Record<string, any>).definitions).toEqual([]);
   });
 
   it('accepts empty first-enrichment batches without falling back', async () => {
@@ -298,7 +311,7 @@ describe('batched search symbol lookup', () => {
     const result = await query(repo, options);
     expect(executeParameterized).toHaveBeenCalledTimes(4);
     expect(enrichmentCalls()).toHaveLength(4);
-    for (const symbol of result.process_symbols!) {
+    for (const symbol of (result as unknown as Record<string, any>).process_symbols!) {
       expect(symbol).not.toHaveProperty('module');
       expect(symbol).not.toHaveProperty('citation_path');
       expect(symbol).toHaveProperty('content');
@@ -334,8 +347,8 @@ describe('batched search symbol lookup', () => {
     for (const [, , params] of enrichmentCalls()) {
       expect(params).toEqual({ nodeIds: candidates.map((candidate) => candidate.nodeId) });
     }
-    expect(result.definitions).toHaveLength(20);
-    expect(result.definitions![0]).toMatchObject({
+    expect((result as unknown as Record<string, any>).definitions).toHaveLength(20);
+    expect((result as unknown as Record<string, any>).definitions![0]).toMatchObject({
       id: candidates[0].nodeId,
       module: candidates[0].nodeId,
     });
@@ -359,7 +372,9 @@ describe('batched search symbol lookup', () => {
         return lookupRows(cypher);
       });
       const result = await query(repo, options);
-      expect(result.process_symbols![0]).not.toHaveProperty('citation_path');
+      expect((result as unknown as Record<string, any>).process_symbols![0]).not.toHaveProperty(
+        'citation_path',
+      );
       expect(enrichmentCalls()).toHaveLength(4);
     },
   );
@@ -374,7 +389,7 @@ describe('batched search symbol lookup', () => {
       return [];
     });
     const result = await query(repo, options);
-    expect(result.process_symbols![0]).toMatchObject({
+    expect((result as unknown as Record<string, any>).process_symbols![0]).toMatchObject({
       id: nodeIds[0],
       module: 'Alpha module',
       content: 'alpha body',
@@ -382,6 +397,9 @@ describe('batched search symbol lookup', () => {
       process_id: 'p',
       citation_path: 'src/main.ts:main -> CALLS -> alpha',
     });
-    expect(result.definitions![0]).toMatchObject({ id: nodeIds[1], name: 'beta' });
+    expect((result as unknown as Record<string, any>).definitions![0]).toMatchObject({
+      id: nodeIds[1],
+      name: 'beta',
+    });
   });
 });

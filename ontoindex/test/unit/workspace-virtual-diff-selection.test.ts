@@ -119,7 +119,10 @@ describe('virtual diff selection plan', () => {
         decision: 'reject',
       },
     ];
-    const plan = buildVirtualDiffSelectionPlan(multiFileDiff, decisions);
+    const plan = buildVirtualDiffSelectionPlan(
+      multiFileDiff,
+      decisions as Parameters<typeof buildVirtualDiffSelectionPlan>[1],
+    );
     expect(plan.acceptedHunkCount).toBe(0);
     expect(plan.rejectedHunkCount).toBe(1);
     expect(plan.deferredHunkCount).toBe(2);

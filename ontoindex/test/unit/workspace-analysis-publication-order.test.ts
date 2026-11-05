@@ -132,13 +132,13 @@ describe('workspace analysis publication ordering', () => {
     dispose.mockResolvedValue(undefined);
     vi.mocked(getCurrentCommit).mockReset().mockReturnValue('stable-head');
     vi.mocked(pruneOverlayGenerations).mockReset().mockResolvedValue(false);
-    vi.mocked(initLbug).mockImplementation(async (dbPath) => {
+    vi.mocked(initLbug).mockImplementation((async (dbPath: string) => {
       await fs.writeFile(dbPath, 'generation database');
-    });
-    vi.mocked(loadGraphToLbug).mockImplementation(async () => {
+    }) as unknown as typeof initLbug);
+    vi.mocked(loadGraphToLbug).mockImplementation((async () => {
       await Promise.resolve();
       completed.push('loaded');
-    });
+    }) as unknown as typeof loadGraphToLbug);
     vi.mocked(createFTSIndex).mockImplementation(async () => {
       await Promise.resolve();
       completed.push('fts');
@@ -276,7 +276,7 @@ describe('workspace analysis publication ordering', () => {
     await fs.mkdir(sourcePath);
     await fs.writeFile(path.join(overlay, 'CURRENT'), `${previous}\n`);
     vi.mocked(supervisedWorkspaceParserIdentity).mockResolvedValue('test-parser');
-    const candidate = { manifest: { seedReady: true }, families: {} } as Awaited<
+    const candidate = { manifest: { seedReady: true }, families: {} } as unknown as Awaited<
       ReturnType<typeof loadScopeRetentionCandidate>
     >;
     vi.mocked(loadScopeRetentionCandidate).mockResolvedValue(candidate);

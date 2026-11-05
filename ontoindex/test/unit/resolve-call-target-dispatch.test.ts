@@ -1,3 +1,4 @@
+import { SupportedLanguages } from 'ontoindex-shared';
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   _resolveCallTargetForTesting,
@@ -221,9 +222,9 @@ describe('resolveCallTarget dispatch branches', () => {
     ],
   ])('uses the extracted %s receiver type consistently', (typeName, source, expected) => {
     const parser = new Parser();
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse(source);
-    const env = buildTypeEnv(tree, 'typescript');
+    const env = buildTypeEnv(tree, SupportedLanguages.TypeScript);
     const receiverTypeName = [...env.allScopes()]
       .map(([, scope]) => scope.get('value'))
       .find((type) => type !== undefined);

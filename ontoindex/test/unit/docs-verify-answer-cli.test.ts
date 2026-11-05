@@ -51,9 +51,11 @@ describe('docs verify-answer CLI', () => {
         repoPath,
         indexedAt: '2026-01-01T00:00:00.000Z',
         lastCommit: 'abc1234',
-        stats: { nodes: 10, relationships: 20, processes: 3 },
+        stats: { nodes: 10, relationships: 20, processes: 3 } as unknown as NonNullable<
+          import('../../src/storage/repo-manager.js').RepoMeta['stats']
+        >,
       },
-    });
+    } as Awaited<ReturnType<typeof repoManager.findRepo>>);
     vi.mocked(repoManager.getStoragePaths).mockReturnValue({
       storagePath: `${repoPath}/.ontoindex`,
       lbugPath: '',

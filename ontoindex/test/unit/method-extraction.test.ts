@@ -61,7 +61,7 @@ try {
 const parser = new Parser();
 
 const parseJava = (code: string) => {
-  parser.setLanguage(Java);
+  parser.setLanguage(Java as Parser.Language);
   return parser.parse(code);
 };
 
@@ -1348,7 +1348,7 @@ describe('C# MethodExtractor', () => {
 // ---------------------------------------------------------------------------
 
 const parseTypeScript = (code: string) => {
-  parser.setLanguage(TypeScript.typescript);
+  parser.setLanguage(TypeScript.typescript as Parser.Language);
   return parser.parse(code);
 };
 
@@ -1812,7 +1812,7 @@ describe('TypeScript MethodExtractor', () => {
 // ---------------------------------------------------------------------------
 
 const parseJavaScript = (code: string) => {
-  parser.setLanguage(JavaScript);
+  parser.setLanguage(JavaScript as Parser.Language);
   return parser.parse(code);
 };
 
@@ -2041,7 +2041,7 @@ describe('JavaScript MethodExtractor', () => {
 // ---------------------------------------------------------------------------
 
 const parseCPP = (code: string) => {
-  parser.setLanguage(CPP);
+  parser.setLanguage(CPP as Parser.Language);
   return parser.parse(code);
 };
 
@@ -2527,7 +2527,7 @@ describe('C++ MethodExtractor', () => {
 // ---------------------------------------------------------------------------
 
 const parsePython = (code: string) => {
-  parser.setLanguage(Python);
+  parser.setLanguage(Python as Parser.Language);
   return parser.parse(code);
 };
 
@@ -2901,7 +2901,7 @@ class Shape(abc.ABC):
 // ---------------------------------------------------------------------------
 
 const parseRuby = (code: string) => {
-  parser.setLanguage(Ruby);
+  parser.setLanguage(Ruby as Parser.Language);
   return parser.parse(code);
 };
 
@@ -4029,7 +4029,7 @@ enum Status: string {
 // ---------------------------------------------------------------------------
 
 const parseRust = (code: string) => {
-  parser.setLanguage(Rust);
+  parser.setLanguage(Rust as Parser.Language);
   return parser.parse(code);
 };
 
@@ -4646,7 +4646,7 @@ actor Counter {
 // ---------------------------------------------------------------------------
 
 const parseGo = (code: string) => {
-  parser.setLanguage(Go);
+  parser.setLanguage(Go as Parser.Language);
   return parser.parse(code);
 };
 

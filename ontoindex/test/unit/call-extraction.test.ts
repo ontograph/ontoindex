@@ -169,7 +169,7 @@ describe('generic call extraction', () => {
     const extractor = createCallExtractor(typescriptCallConfig);
 
     it('extracts free function call', () => {
-      parser.setLanguage(TypeScript.typescript);
+      parser.setLanguage(TypeScript.typescript as Parser.Language);
       const captures = extractCallCaptures(parser, 'doStuff()', SupportedLanguages.TypeScript);
       const match = captures.find((c) => c.calledName === 'doStuff');
       expect(match).toBeDefined();
@@ -181,7 +181,7 @@ describe('generic call extraction', () => {
     });
 
     it('extracts member call with receiver', () => {
-      parser.setLanguage(TypeScript.typescript);
+      parser.setLanguage(TypeScript.typescript as Parser.Language);
       const captures = extractCallCaptures(parser, 'user.save()', SupportedLanguages.TypeScript);
       const match = captures.find((c) => c.calledName === 'save');
       expect(match).toBeDefined();
@@ -193,7 +193,7 @@ describe('generic call extraction', () => {
     });
 
     it('extracts constructor call', () => {
-      parser.setLanguage(TypeScript.typescript);
+      parser.setLanguage(TypeScript.typescript as Parser.Language);
       const captures = extractCallCaptures(parser, 'new User()', SupportedLanguages.TypeScript);
       const match = captures.find((c) => c.calledName === 'User');
       expect(match).toBeDefined();
@@ -204,7 +204,7 @@ describe('generic call extraction', () => {
     });
 
     it('extracts argCount', () => {
-      parser.setLanguage(TypeScript.typescript);
+      parser.setLanguage(TypeScript.typescript as Parser.Language);
       const captures = extractCallCaptures(parser, 'foo(a, b, c)', SupportedLanguages.TypeScript);
       const match = captures.find((c) => c.calledName === 'foo');
       expect(match).toBeDefined();
@@ -214,7 +214,7 @@ describe('generic call extraction', () => {
     });
 
     it('does not set typeAsReceiverHeuristic', () => {
-      parser.setLanguage(TypeScript.typescript);
+      parser.setLanguage(TypeScript.typescript as Parser.Language);
       const captures = extractCallCaptures(parser, 'User.find()', SupportedLanguages.TypeScript);
       const match = captures.find((c) => c.calledName === 'find');
       expect(match).toBeDefined();
@@ -227,7 +227,7 @@ describe('generic call extraction', () => {
     const extractor = createCallExtractor(pythonCallConfig);
 
     it('extracts free function call', () => {
-      parser.setLanguage(Python);
+      parser.setLanguage(Python as Parser.Language);
       const captures = extractCallCaptures(parser, 'do_stuff()', SupportedLanguages.Python);
       const match = captures.find((c) => c.calledName === 'do_stuff');
       expect(match).toBeDefined();
@@ -238,7 +238,7 @@ describe('generic call extraction', () => {
     });
 
     it('extracts member call', () => {
-      parser.setLanguage(Python);
+      parser.setLanguage(Python as Parser.Language);
       const captures = extractCallCaptures(parser, 'user.save()', SupportedLanguages.Python);
       const match = captures.find((c) => c.calledName === 'save');
       expect(match).toBeDefined();
@@ -253,7 +253,7 @@ describe('generic call extraction', () => {
     const extractor = createCallExtractor(javaCallConfig);
 
     it('extracts free function call', () => {
-      parser.setLanguage(Java);
+      parser.setLanguage(Java as Parser.Language);
       const captures = extractCallCaptures(
         parser,
         'class A { void m() { doStuff(); } }',
@@ -268,7 +268,7 @@ describe('generic call extraction', () => {
     });
 
     it('extracts member call with receiver', () => {
-      parser.setLanguage(Java);
+      parser.setLanguage(Java as Parser.Language);
       const captures = extractCallCaptures(
         parser,
         'class A { void m() { user.save(); } }',
@@ -283,7 +283,7 @@ describe('generic call extraction', () => {
     });
 
     it('sets typeAsReceiverHeuristic', () => {
-      parser.setLanguage(Java);
+      parser.setLanguage(Java as Parser.Language);
       const captures = extractCallCaptures(
         parser,
         'class A { void m() { User.find(); } }',
@@ -339,7 +339,7 @@ describe('generic call extraction', () => {
     const extractor = createCallExtractor(goCallConfig);
 
     it('extracts free function call', () => {
-      parser.setLanguage(Go);
+      parser.setLanguage(Go as Parser.Language);
       const captures = extractCallCaptures(
         parser,
         'package main\nfunc main() { doStuff() }',
@@ -358,7 +358,7 @@ describe('generic call extraction', () => {
     const extractor = createCallExtractor(rustCallConfig);
 
     it('extracts free function call', () => {
-      parser.setLanguage(Rust);
+      parser.setLanguage(Rust as Parser.Language);
       const captures = extractCallCaptures(
         parser,
         'fn main() { do_stuff(); }',
@@ -372,7 +372,7 @@ describe('generic call extraction', () => {
     });
 
     it('preserves the type receiver for associated function calls', () => {
-      parser.setLanguage(Rust);
+      parser.setLanguage(Rust as Parser.Language);
       const captures = extractCallCaptures(
         parser,
         'fn main() { let dog = Dog::new(); }',
@@ -390,7 +390,7 @@ describe('generic call extraction', () => {
     });
 
     it('keeps lowercase module-qualified calls on the free-call path', () => {
-      parser.setLanguage(Rust);
+      parser.setLanguage(Rust as Parser.Language);
       const captures = extractCallCaptures(
         parser,
         'fn main() { helpers::format(); }',
@@ -410,7 +410,7 @@ describe('generic call extraction', () => {
     const extractor = createCallExtractor(cppCallConfig);
 
     it('extracts free function call', () => {
-      parser.setLanguage(CPP);
+      parser.setLanguage(CPP as Parser.Language);
       const captures = extractCallCaptures(
         parser,
         'void f() { doStuff(); }',
@@ -429,7 +429,7 @@ describe('generic call extraction', () => {
     const extractor = createCallExtractor(phpCallConfig);
 
     it('extracts free function call', () => {
-      parser.setLanguage(PHP.php);
+      parser.setLanguage(PHP.php as Parser.Language);
       const captures = extractCallCaptures(parser, '<?php doStuff(); ?>', SupportedLanguages.PHP);
       const match = captures.find((c) => c.calledName === 'doStuff');
       expect(match).toBeDefined();
@@ -443,7 +443,7 @@ describe('generic call extraction', () => {
     const extractor = createCallExtractor(rubyCallConfig);
 
     it('extracts member call', () => {
-      parser.setLanguage(Ruby);
+      parser.setLanguage(Ruby as Parser.Language);
       const captures = extractCallCaptures(parser, 'user.save()', SupportedLanguages.Ruby);
       const match = captures.find((c) => c.calledName === 'save');
       expect(match).toBeDefined();
@@ -461,7 +461,7 @@ describe('generic call extraction', () => {
 
 describe('Java method_reference extraction', () => {
   const parser = new Parser();
-  parser.setLanguage(Java);
+  parser.setLanguage(Java as Parser.Language);
   const extractor = createCallExtractor(javaCallConfig);
 
   it('extracts Type::new as constructor', () => {

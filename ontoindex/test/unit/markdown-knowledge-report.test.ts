@@ -465,7 +465,7 @@ function resolution(input: {
     sourceIndexId: 'index-a',
     sourceCommitHash: 'commit-a',
     graphSchemaVersion: 7,
-    docPath: 'docPath' in input.fact ? input.fact.docPath : 'docs/knowledge.md',
+    docPath: 'docPath' in input.fact ? (input.fact.docPath as string) : 'docs/knowledge.md',
     factKey: input.factKey,
     factKind: input.fact.kind,
     subjectKind: 'code-mention',
@@ -476,7 +476,10 @@ function resolution(input: {
     reasons: ['single-candidate'],
     targetGraphIdentity: input.targetGraphIdentity,
     candidates,
-    lineSpan: 'lineSpan' in input.fact ? input.fact.lineSpan : undefined,
+    lineSpan:
+      'lineSpan' in input.fact
+        ? (input.fact.lineSpan as { start: number; end: number })
+        : undefined,
   };
 }
 

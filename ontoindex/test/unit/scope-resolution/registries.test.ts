@@ -1265,8 +1265,9 @@ describe('Step 6: global-qualified fallback', () => {
       const ctx: RegistryContext = {
         ...makeCtx([], [global]),
         scopes: {
-          getScope: (id) => (shape !== 'missing-start' && id === scope.id ? scope : undefined),
-        },
+          getScope: (id: string) =>
+            shape !== 'missing-start' && id === scope.id ? scope : undefined,
+        } as unknown as RegistryContext['scopes'],
       };
       expect(lookupCore('app.User', scope.id, guardedParams, ctx)).toEqual([]);
     },

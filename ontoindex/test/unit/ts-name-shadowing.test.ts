@@ -16,7 +16,7 @@ describe.each([
   ['JavaScript', JavaScript],
 ] as const)('%s name shadowing', (_language, grammar) => {
   const parser = new Parser();
-  parser.setLanguage(grammar);
+  parser.setLanguage(grammar as Parameters<Parser['setLanguage']>[0]);
 
   it.each([
     ['parameter', 'function f(User) { probe(); }', true],
@@ -189,7 +189,7 @@ describe.each([
 
 describe('JavaScript using declaration shadowing', () => {
   const parser = new Parser();
-  parser.setLanguage(JavaScript);
+  parser.setLanguage(JavaScript as Parser.Language);
 
   it.each([
     ['enclosing block', 'function f() { using User = getRes(); return new User(); }', true],

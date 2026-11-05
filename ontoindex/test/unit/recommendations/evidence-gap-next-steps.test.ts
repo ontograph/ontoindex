@@ -113,7 +113,7 @@ describe('evidence gap next steps', () => {
     );
     expect(invalid.ok).toBe(false);
     if (invalid.ok) throw new Error('expected invalid tool validation failure');
-    expect(invalid.errors).toEqual([
+    expect((invalid as unknown as Record<string, any>).errors).toEqual([
       expect.objectContaining({ field: `nextTools[${organicNextSteps.length}]` }),
     ]);
   });

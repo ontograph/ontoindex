@@ -304,7 +304,7 @@ describe('gnEnsureFresh', () => {
         args: ['analyze'],
         logPath: `${REPO_PATH}/.ontoindex/analysis-jobs/job-1.log`,
         createdAt: '2026-08-05T00:00:00.000Z',
-      },
+      } as Awaited<ReturnType<typeof mockSubmitAnalysisJob>>['job'],
     });
     mockComputeSourceManifest.mockResolvedValue({
       version: 1,
@@ -1058,7 +1058,7 @@ describe('gnEnsureFresh', () => {
         args: ['analyze'],
         logPath: `${REPO_PATH}/.ontoindex/analysis-jobs/job-reused.log`,
         createdAt: '2026-08-05T00:00:00.000Z',
-      },
+      } as Awaited<ReturnType<typeof mockSubmitAnalysisJob>>['job'],
     } as any);
 
     const report = await gnEnsureFresh(REPO_ID, { autoAnalyze: true });

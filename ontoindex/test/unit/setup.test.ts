@@ -8,33 +8,11 @@ const execFileMock = vi.fn((...args: any[]) => {
   if (typeof callback === 'function') {
     callback(null, '', '');
   }
-
-  it('installs hooks for Codex and Ontocode', async () => {
-    setPlatform('linux');
-    await fs.mkdir(path.join(tempHome, '.codex'), { recursive: true });
-    await fs.mkdir(path.join(tempHome, '.ontocode'), { recursive: true });
-
-    const { setupCommand } = await import('../../src/cli/setup.js');
-    await setupCommand();
-
-    const codexHooksRaw = await fs.readFile(path.join(tempHome, '.codex', 'hooks.json'), 'utf-8');
-    const codexHooks = JSON.parse(codexHooksRaw);
-    expect(codexHooks.hooks.PreToolUse).toBeDefined();
-    expect(codexHooks.hooks.PostToolUse).toBeDefined();
-
-    const ontocodeHooksRaw = await fs.readFile(
-      path.join(tempHome, '.ontocode', 'hooks.json'),
-      'utf-8',
-    );
-    const ontocodeHooks = JSON.parse(ontocodeHooksRaw);
-    expect(ontocodeHooks.hooks.PreToolUse).toBeDefined();
-    expect(ontocodeHooks.hooks.PostToolUse).toBeDefined();
-  });
 });
 
 // By default, execFileSync throws (simulating `which ontoindex` not found)
 // so getMcpEntry() falls back to the npx path.
-const execFileSyncMock = vi.fn(() => {
+const execFileSyncMock = vi.fn((): string => {
   throw new Error('not found');
 });
 const getGitRootMock = vi.fn(() => '/mock/repo/path');
@@ -124,6 +102,28 @@ describe('setupClaudeCode', () => {
     await fs.rm(tempHome, { recursive: true, force: true });
   });
 
+  it('installs hooks for Codex and Ontocode', async () => {
+    setPlatform('linux');
+    await fs.mkdir(path.join(tempHome, '.codex'), { recursive: true });
+    await fs.mkdir(path.join(tempHome, '.ontocode'), { recursive: true });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const codexHooksRaw = await fs.readFile(path.join(tempHome, '.codex', 'hooks.json'), 'utf-8');
+    const codexHooks = JSON.parse(codexHooksRaw);
+    expect(codexHooks.hooks.PreToolUse).toBeDefined();
+    expect(codexHooks.hooks.PostToolUse).toBeDefined();
+
+    const ontocodeHooksRaw = await fs.readFile(
+      path.join(tempHome, '.ontocode', 'hooks.json'),
+      'utf-8',
+    );
+    const ontocodeHooks = JSON.parse(ontocodeHooksRaw);
+    expect(ontocodeHooks.hooks.PreToolUse).toBeDefined();
+    expect(ontocodeHooks.hooks.PostToolUse).toBeDefined();
+  });
+
   it('writes win32 MCP entry with packaged CLI path', async () => {
     setPlatform('win32');
 
@@ -135,9 +135,11 @@ describe('setupClaudeCode', () => {
 
     expectPackagedMcpEntry(config.mcpServers.ontoindex);
     expect(
-      console.log.mock.calls.some((call) =>
-        call.some((value) => typeof value === 'string' && value.includes('Warnings:')),
-      ),
+      vi
+        .mocked(console.log)
+        .mock.calls.some((call) =>
+          call.some((value) => typeof value === 'string' && value.includes('Warnings:')),
+        ),
     ).toBe(false);
   });
 
@@ -453,12 +455,14 @@ describe('setupClaudeCode', () => {
 
     expectPackagedMcpEntry(config.mcpServers.ontoindex);
     expect(
-      console.log.mock.calls.some((call) =>
-        call.some(
-          (value) =>
-            typeof value === 'string' && value.includes('Packaged CLI path does not exist:'),
+      vi
+        .mocked(console.log)
+        .mock.calls.some((call) =>
+          call.some(
+            (value) =>
+              typeof value === 'string' && value.includes('Packaged CLI path does not exist:'),
+          ),
         ),
-      ),
     ).toBe(true);
   });
 
@@ -475,9 +479,11 @@ describe('setupClaudeCode', () => {
 
     expect(config.mcpServers.ontoindex.command).toBe('npx');
     expect(
-      console.log.mock.calls.some((call) =>
-        call.some((value) => typeof value === 'string' && value.includes('Using npx fallback')),
-      ),
+      vi
+        .mocked(console.log)
+        .mock.calls.some((call) =>
+          call.some((value) => typeof value === 'string' && value.includes('Using npx fallback')),
+        ),
     ).toBe(true);
   });
 

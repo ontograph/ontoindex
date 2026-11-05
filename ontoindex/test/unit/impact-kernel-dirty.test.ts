@@ -45,7 +45,9 @@ describe('impact kernel dirty traversal boundaries', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     query.mockResolvedValue([]);
-    vi.mocked(poolAdapter.executeParameterized).mockResolvedValue([]);
+    vi.mocked(poolAdapter.executeParameterized).mockResolvedValue(
+      [] as unknown as Awaited<ReturnType<typeof poolAdapter.executeParameterized>>,
+    );
   });
 
   it.each(['upstream', 'downstream'] as const)(
@@ -77,7 +79,7 @@ describe('impact kernel dirty traversal boundaries', () => {
         riskReasons: ['traversal_partial'],
       });
       expect(result.partial).toBe(true);
-      expect(result.warnings).toEqual([
+      expect((result as typeof result & { warnings: string[] }).warnings).toEqual([
         'Impact traversal stopped at dirty paths with stale graph IDs: src/dirty.ts',
       ]);
       expect(query).toHaveBeenCalledTimes(3);
@@ -107,7 +109,7 @@ describe('impact kernel dirty traversal boundaries', () => {
       'dirtyThree',
     ]);
     expect(result.impacted.filter(({ dirty }) => dirty)).toHaveLength(3);
-    expect(result.warnings).toEqual([
+    expect((result as typeof result & { warnings: string[] }).warnings).toEqual([
       'Impact traversal stopped at dirty paths with stale graph IDs: src/a.ts, src/z.ts',
     ]);
     expect(result.partial).toBe(true);
@@ -177,12 +179,14 @@ describe('impact kernel dirty traversal boundaries', () => {
         dirtyPaths: new Set(['src/dirty.ts']),
         overlayPaths: new Set(['src/dirty.ts']),
         tombstones: new Set(),
-      });
+      } as unknown as Awaited<ReturnType<typeof getOverlaySnapshot>>);
       vi.mocked(resolveSymbolCandidates).mockResolvedValue({
         kind: 'ok',
         resolvedLabel: 'Function',
         symbol: { ...target, startLine: 1, endLine: 2 },
-      } as Awaited<ReturnType<typeof resolveSymbolCandidates>>);
+      } as Awaited<ReturnType<typeof resolveSymbolCandidates>> as unknown as Awaited<
+        ReturnType<typeof resolveSymbolCandidates>
+      >);
       query.mockResolvedValueOnce([row('dirty')]);
 
       const result = await runImpact(repo, { target: 'target', direction: 'upstream' });
@@ -220,7 +224,7 @@ describe('bounded dirty mentions', () => {
     const readLengths: number[] = [];
     const originalOpen = fs.open;
     const openSpy = vi.spyOn(fs, 'open');
-    openSpy.mockImplementation((...args: any[]) =>
+    openSpy.mockImplementation((...args: Parameters<typeof originalOpen>) =>
       originalOpen(...args).then((handle) => {
         const originalRead = handle.read.bind(handle);
         handle.read = (async (...readArgs: any[]) => {
@@ -285,8 +289,12 @@ describe('bounded dirty mentions', () => {
 
   it('marks clean-target impact partial for a dirty new caller while excluding its definition and tombstones', async () => {
     vi.resetAllMocks();
-    vi.mocked(poolAdapter.executeQuery).mockResolvedValue([]);
-    vi.mocked(poolAdapter.executeParameterized).mockResolvedValue([]);
+    vi.mocked(poolAdapter.executeQuery).mockResolvedValue(
+      [] as unknown as Awaited<ReturnType<typeof poolAdapter.executeQuery>>,
+    );
+    vi.mocked(poolAdapter.executeParameterized).mockResolvedValue(
+      [] as unknown as Awaited<ReturnType<typeof poolAdapter.executeParameterized>>,
+    );
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'impact-wiring-'));
     try {
       await fs.mkdir(path.join(root, 'src'));
@@ -299,12 +307,14 @@ describe('bounded dirty mentions', () => {
         dirtyPaths: new Set(['src/caller.ts', 'src/target.ts', 'src/deleted.ts']),
         overlayPaths: new Set(),
         tombstones: new Set(['src/deleted.ts']),
-      });
+      } as unknown as Awaited<ReturnType<typeof getOverlaySnapshot>>);
       vi.mocked(resolveSymbolCandidates).mockResolvedValue({
         kind: 'ok',
         resolvedLabel: 'Function',
         symbol: { ...target, startLine: 1, endLine: 2 },
-      } as Awaited<ReturnType<typeof resolveSymbolCandidates>>);
+      } as Awaited<ReturnType<typeof resolveSymbolCandidates>> as unknown as Awaited<
+        ReturnType<typeof resolveSymbolCandidates>
+      >);
       const result = await runImpact(
         { ...repo, repoPath: root },
         { target: 'target', direction: 'upstream' },
@@ -315,7 +325,7 @@ describe('bounded dirty mentions', () => {
         partial: true,
         traversalComplete: false,
       });
-      expect(result.warnings).toEqual([
+      expect((result as typeof result & { warnings: string[] }).warnings).toEqual([
         'Dirty file src/caller.ts mentions target; callers added there are not in the graph',
       ]);
     } finally {

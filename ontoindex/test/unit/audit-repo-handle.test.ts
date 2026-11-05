@@ -8,7 +8,7 @@ describe('audit repository handles', () => {
   const entries = [
     { name: 'foo', path: '/a/foo', storagePath: '/a/index', indexedAt: '' },
     { name: 'foo', path: '/b/foo', storagePath: '/b/index', indexedAt: '' },
-  ];
+  ] as Awaited<ReturnType<typeof listRegisteredRepos>>;
   it('resolves canonical ids and absolute paths', async () => {
     vi.mocked(listRegisteredRepos).mockResolvedValue(entries);
     const id = registryRepoIds(entries).get(entries[1])!;

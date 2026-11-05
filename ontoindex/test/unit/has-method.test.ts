@@ -511,7 +511,10 @@ class Outer {
     it('returns null for a node without parent', () => {
       // Simulate a node with null parent
       const fakeNode = { parent: null };
-      const result = findEnclosingClassId(fakeNode, filePath);
+      const result = findEnclosingClassId(
+        fakeNode as unknown as Parameters<typeof findEnclosingClassId>[0],
+        filePath,
+      );
       expect(result).toBeNull();
     });
 
@@ -526,7 +529,10 @@ class Outer {
       const fakeChild = {
         parent: fakeClassNode,
       };
-      const result = findEnclosingClassId(fakeChild, filePath);
+      const result = findEnclosingClassId(
+        fakeChild as unknown as Parameters<typeof findEnclosingClassId>[0],
+        filePath,
+      );
       // The class has no name, so should return null
       expect(result).toBeNull();
     });

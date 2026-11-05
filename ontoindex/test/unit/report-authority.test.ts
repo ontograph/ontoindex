@@ -15,7 +15,7 @@ describe('Report Authority Boundaries', () => {
 
   it('proves gn_pre_commit_audit verdict is independent of ledger state', () => {
     // 1. Setup a representative report for gn_pre_commit_audit
-    const organicReport: CommitAuditReport = {
+    const organicReport = {
       version: 1,
       verdict: 'READY',
       reasoning: 'Changes are safe.',
@@ -24,15 +24,19 @@ describe('Report Authority Boundaries', () => {
       testCoverageDelta: { coveredBefore: 0, coveredAfter: 0, deltaPp: 0 },
       suggestedReviewers: [],
       preCommitChecklist: [],
-      docEvidence: [],
+      docEvidence: [] as unknown as CommitAuditReport['docEvidence'],
       recommendations: [],
       affectedProcesses: [],
       graphSections: { processesAvailable: true, hunkCoverageAvailable: true },
       status: 'ok',
-      freshness: { status: 'fresh', lastCommit: 'abc', indexedAt: '123' },
+      freshness: {
+        status: 'fresh',
+        lastCommit: 'abc',
+        indexedAt: '123',
+      } as unknown as CommitAuditReport['freshness'],
       evidence: [],
       capabilitiesMissing: [],
-    };
+    } as unknown as CommitAuditReport;
 
     // 2. Inject STALE state into the ledger
     recordEvidenceReadSafe({
@@ -74,7 +78,7 @@ describe('Report Authority Boundaries', () => {
   });
 
   it('keeps docs, memory, and runtime diagnostics out of audit evidence authority', () => {
-    const organicReport: CommitAuditReport = {
+    const organicReport = {
       version: 1,
       verdict: 'READY',
       reasoning: 'Graph and audit checks already passed.',
@@ -83,15 +87,19 @@ describe('Report Authority Boundaries', () => {
       testCoverageDelta: { coveredBefore: 0, coveredAfter: 0, deltaPp: 0 },
       suggestedReviewers: [],
       preCommitChecklist: [],
-      docEvidence: [],
+      docEvidence: [] as unknown as CommitAuditReport['docEvidence'],
       recommendations: [],
       affectedProcesses: [],
       graphSections: { processesAvailable: true, hunkCoverageAvailable: true },
       status: 'ok',
-      freshness: { status: 'fresh', lastCommit: 'abc', indexedAt: '123' },
+      freshness: {
+        status: 'fresh',
+        lastCommit: 'abc',
+        indexedAt: '123',
+      } as unknown as CommitAuditReport['freshness'],
       evidence: [],
       capabilitiesMissing: [],
-    };
+    } as unknown as CommitAuditReport;
 
     recordEvidenceReadSafe({
       readClass: 'docs_evidence',

@@ -1,3 +1,11 @@
+type TestFields<T> = {
+  [K in T extends unknown ? keyof T : never]: T extends unknown
+    ? K extends keyof T
+      ? T[K]
+      : never
+    : never;
+};
+
 /**
  * Unit Tests: LocalBackend callTool dispatch & lifecycle
  *
@@ -27,13 +35,13 @@ const { lbugMocks } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/core/lbug/pool-adapter.js')>();
   return { ...actual, ...lbugMocks };
 });
 
 // Re-export shim must resolve to the same mocks
 vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/mcp/core/lbug-adapter.js')>();
   return { ...actual, ...lbugMocks };
 });
 
@@ -1155,7 +1163,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('routes list_repos without needing repo param', async () => {
-    const result = await backend.callTool('list_repos', {});
+    const result = (await backend.callTool('list_repos', {})) as { name: string }[];
     expect(Array.isArray(result)).toBe(true);
     expect(result[0].name).toBe('test-project');
   });
@@ -1168,9 +1176,9 @@ describe('LocalBackend.callTool', () => {
         path: path.join(os.tmpdir(), `repo-${i}`),
       })),
     );
-    await backend.init({ forceRefresh: true });
+    await backend.init({ forceRefresh: true } as Parameters<LocalBackend['init']>[0]);
 
-    const result = await backend.callTool('list_repos', {});
+    const result = (await backend.callTool('list_repos', {})) as { name: string }[];
 
     expect(result).toHaveLength(6000);
     expect(result.at(-1)).toMatchObject({ name: 'repo-5999' });
@@ -1184,32 +1192,48 @@ describe('LocalBackend.callTool', () => {
 
   it('dispatches query tool', async () => {
     (executeParameterized as any).mockResolvedValue([]);
-    const result = await backend.callTool('query', { query: 'auth' });
+    const result = (await backend.callTool('query', { query: 'auth' })) as {
+      error: string;
+      row_count: number;
+      markdown: string;
+    };
     expect(result).toHaveProperty('processes');
     expect(result).toHaveProperty('definitions');
   });
 
   it('query tool returns error for empty query', async () => {
-    const result = await backend.callTool('query', { query: '' });
+    const result = (await backend.callTool('query', { query: '' })) as {
+      error: string;
+      row_count: number;
+      markdown: string;
+    };
     expect(result.error).toContain('query parameter is required');
   });
 
   it('query tool returns error for whitespace-only query', async () => {
-    const result = await backend.callTool('query', { query: '   ' });
+    const result = (await backend.callTool('query', { query: '   ' })) as {
+      error: string;
+      row_count: number;
+      markdown: string;
+    };
     expect(result.error).toContain('query parameter is required');
   });
 
   it('dispatches cypher tool and blocks write queries', async () => {
-    const result = await backend.callTool('cypher', { query: 'CREATE (n:Test)' });
+    const result = (await backend.callTool('cypher', { query: 'CREATE (n:Test)' })) as {
+      error: string;
+      row_count: number;
+      markdown: string;
+    };
     expect(result).toHaveProperty('error');
     expect(result.error).toContain('Read-only Cypher rejected: forbidden keyword CREATE');
   });
 
   it('dispatches cypher tool with valid read query', async () => {
     (executeParameterized as any).mockResolvedValue([{ name: 'test', filePath: 'src/test.ts' }]);
-    const result = await backend.callTool('cypher', {
+    const result = (await backend.callTool('cypher', {
       query: 'MATCH (n:Function) RETURN n.name AS name, n.filePath AS filePath LIMIT 5',
-    });
+    })) as { error: string; row_count: number; markdown: string };
     // formatCypherAsMarkdown returns { markdown, row_count } for tabular results
     expect(result).toHaveProperty('markdown');
     expect(result).toHaveProperty('row_count');
@@ -1227,19 +1251,34 @@ describe('LocalBackend.callTool', () => {
         endLine: 10,
       },
     ]);
-    const result = await backend.callTool('context', { name: 'main' });
+    const result = (await backend.callTool('context', { name: 'main' })) as {
+      status: string;
+      error: string;
+      symbol: { name: string; filePath: string; kind: string };
+      candidates: { score: number; kind: string }[];
+    };
     expect(result.status).toBe('found');
     expect(result.symbol.name).toBe('main');
   });
 
   it('context tool returns error when name and uid are both missing', async () => {
-    const result = await backend.callTool('context', {});
+    const result = (await backend.callTool('context', {})) as {
+      status: string;
+      error: string;
+      symbol: { name: string; filePath: string; kind: string };
+      candidates: { score: number; kind: string }[];
+    };
     expect(result.error).toContain('Either "name" or "uid"');
   });
 
   it('context tool returns not-found for missing symbol', async () => {
     (executeParameterized as any).mockResolvedValue([]);
-    const result = await backend.callTool('context', { name: 'doesNotExist' });
+    const result = (await backend.callTool('context', { name: 'doesNotExist' })) as {
+      status: string;
+      error: string;
+      symbol: { name: string; filePath: string; kind: string };
+      candidates: { score: number; kind: string }[];
+    };
     expect(result.error).toContain('not found');
   });
 
@@ -1262,7 +1301,12 @@ describe('LocalBackend.callTool', () => {
         endLine: 5,
       },
     ]);
-    const result = await backend.callTool('context', { name: 'main' });
+    const result = (await backend.callTool('context', { name: 'main' })) as {
+      status: string;
+      error: string;
+      symbol: { name: string; filePath: string; kind: string };
+      candidates: { score: number; kind: string }[];
+    };
     expect(result.status).toBe('ambiguous');
     expect(result.candidates).toHaveLength(2);
 
@@ -1295,10 +1339,15 @@ describe('LocalBackend.callTool', () => {
         endLine: 60,
       },
     ]);
-    const result = await backend.callTool('context', {
+    const result = (await backend.callTool('context', {
       name: 'handleConnect',
       file_path: 'App.tsx',
-    });
+    })) as {
+      status: string;
+      error: string;
+      symbol: { name: string; filePath: string; kind: string };
+      candidates: { score: number; kind: string }[];
+    };
     // In production, `WHERE n.filePath CONTAINS $filePath` would pre-filter
     // at the DB layer and only `src/App.tsx` would come back — resolving
     // via the single-candidate early return rather than via scoring. The
@@ -1334,11 +1383,16 @@ describe('LocalBackend.callTool', () => {
         endLine: 15,
       },
     ]);
-    const result = await backend.callTool('context', {
+    const result = (await backend.callTool('context', {
       name: 'render',
       file_path: 'components/App.tsx',
       kind: 'Function',
-    });
+    })) as {
+      status: string;
+      error: string;
+      symbol: { name: string; filePath: string; kind: string };
+      candidates: { score: number; kind: string }[];
+    };
     // Expected scoring:
     //   Function candidate: 0.50 base + 0.40 file_path + 0.20 kind = 1.10 → cap 1.00
     //   Method candidate:   0.50 base + 0.00 file_path + 0.00 kind + 0.06 definition = 0.56
@@ -1370,7 +1424,12 @@ describe('LocalBackend.callTool', () => {
     ]);
     // No hints → both candidates score 0.62 (0.50 base + 0.06 Function
     // priority + 0.06 definition span). Tied scores fall back to deterministic tiebreakers.
-    const result = await backend.callTool('context', { name: 'foo' });
+    const result = (await backend.callTool('context', { name: 'foo' })) as {
+      status: string;
+      error: string;
+      symbol: { name: string; filePath: string; kind: string };
+      candidates: { score: number; kind: string }[];
+    };
     expect(result.status).toBe('ambiguous');
     expect(result.candidates).toHaveLength(2);
     expect(result.candidates[0].score).toBeCloseTo(0.62, 2);
@@ -1396,7 +1455,12 @@ describe('LocalBackend.callTool', () => {
         endLine: 15,
       },
     ]);
-    const result = await backend.callTool('context', { name: 'save', kind: 'Function' });
+    const result = (await backend.callTool('context', { name: 'save', kind: 'Function' })) as {
+      status: string;
+      error: string;
+      symbol: { name: string; filePath: string; kind: string };
+      candidates: { score: number; kind: string }[];
+    };
     // When kind hint is given, kind-priority bonus is suppressed and +0.20
     // kind-match bonus applies instead. Function becomes the top candidate.
     expect(result.status).toBe('ambiguous');
@@ -1426,7 +1490,12 @@ describe('LocalBackend.callTool', () => {
       },
     ]);
 
-    const result = await backend.callTool('impact', { target: 'login', direction: 'upstream' });
+    const result = (await backend.callTool('impact', {
+      target: 'login',
+      direction: 'upstream',
+    })) as TestFields<
+      Awaited<ReturnType<typeof import('../../src/mcp/local/backend-impact.js').runImpact>>
+    >;
 
     expect(result.status).toBe('ambiguous');
     expect(result.candidates).toHaveLength(2);
@@ -1456,11 +1525,13 @@ describe('LocalBackend.callTool', () => {
     ]);
     (executeQuery as any).mockResolvedValue([]);
 
-    const result = await backend.callTool('impact', {
+    const result = (await backend.callTool('impact', {
       target: 'ignoredName',
       target_uid: 'uid:1234',
       direction: 'upstream',
-    });
+    })) as TestFields<
+      Awaited<ReturnType<typeof import('../../src/mcp/local/backend-impact.js').runImpact>>
+    >;
 
     // No ambiguous shape and no name-lookup error — the uid short-circuit won.
     expect(result.status).not.toBe('ambiguous');
@@ -1489,10 +1560,12 @@ describe('LocalBackend.callTool', () => {
     ]);
     (executeQuery as any).mockResolvedValue([]);
 
-    const result = await backend.callTool('impact', {
+    const result = (await backend.callTool('impact', {
       target: 'ThreadManager.validate_environment_selections',
       direction: 'upstream',
-    });
+    })) as TestFields<
+      Awaited<ReturnType<typeof import('../../src/mcp/local/backend-impact.js').runImpact>>
+    >;
 
     expect(result.target.id).toBe(
       'Function:src/thread_manager.rs:ThreadManager.validate_environment_selections',
@@ -1516,7 +1589,12 @@ describe('LocalBackend.callTool', () => {
     ]);
     (executeQuery as any).mockResolvedValue([]);
 
-    const result = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    const result = (await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+    })) as TestFields<
+      Awaited<ReturnType<typeof import('../../src/mcp/local/backend-impact.js').runImpact>>
+    >;
     expect(result).toBeDefined();
     expect(result.target).toBeDefined();
   });
@@ -1524,7 +1602,10 @@ describe('LocalBackend.callTool', () => {
   it('dispatches detect_changes tool', async () => {
     // detect_changes calls execFileSync which we haven't mocked at module level,
     // so it will throw a git error — that's fine, we test the error path
-    const result = await backend.callTool('detect_changes', { scope: 'unstaged' });
+    const result = (await backend.callTool('detect_changes', { scope: 'unstaged' })) as {
+      error: string;
+      summary: unknown;
+    };
     // Should either return changes or a git error
     expect(result).toBeDefined();
     expect(result.error || result.summary).toBeDefined();
@@ -1544,16 +1625,16 @@ describe('LocalBackend.callTool', () => {
       ])
       .mockResolvedValue([]);
 
-    const result = await backend.callTool('rename', {
+    const result = (await backend.callTool('rename', {
       symbol_name: 'oldName',
       new_name: 'newName',
       dry_run: true,
-    });
+    })) as { error: string };
     expect(result).toBeDefined();
   });
 
   it('rename returns error when both symbol_name and symbol_uid are missing', async () => {
-    const result = await backend.callTool('rename', { new_name: 'newName' });
+    const result = (await backend.callTool('rename', { new_name: 'newName' })) as { error: string };
     expect(result.error).toContain('Either symbol_name or symbol_uid');
   });
 
@@ -1572,7 +1653,9 @@ describe('LocalBackend.callTool', () => {
         fetchReason: 'fetch-url-match|keys:data,pagination',
       },
     ]);
-    const result = await backend.callTool('api_impact', { route: '/api/grants' });
+    const result = (await backend.callTool('api_impact', { route: '/api/grants' })) as TestFields<
+      Awaited<ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>>
+    >;
     expect(result).toHaveProperty('route', '/api/grants');
     expect(result).toHaveProperty('handler', 'app/api/grants/route.ts');
     expect(result).toHaveProperty('responseShape');
@@ -1587,13 +1670,19 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('api_impact returns error when no route or file param', async () => {
-    const result = await backend.callTool('api_impact', {});
+    const result = (await backend.callTool('api_impact', {})) as TestFields<
+      Awaited<ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>>
+    >;
     expect(result.error).toContain('Either "route" or "file"');
   });
 
   it('api_impact returns error when no routes found', async () => {
     (executeParameterized as any).mockResolvedValue([]);
-    const result = await backend.callTool('api_impact', { route: '/api/nonexistent' });
+    const result = (await backend.callTool('api_impact', {
+      route: '/api/nonexistent',
+    })) as TestFields<
+      Awaited<ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>>
+    >;
     expect(result.error).toContain('No routes found');
   });
 
@@ -1611,7 +1700,9 @@ describe('LocalBackend.callTool', () => {
         fetchReason: 'fetch-url-match|keys:items,meta',
       },
     ]);
-    const result = await backend.callTool('api_impact', { route: '/api/data' });
+    const result = (await backend.callTool('api_impact', { route: '/api/data' })) as TestFields<
+      Awaited<ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>>
+    >;
     expect(result.mismatches).toBeDefined();
     expect(result.mismatches).toHaveLength(1);
     expect(result.mismatches[0].field).toBe('meta');
@@ -1634,7 +1725,11 @@ describe('LocalBackend.callTool', () => {
         fetchReason: null,
       },
     ]);
-    const result = await backend.callTool('api_impact', { file: 'app/api/users/route.ts' });
+    const result = (await backend.callTool('api_impact', {
+      file: 'app/api/users/route.ts',
+    })) as TestFields<
+      Awaited<ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>>
+    >;
     expect(result.route).toBe('/api/users');
     expect(result.impactSummary.directConsumers).toBe(0);
     expect(result.impactSummary.riskLevel).toBe('LOW');
@@ -1685,7 +1780,9 @@ describe('LocalBackend.callTool', () => {
       },
     ]);
 
-    const result = await backend.callTool('api_impact', { route: '/api/users' });
+    const result = (await backend.callTool('api_impact', { route: '/api/users' })) as TestFields<
+      Awaited<ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>>
+    >;
     expect(result.activeModelPacks).toEqual([
       {
         id: 'core.framework-models',
@@ -1722,7 +1819,9 @@ describe('LocalBackend.callTool', () => {
         fetchReason: null,
       },
     ]);
-    const result = await backend.callTool('api_impact', { route: '/api/' });
+    const result = (await backend.callTool('api_impact', { route: '/api/' })) as TestFields<
+      Awaited<ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>>
+    >;
     expect(result.routes).toHaveLength(2);
     expect(result.total).toBe(2);
   });
@@ -1743,7 +1842,9 @@ describe('LocalBackend.callTool', () => {
       });
     }
     (executeParameterized as any).mockResolvedValue(rows);
-    const result = await backend.callTool('api_impact', { route: '/api/popular' });
+    const result = (await backend.callTool('api_impact', { route: '/api/popular' })) as TestFields<
+      Awaited<ReturnType<typeof import('../../src/mcp/local/backend-api-analysis.js').apiImpact>>
+    >;
     expect(result.impactSummary.directConsumers).toBe(10);
     expect(result.impactSummary.riskLevel).toBe('HIGH');
   });
@@ -1777,7 +1878,11 @@ describe('LocalBackend.callTool', () => {
         endLine: 10,
       },
     ]);
-    const result = await backend.callTool('explore', { name: 'main' });
+    const result = (await backend.callTool('explore', { name: 'main' })) as {
+      status: string;
+      symbol: unknown;
+      error?: string;
+    };
     // explore calls context — which may return found or ambiguous depending on mock
     expect(result).toBeDefined();
     expect(result.status === 'found' || result.symbol || result.error === undefined).toBeTruthy();
@@ -1797,7 +1902,7 @@ describe('LocalBackend.resolveRepo', () => {
   it('resolves single repo without param', async () => {
     setupSingleRepo();
     await backend.init();
-    const result = await backend.callTool('list_repos', {});
+    const result = (await backend.callTool('list_repos', {})) as { name: string }[];
     expect(result).toHaveLength(1);
   });
 
@@ -1825,10 +1930,10 @@ describe('LocalBackend.resolveRepo', () => {
     await backend.init();
     // With repo param, it should resolve correctly
     (executeParameterized as any).mockResolvedValue([]);
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'auth',
       repo: 'test-project',
-    });
+    })) as { error: string; row_count: number; markdown: string };
     expect(result).toHaveProperty('processes');
   });
 
@@ -1850,10 +1955,10 @@ describe('LocalBackend.resolveRepo', () => {
     await backend.init();
     (executeParameterized as any).mockResolvedValue([]);
 
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'auth',
       repo: MOCK_REPO_ENTRY.path,
-    });
+    })) as { error: string; row_count: number; markdown: string };
 
     expect(result).toHaveProperty('processes');
   });
@@ -1871,10 +1976,10 @@ describe('LocalBackend.resolveRepo', () => {
     await backend.init();
     (executeParameterized as any).mockResolvedValue([]);
     // Should match even with different case
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'test',
       repo: 'Test-Project',
-    });
+    })) as { error: string; row_count: number; markdown: string };
     expect(result).toHaveProperty('processes');
   });
 
@@ -1887,10 +1992,10 @@ describe('LocalBackend.resolveRepo', () => {
 
     // The resolve should re-read the registry and find the new repo
     (executeParameterized as any).mockResolvedValue([]);
-    const result = await backend.callTool('query', {
+    const result = (await backend.callTool('query', {
       query: 'test',
       repo: 'test-project',
-    });
+    })) as { error: string; row_count: number; markdown: string };
     expect(result).toHaveProperty('processes');
     // listRegisteredRepos should have been called again
     expect(listRegisteredRepos).toHaveBeenCalledTimes(2); // once in init, once in refreshRepos
@@ -1996,7 +2101,11 @@ describe('callTool cypher write blocking', () => {
 
   for (const [query, expectedKeyword] of writeQueries) {
     it(`blocks write query: ${query.slice(0, 30)}...`, async () => {
-      const result = await backend.callTool('cypher', { query });
+      const result = (await backend.callTool('cypher', { query })) as {
+        error: string;
+        row_count: number;
+        markdown: string;
+      };
       expect(result).toHaveProperty('error');
       expect(result.error).toContain(
         `Read-only Cypher rejected: forbidden keyword ${expectedKeyword}`,
@@ -2006,9 +2115,9 @@ describe('callTool cypher write blocking', () => {
 
   it('allows read query through callTool', async () => {
     (executeParameterized as any).mockResolvedValue([]);
-    const result = await backend.callTool('cypher', {
+    const result = (await backend.callTool('cypher', {
       query: 'MATCH (n:Function) RETURN n.name LIMIT 5',
-    });
+    })) as { error: string; row_count: number; markdown: string };
     // Should not have error property with write-block message
     expect(result.error).toBeUndefined();
   });
@@ -2027,14 +2136,14 @@ describe('LocalBackend.listRepos', () => {
   it('returns empty array when no repos', async () => {
     setupNoRepos();
     await backend.init();
-    const repos = await backend.callTool('list_repos', {});
+    const repos = (await backend.callTool('list_repos', {})) as { name: string }[];
     expect(repos).toEqual([]);
   });
 
   it('returns repo metadata', async () => {
     setupSingleRepo();
     await backend.init();
-    const repos = await backend.callTool('list_repos', {});
+    const repos = (await backend.callTool('list_repos', {})) as { name: string }[];
     expect(repos).toHaveLength(1);
     expect(repos[0]).toEqual(
       expect.objectContaining({
@@ -2077,9 +2186,9 @@ describe('cypher tool LadybugDB not ready', () => {
       .mockReturnValueOnce(false) // ensureInitialized check
       .mockReturnValueOnce(false); // cypher's own check
 
-    const result = await backend.callTool('cypher', {
+    const result = (await backend.callTool('cypher', {
       query: 'MATCH (n) RETURN n LIMIT 1',
-    });
+    })) as { error: string; row_count: number; markdown: string };
     expect(result.error).toContain('LadybugDB not ready');
   });
 });
@@ -2108,9 +2217,9 @@ describe('cypher result formatting', () => {
       { name: 'main', filePath: 'src/index.ts' },
       { name: 'helper', filePath: 'src/utils.ts' },
     ]);
-    const result = await backend.callTool('cypher', {
+    const result = (await backend.callTool('cypher', {
       query: 'MATCH (n:Function) RETURN n.name AS name, n.filePath AS filePath LIMIT 10',
-    });
+    })) as { error: string; row_count: number; markdown: string };
     expect(result).toHaveProperty('markdown');
     expect(result.markdown).toContain('name');
     expect(result.markdown).toContain('main');
@@ -2119,17 +2228,17 @@ describe('cypher result formatting', () => {
 
   it('preserves empty array results without repo identity wrapping', async () => {
     (executeParameterized as any).mockResolvedValue([]);
-    const result = await backend.callTool('cypher', {
+    const result = (await backend.callTool('cypher', {
       query: 'MATCH (n:Function) RETURN n.name LIMIT 1',
-    });
+    })) as { error: string; row_count: number; markdown: string };
     expect(result).toEqual([]);
   });
 
   it('returns error object when cypher fails', async () => {
     (executeParameterized as any).mockRejectedValue(new Error('Syntax error'));
-    const result = await backend.callTool('cypher', {
+    const result = (await backend.callTool('cypher', {
       query: 'MATCH (n:Missing) RETURN n LIMIT 1',
-    });
+    })) as { error: string; row_count: number; markdown: string };
     expect(result).toHaveProperty('error');
     expect(result.error).toContain('Syntax error');
   });

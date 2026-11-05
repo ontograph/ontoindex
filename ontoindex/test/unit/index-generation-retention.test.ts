@@ -91,8 +91,8 @@ describe('committed index generation retention', () => {
         init: async () => {
           throw new Error('native init failed');
         },
-      } as lbug.Database;
-    } as typeof lbug.Database);
+      } as unknown as lbug.Database;
+    } as unknown as typeof lbug.Database);
     await expect(
       pool.initLbug('failed-native-retention', path.join(storage, 'lbug')),
     ).rejects.toThrow('native init failed');
@@ -423,7 +423,7 @@ describe('committed index generation retention', () => {
         readOnly,
         64 * 1024 * 1024,
       );
-    } as typeof lbug.Database);
+    } as unknown as typeof lbug.Database);
     try {
       await pool.initLbug('retention-native', path.join(storage, 'lbug'));
       const unlink = fs.unlink.bind(fs);

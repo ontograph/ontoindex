@@ -262,7 +262,11 @@ describe('runPipeline', () => {
       name: 'telemetry',
       deps: [],
       async execute(ctx) {
-        ctx.graph.addNode({ id: 'File:a.ts', label: 'File', properties: { filePath: 'a.ts' } });
+        ctx.graph.addNode({
+          id: 'File:a.ts',
+          label: 'File',
+          properties: { filePath: 'a.ts' } as Parameters<typeof ctx.graph.addNode>[0]['properties'],
+        });
         return 'ok';
       },
     };

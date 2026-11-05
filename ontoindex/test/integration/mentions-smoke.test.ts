@@ -18,21 +18,21 @@ describe('MENTIONS Smoke Test', () => {
       label: 'File',
       domain: 'doc',
       properties: { name: 'README.md', filePath: 'README.md' },
-    });
+    } as Parameters<typeof graph.addNode>[0] & { domain: string });
 
     graph.addNode({
       id: 'Function:src/auth.ts:login',
       label: 'Function',
       domain: 'code',
       properties: { name: 'login', filePath: 'src/auth.ts' },
-    });
+    } as Parameters<typeof graph.addNode>[0] & { domain: string });
 
     graph.addNode({
       id: 'Class:src/models.ts:User',
       label: 'Class',
       domain: 'code',
       properties: { name: 'User', filePath: 'src/models.ts' },
-    });
+    } as Parameters<typeof graph.addNode>[0] & { domain: string });
 
     // 2. Mock markdown file
     const mdFiles = [
@@ -63,7 +63,7 @@ describe('MENTIONS Smoke Test', () => {
       label: 'File',
       domain: 'doc',
       properties: { name: 'security.md', filePath: 'docs/security.md' },
-    });
+    } as Parameters<typeof graph.addNode>[0] & { domain: string });
 
     processMarkdown(
       graph,

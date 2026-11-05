@@ -57,7 +57,7 @@ const repo: RepoHandle = {
   indexedAt: '',
   lastCommit: 'abc123',
 };
-const stale: EnrichedSymbolRow = {
+const stale: Required<Pick<EnrichedSymbolRow, 'name' | 'type' | 'filePath'>> & EnrichedSymbolRow = {
   nodeId: 'Function:src/dirty.ts:CacheStore',
   name: 'OldCacheStore',
   type: 'Function',
@@ -65,7 +65,7 @@ const stale: EnrichedSymbolRow = {
   startLine: 1,
   endLine: 5,
 };
-const clean: EnrichedSymbolRow = {
+const clean: Required<Pick<EnrichedSymbolRow, 'name' | 'type' | 'filePath'>> & EnrichedSymbolRow = {
   ...stale,
   nodeId: 'Function:src/clean.ts:CacheStore',
   name: 'CleanCacheStore',
@@ -86,7 +86,7 @@ function snapshot(usable: boolean, dirtyPaths = ['src/dirty.ts']): OverlaySnapsh
     dirtyPaths: new Set(dirtyPaths),
     overlayPaths: new Set(dirtyPaths),
     tombstones: new Set(),
-  };
+  } as unknown as OverlaySnapshot;
 }
 const options = {
   query: 'CacheStore',
@@ -104,7 +104,11 @@ describe('query dirty-overlay merge', () => {
       })),
       ftsUsed: true,
     });
-    const result = await query(repo, { ...options, limit: 3, structured_output: true });
+    const result = (await query(repo, {
+      ...options,
+      limit: 3,
+      structured_output: true,
+    })) as Extract<Awaited<ReturnType<typeof query>>, { query_intent: unknown }>;
     expect(result.definitions).toHaveLength(3);
     const cacheWrite = vi.mocked(SemanticRetrievalCache.prototype.set).mock.calls[0];
     expect(cacheWrite).toBeDefined();
@@ -113,7 +117,10 @@ describe('query dirty-overlay merge', () => {
       ageMs: 1,
       result: { ...cacheWrite[1], timestamp: 100 },
     });
-    const hit = await query(repo, { ...options, limit: 3, structured_output: true });
+    const hit = (await query(repo, { ...options, limit: 3, structured_output: true })) as Extract<
+      Awaited<ReturnType<typeof query>>,
+      { query_intent: unknown }
+    >;
     expect(hit.definitions).toHaveLength(3);
     expect(hit.structured_retrieval.capabilityState.cacheHit).toBe(true);
     await query(repo, { ...options, limit: 5, structured_output: true });
@@ -132,7 +139,7 @@ describe('query dirty-overlay merge', () => {
     });
     vi.spyOn(SemanticRetrievalCache.prototype, 'set').mockResolvedValue({ evicted: 0 });
     vi.mocked(classifyIntent).mockReturnValue({
-      intent: 'identifier',
+      intent: 'identifier' as ReturnType<typeof classifyIntent>['intent'],
       confidence: 0.8,
       matchedKeywords: [],
     });
@@ -168,13 +175,13 @@ describe('query dirty-overlay merge', () => {
         results: [{ ...stale, filePath: 'src\\dirty.ts' }, clean],
         ftsUsed: true,
       });
-      const result = await query(repo, {
+      const result = (await query(repo, {
         ...options,
         intent_ensemble: ensemble,
         structured_output: true,
         include_content: true,
         include_citations: true,
-      });
+      })) as Extract<Awaited<ReturnType<typeof query>>, { query_intent: unknown }>;
       expect(result).toMatchObject({
         definitions: [{ ...overlayRow, source: 'overlay' }, { name: clean.name }],
         structured_retrieval: {
@@ -227,11 +234,11 @@ describe('query dirty-overlay merge', () => {
       const exactOverlay = { ...overlayRow, name: 'CacheStore' };
       vi.mocked(queryOverlay).mockResolvedValue([exactOverlay]);
 
-      const result = await query(repo, {
+      const result = (await query(repo, {
         ...options,
         intent_ensemble: ensemble,
         structured_output: structured,
-      });
+      })) as Extract<Awaited<ReturnType<typeof query>>, { query_intent: unknown }>;
 
       expect(result.definitions).toHaveLength(20);
       expect(result.definitions).toEqual(
@@ -261,7 +268,10 @@ describe('query dirty-overlay merge', () => {
         filePath: index % 2 === 0 ? 'src/dirty.ts' : 'src/other.ts',
       })),
     ]);
-    const result = await query(repo, { ...options, intent_ensemble: false });
+    const result = (await query(repo, { ...options, intent_ensemble: false })) as Extract<
+      Awaited<ReturnType<typeof query>>,
+      { query_intent: unknown }
+    >;
     const json = JSON.stringify(result);
     expect(json).toContain('CacheStore0');
     expect(json).not.toContain('Outside');
@@ -293,7 +303,7 @@ describe('query dirty-overlay merge', () => {
     vi.mocked(executeParameterized).mockImplementation(async (_repoId, cypher) =>
       cypher.includes('n.name = $symbolQuery') ? [{ ...overlayRow, name: stale.name }] : [],
     );
-    const result = await query(repo, {
+    const result = (await query(repo, {
       typedQuery: {
         lines: [
           { type: 'symbol', query: 'CacheStore', lineNumber: 1 },
@@ -304,7 +314,7 @@ describe('query dirty-overlay merge', () => {
       intent_ensemble: true,
       structured_output: true,
       include_skeleton: false,
-    });
+    })) as Extract<Awaited<ReturnType<typeof query>>, { query_intent: unknown }>;
     expect(JSON.stringify(result)).not.toContain(stale.name);
     expect(executeParameterized).toHaveBeenCalledWith(
       repo.id,
@@ -341,11 +351,17 @@ describe('query dirty-overlay merge', () => {
         intent_ensemble: false,
         structured_output: true,
       };
-      const retained = await query(repo, input);
+      const retained = (await query(repo, input)) as Extract<
+        Awaited<ReturnType<typeof query>>,
+        { query_intent: unknown }
+      >;
       expect(retained.definitions[0]).toMatchObject({ ...current, source: 'overlay' });
       expect(JSON.stringify(retained)).not.toContain('OldFoo');
       exists = false;
-      const deleted = await query(repo, input);
+      const deleted = (await query(repo, input)) as Extract<
+        Awaited<ReturnType<typeof query>>,
+        { query_intent: unknown }
+      >;
       expect(deleted.definitions).toEqual([]);
     },
   );
@@ -355,7 +371,10 @@ describe('query dirty-overlay merge', () => {
     vi.mocked(getFileSkeleton).mockImplementation(async (_repoId, filePath) =>
       filePath === stale.filePath ? stale.name! : clean.name!,
     );
-    const result = await query(repo, { ...options, include_skeleton: true });
+    const result = (await query(repo, { ...options, include_skeleton: true })) as Extract<
+      Awaited<ReturnType<typeof query>>,
+      { query_intent: unknown }
+    >;
     expect(JSON.stringify(result)).not.toContain(stale.name);
     expect(getFileSkeleton).not.toHaveBeenCalledWith(repo.id, stale.filePath, expect.anything());
     expect(result).toMatchObject({ skeletons: { [clean.filePath]: clean.name } });
@@ -374,7 +393,10 @@ describe('query dirty-overlay merge', () => {
       overlayPaths: new Set(),
       tombstones: new Set(['src/dirty.ts']),
     });
-    const result = await query(repo, options);
+    const result = (await query(repo, options)) as Extract<
+      Awaited<ReturnType<typeof query>>,
+      { query_intent: unknown }
+    >;
     expect(result).toMatchObject({ definitions: [expect.objectContaining({ name: clean.name })] });
     expect(JSON.stringify(result)).not.toContain(stale.name);
     expect(queryOverlay).not.toHaveBeenCalled();
@@ -383,9 +405,15 @@ describe('query dirty-overlay merge', () => {
   it.each([false, true])(
     'keeps unusable-but-dirty output byte-identical (structured=%s)',
     async (structured) => {
-      const baseline = await query(repo, { ...options, structured_output: structured });
+      const baseline = (await query(repo, {
+        ...options,
+        structured_output: structured,
+      })) as Extract<Awaited<ReturnType<typeof query>>, { query_intent: unknown }>;
       vi.mocked(getOverlaySnapshot).mockResolvedValue(snapshot(false));
-      const dirty = await query(repo, { ...options, structured_output: structured });
+      const dirty = (await query(repo, { ...options, structured_output: structured })) as Extract<
+        Awaited<ReturnType<typeof query>>,
+        { query_intent: unknown }
+      >;
       expect(JSON.stringify(dirty)).toBe(JSON.stringify(baseline));
       expect(queryOverlay).not.toHaveBeenCalled();
       expect(SemanticRetrievalCache.prototype.lookup).toHaveBeenCalledTimes(structured ? 2 : 0);
@@ -401,9 +429,15 @@ describe('query dirty-overlay merge', () => {
       ageMs: 25,
       result: { ...cached, timestamp: 100 },
     });
-    const baseline = await query(repo, { ...options, structured_output: true });
+    const baseline = (await query(repo, { ...options, structured_output: true })) as Extract<
+      Awaited<ReturnType<typeof query>>,
+      { query_intent: unknown }
+    >;
     vi.mocked(getOverlaySnapshot).mockResolvedValue(snapshot(false));
-    const dirty = await query(repo, { ...options, structured_output: true });
+    const dirty = (await query(repo, { ...options, structured_output: true })) as Extract<
+      Awaited<ReturnType<typeof query>>,
+      { query_intent: unknown }
+    >;
     expect(JSON.stringify(dirty)).toBe(JSON.stringify(baseline));
     expect(dirty).toMatchObject({ structured_retrieval: { capabilityState: { cacheHit: true } } });
     expect(queryOverlay).not.toHaveBeenCalled();
@@ -413,14 +447,20 @@ describe('query dirty-overlay merge', () => {
   it.each(['query', 'snapshot'])(
     'degrades an overlay %s error to base results with a warning',
     async (failure) => {
-      const baseline = await query(repo, { ...options, structured_output: true });
+      const baseline = (await query(repo, { ...options, structured_output: true })) as Extract<
+        Awaited<ReturnType<typeof query>>,
+        { query_intent: unknown }
+      >;
       vi.mocked(getOverlaySnapshot).mockResolvedValue(snapshot(true));
       if (failure === 'query')
         vi.mocked(queryOverlay).mockRejectedValue(new Error('overlay failed'));
       else vi.mocked(getOverlaySnapshot).mockRejectedValue(new Error('overlay failed'));
       vi.mocked(SemanticRetrievalCache.prototype.lookup).mockClear();
       vi.mocked(SemanticRetrievalCache.prototype.set).mockClear();
-      const result = await query(repo, { ...options, structured_output: true });
+      const result = (await query(repo, { ...options, structured_output: true })) as Extract<
+        Awaited<ReturnType<typeof query>>,
+        { query_intent: unknown }
+      >;
       expect(result).toMatchObject({
         definitions: baseline.definitions,
         warning: expect.stringContaining('Overlay unavailable; using base results: overlay failed'),
@@ -461,7 +501,10 @@ describe('query dirty-overlay merge', () => {
           ? { status: 'hit', ageMs: 25, result: { ...cached, timestamp: 100 } }
           : { status: 'miss', result: null },
     );
-    const hit = await query(repo, { ...options, structured_output: true });
+    const hit = (await query(repo, { ...options, structured_output: true })) as Extract<
+      Awaited<ReturnType<typeof query>>,
+      { query_intent: unknown }
+    >;
     expect(hit.structured_retrieval.capabilityState.cacheHit).toBe(true);
     vi.mocked(getOverlaySnapshot).mockResolvedValue({ ...selected, generation: 'generation-b' });
     await query(repo, { ...options, structured_output: true });

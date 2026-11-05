@@ -147,7 +147,7 @@ describe('HTTP server startup and preflight', () => {
         .listeners(signal)
         .find((candidate) => !originalSignals.get(signal)!.includes(candidate));
       expect(listener).toBeDefined();
-      listener!();
+      (listener as unknown as () => void)();
     }
     const lateResponse = { status: vi.fn().mockReturnThis(), end: vi.fn() };
     lateHeartbeat({}, lateResponse);

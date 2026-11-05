@@ -43,21 +43,18 @@ import { query } from '../../src/mcp/local/backend-search.js';
 import { appendQueryLog } from '../../src/mcp/local/query-log.js';
 import { resolveTargetContext } from '../../src/mcp/shared/target-context.js';
 
-type ReplayIntent = 'calls-of' | 'cross-file-impact' | 'nl-conceptual' | 'ambiguous' | 'identifier';
+type ReplayIntent = Parameters<typeof applyEnsemble>[0];
 
-interface ReplayRow extends EnrichedSymbolRow {
-  bm25Score?: number;
-  semanticScore?: number;
-  score?: number;
-}
+type ReplayRow = EnrichedSymbolRow &
+  Awaited<ReturnType<typeof bm25Search>>['results'][number] & {
+    bm25Score?: number;
+    semanticScore?: number;
+    score?: number;
+  };
 
 interface QueryReplayFixture {
   id: string;
-  classifier: {
-    intent: ReplayIntent;
-    confidence?: number;
-    matchedKeywords: string[];
-  };
+  classifier: ReturnType<typeof classifyIntent>;
   params: Record<string, unknown>;
   embeddingsAvailable?: boolean;
   bm25Results?: ReplayRow[];
@@ -179,7 +176,9 @@ describe('search replay fixtures', () => {
       }
       return [];
     });
-    mockResolveTargetContext.mockResolvedValue(targetContext());
+    mockResolveTargetContext.mockResolvedValue(
+      targetContext() as Awaited<ReturnType<typeof resolveTargetContext>>,
+    );
   });
 
   afterEach(async () => {
@@ -192,11 +191,17 @@ describe('search replay fixtures', () => {
   for (const replay of fixtures.queryReplays) {
     it(`replays ${replay.id}`, async () => {
       currentQueryReplay = replay;
-      mockResolveTargetContext.mockResolvedValue(targetContext(replay.targetContextOverrides));
+      mockResolveTargetContext.mockResolvedValue(
+        targetContext(replay.targetContextOverrides) as Awaited<
+          ReturnType<typeof resolveTargetContext>
+        >,
+      );
 
       const result = await query(
-        { id: 'repo-1', repoPath: replayRepoPath, lastCommit: 'abc123' },
-        replay.params as Parameters<typeof query>[1],
+        { id: 'repo-1', repoPath: replayRepoPath, lastCommit: 'abc123' } as Parameters<
+          typeof query
+        >[0],
+        replay.params as unknown as Parameters<typeof query>[1],
       );
 
       expect('error' in result).toBe(false);
@@ -284,17 +289,20 @@ describe('search replay fixtures', () => {
 
   for (const replay of fixtures.organicReplays) {
     it(`replays ${replay.id}`, () => {
-      const result = validateOrganicRecommendation(replay.input, {
-        callableToolNames: replay.callableToolNames,
-      });
+      const result = validateOrganicRecommendation(
+        replay.input as unknown as Parameters<typeof validateOrganicRecommendation>[0],
+        {
+          callableToolNames: replay.callableToolNames,
+        },
+      );
 
       expect(result.ok).toBe(false);
       if (result.ok) {
         throw new Error(`expected rejection for ${replay.id}`);
       }
-      expect(result.errors.map((error) => error.field)).toEqual(
-        expect.arrayContaining(replay.expectedErrorFields),
-      );
+      expect(
+        (result as Extract<typeof result, { errors: unknown }>).errors.map((error) => error.field),
+      ).toEqual(expect.arrayContaining(replay.expectedErrorFields));
     });
   }
 });

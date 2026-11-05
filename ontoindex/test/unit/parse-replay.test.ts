@@ -154,7 +154,7 @@ describe('retained parse reconstruction', () => {
       (families) => {
         families.declarationNodes.push({
           ...families.declarationNodes[0]!,
-          properties: { name: 'Other' },
+          properties: { name: 'Other' } as (typeof families.declarationNodes)[number]['properties'],
         });
       },
     ],
@@ -176,7 +176,10 @@ describe('retained parse reconstruction', () => {
   it('rejects an incompatible upstream node instead of silently keeping it', async () => {
     const families = fixture();
     const graph = createKnowledgeGraph();
-    graph.addNode({ ...families.declarationNodes[0]!, properties: { name: 'different' } });
+    graph.addNode({
+      ...families.declarationNodes[0]!,
+      properties: { name: 'different' } as (typeof families.declarationNodes)[number]['properties'],
+    });
     const before = snapshot(graph);
     await expect(reconstructScopeRetentionParse(families, graph)).rejects.toThrow(
       'conflicting graph node',

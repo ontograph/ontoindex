@@ -1,3 +1,4 @@
+import { SupportedLanguages } from 'ontoindex-shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -83,7 +84,7 @@ func plain() { u := User{}; u.Save() }
     directory = await mkdtemp(path.join(tmpdir(), 'ontoindex-go-index-'));
     await writeFile(path.join(directory, 'main.go'), source);
     const parser = new Parser();
-    parser.setLanguage(Go);
+    parser.setLanguage(Go as Parser.Language);
     tree = parser.parse(source);
     expect(tree.rootNode.hasError).toBe(false);
     result = await runPipelineFromRepo(directory, () => {}, { skipGraphPhases: true });
@@ -120,7 +121,9 @@ func plain() { u := User{}; u.Save() }
   ])('%s binds the indexed expression to %s on %s', (caller, method, owner) => {
     const selector = selectorFor(caller);
     const receiver = selector.childForFieldName('operand')!;
-    expect(buildTypeEnv(tree, 'go').lookup(receiver.text, selector.parent!)).toBe(owner);
+    expect(buildTypeEnv(tree, SupportedLanguages.Go).lookup(receiver.text, selector.parent!)).toBe(
+      owner,
+    );
     expect(goCallConfig.extractLanguageCallSite!(selector.parent!)).toEqual({
       calledName: method,
       callForm: 'member',
@@ -176,7 +179,7 @@ func plain() { u := User{}; u.Save() }
     if (caller !== 'wrongOwner') {
       const selector = selectorFor(caller);
       expect(
-        buildTypeEnv(tree, 'go').lookup(
+        buildTypeEnv(tree, SupportedLanguages.Go).lookup(
           selector.childForFieldName('operand')!.text,
           selector.parent!,
         ),
@@ -186,7 +189,7 @@ func plain() { u := User{}; u.Save() }
 
   it('retains the existing make element binding without leaking the expression binding', () => {
     const selector = selectorFor('makeSlice');
-    const env = buildTypeEnv(tree, 'go');
+    const env = buildTypeEnv(tree, SupportedLanguages.Go);
     expect(env.lookup('sl', selector.parent!)).toBe('User');
     const fn = tree.rootNode.namedChildren.find(
       (node) => node.childForFieldName('name')?.text === 'makeSlice',

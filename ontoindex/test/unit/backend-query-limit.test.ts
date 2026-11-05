@@ -6,7 +6,7 @@ const poolMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/core/lbug/pool-adapter.js')>();
   return {
     ...actual,
     executeParameterized: poolMocks.executeParameterized,

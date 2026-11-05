@@ -6,6 +6,7 @@ import { LocalSidecarStore } from '../../src/core/ingestion/enrichment/sidecar-s
 import * as sidecarRunner from '../../src/core/ingestion/enrichment/sidecar-runner.js';
 import * as markdownCollector from '../../src/core/ingestion/enrichment/markdown-sidecar-collector.js';
 import { hashText } from '../../src/core/ingestion/enrichment/markdown-sidecar-producer.js';
+import type { SidecarLifecycleDecision } from '../../src/core/ingestion/enrichment/sidecar-lifecycle.js';
 
 vi.mock('../../src/storage/repo-manager.js');
 vi.mock('../../src/storage/git.js');
@@ -529,8 +530,10 @@ describe('docs CLI', () => {
           status: 'complete',
           request: {} as any,
           decision: {
-            action: 'continue',
-            reason: 'within-budget',
+            action:
+              'continue' as unknown as import('../../src/core/ingestion/enrichment/sidecar-lifecycle.js').SidecarLifecycleAction,
+            reason:
+              'within-budget' as unknown as import('../../src/core/ingestion/enrichment/sidecar-lifecycle.js').SidecarLifecycleReason,
             maxCpuPercent: 10,
             maxWorkerCount: 1,
             observedCpuPercent: null,
@@ -538,14 +541,15 @@ describe('docs CLI', () => {
             logicalCpuCount: null,
             foregroundActive: false,
             errors: [],
-          },
+          } as unknown as SidecarLifecycleDecision,
         })
         .mockResolvedValueOnce({
           executed: false,
           reason: 'idle',
           decision: {
             action: 'stop',
-            reason: 'invalid-input',
+            reason:
+              'invalid-input' as unknown as import('../../src/core/ingestion/enrichment/sidecar-lifecycle.js').SidecarLifecycleReason,
             maxCpuPercent: 10,
             maxWorkerCount: 1,
             observedCpuPercent: null,
@@ -553,7 +557,7 @@ describe('docs CLI', () => {
             logicalCpuCount: null,
             foregroundActive: false,
             errors: [],
-          },
+          } as unknown as SidecarLifecycleDecision,
         });
 
       await sidecarRunCommand('markdown', { json: true });
@@ -612,8 +616,10 @@ describe('docs CLI', () => {
           status: 'failed',
           request: {} as any,
           decision: {
-            action: 'continue',
-            reason: 'within-budget',
+            action:
+              'continue' as unknown as import('../../src/core/ingestion/enrichment/sidecar-lifecycle.js').SidecarLifecycleAction,
+            reason:
+              'within-budget' as unknown as import('../../src/core/ingestion/enrichment/sidecar-lifecycle.js').SidecarLifecycleReason,
             maxCpuPercent: 10,
             maxWorkerCount: 1,
             observedCpuPercent: null,
@@ -621,14 +627,15 @@ describe('docs CLI', () => {
             logicalCpuCount: null,
             foregroundActive: false,
             errors: [],
-          },
+          } as unknown as SidecarLifecycleDecision,
         })
         .mockResolvedValueOnce({
           executed: false,
           reason: 'idle',
           decision: {
             action: 'stop',
-            reason: 'invalid-input',
+            reason:
+              'invalid-input' as unknown as import('../../src/core/ingestion/enrichment/sidecar-lifecycle.js').SidecarLifecycleReason,
             maxCpuPercent: 10,
             maxWorkerCount: 1,
             observedCpuPercent: null,
@@ -636,7 +643,7 @@ describe('docs CLI', () => {
             logicalCpuCount: null,
             foregroundActive: false,
             errors: [],
-          },
+          } as unknown as SidecarLifecycleDecision,
         });
 
       try {
@@ -677,7 +684,8 @@ describe('docs CLI', () => {
         reason: 'idle',
         decision: {
           action: 'stop',
-          reason: 'invalid-input',
+          reason:
+            'invalid-input' as unknown as import('../../src/core/ingestion/enrichment/sidecar-lifecycle.js').SidecarLifecycleReason,
           maxCpuPercent: 10,
           maxWorkerCount: 1,
           observedCpuPercent: null,
@@ -685,7 +693,7 @@ describe('docs CLI', () => {
           logicalCpuCount: null,
           foregroundActive: false,
           errors: [],
-        },
+        } as unknown as SidecarLifecycleDecision,
       });
 
       await sidecarRunCommand('markdown', { json: true });
@@ -718,7 +726,8 @@ describe('docs CLI', () => {
         reason: 'idle',
         decision: {
           action: 'stop',
-          reason: 'invalid-input',
+          reason:
+            'invalid-input' as unknown as import('../../src/core/ingestion/enrichment/sidecar-lifecycle.js').SidecarLifecycleReason,
           maxCpuPercent: 10,
           maxWorkerCount: 1,
           observedCpuPercent: null,
@@ -726,7 +735,7 @@ describe('docs CLI', () => {
           logicalCpuCount: null,
           foregroundActive: false,
           errors: [],
-        },
+        } as unknown as SidecarLifecycleDecision,
       });
 
       await sidecarRunCommand('markdown', { json: true });

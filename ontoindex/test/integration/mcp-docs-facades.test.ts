@@ -10,13 +10,17 @@ const { lbugMocks } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/core/lbug/pool-adapter.js')>();
   return { ...actual, ...lbugMocks };
 });
 
 import { ONTOINDEX_FACADE_TOOLS } from '../../src/mcp/facade/tool-definitions.js';
 import { DocsMcpSchema, type RepoHandle } from '../../src/mcp/local/tool-params.js';
-import { runDocsMcpAction } from '../../src/mcp/super/docs.js';
+import {
+  runDocsMcpAction,
+  type DocsMcpFullReport,
+  type DocsMcpMinimalReport,
+} from '../../src/mcp/super/docs.js';
 import { ONTOINDEX_SUPER_TOOLS } from '../../src/mcp/super/tool-definitions.js';
 import {
   recordEvidenceReadSafe,
@@ -41,7 +45,7 @@ describe('MCP Docs Facade Integration', () => {
   it('returns skip metadata when the docs sidecar is missing', async () => {
     const repo = await tempRepoHandle();
 
-    const result = await runDocsMcpAction(repo, { action: 'trace' });
+    const result = (await runDocsMcpAction(repo, { action: 'trace' })) as unknown as TestDocsReport;
 
     expect(result.sidecar.status).toBe('missing');
     expect(result.skipReasons).toContain('sidecar-missing');
@@ -55,7 +59,10 @@ describe('MCP Docs Facade Integration', () => {
       sourceCommitHash: 'old-commit',
     });
 
-    const result = await runDocsMcpAction(repo, { action: 'trace', id: 'REQ-1' });
+    const result = (await runDocsMcpAction(repo, {
+      action: 'trace',
+      id: 'REQ-1',
+    })) as unknown as TestDocsReport;
 
     expect(result.sidecar.status).toBe('stale');
     expect(result.skipReasons).toContain('sidecar-stale');
@@ -75,7 +82,7 @@ describe('MCP Docs Facade Integration', () => {
     const repo = await tempRepoHandle();
     await writeSidecar(repo, [apiSpec('GET', '/v1/items')]);
 
-    const result = await runDocsMcpAction(repo, { action: 'drift' });
+    const result = (await runDocsMcpAction(repo, { action: 'drift' })) as unknown as TestDocsReport;
 
     expect(result.report).toBe('api-drift');
     expect(result.docsEvidence[0]).toMatchObject({
@@ -93,7 +100,7 @@ describe('MCP Docs Facade Integration', () => {
       { path: '/v1/items', sourceFile: 'src/routes.ts', handler: 'route:/v1/items' },
     ]);
 
-    const result = await runDocsMcpAction(repo, { action: 'drift' });
+    const result = (await runDocsMcpAction(repo, { action: 'drift' })) as unknown as TestDocsReport;
 
     expect(result.docsEvidence).toHaveLength(1);
     expect(result.primaryGraphFacts).toEqual([
@@ -120,16 +127,19 @@ describe('MCP Docs Facade Integration', () => {
     ];
     lbugMocks.executeParameterized.mockResolvedValue(graphRows);
 
-    const first = await runDocsMcpAction(repo, { action: 'drift', maxItems: 1 });
+    const first = (await runDocsMcpAction(repo, {
+      action: 'drift',
+      maxItems: 1,
+    })) as unknown as TestDocsReport;
     expect(first.docsEvidence).toHaveLength(1);
     expect(first.cursor).toMatchObject({ offset: 0, pageSize: 1, total: 3 });
     expect(first.cursor?.next).toEqual(expect.any(String));
 
-    const continued = await runDocsMcpAction(repo, {
+    const continued = (await runDocsMcpAction(repo, {
       action: 'drift',
       maxItems: 1,
       cursor: first.cursor?.next,
-    });
+    })) as unknown as TestDocsReport;
     expect(continued.cursor).toMatchObject({ offset: 1, pageSize: 1, total: 3 });
     expect(continued.docsEvidence).toEqual([expect.objectContaining({ routeKey: '* /z' })]);
 
@@ -137,7 +147,10 @@ describe('MCP Docs Facade Integration', () => {
       graphRows[0],
       { ...graphRows[1], sourceFile: 'src/y.ts' },
     ]);
-    const graphChanged = await runDocsMcpAction(repo, { action: 'drift', maxItems: 1 });
+    const graphChanged = (await runDocsMcpAction(repo, {
+      action: 'drift',
+      maxItems: 1,
+    })) as unknown as TestDocsReport;
     expect(graphChanged.docsEvidence).toEqual(first.docsEvidence);
     expect(graphChanged.cursor).toMatchObject({ offset: 0, pageSize: 1, total: 3 });
     expect(graphChanged.cursor?.next).not.toBe(first.cursor?.next);
@@ -150,7 +163,10 @@ describe('MCP Docs Facade Integration', () => {
     ).rejects.toThrow(/restart pagination/i);
 
     await writeSidecar(repo, [apiSpec('GET', '/v1/other')]);
-    const docsChanged = await runDocsMcpAction(repo, { action: 'drift', maxItems: 1 });
+    const docsChanged = (await runDocsMcpAction(repo, {
+      action: 'drift',
+      maxItems: 1,
+    })) as unknown as TestDocsReport;
     expect(docsChanged.docsEvidence).toEqual(graphChanged.docsEvidence);
     expect(docsChanged.cursor).toMatchObject({ offset: 0, pageSize: 1, total: 3 });
     expect(docsChanged.cursor?.next).not.toBe(graphChanged.cursor?.next);
@@ -167,7 +183,10 @@ describe('MCP Docs Facade Integration', () => {
     const repo = await tempRepoHandle();
     await writeSidecar(repo, [requirement('REQ-1'), resolution('REQ-1', 'ambiguous', 3)]);
 
-    const result = await runDocsMcpAction(repo, { action: 'trace', id: 'REQ-1' });
+    const result = (await runDocsMcpAction(repo, {
+      action: 'trace',
+      id: 'REQ-1',
+    })) as unknown as TestDocsReport;
 
     expect(result.primaryGraphFacts).toHaveLength(3);
     expect(result.basedOnReads).toMatchObject({
@@ -180,7 +199,10 @@ describe('MCP Docs Facade Integration', () => {
     const repo = await tempRepoHandle();
     await writeSidecar(repo, [requirement('REQ-1'), requirement('REQ-2')]);
 
-    const result = await runDocsMcpAction(repo, { action: 'trace', maxItems: 1 });
+    const result = (await runDocsMcpAction(repo, {
+      action: 'trace',
+      maxItems: 1,
+    })) as unknown as TestDocsReport;
 
     expect(result.docsEvidence).toHaveLength(1);
     expect(result.limits.truncated).toBe(true);
@@ -194,7 +216,7 @@ describe('MCP Docs Facade Integration', () => {
       Array.from({ length: 30 }, (_, index) => requirement(`REQ-${index + 1}`)),
     );
 
-    const result = await runDocsMcpAction(repo, { action: 'trace' });
+    const result = (await runDocsMcpAction(repo, { action: 'trace' })) as unknown as TestDocsReport;
 
     expect(result.docsEvidence).toHaveLength(25);
     expect(result.limits).toMatchObject({ maxItems: 25, emitted: 25, truncated: true });
@@ -205,7 +227,9 @@ describe('MCP Docs Facade Integration', () => {
     const repo = await tempRepoHandle();
     await writeSidecar(repo, [requirement('REQ-1')], { status: 'partial' });
 
-    const result = await runDocsMcpAction(repo, { action: 'readiness' });
+    const result = (await runDocsMcpAction(repo, {
+      action: 'readiness',
+    })) as unknown as TestDocsReport;
 
     expect(['partial', 'stale']).toContain(result.sidecar.status);
     expect(
@@ -220,7 +244,9 @@ describe('MCP Docs Facade Integration', () => {
     const repo = await tempRepoHandle();
     await writeSidecar(repo, [trackerState()]);
 
-    const result = await runDocsMcpAction(repo, { action: 'readiness' });
+    const result = (await runDocsMcpAction(repo, {
+      action: 'readiness',
+    })) as unknown as TestDocsReport;
 
     expect(result.trackerState).toMatchObject({
       contract: 'explicit-frontmatter-v1',
@@ -237,7 +263,9 @@ describe('MCP Docs Facade Integration', () => {
     const repo = await tempRepoHandle();
     await writeSidecar(repo, [requirement('REQ-1'), resolution('REQ-1'), trackerState()]);
 
-    const result = await runDocsMcpAction(repo, { action: 'context' });
+    const result = (await runDocsMcpAction(repo, {
+      action: 'context',
+    })) as unknown as TestDocsReport;
 
     expect(result.docsEvidence).toEqual(
       expect.arrayContaining([expect.objectContaining({ kind: 'knowledge-concept' })]),
@@ -252,11 +280,11 @@ describe('MCP Docs Facade Integration', () => {
     const repo = await tempRepoHandle();
     await writeSidecar(repo, [requirement('REQ-1')]);
 
-    const result = await runDocsMcpAction(repo, {
+    const result = (await runDocsMcpAction(repo, {
       action: 'trace',
       maxItems: 10_000,
       maxCandidatesPerFact: 10_000,
-    });
+    })) as unknown as TestDocsReport;
 
     expect(result.limits.maxItems).toBe(100);
     expect(result.limits.maxCandidatesPerFact).toBe(20);
@@ -277,19 +305,21 @@ describe('MCP Docs Facade Integration', () => {
       enum: ['json', 'inline', 'both'],
     });
 
-    const defaultResult = await runDocsMcpAction(repo, { action: 'trace' });
-    const inlineResult = await runDocsMcpAction(repo, {
+    const defaultResult = (await runDocsMcpAction(repo, {
+      action: 'trace',
+    })) as unknown as TestDocsReport;
+    const inlineResult = (await runDocsMcpAction(repo, {
       action: 'trace',
       format: 'inline',
       maxTokens: 120,
       maxEvidenceItems: 1,
-    });
-    const clampedResult = await runDocsMcpAction(repo, {
+    })) as unknown as TestDocsReport;
+    const clampedResult = (await runDocsMcpAction(repo, {
       action: 'trace',
       format: 'inline',
       maxTokens: 100_000,
       maxEvidenceItems: 100_000,
-    });
+    })) as unknown as TestDocsReport;
 
     expect(defaultResult.inlineContext).toBeUndefined();
     expect(inlineResult.inlineContext).toMatchObject({
@@ -328,7 +358,11 @@ describe('MCP Docs Facade Integration', () => {
     const pages = [];
     let cursor: string | undefined;
     do {
-      const page = await runDocsMcpAction(repo, { action: 'context', maxItems: 1, cursor });
+      const page = (await runDocsMcpAction(repo, {
+        action: 'context',
+        maxItems: 1,
+        cursor,
+      })) as unknown as TestDocsReport;
       pages.push(page);
       cursor = page.cursor?.next;
     } while (cursor);
@@ -379,7 +413,10 @@ describe('MCP Docs Facade Integration', () => {
       }),
     ).rejects.toThrow(/restart pagination/i);
 
-    const restarted = await runDocsMcpAction(repo, { action: 'context', maxItems: 1 });
+    const restarted = (await runDocsMcpAction(repo, {
+      action: 'context',
+      maxItems: 1,
+    })) as unknown as TestDocsReport;
     expect(restarted.docsEvidence).toHaveLength(1);
     expect(restarted.cursor?.offset).toBe(0);
   });
@@ -388,7 +425,10 @@ describe('MCP Docs Facade Integration', () => {
     const repo = await tempRepoHandle();
     await writeSidecar(repo, [requirement('REQ-1'), resolution('REQ-1')]);
 
-    const result = await runDocsMcpAction(repo, { action: 'context', summary: true });
+    const result = (await runDocsMcpAction(repo, {
+      action: 'context',
+      summary: true,
+    })) as unknown as TestDocsReport;
 
     expect(result.responseMode).toBe('summary');
     expect(result.docsEvidence[0]).toMatchObject({
@@ -405,11 +445,11 @@ describe('MCP Docs Facade Integration', () => {
     const repo = await tempRepoHandle();
     await writeSidecar(repo, [requirement('REQ-1'), requirement('REQ-2')]);
 
-    const result = await runDocsMcpAction(repo, {
+    const result = (await runDocsMcpAction(repo, {
       action: 'context',
       minimal: true,
       maxItems: 1,
-    });
+    })) as unknown as TestDocsReport;
 
     expect(result.responseMode).toBe('minimal');
     expect(result).not.toHaveProperty('docsEvidence');
@@ -425,7 +465,10 @@ describe('MCP Docs Facade Integration', () => {
   it('keeps missing docs context sidecar skip reasons while exposing empty knowledge state', async () => {
     const repo = await tempRepoHandle();
 
-    const result = await runDocsMcpAction(repo, { action: 'context', minimal: true });
+    const result = (await runDocsMcpAction(repo, {
+      action: 'context',
+      minimal: true,
+    })) as unknown as TestDocsReport;
 
     expect(result.result.sidecarStatus).toBe('missing');
     expect(result.result.skipReasons).toContain('sidecar-missing');
@@ -443,7 +486,9 @@ describe('MCP Docs Facade Integration', () => {
     const repo = await tempRepoHandle();
     await writeSidecar(repo, [requirement('REQ-1')], { sourceCommitHash: 'old-commit' });
 
-    const result = await runDocsMcpAction(repo, { action: 'context' });
+    const result = (await runDocsMcpAction(repo, {
+      action: 'context',
+    })) as unknown as TestDocsReport;
 
     expect(result.sidecar.status).toBe('stale');
     expect(result.skipReasons).toContain('sidecar-stale');
@@ -462,12 +507,14 @@ describe('MCP Docs Facade Integration', () => {
     const repo = await tempRepoHandle();
     await writeMemory(repo, 'onboarding.md');
 
-    const withoutMemories = await runDocsMcpAction(repo, { action: 'context' });
-    const withMemories = await runDocsMcpAction(repo, {
+    const withoutMemories = (await runDocsMcpAction(repo, {
+      action: 'context',
+    })) as unknown as TestDocsReport;
+    const withMemories = (await runDocsMcpAction(repo, {
       action: 'context',
       includeMemories: true,
       format: 'both',
-    });
+    })) as unknown as TestDocsReport;
 
     expect(withoutMemories).not.toHaveProperty('advisoryMemories');
     expect(withMemories.docsEvidence).toEqual([]);
@@ -487,19 +534,23 @@ describe('MCP Docs Facade Integration', () => {
     await writeSidecar(repo, [requirement('REQ-1'), apiSpec('GET', '/v1/items')]);
     await writeMemory(repo, 'onboarding.md');
 
-    const traceDefault = await runDocsMcpAction(repo, { action: 'trace' });
+    const traceDefault = (await runDocsMcpAction(repo, {
+      action: 'trace',
+    })) as unknown as TestDocsReport;
     resetEvidenceReadLedgerForTests();
-    const traceWithMemories = await runDocsMcpAction(repo, {
+    const traceWithMemories = (await runDocsMcpAction(repo, {
       action: 'trace',
       includeMemories: true,
-    });
+    })) as unknown as TestDocsReport;
     resetEvidenceReadLedgerForTests();
-    const driftDefault = await runDocsMcpAction(repo, { action: 'drift' });
+    const driftDefault = (await runDocsMcpAction(repo, {
+      action: 'drift',
+    })) as unknown as TestDocsReport;
     resetEvidenceReadLedgerForTests();
-    const driftWithMemories = await runDocsMcpAction(repo, {
+    const driftWithMemories = (await runDocsMcpAction(repo, {
       action: 'drift',
       includeMemories: true,
-    });
+    })) as unknown as TestDocsReport;
 
     expect(traceWithMemories).toEqual(traceDefault);
     expect(driftWithMemories).toEqual(driftDefault);
@@ -510,7 +561,9 @@ describe('MCP Docs Facade Integration', () => {
     await writeSidecar(repo, [requirement('REQ-1')]);
 
     // 1. Run readiness normally
-    const baseline = await runDocsMcpAction(repo, { action: 'readiness' });
+    const baseline = (await runDocsMcpAction(repo, {
+      action: 'readiness',
+    })) as unknown as TestDocsReport;
     expect(baseline.sidecar.status).toBe('complete');
     const baselineStatus = baseline.sidecar.status;
 
@@ -525,7 +578,9 @@ describe('MCP Docs Facade Integration', () => {
     });
 
     // 3. Run readiness again
-    const staleResult = await runDocsMcpAction(repo, { action: 'readiness' });
+    const staleResult = (await runDocsMcpAction(repo, {
+      action: 'readiness',
+    })) as unknown as TestDocsReport;
 
     // 4. Verify that 'basedOnReads' shows stale:true but organic status is unchanged
     expect(staleResult.basedOnReads?.stale).toBe(true);
@@ -539,12 +594,14 @@ describe('MCP Docs Facade Integration', () => {
     await writeMemory(repo, 'fresh.md');
     await writeMemory(repo, 'invalid.md', ['sources:']);
 
-    const withoutMemories = await runDocsMcpAction(repo, { action: 'readiness' });
-    const withMemories = await runDocsMcpAction(repo, {
+    const withoutMemories = (await runDocsMcpAction(repo, {
+      action: 'readiness',
+    })) as unknown as TestDocsReport;
+    const withMemories = (await runDocsMcpAction(repo, {
       action: 'readiness',
       includeMemories: true,
       format: 'both',
-    });
+    })) as unknown as TestDocsReport;
 
     expect(withMemories.sidecar).toEqual(withoutMemories.sidecar);
     expect(withMemories.summary).toEqual(withoutMemories.summary);
@@ -775,3 +832,8 @@ function trackerState(): Record<string, unknown> {
     },
   };
 }
+
+type TestDocsReport = Omit<DocsMcpFullReport, 'docsEvidence'> & {
+  docsEvidence: Array<Record<string, unknown>>;
+  result: DocsMcpMinimalReport['result'];
+};

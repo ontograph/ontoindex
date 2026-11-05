@@ -25,7 +25,7 @@ describe('organic recommendations', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected validation failure');
-    expect(result.errors).toEqual(
+    expect((result as unknown as Record<string, any>).errors).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           field: 'evidenceIds',
@@ -51,7 +51,7 @@ describe('organic recommendations', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected validation failure');
-    expect(result.errors).toEqual(
+    expect((result as unknown as Record<string, any>).errors).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           field: 'target.name',
@@ -77,7 +77,7 @@ describe('organic recommendations', () => {
 
     expect(invalid.ok).toBe(false);
     if (invalid.ok) throw new Error('expected validation failure');
-    expect(invalid.errors).toEqual(
+    expect((invalid as unknown as Record<string, any>).errors).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           field: 'nextTools[0]',
@@ -117,7 +117,9 @@ describe('organic recommendations', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected missing registry validation failure');
-    expect(result.errors).toEqual([expect.objectContaining({ field: 'nextTools[0]' })]);
+    expect((result as unknown as Record<string, any>).errors).toEqual([
+      expect.objectContaining({ field: 'nextTools[0]' }),
+    ]);
   });
 
   it('rejects generic reasons that do not reference concrete evidence', () => {
@@ -137,7 +139,7 @@ describe('organic recommendations', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected validation failure');
-    expect(result.errors).toEqual(
+    expect((result as unknown as Record<string, any>).errors).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           field: 'reason',
@@ -192,7 +194,7 @@ describe('organic recommendations', () => {
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('expected validation failure');
-    expect(result.errors).toEqual(
+    expect((result as unknown as Record<string, any>).errors).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           field: 'confidence',
@@ -223,7 +225,7 @@ describe('organic recommendations', () => {
 
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error(`expected ${evidenceClass} validation failure`);
-      expect(result.errors).toEqual(
+      expect((result as unknown as Record<string, any>).errors).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             field: 'confidence',

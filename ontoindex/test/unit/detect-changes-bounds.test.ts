@@ -15,12 +15,12 @@ const { lbugMocks, childProcessMocks } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, ...lbugMocks };
 });
 
 vi.mock('child_process', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, execFile: childProcessMocks.execFile };
 });
 
@@ -141,7 +141,9 @@ describe('detect_changes performance bounds', () => {
       },
     );
 
-    expect(result.error).toContain('Git diff failed: filename capture failed');
+    expect((result as unknown as Record<string, any>).error).toContain(
+      'Git diff failed: filename capture failed',
+    );
     expect(childProcessMocks.execFile).toHaveBeenCalledTimes(1);
     expect(lbugMocks.executeParameterized).not.toHaveBeenCalled();
   });
@@ -158,7 +160,7 @@ describe('detect_changes performance bounds', () => {
       { changed_files: [selected] },
     );
 
-    expect(result.error).toBeUndefined();
+    expect((result as unknown as Record<string, any>).error).toBeUndefined();
     expect(childProcessMocks.execFile).toHaveBeenCalledTimes(2);
   });
 
@@ -190,7 +192,7 @@ describe('detect_changes performance bounds', () => {
       },
     );
 
-    expect(result.error).toContain('exact files');
+    expect((result as unknown as Record<string, any>).error).toContain('exact files');
     expect(lbugMocks.executeParameterized).not.toHaveBeenCalled();
   });
 
@@ -235,7 +237,9 @@ describe('detect_changes performance bounds', () => {
       },
     );
 
-    expect(result.error).toMatch(/normalized repository-relative/);
+    expect((result as unknown as Record<string, any>).error).toMatch(
+      /normalized repository-relative/,
+    );
     expect(childProcessMocks.execFile).not.toHaveBeenCalled();
   });
 
@@ -282,7 +286,7 @@ describe('detect_changes performance bounds', () => {
 
       const result = await detectChanges({ id: 'repo', repoPath }, { changed_files: [selected] });
 
-      expect(result.error).toBeUndefined();
+      expect((result as unknown as Record<string, any>).error).toBeUndefined();
       expect(result.summary?.changed_files).toBe(1);
       expect(lbugMocks.executeParameterized.mock.calls[0][2]).toMatchObject({ filePath: selected });
 
@@ -295,7 +299,7 @@ describe('detect_changes performance bounds', () => {
         },
       );
 
-      expect(compared.error).toBeUndefined();
+      expect((compared as unknown as Record<string, any>).error).toBeUndefined();
       expect(compared.summary?.changed_files).toBe(1);
     } finally {
       fs.rmSync(repoPath, { recursive: true, force: true });
@@ -350,7 +354,7 @@ describe('detect_changes performance bounds', () => {
       ]) {
         childProcessMocks.execFile.mockClear();
         const result = await detectChanges({ id: 'repo', repoPath }, selection);
-        expect(result.error).toContain('exact files');
+        expect((result as unknown as Record<string, any>).error).toContain('exact files');
         // Compare may first resolve its base ref, but no patch capture is allowed.
         expect(
           childProcessMocks.execFile.mock.calls.filter(
@@ -363,7 +367,7 @@ describe('detect_changes performance bounds', () => {
       for (const selected of ['deleted.ts', 'link.ts']) {
         childProcessMocks.execFile.mockClear();
         const result = await detectChanges({ id: 'repo', repoPath }, { changed_files: [selected] });
-        expect(result.error).toBeUndefined();
+        expect((result as unknown as Record<string, any>).error).toBeUndefined();
         expect(childProcessMocks.execFile.mock.calls.map((call) => call[1])).toEqual([
           ['diff', '-U0', '--no-renames', '--name-only', '-z', '--', `:(top,literal)${selected}`],
           ['diff', '-U0', '--no-renames', '--', `:(top,literal)${selected}`],
@@ -479,7 +483,7 @@ describe('detect_changes performance bounds', () => {
       { include_paths: ['src'] },
     );
 
-    expect(result.error).toBeUndefined();
+    expect((result as unknown as Record<string, any>).error).toBeUndefined();
     expect(result.summary).toMatchObject({ changed_files: 1, changed_count: 1 });
     expect(result.changed_symbols).toHaveLength(1);
     expect(result.changed_symbols?.[0]?.filePath).toBe('src/auth.ts');

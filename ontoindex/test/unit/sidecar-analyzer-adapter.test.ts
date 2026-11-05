@@ -128,7 +128,9 @@ describe('sidecar analyzer adapter', () => {
   it('defaults explicit failed analyzer results to a stable failure reason', async () => {
     const records = await analyzeSidecarRequestToEnrichmentRecords(request, {
       ...baseOptions,
-      analyze: vi.fn(async () => ({ status: 'failed' })),
+      analyze: vi.fn(async () => ({
+        status: 'failed',
+      })) as SidecarAnalyzerAdapterOptions['analyze'],
     });
 
     expect(records).toMatchObject([

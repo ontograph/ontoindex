@@ -56,10 +56,10 @@ withTestLbugDB(
     // ─── Block 1: Sequential enrichment queries (#285, #290, #292) ─────
     describe('impact enrichment queries run without crashes', () => {
       it('impact with enrichment completes without SIGSEGV', async () => {
-        const result = await backend.callTool('impact', {
+        const result = (await backend.callTool('impact', {
           target: 'validate',
           direction: 'upstream',
-        });
+        })) as TestBackendResponse;
         expect(result).not.toHaveProperty('error');
         expect(result.impactedCount).toBeGreaterThanOrEqual(1);
         expect(result).toHaveProperty('affected_processes');
@@ -67,11 +67,11 @@ withTestLbugDB(
       });
 
       it('impact with large maxDepth completes without crash', async () => {
-        const result = await backend.callTool('impact', {
+        const result = (await backend.callTool('impact', {
           target: 'login',
           direction: 'downstream',
           maxDepth: 5,
-        });
+        })) as TestBackendResponse;
         expect(result).toBeDefined();
         expect(result).not.toHaveProperty('error');
       });
@@ -81,9 +81,9 @@ withTestLbugDB(
     describe('MCP server stays alive after 10+ consecutive tool calls', () => {
       it('10 consecutive cypher calls complete without stdout corruption', async () => {
         for (let i = 0; i < 10; i++) {
-          const result = await backend.callTool('cypher', {
+          const result = (await backend.callTool('cypher', {
             query: `MATCH (n:Function) RETURN n.name AS name LIMIT ${i + 1}`,
-          });
+          })) as TestBackendResponse;
           expect(result).toHaveProperty('row_count');
           expect(result.row_count).toBeGreaterThanOrEqual(1);
         }
@@ -91,21 +91,21 @@ withTestLbugDB(
 
       it('mixed tool calls: context → impact → query → cypher cycle', async () => {
         for (let i = 0; i < 3; i++) {
-          const ctx = await backend.callTool('context', { name: 'login' });
+          const ctx = (await backend.callTool('context', { name: 'login' })) as TestBackendResponse;
           expect(ctx.status).toBe('found');
 
-          const imp = await backend.callTool('impact', {
+          const imp = (await backend.callTool('impact', {
             target: 'validate',
             direction: 'upstream',
-          });
+          })) as TestBackendResponse;
           expect(imp).not.toHaveProperty('error');
 
-          const qry = await backend.callTool('query', { query: 'login' });
+          const qry = (await backend.callTool('query', { query: 'login' })) as TestBackendResponse;
           expect(qry).not.toHaveProperty('error');
 
-          const cyp = await backend.callTool('cypher', {
+          const cyp = (await backend.callTool('cypher', {
             query: 'MATCH (n:Function) RETURN COUNT(n) AS cnt LIMIT 1',
-          });
+          })) as TestBackendResponse;
           expect(cyp).toHaveProperty('row_count');
         }
       });
@@ -160,9 +160,9 @@ withTestLbugDB(
     // LAST: triggers closeLbug internally which may affect shared state
     describe('stale data detection via meta.json', () => {
       it('initial query works', async () => {
-        const result = await backend.callTool('cypher', {
+        const result = (await backend.callTool('cypher', {
           query: 'MATCH (n:Function) RETURN n.name AS name ORDER BY n.name LIMIT 100',
-        });
+        })) as TestBackendResponse;
         expect(result).toHaveProperty('row_count');
         expect(result.row_count).toBeGreaterThanOrEqual(3);
       });
@@ -180,9 +180,9 @@ withTestLbugDB(
 
         // Next call triggers re-init. May fail but must NOT crash.
         try {
-          const result = await backend.callTool('cypher', {
+          const result = (await backend.callTool('cypher', {
             query: 'MATCH (n:Function) RETURN COUNT(n) AS cnt LIMIT 1',
-          });
+          })) as TestBackendResponse;
           expect(result).toBeDefined();
         } catch (err: any) {
           expect(err.message).not.toMatch(/SIGSEGV/i);
@@ -201,9 +201,9 @@ withTestLbugDB(
         );
 
         try {
-          const result = await backend.callTool('cypher', {
+          const result = (await backend.callTool('cypher', {
             query: 'MATCH (n:Function) RETURN COUNT(n) AS cnt LIMIT 1',
-          });
+          })) as TestBackendResponse;
           expect(result).toBeDefined();
         } catch {
           // No crash = success
@@ -241,3 +241,13 @@ withTestLbugDB(
     },
   },
 );
+
+type TestBackendResponse = {
+  impactedCount: number;
+  byDepth: Record<string, { name: string }[]>;
+  status: string;
+  symbol: { kind: string };
+  incoming: { calls: { name: string }[]; imports: { name: string }[] };
+  outgoing: unknown;
+  row_count: number;
+};

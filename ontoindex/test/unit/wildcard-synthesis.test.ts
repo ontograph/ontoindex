@@ -13,7 +13,7 @@ import { describe, it, expect } from 'vitest';
 import { synthesizeWildcardImportBindings } from '../../src/core/ingestion/pipeline-phases/wildcard-synthesis.js';
 import { createResolutionContext } from '../../src/core/ingestion/model/resolution-context.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import type { GraphNode, GraphRelationship } from '../../src/core/graph/types.js';
+import type { GraphNode, GraphRelationship } from 'ontoindex-shared';
 
 function makeExportedFuncNode(
   id: string,

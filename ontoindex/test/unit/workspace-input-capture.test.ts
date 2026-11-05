@@ -98,7 +98,9 @@ describe('workspace input capture', () => {
         await fs.writeFile(path.join(root, filename), 'malformed: [');
       }
       await fs.writeFile(path.join(root, 'ontoindex-packs/unrelated.yml'), 'ignored');
-      const result = await capture(root, { includePaths });
+      const result = await capture(root, {
+        includePaths: includePaths as unknown as readonly string[],
+      });
       expect(result.capturedPaths).toEqual(expect.arrayContaining(manifests));
       expect(result.capturedPaths).not.toContain('ontoindex-packs/unrelated.yml');
       for (const filename of manifests) {

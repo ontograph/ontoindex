@@ -102,7 +102,9 @@ const mockGetSemanticVectorBackendStatus = vi.mocked(getSemanticVectorBackendSta
 const mockEmbedQuery = vi.mocked(embedQuery);
 const mockIsEmbedderReady = vi.mocked(isEmbedderReady);
 
-function symbolRow(overrides: Partial<EnrichedSymbolRow> = {}): EnrichedSymbolRow {
+function symbolRow(
+  overrides: Partial<EnrichedSymbolRow> & { ceScore?: number } = {},
+): EnrichedSymbolRow & { name: string; type: string } {
   return {
     nodeId: 'Function:src/core/cache.ts:CacheStore',
     name: 'CacheStore',
@@ -126,7 +128,9 @@ function mergedRows(rows: EnrichedSymbolRow[], limit: number) {
   return merged.slice(0, limit);
 }
 
-function targetContext(overrides: Record<string, unknown> = {}) {
+function targetContext(
+  overrides: Record<string, unknown> = {},
+): Awaited<ReturnType<typeof resolveTargetContext>> {
   return {
     version: 1,
     status: 'ok',
@@ -147,14 +151,14 @@ function targetContext(overrides: Record<string, unknown> = {}) {
     policy: { status: 'unknown', reason: 'not-probed' },
     warnings: [],
     ...overrides,
-  };
+  } as unknown as Awaited<ReturnType<typeof resolveTargetContext>>;
 }
 
 describe('backend-search typed input', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockClassifyIntent.mockReturnValue({
-      intent: 'identifier',
+      intent: 'identifier' as ReturnType<typeof classifyIntent>['intent'],
       confidence: 0.8,
       matchedKeywords: [],
     });
@@ -184,7 +188,9 @@ describe('backend-search typed input', () => {
     mockGetFileSkeleton.mockResolvedValue('');
     mockResolveTargetContext.mockResolvedValue(targetContext());
     mockLoadAnnNeighborEdges.mockResolvedValue([]);
-    mockAdaptAnnNeighborEdgesForFrontier.mockImplementation((edges) => edges);
+    mockAdaptAnnNeighborEdgesForFrontier.mockImplementation(
+      (edges) => edges as unknown as ReturnType<typeof adaptAnnNeighborEdgesForFrontier>,
+    );
     mockGetSemanticVectorBackendStatus.mockResolvedValue({
       requestedBackend: 'lbug',
       actualBackend: 'lbug',
@@ -242,9 +248,9 @@ describe('backend-search typed input', () => {
       processes: [],
       process_symbols: [],
       definitions: [],
-      query_intent: 'identifier',
+      query_intent: 'identifier' as ReturnType<typeof classifyIntent>['intent'],
     });
-    expect(result.warning).toBeUndefined();
+    expect((result as unknown as Record<string, any>).warning).toBeUndefined();
     expect(result).not.toHaveProperty('retrieval_diagnostics');
     expect(mockLoadAnnNeighborEdges).not.toHaveBeenCalled();
     expect(mockEmbedQuery).not.toHaveBeenCalled();
@@ -276,7 +282,7 @@ describe('backend-search typed input', () => {
       exclude_paths: ['src/core/generated'],
     });
 
-    expect(result.definitions).toEqual([
+    expect((result as unknown as Record<string, any>).definitions).toEqual([
       expect.objectContaining({ name: 'CacheStore', filePath: 'src/core/cache.ts' }),
     ]);
   });
@@ -315,7 +321,7 @@ describe('backend-search typed input', () => {
       include_explanations: true,
     });
 
-    expect(result.definitions).toEqual([
+    expect((result as unknown as Record<string, any>).definitions).toEqual([
       expect.objectContaining({
         name: 'CacheStore',
         explanation: expect.stringContaining('Matched by BM25 + semantic'),
@@ -351,10 +357,9 @@ describe('backend-search typed input', () => {
       limit: 5,
     });
 
-    expect(result.definitions.map((entry) => entry.filePath)).toEqual([
-      'src/core/proceduralGeneration.ts',
-      'src/ui/App.tsx',
-    ]);
+    expect(
+      (result as unknown as Record<string, any>).definitions.map((entry) => entry.filePath),
+    ).toEqual(['src/core/proceduralGeneration.ts', 'src/ui/App.tsx']);
   });
 
   it('opt-in symbol-neighborhood retrieval policy engages frontier search on plain queries', async () => {
@@ -383,14 +388,14 @@ describe('backend-search typed input', () => {
 
     expect(mockEmbedQuery).toHaveBeenCalledTimes(1);
     expect(mockLoadAnnNeighborEdges).toHaveBeenCalledTimes(1);
-    expect(result.warning).toContain(
+    expect((result as unknown as Record<string, any>).warning).toContain(
       'symbol-neighborhood skipped: no ANN edges found for retrieved seeds',
     );
     expect(result).toMatchObject({
       processes: [],
       process_symbols: [],
       definitions: [{ name: 'CacheStore', filePath: 'src/core/cache.ts' }],
-      query_intent: 'identifier',
+      query_intent: 'identifier' as ReturnType<typeof classifyIntent>['intent'],
     });
     expect(mockLoadAnnNeighborEdges).toHaveBeenCalledWith(
       expect.any(Function),
@@ -423,7 +428,7 @@ describe('backend-search typed input', () => {
     );
     expect(mockSemanticSearch).not.toHaveBeenCalled();
     expect(result).toMatchObject({
-      query_intent: 'identifier',
+      query_intent: 'identifier' as ReturnType<typeof classifyIntent>['intent'],
       definitions: [{ name: 'invalidateCache', filePath: 'src/core/cache.ts' }],
     });
   });
@@ -810,7 +815,7 @@ describe('backend-search typed input', () => {
       retrieval_diagnostics: true,
     });
 
-    expect(result.retrieval_diagnostics).toMatchObject({
+    expect((result as unknown as Record<string, any>).retrieval_diagnostics).toMatchObject({
       vectorBackend: {
         requestedBackend: 'zvec',
         actualBackend: 'lbug',
@@ -865,7 +870,9 @@ describe('backend-search typed input', () => {
       },
     });
 
-    expect(result.structured_retrieval?.capabilityState.tokenCost).toEqual({
+    expect(
+      (result as unknown as Record<string, any>).structured_retrieval?.capabilityState.tokenCost,
+    ).toEqual({
       status: 'available',
       reason: 'token-cost-computed-from-config',
       usage: {
@@ -884,7 +891,9 @@ describe('backend-search typed input', () => {
       costUsd: 0.0027,
       warnings: [],
     });
-    expect(result.structured_retrieval?.candidates[0].label).toBe('CacheStore');
+    expect(
+      (result as unknown as Record<string, any>).structured_retrieval?.candidates[0].label,
+    ).toBe('CacheStore');
   });
 
   it('reports stale freshness and missing embeddings in structured capability state', async () => {
@@ -980,10 +989,14 @@ describe('backend-search typed input', () => {
       structured_output: true,
     });
 
-    expect(result.structured_retrieval?.candidates).toHaveLength(1);
-    expect(result.structured_retrieval?.candidates[0].id).toContain('File:src/semantic.ts');
-    expect(result.structured_retrieval?.rows).toHaveLength(1);
-    expect(result.structured_retrieval?.rows[0]).toMatchObject({
+    expect(
+      (result as unknown as Record<string, any>).structured_retrieval?.candidates,
+    ).toHaveLength(1);
+    expect(
+      (result as unknown as Record<string, any>).structured_retrieval?.candidates[0].id,
+    ).toContain('File:src/semantic.ts');
+    expect((result as unknown as Record<string, any>).structured_retrieval?.rows).toHaveLength(1);
+    expect((result as unknown as Record<string, any>).structured_retrieval?.rows[0]).toMatchObject({
       id: expect.stringContaining('File:src/semantic.ts'),
       kind: 'file',
       label: 'semantic.ts',
@@ -1037,13 +1050,13 @@ describe('backend-search typed input', () => {
       structured_output: true,
     });
 
-    const candidates = result.structured_retrieval?.candidates;
+    const candidates = (result as unknown as Record<string, any>).structured_retrieval?.candidates;
     expect(candidates).toHaveLength(3);
     expect(candidates![0].id).toContain('CacheStore1');
     expect(candidates![1].id).toContain('CacheStore2');
     expect(candidates![2].id).toContain('CacheStore3');
 
-    const rows = result.structured_retrieval?.rows;
+    const rows = (result as unknown as Record<string, any>).structured_retrieval?.rows;
     expect(rows).toHaveLength(3);
     expect(rows![0].id).toEqual(candidates![0].id);
     expect(rows![1].id).toEqual(candidates![1].id);
@@ -1119,7 +1132,7 @@ describe('backend-search typed input', () => {
     expect(lookupSpy).toHaveBeenCalledWith(expect.any(String), 'abc123', undefined);
     expect(setSpy).not.toHaveBeenCalled();
     expect(mockBm25Search).not.toHaveBeenCalled();
-    expect(result.structured_retrieval?.rows).toEqual([
+    expect((result as unknown as Record<string, any>).structured_retrieval?.rows).toEqual([
       {
         id: 'retrieval:Function:src/core/cache.ts:CacheStore',
         kind: 'symbol',
@@ -1132,7 +1145,7 @@ describe('backend-search typed input', () => {
         rawScore: 0.5,
       },
     ]);
-    expect(result.definitions).toEqual([
+    expect((result as unknown as Record<string, any>).definitions).toEqual([
       {
         id: 'Function:src/core/cache.ts:CacheStore',
         name: 'CacheStore',
@@ -1142,7 +1155,9 @@ describe('backend-search typed input', () => {
         endLine: 40,
       },
     ]);
-    expect(result.structured_retrieval?.capabilityState).toMatchObject({
+    expect(
+      (result as unknown as Record<string, any>).structured_retrieval?.capabilityState,
+    ).toMatchObject({
       freshness: { status: 'fresh' },
       cacheHit: true,
       cacheStatus: 'hit',
@@ -1197,8 +1212,13 @@ describe('backend-search typed input', () => {
       structured_output: true,
     });
 
-    expect(result.structured_retrieval?.capabilityState.freshness.status).toBe('stale');
-    expect(result.structured_retrieval?.capabilityState).toMatchObject({
+    expect(
+      (result as unknown as Record<string, any>).structured_retrieval?.capabilityState.freshness
+        .status,
+    ).toBe('stale');
+    expect(
+      (result as unknown as Record<string, any>).structured_retrieval?.capabilityState,
+    ).toMatchObject({
       cacheHit: false,
       cacheStatus: 'miss',
     });
@@ -1243,8 +1263,12 @@ describe('backend-search typed input', () => {
       structured_output: true,
     });
 
-    expect(result.structured_retrieval?.candidates[0].label).toBe('ExpiredRefresh');
-    expect(result.structured_retrieval?.capabilityState).toMatchObject({
+    expect(
+      (result as unknown as Record<string, any>).structured_retrieval?.candidates[0].label,
+    ).toBe('ExpiredRefresh');
+    expect(
+      (result as unknown as Record<string, any>).structured_retrieval?.capabilityState,
+    ).toMatchObject({
       cacheHit: false,
       cacheStatus: 'expired',
       cacheAgeMs: 1_500,
@@ -1316,10 +1340,14 @@ describe('backend-search typed input', () => {
       structured_output: true,
     });
 
-    expect(result.structured_retrieval?.candidates.map((candidate) => candidate.label)).toEqual([
-      'FreshRefresh',
-    ]);
-    expect(result.structured_retrieval?.capabilityState).toMatchObject({
+    expect(
+      (result as unknown as Record<string, any>).structured_retrieval?.candidates.map(
+        (candidate) => candidate.label,
+      ),
+    ).toEqual(['FreshRefresh']);
+    expect(
+      (result as unknown as Record<string, any>).structured_retrieval?.capabilityState,
+    ).toMatchObject({
       cacheHit: false,
       cacheStatus: 'stale',
       cacheAgeMs: 100,

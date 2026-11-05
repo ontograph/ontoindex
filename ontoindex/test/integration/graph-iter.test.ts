@@ -16,13 +16,13 @@ describe('Graph Iteration', () => {
       label: 'Function',
       domain: 'code',
       properties: { name: 'node1', filePath: 'src/one.ts' },
-    });
+    } as Parameters<typeof graph.addNode>[0]);
     graph.addNode({
       id: 'Node:2',
       label: 'Function',
       domain: 'code',
       properties: { name: 'node2', filePath: 'src/two.ts' },
-    });
+    } as Parameters<typeof graph.addNode>[0]);
 
     const nodes = Array.from(graph.iterNodes());
     expect(nodes.length).toBe(2);

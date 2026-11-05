@@ -65,7 +65,7 @@ describe('impact kernel traversal', () => {
     executeParameterized.mockResolvedValueOnce([poisoned]);
 
     const kernel = await runImpactKernel(
-      repo,
+      repo as Parameters<typeof runImpactBFS>[0],
       { id: 'Function:src/target.ts:target', name: 'target', type: 'Function' },
       traversalOptions,
     );
@@ -78,7 +78,7 @@ describe('impact kernel traversal', () => {
     executeParameterized.mockRejectedValueOnce(new Error('traversal unavailable'));
 
     const kernel = await runImpactKernel(
-      repo,
+      repo as Parameters<typeof runImpactBFS>[0],
       { id: 'Function:src/target.ts:target', name: 'target', type: 'Function' },
       traversalOptions,
     );
@@ -87,7 +87,7 @@ describe('impact kernel traversal', () => {
     executeParameterized.mockReset();
     executeParameterized.mockRejectedValueOnce(new Error('traversal unavailable'));
     const impact = await runImpactBFS(
-      repo,
+      repo as Parameters<typeof runImpactBFS>[0],
       { id: 'Function:src/target.ts:target', name: 'target', filePath: 'src/target.ts' },
       'Function',
       'upstream',

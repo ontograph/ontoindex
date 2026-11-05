@@ -133,7 +133,7 @@ describe('inferCallForm', () => {
 
   describe('TypeScript', () => {
     it('detects free call', () => {
-      parser.setLanguage(TypeScript.typescript);
+      parser.setLanguage(TypeScript.typescript as Parser.Language);
       const captures = extractCallCaptures(parser, 'doStuff()', SupportedLanguages.TypeScript);
       const match = captures.find((c) => c.calledName === 'doStuff');
       expect(match).toBeDefined();
@@ -141,7 +141,7 @@ describe('inferCallForm', () => {
     });
 
     it('detects member call', () => {
-      parser.setLanguage(TypeScript.typescript);
+      parser.setLanguage(TypeScript.typescript as Parser.Language);
       const captures = extractCallCaptures(parser, 'user.save()', SupportedLanguages.TypeScript);
       const match = captures.find((c) => c.calledName === 'save');
       expect(match).toBeDefined();
@@ -151,7 +151,7 @@ describe('inferCallForm', () => {
 
   describe('Python', () => {
     it('detects free call', () => {
-      parser.setLanguage(Python);
+      parser.setLanguage(Python as Parser.Language);
       const captures = extractCallCaptures(parser, 'print_result()', SupportedLanguages.Python);
       const match = captures.find((c) => c.calledName === 'print_result');
       expect(match).toBeDefined();
@@ -159,7 +159,7 @@ describe('inferCallForm', () => {
     });
 
     it('detects member call', () => {
-      parser.setLanguage(Python);
+      parser.setLanguage(Python as Parser.Language);
       const captures = extractCallCaptures(parser, 'self.save()', SupportedLanguages.Python);
       const match = captures.find((c) => c.calledName === 'save');
       expect(match).toBeDefined();
@@ -169,7 +169,7 @@ describe('inferCallForm', () => {
 
   describe('Java', () => {
     it('detects free call (no object)', () => {
-      parser.setLanguage(Java);
+      parser.setLanguage(Java as Parser.Language);
       const code = `class Foo { void run() { doStuff(); } }`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.Java);
       const match = captures.find((c) => c.calledName === 'doStuff');
@@ -178,7 +178,7 @@ describe('inferCallForm', () => {
     });
 
     it('detects member call (with object)', () => {
-      parser.setLanguage(Java);
+      parser.setLanguage(Java as Parser.Language);
       const code = `class Foo { void run() { user.save(); } }`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.Java);
       const match = captures.find((c) => c.calledName === 'save');
@@ -209,7 +209,7 @@ describe('inferCallForm', () => {
 
   describe('Go', () => {
     it('detects free call', () => {
-      parser.setLanguage(Go);
+      parser.setLanguage(Go as Parser.Language);
       const code = `package main\nfunc main() { doStuff() }`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.Go);
       const match = captures.find((c) => c.calledName === 'doStuff');
@@ -218,7 +218,7 @@ describe('inferCallForm', () => {
     });
 
     it('detects member call via selector', () => {
-      parser.setLanguage(Go);
+      parser.setLanguage(Go as Parser.Language);
       const code = `package main\nfunc main() { user.Save() }`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.Go);
       const match = captures.find((c) => c.calledName === 'Save');
@@ -229,7 +229,7 @@ describe('inferCallForm', () => {
 
   describe('Rust', () => {
     it('detects free call', () => {
-      parser.setLanguage(Rust);
+      parser.setLanguage(Rust as Parser.Language);
       const code = `fn main() { do_stuff(); }`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.Rust);
       const match = captures.find((c) => c.calledName === 'do_stuff');
@@ -238,7 +238,7 @@ describe('inferCallForm', () => {
     });
 
     it('detects member call via field_expression', () => {
-      parser.setLanguage(Rust);
+      parser.setLanguage(Rust as Parser.Language);
       const code = `fn main() { user.save(); }`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.Rust);
       const match = captures.find((c) => c.calledName === 'save');
@@ -247,7 +247,7 @@ describe('inferCallForm', () => {
     });
 
     it('detects scoped call as free (Foo::new)', () => {
-      parser.setLanguage(Rust);
+      parser.setLanguage(Rust as Parser.Language);
       const code = `fn main() { Foo::new(); }`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.Rust);
       const match = captures.find((c) => c.calledName === 'new');
@@ -258,7 +258,7 @@ describe('inferCallForm', () => {
 
   describe('C++', () => {
     it('detects free call', () => {
-      parser.setLanguage(CPP);
+      parser.setLanguage(CPP as Parser.Language);
       const code = `void main() { doStuff(); }`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.CPlusPlus);
       const match = captures.find((c) => c.calledName === 'doStuff');
@@ -267,7 +267,7 @@ describe('inferCallForm', () => {
     });
 
     it('detects member call via field_expression', () => {
-      parser.setLanguage(CPP);
+      parser.setLanguage(CPP as Parser.Language);
       const code = `void main() { obj.run(); }`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.CPlusPlus);
       const match = captures.find((c) => c.calledName === 'run');
@@ -278,7 +278,7 @@ describe('inferCallForm', () => {
 
   describe('PHP', () => {
     it('detects free function call', () => {
-      parser.setLanguage(PHP.php);
+      parser.setLanguage(PHP.php as Parser.Language);
       const code = `<?php doStuff(); ?>`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.PHP);
       const match = captures.find((c) => c.calledName === 'doStuff');
@@ -287,7 +287,7 @@ describe('inferCallForm', () => {
     });
 
     it('detects member call', () => {
-      parser.setLanguage(PHP.php);
+      parser.setLanguage(PHP.php as Parser.Language);
       const code = `<?php $user->save(); ?>`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.PHP);
       const match = captures.find((c) => c.calledName === 'save');
@@ -296,7 +296,7 @@ describe('inferCallForm', () => {
     });
 
     it('detects static call as member', () => {
-      parser.setLanguage(PHP.php);
+      parser.setLanguage(PHP.php as Parser.Language);
       const code = `<?php Foo::bar(); ?>`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.PHP);
       const match = captures.find((c) => c.calledName === 'bar');
@@ -354,7 +354,7 @@ describe('extractReceiverName', () => {
 
   describe('TypeScript', () => {
     it('extracts simple identifier receiver', () => {
-      parser.setLanguage(TypeScript.typescript);
+      parser.setLanguage(TypeScript.typescript as Parser.Language);
       const captures = extractCallCaptures(parser, 'user.save()', SupportedLanguages.TypeScript);
       const match = captures.find((c) => c.calledName === 'save');
       expect(match).toBeDefined();
@@ -362,7 +362,7 @@ describe('extractReceiverName', () => {
     });
 
     it('extracts "this" as receiver', () => {
-      parser.setLanguage(TypeScript.typescript);
+      parser.setLanguage(TypeScript.typescript as Parser.Language);
       const code = `class Foo { run() { this.save(); } }`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.TypeScript);
       const match = captures.find((c) => c.calledName === 'save');
@@ -371,7 +371,7 @@ describe('extractReceiverName', () => {
     });
 
     it('returns undefined for chained call receiver', () => {
-      parser.setLanguage(TypeScript.typescript);
+      parser.setLanguage(TypeScript.typescript as Parser.Language);
       const captures = extractCallCaptures(
         parser,
         'getUser().save()',
@@ -383,7 +383,7 @@ describe('extractReceiverName', () => {
     });
 
     it('returns undefined for free call', () => {
-      parser.setLanguage(TypeScript.typescript);
+      parser.setLanguage(TypeScript.typescript as Parser.Language);
       const captures = extractCallCaptures(parser, 'doStuff()', SupportedLanguages.TypeScript);
       const match = captures.find((c) => c.calledName === 'doStuff');
       expect(match).toBeDefined();
@@ -391,7 +391,7 @@ describe('extractReceiverName', () => {
     });
 
     it('extracts receiver from optional chain call user?.save()', () => {
-      parser.setLanguage(TypeScript.typescript);
+      parser.setLanguage(TypeScript.typescript as Parser.Language);
       const captures = extractCallCaptures(parser, 'user?.save()', SupportedLanguages.TypeScript);
       const match = captures.find((c) => c.calledName === 'save');
       expect(match).toBeDefined();
@@ -399,7 +399,7 @@ describe('extractReceiverName', () => {
     });
 
     it('extracts "this" from optional chain call this?.save()', () => {
-      parser.setLanguage(TypeScript.typescript);
+      parser.setLanguage(TypeScript.typescript as Parser.Language);
       const code = `class Foo { run() { this?.save(); } }`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.TypeScript);
       const match = captures.find((c) => c.calledName === 'save');
@@ -410,7 +410,7 @@ describe('extractReceiverName', () => {
 
   describe('Python', () => {
     it('extracts simple identifier receiver', () => {
-      parser.setLanguage(Python);
+      parser.setLanguage(Python as Parser.Language);
       const captures = extractCallCaptures(parser, 'user.save()', SupportedLanguages.Python);
       const match = captures.find((c) => c.calledName === 'save');
       expect(match).toBeDefined();
@@ -418,7 +418,7 @@ describe('extractReceiverName', () => {
     });
 
     it('extracts "self" as receiver', () => {
-      parser.setLanguage(Python);
+      parser.setLanguage(Python as Parser.Language);
       const captures = extractCallCaptures(parser, 'self.save()', SupportedLanguages.Python);
       const match = captures.find((c) => c.calledName === 'save');
       expect(match).toBeDefined();
@@ -428,7 +428,7 @@ describe('extractReceiverName', () => {
 
   describe('Java', () => {
     it('extracts receiver from method_invocation', () => {
-      parser.setLanguage(Java);
+      parser.setLanguage(Java as Parser.Language);
       const code = `class Foo { void run() { user.save(); } }`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.Java);
       const match = captures.find((c) => c.calledName === 'save');
@@ -439,7 +439,7 @@ describe('extractReceiverName', () => {
 
   describe('Go', () => {
     it('extracts receiver from selector_expression', () => {
-      parser.setLanguage(Go);
+      parser.setLanguage(Go as Parser.Language);
       const code = `package main\nfunc main() { user.Save() }`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.Go);
       const match = captures.find((c) => c.calledName === 'Save');
@@ -450,7 +450,7 @@ describe('extractReceiverName', () => {
 
   describe('Rust', () => {
     it('extracts receiver from field_expression', () => {
-      parser.setLanguage(Rust);
+      parser.setLanguage(Rust as Parser.Language);
       const code = `fn main() { user.save(); }`;
       const captures = extractCallCaptures(parser, code, SupportedLanguages.Rust);
       const match = captures.find((c) => c.calledName === 'save');

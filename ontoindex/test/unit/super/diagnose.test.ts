@@ -129,7 +129,7 @@ function makeFreshReport(
     reason?: string;
     dirtyFileCount?: number | null;
   } = {},
-) {
+): Awaited<ReturnType<typeof gnEnsureFresh>> {
   const { isStale = false, embeddingsCount = 0, dirtyFileCount = 0 } = options;
   const embeddingsStatus = options.embeddingsStatus ?? (embeddingsCount > 0 ? 'ok' : 'missing');
   const repairCommand =
@@ -186,7 +186,7 @@ function makeFreshReport(
     actionsTaken: [],
     warnings: [],
     recommendations: [],
-  };
+  } as unknown as Awaited<ReturnType<typeof gnEnsureFresh>>;
 }
 
 /**
@@ -1415,7 +1415,7 @@ describe('gnDiagnose', () => {
     vi.spyOn(fs, 'readFile').mockRejectedValue(
       Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
     );
-    vi.spyOn(fs, 'stat').mockImplementation(async (targetPath: fs.PathLike) => {
+    vi.spyOn(fs, 'stat').mockImplementation(async (targetPath: import('node:fs').PathLike) => {
       if (targetPath.toString() === TARGET_LBUG_PATH) {
         return { size: 4096, mtime: new Date('2026-06-27T12:00:00.000Z') } as any;
       }

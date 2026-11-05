@@ -19,7 +19,7 @@ function fakePsProcess(output: string) {
   });
   return child;
 }
-const baseDiagnose: DiagnoseReport = {
+const baseDiagnose = {
   version: 1,
   classification: {
     evidenceClasses: [],
@@ -81,7 +81,7 @@ const baseDiagnose: DiagnoseReport = {
   envVars: {},
   recommendations: [],
   warnings: [],
-};
+} as unknown as DiagnoseReport;
 
 async function probe(paths: string[], env: NodeJS.ProcessEnv = {}, reason?: string) {
   return createMcpDoctorReport(

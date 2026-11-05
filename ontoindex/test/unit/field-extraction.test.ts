@@ -22,7 +22,7 @@ import { SupportedLanguages } from '../../src/config/supported-languages.js';
 const parser = new Parser();
 
 const parse = (code: string) => {
-  parser.setLanguage(TypeScript.typescript);
+  parser.setLanguage(TypeScript.typescript as Parser.Language);
   return parser.parse(code);
 };
 
@@ -40,7 +40,7 @@ const createMockContext = (): FieldExtractorContext => ({
     fileScope: () => new Map(),
     allScopes: () => new Map(),
     constructorTypeMap: new Map(),
-  } as TypeEnvironment,
+  } as unknown as TypeEnvironment,
   symbolTable: createSemanticModel().symbols,
   filePath: 'test.ts',
   language: SupportedLanguages.TypeScript,
@@ -436,7 +436,7 @@ describe('GenericFieldExtractor — TypeScript config', () => {
   mockContext.language = SupportedLanguages.TypeScript;
 
   it('extracts public and private fields from a class', () => {
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse(`
       class User {
         public name: string;
@@ -464,7 +464,7 @@ describe('GenericFieldExtractor — TypeScript config', () => {
   });
 
   it('uses body-discovery fallback when body type does not match config', () => {
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     // interface_declaration has an interface_body — which IS in the config bodyNodeTypes
     // but type_alias_declaration has an object_type body which is also in bodyNodeTypes
     const tree = parser.parse(`
@@ -486,7 +486,7 @@ describe('GenericFieldExtractor — TypeScript config', () => {
   });
 
   it('returns null for non-type-declaration nodes', () => {
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse('function hello() {}');
     const fnNode = tree.rootNode.child(0);
     expect(extractor.isTypeDeclaration(fnNode!)).toBe(false);
@@ -494,7 +494,7 @@ describe('GenericFieldExtractor — TypeScript config', () => {
   });
 
   it('extracts static and readonly modifiers', () => {
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     const tree = parser.parse(`
       class Config {
         static readonly MAX: number;
@@ -519,7 +519,7 @@ describe('GenericFieldExtractor — TypeScript config', () => {
   });
 
   it('does not false-positive visibility on fields named after visibility keywords', () => {
-    parser.setLanguage(TypeScript.typescript);
+    parser.setLanguage(TypeScript.typescript as Parser.Language);
     // A class field literally named 'private' with no accessibility modifier —
     // findVisibility must not confuse the name with a keyword
     const tree = parser.parse(`
@@ -550,7 +550,7 @@ describe('GenericFieldExtractor — Python', () => {
   mockContext.filePath = 'test.py';
 
   it('extracts annotated class fields', () => {
-    parser.setLanguage(Python);
+    parser.setLanguage(Python as Parser.Language);
     const tree = parser.parse(`class User:
     name: str
     email: str
@@ -575,7 +575,7 @@ describe('GenericFieldExtractor — Python', () => {
   });
 
   it('detects underscore-based visibility: _protected and __private', () => {
-    parser.setLanguage(Python);
+    parser.setLanguage(Python as Parser.Language);
     const tree = parser.parse(`class Settings:
     name: str
     _internal: int
@@ -601,7 +601,7 @@ describe('GenericFieldExtractor — Python', () => {
   });
 
   it('does not mark dunder attributes as private', () => {
-    parser.setLanguage(Python);
+    parser.setLanguage(Python as Parser.Language);
     // __slots__ starts with __ but also ends with __ so the private check
     // (startsWith('__') && !endsWith('__')) is skipped.
     // However it still starts with _ so the config classifies it as protected.
@@ -618,7 +618,7 @@ describe('GenericFieldExtractor — Python', () => {
   });
 
   it('reports isStatic and isReadonly as false', () => {
-    parser.setLanguage(Python);
+    parser.setLanguage(Python as Parser.Language);
     const tree = parser.parse(`class A:
     x: int
 `);
@@ -646,7 +646,7 @@ describe('GenericFieldExtractor — Go', () => {
   // The generic factory's extract() requires a node with a 'name' field,
   // so we walk to type_spec which holds the name.
   function findTypeSpec(src: string) {
-    parser.setLanguage(Go);
+    parser.setLanguage(Go as Parser.Language);
     const tree = parser.parse(src);
     const typeDecl = tree.rootNode.child(0)!;
     return { typeDecl, typeSpec: typeDecl.namedChild(0)! };
@@ -659,7 +659,7 @@ describe('GenericFieldExtractor — Go', () => {
   });
 
   it('rejects non-type-declaration nodes', () => {
-    parser.setLanguage(Go);
+    parser.setLanguage(Go as Parser.Language);
     const tree = parser.parse(`func main() {}`);
     const fnNode = tree.rootNode.child(0);
     expect(extractor.isTypeDeclaration(fnNode!)).toBe(false);
@@ -727,7 +727,7 @@ describe('GenericFieldExtractor — C++', () => {
   mockContext.filePath = 'test.cpp';
 
   it('extracts fields from a class with access specifiers', () => {
-    parser.setLanguage(Cpp);
+    parser.setLanguage(Cpp as Parser.Language);
     const tree = parser.parse(`class User {
 public:
   int id;
@@ -759,7 +759,7 @@ private:
   });
 
   it('uses backward-sibling walk to find access specifier', () => {
-    parser.setLanguage(Cpp);
+    parser.setLanguage(Cpp as Parser.Language);
     // protected section followed by more fields
     const tree = parser.parse(`class Base {
 protected:
@@ -788,7 +788,7 @@ public:
   });
 
   it('defaults to private for class without access specifiers', () => {
-    parser.setLanguage(Cpp);
+    parser.setLanguage(Cpp as Parser.Language);
     const tree = parser.parse(`class Secret {
   int value;
 };`);
@@ -802,7 +802,7 @@ public:
   });
 
   it('defaults to public for struct without access specifiers', () => {
-    parser.setLanguage(Cpp);
+    parser.setLanguage(Cpp as Parser.Language);
     const tree = parser.parse(`struct Point {
   double x;
   double y;
@@ -818,7 +818,7 @@ public:
   });
 
   it('detects static and const fields', () => {
-    parser.setLanguage(Cpp);
+    parser.setLanguage(Cpp as Parser.Language);
     const tree = parser.parse(`class Config {
 public:
   static int count;
@@ -852,7 +852,7 @@ describe('GenericFieldExtractor — Ruby', () => {
   mockContext.filePath = 'test.rb';
 
   it('preserves explicit YARD types for each accessor name at field extraction', () => {
-    parser.setLanguage(Ruby);
+    parser.setLanguage(Ruby as Parser.Language);
     const tree = parser.parse(`class User
   # @return [Address]
   attr_accessor :address, :billing
@@ -867,7 +867,7 @@ end`);
   });
 
   it('extracts multiple fields from attr_accessor', () => {
-    parser.setLanguage(Ruby);
+    parser.setLanguage(Ruby as Parser.Language);
     const tree = parser.parse(`class User
   attr_accessor :name, :email, :age
 end`);
@@ -893,7 +893,7 @@ end`);
   });
 
   it('extracts fields from attr_reader as readonly', () => {
-    parser.setLanguage(Ruby);
+    parser.setLanguage(Ruby as Parser.Language);
     const tree = parser.parse(`class Config
   attr_reader :host, :port
 end`);
@@ -907,7 +907,7 @@ end`);
   });
 
   it('extracts fields from attr_writer as non-readonly', () => {
-    parser.setLanguage(Ruby);
+    parser.setLanguage(Ruby as Parser.Language);
     const tree = parser.parse(`class Settings
   attr_writer :theme
 end`);
@@ -921,7 +921,7 @@ end`);
   });
 
   it('handles multiple attr_* calls in the same class', () => {
-    parser.setLanguage(Ruby);
+    parser.setLanguage(Ruby as Parser.Language);
     const tree = parser.parse(`class Person
   attr_accessor :name
   attr_reader :id
@@ -947,7 +947,7 @@ end`);
   });
 
   it('reports type as null (Ruby is dynamically typed)', () => {
-    parser.setLanguage(Ruby);
+    parser.setLanguage(Ruby as Parser.Language);
     const tree = parser.parse(`class Item
   attr_accessor :value
 end`);
@@ -960,7 +960,7 @@ end`);
   });
 
   it('reports isStatic as false', () => {
-    parser.setLanguage(Ruby);
+    parser.setLanguage(Ruby as Parser.Language);
     const tree = parser.parse(`class Demo
   attr_accessor :data
 end`);

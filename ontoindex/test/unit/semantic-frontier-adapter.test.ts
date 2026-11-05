@@ -64,9 +64,9 @@ describe('runAnnNeighborFrontierSearch', () => {
     const frontier = vi.fn(async () => ({
       repo: 'repo',
       repoPath: '/tmp/repo',
-      mode: 'ann',
+      mode: 'ann' as const,
       embeddingReady: true,
-      indexFreshness: 'fresh',
+      indexFreshness: 'fresh' as const,
       visited: 1,
       maxVisited: 10,
       truncated: false,
@@ -84,7 +84,9 @@ describe('runAnnNeighborFrontierSearch', () => {
       [{ nodeId: 'seed-a', vector: [1, 0], lanes: ['seed-a'] }],
       {
         enabled: true,
-        frontierSearch: frontier,
+        frontierSearch: frontier as unknown as NonNullable<
+          Parameters<typeof runAnnNeighborFrontierSearch>[5]
+        >['frontierSearch'],
         topK: 10,
       },
     );

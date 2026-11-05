@@ -52,10 +52,10 @@ withTestLbugDB(
         // cypher tool wraps results as markdown
         expect(result).toHaveProperty('markdown');
         expect(result).toHaveProperty('row_count');
-        expect(result.row_count).toBeGreaterThanOrEqual(3);
-        expect(result.markdown).toContain('login');
-        expect(result.markdown).toContain('validate');
-        expect(result.markdown).toContain('hash');
+        expect((result as unknown as Record<string, any>).row_count).toBeGreaterThanOrEqual(3);
+        expect((result as unknown as Record<string, any>).markdown).toContain('login');
+        expect((result as unknown as Record<string, any>).markdown).toContain('validate');
+        expect((result as unknown as Record<string, any>).markdown).toContain('hash');
       });
 
       it('cypher tool blocks write queries', async () => {
@@ -64,22 +64,28 @@ withTestLbugDB(
             "CREATE (n:Function {id: 'x', name: 'x', filePath: '', startLine: 0, endLine: 0, isExported: false, content: '', description: ''})",
         });
         expect(result).toHaveProperty('error');
-        expect(result.error).toMatch(/Read-only Cypher rejected: forbidden keyword CREATE/);
+        expect((result as unknown as Record<string, any>).error).toMatch(
+          /Read-only Cypher rejected: forbidden keyword CREATE/,
+        );
       });
 
       it('context tool returns symbol info with callers and callees', async () => {
         const result = await backend.callTool('context', { name: 'login' });
         expect(result).not.toHaveProperty('error');
-        expect(result.status).toBe('found');
+        expect((result as unknown as Record<string, any>).status).toBe('found');
         // Should have the symbol identity
-        expect(result.symbol).toBeDefined();
-        expect(result.symbol.name).toBe('login');
-        expect(result.symbol.filePath).toBe('src/auth.ts');
+        expect((result as unknown as Record<string, any>).symbol).toBeDefined();
+        expect((result as unknown as Record<string, any>).symbol.name).toBe('login');
+        expect((result as unknown as Record<string, any>).symbol.filePath).toBe('src/auth.ts');
         // login calls validate and hash — should appear in outgoing.calls
-        expect(result.outgoing).toBeDefined();
-        expect(result.outgoing.calls).toBeDefined();
-        expect(result.outgoing.calls.length).toBeGreaterThanOrEqual(2);
-        const calleeNames = result.outgoing.calls.map((c: any) => c.name);
+        expect((result as unknown as Record<string, any>).outgoing).toBeDefined();
+        expect((result as unknown as Record<string, any>).outgoing.calls).toBeDefined();
+        expect(
+          (result as unknown as Record<string, any>).outgoing.calls.length,
+        ).toBeGreaterThanOrEqual(2);
+        const calleeNames = (result as unknown as Record<string, any>).outgoing.calls.map(
+          (c: any) => c.name,
+        );
         expect(calleeNames).toContain('validate');
         expect(calleeNames).toContain('hash');
       });
@@ -91,9 +97,12 @@ withTestLbugDB(
         });
         expect(result).not.toHaveProperty('error');
         // validate is called by login, so login should appear at depth 1
-        expect(result.impactedCount).toBeGreaterThanOrEqual(1);
-        expect(result.byDepth).toBeDefined();
-        const directDeps = result.byDepth[1] || result.byDepth['1'] || [];
+        expect((result as unknown as Record<string, any>).impactedCount).toBeGreaterThanOrEqual(1);
+        expect((result as unknown as Record<string, any>).byDepth).toBeDefined();
+        const directDeps =
+          (result as unknown as Record<string, any>).byDepth[1] ||
+          (result as unknown as Record<string, any>).byDepth['1'] ||
+          [];
         expect(directDeps.length).toBeGreaterThanOrEqual(1);
         const depNames = directDeps.map((d: any) => d.name);
         expect(depNames).toContain('login');
@@ -107,33 +116,38 @@ withTestLbugDB(
         expect(result).toHaveProperty('definitions');
         // The search should find something (FTS or graph-based)
         const totalResults =
-          (result.processes?.length || 0) +
-          (result.process_symbols?.length || 0) +
-          (result.definitions?.length || 0);
+          ((result as unknown as Record<string, any>).processes?.length || 0) +
+          ((result as unknown as Record<string, any>).process_symbols?.length || 0) +
+          ((result as unknown as Record<string, any>).definitions?.length || 0);
         expect(totalResults).toBeGreaterThanOrEqual(1);
 
         // #553: query response carries per-phase timing metadata.
-        expect(result.timing).toBeDefined();
-        expect(typeof result.timing.wall).toBe('number');
-        expect(result.timing.wall).toBeGreaterThanOrEqual(0);
+        expect((result as unknown as Record<string, any>).timing).toBeDefined();
+        expect(typeof (result as unknown as Record<string, any>).timing.wall).toBe('number');
+        expect((result as unknown as Record<string, any>).timing.wall).toBeGreaterThanOrEqual(0);
         // At least one of the search phases must have fired for any
         // non-error response — bm25 and/or vector always runs.
-        expect(result.timing.bm25 ?? result.timing.vector).toBeGreaterThanOrEqual(0);
+        expect(
+          (result as unknown as Record<string, any>).timing.bm25 ??
+            (result as unknown as Record<string, any>).timing.vector,
+        ).toBeGreaterThanOrEqual(0);
       });
 
       it('tech_debt tool initializes the DB-backed path and returns symbols', async () => {
         const result = await backend.callTool('tech_debt', { since: '10 years', limit: 5 });
         expect(result).not.toHaveProperty('error');
-        expect(result.status).toBe('success');
-        expect(result.symbol_count).toBeGreaterThanOrEqual(1);
-        expect(result.symbols.length).toBeGreaterThanOrEqual(1);
+        expect((result as unknown as Record<string, any>).status).toBe('success');
+        expect((result as unknown as Record<string, any>).symbol_count).toBeGreaterThanOrEqual(1);
+        expect((result as unknown as Record<string, any>).symbols.length).toBeGreaterThanOrEqual(1);
       });
 
       it('ipc_trace tool initializes the DB-backed path before tracing', async () => {
         const result = await backend.callTool('ipc_trace', { symbol_name: 'login' });
-        expect(result.error ?? '').not.toMatch(/LadybugDB not initialized/i);
-        expect(result.status).toBe('success');
-        expect(result.flow_count).toBeGreaterThanOrEqual(0);
+        expect((result as unknown as Record<string, any>).error ?? '').not.toMatch(
+          /LadybugDB not initialized/i,
+        );
+        expect((result as unknown as Record<string, any>).status).toBe('success');
+        expect((result as unknown as Record<string, any>).flow_count).toBeGreaterThanOrEqual(0);
       });
 
       it('impact_batch tool initializes the DB-backed path before aggregating impact', async () => {
@@ -144,9 +158,11 @@ withTestLbugDB(
         });
         const serialized = JSON.stringify(result);
         expect(serialized).not.toMatch(/LadybugDB not initialized/i);
-        expect(result.status).toBe('success');
-        expect(result.perSymbol).toHaveLength(2);
-        expect(result.union.totalAffectedNodes).toBeGreaterThanOrEqual(1);
+        expect((result as unknown as Record<string, any>).status).toBe('success');
+        expect((result as unknown as Record<string, any>).perSymbol).toHaveLength(2);
+        expect(
+          (result as unknown as Record<string, any>).union.totalAffectedNodes,
+        ).toBeGreaterThanOrEqual(1);
       });
 
       it('cycle_detect tool initializes the DB-backed path and reports cycles', async () => {
@@ -174,9 +190,9 @@ withTestLbugDB(
         });
         const serialized = JSON.stringify(result);
         expect(serialized).not.toMatch(/LadybugDB not initialized/i);
-        expect(result.status).toBe('success');
-        expect(result.summary.total_cycles).toBe(1);
-        expect(result.cycles[0].members).toEqual(
+        expect((result as unknown as Record<string, any>).status).toBe('success');
+        expect((result as unknown as Record<string, any>).summary.total_cycles).toBe(1);
+        expect((result as unknown as Record<string, any>).cycles[0].members).toEqual(
           expect.arrayContaining([
             expect.objectContaining({ filePath: 'src/cycle-a.ts', kind: 'File' }),
             expect.objectContaining({ filePath: 'src/cycle-b.ts', kind: 'File' }),
@@ -201,9 +217,11 @@ withTestLbugDB(
         });
         const serialized = JSON.stringify(result);
         expect(serialized).not.toMatch(/LadybugDB not initialized/i);
-        expect(result.status).toBe('success');
-        expect(result.summary.module_count).toBeGreaterThanOrEqual(2);
-        expect(result.rows).toEqual(
+        expect((result as unknown as Record<string, any>).status).toBe('success');
+        expect(
+          (result as unknown as Record<string, any>).summary.module_count,
+        ).toBeGreaterThanOrEqual(2);
+        expect((result as unknown as Record<string, any>).rows).toEqual(
           expect.arrayContaining([
             expect.objectContaining({ community: 'Authentication' }),
             expect.objectContaining({ community: 'Utilities' }),
@@ -238,10 +256,12 @@ withTestLbugDB(
           new_pattern: 'timerRegistry\\.setTimeout\\s*\\(',
           file_glob: 'src/migration.ts',
         });
-        expect(result.status).toBe('success');
-        expect(result.summary.total_old_sites).toBe(2);
-        expect(result.summary.total_new_sites).toBe(1);
-        expect(result.remaining_files[0].file).toBe('src/migration.ts');
+        expect((result as unknown as Record<string, any>).status).toBe('success');
+        expect((result as unknown as Record<string, any>).summary.total_old_sites).toBe(2);
+        expect((result as unknown as Record<string, any>).summary.total_new_sites).toBe(1);
+        expect((result as unknown as Record<string, any>).remaining_files[0].file).toBe(
+          'src/migration.ts',
+        );
       });
 
       it('boundary_violations tool reports forbidden import edges', async () => {
@@ -261,9 +281,9 @@ withTestLbugDB(
         const result = await backend.callTool('boundary_violations', {
           rules: [{ from: 'browser/**', to: 'wsd/**', label: 'browser -> wsd' }],
         });
-        expect(result.status).toBe('success');
-        expect(result.summary.total_violations).toBe(1);
-        expect(result.violations[0]).toMatchObject({
+        expect((result as unknown as Record<string, any>).status).toBe('success');
+        expect((result as unknown as Record<string, any>).summary.total_violations).toBe(1);
+        expect((result as unknown as Record<string, any>).violations[0]).toMatchObject({
           rule_label: 'browser -> wsd',
           source_file: 'browser/index.ts',
           target_file: 'wsd/client.ts',
@@ -307,9 +327,9 @@ withTestLbugDB(
           patterns: ['explicit_any', 'type_suppression', 'unsafe_cast', 'non_null_assertion'],
           limit: 10,
         });
-        expect(result.status).toBe('success');
-        expect(result.result_count).toBeGreaterThanOrEqual(4);
-        expect(result.findings).toEqual(
+        expect((result as unknown as Record<string, any>).status).toBe('success');
+        expect((result as unknown as Record<string, any>).result_count).toBeGreaterThanOrEqual(4);
+        expect((result as unknown as Record<string, any>).findings).toEqual(
           expect.arrayContaining([
             expect.objectContaining({ pattern_type: 'explicit_any', enclosing_symbol: 'risky' }),
             expect.objectContaining({
@@ -359,9 +379,17 @@ withTestLbugDB(
         );
 
         const result = await backend.callTool('analysis_catalog', { tier: 'stable' });
-        expect(result.status).toBe('success');
-        expect(result.packs.some((pack: any) => pack.id === 'demo.pack')).toBe(true);
-        expect(result.suites.some((suite: any) => suite.id === 'suite.demo')).toBe(true);
+        expect((result as unknown as Record<string, any>).status).toBe('success');
+        expect(
+          (result as unknown as Record<string, any>).packs.some(
+            (pack: any) => pack.id === 'demo.pack',
+          ),
+        ).toBe(true);
+        expect(
+          (result as unknown as Record<string, any>).suites.some(
+            (suite: any) => suite.id === 'suite.demo',
+          ),
+        ).toBe(true);
       });
 
       it('graph_diff tool initializes the DB-backed path when a snapshot exists', async () => {
@@ -382,9 +410,11 @@ withTestLbugDB(
         );
 
         const result = await backend.callTool('graph_diff', { limit: 5 });
-        expect(result.error ?? '').not.toMatch(/LadybugDB not initialized/i);
-        expect(result.status).toBe('success');
-        expect(result.snapshot_present).toBe(true);
+        expect((result as unknown as Record<string, any>).error ?? '').not.toMatch(
+          /LadybugDB not initialized/i,
+        );
+        expect((result as unknown as Record<string, any>).status).toBe('success');
+        expect((result as unknown as Record<string, any>).snapshot_present).toBe(true);
       });
 
       it('unknown tool throws', async () => {
@@ -412,8 +442,11 @@ withTestLbugDB(
           relationTypes: ['HAS_METHOD'],
         });
         expect(result).not.toHaveProperty('error');
-        expect(result.impactedCount).toBeGreaterThanOrEqual(1);
-        const d1 = result.byDepth[1] || result.byDepth['1'] || [];
+        expect((result as unknown as Record<string, any>).impactedCount).toBeGreaterThanOrEqual(1);
+        const d1 =
+          (result as unknown as Record<string, any>).byDepth[1] ||
+          (result as unknown as Record<string, any>).byDepth['1'] ||
+          [];
         const names = d1.map((d: any) => d.name);
         expect(names).toContain('authenticate');
         // Should NOT include CALLS-reachable symbols like validate/hash
@@ -435,10 +468,13 @@ withTestLbugDB(
           relationTypes: ['METHOD_OVERRIDES'],
         });
         expect(result).not.toHaveProperty('error');
-        expect(result.status).not.toBe('ambiguous');
+        expect((result as unknown as Record<string, any>).status).not.toBe('ambiguous');
         // AuthService.authenticate overrides BaseService.authenticate
-        expect(result.impactedCount).toBeGreaterThanOrEqual(1);
-        const d1 = result.byDepth[1] || result.byDepth['1'] || [];
+        expect((result as unknown as Record<string, any>).impactedCount).toBeGreaterThanOrEqual(1);
+        const d1 =
+          (result as unknown as Record<string, any>).byDepth[1] ||
+          (result as unknown as Record<string, any>).byDepth['1'] ||
+          [];
         const names = d1.map((d: any) => d.name);
         expect(names).toContain('authenticate');
       });
@@ -455,9 +491,12 @@ withTestLbugDB(
           relationTypes: ['OVERRIDES'],
         });
         expect(result).not.toHaveProperty('error');
-        expect(result.status).not.toBe('ambiguous');
-        expect(result.impactedCount).toBeGreaterThanOrEqual(1);
-        const d1 = result.byDepth[1] || result.byDepth['1'] || [];
+        expect((result as unknown as Record<string, any>).status).not.toBe('ambiguous');
+        expect((result as unknown as Record<string, any>).impactedCount).toBeGreaterThanOrEqual(1);
+        const d1 =
+          (result as unknown as Record<string, any>).byDepth[1] ||
+          (result as unknown as Record<string, any>).byDepth['1'] ||
+          [];
         const names = d1.map((d: any) => d.name);
         expect(names).toContain('authenticate');
       });
@@ -470,7 +509,7 @@ withTestLbugDB(
         });
         expect(result).not.toHaveProperty('error');
         // AuthService has no outgoing CALLS edges, only HAS_METHOD
-        expect(result.impactedCount).toBe(0);
+        expect((result as unknown as Record<string, any>).impactedCount).toBe(0);
       });
     });
 
@@ -490,13 +529,13 @@ withTestLbugDB(
       it('context tool returns error for nonexistent symbol', async () => {
         const result = await backend.callTool('context', { name: 'nonexistent_xyz_symbol_999' });
         expect(result).toHaveProperty('error');
-        expect(result.error).toMatch(/not found/i);
+        expect((result as unknown as Record<string, any>).error).toMatch(/not found/i);
       });
 
       it('query tool returns error for empty query', async () => {
         const result = await backend.callTool('query', { query: '' });
         expect(result).toHaveProperty('error');
-        expect(result.error).toMatch(/required/i);
+        expect((result as unknown as Record<string, any>).error).toMatch(/required/i);
       });
 
       it('query tool returns error for missing query param', async () => {
@@ -513,7 +552,7 @@ withTestLbugDB(
       it('context tool returns error when no name or uid provided', async () => {
         const result = await backend.callTool('context', {});
         expect(result).toHaveProperty('error');
-        expect(result.error).toMatch(/required/i);
+        expect((result as unknown as Record<string, any>).error).toMatch(/required/i);
       });
 
       // ─── impact error handling tests (#321) ───────────────────────────
@@ -528,10 +567,10 @@ withTestLbugDB(
         expect(result).toBeDefined();
         // Should have either an error field (not found) or impactedCount 0
         // Either outcome is valid — the key is it doesn't crash
-        if (result.error) {
-          expect(typeof result.error).toBe('string');
+        if ((result as unknown as Record<string, any>).error) {
+          expect(typeof (result as unknown as Record<string, any>).error).toBe('string');
         } else {
-          expect(result.impactedCount).toBe(0);
+          expect((result as unknown as Record<string, any>).impactedCount).toBe(0);
         }
       });
 
@@ -542,9 +581,12 @@ withTestLbugDB(
         });
         // When an error is returned, target must be an object (not raw string)
         // so downstream API consumers can safely access result.target.name
-        if (result.error && result.target !== undefined) {
-          expect(typeof result.target).toBe('object');
-          expect(result.target).not.toBeNull();
+        if (
+          (result as unknown as Record<string, any>).error &&
+          (result as unknown as Record<string, any>).target !== undefined
+        ) {
+          expect(typeof (result as unknown as Record<string, any>).target).toBe('object');
+          expect((result as unknown as Record<string, any>).target).not.toBeNull();
         }
       });
 
@@ -558,9 +600,9 @@ withTestLbugDB(
         });
         // Should succeed (validate exists in seed data)
         expect(result).not.toHaveProperty('error');
-        if (result.partial) {
+        if ((result as unknown as Record<string, any>).partial) {
           // If partial, must still have some results
-          expect(result.impactedCount).toBeGreaterThan(0);
+          expect((result as unknown as Record<string, any>).impactedCount).toBeGreaterThan(0);
         }
       });
     });
