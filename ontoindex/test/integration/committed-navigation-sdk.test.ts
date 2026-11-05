@@ -215,6 +215,19 @@ describe('explicit committed navigation over MCP', () => {
       expect(defaultPayload.remediation.message).toContain('query the last index');
       expect(defaultPayload.remediation.message).toContain('readContext.sourceProvenance');
       expect(defaultPayload.remediation.message).toContain('Do not automatically retry or reindex');
+    } else if (call.name === 'search') {
+      // Search sees bounded dirty edits through the symbols overlay instead (2.4.22).
+      expect(defaultResult.isError, JSON.stringify(defaultResult)).not.toBe(true);
+      expect(defaultPayload.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining('uncommitted-symbols overlay')]),
+      );
+      // The dirty edit deleted `baseline`, so the overlay suppresses the stale committed row.
+      expect(JSON.stringify(defaultPayload.definitions)).not.toContain('COMMITTED_MARKER');
+      expect(defaultPayload.definitions).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: 'baseline' })]),
+      );
+      expect(analysisSpy).toHaveBeenCalledTimes(1);
+      analysisSpy.mockClear();
     } else {
       // Backend navigation falls back to committed evidence since 2.3.15 (#155).
       expect(defaultResult.isError, JSON.stringify(defaultResult)).not.toBe(true);
