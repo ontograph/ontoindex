@@ -40,6 +40,11 @@ export function forEachPatternName(
 export function isNameShadowed(node: SyntaxNode, name: string): boolean {
   const binds = (pattern: SyntaxNode | null): boolean =>
     forEachPatternName(pattern, (binding) => binding === name);
+  let root = node;
+  while (root.parent) root = root.parent;
+  const isModule = root.namedChildren.some((child) =>
+    ['import_statement', 'export_statement'].includes(child.type),
+  );
 
   for (
     let current: SyntaxNode | null = node;
@@ -66,13 +71,22 @@ export function isNameShadowed(node: SyntaxNode, name: string): boolean {
           'method_definition',
         ].includes(current.parent.type))
     ) {
+      let isStrict = isModule;
+      for (let ancestor: SyntaxNode | null = current; ancestor; ancestor = ancestor.parent) {
+        if (['class_body', 'class', 'class_declaration'].includes(ancestor.type)) {
+          isStrict = true;
+          break;
+        }
+      }
       // var is hoisted through blocks, but never out of a nested function, class, or static block.
       const pending = [...current.namedChildren];
       while (pending.length) {
         const descendant = pending.pop()!;
-        // Conservatively include Annex B block-function bindings before skipping their bodies.
+        // Annex B promotes only plain synchronous block functions in sloppy code.
         if (
-          ['function_declaration', 'generator_function_declaration'].includes(descendant.type) &&
+          !isStrict &&
+          descendant.type === 'function_declaration' &&
+          !descendant.children.some((child) => child.type === 'async') &&
           binds(descendant.childForFieldName('name'))
         )
           return true;

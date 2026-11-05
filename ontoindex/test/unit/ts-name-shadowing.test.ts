@@ -39,7 +39,27 @@ describe.each([
     [
       'hoisted block generator',
       'function f() { if (true) { function* User() {} } probe(); }',
-      true,
+      false,
+    ],
+    [
+      'hoisted async block function',
+      'function f() { if (true) { async function User() {} } probe(); }',
+      false,
+    ],
+    [
+      'module block function',
+      'import x from "y"; function f() { if (true) { function User() {} } probe(); }',
+      false,
+    ],
+    [
+      'exported block function',
+      'export function f() { if (true) { function User() {} } probe(); }',
+      false,
+    ],
+    [
+      'class method block function',
+      'class C { m() { if (true) { function User() {} } probe(); } }',
+      false,
     ],
     [
       'block function in a nested function',
